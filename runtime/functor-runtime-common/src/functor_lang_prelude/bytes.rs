@@ -26,6 +26,16 @@ impl ByteView {
         }
     }
 
+    /// Shares `data` without copying it.
+    pub fn from_shared(data: Arc<[u8]>) -> ByteView {
+        let len = data.len();
+        ByteView {
+            data,
+            start: 0,
+            len,
+        }
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         &self.data[self.start..self.start + self.len]
     }
@@ -71,7 +81,7 @@ crate::host_returnable!(FunctorLangBytes);
 /// The bytes of a file in the project (the entry file's folder). `api` and
 /// `example` shape the errors: `Typeface.file("…"): use a path inside the
 /// project, like "fonts/MyFont.ttf"`.
-pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<Vec<u8>, String> {
+pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<Arc<[u8]>, String> {
     use crate::storage::ProjectReadError;
     let outside = || format!("{api}({path:?}): use a path inside the project, like {example:?}");
     // The same portable rule as project assets; the platform's reader keeps
@@ -248,7 +258,7 @@ macro_rules! writer {
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("File.bytes", "File.bytes(path)", |path: String| {
         read_project_file("File.bytes", &path, "data/model.bin")
-            .map(|data| FunctorLangBytes(ByteView::new(data)))
+            .map(|data| FunctorLangBytes(ByteView::from_shared(data)))
     });
     reg.fn1("File.exists", "File.exists(path)", |path: String| {
         Value::Bool(project_file_exists(&path))

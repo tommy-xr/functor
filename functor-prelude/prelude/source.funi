@@ -1,0 +1,21 @@
+//! Where an external prefix's files come from (`Config.external`). The code
+//! names a source; each machine says where it is, so no local path is ever
+//! in the project.
+//!
+//! ```functor
+//! let config =
+//!   Config.create()
+//!   |> Config.external("ss2/",
+//!        Source.mount("ss2") |> Source.device("/sdcard/shock2quest/sshock2.kpf!data/res/"))
+//! ```
+
+/// An opaque file source.
+type t = host
+
+/// This machine's mount `name`: a folder, or a folder inside a zip, mapped in
+/// `~/.config/functor/mounts.json` (`{"ss2": "~/ss2/sshock2.kpf!data/res/"}`)
+/// or by `--mount ss2=PATH`. `functor run vr` sends the headset what it reads.
+let mount : (string) => t
+/// Where a standalone headset finds the files (an absolute path, `!` into a
+/// zip). Declared for later: reading it isn't implemented yet.
+let device : (string, t) => t

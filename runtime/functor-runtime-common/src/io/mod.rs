@@ -89,7 +89,7 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
             // frames). Until assets are driven by a real executor (see
             // docs/todo.md "async inbox"), read synchronously: one frame hitch
             // instead of a minutes-long stall.
-            std::fs::read(&path).map_err(|e| format!("{}: {}", path, e))?
+            std::fs::read(&path).or_else(|e| read_through_project(&path, e))?
         };
         // Simulated slow network (dev): FUNCTOR_THROTTLE_ASSETS=<KB/s> holds
         // the loaded bytes until size/rate has elapsed, so loading UX
@@ -107,6 +107,25 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
         }
         Ok(bytes)
     }
+}
+
+/// A project-relative asset missing on disk, read through the project reader
+/// instead: an `external` prefix on desktop, or the headset's files. The
+/// reader takes `File.bytes` paths (from the entry's folder), which differ
+/// from renderer paths only for an entry in a subfolder.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_through_project(path: &str, disk_error: std::io::Error) -> Result<Vec<u8>, String> {
+    use crate::storage::ProjectReadError;
+    let reader = crate::storage::project_reader()
+        .filter(|_| crate::debug_protocol::validate_project_asset_path(path).is_ok())
+        .ok_or_else(|| format!("{path}: {disk_error}"))?;
+    reader
+        .read(path)
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| match e {
+            ProjectReadError::Outside => format!("{path}: resolves outside the project"),
+            ProjectReadError::Unreadable(e) => format!("{path}: {e}"),
+        })
 }
 
 /// See the FUNCTOR_THROTTLE_ASSETS comment in [`load_bytes_async2`].
@@ -551,5 +570,33 @@ mod tests {
         assert!(!is_remote_path("crate.png"));
         assert!(!is_remote_path("models/fish.glb"));
         assert!(!is_remote_path("httpx://not-a-scheme.glb"));
+    }
+
+    /// An asset missing on disk is read through the installed project
+    /// reader (an external prefix, the headset's files); unaskable paths aren't.
+    #[test]
+    fn missing_assets_fall_back_to_the_project_reader() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::storage::set_project_reader(None);
+            }
+        }
+        let _reset = Reset;
+        let cache = std::sync::Arc::new(crate::asset::AssetCache::new());
+        cache.replace_uploaded("ext/skin.gif", vec![1, 2]);
+        crate::storage::set_project_reader(Some(cache));
+        let missing = || std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            read_through_project("ext/skin.gif", missing()),
+            Ok(vec![1, 2])
+        );
+        let err = read_through_project("ext/other.gif", missing()).unwrap_err();
+        assert!(err.starts_with("ext/other.gif: not pushed"), "{err}");
+        let err = read_through_project("../ext/skin.gif", missing()).unwrap_err();
+        assert!(err.contains("not found"), "{err}");
     }
 }

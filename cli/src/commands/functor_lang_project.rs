@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
+use functor_runtime_common::runtime_settings::ExternalPrefix;
 
+use super::project_files;
 use crate::output::{emit, Event, Severity};
 // `util` (the shell-command runner + wasm dev server) is only used by the
 // `web`-gated `run wasm` path.
@@ -53,6 +55,8 @@ pub struct FunctorLangProject {
     pub mouse_capture: bool,
     /// Whether the shell exposes an absolute pointer to the game.
     pub cursor: CursorPolicy,
+    /// `--mount name=PATH` overrides of this machine's mounts.
+    pub mounts: Vec<String>,
 }
 
 /// Shell pointer behavior declared by `functor.json`'s `cursor` field.
@@ -186,6 +190,7 @@ because capture is now the default",
                 role: role.to_string(),
                 mouse_capture,
                 cursor,
+                mounts: Vec::new(),
             }
         };
         match &self.entries {
@@ -377,6 +382,117 @@ impl FunctorLangProject {
         Ok(path)
     }
 
+    /// The `external` folders (never pushed or bundled), relative to the
+    /// project root: `"ss2/"`, or `"src/ss2/"` for an entry in `src/`.
+    fn external_dirs(&self, externals: &[ExternalPrefix]) -> Vec<String> {
+        let base: String = Path::new(&self.entry)
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .filter_map(|part| match part {
+                std::path::Component::Normal(name) => Some(name.to_string_lossy() + "/"),
+                _ => None,
+            })
+            .collect();
+        externals
+            .iter()
+            .map(|external| format!("{base}{}", external.prefix))
+            .collect()
+    }
+
+    /// `config`'s `Config.external` declarations, from the project on disk
+    /// (see [`Self::config_externals`]).
+    fn externals(&self, working_directory: &str) -> Result<Vec<ExternalPrefix>, Error> {
+        let project = functor_lang::project::load_with_bundled_modules(
+            &self.entry_path(working_directory)?,
+            &std::collections::HashMap::new(),
+            &functor_prelude::bundled_modules(),
+        )
+        .map_err(|e| Error::other(e.render()))?;
+        self.config_externals(&project)
+    }
+
+    /// `config`'s `Config.external` declarations, read before anything runs:
+    /// only `config` and the definitions it uses are evaluated, and they may
+    /// not read files (the external prefixes say where files come from).
+    fn config_externals(
+        &self,
+        project: &functor_lang::project::Project,
+    ) -> Result<Vec<ExternalPrefix>, Error> {
+        use functor_lang::ir::ExprKind;
+        use functor_runtime_common::functor_lang_prelude::{
+            externals_of, FunctorHost, FILE_READERS,
+        };
+        let names = self
+            .entry_role()
+            .resolve(&self.entry, project)
+            .map_err(Error::other)?;
+        let defs: std::collections::HashMap<&str, &functor_lang::ir::Def> = project
+            .module
+            .defs
+            .iter()
+            .map(|def| (def.name.as_str(), def))
+            .collect();
+        if !defs.contains_key(names.config) {
+            return Ok(Vec::new());
+        }
+        // The names `expr` uses, and its first file read if any.
+        let scan = |expr: &functor_lang::ir::Expr, pending: &mut Vec<String>| {
+            let mut reads = None;
+            crate::util::asset_verify::walk(expr, &mut |expr| match &expr.kind {
+                ExprKind::Global(name) => pending.push(name.clone()),
+                ExprKind::External(path) if FILE_READERS.contains(&path.join(".").as_str()) => {
+                    reads.get_or_insert((path.join("."), expr.span));
+                }
+                _ => {}
+            });
+            reads
+        };
+        let mut needed = std::collections::HashSet::new();
+        let mut pending = vec![names.config.to_string()];
+        // `unit` constructors and operators run implicitly (a suffixed
+        // literal, a branded `+`), so they count as used too.
+        let units = project.module.units.iter().map(|unit| &unit.target);
+        let mut roots: Vec<&functor_lang::ir::Expr> = units
+            .chain(project.module.unit_ops.iter().map(|op| &op.target))
+            .collect();
+        loop {
+            let expr = match roots.pop() {
+                Some(expr) => expr,
+                None => {
+                    let Some(name) = pending.pop() else { break };
+                    match defs.get(name.as_str()) {
+                        Some(def) if needed.insert(name) => &def.value,
+                        _ => continue,
+                    }
+                }
+            };
+            if let Some((api, span)) = scan(expr, &mut pending) {
+                return Err(Error::other(project.sources.render(
+                    span.start,
+                    &format!(
+                        "`config` can't read files ({api}): it's read first, to learn which \
+paths are external — move the read into `init` or a top-level binding `config` doesn't use"
+                    ),
+                )));
+            }
+        }
+        let session = functor_lang::Session::load_only(
+            &project.module,
+            &|name| needed.contains(name),
+            &mut FunctorHost,
+        )
+        .map_err(|f| Error::other(project.sources.render(f.error.span.start, &f.error.message)))?;
+        let value = session.global(names.config).expect("config was evaluated");
+        externals_of(&value).ok_or_else(|| {
+            Error::other(format!(
+                "`{}` must be a Config value (Config.create() |> …), got {}",
+                names.config,
+                value.kind_name()
+            ))
+        })
+    }
+
     /// Load the project (B8: the entry plus every sibling `.fun` file —
     /// file = module) and typecheck the whole program; `functor-lang check`
     /// diagnostics are build errors here (see the module doc).
@@ -447,6 +563,19 @@ impl FunctorLangProject {
             )));
         }
 
+        // `external` prefixes resolve through this machine's mounts.
+        let externals = self.config_externals(&project)?;
+        let mounts = match externals.is_empty() {
+            true => project_files::Mounts::default(),
+            false => project_files::Mounts::load(&self.mounts)?,
+        };
+        let files = project_files::Resolver::load(
+            path.parent().unwrap_or(Path::new(".")),
+            &externals,
+            &mounts,
+        )?;
+        functor_runtime_common::storage::set_project_reader(Some(std::sync::Arc::new(files)));
+
         // B.3: the strict gate also PROVES the typed asset surface — every
         // literal Asset.* locator exists (file on disk, or a verifiable
         // URL). Findings carry spans, so they render exactly like type
@@ -458,6 +587,7 @@ impl FunctorLangProject {
         let findings = crate::util::asset_verify::verify_assets(
             &project.module,
             Path::new(working_directory),
+            &self.external_dirs(&externals),
             &mut crate::util::asset_verify::probe_url_live,
         );
         for (finding, severity) in findings
@@ -690,6 +820,25 @@ impl FunctorLangProject {
         develop: bool,
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
+        // Where `external` sources resolve: `dev` (this machine's mounts,
+        // sent to a headset by `run vr`) or `device` (`Source.device`).
+        let (target, runner_args) = crate::take_flag_arg(runner_args, "--target")?;
+        let runner_args = &runner_args[..];
+        match target.as_deref() {
+            None | Some("dev") => {}
+            Some("device") => {
+                return Err(Error::other(
+                    "--target device (reading `Source.device` paths on the headset) isn't \
+implemented yet: the runner can't read headset storage. Use the default, `--target dev`: this \
+machine's mounts, which `run vr` sends to the headset",
+                ))
+            }
+            Some(other) => {
+                return Err(Error::other(format!(
+                    "--target is `dev` (default) or `device`, got `{other}`"
+                )))
+            }
+        }
         if matches!(environment, Environment::Vr) {
             let (refresh_rate, runner_args) = take_refresh_rate_arg(runner_args)?;
             let (limits, runner_args) = take_push_limit_args(&runner_args)?;
@@ -863,9 +1012,11 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         // same-file role, so the APK's producer resolves the same contract
         // `run native` and `run wasm` do (and re-resolves it on each re-push).
         let role = self.entry_role();
+        let externals = self.externals(working_directory)?;
+        let external = self.external_dirs(&externals);
         // Refuse an over-cap project before touching the device (the
         // readiness probe below clears its uploads).
-        let scan = project_asset_files(project_root)?;
+        let scan = project_asset_files(project_root, &external)?;
         let mut escaped = Vec::new();
         warn_escaped_links(&scan.escaped, &mut escaped);
         check_push_limits(&scan.files, limits)?;
@@ -1010,7 +1161,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             let Ok(ProjectFiles {
                 files: current_assets,
                 ..
-            }) = project_asset_files(project_root)
+            }) = project_asset_files(project_root, &external)
             else {
                 continue;
             };
@@ -1021,9 +1172,9 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             // The same check gate `run native` uses — structured file:line
             // diagnostics beat the device's rendered 400 body, and a broken
             // edit never mutates either source OR assets on the headset.
-            if self.build(working_directory, false).is_err() {
+            if let Err(e) = self.build(working_directory, false) {
                 emit(Event::Warning {
-                    message: "check failed — the headset keeps the previous program".to_string(),
+                    message: format!("check failed ({e}) — the headset keeps the previous program"),
                 });
                 attempted = current;
                 observed_assets = current_assets;
@@ -1032,7 +1183,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             // An asset add/rename can regenerate assets.fun during `build`.
             // Sync and push the exact post-build snapshots, in that order.
             let current = read_project_json(&entry_path)?;
-            let scan = project_asset_files(project_root)?;
+            let scan = project_asset_files(project_root, &external)?;
             warn_escaped_links(&scan.escaped, &mut escaped);
             let current_assets = scan.files;
             if let Err(e) = check_push_limits(&current_assets, limits) {
@@ -1129,6 +1280,7 @@ relative path inside it (got {})",
                 self.cursor.as_str(),
                 &self.prefix,
                 &self.module,
+                &self.external_dirs(&self.externals(working_directory)?),
             )?;
             for name in &export.shadowed {
                 emit(Event::Warning {
@@ -1525,29 +1677,28 @@ struct ProjectFiles {
 /// Recursively collect every project file the headset may read: assets for
 /// the renderer, data for `File.bytes`. Skipped: hidden entries (`.git`,
 /// `.functor`), the generated `dist/` at the root, `target/`, `node_modules/`,
-/// symlinked directories, and multi-file `.gltf` (its URIs don't resolve
-/// against the cache yet).
-fn project_asset_files(root: &Path) -> Result<ProjectFiles, Error> {
+/// symlinked directories, multi-file `.gltf` (its URIs don't resolve against
+/// the cache yet), and `external` folders (root-relative, like `"src/ss2/"`).
+fn project_asset_files(root: &Path, external: &[String]) -> Result<ProjectFiles, Error> {
     fn visit(
         root: &Path,
         canonical_root: &Path,
         directory: &Path,
-        is_root: bool,
+        external: &[String],
         out: &mut ProjectFiles,
     ) -> Result<(), Error> {
         for entry in std::fs::read_dir(directory)? {
             let entry = entry?;
-            let name = entry.file_name();
-            let name = name
-                .to_str()
-                .ok_or_else(|| Error::other(format!("non-UTF8 file name: {:?}", name)))?;
-            if is_unpushed(name, is_root) {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| Error::other(format!("asset escaped project: {}", path.display())))?;
+            if is_unpushed(relative, external) {
                 continue;
             }
-            let path = entry.path();
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                visit(root, canonical_root, &path, false, out)?;
+                visit(root, canonical_root, &path, external, out)?;
                 continue;
             }
             if path
@@ -1556,19 +1707,14 @@ fn project_asset_files(root: &Path) -> Result<ProjectFiles, Error> {
             {
                 continue;
             }
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| Error::other(format!("asset escaped project: {}", path.display())))?;
             // Follow symlinked files whose target is itself pushable, but
             // never recurse through symlinked directories.
             let metadata = if file_type.is_symlink() {
                 match (std::fs::metadata(&path), std::fs::canonicalize(&path)) {
                     (Ok(metadata), Ok(target)) if metadata.is_file() => {
-                        let pushable = target.strip_prefix(canonical_root).is_ok_and(|inside| {
-                            !inside.iter().enumerate().any(|(depth, name)| {
-                                name.to_str().map_or(true, |name| is_unpushed(name, depth == 0))
-                            })
-                        });
+                        let pushable = target
+                            .strip_prefix(canonical_root)
+                            .is_ok_and(|inside| !is_unpushed(inside, external));
                         if !pushable {
                             out.escaped.push(relative.display().to_string());
                             continue;
@@ -1612,19 +1758,38 @@ fn project_asset_files(root: &Path) -> Result<ProjectFiles, Error> {
     }
 
     let mut out = ProjectFiles::default();
-    visit(root, &std::fs::canonicalize(root)?, root, true, &mut out)?;
+    visit(
+        root,
+        &std::fs::canonicalize(root)?,
+        root,
+        external,
+        &mut out,
+    )?;
     out.files.sort_by(|a, b| a.locator.cmp(&b.locator));
     out.escaped.sort();
     Ok(out)
 }
 
-/// Entries `run vr` never pushes: hidden ones, the generated root `dist/`,
-/// and build/dependency trees.
-fn is_unpushed(name: &str, is_root: bool) -> bool {
-    name.starts_with('.')
-        || (is_root && name == "dist")
-        || name == "target"
-        || name == "node_modules"
+/// Whether `run vr` never pushes this root-relative path: under a hidden
+/// entry, the generated root `dist/`, a build/dependency tree or an
+/// `external` folder (`"ss2/"`).
+fn is_unpushed(relative: &Path, external: &[String]) -> bool {
+    let Some(names) = relative
+        .iter()
+        .map(|name| name.to_str())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return true; // a non-UTF8 name `File.bytes` can't ask for
+    };
+    let locator = names.join("/");
+    names.iter().enumerate().any(|(depth, name)| {
+        name.starts_with('.')
+            || (depth == 0 && *name == "dist")
+            || *name == "target"
+            || *name == "node_modules"
+    }) || external
+        .iter()
+        .any(|dir| format!("{locator}/").starts_with(dir.as_str()))
 }
 
 /// Refuse a push over `limits`, naming the file (or total) and the flag.
@@ -2610,7 +2775,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             std::fs::write(root.join(path), bytes).unwrap();
         }
 
-        let scan = project_asset_files(&root).unwrap();
+        let scan = project_asset_files(&root, &[]).unwrap();
         let locators: Vec<&str> = scan
             .files
             .iter()
@@ -2652,7 +2817,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         link(&root.join(".git/config"), "hidden.txt");
         std::fs::write(root.join("back\\slash.bin"), b"unaskable").unwrap();
 
-        let scan = project_asset_files(&root).unwrap();
+        let scan = project_asset_files(&root, &[]).unwrap();
         let locators: Vec<&str> = scan
             .files
             .iter()
@@ -2661,6 +2826,99 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert_eq!(locators, vec!["data.bin", "in.bin"]);
         assert_eq!(scan.escaped, vec!["hidden.txt", "out.bin"]);
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// `config`'s external folders (from the entry's folder, `./` or not)
+    /// and symlinks into them are never pushed. A sibling may declare them.
+    #[cfg(unix)]
+    #[test]
+    fn vr_file_scan_skips_the_folders_config_declares_external() {
+        let root = std::env::temp_dir().join(format!("functor-vr-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/ss2/deep")).unwrap();
+        std::fs::write(root.join("src/game.fun"), "let init = 0.0\n").unwrap();
+        std::fs::write(
+            root.join("src/files.fun"),
+            "let config = Config.create() |> Config.external(\"ss2/\", Source.mount(\"ss2\"))\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/ss2/deep/a.bin"), b"external").unwrap();
+        std::fs::write(root.join("src/data.bin"), b"data").unwrap();
+        std::os::unix::fs::symlink(root.join("src/ss2/deep/a.bin"), root.join("alias.bin"))
+            .unwrap();
+        let wd = root.to_string_lossy().into_owned();
+        for entry in ["./src/game.fun", "src/game.fun"] {
+            let project = single(entry).select(None).unwrap();
+            let externals = project.externals(&wd).unwrap();
+            assert_eq!(project.external_dirs(&externals), ["src/ss2/"], "{entry}");
+        }
+        let scan = project_asset_files(&root, &["src/ss2/".to_string()]).unwrap();
+        let locators: Vec<&str> = scan.files.iter().map(|f| f.locator.as_str()).collect();
+        assert_eq!(locators, ["src/data.bin", "src/files.fun", "src/game.fun"]);
+        assert_eq!(scan.escaped, ["alias.bin"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// `build wasm` leaves out the folders `config` declares external.
+    #[cfg(feature = "web")]
+    #[test]
+    fn wasm_bundles_leave_out_config_external_folders() {
+        let dir = std::env::temp_dir().join(format!("functor-wasm-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ss2")).unwrap();
+        std::fs::write(dir.join("ss2/a.bin"), b"external").unwrap();
+        std::fs::write(
+            dir.join("game.fun"),
+            "let config = Config.create() |> Config.external(\"ss2/\", Source.mount(\"ss2\"))\n",
+        )
+        .unwrap();
+        let project = single("game.fun").select(None).unwrap();
+        project.export_wasm(&dir.to_string_lossy()).unwrap();
+        assert!(dir.join("dist/web/game.fun").is_file());
+        assert!(!dir.join("dist/web/ss2").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `config` is read on its own, before anything runs: only it and what it
+    /// uses are evaluated, and it may not read files.
+    #[test]
+    fn config_is_read_alone_and_without_files() {
+        let dir = std::env::temp_dir().join(format!("functor-config-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wd = dir.to_string_lossy().into_owned();
+        let build = |src: &str| {
+            std::fs::write(dir.join("game.fun"), src).unwrap();
+            let project = single("game.fun").select(None).unwrap();
+            project.build(&wd, false)?;
+            project
+                .externals(&wd)
+                .map(|externals| project.external_dirs(&externals))
+        };
+        // `heavy` would fail if run (no such file); `config` doesn't use it.
+        let ok = build(
+            "let prefix = \"ss2/\"\n\
+             let heavy = File.bytes(\"missing.bin\")\n\
+             let config = Config.create() |> Config.external(prefix, Source.mount(\"ss2\"))\n",
+        );
+        assert_eq!(ok.unwrap(), ["ss2/"]);
+        let err = build(
+            "let data = File.bytes(\"x.bin\")\n\
+             let config = Config.create() |> Config.external(if Bytes.length(data) > 0.0 then \
+\"a/\" else \"b/\", Source.mount(\"ss2\"))\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("`config` can't read files (File.bytes)"),
+            "{err}"
+        );
+        let err =
+            build("let config = Config.create() |> Config.external(\"x\", Source.mount(\"m\"))\n")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("ending in `/`"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

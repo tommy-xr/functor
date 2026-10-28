@@ -613,3 +613,17 @@ fn session_load_never_evaluates_expects() {
         .unwrap_or_else(|failure| panic!("load should ignore expects: {}", failure.error.message));
     assert!(session.global("x").is_some());
 }
+
+#[test]
+fn session_load_only_evaluates_the_kept_defs() {
+    // Only `a` and `c` are evaluated; `b` (a host call `NoHost` lacks) is not.
+    let src = "let a = 1.0\nlet b = List.head([])\nlet c = a + 1.0\n";
+    let keep = |name: &str| name != "b";
+    let session = functor_lang::Session::load_only(&lower(src), &keep, &mut NoHost)
+        .unwrap_or_else(|failure| panic!("load_only: {}", failure.error.message));
+    assert_eq!(
+        session.global("c").map(|v| v.to_string()),
+        Some("2".to_string())
+    );
+    assert!(session.global("b").is_none());
+}

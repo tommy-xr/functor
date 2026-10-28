@@ -612,5 +612,5 @@ fn typeface_file(path: &str) -> Result<Font, String> {
             true => format!("{e} — use Typeface.sans() or Typeface.script()"),
             false => e,
         })?;
-    Font::from_bytes(path, bytes).map_err(|e| format!("Typeface.file: {e}"))
+    Font::from_bytes(path, bytes.to_vec()).map_err(|e| format!("Typeface.file: {e}"))
 }

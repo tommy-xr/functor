@@ -70,6 +70,7 @@ pub fn export_functor_lang_wasm(
     cursor: &str,
     prefix: &str,
     module: &str,
+    external: &[String],
 ) -> Result<WasmExport, Error> {
     let root = Path::new(working_directory);
 
@@ -116,7 +117,11 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
         .collect();
 
     let mut stats = CopyStats::default();
-    copy_project(root, &out, true, &mut stats)?;
+    let skip: Vec<PathBuf> = external
+        .iter()
+        .filter_map(|dir| std::fs::canonicalize(root.join(dir)).ok())
+        .collect();
+    copy_project(root, &out, true, &skip, &mut stats)?;
 
     // The runtime files go in last so nothing in the project can shadow them.
     std::fs::write(
@@ -156,8 +161,15 @@ struct CopyStats {
 /// copy through (`fs::copy` reads the target — a linked shared asset is a
 /// real workflow), but symlinked DIRECTORIES are skipped and reported:
 /// following one can recurse forever (a link to an ancestor) or vacuum an
-/// external tree into the bundle.
-fn copy_project(src: &Path, dst: &Path, is_root: bool, stats: &mut CopyStats) -> Result<(), Error> {
+/// external tree into the bundle. `skip`: canonical `external` folders, never
+/// bundled, not even through a symlinked file.
+fn copy_project(
+    src: &Path,
+    dst: &Path,
+    is_root: bool,
+    skip: &[PathBuf],
+    stats: &mut CopyStats,
+) -> Result<(), Error> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -170,11 +182,16 @@ fn copy_project(src: &Path, dst: &Path, is_root: bool, stats: &mut CopyStats) ->
             continue;
         }
         let from = entry.path();
+        let skipped = || {
+            std::fs::canonicalize(&from)
+                .is_ok_and(|target| skip.iter().any(|dir| target.starts_with(dir)))
+        };
         let to = dst.join(&name);
         // no-follow, so symlinks are decided here and never recursed into
         let file_type = entry.file_type()?;
         if file_type.is_symlink() {
             match std::fs::metadata(&from) {
+                Ok(_) if skipped() => {}
                 Ok(m) if m.is_file() => {
                     stats.bytes += std::fs::copy(&from, &to)?;
                     stats.files += 1;
@@ -183,7 +200,9 @@ fn copy_project(src: &Path, dst: &Path, is_root: bool, stats: &mut CopyStats) ->
                 _ => stats.skipped_symlinks.push(from.display().to_string()),
             }
         } else if file_type.is_dir() {
-            copy_project(&from, &to, false, stats)?;
+            if !skipped() {
+                copy_project(&from, &to, false, skip, stats)?;
+            }
         } else {
             stats.bytes += std::fs::copy(&from, &to)?;
             stats.files += 1;
@@ -305,11 +324,29 @@ mod tests {
         dir.write("tex/wall.png", "png-bytes");
         dir.write(".DS_Store", "junk");
         dir.write("dist/web/stale.txt", "from a previous export");
+        dir.write("ss2/mesh/a.bin", "external: never bundled");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            dir.path().join("ss2/mesh/a.bin"),
+            dir.path().join("alias.bin"),
+        )
+        .unwrap();
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", false, "visible", "", "").unwrap();
+        let export = export_functor_lang_wasm(
+            &wd,
+            "game.fun",
+            false,
+            "visible",
+            "",
+            "",
+            &["ss2/".to_string()],
+        )
+        .unwrap();
 
         let out = &export.out_dir;
+        assert!(!out.join("ss2").exists(), "external folders aren't bundled");
+        assert!(!out.join("alias.bin").exists(), "nor through a symlink");
         let index = fs::read_to_string(out.join("index.html")).unwrap();
         assert!(index.contains("window.__functorLangGamePath = \"game.fun\""));
         assert!(index.contains("window.__functorCursorPolicy = \"visible\""));
@@ -361,7 +398,8 @@ mod tests {
         dir.write("game.fun", "let init = 0");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", false, "visible", "server", "").unwrap();
+        let export =
+            export_functor_lang_wasm(&wd, "game.fun", false, "visible", "server", "", &[]).unwrap();
 
         let index = fs::read_to_string(export.out_dir.join("index.html")).unwrap();
         assert!(index.contains("window.__functorLangEntryPrefix = \"server\""));
@@ -375,7 +413,8 @@ mod tests {
         dir.write("game.fun", "let init = 0");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", false, "visible", "", "Server").unwrap();
+        let export =
+            export_functor_lang_wasm(&wd, "game.fun", false, "visible", "", "Server", &[]).unwrap();
 
         let index = fs::read_to_string(export.out_dir.join("index.html")).unwrap();
         assert!(index.contains("window.__functorLangEntryModule = \"Server\""));
@@ -390,7 +429,8 @@ mod tests {
         dir.write("pkg/junk.js", "not the runtime");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured", "", "").unwrap();
+        let export =
+            export_functor_lang_wasm(&wd, "game.fun", true, "captured", "", "", &[]).unwrap();
 
         let out = &export.out_dir;
         let index = fs::read_to_string(out.join("index.html")).unwrap();
@@ -448,7 +488,8 @@ let g = "pkg/tex.png"
         dir.write(".hidden.fun", "let ghost = 1");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured", "", "").unwrap();
+        let export =
+            export_functor_lang_wasm(&wd, "game.fun", true, "captured", "", "", &[]).unwrap();
         assert_eq!(export.file_count, 1, "only game.fun ships");
         assert!(
             !export.out_dir.join(".hidden.fun").exists(),
@@ -465,7 +506,8 @@ let g = "pkg/tex.png"
         std::os::unix::fs::symlink(dir.path().join("elsewhere"), dir.path().join("dist")).unwrap();
 
         let wd = dir.path().to_string_lossy().to_string();
-        let err = export_functor_lang_wasm(&wd, "game.fun", true, "captured", "", "").unwrap_err();
+        let err =
+            export_functor_lang_wasm(&wd, "game.fun", true, "captured", "", "", &[]).unwrap_err();
         assert!(err.to_string().contains("symlink"), "{err}");
         assert!(
             dir.path().join("elsewhere/precious.txt").is_file(),
@@ -488,7 +530,8 @@ let g = "pkg/tex.png"
         std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured", "", "").unwrap();
+        let export =
+            export_functor_lang_wasm(&wd, "game.fun", true, "captured", "", "", &[]).unwrap();
         assert_eq!(
             fs::read(export.out_dir.join("linked.glb")).unwrap(),
             b"glb-bytes",

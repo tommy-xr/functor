@@ -38,6 +38,12 @@ struct Args {
     #[arg(long, global = true)]
     entry: Option<String>,
 
+    /// Map a `Source.mount` name to a folder or zip on this machine
+    /// (`--mount ss2=~/ss2/sshock2.kpf!data/res/`), over
+    /// `~/.config/functor/mounts.json`. Repeatable.
+    #[arg(long = "mount", value_name = "NAME=PATH", global = true)]
+    mounts: Vec<String>,
+
     /// Emit newline-delimited JSON (one event per line) instead of human text.
     #[arg(long, global = true)]
     json: bool,
@@ -469,7 +475,10 @@ async fn run(args: &Args) -> io::Result<()> {
         {
             runner_args.push("--no-debug".to_string());
         }
-        let project = config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
+        // `--mount` after the environment lands in runner_args too.
+        let (trailing_mounts, runner_args) = take_flag_args(&runner_args, "--mount")?;
+        let mut project = config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
+        project.mounts = [args.mounts.clone(), trailing_mounts].concat();
         return match &args.command {
             Command::Docs { .. }
             | Command::Init { .. }
@@ -503,9 +512,12 @@ async fn run(args: &Args) -> io::Result<()> {
                 // (`serverInit`/`serverTick`/… for a `{ "file", "prefix" }`
                 // role; see check_contract), which is the feature there. A
                 // classic single `entry` keeps the old boundary: `build`
-                // typechecks and runs no game code.
+                // typechecks and runs no game code beyond `config` (read for
+                // its external prefixes).
                 let named = config.is_named();
-                for (i, role) in config.all()?.iter().enumerate() {
+                let mut roles = config.all()?;
+                for (i, role) in roles.iter_mut().enumerate() {
+                    role.mounts = project.mounts.clone();
                     let loaded = role.build(&working_directory_str, i == 0)?;
                     if named {
                         role.check_contract(&loaded)?;
@@ -581,7 +593,14 @@ pub(crate) fn take_flag_arg(
     runner_args: &[String],
     flag: &str,
 ) -> io::Result<(Option<String>, Vec<String>)> {
-    let mut found = None;
+    let (mut found, rest) = take_flag_args(runner_args, flag)?;
+    Ok((found.pop(), rest))
+}
+
+/// Every `flag <value>` / `flag=<value>` in `runner_args`, in order, and the
+/// rest ([`take_flag_arg`] keeps the last).
+fn take_flag_args(runner_args: &[String], flag: &str) -> io::Result<(Vec<String>, Vec<String>)> {
+    let mut found = Vec::new();
     let mut rest = Vec::with_capacity(runner_args.len());
     let mut iter = runner_args.iter();
     while let Some(arg) = iter.next() {
@@ -589,10 +608,10 @@ pub(crate) fn take_flag_arg(
             .strip_prefix(flag)
             .and_then(|tail| tail.strip_prefix('='))
         {
-            found = Some(value.to_string());
+            found.push(value.to_string());
         } else if arg == flag {
             match iter.next() {
-                Some(value) => found = Some(value.clone()),
+                Some(value) => found.push(value.clone()),
                 None => return Err(io::Error::other(format!("{flag} requires a value"))),
             }
         } else {

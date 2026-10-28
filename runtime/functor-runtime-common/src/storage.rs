@@ -259,7 +259,7 @@ pub use backend::{project_dir, set_project_root};
 /// Paths arrive checked by `validate_project_asset_path`. Desktop reads the
 /// project directory; the Quest shell installs its pushed-file cache.
 pub trait ProjectReader: Send + Sync {
-    fn read(&self, path: &str) -> Result<Vec<u8>, ProjectReadError>;
+    fn read(&self, path: &str) -> Result<std::sync::Arc<[u8]>, ProjectReadError>;
     /// Without reading the file.
     fn exists(&self, path: &str) -> bool;
 }
@@ -292,32 +292,51 @@ pub fn project_reader() -> Option<std::sync::Arc<dyn ProjectReader>> {
     installed
 }
 
-/// Reads [`project_dir`], resolving symlinks so none reaches outside it.
+/// Reads [`project_dir`] (see [`read_confined`]).
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 struct ProjectDirReader;
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-impl ProjectDirReader {
-    fn resolve(path: &str) -> Result<std::path::PathBuf, ProjectReadError> {
-        let unreadable = |e: std::io::Error| ProjectReadError::Unreadable(e.to_string());
-        let root = std::fs::canonicalize(project_dir()).map_err(unreadable)?;
-        let full = std::fs::canonicalize(root.join(path)).map_err(unreadable)?;
-        if full.starts_with(&root) {
-            Ok(full)
-        } else {
-            Err(ProjectReadError::Outside)
-        }
+impl ProjectReader for ProjectDirReader {
+    fn read(&self, path: &str) -> Result<std::sync::Arc<[u8]>, ProjectReadError> {
+        read_confined(&project_dir(), path)
+    }
+    fn exists(&self, path: &str) -> bool {
+        is_file_confined(&project_dir(), path)
     }
 }
 
+/// `root/path`, resolving symlinks so none reaches outside `root`.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-impl ProjectReader for ProjectDirReader {
-    fn read(&self, path: &str) -> Result<Vec<u8>, ProjectReadError> {
-        std::fs::read(Self::resolve(path)?).map_err(|e| ProjectReadError::Unreadable(e.to_string()))
+fn resolve_confined(
+    root: &std::path::Path,
+    path: &str,
+) -> Result<std::path::PathBuf, ProjectReadError> {
+    let unreadable = |e: std::io::Error| ProjectReadError::Unreadable(e.to_string());
+    let root = std::fs::canonicalize(root).map_err(unreadable)?;
+    let full = std::fs::canonicalize(root.join(path)).map_err(unreadable)?;
+    if full.starts_with(&root) {
+        Ok(full)
+    } else {
+        Err(ProjectReadError::Outside)
     }
-    fn exists(&self, path: &str) -> bool {
-        Self::resolve(path).is_ok_and(|full| full.is_file())
-    }
+}
+
+/// The file at `root/path`; symlinks may not resolve outside `root`.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn read_confined(
+    root: &std::path::Path,
+    path: &str,
+) -> Result<std::sync::Arc<[u8]>, ProjectReadError> {
+    std::fs::read(resolve_confined(root, path)?)
+        .map(Into::into)
+        .map_err(|e| ProjectReadError::Unreadable(e.to_string()))
+}
+
+/// Whether [`read_confined`] would find a file, without reading it.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn is_file_confined(root: &std::path::Path, path: &str) -> bool {
+    resolve_confined(root, path).is_ok_and(|full| full.is_file())
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -391,8 +410,14 @@ mod tests {
             .unwrap();
         set_project_root(dir.path().to_path_buf());
         let reader = ProjectDirReader;
-        assert_eq!(reader.read("data/a.bin").ok(), Some(vec![1, 2, 3]));
-        assert_eq!(reader.read("in.bin").ok(), Some(vec![1, 2, 3]));
+        assert_eq!(
+            reader.read("data/a.bin").ok().as_deref(),
+            Some(&[1u8, 2, 3][..])
+        );
+        assert_eq!(
+            reader.read("in.bin").ok().as_deref(),
+            Some(&[1u8, 2, 3][..])
+        );
         assert!(reader.exists("data/a.bin") && reader.exists("in.bin"));
         assert!(matches!(
             reader.read("out.bin"),

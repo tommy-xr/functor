@@ -58,10 +58,12 @@ pub enum UrlVerdict {
 
 /// Verify every literal asset locator in `module`. `probe_url` is called at
 /// most once per distinct URL (results are memoized here); the production
-/// prober is [`probe_url_live`].
+/// prober is [`probe_url_live`]. Locators in `external` folders (`"ss2/"`)
+/// aren't shipped, so they aren't checked.
 pub fn verify_assets(
     module: &Module,
     project_dir: &Path,
+    external: &[String],
     probe_url: &mut dyn FnMut(&str) -> UrlVerdict,
 ) -> AssetFindings {
     let mut findings = AssetFindings::default();
@@ -134,7 +136,9 @@ skipping the existence check"
                             findings.warnings.push(finding);
                         }
                     }
-                } else if !project_dir.join(locator).is_file() {
+                } else if !external.iter().any(|dir| locator.starts_with(dir.as_str()))
+                    && !project_dir.join(locator).is_file()
+                {
                     findings.errors.push(Finding {
                         span,
                         message: format!(
@@ -164,7 +168,7 @@ fn string_arg(args: &[Expr], i: usize) -> Option<(&str, Span)> {
 }
 
 /// Depth-first walk over every sub-expression, `f` applied pre-order.
-fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+pub(crate) fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     f(expr);
     match &expr.kind {
         ExprKind::Number(_)
@@ -291,7 +295,7 @@ mod tests {
     }
 
     fn run(src: &str, dir: &Path, probe: &mut dyn FnMut(&str) -> UrlVerdict) -> AssetFindings {
-        verify_assets(&project(src).module, dir, probe)
+        verify_assets(&project(src).module, dir, &["ext/".to_string()], probe)
     }
 
     fn no_probe(url: &str) -> UrlVerdict {
@@ -306,11 +310,16 @@ mod tests {
         std::fs::write(dir.join("here.glb"), b"glTF").unwrap();
 
         let f = run(
-            "let a = Asset.model(\"here.glb\")\nlet b = Asset.texture(\"gone.png\")",
+            "let a = Asset.model(\"here.glb\")\nlet b = Asset.texture(\"gone.png\")\n\
+             let c = Asset.texture(\"ext/not-shipped.png\")",
             &dir,
             &mut no_probe,
         );
-        assert_eq!(f.errors.len(), 1, "only the missing file errors");
+        assert_eq!(
+            f.errors.len(),
+            1,
+            "only the missing file errors, not external ones"
+        );
         assert!(f.errors[0].message.contains("\"gone.png\""));
         assert!(f.errors[0].message.contains("fetch:assets"));
         assert!(f.warnings.is_empty());

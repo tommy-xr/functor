@@ -4520,7 +4520,11 @@ handle_arg!(
 
 // After `handle_arg!`, which it uses.
 mod settings;
-pub use settings::{config_of, settings_of};
+pub use settings::{config_of, externals_of, settings_of};
+
+/// The host functions that read project files (`config` may not call them:
+/// the CLI reads it first, to learn which paths are external).
+pub const FILE_READERS: &[&str] = &["File.bytes", "File.exists", "Typeface.file"];
 
 /// `Scene.instanced`'s instance list, converted once per Functor Lang list:
 /// the same list `Rc` (e.g. one kept in the model) yields the same
@@ -12441,6 +12445,67 @@ the game dir"
         assert!(err.contains("can't read missing.bin"), "{err}");
         let err = failure("File.bytes(\"../data.bin\")");
         assert!(err.contains("inside the project"), "{err}");
+    }
+
+    /// `Config.external` declares prefixes by source; `Config.xr` keeps them,
+    /// and a change shows in the config's identity (the reload warning).
+    #[test]
+    fn config_declares_external_prefixes_by_source() {
+        use crate::runtime_settings::ExternalPrefix;
+        let config = |src: &str| eval_with_prelude(&format!("let main =\n  {src}\n"));
+        let value = config(
+            "Config.create() |> Config.external(\"ss2/\", Source.mount(\"ss2\") \
+|> Source.device(\"/sdcard/s/x.kpf!data/res/\")) |> Config.external(\"music/\", \
+Source.mount(\"music\")) |> Config.xr(Xr.create() |> Xr.refreshRate(90))",
+        )
+        .unwrap();
+        assert_eq!(
+            externals_of(&value).unwrap(),
+            vec![
+                ExternalPrefix {
+                    prefix: "ss2/".into(),
+                    mount: "ss2".into(),
+                    device: Some("/sdcard/s/x.kpf!data/res/".into()),
+                },
+                ExternalPrefix {
+                    prefix: "music/".into(),
+                    mount: "music".into(),
+                    device: None,
+                },
+            ]
+        );
+        let plain = config("Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))");
+        let key = |value: &Value| config_of(value).unwrap().external_key;
+        assert_ne!(key(&value), key(&plain.unwrap()));
+        assert_eq!(config_of(&value).unwrap().xr.refresh_rate, Some(90.0));
+
+        for (src, error) in [
+            (
+                "Config.external(\"ss2\", Source.mount(\"ss2\"), Config.create())",
+                "ending in `/`",
+            ),
+            (
+                "Config.external(\"../x/\", Source.mount(\"x\"), Config.create())",
+                "ending in `/`",
+            ),
+            (
+                "Config.create() |> Config.external(\"a/\", Source.mount(\"a\")) \
+|> Config.external(\"a/b/\", Source.mount(\"b\"))",
+                "overlaps",
+            ),
+            (
+                "Config.external(\"a/\", Source.mount(\"~/x\"), Config.create())",
+                "mount name",
+            ),
+            (
+                "Config.external(\"a/\", Source.mount(\"a\") |> Source.device(\"rel/x\"), \
+Config.create())",
+                "absolute path",
+            ),
+        ] {
+            let err = config(src).err().unwrap_or_default();
+            assert!(err.contains(error), "{src}: {err}");
+        }
     }
 
     /// `File.bytes`/`File.exists` go through the installed project reader
