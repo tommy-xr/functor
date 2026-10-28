@@ -17,8 +17,8 @@
 //!
 //! A map is a persistent tree: `get`, `member`, `insert`, and `remove` are
 //! logarithmic, and an update copies only the few small nodes on its path,
-//! sharing the rest with the old map. `values` and `toList` are linear;
-//! `fromList` is O(n log n).
+//! sharing the rest with the old map. `size` is constant; `keys`, `values`,
+//! `toList`, and `fold` are linear; `fromList` is O(n log n).
 
 /// The empty map.
 let empty : () => Map<'a, 'b>
@@ -33,14 +33,30 @@ let insert : ('a, 'b, Map<'a, 'b>) => Map<'a, 'b>
 /// The map without `key`. Removing an absent key is not an error.
 let remove : ('a, Map<'a, 'b>) => Map<'a, 'b>
 
+/// The map with `key`'s binding rewritten by `fn`, which receives the current
+/// value (`Option.None` when absent) and returns the new one: `Option.Some(v)`
+/// stores `v`, `Option.None` removes the key. One lookup serves both the read
+/// and the write.
+let update : ('a, (Option.t<'b>) => Option.t<'b>, Map<'a, 'b>) => Map<'a, 'b>
+
 /// Whether the map holds a binding for `key`.
 let member : ('a, Map<'a, 'b>) => bool
+
+/// The number of bindings.
+let size : (Map<'a, 'b>) => float
+
+/// Every key, in canonical key order.
+let keys : (Map<'a, 'b>) => List<'a>
 
 /// Every value, in canonical key order.
 let values : (Map<'a, 'b>) => List<'b>
 
 /// Every `(key, value)` pair, in canonical key order.
 let toList : (Map<'a, 'b>) => List<('a, 'b)>
+
+/// Reduce in canonical key order from an initial accumulator, calling
+/// `fn(acc, key, value)` — no intermediate list of pairs.
+let fold : (('c, 'a, 'b) => 'c, 'c, Map<'a, 'b>) => 'c
 
 /// Build a map from `(key, value)` pairs. For a repeated key the LAST pair
 /// wins.

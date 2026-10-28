@@ -627,3 +627,86 @@ fn session_load_only_evaluates_the_kept_defs() {
     );
     assert!(session.global("b").is_none());
 }
+
+/// `expect` reports for `src` loaded as a project (bundled `Option` etc.).
+fn project_reports(src: &str) -> Vec<functor_lang::ExpectReport> {
+    let project = functor_lang::project::load_single_source("game", src)
+        .unwrap_or_else(|e| panic!("project should load: {}", e.message));
+    functor_lang::run_expects(&project.module, &mut NoHost)
+        .unwrap_or_else(|failure| panic!("defs should load: {}", failure.error.message))
+}
+
+#[test]
+fn map_update_keys_size_and_fold() {
+    let src = r#"
+let m = Map.fromList([("b", 2.0), ("a", 1.0), ("c", 3.0)])
+let bump = (o: Option.t<float>) => Option.Some(Option.defaultValue(0.0, o) + 10.0)
+let drop = (o: Option.t<float>) => Option.None
+// update: modify, insert when absent, remove, and removing an absent key
+expect Map.update("a", bump, m) == Map.fromList([("a", 11.0), ("b", 2.0), ("c", 3.0)])
+expect (Map.update("z", bump, m) |> Map.get("z")) == Option.Some(10.0)
+expect Map.update("b", drop, m) == Map.fromList([("a", 1.0), ("c", 3.0)])
+expect Map.update("z", drop, m) == m
+expect (m |> Map.update("a", bump)) != m
+// keys and size, in canonical order
+expect Map.keys(m) == ["a", "b", "c"]
+expect Map.size(m) == 3.0
+expect Map.size(Map.empty()) == 0.0
+expect Map.keys(Map.empty()) == []
+// fold visits (key, value) in key order
+expect Map.fold((acc, k, v) => Text.concat(acc, k), "", m) == "abc"
+expect Map.fold((acc, _, v) => acc + v, 0.0, m) == 6.0
+// across a multi-level tree
+let big = List.range(300.0) |> List.map((i) => (i, i)) |> Map.fromList
+expect Map.fold((acc, k, _) => if k == acc then acc + 1.0 else -1.0, 0.0, big) == 300.0
+expect Map.size(List.range(300.0) |> List.fold((acc, k) => Map.update(k, drop, acc), big)) == 0.0
+"#;
+    let out = project_reports(src);
+    assert_eq!(out.len(), 13);
+    for (i, report) in out.iter().enumerate() {
+        assert!(
+            matches!(report.outcome, ExpectOutcome::Pass),
+            "expect {i}: {:?}",
+            report.outcome
+        );
+    }
+}
+
+#[test]
+fn map_update_rejects_a_non_option_result() {
+    let src = "expect Map.size(Map.update(1.0, (o) => 5.0, Map.empty())) == 1.0\n";
+    let out = project_reports(src);
+    let ExpectOutcome::Error(err) = &out[0].outcome else {
+        panic!("expected a runtime error, got {:?}", out[0].outcome);
+    };
+    assert!(
+        err.message.contains("Option.Some(value) or Option.None"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn map_fold_and_update_charge_their_calls() {
+    // Fold charges per entry (each callback call), uniformly.
+    let fold = |n: usize| {
+        let setup = format!("Map.fromList(sorted({n}.0))");
+        op_cost(MAP_DEFS, &setup, "Map.fold((acc, k, v) => acc, 0.0)")
+    };
+    let per_entry = fold(17) - fold(16);
+    assert!(per_entry >= 1);
+    assert_eq!(fold(300) - fold(16), 284 * per_entry);
+    // Update charges exactly what insert (a write) or member (no write)
+    // would, plus one callback call, at any map size.
+    let mut extras = Vec::new();
+    for n in [16, 6800] {
+        let setup = format!("Map.fromList(sorted({n}.0))");
+        let cost = |op: &str| op_cost(MAP_DEFS, &setup, op);
+        extras.push(cost("Map.update(3.0, (o) => o)") - cost("Map.insert(3.0, 3.0)"));
+        extras.push(cost("Map.update(3.5, (o) => o)") - cost("Map.member(3.5)"));
+    }
+    assert!(
+        extras[0] >= 1 && extras.iter().all(|e| *e == extras[0]),
+        "{extras:?}"
+    );
+}
