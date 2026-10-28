@@ -4,7 +4,10 @@
 //! - `Linear` samples as stored, `Srgb` decodes;
 //! - one texture drawn by several nodes uploads once, and is deleted once
 //!   no node draws it;
-//! - a textured quad shows its texels.
+//! - a textured quad shows its texels;
+//! - a layered atlas composes base + Σ intensity × layer, regenerates
+//!   padding, uploads only changed images, and two compositions in one frame
+//!   both draw correctly.
 //!
 //! Self-skipping like `skinned_data` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -19,7 +22,7 @@ use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::gpu_counters::gpu_counters;
 use functor_runtime_common::math::Angle;
 use functor_runtime_common::shadow::ShadowMap;
-use functor_runtime_common::texture::{ColorSpace, PixelData, PixelEncoding};
+use functor_runtime_common::texture::{ColorSpace, Layer, LayeredImage, PixelData, PixelEncoding};
 use functor_runtime_common::{
     render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, MaterialDescription,
     Scene3D, SceneContext, SceneObject, TextureDescription, Viewport,
@@ -42,6 +45,10 @@ fn main() {
     println!("test one_upload_for_many_nodes ... ok");
     textured_quad(&mut harness);
     println!("test textured_quad ... ok");
+    layered_texels(&harness);
+    println!("test layered_texels ... ok");
+    two_compositions_in_one_frame(&mut harness);
+    println!("test two_compositions_in_one_frame ... ok");
 }
 
 fn pixels(w: u32, h: u32, enc: PixelEncoding, space: ColorSpace, bytes: &[u8]) -> Arc<PixelData> {
@@ -186,6 +193,110 @@ fn textured_quad(harness: &mut Harness) {
         let close = seen.iter().zip(want).all(|(s, w)| s.abs_diff(w) <= 2);
         assert!(close, "block {block}: drew {seen:?}, want {want:?}");
     }
+}
+
+/// A 4×4 `Linear` atlas of grey 10 with one 2×1 image at (1, 1), padding 1,
+/// carrying layers 1 (grey 100) and 2 (red 40).
+fn layered_atlas() -> Arc<PixelData> {
+    let base = PixelData::new(4, 4, PixelEncoding::Rgb8, ColorSpace::Linear, &[10; 48]).unwrap();
+    let layer = |id: f64, rgb: [u8; 3]| Layer {
+        id,
+        rgba8: [rgb, rgb].iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect(),
+    };
+    let image = LayeredImage {
+        x: 1,
+        y: 1,
+        width: 2,
+        height: 1,
+        padding: 1,
+        layers: vec![layer(1.0, [100; 3]), layer(2.0, [40, 0, 0])],
+    };
+    Arc::new(base.with_layers(vec![image]).expect("valid layers"))
+}
+
+/// Bind `atlas` at `intensities` and read its level 0 back.
+fn compose(harness: &Harness, atlas: &PixelData, intensities: &[(f64, f32)]) -> Vec<u8> {
+    let gl = &harness.gl;
+    let texture = harness.scene_context.layered_texture(gl, atlas, intensities);
+    let mut texels = vec![0u8; 64];
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.get_tex_image(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelPackData::Slice(Some(&mut texels)),
+        );
+        gl.bind_texture(glow::TEXTURE_2D, None);
+    }
+    texels
+}
+
+/// Intensities 0, 0.5 and 1 give base + 0, 50 and 100 over the image and its
+/// regenerated padding (rows 0–2), never row 3; unchanged intensities upload
+/// nothing, a change uploads just the padded image; a rewind across a
+/// switch restores the texels.
+fn layered_texels(harness: &Harness) {
+    let atlas = layered_atlas();
+    let rgb = |texels: &[u8], x: usize, y: usize| texels[(y * 4 + x) * 4..][..3].to_vec();
+    for (level, want) in [(0.0, 10), (0.5, 60), (1.0, 110)] {
+        let texels = compose(harness, &atlas, &[(1.0, level)]);
+        for y in 0..3 {
+            for x in 0..4 {
+                assert_eq!(rgb(&texels, x, y), [want; 3], "level {level} at {x},{y}");
+            }
+        }
+        assert_eq!(rgb(&texels, 0, 3), [10; 3], "outside the block");
+    }
+    // Both layers sum per channel; an unknown id is ignored.
+    let both = compose(harness, &atlas, &[(1.0, 1.0), (2.0, 0.5), (9.0, 1.0)]);
+    assert_eq!(rgb(&both, 1, 1), [130, 110, 110]);
+
+    gpu_counters().take_window();
+    compose(harness, &atlas, &[(1.0, 1.0), (2.0, 0.5)]);
+    assert_eq!(gpu_counters().take_window().bytes_uploaded, 0, "unchanged");
+    let off = compose(harness, &atlas, &[]);
+    assert_eq!(gpu_counters().take_window().bytes_uploaded, 4 * 3 * 4, "one padded block");
+    // A rewind redraws the earlier intensities; the texels follow exactly.
+    assert_eq!(compose(harness, &atlas, &[(1.0, 1.0), (2.0, 0.5)]), both);
+    assert_eq!(compose(harness, &atlas, &[]), off);
+    assert_eq!(off, atlas.rgba8(), "all off is the base");
+}
+
+/// One atlas drawn at intensity 0 (left) and 1 (right) in one frame: each
+/// quad shows its own composition.
+fn two_compositions_in_one_frame(harness: &mut Harness) {
+    let base = PixelData::new(4, 4, PixelEncoding::Rgb8, ColorSpace::Linear, &[0; 48]).unwrap();
+    let image = LayeredImage {
+        x: 1,
+        y: 1,
+        width: 2,
+        height: 2,
+        padding: 1,
+        layers: vec![Layer { id: 1.0, rgba8: vec![255; 16] }],
+    };
+    let atlas = Arc::new(base.with_layers(vec![image]).unwrap());
+    let quad = |intensities: Vec<(f64, f32)>, x: f32| {
+        let texture = TextureDescription::Layered { base: atlas.clone(), intensities };
+        let quad = Scene3D {
+            xform: cgmath::Matrix4::from_translation(cgmath::vec3(x, 0.0, 0.0)),
+            ..Scene3D::quad()
+        };
+        Scene3D {
+            obj: SceneObject::Material(MaterialDescription::emissive_texture(texture), vec![quad]),
+            xform: cgmath::Matrix4::from_scale(1.0),
+        }
+    };
+    let mut frame = frame(&[]);
+    frame.scene = Scene3D {
+        obj: SceneObject::Group(vec![quad(vec![], -0.8), quad(vec![(1.0, 1.0)], 0.8)]),
+        xform: cgmath::Matrix4::from_scale(1.0),
+    };
+    let image = harness.render(&frame);
+    let at = |x: u32| image[((SIZE / 2 * SIZE + x) * 4) as usize];
+    let (left, right) = (at(SIZE / 2 - 20), at(SIZE / 2 + 20));
+    assert!(left <= 2 && right >= 253, "left {left}, right {right}");
 }
 
 /// One full-view emissive quad per texture (all at one place), facing a
