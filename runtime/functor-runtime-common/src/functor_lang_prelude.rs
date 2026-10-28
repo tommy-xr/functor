@@ -529,9 +529,9 @@ read ({error}) — answering Option.None"
 /// The tagger-facing record for a raycast result. Always the full shape —
 /// `hit: Bool` discriminates — so field access typechecks on both arms.
 pub fn ray_result_value(hit: Option<physics::RayHit>) -> EffectValue {
-    let (h, p, n, d, tag) = match hit {
-        Some(hit) => (true, hit.position, hit.normal, hit.distance, hit.tag),
-        None => (false, [0.0; 3], [0.0; 3], 0.0, String::new()),
+    let (h, p, n, d, tag, triangle) = match hit {
+        Some(hit) => (true, hit.position, hit.normal, hit.distance, hit.tag, hit.triangle),
+        None => (false, [0.0; 3], [0.0; 3], 0.0, String::new(), None),
     };
     EffectValue::Record(vec![
         ("hit".to_string(), EffectValue::Bool(h)),
@@ -543,6 +543,10 @@ pub fn ray_result_value(hit: Option<physics::RayHit>) -> EffectValue {
         ("nz".to_string(), EffectValue::Number(n[2] as f64)),
         ("distance".to_string(), EffectValue::Number(d as f64)),
         ("tag".to_string(), EffectValue::Text(tag)),
+        (
+            "triangle".to_string(),
+            EffectValue::Number(triangle.map_or(-1.0, f64::from)),
+        ),
     ])
 }
 
@@ -3213,7 +3217,7 @@ capsule for the moving body"
         "Physics.cast",
         "Physics.cast(origin, dir, maxDist)",
         |origin: FunctorLangVec3, dir: FunctorLangVec3, max_dist: f64| {
-            sync_cast(origin, dir, max_dist, None, "Physics.cast")
+            sync_query(None, origin, dir, max_dist, None, "Physics.cast")
         },
     );
     // Excludes the named body, so a character can probe out of its own
@@ -3223,7 +3227,23 @@ capsule for the moving body"
         "Physics.castExcluding",
         "Physics.castExcluding(tag, origin, dir, maxDist)",
         |tag: std::rc::Rc<str>, origin: FunctorLangVec3, dir: FunctorLangVec3, max_dist: f64| {
-            sync_cast(origin, dir, max_dist, Some(&tag), "Physics.castExcluding")
+            sync_query(None, origin, dir, max_dist, Some(&tag), "Physics.castExcluding")
+        },
+    );
+    // The swept counterpart of `Physics.cast`, same record and read rules.
+    reg.fn4(
+        "Physics.shapeCast",
+        "Physics.shapeCast(shape, origin, dir, maxDist)",
+        |shape: FunctorLangShape, origin: FunctorLangVec3, dir: FunctorLangVec3, max_dist: f64| {
+            if !matches!(
+                shape.0,
+                physics::Shape::Cuboid { .. }
+                    | physics::Shape::Sphere { .. }
+                    | physics::Shape::Capsule { .. }
+            ) {
+                return Err("Physics.shapeCast: sweep a box, sphere or capsule".to_string());
+            }
+            sync_query(Some(&shape.0), origin, dir, max_dist, None, "Physics.shapeCast")
         },
     );
     // Scene LAST (subject-last), so it pipes: the way Functor Lang draws a physics body —
@@ -6450,7 +6470,9 @@ fn live_velocity(tag: &str) -> Option<[f32; 3]> {
 /// paths can never drift; a miss is `hit: false` with zeroed fields rather than
 /// an error, because "nothing there" is an ordinary answer a controller
 /// branches on.
-fn sync_cast(
+/// A ray (`shape` `None`) or shape cast against the active world.
+fn sync_query(
+    shape: Option<&physics::Shape>,
     origin: FunctorLangVec3,
     dir: FunctorLangVec3,
     max_dist: f64,
@@ -6482,8 +6504,10 @@ fn sync_cast(
     }
     let max_dist = max_dist as f32;
     note_world_read();
-    let hit = physics::with_world(physics::active_world(), |w| {
-        w.raycast_excluding([ox, oy, oz], [dx, dy, dz], max_dist, exclude)
+    let (origin, dir) = ([ox, oy, oz], [dx, dy, dz]);
+    let hit = physics::with_world(physics::active_world(), |w| match shape {
+        Some(shape) => w.shape_cast(shape, origin, dir, max_dist, exclude),
+        None => w.raycast_excluding(origin, dir, max_dist, exclude),
     })
     .flatten();
     ray_result_value(hit).to_functor_lang()
@@ -10289,6 +10313,54 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
         );
         assert!(matches!(field(&unknown, "tag"), Value::String(s) if &*s == "ball"));
 
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+    }
+
+    // `rayHit.triangle` is the trimesh source index (-1 elsewhere), and
+    // `Physics.shapeCast` sweeps a primitive into the same record.
+    #[test]
+    fn shape_casts_and_triangle_indices_reach_functor_lang() {
+        // The floor y = 0 as source triangles 1 and 2 (0 is degenerate).
+        let floor = crate::physics::TriMeshData::new(
+            vec![[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0]],
+            vec![[0, 0, 1], [0, 2, 1], [0, 3, 2]],
+        )
+        .unwrap();
+        let scene = crate::physics::PhysicsScene::create(
+            [0.0; 3],
+            vec![crate::physics::Body::fixed(
+                "floor".to_string(),
+                crate::physics::Shape::TriMesh {
+                    mesh: std::sync::Arc::new(floor),
+                },
+            )],
+        );
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.reconcile(&scene);
+            w.step_fixed();
+        });
+        let down = "Vec3.make(0.0, -1.0, 0.0)";
+        let hit = eval(&format!(
+            "let main = () => Physics.shapeCast(Physics.sphere(0.5), \
+             Vec3.make(2.0, 3.0, -1.0), {down}, 10.0)"
+        ));
+        assert!(matches!(field(&hit, "tag"), Value::String(s) if &*s == "floor"));
+        assert!((num(&hit, "distance") - 2.5).abs() < 1e-3);
+        assert_eq!(num(&hit, "triangle"), 1.0);
+        let ray = eval(&format!(
+            "let main = () => Physics.cast(Vec3.make(-2.0, 3.0, 1.0), {down}, 10.0)"
+        ));
+        assert_eq!(num(&ray, "triangle"), 2.0);
+        let miss = eval(&format!(
+            "let main = () => Physics.cast(Vec3.make(9.0, 3.0, 0.0), {down}, 10.0)"
+        ));
+        assert_eq!(num(&miss, "triangle"), -1.0);
+        let err = fail_message(
+            "let main = () => Physics.shapeCast(Physics.box(1.0, 1.0, 1.0), \
+             Vec3.make(0.0, 3.0, 0.0), Vec3.make(0.0, 0.0, 0.0), 10.0)",
+        );
+        assert!(err.starts_with("Physics.shapeCast: the direction"), "{err}");
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 

@@ -1288,6 +1288,9 @@ but each `Physics.trimesh` call copies and validates the bytes. Fixed or
 kinematic only (`Physics.dynamic` is an error). Bodies collide with a face's
 front (counter-clockwise winding) and pass through its back; rays hit both
 sides. A small, fast body can also pass through a face in a single step.
+`rayHit.triangle` is the hit's index into `triangles` (-1 off a trimesh), and
+`Physics.shapeCast(shape, origin, dir, maxDist)` sweeps a box, sphere or
+capsule into the same `rayHit` record (two-sided, like rays).
 
 Physics **command effects** are returned beside the model like any effect
 — `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))` — but carry no

@@ -16,6 +16,9 @@ pub struct TriMeshData {
     positions: Vec<[f32; 3]>,
     /// Non-degenerate triangles only.
     triangles: Vec<[u32; 3]>,
+    /// For each kept triangle, its index in the source data (degenerate
+    /// triangles are dropped, so rapier's indices are the kept ones).
+    source: Vec<u32>,
     #[serde(skip)]
     compiled: OnceLock<SharedShape>,
 }
@@ -30,6 +33,7 @@ impl TriMeshData {
             ));
         }
         let mut kept = Vec::with_capacity(triangles.len());
+        let mut source = Vec::with_capacity(triangles.len());
         for (t, tri) in triangles.iter().enumerate() {
             if let Some(i) = tri.iter().find(|&&i| i as usize >= positions.len()) {
                 return Err(format!(
@@ -39,6 +43,7 @@ impl TriMeshData {
             }
             if !degenerate(tri.map(|i| positions[i as usize])) {
                 kept.push(*tri);
+                source.push(t as u32);
             }
         }
         if kept.is_empty() {
@@ -54,8 +59,17 @@ impl TriMeshData {
         Ok(TriMeshData {
             positions,
             triangles: kept,
+            source,
             compiled: OnceLock::new(),
         })
+    }
+
+    /// The source index of rapier's triangle `kept`. A ray hitting a face's
+    /// back reports `kept + n`, so that folds back onto the same triangle.
+    pub(crate) fn source_triangle(&self, kept: u32) -> Option<u32> {
+        self.source
+            .get((kept % self.source.len() as u32) as usize)
+            .copied()
     }
 
     /// The compiled shape, built on first use.
@@ -115,7 +129,9 @@ pub(crate) fn builds() -> usize {
 impl PartialEq for TriMeshData {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(self, other)
-            || (self.positions == other.positions && self.triangles == other.triangles)
+            || (self.positions == other.positions
+                && self.triangles == other.triangles
+                && self.source == other.source)
     }
 }
 
@@ -134,7 +150,7 @@ mod tests {
 
     use super::*;
     use crate::physics::{
-        remove_world, with_world, Body, PhysicsScene, Shape, SteppedPhysics, World,
+        remove_world, with_world, Body, PhysicsScene, RayHit, Shape, SteppedPhysics, World,
         DEFAULT_WORLD, FIXED_DT,
     };
 
@@ -342,6 +358,73 @@ mod tests {
         assert!((y - 1.5).abs() < 0.02, "rests on the box: y={y}");
     }
 
+    /// The wall x = 3, facing -x, as two triangles after a degenerate one:
+    /// source triangle 1 is z < y (below the diagonal), 2 is above it.
+    fn wall() -> Arc<TriMeshData> {
+        let positions = vec![
+            [3.0, -5.0, -5.0],
+            [3.0, -5.0, 5.0],
+            [3.0, 5.0, 5.0],
+            [3.0, 5.0, -5.0],
+        ];
+        let triangles = vec![[0, 0, 1], [0, 1, 2], [0, 2, 3]];
+        Arc::new(TriMeshData::new(positions, triangles).unwrap())
+    }
+
+    #[test]
+    fn a_sphere_cast_hits_a_trimesh_wall_with_its_source_triangle() {
+        let w = stepped([0.0; 3], vec![trimesh("wall", &wall())], 1);
+        let sphere = Shape::Sphere { radius: 0.5 };
+        // Below the diagonal (y < z): source triangle 1.
+        let hit = w.shape_cast(&sphere, [0.0, -1.0, 2.0], [1.0, 0.0, 0.0], 10.0, None).unwrap();
+        assert_eq!(hit.tag, "wall");
+        assert!((hit.distance - 2.5).abs() < 1e-3, "time of impact: {}", hit.distance);
+        assert!((hit.position[0] - 3.0).abs() < 1e-4, "{:?}", hit.position);
+        assert!((hit.normal[0] + 1.0).abs() < 1e-4, "faces the caster: {:?}", hit.normal);
+        assert_eq!(hit.triangle, Some(1));
+        // Above it: source triangle 2. A capsule and a box sweep too.
+        let capsule = Shape::Capsule { half_height: 0.5, radius: 0.25 };
+        let hit = w.shape_cast(&capsule, [0.0, 2.0, -1.0], [2.0, 0.0, 0.0], 10.0, None).unwrap();
+        assert!((hit.distance - 2.75).abs() < 1e-3, "{}", hit.distance);
+        assert_eq!(hit.triangle, Some(2));
+        let cube = Shape::Cuboid { extents: [1.0, 1.0, 1.0] };
+        let hit = w.shape_cast(&cube, [0.0, 2.0, -1.0], [1.0, 0.0, 0.0], 10.0, None).unwrap();
+        assert!((hit.distance - 2.5).abs() < 1e-3, "{}", hit.distance);
+        // Short of the wall, or off its edge: a miss.
+        assert!(w.shape_cast(&sphere, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 2.0, None).is_none());
+        assert!(w.shape_cast(&sphere, [0.0, 7.0, 0.0], [1.0, 0.0, 0.0], 10.0, None).is_none());
+    }
+
+    #[test]
+    fn rays_report_the_source_triangle_from_either_side() {
+        let w = stepped([0.0; 3], vec![trimesh("wall", &wall())], 1);
+        let front = w.raycast([0.0, -1.0, 2.0], [1.0, 0.0, 0.0], 10.0).unwrap();
+        assert_eq!(front.triangle, Some(1));
+        let back = w.raycast([6.0, 2.0, -1.0], [-1.0, 0.0, 0.0], 10.0).unwrap();
+        assert_eq!(back.triangle, Some(2));
+        // Other shapes report none.
+        let w = stepped([0.0; 3], vec![ball(0.0)], 1);
+        let hit = w.raycast([0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 10.0).unwrap();
+        assert_eq!(hit.triangle, None);
+    }
+
+    /// Shape casts hit both sides of a face, like rays (only contacts are
+    /// one-sided): from inside a closed box a sweep reaches the far wall, and
+    /// a sweep from behind a wall stops at it.
+    #[test]
+    fn shape_casts_hit_both_sides_of_a_face() {
+        let sphere = Shape::Sphere { radius: 0.25 };
+        let near = |hit: Option<RayHit>, d: f32| {
+            let hit = hit.expect("a hit");
+            assert!((hit.distance - d).abs() < 1e-3, "{} != {d}", hit.distance);
+        };
+        let w = stepped([0.0; 3], vec![trimesh("room", &closed_box(1.0))], 1);
+        near(w.shape_cast(&sphere, [0.0; 3], [1.0, 0.0, 0.0], 10.0, None), 0.75);
+        near(w.shape_cast(&sphere, [-3.0, 0.0, 0.0], [1.0, 0.0, 0.0], 10.0, None), 1.75);
+        let w = stepped([0.0; 3], vec![trimesh("wall", &wall())], 1);
+        near(w.shape_cast(&sphere, [6.0, 0.0, 1.0], [-1.0, 0.0, 0.0], 10.0, None), 2.75);
+    }
+
     #[test]
     fn invalid_meshes_are_errors_naming_the_field() {
         let tri = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
@@ -361,9 +444,11 @@ mod tests {
             err(line, vec![[0, 1, 2], [0, 0, 1]]),
             "triangles: no triangle has any area (2 given)"
         );
-        // Degenerate triangles beside a good one are dropped.
-        let mesh = TriMeshData::new(tri, vec![[0, 1, 2], [0, 0, 1]]).unwrap();
+        // Degenerate triangles beside a good one are dropped; the kept one
+        // maps back to its source index.
+        let mesh = TriMeshData::new(tri, vec![[0, 0, 1], [0, 1, 2]]).unwrap();
         assert_eq!(mesh.triangles, vec![[0, 1, 2]]);
+        assert_eq!(mesh.source_triangle(0), Some(1));
         // A sliver is kept in every vertex order.
         let sliver = vec![[0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [1000.0, 0.0, 0.0005]];
         for order in [[0, 1, 2], [1, 2, 0], [2, 0, 1]] {

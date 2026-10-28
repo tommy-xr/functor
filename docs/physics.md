@@ -270,6 +270,14 @@ a teaching error. Rays and contacts report the body's tag.
   shared edge.
 - **Tunnelling.** A fast, small body can end a step past a thin surface.
   Continuous collision detection (`Physics.continuous`) is a follow-up.
+- **`rayHit.triangle`** is the hit triangle's index in the source
+  `triangles` data (dropped degenerate triangles don't shift it), or -1 off a
+  trimesh, so a game can look up per-triangle data such as a material.
+- **`Physics.shapeCast(shape, origin, dir, maxDist)`** sweeps an unrotated box,
+  sphere or capsule and answers with the same `rayHit`: `distance` is how far
+  the shape travelled, the point and normal are on the surface it touched. Like
+  rays, shape casts hit both sides of a face; only contacts are one-sided. For
+  a trimesh, `triangle` is the face under the contact point.
 
 ## API (F# — reference design, deferred)
 
