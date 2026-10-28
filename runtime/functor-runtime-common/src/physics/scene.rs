@@ -29,6 +29,9 @@ pub enum Shape {
         half_height: f32,
         radius: f32,
     },
+    /// Triangle-mesh surfaces (`Physics.trimesh`): two-sided, fixed or
+    /// kinematic bodies only. Shared, so re-declaring it is a pointer compare.
+    TriMesh { mesh: Arc<super::TriMeshData> },
     /// A fixed terrain surface hydrated from the same descriptor and decoded
     /// samples as `Scene.terrain`. The live adapter decimates oversized
     /// sources into one bounded heightfield collider.

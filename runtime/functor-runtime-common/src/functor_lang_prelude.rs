@@ -2963,6 +2963,59 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
             }))
         },
     );
+    // `Model.skinned`'s byte layout. Each call copies and validates the data,
+    // so games build it once (a top-level `let`) and re-declare the value.
+    reg.fn1(
+        "Physics.trimesh",
+        "Physics.trimesh({ positions, triangles })",
+        |data: Value| {
+            let field = |name: &str| -> Result<bytes::ByteView, String> {
+                let Value::Record(fields) = &data else {
+                    return Err(format!(
+                        "Physics.trimesh: expected a {{ positions, triangles }} record, got {}",
+                        data.kind_name()
+                    ));
+                };
+                match fields.iter().find(|(field, _)| field == name) {
+                    Some((_, Value::HostData(d))) => d
+                        .as_any()
+                        .downcast_ref::<FunctorLangBytes>()
+                        .map(|b| b.0.clone()),
+                    _ => None,
+                }
+                .ok_or_else(|| format!("Physics.trimesh: `{name}` must be Bytes"))
+            };
+            // Little-endian triples: f32 x, y, z per vertex; u32 indices.
+            fn triples<T>(
+                raw: &[u8],
+                name: &str,
+                read: fn([u8; 4]) -> T,
+            ) -> Result<Vec<[T; 3]>, String> {
+                if raw.len() % 12 != 0 {
+                    return Err(format!(
+                        "Physics.trimesh: {name}: {} bytes is not a whole number of \
+12-byte entries",
+                        raw.len()
+                    ));
+                }
+                Ok(raw
+                    .chunks_exact(12)
+                    .map(|e| std::array::from_fn(|k| read(e[4 * k..4 * k + 4].try_into().unwrap())))
+                    .collect())
+            }
+            let positions =
+                triples(field("positions")?.as_slice(), "positions", f32::from_le_bytes)?;
+            let triangles =
+                triples(field("triangles")?.as_slice(), "triangles", u32::from_le_bytes)?;
+            physics::TriMeshData::new(positions, triangles)
+                .map(|mesh| {
+                    FunctorLangShape(physics::Shape::TriMesh {
+                        mesh: std::sync::Arc::new(mesh),
+                    })
+                })
+                .map_err(|e| format!("Physics.trimesh: {e}"))
+        },
+    );
     reg.fn2(
         "Physics.heightfield",
         "Physics.heightfield(tag, terrain)",
@@ -2989,7 +3042,15 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
     reg.fn2(
         "Physics.dynamic",
         "Physics.dynamic(tag, shape)",
-        body_ctor(physics::Body::dynamic),
+        |tag: std::rc::Rc<str>, shape: FunctorLangShape| {
+            if matches!(shape.0, physics::Shape::TriMesh { .. }) {
+                return Err("Physics.dynamic: a trimesh is a surface with no volume or mass, \
+so it can't be dynamic — use Physics.fixed or Physics.kinematic for it, and a box, sphere or \
+capsule for the moving body"
+                    .to_string());
+            }
+            Ok(body_ctor(physics::Body::dynamic)(tag, shape))
+        },
     );
     reg.fn2(
         "Physics.kinematic",

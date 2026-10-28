@@ -1035,6 +1035,7 @@ fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
             half_height,
             radius,
         } => Some(ColliderBuilder::capsule_y(*half_height, *radius)),
+        Shape::TriMesh { mesh } => Some(ColliderBuilder::new(mesh.shape())),
         Shape::Heightfield { geometry, data } => data
             .as_deref()
             .map(|data| heightfield_collider(geometry, data)),
