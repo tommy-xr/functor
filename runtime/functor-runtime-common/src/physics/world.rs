@@ -196,7 +196,7 @@ pub struct World {
     rooms: BTreeMap<String, LiveRoom>,
     /// Colliders a re-fused room removed since the last step, with its tag:
     /// their contacts end at the next step, and still name the room.
-    #[serde(skip, default)]
+    #[serde(default)]
     retired: Vec<(ColliderHandle, String)>,
     /// Last-declared body per tag — the memory behind the divergence rule:
     /// reconcile writes a field to the live body only when the new declaration
@@ -1135,6 +1135,8 @@ impl World {
 
     fn despawn(&mut self, tag: &str) {
         self.rooms.remove(tag);
+        // A despawned body's contacts end unreported, retired ones included.
+        self.retired.retain(|(_, retired)| retired != tag);
         if let Some(rb_handle) = self.tags.remove(tag) {
             // Removes attached colliders and joints too.
             self.bodies.remove(
@@ -3402,6 +3404,17 @@ mod fused_room_tests {
         ));
         run(&mut w, 2, |_| {});
         assert_eq!(w.take_events(), vec![], "a re-mesh is not a contact");
+        // Nor across a snapshot taken between the re-mesh and its step.
+        let mut next = room.clone();
+        let (&key, mesh) = next.chunks.iter().find(|(_, m)| m.positions.iter().any(under_ball)).unwrap();
+        let mut moved = (**mesh).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] -= 0.001);
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(DEFAULT_GRAVITY, vec![still(next), resting()]));
+        let mut restored = World::new(DEFAULT_GRAVITY);
+        restored.restore(&w.snapshot()).unwrap();
+        run(&mut restored, 2, |_| {});
+        assert_eq!(restored.take_events(), vec![], "a restored re-mesh is not a contact");
         // Lifting the ball off ends the contact, naming the room.
         w.queue_command(PhysicsCommand::Teleport {
             tag: "ball".to_string(),
@@ -3429,6 +3442,33 @@ mod fused_room_tests {
             run(w, 60, |_| {});
         }
         assert_eq!(live.snapshot(), restored.snapshot());
+    }
+
+    /// Despawning a room right after a re-mesh reports nothing about it.
+    #[test]
+    fn a_despawned_room_reports_no_contacts() {
+        let room = stand_in_room();
+        let resting = || ball([0.3, 1.0, 1.0], [0.0; 3]);
+        let mut w = world_with(vec![room_body(&Arc::new(room.clone())), resting()]);
+        run(&mut w, 240, |_| {});
+        let mut next = room.clone();
+        // The desk top's chunk under the ball.
+        let under_ball = |p: &[f32; 3]| {
+            (p[1] - 0.75).abs() < 0.01 && (p[0] - 0.3).abs() < 0.1 && (p[2] - 1.0).abs() < 0.1
+        };
+        let (&key, mesh) = next.chunks.iter().find(|(_, m)| m.positions.iter().any(under_ball)).unwrap();
+        let mut moved = (**mesh).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] += 0.001);
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&Arc::new(next)), resting()],
+        ));
+        w.reconcile(&PhysicsScene::create(DEFAULT_GRAVITY, vec![resting()]));
+        let _ = w.take_events();
+        run(&mut w, 2, |_| {});
+        let events = w.take_events();
+        assert!(events.iter().all(|e| e.a != "room" && e.b != "room"), "{events:?}");
     }
 
     #[test]
