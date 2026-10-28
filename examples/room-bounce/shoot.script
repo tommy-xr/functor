@@ -1,0 +1,28 @@
+# Deterministic desktop shots into the stand-in room: clicks at the desk,
+# the floor and the walls, and Space straight ahead at frame 120. Click
+# positions are for the goldens' 1600x1200 window:
+#   functor -d examples/room-bounce run native -- --input-script shoot.script \
+#     --capture-size 1600x1200
+20 Mouse.Move 880 614
+21 Mouse.Left down
+22 Mouse.Left up
+40 Mouse.Move 600 660
+41 Mouse.Left down
+42 Mouse.Left up
+60 Mouse.Move 1120 680
+61 Mouse.Left down
+62 Mouse.Left up
+80 Mouse.Move 800 500
+81 Mouse.Left down
+82 Mouse.Left up
+100 Mouse.Move 500 560
+101 Mouse.Left down
+102 Mouse.Left up
+120 Space down
+121 Space up
+140 Mouse.Move 1200 520
+141 Mouse.Left down
+142 Mouse.Left up
+160 Mouse.Move 860 600
+161 Mouse.Left down
+162 Mouse.Left up
