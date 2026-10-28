@@ -58,6 +58,24 @@ eligible open PR to exercise the full path. The hermetic lifecycle checks are:
 npm run test:pr-preview
 ```
 
+## Trying a PR without building it
+
+CI uploads, for every main push and PR head, a dev-signed Quest APK
+(`Build Android`) and a release `functor` CLI for macOS arm64 and Linux x64
+(`Build CLI`), kept 30 days. `npm run pr` fetches the ones for a
+PR's head commit (needs `gh`; cached under `~/.functor/pr-artifacts/<sha>/`):
+
+```sh
+npm run pr -- 123                    # install + launch the APK, print the CLI path
+npm run pr -- 123 --cli              # just the CLI
+npm run pr -- 123 --apk --run hello  # install the APK, then run examples/hello on it
+```
+
+It refuses fork PRs and a head commit whose build is missing, running or failed.
+Replacing an install signed with another key, or a newer one, needs
+`--allow-uninstall`. The example comes from this checkout, not the PR. Delete
+`~/.functor/pr-artifacts` to reclaim the cache. Tests: `npm run test:pr`.
+
 ## Building the CLI
 
 Build the CLI. **Order matters:** the CLI embeds the web runtime bundle at compile

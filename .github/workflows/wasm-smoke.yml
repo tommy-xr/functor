@@ -44,6 +44,9 @@ jobs:
       - name: Test Quest bench battery line
         run: npm run test:quest-battery
 
+      - name: Test npm run pr
+        run: npm run test:pr
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
