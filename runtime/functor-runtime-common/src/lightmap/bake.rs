@@ -181,9 +181,8 @@ pub(crate) fn rasterize(u: &Unwrapped) -> Vec<Sample> {
         let chart = u.chart_of[t] as usize;
         first[chart] = first[chart].min(t as u32);
         let rect = u.charts[chart];
-        let p = tri.map(|v| u.uvs2[v as usize].map(|x| x as f64 * u.size as f64));
-        let area = cross(p[0], p[1], p[2]);
-        if area == 0.0 {
+        let p = texels(u, tri);
+        if cross(p[0], p[1], p[2]) == 0.0 {
             continue;
         }
         // Texel centres (x + 0.5) inside the triangle's bounds and its chart.
@@ -196,13 +195,7 @@ pub(crate) fn rasterize(u: &Unwrapped) -> Vec<Sample> {
         };
         for y in span(1, rect.y, rect.height) {
             for x in span(0, rect.x, rect.width) {
-                let c = [x as f64 + 0.5, y as f64 + 0.5];
-                let w = [
-                    cross(p[1], p[2], c),
-                    cross(p[2], p[0], c),
-                    cross(p[0], p[1], c),
-                ]
-                .map(|w| w / area);
+                let w = barycentric(p, [x as f64 + 0.5, y as f64 + 0.5]);
                 let texel = y as usize * size + x as usize;
                 if w.iter().all(|&w| w >= -1e-9) && !taken[texel] {
                     taken[texel] = true;
@@ -245,6 +238,17 @@ pub(crate) fn rasterize(u: &Unwrapped) -> Vec<Sample> {
 /// Twice the signed area of `a b c`.
 fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+/// A triangle's corners in atlas texels.
+fn texels(u: &Unwrapped, tri: &[u32; 3]) -> [[f64; 2]; 3] {
+    tri.map(|v| u.uvs2[v as usize].map(|x| x as f64 * u.size as f64))
+}
+
+/// The barycentric weights of `at` in a triangle with nonzero area.
+fn barycentric([a, b, c]: [[f64; 2]; 3], at: [f64; 2]) -> [f64; 3] {
+    let area = cross(a, b, c);
+    [cross(b, c, at), cross(c, a, at), cross(a, b, at)].map(|w| w / area)
 }
 
 /// Fill each chart's empty texels, out to `padding` past its rect, with the
@@ -394,9 +398,7 @@ impl<'a> Scene<'a> {
             texels: unwrapped
                 .triangles
                 .iter()
-                .map(|t| {
-                    t.map(|v| unwrapped.uvs2[v as usize].map(|x| x as f64 * unwrapped.size as f64))
-                })
+                .map(|t| texels(unwrapped, t))
                 .collect(),
             size: unwrapped.size,
             lights,
@@ -416,18 +418,16 @@ impl<'a> Scene<'a> {
     /// moves onto it).
     fn point(&self, s: &Sample, j: usize, h: u64) -> Point {
         let tri = self.triangles[s.triangle as usize];
-        let [ta, tb, tc] = self.texels[s.triangle as usize];
         let (x, y) = ((s.texel % self.size) as f64, (s.texel / self.size) as f64);
         let at = [
             x + ((j & 1) as f64 + unit(hash(h, 2 * j as u64 + 2)) as f64) / 2.0,
             y + ((j >> 1) as f64 + unit(hash(h, 2 * j as u64 + 3)) as f64) / 2.0,
         ];
-        let area = cross(ta, tb, tc);
-        let weights = if area == 0.0 {
+        let corners = self.texels[s.triangle as usize];
+        let weights = if cross(corners[0], corners[1], corners[2]) == 0.0 {
             s.weights
         } else {
-            let w = [cross(tb, tc, at), cross(tc, ta, at), cross(ta, tb, at)]
-                .map(|w| (w / area).max(0.0));
+            let w = barycentric(corners, at).map(|w| w.max(0.0));
             let sum: f64 = w.iter().sum();
             w.map(|w| (w / sum) as f32)
         };
