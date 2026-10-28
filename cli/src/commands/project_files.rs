@@ -441,9 +441,9 @@ impl ZipIndex {
     ) -> Result<ZipIndex, String> {
         let records = central_directory_records(&mut file).map_err(|e| e.to_string())?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        // The zip reader keeps one entry per (decoded) name: fewer entries
-        // than records means two entries share a name, so which one a path
-        // reads would be arbitrary.
+        // The zip reader keeps one entry per raw name: fewer entries than
+        // records means two entries share a name, so which one a path reads
+        // would be arbitrary.
         if zip.len() != records {
             return Err(format!(
                 "it lists {records} entries under {} distinct names; duplicate names are \
@@ -455,7 +455,7 @@ ambiguous, so it isn't read",
         let mut folded = HashMap::new();
         for index in 0..zip.len() {
             let entry = zip.by_index_raw(index).map_err(|e| e.to_string())?;
-            let name = entry.name().to_string();
+            let name = entry.name().map_err(|e| e.to_string())?.to_string();
             // Unaskable names (absolute, `..`, `\`) stay unreachable.
             if entry.is_dir() || validate_project_asset_path(&name).is_err() {
                 continue;
@@ -470,7 +470,12 @@ ambiguous, so it isn't read",
                 }
             };
             folded.entry(name.to_lowercase()).or_insert(name.clone());
-            entries.insert(name, state);
+            // Distinct raw names can decode alike (UTF-8 `é` vs CP437 0x82).
+            if entries.insert(name.clone(), state).is_some() {
+                return Err(format!(
+                    "two entries decode to {name}; duplicate names are ambiguous, so it isn't read"
+                ));
+            }
         }
         Ok(ZipIndex {
             stamp,
@@ -769,6 +774,43 @@ mod tests {
             assert!(err.contains("3 entries under 2 distinct names"), "{err}");
             assert!(!resolver.exists(path));
         }
+    }
+
+    /// Raw names that differ but decode alike (UTF-8 `é`, CP437 0x82) are
+    /// duplicates too.
+    #[test]
+    fn zips_with_names_decoding_alike_are_refused() {
+        let project = TempProject::new("dup-decoded");
+        let archive = project.0.join("game.zip");
+        write_zip(
+            &archive,
+            &[
+                ("res/\u{e9}.bin", Some(b"utf8")),
+                ("res/z.bin", Some(b"cp437")),
+            ],
+        );
+        // `z` → 0x82: invalid UTF-8, so it decodes as CP437 `é`.
+        let bytes = std::fs::read(&archive).unwrap();
+        let mut patched = Vec::with_capacity(bytes.len());
+        let mut at = 0;
+        while at < bytes.len() {
+            if bytes[at..].starts_with(b"res/z.bin") {
+                patched.extend_from_slice(b"res/\x82.bin");
+                at += b"res/z.bin".len();
+            } else {
+                patched.push(bytes[at]);
+                at += 1;
+            }
+        }
+        std::fs::write(&archive, patched).unwrap();
+        project.config(r#"{"x/": "data"}"#, Some(r#"{"x/": "game.zip!res/"}"#));
+        let resolver = project.resolver();
+        let err = read(&resolver, "x/\u{e9}.bin").unwrap_err();
+        assert!(
+            err.contains("two entries decode to res/\u{e9}.bin"),
+            "{err}"
+        );
+        assert!(!resolver.exists("x/\u{e9}.bin"));
     }
 
     /// Mappings resolve against the project folder once, at load: a relative
