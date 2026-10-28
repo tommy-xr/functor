@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
 
+use super::project_files;
 use crate::output::{emit, Event, Severity};
 // `util` (the shell-command runner + wasm dev server) is only used by the
 // `web`-gated `run wasm` path.
@@ -377,6 +378,24 @@ impl FunctorLangProject {
         Ok(path)
     }
 
+    /// The `external` folders (never pushed or bundled), relative to the
+    /// project root: `"ss2/"`, or `"src/ss2/"` for an entry in `src/`.
+    fn external_dirs(&self, working_directory: &str) -> Result<Vec<String>, Error> {
+        let entry_dir = Path::new(&self.entry).parent().unwrap_or(Path::new(""));
+        let files = project_files::Resolver::load(
+            Path::new(working_directory),
+            &Path::new(working_directory).join(entry_dir),
+        )?;
+        let base = entry_dir
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().into_owned() + "/")
+            .collect::<String>();
+        Ok(files
+            .external_prefixes()
+            .map(|prefix| format!("{base}{prefix}"))
+            .collect())
+    }
+
     /// Load the project (B8: the entry plus every sibling `.fun` file —
     /// file = module) and typecheck the whole program; `functor-lang check`
     /// diagnostics are build errors here (see the module doc).
@@ -393,8 +412,14 @@ impl FunctorLangProject {
         refresh_manifest(working_directory);
         let path = self.entry_path(working_directory)?;
         // Project files (`Typeface.file`) and saves resolve from the entry's
-        // folder, as in the native runner.
+        // folder, as in the native runner; `external` prefixes from their
+        // local mappings.
         functor_runtime_common::storage::set_project_root(path.clone());
+        let files = project_files::Resolver::load(
+            Path::new(working_directory),
+            path.parent().unwrap_or(Path::new(".")),
+        )?;
+        functor_runtime_common::storage::set_project_reader(Some(std::sync::Arc::new(files)));
         let display = path.display().to_string();
         // A load failure (parse error, bad module name, cycle) is a positioned
         // diagnostic too — surface its file:line:col structurally, like a check
@@ -863,9 +888,10 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         // same-file role, so the APK's producer resolves the same contract
         // `run native` and `run wasm` do (and re-resolves it on each re-push).
         let role = self.entry_role();
+        let external = self.external_dirs(working_directory)?;
         // Refuse an over-cap project before touching the device (the
         // readiness probe below clears its uploads).
-        let scan = project_asset_files(project_root)?;
+        let scan = project_asset_files(project_root, &external)?;
         let mut escaped = Vec::new();
         warn_escaped_links(&scan.escaped, &mut escaped);
         check_push_limits(&scan.files, limits)?;
@@ -1010,7 +1036,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             let Ok(ProjectFiles {
                 files: current_assets,
                 ..
-            }) = project_asset_files(project_root)
+            }) = project_asset_files(project_root, &external)
             else {
                 continue;
             };
@@ -1032,7 +1058,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             // An asset add/rename can regenerate assets.fun during `build`.
             // Sync and push the exact post-build snapshots, in that order.
             let current = read_project_json(&entry_path)?;
-            let scan = project_asset_files(project_root)?;
+            let scan = project_asset_files(project_root, &external)?;
             warn_escaped_links(&scan.escaped, &mut escaped);
             let current_assets = scan.files;
             if let Err(e) = check_push_limits(&current_assets, limits) {
@@ -1129,6 +1155,7 @@ relative path inside it (got {})",
                 self.cursor.as_str(),
                 &self.prefix,
                 &self.module,
+                &self.external_dirs(working_directory)?,
             )?;
             for name in &export.shadowed {
                 emit(Event::Warning {
@@ -1525,9 +1552,9 @@ struct ProjectFiles {
 /// Recursively collect every project file the headset may read: assets for
 /// the renderer, data for `File.bytes`. Skipped: hidden entries (`.git`,
 /// `.functor`), the generated `dist/` at the root, `target/`, `node_modules/`,
-/// symlinked directories, and multi-file `.gltf` (its URIs don't resolve
-/// against the cache yet).
-fn project_asset_files(root: &Path) -> Result<ProjectFiles, Error> {
+/// symlinked directories, multi-file `.gltf` (its URIs don't resolve against
+/// the cache yet), and `external` folders (root-relative, like `"src/ss2/"`).
+fn project_asset_files(root: &Path, external: &[String]) -> Result<ProjectFiles, Error> {
     fn visit(
         root: &Path,
         canonical_root: &Path,
@@ -1613,6 +1640,9 @@ fn project_asset_files(root: &Path) -> Result<ProjectFiles, Error> {
 
     let mut out = ProjectFiles::default();
     visit(root, &std::fs::canonicalize(root)?, root, true, &mut out)?;
+    let is_external = |locator: &str| external.iter().any(|dir| locator.starts_with(dir.as_str()));
+    out.files.retain(|file| !is_external(&file.locator));
+    out.escaped.retain(|link| !is_external(link));
     out.files.sort_by(|a, b| a.locator.cmp(&b.locator));
     out.escaped.sort();
     Ok(out)
@@ -2610,7 +2640,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             std::fs::write(root.join(path), bytes).unwrap();
         }
 
-        let scan = project_asset_files(&root).unwrap();
+        let scan = project_asset_files(&root, &[]).unwrap();
         let locators: Vec<&str> = scan
             .files
             .iter()
@@ -2652,7 +2682,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         link(&root.join(".git/config"), "hidden.txt");
         std::fs::write(root.join("back\\slash.bin"), b"unaskable").unwrap();
 
-        let scan = project_asset_files(&root).unwrap();
+        let scan = project_asset_files(&root, &[]).unwrap();
         let locators: Vec<&str> = scan
             .files
             .iter()

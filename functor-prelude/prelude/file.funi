@@ -2,6 +2,14 @@
 //! `draw`. Paths are relative to the entry file's folder and must stay inside
 //! the project. Desktop, `functor export`, and Quest (`functor run vr` pushes
 //! the project's files first); not the web yet.
+//!
+//! Data you don't ship (game files the player owns) goes under an external
+//! prefix. `functor.json` declares it: `"external": {"ss2/": "player SS2
+//! data"}`. An uncommitted `functor.local.json` beside it maps it on this
+//! machine to a folder or into a zip: `{"external": {"ss2/":
+//! "~/ss2/sshock2.kpf!data/res/"}}`. Then `File.bytes("ss2/mesh/x.bin")` reads
+//! `data/res/mesh/x.bin` in the archive, case-sensitively. External folders are
+//! never pushed or bundled.
 
 /// The bytes of a file: `File.bytes("data/model.bin")`.
 let bytes : (string) => Bytes.t
