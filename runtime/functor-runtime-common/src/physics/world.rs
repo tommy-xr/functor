@@ -460,13 +460,7 @@ impl World {
                 CollisionEvent::Started(h1, h2, flags) => (h1, h2, true, flags),
                 CollisionEvent::Stopped(h1, h2, flags) => (h1, h2, false, flags),
             };
-            let tag_of = |handle| {
-                self.tags
-                    .iter()
-                    .find(|(_, &(_, col))| col == handle)
-                    .map(|(tag, _)| tag.clone())
-            };
-            if let (Some(a), Some(b)) = (tag_of(h1), tag_of(h2)) {
+            if let (Some(a), Some(b)) = (self.collider_tag(h1), self.collider_tag(h2)) {
                 self.events.push(PhysicsEvent {
                     started,
                     a,
@@ -580,7 +574,8 @@ impl World {
     /// `dir` for up to `max_dist`: the first body it touches, ignoring
     /// `exclude`'s. `distance` is how far the shape travelled, `position` the
     /// contact point, `normal` the hit surface's outward normal. A shape that
-    /// starts touching something hits at distance 0. Answers as of the last
+    /// starts overlapping something hits it at distance 0, with an approximate
+    /// point and normal, unless the sweep moves out of it. Answers as of the last
     /// step, like [`Self::raycast`].
     pub fn shape_cast(
         &self,
@@ -603,7 +598,8 @@ impl World {
             ShapeCastOptions {
                 max_time_of_impact: max_dist,
                 target_distance: 0.0,
-                stop_at_penetration: true,
+                // A start overlap is a hit at 0 unless the sweep moves out.
+                stop_at_penetration: false,
                 compute_impact_geometry_on_penetration: true,
             },
         )?;

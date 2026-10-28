@@ -67,9 +67,9 @@ impl TriMeshData {
     /// The source index of rapier's triangle `kept`. A ray hitting a face's
     /// back reports `kept + n`, so that folds back onto the same triangle.
     pub(crate) fn source_triangle(&self, kept: u32) -> Option<u32> {
-        self.source
-            .get((kept % self.source.len() as u32) as usize)
-            .copied()
+        let n = self.source.len() as u32;
+        let kept = if kept >= n { kept - n } else { kept };
+        self.source.get(kept as usize).copied()
     }
 
     /// The compiled shape, built on first use.
@@ -390,6 +390,10 @@ mod tests {
         let cube = Shape::Cuboid { extents: [1.0, 1.0, 1.0] };
         let hit = w.shape_cast(&cube, [0.0, 2.0, -1.0], [1.0, 0.0, 0.0], 10.0, None).unwrap();
         assert!((hit.distance - 2.5).abs() < 1e-3, "{}", hit.distance);
+        // Starting 0.1 m into the wall: moving in hits at 0, out misses.
+        let hit = w.shape_cast(&sphere, [2.6, 0.0, 1.0], [1.0, 0.0, 0.0], 1.0, None).unwrap();
+        assert_eq!(hit.distance, 0.0);
+        assert!(w.shape_cast(&sphere, [2.6, 0.0, 1.0], [-1.0, 0.0, 0.0], 1.0, None).is_none());
         // Short of the wall, or off its edge: a miss.
         assert!(w.shape_cast(&sphere, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 2.0, None).is_none());
         assert!(w.shape_cast(&sphere, [0.0, 7.0, 0.0], [1.0, 0.0, 0.0], 10.0, None).is_none());

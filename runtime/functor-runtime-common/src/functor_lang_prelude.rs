@@ -3230,20 +3230,34 @@ capsule for the moving body"
             sync_query(None, origin, dir, max_dist, Some(&tag), "Physics.castExcluding")
         },
     );
-    // The swept counterpart of `Physics.cast`, same record and read rules.
+    // The swept counterparts of `Physics.cast`, same record and read rules.
+    fn swept(shape: &FunctorLangShape, what: &str) -> Result<(), String> {
+        match shape.0 {
+            physics::Shape::Cuboid { .. }
+            | physics::Shape::Sphere { .. }
+            | physics::Shape::Capsule { .. } => Ok(()),
+            _ => Err(format!("{what}: sweep a box, sphere or capsule")),
+        }
+    }
     reg.fn4(
         "Physics.shapeCast",
         "Physics.shapeCast(shape, origin, dir, maxDist)",
         |shape: FunctorLangShape, origin: FunctorLangVec3, dir: FunctorLangVec3, max_dist: f64| {
-            if !matches!(
-                shape.0,
-                physics::Shape::Cuboid { .. }
-                    | physics::Shape::Sphere { .. }
-                    | physics::Shape::Capsule { .. }
-            ) {
-                return Err("Physics.shapeCast: sweep a box, sphere or capsule".to_string());
-            }
+            swept(&shape, "Physics.shapeCast")?;
             sync_query(Some(&shape.0), origin, dir, max_dist, None, "Physics.shapeCast")
+        },
+    );
+    reg.fn5(
+        "Physics.shapeCastExcluding",
+        "Physics.shapeCastExcluding(tag, shape, origin, dir, maxDist)",
+        |tag: std::rc::Rc<str>,
+         shape: FunctorLangShape,
+         origin: FunctorLangVec3,
+         dir: FunctorLangVec3,
+         max_dist: f64| {
+            let what = "Physics.shapeCastExcluding";
+            swept(&shape, what)?;
+            sync_query(Some(&shape.0), origin, dir, max_dist, Some(&tag), what)
         },
     );
     // Scene LAST (subject-last), so it pipes: the way Functor Lang draws a physics body —
@@ -6464,13 +6478,12 @@ fn live_velocity(tag: &str) -> Option<[f32; 3]> {
         .or_else(|| PRIMING.with(|p| p.get()).then_some([0.0; 3]))
 }
 
-/// A synchronous ray query against the ACTIVE world, shared by `Physics.cast`
-/// and `Physics.castExcluding`. Returns the same record shape the deferred
-/// `Physics.raycast` effect hands its tagger (`ray_result_value`), so the two
-/// paths can never drift; a miss is `hit: false` with zeroed fields rather than
-/// an error, because "nothing there" is an ordinary answer a controller
-/// branches on.
-/// A ray (`shape` `None`) or shape cast against the active world.
+/// A synchronous ray (`shape` `None`) or shape cast against the ACTIVE world,
+/// shared by `Physics.cast`, `castExcluding` and `shapeCast`. Returns the same
+/// record shape the deferred `Physics.raycast` effect hands its tagger
+/// (`ray_result_value`), so the paths can never drift; a miss is `hit: false`
+/// with zeroed fields rather than an error, because "nothing there" is an
+/// ordinary answer a controller branches on.
 fn sync_query(
     shape: Option<&physics::Shape>,
     origin: FunctorLangVec3,
@@ -10356,6 +10369,12 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             "let main = () => Physics.cast(Vec3.make(9.0, 3.0, 0.0), {down}, 10.0)"
         ));
         assert_eq!(num(&miss, "triangle"), -1.0);
+        // Excluding the floor sweeps through it.
+        let through = eval(&format!(
+            "let main = () => Physics.shapeCastExcluding(Physics.tag(\"floor\"), \
+             Physics.sphere(0.5), Vec3.make(2.0, 3.0, -1.0), {down}, 10.0)"
+        ));
+        assert!(matches!(field(&through, "hit"), Value::Bool(false)));
         let err = fail_message(
             "let main = () => Physics.shapeCast(Physics.box(1.0, 1.0, 1.0), \
              Vec3.make(0.0, 3.0, 0.0), Vec3.make(0.0, 0.0, 0.0), 10.0)",

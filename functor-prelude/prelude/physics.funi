@@ -209,10 +209,15 @@ let castExcluding : (tag, Vec3.t, Vec3.t, float) => rayHit
 ///
 /// The shape moves unrotated from `origin` along `dir`, up to `maxDist`.
 /// `distance` is how far it travelled, `x, y, z` the contact point and
-/// `nx, ny, nz` the hit surface's outward normal. A shape that starts touching
-/// something hits at distance 0. Like `Physics.cast` it answers in place from
-/// the last step, and hits both sides of a trimesh face.
+/// `nx, ny, nz` the hit surface's outward normal. A shape that starts
+/// overlapping something hits it at distance 0 unless it moves out of it.
+/// Like `Physics.cast` it answers in place from the last step, and hits both
+/// sides of a trimesh face.
 let shapeCast : (shape, Vec3.t, Vec3.t, float) => rayHit
+
+/// `Physics.shapeCast`, ignoring one body: a sweep from a character's own
+/// position would otherwise hit its own collider.
+let shapeCastExcluding : (tag, shape, Vec3.t, Vec3.t, float) => rayHit
 
 /// Apply a body's live transform to a scene node.
 ///

@@ -277,7 +277,10 @@ a teaching error. Rays and contacts report the body's tag.
   sphere or capsule and answers with the same `rayHit`: `distance` is how far
   the shape travelled, the point and normal are on the surface it touched. Like
   rays, shape casts hit both sides of a face; only contacts are one-sided. For
-  a trimesh, `triangle` is the face under the contact point.
+  a trimesh, `triangle` is the face under the contact point (on a shared edge,
+  either neighbour). A sweep that starts overlapping something hits it at
+  distance 0 unless it moves out of it. `Physics.shapeCastExcluding(tag, …)`
+  ignores one body, for sweeps from a character's own position.
 
 ## API (F# — reference design, deferred)
 
