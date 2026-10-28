@@ -974,8 +974,9 @@ impl World {
         true
     }
 
-    /// Bring a fused room body's chunk colliders from `prev` to `next`:
-    /// rebuild only the chunks [`room::dirty_chunks`] names, in key order.
+    /// Bring a fused room body's colliders from `prev` to `next`: rebuild
+    /// only the chunks [`room::dirty_chunks`] names, in key order, and the
+    /// floor plane if the floor moved.
     fn sync_room(&mut self, body: &Body, prev: &RoomMeshes, next: &RoomMeshes) {
         let (Some(&rb_handle), Some(live)) =
             (self.tags.get(&body.tag), self.rooms.get_mut(&body.tag))
@@ -983,6 +984,21 @@ impl World {
             return;
         };
         let floor = room::settle_floor(live.floor, room::floor_height(next));
+        if floor != live.floor {
+            if let Some(handle) = live.floor_plane.take() {
+                self.colliders
+                    .remove(handle, &mut self.islands, &mut self.bodies, true);
+            }
+            if let Some(y) = floor {
+                let plane = ColliderBuilder::halfspace(rapier3d::na::Unit::new_unchecked(Vector::Y))
+                    .translation(Vector::new(0.0, y, 0.0));
+                live.floor_plane = Some(self.colliders.insert_with_parent(
+                    with_material(plane, body).build(),
+                    rb_handle,
+                    &mut self.bodies,
+                ));
+            }
+        }
         for key in room::dirty_chunks(prev, live.floor, next, floor) {
             if let Some(handle) = live.chunks.remove(&key) {
                 self.colliders
@@ -1015,11 +1031,14 @@ impl World {
         live.floor = floor;
     }
 
-    /// The fused room's chunk colliders and detected floor height
-    /// (`/state.xr.mesh`); `None` without a `Physics.fusedRoom` body.
+    /// The fused room's colliders (chunks plus the floor plane) and floor
+    /// height (`/state.xr.mesh`); `None` without a `Physics.fusedRoom` body.
     pub fn fused_room_colliders(&self) -> Option<(usize, Option<f32>)> {
         let live = self.rooms.values().next()?;
-        Some((live.chunks.len(), live.floor))
+        Some((
+            live.chunks.len() + usize::from(live.floor_plane.is_some()),
+            live.floor,
+        ))
     }
 
     /// The tag of the body `collider` belongs to.
@@ -1354,8 +1373,9 @@ fn with_material(collider: ColliderBuilder, body: &Body) -> ColliderBuilder {
 struct LiveRoom {
     #[serde(with = "room::pairs")]
     chunks: BTreeMap<ChunkKey, ColliderHandle>,
-    /// The floor height its chunks were snapped to.
+    /// The floor height, and the plane there that replaces the chunks' floor.
     floor: Option<f32>,
+    floor_plane: Option<ColliderHandle>,
 }
 
 fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
@@ -3188,7 +3208,7 @@ mod fused_room_tests {
         let mut w = world_with(vec![room_body(&room)]);
         let (colliders, floor) = w.fused_room_colliders().unwrap();
         assert!(colliders > 10, "{colliders}");
-        assert!(colliders <= room.chunks.len());
+        assert!(colliders <= room.chunks.len() + 1);
         let floor = floor.expect("the floor was seen");
         assert!(floor.abs() < 0.01, "floor at {floor}");
         // A ray at the wall reports the room's tag.
@@ -3231,6 +3251,20 @@ mod fused_room_tests {
         assert!(back < -1.5, "did not bounce back: vz = {back}");
     }
 
+    /// Nobody saw the floor behind the desk; the floor plane is there anyway.
+    #[test]
+    fn a_ball_dropped_on_unseen_floor_lands_on_the_floor_plane() {
+        let room = Arc::new(stand_in_room());
+        let behind_desk = [0.3, 0.3, 1.8];
+        let mut w = world_with(vec![room_body(&room), ball(behind_desk, [0.0; 3])]);
+        run(&mut w, 1, |_| {});
+        let probe = w.raycast_excluding([0.3, 0.2, 1.8], [0.0, -1.0, 0.0], 1.0, Some("ball"));
+        assert!(probe.is_some_and(|hit| hit.position[1].abs() < 0.01));
+        run(&mut w, 240, |_| {});
+        let y = w.body_transform("ball").unwrap().0[1];
+        assert!((y - BALL).abs() < 0.01, "y = {y}");
+    }
+
     /// Re-declaring the same room is free; a re-fused chunk rebuilds only
     /// that chunk's collider.
     #[test]
@@ -3270,10 +3304,10 @@ mod fused_room_tests {
         jitter
     }
 
-    /// The floor snap's point: without it the fused floor's ripple keeps a
-    /// resting ball moving.
+    /// The floor plane's point: on the fused floor's ripple a resting ball
+    /// keeps rolling.
     #[test]
-    fn the_floor_snap_stills_a_resting_ball() {
+    fn the_floor_plane_stills_a_resting_ball() {
         // The CPU fixture fuses a floor flat to a millimetre; give it the few
         // millimetres of ripple a depth sensor's floor has.
         let mut room = stand_in_room();
@@ -3283,8 +3317,8 @@ mod fused_room_tests {
                 p[1] += 0.004 * (p[0] * 37.0).sin() * (p[2] * 23.0).cos();
             }
         }
-        // Snapped: the room as `Physics.fusedRoom` builds it.
-        let mut snapped = world_with(vec![room_body(&Arc::new(room.clone()))]);
+        // Planed: the room as `Physics.fusedRoom` builds it.
+        let mut planed = world_with(vec![room_body(&Arc::new(room.clone()))]);
         // Unsnapped: the same chunks as raw meshes, on an untagged body.
         let mut raw = World::new(DEFAULT_GRAVITY);
         let body = raw.bodies.insert(RigidBodyBuilder::fixed().build());
@@ -3302,9 +3336,9 @@ mod fused_room_tests {
             raw.colliders
                 .insert_with_parent(collider, body, &mut raw.bodies);
         }
-        let (with, without) = (resting_jitter(&mut snapped), resting_jitter(&mut raw));
-        eprintln!("resting ball max |vy|: snapped {with:.6} m/s, raw {without:.6} m/s");
-        assert!(with <= without, "snapped {with} > raw {without}");
-        assert!(with < 1e-3, "snapped floor jitter {with}");
+        let (with, without) = (resting_jitter(&mut planed), resting_jitter(&mut raw));
+        eprintln!("resting ball max |vy|: floor plane {with:.6} m/s, raw {without:.6} m/s");
+        assert!(with <= without, "floor plane {with} > raw {without}");
+        assert!(with < 1e-3, "floor plane jitter {with}");
     }
 }

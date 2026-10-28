@@ -8,9 +8,10 @@
 //! [`dirty_chunks`] reports.
 //!
 //! Floor snap: the fused floor ripples by a few millimetres, enough to keep a
-//! resting ball twitching. [`floor_height`] finds the floor (the lowest level
-//! surface with real area) and [`chunk_collider`] flattens the level
-//! triangles near it onto that one height.
+//! resting ball rolling, and it has holes wherever nobody has looked (behind
+//! the desk). [`floor_height`] finds the floor — the lowest level surface
+//! with real area — and the room collides with one flat plane there instead:
+//! [`chunk_collider`] drops the level triangles near it.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -23,14 +24,13 @@ use crate::scene3d::MeshData;
 
 /// A triangle counts as level when its normal is within ~18° of straight up.
 const LEVEL_NORMAL_Y: f32 = 0.95;
-/// Level triangles within this of the floor height snap onto it, metres.
+/// Level triangles within this of the floor height are the floor, metres.
 const FLOOR_BAND: f32 = 0.03;
 /// Level area a height needs to be the floor, m²: more than fusion noise or
-/// a desk top, less than the floor seen from one spot. (Taking a big table
-/// for the floor only flattens the table.)
+/// a desk top, less than the floor seen from one spot.
 const FLOOR_MIN_AREA: f32 = 1.0;
 /// A newly detected floor within this of the current one keeps the current
-/// one, metres, so re-meshing doesn't rebuild every floor chunk for a
+/// one, metres, so re-meshing doesn't rebuild the floor chunks for a
 /// sub-millimetre change.
 const FLOOR_HYSTERESIS: f32 = 0.01;
 /// Triangles smaller than this (m²) are dropped: rapier rejects degenerate ones.
@@ -131,41 +131,43 @@ pub(crate) fn settle_floor(current: Option<f32>, detected: Option<f32>) -> Optio
     }
 }
 
-/// `mesh` as collider geometry, with the level triangles within
-/// [`FLOOR_BAND`] of `floor` flattened onto it; `None` if nothing is left.
+/// `mesh` as collider geometry without its floor — the level triangles
+/// within [`FLOOR_BAND`] of `floor`, which the floor plane replaces — or its
+/// degenerate triangles; `None` if nothing is left.
 pub(crate) fn chunk_collider(mesh: &MeshData, floor: Option<f32>) -> Option<ChunkGeometry> {
-    let mut positions = mesh.positions.clone();
-    if let Some(floor) = floor {
-        // Snap whole triangles (all three vertices), so a shared vertex moves
-        // once and its other triangles stay attached.
-        let mut snap = vec![false; positions.len()];
-        for t in &mesh.triangles {
-            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
-            let near = [a, b, c].iter().all(|p| (p[1] - floor).abs() <= FLOOR_BAND);
-            if near && normal_and_area(a, b, c).is_some_and(|(n, _)| n[1] > LEVEL_NORMAL_Y) {
-                for &i in t {
-                    snap[i as usize] = true;
-                }
-            }
-        }
-        for (p, snap) in positions.iter_mut().zip(snap) {
-            if snap {
-                p[1] = floor;
-            }
-        }
-    }
-    let triangles: Vec<[u32; 3]> = mesh
+    let kept: Vec<[u32; 3]> = mesh
         .triangles
         .iter()
         .copied()
         .filter(|t| {
-            let [a, b, c] = t.map(|i| positions[i as usize]);
-            normal_and_area(a, b, c).is_some()
+            let corners = t.map(|i| mesh.positions[i as usize]);
+            let Some((normal, _)) = normal_and_area(corners[0], corners[1], corners[2]) else {
+                return false;
+            };
+            !floor.is_some_and(|floor| {
+                normal[1] > LEVEL_NORMAL_Y
+                    && corners.iter().all(|p| (p[1] - floor).abs() <= FLOOR_BAND)
+            })
         })
         .collect();
-    (!triangles.is_empty()).then_some(ChunkGeometry {
+    if kept.is_empty() {
+        return None;
+    }
+    // Keep the vertices the kept triangles use, in their original order.
+    let mut index = vec![u32::MAX; mesh.positions.len()];
+    for &i in kept.iter().flatten() {
+        index[i as usize] = 0;
+    }
+    let mut positions = Vec::new();
+    for (slot, p) in index.iter_mut().zip(&mesh.positions) {
+        if *slot == 0 {
+            *slot = positions.len() as u32;
+            positions.push(*p);
+        }
+    }
+    Some(ChunkGeometry {
         positions,
-        triangles,
+        triangles: kept.iter().map(|t| t.map(|i| index[i as usize])).collect(),
     })
 }
 
@@ -313,23 +315,32 @@ mod tests {
         assert_eq!(floor_height(&room(vec![desk])), None);
     }
 
+    fn as_geometry(mesh: &MeshData) -> ChunkGeometry {
+        ChunkGeometry {
+            positions: mesh.positions.clone(),
+            triangles: mesh.triangles.clone(),
+        }
+    }
+
     #[test]
-    fn floor_triangles_snap_flat_and_the_rest_stays() {
+    fn the_floor_plane_replaces_floor_triangles_and_the_rest_stays() {
         let floor = level(-1.0, -1.0, 2.0, 2.0, ripple);
-        let snapped = chunk_collider(&floor, Some(0.0)).unwrap();
-        assert!(snapped.positions.iter().all(|p| p[1] == 0.0));
-        assert_eq!(snapped.triangles, floor.triangles);
+        assert_eq!(chunk_collider(&floor, Some(0.0)), None);
+        assert_eq!(chunk_collider(&floor, None), Some(as_geometry(&floor)));
 
         let desk = level(0.0, 0.0, 1.0, 0.6, |x, z| 0.75 + ripple(x, z));
-        assert_eq!(
-            chunk_collider(&desk, Some(0.0)).unwrap().positions,
-            desk.positions
-        );
-        // A wall standing on the floor keeps its shape: its triangles are not
-        // level, so none of its vertices move.
+        assert_eq!(chunk_collider(&desk, Some(0.0)), Some(as_geometry(&desk)));
+        // A wall standing on the floor stays: its triangles are not level.
         let w = wall(1.0, 0.002);
-        assert_eq!(chunk_collider(&w, Some(0.0)).unwrap().positions, w.positions);
-        assert_eq!(chunk_collider(&w, None).unwrap().positions, w.positions);
+        assert_eq!(chunk_collider(&w, Some(0.0)), Some(as_geometry(&w)));
+
+        // A chunk with both keeps the wall, its vertices renumbered.
+        let mut both = level(0.0, 0.5, 0.2, 0.1, |_, _| 0.0);
+        let base = both.positions.len() as u32;
+        both.positions.extend(w.positions.clone());
+        both.triangles
+            .extend(w.triangles.iter().map(|t| t.map(|i| i + base)));
+        assert_eq!(chunk_collider(&both, Some(0.0)), Some(as_geometry(&w)));
     }
 
     #[test]
