@@ -74,7 +74,7 @@ let fromController = (model, xr: Input.xr) =>
     else next
   | Option.None => next
 
-// Desktop: Space shoots along the view, a click through the clicked point.
+// Keys and mouse: Space shoots along the view, a click through the clicked point.
 let fromDesk = (model, snapshot: Input.snapshot) =>
   let keys = snapshot.pressedKeys in
   let next = toggled(model, keys |> List.any((k) => k == Key.G)) in
@@ -88,10 +88,13 @@ let fromDesk = (model, snapshot: Input.snapshot) =>
     | Option.None => next
   else next
 
+// The keys work on the headset too, so `POST /input` can drive it headless.
 let sampledInput = (model, snapshot: Input.snapshot) =>
-  match snapshot.xr with
-  | Option.Some(xr) => fromController(model, xr)
-  | Option.None => fromDesk(model, snapshot)
+  let held =
+    match snapshot.xr with
+    | Option.Some(xr) => fromController(model, xr)
+    | Option.None => model in
+  fromDesk(held, snapshot)
 
 let tick = (model, dt, tts) => model
 
