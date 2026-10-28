@@ -15,7 +15,9 @@ use crate::{ui::UiEventKind, GamepadSnapshot, InputSnapshot, TouchPhase, XrInput
 /// Stable name returned by the discovery endpoint on every runtime target.
 pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 
-/// Version of the routes and JSON wire shapes in this module.
+/// Version of the routes and JSON wire shapes in this module. Bump it only
+/// when a client must gate on the change (a removed or reshaped field, or a
+/// route a client requires); additive optional fields don't bump it.
 ///
 /// 3 added `pending_steps` to `GET /state` and `frames` to `POST /time`'s
 /// `advance`, and made `/time` answer 409 under a `--fixed-time` pin. A client
@@ -1402,7 +1404,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 23);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)
