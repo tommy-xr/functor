@@ -226,6 +226,21 @@ got {b} and {t}"
             }))
         },
     );
+    reg.fn4(
+        "Solid.thread",
+        "Solid.thread(diameter, pitch, length, offset)",
+        |d: f64, p: f64, l: f64, offset: f64| {
+            let diameter = positive(d, "Solid.thread diameter")?;
+            let pitch = positive(p, "Solid.thread pitch")?;
+            let length = positive(l, "Solid.thread length")?;
+            if !offset.is_finite() {
+                return Err(format!("Solid.thread offset must be finite, got {offset}"));
+            }
+            Solid::thread(diameter, pitch, length, offset)
+                .map(solid)
+                .map_err(|e| format!("Solid.thread: {e}"))
+        },
+    );
     reg.fn1("Solid.sphere", "Solid.sphere(radius)", |r: f64| {
         let radius = positive(r, "Solid.sphere radius")?;
         Ok(solid(Solid::Sphere { radius }))

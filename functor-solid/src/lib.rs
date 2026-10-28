@@ -20,6 +20,7 @@ pub mod remesh;
 mod sketch;
 pub mod stl;
 mod text;
+mod thread;
 pub mod threemf;
 
 use std::sync::{Arc, OnceLock};
@@ -45,6 +46,17 @@ pub enum Solid {
     Cone { bottom: f64, top: f64, height: f64 },
     /// A sphere centered on the origin.
     Sphere { radius: f64 },
+    /// A thread `profile` (`(axial, radius)` corners of one pitch) swept
+    /// `turns` times around Z from z = `from`, with ramped ends. Faceted for
+    /// the nominal `radius`, so a bolt and its nut share angular steps. Build
+    /// a flat-ended thread with [`Solid::thread`].
+    Helix {
+        profile: Vec<[f64; 2]>,
+        pitch: f64,
+        from: f64,
+        turns: usize,
+        radius: f64,
+    },
     /// A 2D profile swept from z = 0 to z = `height`.
     Extrude { sketch: Arc<Sketch>, height: f64 },
     Transform {
@@ -104,6 +116,47 @@ impl Solid {
             children,
             result: MeshCache::default(),
         }
+    }
+
+    /// An ISO metric thread (60° basic profile) of major `diameter`, z from 0
+    /// to `length`, grown by `offset` mm along the profile's normals (negative
+    /// shrinks): a bolt's thread, or — subtracted — a nut's.
+    pub fn thread(diameter: f64, pitch: f64, length: f64, offset: f64) -> Result<Solid, String> {
+        if !([diameter, pitch, length]
+            .iter()
+            .all(|x| x.is_finite() && *x > 0.0)
+            && offset.is_finite())
+        {
+            return Err(format!(
+                "a thread needs a positive diameter, pitch and length and a finite offset, \
+got {diameter}, {pitch}, {length}, {offset}"
+            ));
+        }
+        let profile = thread::profile(diameter, pitch, offset)?;
+        // Spare turns at each end, so the slab cuts the ramps away.
+        let turns = (length / pitch).ceil() + 3.0;
+        let radius = diameter / 2.0;
+        if turns * segments_for(radius) as f64 > 1e6 {
+            return Err(format!(
+                "a {length} mm thread of pitch {pitch} mm is too many turns"
+            ));
+        }
+        let outer = profile.iter().map(|c| c[1]).fold(0.0, f64::max);
+        let helix = Solid::Helix {
+            profile,
+            pitch,
+            from: -1.5 * pitch,
+            turns: turns as usize,
+            radius,
+        };
+        let slab = Arc::new(Solid::Box {
+            size: [2.0 * outer + 2.0, 2.0 * outer + 2.0, length],
+        })
+        .translate([0.0, 0.0, length / 2.0]);
+        Ok(Solid::boolean(
+            BoolOp::Intersect,
+            vec![Arc::new(helix), Arc::new(slab)],
+        ))
     }
 
     pub fn translate(self: Arc<Self>, offset: [f64; 3]) -> Solid {
@@ -176,6 +229,19 @@ impl Solid {
             ),
             Solid::Sphere { radius } => {
                 out.append(&mesh::sphere(*radius, segments_for(radius * scale)), xform)
+            }
+            Solid::Helix {
+                profile,
+                pitch,
+                from,
+                turns,
+                radius,
+            } => {
+                let segments = segments_for(radius * scale);
+                out.append(
+                    &thread::helix(profile, *pitch, *from, *turns, segments),
+                    xform,
+                )
             }
             Solid::Extrude { sketch, height } => out.append(&sketch.extrude(*height), xform),
             Solid::Transform { matrix, child } => return child.append_to(out, xform * matrix),

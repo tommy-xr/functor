@@ -75,12 +75,11 @@ let countersink = (s: screw, fit: Fit.t, depth: float) =>
       |> Solid.translate(Vec3.make(0.0, 0.0, (above - (sink - hole)) / 2.0)),
   ])
 
-// A hexagonal pocket that holds a nut from turning, `depth` deep (at least
-// `nutHeight`). Flats face ±Y. Add a clearance hole for the screw.
-let nutTrap = (s: screw, fit: Fit.t, depth: float) =>
-  let w = s.nutWidth / 2.0 + fit.gap in
-  // Corner radius of a hexagon `2w` across flats.
-  let r = w * 2.0 / Math.sqrt(3.0) in
+// A hexagonal prism `acrossFlats` wide (flats face ±Y), from z = 0 to
+// `height`: a nut or a bolt head.
+let hex = (acrossFlats: float, height: float) =>
+  let w = acrossFlats / 2.0 in
+  let r = w * 2.0 / Math.sqrt(3.0) in // corner radius
   Sketch.polygon([
     { x: r, y: 0.0 },
     { x: r / 2.0, y: w },
@@ -89,8 +88,12 @@ let nutTrap = (s: screw, fit: Fit.t, depth: float) =>
     { x: 0.0 - r / 2.0, y: 0.0 - w },
     { x: r / 2.0, y: 0.0 - w },
   ])
-    |> Solid.extrude(depth + above)
-    |> Solid.translate(Vec3.make(0.0, 0.0, 0.0 - depth))
+    |> Solid.extrude(height)
+
+// A hexagonal pocket that holds a nut from turning, `depth` deep (at least
+// `nutHeight`). Flats face ±Y. Add a clearance hole for the screw.
+let nutTrap = (s: screw, fit: Fit.t, depth: float) =>
+  hex(s.nutWidth + 2.0 * fit.gap, depth + above) |> Solid.translate(Vec3.make(0.0, 0.0, 0.0 - depth))
 
 // A pocket a heat-set insert is melted into, `depth` deep: its length plus
 // about two thread pitches (+1 mm for M3) leaves room for displaced plastic.

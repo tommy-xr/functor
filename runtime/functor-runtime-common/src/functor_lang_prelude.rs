@@ -12540,6 +12540,42 @@ the game dir"
         }
     }
 
+    /// `Thread` sizes, fits and engagement; `Solid.thread`'s refusals.
+    #[test]
+    fn threads_fit_and_engage() {
+        let checks = [
+            "List.length(Thread.sizes) == 8.0 && Thread.m8.pitch == 1.25 && Thread.m12.pitch == 1.75 \
+             && Thread.unc1_4_20.diameter == 6.35 && Thread.unc1_4_20.pitch == 1.27",
+            // Full ISO depth 5√3/16·P; the clearance fit closes the tap's
+            // P/4 flat (gap > H/4): 2·gap over the 60° triangle's bottom.
+            "Math.abs(Thread.engagement(Thread.m8, Fit.gap(0.0)) - 5.0 * Math.sqrt(3.0) / 16.0 * 1.25) < 0.000001",
+            "Math.abs(Thread.engagement(Thread.m8, Fit.clearance) \
+             - (7.0 / 8.0 * Math.sqrt(3.0) / 2.0 * 1.25 - 0.6)) < 0.000001",
+            // Every size taps at a slip fit except M3; small ones refuse the clearance fit.
+            "List.all((s: Thread.size) => s.name == \"M3\" || Thread.engagement(s, Fit.slip) \
+             >= Thread.engagement(s, Fit.gap(0.0)) / 3.0, Thread.sizes)",
+            "Vec3.z(Solid.bounds(Thread.tap(Thread.m3, Fit.press, 5.0)).max) > 4.999 \
+             && Vec3.z(Solid.bounds(Thread.tap(Thread.m8, Fit.clearance, 5.0)).max) > 4.999",
+            "Math.abs(Vec3.x(Solid.bounds(Thread.rod(Thread.m8, 5.0)).max) - 4.0) < 0.0001",
+        ];
+        for check in checks {
+            let src = format!("let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+        let err = eval_with_prelude("let main = Solid.volume(Thread.tap(Thread.m5, Fit.clearance, 5.0))\n")
+            .err()
+            .expect("should fail");
+        assert!(err.contains("leaves M5 only"), "{err}");
+        let err = eval_with_prelude("let main = Solid.volume(Solid.thread(3.0, 0.5, 5.0, -1.0))\n")
+            .err()
+            .expect("should fail");
+        assert!(err.contains("leaves no thread"), "{err}");
+    }
+
     /// `Mesh.*` from raw f32 positions + polygons, then `Solid.fromMesh`
     /// closes an open box and scales it to the asked height.
     #[test]

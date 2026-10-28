@@ -2831,7 +2831,7 @@ examples move?",
     /// fits); `verify` only typechecks `game.fun` examples, so run them here.
     #[test]
     fn part_examples_expects_pass() {
-        for name in ["hardware"] {
+        for name in ["bolt", "hardware"] {
             let dir: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples", name]
                 .iter()
                 .collect();
