@@ -2486,6 +2486,36 @@ row 0 has {cols} heights, row {r} has {}",
             }))
         },
     );
+    reg.fn2(
+        "Scene.cells",
+        "Scene.cells(cells, scene)",
+        |cells: FunctorLangCells, scene: FunctorLangScene| {
+            FunctorLangScene(Scene3D {
+                obj: SceneObject::Cells(crate::CellsNode::Walk(cells.0), vec![scene.0]),
+                xform: Matrix4::from_scale(1.0),
+            })
+        },
+    );
+    reg.fn2(
+        "Scene.inCells",
+        "Scene.inCells(ids, scene)",
+        |ids: Vec<f64>, scene: FunctorLangScene| {
+            let ids = ids
+                .into_iter()
+                .map(|id| {
+                    (id >= 0.0 && id.fract() == 0.0 && id <= f64::from(u32::MAX))
+                        .then_some(id as u32)
+                        .ok_or_else(|| {
+                            format!("Scene.inCells: cell ids are whole numbers ≥ 0, got {id}")
+                        })
+                })
+                .collect::<Result<_, _>>()?;
+            Ok::<_, String>(FunctorLangScene(Scene3D {
+                obj: SceneObject::Cells(crate::CellsNode::In(ids), vec![scene.0]),
+                xform: Matrix4::from_scale(1.0),
+            }))
+        },
+    );
     // Stamp a template subtree once per instance — semantically the group of
     // transformed, tinted copies; hardware-instanced when the renderer
     // recognizes the template. `Scene.opacity` INSIDE the template is
@@ -12115,6 +12145,7 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             battery: None,
             skinned: Default::default(),
             cull: Default::default(),
+            cells: Default::default(),
             stages: None,
             build: None,
             xr: None,
@@ -13641,6 +13672,21 @@ Config.create())",
         assert!(err.contains("portal 0 `from` must be a cell id"), "{err}");
         let err = failure("Cells.make({ cells: [{ planes: [] }], portals: [] })");
         assert!(err.contains("cell 0 is unbounded"), "{err}");
+        let err = failure("Scene.inCells([1.5], Scene.cube())");
+        assert!(err.contains("cell ids are whole numbers ≥ 0, got 1.5"), "{err}");
+        // `Scene.cells` wraps its scene; `Scene.inCells` tags its subtree.
+        let src = format!(
+            "{prelude}let main = Scene.cells(world, Scene.inCells([1.0], Scene.cube()))\n"
+        );
+        let Ok(Value::HostData(data)) = eval_with_prelude(&src) else {
+            panic!("{:?}", eval_with_prelude(&src).map(|v| v.to_string()));
+        };
+        let scene = &data.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        let SceneObject::Cells(crate::CellsNode::Walk(cells), items) = &scene.obj else {
+            panic!("{scene:?}");
+        };
+        assert_eq!(cells.len(), 2);
+        assert!(matches!(&items[0].obj, SceneObject::Cells(crate::CellsNode::In(ids), _) if ids == &[1]));
     }
 
     /// `Encode` writes what `Decode` reads; a `Codec` round-trips records,

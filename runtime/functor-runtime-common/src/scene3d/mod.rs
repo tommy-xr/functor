@@ -94,6 +94,11 @@ pub struct SceneContext {
     // Frustum culling on (default) or off (`FUNCTOR_CULL=0`, or
     // `set_frustum_culling`), for A/B checks.
     cull: Cell<bool>,
+    // Inside `Scene.cells` in a forward pass: the cells this eye sees
+    // (`None`: all). `portal_hidden` is set inside a `Scene.inCells` whose
+    // cells are all hidden; its leaves stay resident but draw nothing.
+    portal_visible: RefCell<Option<Vec<bool>>>,
+    portal_hidden: Cell<bool>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
     // both eyes evaluate each model node once. Cleared when a new frame id
     // begins; see `cached_pose_joints` for the key.
@@ -611,6 +616,8 @@ impl SceneContext {
                 std::env::var("FUNCTOR_CULL").as_deref(),
                 Ok("0" | "off")
             )),
+            portal_visible: RefCell::new(None),
+            portal_hidden: Cell::new(false),
             poses: RefCell::new(HashMap::new()),
             main_shadow: Cell::new(None),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -954,12 +961,39 @@ impl SceneContext {
         world: &Matrix4<f32>,
         bounds: &Aabb,
     ) -> bool {
+        if self.portal_hidden.get() {
+            return true;
+        }
         if !self.cull.get() {
             return false;
         }
         let culled = cull::outside(&(projection * view * world), bounds);
         crate::gpu_counters::gpu_counters().cull_tested(culled);
         culled
+    }
+
+    /// The cells visible through portals from this pass's eye, for a
+    /// `Scene.cells` node at `world`. `None` (draw all) with culling off,
+    /// for an orthographic view (no eye point), or with the eye outside
+    /// every cell.
+    fn walk_cells(
+        &self,
+        cells: &crate::cells::Cells,
+        projection: &Matrix4<f32>,
+        view: &Matrix4<f32>,
+        world: &Matrix4<f32>,
+    ) -> Option<Vec<bool>> {
+        if !self.cull.get() || projection.w.w != 0.0 {
+            return None;
+        }
+        let view_world = view * world;
+        let eye = view_world.invert()?.w.truncate();
+        let visible = cells.visible(eye, &(projection * view_world));
+        let reached = visible
+            .as_ref()
+            .map_or(cells.len(), |v| v.iter().filter(|&&seen| seen).count());
+        crate::gpu_counters::gpu_counters().cells_walked(reached);
+        visible
     }
 
     /// The instanced renderer, created on first use.
@@ -2014,11 +2048,24 @@ pub enum SceneObject {
         template: Box<Scene3D>,
         instances: InstanceList,
     },
+    /// `Scene.cells` / `Scene.inCells` — portal culling; see [`CellsNode`].
+    /// Otherwise a group.
+    Cells(CellsNode, Vec<Scene3D>),
     /// A `Scene.memo` result, held by reference so a node wrapping it (a
     /// group, a transform) copies a pointer, not the subtree. Transparent:
     /// it compares, serializes and draws as the object it holds.
     #[serde(untagged, skip_deserializing, serialize_with = "serialize_resolved")]
     Shared(Arc<SceneObject>),
+}
+
+/// A [`SceneObject::Cells`] node's role.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CellsNode {
+    /// `Scene.cells`: the subtree's `In` nodes draw only when one of their
+    /// cells is visible through portals from the eye (this node's space).
+    Walk(Arc<crate::cells::Cells>),
+    /// `Scene.inCells`: the subtree is in these cells.
+    In(Vec<u32>),
 }
 
 impl SceneObject {
@@ -2055,6 +2102,7 @@ impl PartialEq for SceneObject {
             (Material(m, a), Material(n, b)) => m == n && a == b,
             (Group(a), Group(b)) => a == b,
             (Opacity(x, a), Opacity(y, b)) => x == y && a == b,
+            (Cells(n, a), Cells(m, b)) => n == m && a == b,
             (
                 Instanced {
                     template: t,
@@ -2071,7 +2119,8 @@ impl PartialEq for SceneObject {
             | (Material(..), _)
             | (Group(_), _)
             | (Opacity(..), _)
-            | (Instanced { .. }, _) => false,
+            | (Instanced { .. }, _)
+            | (Cells(..), _) => false,
         }
     }
 }
@@ -2357,6 +2406,13 @@ impl Scene3D {
                     .map(|item| item.with_animation(expr.clone()))
                     .collect(),
             ),
+            SceneObject::Cells(node, items) => SceneObject::Cells(
+                node,
+                items
+                    .into_iter()
+                    .map(|item| item.with_animation(expr.clone()))
+                    .collect(),
+            ),
             // The template is the animation target: `Scene.model(x) |>
             // Scene.animate(pose) |> Scene.instanced(xs)` animates every
             // stamped copy identically (exactly what the expansion would do).
@@ -2380,9 +2436,9 @@ impl Scene3D {
     pub fn has_opacity(&self) -> bool {
         match self.obj.resolved() {
             SceneObject::Opacity(..) => true,
-            SceneObject::Group(items) | SceneObject::Material(_, items) => {
-                items.iter().any(Scene3D::has_opacity)
-            }
+            SceneObject::Group(items)
+            | SceneObject::Material(_, items)
+            | SceneObject::Cells(_, items) => items.iter().any(Scene3D::has_opacity),
             // The prelude rejects `Scene.opacity` inside a template, so an
             // instanced node is opaque; an OUTER `Scene.opacity` wrapping it
             // is seen at that outer node like any other subtree.
@@ -2414,7 +2470,9 @@ impl Scene3D {
                     item.accumulate_leaf_origins(world, sum, count);
                 }
             }
-            SceneObject::Group(items) | SceneObject::Opacity(_, items) => {
+            SceneObject::Group(items)
+            | SceneObject::Opacity(_, items)
+            | SceneObject::Cells(_, items) => {
                 let w = world * self.xform;
                 for item in items {
                     item.accumulate_leaf_origins(&w, sum, count);
@@ -2484,7 +2542,7 @@ impl Scene3D {
                     centroid,
                 });
             }
-            SceneObject::Group(items) => {
+            SceneObject::Group(items) | SceneObject::Cells(_, items) => {
                 let w = world * self.xform;
                 for item in items {
                     item.collect_transparent(&w, material, out);
@@ -2587,6 +2645,13 @@ impl Scene3D {
         };
         let geometry_material = override_material.as_ref().unwrap_or(current_material);
 
+        // A portal-hidden primitive has no GPU residency to keep: skip it.
+        if scene_context.portal_hidden.get()
+            && matches!(self.obj.resolved(), SceneObject::Geometry(shape) if !matches!(shape, Shape::Mesh { .. }))
+        {
+            return;
+        }
+
         match self.obj.resolved() {
             SceneObject::Model(ModelDescription {
                 handle: ModelHandle::Data(data),
@@ -2607,6 +2672,10 @@ impl Scene3D {
                 // like the old `get()`).
                 let (hydrated_model, str) =
                     resolve_handle_for_draw(render_context, scene_context, model_description);
+                // Resolving kept it resident; portal-hidden, skip the pose too.
+                if scene_context.portal_hidden.get() {
+                    return;
+                }
 
                 let matrix = world_matrix * self.xform;
 
@@ -2923,6 +2992,54 @@ impl Scene3D {
                     }
                 }
             }
+            SceneObject::Cells(node, items) => {
+                let world = world_matrix * self.xform;
+                let render_items = || {
+                    for item in items {
+                        item.render(
+                            render_context,
+                            scene_context,
+                            &world,
+                            projection_matrix,
+                            view_matrix,
+                            current_material,
+                        )
+                    }
+                };
+                match node {
+                    // Shadows aren't portal-culled: a hidden room still casts.
+                    CellsNode::Walk(cells) => {
+                        let visible = if depth_pass {
+                            None
+                        } else {
+                            scene_context.walk_cells(cells, projection_matrix, view_matrix, &world)
+                        };
+                        let outer = scene_context.portal_visible.replace(visible);
+                        render_items();
+                        scene_context.portal_visible.replace(outer);
+                    }
+                    // An empty list is in no cell: always drawn, like an unmarked node.
+                    CellsNode::In(ids) => {
+                        let hide = !scene_context.portal_hidden.get()
+                            && !ids.is_empty()
+                            && scene_context.portal_visible.borrow().as_ref().is_some_and(
+                                |visible| {
+                                    !ids.iter().any(|&id| {
+                                        visible.get(id as usize).copied().unwrap_or(true)
+                                    })
+                                },
+                            );
+                        if hide {
+                            crate::gpu_counters::gpu_counters().cells_hidden();
+                            scene_context.portal_hidden.set(true);
+                        }
+                        render_items();
+                        if hide {
+                            scene_context.portal_hidden.set(false);
+                        }
+                    }
+                }
+            }
             SceneObject::Instanced {
                 template,
                 instances,
@@ -2935,6 +3052,10 @@ impl Scene3D {
                 // extent acquires the list's buffer, so a culled list stays
                 // resident. CPU-expanded templates cull per leaf instead.
                 let culled = |renderer: &mut InstancedRenderer, template: Option<Aabb>| {
+                    if scene_context.portal_hidden.get() {
+                        renderer.instance_extent(render_context.gl, instances);
+                        return true;
+                    }
                     let Some(template) = template.filter(|t| !t.is_empty()) else {
                         return false;
                     };

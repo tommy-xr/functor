@@ -136,7 +136,8 @@ fn collect_transforms(
     match scene.obj.resolved() {
         SceneObject::Group(children)
         | SceneObject::Material(_, children)
-        | SceneObject::Opacity(_, children) => {
+        | SceneObject::Opacity(_, children)
+        | SceneObject::Cells(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -174,7 +175,9 @@ fn collect_anchor(
 ) {
     let w = world * scene.xform;
     match scene.obj.resolved() {
-        SceneObject::Group(children) | SceneObject::Opacity(_, children) => {
+        SceneObject::Group(children)
+        | SceneObject::Opacity(_, children)
+        | SceneObject::Cells(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -321,7 +324,9 @@ fn collect_sample_leaves<'a>(
 ) {
     let w = world * scene.xform;
     match scene.obj.resolved() {
-        SceneObject::Group(children) | SceneObject::Opacity(_, children) => {
+        SceneObject::Group(children)
+        | SceneObject::Opacity(_, children)
+        | SceneObject::Cells(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -1094,7 +1099,7 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
                 scale_presence(item, presence);
             }
         }
-        SceneObject::Group(items) => {
+        SceneObject::Group(items) | SceneObject::Cells(_, items) => {
             for item in items {
                 scale_presence(item, presence);
             }
@@ -2128,7 +2133,9 @@ mod tests {
                     material_alphas(item, out);
                 }
             }
-            SceneObject::Group(items) | SceneObject::Opacity(_, items) => {
+            SceneObject::Group(items)
+            | SceneObject::Opacity(_, items)
+            | SceneObject::Cells(_, items) => {
                 for item in items {
                     material_alphas(item, out);
                 }
