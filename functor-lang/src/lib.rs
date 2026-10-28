@@ -23,6 +23,7 @@ pub mod ir;
 pub mod lexer;
 mod lower;
 mod parser;
+pub mod pmap;
 pub mod project;
 pub mod rebind;
 mod span;
