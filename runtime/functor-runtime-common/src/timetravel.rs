@@ -439,10 +439,7 @@ impl SceneRecorder {
     /// Whether every retained model snapshot is independent of the loaded
     /// module and can therefore remain seekable across a hot reload.
     pub fn reload_history_is_safe(&self) -> bool {
-        self.model_history
-            .snapshots
-            .iter()
-            .all(Value::is_reload_safe_snapshot)
+        Value::all_reload_safe(&self.model_history.snapshots)
     }
 
     /// Classify and, when necessary, branch the coupled timeline before the

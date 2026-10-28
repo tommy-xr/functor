@@ -4787,9 +4787,9 @@ fn plain_data(value: &Value) -> Result<(), String> {
                 }
             }
             Value::Map(entries) => {
-                if seen.insert(entries.root_ptr()) {
-                    work.extend(entries.iter().map(|(_, v)| v));
-                }
+                entries.for_each_unseen_leaf(&mut seen, |leaf| {
+                    work.extend(leaf.iter().map(|(_, v)| v))
+                });
             }
             Value::Record(fields) => {
                 if seen.insert(Rc::as_ptr(fields) as *const ()) {
@@ -4817,6 +4817,8 @@ fn plain_data(value: &Value) -> Result<(), String> {
 /// plain data is unequal.
 fn same_plain_data(a: &Value, b: &Value) -> bool {
     let mut seen = std::collections::HashSet::new();
+    // Map node pairs already compared (see `zip_unshared`).
+    let mut map_nodes = std::collections::HashSet::new();
     // Whether a pair of containers still needs comparing.
     let mut fresh = |x: *const (), y: *const ()| x != y && seen.insert((x, y));
     let mut work = vec![(a, b)];
@@ -4833,17 +4835,12 @@ fn same_plain_data(a: &Value, b: &Value) -> bool {
                     work.extend(x.iter().zip(y.iter()));
                 }
             }
+            // Node by node: subtrees the two versions share are skipped, so
+            // deps one key apart compare in O(depth).
             (Value::Map(x), Value::Map(y)) => {
-                if fresh(x.root_ptr(), y.root_ptr()) {
-                    if x.len() != y.len() {
-                        return false;
-                    }
-                    for ((ka, va), (kb, vb)) in x.iter().zip(y.iter()) {
-                        if ka.compare(kb) != std::cmp::Ordering::Equal {
-                            return false;
-                        }
-                        work.push((va, vb));
-                    }
+                let same_key = |a: &functor_lang::value::MapKey, b: &_| a == b;
+                if !x.zip_unshared(y, &mut map_nodes, same_key, |va, vb| work.push((va, vb))) {
+                    return false;
                 }
             }
             (Value::Record(x), Value::Record(y)) => {
