@@ -40,10 +40,14 @@ let unwrap : (Model.staticData, options) => unwrapped
 ///
 /// ```
 /// let bakes = [{ name: "room", mesh: roomData, lights: roomLights }]
-/// let room = Model.static({ Lightmap.readMesh(File.bytes("baked/room.mesh.bin")) with
-///   groups: roomData.groups,
-///   lightmap: Option.Some({ texture: Texture.fromPng(File.bytes("baked/room.png"), Texture.Linear),
-///     scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
+/// // `functor bake` evaluates the whole project, so guard the load: the
+/// // first bake runs before its files exist.
+/// let room = if File.exists("baked/room.png") then
+///   Model.static({ Lightmap.readMesh(File.bytes("baked/room.mesh.bin")) with
+///     groups: roomData.groups,
+///     lightmap: Option.Some({ texture: Texture.fromPng(File.bytes("baked/room.png"), Texture.Linear),
+///       scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
+///   else Model.static(roomData)
 /// ```
 ///
 /// The baked texels hold light, not colour: the shader multiplies in each

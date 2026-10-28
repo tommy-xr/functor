@@ -336,6 +336,8 @@ struct Point {
     p: Vector,
     n: Vector,
     origin: Vector,
+    /// How far `origin` sits off the surface.
+    bias: f32,
     face: Vector,
 }
 
@@ -349,8 +351,6 @@ struct Scene<'a> {
     texels: Vec<[[f64; 2]; 3]>,
     size: u32,
     lights: &'a [Light],
-    /// How far ray origins sit off the surface, against self-hits.
-    bias: f32,
     /// Longer than any path through the scene (directional shadow rays).
     far: f32,
     ao_samples: u32,
@@ -400,7 +400,6 @@ impl<'a> Scene<'a> {
                 .collect(),
             size: unwrapped.size,
             lights,
-            bias: (diagonal * 1e-4).max(1e-4),
             far: diagonal * 2.0 + 1.0,
             ao_samples: options.ao_samples,
             ao_distance: options.ao_distance,
@@ -451,10 +450,14 @@ impl<'a> Scene<'a> {
         if face == Vector::ZERO {
             face = n;
         }
+        // Off the surface by more than f32 rounding at this distance from
+        // the origin, against self-hits; local, so far geometry can't widen it.
+        let bias = 1e-4 + 1e-5 * p.abs().max_element();
         Point {
             p,
             n,
-            origin: p + face * self.bias,
+            origin: p + face * bias,
+            bias,
             face,
         }
     }
@@ -473,7 +476,10 @@ impl<'a> Scene<'a> {
                 total += v(radiance(color, 1.0)) * open;
                 continue;
             }
-            for &Point { p, n, origin, .. } in &points {
+            for &Point {
+                p, n, origin, bias, ..
+            } in &points
+            {
                 let (color, l, atten, max) = match *light {
                     Light::Ambient { .. } => unreachable!("handled above"),
                     Light::Directional {
@@ -500,7 +506,7 @@ impl<'a> Scene<'a> {
                             radiance(color, intensity),
                             to / d.max(1e-4),
                             distance_falloff(d, range),
-                            d - self.bias,
+                            d - 2.0 * bias,
                         )
                     }
                     Light::Spot {
@@ -523,7 +529,7 @@ impl<'a> Scene<'a> {
                             radiance(color, intensity),
                             l,
                             distance_falloff(d, range) * cone,
-                            d - self.bias,
+                            d - 2.0 * bias,
                         )
                     }
                 };
@@ -778,6 +784,18 @@ mod tests {
         let one = bytes(1, 7);
         assert_eq!(one, bytes(8, 7));
         assert_ne!(one, bytes(8, 8));
+    }
+
+    /// Geometry far away (here an unused vertex 10 km off) doesn't change
+    /// how rays leave a surface, so it doesn't change the bake.
+    #[test]
+    fn far_geometry_leaves_the_bake_alone() {
+        let lights = [Light::ambient(0.3, 0.3, 0.3), lamp().cast_shadows()];
+        let mut far = cornell();
+        far.positions.push([10_000.0, 0.0, 0.0]);
+        far.normals.push([0.0, 1.0, 0.0]);
+        let bytes = |m| run(m, &lights, options(16)).baked.rgba8();
+        assert_eq!(bytes(far), bytes(cornell()));
     }
 
     /// Every texel of every chart's padded rect is filled; nothing else is.

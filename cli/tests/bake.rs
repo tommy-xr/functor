@@ -16,6 +16,12 @@ const FLOOR: &str = r#"let floorData = {
   lightmap: Option.None
 }
 let lights = [Light.ambient(Color.rgb(0.2, 0.2, 0.2)), Light.point(Vec3.make(0.0, 1.0, 0.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 3.0)]
+// The loading pattern `lightmap.funi` documents: guarded, so the first bake runs.
+let floor = if File.exists("baked/floor.png") then
+  Model.static({ Lightmap.readMesh(File.bytes("baked/floor.mesh.bin")) with
+    lightmap: Option.Some({ texture: Texture.fromPng(File.bytes("baked/floor.png"), Texture.Linear),
+      scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
+  else Model.static(floorData)
 "#;
 
 /// A one-file project: [`FLOOR`] plus `bakes`.
@@ -64,6 +70,12 @@ fn bakes_write_a_lightmap_and_a_mesh() {
     let png = std::fs::read(dir.join("baked/floor.png")).unwrap();
     let mesh = std::fs::read(dir.join("baked/floor.mesh.bin")).unwrap();
     assert_eq!(&mesh[..4], b"FLMB");
+    let mut names: Vec<_> = std::fs::read_dir(dir.join("baked"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["floor.mesh.bin", "floor.png"], "no temp files left");
 
     let reader = png::Decoder::new(std::io::Cursor::new(&png))
         .read_info()
@@ -87,7 +99,8 @@ fn bakes_write_a_lightmap_and_a_mesh() {
         "{text:?}"
     );
 
-    // The same flags, the same bytes.
+    // The same flags, the same bytes — and this run loads the first one's
+    // files (readMesh, fromPng, Model.static) before baking.
     let again = dir.join("again");
     bake(
         &dir,

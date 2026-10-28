@@ -56,15 +56,6 @@ pub fn execute(
         seed: settings.seed,
         threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
     };
-    // Bake everything before writing anything, so an error leaves old files.
-    let mut baked = Vec::new();
-    for job in &jobs {
-        let start = Instant::now();
-        let (mesh, lightmap) = bake_mesh(&job.mesh, &job.lights, &options)
-            .map_err(|e| Error::other(format!("`{}`: {e}", job.name)))?;
-        baked.push((job, mesh, lightmap, start.elapsed()));
-    }
-    std::fs::create_dir_all(output)?;
     // Recorded in the PNG, so a lightmap says how it was made.
     let made = format!(
         "texelsPerMeter={} samples={} aoDistance={} seed={} maxSize={}",
@@ -74,24 +65,50 @@ pub fn execute(
         settings.seed,
         settings.max_size
     );
-    for (job, mesh, lightmap, took) in baked {
+    // Bake and encode everything before writing anything, so an error
+    // leaves the old files.
+    let mut files = Vec::new();
+    let mut reports = Vec::new();
+    for job in &jobs {
+        let start = Instant::now();
+        let (mesh, lightmap) = bake_mesh(&job.mesh, &job.lights, &options)
+            .map_err(|e| Error::other(format!("`{}`: {e}", job.name)))?;
         let png = output.join(format!("{}.png", job.name));
         let bin = output.join(format!("{}.mesh.bin", job.name));
-        std::fs::write(&png, encode_png(lightmap.size, &lightmap.rgba8(), &made)?)?;
-        std::fs::write(&bin, write_mesh(&mesh))?;
         let filled = lightmap.filled.iter().filter(|&&f| f).count();
-        emit(Event::Info {
-            message: format!(
-                "baked `{}`: {} triangles, {} lights, {s}×{s} lightmap ({filled} texels), in {:.2} s → {}, {}",
-                job.name,
-                mesh.triangles.len(),
-                job.lights.len(),
-                took.as_secs_f64(),
-                png.display(),
-                bin.display(),
-                s = lightmap.size,
-            ),
-        });
+        reports.push(format!(
+            "baked `{}`: {} triangles, {} lights, {s}×{s} lightmap ({filled} texels), in {:.2} s → {}, {}",
+            job.name,
+            mesh.triangles.len(),
+            job.lights.len(),
+            start.elapsed().as_secs_f64(),
+            png.display(),
+            bin.display(),
+            s = lightmap.size,
+        ));
+        files.push((png, encode_png(lightmap.size, &lightmap.rgba8(), &made)?));
+        files.push((bin, write_mesh(&mesh)));
+    }
+    // Write beside the targets, then rename each into place, so a failed
+    // write never leaves a lightmap paired with another bake's mesh.
+    std::fs::create_dir_all(output)?;
+    let mut staged = Vec::new();
+    for (path, bytes) in &files {
+        let extension = path.extension().unwrap().to_string_lossy();
+        let temp = path.with_extension(format!("{extension}.tmp"));
+        if let Err(e) = std::fs::write(&temp, bytes) {
+            staged.iter().chain([&(temp, path)]).for_each(|(t, _)| {
+                std::fs::remove_file(t).ok();
+            });
+            return Err(e);
+        }
+        staged.push((temp, path));
+    }
+    for (temp, path) in staged {
+        std::fs::rename(temp, path)?;
+    }
+    for message in reports {
+        emit(Event::Info { message });
     }
     Ok(())
 }
