@@ -1,0 +1,43 @@
+//! Cells and portals: a level split into convex cells (rooms, corridor
+//! segments) joined by portal polygons (doorways, windows). Build it once at
+//! top level; the queries are pure and cheap.
+//!
+//! ```
+//! let room = (x0, x1) => { planes: [
+//!   { n: Vec3.make(1.0, 0.0, 0.0), d: 0.0 - x0 }, { n: Vec3.make(-1.0, 0.0, 0.0), d: x1 },
+//!   { n: Vec3.make(0.0, 1.0, 0.0), d: 0.0 },      { n: Vec3.make(0.0, -1.0, 0.0), d: 3.0 },
+//!   { n: Vec3.make(0.0, 0.0, 1.0), d: 2.0 },      { n: Vec3.make(0.0, 0.0, -1.0), d: 2.0 },
+//! ] }
+//! let door = [Vec3.make(4.0, 0.0, -0.5), Vec3.make(4.0, 0.0, 0.5),
+//!             Vec3.make(4.0, 2.0, 0.5), Vec3.make(4.0, 2.0, -0.5)]
+//! let world = Cells.make({
+//!   cells: [room(0.0, 4.0), room(4.0, 8.0)],
+//!   portals: [{ from: 0.0, to: 1.0, polygon: door },
+//!             { from: 1.0, to: 0.0, polygon: List.reverse(door) }],
+//! })
+//! let canSee = (eye, target) => Cells.segment(eye, target, world)
+//! ```
+
+/// Validated cells and portals.
+type t = host
+/// A plane facing into its cell: a point `p` is inside when `n·p + d ≥ 0`.
+type plane = { n: Vec3.t, d: float }
+/// A convex cell: the points inside all of its planes. Cells must not overlap.
+type cell = { planes: List<plane> }
+/// A flat, convex polygon on a face of cell `from`, leading to cell `to`.
+/// Portals are one-way and always open: list each direction of a doorway.
+type portal = { from: float, to: float, polygon: List<Vec3.t> }
+/// A level's cells and portals. Cell ids are list positions.
+type level = { cells: List<cell>, portals: List<portal> }
+
+/// Validate a level. An error names the first problem: an unbounded or empty
+/// cell, or a portal that isn't flat, convex, on a face of `from` (to 1 mm),
+/// or between existing cells.
+let make : (level) => t
+/// The cell containing a point (to 1 mm); the lowest id on a shared face.
+let locate : (Vec3.t, t) => Option.t<float>
+/// Line of sight from `a` to `b`: true when the segment stays in cells,
+/// crossing from one to the next only through portals. False when either end
+/// is outside every cell. Exact for convex cells; ignores physics, so check
+/// `Physics.cast` after it for objects in the way.
+let segment : (Vec3.t, Vec3.t, t) => bool

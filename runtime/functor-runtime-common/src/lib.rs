@@ -53,6 +53,7 @@ pub mod animation;
 pub mod asset;
 pub mod audio;
 mod camera;
+pub mod cells;
 pub mod color_space;
 pub mod composite;
 #[cfg(not(target_arch = "wasm32"))]

@@ -192,6 +192,7 @@ use crate::webview::HtmlNode;
 use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
 
 pub mod bytes;
+pub mod cells;
 pub mod lightmap;
 pub mod mesh;
 pub mod model;
@@ -1660,6 +1661,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         solid::register(&mut reg);
         bytes::register(&mut reg);
         mesh::register(&mut reg);
+        cells::register(&mut reg);
         model::register(&mut reg);
         register_scene(&mut reg);
         register_instance(&mut reg);
@@ -4665,6 +4667,7 @@ macro_rules! handle_arg {
 }
 
 use bytes::FunctorLangBytes;
+use cells::FunctorLangCells;
 use mesh::FunctorLangMesh;
 use model::FunctorLangModel;
 use solid::{FunctorLangFont, FunctorLangSketch, FunctorLangSolid};
@@ -4675,6 +4678,7 @@ handle_arg!(
     FunctorLangFont => "a Typeface",
     FunctorLangBytes => "Bytes",
     FunctorLangMesh => "a Mesh",
+    FunctorLangCells => "Cells",
     FunctorLangModel => "a Model",
     FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
@@ -13586,6 +13590,57 @@ Config.create())",
         assert!(err.contains("missing field `nozzle`"), "{err}");
         let err = failure("Mesh.transformVertices(4.0, 8.0, [1.0], box)");
         assert!(err.contains("aren't within"), "{err}");
+    }
+
+    /// `Cells.*` from records (the `cells.funi` example): locate, line of
+    /// sight through the doorway and not through the wall, and errors.
+    #[test]
+    fn cells_locate_and_see_through_doorways() {
+        let prelude = "let room = (x0, x1) => { planes: [\n\
+             { n: Vec3.make(1.0, 0.0, 0.0), d: 0.0 - x0 }, { n: Vec3.make(-1.0, 0.0, 0.0), d: x1 },\n\
+             { n: Vec3.make(0.0, 1.0, 0.0), d: 0.0 },      { n: Vec3.make(0.0, -1.0, 0.0), d: 3.0 },\n\
+             { n: Vec3.make(0.0, 0.0, 1.0), d: 2.0 },      { n: Vec3.make(0.0, 0.0, -1.0), d: 2.0 },\n\
+             ] }\n\
+             let door = [Vec3.make(4.0, 0.0, -0.5), Vec3.make(4.0, 0.0, 0.5),\n\
+                         Vec3.make(4.0, 2.0, 0.5), Vec3.make(4.0, 2.0, -0.5)]\n\
+             let world = Cells.make({\n\
+               cells: [room(0.0, 4.0), room(4.0, 8.0)],\n\
+               portals: [{ from: 0.0, to: 1.0, polygon: door },\n\
+                         { from: 1.0, to: 0.0, polygon: List.reverse(door) }],\n\
+             })\n";
+        let checks = [
+            "Cells.locate(Vec3.make(6.0, 1.0, 0.0), world) == Option.Some(1.0)",
+            "Cells.locate(Vec3.make(4.0, 1.0, 0.0), world) == Option.Some(0.0)",
+            "Cells.locate(Vec3.make(9.0, 1.0, 0.0), world) == Option.None",
+            "Cells.segment(Vec3.make(1.0, 1.0, 0.0), Vec3.make(7.0, 1.0, 0.0), world)",
+            "Cells.segment(Vec3.make(1.0, 1.0, 1.5), Vec3.make(7.0, 1.0, 1.5), world) == false",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+        let failure = |main: &str| {
+            eval_with_prelude(&format!("{prelude}let main = {main}\n"))
+                .err()
+                .expect("should fail")
+        };
+        let err = failure(
+            "Cells.make({ cells: [room(0.0, 4.0)], portals: [{ from: 0.0, to: 1.0, polygon: door }] })",
+        );
+        assert!(
+            err.contains("Cells.make: portal 0 (0 → 1) names a cell that doesn't exist"),
+            "{err}"
+        );
+        let err = failure(
+            "Cells.make({ cells: [room(0.0, 4.0), room(4.0, 8.0)], portals: [{ from: 0.5, to: 1.0, polygon: door }] })",
+        );
+        assert!(err.contains("portal 0 `from` must be a cell id"), "{err}");
+        let err = failure("Cells.make({ cells: [{ planes: [] }], portals: [] })");
+        assert!(err.contains("cell 0 is unbounded"), "{err}");
     }
 
     /// `Encode` writes what `Decode` reads; a `Codec` round-trips records,
