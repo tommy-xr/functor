@@ -247,6 +247,7 @@ async function main() {
   console.log(`# Quest device benchmark: ${options.label}`);
   console.log("");
   console.log(`- Device: ${model} (${serial})`);
+  console.log(`- Build: ${after.build ?? "not reported (runtime predates debug protocol v23)"}`);
   console.log(`- Runtime frames: ${before.frame} → ${after.frame}`);
   console.log(`- Views: ${views.length ? views.join(", ") : `${after.viewport.width}x${after.viewport.height}`}`);
   console.log(

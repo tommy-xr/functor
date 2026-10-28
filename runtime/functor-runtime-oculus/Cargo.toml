@@ -1,6 +1,8 @@
 [package]
 name = "functor_runtime_oculus"
-version = "0.1.0"
+# Fixed at 0.0.0 (versionCode 16777216) for local and CI builds alike, so they
+# replace each other in place and never install as an upgrade over a release.
+version = "0.0.0"
 edition = "2021"
 
 # The Quest (Meta Horizon OS) runtime shell: an OpenXR + EGL/GLES Android

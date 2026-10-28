@@ -1110,6 +1110,7 @@ fn service_debug_request(
                     battery: None,
                     skinned,
                     stages,
+                    build: None,
                 });
             });
         }

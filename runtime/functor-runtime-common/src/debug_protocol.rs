@@ -125,7 +125,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `stages` (`{frames, sim_ms, render_ms, sim_wait_ms, frame_ms}`: the shell's mean
 /// stage cost over its last completed stats window, omitted until one
 /// completes) to `GET /state`. Additive — a pre-v22 runtime omits both.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 22;
+/// 23 adds the optional `build` field on `GET /state`: which runtime build is
+/// answering (`pr | <sha7>` for a CI-built Quest APK, `dev` for a local one),
+/// omitted by runtimes that don't report it.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 23;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -397,6 +400,10 @@ pub struct RuntimeState {
     /// Omitted until a window completes, and by runtimes that render nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stages: Option<StageTimings>,
+    /// Which runtime build is answering (v23): `pr | <sha7>` for a CI-built
+    /// Quest APK, `dev` for a local one. Omitted by runtimes that don't report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
 }
 
 /// Mean per-frame stage cost over a shell's last completed [`StageWindow`]
@@ -996,6 +1003,7 @@ mod tests {
                 sim_wait_ms: 0.0,
                 frame_ms: 11.25,
             }),
+            build: Some("pr | 0123abc".into()),
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -1033,7 +1041,8 @@ mod tests {
                 "terrain": { "patches": 2, "vertices": 8962 },
                 "passthrough": { "mode": "composited" },
                 "skinned": { "draws": 8, "pose_evals": 4 },
-                "stages": { "frames": 300, "sim_ms": 1.5, "render_ms": 2.25, "sim_wait_ms": 0.0, "frame_ms": 11.25 }
+                "stages": { "frames": 300, "sim_ms": 1.5, "render_ms": 2.25, "sim_wait_ms": 0.0, "frame_ms": 11.25 },
+                "build": "pr | 0123abc"
             })
         );
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
@@ -1393,7 +1402,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 22);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 23);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)

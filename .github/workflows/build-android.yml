@@ -1,0 +1,129 @@
+name: Build Android
+
+# Builds the Quest tool APK (runtime/functor-runtime-oculus) for every main
+# push and PR head, and uploads it as `functor-apk-<sha>` so a PR can be tried
+# on a headset without building it locally.
+#
+# Release profile (optimized, not debuggable, so `bench:quest` accepts it).
+# The build itself only sees a throwaway debug key; a separate step re-signs
+# the APK with the shared dev key from ANDROID_DEV_KEYSTORE_BASE64 /
+# ANDROID_DEV_KEYSTORE_PASSWORD. A fork PR gets no secrets and keeps the
+# debug key; upstream fails up front without them. The APK reports
+# `pr | <sha7>` as `/state.build`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Rebuilds a branch head on demand (e.g. after its artifact expires).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-android-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # The PR head, not the merge commit: the APK is that commit's build.
+      SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      HAS_DEV_KEY: ${{ secrets.ANDROID_DEV_KEYSTORE_BASE64 != '' && secrets.ANDROID_DEV_KEYSTORE_PASSWORD != '' }}
+      # The NDK the oculus README and `npm run build:oculus:apk` use.
+      NDK_VERSION: 24.0.8215888
+      OPENXR_LOADER_VERSION: 1.1.61
+      OPENXR_LOADER_SHA256: 7e37e8e748b8b6cd636bf5464c70332a4390a635909de873d77c854d5a1e95bd
+      APK: target-android/release/apk/functor_runtime_oculus.apk
+    steps:
+      # A debug-signed upstream APK would break in-place replacement of every
+      # dev-key install, so upstream needs the key before spending a build.
+      - name: Require the dev signing key
+        if: >-
+          env.HAS_DEV_KEY != 'true' && !github.event.repository.fork &&
+          (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork)
+        run: |
+          echo "::error::Missing repository secrets ANDROID_DEV_KEYSTORE_BASE64 and ANDROID_DEV_KEYSTORE_PASSWORD. Create them once with: keytool -genkeypair -keystore functor-dev.keystore -alias functor-dev -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Functor Dev (CI), O=tommy-xr' (choose a store password when prompted), then: base64 < functor-dev.keystore | gh secret set ANDROID_DEV_KEYSTORE_BASE64 && gh secret set ANDROID_DEV_KEYSTORE_PASSWORD (paste the same password). Keep functor-dev.keystore to sign local builds (see runtime/functor-runtime-oculus/README.md)."
+          exit 1
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SHA }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "runtime/functor-runtime-oculus -> ../../target-android"
+          # PRs restore main's cache without saving their own (shared 10 GB budget).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-apk@0.9.7
+
+      - name: Install NDK + android-32 platform
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;$NDK_VERSION" "platforms;android-32" > /dev/null
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)" >> "$GITHUB_ENV"
+
+      # The APK bundles the Khronos OpenXR loader (gitignored locally; see the
+      # oculus README).
+      - name: Fetch the OpenXR loader
+        run: |
+          aar="$RUNNER_TEMP/openxr_loader.aar"
+          curl -fsSL -o "$aar" "https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/$OPENXR_LOADER_VERSION/openxr_loader_for_android-$OPENXR_LOADER_VERSION.aar"
+          echo "$OPENXR_LOADER_SHA256  $aar" | sha256sum -c
+          unzip -j "$aar" jni/arm64-v8a/libopenxr_loader.so -d runtime/functor-runtime-oculus/lib/arm64-v8a/
+
+      # cargo-apk's release profile insists on a keystore; give it a throwaway
+      # debug key so no secret is visible to build scripts.
+      - name: Build APK
+        run: |
+          export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/debug.keystore"
+          export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android
+          keytool -genkeypair -noprompt -keystore "$CARGO_APK_RELEASE_KEYSTORE" \
+            -alias androiddebugkey -storepass android -keypass android \
+            -dname 'CN=Android Debug, O=Android, C=US' -keyalg RSA -keysize 2048 -validity 10000
+          FUNCTOR_BUILD_LABEL="pr | ${SHA::7}" npm run build:oculus:apk -- --release
+
+      - name: Sign with the dev key
+        if: env.HAS_DEV_KEY == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_DEV_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_DEV_KEYSTORE_PASSWORD }}
+        run: |
+          umask 077
+          keystore="$RUNNER_TEMP/dev.keystore"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          "$BUILD_TOOLS/apksigner" sign --ks "$keystore" --ks-pass env:KS_PASS "$APK"
+
+      - name: Verify APK
+        run: |
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" > "$RUNNER_TEMP/certs"
+          cat "$RUNNER_TEMP/certs"
+          if [ "$HAS_DEV_KEY" = true ]; then signer='CN=Functor Dev (CI)'; else signer='CN=Android Debug'; fi
+          grep -F "certificate DN: $signer" "$RUNNER_TEMP/certs"
+          # 0.0.0 sorts below every release; not debuggable, so bench:quest accepts it.
+          "$BUILD_TOOLS/aapt" dump badging "$APK" > "$RUNNER_TEMP/badging"
+          grep -F "package: name='dev.functor.runner' versionCode='16777216' versionName='0.0.0'" "$RUNNER_TEMP/badging"
+          if grep -F application-debuggable "$RUNNER_TEMP/badging"; then exit 1; fi
+          unzip -p "$APK" lib/arm64-v8a/libfunctor_runtime_oculus.so | grep -qaF "pr | ${SHA::7}"
+
+      # `npm run pr` finds this by head SHA.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: functor-apk-${{ env.SHA }}
+          path: ${{ env.APK }}
+          if-no-files-found: error
+          retention-days: 30
