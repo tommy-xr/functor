@@ -5,8 +5,8 @@
 //! the result as `let part = …` and run `functor export -o part.stl`. A file
 //! that is only a `part` runs in a default viewer (`functor run`: drag to orbit,
 //! scroll to zoom) — see `<stdlib>/PartViewer.fun` to customize it. Screw
-//! holes, nut traps, insert and magnet pockets: `<stdlib>/Hardware.fun`, with
-//! print tolerances from `<stdlib>/Fit.fun`.
+//! holes, nut traps, insert and magnet pockets: `<stdlib>/Hardware.fun`;
+//! threads: `<stdlib>/Thread.fun`; print tolerances: `<stdlib>/Fit.fun`.
 //!
 //! ```
 //! let part = Solid.group([
@@ -29,6 +29,12 @@ let cylinder : (float, float) => t
 /// `height` tall, centered on the origin. One radius may be 0 for a point;
 /// two different radii make a frustum (a countersink, a chamfer).
 let cone : (float, float, float) => t
+/// An ISO metric screw thread (60° basic profile) of major `diameter` and
+/// `pitch` along Z, from z = 0 to `length`, grown by `offset` mm all over its
+/// surface (negative shrinks; a flat that closes turns sharp). It is a bolt's
+/// thread, or — subtracted from a part — a nut's. `<stdlib>/Thread.fun` picks
+/// sizes and print fits.
+let thread : (float, float, float, float) => t
 /// A sphere of `radius`, centered on the origin.
 let sphere : (float) => t
 
