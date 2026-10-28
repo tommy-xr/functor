@@ -248,7 +248,9 @@ impl crate::storage::ProjectReader for AssetCache {
             .flatten()
             .ok_or_else(|| {
                 crate::storage::ProjectReadError::Unreadable(
-                    "not pushed to this device".to_string(),
+                    "not pushed to this device; paths are case-sensitive, and hidden or \
+ignored files aren't pushed"
+                        .to_string(),
                 )
             })
     }
@@ -436,10 +438,7 @@ mod tests {
             Err(ProjectReadError::Unreadable(e)) => Err(e),
             Err(ProjectReadError::Outside) => Err("outside".to_string()),
         };
-        assert_eq!(
-            read("data/a.bin"),
-            Err("not pushed to this device".to_string())
-        );
+        assert!(read("data/a.bin").is_err_and(|e| e.starts_with("not pushed to this device")));
         assert!(!cache.exists("data/a.bin"));
 
         cache.replace_uploaded("data/a.bin", vec![1, 2]);

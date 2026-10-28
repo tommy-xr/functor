@@ -73,9 +73,10 @@ full, proven sequence. The short path is:
 2. Run `functor -d yourgame run vr`. It uses device-loopback port 8123 through
    adb, loads every `.fun`/`.funi` plus the project's other files (models,
    textures, sounds, and data for `File.bytes`), and re-pushes changed files on
-   save; a changed data file reloads the game. Hidden folders, `dist/`,
-   `target/`, `node_modules/`, `.gltf` files and symlinks out of the project
-   aren't pushed. Pushes are capped at 64 MB per file and 512 MB in total
+   save; any changed file hot-reloads the game, so top-level `File.bytes`
+   re-reads it. Hidden entries, `dist/`, `target/`, `node_modules/`, `.gltf`
+   files and symlinks out of the project aren't pushed; paths are
+   case-sensitive and resolve from the project root. Pushes are capped at 64 MB per file and 512 MB in total
    (`--max-file-mb`, `--max-push-mb`).
 3. If Meta Home remains visible, recreate `adb forward`, send `prox_close`, and
    restart NativeActivity with `am start -S`. Wait for `/state`'s frame to

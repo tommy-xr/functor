@@ -689,8 +689,8 @@ excluding hidden paths, the generated root `dist/` tree, `target/`,
 (`--max-file-mb`, default 64; `--max-push-mb`, default 512). The initial sync
 finishes before `/load-project`, so top-level `File.bytes` sees the files. The
 watch loop fingerprints metadata and reads large bytes only when a file
-changes; a changed data file (anything but a renderer asset) also triggers
-`/reload-project`, so top-level bindings re-read it.
+changes; any synced change also triggers `/reload-project` (model preserved),
+so top-level `File.bytes` bindings re-read it.
 Replacing an upload evicts cached model/texture/skybox decodes so the next
 frame uses the new bytes. The TypeScript SDK exposes the same flow as
 `client.reloadAsset(path, bytes)` and `client.reloadAssets(files)`. It also

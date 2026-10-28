@@ -294,7 +294,7 @@ pub fn project_reader() -> Option<std::sync::Arc<dyn ProjectReader>> {
 
 /// Reads [`project_dir`], resolving symlinks so none reaches outside it.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-pub struct ProjectDirReader;
+struct ProjectDirReader;
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 impl ProjectDirReader {

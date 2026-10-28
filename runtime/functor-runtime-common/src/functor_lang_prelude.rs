@@ -12147,6 +12147,14 @@ the game dir"
         let _guard = crate::storage::SAVE_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Restore the default reader even if an assertion panics.
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::storage::set_project_reader(None);
+            }
+        }
+        let _reset = Reset;
         let cache = std::sync::Arc::new(crate::asset::AssetCache::new());
         cache.replace_uploaded("data/pushed.bin", vec![5, 6, 7]);
         crate::storage::set_project_reader(Some(cache));
@@ -12156,7 +12164,6 @@ the game dir"
              && not File.exists(\"../data/pushed.bin\")\n",
         );
         let missing = eval_with_prelude("let main = File.bytes(\"other.bin\")\n");
-        crate::storage::set_project_reader(None);
         assert!(
             matches!(result, Ok(Value::Bool(true))),
             "{:?}",
@@ -12164,7 +12171,7 @@ the game dir"
         );
         let err = missing.err().expect("should fail");
         assert!(
-            err.contains("can't read other.bin in the project (not pushed to this device)"),
+            err.contains("can't read other.bin in the project (not pushed to this device"),
             "{err}"
         );
     }
