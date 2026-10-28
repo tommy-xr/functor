@@ -211,6 +211,31 @@ pub struct RenderContext<'a> {
     /// skybox is drawn behind the terrain, whose silhouette then stays at
     /// full contrast however fogged the terrain is.
     pub lod_fog: Option<&'a Fog>,
+    /// Unique per constructed context ([`next_pass_serial`]). Lights, shadow,
+    /// fog, camera and the view/projection every draw receives are constant
+    /// for a context, so [`PassUniforms`] uploads them once per program.
+    pub pass_serial: u64,
+}
+
+/// A fresh [`RenderContext::pass_serial`]; never 0 (a program's "no pass yet").
+pub(crate) fn next_pass_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The pass whose constants a program last uploaded. Lives beside the program
+/// (in its uniforms), so a recreated program starts with none.
+#[derive(Default)]
+pub(crate) struct PassUniforms(std::cell::Cell<u64>);
+
+impl PassUniforms {
+    /// True on the program's first draw in `ctx`'s pass: upload the pass
+    /// constants now. Uniform values persist in the program between draws.
+    pub fn begin(&self, ctx: &RenderContext) -> bool {
+        let first = self.0.get() != ctx.pass_serial;
+        self.0.set(ctx.pass_serial);
+        first
+    }
 }
 
 impl RenderContext<'_> {

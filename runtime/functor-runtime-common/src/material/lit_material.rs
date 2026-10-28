@@ -114,6 +114,7 @@ struct Uniforms {
     lighting: LightingUniforms,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
+    pass: crate::PassUniforms,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -167,6 +168,7 @@ impl Material for LitMaterial {
                     lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
                     output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
+                    pass: Default::default(),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -188,14 +190,23 @@ impl Material for LitMaterial {
                 let p = shader;
                 p.use_program(ctx.gl);
 
+                if uniforms.pass.begin(ctx) {
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                    p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
+                    // Normal map on texture unit 2 (0 = albedo, 1 = shadow map);
+                    // the caller binds the texture when `use_normal_map`.
+                    p.set_uniform_1i(ctx.gl, &uniforms.normal_map_loc, 2);
+                    uniforms.lighting.set_pass(p, ctx, view_matrix);
+                    uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                }
+
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix3(
                     ctx.gl,
                     &uniforms.normal_matrix_loc,
                     &normal_matrix(world_matrix),
                 );
-                p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
-                p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
 
                 // Authored albedo: decode sRGB→linear at the uniform boundary
                 // (the sampled texture decodes in hardware — sRGB storage).
@@ -204,12 +215,7 @@ impl Material for LitMaterial {
                     &uniforms.base_color_loc,
                     &crate::color_space::srgb_to_linear_vec4(self.color),
                 );
-                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
-
-                // Normal map on texture unit 2 (0 = albedo, 1 = shadow map); the
-                // caller binds the texture when `use_normal_map`.
-                p.set_uniform_1i(ctx.gl, &uniforms.normal_map_loc, 2);
                 p.set_uniform_1i(
                     ctx.gl,
                     &uniforms.use_normal_map_loc,
@@ -217,8 +223,8 @@ impl Material for LitMaterial {
                 );
                 p.set_uniform_1f(ctx.gl, &uniforms.specular_scale_loc, self.specular_scale);
 
-                uniforms.lighting.set(p, ctx, view_matrix);
-                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                LightingUniforms::bind_shadow_map(ctx);
+                // Per draw: a translucent subtree switches the alpha mode.
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }
         }

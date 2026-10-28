@@ -46,6 +46,8 @@ pub struct GpuCounters {
     // The current rendered frame's skinned-model work, zeroed when a new
     // frame begins (same contract). One word (draws << 32 | pose evals).
     frame_skinned: AtomicU64,
+    // The current rendered frame's `ShaderProgram` uniform uploads (same contract).
+    frame_uniforms: AtomicU64,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -115,6 +117,7 @@ impl GpuCounters {
             frame_instance_upload_bytes: AtomicU64::new(0),
             frame_terrain: AtomicU64::new(0),
             frame_skinned: AtomicU64::new(0),
+            frame_uniforms: AtomicU64::new(0),
         }
     }
 
@@ -204,6 +207,21 @@ impl GpuCounters {
     /// Zero the per-frame skinned work (a new rendered frame began).
     pub fn begin_skinned_frame(&self) {
         self.frame_skinned.store(0, Ordering::Relaxed);
+    }
+
+    /// Record one `ShaderProgram` uniform upload.
+    pub fn uniform_uploaded(&self) {
+        self.frame_uniforms.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Zero the per-frame uniform uploads (a new rendered frame began).
+    pub fn begin_uniform_frame(&self) {
+        self.frame_uniforms.store(0, Ordering::Relaxed);
+    }
+
+    /// The `ShaderProgram` uniform uploads of the most recently rendered frame.
+    pub fn frame_uniform_uploads(&self) -> u64 {
+        self.frame_uniforms.load(Ordering::Relaxed)
     }
 
     /// The skinned work of the most recently rendered frame.

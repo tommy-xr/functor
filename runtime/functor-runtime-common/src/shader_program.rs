@@ -63,6 +63,7 @@ impl ShaderProgram {
     }
 
     pub fn set_uniform_1i(&self, gl: &glow::Context, uniform_location: &UniformLocation, i: i32) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             gl.uniform_1_i32(Some(&uniform_location.native_uniform_location), i);
         }
@@ -70,12 +71,14 @@ impl ShaderProgram {
 
     /// Upload an `int[]` uniform (the slice sets `array[0..len]`).
     pub fn set_uniform_1iv(&self, gl: &glow::Context, uniform_location: &UniformLocation, v: &[i32]) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             gl.uniform_1_i32_slice(Some(&uniform_location.native_uniform_location), v);
         }
     }
 
     pub fn set_uniform_1f(&self, gl: &glow::Context, uniform_location: &UniformLocation, f: f32) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             gl.uniform_1_f32(Some(&uniform_location.native_uniform_location), f);
         }
@@ -83,6 +86,7 @@ impl ShaderProgram {
 
     /// Upload a `float[]` uniform.
     pub fn set_uniform_1fv(&self, gl: &glow::Context, uniform_location: &UniformLocation, v: &[f32]) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             gl.uniform_1_f32_slice(Some(&uniform_location.native_uniform_location), v);
         }
@@ -90,6 +94,7 @@ impl ShaderProgram {
 
     /// Upload a `vec3[]` uniform from a flattened slice (length = 3 × count).
     pub fn set_uniform_vec3v(&self, gl: &glow::Context, uniform_location: &UniformLocation, v: &[f32]) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             gl.uniform_3_f32_slice(Some(&uniform_location.native_uniform_location), v);
         }
@@ -102,6 +107,7 @@ impl ShaderProgram {
         uniform_location: &UniformLocation,
         vec: &Vector3<f32>,
     ) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             gl.uniform_3_f32_slice(
                 Some(&uniform_location.native_uniform_location),
@@ -117,6 +123,7 @@ impl ShaderProgram {
         uniform_location: &UniformLocation,
         vec: &Vector4<f32>,
     ) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             gl.uniform_4_f32_slice(
                 Some(&uniform_location.native_uniform_location),
@@ -131,6 +138,7 @@ impl ShaderProgram {
         uniform_location: &UniformLocation,
         matrix: &Matrix4<f32>,
     ) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             let data = (&array4x4(*matrix) as *const [[f32; 4]; 4]) as *const f32;
             let raw = slice::from_raw_parts(data, 16);
@@ -148,6 +156,7 @@ impl ShaderProgram {
         uniform_location: &UniformLocation,
         matrix: &Matrix3<f32>,
     ) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         let raw = [
             matrix.x.x, matrix.x.y, matrix.x.z, matrix.y.x, matrix.y.y, matrix.y.z, matrix.z.x,
             matrix.z.y, matrix.z.z,
@@ -167,6 +176,7 @@ impl ShaderProgram {
         location: &UniformLocation,
         values: &[f32],
     ) {
+        crate::gpu_counters::gpu_counters().uniform_uploaded();
         unsafe {
             gl.uniform_matrix_4_f32_slice(Some(&location.native_uniform_location), false, values)
         }

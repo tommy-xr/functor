@@ -46,6 +46,7 @@ struct Uniforms {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     joint_transforms_loc: UniformLocation,
+    pass: crate::PassUniforms,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -90,6 +91,7 @@ impl Material for SkinnedDepthMaterial {
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     joint_transforms_loc: shader.get_uniform_location(ctx.gl, "jointTransforms"),
+                    pass: Default::default(),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -112,8 +114,10 @@ impl Material for SkinnedDepthMaterial {
                 p.use_program(ctx.gl);
 
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
-                p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
-                p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                if uniforms.pass.begin(ctx) {
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                }
 
                 let joint_matrices = crate::model::flatten_joint_matrices(skinning_data);
                 p.set_uniform_matrix4fv(ctx.gl, &uniforms.joint_transforms_loc, &joint_matrices);

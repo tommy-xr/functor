@@ -81,6 +81,7 @@ struct Uniforms {
     use_source_pixels_loc: UniformLocation,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
+    pass: crate::PassUniforms,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -131,6 +132,7 @@ impl Material for EmissiveMaterial {
                     use_source_pixels_loc: shader.get_uniform_location(ctx.gl, "useSourcePixels"),
                     fog: FogUniforms::get(&shader, ctx.gl),
                     output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
+                    pass: Default::default(),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -153,15 +155,18 @@ impl Material for EmissiveMaterial {
                 p.use_program(ctx.gl);
 
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
-                p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
-                p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                if uniforms.pass.begin(ctx) {
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                    p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
+                    uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                }
                 // Authored color: decode sRGB→linear at the uniform boundary.
                 p.set_uniform_vec4(
                     ctx.gl,
                     &uniforms.emissive_color_loc,
                     &crate::color_space::srgb_to_linear_vec4(self.color),
                 );
-                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
                 p.set_uniform_vec4(
                     ctx.gl,
@@ -175,7 +180,6 @@ impl Material for EmissiveMaterial {
                     &uniforms.use_source_pixels_loc,
                     self.source_pixels.is_some() as i32,
                 );
-                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }
         }

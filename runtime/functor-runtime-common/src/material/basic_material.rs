@@ -46,6 +46,7 @@ struct Uniforms {
     texture_loc: UniformLocation,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
+    pass: crate::PassUniforms,
 }
 
 // TODO: We'll have to re-think this pattern
@@ -92,6 +93,7 @@ impl Material for BasicMaterial {
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     fog: FogUniforms::get(&shader, ctx.gl),
                     output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
+                    pass: Default::default(),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -115,10 +117,12 @@ impl Material for BasicMaterial {
                 p.use_program(ctx.gl);
 
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
-                p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
-                p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
-                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                if uniforms.pass.begin(ctx) {
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                    p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
+                    uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                }
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }
         }
