@@ -386,10 +386,9 @@ impl FunctorLangProject {
 
     /// The `external` folders (never pushed or bundled), relative to the
     /// project root: `"ss2/"`, or `"src/ss2/"` for an entry in `src/`.
-    fn external_dirs(&self) -> Vec<String> {
+    fn external_dirs(&self, externals: &[ExternalPrefix]) -> Vec<String> {
         let base = entry_dir(&self.entry);
-        let external = self.external.lock().unwrap_or_else(|e| e.into_inner());
-        external
+        externals
             .iter()
             .map(|external| format!("{base}{}", external.prefix))
             .collect()
@@ -1073,11 +1072,6 @@ target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run
 
         // A v24 runtime asks this machine for files it lacks (`external`
         // prefixes, anything not pushed), resolved as on desktop.
-        let externals = self
-            .external
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
         let mounts = match externals.is_empty() {
             true => project_files::Mounts::default(),
             false => project_files::Mounts::load(&self.mounts)?,
@@ -2032,7 +2026,7 @@ restart `functor run vr`",
         if requests.session != self.session {
             return Ok(false);
         }
-        let (mut sent, mut bytes, mut changed) = (0, 0, false);
+        let (mut sent, mut confirmed, mut bytes, mut changed) = (0, 0, 0, false);
         for request in &requests.requests {
             if bytes >= PROXY_ROUND_BYTES {
                 break;
@@ -2056,6 +2050,7 @@ restart `functor run vr`",
                 Ok((200, _)) => {
                     changed |= ready;
                     sent += (len > 0) as usize;
+                    confirmed += matches!(reply.status, ProjectFileStatus::Current { .. }) as usize;
                     bytes += len;
                 }
                 // Stale or already answered: the device moved on.
@@ -2090,7 +2085,8 @@ restart `functor run vr`",
         if changed {
             emit(Event::Info {
                 message: format!(
-                    "sent the headset {sent} file(s) ({:.1} MB) it asked for; reloading",
+                    "sent the headset {sent} file(s) ({:.1} MB) it asked for, confirmed \
+{confirmed} it kept; reloading",
                     bytes as f64 / (1024.0 * 1024.0)
                 ),
             });
