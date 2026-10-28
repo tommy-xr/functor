@@ -87,11 +87,66 @@ pub fn solid_global(session: &functor_lang::Session, name: &str) -> Result<Arc<S
 /// time-travel history), like the instance-list memo's cap.
 const RENDER_MESH_CAP: usize = 16;
 
-struct RenderMeshEntry {
-    // Weak: the memo never keeps a solid alive, yet pins its address.
-    solid: Weak<Solid>,
-    meshed: Meshed,
-    last_used: u64,
+/// Values derived from `Arc`s, keyed by the `Arc`'s address and held weakly: a
+/// dead key's entry is dropped, and the least recently used is evicted beyond
+/// [`RENDER_MESH_CAP`]. The memo never keeps a key alive, yet pins its address.
+pub(super) struct WeakMemo<K, V> {
+    entries: HashMap<usize, (Weak<K>, V, u64)>,
+    clock: u64,
+}
+
+impl<K, V> Default for WeakMemo<K, V> {
+    fn default() -> Self {
+        WeakMemo {
+            entries: HashMap::new(),
+            clock: 0,
+        }
+    }
+}
+
+impl<K, V: Clone> WeakMemo<K, V> {
+    pub(super) fn get_or_try_insert<E>(
+        &mut self,
+        key: &Arc<K>,
+        make: impl FnOnce() -> Result<V, E>,
+    ) -> Result<V, E> {
+        let address = Arc::as_ptr(key) as usize;
+        self.clock += 1;
+        let clock = self.clock;
+        if let Some((_, value, last_used)) = self.entries.get_mut(&address) {
+            *last_used = clock;
+            return Ok(value.clone());
+        }
+        // Dead keys can never be looked up again — drop them first, then the
+        // least recently used if still full.
+        self.entries.retain(|_, (weak, _, _)| weak.strong_count() > 0);
+        if self.entries.len() >= RENDER_MESH_CAP {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, _, last_used))| *last_used)
+                .map(|(address, _)| *address)
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+        let value = make()?;
+        self.entries
+            .insert(address, (Arc::downgrade(key), value.clone(), clock));
+        Ok(value)
+    }
+
+    pub(super) fn get_or_insert(&mut self, key: &Arc<K>, make: impl FnOnce() -> V) -> V {
+        match self.get_or_try_insert(key, || Ok::<_, std::convert::Infallible>(make())) {
+            Ok(value) => value,
+            Err(never) => match never {},
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 /// One solid's mesh: f64 for measuring, f32 for the renderer.
@@ -101,63 +156,32 @@ struct Meshed {
     render: Arc<MeshData>,
 }
 
-#[derive(Default)]
-struct RenderMeshMemo {
-    entries: HashMap<usize, RenderMeshEntry>,
-    clock: u64,
+/// A mesh as the renderer draws it.
+pub(super) fn render_data(mesh: &functor_solid::Mesh) -> Arc<MeshData> {
+    Arc::new(MeshData {
+        positions: mesh.vertices.iter().map(|v| v.map(|x| x as f32)).collect(),
+        triangles: mesh.triangles.clone(),
+    })
 }
 
 thread_local! {
-    /// Solid → mesh, keyed by the solid's `Arc` address. `draw` converts the
-    /// same top-level `let part` every frame, and booleans are costly to
-    /// re-evaluate: this meshes it once (for `toScene`, `volume`, `bounds`)
-    /// and hands the renderer the same `Arc` each time, so the GPU mesh is
-    /// reused too. Pure memoization: it cannot change any result.
-    static RENDER_MESHES: RefCell<RenderMeshMemo> = RefCell::new(RenderMeshMemo::default());
+    /// Solid → mesh. `draw` converts the same top-level `let part` every
+    /// frame, and booleans are costly to re-evaluate: this meshes it once
+    /// (for `toScene`, `volume`, `bounds`) and hands the renderer the same
+    /// `Arc` each time, so the GPU mesh is reused too. Pure memoization: it
+    /// cannot change any result.
+    static RENDER_MESHES: RefCell<WeakMemo<Solid, Meshed>> = RefCell::new(WeakMemo::default());
 }
 
 fn meshed(solid: &Arc<Solid>) -> Result<Meshed, String> {
-    let key = Arc::as_ptr(solid) as usize;
     RENDER_MESHES.with(|memo| {
-        let mut memo = memo.borrow_mut();
-        memo.clock += 1;
-        let clock = memo.clock;
-        if let Some(entry) = memo.entries.get_mut(&key) {
-            entry.last_used = clock;
-            return Ok(entry.meshed.clone());
-        }
-        // Dead solids can never be looked up again — drop them first, then
-        // the least recently used if still full.
-        memo.entries
-            .retain(|_, entry| entry.solid.strong_count() > 0);
-        if memo.entries.len() >= RENDER_MESH_CAP {
-            if let Some(oldest) = memo
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| *key)
-            {
-                memo.entries.remove(&oldest);
-            }
-        }
-        let mesh = solid.mesh()?;
-        let render = Arc::new(MeshData {
-            positions: mesh.vertices.iter().map(|v| v.map(|x| x as f32)).collect(),
-            triangles: mesh.triangles.clone(),
-        });
-        let meshed = Meshed {
-            mesh: Arc::new(mesh),
-            render,
-        };
-        memo.entries.insert(
-            key,
-            RenderMeshEntry {
-                solid: Arc::downgrade(solid),
-                meshed: meshed.clone(),
-                last_used: clock,
-            },
-        );
-        Ok(meshed)
+        memo.borrow_mut().get_or_try_insert(solid, || {
+            let mesh = solid.mesh()?;
+            Ok(Meshed {
+                render: render_data(&mesh),
+                mesh: Arc::new(mesh),
+            })
+        })
     })
 }
 
@@ -547,7 +571,7 @@ mod tests {
     use super::*;
 
     fn memo_len() -> usize {
-        RENDER_MESHES.with(|memo| memo.borrow().entries.len())
+        RENDER_MESHES.with(|memo| memo.borrow().len())
     }
 
     #[test]

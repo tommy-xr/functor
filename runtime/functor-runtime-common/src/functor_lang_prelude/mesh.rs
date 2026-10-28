@@ -6,8 +6,16 @@ use std::sync::Arc;
 use functor_solid::{Mesh, Solid};
 
 use super::bytes::FunctorLangBytes;
-use super::solid::{bounds_value, FunctorLangSolid};
+use super::solid::{bounds_value, render_data, FunctorLangSolid, WeakMemo};
 use super::*;
+
+thread_local! {
+    /// Mesh → what the renderer draws, so a mesh drawn every frame keeps one
+    /// GPU copy (the renderer caches by this `Arc`'s address). Weak and
+    /// bounded, so meshes retained in history don't pin render copies.
+    static MESH_RENDERS: std::cell::RefCell<WeakMemo<Mesh, Arc<crate::scene3d::MeshData>>> =
+        std::cell::RefCell::new(WeakMemo::default());
+}
 
 /// A [`Mesh`] (Z up, the source's own units) as an opaque value.
 pub struct FunctorLangMesh(pub Arc<Mesh>);
@@ -164,6 +172,21 @@ translation), got {}",
                 out.extend(&m.0);
             }
             mesh(out)
+        },
+    );
+    // Z up becomes the scene's Y up; units stay as they are.
+    reg.fn1(
+        "Mesh.toScene",
+        "Mesh.toScene(mesh)",
+        |m: FunctorLangMesh| {
+            let render = MESH_RENDERS
+                .with(|memo| memo.borrow_mut().get_or_insert(&m.0, || render_data(&m.0)));
+            FunctorLangScene(crate::scene3d::Scene3D {
+                obj: crate::scene3d::SceneObject::Geometry(crate::scene3d::Shape::Mesh {
+                    mesh: render,
+                }),
+                xform: cgmath::Matrix4::from_angle_x(cgmath::Deg(-90.0)),
+            })
         },
     );
     reg.fn1(
