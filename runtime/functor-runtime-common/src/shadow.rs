@@ -179,26 +179,22 @@ pub fn light_space_matrix(light: &Light) -> Option<Matrix4<f32>> {
     }
 }
 
-/// Render the scene into `shadow_map` from the light's viewpoint (a depth-only
-/// pass). Restores the framebuffer binding afterward; the caller restores the
-/// viewport for the main pass.
-#[allow(clippy::too_many_arguments)]
-pub fn render_shadow_pass(
-    gl: &glow::Context,
-    shader_version: &str,
+/// The context for a depth-only pass (a shadow map, the stand-in room's
+/// environment depth): no color, fog or shadows, and `Scene.opacity`
+/// subtrees deferred and never drawn — translucent geometry writes no depth.
+pub(crate) fn depth_only_context<'a>(
+    gl: &'a glow::Context,
+    shader_version: &'a str,
     asset_cache: Arc<AssetCache>,
     frame_time: FrameTime,
-    lights: &[Light],
-    scene: &Scene3D,
-    scene_context: &SceneContext,
-    shadow_map: &ShadowMap,
-    light_space_matrix: Matrix4<f32>,
-) {
-    let depth_ctx = RenderContext {
+    lights: &'a [Light],
+    viewport_height: f32,
+) -> RenderContext<'a> {
+    RenderContext {
         gl,
         shader_version,
-        // The depth pass writes packed-depth DATA into a linear RGBA8
-        // attachment — no color, no encode.
+        // A depth pass writes data (packed depth, or none), never color —
+        // no encode.
         output_srgb_encode: false,
         asset_cache,
         frame_time,
@@ -225,11 +221,36 @@ pub fn render_shadow_pass(
         lod_view_projections: [Matrix4::identity(); 2],
         lod_frustum_count: 1,
         lod_projection_scale: 1.0,
-        viewport_height: shadow_map.size as f32,
+        viewport_height,
         lod_fog: None,
         pass_serial: crate::next_pass_serial(),
         fog_cull_distance: None,
-    };
+    }
+}
+
+/// Render the scene into `shadow_map` from the light's viewpoint (a depth-only
+/// pass). Restores the framebuffer binding afterward; the caller restores the
+/// viewport for the main pass.
+#[allow(clippy::too_many_arguments)]
+pub fn render_shadow_pass(
+    gl: &glow::Context,
+    shader_version: &str,
+    asset_cache: Arc<AssetCache>,
+    frame_time: FrameTime,
+    lights: &[Light],
+    scene: &Scene3D,
+    scene_context: &SceneContext,
+    shadow_map: &ShadowMap,
+    light_space_matrix: Matrix4<f32>,
+) {
+    let depth_ctx = depth_only_context(
+        gl,
+        shader_version,
+        asset_cache,
+        frame_time,
+        lights,
+        shadow_map.size as f32,
+    );
 
     let mut depth_material = DepthMaterial::create();
     depth_material.initialize(&depth_ctx);

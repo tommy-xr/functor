@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v21: stand-in room geometry — `Frame.stand_in_room`
+/// (`Frame.withStandInRoom`), defaulted and omitted when absent, so every
+/// other frame keeps its v20 shape.
+///
 /// Also: lightmaps — a static model's `lightmap` (`{texture, scale, floor}`,
 /// omitted when absent) and `"baked": true` on `Light.baked` lights
 /// (omitted when false, so other frames keep their shape).
@@ -158,7 +162,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -941,8 +945,12 @@ mod tests {
             sprite_layers: vec![],
             pure_2d: false,
             passthrough: true,
+            stand_in_room: Some(Box::new(Scene3D::cube())),
         };
         assert_json_stable(&frame);
+        assert!(serde_json::to_string(&frame)
+            .unwrap()
+            .contains(r#""stand_in_room":{"obj":{"Geometry":"Cube"}"#));
 
         // `lights` was added to Frame later (`render_targets` and `fog` later
         // still); a frame serialized without them must still decode
@@ -958,6 +966,7 @@ mod tests {
         assert!(legacy.skybox.is_none());
         assert!(legacy.clear_color.is_none());
         assert!(legacy.sprite_layers.is_empty());
+        assert!(legacy.stand_in_room.is_none());
     }
 
     // The render-target wire vocabulary: the reader (a texture by target id)

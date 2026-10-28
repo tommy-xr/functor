@@ -26,7 +26,7 @@ use crate::asset::AssetProgress;
 use crate::audio::{AudioCommand, AudioScene};
 use crate::net::{ConnCommand, NetCommand};
 use crate::physics::DebugLine;
-use crate::runtime_settings::GameSettings;
+use crate::runtime_settings::{GameConfig, GameSettings};
 use crate::terrain::TerrainSource;
 use crate::ui::{UiEvent, View};
 use crate::{Frame, FrameTime, InputSnapshot};
@@ -86,6 +86,8 @@ pub struct SimSnapshot {
     pub caps: SimCaps,
     /// The game's latest `settings(model)`, applied by the shell on change.
     pub settings: Option<GameSettings>,
+    /// The game's launch-time `config`.
+    pub config: Option<GameConfig>,
 }
 
 /// The producer, run either on the calling thread or on its own sim thread.
@@ -572,5 +574,6 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
         timeline_generation: game.scene_timeline_generation(),
         caps: caps(game),
         settings: game.settings(),
+        config: game.config(),
     }
 }

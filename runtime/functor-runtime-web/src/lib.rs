@@ -1740,6 +1740,11 @@ async fn run_async() -> Result<(), JsValue> {
             dispatch_conn_commands(&mut **game, &ws_state);
 
             let mut frame: Frame = game.render(frame_time.clone());
+            scene_context.set_environment_depth_source(
+                functor_runtime_common::environment_depth::EnvironmentDepthSource::stand_in(
+                    game.config(),
+                ),
+            );
             if pending_detach
                 && clock.pending_frames() == 0
                 && clock.pending_steps() == 0

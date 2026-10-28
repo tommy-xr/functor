@@ -1089,6 +1089,7 @@ fn service_debug_request(
             let instance_uploads = counters.frame_instance_uploads();
             let terrain = counters.frame_terrain();
             let skinned = counters.frame_skinned();
+            let stand_in_depth = scene_context.stand_in_depth_stats();
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
                     frame,
@@ -1115,6 +1116,10 @@ fn service_debug_request(
                     skinned,
                     stages,
                     build: None,
+                    xr: functor_runtime_common::runtime_settings::XrState::emulated(
+                        g.config(),
+                        stand_in_depth,
+                    ),
                 });
             });
         }
@@ -2956,6 +2961,11 @@ Escape again to quit"
             let frame = snapshot.frame.clone();
             // The time `frame` was drawn at: render-time animation samples it.
             let frame_time = snapshot.time;
+            scene_context.set_environment_depth_source(
+                functor_runtime_common::environment_depth::EnvironmentDepthSource::stand_in(
+                    snapshot.config,
+                ),
+            );
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.

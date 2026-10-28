@@ -89,6 +89,9 @@
 //! Frame.withPassthrough(frame)                              -> Frame
 //!   (the background is the real world: no skybox; a headset compositing
 //!    its camera feed clears transparent, elsewhere a stand-in room)
+//! Frame.withStandInRoom(room, frame)                        -> Frame
+//!   (scene geometry for that stand-in room, drawn only where it is; under
+//!    `Xr.scene(true)` it is also the emulated environment depth)
 //! Ui.text(s) / Ui.textColor(color, s)                       -> View
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
@@ -2761,6 +2764,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 sprite_layers: vec![],
                 pure_2d: false,
                 passthrough: false,
+                stand_in_room: None,
             })
         },
     );
@@ -2812,6 +2816,14 @@ interactive widgets render but their handlers are inert",
         "Frame.withPassthrough",
         "Frame.withPassthrough(frame)",
         |frame: FunctorLangFrame| FunctorLangFrame(Frame::with_passthrough(frame.0)),
+    );
+    reg.fn2(
+        "Frame.withStandInRoom",
+        "Frame.withStandInRoom(room, frame) — room is a Scene drawn with a \
+passthrough frame wherever no camera feed is composited",
+        |room: FunctorLangScene, frame: FunctorLangFrame| {
+            FunctorLangFrame(Frame::with_stand_in_room(frame.0, room.0))
+        },
     );
     // See `Scene.equals` — the same explicit structural walk, one level up.
     reg.fn2(
@@ -11609,6 +11621,7 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             skinned: Default::default(),
             stages: None,
             build: None,
+            xr: None,
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
             .expect("a deep model must stay parseable by stock serde_json");

@@ -49,6 +49,19 @@ let withClearColor : (Color.t, t) => t
 /// `y = 0` with a faint 1 m grid, grey walls above the horizon. The frame is
 /// last for piping.
 let withPassthrough : (t) => t
+/// Stand-in geometry for the real room behind a passthrough frame; the frame
+/// is last for piping.
+///
+/// The room is ordinary scene geometry in world units (metres, floor at
+/// `y = 0`), drawn with the frame's scene only where the stand-in room is —
+/// desktop, web, or a headset whose camera feed is not composited — so a
+/// desk or a wall the game expects reads without a headset. It occludes the
+/// scene like real geometry would, which a camera feed never does. Under
+/// `Xr.scene(true)` its depth is also the environment depth there, standing
+/// in for the headset's depth sensing; the procedural floor behind it is not,
+/// so declare a floor here if one should count. A frame without
+/// `withPassthrough` ignores it.
+let withStandInRoom : (Scene.t, t) => t
 /// Add an ordered sprite pass above the frame's 3D scene.
 ///
 /// Layers render in call order, so a second `with2D` draws above the first.

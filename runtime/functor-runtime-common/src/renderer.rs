@@ -285,6 +285,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             // A target has no camera feed under it: always the stand-in room.
             pass.frame.passthrough,
             pass.frame.fog_cull_distance(),
+            pass.frame.drawn_stand_in_room(false),
             width as f32 / height as f32,
             height as f32,
             &pass.frame.camera,
@@ -336,6 +337,23 @@ are ignored — declare Frame.withUiTarget on the main frame",
             shadow
         }
     };
+
+    // The main pass's projection: the shell's exact one (XR) or the camera's.
+    let main_projection = projection_matrix
+        .copied()
+        .unwrap_or_else(|| camera.projection_matrix(viewport.aspect()));
+    // `Xr.scene`'s environment depth for this pass: the device's, or the
+    // stand-in room rendered depth-only from this pass's camera.
+    crate::environment_depth::prepare(
+        gl,
+        shader_version,
+        asset_cache.clone(),
+        frame_time.clone(),
+        scene_context,
+        frame,
+        main_projection * camera.view_matrix(),
+        viewport,
+    );
 
     // Main (forward) pass into the bound framebuffer, at the viewport's
     // sub-rectangle (x,y default to 0 = full window). The scissor clips the clear
@@ -392,13 +410,14 @@ are ignored — declare Frame.withUiTarget on the main frame",
         // The stand-in room, unless the shell composites the real feed.
         frame.passthrough && !scene_context.passthrough_composited(),
         frame.fog_cull_distance(),
+        frame.drawn_stand_in_room(scene_context.passthrough_composited()),
         viewport.aspect(),
         viewport.height as f32,
         lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
         lod_view.map(|(_, projections, _, _)| projections),
         lod_view.map(|(_, _, projection_scale, _)| projection_scale),
         lod_view.map(|(_, _, _, viewport_height)| viewport_height),
-        projection_matrix,
+        Some(&main_projection),
         false,
         shell_encode,
     );
@@ -487,6 +506,7 @@ fn render_sprite_layers(
             None,
             None,
             false,
+            None,
             None,
             fitted.aspect(),
             fitted.height as f32,
@@ -650,6 +670,7 @@ pub fn render_composited_frames_with_view(
             frame.drawn_skybox(),
             frame.passthrough,
             frame.fog_cull_distance(),
+            frame.drawn_stand_in_room(false),
             width as f32 / height as f32,
             height as f32,
             &frame.camera,
@@ -843,6 +864,8 @@ fn forward_pass(
     passthrough_room: bool,
     // `Frame::fog_cull_distance` of the frame this pass draws.
     fog_cull_distance: Option<f32>,
+    // The frame's stand-in room geometry, drawn before the scene.
+    stand_in_room: Option<&Scene3D>,
     aspect: f32,
     viewport_height: f32,
     lod_camera: &Camera,
@@ -963,6 +986,17 @@ fn forward_pass(
     root_material.initialize(&render_context);
 
     let render_scene = || {
+        if let Some(room) = stand_in_room {
+            Scene3D::render(
+                room,
+                &render_context,
+                scene_context,
+                &world_matrix,
+                &projection_matrix,
+                &view_matrix,
+                &root_material,
+            );
+        }
         Scene3D::render(
             scene,
             &render_context,
@@ -995,16 +1029,18 @@ fn forward_pass(
         }
     } else {
         render_scene();
-        transparent_pass(
-            gl,
-            scene_context,
-            scene,
-            &make_context,
-            &world_matrix,
-            &projection_matrix,
-            &view_matrix,
-            pass_blends,
-        );
+        for root in stand_in_room.into_iter().chain([scene]) {
+            transparent_pass(
+                gl,
+                scene_context,
+                root,
+                &make_context,
+                &world_matrix,
+                &projection_matrix,
+                &view_matrix,
+                pass_blends,
+            );
+        }
     }
 }
 

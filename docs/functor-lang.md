@@ -1037,6 +1037,14 @@ Starts once A2 + B3 exist.
       (debug protocol v20). *Verify:* `examples/passthrough` golden
       (`passthrough-t2`); on Quest 3, logcat `XrPassthroughFB started` and the
       room visible around the primitives.
+- [x] **C9. Environment depth.** `config`'s `Xr.scene(true)` starts the
+      headset's depth sensing (`XR_META_environment_depth`, Quest 3/3S) and
+      hands the renderer each eye's depth layer with its world transform;
+      wherever the stand-in room is drawn, `Frame.withStandInRoom(scene)`
+      geometry is rendered as that depth instead. `/state.xr.depth` (debug
+      protocol v25). *Verify:* `/state.xr.depth` reads `emulated` on desktop
+      and `device` (320x320) on Quest 3 once the spatial data permission is
+      granted.
 
 ## Track D — IDE tooling
 

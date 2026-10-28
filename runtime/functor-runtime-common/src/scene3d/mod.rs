@@ -142,6 +142,10 @@ pub struct SceneContext {
     // Whether the shell composites a real camera feed under the main pass
     // this frame (`set_passthrough_composited`); see `Frame.passthrough`.
     passthrough_composited: Cell<bool>,
+    // `Xr.scene`'s environment depth: where the shell says it comes from, and
+    // the stand-in room's rendered depth (`crate::environment_depth`).
+    environment_depth_source: Cell<crate::environment_depth::EnvironmentDepthSource>,
+    pub(crate) stand_in_depth: RefCell<Option<crate::environment_depth::StandInDepth>>,
 }
 
 /// One in-flight `Effect.preload` target: the handle being driven plus every
@@ -598,6 +602,8 @@ impl SceneContext {
             preloads: RefCell::new(Vec::new()),
             output_colorspace: Cell::new(crate::color_space::OutputColorspace::NonSrgb),
             passthrough_composited: Cell::new(false),
+            environment_depth_source: Cell::new(Default::default()),
+            stand_in_depth: RefCell::new(None),
         }
     }
 
@@ -620,6 +626,29 @@ impl SceneContext {
 
     pub fn passthrough_composited(&self) -> bool {
         self.passthrough_composited.get()
+    }
+
+    /// Declare (before each main pass) where `Xr.scene`'s environment depth
+    /// comes from: a headset's depth image for the eye being rendered, or the
+    /// frame's stand-in room. Defaults to none.
+    pub fn set_environment_depth_source(
+        &self,
+        source: crate::environment_depth::EnvironmentDepthSource,
+    ) {
+        self.environment_depth_source.set(source);
+    }
+
+    pub fn environment_depth_source(&self) -> crate::environment_depth::EnvironmentDepthSource {
+        self.environment_depth_source.get()
+    }
+
+    /// The stand-in room's depth image so far, as `(width, height, passes)` —
+    /// zeros until one renders (`/state.xr.depth` on desktop and web).
+    pub fn stand_in_depth_stats(&self) -> (u32, u32, u64) {
+        self.stand_in_depth
+            .borrow()
+            .as_ref()
+            .map_or((0, 0, 0), |depth| (depth.width, depth.height, depth.frames))
     }
 
     /// Whether caller-framebuffer passes need the shader epilogue's

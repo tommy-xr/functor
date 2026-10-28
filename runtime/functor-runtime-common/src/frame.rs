@@ -80,6 +80,12 @@ pub struct Frame {
     /// (`crate::passthrough_room`) over a [`PASSTHROUGH_PLACEHOLDER`] clear.
     #[serde(default, skip_serializing_if = "is_false")]
     pub passthrough: bool,
+    /// Geometry standing in for the real room (`Frame.withStandInRoom`):
+    /// drawn with a passthrough frame's scene wherever the stand-in room is,
+    /// and rendered as the environment depth there under `Xr.scene`.
+    /// Boxed so frames without one stay their old size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stand_in_room: Option<Box<Scene3D>>,
 }
 
 /// The clear under a passthrough frame's stand-in room wherever no real feed
@@ -102,6 +108,7 @@ impl Frame {
             sprite_layers: vec![],
             pure_2d: false,
             passthrough: false,
+            stand_in_room: None,
         }
     }
 
@@ -206,6 +213,20 @@ impl Frame {
     pub fn with_passthrough(mut frame: Frame) -> Frame {
         frame.passthrough = true;
         frame
+    }
+
+    /// The stand-in room's geometry (`Frame.withStandInRoom`).
+    pub fn with_stand_in_room(mut frame: Frame, room: Scene3D) -> Frame {
+        frame.stand_in_room = Some(Box::new(room));
+        frame
+    }
+
+    /// The stand-in room geometry to draw: a passthrough frame's, wherever no
+    /// camera feed is composited.
+    pub fn drawn_stand_in_room(&self, feed_composited: bool) -> Option<&Scene3D> {
+        self.stand_in_room
+            .as_deref()
+            .filter(|_| self.passthrough && !feed_composited)
     }
 
     /// Add a 2D layer above the 3D pass and any earlier sprite layers.

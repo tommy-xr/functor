@@ -1,7 +1,7 @@
 //! Headset options, built once and handed to `Config.xr` or `Settings.xr`.
 //!
 //! Each knob belongs to one bucket, by when the shell can honour it:
-//! `refreshRate` and `passthrough` are read once at load, so they go in
+//! `refreshRate`, `passthrough` and `scene` are read once at load, so they go in
 //! `config`; `foveation` and `passthroughEnabled` apply live, so they go in
 //! `settings`. A knob in the wrong bucket is a teaching error naming the
 //! right one. Shells without a headset ignore
@@ -45,6 +45,17 @@ let refreshRate : (float, t) => t
 /// 1 unit = 1 metre in the headset's floor-level stage space, so a model
 /// authored in metres appears at true scale.
 let passthrough : (bool, t) => t
+/// Request scene understanding: the headset senses the depth of the real room
+/// every frame, for passes that shade onto its surfaces. The options are last
+/// for piping.
+///
+/// A `config` knob. On Quest 3 and 3S it starts `XR_META_environment_depth`
+/// for the run, and `GET /state` reports it as `xr.depth`. A headset without
+/// it logs a warning, also appended to the `functor run vr` load response.
+/// Wherever no camera feed is composited — desktop, web, or a paused feed —
+/// the frame's stand-in room (`Frame.withStandInRoom`) supplies the depth
+/// instead.
+let scene : (bool, t) => t
 /// Run (`true`) or pause (`false`) the camera feed `Xr.passthrough` prepared;
 /// the options are last for piping.
 ///

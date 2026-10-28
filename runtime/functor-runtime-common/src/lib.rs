@@ -60,6 +60,7 @@ pub mod debug_http;
 pub mod debug_protocol;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_files;
+pub mod environment_depth;
 pub mod events;
 pub mod fog;
 pub mod gpu_counters;

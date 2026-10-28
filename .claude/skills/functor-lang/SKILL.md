@@ -1583,7 +1583,7 @@ then reads this machine's `ss2` mount, set in `~/.config/functor/mounts.json`
 alone before anything runs, so `config` can't read files. `run vr` sends the
 headset what it reads. `Source.device(path)` (standalone headset) is declared
 only: `--target device` isn't implemented yet. Each `Xr` knob belongs to
-one bucket — `refreshRate` and `passthrough` in `config`, `foveation` and
+one bucket — `refreshRate`, `passthrough` and `scene` in `config`, `foveation` and
 `passthroughEnabled` in `settings` — and the other is a teaching error naming
 the right one, raised at load (`settings` is evaluated on `init` there). Unlike every other entry point, each of these two may come
 from a SIBLING file module when the entry (or role) does not define it, so an
@@ -1605,6 +1605,13 @@ procedural stand-in room (darker floor at `y = 0` with a faint 1 m grid, grey
 walls), so scale reads and captures stay deterministic. A passthrough game's XR
 rig is room-locked: keep `Frame.camera` LEVEL (pitch 0) and the stage floor is
 world `y = 0`, 1 unit = 1 metre (`examples/passthrough`; `GET /state.passthrough`).
+`config`'s `Xr.scene(true)` adds the real room's depth (Quest 3/3S
+`XR_META_environment_depth`; the APK needs the spatial data permission granted
+once). Where the stand-in room is drawn instead, `frame |>
+Frame.withStandInRoom(scene)` supplies ordinary geometry (a floor, a desk, a
+wall) that is drawn with the scene AND stands in as that depth (the procedural
+floor does not count — declare one); it is dropped under a composited feed and
+ignored on a non-passthrough frame (`GET /state.xr.depth`).
 
 **UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
 `Ui.*` tree into a render target (declared once with

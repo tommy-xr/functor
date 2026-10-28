@@ -135,7 +135,14 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// from the host: `/load-project` takes `session` and the entry's folder
 /// (`dir`), and `GET`/`POST /project-files` carry the device's misses and the
 /// host's replies ([`ProjectFileRequests`], [`ProjectFileReply`]).
-pub const DEBUG_PROTOCOL_VERSION: u32 = 24;
+///
+/// 25 adds the optional `xr` field on `GET /state`: `xr.depth` (`{mode,
+/// width, height, frames, warning?}`) reports the environment depth behind
+/// `Xr.scene` — `device` (a headset depth image this frame), `waiting` (the
+/// provider has no image yet), `emulated` (desktop/web: the stand-in room's
+/// depth), or `unavailable`. Omitted unless the game's `config` requests
+/// `Xr.scene`.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 25;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -421,6 +428,10 @@ pub struct RuntimeState {
     /// Quest APK, `dev` for a local one. Omitted by runtimes that don't report it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    /// The headset's scene understanding (v25): `depth`, its environment
+    /// depth. Omitted unless the game's `config` requests `Xr.scene`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xr: Option<crate::runtime_settings::XrState>,
 }
 
 /// Mean per-frame stage cost over a shell's last completed [`StageWindow`]
@@ -1283,6 +1294,15 @@ mod tests {
                 frame_ms: 11.25,
             }),
             build: Some("pr | 0123abc".into()),
+            xr: Some(crate::runtime_settings::XrState {
+                depth: crate::runtime_settings::EnvironmentDepthState {
+                    mode: crate::runtime_settings::EnvironmentDepthMode::Emulated,
+                    width: 1920,
+                    height: 1080,
+                    frames: 5,
+                    warning: None,
+                },
+            }),
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -1321,7 +1341,10 @@ mod tests {
                 "passthrough": { "mode": "composited" },
                 "skinned": { "draws": 8, "pose_evals": 4 },
                 "stages": { "frames": 300, "sim_ms": 1.5, "render_ms": 2.25, "sim_wait_ms": 0.0, "frame_ms": 11.25 },
-                "build": "pr | 0123abc"
+                "build": "pr | 0123abc",
+                "xr": {
+                    "depth": { "mode": "emulated", "width": 1920, "height": 1080, "frames": 5 }
+                }
             })
         );
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
