@@ -850,6 +850,7 @@ impl InstancedRenderer {
                     instances.len() as i32,
                 );
             }
+            crate::gpu_counters::gpu_counters().skinned_drawn();
         }
         unsafe {
             ctx.gl.bind_vertex_array(None);

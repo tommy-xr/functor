@@ -42,6 +42,11 @@ const TARGETS = [
     assets: ["Xbot.glb"],
   },
   {
+    dir: "examples/crowd",
+    baseUrl: MESHES_BASE,
+    assets: ["Xbot.glb"],
+  },
+  {
     // Terrain detail maps, one per `Terrain.layered` band. Poly Haven nests
     // each texture under its own id, so these carry a full path rather than a
     // bare filename.

@@ -1066,6 +1066,8 @@ fn service_debug_request(
     net_transport: NetTransportArg,
     // `/state.sim_thread`: where the game logic runs, and its QoS.
     sim_thread: &str,
+    // `/state.stages`; `None` in the headless loop, which renders nothing.
+    stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
 ) -> bool {
     let mut sampled_input_changed = false;
@@ -1082,6 +1084,7 @@ fn service_debug_request(
             let counters = functor_runtime_common::gpu_counters::gpu_counters();
             let instance_uploads = counters.frame_instance_uploads();
             let terrain = counters.frame_terrain();
+            let skinned = counters.frame_skinned();
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
                     frame,
@@ -1105,6 +1108,8 @@ fn service_debug_request(
                         g.settings(),
                     ),
                     battery: None,
+                    skinned,
+                    stages,
                 });
             });
         }
@@ -1562,6 +1567,7 @@ fn run_headless(
                     None, // no webview overlay in headless
                     net_transport,
                     &sim_thread,
+                    None,
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
@@ -2077,6 +2083,10 @@ Escape releases while captured"
         // as inline. Startup always loads, so it starts on.
         let mut lockstep = true;
         let mut heightmap_mirror = functor_runtime_common::sim_driver::HeightmapMirror::default();
+        // `/state.stages`: the stage costs of the last completed window.
+        let mut stage_window = functor_runtime_common::debug_protocol::StageWindow::default();
+        let mut stage_timings = None;
+        let mut last_rendered = Instant::now();
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
@@ -2923,6 +2933,8 @@ Escape again to quit"
                 dispatch_net_ws(&mut fresh, &net_tx, &http_client, &mut ws_manager);
                 audio_commands = std::mem::take(&mut fresh.audio_commands);
                 let (sim_ns, wait_ns) = (fresh.sim_ns, sim.take_wait_ns());
+                stage_window.sim_ns += sim_ns;
+                stage_window.wait_ns += wait_ns;
                 sim.post(move |g| g.record_stage_timing(sim_ns, wait_ns));
                 shown = Some(fresh);
             }
@@ -3362,6 +3374,12 @@ Escape again to quit"
                 );
             }
             let render_ns = render_started.elapsed().as_nanos() as u64;
+            stage_window.render_ns += render_ns;
+            stage_window.frame_ns += last_rendered.elapsed().as_nanos() as u64;
+            last_rendered = Instant::now();
+            if let Some(timings) = stage_window.end_frame() {
+                stage_timings = Some(timings);
+            }
 
             // The pointer, in framebuffer pixels, for BOTH interactive egui
             // passes (the game UI and the scrubber). The cursor (GLFW window/
@@ -3737,6 +3755,7 @@ Escape again to quit"
                         },
                         args.net_transport,
                         &sim_thread,
+                        stage_timings,
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
                             functor_runtime_common::frame_capture::encode_bound_framebuffer_png(

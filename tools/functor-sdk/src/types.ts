@@ -244,6 +244,20 @@ export interface RuntimeState {
     /** Device wall clock, Unix epoch ms. */
     sampled_ms: number;
   };
+  /** The last rendered frame's skinned-model work, summed over its passes
+   * (shadow and each eye): mesh draw calls and pose evaluations. Protocol v22+; a
+   * pre-v22 runtime omits it. */
+  skinned?: { draws: number; pose_evals: number };
+  /** Mean per-frame stage cost over the shell's last completed stats window
+   * (`frames` long); `frame_ms` is the wall time between rendered frames.
+   * Protocol v22+; omitted until a window completes. */
+  stages?: {
+    frames: number;
+    sim_ms: number;
+    render_ms: number;
+    sim_wait_ms: number;
+    frame_ms: number;
+  };
 }
 
 /** Camera block from `GET /scene`. */

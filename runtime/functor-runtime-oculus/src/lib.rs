@@ -641,6 +641,8 @@ struct DebugLoopState {
     display_refresh_rate: Option<DisplayRefreshRate>,
     /// The loaded game's launch `config` (`None` for the boot scene).
     config: Option<functor_runtime_common::runtime_settings::GameConfig>,
+    /// The last completed stage window, for `/state.stages`.
+    stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
 }
 
 /// Ask the runtime for `hz`, which must be one of the display's offered rates.
@@ -769,6 +771,8 @@ fn service_debug_request(
             let instance_uploads =
                 functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
             let terrain = functor_runtime_common::gpu_counters::gpu_counters().frame_terrain();
+            let skinned = functor_runtime_common::gpu_counters::gpu_counters().frame_skinned();
+            let stages = debug.stages;
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
                 let _ = response.send(RuntimeState {
@@ -793,6 +797,8 @@ fn service_debug_request(
                     terrain,
                     passthrough,
                     battery,
+                    skinned,
+                    stages,
                 });
             });
         }
@@ -1353,7 +1359,13 @@ pub fn android_main(app: AndroidApp) {
     let mut shown: Option<SimSnapshot> = None;
     // The `settings` foveation level last applied (`None` = the default).
     let mut applied_foveation: Option<FoveationLevel> = None;
-    let mut stages = StageStats::default();
+    // Per-stage frame cost: the sim stage (all producer work, timed where it
+    // runs), the render stage (both eyes, including swapchain waits and frame
+    // submission), and the render thread's waits on the sim (snapshots and
+    // blocking debug calls). The embedded producer has no stats reporter, so
+    // the shell logs them.
+    let mut stages = functor_runtime_common::debug_protocol::StageWindow::default();
+    let mut last_rendered = Instant::now();
     let mut quit = false;
     let mut event_storage = xr::EventDataBuffer::new();
 
@@ -1466,6 +1478,8 @@ pub fn android_main(app: AndroidApp) {
 
         if !session_running {
             std::thread::sleep(std::time::Duration::from_millis(50));
+            // A doze is not frame time.
+            last_rendered = Instant::now();
             continue;
         }
 
@@ -1512,6 +1526,7 @@ pub fn android_main(app: AndroidApp) {
                 )
                 .expect("frame end (invalid tracking)");
             last_frame_at = None;
+            last_rendered = Instant::now();
             continue;
         }
         let center_pose = views.first().and_then(|left| {
@@ -1566,6 +1581,7 @@ pub fn android_main(app: AndroidApp) {
                     &[],
                 )
                 .expect("frame end (no render)");
+            last_rendered = Instant::now();
             continue;
         }
 
@@ -1814,8 +1830,18 @@ pub fn android_main(app: AndroidApp) {
             .expect("frame end");
 
         stages.render_ns += render_started.elapsed().as_nanos() as u64;
-        stages.frames += 1;
-        stages.report(&sim_thread);
+        stages.frame_ns += last_rendered.elapsed().as_nanos() as u64;
+        last_rendered = Instant::now();
+        if let Some(timings) = stages.end_frame() {
+            log::info!(
+                "stages over {} frames: sim {:.2} ms, render {:.2} ms, sim-wait {:.2} ms ({sim_thread})",
+                timings.frames,
+                timings.sim_ms,
+                timings.render_ms,
+                timings.sim_wait_ms
+            );
+            debug.stages = Some(timings);
+        }
 
         // `/scene` serves the frame on screen.
         debug.last_frame = Some(frame);
@@ -1859,38 +1885,6 @@ pub fn android_main(app: AndroidApp) {
     }
     sim.quit();
     log::info!("functor oculus runtime exiting");
-}
-
-/// Per-stage frame cost, logged every [`StageStats::EVERY`] rendered frames:
-/// the sim stage (all producer work, timed where it runs), the render stage
-/// (both eyes, including swapchain waits and frame submission), and the
-/// render thread's waits on the sim (snapshots and blocking debug calls).
-/// The embedded producer has no stats reporter, so the shell logs them.
-#[derive(Default)]
-struct StageStats {
-    frames: u64,
-    sim_ns: u64,
-    render_ns: u64,
-    wait_ns: u64,
-}
-
-impl StageStats {
-    const EVERY: u64 = 300;
-
-    fn report(&mut self, sim_thread: &str) {
-        if self.frames < Self::EVERY {
-            return;
-        }
-        let ms = |ns: u64| ns as f64 / self.frames as f64 / 1e6;
-        log::info!(
-            "stages over {} frames: sim {:.2} ms, render {:.2} ms, sim-wait {:.2} ms ({sim_thread})",
-            self.frames,
-            ms(self.sim_ns),
-            ms(self.render_ns),
-            ms(self.wait_ns)
-        );
-        *self = Self::default();
-    }
 }
 
 /// An Android system property, e.g. `debug.functor.pipelined`.

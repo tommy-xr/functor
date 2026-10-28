@@ -120,7 +120,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 21 adds the optional `battery` field on `GET /state` ([`BatteryState`]):
 /// the headset battery as Android's `BatteryManager` reports it, sampled at
 /// most once per second. Omitted on runtimes without one, such as desktop.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 21;
+/// 22 adds `skinned` (`{draws, pose_evals}`: the last rendered frame's skinned
+/// mesh draw calls and pose evaluations, summed over its passes) and the optional
+/// `stages` (`{frames, sim_ms, render_ms, sim_wait_ms, frame_ms}`: the shell's mean
+/// stage cost over its last completed stats window, omitted until one
+/// completes) to `GET /state`. Additive — a pre-v22 runtime omits both.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 22;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -384,6 +389,62 @@ pub struct RuntimeState {
     /// runtimes without one, such as desktop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub battery: Option<BatteryState>,
+    /// The last rendered frame's skinned-model work (0 on a headless
+    /// runtime). `default` because a pre-v22 runtime omits it.
+    #[serde(default)]
+    pub skinned: crate::gpu_counters::SkinnedWork,
+    /// Mean stage cost over the shell's last completed stats window (v22).
+    /// Omitted until a window completes, and by runtimes that render nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stages: Option<StageTimings>,
+}
+
+/// Mean per-frame stage cost over a shell's last completed [`StageWindow`]
+/// (`frames` rendered frames): the sim stage, the render stage, the render
+/// side's wait on the sim, and the wall time between rendered frames. Quest's
+/// render stage includes swapchain waits and frame submission; desktop's
+/// excludes the buffer swap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StageTimings {
+    pub frames: u64,
+    pub sim_ms: f64,
+    pub render_ms: f64,
+    pub sim_wait_ms: f64,
+    pub frame_ms: f64,
+}
+
+/// A shell's rolling stage-cost accumulator, closed every
+/// [`StageWindow::FRAMES`] rendered frames.
+#[derive(Default)]
+pub struct StageWindow {
+    pub frames: u64,
+    pub sim_ns: u64,
+    pub render_ns: u64,
+    pub wait_ns: u64,
+    pub frame_ns: u64,
+}
+
+impl StageWindow {
+    pub const FRAMES: u64 = 300;
+
+    /// Count one rendered frame. Once the window is full, return its means
+    /// and start the next window.
+    pub fn end_frame(&mut self) -> Option<StageTimings> {
+        self.frames += 1;
+        if self.frames < Self::FRAMES {
+            return None;
+        }
+        let ms = |ns: u64| ns as f64 / self.frames as f64 / 1e6;
+        let timings = StageTimings {
+            frames: self.frames,
+            sim_ms: ms(self.sim_ns),
+            render_ms: ms(self.render_ns),
+            sim_wait_ms: ms(self.wait_ns),
+            frame_ms: ms(self.frame_ns),
+        };
+        *self = Self::default();
+        Some(timings)
+    }
 }
 
 /// A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
@@ -924,6 +985,17 @@ mod tests {
                 warning: None,
             }),
             battery: None,
+            skinned: crate::gpu_counters::SkinnedWork {
+                draws: 8,
+                pose_evals: 4,
+            },
+            stages: Some(StageTimings {
+                frames: 300,
+                sim_ms: 1.5,
+                render_ms: 2.25,
+                sim_wait_ms: 0.0,
+                frame_ms: 11.25,
+            }),
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -959,7 +1031,9 @@ mod tests {
                 "instance_uploads": { "count": 1, "bytes": 52 },
                 "settings": { "xr": { "foveation": "medium" } },
                 "terrain": { "patches": 2, "vertices": 8962 },
-                "passthrough": { "mode": "composited" }
+                "passthrough": { "mode": "composited" },
+                "skinned": { "draws": 8, "pose_evals": 4 },
+                "stages": { "frames": 300, "sim_ms": 1.5, "render_ms": 2.25, "sim_wait_ms": 0.0, "frame_ms": 11.25 }
             })
         );
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
@@ -1293,11 +1367,33 @@ mod tests {
     }
 
     #[test]
+    fn stage_window_reports_means_once_full() {
+        let mut window = StageWindow::default();
+        for _ in 0..StageWindow::FRAMES - 1 {
+            window.sim_ns += 2_000_000;
+            window.render_ns += 3_000_000;
+            window.frame_ns += 11_000_000;
+            assert_eq!(window.end_frame(), None);
+        }
+        window.sim_ns += 2_000_000;
+        window.render_ns += 3_000_000;
+        window.frame_ns += 11_000_000;
+        window.wait_ns += 300_000;
+        let timings = window.end_frame().expect("a full window reports");
+        assert_eq!(timings.frames, StageWindow::FRAMES);
+        assert!((timings.sim_ms - 2.0).abs() < 1e-9);
+        assert!((timings.render_ms - 3.0).abs() < 1e-9);
+        assert!((timings.sim_wait_ms - 0.001).abs() < 1e-9);
+        assert!((timings.frame_ms - 11.0).abs() < 1e-9);
+        assert_eq!(window.frames, 0, "the next window starts empty");
+    }
+
+    #[test]
     fn discovery_reports_the_protocol_identity_and_version() {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 21);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 22);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)
