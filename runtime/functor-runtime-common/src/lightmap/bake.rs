@@ -274,7 +274,7 @@ fn dilate(baked: &mut Baked, u: &Unwrapped, padding: u32) {
                 .map(move |(x, y)| (y * size + x) as usize)
         };
         let mut queued = vec![false; ((x1 - x0) * (y1 - y0)) as usize];
-        let mut queue = |i: usize, queued: &mut [bool]| {
+        let queue = |i: usize, queued: &mut [bool]| {
             let k = ((i as i64 / size - y0) * (x1 - x0) + i as i64 % size - x0) as usize;
             !std::mem::replace(&mut queued[k], true)
         };
