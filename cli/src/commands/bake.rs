@@ -8,7 +8,9 @@ use std::time::Instant;
 
 use functor_runtime_common::functor_lang_prelude::lightmap::bake_jobs;
 use functor_runtime_common::functor_lang_prelude::FunctorHost;
-use functor_runtime_common::lightmap::{bake_mesh, write_mesh, BakeOptions, UnwrapOptions, BAKE_VERSION};
+use functor_runtime_common::lightmap::{
+    bake_mesh, write_mesh, BakeOptions, UnwrapOptions, BAKE_VERSION,
+};
 
 use crate::output::{emit, Event};
 
@@ -23,10 +25,19 @@ pub struct Settings {
     pub max_size: u32,
 }
 
-pub fn execute(project: &functor_lang::project::Project, output: &Path, settings: &Settings) -> Result<(), Error> {
-    let session = functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
-        Error::other(project.sources.render(failure.error.span.start, &failure.error.message))
-    })?;
+pub fn execute(
+    project: &functor_lang::project::Project,
+    output: &Path,
+    settings: &Settings,
+) -> Result<(), Error> {
+    let session =
+        functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
+            Error::other(
+                project
+                    .sources
+                    .render(failure.error.span.start, &failure.error.message),
+            )
+        })?;
     let value = session.global("bakes").ok_or_else(|| {
         Error::other("no top-level `let bakes = …` (a List<Lightmap.bakeJob>) to bake")
     })?;
@@ -57,7 +68,11 @@ pub fn execute(project: &functor_lang::project::Project, output: &Path, settings
     // Recorded in the PNG, so a lightmap says how it was made.
     let made = format!(
         "texelsPerMeter={} samples={} aoDistance={} seed={} maxSize={}",
-        settings.texels_per_meter, settings.samples, settings.ao_distance, settings.seed, settings.max_size
+        settings.texels_per_meter,
+        settings.samples,
+        settings.ao_distance,
+        settings.seed,
+        settings.max_size
     );
     for (job, mesh, lightmap, took) in baked {
         let png = output.join(format!("{}.png", job.name));
@@ -94,7 +109,9 @@ fn encode_png(size: u32, rgba: &[u8], made: &str) -> Result<Vec<u8>, Error> {
         ("functor-bake-color-space", "linear".to_string()),
     ];
     for (key, value) in text {
-        encoder.add_text_chunk(key.to_string(), value).map_err(Error::other)?;
+        encoder
+            .add_text_chunk(key.to_string(), value)
+            .map_err(Error::other)?;
     }
     let mut writer = encoder.write_header().map_err(Error::other)?;
     writer.write_image_data(rgba).map_err(Error::other)?;

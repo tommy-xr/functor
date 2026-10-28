@@ -13,10 +13,26 @@ const VERSION: u32 = 1;
 
 pub fn write_mesh(mesh: &ModelSource) -> Vec<u8> {
     let mut out = MAGIC.to_vec();
-    let u32s = |out: &mut Vec<u8>, words: &[u32]| words.iter().for_each(|w| out.extend(w.to_le_bytes()));
-    let f32s = |out: &mut Vec<u8>, floats: &[f32]| floats.iter().for_each(|f| out.extend(f.to_le_bytes()));
-    let counts = [mesh.positions.len(), mesh.triangles.len(), mesh.groups.len()].map(|n| n as u32);
-    u32s(&mut out, &[VERSION, counts[0], counts[1], counts[2], !mesh.uvs.is_empty() as u32]);
+    let u32s =
+        |out: &mut Vec<u8>, words: &[u32]| words.iter().for_each(|w| out.extend(w.to_le_bytes()));
+    let f32s =
+        |out: &mut Vec<u8>, floats: &[f32]| floats.iter().for_each(|f| out.extend(f.to_le_bytes()));
+    let counts = [
+        mesh.positions.len(),
+        mesh.triangles.len(),
+        mesh.groups.len(),
+    ]
+    .map(|n| n as u32);
+    u32s(
+        &mut out,
+        &[
+            VERSION,
+            counts[0],
+            counts[1],
+            counts[2],
+            !mesh.uvs.is_empty() as u32,
+        ],
+    );
     f32s(&mut out, mesh.positions.as_flattened());
     f32s(&mut out, mesh.normals.as_flattened());
     f32s(&mut out, mesh.uvs.as_flattened());
@@ -33,9 +49,15 @@ pub fn write_mesh(mesh: &ModelSource) -> Vec<u8> {
 pub fn read_mesh(bytes: &[u8]) -> Result<ModelSource, String> {
     let mut at = 0usize;
     let mut take = |n: usize| -> Result<&[u8], String> {
-        let end = at.checked_add(n).filter(|&end| end <= bytes.len()).ok_or_else(|| {
-            format!("cut short: needs {n} bytes at byte {at}, has {}", bytes.len() - at.min(bytes.len()))
-        })?;
+        let end = at
+            .checked_add(n)
+            .filter(|&end| end <= bytes.len())
+            .ok_or_else(|| {
+                format!(
+                    "cut short: needs {n} bytes at byte {at}, has {}",
+                    bytes.len() - at.min(bytes.len())
+                )
+            })?;
         let slice = &bytes[at..end];
         at = end;
         Ok(slice)
@@ -46,14 +68,23 @@ pub fn read_mesh(bytes: &[u8]) -> Result<ModelSource, String> {
     let mut word = || take(4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
     let version = word()?;
     if version != VERSION {
-        return Err(format!("version {version}; this engine reads version {VERSION}"));
+        return Err(format!(
+            "version {version}; this engine reads version {VERSION}"
+        ));
     }
-    let [vertices, triangles, groups, flags] = [word()?, word()?, word()?, word()?].map(|n| n as usize);
+    let [vertices, triangles, groups, flags] =
+        [word()?, word()?, word()?, word()?].map(|n| n as usize);
     let mut f32s = |n: usize| -> Result<Vec<f32>, String> {
         let b = take(n.checked_mul(4).ok_or("too large")?)?;
-        Ok(b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect())
+        Ok(b.chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect())
     };
-    let vec3s = |v: Vec<f32>| v.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect::<Vec<_>>();
+    let vec3s = |v: Vec<f32>| {
+        v.chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect::<Vec<_>>()
+    };
     let vec2s = |v: Vec<f32>| v.chunks_exact(2).map(|c| [c[0], c[1]]).collect::<Vec<_>>();
     let positions = vec3s(f32s(vertices * 3)?);
     let normals = vec3s(f32s(vertices * 3)?);
@@ -61,15 +92,28 @@ pub fn read_mesh(bytes: &[u8]) -> Result<ModelSource, String> {
     let uvs2 = vec2s(f32s(vertices * 2)?);
     let mut u32s = |n: usize| -> Result<Vec<u32>, String> {
         let b = take(n.checked_mul(4).ok_or("too large")?)?;
-        Ok(b.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect())
+        Ok(b.chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect())
     };
-    let tris = u32s(triangles * 3)?.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+    let tris = u32s(triangles * 3)?
+        .chunks_exact(3)
+        .map(|c| [c[0], c[1], c[2]])
+        .collect();
     let groups = u32s(groups * 3)?
         .chunks_exact(3)
-        .map(|g| GroupSource { first: g[0], count: g[1], texture: None, unlit: g[2] != 0 })
+        .map(|g| GroupSource {
+            first: g[0],
+            count: g[1],
+            texture: None,
+            unlit: g[2] != 0,
+        })
         .collect();
     if at != bytes.len() {
-        return Err(format!("{} bytes past the end of the mesh", bytes.len() - at));
+        return Err(format!(
+            "{} bytes past the end of the mesh",
+            bytes.len() - at
+        ));
     }
     Ok(ModelSource {
         positions,
@@ -95,14 +139,28 @@ mod tests {
         ModelSource {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.5, -2.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
-            uvs: if uvs { vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]] } else { Vec::new() },
+            uvs: if uvs {
+                vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+            } else {
+                Vec::new()
+            },
             uvs2: vec![[0.1, 0.2], [0.3, 0.4], [0.5, 0.75]],
             joints: Vec::new(),
             weights: Vec::new(),
             triangles: vec![[0, 1, 2], [2, 1, 0]],
             groups: vec![
-                GroupSource { first: 0, count: 1, texture: None, unlit: false },
-                GroupSource { first: 1, count: 1, texture: None, unlit: true },
+                GroupSource {
+                    first: 0,
+                    count: 1,
+                    texture: None,
+                    unlit: false,
+                },
+                GroupSource {
+                    first: 1,
+                    count: 1,
+                    texture: None,
+                    unlit: true,
+                },
             ],
             lightmap: None,
             skeleton: Vec::new(),
@@ -124,7 +182,11 @@ mod tests {
         let bytes = write_mesh(&mesh(true));
         let err = |b: &[u8]| read_mesh(b).unwrap_err();
         assert_eq!(err(b"PNG!"), "not a baked mesh (no FLMB header)");
-        assert!(err(&bytes[..bytes.len() - 1]).starts_with("cut short: needs 24 bytes at byte 168"), "{}", err(&bytes[..bytes.len() - 1]));
+        assert!(
+            err(&bytes[..bytes.len() - 1]).starts_with("cut short: needs 24 bytes at byte 168"),
+            "{}",
+            err(&bytes[..bytes.len() - 1])
+        );
         let mut longer = bytes.clone();
         longer.push(0);
         assert_eq!(err(&longer), "1 bytes past the end of the mesh");

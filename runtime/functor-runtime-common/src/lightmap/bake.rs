@@ -137,12 +137,18 @@ pub fn bake(
                             return out;
                         }
                         let range = chunk * CHUNK..((chunk + 1) * CHUNK).min(samples.len());
-                        out.push((range.start, samples[range].iter().map(|s| scene.light_at(s)).collect()));
+                        out.push((
+                            range.start,
+                            samples[range].iter().map(|s| scene.light_at(s)).collect(),
+                        ));
                     }
                 })
             })
             .collect();
-        workers.into_iter().map(|w| w.join().expect("a bake worker panicked")).collect()
+        workers
+            .into_iter()
+            .map(|w| w.join().expect("a bake worker panicked"))
+            .collect()
     });
     for (start, values) in done.into_iter().flatten() {
         light[start..start + values.len()].copy_from_slice(&values);
@@ -191,8 +197,12 @@ pub(crate) fn rasterize(u: &Unwrapped) -> Vec<Sample> {
         for y in span(1, rect.y, rect.height) {
             for x in span(0, rect.x, rect.width) {
                 let c = [x as f64 + 0.5, y as f64 + 0.5];
-                let w = [cross(p[1], p[2], c), cross(p[2], p[0], c), cross(p[0], p[1], c)]
-                    .map(|w| w / area);
+                let w = [
+                    cross(p[1], p[2], c),
+                    cross(p[2], p[0], c),
+                    cross(p[0], p[1], c),
+                ]
+                .map(|w| w / area);
                 let texel = y as usize * size + x as usize;
                 if w.iter().all(|&w| w >= -1e-9) && !taken[texel] {
                     taken[texel] = true;
@@ -218,8 +228,11 @@ pub(crate) fn rasterize(u: &Unwrapped) -> Vec<Sample> {
                 .sum();
             sum / 3.0
         };
-        let clamp = |v: f64, lo: u32, len: u32| (v.floor() as i64).clamp(lo as i64, (lo + len - 1) as i64) as usize;
-        let texel = clamp(centroid(1), rect.y, rect.height) * size + clamp(centroid(0), rect.x, rect.width);
+        let clamp = |v: f64, lo: u32, len: u32| {
+            (v.floor() as i64).clamp(lo as i64, (lo + len - 1) as i64) as usize
+        };
+        let texel =
+            clamp(centroid(1), rect.y, rect.height) * size + clamp(centroid(0), rect.x, rect.width);
         samples.push(Sample {
             texel: texel as u32,
             triangle: t,
@@ -240,7 +253,10 @@ fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
 fn dilate(baked: &mut Baked, u: &Unwrapped, padding: u32) {
     let size = baked.size as i64;
     for rect in &u.charts {
-        let (x0, y0) = (rect.x as i64 - padding as i64, rect.y as i64 - padding as i64);
+        let (x0, y0) = (
+            rect.x as i64 - padding as i64,
+            rect.y as i64 - padding as i64,
+        );
         let (x1, y1) = (
             (rect.x + rect.width + padding) as i64,
             (rect.y + rect.height + padding) as i64,
@@ -262,7 +278,10 @@ fn dilate(baked: &mut Baked, u: &Unwrapped, padding: u32) {
         for y in y0..y1 {
             for x in x0..x1 {
                 let i = (y * size + x) as usize;
-                if !baked.filled[i] && neighbours(i).any(|j| baked.filled[j]) && queue(i, &mut queued) {
+                if !baked.filled[i]
+                    && neighbours(i).any(|j| baked.filled[j])
+                    && queue(i, &mut queued)
+                {
                     ring.push(i);
                 }
             }
@@ -295,7 +314,16 @@ fn dilate(baked: &mut Baked, u: &Unwrapped, padding: u32) {
     }
 }
 
-const NEIGHBOURS: [(i64, i64); 8] = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
+const NEIGHBOURS: [(i64, i64); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
 
 /// Points per texel, on a jittered 2 × 2 grid: shadow edges and occlusion
 /// average over the texel instead of stepping at its centre.
@@ -345,10 +373,16 @@ impl<'a> Scene<'a> {
     ) -> Result<Self, String> {
         // A parry trimesh BVH, as `Physics.trimesh` will build; one shared
         // builder can serve both once that lands.
-        let mesh = TriMesh::new(positions.iter().map(|&p| v(p)).collect(), triangles.to_vec())
-            .map_err(|e| format!("cannot build the ray mesh: {e:?}"))?;
+        let mesh = TriMesh::new(
+            positions.iter().map(|&p| v(p)).collect(),
+            triangles.to_vec(),
+        )
+        .map_err(|e| format!("cannot build the ray mesh: {e:?}"))?;
         let (lo, hi) = positions.iter().fold(
-            (Vector::splat(f32::INFINITY), Vector::splat(f32::NEG_INFINITY)),
+            (
+                Vector::splat(f32::INFINITY),
+                Vector::splat(f32::NEG_INFINITY),
+            ),
             |(lo, hi), &p| (lo.min(v(p)), hi.max(v(p))),
         );
         let diagonal = (hi - lo).length();
@@ -360,7 +394,9 @@ impl<'a> Scene<'a> {
             texels: unwrapped
                 .triangles
                 .iter()
-                .map(|t| t.map(|v| unwrapped.uvs2[v as usize].map(|x| x as f64 * unwrapped.size as f64)))
+                .map(|t| {
+                    t.map(|v| unwrapped.uvs2[v as usize].map(|x| x as f64 * unwrapped.size as f64))
+                })
                 .collect(),
             size: unwrapped.size,
             lights,
@@ -391,12 +427,15 @@ impl<'a> Scene<'a> {
         let weights = if area == 0.0 {
             s.weights
         } else {
-            let w = [cross(tb, tc, at), cross(tc, ta, at), cross(ta, tb, at)].map(|w| (w / area).max(0.0));
+            let w = [cross(tb, tc, at), cross(tc, ta, at), cross(ta, tb, at)]
+                .map(|w| (w / area).max(0.0));
             let sum: f64 = w.iter().sum();
             w.map(|w| (w / sum) as f32)
         };
         let mix = |values: &[[f32; 3]]| {
-            (0..3).fold(Vector::ZERO, |acc, k| acc + v(values[tri[k] as usize]) * weights[k])
+            (0..3).fold(Vector::ZERO, |acc, k| {
+                acc + v(values[tri[k] as usize]) * weights[k]
+            })
         };
         let p = mix(self.positions);
         let [a, b, c] = tri.map(|i| v(self.positions[i as usize]));
@@ -412,7 +451,12 @@ impl<'a> Scene<'a> {
         if face == Vector::ZERO {
             face = n;
         }
-        Point { p, n, origin: p + face * self.bias, face }
+        Point {
+            p,
+            n,
+            origin: p + face * self.bias,
+            face,
+        }
     }
 
     /// Linear light arriving at a texel, averaged over its sub-samples: each
@@ -432,20 +476,55 @@ impl<'a> Scene<'a> {
             for &Point { p, n, origin, .. } in &points {
                 let (color, l, atten, max) = match *light {
                     Light::Ambient { .. } => unreachable!("handled above"),
-                    Light::Directional { direction, color, intensity, .. } => {
-                        (radiance(color, intensity), -v(direction).normalize_or_zero(), 1.0, self.far)
-                    }
-                    Light::Point { position, color, intensity, range, .. } => {
+                    Light::Directional {
+                        direction,
+                        color,
+                        intensity,
+                        ..
+                    } => (
+                        radiance(color, intensity),
+                        -v(direction).normalize_or_zero(),
+                        1.0,
+                        self.far,
+                    ),
+                    Light::Point {
+                        position,
+                        color,
+                        intensity,
+                        range,
+                        ..
+                    } => {
                         let to = v(position) - p;
                         let d = to.length();
-                        (radiance(color, intensity), to / d.max(1e-4), distance_falloff(d, range), d - self.bias)
+                        (
+                            radiance(color, intensity),
+                            to / d.max(1e-4),
+                            distance_falloff(d, range),
+                            d - self.bias,
+                        )
                     }
-                    Light::Spot { position, direction, color, intensity, range, cone_angle, .. } => {
+                    Light::Spot {
+                        position,
+                        direction,
+                        color,
+                        intensity,
+                        range,
+                        cone_angle,
+                        ..
+                    } => {
                         let to = v(position) - p;
                         let d = to.length();
                         let l = to / d.max(1e-4);
-                        let cone = cone_falloff((-l).dot(v(direction).normalize_or_zero()), cone_angle.cos());
-                        (radiance(color, intensity), l, distance_falloff(d, range) * cone, d - self.bias)
+                        let cone = cone_falloff(
+                            (-l).dot(v(direction).normalize_or_zero()),
+                            cone_angle.cos(),
+                        );
+                        (
+                            radiance(color, intensity),
+                            l,
+                            distance_falloff(d, range) * cone,
+                            d - self.bias,
+                        )
                     }
                 };
                 let ndotl = n.dot(l).max(0.0);
@@ -474,7 +553,8 @@ impl<'a> Scene<'a> {
                 let u1 = ((k as f32 + 0.5) / n as f32 + r1).fract();
                 let u2 = (radical_inverse(k) + r2).fract();
                 let (r, phi) = (u1.sqrt(), u2 * std::f32::consts::TAU);
-                let dir = t * (r * phi.cos()) + b * (r * phi.sin()) + face * (1.0 - u1).max(0.0).sqrt();
+                let dir =
+                    t * (r * phi.cos()) + b * (r * phi.sin()) + face * (1.0 - u1).max(0.0).sqrt();
                 !self.blocked(origin, dir.normalize_or_zero(), self.ao_distance)
             })
             .count();
@@ -496,7 +576,9 @@ fn basis(n: Vector) -> (Vector, Vector) {
 
 /// splitmix64 of two words.
 fn hash(a: u64, b: u64) -> u64 {
-    let mut z = a ^ b.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x6A09_E667_F3BC_C909);
+    let mut z = a ^ b
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(0x6A09_E667_F3BC_C909);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
@@ -534,7 +616,8 @@ mod tests {
                 self.positions.push(p.to_array());
                 self.normals.push(a.cross(b).normalize().to_array());
             }
-            self.triangles.extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+            self.triangles
+                .extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
         }
 
         /// An axis-aligned box from `lo` to `hi`, faces out, no bottom.
@@ -571,7 +654,11 @@ mod tests {
 
     fn options(ao_samples: u32) -> BakeOptions {
         BakeOptions {
-            unwrap: UnwrapOptions { texels_per_meter: 16.0, padding: 2, max_size: 1024 },
+            unwrap: UnwrapOptions {
+                texels_per_meter: 16.0,
+                padding: 2,
+                max_size: 1024,
+            },
             ao_samples,
             ao_distance: 1.0,
             seed: 7,
@@ -587,8 +674,20 @@ mod tests {
 
     fn run(mesh: Mesh, lights: &[Light], options: BakeOptions) -> Bake {
         let unwrapped = unwrap(&mesh.positions, &mesh.triangles, options.unwrap).unwrap();
-        let baked = bake(&mesh.positions, &mesh.normals, &mesh.triangles, &unwrapped, lights, &options).unwrap();
-        Bake { mesh, unwrapped, baked }
+        let baked = bake(
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.triangles,
+            &unwrapped,
+            lights,
+            &options,
+        )
+        .unwrap();
+        Bake {
+            mesh,
+            unwrapped,
+            baked,
+        }
     }
 
     impl Bake {
@@ -598,10 +697,14 @@ mod tests {
             let m = &self.mesh;
             rasterize(&self.unwrapped)
                 .iter()
-                .filter(|s| v(m.normals[m.triangles[s.triangle as usize][0] as usize]).dot(v(normal)) > 0.99)
+                .filter(|s| {
+                    v(m.normals[m.triangles[s.triangle as usize][0] as usize]).dot(v(normal)) > 0.99
+                })
                 .map(|s| {
                     let tri = m.triangles[s.triangle as usize];
-                    let p = (0..3).fold(Vector::ZERO, |acc, k| acc + v(m.positions[tri[k] as usize]) * s.weights[k]);
+                    let p = (0..3).fold(Vector::ZERO, |acc, k| {
+                        acc + v(m.positions[tri[k] as usize]) * s.weights[k]
+                    });
                     (self.baked.light[s.texel as usize], p)
                 })
                 .min_by(|a, b| a.1.distance(v(at)).total_cmp(&b.1.distance(v(at))))
@@ -623,7 +726,10 @@ mod tests {
             let shader = (1.0 - d * d / 36.0).clamp(0.0, 1.0).powi(2);
             assert_eq!(distance_falloff(d, 6.0), shader);
             let expected = to.y / d * shader;
-            assert!((light[0] - expected).abs() <= 0.02 * expected, "at {p}: {light:?} vs {expected}");
+            assert!(
+                (light[0] - expected).abs() <= 0.02 * expected,
+                "at {p}: {light:?} vs {expected}"
+            );
             assert_eq!(light[0], light[2]);
         }
     }
@@ -640,7 +746,10 @@ mod tests {
         // Without `castShadows`, as at runtime, no shadow.
         let b = run(cornell(), &[lamp()], options(0));
         let (unshadowed, _) = b.near([1.6, 0.0, -2.1], UP);
-        assert!((unshadowed[0] - lit[0]).abs() < 0.02 * lit[0], "{unshadowed:?} vs {lit:?}");
+        assert!(
+            (unshadowed[0] - lit[0]).abs() < 0.02 * lit[0],
+            "{unshadowed:?} vs {lit:?}"
+        );
     }
 
     /// Ambient light is darker in a corner than mid-wall.
@@ -715,9 +824,17 @@ mod tests {
     #[ignore]
     fn bake_times() {
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let time = |name: &str, (positions, normals, triangles): (&[[f32; 3]], &[[f32; 3]], &[[u32; 3]]), lights: &[Light], tpm: f64, ao: u32| {
+        let time = |name: &str,
+                    (positions, normals, triangles): (&[[f32; 3]], &[[f32; 3]], &[[u32; 3]]),
+                    lights: &[Light],
+                    tpm: f64,
+                    ao: u32| {
             let o = BakeOptions {
-                unwrap: UnwrapOptions { texels_per_meter: tpm, padding: 2, max_size: 4096 },
+                unwrap: UnwrapOptions {
+                    texels_per_meter: tpm,
+                    padding: 2,
+                    max_size: 4096,
+                },
                 ao_samples: ao,
                 threads,
                 ..options(0)
@@ -738,20 +855,37 @@ mod tests {
         };
         let box_lights = [Light::ambient(0.3, 0.3, 0.3), lamp().cast_shadows()];
         let m = cornell();
-        time("cornell", (&m.positions, &m.normals, &m.triangles), &box_lights, 32.0, 64);
+        time(
+            "cornell",
+            (&m.positions, &m.normals, &m.triangles),
+            &box_lights,
+            32.0,
+            64,
+        );
 
         let (positions, triangles) = super::super::unwrap::tests::level(72);
-        let normals = triangles.iter().fold(vec![[0.0; 3]; positions.len()], |mut n, t| {
-            let [a, b, c] = t.map(|i| v(positions[i as usize]));
-            t.iter().for_each(|&i| n[i as usize] = (b - a).cross(c - a).normalize().to_array());
-            n
-        });
+        let normals = triangles
+            .iter()
+            .fold(vec![[0.0; 3]; positions.len()], |mut n, t| {
+                let [a, b, c] = t.map(|i| v(positions[i as usize]));
+                t.iter()
+                    .for_each(|&i| n[i as usize] = (b - a).cross(c - a).normalize().to_array());
+                n
+            });
         let lights: Vec<Light> = (0..72)
-            .map(|r| Light::point(r as f32 * 7.0 + 3.0, 2.6, 3.0, 1.0, 0.9, 0.8, 1.0, 6.0).cast_shadows())
+            .map(|r| {
+                Light::point(r as f32 * 7.0 + 3.0, 2.6, 3.0, 1.0, 0.9, 0.8, 1.0, 6.0).cast_shadows()
+            })
             .chain([Light::ambient(0.2, 0.2, 0.25)])
             .collect();
         for (tpm, ao) in [(8.0, 16), (16.0, 64)] {
-            time("level", (&positions, &normals, &triangles), &lights, tpm, ao);
+            time(
+                "level",
+                (&positions, &normals, &triangles),
+                &lights,
+                tpm,
+                ao,
+            );
         }
     }
 }
