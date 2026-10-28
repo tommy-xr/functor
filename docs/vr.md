@@ -341,13 +341,44 @@ frame |> Frame.withFusedRoom(0.25, Color.rgb(0.35, 0.9, 1.0))
 - Depth beyond 4 m builds no surface but still clears the free space in
   front of it, so a chair moved away from a far wall still fades.
 - `/state.xr.mesh` (debug protocol v25) reports `{chunks, triangles,
-  fused_frames, voxel_m}`.
+  fused_frames, voxel_m, colliders, floor_m?}`; the last two are the
+  `Physics.fusedRoom` colliders below.
 - Desktop and web fuse the stand-in room's depth through the same code.
   Runs pinned by `--fixed-time` or `--input-script` (and wasm, which has no
   threads) fuse inline on the render thread, so a capture after a fixed
   number of frames always shows the same mesh.
 - GLES 3.0 has no compute shaders, so fusion runs on the CPU; a GLES 3.1
   compute path is the follow-up if the CPU cost matters.
+
+#### The fused room as colliders
+
+One body makes the fused room solid, whether or not a frame draws it:
+
+```functor
+let physics = (model) =>
+  Physics.scene(gravity, [
+    Physics.fusedRoom(roomTag) |> Physics.restitution(0.7),
+    // … balls
+  ])
+```
+
+- Each chunk mesh becomes a static triangle-mesh collider on one fixed body,
+  and a re-meshed chunk rebuilds only its own collider. Rays and contacts on
+  any chunk report the body's tag.
+- The floor is a plane. The fused floor ripples by a few millimetres, which
+  keeps a resting ball rolling, and it has holes wherever nobody looked
+  (behind the desk). The runtime takes the lowest level surface with at
+  least 1 m² within 3 cm of one height as the floor, drops the level
+  triangles there from the chunks, and puts an infinite plane at that
+  height. It moves only when the floor estimate moves by a centimetre. Until
+  the floor itself has been seen, a large table can pass for it.
+- The meshes reach physics through the same ordered message queue as every
+  other shell call: the room fused while rendering frame N collides from the
+  physics step of frame N+1. Desktop runs pinned by `--fixed-time` or
+  `--input-script` fuse inline, and a pipelined run steps in lockstep while
+  a `Physics.fusedRoom` body exists, so a scripted capture is the same
+  pipelined or not. On Quest fusion runs on its own thread and new chunks
+  arrive whenever it finishes.
 
 ### Mixed-reality parts viewer
 

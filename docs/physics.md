@@ -153,7 +153,9 @@ and boxes use their local axes, so fixed ramps and rotating kinematic obstacles
 need no special shape. Angles are branded values—bare numbers are rejected.
 `Physics.heightfield` remains translation-only because `Scene.terrain`
 rendering cannot rotate; applying any `Physics.rotate*` modifier to one is a
-teaching error.
+teaching error. `Physics.fusedRoom(tag)` — the mixed-reality room fused from
+the headset's depth, as colliders (see `docs/vr.md`) — is already in world
+space, so `Physics.at` and the rotations are errors on it.
 
 Functor Lang dissolves the read-back boundary problem outright: the interpreter runs in
 the **shell's own process**, sharing the crate statics that hold the physics

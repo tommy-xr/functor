@@ -110,10 +110,11 @@ let heightfield : (tag, Terrain.t) => body
 /// (the stand-in room's on desktop and web) into a mesh, as
 /// `Frame.withFusedRoom` draws it, and this body collides with it — the
 /// room need not be drawn. Each 64 cm chunk is a static triangle mesh,
-/// rebuilt when that chunk re-meshes, so balls bounce off the real floor,
-/// walls and furniture as soon as they are seen. The floor is snapped flat:
-/// level surfaces within 3 cm of the lowest large level surface are
-/// flattened onto one height, so a resting ball stays still.
+/// rebuilt when that chunk re-meshes, so balls bounce off the real walls and
+/// furniture as soon as they are seen. The floor is an infinite plane at the
+/// lowest level surface of at least 1 m², replacing the fused floor's
+/// ripple, so a resting ball stays still and nothing falls through floor
+/// nobody has looked at yet.
 ///
 /// New surfaces reach the body at the physics step after they fuse. The
 /// room is already in world space: `Physics.at` and the rotations are

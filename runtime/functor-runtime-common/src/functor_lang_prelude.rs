@@ -10748,6 +10748,39 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
         );
     }
 
+    #[test]
+    fn physics_fused_room_is_a_fixed_body_that_stays_put() {
+        let value = eval(
+            "let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
+               Physics.fusedRoom(Physics.tag(\"room\")) |> Physics.restitution(0.7),\n\
+             ])",
+        );
+        let scene = physics_scene_value(&value).expect("a PhysicsScene");
+        let room = &scene.bodies[0];
+        assert_eq!((room.kind, room.restitution), (physics::BodyKind::Fixed, 0.7));
+        let physics::Shape::FusedRoom { room } = &room.shape else {
+            panic!("expected a fused room");
+        };
+        assert!(room.chunks.is_empty(), "the shell's room resolves at the step");
+
+        let moved = "Physics.at: the fused room is already in world space — declare \
+Physics.fusedRoom(tag) without moving or rotating it";
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.fusedRoom(Physics.tag(\"room\")) \
+|> Physics.at(Vec3.make(0.0, 1.0, 0.0))"
+            ),
+            moved
+        );
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.fusedRoom(Physics.tag(\"room\")) \
+|> Physics.rotateY(Angle.degrees(5.0))"
+            ),
+            moved.replace("Physics.at", "Physics.rotateY")
+        );
+    }
+
     // End to end across the seam: reconcile + step the singleton world the
     // way the FunctorLangGame driver does, then read it back from Functor Lang — the in-process
     // live read that is the whole point of the Functor Lang surface.
