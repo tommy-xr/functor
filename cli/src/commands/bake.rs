@@ -93,7 +93,11 @@ pub fn execute(
         let bin = output.join(format!("{}.mesh.bin", job.name));
         let filled = lightmap.filled.iter().filter(|&&f| f).count();
         // The brightest channel, so clipping (over `scale`) shows.
-        let peak = lightmap.light.iter().flatten().fold(0.0f32, |a, &b| a.max(b));
+        let peak = lightmap
+            .light
+            .iter()
+            .flatten()
+            .fold(0.0f32, |a, &b| a.max(b));
         reports.push(format!(
             "baked `{}`: {} triangles, {} lights, {s}×{s} lightmap ({filled} texels, peak {peak:.2}{}), in {:.2} s → {}, {}",
             job.name,

@@ -62,7 +62,18 @@ const ONE: &str = r#"let bakes = [{ name: "floor", mesh: floorData, lights: ligh
 fn bakes_write_a_lightmap_and_a_mesh() {
     let dir = project("ok", ONE);
     // Default: `baked/` in the project.
-    let out = bake(&dir, &["--ao-samples", "4", "--gi-samples", "4", "--texels-per-meter", "8"]).unwrap();
+    let out = bake(
+        &dir,
+        &[
+            "--ao-samples",
+            "4",
+            "--gi-samples",
+            "4",
+            "--texels-per-meter",
+            "8",
+        ],
+    )
+    .unwrap();
     assert!(
         out.contains("baked `floor`: 2 triangles, 2 lights, 32×32 lightmap"),
         "{out}"
@@ -91,7 +102,10 @@ fn bakes_write_a_lightmap_and_a_mesh() {
         .map(|t| (t.keyword.as_str(), t.text.as_str()))
         .collect();
     assert!(text.contains(&("functor-bake-version", "2")), "{text:?}");
-    assert!(text.contains(&("functor-bake-color-space", "srgb")), "{text:?}");
+    assert!(
+        text.contains(&("functor-bake-color-space", "srgb")),
+        "{text:?}"
+    );
     assert!(
         text.contains(&(
             "functor-bake-settings",
@@ -123,7 +137,18 @@ fn bakes_write_a_lightmap_and_a_mesh() {
     // A stale bake (here garbage) reads as missing while the next one runs.
     std::fs::write(dir.join("baked/floor.mesh.bin"), b"stale").unwrap();
     std::fs::write(dir.join("baked/floor.png"), b"stale").unwrap();
-    bake(&dir, &["--ao-samples", "4", "--gi-samples", "4", "--texels-per-meter", "8"]).unwrap();
+    bake(
+        &dir,
+        &[
+            "--ao-samples",
+            "4",
+            "--gi-samples",
+            "4",
+            "--texels-per-meter",
+            "8",
+        ],
+    )
+    .unwrap();
     assert_eq!(std::fs::read(dir.join("baked/floor.png")).unwrap(), png);
     std::fs::remove_dir_all(dir).ok();
 }

@@ -171,7 +171,10 @@ pub fn bake(
             }
             let lit = lightmap(unwrapped, &samples, &last, padding);
             last = par_map(&samples, threads, |s| scene.gather(s, &lit, bounce));
-            indirect.iter_mut().zip(&last).for_each(|(i, l)| *i = add(*i, *l));
+            indirect
+                .iter_mut()
+                .zip(&last)
+                .for_each(|(i, l)| *i = add(*i, *l));
         }
         let size = unwrapped.size as usize;
         let mut chart = vec![u32::MAX; size * size];
@@ -733,11 +736,12 @@ impl<'a> Scene<'a> {
             }
             if let Some(t) = node.leaf_data() {
                 let tri = self.mesh.triangle(t);
-                if let Some((hit, w)) = local_ray_intersection_with_triangle(tri.a, tri.b, tri.c, &ray) {
+                if let Some((hit, w)) =
+                    local_ray_intersection_with_triangle(tri.a, tri.b, tri.c, &ray)
+                {
                     let toi = hit.time_of_impact;
-                    let better = best.map_or(toi <= max, |(bt, bi, _)| {
-                        toi < bt || (toi == bt && t < bi)
-                    });
+                    let better =
+                        best.map_or(toi <= max, |(bt, bi, _)| toi < bt || (toi == bt && t < bi));
                     if better {
                         best = Some((toi, t, w.to_array()));
                     }
@@ -1202,14 +1206,24 @@ mod tests {
             .collect();
         let out = denoise(size, &chart, &light, 2);
         let spread = |values: &[[f32; 3]]| {
-            let dark: Vec<f32> = (0..n).filter(|&i| chart[i] == 1).map(|i| values[i][0]).collect();
+            let dark: Vec<f32> = (0..n)
+                .filter(|&i| chart[i] == 1)
+                .map(|i| values[i][0])
+                .collect();
             let mean = dark.iter().sum::<f32>() / dark.len() as f32;
             let max = dark.iter().cloned().fold(0.0, f32::max);
-            (dark.iter().map(|d| (d - mean).powi(2)).sum::<f32>() / dark.len() as f32, max)
+            (
+                dark.iter().map(|d| (d - mean).powi(2)).sum::<f32>() / dark.len() as f32,
+                max,
+            )
         };
         for i in 0..n {
             match chart[i] {
-                0 => assert!((out[i][0] - 1.0).abs() < 1e-6, "bright texel {i}: {:?}", out[i]),
+                0 => assert!(
+                    (out[i][0] - 1.0).abs() < 1e-6,
+                    "bright texel {i}: {:?}",
+                    out[i]
+                ),
                 u32::MAX => assert_eq!(out[i], light[i]),
                 _ => {}
             }
@@ -1251,7 +1265,10 @@ mod tests {
             filled: vec![true],
         };
         let byte = one.rgba8(2.0)[0];
-        assert!((crate::color_space::srgb_u8_to_linear(byte) - 0.5).abs() < 0.005, "{byte}");
+        assert!(
+            (crate::color_space::srgb_u8_to_linear(byte) - 0.5).abs() < 0.005,
+            "{byte}"
+        );
     }
 
     /// A ray through the edge two triangles share hits the lower one,
@@ -1270,7 +1287,11 @@ mod tests {
             let scene =
                 Scene::new(&m.positions, &m.normals, &m.triangles, &u, &[], &albedo, &o).unwrap();
             // (0, 0, 0) is on the shared diagonal.
-            let hit = scene.nearest(Vector::new(0.0, 1.0, 0.0), Vector::new(0.0, -1.0, 0.0), 10.0);
+            let hit = scene.nearest(
+                Vector::new(0.0, 1.0, 0.0),
+                Vector::new(0.0, -1.0, 0.0),
+                10.0,
+            );
             assert_eq!(hit.map(|h| h.0), Some(0), "flipped: {flip}");
         }
     }
@@ -1347,7 +1368,12 @@ mod tests {
                 setting,
             );
         }
-        for setting in [(8.0, 16, 0, 0), (8.0, 16, 1, 32), (16.0, 64, 0, 0), (16.0, 64, 1, 32)] {
+        for setting in [
+            (8.0, 16, 0, 0),
+            (8.0, 16, 1, 32),
+            (16.0, 64, 0, 0),
+            (16.0, 64, 1, 32),
+        ] {
             time("level", level, &lights, setting);
         }
     }
