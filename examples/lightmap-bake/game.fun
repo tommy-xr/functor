@@ -66,9 +66,11 @@ let roomData = {
 }
 
 // The lights, marked `Light.baked`: lightmapped surfaces already hold them.
-let lampAt = v(0.0, 2.6, 0.0 - 2.0)
+// Bright enough to light the room, dim enough that no texel passes 1 (the
+// lightmap clips there), even on the ceiling half a metre above the lamp.
+let lampAt = v(0.0, 2.5, 0.0 - 2.0)
 let ambient = Light.ambient(Color.rgb(0.35, 0.35, 0.35))
-let lamp = Light.point(lampAt, Color.rgb(1.0, 0.92, 0.8), 1.6, 5.0) |> Light.castShadows
+let lamp = Light.point(lampAt, Color.rgb(1.0, 0.92, 0.8), 0.85, 6.0) |> Light.castShadows
 let bakedLights = [ambient |> Light.baked, lamp |> Light.baked]
 
 let bakes = [

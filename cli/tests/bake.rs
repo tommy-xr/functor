@@ -116,6 +116,12 @@ fn bakes_write_a_lightmap_and_a_mesh() {
     .unwrap();
     assert_eq!(std::fs::read(again.join("floor.png")).unwrap(), png);
     assert_eq!(std::fs::read(again.join("floor.mesh.bin")).unwrap(), mesh);
+
+    // A stale bake (here garbage) reads as missing while the next one runs.
+    std::fs::write(dir.join("baked/floor.mesh.bin"), b"stale").unwrap();
+    std::fs::write(dir.join("baked/floor.png"), b"stale").unwrap();
+    bake(&dir, &["--samples", "4", "--texels-per-meter", "8"]).unwrap();
+    assert_eq!(std::fs::read(dir.join("baked/floor.png")).unwrap(), png);
     std::fs::remove_dir_all(dir).ok();
 }
 

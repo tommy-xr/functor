@@ -30,6 +30,8 @@ pub fn execute(
     output: &Path,
     settings: &Settings,
 ) -> Result<(), Error> {
+    // The game may load the previous bake; it reads as not there yet.
+    functor_runtime_common::functor_lang_prelude::bytes::hide_files_under(output);
     let session =
         functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
             Error::other(

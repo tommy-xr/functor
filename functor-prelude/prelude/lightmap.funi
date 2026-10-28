@@ -41,7 +41,8 @@ let unwrap : (Model.staticData, options) => unwrapped
 /// ```
 /// let bakes = [{ name: "room", mesh: roomData, lights: roomLights }]
 /// // `functor bake` evaluates the whole project, so guard the load: the
-/// // first bake runs before its files exist.
+/// // first bake runs before its files exist, and while it runs the files it
+/// // writes read as missing.
 /// let room = if File.exists("baked/room.png") then
 ///   Model.static({ Lightmap.readMesh(File.bytes("baked/room.mesh.bin")) with
 ///     groups: roomData.groups,

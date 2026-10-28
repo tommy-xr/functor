@@ -78,6 +78,18 @@ impl HostData for FunctorLangBytes {
 
 crate::host_returnable!(FunctorLangBytes);
 
+/// A folder whose files read as missing: `functor bake`'s output while it
+/// evaluates the project, so a game's guarded load of the previous bake
+/// (stale, or for an older mesh) never breaks the next one.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+static HIDDEN: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Make the files under `dir` read as missing (see [`HIDDEN`]).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn hide_files_under(dir: &std::path::Path) {
+    *HIDDEN.lock().unwrap_or_else(|e| e.into_inner()) = std::fs::canonicalize(dir).ok();
+}
+
 /// The bytes of a file in the project (the entry file's folder). `api` and
 /// `example` shape the errors: `Typeface.file("…"): use a path inside the
 /// project, like "fonts/MyFont.ttf"`.
@@ -87,6 +99,9 @@ pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<
     // The same portable rule as project assets; the platform's reader keeps
     // symlinks from reaching outside too.
     crate::debug_protocol::validate_project_asset_path(path).map_err(|_| outside())?;
+    if is_hidden(path) {
+        return Err(format!("{api}: {path} is hidden while `functor bake` rewrites it"));
+    }
     let reader = crate::storage::project_reader().ok_or_else(|| {
         format!(
             "{api}({path:?}): project files load on desktop, in `functor export` and on Quest \
@@ -104,6 +119,22 @@ pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<
 fn project_file_exists(path: &str) -> bool {
     crate::debug_protocol::validate_project_asset_path(path).is_ok()
         && crate::storage::project_reader().is_some_and(|reader| reader.exists(path))
+        && !is_hidden(path)
+}
+
+/// Whether `path` resolves into the [`HIDDEN`] folder.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn is_hidden(path: &str) -> bool {
+    let hidden = HIDDEN.lock().unwrap_or_else(|e| e.into_inner());
+    hidden.as_ref().is_some_and(|dir| {
+        std::fs::canonicalize(crate::storage::project_dir().join(path))
+            .is_ok_and(|full| full.starts_with(dir))
+    })
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+fn is_hidden(_path: &str) -> bool {
+    false
 }
 
 /// A `Binary.error` record at `offset` with an empty path.

@@ -740,6 +740,40 @@ mod tests {
         }
     }
 
+    /// A sun lights by N·L alone: straight down, the floor gets all of it
+    /// and the back wall none; tilted 45° toward the wall, each gets cos 45°.
+    #[test]
+    fn directional_light_is_n_dot_l() {
+        let sun = |dy: f32, dz: f32| Light::directional(0.0, dy, dz, 1.0, 1.0, 1.0, 1.0);
+        let back = [0.0, 0.0, 1.0];
+        let b = run(cornell(), &[sun(-1.0, 0.0)], options(0));
+        assert!((b.near([-1.0, 0.0, -1.0], UP).0[0] - 1.0).abs() < 1e-5);
+        assert_eq!(b.near([-1.0, 1.5, -4.0], back).0[0], 0.0);
+        let b = run(cornell(), &[sun(-1.0, -1.0)], options(0));
+        let cos45 = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((b.near([-1.0, 0.0, -1.0], UP).0[0] - cos45).abs() < 1e-5);
+        assert!((b.near([-1.0, 1.5, -4.0], back).0[0] - cos45).abs() < 1e-5);
+    }
+
+    /// A spot aimed down from the lamp: full inside its cone (`cos θ ×
+    /// falloff`, as a point light), nothing past its edge.
+    #[test]
+    fn spot_light_stays_in_its_cone() {
+        let spot = Light::spot(
+            LAMP[0], LAMP[1], LAMP[2], 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 6.0, 0.5236,
+        );
+        let b = run(cornell(), &[spot], options(0));
+        let (inside, p) = b.near([0.3, 0.0, -2.0], UP);
+        let to = v(LAMP) - p;
+        let expected = to.y / to.length() * distance_falloff(to.length(), 6.0);
+        assert!(
+            (inside[0] - expected).abs() <= 0.02 * expected,
+            "{inside:?} vs {expected}"
+        );
+        // 1.8 m out is 33° off the axis, past the 30° cone.
+        assert_eq!(b.near([-1.8, 0.0, -2.0], UP).0[0], 0.0);
+    }
+
     /// A floor texel in the block's shadow gets under 0.3× the light of its
     /// mirror image across the lamp, which nothing blocks.
     #[test]

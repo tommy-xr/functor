@@ -126,12 +126,16 @@ pub fn bake_jobs(value: &Value) -> Result<Vec<BakeJob>, String> {
             Value::String(name) => name.to_string(),
             other => return Err(format!("{what}.name: expected a string, got {}", other.kind_name())),
         };
-        if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) {
+        // Portable file names: letters, digits, `-`, `_` and `.`, unique
+        // ignoring case (`Room.png` and `room.png` are one file on macOS).
+        let portable = |c: char| c.is_ascii_alphanumeric() || "-_.".contains(c);
+        if name.is_empty() || name.starts_with('.') || !name.chars().all(portable) {
             return Err(format!(
-                "{what}.name: {name:?} must be a file name without a folder (it names `<name>.png`)"
+                "{what}.name: {name:?} must be a file name of letters, digits, `-`, `_` and `.` \
+(it names `<name>.png`)"
             ));
         }
-        if out.iter().any(|job| job.name == name) {
+        if out.iter().any(|job| job.name.eq_ignore_ascii_case(&name)) {
             return Err(format!("{what}.name: {name:?} is used twice"));
         }
         let mut mesh = model::static_source(get("mesh")?, span)

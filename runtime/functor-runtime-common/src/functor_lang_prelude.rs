@@ -13432,13 +13432,15 @@ maxSize 16; lower texelsPerMeter or padding"
             let value = eval_with_prelude_unchecked(&format!("{src}let main = bakes\n")).unwrap();
             lightmap::bake_jobs(&value).unwrap_err()
         };
+        for bad in ["../room", "a:b", ".room", ""] {
+            assert_eq!(
+                fail(("name: \"room\"", &format!("name: {bad:?}"))),
+                format!("bakes[0].name: {bad:?} must be a file name of letters, digits, `-`, `_` and `.` (it names `<name>.png`)")
+            );
+        }
         assert_eq!(
-            fail(("name: \"room\"", "name: \"../room\"")),
-            "bakes[0].name: \"../room\" must be a file name without a folder (it names `<name>.png`)"
-        );
-        assert_eq!(
-            fail(("}]\n", "}, { name: \"room\", mesh: roomData, lights: [] }]\n")),
-            "bakes[1].name: \"room\" is used twice"
+            fail(("}]\n", "}, { name: \"Room\", mesh: roomData, lights: [] }]\n")),
+            "bakes[1].name: \"Room\" is used twice"
         );
         assert_eq!(
             fail(("Bytes.fromU32le([0.0, 1.0, 2.0,", "Bytes.fromU32le([0.0, 1.0, 9.0,")),

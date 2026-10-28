@@ -194,7 +194,7 @@ enum Command {
     /// `<name>.mesh.bin`. The same flags give the same bytes.
     /// E.g. `functor -d examples/lightmap-bake bake`.
     Bake {
-        /// The folder to write (default: `baked/` in the project).
+        /// The folder to write (default: `baked/` beside the entry file).
         #[arg(short, long)]
         output: Option<PathBuf>,
 
@@ -539,7 +539,10 @@ async fn run(args: &Args) -> io::Result<()> {
                 let loaded = project.build(&working_directory_str, false)?;
                 commands::bake::execute(
                     &loaded,
-                    &output.clone().unwrap_or_else(|| working_directory.join("baked")),
+                    // `File.*` paths are relative to the entry's folder.
+                    &output.clone().unwrap_or_else(|| {
+                        functor_runtime_common::storage::project_dir().join("baked")
+                    }),
                     &commands::bake::Settings {
                         texels_per_meter: *texels_per_meter,
                         samples: *samples,
