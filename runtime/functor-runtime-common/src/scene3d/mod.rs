@@ -603,7 +603,7 @@ impl SceneContext {
     /// The GL texture for `pixels`, uploaded on first use this residency.
     /// Wrap and filtering are set here, from its colour space: `Srgb` is
     /// mipmapped and repeats, `Linear` (lightmaps) is clamped with no mips.
-    pub(crate) fn pixel_texture(
+    pub fn pixel_texture(
         &self,
         gl: &glow::Context,
         pixels: &crate::texture::PixelData,

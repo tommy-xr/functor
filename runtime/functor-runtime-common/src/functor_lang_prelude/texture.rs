@@ -37,7 +37,10 @@ fn side(value: f64, name: &str) -> Result<u32, String> {
 impl crate::host_registry::FromArg for PixelsArg {
     fn from_arg(value: &Value, _path: &str, span: Span) -> Result<Self, RunError> {
         let Value::Record(fields) = value else {
-            return fail(format!("expected a record, got {}", value.kind_name()), span);
+            return fail(
+                format!("expected a record, got {}", value.kind_name()),
+                span,
+            );
         };
         let get = |name: &str| match fields.iter().find(|(field, _)| field == name) {
             Some((_, value)) => Ok(value),

@@ -188,8 +188,14 @@ impl Serialize for PixelData {
 impl<'de> Deserialize<'de> for PixelData {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let w = PixelWire::deserialize(deserializer)?;
-        PixelData::new(w.width, w.height, PixelEncoding::Rgba8, w.color_space, &w.rgba8)
-            .map_err(serde::de::Error::custom)
+        PixelData::new(
+            w.width,
+            w.height,
+            PixelEncoding::Rgba8,
+            w.color_space,
+            &w.rgba8,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
@@ -250,7 +256,10 @@ mod tests {
             r#"{"width":1,"height":1,"colorSpace":"Linear","rgba8":[9,8,7,255]}"#
         );
         let b: PixelData = serde_json::from_str(&json).unwrap();
-        assert_eq!((b.rgba8(), b.color_space()), (a.rgba8(), ColorSpace::Linear));
+        assert_eq!(
+            (b.rgba8(), b.color_space()),
+            (a.rgba8(), ColorSpace::Linear)
+        );
         assert_ne!(a.id(), b.id());
         let bad = r#"{"width":2,"height":1,"colorSpace":"Srgb","rgba8":[1,2,3,4]}"#;
         assert!(serde_json::from_str::<PixelData>(bad).is_err());
