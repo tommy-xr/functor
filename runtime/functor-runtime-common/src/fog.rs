@@ -54,6 +54,16 @@ impl Fog {
         }
     }
 
+    /// Where the fog becomes total: past this distance every surface renders
+    /// as exactly the fog color, however bright. Only linear fog has one;
+    /// exponential fog never reaches zero visibility.
+    pub fn end(&self) -> Option<f32> {
+        match *self {
+            Fog::Linear { near, far, .. } if far > near && far.is_finite() => Some(far),
+            _ => None,
+        }
+    }
+
     /// How much of a surface's own color survives at `distance`: the
     /// shader's `applyFog` factor, clamped to 0..1 (NaN reads as no fog).
     /// Terrain LOD scales its screen-space error by it.
@@ -90,18 +100,24 @@ pub const FOG_GLSL: &str = r#"
         uniform float fogDensity;
         uniform vec3 fogCameraPos;   // camera world position
 
+        // How much of a surface's own color survives at worldPosition; 1.0
+        // with fog off.
+        float fogVisibility(vec3 worldPosition) {
+            if (fogEnabled == 0) {
+                return 1.0;
+            }
+            float dist = distance(worldPosition, fogCameraPos);
+            if (fogMode == 0) {
+                return clamp((fogFar - dist) / max(fogFar - fogNear, 1e-4), 0.0, 1.0);
+            }
+            return exp(-fogDensity * dist);
+        }
+
         vec3 applyFog(vec3 color, vec3 worldPosition) {
             if (fogEnabled == 0) {
                 return color;
             }
-            float dist = distance(worldPosition, fogCameraPos);
-            float factor;
-            if (fogMode == 0) {
-                factor = clamp((fogFar - dist) / max(fogFar - fogNear, 1e-4), 0.0, 1.0);
-            } else {
-                factor = exp(-fogDensity * dist);
-            }
-            return mix(fogColor, color, factor);
+            return mix(fogColor, color, fogVisibility(worldPosition));
         }
 "#;
 
@@ -187,6 +203,15 @@ mod tests {
         assert!((exp.visibility(100.0) - (-1.0f32).exp()).abs() < 1e-6);
         assert_eq!(Fog::exp(-1.0, 0.0, 0.0, 0.0).visibility(10.0), 1.0);
         assert_eq!(Fog::exp(f32::NAN, 0.0, 0.0, 0.0).visibility(10.0), 1.0);
+    }
+
+    #[test]
+    fn only_linear_fog_has_an_end() {
+        let linear = Fog::linear(20.0, 200.0, 0.0, 0.0, 0.0);
+        assert_eq!(linear.end(), Some(200.0));
+        assert_eq!(linear.visibility(200.0), 0.0);
+        assert_eq!(Fog::linear(200.0, 20.0, 0.0, 0.0, 0.0).end(), None);
+        assert_eq!(Fog::exp(0.01, 0.0, 0.0, 0.0).end(), None);
     }
 
     #[test]

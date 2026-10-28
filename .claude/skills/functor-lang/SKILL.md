@@ -1030,7 +1030,13 @@ Terrain rendering is a camera-relative quadtree over a shared GPU grid (16-bit
 height sampling, skirts, bounded instanced grass) — one `Scene.terrain` node,
 not thousands of scene nodes. Fog coarsens it: without a skybox,
 `Terrain.maxPixelError` is divided by the frame fog's visibility at each patch
-(at most 4×), so fogged distance costs fewer vertices. `/state.terrain` reports the drawn patches/vertices.
+(at most 4×), so fogged distance costs fewer vertices. When the background IS the fog
+(no skybox, no passthrough, clear color left at — or set to — the fog color), patches
+wholly past linear fog's `far` are not drawn at all, and fully fogged terrain pixels
+skip lighting and texturing (exp fog never reaches zero visibility, so it culls
+nothing; neither do the normals/tangents debug views, which draw unfogged). Props are the game's to cull: `examples/night-terrain` drops them past the
+fog in `regroup` and sets the camera's far plane to the fog end. `/state.terrain`
+reports the drawn patches/vertices.
 
 ### The cross-cutting rules (what a signature won't tell you)
 

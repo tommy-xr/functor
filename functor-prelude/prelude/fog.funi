@@ -3,6 +3,10 @@
 //! Fog applies to every forward material, emissive included, and its color
 //! also becomes the frame's clear color unless `Frame.withClearColor` says
 //! otherwise. A skybox is never fogged.
+//!
+//! When the background is the fog color (no skybox or override), terrain
+//! wholly past linear fog's `far` is not drawn at all; set the camera's far
+//! plane there too (`Camera3D.clip`) so fog bounds the work.
 
 /// An opaque fog description.
 type t = host

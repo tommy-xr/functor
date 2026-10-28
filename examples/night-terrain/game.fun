@@ -3,8 +3,10 @@
 //
 // One unshadowed spot light rides the camera and points where it looks (on
 // XR, where the headset looks); a dim blue moon and ambient light the relief
-// beyond its cone, out to a ridged, snow-capped range that reads against the
-// sky. Trees, fallen logs, and boulders are scattered from a seed, stood on the
+// beyond its cone until a dense night fog swallows everything by `fogEnd`.
+// The fog also bounds the work: the camera's far plane sits at `fogEnd`, the
+// renderer skips terrain past it, and props past it are never submitted.
+// Trees, fallen logs, and boulders are scattered from a seed, stood on the
 // ground by raycasting the same heightfield the terrain draws, and thinned by
 // biome: dense on the low ground, sparse toward the treeline, none on cliffs.
 //
@@ -15,10 +17,11 @@
 
 // ── Tunables (hot-reload: save and the scene updates in place) ──────────────
 
-let fogDensity = 0.0006
-let fogColor = Color.rgb(0.030, 0.038, 0.066)
-// A touch brighter than the fogged distance, so ridgelines stand out dark.
-let skyColor = Color.rgb(0.040, 0.050, 0.088)
+// Clear to `fogStart`, fully black by `fogEnd`. The background clears to the
+// same black, so nothing past `fogEnd` can be told apart from it.
+let fogStart = 20.0
+let fogEnd = 200.0
+let fogColor = Color.rgb(0.0, 0.0, 0.0)
 
 let flashlightCone = Angle.degrees(20.0)
 let flashlightRange = 60.0
@@ -230,9 +233,12 @@ let init = {
   trees: [],
   logs: [],
   boulders: [],
-  // The trees split by fir variant and mesh/card distance, and where the eye
-  // stood when they were split (see `regroup`).
+  // The trees split by fir variant and mesh/card distance, the logs and
+  // boulders short of the fog, and where the eye stood when they were split
+  // (see `regroup`).
   forest: [],
+  shownLogs: [],
+  shownBoulders: [],
   forestAt: Option.None,
 }
 
@@ -336,24 +342,34 @@ let rockAt = (p) => placeAt(p, 0.15, p.size)
 
 let isNear = (eye, p) => near(p, eye, meshDistance)
 
-// Split the trees by variant and by mesh/card distance. Splitting walks every
-// tree, so `tick` redoes it only after the eye moves `regroupStep` metres —
-// near trees switch to cards up to that much late.
+// Split the trees by variant and by mesh/card distance, and drop every prop
+// past the fog. Splitting walks every prop, so `tick` redoes it only after the
+// eye moves `regroupStep` metres — near trees switch to cards up to that much
+// late.
 let regroupStep = 4.0
+// No prop reaches further than this from its origin.
+let propRadius = 4.0
+// Short of the fog from anywhere within `regroupStep` of the split's eye.
+let isShown = (eye, p) => near(p, eye, fogEnd + regroupStep + propRadius)
 let regroup = (model) =>
   let fresh = match model.forestAt with
-    // `distance` keys the split too, so a hot-reloaded `meshDistance` applies.
-    | Option.Some(at) => at.distance == meshDistance && near(at, model.eye, regroupStep)
+    // The tunables key the split too, so hot-reloading either applies.
+    | Option.Some(at) =>
+      at.distance == meshDistance && at.fogEnd == fogEnd && near(at, model.eye, regroupStep)
     | Option.None => false in
   if fresh then model
   else
+    let shown = (props) => props |> List.filter((p) => isShown(model.eye, p)) in
+    let trees = shown(model.trees) in
     { model with
-        forestAt: Option.Some({ x: model.eye.x, z: model.eye.z, distance: meshDistance }),
+        forestAt: Option.Some({ x: model.eye.x, z: model.eye.z, distance: meshDistance, fogEnd: fogEnd }),
         // One { near, far } per entry of `firs`, in order.
         forest: List.range(List.length(firs)) |> List.map((i) =>
-          let mine = model.trees |> List.filter((t) => variantOf(List.length(firs), t) == i) in
+          let mine = trees |> List.filter((t) => variantOf(List.length(firs), t) == i) in
           { near: mine |> List.filter((t) => isNear(model.eye, t)),
-            far: mine |> List.filter((t) => not isNear(model.eye, t)) }) }
+            far: mine |> List.filter((t) => not isNear(model.eye, t)) }),
+        shownLogs: shown(model.logs),
+        shownBoulders: shown(model.boulders) }
 
 let forest = (groups) =>
   groups
@@ -369,7 +385,8 @@ let draw = (model, tts) =>
   let eye = Vec3.make(model.eye.x, model.eye.y, model.eye.z) in
   let camera =
     Camera3D.firstPerson(eye, Angle.radians(model.yaw), Angle.radians(model.pitch), Angle.degrees(68.0))
-    |> Camera3D.clip(0.3, 6000.0) in
+    // Nothing past the fog's end can show, so the far plane stops there.
+    |> Camera3D.clip(0.3, fogEnd) in
   // On XR the beam follows the tracked head, mapped through the same camera.
   let (from, dir) =
     match model.head with
@@ -389,16 +406,15 @@ let draw = (model, tts) =>
     Scene.group([
       Scene.terrain(world),
       Scene.memo("forest", model.forest, (groups) => Scene.group(forest(groups))),
-      Scene.memo("logs", model.logs, (props) => Scene.group(byVariant(logs, props, logAt))),
-      Scene.memo("rocks", model.boulders, (props) => Scene.group(byVariant(rocks, props, rockAt))),
+      Scene.memo("logs", model.shownLogs, (props) => Scene.group(byVariant(logs, props, logAt))),
+      Scene.memo("rocks", model.shownBoulders, (props) => Scene.group(byVariant(rocks, props, rockAt))),
     ]),
     [
       Light.ambient(ambientColor),
       Light.directional(moonDirection, moonColor, moonIntensity),
       flashlight,
     ])
-  |> Frame.withFog(Fog.exp(fogDensity, fogColor))
-  |> Frame.withClearColor(skyColor)
+  |> Frame.withFog(Fog.linear(fogStart, fogEnd, fogColor))
 
 // How many instanced props use each of `count` variants.
 let perVariant = (count, props) =>
@@ -414,9 +430,9 @@ let ui = (model) =>
   let draws =
     nonEmpty(close) * (firMeshPrimitives + 1.0)
     + nonEmpty(distant)
-    + nonEmpty(perVariant(List.length(logs), model.logs))
-    + nonEmpty(perVariant(List.length(rocks), model.boulders)) in
+    + nonEmpty(perVariant(List.length(logs), model.shownLogs))
+    + nonEmpty(perVariant(List.length(rocks), model.shownBoulders)) in
   let instances =
-    2.0 * List.sum(close) + List.sum(distant) + List.length(model.logs) + List.length(model.boulders) in
-  Ui.text($"Night terrain · WASD + mouse · {List.length(model.trees)} trees ({List.sum(close)} mesh, {List.sum(distant)} card) · {List.length(model.logs)} logs · {List.length(model.boulders)} rocks · {instances} instances · {draws} draws")
+    2.0 * List.sum(close) + List.sum(distant) + List.length(model.shownLogs) + List.length(model.shownBoulders) in
+  Ui.text($"Night terrain · WASD + mouse · {List.sum(close) + List.sum(distant)}/{List.length(model.trees)} trees ({List.sum(close)} mesh, {List.sum(distant)} card) · {List.length(model.shownLogs)} logs · {List.length(model.shownBoulders)} rocks · {instances} instances · {draws} draws")
   |> Ui.panel(Ui.topLeft())
