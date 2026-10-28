@@ -41,6 +41,10 @@ pub fn bundled_modules() -> Vec<BundledModule> {
         include_str!("../stdlib/codec.fun"),
     ));
     bundled.push(BundledModule::implementation(
+        "Connector",
+        include_str!("../stdlib/connector.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
         "Fit",
         include_str!("../stdlib/fit.fun"),
     ));

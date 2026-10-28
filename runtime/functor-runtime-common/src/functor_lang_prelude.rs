@@ -12575,6 +12575,88 @@ the game dir"
         assert!(err.contains("leaves no thread"), "{err}");
     }
 
+    /// `Solid.split` keeps each side of a normalized plane; `Connector` pins,
+    /// holes and keys mate with exactly the `Fit` gap; `layFlat` puts a cut
+    /// face on the bed.
+    #[test]
+    fn split_halves_and_connectors_mate() {
+        let prelude = "let near = (a: float, b: float) => Math.abs(a - b) < 0.0005\n\
+             let same = (a: float, b: float) => Math.abs(a / b - 1.0) < 0.000001\n\
+             let up = Vec3.make(0.0, 0.0, 1.0)\n\
+             let box = Solid.box(40.0, 30.0, 60.0)\n\
+             let halves = (p: Solid.plane, s) => Solid.split(p, s)\n\
+             let first = (pair) => match pair with | (a, _) => a\n\
+             let second = (pair) => match pair with | (_, b) => b\n\
+             let pin = { diameter: 5.0, length: 16.0 }\n\
+             let k = { width: 6.0, length: 10.0, height: 4.0 }\n\
+             let spots = [{ x: -10.0, y: 0.0 }, { x: 10.0, y: 5.0 }]\n\
+             let flat = { normal: up, offset: 10.0 }\n\
+             // Oblique and unnormalized, through the box's center.\n\
+             let tilted = { normal: Vec3.make(2.0, 0.0, 2.0), offset: 0.0 }\n\
+             let dowelled = Connector.dowelled(tilted, Fit.slip, pin, spots, box)\n\
+             let pinAt = (at: Input.point2) => Connector.onPlane(tilted, at, Connector.pin(pin) |> Solid.translate(Vec3.make(0.0, 0.0, -8.0)))\n\
+             let keyed = Connector.keyed(flat, Fit.slip, k, { x: 5.0, y: 0.0 }, box)\n";
+        let checks = [
+            // Normal (0, 0, 2) with offset 20 is z = 10: 20 of the box's 60 mm above.
+            "near(Solid.volume(first(halves({ normal: Vec3.make(0.0, 0.0, 2.0), offset: 20.0 }, box))), 40.0 * 30.0 * 20.0) \
+             && near(Vec3.z(Solid.bounds(second(halves({ normal: Vec3.make(0.0, 0.0, 2.0), offset: 20.0 }, box))).max), 10.0)",
+            // Pin: nominal, standing on the bed; hole: Ø + 2·gap, length / 2 + gap each side.
+            "near(Vec3.x(Solid.bounds(Connector.pin(pin)).max), 2.5) && near(Vec3.z(Solid.bounds(Connector.pin(pin)).min), 0.0) \
+             && near(Vec3.z(Solid.bounds(Connector.pin(pin)).max), 16.0) \
+             && near(Vec3.x(Solid.bounds(Connector.hole(Fit.slip, pin)).max) - 2.5, Fit.slip.gap) \
+             && near(Vec3.z(Solid.bounds(Connector.hole(Fit.slip, pin)).max), 8.0 + Fit.slip.gap)",
+            // A negative gap tightens the hole, never its depth; a short pin still builds.
+            "near(Vec3.x(Solid.bounds(Connector.hole(Fit.gap(-0.1), pin)).max), 2.4) \
+             && near(Vec3.z(Solid.bounds(Connector.hole(Fit.gap(-0.1), pin)).max), 8.0) \
+             && near(Vec3.z(Solid.bounds(Connector.slot(Fit.gap(-0.1), k)).max), 4.0) \
+             && near(Vec3.z(Solid.bounds(Connector.pin({ diameter: 5.0, length: 1.0 })).max), 1.0)",
+            // A normal a hair off +Z leaves spots where they are (no spin about Z).
+            "near(Vec3.y(Solid.bounds(Connector.onPlane({ normal: Vec3.make(0.000001, 0.000001, 1.0), offset: 0.0 }, \
+               { x: 10.0, y: 0.0 }, Solid.box(1.0, 1.0, 1.0))).max), 0.5)",
+            // onPlane turns Z to the normal: a pin on the x = 10 plane runs from x = 10 out.
+            "near(Vec3.x(Solid.bounds(Connector.onPlane({ normal: Vec3.make(3.0, 0.0, 0.0), offset: 30.0 }, { x: 0.0, y: 0.0 }, Connector.pin(pin))).min), 10.0) \
+             && near(Vec3.x(Solid.bounds(Connector.onPlane({ normal: Vec3.make(3.0, 0.0, 0.0), offset: 30.0 }, { x: 0.0, y: 0.0 }, Connector.pin(pin))).max), 26.0)",
+            // Dowelled on the oblique plane: halves sum to the box less two holes,
+            // and the pins, seated, touch neither half.
+            "same(Solid.volume(first(dowelled)) + Solid.volume(second(dowelled)), \
+               Solid.volume(box) - 2.0 * Solid.volume(Connector.hole(Fit.slip, pin))) \
+             && List.all((at: Input.point2) => Solid.volume(Solid.intersect(first(dowelled), pinAt(at))) < 0.000001 \
+               && Solid.volume(Solid.intersect(second(dowelled), pinAt(at))) < 0.000001, spots)",
+            // Key: the tab stands 4 mm proud of the cut, its slot is gap wider and
+            // deeper, and the halves meet without touching.
+            "near(Vec3.z(Solid.bounds(second(keyed)).max), 14.0) \
+             && near(Vec3.x(Solid.bounds(Connector.slot(Fit.slip, k)).max) - 3.0, Fit.slip.gap) \
+             && near(Vec3.z(Solid.bounds(Connector.slot(Fit.slip, k)).max) - 4.0, Fit.slip.gap) \
+             && Solid.volume(Solid.intersect(first(keyed), second(keyed))) < 0.000001 \
+             && same(Solid.volume(first(keyed)) + Solid.volume(second(keyed)), \
+               Solid.volume(box) - 6.3 * 10.3 * 4.15 + 6.0 * 10.0 * 4.0)",
+            // layFlat on the oblique cut: the 30 × 40√2 mm cut face lies on the
+            // bed, so a slab 0.01 mm above it holds the whole face.
+            "near(Vec3.z(Solid.bounds(Connector.layFlat(Vec3.make(-1.0, 0.0, -1.0), first(halves(tilted, box)))).min), 0.0) \
+             && Math.abs(Solid.volume(Solid.intersect(Solid.box(200.0, 200.0, 0.02), \
+                  Connector.layFlat(Vec3.make(-1.0, 0.0, -1.0), first(halves(tilted, box))))) \
+                / (0.01 * 30.0 * 40.0 * Math.sqrt(2.0)) - 1.0) < 0.01",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+        for (src, want) in [
+            ("first(Solid.split({ normal: Vec3.make(0.0, 0.0, 0.0), offset: 1.0 }, box))", "non-zero, finite normal"),
+            ("first(halves({ normal: up, offset: 30.0 }, box))", "misses or only touches the solid"),
+            ("first(halves({ normal: up, offset: 45.0 }, box))", "spans -30.000 to 30.000"),
+            ("Connector.onPlane({ normal: Vec3.make(0.0, 0.0, 0.0), offset: 1.0 }, { x: 0.0, y: 0.0 }, box)", "normal can't be zero"),
+        ] {
+            let src = format!("{prelude}let main = Solid.volume({src})\n");
+            let err = eval_with_prelude(&src).err().expect("should fail");
+            assert!(err.contains(want), "{src}: {err}");
+        }
+    }
+
     /// `Mesh.*` from raw f32 positions + polygons, then `Solid.fromMesh`
     /// closes an open box and scales it to the asked height.
     #[test]

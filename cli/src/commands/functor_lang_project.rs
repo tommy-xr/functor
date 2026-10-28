@@ -2831,7 +2831,7 @@ examples move?",
     /// fits); `verify` only typechecks `game.fun` examples, so run them here.
     #[test]
     fn part_examples_expects_pass() {
-        for name in ["bolt", "hardware"] {
+        for name in ["bolt", "hardware", "split"] {
             let dir: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples", name]
                 .iter()
                 .collect();
@@ -2889,6 +2889,23 @@ examples move?",
         assert_eq!(&bytes[..4], b"PK\x03\x04");
         let end = bytes.len() - 22;
         assert_eq!(u16::from_le_bytes([bytes[end + 10], bytes[end + 11]]), 6);
+    }
+
+    /// The split example's halves and pins each export as a printable part.
+    #[test]
+    fn export_writes_split_halves_and_pins_as_3mf() {
+        let dir: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples", "split"]
+            .iter()
+            .collect();
+        let dir = dir.to_string_lossy().into_owned();
+        let project = super::detect(&dir).unwrap().select(None).unwrap();
+        let loaded = project.build(&dir, false).unwrap();
+        let out =
+            std::env::temp_dir().join(format!("functor-export-split-{}.3mf", std::process::id()));
+        let parts = ["top", "bottom", "pins"].map(String::from);
+        project.export(&loaded, &parts, &out).unwrap();
+        assert!(std::fs::metadata(&out).unwrap().len() > 1000);
+        std::fs::remove_file(&out).ok();
     }
 
     /// A `part` that is not a Solid gets a teaching error, and nothing is written.

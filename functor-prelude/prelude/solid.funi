@@ -6,7 +6,8 @@
 //! that is only a `part` runs in a default viewer (`functor run`: drag to orbit,
 //! scroll to zoom) — see `<stdlib>/PartViewer.fun` to customize it. Screw
 //! holes, nut traps, insert and magnet pockets: `<stdlib>/Hardware.fun`;
-//! threads: `<stdlib>/Thread.fun`; print tolerances: `<stdlib>/Fit.fun`.
+//! threads: `<stdlib>/Thread.fun`; dowels and keys for split parts:
+//! `<stdlib>/Connector.fun`; print tolerances: `<stdlib>/Fit.fun`.
 //!
 //! ```
 //! let part = Solid.group([
@@ -61,6 +62,17 @@ let union : (List<t>) => t
 let subtract : (t, t) => t
 /// Keep only where a solid overlaps `other`; the solid is last for piping.
 let intersect : (t, t) => t
+
+/// A plane: the points `p` where `Vec3.dot(normal, p) == offset`, in mm.
+/// Normal and offset scale together: `{ normal: Vec3.make(0.0, 0.0, 2.0),
+/// offset: 10.0 }` is z = 5.
+type plane = { normal: Vec3.t, offset: float }
+/// Cut a solid in two along a plane: `(above, below)`, where `above` is the
+/// side the normal points to. Each half is closed by its cut face, in place.
+/// A plane that misses the solid or only touches it fails when the halves
+/// are measured or exported. `<stdlib>/Connector.fun` adds dowels and keys
+/// and lays halves flat for printing.
+let split : (plane, t) => (t, t)
 
 /// Place solids together as one part (at least one). Pieces are NOT merged —
 /// each stays its own closed shell, which slicers print as a union — so they
