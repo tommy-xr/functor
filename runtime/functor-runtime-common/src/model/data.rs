@@ -376,7 +376,7 @@ fn validate_static(s: &ModelSource) -> Result<(), String> {
                 lightmap.scale
             ));
         }
-        if !lightmap.floor.iter().all(|c| c.is_finite()) {
+        if !finite(&[lightmap.floor]) {
             return Err("lightmap: floor is not a finite colour".to_string());
         }
     }

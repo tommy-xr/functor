@@ -92,7 +92,8 @@ type group = { first: float, count: float, texture: Option.t<Asset.Texture>, unl
 ///   base and lightmap in gamma space, since decoding the product is
 ///   (nearly) the product of the decodes.
 ///
-/// A file lightmap is sampled clamped. A Blender bake maps directly:
+/// Lightmaps are sampled clamped, without mipmaps, so atlas rects never
+/// bleed into each other. A Blender bake maps directly:
 /// `TEXCOORD_1` → `uvs2`, the baked image → `texture`, primitives → groups.
 type lightmap = { texture: Asset.Texture, scale: float, floor: Color.t }
 

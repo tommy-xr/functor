@@ -111,6 +111,9 @@ pub struct SceneContext {
     render_targets: RefCell<HashMap<String, RenderTargetBuffers>>,
     render_target_warned: RefCell<HashSet<String>>,
     fallback_texture: RefCell<Option<glow::Texture>>,
+    // Clamped, unmipmapped sampling for lightmaps, whatever their texture's
+    // own wrap and mips (an `Srgb` atlas is mipmapped and repeats).
+    lightmap_sampler: Cell<Option<glow::Sampler>>,
     // Compiled-in textures, hydrated on first bind and kept for the process
     // lifetime like the fallback texture: they have no locator to evict by and
     // there is at most one per variant.
@@ -363,21 +366,21 @@ fn draw_static_model(
         &source.groups[..]
     };
     // The lightmap samples in its own colour space (a file one as sRGB),
-    // clamped so atlas rects never wrap.
+    // through a sampler that clamps with no mips, so atlas rects never
+    // bleed into each other.
     if let Some(lightmap) = &source.lightmap {
-        let texture = match &lightmap.texture {
-            TextureDescription::File(file) => TextureDescription::FileClamped(file.clone()),
-            other => other.clone(),
-        };
         material_description::bind_texture_description(
-            &texture,
+            &lightmap.texture,
             3,
             SpriteSampling::Linear,
             &scene_context.texture_pipeline,
             render_context,
             scene_context,
         );
-        unsafe { gl.active_texture(glow::TEXTURE0) };
+        unsafe {
+            gl.bind_sampler(3, Some(scene_context.lightmap_sampler(gl)));
+            gl.active_texture(glow::TEXTURE0);
+        }
     }
     let mut material = crate::material::StaticMaterial {
         lightmap: source.lightmap.as_ref().map(|l| {
@@ -399,6 +402,9 @@ fn draw_static_model(
         }
         material.set_group(render_context, group.texture.is_some(), group.unlit);
         mesh.draw_range(gl, group.first as i32 * 3, group.count as i32 * 3);
+    }
+    if source.lightmap.is_some() {
+        unsafe { gl.bind_sampler(3, None) };
     }
 }
 
@@ -582,6 +588,7 @@ impl SceneContext {
             render_targets: RefCell::new(HashMap::new()),
             render_target_warned: RefCell::new(HashSet::new()),
             fallback_texture: RefCell::new(None),
+            lightmap_sampler: Cell::new(None),
             builtin_textures: RefCell::new(HashMap::new()),
             raw_image_pipeline: asset::build_pipeline(Box::new(RawImagePipeline)),
             skyboxes: RefCell::new(HashMap::new()),
@@ -1101,6 +1108,26 @@ impl SceneContext {
 
     /// A 1x1 magenta texture bound when a material references a render target
     /// no frame declares — loud on screen, and `warn_once` says why.
+    fn lightmap_sampler(&self, gl: &glow::Context) -> glow::Sampler {
+        if let Some(sampler) = self.lightmap_sampler.get() {
+            return sampler;
+        }
+        let sampler = unsafe {
+            let sampler = gl.create_sampler().expect("lightmap sampler");
+            for (param, value) in [
+                (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+            ] {
+                gl.sampler_parameter_i32(sampler, param, value as i32);
+            }
+            sampler
+        };
+        self.lightmap_sampler.set(Some(sampler));
+        sampler
+    }
+
     pub fn fallback_texture(&self, gl: &glow::Context) -> glow::Texture {
         let mut fallback = self.fallback_texture.borrow_mut();
         *fallback.get_or_insert_with(|| unsafe {

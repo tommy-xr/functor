@@ -7,7 +7,7 @@
 //!   nothing, and undrawn it is deleted;
 //! - the shadow pass and the instanced (stamped) path draw it;
 //! - a lightmapped texel is base × lightmap × scale, in either lightmap
-//!   colour space; `floor` is a minimum; `Light.baked` lights skip
+//!   colour space, sampled clamped without mips; `floor` is a minimum; `Light.baked` lights skip
 //!   lightmapped surfaces but still light others; unbaked lights add.
 //!
 //! Self-skipping like `skinned_data` (needs a GL display; GLFW on the main
@@ -135,6 +135,18 @@ fn lightmap_texels(harness: &mut Harness) {
         let seen = rgb(&image, x, 64)[0];
         assert!(seen.abs_diff(want) <= 6, "uv2 ramp at {x}: drew {seen}, want {want}");
     }
+    // Lightmaps sample clamped with no mips: uv2 running far past 1 over a
+    // white | black `Srgb` map (mipmapped, repeating as a texture) reads the
+    // black edge texel, not the grey average of the smallest mip.
+    let edge = PixelData::new(2, 1, PixelEncoding::Rgb8, ColorSpace::Srgb, &[255, 255, 255, 0, 0, 0]);
+    let edge = TextureDescription::Data(Arc::new(edge.expect("valid pixels")));
+    let room = lightmapped(solid([255, 255, 255]), edge, 1.0, [0.0; 3]);
+    let room = model(ModelSource {
+        uvs2: vec![[0.0, 0.5], [100.0, 0.5], [100.0, 0.5], [0.0, 0.5]],
+        ..room.source().clone()
+    });
+    let image = harness.render(&frame(&room, 1, false, vec![]));
+    assert_near(rgb(&image, 32, 64), [0, 0, 0], "clamped, unmipmapped lightmap");
     // A dark lightmap shows `floor` (an sRGB colour) instead.
     let room = lightmapped(
         solid([255, 255, 255]),

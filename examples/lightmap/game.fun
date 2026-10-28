@@ -28,7 +28,8 @@ let at = (f, s: float, t: float) => f.o |> Vec3.add(Vec3.scale(s, f.a)) |> Vec3.
 
 // Baked illumination at a point: ambient plus the lamp, with the engine's
 // light falloff (1 - d²/r²)² and Lambert, darkened by `ao`. Linear, 0–1.
-let srgbToLinear = (c: float): float => Math.pow(c, 2.2)
+let srgbToLinear = (c: float): float =>
+  if c <= 0.04045 then c / 12.92 else Math.pow((c + 0.055) / 1.055, 2.4)
 let lit = (p, n, ao: float, channel: float, lamp: float): float =>
   let toLamp = lampAt |> Vec3.sub(p) in
   let d = Vec3.length(toLamp) in
@@ -76,9 +77,11 @@ let uvs = perCorner((face, rect, c) => let (s, t) = c in [s * Vec3.length(face.a
 let uvs2 = perCorner((face, rect, c) => let (s, t) = c in [rect.u0 |> Math.lerp(rect.u1, s), rect.v0 |> Math.lerp(rect.v1, t)])
 let triangles = List.range(5.0) |> List.concatMap((k) => [0.0, 1.0, 2.0, 0.0, 2.0, 3.0] |> List.map((i) => 4.0 * k + i))
 
-// A checker floor and plain plaster, both tiny sRGB textures.
+// A checker floor (8×8, two tiles a metre) and plain plaster, both sRGB.
 let rgb = (w, h, bytes) => Texture.fromPixels({ width: w, height: h, format: Texture.Rgb8, colorSpace: Texture.Srgb, pixels: Bytes.fromU8(bytes) })
-let checker = rgb(2.0, 2.0, [200.0, 200.0, 190.0, 90.0, 90.0, 100.0, 90.0, 90.0, 100.0, 200.0, 200.0, 190.0])
+let tile = (i: float, j: float): List<float> =>
+  if Math.mod(Math.floor(i / 4.0) + Math.floor(j / 4.0), 2.0) == 0.0 then [200.0, 200.0, 190.0] else [90.0, 90.0, 100.0]
+let checker = rgb(8.0, 8.0, List.range(8.0) |> List.concatMap((j) => List.range(8.0) |> List.concatMap((i) => tile(i, j))))
 let plaster = rgb(1.0, 1.0, [225.0, 215.0, 200.0])
 
 let room = Model.static({
@@ -108,7 +111,7 @@ let draw = (model, tts: float) =>
     camera,
     Scene.group([
       Scene.modelOf(room),
-      Scene.cube() |> Scene.scale(0.6) |> Scene.translate(Vec3.make(0.6, 0.3, 0.0 - 2.2)) |> Scene.lit(Color.rgb(0.8, 0.3, 0.25)),
+      Scene.cube() |> Scene.scale(0.6) |> Scene.translate(Vec3.make(0.6, 0.3, 0.0 - 1.4)) |> Scene.lit(Color.rgb(0.8, 0.3, 0.25)),
       Scene.sphere() |> Scene.scale(0.12) |> Scene.translate(orbAt(tts)) |> Scene.emissive(Color.rgb(0.4, 0.6, 1.0)),
       Scene.sphere() |> Scene.scale(0.15) |> Scene.translate(lampAt) |> Scene.emissive(lampColor)
     ]),
