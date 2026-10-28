@@ -155,8 +155,9 @@ impl<K: Clone, V: Clone> PMap<K, V> {
     /// of the entries, so a single-leaf map costs nothing extra.
     pub fn from_sorted(entries: Vec<(K, V)>) -> (Self, u64) {
         let len = entries.len();
-        if len == 0 {
-            return (PMap::default(), 0);
+        if len <= CAP {
+            let root = (len > 0).then(|| Rc::new(Node::Leaf(entries)));
+            return (PMap { root, len }, 0);
         }
         // Each level is (smallest key under the node, node).
         let mut level: Vec<(K, Rc<Node<K, V>>)> = even_chunks(entries)

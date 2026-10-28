@@ -246,8 +246,8 @@ fn append_doubling_cannot_amplify_past_the_budget() {
 }
 
 #[test]
-fn immutable_map_updates_charge_the_copied_output() {
-    // Four inserts materialize vectors of lengths 1+2+3+4. Together with
+fn immutable_map_updates_charge_the_written_output() {
+    // Four inserts into a one-leaf map write leaves of 1+2+3+4 entries. With
     // their logarithmic searches this must exceed a budget that a
     // per-builtin-call-only implementation would fit.
     let src = "expect Map.member(4.0,\n\
@@ -367,7 +367,10 @@ fn min_budget(defs: &str, value: &str) -> u64 {
 
 /// Fuel charged by applying `op` (a pipeline step) to `setup`'s value.
 fn op_cost(defs: &str, setup: &str, op: &str) -> u64 {
-    min_budget(defs, &format!("({setup}) |> {op}")) - min_budget(defs, setup)
+    let cost = min_budget(defs, &format!("({setup}) |> {op}")) - min_budget(defs, setup);
+    // Zero would mean a setup preflight, not the op, set both budgets.
+    assert!(cost > 0, "{op} measured nothing");
+    cost
 }
 
 const MAP_DEFS: &str = "let sorted = (n) => List.range(n) |> List.map((i) => (i, i))";
@@ -437,7 +440,7 @@ fn map_internal_separators_charge_compared_string_bytes() {
     let call = map_call_overhead();
     // 17 keys sharing a 1000-byte prefix: leaves "a".."i" + "j".."q".
     // Finding "q" compares against separator "j", then 3 leaf keys; each
-    // comparison costs the common length + 1 = 1002.
+    // comparison costs the shorter key's length + 1 = 1002.
     let prefix = "a".repeat(1000);
     let keys: Vec<String> = ('a'..='q')
         .map(|c| format!("(\"{prefix}{c}\", 0.0)"))

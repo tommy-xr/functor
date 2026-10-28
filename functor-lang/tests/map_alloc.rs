@@ -31,7 +31,7 @@ fn bytes_per_update(session: &Session, name: &str) -> usize {
             .unwrap();
         BYTES.load(Ordering::Relaxed) - before
     };
-    (measure(30) - measure(10)) / 20
+    measure(30).saturating_sub(measure(10)) / 20
 }
 
 #[test]

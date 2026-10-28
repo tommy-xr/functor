@@ -794,8 +794,8 @@ impl Session {
 /// arithmetic), or one element/byte a bulk builtin materializes or scans
 /// (`List.range`'s count; `List.append`/`flatten` output elements;
 /// `Text.concat`/`join`/`toBullets` output bytes; `reverse`/`maximum`/
-/// `split` input size; Map key comparisons, copied entries, and materialized
-/// iteration output). Charging GROWTH builtins by output is what makes
+/// `split` input size; Map key comparisons, written tree nodes, and
+/// materialized iteration output). Charging GROWTH builtins by output is what makes
 /// the budget honest — `(x) => List.append(x, x)` doubles per call, so a
 /// per-call-only charge would allow exponential work under a linear budget.
 /// The general per-node eval path is deliberately uncharged so the frame
@@ -2818,8 +2818,9 @@ most 1000000 cells"
                     debug_assert!(comparison_work <= comparison_work_ceiling);
                     self.charge(comparison_work, span)?;
                     // The bulk build moves the (already charged) entries into
-                    // leaves; charge the internal nodes it adds (~n/12, none
-                    // for a one-leaf map).
+                    // leaves; charge the internal nodes it adds (~n/15, none
+                    // for a one-leaf map), refusing first on a bound (≤ n/4).
+                    self.preflight_charge(out.len() as u64 / 4, span)?;
                     let (map, units) = PMap::from_sorted(out);
                     self.charge(units, span)?;
                     Ok(Value::Map(map))
