@@ -75,6 +75,13 @@ pub(crate) fn fused_room() -> Arc<RoomMeshes> {
     FUSED_ROOM.with(|slot| slot.borrow().clone())
 }
 
+/// Whether this thread's physics world has a `Physics.fusedRoom` body, so
+/// the shell should fuse the room and publish it.
+pub fn wants_fused_room() -> bool {
+    super::with_world(super::DEFAULT_WORLD, |w| w.fused_room_colliders().is_some())
+        .unwrap_or(false)
+}
+
 /// One chunk's collider geometry.
 #[derive(Debug, PartialEq)]
 pub(crate) struct ChunkGeometry {

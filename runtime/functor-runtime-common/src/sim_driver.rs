@@ -593,10 +593,7 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
         },
         terrain_requests,
         terrain_pending,
-        wants_fused_room: crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
-            w.fused_room_colliders().is_some()
-        })
-        .unwrap_or(false),
+        wants_fused_room: crate::physics::wants_fused_room(),
         physics_lines: if req.physics_lines {
             crate::physics::with_world(
                 crate::physics::DEFAULT_WORLD,
