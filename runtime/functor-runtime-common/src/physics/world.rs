@@ -12,7 +12,8 @@
 //! mid-flight. Rapier's scratch `PhysicsPipeline` is deliberately skipped
 //! (recreated on restore; it holds no simulation-visible state).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use rapier3d::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -145,6 +146,19 @@ fn hsla_to_rgba([h, s, l, a]: [f32; 4]) -> [f32; 4] {
     [r + m, g + m, b + m, a]
 }
 
+/// What the last [`World::reconcile`] did: the counters behind
+/// `Physics.memo`'s claim that an unchanged group costs O(1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReconcileStats {
+    /// Declarations compared with the cache: flat bodies plus the bodies of
+    /// groups that changed.
+    pub compared: usize,
+    /// Declarations written to the cache (spawns and changes).
+    pub written: usize,
+    /// Groups skipped because their `Arc` was the one already reconciled.
+    pub groups_skipped: usize,
+}
+
 /// A live Rapier world plus the reconcile bookkeeping that maps declared
 /// [`Body`] tags onto Rapier handles.
 #[derive(Serialize, Deserialize)]
@@ -169,6 +183,13 @@ pub struct World {
     /// *differs from this cache*; an unchanged declaration leaves the body to
     /// the simulation.
     declared: BTreeMap<String, Body>,
+    /// Tags the last reconcile saw declared flat (outside any group). With
+    /// changed groups' members, the only tags a despawn scan visits.
+    flat: BTreeSet<String>,
+    /// The last-reconciled `Physics.memo` group per key. A scene holding the
+    /// same `Arc` again skips the group without visiting its bodies. World
+    /// state, so restoring a checkpoint can't leave a stale fast path.
+    groups: BTreeMap<String, Arc<[Body]>>,
     accumulator: f32,
     frame: u64,
     /// Commands awaiting the next stepped frame (serialized: a snapshot taken
@@ -192,6 +213,8 @@ pub struct World {
     /// at. Drain with [`World::take_command_warnings`].
     #[serde(skip, default)]
     command_warnings: Vec<String>,
+    #[serde(skip, default)]
+    reconcile_stats: ReconcileStats,
 }
 
 impl Clone for World {
@@ -210,12 +233,15 @@ impl Clone for World {
             ccd_solver: self.ccd_solver.clone(),
             tags: self.tags.clone(),
             declared: self.declared.clone(),
+            flat: self.flat.clone(),
+            groups: self.groups.clone(),
             accumulator: self.accumulator,
             frame: self.frame,
             pending: self.pending.clone(),
             forced: self.forced.clone(),
             events: self.events.clone(),
             command_warnings: self.command_warnings.clone(),
+            reconcile_stats: self.reconcile_stats,
         }
     }
 }
@@ -262,12 +288,15 @@ impl World {
             ccd_solver: CCDSolver::new(),
             tags: BTreeMap::new(),
             declared: BTreeMap::new(),
+            flat: BTreeSet::new(),
+            groups: BTreeMap::new(),
             accumulator: 0.0,
             frame: 0,
             pending: Vec::new(),
             forced: Vec::new(),
             events: Vec::new(),
             command_warnings: Vec::new(),
+            reconcile_stats: ReconcileStats::default(),
         }
     }
 
@@ -337,39 +366,105 @@ impl World {
     /// game happened to assemble the body list (docs/physics.md, "sort by
     /// tag"). A tag repeated in the scene keeps its first occurrence (mirrors
     /// `audio::reconcile`).
+    ///
+    /// A group whose `Arc` was reconciled last time is skipped: its bodies
+    /// would all compare equal. Only flat bodies and changed groups are
+    /// visited, so the rapier history matches declaring every body flat.
     pub fn reconcile(&mut self, scene: &PhysicsScene) {
         self.gravity = scene.gravity;
+        let mut stats = ReconcileStats::default();
 
         let mut wanted: BTreeMap<&String, &Body> = BTreeMap::new();
         for body in &scene.bodies {
             wanted.entry(&body.tag).or_insert(body); // first occurrence wins
         }
-
-        // Despawns: live tags no longer declared, in tag order.
-        let gone: Vec<String> = self
-            .tags
-            .keys()
-            .filter(|t| !wanted.contains_key(t))
-            .cloned()
+        let mut groups: BTreeMap<&str, &Arc<[Body]>> = BTreeMap::new();
+        for group in &scene.groups {
+            groups.entry(group.key.as_str()).or_insert(&group.bodies);
+        }
+        let reconciled = |key: &str, bodies: &Arc<[Body]>| {
+            self.groups
+                .get(key)
+                .is_some_and(|old| Arc::ptr_eq(old, bodies))
+        };
+        let changed: Vec<&Arc<[Body]>> = groups
+            .iter()
+            .filter(|(key, bodies)| !reconciled(key, bodies))
+            .map(|(_, bodies)| *bodies)
             .collect();
-        for tag in &gone {
+        // Last versions of groups that changed or went away.
+        let retired: Vec<Arc<[Body]>> = self
+            .groups
+            .iter()
+            .filter(|(key, old)| {
+                !groups
+                    .get(key.as_str())
+                    .is_some_and(|b| Arc::ptr_eq(old, b))
+            })
+            .map(|(_, old)| old.clone())
+            .collect();
+        stats.groups_skipped = groups.len() - changed.len();
+
+        let flat_unchanged = self.flat.len() == wanted.len()
+            && self.flat.iter().zip(wanted.keys()).all(|(a, b)| a == *b);
+        let next_flat = (!flat_unchanged).then(|| wanted.keys().map(|t| (*t).clone()).collect());
+        let old_flat = std::mem::take(&mut self.flat);
+
+        // Declarations that may differ from the cache, in tag order: flat
+        // bodies and changed groups' bodies. Tags are disjoint across them
+        // (`Physics.scene` enforces it), so an unchanged group owns none of
+        // the tags that went away.
+        let mut updates = wanted;
+        for bodies in &changed {
+            for body in bodies.iter() {
+                updates.entry(&body.tag).or_insert(body);
+            }
+        }
+        let gone: BTreeSet<&String> = old_flat
+            .iter()
+            .chain(
+                retired
+                    .iter()
+                    .flat_map(|bodies| bodies.iter().map(|b| &b.tag)),
+            )
+            .filter(|tag| !updates.contains_key(*tag))
+            .collect();
+
+        // Despawns, in tag order.
+        for tag in gone {
             self.despawn(tag);
         }
 
         // Spawns / updates, in tag order.
-        for (tag, body) in wanted {
+        for (tag, body) in updates {
+            stats.compared += 1;
             let accepted = match self.declared.get(tag) {
                 None => self.spawn(body),
                 Some(prev) if prev != body => {
                     let prev = prev.clone();
                     self.apply_divergence(&prev, body)
                 }
-                Some(_) => true, // unchanged: the simulation owns this body
+                Some(_) => continue, // unchanged: the simulation owns this body
             };
             if accepted {
                 self.declared.insert(tag.clone(), body.clone());
+                stats.written += 1;
             }
         }
+
+        self.flat = next_flat.unwrap_or(old_flat);
+        if !changed.is_empty() || !retired.is_empty() {
+            self.groups = groups
+                .into_iter()
+                .map(|(key, bodies)| (key.to_string(), bodies.clone()))
+                .collect();
+        }
+        self.reconcile_stats = stats;
+    }
+
+    /// What the last [`World::reconcile`] did.
+    pub fn reconcile_stats(&self) -> ReconcileStats {
+        self.reconcile_stats
     }
 
     /// Accumulate real (variable) dt and run whole fixed substeps, carrying the
@@ -2460,5 +2555,238 @@ mod tests {
             .collect();
         assert_eq!(tags, vec!["a", "b"]);
         assert_eq!(dump["frame"], 0);
+    }
+
+    // ── Physics.memo groups ─────────────────────────────────────────────
+
+    /// A tag-sorted group, as `Physics.memo` builds it.
+    fn group(key: &str, mut bodies: Vec<Body>) -> super::super::BodyGroup {
+        bodies.sort_by(|a, b| a.tag.cmp(&b.tag));
+        super::super::BodyGroup {
+            key: key.to_string(),
+            bodies: bodies.into(),
+        }
+    }
+
+    /// `n` fixed 1 m boxes tiling a floor at y = 0, tagged `s0000`….
+    fn floor_tiles(n: usize) -> Vec<Body> {
+        (0..n)
+            .map(|i| {
+                Body::fixed(
+                    format!("s{i:04}"),
+                    Shape::Cuboid {
+                        extents: [1.0, 1.0, 1.0],
+                    },
+                )
+                .at([(i % 30) as f32 - 15.0, 0.0, (i / 30) as f32 - 25.0])
+            })
+            .collect()
+    }
+
+    fn with_groups(bodies: Vec<Body>, groups: Vec<super::super::BodyGroup>) -> PhysicsScene {
+        PhysicsScene {
+            groups,
+            ..scene(bodies)
+        }
+    }
+
+    /// The world minus the reconcile bookkeeping that differs by how bodies
+    /// were declared (flat vs grouped): rapier state, tags and the cache.
+    fn sim_state(w: &World) -> Vec<u8> {
+        let mut w = w.clone();
+        w.flat.clear();
+        w.groups.clear();
+        w.snapshot()
+    }
+
+    fn handle(w: &World, tag: &str) -> RigidBodyHandle {
+        w.tags[tag].0
+    }
+
+    #[test]
+    fn an_unchanged_group_is_skipped_by_identity() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        let statics = group("statics", floor_tiles(1500));
+        let frame = with_groups(vec![crate_at("a", [0.0, 3.0, 0.0])], vec![statics.clone()]);
+        w.reconcile(&frame);
+        assert_eq!(
+            w.reconcile_stats(),
+            ReconcileStats {
+                compared: 1501,
+                written: 1501,
+                groups_skipped: 0
+            }
+        );
+        for _ in 0..300 {
+            w.step_frame(FIXED_DT);
+            w.reconcile(&frame);
+            assert_eq!(
+                w.reconcile_stats(),
+                ReconcileStats {
+                    compared: 1,
+                    written: 0,
+                    groups_skipped: 1
+                }
+            );
+        }
+        assert_eq!(w.tags.len(), 1501);
+    }
+
+    #[test]
+    fn a_rebuilt_equal_group_does_no_rapier_work() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        w.reconcile(&with_groups(
+            vec![],
+            vec![group("statics", floor_tiles(1500))],
+        ));
+        w.step_frame(FIXED_DT);
+        let before = w.snapshot();
+        // A hot reload rebuilds the site: a new `Arc`, equal bodies.
+        w.reconcile(&with_groups(
+            vec![],
+            vec![group("statics", floor_tiles(1500))],
+        ));
+        assert_eq!(
+            w.reconcile_stats(),
+            ReconcileStats {
+                compared: 1500,
+                written: 0,
+                groups_skipped: 0
+            }
+        );
+        assert!(w.snapshot() == before);
+    }
+
+    #[test]
+    fn a_changed_group_diffs_only_itself() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        let statics = group("statics", floor_tiles(1500));
+        let doors = |y: f32| {
+            group(
+                "doors",
+                (0..10)
+                    .map(|i| {
+                        Body::kinematic(format!("door{i}"), Shape::Sphere { radius: 0.5 })
+                            .at([i as f32, y, 9.0])
+                    })
+                    .collect(),
+            )
+        };
+        w.reconcile(&with_groups(vec![], vec![statics.clone(), doors(1.0)]));
+        w.reconcile(&with_groups(vec![], vec![statics.clone(), doors(2.0)]));
+        assert_eq!(
+            w.reconcile_stats(),
+            ReconcileStats {
+                compared: 10,
+                written: 10,
+                groups_skipped: 1
+            }
+        );
+        // Dropping a group despawns exactly its tags.
+        w.reconcile(&with_groups(vec![], vec![statics]));
+        assert_eq!(w.tags.len(), 1500);
+        assert!(!w.tags.keys().any(|t| t.starts_with("door")));
+    }
+
+    #[test]
+    fn a_tag_moving_between_flat_and_a_group_keeps_its_body() {
+        let tile = || floor_tiles(1).remove(0);
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        w.reconcile(&scene(vec![tile()]));
+        let before = handle(&w, "s0000");
+        w.reconcile(&with_groups(vec![], vec![group("g", vec![tile()])]));
+        assert_eq!(handle(&w, "s0000"), before);
+        w.reconcile(&scene(vec![tile()]));
+        assert_eq!(handle(&w, "s0000"), before);
+        assert!(w.groups.is_empty());
+    }
+
+    /// The equivalence golden: the same bodies declared flat or as a group
+    /// give byte-identical simulations, through impulses, a teleport of a
+    /// group body and a mid-run group edit — and a recorded memo run seeks
+    /// and replays bit-exact across that edit.
+    #[test]
+    fn a_memoized_group_simulates_exactly_like_flat_bodies() {
+        use super::super::{Command, Simulatable, Timeline, TimelineLog};
+
+        let before = group("statics", floor_tiles(1500));
+        let after = {
+            let mut tiles = floor_tiles(1500);
+            tiles.remove(7);
+            tiles[99].position[1] += 0.5;
+            tiles.push(
+                Body::fixed("s9999".to_string(), Shape::Sphere { radius: 1.0 }).at([4.0, 1.0, 4.0]),
+            );
+            group("statics", tiles)
+        };
+        let dynamics = vec![
+            crate_at("a", [0.0, 3.0, 0.0]),
+            crate_at("b", [-7.5, 2.0, -18.0]),
+            crate_at("c", [4.0, 5.0, 4.0]),
+        ];
+        let cmds_at = |frame: u64, memo: bool| {
+            let statics = if frame < 300 { &before } else { &after };
+            let scene = if memo {
+                with_groups(dynamics.clone(), vec![statics.clone()])
+            } else {
+                scene(
+                    dynamics
+                        .iter()
+                        .chain(statics.bodies.iter())
+                        .cloned()
+                        .collect(),
+                )
+            };
+            let mut cmds = vec![Command::DeclareScene(scene)];
+            if frame == 100 {
+                cmds.push(Command::Apply(PhysicsCommand::ApplyImpulse {
+                    tag: "a".to_string(),
+                    impulse: [2.0, 4.0, 0.0],
+                }));
+            }
+            if frame == 200 {
+                cmds.push(Command::Apply(PhysicsCommand::Teleport {
+                    tag: "s0042".to_string(),
+                    position: [0.0, 0.5, 0.0],
+                }));
+            }
+            cmds
+        };
+
+        let mut flat = World::new([0.0, -9.81, 0.0]);
+        let mut memo = World::new([0.0, -9.81, 0.0]);
+        let mut log = TimelineLog::keyframes(30);
+        let mut at_290 = Vec::new();
+        for frame in 0..600 {
+            if frame == 290 {
+                at_290 = memo.snapshot();
+            }
+            let cmds = cmds_at(frame, true);
+            log.record(frame, &memo, &cmds);
+            flat.step(&cmds_at(frame, false));
+            memo.step(&cmds);
+            if frame > 0 && frame != 300 {
+                assert_eq!(memo.reconcile_stats().compared, 3, "frame {frame}");
+                assert_eq!(memo.reconcile_stats().written, 0, "frame {frame}");
+            }
+        }
+        assert!(
+            sim_state(&flat) == sim_state(&memo),
+            "flat and memoized diverged"
+        );
+        assert!(memo.tags.contains_key("s9999") && !memo.tags.contains_key("s0007"));
+
+        // Seek to before the edit: the restored world holds the old group,
+        // so replaying frame 300 must not take the fast path.
+        let end = memo.snapshot();
+        log.seek(290, &mut memo);
+        assert!(memo.snapshot() == at_290, "seek(290) diverged");
+        for cmds in log.commands_since(290).to_vec() {
+            memo.step(&cmds);
+        }
+        assert!(
+            memo.snapshot() == end,
+            "replay across the group edit diverged"
+        );
     }
 }

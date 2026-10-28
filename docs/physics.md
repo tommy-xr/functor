@@ -189,6 +189,29 @@ spanned errors** — games read only tags their `physics` hook declares. (An
 Option-shaped variant return is possible now that Functor Lang has `match`; loud
 remains the default because a missing declared body is a bug, not a case.)
 
+### Static worlds: `Physics.memo`
+
+`Physics.memo(key, deps, builder)` builds a group of fixed/kinematic bodies
+once, under `Scene.memo`'s rules (plain-data deps, builder reads only deps,
+runtime-owned cache, rebuilt once after a hot reload). The group is one
+`Arc`-shared `BodyGroup` in the declared scene, so an unchanged group costs:
+
+- **interpreter:** the memo hit, no builder run;
+- **reconcile:** a pointer compare against `World.groups[key]`, no per-body
+  diff (`World::reconcile_stats`);
+- **command log:** one `Arc` per recorded `DeclareScene`, not a copy of every
+  body. Keyframes still clone the world (rapier sets and the declared cache).
+
+`World.groups` is world state, so checkpoints, rewinds and seeks restore it with
+the bodies; a seek can't leave a stale fast path. A changed group diffs its
+bodies by tag; a rebuilt-but-equal one (after a reload) does no rapier work.
+Reconcile visits flat bodies and changed groups in the same tag order as a flat
+declaration, so memoized and flat worlds stay byte-identical.
+
+**Tag ownership:** a tag belongs to one flat body or one group. `Physics.scene`
+rejects a flat body reusing a group's tag, two groups sharing a tag, and a key
+used twice. Commands and reads address group bodies by tag.
+
 ### Cold start: the world is primed from `init`
 
 At session start — and at every model reset (restart), but **not** on hot

@@ -200,29 +200,57 @@ impl Body {
     }
 }
 
+/// A `Physics.memo` group: fixed/kinematic bodies with ready shapes, sorted
+/// by tag with unique tags. Shared, so an unchanged group costs reconcile one
+/// pointer compare and the command log one `Arc` per frame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BodyGroup {
+    /// The memo key: the group's identity across frames.
+    pub key: String,
+    pub bodies: Arc<[Body]>,
+}
+
+impl BodyGroup {
+    /// The group's body with `tag`, if any.
+    pub fn get(&self, tag: &str) -> Option<&Body> {
+        let i = self
+            .bodies
+            .binary_search_by(|body| body.tag.as_str().cmp(tag))
+            .ok()?;
+        Some(&self.bodies[i])
+    }
+}
+
 /// The full set of bodies the game wants this frame — what `physicsScape model`
 /// returns (Phase 2). Reconciled against the live world by `World::reconcile`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PhysicsScene {
     pub gravity: [f32; 3],
     pub bodies: Vec<Body>,
+    /// `Physics.memo` groups. Reconcile assumes their tags are disjoint from
+    /// each other and from `bodies`, and their shapes ready (no pending
+    /// heightfield): `Physics.scene` and `Physics.memo` enforce both.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<BodyGroup>,
 }
 
 impl PhysicsScene {
     pub fn create(gravity: [f32; 3], bodies: Vec<Body>) -> PhysicsScene {
-        PhysicsScene { gravity, bodies }
+        PhysicsScene {
+            gravity,
+            bodies,
+            groups: Vec::new(),
+        }
     }
 
     /// No bodies, standard gravity.
     pub fn empty() -> PhysicsScene {
-        PhysicsScene {
-            gravity: DEFAULT_GRAVITY,
-            bodies: Vec::new(),
-        }
+        PhysicsScene::create(DEFAULT_GRAVITY, Vec::new())
     }
 
     /// Resolve shell-owned heightmap samples into the immutable scene that
-    /// will be recorded and simulated this fixed frame.
+    /// will be recorded and simulated this fixed frame. Groups hold no
+    /// heightfields, so they pass through by reference.
     ///
     /// This happens before timeline recording rather than in
     /// `World::reconcile`: replay must consume the exact asset revision that

@@ -173,6 +173,36 @@ let upright : (body) => body
 /// Declare a physics world from gravity and bodies.
 let scene : (Vec3.t, List<body>) => world
 
+/// Build fixed and kinematic bodies once and reuse them while their inputs
+/// stay the same — `Scene.memo` for physics.
+///
+/// `Physics.memo(key, deps, builder)` calls `builder(deps)` only when `key` is
+/// new, `deps` changed, or after a hot reload, and returns ONE group for
+/// `Physics.scene`'s list. An unchanged group costs the frame a pointer
+/// compare: the builder doesn't run and reconcile skips its bodies.
+///
+/// ```functor
+/// let staticBodies = (rev) => List.map(crateBody, staticCrates)
+/// let physics = (model) => Physics.scene(gravity, [
+///   Physics.memo("statics", model.staticsRev, staticBodies),
+///   player(model),
+/// ])
+/// ```
+///
+/// - `key`, `deps` and the builder follow `Scene.memo`'s rules: `deps` is
+///   plain data (pass a revision number, not `Bytes` or textures), the builder
+///   reads only `deps` and top-level definitions (reading the live world is an
+///   error), and a key unused for a couple of seconds is forgotten.
+/// - Fixed and kinematic bodies only: a dynamic body or a heightfield inside
+///   is an error. A kinematic body that moves belongs flat, since its deps
+///   would change every frame.
+/// - Each tag belongs to one place. A flat body reusing a group's tag, two
+///   groups sharing a tag, or one key twice in a scene is an error.
+///   Reads and commands address group bodies by tag like flat ones.
+/// - The group is not a body: `Physics.at` or any attribute on it is an
+///   error; apply it inside the builder.
+let memo : (string, 'd, ('d) => List<body>) => body
+
 /// Read a body's live, stepped world position.
 ///
 /// Answers with the LAST stepped world, so a pre-step caller (`tick`, the
