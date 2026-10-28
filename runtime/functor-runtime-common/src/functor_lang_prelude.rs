@@ -2958,6 +2958,7 @@ fn rotate_physics_body(
 translation-only; use Physics.at with an unrotated Scene.terrain"
         ));
     }
+    fused_room_stays_put(path, &body)?;
 
     let angle: cgmath::Rad<f32> = angle.0.into();
     // One canonical turn keeps equivalent angles (90° and 450°) on the same
@@ -3010,6 +3011,17 @@ fn canonical_quaternion(mut q: [f32; 4]) -> [f32; 4] {
         }
     }
     q
+}
+
+/// The fused room is where the room is: it cannot be moved or rotated.
+fn fused_room_stays_put(path: &str, body: &FunctorLangBody) -> Result<(), String> {
+    match &body.0.shape {
+        physics::Shape::FusedRoom { .. } => Err(format!(
+            "{path}: the fused room is already in world space — declare \
+Physics.fusedRoom(tag) without moving or rotating it"
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn register_physics(reg: &mut crate::host_registry::Registry) {
@@ -3106,6 +3118,20 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
             ))
         },
     );
+    reg.fn1(
+        "Physics.fusedRoom",
+        "Physics.fusedRoom(tag)",
+        |tag: std::rc::Rc<str>| {
+            // Empty here; the physics adapter resolves the shell's latest
+            // fused room whenever it consumes a scene.
+            FunctorLangBody(physics::Body::fixed(
+                tag.to_string(),
+                physics::Shape::FusedRoom {
+                    room: Default::default(),
+                },
+            ))
+        },
+    );
     // Bodies (tag, shape). The tag brand is erased at runtime, so it arrives
     // as the plain string (Rc<str>, allocation-light like `Physics.tag`).
     fn body_ctor(
@@ -3184,8 +3210,9 @@ capsule for the moving body"
         "Physics.at",
         "Physics.at(v, body)",
         |v: FunctorLangVec3, body: FunctorLangBody| {
+            fused_room_stays_put("Physics.at", &body)?;
             let (x, y, z) = v.0;
-            FunctorLangBody(body.0.at([x, y, z]))
+            Ok(FunctorLangBody(body.0.at([x, y, z])))
         },
     );
     reg.fn2(
@@ -5018,6 +5045,12 @@ bodies only; declare dynamic bodies flat in Physics.scene",
         if matches!(body.shape, physics::Shape::Heightfield { .. }) {
             return Err(format!(
                 "Physics.memo: \"{}\" is a heightfield — declare it flat in Physics.scene",
+                body.tag
+            ));
+        }
+        if matches!(body.shape, physics::Shape::FusedRoom { .. }) {
+            return Err(format!(
+                "Physics.memo: \"{}\" is a fused room — declare it flat in Physics.scene",
                 body.tag
             ));
         }

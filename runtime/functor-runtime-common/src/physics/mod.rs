@@ -21,6 +21,7 @@
 
 mod driver;
 mod registry;
+mod room;
 mod scene;
 mod timeline;
 mod trimesh;
@@ -35,6 +36,7 @@ mod goldens;
 // Functor Lang shells call instead of `World::step_frame` directly (Phase 6).
 pub use driver::*;
 pub use registry::*;
+pub use room::{publish_fused_room, RoomMeshes};
 pub use scene::*;
 pub use timeline::*;
 pub use trimesh::TriMeshData;

@@ -41,6 +41,10 @@ pub enum Shape {
         /// keeps any prior live collider, or defers the initial spawn.
         data: Option<Arc<HeightmapData>>,
     },
+    /// The room fused from the environment depth (`Physics.fusedRoom`): one
+    /// static triangle mesh per chunk, in world space. Empty until the shell
+    /// has fused some; resolved when the scene is recorded.
+    FusedRoom { room: Arc<super::RoomMeshes> },
 }
 
 /// How the body participates in simulation.
@@ -277,22 +281,25 @@ impl PhysicsScene {
         PhysicsScene::create(DEFAULT_GRAVITY, Vec::new())
     }
 
-    /// Resolve shell-owned heightmap samples into the immutable scene that
-    /// will be recorded and simulated this fixed frame. Groups hold no
-    /// heightfields, so they pass through by reference.
+    /// Resolve shell-owned data — heightmap samples and the fused room — into
+    /// the immutable scene that will be recorded and simulated this fixed
+    /// frame. Groups hold neither, so they pass through by reference.
     ///
     /// This happens before timeline recording rather than in
-    /// `World::reconcile`: replay must consume the exact asset revision that
-    /// live simulation saw, independent of later loads or hot reloads.
-    pub(crate) fn hydrated_heightfields(&self) -> PhysicsScene {
+    /// `World::reconcile`: replay must consume the exact revision that live
+    /// simulation saw, independent of later loads, fusion or hot reloads.
+    pub(crate) fn hydrated(&self) -> PhysicsScene {
         let mut scene = self.clone();
         for body in &mut scene.bodies {
-            let Shape::Heightfield { geometry, data } = &mut body.shape else {
-                continue;
-            };
-            crate::terrain::request_heightmap(geometry.source.clone());
-            if let Some(latest) = crate::terrain::hydrated_heightmap(&geometry.source) {
-                *data = Some(latest);
+            match &mut body.shape {
+                Shape::Heightfield { geometry, data } => {
+                    crate::terrain::request_heightmap(geometry.source.clone());
+                    if let Some(latest) = crate::terrain::hydrated_heightmap(&geometry.source) {
+                        *data = Some(latest);
+                    }
+                }
+                Shape::FusedRoom { room } => *room = super::room::fused_room(),
+                _ => {}
             }
         }
         scene

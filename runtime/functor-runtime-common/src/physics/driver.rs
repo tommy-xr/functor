@@ -155,7 +155,7 @@ impl SteppedPhysics {
     /// hand-updating it outside the pipeline would put the determinism the
     /// Timeline depends on at risk for one frame of probe latency.
     pub fn prime(&mut self, scene: &PhysicsScene) {
-        let scene = scene.hydrated_heightfields();
+        let scene = scene.hydrated();
         with_world(self.world, |w| {
             w.reconcile(&scene);
             // Reconcile is declaration only — no step runs, so nothing may
@@ -212,10 +212,11 @@ impl SteppedPhysics {
                 // (the same discipline as World::step_frame).
                 self.accumulator %= FIXED_DT;
             }
-            // Resolve terrain once at the live shell boundary, then move that
-            // exact immutable scene into the command log. Replays must never
-            // consult whatever asset revision happens to be loaded later.
-            let mut scene = scene.map(|scene| scene.hydrated_heightfields());
+            // Resolve terrain and the fused room once at the live shell
+            // boundary, then move that exact immutable scene into the command
+            // log. Replays must never consult whatever revision happens to be
+            // loaded later.
+            let mut scene = scene.map(|scene| scene.hydrated());
             let (events, warnings) = with_world(self.world, |w| {
                 let mut events = Vec::new();
                 for i in 0..steps {

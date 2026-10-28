@@ -144,6 +144,8 @@ pub(crate) struct FusedRoom {
     triangles: usize,
     /// `meshes` as one group, rebuilt when they change.
     scene: Option<Scene3D>,
+    /// `meshes` for `Physics.fusedRoom`, rebuilt when they change.
+    colliders: Option<Arc<crate::physics::RoomMeshes>>,
 }
 
 fn fuse_thread(frames: mpsc::Receiver<(Vec<u8>, Matrix4<f32>)>, fused: Arc<Mutex<Fused>>) {
@@ -194,6 +196,7 @@ impl FusedRoom {
             meshes: BTreeMap::new(),
             triangles: 0,
             scene: None,
+            colliders: None,
         }
     }
 
@@ -290,6 +293,19 @@ impl FusedRoom {
         }
         self.triangles = self.meshes.values().map(|m| m.triangles.len()).sum();
         self.scene = None;
+        self.colliders = None;
+    }
+
+    /// The meshes for `Physics.fusedRoom`: the same `Arc` until they change.
+    pub(crate) fn room_meshes(&mut self) -> Arc<crate::physics::RoomMeshes> {
+        let meshes = &self.meshes;
+        self.colliders
+            .get_or_insert_with(|| {
+                Arc::new(crate::physics::RoomMeshes {
+                    chunks: meshes.clone(),
+                })
+            })
+            .clone()
     }
 
     /// `GET /state.xr.mesh`.
@@ -299,6 +315,7 @@ impl FusedRoom {
             triangles: self.triangles,
             fused_frames: self.fused_frames,
             voxel_m: VOXEL,
+            ..Default::default()
         }
     }
 

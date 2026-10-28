@@ -527,13 +527,13 @@ fn cube_triangles(config: usize) -> Vec<[u8; 3]> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use cgmath::{Deg, Point3};
     use std::collections::HashMap;
 
     /// A camera at `eye` looking at `target`, 90° square, 0.1–20 m.
-    fn view_projection(eye: [f32; 3], target: [f32; 3]) -> Matrix4<f32> {
+    pub(crate) fn view_projection(eye: [f32; 3], target: [f32; 3]) -> Matrix4<f32> {
         cgmath::perspective(Deg(90.0), 1.0, 0.1, 20.0)
             * Matrix4::look_at_rh(Point3::from(eye), Point3::from(target), Vector3::unit_y())
     }
@@ -544,7 +544,7 @@ mod tests {
         depth_frame_sized(view_projection, boxes, 96)
     }
 
-    fn depth_frame_sized(
+    pub(crate) fn depth_frame_sized(
         view_projection: Matrix4<f32>,
         boxes: &[([f32; 3], [f32; 3])],
         size: usize,

@@ -1351,6 +1351,8 @@ mod tests {
                     triangles: 64,
                     fused_frames: 3,
                     voxel_m: 0.5,
+                    colliders: 2,
+                    floor_m: None,
                 },
             }),
         };
@@ -1396,7 +1398,10 @@ mod tests {
                 "build": "pr | 0123abc",
                 "xr": {
                     "depth": { "mode": "emulated", "width": 1920, "height": 1080, "frames": 5 },
-                    "mesh": { "chunks": 2, "triangles": 64, "fused_frames": 3, "voxel_m": 0.5 }
+                    "mesh": {
+                        "chunks": 2, "triangles": 64, "fused_frames": 3, "voxel_m": 0.5,
+                        "colliders": 2
+                    }
                 }
             })
         );

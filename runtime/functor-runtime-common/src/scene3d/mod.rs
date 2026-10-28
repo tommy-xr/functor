@@ -165,6 +165,8 @@ pub struct SceneContext {
     // fuses on the render thread (`set_fusion_inline`).
     fused_room: RefCell<Option<crate::fused_room::FusedRoom>>,
     fusion_inline: Cell<bool>,
+    // A `Physics.fusedRoom` body wants the room fused, drawn or not.
+    fused_room_wanted: Cell<bool>,
 }
 
 /// One in-flight `Effect.preload` target: the handle being driven plus every
@@ -656,6 +658,7 @@ impl SceneContext {
             fused_room: RefCell::new(None),
             // wasm has no threads.
             fusion_inline: Cell::new(cfg!(target_arch = "wasm32")),
+            fused_room_wanted: Cell::new(false),
         }
     }
 
@@ -700,8 +703,29 @@ impl SceneContext {
         self.fusion_inline.set(inline);
     }
 
+    /// Whether the room fuses on the render thread (deterministic runs, wasm).
+    pub fn fusion_inline(&self) -> bool {
+        self.fusion_inline.get()
+    }
+
+    /// Fuse the room even where no frame draws it: a `Physics.fusedRoom` body
+    /// collides with it.
+    pub fn set_fused_room_wanted(&self, wanted: bool) {
+        self.fused_room_wanted.set(wanted);
+    }
+
+    /// The fused room's meshes for `Physics.fusedRoom` (`None` before it
+    /// exists): the same `Arc` until they change.
+    pub fn fused_room_meshes(&self) -> Option<std::sync::Arc<crate::physics::RoomMeshes>> {
+        self.fused_room
+            .borrow_mut()
+            .as_mut()
+            .map(|room| room.room_meshes())
+    }
+
     /// Feed this main pass's environment depth to the fused room: created on
-    /// the first frame that draws it (`requested`), fused every few frames
+    /// the first frame that draws it (`requested`) or a `Physics.fusedRoom`
+    /// body wants it, fused every few frames
     /// from then on while `Xr.scene` is on, dropped when it goes off.
     pub(crate) fn fuse_environment_depth(
         &self,
@@ -718,7 +742,7 @@ impl SceneContext {
             }
             return;
         }
-        if slot.is_none() && !requested {
+        if slot.is_none() && !requested && !self.fused_room_wanted.get() {
             return;
         }
         slot.get_or_insert_with(|| {

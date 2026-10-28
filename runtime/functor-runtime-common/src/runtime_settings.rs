@@ -191,6 +191,28 @@ pub struct FusedMeshState {
     pub fused_frames: u64,
     /// Voxel edge, metres.
     pub voxel_m: f32,
+    /// Chunk colliders of a `Physics.fusedRoom` body (0 without one).
+    #[serde(default)]
+    pub colliders: usize,
+    /// The floor height those colliders are snapped to, metres; absent until
+    /// the floor has been seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor_m: Option<f32>,
+}
+
+impl FusedMeshState {
+    /// With the physics world's fused room colliders — read on the
+    /// producer's thread, where the world lives.
+    pub fn with_colliders(mut self) -> Self {
+        let colliders = crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.fused_room_colliders()
+        });
+        if let Some(Some((colliders, floor))) = colliders {
+            self.colliders = colliders;
+            self.floor_m = floor;
+        }
+        self
+    }
 }
 
 /// `GET /state.xr`: headset scene state, omitted while it has nothing to say.
@@ -280,13 +302,18 @@ mod tests {
                 triangles: 120,
                 fused_frames: 2,
                 voxel_m: 0.08,
+                colliders: 3,
+                floor_m: Some(0.0),
             },
         };
         assert_eq!(
             serde_json::to_value(depth).unwrap(),
             serde_json::json!({
                 "depth": { "mode": "device", "width": 320, "height": 320, "frames": 7 },
-                "mesh": { "chunks": 3, "triangles": 120, "fused_frames": 2, "voxel_m": 0.08f32 }
+                "mesh": {
+                    "chunks": 3, "triangles": 120, "fused_frames": 2, "voxel_m": 0.08f32,
+                    "colliders": 3, "floor_m": 0.0
+                }
             })
         );
         let state = PassthroughState {
