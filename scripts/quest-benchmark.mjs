@@ -10,6 +10,8 @@
 
 import { execFileSync, spawn } from "node:child_process";
 
+import { batteryLine, parseDumpsysBattery } from "./quest-battery.mjs";
+
 const PACKAGE = "dev.functor.runner";
 const ACTIVITY = `${PACKAGE}/android.app.NativeActivity`;
 
@@ -162,36 +164,6 @@ function parseMemory(text) {
   };
 }
 
-// Battery state before/after a sample. sysfs current_now is not readable
-// over adb on Quest, so net current comes from the charge-counter delta
-// (µAh) over the sample: positive = net charging, negative = net drain.
-function readBattery() {
-  const text = adb(["shell", "dumpsys", "battery"]);
-  const number = (pattern) => {
-    const match = text.match(pattern);
-    return match ? Number(match[1]) : undefined;
-  };
-  const STATUS = { 2: "charging", 3: "discharging", 4: "not charging", 5: "full" };
-  return {
-    level: number(/level:\s+(\d+)/),
-    status: STATUS[number(/status:\s+(\d+)/)] ?? "unknown",
-    plugged: /(?:AC|USB|Wireless|Dock) powered:\s+true/.test(text),
-    charge_uah: number(/Charge counter:\s+(\d+)/),
-    // Anchored: `Max charging voltage:` precedes the battery `voltage:` line.
-    voltage_mv: number(/^\s*voltage:\s+(\d+)/m),
-    max_charge_w:
-      ((number(/Max charging current:\s+(\d+)/) ?? 0) / 1e6) *
-      ((number(/Max charging voltage:\s+(\d+)/) ?? 0) / 1e6),
-    at: Date.now(),
-  };
-}
-
-function netCurrentMa(before, after) {
-  if (before.charge_uah === undefined || after.charge_uah === undefined) return undefined;
-  const hours = (after.at - before.at) / 3_600_000;
-  return hours > 0 ? (after.charge_uah - before.charge_uah) / 1000 / hours : undefined;
-}
-
 function printMetric(label, metric, suffix = "") {
   if (!metric) return;
   console.log(
@@ -244,11 +216,14 @@ async function main() {
     );
   }
   await delay(options.warmup * 1_000);
-  const batteryBefore = readBattery();
+  // `/state.battery` needs runtime protocol v21; older runtimes fall back.
+  const readBattery = (state) =>
+    state.battery ?? parseDumpsysBattery(adb(["shell", "dumpsys", "battery"]));
   const before = await waitForRuntime();
+  const batteryBefore = readBattery(before);
   const telemetryText = await collectVrApi(options.seconds);
   const after = await waitForRuntime();
-  const batteryAfter = readBattery();
+  const batteryAfter = readBattery(after);
   if (after.frame <= before.frame) {
     throw new Error(`runtime did not render during sample (frame stayed ${after.frame})`);
   }
@@ -295,16 +270,7 @@ async function main() {
   console.log("");
   console.log(`- Stale frames: ${telemetry.stale_frames}`);
   console.log(`- Torn frames: ${telemetry.torn_frames}`);
-  const net = netCurrentMa(batteryBefore, batteryAfter);
-  const netText =
-    net === undefined
-      ? "net current n/a"
-      : // The counter steps coarsely (~14 mAh on Quest 3), so print the raw
-        // delta: one step over a 30 s sample is ~1.7 A.
-        `charge ${((batteryAfter.charge_uah - batteryBefore.charge_uah) / 1000).toFixed(1)} mAh over ${((batteryAfter.at - batteryBefore.at) / 1000).toFixed(0)} s ≈ net ${net >= 0 ? "+" : ""}${net.toFixed(0)} mA ≈ ${((net / 1000) * ((batteryAfter.voltage_mv ?? 0) / 1000)).toFixed(1)} W`;
-  console.log(
-    `- Battery: ${batteryBefore.level}% → ${batteryAfter.level}% (${batteryAfter.status}, ${batteryAfter.plugged ? "plugged" : "unplugged"}, negotiated ${batteryAfter.max_charge_w.toFixed(0)} W max; ${netText})`,
-  );
+  console.log(batteryLine(batteryBefore, batteryAfter));
   console.log(`- Memory: ${memory.total_pss_mib?.toFixed(1)} MiB PSS, ${memory.total_rss_mib?.toFixed(1)} MiB RSS, ${memory.graphics_pss_mib?.toFixed(1)} MiB graphics PSS`);
   console.log("- Restore proximity automation: `adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable`");
 
