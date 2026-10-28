@@ -512,9 +512,12 @@ async fn run(args: &Args) -> io::Result<()> {
                 // (`serverInit`/`serverTick`/… for a `{ "file", "prefix" }`
                 // role; see check_contract), which is the feature there. A
                 // classic single `entry` keeps the old boundary: `build`
-                // typechecks and runs no game code.
+                // typechecks and runs no game code beyond `config` (read for
+                // its external prefixes).
                 let named = config.is_named();
-                for (i, role) in config.all()?.iter().enumerate() {
+                let mut roles = config.all()?;
+                for (i, role) in roles.iter_mut().enumerate() {
+                    role.mounts = project.mounts.clone();
                     let loaded = role.build(&working_directory_str, i == 0)?;
                     if named {
                         role.check_contract(&loaded)?;
@@ -590,7 +593,14 @@ pub(crate) fn take_flag_arg(
     runner_args: &[String],
     flag: &str,
 ) -> io::Result<(Option<String>, Vec<String>)> {
-    let mut found = None;
+    let (mut found, rest) = take_flag_args(runner_args, flag)?;
+    Ok((found.pop(), rest))
+}
+
+/// Every `flag <value>` / `flag=<value>` in `runner_args`, in order, and the
+/// rest ([`take_flag_arg`] keeps the last).
+fn take_flag_args(runner_args: &[String], flag: &str) -> io::Result<(Vec<String>, Vec<String>)> {
+    let mut found = Vec::new();
     let mut rest = Vec::with_capacity(runner_args.len());
     let mut iter = runner_args.iter();
     while let Some(arg) = iter.next() {
@@ -598,10 +608,10 @@ pub(crate) fn take_flag_arg(
             .strip_prefix(flag)
             .and_then(|tail| tail.strip_prefix('='))
         {
-            found = Some(value.to_string());
+            found.push(value.to_string());
         } else if arg == flag {
             match iter.next() {
-                Some(value) => found = Some(value.clone()),
+                Some(value) => found.push(value.clone()),
                 None => return Err(io::Error::other(format!("{flag} requires a value"))),
             }
         } else {
@@ -609,37 +619,6 @@ pub(crate) fn take_flag_arg(
         }
     }
     Ok((found, rest))
-}
-
-/// Every `flag <value>` / `flag=<value>` in `runner_args`, and the rest.
-fn take_flag_args(runner_args: &[String], flag: &str) -> io::Result<(Vec<String>, Vec<String>)> {
-    let (mut found, mut rest) = (Vec::new(), runner_args.to_vec());
-    while let (Some(value), remaining) = take_one_flag_arg(&rest, flag)? {
-        found.push(value);
-        rest = remaining;
-    }
-    Ok((found, rest))
-}
-
-/// The first `flag <value>` / `flag=<value>` in `runner_args`, and the rest.
-fn take_one_flag_arg(
-    runner_args: &[String],
-    flag: &str,
-) -> io::Result<(Option<String>, Vec<String>)> {
-    let Some(at) = runner_args
-        .iter()
-        .position(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
-    else {
-        return Ok((None, runner_args.to_vec()));
-    };
-    let mut rest = runner_args.to_vec();
-    let arg = rest.remove(at);
-    let value = match arg.split_once('=') {
-        Some((_, value)) => value.to_string(),
-        None if at < rest.len() => rest.remove(at),
-        None => return Err(io::Error::other(format!("{flag} requires a value"))),
-    };
-    Ok((Some(value), rest))
 }
 
 fn command_name(command: &Command) -> &'static str {

@@ -4522,6 +4522,10 @@ handle_arg!(
 mod settings;
 pub use settings::{config_of, externals_of, settings_of};
 
+/// The host functions that read project files (`config` may not call them:
+/// the CLI reads it first, to learn which paths are external).
+pub const FILE_READERS: &[&str] = &["File.bytes", "File.exists", "Typeface.file"];
+
 /// `Scene.instanced`'s instance list, converted once per Functor Lang list:
 /// the same list `Rc` (e.g. one kept in the model) yields the same
 /// [`InstanceList`] `Arc`, which is what lets the renderer skip the re-upload.

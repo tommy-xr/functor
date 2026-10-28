@@ -49,11 +49,17 @@ pub struct Mounts {
     targets: HashMap<String, (String, PathBuf)>,
 }
 
-/// `$XDG_CONFIG_HOME/functor/mounts.json`, else `~/.config/functor/mounts.json`.
+/// `$XDG_CONFIG_HOME/functor/mounts.json` (when absolute), else
+/// `~/.config/functor/mounts.json` (`%USERPROFILE%` on Windows).
 pub fn mounts_file() -> Option<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|home| PathBuf::from(home).join(".config"))
+        })?;
     Some(config.join("functor").join("mounts.json"))
 }
 
