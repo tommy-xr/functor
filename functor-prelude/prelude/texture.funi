@@ -1,7 +1,44 @@
 //! Texture values accepted by scene material functions.
+//!
+//! `fromPixels` builds one from decoded pixels (a decoder's output, or
+//! bytes made in Functor). Build it once (a top-level `let`): N nodes
+//! drawing it share one GPU upload.
+//!
+//! ```
+//! let checker = Texture.fromPixels({
+//!   width: 2.0, height: 2.0, format: Texture.Rgb8, colorSpace: Texture.Srgb,
+//!   pixels: Bytes.fromU8([255.0, 255.0, 255.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 255.0, 255.0, 255.0])
+//! })
+//! let tile = Scene.quad() |> Scene.emissiveTexture(checker)
+//! ```
 
 /// An opaque texture value.
 type t = host
 
+/// How `pixels` encodes each pixel. `Rgb555le` is a little-endian u16 with
+/// red in bits 0–4, green 5–9 and blue 10–14 (bit 15 ignored), expanded to
+/// the full 0–255 range.
+type format =
+  | Rgba8
+  | Rgb8
+  | Rgb555le
+
+/// What the texels mean. `Srgb` is colour (albedo): decoded to linear when
+/// sampled, mipmapped, repeating. `Linear` is data (lightmaps): sampled as
+/// stored, no mipmaps, clamped to the edge.
+type colorSpace =
+  | Srgb
+  | Linear
+
+/// Decoded pixels, top row first: `width × height` pixels in `format`. Each
+/// side is a whole number from 1 to 4096. Row 0 is sampled at v = 0, as with
+/// `Texture.file` (on `Scene.quad`, the bottom edge).
+type pixels = { width: float, height: float, format: format, colorSpace: colorSpace, pixels: Bytes.t }
+
 /// Load an image texture from a path relative to the game directory.
 let file : (string) => t
+/// A texture from decoded pixels, validated once: a size or byte-count
+/// mismatch is an error naming the field. 3D texture materials take it;
+/// sprites, terrain, `Asset.whilePending` and `Effect.preload` need a file
+/// asset.
+let fromPixels : (pixels) => Asset.Texture

@@ -352,6 +352,13 @@ pub(super) fn bind_texture_description(
             set_bound_texture_wrap(unit, false, context);
             set_bound_texture_filter(unit, sampling, context);
         }
+        // Its own GL object, with wrap and filter set at upload.
+        TextureDescription::Data(pixels) => unsafe {
+            // Select the unit BEFORE the lazy upload (it binds TEXTURE_2D).
+            context.gl.active_texture(glow::TEXTURE0 + unit);
+            let texture = scene_context.pixel_texture(context.gl, pixels);
+            context.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        },
         TextureDescription::RenderTarget(id) => {
             // Select the unit BEFORE any lazy fallback creation: creating the
             // fallback binds/unbinds TEXTURE_2D on the active unit, which would

@@ -188,6 +188,7 @@ pub mod mesh;
 pub mod model;
 pub mod solid;
 mod sprite;
+mod texture;
 
 /// A [`Scene3D`] as an opaque Functor Lang value.
 pub struct FunctorLangScene(pub Scene3D);
@@ -1641,6 +1642,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_light(&mut reg);
         register_frame(&mut reg);
         register_render_resources(&mut reg);
+        texture::register(&mut reg);
         register_physics(&mut reg);
         register_assets(&mut reg);
         register_anim(&mut reg);
@@ -13072,6 +13074,69 @@ the game dir"
         assert_eq!(err, "Model.skinned: clips[1] (\"lift\").tracks[0]: no joint named \"elbow\"");
         let err = fail(("uvs: none", "uvs: Bytes.fromF32le([1.0])"));
         assert_eq!(err, "Model.skinned: uvs: 4 bytes is not a whole number of 8-byte entries");
+    }
+
+    const PIXELS: &str = "let px = { width: 2.0, height: 1.0, format: Texture.Rgb8, \
+colorSpace: Texture.Linear, pixels: Bytes.fromU8([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]) }\n";
+
+    /// `Texture.fromPixels` builds a `Data` texture that 3D materials take,
+    /// typed as `Asset.Texture`.
+    #[test]
+    fn from_pixels_feeds_texture_materials() {
+        use crate::texture::ColorSpace;
+        let src = format!(
+            "{PIXELS}let tex : Asset.Texture = Texture.fromPixels(px)\n\
+let main = Scene.cube() |> Scene.litTexture(tex)\n"
+        );
+        let value = eval_with_prelude(&src).unwrap();
+        let Value::HostData(data) = value else {
+            panic!("expected a scene");
+        };
+        let scene = &data.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        let SceneObject::Material(MaterialDescription::Lit { texture, .. }, _) = &scene.obj else {
+            panic!("expected a lit material, got {:?}", scene.obj);
+        };
+        let Some(TextureDescription::Data(pixels)) = texture else {
+            panic!("expected a pixel texture, got {texture:?}");
+        };
+        assert_eq!((pixels.width(), pixels.height()), (2, 1));
+        assert_eq!(pixels.color_space(), ColorSpace::Linear);
+        assert_eq!(pixels.rgba8(), [10, 20, 30, 255, 40, 50, 60, 255]);
+    }
+
+    /// Bad pixels are an error naming the field.
+    #[test]
+    fn from_pixels_errors_name_the_field() {
+        let fail = |replace: (&str, &str)| {
+            let src = PIXELS.replace(replace.0, replace.1);
+            assert_ne!(src, PIXELS, "{replace:?} did not apply");
+            eval_with_prelude(&format!("{src}let main = Texture.fromPixels(px)\n"))
+                .err()
+                .expect("should fail")
+        };
+        assert_eq!(
+            fail(("Texture.Rgb8", "Texture.Rgba8")),
+            "Texture.fromPixels: pixels: 6 bytes, but 2×1 Rgba8 needs 8 (4 per pixel)"
+        );
+        assert_eq!(
+            fail(("width: 2.0", "width: 0.0")),
+            "Texture.fromPixels: width must be 1 to 4096 (the largest texture every target \
+supports), got 0"
+        );
+        assert_eq!(
+            fail(("height: 1.0", "height: 0.5")),
+            "Texture.fromPixels: height must be a whole number, got 0.5"
+        );
+        assert_eq!(
+            fail(("width: 2.0", "width: -1.0")),
+            "Texture.fromPixels: width must be 1 to 4096 (the largest texture every target \
+supports), got -1"
+        );
+        assert_eq!(
+            fail(("width: 2.0", "width: 5000.0")),
+            "Texture.fromPixels: width must be 1 to 4096 (the largest texture every target \
+supports), got 5000"
+        );
     }
 
     /// The persistence spine on the REAL store: `Persistence.save` writes the

@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::render_target::RenderTargetDescriptor;
+use crate::texture::PixelData;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TextureDescription {
@@ -37,6 +40,10 @@ pub enum TextureDescription {
     /// `Sprite.text` need no asset. Sampled clamp-to-edge like a sprite image
     /// and uploaded top-row-first like a file texture.
     Builtin(BuiltinTexture),
+    /// Pixels built in the game (`Texture.fromPixels`), carried inline on the
+    /// wire; equal only to the same built value. Its colour space picks the
+    /// sampling, whatever the material slot.
+    Data(Arc<PixelData>),
 }
 
 /// The runtime's compiled-in textures. An enum rather than a magic path so a
