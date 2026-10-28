@@ -1,5 +1,7 @@
-//! `Texture.fromPixels` — textures from decoded pixels (see `texture.funi`).
+//! `Texture.fromPixels` and `Texture.atlas` — textures from decoded pixels
+//! (see `texture.funi`).
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::texture::{ColorSpace, PixelData, PixelEncoding};
@@ -7,82 +9,186 @@ use crate::texture::{ColorSpace, PixelData, PixelEncoding};
 use super::bytes::FunctorLangBytes;
 use super::*;
 
-/// `Texture.fromPixels`'s record, unpacked (validation is [`PixelData::new`]'s).
-struct PixelsArg {
-    width: u32,
-    height: u32,
-    encoding: PixelEncoding,
-    color_space: ColorSpace,
-    pixels: FunctorLangBytes,
-}
-
-const PATH: &str = "Texture.fromPixels";
-
-fn fail<T>(message: String, span: Span) -> Result<T, RunError> {
+fn fail<T>(what: &str, message: String, span: Span) -> Result<T, RunError> {
     Err(RunError {
-        message: format!("{PATH}: {message}"),
+        message: format!("{what}: {message}"),
         span,
     })
 }
 
-impl crate::host_registry::FromArg for PixelsArg {
-    fn from_arg(value: &Value, _path: &str, span: Span) -> Result<Self, RunError> {
-        let Value::Record(fields) = value else {
+fn record<'a>(value: &'a Value, what: &str, span: Span) -> Result<&'a [(String, Value)], RunError> {
+    match value {
+        Value::Record(fields) => Ok(fields),
+        other => fail(
+            what,
+            format!("expected a record, got {}", other.kind_name()),
+            span,
+        ),
+    }
+}
+
+fn field<'a>(
+    fields: &'a [(String, Value)],
+    name: &str,
+    what: &str,
+    span: Span,
+) -> Result<&'a Value, RunError> {
+    match fields.iter().find(|(field, _)| field == name) {
+        Some((_, value)) => Ok(value),
+        None => fail(what, format!("missing `{name}`"), span),
+    }
+}
+
+/// A side length field (`width`, `maxSize`): a whole number in range.
+fn side(
+    fields: &[(String, Value)],
+    name: &str,
+    record_name: &str,
+    what: &str,
+    span: Span,
+) -> Result<u32, RunError> {
+    let n = finite_record_number(fields, name, record_name, what, span)?;
+    crate::texture::check_side(name, n as f64).or_else(|e| fail(what, e, span))
+}
+
+/// A `Texture.pixels` record, validated and converted. Errors start `what: `.
+fn pixels_of(value: &Value, what: &str, span: Span) -> Result<PixelData, RunError> {
+    let fields = record(value, what, span)?;
+    let ctor = |name: &str| match field(fields, name, what, span)? {
+        Value::Variant { ctor, args } if args.is_empty() => Ok(ctor.to_string()),
+        other => fail(
+            what,
+            format!("{name}: expected a constructor, got {}", other.kind_name()),
+            span,
+        ),
+    };
+    let encoding = match ctor("format")?.as_str() {
+        "Texture.Rgba8" => PixelEncoding::Rgba8,
+        "Texture.Rgb8" => PixelEncoding::Rgb8,
+        "Texture.Rgb555le" => PixelEncoding::Rgb555le,
+        other => return fail(what, format!("format: unknown format {other}"), span),
+    };
+    let color_space = match ctor("colorSpace")?.as_str() {
+        "Texture.Srgb" => ColorSpace::Srgb,
+        "Texture.Linear" => ColorSpace::Linear,
+        other => {
             return fail(
-                format!("expected a record, got {}", value.kind_name()),
+                what,
+                format!("colorSpace: unknown colour space {other}"),
+                span,
+            )
+        }
+    };
+    let bytes: FunctorLangBytes = crate::host_registry::FromArg::from_arg(
+        field(fields, "pixels", what, span)?,
+        &format!("{what}: pixels"),
+        span,
+    )?;
+    PixelData::new(
+        side(fields, "width", "pixels", what, span)?,
+        side(fields, "height", "pixels", what, span)?,
+        encoding,
+        color_space,
+        bytes.0.as_slice(),
+    )
+    .or_else(|e| fail(what, e, span))
+}
+
+struct PixelsArg(PixelData);
+
+impl crate::host_registry::FromArg for PixelsArg {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        pixels_of(value, path, span).map(PixelsArg)
+    }
+}
+
+/// `Texture.atlas`'s record: images converted, padding and size checked.
+struct AtlasArg {
+    images: Vec<PixelData>,
+    padding: u32,
+    max_size: u32,
+}
+
+impl crate::host_registry::FromArg for AtlasArg {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let fields = record(value, path, span)?;
+        let Value::List(images) = field(fields, "images", path, span)? else {
+            return fail(path, "images: expected a list".to_string(), span);
+        };
+        let images = images
+            .iter()
+            .enumerate()
+            .map(|(i, image)| {
+                let what = format!("{path}: images[{i}]");
+                let image = record(image, &what, span)?;
+                // Switchable layers arrive with `Texture.withLayers`.
+                match field(image, "layers", &what, span)? {
+                    Value::List(layers) if layers.is_empty() => {}
+                    _ => return fail(&what, "layers aren't supported yet; pass []".into(), span),
+                }
+                pixels_of(field(image, "pixels", &what, span)?, &what, span)
+            })
+            .collect::<Result<_, _>>()?;
+        let padding = finite_record_number(fields, "padding", "atlas", path, span)?;
+        if padding.fract() != 0.0 || padding < 0.0 {
+            return fail(
+                path,
+                format!("padding must be a whole number from 0, got {padding}"),
                 span,
             );
-        };
-        let get = |name: &str| match fields.iter().find(|(field, _)| field == name) {
-            Some((_, value)) => Ok(value),
-            None => fail(format!("missing `{name}`"), span),
-        };
-        let side = |name: &str| {
-            let n = finite_record_number(fields, name, "pixels", PATH, span)?;
-            crate::texture::check_side(name, n as f64).or_else(|e| fail(e, span))
-        };
-        let ctor = |name: &str| match get(name)? {
-            Value::Variant { ctor, args } if args.is_empty() => Ok(ctor.to_string()),
-            other => fail(
-                format!("{name}: expected a constructor, got {}", other.kind_name()),
-                span,
-            ),
-        };
-        let encoding = match ctor("format")?.as_str() {
-            "Texture.Rgba8" => PixelEncoding::Rgba8,
-            "Texture.Rgb8" => PixelEncoding::Rgb8,
-            "Texture.Rgb555le" => PixelEncoding::Rgb555le,
-            other => return fail(format!("format: unknown format {other}"), span),
-        };
-        let color_space = match ctor("colorSpace")?.as_str() {
-            "Texture.Srgb" => ColorSpace::Srgb,
-            "Texture.Linear" => ColorSpace::Linear,
-            other => return fail(format!("colorSpace: unknown colour space {other}"), span),
-        };
-        Ok(PixelsArg {
-            width: side("width")?,
-            height: side("height")?,
-            encoding,
-            color_space,
-            pixels: crate::host_registry::FromArg::from_arg(
-                get("pixels")?,
-                &format!("{PATH}: pixels"),
-                span,
-            )?,
+        }
+        Ok(AtlasArg {
+            images,
+            padding: padding as u32,
+            max_size: side(fields, "maxSize", "atlas", path, span)?,
         })
     }
 }
 
+fn texture_value(data: PixelData) -> Value {
+    Value::HostData(Rc::new(FunctorLangTexture(TextureDescription::Data(
+        Arc::new(data),
+    ))))
+}
+
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
-    reg.fn1(PATH, "Texture.fromPixels(pixels)", |p: PixelsArg| {
-        PixelData::new(
-            p.width,
-            p.height,
-            p.encoding,
-            p.color_space,
-            p.pixels.0.as_slice(),
-        )
-        .map(|data| FunctorLangTexture(TextureDescription::Data(Arc::new(data))))
-        .map_err(|e| format!("{PATH}: {e}"))
-    });
+    reg.fn1(
+        "Texture.fromPixels",
+        "Texture.fromPixels(pixels)",
+        |p: PixelsArg| texture_value(p.0),
+    );
+    reg.fn1(
+        "Texture.atlas",
+        "Texture.atlas({ images, padding, maxSize })",
+        |a: AtlasArg| {
+            let images: Vec<&PixelData> = a.images.iter().collect();
+            let (atlas, placed) = crate::texture::atlas(&images, a.padding, a.max_size)
+                .map_err(|e| format!("Texture.atlas: {e}"))?;
+            let side = atlas.width() as f64;
+            // UVs inset half a texel, so bilinear taps stay inside the image.
+            let rects = a
+                .images
+                .iter()
+                .zip(placed)
+                .map(|(image, p)| {
+                    let (x, y) = (p.x as f64, p.y as f64);
+                    crate::input::record([
+                        ("x", Value::Number(x)),
+                        ("y", Value::Number(y)),
+                        ("u0", Value::Number((x + 0.5) / side)),
+                        ("v0", Value::Number((y + 0.5) / side)),
+                        ("u1", Value::Number((x + image.width() as f64 - 0.5) / side)),
+                        (
+                            "v1",
+                            Value::Number((y + image.height() as f64 - 0.5) / side),
+                        ),
+                    ])
+                })
+                .collect();
+            Ok::<_, String>(crate::input::record([
+                ("texture", texture_value(atlas)),
+                ("rects", Value::List(Rc::new(rects))),
+            ]))
+        },
+    );
 }

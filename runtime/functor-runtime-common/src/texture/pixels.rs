@@ -103,7 +103,7 @@ impl PixelData {
     }
 
     /// Wrap already-checked RGBA8 pixels with a fresh identity.
-    fn from_rgba8(width: u32, height: u32, color_space: ColorSpace, rgba8: Vec<u8>) -> PixelData {
+    pub(super) fn from_rgba8(width: u32, height: u32, color_space: ColorSpace, rgba8: Vec<u8>) -> PixelData {
         PixelData {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             color_space,
