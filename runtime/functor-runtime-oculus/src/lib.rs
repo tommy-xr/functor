@@ -46,6 +46,7 @@ use functor_runtime_common::{
 use khronos_egl as egl;
 use openxr as xr;
 
+mod battery;
 mod passthrough;
 
 /// GLES version to request. Quest 3 supports 3.2.
@@ -764,6 +765,7 @@ fn service_debug_request(
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
             let passthrough = passthrough.state(debug.config);
+            let battery = battery::latest();
             let instance_uploads =
                 functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
             let terrain = functor_runtime_common::gpu_counters::gpu_counters().frame_terrain();
@@ -790,6 +792,7 @@ fn service_debug_request(
                     settings: g.settings(),
                     terrain,
                     passthrough,
+                    battery,
                 });
             });
         }
@@ -1092,6 +1095,7 @@ pub fn android_main(app: AndroidApp) {
         })
     };
     let gl = Arc::new(gl);
+    battery::init(app.vm_as_ptr(), app.activity_as_ptr());
 
     // android-activity stores the *Application* in ndk_context, but Meta's
     // runtime needs the *Activity* in XrInstanceCreateInfoAndroidKHR to track

@@ -11093,6 +11093,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             settings: None,
             terrain: Default::default(),
             passthrough: None,
+            battery: None,
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
             .expect("a deep model must stay parseable by stock serde_json");
