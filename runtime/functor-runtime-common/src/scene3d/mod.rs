@@ -1460,7 +1460,7 @@ pub struct MeshData {
     pub triangles: Vec<[u32; 3]>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneObject {
     Geometry(Shape),
     Model(ModelDescription),
@@ -1488,6 +1488,66 @@ pub enum SceneObject {
         template: Box<Scene3D>,
         instances: InstanceList,
     },
+    /// A `Scene.memo` result, held by reference so a node wrapping it (a
+    /// group, a transform) copies a pointer, not the subtree. Transparent:
+    /// it compares, serializes and draws as the object it holds.
+    #[serde(untagged, skip_deserializing, serialize_with = "serialize_resolved")]
+    Shared(Arc<SceneObject>),
+}
+
+impl SceneObject {
+    /// The object a `Shared` stands for; any other object is itself. Walkers
+    /// match on this, so their `Shared` arm is unreachable.
+    pub fn resolved(&self) -> &SceneObject {
+        match self {
+            SceneObject::Shared(inner) => inner.resolved(),
+            other => other,
+        }
+    }
+
+    /// Owned [`Self::resolved`], for rewriting walkers: clones the shared
+    /// object only if something else still holds it.
+    pub fn into_resolved(self) -> SceneObject {
+        match self {
+            SceneObject::Shared(inner) => Arc::unwrap_or_clone(inner).into_resolved(),
+            other => other,
+        }
+    }
+}
+
+/// Structural, and blind to sharing: a memoized subtree equals the same
+/// subtree built inline. No pointer shortcut, so a NaN stays unequal to itself.
+impl PartialEq for SceneObject {
+    fn eq(&self, other: &Self) -> bool {
+        use SceneObject::*;
+        match (self, other) {
+            (Shared(a), b) => **a == *b,
+            (a, Shared(b)) => *a == **b,
+            (Geometry(a), Geometry(b)) => a == b,
+            (Model(a), Model(b)) => a == b,
+            (Terrain(a), Terrain(b)) => a == b,
+            (Material(m, a), Material(n, b)) => m == n && a == b,
+            (Group(a), Group(b)) => a == b,
+            (Opacity(x, a), Opacity(y, b)) => x == y && a == b,
+            (
+                Instanced {
+                    template: t,
+                    instances: i,
+                },
+                Instanced {
+                    template: u,
+                    instances: j,
+                },
+            ) => t == u && i == j,
+            (Geometry(_), _)
+            | (Model(_), _)
+            | (Terrain(_), _)
+            | (Material(..), _)
+            | (Group(_), _)
+            | (Opacity(..), _)
+            | (Instanced { .. }, _) => false,
+        }
+    }
 }
 
 /// A scene node: what it draws, under a transform.
@@ -1746,7 +1806,7 @@ impl Scene3D {
     /// `Scene.animate`'s semantics. Piping right after `Scene.model` targets
     /// that one model; applying over a group animates each model in it.
     pub fn with_animation(self, expr: crate::anim::AnimExpr) -> Self {
-        let obj = match self.obj {
+        let obj = match self.obj.into_resolved() {
             SceneObject::Model(mut description) => {
                 description.animation = Some(expr);
                 SceneObject::Model(description)
@@ -1782,6 +1842,7 @@ impl Scene3D {
                 instances,
             },
             leaf @ (SceneObject::Geometry(_) | SceneObject::Terrain(_)) => leaf,
+            SceneObject::Shared(_) => unreachable!("resolved"),
         };
         Scene3D { obj, ..self }
     }
@@ -1791,7 +1852,7 @@ impl Scene3D {
     /// walk) entirely off the frame path of every scene that never calls
     /// `Scene.opacity`. Short-circuits, allocates nothing, does no matrix math.
     pub fn has_opacity(&self) -> bool {
-        match &self.obj {
+        match self.obj.resolved() {
             SceneObject::Opacity(..) => true,
             SceneObject::Group(items) | SceneObject::Material(_, items) => {
                 items.iter().any(Scene3D::has_opacity)
@@ -1803,6 +1864,7 @@ impl Scene3D {
             | SceneObject::Model(_)
             | SceneObject::Terrain(_)
             | SceneObject::Instanced { .. } => false,
+            SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
 
@@ -1820,7 +1882,7 @@ impl Scene3D {
         sum: &mut cgmath::Vector3<f32>,
         count: &mut u32,
     ) {
-        match &self.obj {
+        match self.obj.resolved() {
             SceneObject::Material(_, items) => {
                 for item in items {
                     item.accumulate_leaf_origins(world, sum, count);
@@ -1849,6 +1911,7 @@ impl Scene3D {
                     template.accumulate_leaf_origins(&(w * instance.matrix()), sum, count);
                 }
             }
+            SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
 
@@ -1885,7 +1948,7 @@ impl Scene3D {
         material: Option<&'a MaterialDescription>,
         out: &mut Vec<TransparentDraw<'a>>,
     ) {
-        match &self.obj {
+        match self.obj.resolved() {
             SceneObject::Opacity(..) => {
                 let centroid = self.leaf_centroid(world);
                 out.push(TransparentDraw {
@@ -1912,6 +1975,7 @@ impl Scene3D {
             | SceneObject::Model(_)
             | SceneObject::Terrain(_)
             | SceneObject::Instanced { .. } => {}
+            SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
 
@@ -1997,7 +2061,7 @@ impl Scene3D {
         };
         let geometry_material = override_material.as_ref().unwrap_or(current_material);
 
-        match &self.obj {
+        match self.obj.resolved() {
             SceneObject::Model(model_description) => {
                 // While the primary streams in, an `Asset.whilePending`
                 // chain renders its first loaded placeholder instead of
@@ -2576,8 +2640,17 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
                 mesh.update(&render_context.gl, points);
                 mesh.draw(&render_context.gl);
             }
+            SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
+}
+
+/// A `Shared` object serializes as the object it holds: no wire variant.
+fn serialize_resolved<S>(obj: &Arc<SceneObject>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    obj.resolved().serialize(serializer)
 }
 
 fn serialize_matrix<S>(matrix: &Matrix4<f32>, serializer: S) -> Result<S::Ok, S::Error>
@@ -3195,6 +3268,21 @@ mod opacity_tests {
         scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
         assert_eq!(draws[0].centroid, vec3(0.0, 0.0, 0.0));
         assert_eq!(draws[0].parent_world, Matrix4::identity());
+    }
+
+    /// `Shared` is invisible to `==` and serde: equal to its inline form,
+    /// serialized as it, and a NaN inside is unequal even to the same `Arc`.
+    #[test]
+    fn shared_objects_compare_and_serialize_as_inline() {
+        let inline = group(vec![cube_at(1.0), opacity(0.5, cube_at(2.0))]).obj;
+        let shared = SceneObject::Shared(Arc::new(inline.clone()));
+        assert!(shared == inline && inline == shared && shared == shared.clone());
+        assert_eq!(
+            serde_json::to_string(&shared).unwrap(),
+            serde_json::to_string(&inline).unwrap()
+        );
+        let nan = SceneObject::Shared(Arc::new(opacity(f32::NAN, cube_at(0.0)).obj));
+        assert!(nan != nan.clone());
     }
 
     #[test]
