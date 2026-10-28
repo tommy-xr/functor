@@ -168,6 +168,28 @@ impl Light {
     }
 }
 
+/// Linear light from an authored (sRGB) colour and intensity, as the lit
+/// shader receives it.
+pub fn radiance(color: [f32; 3], intensity: f32) -> [f32; 3] {
+    crate::color_space::srgb_to_linear3(color).map(|c| c * intensity)
+}
+
+/// Point and spot light distance falloff: `clamp(1 − d²/r², 0, 1)²`. The
+/// lit shader's `accumulateLights` computes the same; the baker calls this.
+pub fn distance_falloff(dist: f32, range: f32) -> f32 {
+    let range = range.max(1e-4);
+    let a = (1.0 - (dist * dist) / (range * range)).clamp(0.0, 1.0);
+    a * a
+}
+
+/// A spot light's cone: 1 inside, fading to 0 at `cone_cos` (the cosine of
+/// its cone angle) over the outer 15%, as in `accumulateLights`.
+/// `cos_angle` is between the spot's axis and the direction to the point.
+pub fn cone_falloff(cos_angle: f32, cone_cos: f32) -> f32 {
+    let inner = 1.0 + (cone_cos - 1.0) * 0.85;
+    ((cos_angle - cone_cos) / (inner - cone_cos).max(1e-4)).clamp(0.0, 1.0)
+}
+
 /// The maximum lights a single `LitMaterial` shader evaluates per draw. Beyond
 /// this the extra lights are dropped (the multi-pass additive path is a later
 /// step). Must match `MAX_LIGHTS` in the lit shader.
@@ -212,10 +234,7 @@ pub fn pack_lights(lights: &[Light]) -> LightUniforms {
         let i = u.count as usize;
         let c3 = i * 3;
         let mut set_color = |col: &[f32; 3], intensity: f32| {
-            let linear = crate::color_space::srgb_to_linear3(*col);
-            u.colors[c3] = linear[0] * intensity;
-            u.colors[c3 + 1] = linear[1] * intensity;
-            u.colors[c3 + 2] = linear[2] * intensity;
+            u.colors[c3..c3 + 3].copy_from_slice(&radiance(*col, intensity));
         };
         match light {
             Light::Ambient { color, .. } => {
@@ -362,6 +381,7 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
                     highp float dist = length(toLight);
                     l = toLight / max(dist, 1e-4);
 
+                    // Mirrored by `distance_falloff` and `cone_falloff`.
                     float range = max(lightRange[i], 1e-4);
                     float a = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
                     atten = a * a;
@@ -551,6 +571,30 @@ mod tests {
         let json = serde_json::to_string(&lights[0]).unwrap();
         assert_eq!(json, r#"{"Ambient":{"color":[0.1,0.1,0.1],"baked":true}}"#);
         assert_eq!(serde_json::from_str::<Light>(&json).unwrap(), lights[0]);
+    }
+
+    // The baker's falloff is the shader's: pinned values, and the GLSL still
+    // spells the formulas the Rust functions mirror.
+    #[test]
+    fn falloffs_match_the_shader() {
+        use super::{cone_falloff, distance_falloff};
+        assert_eq!(distance_falloff(0.0, 4.0), 1.0);
+        assert_eq!(distance_falloff(2.0, 4.0), 0.5625);
+        assert_eq!(distance_falloff(4.0, 4.0), 0.0);
+        assert_eq!(distance_falloff(5.0, 4.0), 0.0);
+        let outer = 0.8f32;
+        assert_eq!(cone_falloff(1.0, outer), 1.0);
+        assert_eq!(cone_falloff(outer, outer), 0.0);
+        assert!((cone_falloff(outer + 0.5 * 0.15 * (1.0 - outer), outer) - 0.5).abs() < 1e-5);
+        let glsl = lighting_glsl();
+        for formula in [
+            "float a = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);",
+            "atten = a * a;",
+            "highp float inner = mix(1.0, outer, 0.85);",
+            "atten *= clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);",
+        ] {
+            assert!(glsl.contains(formula), "{formula}");
+        }
     }
 
     #[test]
