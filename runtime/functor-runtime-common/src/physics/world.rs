@@ -194,6 +194,10 @@ pub struct World {
     /// tag → a fused room body's colliders (`Shape::FusedRoom`).
     #[serde(default)]
     rooms: BTreeMap<String, LiveRoom>,
+    /// Colliders a re-fused room removed since the last step, with its tag:
+    /// their contacts end at the next step, and still name the room.
+    #[serde(skip, default)]
+    retired: Vec<(ColliderHandle, String)>,
     /// Last-declared body per tag — the memory behind the divergence rule:
     /// reconcile writes a field to the live body only when the new declaration
     /// *differs from this cache*; an unchanged declaration leaves the body to
@@ -253,6 +257,7 @@ impl Clone for World {
             ccd_solver: self.ccd_solver.clone(),
             tags: self.tags.clone(),
             rooms: self.rooms.clone(),
+            retired: self.retired.clone(),
             declared: self.declared.clone(),
             flat: self.flat.clone(),
             groups: self.groups.clone(),
@@ -310,6 +315,7 @@ impl World {
             ccd_solver: CCDSolver::new(),
             tags: BTreeMap::new(),
             rooms: BTreeMap::new(),
+            retired: Vec::new(),
             declared: BTreeMap::new(),
             flat: BTreeSet::new(),
             groups: BTreeMap::new(),
@@ -570,20 +576,48 @@ impl World {
         // pair involving a body despawned earlier this frame (rapier's
         // REMOVED stop-events) has no tag left — those events are dropped:
         // the game already unmade the body, there is nobody to notify about.
+        //
+        // A fused room is many colliders, but the game hears about bodies: a
+        // pair with a room starts when the first of its collider pairs
+        // touches and stops when the last lets go, so a chunk re-meshed under
+        // a resting ball (or a ball across two chunks) says nothing. Net
+        // starts per room pair, keyed by sorted tags and sensor flag.
+        let mut room_pairs: BTreeMap<(String, String, bool), i32> = BTreeMap::new();
         for event in sink.0.into_inner().unwrap() {
             let (h1, h2, started, flags) = match event {
                 CollisionEvent::Started(h1, h2, flags) => (h1, h2, true, flags),
                 CollisionEvent::Stopped(h1, h2, flags) => (h1, h2, false, flags),
             };
-            if let (Some(a), Some(b)) = (self.tag_of_collider(h1), self.tag_of_collider(h2)) {
+            let tag_of = |handle| self.tag_of_collider(handle);
+            let (Some(a), Some(b)) = (tag_of(h1), tag_of(h2)) else {
+                continue;
+            };
+            let sensor = flags.contains(CollisionEventFlags::SENSOR);
+            if self.rooms.contains_key(&a) || self.rooms.contains_key(&b) {
+                let (a, b) = if a <= b { (a, b) } else { (b, a) };
+                *room_pairs.entry((a, b, sensor)).or_default() += if started { 1 } else { -1 };
+            } else {
                 self.events.push(PhysicsEvent {
                     started,
                     a,
                     b,
-                    sensor: flags.contains(CollisionEventFlags::SENSOR),
+                    sensor,
                 });
             }
         }
+        for ((a, b, sensor), net) in room_pairs {
+            let now = self.touching_pairs(&a, &b, sensor);
+            let before = now - net;
+            if (before == 0) != (now == 0) {
+                self.events.push(PhysicsEvent {
+                    started: now > 0,
+                    a,
+                    b,
+                    sensor,
+                });
+            }
+        }
+        self.retired.clear();
         self.frame += 1;
     }
 
@@ -878,6 +912,13 @@ impl World {
                 ));
                 continue;
             }
+            if self.rooms.contains_key(&tag) {
+                self.push_command_warning(format!(
+                    "physics {kind} on the fused room \"{tag}\" has no effect: it is where \
+                     the room is"
+                ));
+                continue;
+            }
             let rb = &mut self.bodies[rb_handle];
             match &command {
                 PhysicsCommand::ApplyImpulse { impulse, .. } => {
@@ -984,11 +1025,17 @@ impl World {
         else {
             return;
         };
-        let floor = room::settle_floor(live.floor, room::floor_height(next));
+        // An emptied room (the shell started over) has no floor.
+        let floor = if next.chunks.is_empty() {
+            None
+        } else {
+            room::settle_floor(live.floor, room::floor_height(next))
+        };
         if floor != live.floor {
             if let Some(handle) = live.floor_plane.take() {
                 self.colliders
                     .remove(handle, &mut self.islands, &mut self.bodies, true);
+                self.retired.push((handle, body.tag.clone()));
             }
             if let Some(y) = floor {
                 let plane = ColliderBuilder::halfspace(rapier3d::na::Unit::new_unchecked(Vector::Y))
@@ -1004,6 +1051,7 @@ impl World {
             if let Some(handle) = live.chunks.remove(&key) {
                 self.colliders
                     .remove(handle, &mut self.islands, &mut self.bodies, true);
+                self.retired.push((handle, body.tag.clone()));
             }
             let Some(geometry) = next
                 .chunks
@@ -1012,14 +1060,8 @@ impl World {
             else {
                 continue;
             };
-            let vertices = geometry.positions.into_iter().map(vec3).collect();
-            // Shared vertices let rapier smooth contacts across the chunk's
-            // internal edges, so a ball rolls over them without hopping.
-            let Ok(collider) = ColliderBuilder::trimesh_with_flags(
-                vertices,
-                geometry.triangles,
-                TriMeshFlags::FIX_INTERNAL_EDGES,
-            ) else {
+            let Some(collider) = chunk_trimesh(geometry) else {
+                log::warn!("fused room: chunk {key:?} is not a valid triangle mesh; skipped");
                 continue;
             };
             let handle = self.colliders.insert_with_parent(
@@ -1042,9 +1084,47 @@ impl World {
         ))
     }
 
-    /// The tag of the body `collider` belongs to.
+    /// Collider pairs between the bodies tagged `a` and `b` touching now
+    /// (overlapping, for a sensor pair).
+    fn touching_pairs(&self, a: &str, b: &str, sensor: bool) -> i32 {
+        let (Some(&a), Some(&b)) = (self.tags.get(a), self.tags.get(b)) else {
+            return 0;
+        };
+        // Walk the body with fewer colliders: the ball, not the room.
+        let count = |body: RigidBodyHandle| self.bodies[body].colliders().len();
+        let (mine, other) = if count(a) <= count(b) { (a, b) } else { (b, a) };
+        let of_other =
+            |c: ColliderHandle| self.colliders.get(c).and_then(|c| c.parent()) == Some(other);
+        let mut touching = 0;
+        for &c in self.bodies[mine].colliders() {
+            touching += if sensor {
+                self.narrow_phase
+                    .intersection_pairs_with(c)
+                    .filter(|&(c1, c2, hit)| hit && of_other(if c1 == c { c2 } else { c1 }))
+                    .count()
+            } else {
+                self.narrow_phase
+                    .contact_pairs_with(c)
+                    .filter(|p| {
+                        let partner = if p.collider1 == c { p.collider2 } else { p.collider1 };
+                        p.has_any_active_contact() && of_other(partner)
+                    })
+                    .count()
+            };
+        }
+        touching as i32
+    }
+
+    /// The tag of the body `collider` belongs to, or belonged to if a
+    /// re-fused room removed it this step.
     fn tag_of_collider(&self, collider: ColliderHandle) -> Option<String> {
-        let body = self.colliders.get(collider)?.parent()?;
+        let Some(body) = self.colliders.get(collider).and_then(|c| c.parent()) else {
+            return self
+                .retired
+                .iter()
+                .find(|(retired, _)| *retired == collider)
+                .map(|(_, tag)| tag.clone());
+        };
         // Scenes are small; a scan beats carrying a second map in every
         // snapshot.
         self.tags
@@ -1146,9 +1226,10 @@ impl World {
             (Shape::FusedRoom { room: a }, Shape::FusedRoom { room: b }) => Some((a, b)),
             _ => None,
         };
+        // (A room is fixed, so its mass means nothing.)
         if prev.kind != next.kind
             || (prev.shape != next.shape && rooms.is_none())
-            || prev.mass != next.mass
+            || (prev.mass != next.mass && rooms.is_none())
         {
             if !shape_is_ready(&next.shape) {
                 return false;
@@ -1370,6 +1451,18 @@ fn with_material(collider: ColliderBuilder, body: &Body) -> ColliderBuilder {
         // Every body reports contact begin/end (Physics.events); rapier
         // only pays for this when a pair's state actually changes.
         .active_events(ActiveEvents::COLLISION_EVENTS)
+}
+
+/// A chunk's triangle mesh collider; `None` if rapier rejects the mesh.
+fn chunk_trimesh(geometry: room::ChunkGeometry) -> Option<ColliderBuilder> {
+    // Shared vertices let rapier smooth contacts across the chunk's internal
+    // edges, so a ball rolls over them without hopping.
+    ColliderBuilder::trimesh_with_flags(
+        geometry.positions.into_iter().map(vec3).collect(),
+        geometry.triangles,
+        TriMeshFlags::FIX_INTERNAL_EDGES,
+    )
+    .ok()
 }
 
 /// A fused room body's live colliders.
@@ -3268,6 +3361,88 @@ mod fused_room_tests {
         assert!(!w.bodies[w.tags["ball"]].is_ccd_enabled());
     }
 
+    /// Contacts are per body pair: a ball landing on the room starts one, and
+    /// a chunk re-meshed under it (old collider out, new one in) says
+    /// nothing.
+    #[test]
+    fn contacts_with_the_room_are_per_body_not_per_chunk() {
+        let room = stand_in_room();
+        let resting = || ball([0.3, 1.0, 1.0], [0.0; 3]).with_restitution(0.0);
+        let still = |room: RoomMeshes| room_body(&Arc::new(room)).with_restitution(0.0);
+        let mut w = world_with(vec![still(room.clone()), resting()]);
+        let names = |e: &PhysicsEvent| {
+            let mut pair = [e.a.clone(), e.b.clone()];
+            pair.sort();
+            pair == ["ball", "room"]
+        };
+        run(&mut w, 240, |_| {});
+        let landed = w.take_events();
+        assert!(landed.iter().all(names), "{landed:?}");
+        assert_eq!(
+            landed.iter().map(|e| e.started).collect::<Vec<_>>(),
+            vec![true],
+            "one contact, however many colliders it touched"
+        );
+        // The desk top's chunk under the ball, moved a millimetre.
+        let under_ball = |p: &[f32; 3]| {
+            (p[1] - 0.75).abs() < 0.01 && (p[0] - 0.3).abs() < 0.1 && (p[2] - 1.0).abs() < 0.1
+        };
+        let (&key, mesh) = room
+            .chunks
+            .iter()
+            .find(|(_, m)| m.positions.iter().any(under_ball))
+            .unwrap();
+        let mut moved = (**mesh).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] += 0.001);
+        let mut next = room.clone();
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![still(next), resting()],
+        ));
+        run(&mut w, 2, |_| {});
+        assert_eq!(w.take_events(), vec![], "a re-mesh is not a contact");
+        // Lifting the ball off ends the contact, naming the room.
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "ball".to_string(),
+            position: [0.3, 1.5, 1.0],
+        });
+        w.step_frame(FIXED_DT);
+        let lifted = w.take_events();
+        assert!(lifted.len() == 1 && !lifted[0].started && names(&lifted[0]), "{lifted:?}");
+    }
+
+    /// A world with a room snapshots to JSON and resumes bit-exact.
+    #[test]
+    fn a_world_with_a_room_restores_bit_exact() {
+        let room = Arc::new(stand_in_room());
+        let scene = PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&room), ball([0.3, 1.4, 1.0], [0.5, 0.0, 0.0])],
+        );
+        let mut live = world_with(scene.bodies.clone());
+        run(&mut live, 30, |_| {});
+        let mut restored = World::new(DEFAULT_GRAVITY);
+        restored.restore(&live.snapshot()).unwrap();
+        for w in [&mut live, &mut restored] {
+            w.reconcile(&scene);
+            run(w, 60, |_| {});
+        }
+        assert_eq!(live.snapshot(), restored.snapshot());
+    }
+
+    #[test]
+    fn teleporting_the_room_is_refused() {
+        let mut w = world_with(vec![room_body(&Arc::new(stand_in_room()))]);
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "room".to_string(),
+            position: [0.0, 1.0, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_transform("room").unwrap().0, [0.0; 3]);
+        assert_eq!(w.take_command_warnings().len(), 1);
+    }
+
     /// Nobody saw the floor behind the desk; the floor plane is there anyway.
     #[test]
     fn a_ball_dropped_on_unseen_floor_lands_on_the_floor_plane() {
@@ -3340,18 +3515,11 @@ mod fused_room_tests {
         let mut raw = World::new(DEFAULT_GRAVITY);
         let body = raw.bodies.insert(RigidBodyBuilder::fixed().build());
         for mesh in room.chunks.values() {
-            let Some(geometry) = room::chunk_collider(mesh, None) else {
+            let Some(collider) = room::chunk_collider(mesh, None).and_then(chunk_trimesh) else {
                 continue;
             };
-            let collider = ColliderBuilder::trimesh_with_flags(
-                geometry.positions.into_iter().map(vec3).collect(),
-                geometry.triangles,
-                TriMeshFlags::FIX_INTERNAL_EDGES,
-            )
-            .unwrap()
-            .restitution(0.8);
             raw.colliders
-                .insert_with_parent(collider, body, &mut raw.bodies);
+                .insert_with_parent(collider.restitution(0.8), body, &mut raw.bodies);
         }
         let (with, without) = (resting_jitter(&mut planed), resting_jitter(&mut raw));
         eprintln!("resting ball max |vy|: floor plane {with:.6} m/s, raw {without:.6} m/s");

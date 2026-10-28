@@ -367,18 +367,22 @@ let physics = (model) =>
   any chunk report the body's tag.
 - The floor is a plane. The fused floor ripples by a few millimetres, which
   keeps a resting ball rolling, and it has holes wherever nobody looked
-  (behind the desk). The runtime takes the lowest level surface with at
-  least 1 m² within 3 cm of one height as the floor, drops the level
+  (behind the desk). The runtime takes as the floor the lowest level surface
+  with at least 0.5 m² within 3 cm of one height and within 20 cm of
+  `y = 0` (the stage floor; a bed or a table never counts), drops the level
   triangles there from the chunks, and puts an infinite plane at that
-  height. It moves only when the floor estimate moves by a centimetre. Until
-  the floor itself has been seen, a large table can pass for it.
+  height. It moves only when the estimate moves by 2 mm, and stays
+  until the shell starts the room over. A world whose floor is not near
+  `y = 0` gets no plane and collides with its fused floor as it is.
 - The meshes reach physics through the same ordered message queue as every
   other shell call: the room fused while rendering frame N collides from the
   physics step of frame N+1. Desktop runs pinned by `--fixed-time` or
-  `--input-script` fuse inline, and a pipelined run steps in lockstep while
-  a `Physics.fusedRoom` body exists, so a scripted capture is the same
-  pipelined or not. On Quest fusion runs on its own thread and new chunks
-  arrive whenever it finishes.
+  `--input-script` fuse inline, and a pipelined run of them steps in
+  lockstep while `config` requests `Xr.scene`, so a scripted capture is the
+  same pipelined or not. On Quest fusion runs on its own thread and new
+  chunks arrive whenever it finishes.
+- Contacts are per body: a ball touching two chunks, or a chunk re-meshed
+  under a resting ball, is one contact with the room's tag.
 - Walls are surfaces with no thickness. A body that moves farther than its
   radius in one 1/60 s step can end a step behind one, so give small, fast
   bodies `|> Physics.continuous` (continuous collision detection).

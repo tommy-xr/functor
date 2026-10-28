@@ -10,13 +10,14 @@
 //! Floor snap: the fused floor ripples by a few millimetres, enough to keep a
 //! resting ball rolling, and it has holes wherever nobody has looked (behind
 //! the desk). [`floor_height`] finds the floor — the lowest level surface
-//! with real area — and the room collides with one flat plane there instead:
-//! [`chunk_collider`] drops the level triangles near it.
+//! with real area near `y = 0` — and the room collides with one flat plane
+//! there instead: [`chunk_collider`] drops the level triangles near it.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use cgmath::{InnerSpace, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::fused_mesh::ChunkKey;
@@ -26,13 +27,18 @@ use crate::scene3d::MeshData;
 const LEVEL_NORMAL_Y: f32 = 0.95;
 /// Level triangles within this of the floor height are the floor, metres.
 const FLOOR_BAND: f32 = 0.03;
-/// Level area a height needs to be the floor, m²: more than fusion noise or
-/// a desk top, less than the floor seen from one spot.
-const FLOOR_MIN_AREA: f32 = 1.0;
+/// Level area a height needs to be the floor, m²: more than fusion noise,
+/// less than the floor seen from one spot.
+const FLOOR_MIN_AREA: f32 = 0.5;
+/// How far from `y = 0` the floor may be, metres. A passthrough game's stage
+/// floor is world `y = 0` (`docs/vr.md`); this keeps a bed or a coffee table
+/// from passing for it. A world with its floor elsewhere gets no plane, and
+/// collides with its fused floor as it is.
+const FLOOR_NEAR_ZERO: f32 = 0.2;
 /// A newly detected floor within this of the current one keeps the current
 /// one, metres, so re-meshing doesn't rebuild the floor chunks for a
 /// sub-millimetre change.
-const FLOOR_HYSTERESIS: f32 = 0.01;
+const FLOOR_HYSTERESIS: f32 = 0.002;
 /// Triangles smaller than this (m²) are dropped: rapier rejects degenerate ones.
 const MIN_TRIANGLE_AREA: f32 = 1e-8;
 
@@ -89,9 +95,10 @@ pub(crate) struct ChunkGeometry {
     pub triangles: Vec<[u32; 3]>,
 }
 
-/// The floor height: the lowest height where level, upward triangles within
-/// [`FLOOR_BAND`] cover [`FLOOR_MIN_AREA`]; their area-weighted mean height.
-/// `None` until the floor has been seen that much.
+/// The floor height: the lowest height within [`FLOOR_NEAR_ZERO`] of
+/// `y = 0` where level, upward triangles within [`FLOOR_BAND`] cover
+/// [`FLOOR_MIN_AREA`]; their area-weighted mean height. `None` until the
+/// floor has been seen that much.
 pub(crate) fn floor_height(room: &RoomMeshes) -> Option<f32> {
     // (height, area) of each level, upward triangle, lowest first.
     let mut level: Vec<(f32, f32)> = room
@@ -101,7 +108,8 @@ pub(crate) fn floor_height(room: &RoomMeshes) -> Option<f32> {
             mesh.triangles.iter().filter_map(|t| {
                 let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
                 let (normal, area) = normal_and_area(a, b, c)?;
-                (normal[1] > LEVEL_NORMAL_Y).then_some(((a[1] + b[1] + c[1]) / 3.0, area))
+                let y = (a[1] + b[1] + c[1]) / 3.0;
+                (normal[1] > LEVEL_NORMAL_Y && y.abs() <= FLOOR_NEAR_ZERO).then_some((y, area))
             })
         })
         .collect();
@@ -115,18 +123,27 @@ pub(crate) fn floor_height(room: &RoomMeshes) -> Option<f32> {
             start += 1;
         }
         if area >= FLOOR_MIN_AREA {
-            let band = &level[start..=end];
-            let total: f32 = band.iter().map(|(_, a)| a).sum();
-            return Some(band.iter().map(|(y, a)| y * a).sum::<f32>() / total);
+            // The first band to qualify is its lowest slice; centre on it and
+            // average the whole band, so the floor isn't biased low.
+            let mean = |band: &mut dyn Iterator<Item = &(f32, f32)>| {
+                let (sum, total) = band.fold((0.0, 0.0), |(s, t), (y, a)| (s + y * a, t + a));
+                sum / total
+            };
+            let centre = mean(&mut level[start..=end].iter());
+            return Some(mean(
+                &mut level.iter().filter(|(y, _)| (y - centre).abs() <= FLOOR_BAND),
+            ));
         }
     }
     None
 }
 
-/// Keep `current` while `detected` is within [`FLOOR_HYSTERESIS`] of it.
+/// Keep `current` while `detected` is within [`FLOOR_HYSTERESIS`] of it, or
+/// missing: floors don't move, and fusion can wear a patch below the area.
 pub(crate) fn settle_floor(current: Option<f32>, detected: Option<f32>) -> Option<f32> {
     match (current, detected) {
         (Some(c), Some(d)) if (c - d).abs() < FLOOR_HYSTERESIS => Some(c),
+        (current, None) => current,
         _ => detected,
     }
 }
@@ -207,16 +224,10 @@ pub(crate) fn dirty_chunks(
 /// A triangle's unit normal (counter-clockwise front) and area; `None` when
 /// degenerate.
 fn normal_and_area(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<([f32; 3], f32)> {
-    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    let n = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    let area = len / 2.0;
-    (area > MIN_TRIANGLE_AREA).then(|| ([n[0] / len, n[1] / len, n[2] / len], area))
+    let [a, b, c] = [a, b, c].map(Vector3::from);
+    let n = (b - a).cross(c - a);
+    let area = n.magnitude() / 2.0;
+    (area > MIN_TRIANGLE_AREA).then(|| ((n / (2.0 * area)).into(), area))
 }
 
 /// A `BTreeMap` keyed by arrays as a list of pairs: JSON keys must be
@@ -303,16 +314,16 @@ mod tests {
     }
 
     #[test]
-    fn the_floor_is_the_lowest_level_surface_with_real_area() {
+    fn the_floor_is_the_lowest_level_surface_with_real_area_near_zero() {
         let floor = level(-1.0, -1.0, 2.0, 2.0, |x, z| 0.01 + ripple(x, z));
-        let desk = level(0.0, 0.0, 1.0, 0.6, |_, _| 0.75);
         // A speck of noise below the floor is not enough area.
-        let speck = level(2.0, 2.0, 0.2, 0.2, |_, _| -0.3);
-        let found = floor_height(&room(vec![desk.clone(), floor, speck, wall(1.0, 0.0)]))
+        let speck = level(2.0, 2.0, 0.2, 0.2, |_, _| -0.05);
+        let bed = level(0.0, 0.0, 2.0, 1.4, |_, _| 0.45);
+        let found = floor_height(&room(vec![bed.clone(), floor, speck, wall(1.0, 0.0)]))
             .expect("a floor");
         assert!((found - 0.01).abs() < 0.002, "{found}");
-        // A desk alone is too small to be a floor.
-        assert_eq!(floor_height(&room(vec![desk])), None);
+        // A bed is not a floor, however big.
+        assert_eq!(floor_height(&room(vec![bed])), None);
     }
 
     fn as_geometry(mesh: &MeshData) -> ChunkGeometry {
@@ -354,10 +365,10 @@ mod tests {
 
     #[test]
     fn a_small_floor_change_keeps_the_floor() {
-        assert_eq!(settle_floor(Some(0.0), Some(0.004)), Some(0.0));
+        assert_eq!(settle_floor(Some(0.0), Some(0.001)), Some(0.0));
         assert_eq!(settle_floor(Some(0.0), Some(0.02)), Some(0.02));
         assert_eq!(settle_floor(None, Some(0.004)), Some(0.004));
-        assert_eq!(settle_floor(Some(0.0), None), None);
+        assert_eq!(settle_floor(Some(0.0), None), Some(0.0));
     }
 
     #[test]

@@ -513,7 +513,11 @@ impl FusedRoomMirror {
         scene_context: &crate::SceneContext,
         wanted: bool,
     ) {
-        let room = scene_context.fused_room_meshes().filter(|_| wanted);
+        let room = if wanted {
+            scene_context.fused_room_meshes()
+        } else {
+            None
+        };
         let unchanged = match (&room, &self.last) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (a, b) => a.is_none() && b.is_none(),

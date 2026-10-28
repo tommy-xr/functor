@@ -3837,9 +3837,10 @@ Escape again to quit"
                 lockstep = feedback
                     || functor_runtime_common::sim_driver::assets_busy(&pushed, &asset_cache.progress())
                     || loads_pending
-                    // Fused inline, the room reaches physics on the step
-                    // after the frame that fused it, as inline.
-                    || (snapshot.wants_fused_room && scene_context.fusion_inline())
+                    // Fused inline, a room fused while rendering frame N
+                    // reaches physics at N+1's step, as inline.
+                    || (functor_runtime_common::runtime_settings::scene_requested(snapshot.config)
+                        && scene_context.fusion_inline())
                     // Widget events must resolve against the view shown.
                     || snapshot.webview_html.is_some()
                     || functor_runtime_common::sim_driver::has_widgets(&snapshot.ui)
