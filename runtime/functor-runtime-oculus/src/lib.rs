@@ -785,6 +785,7 @@ fn service_debug_request(
                 functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
             let terrain = functor_runtime_common::gpu_counters::gpu_counters().frame_terrain();
             let skinned = functor_runtime_common::gpu_counters::gpu_counters().frame_skinned();
+            let cull = functor_runtime_common::gpu_counters::gpu_counters().frame_cull();
             let stages = debug.stages;
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
@@ -811,6 +812,7 @@ fn service_debug_request(
                     passthrough,
                     battery,
                     skinned,
+                    cull,
                     stages,
                     build: Some(BUILD_LABEL.to_string()),
                     xr,

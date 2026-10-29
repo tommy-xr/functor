@@ -18,21 +18,21 @@ use crate::animation::{Animation, AnimationChannel, AnimationProperty, Animation
 use crate::model::{build_skeleton_from_skin, document_hierarchy, HierarchyNode, Skeleton};
 
 /// An axis-aligned bounding box in model space.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Aabb {
     pub min: Vector3<f32>,
     pub max: Vector3<f32>,
 }
 
 impl Aabb {
-    fn empty() -> Aabb {
+    pub fn empty() -> Aabb {
         Aabb {
             min: vec3(f32::INFINITY, f32::INFINITY, f32::INFINITY),
             max: vec3(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
         }
     }
 
-    fn extend(&mut self, p: Vector3<f32>) {
+    pub fn extend(&mut self, p: Vector3<f32>) {
         self.min.x = self.min.x.min(p.x);
         self.min.y = self.min.y.min(p.y);
         self.min.z = self.min.z.min(p.z);

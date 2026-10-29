@@ -275,9 +275,11 @@ fn process_node(
                 )
             };
 
+            let bounds = crate::scene3d::MeshBounds::of(&vertices);
             let mesh = IndexedMesh::create(vertices, indices);
             let model_mesh = ModelMesh {
                 mesh,
+                bounds,
                 base_color_texture: texture,
                 transform,
             };

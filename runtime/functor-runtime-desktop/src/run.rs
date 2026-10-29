@@ -1091,6 +1091,7 @@ fn service_debug_request(
             let skinned = counters.frame_skinned();
             let stand_in_depth = scene_context.stand_in_depth_stats();
             let fused_room = scene_context.fused_room_state();
+            let cull = counters.frame_cull();
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
                     frame,
@@ -1115,6 +1116,7 @@ fn service_debug_request(
                     ),
                     battery: None,
                     skinned,
+                    cull,
                     stages,
                     build: None,
                     xr: functor_runtime_common::runtime_settings::XrState::emulated(

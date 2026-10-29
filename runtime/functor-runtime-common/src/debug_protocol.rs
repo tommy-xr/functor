@@ -143,6 +143,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// depth), or `unavailable`. `xr.mesh` (`{chunks, triangles, fused_frames,
 /// voxel_m}`) reports the room fused from that depth. Omitted unless the
 /// game's `config` requests `Xr.scene`.
+///
+/// Also reports `cull` (`{tested, culled}`: the last rendered frame's frustum
+/// tests and skipped draws, summed over its passes) on `GET /state`.
+/// Additive — a runtime that doesn't report it omits it, which deserializes as zero.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 25;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -421,6 +425,10 @@ pub struct RuntimeState {
     /// runtime). `default` because a pre-v22 runtime omits it.
     #[serde(default)]
     pub skinned: crate::gpu_counters::SkinnedWork,
+    /// The last rendered frame's frustum culling (0 on a headless runtime).
+    /// `default` because a runtime that doesn't report it omits it.
+    #[serde(default)]
+    pub cull: crate::gpu_counters::CullCounts,
     /// Mean stage cost over the shell's last completed stats window (v22).
     /// Omitted until a window completes, and by runtimes that render nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1287,6 +1295,10 @@ mod tests {
                 draws: 8,
                 pose_evals: 4,
             },
+            cull: crate::gpu_counters::CullCounts {
+                tested: 12,
+                culled: 9,
+            },
             stages: Some(StageTimings {
                 frames: 300,
                 sim_ms: 1.5,
@@ -1347,6 +1359,7 @@ mod tests {
                 "terrain": { "patches": 2, "vertices": 8962 },
                 "passthrough": { "mode": "composited" },
                 "skinned": { "draws": 8, "pose_evals": 4 },
+                "cull": { "tested": 12, "culled": 9 },
                 "stages": { "frames": 300, "sim_ms": 1.5, "render_ms": 2.25, "sim_wait_ms": 0.0, "frame_ms": 11.25 },
                 "build": "pr | 0123abc",
                 "xr": {

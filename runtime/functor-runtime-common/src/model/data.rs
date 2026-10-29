@@ -167,7 +167,7 @@ impl ModelData {
     /// A drawable model; its GPU buffers hydrate on first draw.
     pub(crate) fn to_model(&self) -> Model {
         let s = &self.source;
-        let vertices = (0..s.positions.len())
+        let vertices: Vec<VertexPositionTextureSkinned> = (0..s.positions.len())
             .map(|i| {
                 let [x, y, z] = s.positions[i];
                 let [nx, ny, nz] = s.normals[i];
@@ -198,6 +198,7 @@ impl ModelData {
         Model {
             meshes: vec![ModelMesh {
                 base_color_texture: white,
+                bounds: crate::scene3d::MeshBounds::of(&vertices),
                 mesh: IndexedMesh::create(vertices, indices),
                 transform: Matrix4::identity(),
             }],

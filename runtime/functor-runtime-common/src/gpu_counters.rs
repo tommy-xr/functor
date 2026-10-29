@@ -48,6 +48,9 @@ pub struct GpuCounters {
     frame_skinned: AtomicU64,
     // The current rendered frame's `ShaderProgram` uniform uploads (same contract).
     frame_uniforms: AtomicU64,
+    // The current rendered frame's frustum tests (same contract). One word
+    // (tested << 32 | culled).
+    frame_cull: AtomicU64,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -95,6 +98,15 @@ pub struct SkinnedWork {
     pub pose_evals: u64,
 }
 
+/// One frame's frustum culling, summed over every pass (shadow, render
+/// targets, each eye): draws tested against the pass's frustum, and those
+/// skipped. A hardware-instanced node counts once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CullCounts {
+    pub tested: u64,
+    pub culled: u64,
+}
+
 /// One frame's `Scene.instanced` instance-buffer uploads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstanceUploads {
@@ -118,6 +130,7 @@ impl GpuCounters {
             frame_terrain: AtomicU64::new(0),
             frame_skinned: AtomicU64::new(0),
             frame_uniforms: AtomicU64::new(0),
+            frame_cull: AtomicU64::new(0),
         }
     }
 
@@ -230,6 +243,26 @@ impl GpuCounters {
         SkinnedWork {
             draws: packed >> 32,
             pose_evals: packed & u64::from(u32::MAX),
+        }
+    }
+
+    /// Record one frustum test.
+    pub fn cull_tested(&self, culled: bool) {
+        self.frame_cull
+            .fetch_add(1 << 32 | u64::from(culled), Ordering::Relaxed);
+    }
+
+    /// Zero the per-frame frustum tests (a new rendered frame began).
+    pub fn begin_cull_frame(&self) {
+        self.frame_cull.store(0, Ordering::Relaxed);
+    }
+
+    /// The frustum tests of the most recently rendered frame.
+    pub fn frame_cull(&self) -> CullCounts {
+        let packed = self.frame_cull.load(Ordering::Relaxed);
+        CullCounts {
+            tested: packed >> 32,
+            culled: packed & u64::from(u32::MAX),
         }
     }
 

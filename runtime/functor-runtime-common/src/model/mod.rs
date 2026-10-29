@@ -20,6 +20,9 @@ pub struct ModelMesh {
     pub mesh: IndexedMesh<VertexPositionTextureSkinned>,
 
     pub transform: Matrix4<f32>,
+
+    /// Frustum-culling bounds, from the vertices at load.
+    pub bounds: crate::scene3d::MeshBounds,
 }
 
 pub struct Model {

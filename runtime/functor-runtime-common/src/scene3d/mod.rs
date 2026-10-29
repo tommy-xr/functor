@@ -35,6 +35,7 @@ use crate::{
     DebugRenderMode, RenderContext, RenderPass,
 };
 
+mod cull;
 mod instanced_renderer;
 mod instancing;
 mod instance_cache;
@@ -42,6 +43,7 @@ mod material_description;
 mod model_description;
 mod texture_description;
 
+pub use cull::{Aabb, MeshBounds};
 pub use instancing::{InstanceData, InstanceList};
 pub use material_description::*;
 
@@ -89,6 +91,9 @@ pub struct SceneContext {
     // One GL texture per `Texture.fromPixels` value, keyed by its id and
     // swept like `data_models`, so N nodes sharing it upload it once.
     pixel_textures: RefCell<HashMap<u64, RetainedTexture>>,
+    // Frustum culling on (default) or off (`FUNCTOR_CULL=0`, or
+    // `set_frustum_culling`), for A/B checks.
+    cull: Cell<bool>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
     // both eyes evaluate each model node once. Cleared when a new frame id
     // begins; see `cached_pose_joints` for the key.
@@ -437,6 +442,8 @@ struct CachedPose {
     animation: Option<crate::anim::AnimExpr>,
     tts: f32,
     joints: Arc<[Matrix4<f32>]>,
+    // The posed model's bounds in model space (`None`: unknown, draw).
+    bounds: Option<Aabb>,
 }
 
 impl CachedPose {
@@ -454,8 +461,8 @@ impl CachedPose {
     }
 }
 
-/// `model_pose_joints`, memoized for the frame. Keyed by the node's
-/// `ModelDescription` address, which is stable while the frame is drawn; a
+/// `model_pose_joints` and the posed bounds, memoized for the frame. Keyed by
+/// the node's `ModelDescription` address, which is stable while the frame is drawn; a
 /// hit must also match the model, expression and clock, so an address reused
 /// within the frame (an `expand_instanced` temporary) re-evaluates instead of
 /// aliasing another node's pose.
@@ -465,12 +472,12 @@ fn cached_pose_joints(
     hydrated_model: &Arc<Model>,
     description: &ModelDescription,
     file: &str,
-) -> Arc<[Matrix4<f32>]> {
+) -> (Arc<[Matrix4<f32>]>, Option<Aabb>) {
     let key = description as *const ModelDescription as usize;
     let tts = render_context.frame_time.tts;
     if let Some(cached) = scene_context.poses.borrow().get(&key) {
         if cached.matches(hydrated_model, &description.animation, tts) {
-            return cached.joints.clone();
+            return (cached.joints.clone(), cached.bounds);
         }
     }
     let joints: Arc<[Matrix4<f32>]> = model_pose_joints(
@@ -481,6 +488,14 @@ fn cached_pose_joints(
         file,
     )
     .into();
+    // Only culling reads them.
+    let bounds = scene_context.cull.get().then(|| {
+        hydrated_model
+            .meshes
+            .iter()
+            .try_fold(Aabb::empty(), |acc, mesh| Some(acc.union(&mesh.bounds.posed(&joints)?)))
+    });
+    let bounds = bounds.flatten();
     scene_context.poses.borrow_mut().insert(
         key,
         CachedPose {
@@ -488,9 +503,10 @@ fn cached_pose_joints(
             animation: description.animation.clone(),
             tts,
             joints: joints.clone(),
+            bounds,
         },
     );
-    joints
+    (joints, bounds)
 }
 
 /// Evaluate a skinned model's pose ONCE — the declarative `Scene.animate`
@@ -591,6 +607,10 @@ impl SceneContext {
             meshes: RefCell::new(HashMap::new()),
             data_models: RefCell::new(HashMap::new()),
             pixel_textures: RefCell::new(HashMap::new()),
+            cull: Cell::new(!matches!(
+                std::env::var("FUNCTOR_CULL").as_deref(),
+                Ok("0" | "off")
+            )),
             poses: RefCell::new(HashMap::new()),
             main_shadow: Cell::new(None),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -803,6 +823,7 @@ impl SceneContext {
         if frame != self.current_frame.get() {
             crate::gpu_counters::gpu_counters().begin_skinned_frame();
             crate::gpu_counters::gpu_counters().begin_uniform_frame();
+            crate::gpu_counters::gpu_counters().begin_cull_frame();
             self.poses.borrow_mut().clear();
         }
         self.current_frame.set(frame);
@@ -916,6 +937,29 @@ impl SceneContext {
             DataModelGpu::Skinned(model) => model,
             DataModelGpu::Static(_) => unreachable!("static models draw by draw_static_model"),
         }
+    }
+
+    /// Turn frustum culling on or off (on by default).
+    pub fn set_frustum_culling(&self, on: bool) {
+        self.cull.set(on);
+    }
+
+    /// Whether a draw of `bounds` under `projection * view * world` can be
+    /// skipped, counting the test. Callers still mark the draw's GPU
+    /// resources used, so a culled node stays resident.
+    fn culled(
+        &self,
+        projection: &Matrix4<f32>,
+        view: &Matrix4<f32>,
+        world: &Matrix4<f32>,
+        bounds: &Aabb,
+    ) -> bool {
+        if !self.cull.get() {
+            return false;
+        }
+        let culled = cull::outside(&(projection * view * world), bounds);
+        crate::gpu_counters::gpu_counters().cull_tested(culled);
+        culled
     }
 
     /// The instanced renderer, created on first use.
@@ -1886,11 +1930,32 @@ pub enum Shape {
     Mesh { mesh: Arc<MeshData> },
 }
 
+// The unit primitives' local bounds (see `geometry`). The cylinder fits
+// the cube's box.
+const CUBE_BOUNDS: Aabb = Aabb::new([-0.5; 3], [0.5; 3]);
+const SPHERE_BOUNDS: Aabb = Aabb::new([-1.0; 3], [1.0; 3]);
+const QUAD_BOUNDS: Aabb = Aabb::new([-0.5, -0.5, 0.0], [0.5, 0.5, 0.0]);
+const PLANE_BOUNDS: Aabb = Aabb::new([-0.5, 0.0, -0.5], [0.5, 0.0, 0.5]);
+
+/// An instanced primitive's local bounds; `None` for the billboard, which
+/// turns to face each pass's camera.
+fn primitive_bounds(primitive: instancing::InstancedPrimitive) -> Option<Aabb> {
+    use instancing::InstancedPrimitive as P;
+    match primitive {
+        P::Cube | P::Cylinder => Some(CUBE_BOUNDS),
+        P::Sphere => Some(SPHERE_BOUNDS),
+        P::Quad => Some(QUAD_BOUNDS),
+        P::Plane => Some(PLANE_BOUNDS),
+        P::Billboard => None,
+    }
+}
+
 /// A `Shape::Mesh`'s GPU buffers. `source` pins the `Arc`, so its address
 /// (the cache key) cannot be reused while the entry lives.
 struct RetainedMesh {
     _source: Arc<MeshData>,
     gpu: geometry::TriangleMesh,
+    bounds: Aabb,
     last_used: u64,
 }
 
@@ -2603,7 +2668,7 @@ impl Scene3D {
                 // The pose depends only on the model + expression, so
                 // evaluate it once per model (a blend samples every
                 // clip in the expression) and share it across meshes.
-                let joints = if is_skinned {
+                let (joints, posed) = if is_skinned {
                     cached_pose_joints(
                         render_context,
                         scene_context,
@@ -2612,7 +2677,7 @@ impl Scene3D {
                         str,
                     )
                 } else {
-                    Arc::from([])
+                    (Arc::from([]), None)
                 };
 
                 for mesh in hydrated_model.meshes.iter() {
@@ -2654,6 +2719,16 @@ impl Scene3D {
                     // the whole model is drawn with the override material.
                     if debug_override || depth_pass {
                         override_material_description = None;
+                    }
+
+                    // A skinned draw tests the posed bounds (unknown: draw); a
+                    // material override draws the mesh unskinned.
+                    let skinned_draw = is_skinned && override_material_description.is_none();
+                    let bounds = if skinned_draw { posed } else { Some(mesh.bounds.local) };
+                    if bounds.is_some_and(|bounds| {
+                        scene_context.culled(projection_matrix, view_matrix, &matrix, &bounds)
+                    }) {
+                        continue;
                     }
 
                     if let Some(material_description) = override_material_description {
@@ -2856,9 +2931,32 @@ impl Scene3D {
                     return;
                 }
                 let xform = world_matrix * self.xform;
+                // A whole node culls when every copy's box is outside. The
+                // extent acquires the list's buffer, so a culled list stays
+                // resident. CPU-expanded templates cull per leaf instead.
+                let culled = |renderer: &mut InstancedRenderer, template: Option<Aabb>| {
+                    let Some(template) = template.filter(|t| !t.is_empty()) else {
+                        return false;
+                    };
+                    if !scene_context.cull.get() {
+                        return false;
+                    }
+                    let extent = renderer.instance_extent(render_context.gl, instances);
+                    let reach = cgmath::vec3(1.0, 1.0, 1.0) * (template.radius() * extent.stretch);
+                    let bounds = Aabb {
+                        min: extent.positions.min - reach,
+                        max: extent.positions.max + reach,
+                    };
+                    scene_context.culled(projection_matrix, view_matrix, &xform, &bounds)
+                };
                 match instancing::recognize(template) {
                     Some(instancing::RecognizedTemplate::Primitive(recognized)) => {
+                        let bounds = primitive_bounds(recognized.primitive)
+                            .map(|bounds| bounds.transform(&recognized.local));
                         let mut renderer = scene_context.instanced_renderer(render_context);
+                        if culled(&mut renderer, bounds) {
+                            return;
+                        }
                         renderer.draw_primitive(
                             render_context,
                             &recognized,
@@ -2883,7 +2981,7 @@ impl Scene3D {
                         // copy skins from it. (Per-instance playheads are
                         // the next ladder rung.)
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
-                        let joints = if is_skinned {
+                        let (joints, bounds) = if is_skinned {
                             cached_pose_joints(
                                 render_context,
                                 scene_context,
@@ -2892,9 +2990,17 @@ impl Scene3D {
                                 file,
                             )
                         } else {
-                            Arc::from([])
+                            let bounds =
+                                hydrated_model.meshes.iter().fold(Aabb::empty(), |acc, mesh| {
+                                    acc.union(&mesh.bounds.local.transform(&mesh.transform))
+                                });
+                            (Arc::from([]), Some(bounds))
                         };
+                        let bounds = bounds.map(|bounds| bounds.transform(&recognized.local));
                         let mut renderer = scene_context.instanced_renderer(render_context);
+                        if culled(&mut renderer, bounds) {
+                            return;
+                        }
                         if is_skinned {
                             renderer.draw_skinned_model(
                                 render_context,
@@ -2965,6 +3071,9 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
 
             SceneObject::Geometry(Shape::Cube) => {
                 let xform = world_matrix * self.xform;
+                if scene_context.culled(projection_matrix, view_matrix, &xform, &CUBE_BOUNDS) {
+                    return;
+                }
                 geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
@@ -2976,6 +3085,9 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
             }
             SceneObject::Geometry(Shape::Cylinder) => {
                 let xform = world_matrix * self.xform;
+                if scene_context.culled(projection_matrix, view_matrix, &xform, &CUBE_BOUNDS) {
+                    return;
+                }
                 geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
@@ -2988,6 +3100,9 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
             }
             SceneObject::Geometry(Shape::Sphere) => {
                 let xform = world_matrix * self.xform;
+                if scene_context.culled(projection_matrix, view_matrix, &xform, &SPHERE_BOUNDS) {
+                    return;
+                }
                 geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
@@ -3005,6 +3120,12 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
                 // path's skip.
                 if !(is_billboard && depth_pass) {
                     let acc = world_matrix * self.xform;
+                    // Billboards turn to face each pass's camera: always drawn.
+                    if !is_billboard
+                        && scene_context.culled(projection_matrix, view_matrix, &acc, &QUAD_BOUNDS)
+                    {
+                        return;
+                    }
                     let xform = if is_billboard {
                         billboard_xform(&acc, view_matrix)
                     } else {
@@ -3022,6 +3143,9 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
             }
             SceneObject::Geometry(Shape::Plane) => {
                 let xform = world_matrix * self.xform;
+                if scene_context.culled(projection_matrix, view_matrix, &xform, &PLANE_BOUNDS) {
+                    return;
+                }
                 geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
@@ -3069,17 +3193,12 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
             }
             SceneObject::Geometry(Shape::Mesh { mesh }) => {
                 let xform = world_matrix * self.xform;
-                geometry_material.draw_opaque(
-                    &render_context,
-                    &projection_matrix,
-                    &view_matrix,
-                    &xform,
-                    &skinning_data,
-                );
                 let gl = &render_context.gl;
                 let counters = crate::gpu_counters::gpu_counters();
                 let frame = scene_context.current_frame.get();
                 let mut meshes = scene_context.meshes.borrow_mut();
+                // Uploaded (and its bounds computed) on first sight, even
+                // when culled; marked used either way, so it stays resident.
                 let entry = match meshes.entry(Arc::as_ptr(mesh) as usize) {
                     std::collections::hash_map::Entry::Occupied(e) => {
                         counters.cache_hit();
@@ -3087,14 +3206,29 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
                         counters.cache_miss();
+                        let mut bounds = Aabb::empty();
+                        for p in &mesh.positions {
+                            bounds.extend((*p).into());
+                        }
                         e.insert(RetainedMesh {
                             _source: mesh.clone(),
                             gpu: geometry::TriangleMesh::create(gl, mesh),
+                            bounds,
                             last_used: frame,
                         })
                     }
                 };
                 entry.last_used = frame;
+                if scene_context.culled(projection_matrix, view_matrix, &xform, &entry.bounds) {
+                    return;
+                }
+                geometry_material.draw_opaque(
+                    &render_context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
                 entry.gpu.draw(gl);
             }
             SceneObject::Geometry(Shape::ConvexPolygon { points }) => {
@@ -3847,6 +3981,7 @@ mod pose_cache_tests {
             animation: clip(0.5),
             tts: 2.0,
             joints: Arc::from([]),
+            bounds: None,
         };
         assert!(cached.matches(&model, &clip(0.5), 2.0));
         // A reused address with another model, expression or clock misses.
