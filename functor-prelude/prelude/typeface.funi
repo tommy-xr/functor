@@ -13,4 +13,5 @@ let sans : () => t
 /// `Typeface.file("fonts/MyScript.ttf")`. It is read on each call, so bind it
 /// once at the top level, not in `draw`. Desktop, `functor export` and Quest;
 /// not the web yet.
+impure[file]
 let file : (string) => t

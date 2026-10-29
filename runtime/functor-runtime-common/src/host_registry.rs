@@ -335,7 +335,13 @@ impl Registry {
         args: &[Value],
         span: Span,
     ) -> Option<Result<HostReturn, RunError>> {
-        self.fns.get(path).map(|ext| (ext.call)(path, args, span))
+        self.fns.get_key_value(path).map(|(&path, ext)| {
+            // Debug builds name the running external, so a read it notes can
+            // be checked against its `.funi` `impure[…]` header.
+            #[cfg(debug_assertions)]
+            let _running = Running::enter(path);
+            (ext.call)(path, args, span)
+        })
     }
 
     /// The registered paths, for the `.funi` drift test.
@@ -352,6 +358,37 @@ impl Registry {
     /// The registered signature for `path`, for tests.
     pub fn sig(&self, path: &str) -> Option<&'static str> {
         self.fns.get(path).map(|ext| ext.sig)
+    }
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static RUNNING: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// The external whose host closure is running, if any (debug builds). A
+/// callback it hands back through [`HostReturn::Apply`] runs after it returns,
+/// so it is not counted as running.
+#[cfg(debug_assertions)]
+pub(crate) fn running() -> Option<&'static str> {
+    RUNNING.with(std::cell::Cell::get)
+}
+
+/// Sets [`running`] for one call, restoring the outer value on drop.
+#[cfg(debug_assertions)]
+struct Running(Option<&'static str>);
+
+#[cfg(debug_assertions)]
+impl Running {
+    fn enter(path: &'static str) -> Running {
+        Running(RUNNING.with(|running| running.replace(Some(path))))
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for Running {
+    fn drop(&mut self) {
+        RUNNING.with(|running| running.set(self.0));
     }
 }
 

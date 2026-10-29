@@ -10,14 +10,27 @@
 //! ([`crate::types::ExprTypes`]) — where inference has nothing (the language
 //! is gradually typed; see [`crate::types`]) they are honestly `unknown`.
 
+use std::collections::HashMap;
+
 use crate::ast::TypeName;
 use crate::ir::{Expr, ExprKind, Module, Pattern, PatternKind};
 use crate::span::Span;
 use crate::types::{ExprTypes, Type};
 
 /// The hover for `offset`, if any: the span the hover applies to plus its
-/// text (one line, `name : Type` shaped).
+/// text (`name : Type` shaped; an impure built-in's `impure[…]` header line
+/// leads it).
 pub fn hover_text(module: &Module, types: &ExprTypes, offset: usize) -> Option<(Span, String)> {
+    // An impure built-in's hover leads with its `.funi` header line.
+    let headers: HashMap<&str, String> = module
+        .signatures
+        .iter()
+        .filter(|sig| !sig.reads.is_empty())
+        .map(|sig| {
+            let names: Vec<&str> = sig.reads.iter().map(|class| class.name()).collect();
+            (sig.name.as_str(), format!("impure[{}]\n", names.join(", ")))
+        })
+        .collect();
     let mut best: Option<(Span, String)> = None;
     let mut consider = |span: Span, text: String| {
         if span.start <= offset && offset < span.end {
@@ -41,12 +54,17 @@ pub fn hover_text(module: &Module, types: &ExprTypes, offset: usize) -> Option<(
                 format!("{} : {ty}", def.name),
             );
         }
-        visit(&def.value, types, &mut consider);
+        visit(&def.value, types, &headers, &mut consider);
     }
     best
 }
 
-fn visit(expr: &Expr, types: &ExprTypes, consider: &mut impl FnMut(Span, String)) {
+fn visit(
+    expr: &Expr,
+    types: &ExprTypes,
+    headers: &HashMap<&str, String>,
+    consider: &mut impl FnMut(Span, String),
+) {
     let ty = types.expr(expr.id).cloned().unwrap_or(Type::Unknown);
     match &expr.kind {
         ExprKind::Local { name, .. } | ExprKind::Global(name) => {
@@ -61,7 +79,9 @@ fn visit(expr: &Expr, types: &ExprTypes, consider: &mut impl FnMut(Span, String)
             consider(expr.span, format!("mut {name} : {ty}"));
         }
         ExprKind::External(path) => {
-            consider(expr.span, format!("{} : {ty}", path.join(".")));
+            let path = path.join(".");
+            let header = headers.get(path.as_str()).map_or("", String::as_str);
+            consider(expr.span, format!("{header}{path} : {ty}"));
         }
         ExprKind::Let {
             name,
@@ -81,8 +101,8 @@ fn visit(expr: &Expr, types: &ExprTypes, consider: &mut impl FnMut(Span, String)
                 consider(Span::new(expr.span.start, value.span.start), label);
             }
             consider(expr.span, ty.to_string());
-            visit(value, types, consider);
-            visit(body, types, consider);
+            visit(value, types, headers, consider);
+            visit(body, types, headers, consider);
         }
         ExprKind::Lambda { params, body, .. } => {
             consider(expr.span, ty.to_string());
@@ -98,20 +118,20 @@ fn visit(expr: &Expr, types: &ExprTypes, consider: &mut impl FnMut(Span, String)
                     .unwrap_or_else(|| Type::Unknown.to_string());
                 consider(param.span, format!("{} : {shown}", param.name));
             }
-            visit(body, types, consider);
+            visit(body, types, headers, consider);
         }
         ExprKind::Match { scrutinee, arms } => {
             consider(expr.span, ty.to_string());
-            visit(scrutinee, types, consider);
+            visit(scrutinee, types, headers, consider);
             for arm in arms {
                 pattern_vars(&arm.pattern, types, consider);
-                visit(&arm.body, types, consider);
+                visit(&arm.body, types, headers, consider);
             }
         }
         _ => {
             consider(expr.span, ty.to_string());
             for child in children(expr) {
-                visit(child, types, consider);
+                visit(child, types, headers, consider);
             }
         }
     }

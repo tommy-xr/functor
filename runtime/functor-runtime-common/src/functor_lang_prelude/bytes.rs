@@ -95,7 +95,7 @@ pub fn hide_files_under(dir: &std::path::Path) {
 /// already [`super::path::resolve`]d; `api` names the call in errors.
 pub(super) fn read_project_file(api: &str, path: &str) -> Result<Arc<[u8]>, String> {
     let read = read_project_file_untracked(api, path);
-    note_input(|| (format!("{READ}{path}"), read_identity(&read)));
+    note_file_read(|| (format!("{READ}{path}"), read_identity(&read)));
     read
 }
 
@@ -126,7 +126,7 @@ fn read_project_file_untracked(api: &str, path: &str) -> Result<Arc<[u8]>, Strin
 /// (false for the root, and on hosts that can't read project files).
 fn project_file_exists(path: &str) -> bool {
     let exists = project_file_exists_untracked(path);
-    note_input(|| (format!("{EXISTS}{path}"), exists as u64));
+    note_file_read(|| (format!("{EXISTS}{path}"), exists as u64));
     exists
 }
 

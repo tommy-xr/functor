@@ -15,7 +15,9 @@
 //! they arrive.
 
 /// The bytes of a file: `"data/model.bin" |> Path.of |> File.bytes`.
+impure[file]
 let bytes : (Path.t) => Bytes.t
 /// Whether the project has the file — e.g. to fall back when an optional,
 /// uncommitted input (a game asset) isn't there.
+impure[file]
 let exists : (Path.t) => bool

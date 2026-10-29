@@ -181,6 +181,26 @@ and become ordinary interface-only modules owned by the bundled prelude.
 - Result: `ringCube : (float, float) => SceneNode` in hover/codelens; inlay/
   codelens across a real game stop showing `'a`/`Unknown` for engine calls.
 
+### Read classes: `impure[…]`
+
+A host built-in that reads ambient host state when called declares the class
+on the line above its signature:
+
+```
+/// The bytes of a file: `File.bytes("data/model.bin")`.
+impure[file]
+let bytes : (Path.t) => Bytes.t
+```
+
+- Classes are registered (`functor_lang::reads::ReadClass`: `file`, `physics`,
+  `ui`); an unknown name is a parse error. The header is `.funi`-only — `.fun`
+  code is never annotated.
+- Docs quote the header with the signature (the JSON lists it as `reads`), and
+  hover leads with it.
+- The host notes each read with `note_read(class)`; that run-time record is
+  the authority (reload reuse today; `Scene.memo` checks physics reads). A drift test pins each header to the
+  classes its built-in notes, and debug builds assert a noted class is declared.
+
 ## Module semantics summary
 
 The one real module enhancement is **interface-only modules** (a module backed
