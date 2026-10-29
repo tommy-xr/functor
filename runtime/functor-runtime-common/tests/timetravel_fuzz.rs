@@ -848,8 +848,14 @@ impl<'a> Shell<'a> {
         let restarted =
             self.spec.closures && after.1 != before.1 && after.2.map(|f| (f, f)) == after.1;
         if restarted {
+            // The new generation is seeded from the live model, which may hold
+            // input since the frame (a known gap): adopt it.
             let frame = after.2.expect("restarted at a frame");
             self.oracle.retain(|f, _| *f == frame);
+            if let Some(rec) = self.oracle.get_mut(&frame) {
+                rec.model = None;
+                rec.frame = None;
+            }
         }
         let same = (rebuilt || before.0 == after.0)
             && (restarted || before.1 == after.1)
