@@ -1003,15 +1003,17 @@ impl GameProducer for FunctorLangEmbeddedGame {
             .push(crate::RecordedInput::WebviewEvent(event));
     }
 
-    fn render(&mut self, frame_time: FrameTime) -> Frame {
+    fn render_at(&mut self, frame_time: FrameTime, alpha: f32) -> Frame {
         // While scrubbing, draw at the scrubbed frame's recorded `tts` so
         // `tts`-driven visuals rewind with the model; live play uses the real
         // clock (docs/time-travel.md).
         let tts = self
             .recorder
-            .scrub_render_tts()
-            .unwrap_or(frame_time.tts as f64);
-        let args = vec![self.model.clone(), Value::Number(tts)];
+            .scrub_render_tts();
+        // A scrubbed frame is step-aligned: it draws at alpha 0.
+        let alpha = if tts.is_some() { 0.0 } else { alpha };
+        let tts = tts.unwrap_or(frame_time.tts as f64);
+        let args = crate::functor_lang_producer::draw_args(&self.session, self.names.draw, self.model.clone(), tts, alpha);
         match self.session.call(self.names.draw, args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => {
@@ -1174,7 +1176,7 @@ AudioScene.empty), got {}",
         let tts = self.recorder.current_scene_frame_tts().unwrap_or(0.0);
         // Draw is pure and never journaled; the builder replays it once
         // against the frozen model so the render pass is inspectable too.
-        let draw_args = vec![self.model.clone(), Value::Number(tts)];
+        let draw_args = crate::functor_lang_producer::draw_args(&self.session, self.names.draw, self.model.clone(), tts, 0.0);
         let ring: Vec<(u64, Vec<JournalEntry>)> = self.journal_ring.iter().cloned().collect();
         let json = crate::inspector::build_trace_doc_with_coverage(
             true,
@@ -1279,7 +1281,7 @@ fn empty_frame() -> Frame {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const BOOT: &str = r#"
@@ -1298,6 +1300,46 @@ let draw = (model, tts) =>
 
     fn frame_time(tts: f32, dts: f32) -> FrameTime {
         FrameTime { tts, dts }
+    }
+
+    /// A rig at `x = steps`, drawn at `lerp(prev, cur, alpha)` — the camera eye
+    /// carries the drawn x.
+    pub(crate) const INTERPOLATED: &str = r#"
+let init = { prev: 0.0, cur: 0.0 }
+let tick = (model, dt, tts) => { prev: model.cur, cur: model.cur + 1.0 }
+let draw = (model, tts, alpha) =>
+  Frame.create(
+    Camera3D.lookAt(
+      Vec3.make(model.prev + (model.cur - model.prev) * alpha, 0.0, -5.0),
+      Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+
+    #[test]
+    fn a_three_parameter_draw_receives_the_presentation_alpha() {
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), INTERPOLATED.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("loads");
+        let ft = frame_time(1.0 / 60.0, 1.0 / 60.0);
+        game.tick(ft);
+        game.tick(ft);
+        // prev = 1, cur = 2.
+        assert_eq!(game.render_at(ft, 0.25).camera.eye[0], 1.25);
+        assert_eq!(game.render(ft).camera.eye[0], 1.0, "render is alpha 0");
+    }
+
+    #[test]
+    fn draw_takes_two_or_three_parameters() {
+        let four = INTERPOLATED.replace("(model, tts, alpha) =>", "(model, tts, alpha, extra) =>");
+        let err = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), four)],
+            Box::new(NativePlatform),
+        )
+        .err()
+        .expect("a four-parameter draw is a contract error");
+        assert!(err.contains("`draw` must take 2 parameter(s), takes 4"), "{err}");
     }
 
     // The draw-eval drain: a `Frame.withUiTarget` button's handler must never

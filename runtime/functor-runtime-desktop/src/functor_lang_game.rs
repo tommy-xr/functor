@@ -1335,16 +1335,18 @@ impl Game for FunctorLangGame {
             .push(functor_runtime_common::RecordedInput::WebviewEvent(event));
     }
 
-    fn render(&mut self, frame_time: FrameTime) -> Frame {
+    fn render_at(&mut self, frame_time: FrameTime, alpha: f32) -> Frame {
         let started = Instant::now();
         // While scrubbing, draw at the scrubbed frame's recorded `tts` so
         // `tts`-driven visuals (orbiting lights, `sin(tts)` motion) rewind with
         // the model; live play uses the real clock (docs/time-travel.md).
         let tts = self
             .recorder
-            .scrub_render_tts()
-            .unwrap_or(frame_time.tts as f64);
-        let args = vec![self.model.clone(), Value::Number(tts)];
+            .scrub_render_tts();
+        // A scrubbed frame is step-aligned: it draws at alpha 0.
+        let alpha = if tts.is_some() { 0.0 } else { alpha };
+        let tts = tts.unwrap_or(frame_time.tts as f64);
+        let args = functor_runtime_common::functor_lang_producer::draw_args(&self.session, self.names.draw, self.model.clone(), tts, alpha);
         match self.session.call(self.names.draw, args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => self.last_frame = frame.clone(),
@@ -1523,7 +1525,7 @@ AudioScene.empty), got {}",
         let tts = self.recorder.current_scene_frame_tts().unwrap_or(0.0);
         // Draw is pure and never journaled; the builder replays it once
         // against the frozen model so the render pass is inspectable too.
-        let draw_args = vec![self.model.clone(), Value::Number(tts)];
+        let draw_args = functor_runtime_common::functor_lang_producer::draw_args(&self.session, self.names.draw, self.model.clone(), tts, 0.0);
         let ring: Vec<(u64, Vec<JournalEntry>)> = self.journal_ring.iter().cloned().collect();
         let json = functor_runtime_common::inspector::build_trace_doc_with_coverage(
             true,

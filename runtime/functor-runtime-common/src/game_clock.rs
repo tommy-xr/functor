@@ -248,6 +248,20 @@ impl GameClock {
         self.fixed_time.unwrap_or(self.game_time)
     }
 
+    /// The presentation sub-step alpha in `[0, 1)`: how far this render frame
+    /// sits between the last fixed step and the next (`accumulator / FIXED_DT`).
+    /// `draw` interpolates its previous→current poses by it. Exactly 0 under
+    /// `--fixed-time` and while paused — which covers stepping, scripted
+    /// playback and scrubbing, all of which pause — so captures and
+    /// time-travel draws never depend on wall-clock jitter.
+    pub fn alpha(&self) -> f32 {
+        if self.is_pinned() {
+            return 0.0;
+        }
+        // The accumulator is drained below one step, so this is < 1.
+        self.accumulator / FIXED_DT
+    }
+
     /// Whether the scrubber/debug pause is engaged (Step also pauses).
     pub fn is_paused(&self) -> bool {
         self.paused
@@ -860,5 +874,77 @@ mod tests {
         assert!((a[0].dts - 1.0 / 60.0).abs() < 1e-6);
         // ...then holds (paused).
         assert!(clock.fixed_frames(1.0).is_empty());
+    }
+
+    /// The `(steps, alpha)` trace of a live clock fed `deltas`.
+    fn alpha_trace(deltas: &[f32]) -> Vec<(usize, f32)> {
+        let mut clock = GameClock::new(None);
+        deltas
+            .iter()
+            .map(|&dt| (clock.fixed_frames(dt).len(), clock.alpha()))
+            .collect()
+    }
+
+    #[test]
+    fn alpha_stays_in_unit_interval_across_display_rates() {
+        // 120/90/30 Hz displays, a jittery mix, and a stall past the
+        // MAX_SUBSTEPS clamp (catch-up).
+        let jitter: Vec<f32> = (0..500).map(|i| 0.004 + (i % 7) as f32 * 0.003).collect();
+        let runs: [Vec<f32>; 5] = [
+            vec![1.0 / 120.0; 500],
+            vec![1.0 / 90.0; 500],
+            vec![1.0 / 30.0; 500],
+            jitter,
+            vec![1.0 / 120.0, 0.5, 1.0 / 120.0, 1.0 / 30.0, 0.0],
+        ];
+        for deltas in &runs {
+            for (steps, alpha) in alpha_trace(deltas) {
+                assert!((0.0..1.0).contains(&alpha), "alpha {alpha} out of [0,1)");
+                assert!(steps <= MAX_SUBSTEPS);
+            }
+        }
+        // 120 Hz alternates half-way and on-step frames; 90 Hz walks thirds.
+        let at_120 = alpha_trace(&[1.0 / 120.0; 4]);
+        assert!((at_120[0].1 - 0.5).abs() < 1e-4, "{at_120:?}");
+        assert!(at_120.iter().any(|&(steps, _)| steps == 0), "some frames run no step");
+        assert!(at_120.iter().any(|&(_, a)| a > 0.25), "and draw between steps");
+        let at_90 = alpha_trace(&[1.0 / 90.0; 3]);
+        assert!((at_90[0].1 - 2.0 / 3.0).abs() < 1e-4, "{at_90:?}");
+        assert!((at_90[1].1 - 1.0 / 3.0).abs() < 1e-4, "{at_90:?}");
+    }
+
+    #[test]
+    fn alpha_is_deterministic_for_a_delta_sequence() {
+        let deltas: Vec<f32> = (0..300).map(|i| 1.0 / 120.0 + (i % 5) as f32 * 1e-3).collect();
+        let a = alpha_trace(&deltas);
+        let b = alpha_trace(&deltas);
+        assert!(a
+            .iter()
+            .zip(&b)
+            .all(|(x, y)| x.0 == y.0 && x.1.to_bits() == y.1.to_bits()));
+    }
+
+    #[test]
+    fn alpha_is_zero_when_pinned_paused_or_stepped() {
+        let mut fixed = GameClock::new(Some(2.0));
+        fixed.fixed_frames(1.0 / 120.0);
+        assert_eq!(fixed.alpha(), 0.0);
+
+        let mut clock = GameClock::new(None);
+        clock.fixed_frames(1.0 / 120.0);
+        assert!(clock.alpha() > 0.0, "live mid-step frame");
+        clock.pause();
+        clock.fixed_frames(1.0 / 120.0);
+        assert_eq!(clock.alpha(), 0.0, "paused (scrubbing)");
+        clock.step(FIXED_DT);
+        clock.fixed_frames(1.0 / 120.0);
+        assert_eq!(clock.alpha(), 0.0, "stepped (scripted / debug advance)");
+        clock.step_frames(3);
+        clock.fixed_frames(1.0 / 120.0);
+        assert_eq!(clock.alpha(), 0.0, "scrubber catch-up");
+        // Resuming picks the live remainder back up.
+        clock.resume();
+        clock.fixed_frames(0.0);
+        assert!(clock.alpha() > 0.0);
     }
 }
