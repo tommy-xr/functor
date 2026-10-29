@@ -6,8 +6,10 @@ import type {
   Camera,
   GamepadSnapshot,
   InputCommand as WireInputCommand,
+  InputSnapshot as WireInputSnapshot,
   JsonValue,
   Key,
+  RuntimeState as WireRuntimeState,
   TouchPhase,
   TrackingPose,
   XrControllerSnapshot,
@@ -18,6 +20,21 @@ export type * from "./generated/protocol.js";
 /** A canonical key name as reported by the runtime (`Key`). The
  * `(string & {})` arm keeps newly-added keys usable before the SDK is updated. */
 export type KeyName = Key | (string & {});
+
+/** The wire `InputSnapshot` with its key arrays widened to {@link KeyName}. */
+export type InputSnapshot = Omit<
+  WireInputSnapshot,
+  "held_keys" | "pressed_keys" | "released_keys"
+> & {
+  held_keys: KeyName[];
+  pressed_keys: KeyName[];
+  released_keys: KeyName[];
+};
+
+/** Runtime state from `GET /state`, carrying the widened {@link InputSnapshot}. */
+export type RuntimeState = Omit<WireRuntimeState, "input"> & {
+  input: InputSnapshot;
+};
 
 export type Vec3 = [number, number, number];
 export type Quaternion = [x: number, y: number, z: number, w: number];

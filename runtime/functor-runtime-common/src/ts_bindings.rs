@@ -66,14 +66,20 @@ fn render() -> String {
 fn ts_bindings_match_committed_file() {
     let fresh = render();
     if std::env::var_os("UPDATE_TS").is_some() {
-        std::fs::create_dir_all(std::path::Path::new(OUT).parent().unwrap()).unwrap();
         std::fs::write(OUT, &fresh).unwrap();
         return;
     }
-    let committed = std::fs::read_to_string(OUT).unwrap_or_default();
-    assert!(
-        committed == fresh,
-        "{OUT} is stale — regenerate with \
-         UPDATE_TS=1 cargo test -p functor_runtime_common --features ts ts_bindings"
-    );
+    let committed = std::fs::read_to_string(OUT).unwrap_or_else(|e| panic!("read {OUT}: {e}"));
+    if committed != fresh {
+        let line = committed
+            .lines()
+            .zip(fresh.lines())
+            .position(|(a, b)| a != b)
+            .unwrap_or_else(|| committed.lines().count().min(fresh.lines().count()));
+        panic!(
+            "{OUT} is stale (first difference at line {}) — regenerate with \
+             UPDATE_TS=1 cargo test -p functor_runtime_common --features ts ts_bindings",
+            line + 1
+        );
+    }
 }

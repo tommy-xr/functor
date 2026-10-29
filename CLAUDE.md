@@ -381,6 +381,9 @@ is in the test's doc comment.
 **Tests** are Rust: the runtime in `functor-runtime-common`
 (`cargo test -p functor_runtime_common`, includes the Functor Lang prelude) and the language in the `functor_lang`
 crate (`cargo test -p functor-lang`; `UPDATE_GOLDENS=1` regenerates its snapshots).
+The SDK's debug-protocol TS types (`tools/functor-sdk/src/generated/protocol.ts`) are
+generated from the Rust wire structs; after changing one, regenerate with
+`UPDATE_TS=1 cargo test -p functor_runtime_common --features ts ts_bindings` (CI fails if stale).
 
 ## Visual changes
 

@@ -40,10 +40,10 @@ export interface RuntimeDiscovery {
 }
 
 /**
- * The `GET /state` snapshot, loosened for the v2/v3 runtimes this client still
- * links: they omit `pending_steps` and `model_debug`, and pre-v4 runtimes send
- * the Debug text under `model` (this panel reads `model_debug`, falling back
- * to a string `model`).
+ * The `GET /state` snapshot. This client still links v2 runtimes, so the
+ * fields it reads that older runtimes omit are optional: v2 lacks
+ * `pending_steps`, and pre-v4 lacks `model_debug` (sending the Debug text
+ * under `model` instead, which this panel falls back to).
  */
 export type RuntimeState = Omit<WireRuntimeState, "pending_steps" | "model_debug"> &
   Partial<Pick<WireRuntimeState, "pending_steps" | "model_debug">>;

@@ -9,7 +9,7 @@ export type BatteryState = { level_pct: number | null,
 /**
  * `charging`, `discharging`, `not charging`, `full`, or `unknown`.
  */
-status: string, 
+status: "charging" | "discharging" | "not charging" | "full" | "unknown", 
 /**
  * Connected to any charger (AC, USB, wireless, or dock).
  */

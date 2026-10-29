@@ -529,6 +529,10 @@ pub struct DisplayRefreshRate {
 pub struct BatteryState {
     pub level_pct: Option<i32>,
     /// `charging`, `discharging`, `not charging`, `full`, or `unknown`.
+    #[cfg_attr(
+        feature = "ts",
+        ts(type = r#""charging" | "discharging" | "not charging" | "full" | "unknown""#)
+    )]
     pub status: String,
     /// Connected to any charger (AC, USB, wireless, or dock).
     pub plugged: bool,
