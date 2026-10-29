@@ -1,6 +1,8 @@
 //! Time-travel fuzzer: seeded random sequences of play / pause / scrub /
-//! branch / hot reload over the shipping embedded producer, driven the way a
-//! shell drives it (a [`GameClock`], one fixed step per rendered frame).
+//! branch / hot reload over the embedded (web + Quest) producer, driven the way
+//! a shell drives it (a [`GameClock`], one fixed step per rendered frame). The
+//! desktop producer shares its recorder and frame body. Input while paused
+//! models debug `POST /input` (shells ignore window input while paused).
 //!
 //! After every operation it checks that the independent histories — the model
 //! snapshot ring, the physics timeline, the clock — stay in lockstep, and that
@@ -18,16 +20,13 @@
 //! restored world JSON (`was.json` / `now.json`) on a world-bytes mismatch.
 
 use std::cell::{Cell, RefCell};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::physics::{self, DEFAULT_WORLD, FIXED_DT};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::{
-    FrameTime, GameClock, InputSnapshot, Key, RecordedInput, XrControllerSnapshot,
+    FrameTime, GameClock, InputEdges, InputSnapshot, Key, RecordedInput, XrControllerSnapshot,
     XrInputSnapshot,
 };
 
@@ -39,6 +38,10 @@ struct Spec {
     keys: &'static [Key],
     /// The game defines `input`, so key events reach it (and its log).
     events: bool,
+    /// Its model holds closures, so a reload restarts history (by design).
+    closures: bool,
+    /// It defines `physics`, so every played frame steps the world once.
+    physics: bool,
     mouse: bool,
     xr: bool,
     /// A tunable constant: `(exact source text, template with {})`. A semantic
@@ -104,11 +107,12 @@ let draw = (model, tts) =>
 "#;
 
 /// A closure stored in the model: a reload can't carry such history, so it
-/// restarts history at the current frame (an unsafe reload).
+/// restarts history at the current frame (an unsafe reload). The two closures
+/// differ in parameter name so the model's `Display` tells them apart.
 const CLOSURE_GAME: &str = r#"
 let ballTag = Physics.tag("ball")
 let slow = (x) => x + 1.0
-let fast = (x) => x + 2.0
+let fast = (y) => y + 2.0
 let init = { step: slow, n: 0.0 }
 let input = (model, key, isDown) =>
   match key with
@@ -134,6 +138,8 @@ fn specs() -> Vec<Spec> {
             sources: example("character"),
             keys: &[W, A, S, D, Space, Left, Right],
             events: false,
+            physics: true,
+            closures: false,
             mouse: false,
             xr: true,
             knob: ("let walkSpeed = 3.0", "let walkSpeed = {}"),
@@ -143,6 +149,8 @@ fn specs() -> Vec<Spec> {
             sources: example("physics"),
             keys: &[Space, K, R],
             events: true,
+            physics: true,
+            closures: false,
             mouse: false,
             xr: false,
             knob: ("|> Physics.restitution(0.55))", "|> Physics.restitution({}))"),
@@ -152,6 +160,8 @@ fn specs() -> Vec<Spec> {
             sources: example("platformer"),
             keys: &[Left, Right, A, D, Space, Up, W],
             events: true,
+            physics: false,
+            closures: false,
             mouse: false,
             xr: false,
             knob: ("let runSpeed = 8.0", "let runSpeed = {}"),
@@ -167,6 +177,8 @@ fn specs() -> Vec<Spec> {
             },
             keys: &[],
             events: false,
+            physics: false,
+            closures: false,
             mouse: false,
             xr: false,
             knob: ("let spacing = 1.2", "let spacing = {}"),
@@ -176,6 +188,8 @@ fn specs() -> Vec<Spec> {
             sources: example("night-terrain"),
             keys: &[W, A, S, D, Up, Down],
             events: true,
+            physics: true,
+            closures: false,
             mouse: true,
             xr: false,
             knob: ("let walkSpeed = 6.0", "let walkSpeed = {}"),
@@ -185,6 +199,8 @@ fn specs() -> Vec<Spec> {
             sources: vec![("game.fun".to_string(), CLOSURE_GAME.to_string())],
             keys: &[F, K],
             events: true,
+            physics: true,
+            closures: true,
             mouse: false,
             xr: false,
             knob: ("|> Physics.restitution(0.4)", "|> Physics.restitution({})"),
@@ -194,6 +210,8 @@ fn specs() -> Vec<Spec> {
             sources: vec![("game.fun".to_string(), MEMO_GAME.to_string())],
             keys: &[Space, L, K],
             events: true,
+            physics: true,
+            closures: false,
             mouse: false,
             xr: false,
             knob: ("|> Physics.restitution(0.5)", "|> Physics.restitution({})"),
@@ -214,7 +232,8 @@ enum Target {
 
 #[derive(Clone, Debug)]
 enum Op {
-    /// Render `frames` frames with random input (no ticks while paused).
+    /// Render `frames` frames with random input (no ticks while paused, so
+    /// paused input then stays pending, as debug `POST /input` delivers it).
     Play { frames: u8, seed: u32 },
     Pause,
     /// The scrubber's play button: rebase the clock to the scene, unpause.
@@ -223,10 +242,9 @@ enum Op {
     Step,
     /// Non-destructive scrub (pauses).
     Seek(Target),
-    /// Drag into the future: seek the newest frame, then catch up `n` frames.
+    /// Drag into the future: seek the newest frame and queue `n` catch-up
+    /// frames, drained at most 8 per rendered frame by this and later ops.
     PastEnd(u8),
-    /// Input delivered while paused.
-    PausedInput(u32),
     /// The debug API's destructive `POST /rewind`.
     Rewind(Target),
     /// Hot reload; `semantic` rewrites the spec's knob, else an unused binding.
@@ -285,8 +303,7 @@ fn gen_ops(seed: u64, count: usize) -> Vec<Op> {
             48..=51 => Op::Step,
             52..=67 => Op::Seek(gen_target(&mut rng)),
             68..=71 => Op::PastEnd(1 + rng.below(20) as u8),
-            72..=77 => Op::PausedInput(rng.next() as u32),
-            78..=81 => Op::Rewind(gen_target(&mut rng)),
+            72..=81 => Op::Rewind(gen_target(&mut rng)),
             82..=89 => Op::Reload {
                 semantic: rng.chance(0.5),
                 n: rng.next() as u32,
@@ -314,10 +331,12 @@ struct Rec {
     pending: Option<String>,
     tts: f64,
     frame: Option<u64>,
-    /// The inputs the shell fed into this frame.
-    fed: Vec<RecordedInput>,
     /// The program revision it ran under (semantic reloads bump it).
     rev: u32,
+    /// A reload ran while this frame's input was pending: the reload drops the
+    /// queries that input issued but the log keeps the input, so a replay
+    /// of this frame diverges (a known gap; not replayed).
+    reload_dropped_queries: bool,
     /// The shell's held keys at the tick.
     held: Vec<Key>,
 }
@@ -348,10 +367,11 @@ struct Failure {
     detail: String,
 }
 
-fn hash<T: Hash + ?Sized>(t: &T) -> u64 {
-    let mut h = DefaultHasher::new();
-    t.hash(&mut h);
-    h.finish()
+/// FNV-1a: stable across toolchains, so reported seeds keep reproducing.
+fn hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// The live world: `(hash of its bytes minus pending commands, frame,
@@ -371,7 +391,10 @@ struct Shell<'a> {
     clock: GameClock,
     oracle: BTreeMap<u64, Rec>,
     held: Vec<Key>,
-    prev_held: Vec<Key>,
+    /// Key transitions since the last sample, as the shells accumulate them.
+    edges: InputEdges,
+    /// A reload ran while input was pending (see [`Rec::reload_dropped_queries`]).
+    reloaded_pending: bool,
     stick: [f32; 2],
     look: [f32; 2],
     jump: bool,
@@ -391,8 +414,10 @@ thread_local! {
     static DUMP: RefCell<BTreeMap<u64, Vec<u8>>> = Default::default();
     /// Set while a fuzz run's panics are caught and reported.
     static QUIET: Cell<bool> = const { Cell::new(false) };
-    /// What the runs on this thread verified (printed with `--nocapture`).
-    static STATS: RefCell<BTreeMap<&'static str, u64>> = Default::default();
+    /// What the run on this thread verified (printed with `--nocapture`).
+    static STATS: RefCell<Stats> = Default::default();
+    /// Where the last caught panic happened.
+    static PANIC_AT: RefCell<String> = Default::default();
 }
 
 fn count(what: &'static str) {
@@ -409,7 +434,8 @@ impl<'a> Shell<'a> {
             clock: GameClock::new(None),
             oracle: BTreeMap::new(),
             held: Vec::new(),
-            prev_held: Vec::new(),
+            edges: InputEdges::default(),
+            reloaded_pending: false,
             stick: [0.0; 2],
             look: [0.0; 2],
             jump: false,
@@ -435,15 +461,8 @@ impl<'a> Shell<'a> {
     fn sample(&mut self) -> InputSnapshot {
         let mut held = self.held.clone();
         held.sort_by_key(|k| *k as i32);
-        let edges = |a: &[Key], b: &[Key]| {
-            let mut v: Vec<Key> = a.iter().filter(|k| !b.contains(k)).copied().collect();
-            v.sort_by_key(|k| *k as i32);
-            v
-        };
-        let snap = InputSnapshot {
-            pressed_keys: edges(&held, &self.prev_held),
-            released_keys: edges(&self.prev_held, &held),
-            held_keys: held.clone(),
+        let mut snap = InputSnapshot {
+            held_keys: held,
             xr: self.spec.xr.then(|| XrInputSnapshot {
                 head: None,
                 left: XrControllerSnapshot {
@@ -460,7 +479,7 @@ impl<'a> Shell<'a> {
             }),
             ..InputSnapshot::default()
         };
-        self.prev_held = held;
+        std::mem::take(&mut self.edges).apply_to(&mut snap);
         snap
     }
 
@@ -498,9 +517,26 @@ impl<'a> Shell<'a> {
         if self.oracle.contains_key(&frame) {
             count("branches");
         }
+        let w = world();
+        // One fixed step per recorded frame, from where the selected frame ended.
+        let from = selected.and_then(|s| self.oracle.get(&s)).and_then(|r| r.fixed);
+        if let (true, Some(from), Some(now)) = (self.spec.physics, from, w.as_ref().map(|w| w.1)) {
+            if now != from + 1 {
+                return Err(self.fail(
+                    Kind::Lockstep,
+                    format!("frame {frame}: world stepped from fixed {from} to {now}"),
+                ));
+            }
+        }
+        let logged = self.game.recorded_inputs_at(frame);
+        if format!("{logged:?}") != format!("{fed:?}") {
+            return Err(self.fail(
+                Kind::InputLog,
+                format!("frame {frame}: logged {logged:?}\n  but fed {fed:?}"),
+            ));
+        }
         // The future past a branch is gone.
         self.oracle.split_off(&frame);
-        let w = world();
         if std::env::var("TIMETRAVEL_FUZZ_DUMP").is_ok() {
             let bytes = physics::with_world(DEFAULT_WORLD, |w| w.snapshot()).unwrap_or_default();
             DUMP.with(|d| d.borrow_mut().insert(frame, bytes));
@@ -517,8 +553,8 @@ impl<'a> Shell<'a> {
                 pending: w.map(|w| w.2),
                 tts: self.game.current_scene_tts().expect("tts"),
                 frame: Some(drawn),
-                fed,
                 rev: self.rev,
+                reload_dropped_queries: std::mem::take(&mut self.reloaded_pending),
                 held: self.held.clone(),
             },
         );
@@ -547,6 +583,7 @@ impl<'a> Shell<'a> {
         if !keys.is_empty() && rng.chance(0.3) {
             let key = keys[rng.below(keys.len() as u64) as usize];
             let down = !self.held.contains(&key);
+            self.edges.key_transition(key, !down, down);
             if down {
                 self.held.push(key);
             } else {
@@ -639,7 +676,11 @@ impl<'a> Shell<'a> {
         let drawn = self.draw_hash(self.clock.current_tts());
         let op = self.op;
         let Some(rec) = self.oracle.get_mut(&frame) else {
-            return Ok(());
+            return Err(Failure {
+                op,
+                kind: Kind::Lockstep,
+                detail: format!("frame {frame} is in range but was never recorded"),
+            });
         };
         let mut diffs = Vec::new();
         match &rec.model {
@@ -681,6 +722,12 @@ impl<'a> Shell<'a> {
         }
     }
 
+    /// A seek or rewind discards input since the frame, as the producer does.
+    fn drop_pending(&mut self) {
+        self.pending.clear();
+        self.reloaded_pending = false;
+    }
+
     fn rebase(&mut self) {
         if let Some(tts) = self.game.current_scene_tts() {
             self.clock.rebase(tts as f32);
@@ -695,7 +742,7 @@ impl<'a> Shell<'a> {
             Ok(_) => {}
             Err(e) => return Err(self.fail(Kind::Refused, format!("seek {target}: {e}"))),
         }
-        self.pending.clear();
+        self.drop_pending();
         let want = target.clamp(lo, hi);
         let got = self.game.current_scene_frame();
         if got != Some(want) {
@@ -735,16 +782,7 @@ impl<'a> Shell<'a> {
                 let newest = self.resolve(Target::Newest);
                 self.seek(newest)?;
                 self.clock.step_frames(*n as u32);
-                while self.clock.pending_frames() > 0 {
-                    self.render_frame(FIXED_DT)?;
-                }
-            }
-            Op::PausedInput(seed) => {
-                if self.clock.is_paused() {
-                    let mut rng = Rng::new(*seed as u64);
-                    self.random_input(&mut rng);
-                    self.render_frame(FIXED_DT)?;
-                }
+                self.render_frame(FIXED_DT)?;
             }
             Op::Rewind(target) => {
                 let target = self.resolve(*target);
@@ -752,7 +790,7 @@ impl<'a> Shell<'a> {
                     if let Err(e) = self.game.rewind_scene_to(target) {
                         return Err(self.fail(Kind::Refused, format!("rewind {target}: {e}")));
                     }
-                    self.pending.clear();
+                    self.drop_pending();
                     self.rebase();
                     let frame = self.game.current_scene_frame().expect("rewound");
                     self.oracle.split_off(&(frame + 1));
@@ -779,25 +817,23 @@ impl<'a> Shell<'a> {
             world(),
         );
         count(if self.clock.is_paused() { "reloads while paused" } else { "reloads" });
-        if let Err(e) = self.game.reload_source(&self.source()) {
-            return Err(self.fail(Kind::Reload, format!("reload rejected: {e}")));
-        }
+        self.reloaded_pending |= !self.pending.is_empty();
+        let status = match self.game.reload_source(&self.source()) {
+            Ok(status) => status,
+            Err(e) => return Err(self.fail(Kind::Reload, format!("reload rejected: {e}"))),
+        };
+        // An input-only game's reload while scrubbed rebuilds its history under
+        // the new code, by design.
+        let rebuilt = status.contains("history recomputed");
         if semantic {
-            // New code over old data: a retained draw, and (for an input-only
-            // game) a rebuilt model, may legitimately differ now.
             self.rev += 1;
-            for rec in self.oracle.values_mut() {
-                rec.model = None;
-                rec.frame = None;
-            }
-            return Ok(());
         }
-        // History recorded under older code: a reload while scrubbed may
-        // rebuild it under the current code (input-only games), by design.
-        let mixed = self.oracle.values().any(|r| r.rev != self.rev);
-        if mixed {
-            for rec in self.oracle.values_mut() {
+        for rec in self.oracle.values_mut() {
+            if rebuilt {
                 rec.model = None;
+            }
+            if semantic || rebuilt {
+                // New code draws the retained frames anew.
                 rec.frame = None;
             }
         }
@@ -807,23 +843,21 @@ impl<'a> Shell<'a> {
             self.game.current_scene_frame(),
             world(),
         );
-        // History holding a closure can't cross a reload: it restarts at
-        // the selected frame, by design.
-        let restarted = after.1 != before.1 && after.2.map(|f| (f, f)) == after.1;
+        // History holding a closure can't cross a reload: it restarts at the
+        // selected frame, by design.
+        let restarted =
+            self.spec.closures && after.1 != before.1 && after.2.map(|f| (f, f)) == after.1;
         if restarted {
             let frame = after.2.expect("restarted at a frame");
             self.oracle.retain(|f, _| *f == frame);
         }
-        let same = if mixed || restarted {
-            (&before.2, &before.3) == (&after.2, &after.3)
-                && (restarted || before.1 == after.1)
-        } else {
-            before == after
-        };
+        let same = (rebuilt || before.0 == after.0)
+            && (restarted || before.1 == after.1)
+            && (&before.2, &before.3) == (&after.2, &after.3);
         if !same {
             return Err(self.fail(
                 Kind::Reload,
-                format!("no-op reload changed (model, range, frame, world): {before:?} -> {after:?}"),
+                format!("reload changed (model, range, frame, world): {before:?} -> {after:?}"),
             ));
         }
         // The live state may hold input since the frame; a later seek checks
@@ -832,8 +866,7 @@ impl<'a> Shell<'a> {
     }
 
     fn replay(&mut self, back: u16, frames: u8) -> Check {
-        // Input fed since the last frame belongs to no recorded frame.
-        let Some((lo, hi)) = self.range().filter(|_| self.pending.is_empty()) else {
+        let Some((lo, hi)) = self.range() else {
             return Ok(());
         };
         let k = hi.saturating_sub(back as u64).max(lo);
@@ -844,29 +877,22 @@ impl<'a> Shell<'a> {
             || window.len() as u64 != n + 1
             || window
                 .iter()
-                .any(|r| r.rev != self.rev || r.model.is_none() || r.frame.is_none())
+                .any(|r| {
+                    r.rev != self.rev
+                        || r.model.is_none()
+                        || r.frame.is_none()
+                        || r.reload_dropped_queries
+                })
         {
             return Ok(());
         }
         count("replays");
         let logged: Vec<Vec<RecordedInput>> =
             (k + 1..=k + n).map(|f| self.game.recorded_inputs_at(f)).collect();
-        for (i, (log, rec)) in logged.iter().zip(&window[1..]).enumerate() {
-            if format!("{log:?}") != format!("{:?}", rec.fed) {
-                return Err(self.fail(
-                    Kind::InputLog,
-                    format!(
-                        "frame {}: logged {log:?}\n  but fed {:?}",
-                        k + 1 + i as u64,
-                        rec.fed
-                    ),
-                ));
-            }
-        }
         if let Err(e) = self.game.rewind_scene_to(k) {
             return Err(self.fail(Kind::Refused, format!("replay rewind {k}: {e}")));
         }
-        self.pending.clear();
+        self.drop_pending();
         self.rebase();
         self.clock.resume();
         self.check_fidelity(k, Kind::Fidelity)?;
@@ -887,7 +913,10 @@ impl<'a> Shell<'a> {
                 self.pending.push(RecordedInput::Snapshot(Box::new(snap)));
             }
             self.game.tick(ft[0]);
-            self.pending.clear();
+            let fed = std::mem::take(&mut self.pending);
+            if format!("{:?}", self.game.recorded_inputs_at(frame)) != format!("{fed:?}") {
+                return Err(self.fail(Kind::InputLog, format!("replayed frame {frame}: log differs")));
+            }
             if self.game.current_scene_frame() != selected.map(|s| s + 1) {
                 return Err(self.fail(Kind::FrameGap, format!("replayed frame {frame} recorded elsewhere")));
             }
@@ -898,61 +927,72 @@ impl<'a> Shell<'a> {
         // the replayed log.
         self.oracle.split_off(&(k + n + 1));
         self.held = window[n as usize].held.clone();
-        self.prev_held = self.held.clone();
+        self.edges = InputEdges::default();
         Ok(())
     }
 }
 
 // ── Driver ──────────────────────────────────────────────────────────────
 
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "non-string panic".to_string())
-}
+type Stats = BTreeMap<&'static str, u64>;
 
-/// Run `ops` on a fresh game; the first failure, if any.
-fn execute(spec: &Spec, ops: &[Op]) -> Option<Failure> {
+/// Run `ops` on a fresh game on a fresh thread — thread-locals (the physics
+/// world, memo tables) start clean, so a repro depends on its ops alone. The
+/// first failure, if any, and what the run verified.
+fn execute(spec: &Spec, ops: &[Op]) -> (Option<Failure>, Stats) {
     static HOOK: std::sync::Once = std::sync::Once::new();
     HOOK.call_once(|| {
-        // Caught panics are reported as failures; keep their spew out.
+        // Caught panics become failures: keep their spew out, keep the site.
         let default = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if !QUIET.get() {
+            if QUIET.get() {
+                let at = info.location().map(|l| format!(" at {}:{}", l.file(), l.line()));
+                PANIC_AT.set(at.unwrap_or_default());
+            } else {
                 default(info)
             }
         }));
     });
-    let at = Cell::new(0);
-    QUIET.set(true);
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let mut shell = Shell::new(spec);
-        for (i, op) in ops.iter().enumerate() {
-            at.set(i);
-            shell.op = i;
-            if let Err(f) = shell.run(op) {
-                return Some(f);
-            }
-        }
-        None
-    }));
-    QUIET.set(false);
-    match result {
-        Ok(found) => found,
-        Err(payload) => Some(Failure {
-            op: at.get(),
-            kind: Kind::Panic,
-            detail: panic_message(payload),
-        }),
-    }
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                QUIET.set(true);
+                let at = Cell::new(0);
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut shell = Shell::new(spec);
+                    for (i, op) in ops.iter().enumerate() {
+                        at.set(i);
+                        shell.op = i;
+                        shell.run(op)?;
+                    }
+                    Ok(())
+                }));
+                let failure = match run {
+                    Ok(checked) => checked.err(),
+                    Err(payload) => {
+                        let message = payload
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| payload.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "non-string panic".to_string());
+                        Some(Failure {
+                            op: at.get(),
+                            kind: Kind::Panic,
+                            detail: format!("{message}{}", PANIC_AT.take()),
+                        })
+                    }
+                };
+                (failure, STATS.take())
+            })
+            .join()
+            .expect("the run thread catches its panics")
+    })
 }
 
 /// Delta-debug `ops` down to a minimal sequence failing the same way.
-fn shrink(spec: &Spec, mut ops: Vec<Op>, kind: &Kind) -> (Vec<Op>, Failure) {
-    let still = |ops: &[Op]| execute(spec, ops).filter(|f| f.kind == *kind);
-    let mut failure = still(&ops).expect("the failure reproduces");
+fn shrink(spec: &Spec, mut ops: Vec<Op>, mut failure: Failure) -> (Vec<Op>, Failure) {
+    let kind = failure.kind.clone();
+    let still = |ops: &[Op]| execute(spec, ops).0.filter(|f| f.kind == kind);
     ops.truncate(failure.op + 1);
     let mut chunk = ops.len() / 2;
     while chunk >= 1 {
@@ -960,11 +1000,12 @@ fn shrink(spec: &Spec, mut ops: Vec<Op>, kind: &Kind) -> (Vec<Op>, Failure) {
         while i < ops.len() {
             let mut candidate = ops.clone();
             candidate.drain(i..(i + chunk).min(ops.len()));
-            if let Some(f) = still(&candidate) {
-                ops = candidate;
-                failure = f;
-            } else {
-                i += chunk;
+            match still(&candidate) {
+                Some(f) => {
+                    ops = candidate;
+                    failure = f;
+                }
+                None => i += chunk,
             }
         }
         chunk /= 2;
@@ -1010,10 +1051,15 @@ fn fuzz(game: &str, default_seeds: u64, default_ops: u64) {
     let ops = env("TIMETRAVEL_FUZZ_OPS", default_ops) as usize;
     let first = env("TIMETRAVEL_FUZZ_SEED0", 1);
     let mut failures = Vec::new();
+    let mut verified = Stats::new();
     for seed in first..first + seeds {
-        let sequence = gen_ops(seed ^ hash(game), ops);
-        if let Some(found) = execute(&spec, &sequence) {
-            let (minimal, failure) = shrink(&spec, sequence, &found.kind);
+        let sequence = gen_ops(seed ^ hash(game.as_bytes()), ops);
+        let (found, stats) = execute(&spec, &sequence);
+        for (what, n) in stats {
+            *verified.entry(what).or_default() += n;
+        }
+        if let Some(found) = found {
+            let (minimal, failure) = shrink(&spec, sequence, found);
             failures.push(format!(
                 "{game} seed {seed}: {:?} at op {}: {}\n  repro ({} ops): {minimal:?}",
                 failure.kind,
@@ -1023,7 +1069,7 @@ fn fuzz(game: &str, default_seeds: u64, default_ops: u64) {
             ));
         }
     }
-    eprintln!("{game}: {seeds} seeds x {ops} ops: {:?}", STATS.with(|s| s.take()));
+    eprintln!("{game}: {seeds} seeds x {ops} ops: {verified:?}");
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
