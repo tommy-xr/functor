@@ -6,15 +6,15 @@
 // sits between the last step and the next. Keep the previous and current pose
 // in the model and draw between them.
 //
-// The two ghosts mark the stepped poses; the rig is drawn between them, and
+// The two ghosts above the rig mark the stepped poses; the rig is drawn between them, and
 // the chase camera follows the drawn rig. Simulate a 120 Hz display with
 // `functor -d examples/interpolation run native -- --display-hz 120`.
 // `e2e/interpolation.mjs` checks it headlessly over the debug server.
 
 type Model = { angle: float, prev: Vec3.t, cur: Vec3.t }
 
-let radius = 4.0
-let speed = 1.2 // radians per second around the loop
+let radius = 5.0
+let speed = 2.0 // radians per second around the loop
 
 let poseAt = (angle: float) =>
   Vec3.make(Math.cos(angle) * radius, 0.5, Math.sin(angle) * radius)
@@ -40,9 +40,9 @@ expect (
 
 let ghost = (pos: Vec3.t, color: Color.t) =>
   Scene.sphere()
-    |> Scene.scaleXYZ(0.3, 0.3, 0.3)
+    |> Scene.scaleXYZ(0.25, 0.25, 0.25)
     |> Scene.color(color)
-    |> Scene.translate(pos)
+    |> Scene.translate(pos |> Vec3.add(Vec3.make(0.0, 1.2, 0.0)))
 
 // Group order is fixed — rig, previous, current — for the e2e check.
 let draw = (m: Model, tts, alpha: float) =>
