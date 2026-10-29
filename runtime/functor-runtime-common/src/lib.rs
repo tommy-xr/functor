@@ -143,6 +143,9 @@ pub use trajectory::{
 };
 pub use viewport::*;
 
+#[cfg(all(test, feature = "ts"))]
+mod ts_bindings;
+
 #[cfg(test)]
 mod tests {
     use super::*;
