@@ -138,6 +138,7 @@
 //! Physics.linearDamping/angularDamping(n, body)             -> Body
 //! Physics.sensor(body)                                      -> Body
 //! Physics.upright(body)                                     -> Body
+//! Physics.continuous(body)                                  -> Body
 //! Physics.scene(Vec3.make(gx, gy, gz), [body, …])                      -> PhysicsScene
 //! Physics.position(tag)                                     -> {x, y, z}
 //! Physics.transformed(tag, scene)                           -> Scene
@@ -2960,6 +2961,7 @@ fn rotate_physics_body(
 translation-only; use Physics.at with an unrotated Scene.terrain"
         ));
     }
+    fused_room_stays_put(path, &body)?;
 
     let angle: cgmath::Rad<f32> = angle.0.into();
     // One canonical turn keeps equivalent angles (90° and 450°) on the same
@@ -3012,6 +3014,17 @@ fn canonical_quaternion(mut q: [f32; 4]) -> [f32; 4] {
         }
     }
     q
+}
+
+/// The fused room is where the room is: it cannot be moved or rotated.
+fn fused_room_stays_put(path: &str, body: &FunctorLangBody) -> Result<(), String> {
+    match &body.0.shape {
+        physics::Shape::FusedRoom { .. } => Err(format!(
+            "{path}: the fused room is already in world space — declare \
+Physics.fusedRoom(tag) without moving or rotating it"
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn register_physics(reg: &mut crate::host_registry::Registry) {
@@ -3108,6 +3121,20 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
             ))
         },
     );
+    reg.fn1(
+        "Physics.fusedRoom",
+        "Physics.fusedRoom(tag)",
+        |tag: std::rc::Rc<str>| {
+            // Empty here; the physics adapter resolves the shell's latest
+            // fused room whenever it consumes a scene.
+            FunctorLangBody(physics::Body::fixed(
+                tag.to_string(),
+                physics::Shape::FusedRoom {
+                    room: Default::default(),
+                },
+            ))
+        },
+    );
     // Bodies (tag, shape). The tag brand is erased at runtime, so it arrives
     // as the plain string (Rc<str>, allocation-light like `Physics.tag`).
     fn body_ctor(
@@ -3186,8 +3213,9 @@ capsule for the moving body"
         "Physics.at",
         "Physics.at(v, body)",
         |v: FunctorLangVec3, body: FunctorLangBody| {
+            fused_room_stays_put("Physics.at", &body)?;
             let (x, y, z) = v.0;
-            FunctorLangBody(body.0.at([x, y, z]))
+            Ok(FunctorLangBody(body.0.at([x, y, z])))
         },
     );
     reg.fn2(
@@ -3273,6 +3301,11 @@ capsule for the moving body"
         "Physics.upright",
         "Physics.upright(body)",
         |body: FunctorLangBody| FunctorLangBody(body.0.as_upright()),
+    );
+    reg.fn1(
+        "Physics.continuous",
+        "Physics.continuous(body)",
+        |body: FunctorLangBody| FunctorLangBody(body.0.as_continuous()),
     );
     reg.fn2(
         "Physics.scene",
@@ -5020,6 +5053,12 @@ bodies only; declare dynamic bodies flat in Physics.scene",
         if matches!(body.shape, physics::Shape::Heightfield { .. }) {
             return Err(format!(
                 "Physics.memo: \"{}\" is a heightfield — declare it flat in Physics.scene",
+                body.tag
+            ));
+        }
+        if matches!(body.shape, physics::Shape::FusedRoom { .. }) {
+            return Err(format!(
+                "Physics.memo: \"{}\" is a fused room — declare it flat in Physics.scene",
                 body.tag
             ));
         }
@@ -10714,6 +10753,39 @@ moving body"
 triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             ),
             "Physics.trimesh: `positions` must be Bytes"
+        );
+    }
+
+    #[test]
+    fn physics_fused_room_is_a_fixed_body_that_stays_put() {
+        let value = eval(
+            "let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
+               Physics.fusedRoom(Physics.tag(\"room\")) |> Physics.restitution(0.7),\n\
+             ])",
+        );
+        let scene = physics_scene_value(&value).expect("a PhysicsScene");
+        let room = &scene.bodies[0];
+        assert_eq!((room.kind, room.restitution), (physics::BodyKind::Fixed, 0.7));
+        let physics::Shape::FusedRoom { room } = &room.shape else {
+            panic!("expected a fused room");
+        };
+        assert!(room.chunks.is_empty(), "the shell's room resolves at the step");
+
+        let moved = "Physics.at: the fused room is already in world space — declare \
+Physics.fusedRoom(tag) without moving or rotating it";
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.fusedRoom(Physics.tag(\"room\")) \
+|> Physics.at(Vec3.make(0.0, 1.0, 0.0))"
+            ),
+            moved
+        );
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.fusedRoom(Physics.tag(\"room\")) \
+|> Physics.rotateY(Angle.degrees(5.0))"
+            ),
+            moved.replace("Physics.at", "Physics.rotateY")
         );
     }
 

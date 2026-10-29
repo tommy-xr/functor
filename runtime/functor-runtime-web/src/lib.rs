@@ -1705,6 +1705,14 @@ async fn run_async() -> Result<(), JsValue> {
                 game.preload_push_settled(token);
             }
 
+            // The room the last render fused, for `Physics.fusedRoom` (one
+            // thread: the producer reads it from the next tick).
+            if functor_runtime_common::physics::wants_fused_room() {
+                functor_runtime_common::physics::publish_fused_room(
+                    scene_context.fused_room_meshes().unwrap_or_default(),
+                );
+            }
+
             for sub in &sub_frames {
                 // Scripted browser demos queue edges against authoritative
                 // fixed-step frames. Admit each edge immediately before its
@@ -1745,6 +1753,7 @@ async fn run_async() -> Result<(), JsValue> {
                     game.config(),
                 ),
             );
+            scene_context.set_fused_room_wanted(functor_runtime_common::physics::wants_fused_room());
             if pending_detach
                 && clock.pending_frames() == 0
                 && clock.pending_steps() == 0

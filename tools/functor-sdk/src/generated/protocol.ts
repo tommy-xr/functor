@@ -119,7 +119,16 @@ fused_frames: number,
 /**
  * Voxel edge, metres.
  */
-voxel_m: number, };
+voxel_m: number, 
+/**
+ * Chunk colliders of a `Physics.fusedRoom` body (0 without one).
+ */
+colliders: number, 
+/**
+ * The floor height those colliders are snapped to, metres; absent until
+ * the floor has been seen.
+ */
+floor_m?: number, };
 
 /**
  * The launch-time `config` value.

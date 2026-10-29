@@ -104,6 +104,27 @@ let trimesh : (triangles) => shape
 /// unrotated, unscaled `Scene.terrain`, using the same translation.
 let heightfield : (tag, Terrain.t) => body
 
+/// Create a fixed body from the room fused from the environment depth.
+///
+/// Needs `config`'s `Xr.scene(true)`: the runtime fuses the headset's depth
+/// (the stand-in room's on desktop and web) into a mesh, as
+/// `Frame.withFusedRoom` draws it, and this body collides with it — the
+/// room need not be drawn. Each 64 cm chunk is a static triangle mesh,
+/// rebuilt when that chunk re-meshes, so balls bounce off the real walls and
+/// furniture as soon as they are seen. The floor — the lowest level surface
+/// of at least 0.5 m² at least 1 m below the highest the headset has been —
+/// is an infinite plane instead of the fused floor's ripple, so a resting
+/// ball stays still and nothing falls through floor nobody has looked at
+/// yet. It is found by height below the head, not at `y = 0`: a headset's
+/// stage origin is not always on the floor.
+///
+/// New surfaces reach the body at the physics step after they fuse. The
+/// room is already in world space: `Physics.at` and the rotations are
+/// errors. Pipe `Physics.friction` and `Physics.restitution` to tune
+/// contacts; a ray or contact on any chunk reports this tag. Walls are
+/// surfaces with no thickness: give fast, small bodies `Physics.continuous`.
+let fusedRoom : (tag) => body
+
 /// Create a dynamic body affected by forces and collisions.
 let dynamic : (tag, shape) => body
 /// Create a kinematic body driven explicitly by the game.
@@ -189,6 +210,17 @@ let sensor : (body) => body
 /// grounding probe makes. The body is last for piping.
 let upright : (body) => body
 
+/// Sweep a fast body along each physics step (continuous collision
+/// detection), so it cannot pass through a thin surface between two steps;
+/// the body is last for piping.
+///
+/// Without it a body is tested only where each step lands it, and one that
+/// moves farther than its own radius per step (a 5 cm ball at a few metres a
+/// second, at 60 steps a second) can end a step past a wall that is only a
+/// surface, like `Physics.fusedRoom`'s. It costs only while the body is
+/// fast. Changing it reconciles onto the live body.
+let continuous : (body) => body
+
 /// Declare a physics world from gravity and bodies.
 let scene : (Vec3.t, List<body>) => world
 
@@ -212,9 +244,9 @@ let scene : (Vec3.t, List<body>) => world
 ///   plain data (pass a revision number, not `Bytes` or textures), the builder
 ///   reads only `deps` and top-level definitions (reading the live world is an
 ///   error), and a key unused for a couple of seconds is forgotten.
-/// - Fixed and kinematic bodies only: a dynamic body or a heightfield inside
-///   is an error. A kinematic body that moves belongs flat, since its deps
-///   would change every frame.
+/// - Fixed and kinematic bodies only: a dynamic body, a heightfield or a
+///   fused room inside is an error. A kinematic body that moves belongs
+///   flat, since its deps would change every frame.
 /// - Each tag belongs to one place. A flat body reusing a group's tag, two
 ///   groups sharing a tag, or one key twice in a scene is an error.
 ///   Reads and commands address group bodies by tag like flat ones.

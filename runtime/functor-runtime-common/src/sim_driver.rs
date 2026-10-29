@@ -78,6 +78,9 @@ pub struct SimSnapshot {
     pub terrain_requests: Vec<TerrainSource>,
     /// Some requested heightmap is not yet hydrated on the producer's thread.
     pub terrain_pending: bool,
+    /// The physics world has a `Physics.fusedRoom` body: fuse the room and
+    /// hand it over ([`FusedRoomMirror`]).
+    pub wants_fused_room: bool,
     pub physics_lines: Vec<DebugLine>,
     pub scene_frame: Option<u64>,
     pub scene_range: Option<(u64, u64)>,
@@ -492,6 +495,41 @@ impl HeightmapMirror {
     }
 }
 
+/// Hands the shell's fused room to the producer's thread for
+/// `Physics.fusedRoom` bodies whenever its meshes change. Posted in order
+/// before the next frame's tick, so inline (and lockstep) runs see a room
+/// fused while rendering frame N from frame N+1's physics step.
+#[derive(Default)]
+pub struct FusedRoomMirror {
+    last: Option<Arc<crate::physics::RoomMeshes>>,
+}
+
+impl FusedRoomMirror {
+    /// Post the room if it changed since the last post; does nothing unless
+    /// `wanted` (a `Physics.fusedRoom` body exists).
+    pub fn sync(
+        &mut self,
+        sim: &mut SimDriver,
+        scene_context: &crate::SceneContext,
+        wanted: bool,
+    ) {
+        let room = if wanted {
+            scene_context.fused_room_meshes()
+        } else {
+            None
+        };
+        let unchanged = match (&room, &self.last) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        if unchanged {
+            return;
+        }
+        self.last = room.clone();
+        sim.post(move |_| crate::physics::publish_fused_room(room.unwrap_or_default()));
+    }
+}
+
 /// Whether assets are still settling: the cache moved since `pushed` was sent
 /// to the sim, or loads are in flight. Pipelined shells step in lockstep then.
 pub fn assets_busy(pushed: &AssetProgress, current: &AssetProgress) -> bool {
@@ -559,6 +597,7 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
         },
         terrain_requests,
         terrain_pending,
+        wants_fused_room: crate::physics::wants_fused_room(),
         physics_lines: if req.physics_lines {
             crate::physics::with_world(
                 crate::physics::DEFAULT_WORLD,

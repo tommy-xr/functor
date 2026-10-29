@@ -21,6 +21,8 @@ use rapier3d::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::{Body, BodyKind, CharacterSettings, PhysicsScene, Shape};
+use super::room::{self, RoomMeshes};
+use crate::fused_mesh::ChunkKey;
 
 /// The fixed simulation timestep. `step_frame` accumulates real dt and steps
 /// the world in whole `FIXED_DT` substeps — Rapier is never stepped with a
@@ -185,9 +187,17 @@ pub struct World {
     impulse_joints: ImpulseJointSet,
     multibody_joints: MultibodyJointSet,
     ccd_solver: CCDSolver,
-    /// tag → live handles. `BTreeMap` so iteration (despawn order, dumps,
-    /// serialization) is deterministic — a requirement, not a nicety.
-    tags: BTreeMap<String, (RigidBodyHandle, ColliderHandle)>,
+    /// tag → live body. `BTreeMap` so iteration (despawn order, dumps,
+    /// serialization) is deterministic — a requirement, not a nicety. A body
+    /// owns one collider, except a fused room, which owns one per chunk.
+    tags: BTreeMap<String, RigidBodyHandle>,
+    /// tag → a fused room body's colliders (`Shape::FusedRoom`).
+    #[serde(default)]
+    rooms: BTreeMap<String, LiveRoom>,
+    /// Colliders a re-fused room removed since the last step, with its tag:
+    /// their contacts end at the next step, and still name the room.
+    #[serde(default)]
+    retired: Vec<(ColliderHandle, String)>,
     /// Last-declared body per tag — the memory behind the divergence rule:
     /// reconcile writes a field to the live body only when the new declaration
     /// *differs from this cache*; an unchanged declaration leaves the body to
@@ -246,6 +256,8 @@ impl Clone for World {
             multibody_joints: self.multibody_joints.clone(),
             ccd_solver: self.ccd_solver.clone(),
             tags: self.tags.clone(),
+            rooms: self.rooms.clone(),
+            retired: self.retired.clone(),
             declared: self.declared.clone(),
             flat: self.flat.clone(),
             groups: self.groups.clone(),
@@ -302,6 +314,8 @@ impl World {
             multibody_joints: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             tags: BTreeMap::new(),
+            rooms: BTreeMap::new(),
+            retired: Vec::new(),
             declared: BTreeMap::new(),
             flat: BTreeSet::new(),
             groups: BTreeMap::new(),
@@ -562,20 +576,48 @@ impl World {
         // pair involving a body despawned earlier this frame (rapier's
         // REMOVED stop-events) has no tag left — those events are dropped:
         // the game already unmade the body, there is nobody to notify about.
+        //
+        // A fused room is many colliders, but the game hears about bodies: a
+        // pair with a room starts when the first of its collider pairs
+        // touches and stops when the last lets go, so a chunk re-meshed under
+        // a resting ball (or a ball across two chunks) says nothing. Net
+        // starts per room pair, keyed by sorted tags and sensor flag.
+        let mut room_pairs: BTreeMap<(String, String, bool), i32> = BTreeMap::new();
         for event in sink.0.into_inner().unwrap() {
             let (h1, h2, started, flags) = match event {
                 CollisionEvent::Started(h1, h2, flags) => (h1, h2, true, flags),
                 CollisionEvent::Stopped(h1, h2, flags) => (h1, h2, false, flags),
             };
-            if let (Some(a), Some(b)) = (self.collider_tag(h1), self.collider_tag(h2)) {
+            let tag_of = |handle| self.tag_of_collider(handle);
+            let (Some(a), Some(b)) = (tag_of(h1), tag_of(h2)) else {
+                continue;
+            };
+            let sensor = flags.contains(CollisionEventFlags::SENSOR);
+            if self.rooms.contains_key(&a) || self.rooms.contains_key(&b) {
+                let (a, b) = if a <= b { (a, b) } else { (b, a) };
+                *room_pairs.entry((a, b, sensor)).or_default() += if started { 1 } else { -1 };
+            } else {
                 self.events.push(PhysicsEvent {
                     started,
                     a,
                     b,
-                    sensor: flags.contains(CollisionEventFlags::SENSOR),
+                    sensor,
                 });
             }
         }
+        for ((a, b, sensor), net) in room_pairs {
+            let now = self.touching_pairs(&a, &b, sensor);
+            let before = now - net;
+            if (before == 0) != (now == 0) {
+                self.events.push(PhysicsEvent {
+                    started: now > 0,
+                    a,
+                    b,
+                    sensor,
+                });
+            }
+        }
+        self.retired.clear();
         self.frame += 1;
     }
 
@@ -607,8 +649,7 @@ impl World {
 
     /// Live pose of a declared body: `(position, rotation-quaternion-xyzw)`.
     pub fn body_transform(&self, tag: &str) -> Option<([f32; 3], [f32; 4])> {
-        let (rb_handle, _) = self.tags.get(tag)?;
-        let rb = self.bodies.get(*rb_handle)?;
+        let rb = self.bodies.get(*self.tags.get(tag)?)?;
         let pos = rb.translation();
         let rot = rb.rotation();
         Some(([pos.x, pos.y, pos.z], [rot.x, rot.y, rot.z, rot.w]))
@@ -616,8 +657,7 @@ impl World {
 
     /// Live linear velocity of a declared body.
     pub fn body_velocity(&self, tag: &str) -> Option<[f32; 3]> {
-        let (rb_handle, _) = self.tags.get(tag)?;
-        let rb = self.bodies.get(*rb_handle)?;
+        let rb = self.bodies.get(*self.tags.get(tag)?)?;
         let v = rb.linvel();
         Some([v.x, v.y, v.z])
     }
@@ -669,7 +709,7 @@ impl World {
         let (col_handle, hit) = self
             .queries(QueryFilter::default(), exclude)
             .cast_ray_and_get_normal(&ray, max_dist, true)?;
-        let tag = self.collider_tag(col_handle)?;
+        let tag = self.tag_of_collider(col_handle)?;
         let kept = match hit.feature {
             FeatureId::Face(i) => Some(i),
             _ => None,
@@ -708,7 +748,7 @@ impl World {
         let queries = self.queries(QueryFilter::default(), exclude);
         let from = Pose::from_translation(vec3(origin));
         let (col_handle, hit) = sweep(&queries, &*swept, &from, d / len, max_dist, 0.0)?;
-        let tag = self.collider_tag(col_handle)?;
+        let tag = self.tag_of_collider(col_handle)?;
         // Shape casts report no feature, so find the triangle under the
         // contact point (on a shared edge, either neighbour).
         let collider = &self.colliders[col_handle];
@@ -734,7 +774,7 @@ impl World {
     fn queries<'a>(&'a self, mut filter: QueryFilter<'a>, exclude: Option<&str>) -> QueryPipeline<'a> {
         // The rigid body, not the tag's one collider, so a body that later
         // gains a second collider still can't hit itself.
-        if let Some((body, _)) = exclude.and_then(|tag| self.tags.get(tag)) {
+        if let Some(body) = exclude.and_then(|tag| self.tags.get(tag)) {
             filter = filter.exclude_rigid_body(*body);
         }
         self.broad_phase.as_query_pipeline(
@@ -743,15 +783,6 @@ impl World {
             &self.colliders,
             filter,
         )
-    }
-
-    /// Reverse handle→tag lookup: scenes are small; a scan beats carrying a
-    /// second map in every snapshot.
-    fn collider_tag(&self, handle: ColliderHandle) -> Option<String> {
-        self.tags
-            .iter()
-            .find(|(_, &(_, col))| col == handle)
-            .map(|(tag, _)| tag.clone())
     }
 
     /// The source index of rapier triangle `kept` on `tag`'s trimesh.
@@ -827,7 +858,7 @@ impl World {
         let bodies = self
             .tags
             .iter()
-            .filter_map(|(tag, (rb_handle, _))| {
+            .filter_map(|(tag, rb_handle)| {
                 let rb = self.bodies.get(*rb_handle)?;
                 let pos = rb.translation();
                 let rot = rb.rotation();
@@ -857,14 +888,14 @@ impl World {
         for command in std::mem::take(&mut self.pending) {
             let (tag, kind) = command.tag_and_kind();
             let (tag, kind) = (tag.to_string(), kind);
-            let Some(&(rb_handle, col_handle)) = self.tags.get(tag.as_str()) else {
+            let Some(&rb_handle) = self.tags.get(tag.as_str()) else {
                 self.push_command_warning(format!(
                     "physics {kind} for unknown tag \"{tag}\""
                 ));
                 continue;
             };
             if let PhysicsCommand::Move { translation, .. } = &command {
-                if !self.move_character(&tag, rb_handle, col_handle, vec3(*translation)) {
+                if !self.move_character(&tag, rb_handle, vec3(*translation)) {
                     self.push_command_warning(format!(
                         "physics move on \"{tag}\", which is not a Physics.character, has no effect"
                     ));
@@ -878,6 +909,13 @@ impl World {
             if !matches!(command, PhysicsCommand::Teleport { .. }) && !is_dynamic {
                 self.push_command_warning(format!(
                     "physics {kind} on non-dynamic body \"{tag}\" has no effect"
+                ));
+                continue;
+            }
+            if self.rooms.contains_key(&tag) {
+                self.push_command_warning(format!(
+                    "physics {kind} on the fused room \"{tag}\" has no effect: it is where \
+                     the room is"
                 ));
                 continue;
             }
@@ -930,6 +968,14 @@ impl World {
     // ── reconcile internals ─────────────────────────────────────────────
 
     fn spawn(&mut self, body: &Body) -> bool {
+        if let Shape::FusedRoom { room } = &body.shape {
+            // A fixed body with a collider per chunk.
+            let rb_handle = self.bodies.insert(RigidBodyBuilder::fixed().build());
+            self.tags.insert(body.tag.clone(), rb_handle);
+            self.rooms.insert(body.tag.clone(), LiveRoom::default());
+            self.sync_room(body, &RoomMeshes::default(), room);
+            return true;
+        }
         let Some(mut collider) = collider_of(&body.shape) else {
             return false;
         };
@@ -946,7 +992,8 @@ impl World {
             // the integrator applies, not a contact response. Rapier only
             // integrates a dynamic body, so it is inert on kinematic/fixed.
             .linear_damping(body.linear_damping)
-            .angular_damping(body.angular_damping);
+            .angular_damping(body.angular_damping)
+            .ccd_enabled(body.continuous);
         if body.rotation_locked {
             // An upright body translates but never tips (the character-capsule
             // case). This stops the solver from ACCUMULATING spin; a body that
@@ -957,27 +1004,140 @@ impl World {
         }
         let rb = builder.build();
 
-        collider = collider
-            .friction(body.friction)
-            .restitution(body.restitution)
-            .sensor(body.sensor)
-            // Every body reports contact begin/end (Physics.events); rapier
-            // only pays for this when a pair's state actually changes.
-            .active_events(ActiveEvents::COLLISION_EVENTS);
+        collider = with_material(collider, body);
         if let Some(mass) = body.mass {
             collider = collider.mass(mass);
         }
 
         let rb_handle = self.bodies.insert(rb);
-        let col_handle =
-            self.colliders
-                .insert_with_parent(collider.build(), rb_handle, &mut self.bodies);
-        self.tags.insert(body.tag.clone(), (rb_handle, col_handle));
+        self.colliders
+            .insert_with_parent(collider.build(), rb_handle, &mut self.bodies);
+        self.tags.insert(body.tag.clone(), rb_handle);
         true
     }
 
+    /// Bring a fused room body's colliders from `prev` to `next`: rebuild
+    /// only the chunks [`room::dirty_chunks`] names, in key order, and the
+    /// floor plane if the floor moved.
+    fn sync_room(&mut self, body: &Body, prev: &RoomMeshes, next: &RoomMeshes) {
+        let (Some(&rb_handle), Some(live)) =
+            (self.tags.get(&body.tag), self.rooms.get_mut(&body.tag))
+        else {
+            return;
+        };
+        // An emptied room (the shell started over) has no floor.
+        let floor = if next.chunks.is_empty() {
+            None
+        } else {
+            room::settle_floor(live.floor, room::floor_height(next))
+        };
+        if floor != live.floor {
+            if let Some(handle) = live.floor_plane.take() {
+                self.colliders
+                    .remove(handle, &mut self.islands, &mut self.bodies, true);
+                self.retired.push((handle, body.tag.clone()));
+            }
+            if let Some(y) = floor {
+                let plane = ColliderBuilder::halfspace(rapier3d::na::Unit::new_unchecked(Vector::Y))
+                    .translation(Vector::new(0.0, y, 0.0));
+                live.floor_plane = Some(self.colliders.insert_with_parent(
+                    with_material(plane, body).build(),
+                    rb_handle,
+                    &mut self.bodies,
+                ));
+            }
+        }
+        for key in room::dirty_chunks(prev, live.floor, next, floor) {
+            if let Some(handle) = live.chunks.remove(&key) {
+                self.colliders
+                    .remove(handle, &mut self.islands, &mut self.bodies, true);
+                self.retired.push((handle, body.tag.clone()));
+            }
+            let Some(geometry) = next
+                .chunks
+                .get(&key)
+                .and_then(|mesh| room::chunk_collider(mesh, floor))
+            else {
+                continue;
+            };
+            let Some(collider) = chunk_trimesh(geometry) else {
+                log::warn!("fused room: chunk {key:?} is not a valid triangle mesh; skipped");
+                continue;
+            };
+            let handle = self.colliders.insert_with_parent(
+                with_material(collider, body).build(),
+                rb_handle,
+                &mut self.bodies,
+            );
+            live.chunks.insert(key, handle);
+        }
+        live.floor = floor;
+    }
+
+    /// The fused room's colliders (chunks plus the floor plane) and floor
+    /// height (`/state.xr.mesh`); `None` without a `Physics.fusedRoom` body.
+    pub fn fused_room_colliders(&self) -> Option<(usize, Option<f32>)> {
+        let live = self.rooms.values().next()?;
+        Some((
+            live.chunks.len() + usize::from(live.floor_plane.is_some()),
+            live.floor,
+        ))
+    }
+
+    /// Collider pairs between the bodies tagged `a` and `b` touching now
+    /// (overlapping, for a sensor pair).
+    fn touching_pairs(&self, a: &str, b: &str, sensor: bool) -> i32 {
+        let (Some(&a), Some(&b)) = (self.tags.get(a), self.tags.get(b)) else {
+            return 0;
+        };
+        // Walk the body with fewer colliders: the ball, not the room.
+        let count = |body: RigidBodyHandle| self.bodies[body].colliders().len();
+        let (mine, other) = if count(a) <= count(b) { (a, b) } else { (b, a) };
+        let of_other =
+            |c: ColliderHandle| self.colliders.get(c).and_then(|c| c.parent()) == Some(other);
+        let mut touching = 0;
+        for &c in self.bodies[mine].colliders() {
+            touching += if sensor {
+                self.narrow_phase
+                    .intersection_pairs_with(c)
+                    .filter(|&(c1, c2, hit)| hit && of_other(if c1 == c { c2 } else { c1 }))
+                    .count()
+            } else {
+                self.narrow_phase
+                    .contact_pairs_with(c)
+                    .filter(|p| {
+                        let partner = if p.collider1 == c { p.collider2 } else { p.collider1 };
+                        p.has_any_active_contact() && of_other(partner)
+                    })
+                    .count()
+            };
+        }
+        touching as i32
+    }
+
+    /// The tag of the body `collider` belongs to, or belonged to if a
+    /// re-fused room removed it this step.
+    fn tag_of_collider(&self, collider: ColliderHandle) -> Option<String> {
+        let Some(body) = self.colliders.get(collider).and_then(|c| c.parent()) else {
+            return self
+                .retired
+                .iter()
+                .find(|(retired, _)| *retired == collider)
+                .map(|(_, tag)| tag.clone());
+        };
+        // Scenes are small; a scan beats carrying a second map in every
+        // snapshot.
+        self.tags
+            .iter()
+            .find(|(_, &rb)| rb == body)
+            .map(|(tag, _)| tag.clone())
+    }
+
     fn despawn(&mut self, tag: &str) {
-        if let Some((rb_handle, _)) = self.tags.remove(tag) {
+        self.rooms.remove(tag);
+        // A despawned body's contacts end unreported, retired ones included.
+        self.retired.retain(|(_, retired)| retired != tag);
+        if let Some(rb_handle) = self.tags.remove(tag) {
             // Removes attached colliders and joints too.
             self.bodies.remove(
                 rb_handle,
@@ -1000,10 +1160,13 @@ impl World {
         &mut self,
         tag: &str,
         rb_handle: RigidBodyHandle,
-        col_handle: ColliderHandle,
         desired: Vector,
     ) -> bool {
         let Some(settings) = self.declared.get(tag).and_then(|body| body.character) else {
+            return false;
+        };
+        // A character's body owns its one capsule collider.
+        let Some(&col_handle) = self.bodies[rb_handle].colliders().first() else {
             return false;
         };
         let shape = self.colliders[col_handle].shared_shape().clone();
@@ -1060,11 +1223,20 @@ impl World {
     /// a mass change on a falling crate must not teleport it back to its
     /// declared spawn pose.
     fn apply_divergence(&mut self, prev: &Body, next: &Body) -> bool {
-        if prev.kind != next.kind || prev.shape != next.shape || prev.mass != next.mass {
+        // A re-fused room rebuilds only its changed chunks, below.
+        let rooms = match (&prev.shape, &next.shape) {
+            (Shape::FusedRoom { room: a }, Shape::FusedRoom { room: b }) => Some((a, b)),
+            _ => None,
+        };
+        // (A room is fixed, so its mass means nothing.)
+        if prev.kind != next.kind
+            || (prev.shape != next.shape && rooms.is_none())
+            || (prev.mass != next.mass && rooms.is_none())
+        {
             if !shape_is_ready(&next.shape) {
                 return false;
             }
-            let live = self.tags.get(&next.tag).and_then(|(rb, _)| {
+            let live = self.tags.get(&next.tag).and_then(|rb| {
                 let rb = self.bodies.get(*rb)?;
                 let live_pose = *rb.position();
                 // Rapier documents next_position() as unspecified for
@@ -1085,10 +1257,7 @@ impl World {
             self.despawn(&next.tag);
             let spawned = self.spawn(next);
             debug_assert!(spawned);
-            if let (
-                Some((live_pose, pending_pose, linvel, angvel)),
-                Some((rb_handle, _)),
-            ) =
+            if let (Some((live_pose, pending_pose, linvel, angvel)), Some(rb_handle)) =
                 (live, self.tags.get(&next.tag).copied())
             {
                 let rb = &mut self.bodies[rb_handle];
@@ -1143,7 +1312,10 @@ impl World {
             return true;
         }
 
-        let (rb_handle, col_handle) = self.tags[&next.tag];
+        if let Some((a, b)) = rooms.filter(|(a, b)| a != b) {
+            self.sync_room(next, a, b);
+        }
+        let rb_handle = self.tags[&next.tag];
 
         if prev.position != next.position || prev.rotation != next.rotation {
             let rb = &mut self.bodies[rb_handle];
@@ -1200,14 +1372,18 @@ impl World {
         if prev.angular_damping != next.angular_damping {
             self.bodies[rb_handle].set_angular_damping(next.angular_damping);
         }
-        if prev.friction != next.friction {
-            self.colliders[col_handle].set_friction(next.friction);
+        if (prev.friction, prev.restitution, prev.sensor)
+            != (next.friction, next.restitution, next.sensor)
+        {
+            for handle in self.bodies[rb_handle].colliders().to_vec() {
+                let collider = &mut self.colliders[handle];
+                collider.set_friction(next.friction);
+                collider.set_restitution(next.restitution);
+                collider.set_sensor(next.sensor);
+            }
         }
-        if prev.restitution != next.restitution {
-            self.colliders[col_handle].set_restitution(next.restitution);
-        }
-        if prev.sensor != next.sensor {
-            self.colliders[col_handle].set_sensor(next.sensor);
+        if prev.continuous != next.continuous {
+            self.bodies[rb_handle].enable_ccd(next.continuous);
         }
         if prev.rotation_locked != next.rotation_locked {
             let rb = &mut self.bodies[rb_handle];
@@ -1268,6 +1444,39 @@ fn shape_is_ready(shape: &Shape) -> bool {
     !matches!(shape, Shape::Heightfield { data: None, .. })
 }
 
+/// The body's contact material, and contact begin/end reporting.
+fn with_material(collider: ColliderBuilder, body: &Body) -> ColliderBuilder {
+    collider
+        .friction(body.friction)
+        .restitution(body.restitution)
+        .sensor(body.sensor)
+        // Every body reports contact begin/end (Physics.events); rapier
+        // only pays for this when a pair's state actually changes.
+        .active_events(ActiveEvents::COLLISION_EVENTS)
+}
+
+/// A chunk's triangle mesh collider; `None` if rapier rejects the mesh.
+fn chunk_trimesh(geometry: room::ChunkGeometry) -> Option<ColliderBuilder> {
+    // Shared vertices let rapier smooth contacts across the chunk's internal
+    // edges, so a ball rolls over them without hopping.
+    ColliderBuilder::trimesh_with_flags(
+        geometry.positions.into_iter().map(vec3).collect(),
+        geometry.triangles,
+        TriMeshFlags::FIX_INTERNAL_EDGES,
+    )
+    .ok()
+}
+
+/// A fused room body's live colliders.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct LiveRoom {
+    #[serde(with = "room::pairs")]
+    chunks: BTreeMap<ChunkKey, ColliderHandle>,
+    /// The floor height, and the plane there that replaces the chunks' floor.
+    floor: Option<f32>,
+    floor_plane: Option<ColliderHandle>,
+}
+
 fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
     match shape {
         Shape::Cuboid { extents } => Some(ColliderBuilder::cuboid(
@@ -1286,6 +1495,8 @@ fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
         Shape::Heightfield { geometry, data } => data
             .as_deref()
             .map(|data| heightfield_collider(geometry, data)),
+        // One collider per chunk (`World::sync_room`).
+        Shape::FusedRoom { .. } => None,
     }
 }
 
@@ -1861,7 +2072,7 @@ mod tests {
         w.reconcile(&scene(vec![body(after)]));
         w.step_fixed();
 
-        let (rb_handle, _) = w.tags["spinner"];
+        let rb_handle = w.tags["spinner"];
         let angular_velocity = w.bodies[rb_handle].angvel().y;
         let expected = 2.0_f32.to_radians() / FIXED_DT;
         assert!(
@@ -1896,7 +2107,7 @@ mod tests {
         for (actual, expected) in rotation.into_iter().zip(identity) {
             assert!((actual - expected).abs() < 1e-6);
         }
-        let (rb_handle, _) = w.tags["spinner"];
+        let rb_handle = w.tags["spinner"];
         assert!(w.bodies[rb_handle].angvel().length() < 1e-6);
     }
 
@@ -1944,7 +2155,7 @@ mod tests {
         retargeted.step_fixed();
         let (_, after_step) = retargeted.body_transform("spinner").unwrap();
         assert_eq!(after_step, identity);
-        let (rb_handle, _) = retargeted.tags["spinner"];
+        let rb_handle = retargeted.tags["spinner"];
         assert!(retargeted.bodies[rb_handle].angvel().length() < 1e-6);
     }
 
@@ -1968,7 +2179,7 @@ mod tests {
             };
             let mut w = World::new([0.0, 0.0, 0.0]);
             w.reconcile(&scene(vec![original]));
-            let (rb_handle, _) = w.tags["mover"];
+            let rb_handle = w.tags["mover"];
             w.bodies[rb_handle].set_position(live_pose, true);
 
             // The kind changes, but neither declared pose field does. The new
@@ -1979,7 +2190,7 @@ mod tests {
                 "mover".to_string(),
                 shape.clone(),
             )]));
-            let (kinematic_handle, _) = w.tags["mover"];
+            let kinematic_handle = w.tags["mover"];
             assert_eq!(*w.bodies[kinematic_handle].position(), live_pose);
             assert_eq!(*w.bodies[kinematic_handle].next_position(), live_pose);
             w.step_fixed();
@@ -2070,12 +2281,12 @@ mod tests {
     // Angular velocity is not declarable and has no command, so these tests
     // reach into the live body directly.
     fn spin_up(w: &mut World, tag: &str, angvel: [f32; 3]) {
-        let (rb, _) = w.tags[tag];
+        let rb = w.tags[tag];
         w.bodies[rb].set_angvel(Vector::new(angvel[0], angvel[1], angvel[2]), true);
     }
 
     fn spin_of(w: &World, tag: &str) -> f32 {
-        let (rb, _) = w.tags[tag];
+        let rb = w.tags[tag];
         w.bodies[rb].angvel().length()
     }
 
@@ -2139,10 +2350,10 @@ mod tests {
                 .with_angular_damping(0.25),
             crate_at("free", [5.0, 5.0, 0.0]),
         ]));
-        assert_eq!(w.bodies[w.tags["damped"].0].linear_damping(), 0.5);
-        assert_eq!(w.bodies[w.tags["damped"].0].angular_damping(), 0.25);
-        assert_eq!(w.bodies[w.tags["free"].0].linear_damping(), 0.0);
-        assert_eq!(w.bodies[w.tags["free"].0].angular_damping(), 0.0);
+        assert_eq!(w.bodies[w.tags["damped"]].linear_damping(), 0.5);
+        assert_eq!(w.bodies[w.tags["damped"]].angular_damping(), 0.25);
+        assert_eq!(w.bodies[w.tags["free"]].linear_damping(), 0.0);
+        assert_eq!(w.bodies[w.tags["free"]].angular_damping(), 0.0);
     }
 
     // A body coasting with no gravity keeps its velocity forever without
@@ -2200,8 +2411,8 @@ mod tests {
             .with_velocity([4.0, 0.0, 0.0])
             .with_linear_damping(2.0)
             .with_angular_damping(1.0)]));
-        assert_eq!(w.bodies[w.tags["a"].0].linear_damping(), 2.0);
-        assert_eq!(w.bodies[w.tags["a"].0].angular_damping(), 1.0);
+        assert_eq!(w.bodies[w.tags["a"]].linear_damping(), 2.0);
+        assert_eq!(w.bodies[w.tags["a"]].angular_damping(), 1.0);
         // Neither pose nor velocity was disturbed by the attribute change.
         assert_eq!(w.body_transform("a").unwrap().0, moved);
         assert!((w.body_velocity("a").unwrap()[0] - 4.0).abs() < 1e-4);
@@ -2218,15 +2429,15 @@ mod tests {
             .with_linear_damping(2.0)
             .with_angular_damping(1.0)
             .with_mass(3.0)]));
-        assert_eq!(w.bodies[w.tags["a"].0].linear_damping(), 2.0);
-        assert_eq!(w.bodies[w.tags["a"].0].angular_damping(), 1.0);
+        assert_eq!(w.bodies[w.tags["a"]].linear_damping(), 2.0);
+        assert_eq!(w.bodies[w.tags["a"]].angular_damping(), 1.0);
 
         // …and taking the attribute back off restores the coast.
         w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])
             .with_velocity([4.0, 0.0, 0.0])
             .with_mass(3.0)]));
-        assert_eq!(w.bodies[w.tags["a"].0].linear_damping(), 0.0);
-        assert_eq!(w.bodies[w.tags["a"].0].angular_damping(), 0.0);
+        assert_eq!(w.bodies[w.tags["a"]].linear_damping(), 0.0);
+        assert_eq!(w.bodies[w.tags["a"]].angular_damping(), 0.0);
     }
 
     #[test]
@@ -2833,7 +3044,7 @@ mod tests {
     }
 
     fn handle(w: &World, tag: &str) -> RigidBodyHandle {
-        w.tags[tag].0
+        w.tags[tag]
     }
 
     #[test]
@@ -3021,5 +3232,365 @@ mod tests {
             memo.snapshot() == end,
             "replay across the group edit diverged"
         );
+    }
+}
+
+/// The fused room as colliders, on the desktop stand-in room (the
+/// `examples/scene-grid` floor, desk and wall) fused on the CPU from the
+/// desktop camera's viewpoint.
+#[cfg(test)]
+mod fused_room_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::fused_mesh::tests::{depth_frame_sized, view_projection};
+    use crate::fused_mesh::Volume;
+    use crate::physics::DEFAULT_GRAVITY;
+
+    const FLOOR: ([f32; 3], [f32; 3]) = ([-3.0, -0.02, -1.5], [3.0, 0.0, 4.5]);
+    const DESK: ([f32; 3], [f32; 3]) = ([-0.3, 0.0, 0.7], [0.9, 0.75, 1.3]);
+    const WALL: ([f32; 3], [f32; 3]) = ([-3.0, 0.0, 2.375], [3.0, 2.6, 2.425]);
+    const BALL: f32 = 0.05;
+
+    /// The stand-in room fused from the desktop camera, looking around it.
+    fn stand_in_room() -> RoomMeshes {
+        let eye = [0.0, 1.6, -0.6];
+        let mut volume = Volume::default();
+        let mut chunks = BTreeMap::new();
+        for target in [
+            [0.3, 0.6, 1.0],
+            [-1.2, 0.6, 2.0],
+            [1.4, 0.6, 2.0],
+            [0.0, 1.2, 2.4],
+            [0.0, 0.0, 0.6],
+        ] {
+            let vp = view_projection(eye, target);
+            volume.integrate(&depth_frame_sized(vp, &[FLOOR, DESK, WALL], 160));
+            for (key, mesh) in volume.extract_dirty() {
+                match mesh {
+                    Some(mesh) => chunks.insert(key, Arc::new(mesh)),
+                    None => chunks.remove(&key),
+                };
+            }
+        }
+        RoomMeshes {
+            chunks,
+            top_eye_y: volume.top_eye_y,
+        }
+    }
+
+    fn room_body(room: &Arc<RoomMeshes>) -> Body {
+        Body::fixed("room".to_string(), Shape::FusedRoom { room: room.clone() })
+            .with_restitution(0.8)
+    }
+
+    fn ball(position: [f32; 3], velocity: [f32; 3]) -> Body {
+        Body::dynamic("ball".to_string(), Shape::Sphere { radius: BALL })
+            .at(position)
+            .with_velocity(velocity)
+            .with_restitution(0.8)
+    }
+
+    fn world_with(bodies: Vec<Body>) -> World {
+        let mut w = World::new(DEFAULT_GRAVITY);
+        w.reconcile(&PhysicsScene::create(DEFAULT_GRAVITY, bodies));
+        w
+    }
+
+    fn run(w: &mut World, steps: usize, mut each: impl FnMut(&World)) {
+        for _ in 0..steps {
+            w.step_fixed();
+            each(w);
+        }
+    }
+
+    #[test]
+    fn the_stand_in_room_becomes_chunk_colliders_with_a_floor() {
+        let room = Arc::new(stand_in_room());
+        let mut w = world_with(vec![room_body(&room)]);
+        let (colliders, floor) = w.fused_room_colliders().unwrap();
+        assert!(colliders > 10, "{colliders}");
+        assert!(colliders <= room.chunks.len() + 1);
+        let floor = floor.expect("the floor was seen");
+        assert!(floor.abs() < 0.01, "floor at {floor}");
+        // A ray at the wall reports the room's tag.
+        run(&mut w, 1, |_| {});
+        let hit = w.raycast([-1.5, 1.0, 0.0], [0.0, 0.0, 1.0], 5.0).unwrap();
+        assert_eq!(hit.tag, "room");
+        assert!((hit.position[2] - 2.375).abs() < 0.02, "{:?}", hit.position);
+    }
+
+    #[test]
+    fn a_ball_dropped_over_the_desk_rests_on_it() {
+        let room = Arc::new(stand_in_room());
+        let mut w = world_with(vec![room_body(&room), ball([0.3, 1.4, 1.0], [0.0; 3])]);
+        let mut lowest = f32::INFINITY;
+        run(&mut w, 360, |w| {
+            lowest = lowest.min(w.body_transform("ball").unwrap().0[1]);
+        });
+        let ([x, y, z], _) = w.body_transform("ball").unwrap();
+        assert!((y - (0.75 + BALL)).abs() < 0.02, "resting at y = {y}");
+        assert!((-0.3..0.9).contains(&x) && (0.7..1.3).contains(&z));
+        assert!(lowest > 0.7, "fell into the desk: {lowest}");
+        let v = w.body_velocity("ball").unwrap();
+        assert!(v.iter().all(|c| c.abs() < 0.01), "still moving: {v:?}");
+    }
+
+    #[test]
+    fn a_ball_rolled_at_the_wall_bounces_off_it() {
+        let room = Arc::new(stand_in_room());
+        let rolled = ball([-1.5, BALL, 1.2], [0.0, 0.0, 3.0]);
+        let thrown = |speed| ball([-1.5, 1.2, 1.2], [0.0, 0.0, speed]).as_continuous();
+        // The wall is a surface with no thickness: a thrown ball is swept
+        // along each step, at any speed.
+        for body in [rolled, thrown(5.0), thrown(6.0), thrown(9.0), thrown(15.0)] {
+            let speed = body.velocity[2];
+            let mut w = world_with(vec![room_body(&room), body]);
+            let (mut nearest, mut back) = (f32::NEG_INFINITY, 0.0f32);
+            run(&mut w, 120, |w| {
+                nearest = nearest.max(w.body_transform("ball").unwrap().0[2]);
+                back = back.min(w.body_velocity("ball").unwrap()[2]);
+            });
+            assert!(nearest < 2.375, "{speed} m/s went through the wall: z = {nearest}");
+            assert!(nearest > 2.375 - BALL - 0.03, "{speed} m/s never reached it: {nearest}");
+            assert!(back < -0.4 * speed, "{speed} m/s did not bounce back: vz = {back}");
+        }
+    }
+
+    #[test]
+    fn continuous_reconciles_onto_the_live_body() {
+        let swept = ball([0.0, 1.0, 0.0], [0.0; 3]).as_continuous();
+        let mut w = world_with(vec![swept]);
+        assert!(w.bodies[w.tags["ball"]].is_ccd_enabled());
+        w.reconcile(&PhysicsScene::create(DEFAULT_GRAVITY, vec![ball([0.0, 1.0, 0.0], [0.0; 3])]));
+        assert!(!w.bodies[w.tags["ball"]].is_ccd_enabled());
+    }
+
+    /// Contacts are per body pair: a ball landing on the room starts one, and
+    /// a chunk re-meshed under it (old collider out, new one in) says
+    /// nothing.
+    #[test]
+    fn contacts_with_the_room_are_per_body_not_per_chunk() {
+        let room = stand_in_room();
+        let resting = || ball([0.3, 1.0, 1.0], [0.0; 3]).with_restitution(0.0);
+        let still = |room: RoomMeshes| room_body(&Arc::new(room)).with_restitution(0.0);
+        let mut w = world_with(vec![still(room.clone()), resting()]);
+        let names = |e: &PhysicsEvent| {
+            let mut pair = [e.a.clone(), e.b.clone()];
+            pair.sort();
+            pair == ["ball", "room"]
+        };
+        run(&mut w, 240, |_| {});
+        let landed = w.take_events();
+        assert!(landed.iter().all(names), "{landed:?}");
+        assert_eq!(
+            landed.iter().map(|e| e.started).collect::<Vec<_>>(),
+            vec![true],
+            "one contact, however many colliders it touched"
+        );
+        // The desk top's chunk under the ball, moved a millimetre.
+        let under_ball = |p: &[f32; 3]| {
+            (p[1] - 0.75).abs() < 0.01 && (p[0] - 0.3).abs() < 0.1 && (p[2] - 1.0).abs() < 0.1
+        };
+        let (&key, mesh) = room
+            .chunks
+            .iter()
+            .find(|(_, m)| m.positions.iter().any(under_ball))
+            .unwrap();
+        let mut moved = (**mesh).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] += 0.001);
+        let mut next = room.clone();
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![still(next), resting()],
+        ));
+        run(&mut w, 2, |_| {});
+        assert_eq!(w.take_events(), vec![], "a re-mesh is not a contact");
+        // Nor across a snapshot taken between the re-mesh and its step.
+        let mut next = room.clone();
+        let (&key, mesh) = next.chunks.iter().find(|(_, m)| m.positions.iter().any(under_ball)).unwrap();
+        let mut moved = (**mesh).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] -= 0.001);
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(DEFAULT_GRAVITY, vec![still(next), resting()]));
+        let mut restored = World::new(DEFAULT_GRAVITY);
+        restored.restore(&w.snapshot()).unwrap();
+        run(&mut restored, 2, |_| {});
+        assert_eq!(restored.take_events(), vec![], "a restored re-mesh is not a contact");
+        // Lifting the ball off ends the contact, naming the room.
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "ball".to_string(),
+            position: [0.3, 1.5, 1.0],
+        });
+        w.step_frame(FIXED_DT);
+        let lifted = w.take_events();
+        assert!(lifted.len() == 1 && !lifted[0].started && names(&lifted[0]), "{lifted:?}");
+    }
+
+    /// A world with a room snapshots to JSON and resumes bit-exact.
+    #[test]
+    fn a_world_with_a_room_restores_bit_exact() {
+        let room = Arc::new(stand_in_room());
+        let scene = PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&room), ball([0.3, 1.4, 1.0], [0.5, 0.0, 0.0])],
+        );
+        let mut live = world_with(scene.bodies.clone());
+        run(&mut live, 30, |_| {});
+        let mut restored = World::new(DEFAULT_GRAVITY);
+        restored.restore(&live.snapshot()).unwrap();
+        for w in [&mut live, &mut restored] {
+            w.reconcile(&scene);
+            run(w, 60, |_| {});
+        }
+        assert_eq!(live.snapshot(), restored.snapshot());
+    }
+
+    /// Despawning a room right after a re-mesh reports nothing about it.
+    #[test]
+    fn a_despawned_room_reports_no_contacts() {
+        let room = stand_in_room();
+        let resting = || ball([0.3, 1.0, 1.0], [0.0; 3]);
+        let mut w = world_with(vec![room_body(&Arc::new(room.clone())), resting()]);
+        run(&mut w, 240, |_| {});
+        let mut next = room.clone();
+        // The desk top's chunk under the ball.
+        let under_ball = |p: &[f32; 3]| {
+            (p[1] - 0.75).abs() < 0.01 && (p[0] - 0.3).abs() < 0.1 && (p[2] - 1.0).abs() < 0.1
+        };
+        let (&key, mesh) = next.chunks.iter().find(|(_, m)| m.positions.iter().any(under_ball)).unwrap();
+        let mut moved = (**mesh).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] += 0.001);
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&Arc::new(next)), resting()],
+        ));
+        w.reconcile(&PhysicsScene::create(DEFAULT_GRAVITY, vec![resting()]));
+        let _ = w.take_events();
+        run(&mut w, 2, |_| {});
+        let events = w.take_events();
+        assert!(events.iter().all(|e| e.a != "room" && e.b != "room"), "{events:?}");
+    }
+
+    #[test]
+    fn teleporting_the_room_is_refused() {
+        let mut w = world_with(vec![room_body(&Arc::new(stand_in_room()))]);
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "room".to_string(),
+            position: [0.0, 1.0, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_transform("room").unwrap().0, [0.0; 3]);
+        assert_eq!(w.take_command_warnings().len(), 1);
+    }
+
+    /// Nobody saw the floor behind the desk; the floor plane is there anyway.
+    #[test]
+    fn a_ball_dropped_on_unseen_floor_lands_on_the_floor_plane() {
+        let room = Arc::new(stand_in_room());
+        let behind_desk = [0.3, 0.3, 1.8];
+        let mut w = world_with(vec![room_body(&room), ball(behind_desk, [0.0; 3])]);
+        run(&mut w, 1, |_| {});
+        let probe = w.raycast_excluding([0.3, 0.2, 1.8], [0.0, -1.0, 0.0], 1.0, Some("ball"));
+        assert!(probe.is_some_and(|hit| hit.position[1].abs() < 0.01));
+        run(&mut w, 240, |_| {});
+        let y = w.body_transform("ball").unwrap().0[1];
+        assert!((y - BALL).abs() < 0.01, "y = {y}");
+    }
+
+    /// A head that rises later admits the floor it saw while low: the same
+    /// chunks with a higher head re-run floor detection, rebuilding nothing.
+    #[test]
+    fn a_higher_head_admits_the_floor() {
+        let room = stand_in_room();
+        let low = RoomMeshes {
+            top_eye_y: Some(0.5),
+            ..room.clone()
+        };
+        let mut w = world_with(vec![room_body(&Arc::new(low))]);
+        assert_eq!(w.fused_room_colliders().unwrap().1, None);
+        let before = w.rooms["room"].chunks.clone();
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&Arc::new(room))],
+        ));
+        let floor = w.fused_room_colliders().unwrap().1.expect("a floor");
+        assert!(floor.abs() < 0.01, "{floor}");
+        // Only the floor's chunks changed (their level triangles went to the
+        // plane); the rest kept their colliders.
+        let after = &w.rooms["room"].chunks;
+        assert!(before.iter().any(|(k, h)| after.get(k) == Some(h)));
+    }
+
+    /// Re-declaring the same room is free; a re-fused chunk rebuilds only
+    /// that chunk's collider.
+    #[test]
+    fn only_re_meshed_chunks_rebuild() {
+        let room = stand_in_room();
+        let mut w = world_with(vec![room_body(&Arc::new(room.clone()))]);
+        let before = w.rooms["room"].chunks.clone();
+        let (&key, mesh) = room.chunks.iter().find(|(k, _)| k[1] > 0).unwrap();
+        let mut next = room.clone();
+        let mut moved = (**mesh).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] += 0.01);
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&Arc::new(next))],
+        ));
+        let after = &w.rooms["room"].chunks;
+        assert_eq!(before.len(), after.len());
+        for (k, handle) in &before {
+            assert_eq!(*k == key, after[k] != *handle, "chunk {k:?}");
+        }
+    }
+
+    /// Max |vertical velocity| of a ball resting on the floor over 2 s, after
+    /// 2 s to settle.
+    fn resting_jitter(w: &mut World) -> f32 {
+        let resting = Body::dynamic("ball".to_string(), Shape::Sphere { radius: BALL })
+            .at([-1.13, 0.3, 0.37]);
+        let mut scene = PhysicsScene::create(DEFAULT_GRAVITY, vec![resting]);
+        scene.bodies.extend(w.declared.values().cloned());
+        w.reconcile(&scene);
+        run(w, 120, |_| {});
+        let mut jitter = 0.0f32;
+        run(w, 120, |w| {
+            jitter = jitter.max(w.body_velocity("ball").unwrap()[1].abs())
+        });
+        jitter
+    }
+
+    /// The floor plane's point: on the fused floor's ripple a resting ball
+    /// keeps rolling.
+    #[test]
+    fn the_floor_plane_stills_a_resting_ball() {
+        // The CPU fixture fuses a floor flat to a millimetre; give it the few
+        // millimetres of ripple a depth sensor's floor has.
+        let mut room = stand_in_room();
+        for mesh in room.chunks.values_mut() {
+            let mesh = Arc::make_mut(mesh);
+            for p in mesh.positions.iter_mut().filter(|p| p[1].abs() < 0.02) {
+                p[1] += 0.004 * (p[0] * 37.0).sin() * (p[2] * 23.0).cos();
+            }
+        }
+        // Planed: the room as `Physics.fusedRoom` builds it.
+        let mut planed = world_with(vec![room_body(&Arc::new(room.clone()))]);
+        // Unsnapped: the same chunks as raw meshes, on an untagged body.
+        let mut raw = World::new(DEFAULT_GRAVITY);
+        let body = raw.bodies.insert(RigidBodyBuilder::fixed().build());
+        for mesh in room.chunks.values() {
+            let Some(collider) = room::chunk_collider(mesh, None).and_then(chunk_trimesh) else {
+                continue;
+            };
+            raw.colliders
+                .insert_with_parent(collider.restitution(0.8), body, &mut raw.bodies);
+        }
+        let (with, without) = (resting_jitter(&mut planed), resting_jitter(&mut raw));
+        eprintln!("resting ball max |vy|: floor plane {with:.6} m/s, raw {without:.6} m/s");
+        assert!(with <= without, "floor plane {with} > raw {without}");
+        assert!(with < 1e-3, "floor plane jitter {with}");
     }
 }

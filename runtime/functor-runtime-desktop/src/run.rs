@@ -1124,7 +1124,7 @@ fn service_debug_request(
                     xr: functor_runtime_common::runtime_settings::XrState::emulated(
                         g.config(),
                         stand_in_depth,
-                        fused_room,
+                        fused_room.with_colliders(),
                     ),
                 });
             });
@@ -2113,6 +2113,7 @@ Escape releases while captured"
         let mut stage_window = functor_runtime_common::debug_protocol::StageWindow::default();
         let mut stage_timings = None;
         let mut last_rendered = Instant::now();
+        let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
@@ -2179,6 +2180,12 @@ Escape releases while captured"
             let loads_pending = scene_context.has_pending_loads();
 
             feedback |= heightmap_mirror.sync(&mut sim);
+            // The room the last render fused, for `Physics.fusedRoom`.
+            fused_room_mirror.sync(
+                &mut sim,
+                &scene_context,
+                shown.as_ref().is_some_and(|s| s.wants_fused_room),
+            );
 
             // Asset hot-reload, the twin of the .fun check above: a model/
             // texture saved on disk is evicted from the caches so the next
@@ -2975,6 +2982,7 @@ Escape again to quit"
                     snapshot.config,
                 ),
             );
+            scene_context.set_fused_room_wanted(snapshot.wants_fused_room);
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.
@@ -3829,6 +3837,10 @@ Escape again to quit"
                 lockstep = feedback
                     || functor_runtime_common::sim_driver::assets_busy(&pushed, &asset_cache.progress())
                     || loads_pending
+                    // Fused inline, a room fused while rendering frame N
+                    // reaches physics at N+1's step, as inline.
+                    || (functor_runtime_common::runtime_settings::scene_requested(snapshot.config)
+                        && scene_context.fusion_inline())
                     // Widget events must resolve against the view shown.
                     || snapshot.webview_html.is_some()
                     || functor_runtime_common::sim_driver::has_widgets(&snapshot.ui)
