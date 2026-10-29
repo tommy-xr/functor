@@ -151,7 +151,7 @@ let tick = (m: Model, dt: float, tts) =>
 
 let sky = Color.rgb(0.1, 0.06, 0.16)
 let ion = Color.rgb(0.35, 1.0, 0.9)
-let speedo = RenderTarget.named("speedo") |> RenderTarget.sized(256.0, 128.0)
+let speedo = RenderTarget.named("speedo") |> RenderTarget.sized(128.0, 64.0)
 
 let gaugeView = (m: Model) =>
   Ui.column([
