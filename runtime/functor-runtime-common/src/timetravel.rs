@@ -132,8 +132,7 @@ impl<T: Clone> History<T> {
     }
 
     /// Replace one retained snapshot without changing the window or its next
-    /// frame. Reload uses this to make the current snapshot authoritative when
-    /// paused input changed the live model between recorded frames.
+    /// frame. A counterfactual reload rebuilds history under new code with it.
     pub fn replace(&mut self, frame: Frame, state: &T) {
         let (oldest, newest) = self.recorded_range().expect("replace in an empty history");
         assert!(
@@ -393,16 +392,11 @@ impl SceneRecorder {
         self.program_revision = self.program_revision.wrapping_add(1);
         let current_frame = self.current_scene_frame();
         if live_model_was_safe && self.reload_history_is_safe() {
-            // Input can update the live model while paused, without producing
-            // a new recorded frame. Make the snapshot at the visible cursor
-            // match that authoritative live state before retaining history.
+            // Snapshots stay as recorded. Input delivered while paused lives
+            // in the rebound live model, which the next frame carries on from
+            // (Resume keeps it); the input log records it on that frame.
             // Keep `scrub_pos`: reload is non-destructive, and Resume remains
             // the operation that branches away the recorded future.
-            if let Some(frame) = current_frame {
-                self.model_history.replace(frame, rebound_model);
-                self.world_frame_history
-                    .replace(frame, &physics_fixed_frame);
-            }
             // Ordinary hot reload at the live tail preserves the live model;
             // only an explicitly scrubbed historical branch is counterfactual.
             self.counterfactual_replay = self
@@ -536,7 +530,9 @@ impl SceneRecorder {
     }
 
     /// Replace the complete retained model timeline with models replayed under
-    /// the current program, returning the rebuilt selected model. The input,
+    /// the current program, returning the rebuilt selected model — or
+    /// `selected_override` unchanged when given (the live model holding input
+    /// since the frame). The input,
     /// world-frame, and `tts` rings keep their existing frame alignment.
     pub fn materialize_counterfactual_history(
         &mut self,
@@ -563,17 +559,14 @@ impl SceneRecorder {
             );
         }
         for (frame, rebuilt) in (lo..=hi).zip(models) {
-            self.model_history.replace(
-                frame,
-                if frame == selected {
-                    selected_override.unwrap_or(rebuilt)
-                } else {
-                    rebuilt
-                },
-            );
+            self.model_history.replace(frame, rebuilt);
         }
         self.counterfactual_replay = false;
-        Ok(Some(self.model_history.seek(selected).clone()))
+        Ok(Some(
+            selected_override
+                .unwrap_or_else(|| self.model_history.seek(selected))
+                .clone(),
+        ))
     }
 
     /// Commit a non-destructive scrub before an UNSAFE reload replaces the
@@ -1369,12 +1362,12 @@ mod tests {
     }
 
     #[test]
-    fn preserved_reload_refreshes_the_current_snapshot_from_the_live_model() {
+    fn preserved_reload_keeps_the_recorded_snapshot() {
         let mut rec = SceneRecorder::new();
         rec.record(&Value::Number(1.0), 0, 0.0);
 
-        // Paused input may update the live model without advancing/recording a
-        // frame. Reload must not leave frame 0 pointing at the stale value.
+        // Paused input may update the live model without recording a frame.
+        // The log records it on the next frame, so frame 0 stays as recorded.
         let live_model = Value::Number(99.0);
         assert_eq!(
             rec.finish_reload(&live_model, 0, true),
@@ -1386,7 +1379,7 @@ mod tests {
         let mut physics_frame = 0;
         rec.seek_scene_to(0, &mut restored, &mut physics, &mut physics_frame, false)
             .expect("seek");
-        assert_eq!(restored.to_string(), live_model.to_string());
+        assert_eq!(restored.to_string(), "1");
     }
 
     #[test]

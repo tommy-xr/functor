@@ -86,7 +86,9 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   input while paused, but debug `POST /input` still delivers it — at the tail
   or parked on a scrubbed frame. It updates the live model at once and the
   input log records it on the next recorded frame, so Resume keeps it (sampled
-  input arrives with that frame). A seek or rewind discards it.
+  input arrives with that frame); a plain-data reload keeps it in the live
+  model, not the paused frame's snapshot (an unsafe reload seeds its new
+  generation from the live model). A seek or rewind discards it.
 - **`tts` is a game clock, not a wall clock.** Both shells own a shared
   `GameClock` (`functor_runtime_common::game_clock`) that produces each frame's
   `FrameTime`. Live, it ACCUMULATES the real frame delta (`game_time += dts`);
