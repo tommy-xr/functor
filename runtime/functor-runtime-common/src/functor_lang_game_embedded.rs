@@ -1392,7 +1392,7 @@ let settings = (model) =>
         cache.replace_uploaded("data/level.bin", vec![1, 2, 3]);
         cache.replace_uploaded("data/other.bin", vec![9]);
         crate::storage::set_project_reader(Some(cache.clone()));
-        const LEVEL: &str = "let data = File.bytes(\"data/level.bin\")
+        const LEVEL: &str = "let data = File.bytes(Path.of(\"data/level.bin\"))
 let size = Bytes.length(data)
 let probe = Physics.cast(Vec3.make(0.0, 10.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 100.0)
 ";
