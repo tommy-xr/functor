@@ -5085,6 +5085,9 @@ fn memo_site(
         })
     });
     if let Some(scene) = hit {
+        // The skipped builder's reads go unrecorded, so a top-level value
+        // built through a hit can't vouch for its inputs.
+        note_unrecorded_inputs();
         return Ok(HostReturn::Value(scene));
     }
     // Only a miss walks the deps: a hit compared equal to deps that passed.
@@ -5351,6 +5354,17 @@ thread_local! {
 struct DefInputs {
     files: Vec<functor_lang::reuse::HostInput>,
     world_reads: u64,
+    /// It read something no input describes.
+    unrecorded: bool,
+}
+
+/// Mark the evaluating def, if any, as non-reusable.
+fn note_unrecorded_inputs() {
+    DEF_INPUTS.with(|inputs| {
+        if let Some(inputs) = inputs.borrow_mut().as_mut() {
+            inputs.unrecorded = true;
+        }
+    });
 }
 
 /// Record an input of the evaluating def, if one is.
@@ -5370,7 +5384,9 @@ fn note_input(input: impl FnOnce() -> (String, u64)) {
 /// contents' hash, and the live physics world, which no input captures.
 /// Everything else the prelude reads at call time is the call's arguments;
 /// input, time and other live state reach a game through its hooks, never
-/// through a top-level value.
+/// through a top-level value. A NEW host function that reads ambient state at
+/// call time must say so — `note_world_read()`, or `note_unrecorded_inputs()` —
+/// or a reload will keep a value computed from its stale answer.
 impl Host for FunctorHost {
     fn provides(&self, path: &str) -> bool {
         registry().provides(path)
@@ -5382,13 +5398,15 @@ impl Host for FunctorHost {
             *inputs.borrow_mut() = Some(DefInputs {
                 files: Vec::new(),
                 world_reads,
+                unrecorded: false,
             })
         });
     }
 
     fn end_inputs(&mut self) -> Option<Vec<functor_lang::reuse::HostInput>> {
         let inputs = DEF_INPUTS.with(|inputs| inputs.borrow_mut().take())?;
-        (WORLD_READS.with(|reads| reads.get()) == inputs.world_reads).then_some(inputs.files)
+        let live = WORLD_READS.with(|reads| reads.get()) != inputs.world_reads;
+        (!live && !inputs.unrecorded).then_some(inputs.files)
     }
 
     fn inputs_current(&mut self, inputs: &[functor_lang::reuse::HostInput]) -> bool {

@@ -411,7 +411,8 @@ let grab = (s) =>
   `File.exists` reads are unchanged keeps its old value instead of
   re-evaluating — put an expensive decode in its own module/def and editing a
   constant elsewhere reloads in milliseconds. Never kept: functions, opaque
-  non-plain values, anything that read the live physics world.
+  non-plain values, anything that read the live physics world. A kept value
+  doesn't re-run, so its `Debug.log` lines don't print again.
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
   source text (multi-file is native-only for now).
 

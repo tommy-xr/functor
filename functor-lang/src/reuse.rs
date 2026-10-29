@@ -30,7 +30,7 @@ use std::rc::Rc;
 /// One thing a def's evaluation read from the host, named by the host
 /// (`"bytes:data/level.bin"`), and an identity of what it read (a content
 /// hash) — the host re-checks it on the next reload.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HostInput {
     pub key: String,
     pub identity: u64,
@@ -112,7 +112,7 @@ impl<'p> Planner<'p> {
         let mut shapes: HashMap<String, Shape> = module
             .defs
             .iter()
-            .map(|def| (def.name.clone(), shape_of(&def.value)))
+            .map(|def| (def.name.clone(), shape_of(def)))
             .collect();
         // A unit operator naming a global can run inside any def.
         for shape in shapes.values_mut() {
@@ -166,9 +166,17 @@ impl<'p> Planner<'p> {
         // Cheap checks first, then a dependency sweep, so host inputs (file
         // re-reads) are only checked for defs that can still be reused.
         self.drop_dependents(module, &mut candidates);
+        // Each input once, however many defs read it (a re-read can be large).
+        let mut current: HashMap<&HostInput, bool> = HashMap::new();
         let stale: Vec<&str> = candidates
             .iter()
-            .filter(|(_, inputs)| !inputs.is_empty() && !host.inputs_current(inputs))
+            .filter(|(_, inputs)| {
+                !inputs.iter().all(|input| {
+                    *current
+                        .entry(input)
+                        .or_insert_with(|| host.inputs_current(std::slice::from_ref(input)))
+                })
+            })
             .map(|(name, _)| *name)
             .collect();
         for name in stale {
@@ -213,11 +221,11 @@ impl<'p> Planner<'p> {
 
     fn reusable(&mut self, def: &Def) -> Option<Value> {
         let (globals, previous) = self.previous?;
-        if !self.unchanged.contains(&def.name) || !self.same_order(&def.name, previous) {
+        if matches!(def.value.kind, ExprKind::Lambda { .. }) || !self.unchanged.contains(&def.name) {
             return None;
         }
         let value = globals.get(&def.name)?;
-        if !value.is_reload_safe_snapshot() {
+        if !value.is_reload_safe_snapshot() || !self.same_order(&def.name, previous) {
             return None;
         }
         let mut record = previous.defs[&def.name].clone();
@@ -291,9 +299,10 @@ fn unit_shape(module: &Module) -> (u64, Vec<String>) {
     (walk.hasher.finish(), walk.refs.into_iter().collect())
 }
 
-fn shape_of(expr: &Expr) -> Shape {
+fn shape_of(def: &Def) -> Shape {
     let mut walk = Walk::default();
-    walk.expr(expr);
+    walk.ty(&def.ty);
+    walk.expr(&def.value);
     Shape {
         hash: walk.hasher.finish(),
         refs: walk.refs.into_iter().collect(),
