@@ -140,6 +140,8 @@ pub struct ExpectDef {
 pub struct Signature {
     pub name: String,
     pub ty: TypeName,
+    /// Its `impure[…]` read classes; empty for a pure built-in.
+    pub reads: Vec<crate::reads::ReadClass>,
     pub span: Span,
 }
 

@@ -172,6 +172,7 @@
 //!   place, *then* moves — the order the source reads.
 
 use cgmath::Matrix4;
+use functor_lang::reads::ReadClass;
 use functor_lang::value::HostData;
 use functor_lang::{Host, HostApply, HostReturn, RunError, Span, Value};
 use std::rc::Rc;
@@ -3342,7 +3343,7 @@ capsule for the moving body"
     // A world read like `Physics.position`; `false` before a character's
     // first move (and while priming).
     reg.fn1("Physics.grounded", "Physics.grounded(tag)", |tag: std::rc::Rc<str>| {
-        note_world_read();
+        note_read(ReadClass::Physics);
         physics::with_world(physics::active_world(), |w| w.grounded(&tag))
             .flatten()
             .or_else(|| PRIMING.with(|p| p.get()).then_some(false))
@@ -5100,13 +5101,13 @@ functions or engine values"
         ));
     }
     let args = vec![deps.clone()];
-    let reads_before = WORLD_READS.with(|reads| reads.get());
+    let reads_before = read_count(ReadClass::Physics);
     Ok(HostReturn::Apply(Box::new(HostApply {
         callee: builder,
         args,
         via,
         then: Box::new(move |built| {
-            if WORLD_READS.with(|reads| reads.get()) != reads_before {
+            if read_count(ReadClass::Physics) != reads_before {
                 return Err(format!(
                     "{via}: the builder read the live physics world \
 (Physics.position / linearVelocity / cast / transformed), which deps cannot capture, so \
@@ -5349,13 +5350,82 @@ thread_local! {
 }
 
 /// One def's reads: project files (`File.bytes`, `File.exists`,
-/// `Typeface.file`), and the world-read count it started at — any live
-/// physics read makes the value non-reusable.
+/// `Typeface.file`), and the [`live_reads`] count it started at — any other
+/// class's read makes the value non-reusable.
 struct DefInputs {
     files: Vec<functor_lang::reuse::HostInput>,
-    world_reads: u64,
+    live_reads: u64,
     /// It read something no input describes.
     unrecorded: bool,
+}
+
+thread_local! {
+    /// Reads so far, indexed by [`ReadClass`]: reload reuse and the memos
+    /// compare counts around an evaluation to see what it read.
+    static READS: [std::cell::Cell<u64>; ReadClass::ALL.len()] =
+        const { [const { std::cell::Cell::new(0) }; ReadClass::ALL.len()] };
+}
+
+/// Note a read of ambient host state at call time. Every such read in the
+/// prelude goes through here, and its built-in declares the class in its
+/// `.funi` (`impure[physics]` above `let position`) — debug builds assert it.
+fn note_read(class: ReadClass) {
+    #[cfg(debug_assertions)]
+    assert_declared(class);
+    READS.with(|reads| {
+        let count = &reads[class as usize];
+        count.set(count.get() + 1);
+    });
+}
+
+fn read_count(class: ReadClass) -> u64 {
+    READS.with(|reads| reads[class as usize].get())
+}
+
+/// Reads of every class but `file` (whose reads are recorded as inputs).
+fn live_reads() -> u64 {
+    ReadClass::ALL
+        .into_iter()
+        .filter(|&class| class != ReadClass::File)
+        .map(read_count)
+        .sum()
+}
+
+/// Panics unless the running built-in's `.funi` signature declares `class`.
+#[cfg(debug_assertions)]
+fn assert_declared(class: ReadClass) {
+    let Some(path) = crate::host_registry::running() else {
+        return;
+    };
+    let declared = declared_reads()
+        .get(path)
+        .is_some_and(|reads| reads.contains(&class));
+    assert!(
+        declared,
+        "`{path}` reads {class} state, but its .funi signature doesn't declare it — \
+add `impure[{class}]` above it"
+    );
+}
+
+/// Each prelude signature's `impure[…]` classes, by path (`File.bytes`).
+#[cfg(any(debug_assertions, test))]
+fn declared_reads() -> &'static std::collections::HashMap<String, Vec<ReadClass>> {
+    static DECLARED: std::sync::OnceLock<std::collections::HashMap<String, Vec<ReadClass>>> =
+        std::sync::OnceLock::new();
+    DECLARED.get_or_init(|| {
+        let mut declared = std::collections::HashMap::new();
+        for (module, src) in functor_prelude::modules() {
+            let program = functor_lang::parse_interface(&src).expect("the prelude parses");
+            for item in program.items {
+                if let functor_lang::ast::Item::Sig(sig) = item {
+                    if !sig.reads.is_empty() {
+                        declared.insert(format!("{module}.{}", sig.name), sig.reads);
+                    }
+                }
+            }
+        }
+        declared
+    })
 }
 
 /// Mark the evaluating def, if any, as non-reusable.
@@ -5367,8 +5437,10 @@ fn note_unrecorded_inputs() {
     });
 }
 
-/// Record an input of the evaluating def, if one is.
-fn note_input(input: impl FnOnce() -> (String, u64)) {
+/// A project-file read: noted, and recorded as an input of the evaluating
+/// def, if one is.
+fn note_file_read(input: impl FnOnce() -> (String, u64)) {
+    note_read(ReadClass::File);
     DEF_INPUTS.with(|inputs| {
         if let Some(inputs) = inputs.borrow_mut().as_mut() {
             let (key, identity) = input();
@@ -5380,24 +5452,26 @@ fn note_input(input: impl FnOnce() -> (String, u64)) {
 }
 
 /// Reload reuse (`functor_lang::reuse`): a top-level value is a pure function
-/// of its arguments here except for project files, recorded with their
-/// contents' hash, and the live physics world, which no input captures.
-/// Everything else the prelude reads at call time is the call's arguments;
-/// input, time and other live state reach a game through its hooks, never
+/// of its arguments here except for its noted reads ([`note_read`]): project
+/// files, recorded with their contents' hash, and any other class (the live
+/// physics world, UI handler slots), which no input captures. Everything else
+/// the prelude reads at call time is the call's arguments; input, time and
+/// other live state reach a game through its hooks or `Effect`s, never
 /// through a top-level value. A NEW host function that reads ambient state at
-/// call time must say so — `note_world_read()`, or `note_unrecorded_inputs()` —
-/// or a reload will keep a value computed from its stale answer.
+/// call time must call `note_read` with its class and declare that class in
+/// its `.funi` (`impure[physics]`), or a reload will keep a value computed
+/// from its stale answer.
 impl Host for FunctorHost {
     fn provides(&self, path: &str) -> bool {
         registry().provides(path)
     }
 
     fn begin_inputs(&mut self) {
-        let world_reads = WORLD_READS.with(|reads| reads.get());
+        let live_reads = live_reads();
         DEF_INPUTS.with(|inputs| {
             *inputs.borrow_mut() = Some(DefInputs {
                 files: Vec::new(),
-                world_reads,
+                live_reads,
                 unrecorded: false,
             })
         });
@@ -5405,7 +5479,7 @@ impl Host for FunctorHost {
 
     fn end_inputs(&mut self) -> Option<Vec<functor_lang::reuse::HostInput>> {
         let inputs = DEF_INPUTS.with(|inputs| inputs.borrow_mut().take())?;
-        let live = WORLD_READS.with(|reads| reads.get()) != inputs.world_reads;
+        let live = live_reads() != inputs.live_reads;
         (!live && !inputs.unrecorded).then_some(inputs.files)
     }
 
@@ -5906,6 +5980,8 @@ thread_local! {
 /// Register a widget's handler for the `ui(model)` evaluation in progress and
 /// return its slot index (see [`UI_HANDLERS`]).
 pub fn push_ui_handler(handler: UiHandler) -> u32 {
+    // The slot depends on the widgets built before it this evaluation.
+    note_read(ReadClass::Ui);
     UI_HANDLERS.with(|h| {
         let mut handlers = h.borrow_mut();
         handlers.push(handler);
@@ -6878,22 +6954,12 @@ impl Drop for PrimingScope {
     }
 }
 
-thread_local! {
-    /// Synchronous physics-world reads so far — `Scene.memo` refuses a builder
-    /// that made any, since its deps cannot capture live world state.
-    static WORLD_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-fn note_world_read() {
-    WORLD_READS.with(|reads| reads.set(reads.get() + 1));
-}
-
 /// Live pose of a body in the ACTIVE world (normally the singleton world the
 /// shell steps — same process, same crate statics as this prelude; under a
 /// dry-run forward-step scope, the throwaway projected world, so ghost draws
 /// read the stepped poses — docs/time-travel.md T6b).
 fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
-    note_world_read();
+    note_read(ReadClass::Physics);
     physics::with_world(physics::active_world(), |w| w.body_transform(tag))
         .flatten()
         .or_else(|| {
@@ -6907,7 +6973,7 @@ fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
 /// of `Physics.setVelocity`, on the same world-scope rules as
 /// [`live_transform`].
 fn live_velocity(tag: &str) -> Option<[f32; 3]> {
-    note_world_read();
+    note_read(ReadClass::Physics);
     physics::with_world(physics::active_world(), |w| w.body_velocity(tag))
         .flatten()
         .or_else(|| PRIMING.with(|p| p.get()).then_some([0.0; 3]))
@@ -6951,7 +7017,7 @@ fn sync_query(
         return Err(format!("{what} maxDist must be positive, got {max_dist}"));
     }
     let max_dist = max_dist as f32;
-    note_world_read();
+    note_read(ReadClass::Physics);
     let (origin, dir) = ([ox, oy, oz], [dx, dy, dz]);
     let hit = physics::with_world(physics::active_world(), |w| match shape {
         Some(shape) => w.shape_cast(shape, origin, dir, max_dist, exclude),
@@ -7313,6 +7379,71 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
                 "registered arity for `{path}` must match its .funi signature"
             );
         }
+    }
+
+    /// Drift guard: each `.funi` `impure[…]` header equals the classes its
+    /// built-in notes when called. Every header needs a sample call here, so
+    /// a declared class nothing notes fails; a noted class nothing declares
+    /// fails `note_read`'s debug assertion.
+    #[test]
+    fn impure_headers_match_the_reads_each_builtin_notes() {
+        use std::collections::BTreeSet;
+        let at = "Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 1.0";
+        let samples = [
+            ("File.bytes", "File.bytes(\"missing.bin\")".to_string()),
+            ("File.exists", "File.exists(\"missing.bin\")".to_string()),
+            ("Typeface.file", "Typeface.file(\"missing.ttf\")".to_string()),
+            ("Physics.position", "Physics.position(\"nobody\")".to_string()),
+            ("Physics.linearVelocity", "Physics.linearVelocity(\"nobody\")".to_string()),
+            ("Physics.grounded", "Physics.grounded(\"nobody\")".to_string()),
+            ("Physics.cast", format!("Physics.cast({at})")),
+            ("Physics.castExcluding", format!("Physics.castExcluding(\"nobody\", {at})")),
+            ("Physics.shapeCast", format!("Physics.shapeCast(Physics.sphere(0.5), {at})")),
+            (
+                "Physics.shapeCastExcluding",
+                format!("Physics.shapeCastExcluding(\"nobody\", Physics.sphere(0.5), {at})"),
+            ),
+            ("Physics.transformed", "Physics.transformed(\"nobody\", Scene.cube())".to_string()),
+            ("Ui.button", "Ui.button(\"go\", 1.0)".to_string()),
+            ("Ui.slider", "Ui.slider(0.0, 1.0, 0.5, (v) => v)".to_string()),
+            ("Ui.textInput", "Ui.textInput(\"t\", (s) => s)".to_string()),
+            ("Attr.onClick", "Attr.onClick(1.0)".to_string()),
+            ("Attr.onInput", "Attr.onInput((s) => s)".to_string()),
+        ];
+        let declared = declared_reads();
+        assert_eq!(
+            samples.iter().map(|(path, _)| *path).collect::<BTreeSet<_>>(),
+            declared.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            "every `impure[…]` built-in needs exactly one sample call here"
+        );
+        for (path, call) in samples {
+            let src = format!("let main = () => {call}");
+            let module = functor_lang::lower(functor_lang::parse(&src).expect("parse")).expect("lower");
+            let before = ReadClass::ALL.map(read_count);
+            // The call may fail (no project files, no world); the read is noted first.
+            let _ = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost);
+            let noted: BTreeSet<ReadClass> = ReadClass::ALL
+                .into_iter()
+                .filter(|&class| read_count(class) != before[class as usize])
+                .collect();
+            let expected: BTreeSet<ReadClass> = declared[path].iter().copied().collect();
+            assert_eq!(noted, expected, "`{path}`: noted reads vs its `impure[…]` header");
+        }
+        take_ui_handlers();
+    }
+
+    /// A built-in that notes a read its `.funi` doesn't declare fails loudly.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "`Physics.peek` reads physics state, but its .funi signature \
+doesn't declare it — add `impure[physics]` above it")]
+    fn an_undeclared_read_fails_the_debug_assertion() {
+        let mut reg = crate::host_registry::Registry::default();
+        reg.fn0("Physics.peek", "Physics.peek()", || {
+            note_read(ReadClass::Physics);
+            Value::Bool(true)
+        });
+        let _ = reg.call("Physics.peek", &[], Span::new(0, 0));
     }
 
     // The C1 verify criterion (docs/functor-lang.md): an .fun snippet emits exactly

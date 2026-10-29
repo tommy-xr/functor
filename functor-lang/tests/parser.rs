@@ -900,3 +900,51 @@ fn if_without_else_is_a_parse_error() {
         "expected the missing-else error to mention `else`, got: {message}"
     );
 }
+
+/// `impure[…]` above a `.funi` signature carries its read classes, and the
+/// signature's span starts at the header so the `///` block above documents it.
+#[test]
+fn impure_header_declares_read_classes() {
+    use functor_lang::reads::ReadClass;
+    let src = "/// Reads.\nimpure[file, physics]\nlet peek : (string) => bool\nlet pure : float\n";
+    let program = functor_lang::parse_interface(src).expect("parses");
+    let sigs: Vec<_> = program
+        .items
+        .iter()
+        .map(|item| match item {
+            Item::Sig(sig) => sig,
+            other => panic!("expected a signature, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(sigs[0].reads, vec![ReadClass::File, ReadClass::Physics]);
+    assert!(text(src, sigs[0].span).starts_with("impure[file, physics]\nlet peek"));
+    assert!(sigs[1].reads.is_empty());
+}
+
+#[test]
+fn impure_header_errors() {
+    let err = |src: &str| {
+        functor_lang::parse_interface(src)
+            .expect_err("should reject")
+            .message
+    };
+    assert_eq!(
+        err("impure[fiel]\nlet x : float\n"),
+        "unknown read class `fiel` — the registered classes are file, physics, ui"
+    );
+    assert_eq!(
+        err("impure[ui, ui]\nlet x : float\n"),
+        "read class `ui` is listed twice"
+    );
+    assert!(err("impure[]\nlet x : float\n").contains("a read class"));
+    assert!(err("impure[file]\ntype t = host\n").contains("a `let name : Type` signature"));
+    // `.fun` code is never annotated.
+    let (message, _, _) = parse_err("impure[file]\nlet x = 1.0\n");
+    assert!(message.contains("`.fun` code is never annotated"), "{message}");
+}
+
+/// `impure` is contextual: an ordinary name outside item position.
+#[test]
+fn impure_stays_an_identifier() {
+    functor_lang::parse("let impure = 1.0\nlet f = (impure) => impure + 1.0\n").expect("parses");
+}

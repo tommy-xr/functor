@@ -2417,3 +2417,31 @@ fn a_host_type_is_rejected_in_an_implementation_file() {
     );
     assert!(message.contains("belongs in an interface (.funi) file"), "{message}");
 }
+
+/// Hovering an impure built-in leads with its `.funi` `impure[…]` header.
+#[test]
+fn hovering_an_impure_external_shows_its_read_classes() {
+    let src = "let main = () => if T.peek(\"a\") then T.pure() else 0.0\n";
+    let sources = vec![(PathBuf::from("game.fun"), src.to_string())];
+    let bundled = [functor_lang::project::BundledModule::interface(
+        "T",
+        "impure[file]\nlet peek : (string) => bool\nlet pure : () => float\n",
+    )];
+    let project = functor_lang::project::load_sources_with_bundled_modules(sources, &bundled)
+        .unwrap_or_else(|e| panic!("{}", e.render()));
+    let (_, types) = project.check_with_types();
+    let base = project
+        .sources
+        .file_by_path(std::path::Path::new("game.fun"))
+        .expect("the entry")
+        .base;
+    let hover = |needle: &str| {
+        let offset = base + src.find(needle).expect("in source") + 2;
+        functor_lang::hover::hover_text(&project.module, &types, offset).map(|(_, text)| text)
+    };
+    assert_eq!(
+        hover("T.peek").as_deref(),
+        Some("impure[file]\nT.peek : (string) => bool")
+    );
+    assert_eq!(hover("T.pure").as_deref(), Some("T.pure : () => float"));
+}

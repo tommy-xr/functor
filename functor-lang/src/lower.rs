@@ -1013,6 +1013,7 @@ with `unit {suffix} = SomeFn` (a `(float) => 't` function), or write the call it
                 out.signatures.push(Signature {
                     name: self.self_qualify(&decl.name),
                     ty: self.canon_type(decl.ty)?,
+                    reads: decl.reads,
                     span: decl.span,
                 });
             }

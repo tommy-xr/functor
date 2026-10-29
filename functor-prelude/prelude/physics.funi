@@ -226,16 +226,19 @@ let memo : (string, 'd, ('d) => List<body>) => body
 ///
 /// Answers with the LAST stepped world, so a pre-step caller (`tick`, the
 /// `physics` hook) sees the previous step and `draw` sees this frame's.
+impure[physics]
 let position : (tag) => position
 
 /// Read a body's live, stepped linear velocity.
 ///
 /// The read counterpart of `Physics.setVelocity`. (`Physics.velocity` is the
 /// body-builder attribute that sets an *initial* velocity.)
+impure[physics]
 let linearVelocity : (tag) => velocity
 
 /// Whether a character's last move ended on walkable ground (`false` before
 /// its first move). A world read like `Physics.position`.
+impure[physics]
 let grounded : (tag) => bool
 
 /// Cast a ray against the world and get the nearest hit immediately.
@@ -246,6 +249,7 @@ let grounded : (tag) => bool
 /// in `tick` that is the previous step, in `draw` this frame's. A miss is
 /// `hit: false` with zeroed fields, not an error. `dir` need not be
 /// normalized, so `maxDist` is in world units.
+impure[physics]
 let cast : (Vec3.t, Vec3.t, float) => rayHit
 
 /// `Physics.cast`, ignoring one body — the grounding probe.
@@ -253,6 +257,7 @@ let cast : (Vec3.t, Vec3.t, float) => rayHit
 /// A ray cast from inside a character's own capsule would otherwise hit that
 /// capsule at distance 0 and report the character standing on itself. Excluding
 /// a tag that isn't in the world excludes nothing.
+impure[physics]
 let castExcluding : (tag, Vec3.t, Vec3.t, float) => rayHit
 
 /// Sweep a box, sphere or capsule and get the first body it touches.
@@ -263,15 +268,18 @@ let castExcluding : (tag, Vec3.t, Vec3.t, float) => rayHit
 /// overlapping something hits it at distance 0 unless it moves out of it.
 /// Like `Physics.cast` it answers in place from the last step, and hits both
 /// sides of a trimesh face.
+impure[physics]
 let shapeCast : (shape, Vec3.t, Vec3.t, float) => rayHit
 
 /// `Physics.shapeCast`, ignoring one body: a sweep from a character's own
 /// position would otherwise hit its own collider.
+impure[physics]
 let shapeCastExcluding : (tag, shape, Vec3.t, Vec3.t, float) => rayHit
 
 /// Apply a body's live transform to a scene node.
 ///
 /// The scene is last for piping.
+impure[physics]
 let transformed : (tag, Scene.t) => Scene.t
 
 /// Apply an instantaneous impulse to a body.

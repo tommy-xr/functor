@@ -25,6 +25,7 @@ mod lower;
 mod parser;
 pub mod pmap;
 pub mod project;
+pub mod reads;
 pub mod rebind;
 pub mod reuse;
 mod span;

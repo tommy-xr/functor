@@ -28,6 +28,7 @@ let placeholder : (string) => t
 ///
 /// A click on a descendant counts too, through ordinary DOM bubbling. The
 /// message is delivered verbatim, like `Ui.button`'s.
+impure[ui]
 let onClick : ('msg) => t
 /// Apply a tagger to edited text and deliver its message through `update`.
 ///
@@ -37,4 +38,5 @@ let onClick : ('msg) => t
 /// per-edit re-render. As with `Ui.textInput`, an `update` that transforms the
 /// text resets the caret to the end. IME composition (CJK, dead keys) is
 /// deferred on native.
+impure[ui]
 let onInput : ('tagger) => t
