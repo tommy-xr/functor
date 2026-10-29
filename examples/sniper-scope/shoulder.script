@@ -1,0 +1,7 @@
+# Deterministic desktop proof for the goldens: shoulder the rifle at frame 2
+# (fully up by frame 17), then Z to the narrow preset at frame 60.
+#   functor -d examples/sniper-scope run native -- --input-script shoulder.script \
+#     --capture-at-frame 45 --capture-frame /tmp/scope-12.png --capture-size 1600x1200
+2 Mouse.Right down
+60 Z down
+62 Z up

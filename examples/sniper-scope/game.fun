@@ -100,7 +100,7 @@ let bermTag = Physics.tag("berm")
 let backstopTag = Physics.tag("backstop")
 
 // Earthworks as (extents, centre), shared by the colliders and the drawing.
-let backstop = { w: 170.0, h: 12.0, d: 20.0, x: 0.0, y: 6.0, z: 240.0 }
+let backstop = { w: 170.0, h: 8.0, d: 20.0, x: 0.0, y: 4.0, z: 240.0 }
 let leftBerm = { w: 14.0, h: 4.0, d: 240.0, x: 76.0, y: 2.0, z: 115.0 }
 let rightBerm = { w: 14.0, h: 4.0, d: 240.0, x: 0.0 - 76.0, y: 2.0, z: 115.0 }
 
@@ -296,11 +296,11 @@ let physics = (m) => Physics.scene(Vec3.make(0.0, 0.0 - 9.81, 0.0), rangeBodies)
 // sqrt(2) * lensR / lensZ <= tubeR / eyeZ.
 
 let lensR = 0.046
-let tubeR = 0.052
-let eyeZ = 0.13
+let tubeR = 0.062
+let eyeZ = 0.155
 let lensZ = 0.17
 let bellZ = 0.40
-let bellR = 0.066
+let bellR = 0.078
 let endZ = 0.50
 
 // Mesh data is Z-up and `Mesh.toScene` maps (x, y, z) to (x, z, -y), so a
@@ -328,19 +328,22 @@ let annulus = (r0, r1, z) =>
 let disc = (r, z, towardEye) =>
   meshOf([ringAt(r, z)], [(if towardEye then List.reverse(List.range(segs)) else List.range(segs))])
 
-let gunmetal = Color.rgb(0.13, 0.12, 0.16)
+let gunmetal = Color.rgb(0.07, 0.06, 0.09)
 let glass = Color.rgb(0.03, 0.04, 0.07)
 
 // Open at the eyepiece, hollow down to the lens, closed at the objective.
 let scopeBody =
   Mesh.combine([
-    annulus(lensR, tubeR, eyeZ),
     wall(lensR, eyeZ, lensZ, false),
     wall(tubeR, eyeZ, bellZ, true),
     annulus(tubeR, bellR, bellZ),
     wall(bellR, bellZ, endZ, true),
     disc(bellR, endZ, false),
   ]) |> Mesh.toScene |> Scene.lit(gunmetal)
+
+// The eyepiece face, unlit: it faces the key light head-on, and a lit face
+// would wash out to a bright specular disc around the glass.
+let eyepiece = annulus(lensR, tubeR, eyeZ) |> Mesh.toScene |> Scene.emissive(Color.rgb(0.05, 0.04, 0.07))
 
 // Dark glass at the bottom of the tube: what the hip view sees.
 let darkLens = disc(lensR, lensZ, true) |> Mesh.toScene |> Scene.lit(glass)
@@ -367,17 +370,18 @@ let at = (x, y, z, s) => s |> Scene.translate(Vec3.make(x, y, z))
 let rifleParts =
   Scene.group([
     scopeBody,
+    eyepiece,
     darkLens,
     rimGlow,
     // elevation and windage turrets
-    Scene.cylinder() |> Scene.scaleXYZ(0.036, 0.05, 0.036) |> at(0.0, 0.07, 0.27)
+    Scene.cylinder() |> Scene.scaleXYZ(0.04, 0.06, 0.04) |> at(0.0, 0.085, 0.24)
       |> Scene.lit(Color.rgb(0.18, 0.17, 0.22)),
-    Scene.cylinder() |> Scene.scaleXYZ(0.032, 0.04, 0.032) |> Scene.rotateZ(90deg)
-      |> at(0.0 - 0.068, 0.0, 0.27) |> Scene.lit(Color.rgb(0.18, 0.17, 0.22)),
+    Scene.cylinder() |> Scene.scaleXYZ(0.036, 0.05, 0.036) |> Scene.rotateZ(90deg)
+      |> at(0.0 - 0.08, 0.0, 0.24) |> Scene.lit(Color.rgb(0.18, 0.17, 0.22)),
     // rings, receiver, barrel and stock
     box(0.03, 0.05, 0.03) |> at(0.0, 0.0 - 0.06, 0.2) |> Scene.lit(gunmetal),
     box(0.03, 0.05, 0.03) |> at(0.0, 0.0 - 0.06, 0.36) |> Scene.lit(gunmetal),
-    box(0.06, 0.07, 0.5) |> at(0.0, 0.0 - 0.115, 0.3) |> Scene.lit(Color.rgb(0.20, 0.19, 0.24)),
+    box(0.045, 0.06, 0.4) |> at(0.0, 0.0 - 0.13, 0.4) |> Scene.lit(gunmetal),
     Scene.cylinder() |> Scene.scaleXYZ(0.024, 0.7, 0.024) |> Scene.rotateX(90deg)
       |> at(0.0, 0.0 - 0.1, 0.9) |> Scene.lit(gunmetal),
     box(0.05, 0.12, 0.3) |> at(0.0, 0.0 - 0.16, 0.0 - 0.05)
@@ -385,8 +389,8 @@ let rifleParts =
   ])
 
 // Hip carry: low on the right (local -X), canted in toward the eye.
-let hip = vec(0.0 - 0.2, 0.0 - 0.17, 0.1)
-let hipCant = 0.12
+let hip = vec(0.0 - 0.24, 0.0 - 0.2, 0.3)
+let hipCant = 0.06
 
 let rifleNode = (m) =>
   let t = 1.0 - Math.smoothstep(0.0, 1.0, m.shoulder) in
@@ -427,7 +431,7 @@ let world =
     earthwork(leftBerm),
     earthwork(rightBerm),
     // firing line and the lane edges
-    box(40.0, 0.01, 0.12) |> at(0.0, 0.005, 3.0) |> Scene.emissive(pink),
+    box(40.0, 0.01, 0.05) |> at(0.0, 0.005, 3.0) |> Scene.emissive(Color.rgb(0.7, 0.25, 0.5)),
     box(0.1, 0.01, 226.0) |> at(9.0, 0.005, 116.0) |> Scene.emissive(Color.rgb(0.10, 0.30, 0.36)),
     box(0.1, 0.01, 226.0) |> at(0.0 - 9.0, 0.005, 116.0) |> Scene.emissive(Color.rgb(0.10, 0.30, 0.36)),
     Scene.group([50.0, 100.0, 150.0, 200.0] |> List.concatMap((z) => [post(10.0, z), post(0.0 - 10.0, z)])),
@@ -445,7 +449,8 @@ let world =
 // on its hangers and flashes.
 let plateNode = (p) =>
   let swing = 0.5 * p.ring * Math.sin((1.0 - p.ring) * 24.0) in
-  let face = if p.ring > 0.8 then Scene.emissive(pink) else Scene.lit(Color.rgb(0.92, 0.9, 0.96)) in
+  let face = (s) =>
+    if p.ring > 0.8 then s |> Scene.emissive(pink) else s |> Scene.lit(Color.rgb(0.92, 0.9, 0.96)) in
   Scene.group([
     box(0.08, 1.7, 0.08) |> at(0.75, 0.85, 0.0) |> Scene.lit(Color.rgb(0.45, 0.42, 0.5)),
     box(0.25, 0.25, 0.1) |> at(0.75, 1.8, 0.0) |> Scene.emissive(cyan),
