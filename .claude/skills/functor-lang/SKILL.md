@@ -365,10 +365,13 @@ let grab = (s) =>
   inactive controllers, and temporarily invalid poses are explicit
   `Option.None`/`active: false`, never stale values.
   `Camera3D.mapTrackedPose(camera, pose)` maps one into the world as
-  `{position, forward, up}` (tracked -Z becomes authored forward), and
+  `{position, forward, up}` (tracked -Z becomes authored forward).
   `Camera3D.fromPose(mapped, fov)` is a camera along that forward, rolled by
   its up — the authored basis is `firstPerson`'s (+Z forward, +Y up), so a
-  held scope or camera follows the controller, cant included. The snapshot also
+  held scope or camera follows the controller, cant included.
+  `Scene.atPose(mapped, scene)` places a subtree there with the same basis:
+  local +Z along `forward`, +Y along `up` (so local +X is the pose's left) —
+  author a held object facing +Z. The snapshot also
   contains `gamepad: Option.t<Input.gamepad>` — the primary connected pad's
   held state, `Option.None` while no pad is connected. Sticks are `point2` in
   `-1..1` with **up-positive `y`** (the XR thumbstick convention); triggers

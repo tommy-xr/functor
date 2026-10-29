@@ -636,6 +636,20 @@ functor -d examples/xr-controllers run native --emulate-xr \
   --capture-at-frame 60
 ```
 
+To hold an object, author it facing `+Z` with `+Y` up and place it at the
+mapped grip with `Scene.atPose`, which keeps the controller's full orientation
+(roll included; local `+X` lands on the hand's left):
+
+```functor
+let held = (camera, grip: Input.pose) =>
+  Scene.cube()
+    |> Scene.scaleXYZ(0.03, 0.03, 0.18)
+    |> Scene.translate(Vec3.make(0.0, 0.0, 0.06))   // the blade sticks out ahead
+    |> Scene.atPose(Camera3D.mapTrackedPose(camera, grip))
+```
+
+`examples/held-pose` draws an asymmetric marker this way.
+
 ## After bring-up (in rough order)
 
 - The typed XR snapshot is exposed to Functor Lang through the per-tick

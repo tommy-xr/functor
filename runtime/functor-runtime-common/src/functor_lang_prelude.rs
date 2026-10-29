@@ -275,6 +275,46 @@ impl crate::host_registry::FromArg for FunctorLangMouse {
     }
 }
 
+/// A `Camera3D.mappedPose` record (`position`, `forward`, `up`, each an
+/// `Input.point3`), as `Scene.atPose` takes it.
+struct FunctorLangMappedPose(crate::MappedTrackingPose);
+
+impl crate::host_registry::FromArg for FunctorLangMappedPose {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let fail = |message: String| RunError { message, span };
+        let Value::Record(fields) = value else {
+            return Err(fail(format!(
+                "{path}: expected a Camera3D.mappedPose record, got {}",
+                value.kind_name()
+            )));
+        };
+        let point = |name: &str| -> Result<[f32; 3], RunError> {
+            match fields.iter().find(|(field, _)| field == name) {
+                Some((_, Value::Record(p))) => {
+                    let what = format!("mappedPose.{name}");
+                    Ok([
+                        finite_record_number(p, "x", &what, path, span)?,
+                        finite_record_number(p, "y", &what, path, span)?,
+                        finite_record_number(p, "z", &what, path, span)?,
+                    ])
+                }
+                Some((_, other)) => Err(fail(format!(
+                    "{path}: mappedPose `{name}` must be an Input.point3 record, got {}",
+                    other.kind_name()
+                ))),
+                None => Err(fail(format!(
+                    "{path}: expected a Camera3D.mappedPose record, missing `{name}`"
+                ))),
+            }
+        };
+        Ok(FunctorLangMappedPose(crate::MappedTrackingPose {
+            position: point("position")?,
+            forward: point("forward")?,
+            up: point("up")?,
+        }))
+    }
+}
+
 /// A [`Frame`] as an opaque Functor Lang value — what a Functor Lang `draw` returns.
 pub struct FunctorLangFrame(pub Frame);
 
@@ -2585,6 +2625,19 @@ instanced node instead: scene |> Scene.instanced(instances) |> Scene.opacity(alp
         |angle: FunctorLangAngle, scene: FunctorLangScene| {
             let angle: cgmath::Rad<f32> = angle.0.into();
             transformed(scene, Matrix4::from_angle_z(angle))
+        },
+    );
+    // Full orientation from a mapped pose: local +Z onto forward, +Y onto up
+    // (the `Anim.lookAt` / `Scene.quad` front), as one rigid transform.
+    reg.fn2(
+        "Scene.atPose",
+        "Scene.atPose(pose, scene) — a Camera3D.mappedPose record (position, forward, up); \
+up must not be parallel to forward",
+        |pose: FunctorLangMappedPose, scene: FunctorLangScene| {
+            let xform = pose.0.to_matrix().ok_or_else(|| {
+                "Scene.atPose: forward and up must be non-zero and not parallel".to_string()
+            })?;
+            Ok::<_, String>(transformed(scene, xform))
         },
     );
     // Structural equality, as an explicit call rather than `==` — `Scene.t` is
@@ -8433,6 +8486,210 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         // three axes stretch independently (unlike Scene.scale's uniform k).
         let s = frame.scene.xform;
         assert_eq!((s.x.x, s.y.y, s.z.z), (2.0, 3.0, 4.0));
+    }
+
+    /// `main`'s scene as one world matrix: the product of every wrapper's
+    /// xform down a chain of single-child groups to the leaf.
+    fn pose_chain_world(src: &str) -> Matrix4<f32> {
+        let value = eval(src);
+        let mut node = scene_of(&value).expect("main should return a Scene");
+        let mut world = node.xform;
+        while let SceneObject::Group(children) = &node.obj {
+            assert_eq!(children.len(), 1, "expected a single-child chain");
+            node = &children[0];
+            world = world * node.xform;
+        }
+        world
+    }
+
+    fn pose_src(position: [f32; 3], forward: [f32; 3], up: [f32; 3]) -> String {
+        let p = |v: [f32; 3]| format!("{{ x: {:?}, y: {:?}, z: {:?} }}", v[0], v[1], v[2]);
+        format!(
+            "{{ position: {}, forward: {}, up: {} }}",
+            p(position),
+            p(forward),
+            p(up)
+        )
+    }
+
+    fn pose_world(pose: &str, inner: &str) -> Matrix4<f32> {
+        pose_chain_world(&format!(
+            "let main = () => Scene.cube(){inner} |> Scene.atPose({pose})"
+        ))
+    }
+
+    fn pose_assert_matrix(a: Matrix4<f32>, b: Matrix4<f32>) {
+        let (fa, fb): (&[f32; 16], &[f32; 16]) = (a.as_ref(), b.as_ref());
+        assert!(
+            fa.iter().zip(fb).all(|(x, y)| (x - y).abs() < 1e-5),
+            "{a:?} != {b:?}"
+        );
+    }
+
+    fn pose_apply(m: Matrix4<f32>, p: [f32; 3]) -> [f32; 3] {
+        let v = m * cgmath::vec4(p[0], p[1], p[2], 1.0);
+        [v.x, v.y, v.z]
+    }
+
+    fn pose_assert_near(a: [f32; 3], b: [f32; 3]) {
+        assert!(
+            a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5),
+            "{a:?} != {b:?}"
+        );
+    }
+
+    // Local +Z goes to `forward` and +Y to `up`: yaw, pitch, and roll poses
+    // each reproduce the matching Euler rotate, so a mirrored basis (which
+    // flips local +X) cannot pass the roll case.
+    #[test]
+    fn at_pose_orients_local_z_forward_and_y_up() {
+        let origin = [0.0; 3];
+        let identity = pose_world(&pose_src(origin, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), "");
+        pose_assert_matrix(identity, Matrix4::from_scale(1.0));
+
+        let (s, c) = 30f32.to_radians().sin_cos();
+        let rotated = |op: &str| {
+            pose_chain_world(&format!(
+                "let main = () => Scene.cube() |> Scene.{op}(Angle.degrees(30.0))"
+            ))
+        };
+        // Yaw: forward swings from +Z toward +X.
+        pose_assert_matrix(
+            pose_world(&pose_src(origin, [s, 0.0, c], [0.0, 1.0, 0.0]), ""),
+            rotated("rotateY"),
+        );
+        // Pitch: Scene.rotateX(+30°) tips forward DOWN (+Z toward -Y).
+        pose_assert_matrix(
+            pose_world(&pose_src(origin, [0.0, -s, c], [0.0, c, s]), ""),
+            rotated("rotateX"),
+        );
+        // Roll: Scene.rotateZ(+30°) turns +Y toward -X.
+        let roll = pose_world(&pose_src(origin, [0.0, 0.0, 1.0], [-s, c, 0.0]), "");
+        pose_assert_matrix(roll, rotated("rotateZ"));
+        pose_assert_near(pose_apply(roll, [1.0, 0.0, 0.0]), [c, s, 0.0]);
+    }
+
+    // The pose wraps the subtree: inner transforms happen in the pose's local
+    // frame, outer ones after it in world space.
+    #[test]
+    fn at_pose_composes_with_inner_and_outer_transforms() {
+        // Yawed 90° (forward +X) at (5, 1, 0).
+        let p = pose_src([5.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let inner = pose_world(&p, " |> Scene.translate(Vec3.make(0.0, 0.0, 2.0))");
+        pose_assert_near(pose_apply(inner, [0.0; 3]), [7.0, 1.0, 0.0]);
+        // An inner rotateY(90°) sends local +Z to +X; the pose then to -Z.
+        let spun = pose_world(&p, " |> Scene.rotateY(Angle.degrees(90.0))");
+        pose_assert_near(pose_apply(spun, [0.0, 0.0, 1.0]), [5.0, 1.0, -1.0]);
+        let outer = pose_chain_world(&format!(
+            "let main = () => Scene.cube() |> Scene.atPose({p}) \
+             |> Scene.translate(Vec3.make(0.0, 0.0, 2.0))"
+        ));
+        pose_assert_near(pose_apply(outer, [0.0, 0.0, 1.0]), [6.0, 1.0, 2.0]);
+    }
+
+    // `forward` need not be unit length and `up` need not be perpendicular:
+    // forward is kept, up re-orthogonalized against it.
+    #[test]
+    fn at_pose_normalizes_its_basis() {
+        pose_assert_matrix(
+            pose_world(
+                &pose_src([1.0, 2.0, 3.0], [0.0, 0.0, 5.0], [0.0, 2.0, 0.7]),
+                "",
+            ),
+            Matrix4::from_translation(cgmath::vec3(1.0, 2.0, 3.0)),
+        );
+    }
+
+    // The held-object pipeline against OpenXR ground truth: a controller
+    // rolled +90° about rig +Z turns its top to the player's left. Under a
+    // rig looking down world +Z that is world +X, and the held object's
+    // local +X (the hand's left) points world DOWN. A mirrored basis puts it
+    // up.
+    #[test]
+    fn at_pose_follows_a_rolled_tracked_controller() {
+        let world = |q: &str| {
+            pose_chain_world(&format!(
+                "let rig = Camera3D.firstPerson(Vec3.make(0.0, 1.5, 0.0), Angle.radians(0.0), \
+                   Angle.radians(0.0), Angle.degrees(60.0))\n\
+                 let main = () => Scene.cube() |> Scene.atPose(Camera3D.mapTrackedPose(rig, \
+                   {{ position: {{ x: 0.0, y: 0.0, z: -0.5 }}, orientation: {q} }}))"
+            ))
+        };
+        let level = world("{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }");
+        pose_assert_near(pose_apply(level, [0.0; 3]), [0.0, 1.5, 0.5]);
+        pose_assert_near(pose_apply(level, [0.0, 0.0, 1.0]), [0.0, 1.5, 1.5]);
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let rolled = world(&format!("{{ x: 0.0, y: 0.0, z: {half}, w: {half} }}"));
+        pose_assert_near(pose_apply(rolled, [0.0, 0.0, 1.0]), [0.0, 1.5, 1.5]);
+        pose_assert_near(pose_apply(rolled, [0.0, 1.0, 0.0]), [1.0, 1.5, 0.5]);
+        pose_assert_near(pose_apply(rolled, [1.0, 0.0, 0.0]), [0.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn at_pose_rejects_degenerate_poses() {
+        let fail = |p: &str| {
+            fail_message(&format!(
+                "let main = () => Scene.cube() |> Scene.atPose({p})"
+            ))
+        };
+        let degenerate = "Scene.atPose: forward and up must be non-zero and not parallel";
+        for (forward, up) in [
+            ([0.0, 0.0, 1.0], [0.0, 0.0, 1.0]),
+            ([0.0, 0.0, 1.0], [0.0, 0.0, -3.0]),
+            ([0.0, 0.0, 1.0], [0.0, 1e-4, 1.0]),
+            ([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            ([0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+        ] {
+            assert_eq!(
+                fail(&pose_src([0.0; 3], forward, up)),
+                degenerate,
+                "{forward:?} {up:?}"
+            );
+        }
+        // Nearly, but not, parallel still defines a roll.
+        pose_world(&pose_src([0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.01, 1.0]), "");
+        assert!(fail(
+            "{ position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 } }"
+        )
+        .contains("missing `up`"));
+        assert!(fail(
+            // 1e39 overflows f32.
+            "{ position: { x: 1000000000000000000000000000000000000000.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 }, \
+               up: { x: 0.0, y: 1.0, z: 0.0 } }"
+        )
+        .contains("must be finite"));
+    }
+
+    // A posed node is an ordinary transform group, so structural equality and
+    // the scene's serialized form see the pose.
+    #[test]
+    fn at_pose_is_plain_scene_data() {
+        let value = eval(&format!(
+            "let a = Scene.cube() |> Scene.atPose({})\n\
+             let b = Scene.cube() |> Scene.atPose({})\n\
+             let main = () => [Scene.equals(a, a), Scene.equals(a, b), \
+               Scene.equals(Scene.cube() |> Scene.atPose({}), Scene.group([Scene.cube()]))]",
+            pose_src([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+            pose_src([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]),
+            pose_src([0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ));
+        let Value::List(flags) = value else {
+            panic!("expected a list")
+        };
+        let flags: Vec<_> = flags
+            .iter()
+            .map(|v| matches!(v, Value::Bool(true)))
+            .collect();
+        assert_eq!(flags, [true, false, true]);
+
+        let posed = eval(&format!(
+            "let main = () => Scene.cube() |> Scene.atPose({})",
+            pose_src([1.0, 2.0, 3.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+        ));
+        let scene = scene_of(&posed).unwrap();
+        let json = serde_json::to_string(scene).unwrap();
+        let back: Scene3D = serde_json::from_str(&json).unwrap();
+        assert_eq!(&back, scene);
     }
 
     // The hello-cubes shape: a List.map-built group of colored cubes.

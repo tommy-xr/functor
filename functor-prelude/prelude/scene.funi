@@ -211,6 +211,22 @@ let rotateX : (Angle.t, t) => t
 let rotateY : (Angle.t, t) => t
 /// Rotate a scene node around Z.
 let rotateZ : (Angle.t, t) => t
+/// Place a scene node at a pose with its full orientation — for an object
+/// held in the hand.
+///
+/// The node's origin moves to `position`, its local `+Z` points along
+/// `forward`, and its local `+Y` along `up`; local `+X` ends up on the pose's
+/// left. That is the front `Scene.quad` faces and the axis `Anim.lookAt`
+/// aims, so author a held object facing `+Z`, upright in `+Y`, and a
+/// `Camera3D.mapTrackedPose` result (whose tracked `-Z` already maps to
+/// `forward`) carries it where the controller points, roll included.
+/// `forward` need not be unit length and `up` need not be perpendicular to
+/// it. A zero, non-finite, or parallel `forward`/`up` is a teaching error.
+///
+/// ```functor
+/// let held = Scene.cube() |> Scene.scaleXYZ(0.04, 0.04, 0.2) |> Scene.atPose(grip)
+/// ```
+let atPose : (Camera3D.mappedPose, t) => t
 
 /// Compare two scene nodes structurally — the escape hatch for `Scene.t`,
 /// which is opaque and therefore supports no `==`.
