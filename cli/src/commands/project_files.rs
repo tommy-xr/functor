@@ -9,7 +9,7 @@
 //! Folder mappings are trusted like the project folder: symlinks may not
 //! resolve outside them, but a folder changed mid-read isn't guarded against.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Error, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -441,9 +441,9 @@ impl ZipIndex {
     ) -> Result<ZipIndex, String> {
         let records = central_directory_records(&mut file).map_err(|e| e.to_string())?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        // The zip reader keeps one entry per (decoded) name: fewer entries
-        // than records means two entries share a name, so which one a path
-        // reads would be arbitrary.
+        // The zip reader keeps one entry per raw name: fewer entries than
+        // records means two entries share a name, so which one a path reads
+        // would be arbitrary.
         if zip.len() != records {
             return Err(format!(
                 "it lists {records} entries under {} distinct names; duplicate names are \
@@ -453,9 +453,16 @@ ambiguous, so it isn't read",
         }
         let mut entries = HashMap::new();
         let mut folded = HashMap::new();
+        let mut decoded = HashSet::new();
         for index in 0..zip.len() {
             let entry = zip.by_index_raw(index).map_err(|e| e.to_string())?;
-            let name = entry.name().to_string();
+            let name = entry.name().map_err(|e| e.to_string())?.to_string();
+            // Distinct raw names can decode alike (UTF-8 `é` vs CP437 0x82).
+            if !decoded.insert(name.clone()) {
+                return Err(format!(
+                    "two entries decode to {name}; duplicate names are ambiguous, so it isn't read"
+                ));
+            }
             // Unaskable names (absolute, `..`, `\`) stay unreachable.
             if entry.is_dir() || validate_project_asset_path(&name).is_err() {
                 continue;
@@ -615,6 +622,24 @@ mod tests {
         zip.finish().unwrap();
     }
 
+    /// Rewrites every `from` in the zip at `path` to `to` (same length), in
+    /// both the local header and the central directory.
+    fn rename_in_zip(path: &Path, from: &[u8], to: &[u8]) {
+        let bytes = std::fs::read(path).unwrap();
+        let mut patched = Vec::with_capacity(bytes.len());
+        let mut at = 0;
+        while at < bytes.len() {
+            if bytes[at..].starts_with(from) {
+                patched.extend_from_slice(to);
+                at += from.len();
+            } else {
+                patched.push(bytes[at]);
+                at += 1;
+            }
+        }
+        std::fs::write(path, patched).unwrap();
+    }
+
     fn read(resolver: &Resolver, path: &str) -> Result<Vec<u8>, String> {
         match resolver.read(path) {
             Ok(bytes) => Ok(bytes.to_vec()),
@@ -746,22 +771,8 @@ mod tests {
                 ("res/ok.bin", Some(b"ok")),
             ],
         );
-        // Rename the second entry onto the first (same length), in both the
-        // local header and the central directory.
-        let bytes = std::fs::read(&archive).unwrap();
-        let (from, to) = (b"res/dup-b.bin", b"res/dup-a.bin");
-        let mut patched = Vec::with_capacity(bytes.len());
-        let mut at = 0;
-        while at < bytes.len() {
-            if bytes[at..].starts_with(from) {
-                patched.extend_from_slice(to);
-                at += from.len();
-            } else {
-                patched.push(bytes[at]);
-                at += 1;
-            }
-        }
-        std::fs::write(&archive, patched).unwrap();
+        // Rename the second entry onto the first.
+        rename_in_zip(&archive, b"res/dup-b.bin", b"res/dup-a.bin");
         project.config(r#"{"x/": "data"}"#, Some(r#"{"x/": "game.zip!res/"}"#));
         let resolver = project.resolver();
         for path in ["x/dup-a.bin", "x/ok.bin"] {
@@ -769,6 +780,31 @@ mod tests {
             assert!(err.contains("3 entries under 2 distinct names"), "{err}");
             assert!(!resolver.exists(path));
         }
+    }
+
+    /// Raw names that differ but decode alike (UTF-8 `é`, CP437 0x82) are
+    /// duplicates too.
+    #[test]
+    fn zips_with_names_decoding_alike_are_refused() {
+        let project = TempProject::new("dup-decoded");
+        let archive = project.0.join("game.zip");
+        write_zip(
+            &archive,
+            &[
+                ("res/\u{e9}.bin", Some(b"utf8")),
+                ("res/z.bin", Some(b"cp437")),
+            ],
+        );
+        // `z` → 0x82: invalid UTF-8, so it decodes as CP437 `é`.
+        rename_in_zip(&archive, b"res/z.bin", b"res/\x82.bin");
+        project.config(r#"{"x/": "data"}"#, Some(r#"{"x/": "game.zip!res/"}"#));
+        let resolver = project.resolver();
+        let err = read(&resolver, "x/\u{e9}.bin").unwrap_err();
+        assert!(
+            err.contains("two entries decode to res/\u{e9}.bin"),
+            "{err}"
+        );
+        assert!(!resolver.exists("x/\u{e9}.bin"));
     }
 
     /// Mappings resolve against the project folder once, at load: a relative
