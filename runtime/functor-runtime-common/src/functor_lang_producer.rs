@@ -387,8 +387,16 @@ return them beside the model as `(model, effect)`",
     }
     require_function(path, session, names.tick, 3)?;
     // `draw(model, tts)`, or `draw(model, tts, alpha)` to interpolate.
-    if !draw_takes_alpha(session, names.draw) {
-        require_function(path, session, names.draw, 2)?;
+    match session.global(names.draw) {
+        Some(Value::Closure(c)) if c.params.len() != 2 && c.params.len() != 3 => {
+            return Err(format!(
+                "{path}: `{}` must take 2 parameters `(model, tts)` or 3 `(model, tts, alpha)`, takes {}",
+                names.draw,
+                c.params.len()
+            ))
+        }
+        Some(Value::Closure(_)) => {}
+        _ => require_function(path, session, names.draw, 2)?,
     }
     // `input` is optional (many games are non-interactive), but when
     // present it must honor the contract: (model, key, isDown) => model.
@@ -604,16 +612,12 @@ its launch config)"
 /// when `draw` declares a third parameter. Auxiliary draws (inspector,
 /// time-travel trails) pass 0 — they render step-aligned models.
 pub fn draw_args(session: &Session, draw: &str, model: Value, tts: f64, alpha: f32) -> Vec<Value> {
-    if draw_takes_alpha(session, draw) {
-        vec![model, Value::Number(tts), Value::Number(alpha as f64)]
-    } else {
-        vec![model, Value::Number(tts)]
+    match session.global(draw) {
+        Some(Value::Closure(c)) if c.params.len() == 3 => {
+            vec![model, Value::Number(tts), Value::Number(alpha as f64)]
+        }
+        _ => vec![model, Value::Number(tts)],
     }
-}
-
-/// Whether `draw` is the three-parameter `(model, tts, alpha)` form.
-fn draw_takes_alpha(session: &Session, draw: &str) -> bool {
-    matches!(session.global(draw), Some(Value::Closure(c)) if c.params.len() == 3)
 }
 
 /// `name` must be a function of `arity` params — a contract violation is

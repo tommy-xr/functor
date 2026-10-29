@@ -775,7 +775,7 @@ pub struct Args {
     /// the live clock by exactly `1/HZ` instead of wall-clock time, so the
     /// fixed-step cadence and `draw`'s sub-step alpha are reproducible (e.g.
     /// `--display-hz 120` alternates alpha 0.5 / 0).
-    #[arg(long, value_parser = parse_display_hz)]
+    #[arg(long, value_parser = parse_display_hz, conflicts_with_all = ["fixed_time", "input_script"])]
     display_hz: Option<f32>,
 
     /// Capture `--capture-frame` at this exact deterministic sim frame (0-based),
@@ -2155,8 +2155,8 @@ Escape releases while captured"
             // frame is drawn / hot-reloaded / reported at (its `dts` is unused by
             // render/draw). Capture still keys off wall-clock `elapsed_time` so the
             // loop runs long enough for assets to load before a shot.
-            let real_delta = args.display_hz.map_or(elapsed_time - last_time, |hz| 1.0 / hz);
-            let sub_frames = clock.fixed_frames(real_delta);
+            let real_delta = elapsed_time - last_time;
+            let sub_frames = clock.fixed_frames(args.display_hz.map_or(real_delta, |hz| 1.0 / hz));
             last_time = elapsed_time;
             let time = FrameTime {
                 dts: 0.0,

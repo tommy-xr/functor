@@ -1593,8 +1593,10 @@ let draw = (m: Model, tts, alpha: float) =>
   Frame.create(camera, rig |> Scene.translate(m.prev |> Vec3.lerp(m.cur, alpha)))
 ```
 
-This draws one step (≤16.7 ms) behind the sim. Reset `prev` to `cur` on a
-snap (teleport, respawn) so it doesn't sweep. `alpha` is exactly 0 under
+This draws one step (≤16.7 ms) behind the sim. `tts` is still the time of
+`cur`; `tts - (1.0 - alpha) / 60.0` is the drawn pose's time, for any
+`sin(tts)`-style motion in the same `draw`. Reset `prev` to `cur` on a snap
+(teleport, respawn) so it doesn't sweep. `alpha` is exactly 0 under
 `--fixed-time`, while paused, stepped (`/time advance`), under
 `--input-script`, and while scrubbing, so captures and time travel never
 depend on the display — those frames draw `prev`. `--display-hz 120`
