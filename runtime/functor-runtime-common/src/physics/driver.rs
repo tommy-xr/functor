@@ -255,7 +255,7 @@ impl SteppedPhysics {
     /// path (docs/time-travel.md T1), called in-process by the shell when a
     /// time-travel branch commits. Returns any clamp/range warnings. The
     /// coupled caller checks [`Self::seekable_range`] first so this only ever
-    /// runs on an exactly-restorable frame.
+    /// runs on an exactly-restorable frame (or the live tail, one past it).
     pub fn rewind_to_frame(&mut self, frame: u64) -> Vec<String> {
         let mut warnings = Vec::new();
         self.rewind_to(frame, &mut warnings);
@@ -298,7 +298,7 @@ impl SteppedPhysics {
     /// (frame 0's pre-step is the world before any STEP — empty, or the
     /// cold-start primed declaration — so 1 is the real
     /// floor) through the newest recorded frame. `None` until something has
-    /// stepped. The coupled scene rewind (docs/time-travel.md T1) uses this to
+    /// stepped. Seeks also accept one past it: the live tail. The coupled scene rewind (docs/time-travel.md T1) uses this to
     /// refuse rather than silently clamp — a clamp would land the world on a
     /// different frame than the model, desyncing the two.
     pub fn seekable_range(&self) -> Option<(u64, u64)> {
@@ -514,11 +514,15 @@ mod tests {
         for t in 0..5 {
             sp.advance(&scene_at(t), FIXED_DT);
         }
-        // Past the newest end: clamped, no warning. (Rewinding to the OLDEST
+        // Past the newest end: clamped to the live tail, no warning, nothing
+        // truncated. (Rewinding to the OLDEST
         // frame truncates the entire history — by design: the future is
         // discarded — so the far-future clamp is tested first.)
+        let range = sp.seekable_range();
         let warnings = sp.rewind_to_frame(9_999);
         assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(sp.seekable_range(), range);
+        assert_eq!(sp.current_fixed_frame(), 5);
         // Below the recorded floor: clamped to it, no warning, no panic.
         let warnings = sp.rewind_to_frame(0);
         assert!(warnings.is_empty(), "{warnings:?}");

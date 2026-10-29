@@ -4077,14 +4077,14 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         let tail = snapshot();
         let (_, newest) = h.recorder.scene_frame_range().unwrap();
 
-        let ctx = |h: &mut PhysicsHarness, frame| {
+        let seek = |h: &mut PhysicsHarness, frame| {
             h.recorder
                 .seek_scene_to(frame, &mut h.model, &mut h.physics_rt, &mut h.physics_frame, true)
                 .unwrap();
         };
-        ctx(&mut h, newest - 23);
+        seek(&mut h, newest - 23);
         assert!(snapshot() != tail, "the scrub parks the world mid-history");
-        ctx(&mut h, newest);
+        seek(&mut h, newest);
         assert!(snapshot() == tail, "the newest frame restores the live tail");
 
         // Resume: commits the scrub at the newest frame and keeps recording.
