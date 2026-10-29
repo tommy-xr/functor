@@ -3,7 +3,8 @@
 //
 // Every piece is a box (centre and full extents, metres), drawn and declared
 // as a fixed body from the same list. The open lane x ∈ [0, 15] runs north
-// from the spawn along the east wall, which `e2e/hoverbike.mjs` slides along.
+// from the spawn along the east wall, which `e2e/hoverbike.mjs` slides along;
+// x ∈ [-20, 15] south of z = 100 is clear for its test turn.
 
 type Block = { x: float, y: float, z: float, w: float, h: float, d: float, kind: float }
 
@@ -27,15 +28,15 @@ let blocks = [
   standing(wallKind, -15.0, -40.5, 62.0, 3.0, 1.0),
   standing(wallKind, -15.0, 210.5, 62.0, 3.0, 1.0),
   // Low crates: the probes ride up over them, the collider passes above.
-  standing(crateKind, -10.0, 20.0, 2.0, 0.5, 2.0),
-  standing(crateKind, -14.0, 32.0, 2.0, 0.5, 2.0),
-  standing(crateKind, -10.0, 44.0, 2.0, 0.5, 2.0),
-  standing(crateKind, -14.0, 56.0, 3.0, 0.7, 3.0),
+  standing(crateKind, -26.0, 20.0, 2.0, 0.5, 2.0),
+  standing(crateKind, -30.0, 32.0, 2.0, 0.5, 2.0),
+  standing(crateKind, -26.0, 44.0, 2.0, 0.5, 2.0),
+  standing(crateKind, -30.0, 56.0, 3.0, 0.7, 3.0),
   // Tall enough to stop the bike.
-  standing(pillarKind, -26.0, 30.0, 1.5, 5.0, 1.5),
-  standing(pillarKind, -32.0, 70.0, 1.5, 5.0, 1.5),
-  standing(pillarKind, -22.0, 105.0, 1.5, 5.0, 1.5),
-  standing(wallKind, -20.0, 150.0, 14.0, 2.0, 0.8),
+  standing(pillarKind, -38.0, 26.0, 1.5, 5.0, 1.5),
+  standing(pillarKind, -36.0, 70.0, 1.5, 5.0, 1.5),
+  standing(pillarKind, -24.0, 105.0, 1.5, 5.0, 1.5),
+  standing(wallKind, -28.0, 150.0, 14.0, 2.0, 0.8),
 ]
 
 // Declared every frame from this one value, so the world never changes.

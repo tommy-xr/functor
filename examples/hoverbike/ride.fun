@@ -75,7 +75,9 @@ let approach = (target: float, rate: float, dt: float, v: float): float =>
 
 let step = (c: Controls, probes: List<Probe>, dt: float, s: State): State =>
   let speed = Math.sqrt(s.vx * s.vx + s.vz * s.vz) in
-  let limit = yawLimit(speed) in
+  // Capped at the most speed this step can reach, so speed × yaw rate stays
+  // under `maxLateralAccel` after the step too.
+  let limit = yawLimit(speed + c.throttle * thrust * dt) in
   let yawRate = Math.clamp(-limit, limit, s.yawRate |> approach(c.steer * limit, yawResponse, dt)) in
   let yaw = s.yaw + yawRate * dt in
   // Split the velocity along the new heading: forward (sin, cos), left (cos, -sin).
@@ -213,8 +215,7 @@ expect (
 
 // Comfort over a ride (throttle, hard left, hard right, brake): yaw rate,
 // yaw acceleration, lateral acceleration (speed × yaw rate), lean, and vertical
-// acceleration on flat ground all stay bounded. The yaw cap is set from the
-// speed at the start of a step, so lateral acceleration may pass it by under 1%.
+// acceleration on flat ground all stay bounded.
 let route = (t: float) =>
   if t < 4.0 then full
   else if t < 8.0 then { throttle: 1.0, brake: 0.0, steer: 1.0 }
@@ -224,7 +225,7 @@ let route = (t: float) =>
 let comfortable = (older: Sample, newer: Sample) =>
   Math.abs(newer.s.yawRate) <= maxYawRate
     && Math.abs(newer.s.yawRate - older.s.yawRate) / dt60 <= 2.0 * maxYawRate * yawResponse
-    && speedOf(newer.s) * Math.abs(newer.s.yawRate) <= 1.01 * maxLateralAccel
+    && speedOf(newer.s) * Math.abs(newer.s.yawRate) <= maxLateralAccel + 0.000001
     && Math.abs(newer.s.roll) <= maxLean && Math.abs(newer.s.pitch) <= maxPitch
     && Math.abs(newer.ay) < 0.05
 expect (
