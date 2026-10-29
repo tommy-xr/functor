@@ -1,0 +1,43 @@
+# Deterministic desktop aiming and planting in the stand-in room: the ring
+# sweeps the back wall, the desk, the floor and a side wall, a click plants at
+# each stop, and the last move aims above the walls, where nothing is hit.
+# Positions are for the goldens' 1600x1200 window:
+#   functor -d examples/room-place run native -- --input-script place.script \
+#     --capture-size 1600x1200
+10 Mouse.Move 649 617
+20 Mouse.Left down
+21 Mouse.Left up
+30 Mouse.Move 700 640
+36 Mouse.Move 750 667
+42 Mouse.Move 800 680
+48 Mouse.Move 951 684
+55 Mouse.Left down
+56 Mouse.Left up
+65 Mouse.Move 860 740
+72 Mouse.Move 760 800
+80 Mouse.Move 677 832
+88 Mouse.Left down
+89 Mouse.Left up
+98 Mouse.Move 720 900
+106 Mouse.Move 768 963
+114 Mouse.Left down
+115 Mouse.Left up
+124 Mouse.Move 650 1040
+132 Mouse.Move 467 1133
+140 Mouse.Left down
+141 Mouse.Left up
+150 Mouse.Move 760 1080
+158 Mouse.Move 1050 1000
+166 Mouse.Left down
+167 Mouse.Left up
+176 Mouse.Move 1250 920
+184 Mouse.Move 1392 833
+192 Space down
+193 Space up
+202 Mouse.Move 900 600
+210 Mouse.Move 500 680
+218 Mouse.Move 356 700
+226 Mouse.Left down
+227 Mouse.Left up
+240 Mouse.Move 600 300
+252 Mouse.Move 800 60
