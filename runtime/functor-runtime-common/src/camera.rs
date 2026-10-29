@@ -11,6 +11,7 @@ use crate::math::Angle;
 /// Deserialization fills missing fields from [`TrackingPose::IDENTITY`], so a
 /// scripted/injected pose can name only the part it cares about.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default, deny_unknown_fields)]
 pub struct TrackingPose {
     pub position: [f32; 3],
@@ -187,6 +188,7 @@ pub(crate) struct CameraBasis {
 /// into view/projection matrices at render time via `view_matrix` /
 /// `projection_matrix`.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Camera {
     pub eye: [f32; 3],
     pub target: [f32; 3],

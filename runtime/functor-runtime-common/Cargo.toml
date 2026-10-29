@@ -6,6 +6,9 @@ edition = "2021"
 [features]
 # Treat warnings as a buld error
 strict = []
+# Derive TypeScript for the debug-protocol wire types; the drift test writes
+# tools/functor-sdk/src/generated/protocol.ts.
+ts = ["dep:ts-rs"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -49,6 +52,7 @@ gltf = { version = "1.4.1", features = ["names", "KHR_materials_pbrSpecularGloss
 # embedded producer links pushed sources against the complete bundle, while
 # drift tests keep the interface signatures in sync with the host registry.
 functor-prelude = { path = "../../functor-prelude" }
+ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 
 [dev-dependencies]
 # Throwaway project directories for the headless `expect`-runner tests.

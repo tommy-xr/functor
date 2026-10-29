@@ -65,9 +65,11 @@ jobs:
       # across the whole OS matrix for free: this job already has the common
       # runtime compiled. The functor-lang suite runs on the default test-thread stack —
       # that is deliberate: it guards the MAX_EVAL_DEPTH-fits-2-MiB budget (#221).
+      # The `ts` feature adds the drift test for the SDK's generated
+      # debug-protocol types (tools/functor-sdk/src/generated/protocol.ts).
       - name: Run tests
         run: |
-          cargo test -p functor_runtime_common -p functor-lang -p functor-docgen -p functor-solid
+          cargo test -p functor_runtime_common -p functor-lang -p functor-docgen -p functor-solid --features functor_runtime_common/ts
 
       - name: Validate API documentation generation
         run: npm run check:docs

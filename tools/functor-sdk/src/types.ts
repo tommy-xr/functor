@@ -1,153 +1,49 @@
-/** A canonical key name as reported by the runtime (`functor_runtime_common::Key`).
- * The `(string & {})` arm keeps newly-added keys usable before the SDK is updated. */
-export type KeyName =
-  | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
-  | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
-  | "Up" | "Down" | "Left" | "Right" | "Space" | "Enter" | "Escape" | "Unknown"
-  | "Num0" | "Num1" | "Num2" | "Num3" | "Num4"
-  | "Num5" | "Num6" | "Num7" | "Num8" | "Num9"
-  | (string & {});
+// The debug-protocol wire types are generated from the Rust structs
+// (`generated/protocol.ts`). This file re-exports them, narrows a few, and
+// holds the SDK-only option types.
+
+import type {
+  Camera,
+  GamepadSnapshot,
+  InputCommand as WireInputCommand,
+  InputSnapshot as WireInputSnapshot,
+  JsonValue,
+  Key,
+  RuntimeState as WireRuntimeState,
+  TouchPhase,
+  TrackingPose,
+  XrControllerSnapshot,
+} from "./generated/protocol.js";
+
+export type * from "./generated/protocol.js";
+
+/** A canonical key name as reported by the runtime (`Key`). The
+ * `(string & {})` arm keeps newly-added keys usable before the SDK is updated. */
+export type KeyName = Key | (string & {});
+
+/** The wire `InputSnapshot` with its key arrays widened to {@link KeyName}. */
+export type InputSnapshot = Omit<
+  WireInputSnapshot,
+  "held_keys" | "pressed_keys" | "released_keys"
+> & {
+  held_keys: KeyName[];
+  pressed_keys: KeyName[];
+  released_keys: KeyName[];
+};
+
+/** Runtime state from `GET /state`, carrying the widened {@link InputSnapshot}. */
+export type RuntimeState = Omit<WireRuntimeState, "input"> & {
+  input: InputSnapshot;
+};
 
 export type Vec3 = [number, number, number];
 export type Quaternion = [x: number, y: number, z: number, w: number];
 
-/** A rig-local tracked pose: +X right, +Y up, -Z forward. */
-export interface TrackingPose {
-  position: Vec3;
-  orientation: Quaternion;
-}
-
-/** One target-neutral tracked XR controller. */
-export interface XrControllerSnapshot {
-  active: boolean;
-  grip: TrackingPose | null;
-  aim: TrackingPose | null;
-  trigger: number;
-  squeeze: number;
-  thumbstick: [x: number, y: number];
-  primary_pressed: boolean;
-  secondary_pressed: boolean;
-  thumbstick_pressed: boolean;
-  menu_pressed: boolean;
-}
-
-/** XR tracking and controllers sampled for one fixed simulation step. */
-export interface XrInputSnapshot {
-  head: TrackingPose | null;
-  left: XrControllerSnapshot;
-  right: XrControllerSnapshot;
-}
-
-/** The primary connected gamepad's held state, aligned to the standard
- * mapping desktop and web pads share. Face buttons are positional (`south` is
- * the bottom face button); sticks are `-1..1` with up-positive Y (the XR
- * thumbstick convention); triggers are `0..1`. Levels only — no edge sets. */
-export interface GamepadSnapshot {
-  left_stick: [x: number, y: number];
-  right_stick: [x: number, y: number];
-  left_trigger: number;
-  right_trigger: number;
-  south: boolean;
-  east: boolean;
-  west: boolean;
-  north: boolean;
-  left_bumper: boolean;
-  right_bumper: boolean;
-  left_stick_pressed: boolean;
-  right_stick_pressed: boolean;
-  dpad_up: boolean;
-  dpad_down: boolean;
-  dpad_left: boolean;
-  dpad_right: boolean;
-  start: boolean;
-  select: boolean;
-}
-
-/** One touch contact in the mouse's logical coordinate space. `id` is a
- * small ordinal stable for the contact's lifetime. */
-export interface TouchPoint {
-  id: number;
-  x: number;
-  y: number;
-}
-
-/** Active touch contacts plus one step's de-duplicated transitions — the
- * keyboard contract for fingers. A cancelled contact reports through
- * `released`. */
-export interface TouchSnapshot {
-  touches: TouchPoint[];
-  pressed: TouchPoint[];
-  released: TouchPoint[];
-}
-
 /** Wire spelling of a touch transition phase for `POST /input`. */
-export type TouchPhaseName = "begin" | "move" | "end" | "cancel";
+export type TouchPhaseName = TouchPhase;
 
 /** Wire spelling of a mouse button for `POST /input`. */
 export type MouseButtonName = "left" | "right" | "middle";
-
-/** A fixed mouse-button set, used for held, pressed, and released fields. */
-export interface MouseButtons {
-  left: boolean;
-  right: boolean;
-  middle: boolean;
-}
-
-/** Runtime-owned input sampled independently of the game model.
- *
- * Typed device domains extend this record — XR, gamepad, and touch today;
- * further devices join as sibling fields without replacing keyboard/mouse or
- * introducing target-specific clients. */
-export interface InputSnapshot {
-  /** Keys currently held, by canonical name. */
-  held_keys: KeyName[];
-  /** Keys pressed since the previous fixed simulation step.
-   *
-   * Absent on runtimes predating deterministic sampled edges. */
-  pressed_keys?: KeyName[];
-  /** Keys released since the previous fixed simulation step.
-   *
-   * A quick tap can place the same key in both edge arrays. Absent on older
-   * runtimes. */
-  released_keys?: KeyName[];
-  /** Last known cursor position and logical surface extent in the same
-   * top-left-origin coordinate space, plus held and edge sets.
-   *
-   * Desktop reports window points and web reports CSS pixels, independent of
-   * Retina/device-pixel ratio. Surface and button/edge fields are absent from
-   * older runtimes' `/state`; treat a missing button field as an empty set. */
-  mouse: {
-    x: number;
-    y: number;
-    surface_width?: number;
-    surface_height?: number;
-    buttons?: MouseButtons;
-    pressed?: MouseButtons;
-    released?: MouseButtons;
-  };
-  /** Present while an XR target has valid head tracking. */
-  xr?: XrInputSnapshot;
-  /** Present while a pad is connected (desktop GLFW / browser Gamepad API
-   * polling — rest levels while unfocused/pinned) or a sample is injected;
-   * absent on headless, which polls nothing. */
-  gamepad?: GamepadSnapshot;
-  /** Present while a touch surface exists (web declares it up front on
-   * touch-capable devices; desktop only while injected); empty lists while
-   * idle. Absent on targets with no touch input at all. */
-  touch?: TouchSnapshot;
-}
-
-export interface RuntimeViewport {
-  width: number;
-  height: number;
-}
-
-/** One render view. Desktop reports `main`; stereo XR reports `left` and
- * `right`. Names are intentionally open-ended for future runtime targets. */
-export interface RuntimeView {
-  name: string;
-  viewport: RuntimeViewport;
-}
 
 /** A structured JSON view of a Functor Lang value: plain data maps structurally
  * (records as objects, lists as arrays, maps as canonical entry arrays), and
@@ -157,145 +53,7 @@ export interface RuntimeView {
  * `{"$ctor": "Some", "args": [...]}`, `{"$fn": "<fn(dt)>"}`,
  * `{"$host": "SceneNode"}`, `{"$number": "NaN"}`, and
  * `{"$truncated": "max depth"}` past the nesting bound. */
-export type ModelJson =
-  | number
-  | string
-  | boolean
-  | null
-  | ModelJson[]
-  | { [key: string]: ModelJson };
-
-/** Runtime state from `GET /state`. `input` is structured and game-agnostic;
- * `model` is the structured, lossy JSON view of the game model — the default
- * thing to read fields from. */
-export interface RuntimeState {
-  frame: number;
-  tts: number;
-  /** Clock steps queued by `advance` that have not run yet. `0` means every
-   * requested step has been simulated. */
-  pending_steps: number;
-  /** How many times the model has been REPLACED by game logic since load —
-   * the version label for a NETWORKED model, since pausing pins the clock and
-   * not the transport, so a paused game keeps folding inbound messages while
-   * `frame` stands still. Protocol v10+; a pre-v10 runtime omits it. */
-  model_revision?: number;
-  /** Inbound network events the shell has accepted but not yet delivered to
-   * the game. Poll until `0` for quiescence before snapshotting a baseline.
-   * Protocol v10+; a pre-v10 runtime omits it, so gate on `protocol_version`
-   * rather than reading a missing field as quiescent. */
-  pending_net?: number;
-  /** Combined/legacy output extent. Use `views` when view identity matters. */
-  viewport: RuntimeViewport;
-  views: RuntimeView[];
-  input: InputSnapshot;
-  /** Structured, lossy JSON view of the model (`null` for producers without
-   * a structured model, e.g. replay). Protocol v4+ — a pre-v4 runtime sends
-   * the Debug TEXT under this key instead; gate on `GET /`'s
-   * `protocol_version` before reading it as data. */
-  model: ModelJson;
-  /** The Rust-`Debug` pretty-print of the model: the human-facing view (full
-   * depth, construction order where `model` is lossy). Opaque text — don't
-   * parse it. v4 and later — a pre-v4 runtime omits it (and sends the text
-   * under `model` instead). */
-  model_debug: string;
-  /** Where the game logic runs (`inline` on the render thread, or `pipelined`
-   * on its own sim thread) and that thread's scheduling class, e.g.
-   * `"pipelined: user-interactive"`. Protocol v16+; omitted by runtimes that
-   * don't report it. */
-  sim_thread?: string;
-  /** The last rendered frame's `Scene.instanced` instance-buffer uploads — 0
-   * after the first frame when instance lists are retained. Protocol v17+; a
-   * pre-v17 runtime omits it. */
-  instance_uploads?: { count: number; bytes: number };
-  /** The game's launch-time `config` value, fixed at load. Protocol v18+;
-   * omitted when the game defines none. */
-  config?: { xr: { refresh_rate?: number; passthrough?: boolean; scene?: boolean } };
-  /** The game's latest `settings(model)`, which a headset runtime applies on
-   * change. Protocol v18+; omitted when the game defines no `settings`. */
-  settings?: {
-    xr: { foveation?: "off" | "low" | "medium" | "high"; passthrough?: boolean };
-  };
-  /** The last rendered frame's terrain draws, summed over its eye draws (a
-   * stereo frame counts the shared patch set twice); `vertices` is patches ×
-   * the patch mesh's vertex count. Protocol v19+; a pre-v19 runtime omits it. */
-  terrain?: { patches: number; vertices: number };
-  /** How the shell shows the real world behind `Frame.withPassthrough`
-   * frames: the headset's camera feed (`composited`), the desktop/web
-   * stand-in room (`emulated`), paused by `settings`, or `unavailable` (with
-   * the reason in `warning`). Protocol v20+; omitted unless `config` requests
-   * passthrough. */
-  passthrough?: {
-    mode: "composited" | "emulated" | "paused" | "unavailable";
-    warning?: string;
-  };
-  /** The headset battery from Android's `BatteryManager`, sampled at most
-   * once per second; a field the device doesn't report is `null`. Currents
-   * are negative when discharging. Protocol v21+; omitted on
-   * desktop. */
-  battery?: {
-    level_pct: number | null;
-    status: "charging" | "discharging" | "not charging" | "full" | "unknown";
-    plugged: boolean;
-    current_now_ma: number | null;
-    current_avg_ma: number | null;
-    charge_uah: number | null;
-    voltage_mv: number | null;
-    temp_c: number | null;
-    /** Device wall clock, Unix epoch ms. */
-    sampled_ms: number;
-  };
-  /** The last rendered frame's skinned-model work, summed over its passes
-   * (shadow and each eye): mesh draw calls and pose evaluations. Protocol v22+; a
-   * pre-v22 runtime omits it. */
-  skinned?: { draws: number; pose_evals: number };
-  /** Mean per-frame stage cost over the shell's last completed stats window
-   * (`frames` long); `frame_ms` is the wall time between rendered frames.
-   * Protocol v22+; omitted until a window completes. */
-  stages?: {
-    frames: number;
-    sim_ms: number;
-    render_ms: number;
-    sim_wait_ms: number;
-    frame_ms: number;
-  };
-  /** Scene understanding behind `Xr.scene`: `depth` is the environment depth
-   * — a headset depth image this frame (`device`), a running provider with no
-   * image yet (`waiting`), the desktop/web stand-in room rendered as depth
-   * (`emulated`), or `unavailable` (with the reason in `warning`); `frames`
-   * counts images acquired or stand-in passes rendered. `mesh` is the room
-   * fused from that depth (`Frame.withFusedRoom`): chunks with surface, their
-   * triangles, depth frames fused, and the voxel edge in metres. Protocol
-   * v25+; omitted unless `config` requests `Xr.scene`. */
-  xr?: {
-    depth: {
-      mode: "device" | "waiting" | "emulated" | "unavailable";
-      width: number;
-      height: number;
-      frames: number;
-      warning?: string;
-    };
-    mesh: {
-      chunks: number;
-      triangles: number;
-      fused_frames: number;
-      voxel_m: number;
-    };
-  };
-  /** Which runtime build is answering: `pr | <sha7>` for a CI-built Quest
-   * APK, `dev` for a local one. Protocol v23+; omitted by runtimes that don't
-   * report it. */
-  build?: string;
-}
-
-/** Camera block from `GET /scene`. */
-export interface Camera {
-  eye: Vec3;
-  target: Vec3;
-  up: Vec3;
-  fov_radians: number;
-  near: number;
-  far: number;
-}
+export type ModelJson = JsonValue;
 
 /** The frame description from `GET /scene` (camera + scene + lights). The scene
  * and lights are passed through as-is for now. */
@@ -305,19 +63,14 @@ export interface Scene {
   lights: unknown;
 }
 
-/** An input event for `POST /input`, tagged by `type`. */
+/** An input event for `POST /input`, tagged by `type`. Narrows the wire type:
+ * `button` is a known name, and `xr`/`gamepad` take partial samples (the
+ * runtime defaults omitted fields). */
 export type InputCommand =
-  | { type: "key"; key: string; down: boolean }
-  | { type: "mouse_move"; x: number; y: number }
-  | { type: "mouse_wheel"; delta: number }
+  | Exclude<WireInputCommand, { type: "mouse_button" | "xr" | "gamepad" }>
   | { type: "mouse_button"; button: MouseButtonName; down: boolean }
-  | { type: "ui_event"; slot: number; kind: UiEventKind }
-  | { type: "webview_event"; slot: number; kind: UiEventKind }
   | ({ type: "xr" } & XrInputSample)
-  | { type: "xr_clear" }
-  | ({ type: "gamepad" } & GamepadInputSample)
-  | { type: "gamepad_clear" }
-  | { type: "touch"; phase: TouchPhaseName; id: number; x: number; y: number };
+  | ({ type: "gamepad" } & GamepadInputSample);
 
 /** An injected gamepad sample for `POST /input` (desktop only) — the
  * {@link XrInputSample} contract for the pad domain: level state until
@@ -344,11 +97,6 @@ export type XrControllerSample = Partial<
   grip?: Partial<TrackingPose> | null;
   aim?: Partial<TrackingPose> | null;
 };
-
-export type UiEventKind =
-  | "Clicked"
-  | { SliderChanged: number }
-  | { TextChanged: string };
 
 /** Whole-project wire body for `POST /reload-project`, entry file first. */
 export type ProjectSources = Array<[path: string, source: string]>;
