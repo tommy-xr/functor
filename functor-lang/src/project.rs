@@ -65,6 +65,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Binary",
     "File",
     "Mesh",
+    "Cells",
     "Model",
     "Asset",
     "Camera3D",
