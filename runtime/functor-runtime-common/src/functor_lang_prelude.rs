@@ -8518,24 +8518,21 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         ))
     }
 
-    fn pose_assert_matrix(a: Matrix4<f32>, b: Matrix4<f32>) {
-        let (fa, fb): (&[f32; 16], &[f32; 16]) = (a.as_ref(), b.as_ref());
-        assert!(
-            fa.iter().zip(fb).all(|(x, y)| (x - y).abs() < 1e-5),
-            "{a:?} != {b:?}"
-        );
-    }
-
     fn pose_apply(m: Matrix4<f32>, p: [f32; 3]) -> [f32; 3] {
         let v = m * cgmath::vec4(p[0], p[1], p[2], 1.0);
         [v.x, v.y, v.z]
     }
 
-    fn pose_assert_near(a: [f32; 3], b: [f32; 3]) {
+    fn pose_assert_near(a: &[f32], b: &[f32]) {
         assert!(
             a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5),
             "{a:?} != {b:?}"
         );
+    }
+
+    fn pose_assert_matrix(a: Matrix4<f32>, b: Matrix4<f32>) {
+        let (a, b): (&[f32; 16], &[f32; 16]) = (a.as_ref(), b.as_ref());
+        pose_assert_near(a, b);
     }
 
     // Local +Z goes to `forward` and +Y to `up`: yaw, pitch, and roll poses
@@ -8566,7 +8563,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         // Roll: Scene.rotateZ(+30°) turns +Y toward -X.
         let roll = pose_world(&pose_src(origin, [0.0, 0.0, 1.0], [-s, c, 0.0]), "");
         pose_assert_matrix(roll, rotated("rotateZ"));
-        pose_assert_near(pose_apply(roll, [1.0, 0.0, 0.0]), [c, s, 0.0]);
+        pose_assert_near(&pose_apply(roll, [1.0, 0.0, 0.0]), &[c, s, 0.0]);
     }
 
     // The pose wraps the subtree: inner transforms happen in the pose's local
@@ -8576,15 +8573,15 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         // Yawed 90° (forward +X) at (5, 1, 0).
         let p = pose_src([5.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         let inner = pose_world(&p, " |> Scene.translate(Vec3.make(0.0, 0.0, 2.0))");
-        pose_assert_near(pose_apply(inner, [0.0; 3]), [7.0, 1.0, 0.0]);
+        pose_assert_near(&pose_apply(inner, [0.0; 3]), &[7.0, 1.0, 0.0]);
         // An inner rotateY(90°) sends local +Z to +X; the pose then to -Z.
         let spun = pose_world(&p, " |> Scene.rotateY(Angle.degrees(90.0))");
-        pose_assert_near(pose_apply(spun, [0.0, 0.0, 1.0]), [5.0, 1.0, -1.0]);
+        pose_assert_near(&pose_apply(spun, [0.0, 0.0, 1.0]), &[5.0, 1.0, -1.0]);
         let outer = pose_chain_world(&format!(
             "let main = () => Scene.cube() |> Scene.atPose({p}) \
              |> Scene.translate(Vec3.make(0.0, 0.0, 2.0))"
         ));
-        pose_assert_near(pose_apply(outer, [0.0, 0.0, 1.0]), [6.0, 1.0, 2.0]);
+        pose_assert_near(&pose_apply(outer, [0.0, 0.0, 1.0]), &[6.0, 1.0, 2.0]);
     }
 
     // `forward` need not be unit length and `up` need not be perpendicular:
@@ -8616,13 +8613,13 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             ))
         };
         let level = world("{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }");
-        pose_assert_near(pose_apply(level, [0.0; 3]), [0.0, 1.5, 0.5]);
-        pose_assert_near(pose_apply(level, [0.0, 0.0, 1.0]), [0.0, 1.5, 1.5]);
+        pose_assert_near(&pose_apply(level, [0.0; 3]), &[0.0, 1.5, 0.5]);
+        pose_assert_near(&pose_apply(level, [0.0, 0.0, 1.0]), &[0.0, 1.5, 1.5]);
         let half = std::f64::consts::FRAC_1_SQRT_2;
         let rolled = world(&format!("{{ x: 0.0, y: 0.0, z: {half}, w: {half} }}"));
-        pose_assert_near(pose_apply(rolled, [0.0, 0.0, 1.0]), [0.0, 1.5, 1.5]);
-        pose_assert_near(pose_apply(rolled, [0.0, 1.0, 0.0]), [1.0, 1.5, 0.5]);
-        pose_assert_near(pose_apply(rolled, [1.0, 0.0, 0.0]), [0.0, 0.5, 0.5]);
+        pose_assert_near(&pose_apply(rolled, [0.0, 0.0, 1.0]), &[0.0, 1.5, 1.5]);
+        pose_assert_near(&pose_apply(rolled, [0.0, 1.0, 0.0]), &[1.0, 1.5, 0.5]);
+        pose_assert_near(&pose_apply(rolled, [1.0, 0.0, 0.0]), &[0.0, 0.5, 0.5]);
     }
 
     #[test]
