@@ -3329,7 +3329,7 @@ mod fused_room_tests {
     /// under it with the room's tag, the point, and the normal facing the
     /// ray; nothing there is a miss.
     #[test]
-    fn rays_land_on_the_room_with_its_outward_normal() {
+    fn rays_land_on_the_room_with_a_normal_facing_the_ray() {
         let room = stand_in_room();
         let mut w = world_with(vec![room_body(&Arc::new(room.clone()))]);
         run(&mut w, 1, |_| {});

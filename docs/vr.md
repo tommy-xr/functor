@@ -431,16 +431,18 @@ functor -d examples/room-place run native   # desktop stand-in room
 ```
 
 `Physics.fusedRoom` makes the room hittable, and `Physics.cast` returns the
-point and the surface normal (it faces the ray: chunk triangles are
-two-sided):
+point and the surface normal, facing the ray:
 
 ```functor
+// Stand a +Y-up node on the hit surface: tilt, then turn toward the normal.
+let placed = (hit: Physics.rayHit, node) =>
+  node
+    |> Scene.rotateX(Angle.radians(Math.acos(Math.clamp(-1.0, 1.0, hit.ny))))
+    |> Scene.rotateY(Angle.radians(Math.atan2(hit.nx, hit.nz)))
+    |> Scene.translate(Vec3.make(hit.x, hit.y, hit.z))
+
 let hit = Physics.cast(ray.origin, ray.direction, 10.0) in
-// stand a +Y-up node on the normal n: tilt, then turn toward it
-node
-  |> Scene.rotateX(Angle.radians(Math.acos(n.y)))
-  |> Scene.rotateY(Angle.radians(Math.atan2(n.x, n.z)))
-  |> Scene.translate(Vec3.make(hit.x, hit.y, hit.z))
+if hit.hit then Option.Some(placed(hit, marker)) else Option.None
 ```
 
 - A ring shows where the right controller's aim ray meets the room. A ray
