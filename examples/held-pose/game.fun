@@ -15,12 +15,12 @@ let rig =
   Camera3D.firstPerson(
     Vec3.make(0.0, 1.5, 0.0), Angle.radians(0.0), Angle.radians(0.0), Angle.degrees(60.0))
 
-// Without a tracked right hand: ahead and a little low, turned 30 degrees to
-// the left, tipped up 20, and rolled 40 to the left (a tracking-space pose).
+// Without a tracked right hand: ahead, turned 65 degrees to the left, tipped
+// up 20, and rolled 40 to the left (a tracking-space pose).
 let demoGrip =
   Camera3D.mapTrackedPose(rig, {
-    position: { x: 0.0, y: -0.1, z: -0.45 },
-    orientation: { x: 0.24479232, y: 0.18214797, z: 0.28311405, w: 0.90925534 }
+    position: { x: 0.0, y: -0.04, z: -0.4 },
+    orientation: { x: 0.31859662, y: 0.44713596, z: 0.1964002, w: 0.81239928 }
   })
 
 let init = { grip: demoGrip, tracked: false }
@@ -42,7 +42,7 @@ let bar = (color, x, y, z, at) =>
   Scene.cube()
     |> Scene.scaleXYZ(x, y, z)
     |> Scene.translate(at)
-    |> Scene.color(color)
+    |> Scene.lit(color)
 
 let marker =
   Scene.group([
@@ -53,10 +53,14 @@ let marker =
   ])
 
 let draw = (m, tts) =>
-  Frame.create(
+  Frame.createLit(
     rig |> Camera3D.clip(0.05, 50.0),
     Scene.group([
-      Scene.plane() |> Scene.scale(6.0) |> Scene.color(Color.rgb(0.08, 0.09, 0.16)),
+      Scene.plane() |> Scene.scale(6.0) |> Scene.lit(Color.rgb(0.08, 0.09, 0.16)),
       marker |> Scene.atPose(m.grip),
-    ]))
+    ]),
+    [
+      Light.ambient(Color.rgb(0.35, 0.35, 0.4)),
+      Light.directional(Vec3.make(-0.4, -1.0, 0.6), Color.rgb(1.0, 1.0, 1.0), 0.8),
+    ])
     |> Frame.withClearColor(Color.rgb(0.015, 0.02, 0.06))

@@ -94,7 +94,7 @@ function boxCenters(scene) {
     const world = mmul(parent, node.xform);
     const obj = node.obj;
     if (obj.Group) obj.Group.forEach((c) => walk(c, world, color));
-    else if (obj.Material) obj.Material[1].forEach((c) => walk(c, world, obj.Material[0].Color ?? color));
+    else if (obj.Material) obj.Material[1].forEach((c) => walk(c, world, obj.Material[0].Lit?.color ?? color));
     else if (obj.Geometry === "Cube" && color) {
       for (const [name, rgb] of Object.entries(COLORS)) {
         if (rgb.every((v, i) => Math.abs(v - color[i]) < 1e-6)) found[name] = world[3].slice(0, 3);

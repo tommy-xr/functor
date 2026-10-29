@@ -306,6 +306,15 @@
       ],
       "inputScript": "shoulder.script",
       "captureAtFrame": 90
+    },
+    {
+      "name": "held-pose-demo",
+      "sample": "held-pose",
+      "fixedTime": 0.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }
