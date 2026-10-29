@@ -17,9 +17,9 @@ type t = host
 /// or by `--mount ss2=PATH`. `functor run vr` sends the headset what it reads.
 let mount : (string) => t
 /// Match file names under the prefix ignoring ASCII case, for data authored
-/// on a case-insensitive disk (`fam/MedSci_1/WALL.PCX` named `medsci_1/wall.pcx`):
-/// a path with no exact match reads the one file it matches, and none when
-/// two differ only in case. The source is last for piping.
+/// on a case-insensitive disk (`fam/MedSci_1/WALL.PCX` named
+/// `fam/medsci_1/wall.pcx`): a path with no exact match reads the one file it
+/// matches, and none when two differ only in case.
 let ignoreCase : (t) => t
 /// Where a standalone headset finds the files (an absolute path, `!` into a
 /// zip). Declared for later: reading it isn't implemented yet.
