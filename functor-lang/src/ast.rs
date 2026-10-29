@@ -105,11 +105,16 @@ pub struct ExpectDecl {
     pub span: Span,
 }
 
-/// `let name : Type` in a `.funi` — a value signature with no body.
+/// `let name : Type` in a `.funi` — a value signature with no body —
+/// optionally under an `impure[file]` header naming what it reads.
 #[derive(Debug)]
 pub struct SigDecl {
     pub name: String,
     pub ty: TypeName,
+    /// The header's read classes; empty for a pure built-in.
+    pub reads: Vec<crate::reads::ReadClass>,
+    /// From the `impure` header when there is one, so the `///` block above
+    /// it documents the signature.
     pub span: Span,
 }
 

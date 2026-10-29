@@ -38,12 +38,14 @@ let center : () => anchor
 ///
 /// The message is delivered VERBATIM, like `Sub.every`'s — so the link between
 /// its type and `update`'s is a runtime check, not a static one.
+impure[ui]
 let button : (string, 'msg) => view
 /// Create a controlled slider from minimum, maximum, value, and tagger.
 ///
 /// A drag applies the tagger to the new value and folds the resulting message
 /// through `update`. The maximum must exceed the minimum, and the tagger must
 /// be a function or constructor.
+impure[ui]
 let slider : (float, float, float, 'tagger) => view
 /// Create a controlled text input whose tagger receives edited text.
 ///
@@ -51,4 +53,5 @@ let slider : (float, float, float, 'tagger) => view
 /// type into the field instead of driving the game; Escape defocuses the field
 /// first and releases the cursor second. An `update` that transforms the text
 /// resets the caret to the end.
+impure[ui]
 let textInput : (string, 'tagger) => view

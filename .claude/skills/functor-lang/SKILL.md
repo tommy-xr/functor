@@ -406,7 +406,13 @@ let grab = (s) =>
 - **Hot reload watches every project file**: editing, adding, or removing
   ANY `.fun` in the directory reloads with the model preserved (stored
   closures rebind per module — a def moved between files is a rename and
-  keeps its old body with a warning).
+  keeps its old body with a warning). A top-level **value** whose code,
+  type, referenced defs (transitively, any module) and `File.bytes` /
+  `File.exists` reads are unchanged keeps its old value instead of
+  re-evaluating — put an expensive decode in its own module/def and editing a
+  constant elsewhere reloads in milliseconds. Never kept: functions, opaque
+  non-plain values, anything that read the live physics world. A kept value
+  doesn't re-run, so its `Debug.log` lines don't print again.
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
   source text (multi-file is native-only for now).
 

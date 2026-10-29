@@ -143,7 +143,13 @@ project files' mtime each frame and on change reparses → rechecks → builds a
 **the model preserved** (it is a plain value the host holds). Closures stored *inside* the model
 rebind to the edited code, carrying their captured values over (matched by the enclosing def's
 name; a renamed/deleted def keeps its old body with a loud `[functor-lang]` warning). A broken edit prints
-once and keeps the old program running. The physics world (like the model) survives reload. Pending
+once and keeps the old program running. The new `Session` keeps each top-level value whose code,
+type, referenced defs (transitively) and project-file reads are unchanged, so an edit to a constant
+doesn't re-run an expensive decode (`functor_lang::reuse`; plain-data values only, never one that
+read the live physics world). **A host function that reads host state at call time must declare
+`impure[class]` above its `.funi` signature and call `note_read(class)`** (classes: `file`,
+`physics`, `ui`; side effects stay `Effect.t` values) — or reload reuse keeps stale values. A drift
+test and a debug assertion check the two agree. The physics world (like the model) survives reload. Pending
 effects are reset on reload (an in-flight HTTP tagger would dangle). Native watches every project
 `.fun`; on wasm, hot-reload is native-only (reload the page, or push source via a
 `{ type: "functor-lang-set-source", source }` postMessage). See the `functor-lang` skill for the exact rules.

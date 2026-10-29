@@ -40,7 +40,8 @@ use functor_runtime_common::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
-    journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, validate_contract,
+    journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, reused_status,
+    validate_contract,
     ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Provenance, Reporter,
     ShellOptions, SpanSource,
 };
@@ -280,24 +281,38 @@ struct Loaded {
     has_webview: bool,
     config: Option<GameConfig>,
     settings: Option<GameSettings>,
+    /// How many top-level values a reload kept (`functor_lang::reuse`).
+    reuse: functor_lang::reuse::ReuseStats,
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
 /// every sibling `.fun` file — file = module). Errors come back as fully
 /// rendered strings (`path:line:col: message`) so `create` can exit loud with
 /// them and hot-reload can print-and-keep-running with the same text.
-fn load_game(path: &str, role: &EntryRole) -> Result<Loaded, String> {
-    load_project(path, None, role)
+fn load_game(path: &str, role: &EntryRole, previous: Option<&Session>) -> Result<Loaded, String> {
+    load_project(path, None, role, previous)
 }
 
 /// The source-shaped half of [`load_game`]: the pushed source stands in for
 /// the ENTRY file (the network reload path, `reload_source`); sibling
 /// modules still load from disk.
-fn load_source(path: &str, src: String, role: &EntryRole) -> Result<Loaded, String> {
-    load_project(path, Some(src), role)
+fn load_source(
+    path: &str,
+    src: String,
+    role: &EntryRole,
+    previous: Option<&Session>,
+) -> Result<Loaded, String> {
+    load_project(path, Some(src), role, previous)
 }
 
-fn load_project(path: &str, entry_src: Option<String>, role: &EntryRole) -> Result<Loaded, String> {
+/// `previous`: the running session, on a hot reload — values it can vouch
+/// for are reused (`Session::load_reusing`).
+fn load_project(
+    path: &str,
+    entry_src: Option<String>,
+    role: &EntryRole,
+    previous: Option<&Session>,
+) -> Result<Loaded, String> {
     let entry = std::path::Path::new(path);
     // A pushed buffer (network reload) stands in for the entry file; siblings
     // still load from disk.
@@ -312,13 +327,17 @@ fn load_project(path: &str, entry_src: Option<String>, role: &EntryRole) -> Resu
         &functor_prelude::bundled_modules(),
     )
     .map_err(|e| format!("cannot load {}", e.render()))?;
-    finish_load(path, project, role)
+    finish_load(path, project, role, previous)
 }
 
 /// Load an exact in-memory project: entry first, then sibling modules. This
 /// is the desktop counterpart of the embedded/Quest producer's whole-project
 /// push and deliberately performs no filesystem reads.
-fn load_sources(files: &[(String, String)], role: &EntryRole) -> Result<Loaded, String> {
+fn load_sources(
+    files: &[(String, String)],
+    role: &EntryRole,
+    previous: Option<&Session>,
+) -> Result<Loaded, String> {
     let path = files
         .first()
         .map(|(path, _)| path.as_str())
@@ -332,7 +351,7 @@ fn load_sources(files: &[(String, String)], role: &EntryRole) -> Result<Loaded, 
         &functor_prelude::bundled_modules(),
     )
     .map_err(|e| format!("cannot load {}", e.render()))?;
-    finish_load(path, project, role)
+    finish_load(path, project, role, previous)
 }
 
 /// The project's OWN files out of a linked source map: bundled prelude and
@@ -361,26 +380,30 @@ fn finish_load(
     path: &str,
     project: functor_lang::project::Project,
     role: &EntryRole,
+    previous: Option<&Session>,
 ) -> Result<Loaded, String> {
     // An inline-module role resolves against the linked project, so a reload
     // that renamed or deleted the block fails here — naming the block — rather
     // than reporting its every entry binding as missing.
     let names = role.resolve(path, &project)?;
     // Type diagnostics are advisory in the dev loop: print, keep going.
-    for diag in project.check() {
+    let (diagnostics, types) = project.check_with_types();
+    for diag in diagnostics {
         eprintln!(
             "warning: {}",
             project.sources.render(diag.span.start, &diag.message)
         );
     }
+    let types = functor_lang::reuse::def_types(&project.module, &types);
     let module = project.module;
     let sources = project.sources;
-    let session = Session::load(&module, &mut FunctorHost).map_err(|f| {
-        format!(
-            "cannot load {}",
-            sources.render(f.error.span.start, &f.error.message)
-        )
-    })?;
+    let (session, reuse) = Session::load_reusing(&module, &mut FunctorHost, previous, types)
+        .map_err(|f| {
+            format!(
+                "cannot load {}",
+                sources.render(f.error.span.start, &f.error.message)
+            )
+        })?;
     // The producer contract (init a value, tick/draw functions of the right
     // arity, optional hooks well-shaped) is shared with the embedded producer
     // and the CLI's build gate — errors name the ROLE'S resolved bindings
@@ -404,8 +427,10 @@ fn finish_load(
         has_webview: contract.has_webview,
         config: contract.config,
         settings: contract.settings,
+        reuse,
     })
 }
+
 
 /// Per-file mtimes of every `.fun` file in the entry's project, sorted by
 /// path — the hot-reload change stamp. Any edited, added, or removed file
@@ -453,7 +478,7 @@ impl FunctorLangGame {
         // unequal on the next frame and triggers a reload, instead of being
         // silently absorbed into a stale session.
         let stamp = project_stamp(path);
-        let loaded = match load_game(path, &role) {
+        let loaded = match load_game(path, &role, None) {
             Ok(loaded) => loaded,
             Err(message) => {
                 eprintln!("error: {message}");
@@ -847,11 +872,12 @@ impl Game for FunctorLangGame {
         }
         let started = Instant::now();
         let loaded = match &self.pushed_entry {
-            Some(src) => load_source(&self.path, src.clone(), &self.role),
-            None => load_game(&self.path, &self.role),
+            Some(src) => load_source(&self.path, src.clone(), &self.role, Some(&self.session)),
+            None => load_game(&self.path, &self.role, Some(&self.session)),
         };
         match loaded {
             Ok(loaded) => {
+                let reused = reused_status(&loaded.reuse, &loaded.sources);
                 let (rebound, history_replay) = self.swap_in(loaded);
                 let stored = if rebound > 0 {
                     format!("; {rebound} stored closure(s) rebound")
@@ -862,7 +888,7 @@ impl Game for FunctorLangGame {
                 events::emit(RuntimeEvent::HotReload {
                     ok: true,
                     message: format!(
-                        "hot-reloaded {} in {:.2}ms (model preserved{stored}{history}; an edited \
+                        "hot-reloaded {} in {:.2}ms ({reused}model preserved{stored}{history}; an edited \
 `init` takes effect on restart)",
                         self.path,
                         started.elapsed().as_secs_f64() * 1000.0
@@ -904,8 +930,8 @@ impl Game for FunctorLangGame {
             files
         });
         let loaded = match &pushed_project {
-            Some(files) => load_sources(files, &self.role),
-            None => load_source(&self.path, source.to_string(), &self.role),
+            Some(files) => load_sources(files, &self.role, Some(&self.session)),
+            None => load_source(&self.path, source.to_string(), &self.role, Some(&self.session)),
         }?;
         if let Some(files) = pushed_project {
             self.pushed_project = Some(files);
@@ -913,6 +939,7 @@ impl Game for FunctorLangGame {
         } else {
             self.pushed_entry = Some(source.to_string());
         }
+        let reused = reused_status(&loaded.reuse, &loaded.sources);
         let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
             format!("; {rebound} stored closure(s) rebound")
@@ -922,7 +949,7 @@ impl Game for FunctorLangGame {
         let history = replay_status(history_replay);
         self.stamp = stamp;
         let status = format!(
-            "reloaded {} from pushed source in {:.2}ms (model preserved{stored}{history})",
+            "reloaded {} from pushed source in {:.2}ms ({reused}model preserved{stored}{history})",
             self.path,
             started.elapsed().as_secs_f64() * 1000.0
         );
@@ -947,7 +974,8 @@ impl Game for FunctorLangGame {
         }
         let started = Instant::now();
         let stamp = project_stamp(&self.path);
-        let loaded = load_sources(files, &self.role)?;
+        let loaded = load_sources(files, &self.role, Some(&self.session))?;
+        let reused = reused_status(&loaded.reuse, &loaded.sources);
         self.pushed_project = Some(files.to_vec());
         self.pushed_entry = None;
         let (rebound, history_replay) = self.swap_in(loaded);
@@ -960,7 +988,7 @@ impl Game for FunctorLangGame {
         self.stamp = stamp;
         let status = format!(
             "reloaded {} ({} file(s)) from pushed project in {:.2}ms \
-(model preserved{stored}{history})",
+({reused}model preserved{stored}{history})",
             self.path,
             files.len(),
             started.elapsed().as_secs_f64() * 1000.0
@@ -977,7 +1005,7 @@ impl Game for FunctorLangGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = Instant::now();
-        let loaded = load_sources(files, &self.role)?;
+        let loaded = load_sources(files, &self.role, None)?;
         self.pushed_project = Some(files.to_vec());
         self.pushed_entry = None;
         self.reset_in(loaded);
@@ -1882,6 +1910,7 @@ mod tests {
         let err = load_game(
             path.to_str().expect("utf-8 temp path"),
             &EntryRole::Prefix(String::new()),
+            None,
         )
         .err()
         .expect("load should fail");
@@ -2028,6 +2057,38 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             "adding the hook must prime the world before the next frame"
         );
         physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An on-disk edit of a constant reloads keeping a sibling's unchanged
+    /// value (the same list, not rebuilt) and says so in the status line.
+    #[test]
+    fn hot_reload_reuses_unchanged_values() {
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-reuse",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let entry = dir.join("game.fun");
+        let write_entry = |speed: f64| {
+            let src = format!("{BASE}let speed = {speed:?}\nlet table = Level.table\n");
+            std::fs::write(&entry, src).expect("write entry");
+        };
+        write_entry(1.0);
+        std::fs::write(dir.join("level.fun"), "let table = List.range(1000.0)\n").expect("level");
+        let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
+        let table = |game: &FunctorLangGame| match game.session.global("Level.table") {
+            Some(Value::List(items)) => items,
+            _ => panic!("Level.table is a list"),
+        };
+        let before = table(&game);
+        std::thread::sleep(std::time::Duration::from_millis(20)); // distinct mtime
+        write_entry(2.0);
+        let status = game.reload_source(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+        assert!(status.contains("(reused 3 of 4 bindings; model preserved"), "{status}");
+        assert!(std::rc::Rc::ptr_eq(&before, &table(&game)));
+        assert_eq!(game.session.global("speed").unwrap().to_string(), "2");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

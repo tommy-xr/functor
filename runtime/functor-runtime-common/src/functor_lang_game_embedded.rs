@@ -31,7 +31,7 @@ use crate::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
-    journal_arm, journal_swap, rebase_connect_retry_deadlines, validate_contract,
+    journal_arm, journal_swap, rebase_connect_retry_deadlines, reused_status, validate_contract,
     ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Reporter, ShellOptions,
     SpanSource,
 };
@@ -240,6 +240,8 @@ struct Loaded {
     has_webview: bool,
     config: Option<GameConfig>,
     settings: Option<GameSettings>,
+    /// How many top-level values a reload kept (`functor_lang::reuse`).
+    reuse: functor_lang::reuse::ReuseStats,
 }
 
 /// Load, check, and contract-validate a game PROJECT — the in-memory
@@ -247,8 +249,15 @@ struct Loaded {
 /// (`create`) and the push path (`reload_source`/`reload_project`). `sources`
 /// is every project file as `(path, source)`, the ENTRY first, then siblings
 /// (`file = module`, so `pieces.fun` is module `Pieces`). Errors come back as
-/// fully rendered strings (`path:line:col: message`).
-fn load_source(sources: &[(String, String)], role: &EntryRole) -> Result<Loaded, String> {
+/// fully rendered strings (`path:line:col: message`). `previous`: the running
+/// session, on a hot reload — values it can vouch for are reused
+/// (`Session::load_reusing`); a changed pushed data file invalidates its
+/// readers.
+fn load_source(
+    sources: &[(String, String)],
+    role: &EntryRole,
+    previous: Option<&Session>,
+) -> Result<Loaded, String> {
     let path = sources
         .first()
         .map(|(p, _)| p.clone())
@@ -272,18 +281,21 @@ fn load_source(sources: &[(String, String)], role: &EntryRole) -> Result<Loaded,
     let source_map = project.sources;
     // Type diagnostics are advisory in the dev loop: warn, keep going
     // (the CLI's `build` is the strict gate).
-    for diag in functor_lang::check(&module) {
+    let (diagnostics, types) = functor_lang::check_with_types(&module);
+    for diag in diagnostics {
         log::warn!(
             "warning: {}",
             source_map.render(diag.span.start, &diag.message)
         );
     }
-    let session = Session::load(&module, &mut FunctorHost).map_err(|f| {
-        format!(
-            "cannot load {}",
-            source_map.render(f.error.span.start, &f.error.message)
-        )
-    })?;
+    let types = functor_lang::reuse::def_types(&module, &types);
+    let (session, reuse) = Session::load_reusing(&module, &mut FunctorHost, previous, types)
+        .map_err(|f| {
+            format!(
+                "cannot load {}",
+                source_map.render(f.error.span.start, &f.error.message)
+            )
+        })?;
     // The producer contract (init a value, tick/draw functions of the right
     // arity, optional hooks well-shaped) is shared with the desktop producer
     // and the CLI's build gate — errors name the ROLE'S resolved bindings
@@ -307,8 +319,10 @@ fn load_source(sources: &[(String, String)], role: &EntryRole) -> Result<Loaded,
         has_webview: contract.has_webview,
         config: contract.config,
         settings: contract.settings,
+        reuse,
     })
 }
+
 
 impl FunctorLangEmbeddedGame {
     /// Build the producer from in-memory project sources (entry FIRST, then
@@ -338,7 +352,7 @@ impl FunctorLangEmbeddedGame {
             .first()
             .map(|(p, _)| p.clone())
             .unwrap_or_else(|| "game.fun".to_string());
-        let loaded = load_source(&sources, &role)?;
+        let loaded = load_source(&sources, &role, None)?;
         log::info!("[functor-lang] loaded {path}");
         // Arm the paused-inspector journal on this thread: from now on every
         // live model-updating call is journaled (a cheap Rc-clone push).
@@ -652,7 +666,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
         } else {
             sources.push((self.path.clone(), source.to_string()));
         }
-        let loaded = load_source(&sources, &self.role)?;
+        let loaded = load_source(&sources, &self.role, Some(&self.session))?;
+        let reused = reused_status(&loaded.reuse, &loaded.sources);
         self.sources = sources;
         let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
@@ -662,7 +677,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
         };
         let history = replay_status(history_replay);
         let status = format!(
-            "reloaded {} from pushed source in {:.2}ms (model preserved{stored}{history})",
+            "reloaded {} from pushed source in {:.2}ms ({reused}model preserved{stored}{history})",
             self.path,
             now_ms() - started
         );
@@ -687,7 +702,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = now_ms();
-        let loaded = load_source(files, &self.role)?;
+        let loaded = load_source(files, &self.role, Some(&self.session))?;
+        let reused = reused_status(&loaded.reuse, &loaded.sources);
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         let (rebound, history_replay) = self.swap_in(loaded);
@@ -699,7 +715,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
         let history = replay_status(history_replay);
         let status = format!(
             "reloaded {} ({} file(s)) from pushed project in {:.2}ms \
-(model preserved{stored}{history})",
+({reused}model preserved{stored}{history})",
             self.path,
             files.len(),
             now_ms() - started
@@ -713,7 +729,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = now_ms();
-        let loaded = load_source(files, &self.role)?;
+        let loaded = load_source(files, &self.role, None)?;
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         self.reset_in(loaded);
@@ -1354,6 +1370,61 @@ let settings = (model) =>
         game.load_project(&edited).expect("loads");
         assert_eq!(game.config().unwrap().xr.refresh_rate, Some(72.0));
         assert_eq!(foveation(&game), Some(FoveationLevel::High), "settings(init)");
+    }
+
+    /// A reload keeps a top-level value whose code, dependencies and project
+    /// files are unchanged — the SAME value, not evaluated again — and
+    /// evaluates its readers again when a pushed data file changes. A value
+    /// reading the live physics world is never kept.
+    #[test]
+    fn reload_reuses_values_until_a_file_they_read_changes() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::storage::set_project_reader(None);
+            }
+        }
+        let _reset = Reset;
+        let cache = std::sync::Arc::new(crate::asset::AssetCache::new());
+        cache.replace_uploaded("data/level.bin", vec![1, 2, 3]);
+        cache.replace_uploaded("data/other.bin", vec![9]);
+        crate::storage::set_project_reader(Some(cache.clone()));
+        const LEVEL: &str = "let data = File.bytes(Path.of(\"data/level.bin\"))
+let size = Bytes.length(data)
+let probe = Physics.cast(Vec3.make(0.0, 10.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 100.0)
+";
+        let files = |speed: f64| {
+            vec![
+                ("game.fun".to_string(), format!("{BOOT}\nlet speed = {speed:?}\nlet size = Level.size\n")),
+                ("level.fun".to_string(), LEVEL.to_string()),
+            ]
+        };
+        let mut game =
+            FunctorLangEmbeddedGame::create(files(1.0), Box::new(NativePlatform)).expect("loads");
+        let global = |game: &FunctorLangEmbeddedGame, name: &str| game.session.global(name).unwrap();
+        let same = |a: &Value, b: &Value| match (a, b) {
+            (Value::HostData(a), Value::HostData(b)) => std::rc::Rc::ptr_eq(a, b),
+            (Value::Record(a), Value::Record(b)) => std::rc::Rc::ptr_eq(a, b),
+            _ => panic!("not a shared value"),
+        };
+        let (data, probe) = (global(&game, "Level.data"), global(&game, "Level.probe"));
+
+        let status = game.reload_project(&files(2.0)).expect("reloads");
+        assert!(status.contains("reused 4 of 6 bindings"), "{status}");
+        assert!(same(&data, &global(&game, "Level.data")), "an unchanged read is kept");
+        assert!(!same(&probe, &global(&game, "Level.probe")), "a live read never is");
+
+        cache.replace_uploaded("data/other.bin", vec![8]);
+        game.reload_project(&files(2.0)).expect("reloads");
+        assert!(same(&data, &global(&game, "Level.data")), "an unrelated file changed");
+
+        cache.replace_uploaded("data/level.bin", vec![1, 2, 3, 4]);
+        game.reload_project(&files(2.0)).expect("reloads");
+        assert!(!same(&data, &global(&game, "Level.data")), "the file it read changed");
+        assert!(matches!(global(&game, "size"), Value::Number(n) if n == 4.0), "and its readers");
     }
 
     #[test]
