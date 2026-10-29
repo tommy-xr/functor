@@ -352,7 +352,8 @@ frame |> Frame.withFusedRoom(0.25, Color.rgb(0.35, 0.9, 1.0))
 
 #### The fused room as colliders
 
-One body makes the fused room solid, whether or not a frame draws it:
+One body makes the fused room solid, whether or not a frame draws it
+(`examples/room-bounce` shoots bouncy balls at it):
 
 ```functor
 let physics = (model) =>
@@ -393,6 +394,25 @@ let physics = (model) =>
 - Walls are surfaces with no thickness. A body that moves farther than its
   radius in one 1/60 s step can end a step behind one, so give small, fast
   bodies `|> Physics.continuous` (continuous collision detection).
+
+### Room-bounce
+
+`examples/room-bounce` shoots bouncy balls at the real room:
+
+```sh
+functor -d examples/room-bounce run vr
+functor -d examples/room-bounce run native   # desktop stand-in room
+```
+
+- The right trigger shoots a 5 cm ball along the controller's aim, once per
+  press. X shows or hides the fused room the balls hit. The room fills in as
+  you look around, and a ball thrown where nobody has looked yet flies
+  through.
+- The newest 40 balls stay; the 41st recycles the oldest.
+- On desktop the stand-in room (a floor, a desk and three walls) is fused
+  instead. Space shoots along the view, a click shoots through the clicked
+  point, and G toggles the mesh. `shoot.script` replays a few shots for the
+  goldens (its click positions assume `--capture-size 1600x1200`).
 
 ### Mixed-reality parts viewer
 

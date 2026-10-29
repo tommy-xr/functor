@@ -248,6 +248,26 @@
       ],
       "inputScript": "toggle.script",
       "captureAtFrame": 120
+    },
+    {
+      "name": "room-bounce-flight",
+      "sample": "room-bounce",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "shoot.script",
+      "captureAtFrame": 180
+    },
+    {
+      "name": "room-bounce-rest",
+      "sample": "room-bounce",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "shoot.script",
+      "captureAtFrame": 420
     }
   ]
 }
