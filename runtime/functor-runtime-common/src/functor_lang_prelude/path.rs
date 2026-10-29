@@ -36,7 +36,9 @@ impl crate::host_registry::FromArg for FunctorLangPath {
             }
             Value::String(s) => {
                 return Err(RunError {
-                    message: format!("{path}: expected a Path.t, got a string — wrap it: Path.of({s:?})"),
+                    message: format!(
+                        "{path}: expected a Path.t, got a string — wrap it: Path.of({s:?})"
+                    ),
                     span,
                 })
             }
@@ -135,12 +137,22 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Path.ext", "Path.ext(path)", |path: FunctorLangPath| {
         Value::String(ext(&path.0).into())
     });
-    reg.fn1("Path.parent", "Path.parent(path)", |path: FunctorLangPath| {
-        path_value(parent(&path.0))
-    });
-    reg.fn1("Path.toString", "Path.toString(path)", |path: FunctorLangPath| {
-        Value::String(if path.0.is_empty() { ".".into() } else { path.0.clone() })
-    });
+    reg.fn1(
+        "Path.parent",
+        "Path.parent(path)",
+        |path: FunctorLangPath| path_value(parent(&path.0)),
+    );
+    reg.fn1(
+        "Path.toString",
+        "Path.toString(path)",
+        |path: FunctorLangPath| {
+            Value::String(if path.0.is_empty() {
+                ".".into()
+            } else {
+                path.0.clone()
+            })
+        },
+    );
 }
 
 #[cfg(test)]
@@ -180,9 +192,18 @@ mod tests {
 
     #[test]
     fn resolve_joins_against_a_base() {
-        assert_eq!(resolve("ss2/mesh", "a.bin").as_deref(), Ok("ss2/mesh/a.bin"));
-        assert_eq!(resolve("ss2/mesh", "sub/a.bin/").as_deref(), Ok("ss2/mesh/sub/a.bin"));
-        assert_eq!(resolve("ss2/mesh", "../tex/a.png").as_deref(), Ok("ss2/tex/a.png"));
+        assert_eq!(
+            resolve("ss2/mesh", "a.bin").as_deref(),
+            Ok("ss2/mesh/a.bin")
+        );
+        assert_eq!(
+            resolve("ss2/mesh", "sub/a.bin/").as_deref(),
+            Ok("ss2/mesh/sub/a.bin")
+        );
+        assert_eq!(
+            resolve("ss2/mesh", "../tex/a.png").as_deref(),
+            Ok("ss2/tex/a.png")
+        );
         assert_eq!(resolve("", "a.bin").as_deref(), Ok("a.bin"));
         assert!(resolve("ss2", "../../x").is_err());
         assert!(resolve("ss2", "/x").is_err());
