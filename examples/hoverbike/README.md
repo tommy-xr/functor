@@ -33,7 +33,8 @@ npm run test:hoverbike                   # a scripted ride over the debug server
   probes, steps the controller, and returns `Physics.move`. The capsule rides
   far above the ground, so `snap`, the step-up and `grounded` never engage.
   When a move comes up short against a wall, the bike takes the velocity the
-  move achieved and slides on.
+  move achieved and slides on. The capsule is round in plan: wider than the bike, and
+  about 0.6 m short of its nose head-on.
 - **Rig.** Both cameras are yaw-only, so the horizon stays level. The fairing
   banks into turns and pitches with acceleration; the saddle, bars, grips and
   gauge stay rigid in the yaw-only frame, and the rider camera sits at the eye.

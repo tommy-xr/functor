@@ -73,8 +73,10 @@ let drive = (c: Controls, dt: float, v: float): float =>
 let approach = (target: float, rate: float, dt: float, v: float): float =>
   v + (target - v) * Math.min(1.0, rate * dt)
 
+let speedOf = (s: State) => Math.sqrt(s.vx * s.vx + s.vz * s.vz)
+
 let step = (c: Controls, probes: List<Probe>, dt: float, s: State): State =>
-  let speed = Math.sqrt(s.vx * s.vx + s.vz * s.vz) in
+  let speed = speedOf(s) in
   // Capped at the most speed this step can reach, so speed × yaw rate stays
   // under `maxLateralAccel` after the step too.
   let limit = yawLimit(speed + c.throttle * thrust * dt) in
@@ -112,15 +114,13 @@ type Sample = { t: float, h: float, x: float, z: float, s: State, ay: float }
 // Positions advance by the new velocity, as `Physics.move(v × dt)` does.
 let simulate = (seconds: float, controlsAt: (float) => Controls, h0: float, s0: State): List<Sample> =>
   List.range(Math.round(seconds * 60.0)) |> List.fold((acc, i) =>
-    let last = (match acc with | [head, .._] => head | [] => { t: 0.0, h: h0, x: 0.0, z: 0.0, s: s0, ay: 0.0 }) in
+    let last = acc |> List.head |> Option.defaultValue({ t: 0.0, h: h0, x: 0.0, z: 0.0, s: s0, ay: 0.0 }) in
     let s = step(controlsAt(last.t), flatProbes(last.h), dt60, last.s) in
     [{ t: (i + 1.0) * dt60, h: last.h + s.vy * dt60, x: last.x + s.vx * dt60, z: last.z + s.vz * dt60,
        s: s, ay: (s.vy - last.s.vy) / dt60 }, ..acc], [])
 
 let latest = (samples: List<Sample>): Sample =>
-  match samples with
-  | [head, .._] => head
-  | [] => { t: 0.0, h: 0.0, x: 0.0, z: 0.0, s: rest, ay: 0.0 }
+  samples |> List.head |> Option.defaultValue({ t: 0.0, h: 0.0, x: 0.0, z: 0.0, s: rest, ay: 0.0 })
 
 let maxOf = (f: (Sample) => float, samples: List<Sample>): float =>
   samples |> List.map(f) |> List.maximum |> Option.defaultValue(0.0)
@@ -129,7 +129,6 @@ let between = (t0: float, t1: float, samples: List<Sample>) =>
   samples |> List.filter((x) => x.t >= t0 && x.t < t1)
 
 let hoverError = (x: Sample) => Math.abs(x.h - hoverHeight)
-let speedOf = (s: State) => Math.sqrt(s.vx * s.vx + s.vz * s.vz)
 let always = (c: Controls) => (t: float) => c
 
 // Hover settles within ±5 cm in 3 s from below, from above, and from high
