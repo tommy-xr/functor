@@ -327,3 +327,26 @@ fn a_host_that_records_nothing_reuses_only_values_that_never_called_it() {
     assert_eq!(all(&stats), (1, 2));
     assert_eq!(host.0.slow_calls, 2);
 }
+
+#[test]
+fn swapping_unit_constructors_evaluates_operator_uses() {
+    // `==` dispatches on the brand `aa`'s constructor builds, so swapping the
+    // constructors changes `result` with its own code untouched.
+    let src = |aa: &str, bb: &str| {
+        format!(
+            "type a = | A(value: float)\ntype b = | B(value: float)\nunit aa = {aa}\nunit bb = {bb}\n\
+unit aa (==) = (x, y) => true\nunit bb (==) = (x, y) => false\nlet result = A(1.0) == A(2.0)\n"
+        )
+    };
+    let (before, after) = (src("A", "B"), src("B", "A"));
+    let mut host = TestHost::default();
+    let (first, _) = load(&[("game.fun", &before)], &mut host, None);
+    assert!(matches!(first.global("result"), Some(Value::Bool(true))));
+    let (cold, _) = load(&[("game.fun", &after)], &mut host, None);
+    let (reloaded, stats) = load(&[("game.fun", &after)], &mut host, Some(&first));
+    assert_eq!(all(&stats).0, 0);
+    assert_eq!(
+        reloaded.global("result").map(|v| v.to_string()),
+        cold.global("result").map(|v| v.to_string())
+    );
+}

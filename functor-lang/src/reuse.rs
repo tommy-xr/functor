@@ -10,7 +10,8 @@
 //!   those still read the same ([`crate::Host::inputs_current`]);
 //! - every def it references is unchanged, transitively, and sits on the same
 //!   side of it in def order (eager evaluation can only demand earlier defs);
-//! - the module's unit operators are the same (they dispatch by name).
+//! - the module's units and unit operators are the same, and resolving them
+//!   read nothing from the host (an operator dispatches on its unit's brand).
 //!
 //! An unchanged def whose value is plain data
 //! ([`Value::is_reload_safe_snapshot`]) is reused; every other def evaluates
@@ -104,6 +105,7 @@ impl<'p> Planner<'p> {
         module: &Module,
         previous: Option<(&'p HashMap<String, Value>, &'p Records)>,
         types: HashMap<String, String>,
+        units_pure: bool,
         host: &mut dyn Host,
     ) -> Planner<'p> {
         let (units, unit_refs) = unit_shape(module);
@@ -134,7 +136,9 @@ impl<'p> Planner<'p> {
             },
             stats: ReuseStats::default(),
         };
-        planner.unchanged = planner.find_unchanged(module, host);
+        if units_pure {
+            planner.unchanged = planner.find_unchanged(module, host);
+        }
         planner
     }
 
@@ -270,9 +274,14 @@ impl<'p> Planner<'p> {
     }
 }
 
-/// The hash of the module's unit operators, and the globals they name.
+/// The hash of the module's units and unit operators (an operator dispatches
+/// on the brand its unit's constructor builds), and the globals they name.
 fn unit_shape(module: &Module) -> (u64, Vec<String>) {
     let mut walk = Walk::default();
+    for unit in &module.units {
+        unit.suffix.hash(&mut walk.hasher);
+        walk.expr(&unit.target);
+    }
     for op in &module.unit_ops {
         op.suffix.hash(&mut walk.hasher);
         std::mem::discriminant(&op.op).hash(&mut walk.hasher);

@@ -730,7 +730,6 @@ impl Session {
             calls: &calls,
         };
         let previous = previous.and_then(|p| Some((&p.globals, p.records.as_ref()?)));
-        let mut planner = Planner::new(module, previous, types, &mut counted);
         let mut interp = Interp {
             globals: HashMap::new(),
             mut_slots: HashMap::new(),
@@ -744,9 +743,24 @@ impl Session {
             brand_ops_complete: true,
             host: &mut counted,
         };
+        // Unit operators resolve first, by probing each unit's constructor.
+        // Reuse needs those probes to read nothing from the host and to settle
+        // every operator now: one waiting on a def's value resolves mid-load,
+        // outside any def's record.
+        interp.host.begin_inputs();
+        let probed = interp.load_unit_operators(module);
+        let probe_inputs = interp.host.end_inputs();
+        if let Err(error) = probed {
+            return Err(RunFailure {
+                error,
+                trace: interp.trace,
+            });
+        }
+        let units_pure = interp.brand_ops_complete
+            && (calls.get() == 0 || probe_inputs.is_some_and(|inputs| inputs.is_empty()));
+        let mut planner = Planner::new(module, previous, types, units_pure, &mut *interp.host);
         let loaded = interp
-            .load_unit_operators(module)
-            .and_then(|_| interp.eval_defs_reusing(module, &mut planner, &calls))
+            .eval_defs_reusing(module, &mut planner, &calls)
             .and_then(|_| interp.settle_unit_operators(module));
         match loaded {
             Ok(()) => Ok((
