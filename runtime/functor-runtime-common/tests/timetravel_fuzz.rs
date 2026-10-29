@@ -816,6 +816,7 @@ impl<'a> Shell<'a> {
             self.game.current_scene_frame(),
             world(),
         );
+        let generation = self.game.scene_timeline_generation();
         count(if self.clock.is_paused() { "reloads while paused" } else { "reloads" });
         self.reloaded_pending |= !self.pending.is_empty();
         let status = match self.game.reload_source(&self.source()) {
@@ -845,8 +846,10 @@ impl<'a> Shell<'a> {
         );
         // History holding a closure can't cross a reload: it restarts at the
         // selected frame, by design.
-        let restarted =
-            self.spec.closures && after.1 != before.1 && after.2.map(|f| (f, f)) == after.1;
+        let restarted = self.game.scene_timeline_generation() != generation;
+        if restarted && !(self.spec.closures && after.2.map(|f| (f, f)) == after.1) {
+            return Err(self.fail(Kind::Reload, format!("reload restarted history: {after:?}")));
+        }
         if restarted {
             // The new generation is seeded from the live model, which may hold
             // input since the frame (a known gap): adopt it.
