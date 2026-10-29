@@ -22,7 +22,7 @@
 //     `sightHeight` below the line of sight and is zeroed at `zeroRange`.
 //
 // Everything is a pure function of the model and the fixed step, so scripted
-// captures are byte-identical and every rule below is an `expect`.
+// captures are byte-identical; the expects at the bottom pin the rules.
 
 // ---------------------------------------------------------------- tunables
 
