@@ -7392,33 +7392,61 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         let samples = [
             ("File.bytes", "File.bytes(\"missing.bin\")".to_string()),
             ("File.exists", "File.exists(\"missing.bin\")".to_string()),
-            ("Typeface.file", "Typeface.file(\"missing.ttf\")".to_string()),
-            ("Physics.position", "Physics.position(\"nobody\")".to_string()),
-            ("Physics.linearVelocity", "Physics.linearVelocity(\"nobody\")".to_string()),
-            ("Physics.grounded", "Physics.grounded(\"nobody\")".to_string()),
+            (
+                "Typeface.file",
+                "Typeface.file(\"missing.ttf\")".to_string(),
+            ),
+            (
+                "Physics.position",
+                "Physics.position(\"nobody\")".to_string(),
+            ),
+            (
+                "Physics.linearVelocity",
+                "Physics.linearVelocity(\"nobody\")".to_string(),
+            ),
+            (
+                "Physics.grounded",
+                "Physics.grounded(\"nobody\")".to_string(),
+            ),
             ("Physics.cast", format!("Physics.cast({at})")),
-            ("Physics.castExcluding", format!("Physics.castExcluding(\"nobody\", {at})")),
-            ("Physics.shapeCast", format!("Physics.shapeCast(Physics.sphere(0.5), {at})")),
+            (
+                "Physics.castExcluding",
+                format!("Physics.castExcluding(\"nobody\", {at})"),
+            ),
+            (
+                "Physics.shapeCast",
+                format!("Physics.shapeCast(Physics.sphere(0.5), {at})"),
+            ),
             (
                 "Physics.shapeCastExcluding",
                 format!("Physics.shapeCastExcluding(\"nobody\", Physics.sphere(0.5), {at})"),
             ),
-            ("Physics.transformed", "Physics.transformed(\"nobody\", Scene.cube())".to_string()),
+            (
+                "Physics.transformed",
+                "Physics.transformed(\"nobody\", Scene.cube())".to_string(),
+            ),
             ("Ui.button", "Ui.button(\"go\", 1.0)".to_string()),
-            ("Ui.slider", "Ui.slider(0.0, 1.0, 0.5, (v) => v)".to_string()),
+            (
+                "Ui.slider",
+                "Ui.slider(0.0, 1.0, 0.5, (v) => v)".to_string(),
+            ),
             ("Ui.textInput", "Ui.textInput(\"t\", (s) => s)".to_string()),
             ("Attr.onClick", "Attr.onClick(1.0)".to_string()),
             ("Attr.onInput", "Attr.onInput((s) => s)".to_string()),
         ];
         let declared = declared_reads();
         assert_eq!(
-            samples.iter().map(|(path, _)| *path).collect::<BTreeSet<_>>(),
+            samples
+                .iter()
+                .map(|(path, _)| *path)
+                .collect::<BTreeSet<_>>(),
             declared.keys().map(String::as_str).collect::<BTreeSet<_>>(),
             "every `impure[…]` built-in needs exactly one sample call here"
         );
         for (path, call) in samples {
             let src = format!("let main = () => {call}");
-            let module = functor_lang::lower(functor_lang::parse(&src).expect("parse")).expect("lower");
+            let module =
+                functor_lang::lower(functor_lang::parse(&src).expect("parse")).expect("lower");
             let before = ReadClass::ALL.map(read_count);
             // The call may fail (no project files, no world); the read is noted first.
             let _ = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost);
@@ -7427,7 +7455,10 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
                 .filter(|&class| read_count(class) != before[class as usize])
                 .collect();
             let expected: BTreeSet<ReadClass> = declared[path].iter().copied().collect();
-            assert_eq!(noted, expected, "`{path}`: noted reads vs its `impure[…]` header");
+            assert_eq!(
+                noted, expected,
+                "`{path}`: noted reads vs its `impure[…]` header"
+            );
         }
         take_ui_handlers();
     }
@@ -7435,8 +7466,10 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     /// A built-in that notes a read its `.funi` doesn't declare fails loudly.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "`Physics.peek` reads physics state, but its .funi signature \
-doesn't declare it — add `impure[physics]` above it")]
+    #[should_panic(
+        expected = "`Physics.peek` reads physics state, but its .funi signature \
+doesn't declare it — add `impure[physics]` above it"
+    )]
     fn an_undeclared_read_fails_the_debug_assertion() {
         let mut reg = crate::host_registry::Registry::default();
         reg.fn0("Physics.peek", "Physics.peek()", || {

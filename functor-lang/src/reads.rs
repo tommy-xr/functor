@@ -34,7 +34,9 @@ impl ReadClass {
 
     /// The class a header name registers, if any.
     pub fn from_name(name: &str) -> Option<ReadClass> {
-        ReadClass::ALL.into_iter().find(|class| class.name() == name)
+        ReadClass::ALL
+            .into_iter()
+            .find(|class| class.name() == name)
     }
 }
 
@@ -43,4 +45,3 @@ impl fmt::Display for ReadClass {
         f.write_str(self.name())
     }
 }
-
