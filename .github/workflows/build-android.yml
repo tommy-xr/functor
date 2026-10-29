@@ -15,6 +15,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `closed` runs only to cancel the PR's in-flight run (see concurrency).
+    types: [opened, synchronize, reopened, closed]
   # Rebuilds a branch head on demand (e.g. after its artifact expires).
   workflow_dispatch:
 
@@ -27,6 +29,7 @@ concurrency:
 
 jobs:
   apk:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

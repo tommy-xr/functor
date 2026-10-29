@@ -11,6 +11,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `closed` runs only to cancel the PR's in-flight run (see concurrency).
+    types: [opened, synchronize, reopened, closed]
   # Rebuilds a branch head on demand (e.g. after its artifacts expire).
   workflow_dispatch:
 
@@ -23,6 +25,7 @@ concurrency:
 
 jobs:
   cli:
+    if: github.event.action != 'closed'
     name: ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
