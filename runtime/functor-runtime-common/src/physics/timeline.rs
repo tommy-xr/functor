@@ -110,9 +110,11 @@ pub trait Timeline<S: Simulatable> {
     /// culmination (Phase 6); until then, resume a seek by replaying
     /// [`Timeline::commands_since`], not by re-recording.
     fn record(&mut self, frame: Frame, sim: &S, cmds: &[S::Command]);
-    /// Restore `sim` to the pre-step state of `frame`.
+    /// Restore `sim` to the pre-step state of `frame`; one past the newest
+    /// recorded frame restores the live tail.
     ///
-    /// Panics if `frame` was never recorded or has been pruned away.
+    /// Panics if `frame` was never recorded (and is not the tail) or has been
+    /// pruned away.
     fn seek(&mut self, frame: Frame, sim: &mut S);
     /// The recorded commands for every frame `>= frame`, in frame order.
     ///
@@ -207,13 +209,17 @@ where
     /// needs it while only holding a shared borrow of the live driver, so it
     /// can reconstruct recorded worlds into a throwaway world.
     ///
-    /// Panics on a frame outside recorded history, exactly like
+    /// `frame` may also be one past the newest recorded frame: the live
+    /// tail, i.e. the newest frame's post-step state (a scrub that parked the
+    /// sim mid-history returns to it this way).
+    ///
+    /// Panics on a frame outside that range, exactly like
     /// [`Timeline::seek`] — callers check [`Self::recorded_range`] first.
     pub fn restore_into(&self, frame: Frame, sim: &mut S) {
         let next = self.next_frame().expect("seek on an empty timeline");
         assert!(
-            frame >= self.base && frame < next,
-            "seek({frame}) outside recorded history [{}, {})",
+            frame >= self.base && frame <= next,
+            "seek({frame}) outside recorded history [{}, {}]",
             self.base,
             next
         );
@@ -351,6 +357,17 @@ mod tests {
             Simulatable::snapshot(&sim) == live_end,
             "seek + command replay diverged from the live run"
         );
+    }
+
+    #[test]
+    fn seek_one_past_the_end_restores_the_live_tail() {
+        let mut tl = TimelineLog::keyframes(8);
+        let mut sim = World::new(DEFAULT_GRAVITY);
+        drive(&mut tl, &mut sim, 0, 20);
+        let tail = Simulatable::snapshot(&sim);
+        tl.seek(10, &mut sim);
+        tl.seek(20, &mut sim);
+        assert!(Simulatable::snapshot(&sim) == tail, "seek(20) missed the tail");
     }
 
     #[test]

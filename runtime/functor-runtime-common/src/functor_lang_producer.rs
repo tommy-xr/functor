@@ -4057,6 +4057,43 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         }
     }
 
+    /// Scrubbing back, then back to the newest frame (the desktop scrubber's
+    /// "drag past the end" path), must restore the live world too: that frame
+    /// ended at the live tail, but the earlier scrub parked the world
+    /// mid-history. Resuming then records consecutively.
+    #[test]
+    fn the_character_example_resumes_after_scrubbing_back_to_the_newest_frame() {
+        const SRC: &str = include_str!("../../../examples/character/game.fun");
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        let walk = crate::InputSnapshot {
+            held_keys: vec![crate::Key::W],
+            ..crate::InputSnapshot::default()
+        };
+        let snapshot = || physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()).unwrap();
+        for _ in 0..60 {
+            h.frame_at(physics::FIXED_DT, Some(&walk));
+        }
+        let tail = snapshot();
+        let (_, newest) = h.recorder.scene_frame_range().unwrap();
+
+        let ctx = |h: &mut PhysicsHarness, frame| {
+            h.recorder
+                .seek_scene_to(frame, &mut h.model, &mut h.physics_rt, &mut h.physics_frame, true)
+                .unwrap();
+        };
+        ctx(&mut h, newest - 23);
+        assert!(snapshot() != tail, "the scrub parks the world mid-history");
+        ctx(&mut h, newest);
+        assert!(snapshot() == tail, "the newest frame restores the live tail");
+
+        // Resume: commits the scrub at the newest frame and keeps recording.
+        for _ in 0..30 {
+            h.frame_at(physics::FIXED_DT, Some(&walk));
+        }
+        assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
+    }
+
     /// At 90 Hz most ticks run without a physics step after the last, so they
     /// read a stale `grounded`: the example's jump must still leave the ground.
     #[test]

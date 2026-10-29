@@ -282,7 +282,9 @@ impl SteppedPhysics {
             return warnings;
         }
         let floor = if lo == 0 { 1 } else { lo };
-        let target = frame.clamp(floor, hi);
+        // `hi + 1` is the live tail: a scrub back to the newest rendered frame
+        // must restore it, since an earlier scrub parked the world mid-history.
+        let target = frame.clamp(floor, hi + 1);
         with_world(self.world, |w| {
             self.timeline.seek(target, w);
             // The replayed steps re-emit events/warnings nobody should re-observe.
@@ -331,7 +333,8 @@ impl SteppedPhysics {
         // Pre-step of fixed frame 0 is the world before any step, so the floor
         // is frame 1 (= the world after its first step).
         let floor = if lo == 0 { 1 } else { lo };
-        let target = frame.clamp(floor, hi);
+        // Up to the live tail (`hi + 1`), as in `seek_to_frame`.
+        let target = frame.clamp(floor, hi + 1);
         with_world(self.world, |w| {
             // Commands queued THIS frame (before the rewind) survive the
             // restore: a rewind+command in one frame lands the command at the
