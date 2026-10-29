@@ -3186,6 +3186,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
                 prefix: "ss2/".to_string(),
                 mount: "ss2".to_string(),
                 device: None,
+                ignore_case: false,
             };
             let mounts = project_files::Mounts::read(&root.join("mounts.json")).unwrap();
             project_files::Resolver::load(&root, &[external], &mounts).unwrap()

@@ -37,6 +37,42 @@ struct External {
     /// The `Source.mount` name.
     name: String,
     mount: Option<Mount>,
+    /// `Source.ignoreCase`.
+    ignore_case: bool,
+}
+
+/// `rest`, or with `Source.ignoreCase` the one path under `dir` that matches
+/// it ignoring ASCII case, component by component (an exact name wins; two
+/// that differ only in case match neither).
+fn dir_path(dir: &Path, rest: &str, ignore_case: bool) -> String {
+    if !ignore_case || dir.join(rest).exists() {
+        return rest.to_string();
+    }
+    let mut at = dir.to_path_buf();
+    let mut parts = Vec::new();
+    for part in rest.split('/') {
+        let exact = at.join(part);
+        let found = if exact.exists() {
+            Some(part.to_string())
+        } else {
+            let mut matches = std::fs::read_dir(&at)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|name| name.eq_ignore_ascii_case(part));
+            match (matches.next(), matches.next()) {
+                (Some(name), None) => Some(name),
+                _ => None,
+            }
+        };
+        let Some(name) = found else {
+            return rest.to_string();
+        };
+        at.push(&name);
+        parts.push(name);
+    }
+    parts.join("/")
 }
 
 enum Mount {
@@ -136,10 +172,18 @@ impl Resolver {
                     })?,
                 ),
             };
+            let mount = mount.map(|mount| match mount {
+                Mount::Zip(zip) => Mount::Zip(ZipMount {
+                    ignore_case: external.ignore_case,
+                    ..zip
+                }),
+                dir => dir,
+            });
             resolved.push(External {
                 prefix: external.prefix.clone(),
                 name: external.mount.clone(),
                 mount,
+                ignore_case: external.ignore_case,
             });
         }
         Ok(Resolver {
@@ -214,7 +258,7 @@ impl Resolver {
             None => on_disk(&self.root, path),
             Some((external, rest)) => match &external.mount {
                 None => None,
-                Some(Mount::Dir(dir)) => on_disk(dir, rest),
+                Some(Mount::Dir(dir)) => on_disk(dir, &dir_path(dir, rest, external.ignore_case)),
                 Some(Mount::Zip(zip)) => zip.version(rest),
             },
         }
@@ -257,7 +301,9 @@ impl ProjectReader for Resolver {
             },
             Some((external, rest)) => match &external.mount {
                 None => Err(ProjectReadError::Unreadable(external.unmapped())),
-                Some(Mount::Dir(dir)) => storage::read_confined(dir, rest),
+                Some(Mount::Dir(dir)) => {
+                    storage::read_confined(dir, &dir_path(dir, rest, external.ignore_case))
+                }
                 Some(Mount::Zip(zip)) => zip
                     .read(rest, &external.prefix)
                     .map_err(ProjectReadError::Unreadable),
@@ -270,7 +316,9 @@ impl ProjectReader for Resolver {
             None => self.miscased(path).is_none() && storage::is_file_confined(&self.root, path),
             Some((external, rest)) => match &external.mount {
                 None => false,
-                Some(Mount::Dir(dir)) => storage::is_file_confined(dir, rest),
+                Some(Mount::Dir(dir)) => {
+                    storage::is_file_confined(dir, &dir_path(dir, rest, external.ignore_case))
+                }
                 Some(Mount::Zip(zip)) => zip.exists(rest),
             },
         }
@@ -320,6 +368,7 @@ impl Mount {
             },
             max_entry: MAX_ENTRY_BYTES,
             index: Mutex::new(None),
+            ignore_case: false,
         }))
     }
 }
@@ -334,6 +383,9 @@ struct ZipMount {
     max_entry: u64,
     /// Rebuilt when the archive's size or mtime changes.
     index: Mutex<Option<ZipIndex>>,
+    /// `Source.ignoreCase`: a name with no exact entry reads its one
+    /// case-insensitive match.
+    ignore_case: bool,
 }
 
 struct ZipIndex {
@@ -342,6 +394,22 @@ struct ZipIndex {
     entries: HashMap<String, Entry>,
     /// Lowercased name → a real one, for the case-mismatch hint.
     folded: HashMap<String, String>,
+    /// Lowercased names more than one entry has: `Source.ignoreCase` reads none.
+    ambiguous: HashSet<String>,
+}
+
+impl ZipIndex {
+    /// The entry name `name` reads: itself, else (ignoring case) its one match.
+    fn resolve(&self, name: String, ignore_case: bool) -> String {
+        if !ignore_case || self.entries.contains_key(&name) {
+            return name;
+        }
+        let folded = name.to_lowercase();
+        match self.folded.get(&folded) {
+            Some(real) if !self.ambiguous.contains(&folded) => real.clone(),
+            _ => name,
+        }
+    }
 }
 
 enum Entry {
@@ -369,7 +437,7 @@ impl ZipMount {
     /// The entry's crc and size: changes when its contents do.
     fn version(&self, rest: &str) -> Option<String> {
         let name = format!("{}{rest}", self.inner);
-        self.with_index(|index| match index.entries.get(&name) {
+        self.with_index(|index| match index.entries.get(&index.resolve(name.clone(), self.ignore_case)) {
             Some(Entry::File { size, crc, .. }) => Ok(Some(format!("zip:{crc:08x}:{size}"))),
             _ => Ok(None),
         })
@@ -379,7 +447,10 @@ impl ZipMount {
 
     fn exists(&self, rest: &str) -> bool {
         let name = format!("{}{rest}", self.inner);
-        self.with_index(|index| Ok(matches!(index.entries.get(&name), Some(Entry::File { .. }))))
+        self.with_index(|index| {
+            let name = index.resolve(name, self.ignore_case);
+            Ok(matches!(index.entries.get(&name), Some(Entry::File { .. })))
+        })
             .unwrap_or(false)
     }
 
@@ -387,7 +458,7 @@ impl ZipMount {
     fn read(&self, rest: &str, prefix: &str) -> Result<Arc<[u8]>, String> {
         let name = format!("{}{rest}", self.inner);
         let archive = self.archive.display();
-        self.with_index(|index| match index.entries.get(&name) {
+        self.with_index(|index| match index.entries.get(&index.resolve(name.clone(), self.ignore_case)) {
             Some(Entry::File {
                 index: at, size, ..
             }) => {
@@ -453,6 +524,7 @@ ambiguous, so it isn't read",
         }
         let mut entries = HashMap::new();
         let mut folded = HashMap::new();
+        let mut ambiguous = HashSet::new();
         let mut decoded = HashSet::new();
         for index in 0..zip.len() {
             let entry = zip.by_index_raw(index).map_err(|e| e.to_string())?;
@@ -476,7 +548,10 @@ ambiguous, so it isn't read",
                     crc: entry.crc32(),
                 }
             };
-            folded.entry(name.to_lowercase()).or_insert(name.clone());
+            let real = folded.entry(name.to_lowercase()).or_insert(name.clone());
+            if *real != name {
+                ambiguous.insert(name.to_lowercase());
+            }
             entries.insert(name, state);
         }
         Ok(ZipIndex {
@@ -484,6 +559,7 @@ ambiguous, so it isn't read",
             zip,
             entries,
             folded,
+            ambiguous,
         })
     }
 }
@@ -586,6 +662,7 @@ mod tests {
                     prefix: prefix.clone(),
                     mount: prefix.trim_end_matches('/').to_string(),
                     device: None,
+                    ignore_case: false,
                 })
                 .collect()
         }
@@ -728,6 +805,65 @@ mod tests {
         project.config(r#"{"ss2/": "SS2 data"}"#, Some(r#"{"ss2/": "game.kpf"}"#));
         let whole = project.resolver();
         assert_eq!(read(&whole, "ss2/data/other.bin"), Ok(vec![0]));
+    }
+
+    /// `Source.ignoreCase`: a miscased name reads its one match, in a zip
+    /// and in a folder; an exact name wins, and two that differ only in case
+    /// match neither.
+    #[test]
+    fn ignore_case_reads_the_one_case_insensitive_match() {
+        let project = TempProject::new("fold");
+        write_zip(
+            &project.0.join("game.kpf"),
+            &[
+                ("data/res/fam/MedSci_1/WALL.PCX", Some(b"W")),
+                ("data/res/fam/Dup/a.pcx", Some(b"a")),
+                ("data/res/fam/Dup/A.pcx", Some(b"A")),
+            ],
+        );
+        project.config(
+            r#"{"ss2/": "SS2 data"}"#,
+            Some(r#"{"ss2/": "game.kpf!data/res/"}"#),
+        );
+        let folding = |resolver: Resolver| Resolver {
+            externals: resolver
+                .externals
+                .into_iter()
+                .map(|external| External {
+                    ignore_case: true,
+                    mount: external.mount.map(|mount| match mount {
+                        Mount::Zip(zip) => Mount::Zip(ZipMount {
+                            ignore_case: true,
+                            ..zip
+                        }),
+                        dir => dir,
+                    }),
+                    ..external
+                })
+                .collect(),
+            ..resolver
+        };
+        let strict = project.resolver();
+        assert!(read(&strict, "ss2/fam/medsci_1/wall.pcx").is_err());
+        let zip = folding(project.resolver());
+        assert_eq!(read(&zip, "ss2/fam/medsci_1/wall.pcx"), Ok(b"W".to_vec()));
+        assert!(zip.exists("ss2/fam/MEDSCI_1/Wall.pcx"));
+        assert_eq!(
+            zip.version("ss2/fam/medsci_1/wall.pcx"),
+            zip.version("ss2/fam/MedSci_1/WALL.PCX")
+        );
+        assert_eq!(read(&zip, "ss2/fam/Dup/A.pcx"), Ok(b"A".to_vec()));
+        assert!(read(&zip, "ss2/fam/dup/A.PCX").is_err() && !zip.exists("ss2/fam/Dup/a.PCX"));
+
+        let data = TempProject::new("fold-data");
+        data.write("fam/MedSci_1/WALL.PCX", b"D");
+        project.config(
+            r#"{"ss2/": "game data"}"#,
+            Some(&format!("{{\"ss2/\": {:?}}}", data.0.display().to_string())),
+        );
+        let dir = folding(project.resolver());
+        assert_eq!(read(&dir, "ss2/fam/medsci_1/wall.pcx"), Ok(b"D".to_vec()));
+        assert!(dir.exists("ss2/FAM/medsci_1/WALL.pcx") && !dir.exists("ss2/fam/medsci_1/door.pcx"));
     }
 
     /// Entries that could escape are never served: traversal and absolute

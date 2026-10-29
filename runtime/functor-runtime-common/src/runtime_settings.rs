@@ -43,6 +43,9 @@ pub struct ExternalPrefix {
     pub mount: String,
     /// `Source.device(path)`: where a standalone headset finds it.
     pub device: Option<String>,
+    /// `Source.ignoreCase`: a path under `prefix` that names no file exactly
+    /// reads the one file it names ignoring ASCII case.
+    pub ignore_case: bool,
 }
 
 /// `config`'s XR knobs, read before the XR session starts rendering the game.
