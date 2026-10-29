@@ -31,6 +31,11 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   see the design note below).
 - **PRs:** `History` primitive #218, per-frame model recording #219, coupled
   seek #222, `POST /rewind` #225, the scrubber + web parity #226.
+- **Fuzzed.** `runtime/functor-runtime-common/tests/timetravel_fuzz.rs` drives
+  example games through seeded random play, pause, scrub, branch, and hot
+  reload, checking after every step that model, physics, and clock agree on the
+  frame, that a seek restores exactly what the frame recorded, and that
+  replaying the input log from a branch reproduces the recorded future.
 
 ### Design decisions that emerged (diverged from the original plan)
 
