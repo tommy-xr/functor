@@ -94,6 +94,12 @@ pub fn hide_files_under(dir: &std::path::Path) {
 /// The bytes of a file in the project (the entry file's folder). `path` is
 /// already [`super::path::resolve`]d; `api` names the call in errors.
 pub(super) fn read_project_file(api: &str, path: &str) -> Result<Arc<[u8]>, String> {
+    let read = read_project_file_untracked(api, path);
+    note_input(|| (format!("{READ}{path}"), read_identity(&read)));
+    read
+}
+
+fn read_project_file_untracked(api: &str, path: &str) -> Result<Arc<[u8]>, String> {
     use crate::storage::ProjectReadError;
     if path.is_empty() {
         return Err(format!("{api}: the project root is a folder, not a file"));
@@ -119,9 +125,41 @@ pub(super) fn read_project_file(api: &str, path: &str) -> Result<Arc<[u8]>, Stri
 /// Whether the [`super::path::resolve`]d `path` names a file in the project
 /// (false for the root, and on hosts that can't read project files).
 fn project_file_exists(path: &str) -> bool {
+    let exists = project_file_exists_untracked(path);
+    note_input(|| (format!("{EXISTS}{path}"), exists as u64));
+    exists
+}
+
+fn project_file_exists_untracked(path: &str) -> bool {
     !path.is_empty()
         && crate::storage::project_reader().is_some_and(|reader| reader.exists(path))
         && !is_hidden(path)
+}
+
+/// [`functor_lang::reuse::HostInput`] key prefixes: a file's contents, and
+/// whether it exists.
+const READ: &str = "read:";
+const EXISTS: &str = "exists:";
+
+/// A read's identity: a content hash, or 0 for a failed read.
+fn read_identity(read: &Result<Arc<[u8]>, String>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    read.as_ref().map_or(0, |data| {
+        let mut hasher = std::hash::DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish() | 1
+    })
+}
+
+/// Whether a project-file input still reads the same; `None` for a key that
+/// isn't one.
+pub(super) fn file_input_current(input: &functor_lang::reuse::HostInput) -> Option<bool> {
+    if let Some(path) = input.key.strip_prefix(READ) {
+        let read = read_project_file_untracked("File.bytes", path);
+        return Some(read_identity(&read) == input.identity);
+    }
+    let path = input.key.strip_prefix(EXISTS)?;
+    Some(project_file_exists_untracked(path) as u64 == input.identity)
 }
 
 /// Whether `path` resolves into the [`HIDDEN`] folder.

@@ -26,6 +26,7 @@ mod parser;
 pub mod pmap;
 pub mod project;
 pub mod rebind;
+pub mod reuse;
 mod span;
 pub mod trace;
 pub mod types;

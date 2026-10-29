@@ -1203,6 +1203,10 @@ impl HostData for FunctorLangTexture {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    // A locator, a render-target id, or shared pixels: plain data.
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
 }
 
 /// Which asset family a branded [`FunctorLangAsset`] locates. Consumers check
@@ -1469,6 +1473,10 @@ impl HostData for FunctorLangShape {
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+    // Collision geometry, no handles or live state (`physics::Shape`).
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
     }
 }
 
@@ -5330,9 +5338,63 @@ impl crate::host_registry::FromArg for FunctorLangUiAnchor {
     }
 }
 
+thread_local! {
+    /// What the evaluating top-level def has read so far, between
+    /// [`FunctorHost`]'s `begin_inputs` and `end_inputs`; `None` outside.
+    static DEF_INPUTS: std::cell::RefCell<Option<DefInputs>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// One def's reads: project files (`File.bytes`, `File.exists`,
+/// `Typeface.file`), and the world-read count it started at — any live
+/// physics read makes the value non-reusable.
+struct DefInputs {
+    files: Vec<functor_lang::reuse::HostInput>,
+    world_reads: u64,
+}
+
+/// Record an input of the evaluating def, if one is.
+fn note_input(input: impl FnOnce() -> (String, u64)) {
+    DEF_INPUTS.with(|inputs| {
+        if let Some(inputs) = inputs.borrow_mut().as_mut() {
+            let (key, identity) = input();
+            inputs
+                .files
+                .push(functor_lang::reuse::HostInput { key, identity });
+        }
+    });
+}
+
+/// Reload reuse (`functor_lang::reuse`): a top-level value is a pure function
+/// of its arguments here except for project files, recorded with their
+/// contents' hash, and the live physics world, which no input captures.
+/// Everything else the prelude reads at call time is the call's arguments;
+/// input, time and other live state reach a game through its hooks, never
+/// through a top-level value.
 impl Host for FunctorHost {
     fn provides(&self, path: &str) -> bool {
         registry().provides(path)
+    }
+
+    fn begin_inputs(&mut self) {
+        let world_reads = WORLD_READS.with(|reads| reads.get());
+        DEF_INPUTS.with(|inputs| {
+            *inputs.borrow_mut() = Some(DefInputs {
+                files: Vec::new(),
+                world_reads,
+            })
+        });
+    }
+
+    fn end_inputs(&mut self) -> Option<Vec<functor_lang::reuse::HostInput>> {
+        let inputs = DEF_INPUTS.with(|inputs| inputs.borrow_mut().take())?;
+        (WORLD_READS.with(|reads| reads.get()) == inputs.world_reads).then_some(inputs.files)
+    }
+
+    fn inputs_current(&mut self, inputs: &[functor_lang::reuse::HostInput]) -> bool {
+        inputs
+            .iter()
+            .all(|input| bytes::file_input_current(input) == Some(true))
     }
 
     fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<HostReturn, RunError> {
