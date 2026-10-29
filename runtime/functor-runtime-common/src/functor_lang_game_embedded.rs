@@ -1878,13 +1878,8 @@ let draw = (model, tts) =>
         ));
     }
 
-    /// An edge event delivered while parked on a scrubbed frame runs its hook
-    /// at once, and the input log records it on the branch's first frame. The
-    /// resume must keep its model change and the query it issued, or replaying
-    /// that log applies an input the branch never saw.
-    #[test]
-    fn input_while_parked_on_a_scrub_survives_the_resume() {
-        let source = r#"
+    /// Each key press counts and fires a raycast; each answer counts.
+    const PARKED_INPUT_GAME: &str = r#"
 type Msg<'h> = | Hit(hit: 'h)
 let init = { presses: 0.0, answers: 0.0, ticks: 0.0 }
 let input = (model, key, isDown) =>
@@ -1899,11 +1894,22 @@ let draw = (model, tts) =>
     Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
-        let mut game = FunctorLangEmbeddedGame::create(
-            vec![("game.fun".to_string(), source.to_string())],
+
+    fn parked_input_game() -> FunctorLangEmbeddedGame {
+        FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), PARKED_INPUT_GAME.to_string())],
             Box::new(NativePlatform),
         )
-        .expect("input game loads");
+        .expect("input game loads")
+    }
+
+    /// An edge event delivered while parked on a scrubbed frame runs its hook
+    /// at once, and the input log records it on the branch's first frame. The
+    /// resume must keep its model change and the query it issued, or replaying
+    /// that log applies an input the branch never saw.
+    #[test]
+    fn input_while_parked_on_a_scrub_survives_the_resume() {
+        let mut game = parked_input_game();
         game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
         game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
         game.seek_scene_to(0).expect("frame zero remains seekable");
@@ -1919,6 +1925,23 @@ let draw = (model, tts) =>
             game.recorded_inputs_at(1).as_slice(),
             [crate::RecordedInput::Key { is_down: true, .. }]
         ));
+    }
+
+    /// A seek discards input since the frame — its model change, its log
+    /// entry, and the query it issued.
+    #[test]
+    fn a_seek_drops_input_from_before_it() {
+        let mut game = parked_input_game();
+        game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+        game.key_event(crate::Key::Space as i32, true);
+        game.seek_scene_to(0).expect("frame zero remains seekable");
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+
+        let model = game.state_debug();
+        assert!(model.contains("presses: 0"), "{model}");
+        assert!(model.contains("answers: 0"), "{model}");
+        assert!(game.recorded_inputs_at(1).is_empty());
     }
 
     #[test]

@@ -1083,7 +1083,7 @@ impl FrameCtx<'_> {
                 *self.prev_tts,
             );
             self.pending_events.clear();
-            // The restored model predates the current loading snapshot, so
+            // The scrubbed model predates the current loading snapshot, so
             // "what the game last saw" no longer holds — invalidate the
             // marker so the branch's first frame redelivers current progress
             // (a rewound loading screen must learn its assets already

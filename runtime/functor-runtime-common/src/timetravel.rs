@@ -773,9 +773,11 @@ impl SceneRecorder {
     /// in-flight frame work that must not cross the branch (pending events —
     /// the reload discipline).
     ///
-    /// Input delivered while parked already updated the live `model`; the
-    /// input log records it on the branch's first frame, so the branch keeps
-    /// it rather than restoring the scrubbed snapshot over it.
+    /// Input injected while parked (debug `POST /input`) already updated the
+    /// live `model`; the input log records it on the branch's first frame, so
+    /// the branch keeps it rather than restoring the scrubbed snapshot over
+    /// it. (Network and preload results delivered while parked are kept too,
+    /// unlogged, as at the live tail.)
     pub fn commit_scrub_if_resuming(
         &mut self,
         model: &mut Value,

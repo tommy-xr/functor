@@ -82,11 +82,11 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   reconstruction there needs the fuller T7–T8 event/coeffect log.
   "Rewind shows the earlier *code* version" (the harder frontier
   where code-bearing snapshots retain or replay old code) remains deferred.
-- **Input while paused belongs to the next frame.** A key or click delivered
-  while paused — at the tail or parked on a scrubbed frame — updates the live
-  model at once, and the input log records it on the next recorded frame, so
-  Resume keeps it (sampled input arrives with that frame). A seek or rewind
-  discards it with the rest of the live state since the frame.
+- **Input while paused belongs to the next frame.** The shells ignore window
+  input while paused, but debug `POST /input` still delivers it — at the tail
+  or parked on a scrubbed frame. It updates the live model at once and the
+  input log records it on the next recorded frame, so Resume keeps it (sampled
+  input arrives with that frame). A seek or rewind discards it.
 - **`tts` is a game clock, not a wall clock.** Both shells own a shared
   `GameClock` (`functor_runtime_common::game_clock`) that produces each frame's
   `FrameTime`. Live, it ACCUMULATES the real frame delta (`game_time += dts`);
