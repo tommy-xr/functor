@@ -1642,7 +1642,7 @@ impl Checker<'_> {
         });
         match (ctors.next(), ctors.next()) {
             (Some((ctor, _)), None) => Some(format!(
-                " — `{name}` is a branded value: wrap the string with `{ctor}(\"…\")`"
+                " — build a `{name}` from the string with `{ctor}(\"…\")`"
             )),
             _ => None,
         }

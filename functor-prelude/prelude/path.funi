@@ -36,5 +36,6 @@ let ext : (t) => string
 /// top-level file is the project root, whose parent is itself.
 let parent : (t) => t
 /// The normalized text: `"data/x.bin"`, `"."` for the project root.
-/// `Path.of(Path.toString(p))` is `p`.
+/// `Path.of` reads it back as the same path. A path can't be compared with
+/// `==`, so compare these strings instead.
 let toString : (t) => string

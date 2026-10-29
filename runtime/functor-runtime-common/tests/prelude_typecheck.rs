@@ -225,8 +225,14 @@ fn file_reads_take_paths_only() {
     let diags = check("let a = File.bytes(\"data/x.bin\")");
     assert_eq!(
         diags,
-        ["argument 1 of `File.bytes`: expected Path.t, got string — `Path.t` is a branded \
-value: wrap the string with `Path.of(\"…\")`"]
+        ["argument 1 of `File.bytes`: expected Path.t, got string — build a `Path.t` from the \
+string with `Path.of(\"…\")`"]
+    );
+    // The hint is any host brand's one string constructor, not Path's alone.
+    let diags = check("let s = Effect.play(\"boom.ogg\")");
+    assert!(
+        diags.iter().any(|m| m.ends_with("with `Asset.sound(\"…\")`")),
+        "{diags:?}"
     );
 }
 

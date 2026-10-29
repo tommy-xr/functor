@@ -67,12 +67,9 @@ pub(super) fn resolve(base: &str, relative: &str) -> Result<String, &'static str
     if relative.contains("://") {
         return Err("a URL isn't a project file");
     }
-    // `/x`, or a Windows drive (`C:/x`).
-    let drive = relative.as_bytes().get(1) == Some(&b':')
-        && relative.as_bytes()[0].is_ascii_alphabetic()
-        && matches!(relative.as_bytes().get(2), None | Some(b'/'));
-    if relative.starts_with('/') || drive {
-        return Err("an absolute path — use one relative to the entry file's folder");
+    const ABSOLUTE: &str = "an absolute path — use one relative to the entry file's folder";
+    if relative.starts_with('/') || starts_with_drive(relative) {
+        return Err(ABSOLUTE);
     }
     let mut segments: Vec<&str> = base.split('/').filter(|s| !s.is_empty()).collect();
     for segment in relative.split('/') {
@@ -87,10 +84,21 @@ pub(super) fn resolve(base: &str, relative: &str) -> Result<String, &'static str
         }
     }
     let resolved = segments.join("/");
+    // Normalizing can surface a drive: `./C:/x`, `a/../C:/x`.
+    if starts_with_drive(&resolved) {
+        return Err(ABSOLUTE);
+    }
     if resolved.len() > crate::debug_protocol::MAX_ASSET_PATH_BYTES {
         return Err("the path is too long");
     }
     Ok(resolved)
+}
+
+/// Whether the first segment starts with a Windows drive (`C:`, or the
+/// drive-relative `C:x`).
+fn starts_with_drive(path: &str) -> bool {
+    let first = path.split('/').next().unwrap_or("").as_bytes();
+    first.len() >= 2 && first[0].is_ascii_alphabetic() && first[1] == b':'
 }
 
 /// The last segment; `""` for the root.
@@ -168,15 +176,21 @@ mod tests {
             ("data/sub/../x.bin", "data/x.bin"),
             (".", ""),
             ("a/..", ""),
-            ("C:x", "C:x"),
+            ("x/C:y", "x/C:y"),
         ] {
             assert_eq!(resolve("", input).as_deref(), Ok(want), "{input}");
+            // Readers (Quest's cache, the host proxy) rely on the asset rule.
+            let asset_rule = crate::debug_protocol::validate_project_asset_path(want);
+            assert!(want.is_empty() || asset_rule.is_ok(), "{input}");
         }
         for (input, reason) in [
             ("", "empty"),
             ("/etc/passwd", "absolute"),
             ("C:/x", "absolute"),
             ("c:", "absolute"),
+            ("C:x", "absolute"),
+            ("./C:/x", "absolute"),
+            ("a/../C:/x", "absolute"),
             ("data\\x.bin", "`/`"),
             ("../x.bin", "inside the project"),
             ("a/../../x", "inside the project"),
@@ -207,6 +221,9 @@ mod tests {
         assert_eq!(resolve("", "a.bin").as_deref(), Ok("a.bin"));
         assert!(resolve("ss2", "../../x").is_err());
         assert!(resolve("ss2", "/x").is_err());
+        assert!(resolve("ss2", "C:/x").is_err());
+        assert!(resolve("ss2", "../C:/x").is_err());
+        assert_eq!(resolve("ss2", "x/C:").as_deref(), Ok("ss2/x/C:"));
         assert!(resolve("ss2", "").is_err());
     }
 
