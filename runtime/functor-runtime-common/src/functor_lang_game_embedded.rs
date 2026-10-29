@@ -23,7 +23,6 @@
 //! producer is this file's ancestor and can converge onto it later.
 
 use functor_lang::project::SourceMap;
-use functor_lang::reuse::ReuseStats;
 use functor_lang::{Session, Value};
 
 use crate::functor_lang_prelude::{
@@ -32,7 +31,7 @@ use crate::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
-    journal_arm, journal_swap, rebase_connect_retry_deadlines, validate_contract,
+    journal_arm, journal_swap, rebase_connect_retry_deadlines, reused_status, validate_contract,
     ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Reporter, ShellOptions,
     SpanSource,
 };
@@ -242,7 +241,7 @@ struct Loaded {
     config: Option<GameConfig>,
     settings: Option<GameSettings>,
     /// How many top-level values a reload kept (`functor_lang::reuse`).
-    reuse: ReuseStats,
+    reuse: functor_lang::reuse::ReuseStats,
 }
 
 /// Load, check, and contract-validate a game PROJECT — the in-memory
@@ -324,13 +323,6 @@ fn load_source(
     })
 }
 
-/// The status line's reuse count: `reused 41 of 47 bindings; `.
-fn reused_status(reuse: &ReuseStats, sources: &SourceMap) -> String {
-    // The project's own files: bundled modules carry `<stdlib>`/`<prelude>` paths.
-    let (reused, values) =
-        reuse.count(|span| !sources.file_at(span.start).path.to_string_lossy().starts_with('<'));
-    format!("reused {reused} of {values} bindings; ")
-}
 
 impl FunctorLangEmbeddedGame {
     /// Build the producer from in-memory project sources (entry FIRST, then

@@ -1016,18 +1016,22 @@ impl Interp<'_> {
             let value = self.eval(&def.value, &Env::empty())?;
             self.globals.insert(def.name.clone(), value.clone());
             bindings.push((def.name.clone(), value));
-            // A unit whose own constructor is a top-level `let` could not be
-            // probed before the defs ran; retry as soon as more globals exist,
-            // so the very next initializer can use its operators. Normal
-            // programs (every prelude unit) resolve up front and never enter
-            // this branch.
-            if !self.brand_ops_complete {
-                let (ops, complete) = self.load_brand_ops(module)?;
-                self.brand_ops = ops;
-                self.brand_ops_complete = complete;
-            }
+            self.retry_unit_operators(module)?;
         }
         Ok(bindings)
+    }
+
+    /// A unit whose own constructor is a top-level `let` could not be probed
+    /// before the defs ran; retry as soon as more globals exist, so the very
+    /// next initializer can use its operators. Normal programs (every prelude
+    /// unit) resolve up front and never retry.
+    fn retry_unit_operators(&mut self, module: &Module) -> Result<(), RunError> {
+        if !self.brand_ops_complete {
+            let (ops, complete) = self.load_brand_ops(module)?;
+            self.brand_ops = ops;
+            self.brand_ops_complete = complete;
+        }
+        Ok(())
     }
 
     /// [`Self::eval_defs`] for [`Session::load_reusing`]: each def is reused
@@ -1057,12 +1061,7 @@ impl Interp<'_> {
                 }
             };
             self.globals.insert(def.name.clone(), value);
-            // As in `eval_defs`.
-            if !self.brand_ops_complete {
-                let (ops, complete) = self.load_brand_ops(module)?;
-                self.brand_ops = ops;
-                self.brand_ops_complete = complete;
-            }
+            self.retry_unit_operators(module)?;
         }
         Ok(())
     }

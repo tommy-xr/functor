@@ -32,7 +32,6 @@
 use std::time::Instant;
 
 use functor_lang::project::SourceMap;
-use functor_lang::reuse::ReuseStats;
 use functor_lang::{Session, Value};
 use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_prelude::{
@@ -41,7 +40,8 @@ use functor_runtime_common::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
-    journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, validate_contract,
+    journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, reused_status,
+    validate_contract,
     ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Provenance, Reporter,
     ShellOptions, SpanSource,
 };
@@ -282,7 +282,7 @@ struct Loaded {
     config: Option<GameConfig>,
     settings: Option<GameSettings>,
     /// How many top-level values a reload kept (`functor_lang::reuse`).
-    reuse: ReuseStats,
+    reuse: functor_lang::reuse::ReuseStats,
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
@@ -431,14 +431,6 @@ fn finish_load(
     })
 }
 
-/// The status line's reuse count: `reused 41 of 47 bindings; ` (values only —
-/// functions always re-evaluate).
-fn reused_status(reuse: &ReuseStats, sources: &SourceMap) -> String {
-    // The project's own files: bundled modules carry `<stdlib>`/`<prelude>` paths.
-    let (reused, values) =
-        reuse.count(|span| !sources.file_at(span.start).path.to_string_lossy().starts_with('<'));
-    format!("reused {reused} of {values} bindings; ")
-}
 
 /// Per-file mtimes of every `.fun` file in the entry's project, sorted by
 /// path — the hot-reload change stamp. Any edited, added, or removed file

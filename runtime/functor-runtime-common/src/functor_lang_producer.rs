@@ -507,6 +507,14 @@ return them beside the model as `(model, effect)`",
     })
 }
 
+/// A reload status line's reuse count, over the project's own files (bundled
+/// modules carry `<stdlib>`/`<prelude>` paths): `reused 41 of 47 bindings; `.
+pub fn reused_status(reuse: &functor_lang::reuse::ReuseStats, sources: &SourceMap) -> String {
+    let (reused, values) =
+        reuse.count(|span| !sources.file_at(span.start).path.to_string_lossy().starts_with('<'));
+    format!("reused {reused} of {values} bindings; ")
+}
+
 /// The producer side of the `config` value and `settings(model)` hook, one
 /// implementation for every producer. `config` is fixed at load; `settings`
 /// is re-evaluated each frame and keeps its last good value on error.
