@@ -53,6 +53,7 @@
     "test:ide-page": "node e2e/ide-page.mjs",
     "test:runtime-target": "node e2e/runtime-target.mjs",
     "test:xr-injection": "cargo build -p functor-cli --no-default-features && node e2e/xr-pose-injection.mjs",
+    "test:sniper-scope": "cargo build -p functor-cli --no-default-features && node e2e/sniper-scope.mjs",
     "test:mcp": "cargo build -p functor-cli --no-default-features && node e2e/mcp-server.mjs",
     "test:mcp-step-all": "cargo build -p functor-cli --no-default-features && node e2e/mcp-step-all.mjs",
     "test:code-garden": "cargo build -p functor-cli --no-default-features && node e2e/code-garden.mjs",
