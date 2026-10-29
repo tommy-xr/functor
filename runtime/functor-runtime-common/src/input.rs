@@ -1019,25 +1019,30 @@ fn finite_number(value: &functor_lang::Value, what: &str, name: &str) -> Result<
     }
 }
 
+/// The `{x, y, z}` record in field `name`; errors name `name.axis`.
+fn point3_field(value: &functor_lang::Value, what: &str, name: &str) -> Result<[f32; 3], String> {
+    let point = record_field(value, what, name)?;
+    let axis = |axis: &str| {
+        finite_number(record_field(point, what, axis)?, what, &format!("{name}.{axis}"))
+    };
+    Ok([axis("x")?, axis("y")?, axis("z")?])
+}
+
 /// Decode the plain-data `Input.pose` record accepted by camera-rig helpers.
 pub fn tracking_pose_from_value(value: &functor_lang::Value) -> Result<TrackingPose, String> {
     const WHAT: &str = "Input.pose";
-    let field = |value, name| record_field(value, WHAT, name);
-    let number = |value, name| finite_number(value, WHAT, name);
-    let position = field(value, "position")?;
-    let orientation = field(value, "orientation")?;
+    let position = point3_field(value, WHAT, "position")?;
+    let orientation = record_field(value, WHAT, "orientation")?;
+    let number = |name: &str| {
+        finite_number(
+            record_field(orientation, WHAT, name)?,
+            WHAT,
+            &format!("orientation.{name}"),
+        )
+    };
     Ok(TrackingPose::new(
-        [
-            number(field(position, "x")?, "position.x")?,
-            number(field(position, "y")?, "position.y")?,
-            number(field(position, "z")?, "position.z")?,
-        ],
-        [
-            number(field(orientation, "x")?, "orientation.x")?,
-            number(field(orientation, "y")?, "orientation.y")?,
-            number(field(orientation, "z")?, "orientation.z")?,
-            number(field(orientation, "w")?, "orientation.w")?,
-        ],
+        position,
+        [number("x")?, number("y")?, number("z")?, number("w")?],
     ))
 }
 
@@ -1047,17 +1052,10 @@ pub fn mapped_pose_from_value(
     value: &functor_lang::Value,
 ) -> Result<crate::MappedTrackingPose, String> {
     const WHAT: &str = "Camera3D.mappedPose";
-    let point = |name: &str| -> Result<[f32; 3], String> {
-        let p = record_field(value, WHAT, name)?;
-        let axis = |axis: &str| {
-            finite_number(record_field(p, WHAT, axis)?, WHAT, &format!("{name}.{axis}"))
-        };
-        Ok([axis("x")?, axis("y")?, axis("z")?])
-    };
     Ok(crate::MappedTrackingPose {
-        position: point("position")?,
-        forward: point("forward")?,
-        up: point("up")?,
+        position: point3_field(value, WHAT, "position")?,
+        forward: point3_field(value, WHAT, "forward")?,
+        up: point3_field(value, WHAT, "up")?,
     })
 }
 

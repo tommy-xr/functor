@@ -183,7 +183,8 @@ let init = {
   tracked: false,
   grip: { position: vec(0.0, 0.0, 0.0), forward: vec(0.0, 0.0, 1.0), up: vec(0.0, 1.0, 0.0) },
   shoulderButton: false,
-  zoomButton: false,
+  bButton: false,
+  yButton: false,
   triggerArmed: true,
 }
 
@@ -242,21 +243,24 @@ let has = (k, keys) => keys |> List.any((x) => x == k)
 
 // Desktop: levels and de-duplicated edges for one fixed step: RMB shoulders,
 // SPACE holds breath, Z toggles the zoom, and a left-click edge pulls the
-// trigger.
+// trigger. A headset that drops out counts as losing the hand: the trigger
+// must be released before a returning headset can fire.
 let desktopInput = (m, s) =>
   { m with
       xr: false,
+      tracked: false,
+      triggerArmed: false,
       aiming: s.mouse.buttons.right,
       breathKey: has(Key.Space, s.heldKeys),
       zoom: if has(Key.Z, s.pressedKeys) then 1.0 - m.zoom else m.zoom,
       triggerEdge: m.triggerEdge || s.mouse.pressed.left }
 
 // One EMA step from `prev` toward `raw`, `k` being the weight kept. A jump of
-// more than 90 degrees in one sample (a re-grab) snaps rather than blending
-// through a degenerate basis.
+// 60 degrees or more in one sample (a re-grab) snaps: blending that far apart
+// can collapse forward onto up.
 let ema = (k, prev: V, raw: V): V => vadd(vscale(k, prev), vscale(1.0 - k, raw))
 let smoothPose = (k, prev, raw) =>
-  if dot(prev.forward, raw.forward) < 0.0 || dot(prev.up, raw.up) < 0.0 then raw
+  if dot(prev.forward, raw.forward) <= 0.5 || dot(prev.up, raw.up) <= 0.5 then raw
   else { position: ema(k, prev.position, raw.position),
          forward: ema(k, prev.forward, raw.forward),
          up: ema(k, prev.up, raw.up) }
@@ -267,13 +271,15 @@ let smoothPose = (k, prev, raw) =>
 // is released.
 let xrInput = (m, xr) =>
   let shoulderButton = xr.right.primaryPressed in
-  let zoomButton = xr.right.secondaryPressed || xr.left.secondaryPressed in
+  let b = xr.right.secondaryPressed in
+  let y = xr.left.secondaryPressed in
   let base = { m with
       xr: true,
       breathKey: false,
       shoulderButton: shoulderButton,
-      zoomButton: zoomButton,
-      zoom: if zoomButton && not m.zoomButton then 1.0 - m.zoom else m.zoom } in
+      bButton: b,
+      yButton: y,
+      zoom: if (b && not m.bButton) || (y && not m.yButton) then 1.0 - m.zoom else m.zoom } in
   match (if xr.right.active then xr.right.grip else Option.None) with
   | Option.None => { base with tracked: false, aiming: false, triggerEdge: false, triggerArmed: false }
   | Option.Some(pose) =>
@@ -500,7 +506,7 @@ let rifleNode = (m) =>
     |> Scene.translate(v3(eye))
 
 // Turn a rifle-space scene to a world pose: roll about +Z, then the pitch and
-// yaw `rifleNode` uses (Euler angles, so a straight-up aim loses its yaw).
+// yaw `rifleNode` uses.
 let posed = (p, origin, scene) =>
   let f = unit(p.forward) in
   let yaw = Math.atan2(f.x, f.z) in
@@ -844,9 +850,14 @@ expect shouldered(vrUp)
 expect run(5.0, pressA, init).aiming
 expect not run(1.0, pressA, run(1.0, rest, run(1.0, pressA, init))).aiming
 expect not shouldered(run(20.0, rest, run(1.0, pressA, vrUp)))
-// B (or Y) cycles the zoom once per press.
+// B (or Y) cycles the zoom once per press; holding one doesn't mask the other.
 expect zoomFov(run(3.0, pressB, init)) == narrowFov
 expect zoomFov(run(1.0, pressB, run(1.0, rest, run(1.0, pressB, init)))) == wideFov
+expect (
+  let pressY = { pressB with xr: Option.Some({ head: Option.None, left: hand(levelGrip, 0.0, false, true),
+                                               right: hand(levelGrip, 0.0, false, true) }) } in
+  zoomFov(run(1.0, pressY, run(1.0, pressB, init))) == wideFov
+)
 // Trigger: a pull fires once; holding it past the bolt does not fire again...
 expect run(1.0, pull, vrUp).shots == 1.0
 expect run(70.0, pull, vrUp).shots == 1.0
@@ -863,7 +874,12 @@ expect (
   not m.tracked && not m.aiming && not m.triggerEdge && not m.triggerArmed && m.grip == vrUp.grip
 )
 expect not shouldered(run(1.0, lost, vrUp))
-// ...and a trigger still held when the hand returns waits for a release.
+// ...and a trigger still held when the hand (or the headset) returns waits
+// for a release.
+expect (
+  let back = run(1.0, pull, sampledInput(vrUp, idle)) in
+  not back.triggerArmed && not back.triggerEdge
+)
 expect (
   let back = run(1.0, vr(hand(levelGrip, 1.0, true, false)), run(1.0, lost, vrUp)) in
   run(30.0, pull, back).shots == 0.0 && run(1.0, pull, run(1.0, rest, run(30.0, pull, back))).shots == 1.0
@@ -878,6 +894,11 @@ expect smoothPose(0.0, gripA, gripB) == gripB
 expect smoothPose(0.5, gripA, gripB).position == vec(0.5, 0.0, 0.0)
 expect smoothPose(0.5, gripA, gripB).forward == vec(0.5, 0.0, 1.0)
 expect smoothPose(0.5, gripA, gripBack) == gripBack
+// 90 degrees apart, a blend would make forward == up: it snaps instead.
+expect (
+  let swapped = { gripA with forward: vec(0.0, 1.0, 0.0), up: vec(0.0, 0.0, 1.0) } in
+  smoothPose(0.5, gripA, swapped) == swapped
+)
 expect (
   let moved = { levelGrip with position: { x: 0.3, y: 0.0, z: 0.0 - 0.4 } } in
   run(1.0, vr(hand(moved, 0.0, false, false)), vrUp).grip == Camera3D.mapTrackedPose(rig, moved)

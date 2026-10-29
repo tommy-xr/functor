@@ -144,7 +144,10 @@ try {
   check(unit(sub(canted.target, canted.eye))[2] > 0.999, "rolling about forward keeps the aim");
   // The 200 m plate's frame: a tall cyan-capped post on the shooter's left
   // (+X) and a short one on the right. Level, the cap is left of the plate;
-  // canted top-left, it must sit ABOVE it. A mirrored basis puts it below.
+  // canted top-left, it must sit ABOVE it. A mirrored tracked→camera roll
+  // (the up sign through mapTrackedPose + fromPose) puts it below. This
+  // projects with look_at_rh's convention; the renderer's own handedness is
+  // pinned by the Rust `from_pose_rolls_the_view_about_forward` test.
   const plate = [0, 1.0, 200];
   const cap = [0.75, 1.8, 200];
   const lv = { cap: onScreen(level, cap), plate: onScreen(level, plate) };
