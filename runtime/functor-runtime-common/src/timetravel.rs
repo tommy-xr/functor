@@ -531,7 +531,8 @@ impl SceneRecorder {
 
     /// Replace the complete retained model timeline with models replayed under
     /// the current program, returning the rebuilt selected model — or
-    /// `selected_override`, a live model holding input since. The input,
+    /// `selected_override` unchanged when given (the live model holding input
+    /// since the frame). The input,
     /// world-frame, and `tts` rings keep their existing frame alignment.
     pub fn materialize_counterfactual_history(
         &mut self,

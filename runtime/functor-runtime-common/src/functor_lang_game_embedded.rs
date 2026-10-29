@@ -1944,11 +1944,11 @@ let draw = (model, tts) =>
         assert!(game.recorded_inputs_at(1).is_empty());
     }
 
-    /// Input delivered while paused belongs to the next frame, where the log
-    /// records it. A reload in between must not fold it into the paused
+    /// Input delivered since the last frame belongs to the next one, where the
+    /// log records it. A reload in between must not fold it into the last
     /// frame's snapshot too, or a replay from there applies it twice.
     #[test]
-    fn reload_while_paused_keeps_input_out_of_the_recorded_snapshot() {
+    fn reload_keeps_pending_input_out_of_the_recorded_snapshot() {
         let mut game = parked_input_game();
         game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
         game.key_event(crate::Key::Space as i32, true);
