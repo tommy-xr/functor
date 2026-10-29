@@ -1,14 +1,20 @@
 // examples/sniper-scope — a magnified rifle scope on a 200 m range.
 //
 //   functor -d examples/sniper-scope run native
+//   functor -d examples/sniper-scope run vr
 //   functor -d examples/sniper-scope test
 //
-// CONTROLS
+// CONTROLS (desktop)
 //   mouse          look
 //   RIGHT MOUSE    hold to shoulder the rifle (hip <-> shouldered)
 //   WHEEL / Z      zoom preset: 12 deg or 6 deg vertical field of view
 //   LEFT MOUSE     fire (shouldered only; the bolt takes `boltTime` to cycle)
 //   SPACE          hold breath: steadies the sway for a few seconds
+//
+// CONTROLS (VR) — the rifle is held in the right hand
+//   A              toggle the shoulder (the scope goes live)
+//   B / Y          zoom preset
+//   TRIGGER        fire; release it before the next shot
 //
 // HOW THE SCOPE WORKS
 //   * The magnified image is a second camera (same eye, narrow FOV) rendered
@@ -49,6 +55,17 @@ let zeroRange = 100.0
 let muzzleZ = 0.9
 let shotRange = 600.0
 
+// VR: where the right hand holds the rifle, in rifle space (the scope axis
+// through the origin, +Z forward).
+let gripLocal = { x: 0.0, y: 0.0 - 0.15, z: 0.22 }
+// Trigger hysteresis: a pull past `triggerPull` fires once, and the trigger
+// must fall back below `triggerRelease` before the next pull counts.
+let triggerPull = 0.6
+let triggerRelease = 0.2
+// EMA weight on the tracked weapon pose: 0 follows the controller exactly;
+// nearer 1 is steadier but lags.
+let poseSmoothing = 0.0
+
 // Sway: a figure-eight of two sines (radians of aim), scaled by `steady`.
 let swayAmp = 0.002
 let swayRate = 0.9
@@ -71,6 +88,12 @@ type V = { x: float, y: float, z: float }
 
 let vec = (x: float, y: float, z: float): V => { x: x, y: y, z: z }
 let vadd = (a: V, b: V): V => vec(a.x + b.x, a.y + b.y, a.z + b.z)
+let vsub = (a: V, b: V): V => vec(a.x - b.x, a.y - b.y, a.z - b.z)
+let vscale = (k: float, a: V): V => vec(k * a.x, k * a.y, k * a.z)
+let dot = (a: V, b: V) => a.x * b.x + a.y * b.y + a.z * b.z
+let cross = (a: V, b: V): V =>
+  vec(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+let unit = (a: V): V => vscale(1.0 / Math.sqrt(dot(a, a)), a)
 let v3 = (a: V) => Vec3.make(a.x, a.y, a.z)
 
 // Rotate a camera-local offset (+X screen-left, +Y up, +Z forward) into world
@@ -83,6 +106,13 @@ let camRot = (yaw: float, pitch: float, l: V): V =>
   let cy = Math.cos(yaw) in
   let sy = Math.sin(yaw) in
   vec(l.x * cy + z2 * sy, y2, z2 * cy - l.x * sy)
+
+// The same local axes for a world pose ({ position, forward, up }, as
+// `Camera3D.mapTrackedPose` returns): +X left, +Y up, +Z forward.
+let poseRot = (p, l: V): V =>
+  let f = unit(p.forward) in
+  let left = unit(cross(p.up, f)) in
+  vadd(vadd(vscale(l.x, left), vscale(l.y, cross(f, left))), vscale(l.z, f))
 
 // ------------------------------------------------------------------- range
 
@@ -147,6 +177,14 @@ let init = {
   callout: 0.0,
   plates: plateSpecs |> List.map((p) => { id: p.id, x: p.x, z: p.z, ring: 0.0 }),
   marks: [],
+  // VR: whether a headset is driving, whether the right hand is tracked, its
+  // (smoothed) world pose, the button levels last step, and the trigger latch.
+  xr: false,
+  tracked: false,
+  grip: { position: vec(0.0, 0.0, 0.0), forward: vec(0.0, 0.0, 1.0), up: vec(0.0, 1.0, 0.0) },
+  shoulderButton: false,
+  zoomButton: false,
+  triggerArmed: true,
 }
 
 // ------------------------------------------------------------ derived state
@@ -163,6 +201,14 @@ let swayPitch = (m) =>
 let aimYaw = (m) => m.yaw + swayYaw(m)
 let aimPitch = (m) => m.pitch + swayPitch(m)
 let eye = vec(0.0, eyeHeight, 0.0)
+
+// In VR the authored camera is a level rig at the eye; the head and hands
+// move within it.
+let rig = Camera3D.firstPerson(v3(eye), Angle.radians(0.0), Angle.radians(0.0), Angle.degrees(hipFov))
+
+// The held rifle's frame: the scope axis origin, oriented by the grip.
+let rifleOrigin = (m) => vsub(m.grip.position, poseRot(m.grip, gripLocal))
+let riflePose = (m) => { position: rifleOrigin(m), forward: m.grip.forward, up: m.grip.up }
 
 // The bore in camera-local space: it starts `sightHeight` below the line of
 // sight and crosses it at `zeroRange`. Its height relative to the line of
@@ -194,14 +240,59 @@ let mouseWheel = (m, delta) =>
 
 let has = (k, keys) => keys |> List.any((x) => x == k)
 
-// Levels and de-duplicated edges for one fixed step: RMB shoulders, SPACE
-// holds breath, Z toggles the zoom, and a left-click edge pulls the trigger.
-let sampledInput = (m, s) =>
+// Desktop: levels and de-duplicated edges for one fixed step: RMB shoulders,
+// SPACE holds breath, Z toggles the zoom, and a left-click edge pulls the
+// trigger.
+let desktopInput = (m, s) =>
   { m with
+      xr: false,
       aiming: s.mouse.buttons.right,
       breathKey: has(Key.Space, s.heldKeys),
       zoom: if has(Key.Z, s.pressedKeys) then 1.0 - m.zoom else m.zoom,
       triggerEdge: m.triggerEdge || s.mouse.pressed.left }
+
+// One EMA step from `prev` toward `raw`, `k` being the weight kept. A jump of
+// more than 90 degrees in one sample (a re-grab) snaps rather than blending
+// through a degenerate basis.
+let ema = (k, prev: V, raw: V): V => vadd(vscale(k, prev), vscale(1.0 - k, raw))
+let smoothPose = (k, prev, raw) =>
+  if dot(prev.forward, raw.forward) < 0.0 || dot(prev.up, raw.up) < 0.0 then raw
+  else { position: ema(k, prev.position, raw.position),
+         forward: ema(k, prev.forward, raw.forward),
+         up: ema(k, prev.up, raw.up) }
+
+// VR: the right grip holds the rifle. A toggles the shoulder, B or Y cycles the
+// zoom, and each trigger pull fires once. Losing the right hand freezes the
+// rifle's pose (it is hidden), unshoulders, and disarms the trigger until it
+// is released.
+let xrInput = (m, xr) =>
+  let shoulderButton = xr.right.primaryPressed in
+  let zoomButton = xr.right.secondaryPressed || xr.left.secondaryPressed in
+  let base = { m with
+      xr: true,
+      breathKey: false,
+      shoulderButton: shoulderButton,
+      zoomButton: zoomButton,
+      zoom: if zoomButton && not m.zoomButton then 1.0 - m.zoom else m.zoom } in
+  match (if xr.right.active then xr.right.grip else Option.None) with
+  | Option.None => { base with tracked: false, aiming: false, triggerEdge: false, triggerArmed: false }
+  | Option.Some(pose) =>
+    let raw = Camera3D.mapTrackedPose(rig, pose) in
+    let pulled = xr.right.trigger >= triggerPull in
+    { base with
+        tracked: true,
+        grip: if m.tracked then smoothPose(poseSmoothing, m.grip, raw) else raw,
+        aiming: if shoulderButton && not m.shoulderButton then not m.aiming else m.aiming,
+        triggerEdge: m.triggerEdge || (pulled && m.triggerArmed),
+        triggerArmed:
+          if pulled then false
+          else if xr.right.trigger <= triggerRelease then true
+          else m.triggerArmed }
+
+let sampledInput = (m, s) =>
+  match s.xr with
+  | Option.None => desktopInput(m, s)
+  | Option.Some(xr) => xrInput(m, xr)
 
 // -------------------------------------------------------------------- step
 
@@ -229,10 +320,15 @@ let stepRifle = (dt, m) =>
       callout: Math.max(0.0, m.callout - dt),
       plates: m.plates |> List.map((p) => { p with ring: Math.max(0.0, p.ring - dt / ringTime) }) }
 
-// A shot: spend the bolt, and ask the physics world where the bore line lands.
+// A shot: spend the bolt, and ask the physics world where the bore line lands
+// — from the eye's swaying aim on desktop, from the held rifle in VR.
 let fire = (m) =>
-  let origin = vadd(eye, camRot(aimYaw(m), aimPitch(m), muzzleLocal)) in
-  let dir = camRot(aimYaw(m), aimPitch(m), boreDirLocal) in
+  let origin =
+    if m.xr then vadd(rifleOrigin(m), poseRot(m.grip, muzzleLocal))
+    else vadd(eye, camRot(aimYaw(m), aimPitch(m), muzzleLocal)) in
+  let dir =
+    if m.xr then poseRot(m.grip, boreDirLocal)
+    else camRot(aimYaw(m), aimPitch(m), boreDirLocal) in
   ({ m with shots: m.shots + 1.0, cooldown: boltTime },
    Physics.raycast(v3(origin), v3(dir), shotRange, (h) => Landed(h)))
 
@@ -403,6 +499,26 @@ let rifleNode = (m) =>
     |> Scene.rotateY(Angle.radians(aimYaw(m)))
     |> Scene.translate(v3(eye))
 
+// Turn a rifle-space scene to a world pose: roll about +Z, then the pitch and
+// yaw `rifleNode` uses (Euler angles, so a straight-up aim loses its yaw).
+let posed = (p, origin, scene) =>
+  let f = unit(p.forward) in
+  let yaw = Math.atan2(f.x, f.z) in
+  let pitch = Math.asin(Math.clamp(0.0 - 1.0, 1.0, f.y)) in
+  let roll = Math.atan2(0.0 - dot(p.up, camRot(yaw, pitch, vec(1.0, 0.0, 0.0))),
+                        dot(p.up, camRot(yaw, pitch, vec(0.0, 1.0, 0.0)))) in
+  scene
+    |> Scene.rotateZ(Angle.radians(roll))
+    |> Scene.rotateX(Angle.radians(0.0 - pitch))
+    |> Scene.rotateY(Angle.radians(yaw))
+    |> Scene.translate(v3(origin))
+
+// VR: the rifle in the right hand; hidden while that hand is untracked.
+let heldRifle = (m) =>
+  if m.tracked then
+    posed(m.grip, rifleOrigin(m), Scene.group(if shouldered(m) then [rifleParts, liveLens] else [rifleParts]))
+  else Scene.group([])
+
 // ------------------------------------------------------------------ world
 
 let sky = Color.rgb(0.12, 0.07, 0.20)
@@ -501,10 +617,13 @@ let reticle =
     Sprite.circle(pink, 2.5),
   ])
 
+// The scope camera looks down the rifle's axis: from the eye on desktop, from
+// the held rifle (roll included) in VR.
 let scopeFrame = (m, scene) =>
   Frame.createLit(
-    Camera3D.firstPerson(v3(eye), Angle.radians(aimYaw(m)), Angle.radians(aimPitch(m)),
-                         Angle.degrees(zoomFov(m)))
+    (if m.xr then Camera3D.fromPose(riflePose(m), Angle.degrees(zoomFov(m)))
+     else Camera3D.firstPerson(v3(eye), Angle.radians(aimYaw(m)), Angle.radians(aimPitch(m)),
+                               Angle.degrees(zoomFov(m))))
       |> Camera3D.clip(1.0, 700.0),
     scene,
     lights)
@@ -572,15 +691,21 @@ let draw = (m, tts) =>
   let range = rangeScene(m) in
   let main =
     Frame.createLit(
-      Camera3D.firstPerson(v3(eye), Angle.radians(aimYaw(m)), Angle.radians(aimPitch(m)),
-                           Angle.degrees(hipFov))
+      (if m.xr then rig
+       else Camera3D.firstPerson(v3(eye), Angle.radians(aimYaw(m)), Angle.radians(aimPitch(m)),
+                                 Angle.degrees(hipFov)))
         |> Camera3D.clip(0.05, 700.0),
-      Scene.group([range, rifleNode(m)]),
+      Scene.group([range, if m.xr then heldRifle(m) else rifleNode(m)]),
       lights)
       |> Frame.withClearColor(sky)
       |> Frame.withFog(haze) in
   (if shouldered(m) then main |> Frame.withRenderTarget(scopeFeed, scopeFrame(m, range)) else main)
     |> Frame.with2D(Camera2D.create(800.0, 600.0), hud(m))
+
+// Headset: request 120 Hz, and pin foveation off so the lens is never shaded
+// coarsely wherever it sits in view. Desktop ignores both.
+let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(120.0))
+let settings = (model) => Settings.create() |> Settings.xr(Xr.create() |> Xr.foveation(Xr.Off))
 
 // ------------------------------------------------------------------ expects
 //
@@ -592,7 +717,8 @@ let snap = (held, pressed, buttons, clicked) =>
     releasedKeys: [],
     mouse: { x: 0.0, y: 0.0, surfaceWidth: 800.0, surfaceHeight: 600.0,
              buttons: buttons, pressed: clicked,
-             released: { left: false, right: false, middle: false } } }
+             released: { left: false, right: false, middle: false } },
+    xr: Option.None }
 
 let noButtons = { left: false, right: false, middle: false }
 let rmb = { left: false, right: true, middle: false }
@@ -691,3 +817,79 @@ expect landed(rayHit(rightBermTag, 80.0)).lastShot == Blocked(80.0)
 expect ringTime < boltTime
 expect (run(61.0, aimed, landed(rayHit(plateTag(2.0), 199.1))).plates |> List.map((p) => p.ring)) == [0.0, 0.0, 0.0]
 expect List.length(List.fold((m, _i) => update(m, Landed(rayHit(groundTag, 30.0))), up, List.range(12.0)).marks) == maxMarks
+
+// VR. A right hand at a fixed rig pose, with the trigger at `trigger` and the
+// A / B buttons held or not; the left hand is idle.
+let levelGrip = { position: { x: 0.15, y: 0.0 - 0.2, z: 0.0 - 0.3 }, orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }
+let hand = (grip, trigger, a, b) =>
+  { active: true, grip: Option.Some(grip), aim: Option.Some(grip), trigger: trigger, squeeze: 0.0,
+    thumbstick: { x: 0.0, y: 0.0 }, primaryPressed: a, secondaryPressed: b,
+    thumbstickPressed: false, menuPressed: false }
+let lostHand = { hand(levelGrip, 0.0, false, false) with active: false, grip: Option.None, aim: Option.None }
+let vr = (right) => { idle with xr: Option.Some({ head: Option.None, left: lostHand, right: right }) }
+let rest = vr(hand(levelGrip, 0.0, false, false))
+let pressA = vr(hand(levelGrip, 0.0, true, false))
+let pressB = vr(hand(levelGrip, 0.0, false, true))
+let pull = vr(hand(levelGrip, 1.0, false, false))
+let lost = vr(lostHand)
+
+let vrUp = run(20.0, rest, run(1.0, pressA, init))
+
+// A headset sample switches to VR; the grip is the rig-mapped pose.
+expect sampledInput(init, rest).xr && sampledInput(init, rest).tracked
+expect sampledInput(init, rest).grip == Camera3D.mapTrackedPose(rig, levelGrip)
+expect not sampledInput(sampledInput(init, rest), idle).xr
+// Shoulder toggle: A toggles once per press, however long it is held.
+expect shouldered(vrUp)
+expect run(5.0, pressA, init).aiming
+expect not run(1.0, pressA, run(1.0, rest, run(1.0, pressA, init))).aiming
+expect not shouldered(run(20.0, rest, run(1.0, pressA, vrUp)))
+// B (or Y) cycles the zoom once per press.
+expect zoomFov(run(3.0, pressB, init)) == narrowFov
+expect zoomFov(run(1.0, pressB, run(1.0, rest, run(1.0, pressB, init)))) == wideFov
+// Trigger: a pull fires once; holding it past the bolt does not fire again...
+expect run(1.0, pull, vrUp).shots == 1.0
+expect run(70.0, pull, vrUp).shots == 1.0
+// ...a partial release (above triggerRelease) does not re-arm...
+expect run(1.0, pull, run(1.0, vr(hand(levelGrip, 0.4, false, false)), run(70.0, pull, vrUp))).shots == 1.0
+// ...a full release does.
+expect run(1.0, pull, run(1.0, rest, run(70.0, pull, vrUp))).shots == 2.0
+// Not shouldered, a pull is spent without firing.
+expect run(1.0, pull, run(1.0, rest, init)).shots == 0.0
+// Tracking loss: the pose freezes, the rifle unshoulders, and a pending pull
+// is dropped...
+expect (
+  let m = sampledInput({ vrUp with triggerEdge: true }, lost) in
+  not m.tracked && not m.aiming && not m.triggerEdge && not m.triggerArmed && m.grip == vrUp.grip
+)
+expect not shouldered(run(1.0, lost, vrUp))
+// ...and a trigger still held when the hand returns waits for a release.
+expect (
+  let back = run(1.0, vr(hand(levelGrip, 1.0, true, false)), run(1.0, lost, vrUp)) in
+  run(30.0, pull, back).shots == 0.0 && run(1.0, pull, run(1.0, rest, run(30.0, pull, back))).shots == 1.0
+)
+// The EMA keeps weight k of the previous pose: 0 (the default) follows the
+// controller exactly, and a jump past 90 degrees snaps.
+let gripA = { position: vec(0.0, 0.0, 0.0), forward: vec(0.0, 0.0, 1.0), up: vec(0.0, 1.0, 0.0) }
+let gripB = { position: vec(1.0, 0.0, 0.0), forward: vec(1.0, 0.0, 1.0), up: vec(0.0, 1.0, 0.0) }
+let gripBack = { gripB with forward: vec(0.0, 0.0, 0.0 - 1.0) }
+expect poseSmoothing == 0.0
+expect smoothPose(0.0, gripA, gripB) == gripB
+expect smoothPose(0.5, gripA, gripB).position == vec(0.5, 0.0, 0.0)
+expect smoothPose(0.5, gripA, gripB).forward == vec(0.5, 0.0, 1.0)
+expect smoothPose(0.5, gripA, gripBack) == gripBack
+expect (
+  let moved = { levelGrip with position: { x: 0.3, y: 0.0, z: 0.0 - 0.4 } } in
+  run(1.0, vr(hand(moved, 0.0, false, false)), vrUp).grip == Camera3D.mapTrackedPose(rig, moved)
+)
+// The VR bore leaves the muzzle below the scope axis and meets it at
+// zeroRange, whatever the rifle's roll.
+expect (
+  let rolled = { levelGrip with orientation: { x: 0.0, y: 0.0, z: 0.38268343, w: 0.92387953 } } in
+  let m = run(1.0, vr(hand(rolled, 0.0, false, false)), vrUp) in
+  let origin = vadd(rifleOrigin(m), poseRot(m.grip, muzzleLocal)) in
+  let dir = poseRot(m.grip, boreDirLocal) in
+  let t = (zeroRange - muzzleLocal.z) / boreDirLocal.z in
+  let gap = vsub(vadd(origin, vscale(t, dir)), vadd(rifleOrigin(m), vscale(zeroRange, unit(m.grip.forward)))) in
+  dot(gap, gap) < 0.000001
+)
