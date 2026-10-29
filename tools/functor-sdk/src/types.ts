@@ -257,6 +257,7 @@ export interface RuntimeState {
     render_ms: number;
     sim_wait_ms: number;
     frame_ms: number;
+  };
   /** Scene understanding behind `Xr.scene`: `depth` is the environment depth
    * — a headset depth image this frame (`device`), a running provider with no
    * image yet (`waiting`), the desktop/web stand-in room rendered as depth
