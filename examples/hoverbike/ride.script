@@ -1,0 +1,9 @@
+# A scripted ride for the goldens: throttle up, bank right toward the crates,
+# then swap to the rider camera.
+#   functor -d examples/hoverbike run native -- --input-script ride.script \
+#     --capture-frame /tmp/f.png --capture-at-frame 150 --capture-size 1600x1200
+10 W down
+90 D down
+170 D up
+180 C down
+181 C up

@@ -45,7 +45,7 @@ let gauge = (screen: RenderTarget.t) =>
       |> Scene.rotateY(Angle.degrees(180.0)) |> Scene.translate(Vec3.make(0.0, 0.0, -0.025)),
   ])
     |> Scene.rotateX(Angle.degrees(-25.0))
-    |> Scene.translate(Vec3.make(0.0, 1.05, 0.6))
+    |> Scene.translate(Vec3.make(0.0, 1.08, 0.52))
 
 let grip = (x: float) =>
   Scene.cylinder() |> Scene.scaleXYZ(0.05, 0.14, 0.05) |> Scene.lit(rubber)
@@ -54,7 +54,7 @@ let grip = (x: float) =>
 let cockpit = (screen: RenderTarget.t) =>
   Scene.group([
     box(0.32, 0.1, 0.6, 0.0, 0.66, -0.4, rubber),
-    box(0.06, 0.45, 0.06, 0.0, 0.8, 0.6, panel),
+    box(0.06, 0.35, 0.06, 0.0, 0.775, 0.6, panel),
     box(0.5, 0.045, 0.045, 0.0, 1.0, 0.62, panel),
     grip(0.31),
     grip(-0.31),
