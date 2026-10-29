@@ -2566,6 +2566,52 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The scrubber's drag-past-the-end path: scrub back, then `SeekTo` beyond
+    /// the newest frame seeks to the newest and steps on. The world must return
+    /// to the live tail, or the resumed step records out of order and panics.
+    #[test]
+    fn scrub_back_then_past_the_end_resumes_from_the_live_tail() {
+        fn ball() -> Vec<u8> {
+            physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()).expect("world")
+        }
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-scrub-tail",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.fun"),
+            "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
+             let physics = (m) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
+             \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 8.0, 0.0))])\n\
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+        )
+        .expect("write game");
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
+        let dt = FrameTime {
+            tts: 0.0,
+            dts: physics::FIXED_DT,
+        };
+        for _ in 0..40 {
+            game.tick(dt.clone());
+        }
+        let tail = ball();
+
+        game.seek_scene_to(16).expect("seek 16");
+        game.seek_scene_to(39).expect("seek newest");
+        assert!(ball() == tail, "the newest frame must restore the live tail");
+        for _ in 0..5 {
+            game.tick(dt.clone());
+        }
+        assert_eq!(game.scene_frame_range(), Some((0, 44)));
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Rewinding to the LATEST rendered frame is a no-op that must not desync:
     /// that frame's recorded fixed frame equals the live world frame (no step
     /// happened after it), so the world needs no seek and the model is already

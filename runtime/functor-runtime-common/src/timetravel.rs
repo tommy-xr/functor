@@ -894,7 +894,13 @@ impl SceneRecorder {
         let want = *self.world_frame_history.seek(frame);
         match physics.seekable_range() {
             None => Ok(None),
-            Some((_, hi)) if want > hi => Ok(None),
+            // The frame ended at the live tail. No seek if the world is still
+            // there; after a scrub parked it mid-history, restore the tail, or
+            // the next record would skip the frames in between.
+            Some((_, hi)) if want > hi => {
+                debug_assert_eq!(want, hi + 1, "a rendered frame ended past the live tail");
+                Ok((physics.current_fixed_frame() != want).then_some(want))
+            }
             Some((flo, hi)) if want >= flo && want <= hi => Ok(Some(want)),
             _ => Err(format!(
                 "cannot seek to rendered frame {frame}: its physics frame {want} has \
