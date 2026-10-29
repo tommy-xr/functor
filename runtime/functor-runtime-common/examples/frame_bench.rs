@@ -308,7 +308,13 @@ fn draw_frame(session: &functor_lang::Session, model: &Value, last_frame: &mut O
     let value = session
         .call(
             "draw",
-            vec![model.clone(), Value::Number(1.0)],
+            functor_runtime_common::functor_lang_producer::draw_args(
+                session,
+                "draw",
+                model.clone(),
+                1.0,
+                0.0,
+            ),
             &mut FunctorHost,
         )
         .unwrap_or_else(|e| panic!("draw failed: {}", e.message));

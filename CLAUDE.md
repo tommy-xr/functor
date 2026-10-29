@@ -87,6 +87,8 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 - `update = (model, msg) => model'` — OPTIONAL; handles messages (ADT variants) from subscriptions/effects
 - `subscriptions = (model) => Sub.every(...)` — OPTIONAL declarative timers, polled each frame (requires `update`)
 - `draw = (model, tts) => Frame.create(camera, scene)` — pure frame description: a `Camera3D` plus a scene
+  (or `(model, tts, alpha)`: `alpha` in [0,1) is how far the frame sits between fixed steps, for
+  interpolating prev→cur poses; 0 when paused/stepped/scripted/`--fixed-time`)
 - `physics = (model) => Physics.scene(...)`, `soundScape = (model) => AudioScene.create(...)`,
   `ui = (model) => …` — OPTIONAL hooks
 
