@@ -86,7 +86,14 @@ async function drive(hz, port) {
     // Advance pauses the clock and runs one step; wait for it to land.
     const before = (await get(base, "/state")).frame;
     await post(base, "/time", { type: "advance", dts: 1 / 60 });
-    await waitFrame(base, before + 1, 10000);
+    // Wait until the step has run, so `/scene` is the paused frame.
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      const s = await get(base, "/state");
+      if (s.frame > before && s.pending_steps === 0) break;
+      if (Date.now() > deadline) throw new Error("advance never landed");
+      await sleep(10);
+    }
     const stepped = await sample(base);
     await post(base, "/rewind", { frame: K });
     // The model text plus the stepped poses its next frame draws.

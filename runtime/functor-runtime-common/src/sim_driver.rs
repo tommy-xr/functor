@@ -638,12 +638,13 @@ mod tests {
         )
     }
 
-    /// Drive `sim` as the shells do over `deltas`; the drawn rig x per frame.
-    fn drawn(mut sim: SimDriver, deltas: &[f32]) -> Vec<f32> {
+    /// Drive `sim` as the shells do over `deltas`; `(seq, drawn rig x)` per
+    /// snapshot returned.
+    fn drawn(mut sim: SimDriver, deltas: &[f32], lockstep: bool) -> Vec<(u64, f32)> {
         let mut clock = GameClock::new(None);
         let xs = deltas
             .iter()
-            .map(|&dt| {
+            .filter_map(|&dt| {
                 for sub in clock.fixed_frames(dt) {
                     sim.tick(sub);
                 }
@@ -656,8 +657,8 @@ mod tests {
                     physics_lines: false,
                     conn_commands: false,
                 };
-                let snapshot = sim.frame(req, true).expect("lockstep yields this frame");
-                snapshot.frame.camera.eye[0]
+                sim.frame(req, lockstep)
+                    .map(|snapshot| (snapshot.seq, snapshot.frame.camera.eye[0]))
             })
             .collect();
         sim.quit();
@@ -670,10 +671,16 @@ mod tests {
             .iter()
             .flat_map(|&dt| std::iter::repeat(dt).take(12))
             .collect();
-        let inline = drawn(SimDriver::inline(interpolated()), &deltas);
-        let threaded = drawn(SimDriver::spawn(interpolated), &deltas);
-        assert_eq!(inline, threaded);
+        let inline = drawn(SimDriver::inline(interpolated()), &deltas, false);
+        assert_eq!(drawn(SimDriver::spawn(interpolated), &deltas, true), inline);
+        // Pipelined presents frame N-1 while drawing N: each snapshot still
+        // carries the pose drawn with its own request's alpha.
+        let pipelined = drawn(SimDriver::spawn(interpolated), &deltas, false);
+        assert!(!pipelined.is_empty());
+        for (seq, x) in &pipelined {
+            assert_eq!(inline[*seq as usize - 1], (*seq, *x));
+        }
         // At 120 Hz, frames between steps draw between the stepped poses.
-        assert!(inline[..12].iter().any(|x| x.fract() != 0.0), "{inline:?}");
+        assert!(inline[..12].iter().any(|(_, x)| x.fract() != 0.0), "{inline:?}");
     }
 }
