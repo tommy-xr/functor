@@ -76,8 +76,8 @@ let rider = Scene.group([
   box(0.14, 0.14, 0.5, -0.15, 0.76, -0.15, Color.rgb(0.2, 0.2, 0.25)),
 ])
 
-// The lift beams from each emitter to what its probe hit, in the rig frame
-// (straight down, not leaning).
+// The lift beams from each emitter to what its probe hit. They lean with the
+// fairing, so they stay on their emitters.
 let beam = (e, distance: float) =>
   Scene.cylinder() |> Scene.scaleXYZ(0.3, distance, 0.4) |> Scene.emissive(ion)
     |> Scene.translate(Vec3.make(e.x, -distance / 2.0, e.z))
@@ -91,10 +91,9 @@ let beams = (distances: List<float>) =>
 let draw = (roll: float, pitch: float, distances: List<float>, withRider: bool, screen: RenderTarget.t) =>
   Scene.group([
     // Lean about a pivot at saddle height, so the fairing banks under the rider.
-    fairing |> Scene.translate(Vec3.make(0.0, -0.66, 0.0))
+    Scene.group([fairing, beams(distances)]) |> Scene.translate(Vec3.make(0.0, -0.66, 0.0))
       |> Scene.rotateX(Angle.radians(-pitch)) |> Scene.rotateZ(Angle.radians(-roll))
       |> Scene.translate(Vec3.make(0.0, 0.66, 0.0)),
     cockpit(screen),
     if withRider then rider else Scene.group([]),
-    beams(distances),
   ])

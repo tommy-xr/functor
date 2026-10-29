@@ -6,37 +6,38 @@
 // from the spawn along the east wall, which `e2e/hoverbike.mjs` slides along;
 // x ∈ [-20, 15] south of z = 100 is clear for its test turn.
 
-type Block = { x: float, y: float, z: float, w: float, h: float, d: float, kind: float }
+type Kind =
+  | Floor
+  | Wall
+  | Crate
+  | Pillar
 
-let floorKind = 0.0
-let wallKind = 1.0
-let crateKind = 2.0
-let pillarKind = 3.0
+type Block = { x: float, y: float, z: float, w: float, h: float, d: float, kind: Kind }
 
-let block = (kind: float, x: float, y: float, z: float, w: float, h: float, d: float): Block =>
+let block = (kind: Kind, x: float, y: float, z: float, w: float, h: float, d: float): Block =>
   { x: x, y: y, z: z, w: w, h: h, d: d, kind: kind }
 // A box standing on the ground.
-let standing = (kind: float, x: float, z: float, w: float, h: float, d: float) =>
+let standing = (kind: Kind, x: float, z: float, w: float, h: float, d: float) =>
   block(kind, x, h / 2.0, z, w, h, d)
 
 let eastWall = 15.0 // x of the east wall's inner face
 
 let blocks = [
-  block(floorKind, -15.0, -0.5, 85.0, 70.0, 1.0, 260.0),
-  standing(wallKind, eastWall + 0.5, 85.0, 1.0, 3.0, 252.0),
-  standing(wallKind, -45.5, 85.0, 1.0, 3.0, 252.0),
-  standing(wallKind, -15.0, -40.5, 62.0, 3.0, 1.0),
-  standing(wallKind, -15.0, 210.5, 62.0, 3.0, 1.0),
+  block(Floor, -15.0, -0.5, 85.0, 70.0, 1.0, 260.0),
+  standing(Wall, eastWall + 0.5, 85.0, 1.0, 3.0, 252.0),
+  standing(Wall, -45.5, 85.0, 1.0, 3.0, 252.0),
+  standing(Wall, -15.0, -40.5, 62.0, 3.0, 1.0),
+  standing(Wall, -15.0, 210.5, 62.0, 3.0, 1.0),
   // Low crates: the probes ride up over them, the collider passes above.
-  standing(crateKind, -26.0, 20.0, 2.0, 0.5, 2.0),
-  standing(crateKind, -30.0, 32.0, 2.0, 0.5, 2.0),
-  standing(crateKind, -26.0, 44.0, 2.0, 0.5, 2.0),
-  standing(crateKind, -30.0, 56.0, 3.0, 0.7, 3.0),
+  standing(Crate, -26.0, 20.0, 2.0, 0.5, 2.0),
+  standing(Crate, -30.0, 32.0, 2.0, 0.5, 2.0),
+  standing(Crate, -26.0, 44.0, 2.0, 0.5, 2.0),
+  standing(Crate, -30.0, 56.0, 3.0, 0.7, 3.0),
   // Tall enough to stop the bike.
-  standing(pillarKind, -38.0, 26.0, 1.5, 5.0, 1.5),
-  standing(pillarKind, -36.0, 70.0, 1.5, 5.0, 1.5),
-  standing(pillarKind, -24.0, 105.0, 1.5, 5.0, 1.5),
-  standing(wallKind, -28.0, 150.0, 14.0, 2.0, 0.8),
+  standing(Pillar, -38.0, 26.0, 1.5, 5.0, 1.5),
+  standing(Pillar, -36.0, 70.0, 1.5, 5.0, 1.5),
+  standing(Pillar, -24.0, 105.0, 1.5, 5.0, 1.5),
+  standing(Wall, -28.0, 150.0, 14.0, 2.0, 0.8),
 ]
 
 // Declared every frame from this one value, so the world never changes.
@@ -44,11 +45,12 @@ let bodies = blocks |> List.indexedMap((i, b) =>
   Physics.fixed(Physics.tag($"course{i}"), Physics.box(b.w, b.h, b.d))
     |> Physics.at(Vec3.make(b.x, b.y, b.z)))
 
-let colorOf = (kind: float) =>
-  if kind == floorKind then Color.rgb(0.1, 0.08, 0.14)
-  else if kind == crateKind then Color.rgb(0.45, 0.32, 0.5)
-  else if kind == pillarKind then Color.rgb(0.3, 0.28, 0.4)
-  else Color.rgb(0.2, 0.18, 0.28)
+let colorOf = (kind: Kind) =>
+  match kind with
+  | Floor => Color.rgb(0.1, 0.08, 0.14)
+  | Crate => Color.rgb(0.45, 0.32, 0.5)
+  | Pillar => Color.rgb(0.3, 0.28, 0.4)
+  | Wall => Color.rgb(0.2, 0.18, 0.28)
 
 let solid = (b: Block) =>
   Scene.cube() |> Scene.scaleXYZ(b.w, b.h, b.d) |> Scene.lit(colorOf(b.kind))
@@ -56,7 +58,7 @@ let solid = (b: Block) =>
 
 // A glowing edge along the top of every wall, crate and pillar.
 let trim = (b: Block) =>
-  Scene.cube() |> Scene.scaleXYZ(b.w + 0.02, 0.06, b.d + 0.02) |> Scene.emissive(Color.rgb(0.35, 1.0, 0.9))
+  Scene.cube() |> Scene.scaleXYZ(b.w + 0.02, 0.06, b.d + 0.02) |> Scene.emissive(Bike.ion)
     |> Scene.translate(Vec3.make(b.x, b.y + b.h / 2.0, b.z))
 
 // A 10 m grid of thin lines on the floor, for a sense of speed.
@@ -68,6 +70,6 @@ let gridLines =
 
 let scene = Scene.group([
   Scene.group(blocks |> List.map(solid)),
-  Scene.group(blocks |> List.filter((b) => b.kind != floorKind) |> List.map(trim)),
+  Scene.group(blocks |> List.filter((b) => b.kind != Floor) |> List.map(trim)),
   Scene.cube() |> Scene.emissive(Color.rgb(0.55, 0.25, 0.6)) |> Scene.instanced(gridLines),
 ])

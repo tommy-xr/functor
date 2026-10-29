@@ -11,6 +11,8 @@
 //      the bike never passes it, slides along it near top speed, and the
 //      north wall stops it.
 //   6. Two runs end on an identical model.
+//   7. Live at a simulated 120 Hz, the drawn rig moves every frame: `draw`
+//      interpolates between the 60 Hz steps.
 //
 // Run (needs the CLI built; the wasm bundle is not required):
 //
@@ -71,9 +73,11 @@ async function waitFrame(base, atLeast) {
 async function step(base, n) {
   const before = (await get(base, "/state")).frame;
   await post(base, "/time", { type: "advance", dts: DT, frames: n });
+  const deadline = Date.now() + 30000;
   for (;;) {
     const s = await get(base, "/state");
     if (s.frame >= before + n && s.pending_steps === 0) return s.model;
+    if (Date.now() > deadline) throw new Error(`${n} steps from frame ${before} never landed (frame ${s.frame}, pending ${s.pending_steps})`);
     await sleep(5);
   }
 }
@@ -151,12 +155,12 @@ async function ride(port, check) {
     // 3. Brake on the gamepad's left trigger until stopped.
     const v0 = m.speed;
     await post(base, "/input", { type: "gamepad", left_trigger: 1 });
-    let from = null;
+    // The first braked step reads where the braking starts.
+    m = await step(base, 1);
+    const from = m.last;
     let reversed = false;
     for (let i = 0; i < 60 && m.speed > 0; i++) {
-      const before = m;
       m = await step(base, 2);
-      from ??= before.last;
       reversed ||= m.ride.vz < 0;
       clearance = [Math.min(clearance[0], m.clearance), Math.max(clearance[1], m.clearance)];
     }
@@ -238,6 +242,33 @@ async function ride(port, check) {
   }
 }
 
+/**
+ * Live at 120 Hz with the throttle held, sampling `/scene` back to back (the
+ * debug server answers one request per frame). A rig drawn at the stepped
+ * pose alternates still and full-step frames; an interpolated one moves
+ * evenly every frame.
+ */
+async function interpolates(port) {
+  const base = `http://127.0.0.1:${port}`;
+  const proc = spawn(
+    BIN,
+    ["-d", SAMPLE, "run", "native", "--headless", "--display-hz", "120", "--debug-port", String(port)],
+    { cwd: ROOT, stdio: ["ignore", "ignore", "ignore"] },
+  );
+  try {
+    await waitFrame(base, 5);
+    await key(base, "w", true);
+    await waitFrame(base, (await get(base, "/state")).frame + 120);
+    const zs = [];
+    for (let i = 0; i < 16; i++) zs.push((await get(base, "/scene")).scene.obj.Group[1].xform[3][2]);
+    const deltas = zs.slice(1).map((z, i) => z - zs[i]);
+    const even = Math.min(...deltas) > 0 && Math.max(...deltas) < 1.5 * Math.min(...deltas);
+    check(even, `120 Hz: the rig moves evenly every frame (Δz ${deltas.map((d) => d.toFixed(3)).join(" ")})`);
+  } finally {
+    proc.kill("SIGKILL");
+  }
+}
+
 const failures = [];
 const check = (ok, what) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${what}`);
@@ -247,6 +278,7 @@ const check = (ok, what) => {
 const first = await ride(8951, check);
 const second = await ride(8952, () => {});
 check(first === second, `two runs end on an identical model`);
+await interpolates(8953);
 
 if (failures.length) {
   console.error(`\n${failures.length} check(s) failed`);
