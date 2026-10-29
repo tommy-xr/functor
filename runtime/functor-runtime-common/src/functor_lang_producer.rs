@@ -3111,6 +3111,10 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             .seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek rebuilt recorded future");
         assert_eq!(model.to_string(), "4", "other snapshots are reconstructed");
+        recorder
+            .seek_scene_to(1, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek the rebuilt selected frame");
+        assert_eq!(model.to_string(), "3", "the selected snapshot holds no paused input");
     }
 
     #[test]
