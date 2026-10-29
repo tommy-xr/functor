@@ -256,7 +256,8 @@ pub use backend::{read_slot, write_slot};
 pub use backend::{project_dir, set_project_root};
 
 /// How this platform reads project files (`File.bytes`, `Typeface.file`).
-/// Paths arrive checked by `validate_project_asset_path`. Desktop reads the
+/// Paths arrive passing `validate_project_asset_path` (`File.*` paths are
+/// stricter: `functor_lang_prelude::path`). Desktop reads the
 /// project directory; the Quest shell installs its pushed-file cache.
 pub trait ProjectReader: Send + Sync {
     fn read(&self, path: &str) -> Result<std::sync::Arc<[u8]>, ProjectReadError>;

@@ -17,9 +17,9 @@ const FLOOR: &str = r#"let floorData = {
 }
 let lights = [Light.ambient(Color.rgb(0.2, 0.2, 0.2)), Light.point(Vec3.make(0.0, 1.0, 0.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 3.0)]
 // The loading pattern `lightmap.funi` documents: guarded, so the first bake runs.
-let floor = if File.exists("baked/floor.png") then
-  Model.static({ Lightmap.readMesh(File.bytes("baked/floor.mesh.bin")) with
-    lightmap: Option.Some({ texture: Texture.fromPng(File.bytes("baked/floor.png"), Texture.Linear),
+let floor = if File.exists(Path.of("baked/floor.png")) then
+  Model.static({ Lightmap.readMesh(File.bytes(Path.of("baked/floor.mesh.bin"))) with
+    lightmap: Option.Some({ texture: Texture.fromPng(File.bytes(Path.of("baked/floor.png")), Texture.Linear),
       scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
   else Model.static(floorData)
 "#;

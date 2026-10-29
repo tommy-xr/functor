@@ -93,7 +93,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
         &["Config", "Source", "Settings", "Xr"],
     ),
     (ApiGroup::Engine, "Parts", &["Solid", "Sketch", "Typeface", "Mesh"]),
-    (ApiGroup::Engine, "Binary data", &["File", "Bytes", "Binary"]),
+    (ApiGroup::Engine, "Binary data", &["File", "Path", "Bytes", "Binary"]),
     (ApiGroup::Stdlib, "Collections", &["List", "Map"]),
     (ApiGroup::Stdlib, "Text", &["Text"]),
     (

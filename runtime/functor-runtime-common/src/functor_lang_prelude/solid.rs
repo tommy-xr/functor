@@ -607,7 +607,9 @@ mod tests {
 
 /// A font file in the project (the entry file's folder), read on each call.
 fn typeface_file(path: &str) -> Result<Font, String> {
-    let bytes = super::bytes::read_project_file("Typeface.file", path, "fonts/MyFont.ttf")
+    let bytes = super::path::resolve("", path)
+        .map_err(|reason| format!("Typeface.file({path:?}): {reason}"))
+        .and_then(|resolved| super::bytes::read_project_file("Typeface.file", &resolved))
         .map_err(|e| match cfg!(any(target_arch = "wasm32", target_os = "android")) {
             true => format!("{e} — use Typeface.sans() or Typeface.script()"),
             false => e,

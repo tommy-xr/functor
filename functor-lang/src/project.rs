@@ -64,6 +64,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Bytes",
     "Binary",
     "File",
+    "Path",
     "Mesh",
     "Cells",
     "Model",

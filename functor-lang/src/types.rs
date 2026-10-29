@@ -1621,9 +1621,31 @@ impl Checker<'_> {
             (Type::Variant(name, _) | Type::Record(name, _), Type::Float) => {
                 self.unit_hint(name, None).unwrap_or_default()
             }
+            (Type::Variant(name, args), Type::String) if args.is_empty() => {
+                self.string_ctor_hint(name).unwrap_or_default()
+            }
             _ => String::new(),
         };
         self.diag(span, format!("{what}: expected {expected}, got {got}{hint}"));
+    }
+
+    /// How to build a host brand from a string — `Path.t` from `Path.of` —
+    /// when exactly one `.funi` signature is `(string) => name`.
+    fn string_ctor_hint(&self, name: &str) -> Option<String> {
+        if !self.host_types.contains(name) {
+            return None;
+        }
+        let mut ctors = self.signatures.iter().filter(|(_, scheme)| {
+            matches!(&scheme.ty, Type::Fn(params, ret)
+                if matches!(params.as_slice(), [Type::String])
+                    && matches!(ret.as_ref(), Type::Variant(n, args) if n == name && args.is_empty()))
+        });
+        match (ctors.next(), ctors.next()) {
+            (Some((ctor, _)), None) => Some(format!(
+                " — build a `{name}` from the string with `{ctor}(\"…\")`"
+            )),
+            _ => None,
+        }
     }
 
     /// The suffix half of a branded-value teaching error: how to build a

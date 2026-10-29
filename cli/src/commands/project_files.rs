@@ -4,7 +4,7 @@
 //! bundled. Each machine maps a mount name to a folder or a folder inside a
 //! zip, in `~/.config/functor/mounts.json` (`{"ss2":
 //! "~/ss2-25th/sshock2.kpf!data/res/"}`) or with `--mount ss2=PATH`. Game code
-//! only ever says `File.bytes("ss2/mesh/GRUNT_P.BIN")`.
+//! only ever says `File.bytes(Path.of("ss2/mesh/GRUNT_P.BIN"))`.
 //!
 //! Folder mappings are trusted like the project folder: symlinks may not
 //! resolve outside them, but a folder changed mid-read isn't guarded against.
