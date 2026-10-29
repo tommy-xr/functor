@@ -37,6 +37,9 @@ let narrowFov = 6.0
 
 // Bolt cycle between shots, in seconds.
 let boltTime = 1.0
+// Seconds a rung plate swings. Shorter than the bolt, so the plate is back
+// at rest (matching its fixed collider) before the next shot.
+let ringTime = 0.8
 // Shoulder blend: seconds from hip to shouldered.
 let shoulderTime = 0.25
 
@@ -96,7 +99,8 @@ let plateSpecs = [
 
 let plateTag = (id: float) => Physics.tag($"plate-{Text.fixed(id, 0.0)}")
 let groundTag = Physics.tag("ground")
-let bermTag = Physics.tag("berm")
+let leftBermTag = Physics.tag("berm-left")
+let rightBermTag = Physics.tag("berm-right")
 let backstopTag = Physics.tag("backstop")
 
 // Earthworks as (extents, centre), shared by the colliders and the drawing.
@@ -201,8 +205,6 @@ let sampledInput = (m, s) =>
 
 // -------------------------------------------------------------------- step
 
-let approach = (rate: float, dt: float, target: float, x: float) => x +(target - x) * Math.min(1.0, rate * dt)
-
 // Breath: holding drains the reserve; running dry forces a short recovery.
 let stepBreath = (dt, m) =>
   if holding(m) then
@@ -221,11 +223,11 @@ let stepRifle = (dt, m) =>
   { breathed with
       shoulder: if m.aiming then Math.min(1.0, m.shoulder + dt / shoulderTime)
                 else Math.max(0.0, m.shoulder - dt / shoulderTime),
-      steady: approach(5.0, dt, steadyTarget(breathed), m.steady),
+      steady: m.steady |> Math.lerp(steadyTarget(breathed), Math.min(1.0, 5.0 * dt)),
       clock: m.clock + dt,
       cooldown: Math.max(0.0, m.cooldown - dt),
       callout: Math.max(0.0, m.callout - dt),
-      plates: m.plates |> List.map((p) => { p with ring: Math.max(0.0, p.ring - dt / 1.5) }) }
+      plates: m.plates |> List.map((p) => { p with ring: Math.max(0.0, p.ring - dt / ringTime) }) }
 
 // A shot: spend the bolt, and ask the physics world where the bore line lands.
 let fire = (m) =>
@@ -282,8 +284,8 @@ let plateBody = (p) =>
 let rangeBodies =
   [ boxBody(groundTag, { w: 400.0, h: 1.0, d: 600.0, x: 0.0, y: 0.0 - 0.5, z: 250.0 }),
     boxBody(backstopTag, backstop),
-    boxBody(bermTag, leftBerm),
-    boxBody(bermTag, rightBerm) ]
+    boxBody(leftBermTag, leftBerm),
+    boxBody(rightBermTag, rightBerm) ]
     |> List.append(plateSpecs |> List.map(plateBody))
 
 let physics = (m) => Physics.scene(Vec3.make(0.0, 0.0 - 9.81, 0.0), rangeBodies)
@@ -680,7 +682,10 @@ expect landed(rayHit(backstopTag, 231.0)).score == 0.0
 expect landed({ rayHit(groundTag, 0.0) with hit: false }).lastShot == Miss(shotRange)
 expect landed({ rayHit(groundTag, 0.0) with hit: false }).marks == []
 expect landed(rayHit(groundTag, 31.0)).lastShot == Blocked(31.0)
-expect landed(rayHit(bermTag, 80.0)).lastShot == Blocked(80.0)
-// A rung plate settles after 1.5 s; the marks are capped at maxMarks.
-expect (run(91.0, aimed, landed(rayHit(plateTag(2.0), 199.1))).plates |> List.map((p) => p.ring)) == [0.0, 0.0, 0.0]
+expect landed(rayHit(rightBermTag, 80.0)).lastShot == Blocked(80.0)
+// A rung plate settles within ringTime — before the bolt cycles, so its
+// fixed collider never disagrees with a swinging plate you can shoot at.
+// The marks are capped at maxMarks.
+expect ringTime < boltTime
+expect (run(61.0, aimed, landed(rayHit(plateTag(2.0), 199.1))).plates |> List.map((p) => p.ring)) == [0.0, 0.0, 0.0]
 expect List.length(List.fold((m, _i) => update(m, Landed(rayHit(groundTag, 30.0))), up, List.range(12.0)).marks) == maxMarks

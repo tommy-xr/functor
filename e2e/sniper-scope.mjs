@@ -15,14 +15,10 @@
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/sniper-scope.mjs
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { BIN, ROOT, check, failures, sleep } from "./mcp-rpc.mjs";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const BIN = `${ROOT}target/debug/functor`;
 const PORT = 8187;
 const BASE = `http://127.0.0.1:${PORT}`;
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function post(path, body) {
   const res = await fetch(`${BASE}${path}`, { method: "POST", body: JSON.stringify(body) });
@@ -52,10 +48,12 @@ async function waitReady(timeoutMs) {
 // Queue n fixed steps and wait until they have all landed.
 async function step(n = 1) {
   await post("/time", { type: "advance", dts: 1 / 60, frames: n });
-  for (;;) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
     if ((await state()).pending_steps === 0) return;
     await sleep(5);
   }
+  throw new Error(`${n} queued step(s) never landed`);
 }
 
 const input = (body) => post("/input", body);
@@ -69,12 +67,6 @@ async function shoot() {
   await step(3);
   return (await state()).model;
 }
-
-const failures = [];
-const check = (ok, what) => {
-  console.log(`${ok ? "ok  " : "FAIL"} ${what}`);
-  if (!ok) failures.push(what);
-};
 
 const proc = spawn(
   BIN,
