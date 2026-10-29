@@ -62,7 +62,7 @@ let file : (string) => t
 /// asset.
 let fromPixels : (pixels) => Asset.Texture
 /// A texture from a PNG's bytes, in `colorSpace`: `Linear` for a lightmap
-/// `functor bake` wrote (`Texture.fromPng(File.bytes("baked/room.png"),
+/// `functor bake` wrote (`Texture.fromPng(File.bytes(Path.of("baked/room.png")),
 /// Texture.Linear)`), `Srgb` for colour. Bad bytes are an error.
 let fromPng : (Bytes.t, colorSpace) => Asset.Texture
 /// Pack images into one texture (lightmaps): the smallest power-of-two

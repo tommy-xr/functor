@@ -196,7 +196,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     );
     reg.fn1(
         "Lightmap.readMesh",
-        "Lightmap.readMesh(File.bytes(\"baked/room.mesh.bin\"))",
+        "Lightmap.readMesh(File.bytes(Path.of(\"baked/room.mesh.bin\")))",
         |data: FunctorLangBytes| {
             let mesh = read_mesh(data.0.as_slice()).map_err(|e| format!("Lightmap.readMesh: {e}"))?;
             let groups = mesh

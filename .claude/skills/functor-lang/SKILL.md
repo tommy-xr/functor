@@ -1006,6 +1006,7 @@ The generated modules:
 | `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator); `Texture.fromPixels` — one from decoded pixels (`Rgba8`/`Rgb8`/`Rgb555le`, `Srgb` colour or `Linear` data such as lightmaps); `Texture.atlas` — pack pixel images into one padded texture, returning UV rects |
 | `RenderTarget` | named offscreen targets for render-to-texture |
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
+| `Path` | branded, normalized project-relative paths — what `File.bytes` / `File.exists` take (`"data/x.bin" \|> Path.of \|> File.bytes`; a bare string is a check error) |
 | `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at |
 | `Model` | models built from decoded data — skinned (`Model.skinned`) or static world geometry in textured groups (`Model.static`) — drawn with `Scene.modelOf` |
 | `Lightmap` | `Lightmap.unwrap` — lightmap UVs (`uvs2`) for `Model.staticData`: planar charts packed into one atlas at a fixed `texelsPerMeter`, seam vertices duplicated; `bakeJob` — what `functor bake` reads from a top-level `let bakes` (it writes `<name>.png` + `<name>.mesh.bin`); `readMesh` loads the baked mesh back (`Texture.fromPng(…, Texture.Linear)` the light) |
@@ -1051,6 +1052,7 @@ teaching error at check or construction time:
 Angle.degrees(60.0)  Time.seconds(0.5)  Color.rgb(1.0, 0.2, 0.2)
 Vec3.make(0.0, 1.0, 0.0)  Fog.linear(…)  Skybox.files(…)
 RenderTarget.named("id")  Physics.tag("player")  Asset.model(…)  Anim.clip(…)
+Path.of("data/x.bin")
 ```
 
 Declare the identity-shaped ones (`RenderTarget.named`, `Physics.tag`) ONCE as a
@@ -1577,8 +1579,8 @@ model, so it hot-reloads, replays, and never stores state of its own; a failing
 evaluation keeps the last good value and reports once.
 
 **External data** (files the player owns, never shipped) is declared in
-`config`: `Config.external("ss2/", Source.mount("ss2"))`. `File.bytes("ss2/…")`
-then reads this machine's `ss2` mount, set in `~/.config/functor/mounts.json`
+`config`: `Config.external("ss2/", Source.mount("ss2"))`.
+`File.bytes(Path.of("ss2/…"))` then reads this machine's `ss2` mount, set in `~/.config/functor/mounts.json`
 (`{"ss2": "~/ss2/sshock2.kpf!data/res/"}`, `!` into a zip) or with
 `--mount ss2=PATH`; never put a local path in code. The CLI evaluates `config`
 alone before anything runs, so `config` can't read files. `run vr` sends the

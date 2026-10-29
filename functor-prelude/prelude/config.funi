@@ -24,6 +24,6 @@ let create : () => t
 let xr : (Xr.t, t) => t
 /// Files under `prefix` (a folder like `"ss2/"`) aren't the project's: they
 /// come from `source` (see `Source`) and are never pushed or bundled.
-/// `File.bytes("ss2/mesh/a.bin")` reads them like any project file. The CLI
-/// reads `config` before anything else, so it can't read files itself.
+/// `File.bytes(Path.of("ss2/mesh/a.bin"))` reads them like any project file.
+/// The CLI reads `config` before anything else, so it can't read files itself.
 let external : (string, Source.t, t) => t

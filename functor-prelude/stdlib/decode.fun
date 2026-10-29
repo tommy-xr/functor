@@ -5,7 +5,7 @@
 //
 //   let vec3 = Decode.map3(Vec3.make, Decode.f32le, Decode.f32le, Decode.f32le)
 //   let points = Decode.u32le |> Decode.andThen((n) => Decode.list(n, vec3))
-//   let result = Decode.run(points, File.bytes("points.bin"))
+//   let result = Decode.run(points, File.bytes(Path.of("points.bin")))
 
 // A decoded value and the offset just past it.
 type step<'a> = { value: 'a, next: float }

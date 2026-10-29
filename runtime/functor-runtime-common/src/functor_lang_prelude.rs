@@ -196,6 +196,7 @@ pub mod cells;
 pub mod lightmap;
 pub mod mesh;
 pub mod model;
+pub mod path;
 pub mod solid;
 mod sprite;
 mod texture;
@@ -1660,6 +1661,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_terrain(&mut reg);
         solid::register(&mut reg);
         bytes::register(&mut reg);
+        path::register(&mut reg);
         mesh::register(&mut reg);
         cells::register(&mut reg);
         model::register(&mut reg);
@@ -13141,7 +13143,7 @@ the game dir"
              Binary.Index(2.0)] }) == \"polygons[17].indices[2] at byte 1462: needs 2 bytes, 1 left\"",
         ];
         for check in checks {
-            let src = format!("let d = File.bytes(\"data.bin\")\nlet main = {check}\n");
+            let src = format!("let d = File.bytes(Path.of(\"data.bin\"))\nlet main = {check}\n");
             assert!(
                 matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
                 "{check}: {:?}",
@@ -13153,19 +13155,39 @@ the game dir"
                 .err()
                 .expect("should fail")
         };
-        let err = failure("Binary.require(Bytes.u32le(32.0, File.bytes(\"data.bin\")))");
+        let err = failure("Binary.require(Bytes.u32le(32.0, File.bytes(Path.of(\"data.bin\"))))");
         assert!(err.contains("at byte 32: needs 4 bytes, 2 left"), "{err}");
-        let src = "let main = File.exists(\"data.bin\") && not File.exists(\"missing.bin\") \
-                   && not File.exists(\"../data.bin\")\n";
+        let src = "let main = File.exists(Path.of(\"data.bin\")) && not File.exists(Path.of(\"missing.bin\"))\n";
         assert!(
             matches!(eval_with_prelude(src), Ok(Value::Bool(true))),
             "{:?}",
             eval_with_prelude(src).map(|v| v.to_string())
         );
-        let err = failure("File.bytes(\"missing.bin\")");
+        let err = failure("File.bytes(Path.of(\"missing.bin\"))");
         assert!(err.contains("can't read missing.bin"), "{err}");
-        let err = failure("File.bytes(\"../data.bin\")");
+        let err = failure("File.bytes(Path.of(\"../data.bin\"))");
         assert!(err.contains("inside the project"), "{err}");
+        // A bare string through the gradual seam still gets the wrapper taught.
+        let err = eval_with_prelude("let s : unknown = \"data.bin\"\nlet main = File.bytes(s)\n")
+            .err()
+            .expect("should fail");
+        assert!(err.contains("wrap it: Path.of(\"data.bin\")"), "{err}");
+        let err = failure("File.bytes(Path.of(\".\"))");
+        assert!(err.contains("project root is a folder"), "{err}");
+        let src = "let p = Path.of(\"./x/data.bin/\")\n\
+                   let main = [Path.toString(p), Path.name(p), Path.ext(p), \
+                   Path.toString(Path.parent(Path.parent(p))), \
+                   Path.toString(p |> Path.parent |> Path.join(\"../data.bin\"))] \
+                   == [\"x/data.bin\", \"data.bin\", \"bin\", \".\", \"data.bin\"] \
+                   && File.exists(\"x\" |> Path.of |> Path.join(\"../data.bin\")) \
+                   && not File.exists(Path.of(\".\"))\n";
+        assert!(
+            matches!(eval_with_prelude(src), Ok(Value::Bool(true))),
+            "{:?}",
+            eval_with_prelude(src).map(|v| v.to_string())
+        );
+        let err = failure("Path.of(\"x\") |> Path.join(\"/etc/passwd\")");
+        assert!(err.contains("Path.join(\"/etc/passwd\"): an absolute path"), "{err}");
     }
 
     /// `Config.external` declares prefixes by source; `Config.xr` keeps them,
@@ -13248,11 +13270,10 @@ Config.create())",
         cache.replace_uploaded("data/pushed.bin", vec![5, 6, 7]);
         crate::storage::set_project_reader(Some(cache));
         let result = eval_with_prelude(
-            "let main = Bytes.length(File.bytes(\"data/pushed.bin\")) == 3.0 \
-             && File.exists(\"data/pushed.bin\") && not File.exists(\"other.bin\") \
-             && not File.exists(\"../data/pushed.bin\")\n",
+            "let main = Bytes.length(File.bytes(Path.of(\"data/pushed.bin\"))) == 3.0 \
+             && File.exists(Path.of(\"data/pushed.bin\")) && not File.exists(Path.of(\"other.bin\"))\n",
         );
-        let missing = eval_with_prelude("let main = File.bytes(\"other.bin\")\n");
+        let missing = eval_with_prelude("let main = File.bytes(Path.of(\"other.bin\"))\n");
         assert!(
             matches!(result, Ok(Value::Bool(true))),
             "{:?}",
@@ -13293,12 +13314,12 @@ Config.create())",
                Decode.field(\"count\", Decode.u32le), Decode.field(\"start\", Decode.u32le))\n\
              let points = header |> Decode.andThen((h: header) => \
                Decode.field(\"points\", Decode.at(h.start, Decode.list(h.count, vec3))))\n\
-             let data = File.bytes(\"points.bin\")\n";
+             let data = File.bytes(Path.of(\"points.bin\"))\n";
         let checks = [
             "Decode.run(points, data) == Result.Ok([6.0, 15.0])",
             "Decode.run(Decode.map2((a, b) => a + b, Decode.u8, Decode.skipThen(3.0, Decode.u8)), data) \
              == Result.Ok(80.0 + 2.0)",
-            "(Decode.run(Decode.list(100000.0, Decode.u8), File.bytes(\"big.bin\")) \
+            "(Decode.run(Decode.list(100000.0, Decode.u8), File.bytes(Path.of(\"big.bin\"))) \
              |> Result.map(List.length)) == Result.Ok(100000.0)",
             "match Decode.run(Decode.field(\"head\", Decode.list(3.0, Decode.list(2.0, Decode.f64le))), data) with \
              | Result.Error(e) => Binary.describe(e) == \"head[2][1] at byte 40: needs 8 bytes, 0 left\" \
@@ -13308,9 +13329,9 @@ Config.create())",
              && Decode.run(Decode.succeed(1.0), data) == Result.Ok(1.0)",
             "Decode.run(Decode.bytes(4.0) |> Decode.map(Bytes.length), data) == Result.Ok(4.0)",
             "Decode.run(List.range(40.0) |> List.fold((d, i) => Decode.map2((a, b) => a + b, d, \
-             Decode.u8), Decode.succeed(0.0)), File.bytes(\"big.bin\")) == Result.Ok(280.0)",
+             Decode.u8), Decode.succeed(0.0)), File.bytes(Path.of(\"big.bin\"))) == Result.Ok(280.0)",
             "(Decode.run(Decode.sequence(List.range(5000.0) |> List.map((i) => Decode.u8)), \
-             File.bytes(\"big.bin\")) |> Result.map(List.sum)) == Result.Ok(35000.0)",
+             File.bytes(Path.of(\"big.bin\"))) |> Result.map(List.sum)) == Result.Ok(35000.0)",
             "Result.isError(Decode.run(Decode.skipThen(100.0, Decode.succeed(1.0)), data)) \
              && Result.isError(Decode.run(Decode.skipThen(-1.0, Decode.u8), data)) \
              && Result.isError(Decode.run(Decode.at(41.0, Decode.succeed(1.0)), data)) \
@@ -13524,7 +13545,7 @@ Config.create())",
             .collect();
         std::fs::write(dir.path().join("cube.bin"), &corners).unwrap();
         // Five faces as quads — no top, so the box is open.
-        let prelude = "let box = Mesh.fromPolygons(File.bytes(\"cube.bin\"), \
+        let prelude = "let box = Mesh.fromPolygons(File.bytes(Path.of(\"cube.bin\")), \
              [[0.0, 2.0, 3.0, 1.0], [0.0, 1.0, 5.0, 4.0], [1.0, 3.0, 7.0, 5.0], \
              [3.0, 2.0, 6.0, 7.0], [2.0, 0.0, 4.0, 6.0]])\n\
              let moved = Mesh.transformVertices(0.0, 8.0, \
@@ -13579,13 +13600,13 @@ Config.create())",
             std::sync::Arc::as_ptr(mesh) as usize
         };
         assert_eq!(render(&scenes[0]), render(&scenes[1]));
-        let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0, 9.0]])");
+        let err = failure("Mesh.fromPolygons(File.bytes(Path.of(\"cube.bin\")), [[0.0, 1.0, 9.0]])");
         assert!(err.contains("polygon 0 uses vertex 9, but there are 8"), "{err}");
-        let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0]])");
+        let err = failure("Mesh.fromPolygons(File.bytes(Path.of(\"cube.bin\")), [[0.0, 1.0]])");
         assert!(err.contains("needs 3 or more"), "{err}");
         // A degenerate polygon (repeated corner) adds no triangles.
         let src = format!("{prelude}let main = Mesh.triangleCount(Mesh.fromPolygons(\
-            File.bytes(\"cube.bin\"), [[0.0, 1.0, 0.0], [0.0, 1.0, 3.0]]))\n");
+            File.bytes(Path.of(\"cube.bin\")), [[0.0, 1.0, 0.0], [0.0, 1.0, 3.0]]))\n");
         assert!(matches!(eval_with_prelude(&src), Ok(Value::Number(n)) if n == 1.0));
         let err = failure("Solid.fromMesh({ height: 20.0 }, box)");
         assert!(err.contains("missing field `nozzle`"), "{err}");

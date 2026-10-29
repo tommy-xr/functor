@@ -79,12 +79,13 @@ let bakes = [
 ]
 
 // The baked room, once `functor bake` has run.
+let bakeDir = Path.of("baked")
 let load = (name: string) =>
-  let mesh = Lightmap.readMesh(File.bytes($"baked/{name}.mesh.bin")) in
+  let mesh = bakeDir |> Path.join($"{name}.mesh.bin") |> File.bytes |> Lightmap.readMesh in
   Model.static({ mesh with groups: groups, lightmap: Option.Some({
-    texture: Texture.fromPng(File.bytes($"baked/{name}.png"), Texture.Linear),
+    texture: Texture.fromPng(bakeDir |> Path.join($"{name}.png") |> File.bytes, Texture.Linear),
     scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
-let baked = if File.exists("baked/room.png") && File.exists("baked/room-ao.png")
+let baked = if File.exists(Path.join("room.png", bakeDir)) && File.exists(Path.join("room-ao.png", bakeDir))
   then Option.Some((load("room"), load("room-ao")))
   else Option.None
 let realtime = Model.static(roomData)

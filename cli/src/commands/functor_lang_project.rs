@@ -3138,12 +3138,12 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         // `heavy` would fail if run (no such file); `config` doesn't use it.
         let ok = build(
             "let prefix = \"ss2/\"\n\
-             let heavy = File.bytes(\"missing.bin\")\n\
+             let heavy = File.bytes(Path.of(\"missing.bin\"))\n\
              let config = Config.create() |> Config.external(prefix, Source.mount(\"ss2\"))\n",
         );
         assert_eq!(ok.unwrap(), ["ss2/"]);
         let err = build(
-            "let data = File.bytes(\"x.bin\")\n\
+            "let data = File.bytes(Path.of(\"x.bin\"))\n\
              let config = Config.create() |> Config.external(if Bytes.length(data) > 0.0 then \
 \"a/\" else \"b/\", Source.mount(\"ss2\"))\n",
         )

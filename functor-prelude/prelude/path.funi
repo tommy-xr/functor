@@ -1,0 +1,40 @@
+//! Project file paths for `File.*`: a `Path.t` is checked and normalized
+//! once, where it is built, so a bad path is an error at `Path.of` instead
+//! of a missing file later.
+//!
+//! A path is relative to the entry file's folder and stays inside the
+//! project. Segments are separated by `/` and are case-sensitive. `.` and
+//! empty segments (`a//b`, a trailing `/`) drop out, and `..` steps up a
+//! folder but never above the project. Absolute paths, URLs, backslashes, and
+//! the empty string are errors. `Path.of(".")` is the project root.
+//!
+//! The path is the LAST argument, so pipelines read left to right:
+//!
+//! ```
+//! let header = "data/x.bin" |> Path.of |> File.bytes
+//! let mesh = (name) => "ss2/mesh" |> Path.of |> Path.join($"{name}.bin") |> File.bytes
+//! ```
+
+/// A normalized, project-relative path.
+type t = host
+
+/// Check and normalize a path: `Path.of("data/./x.bin")` is `data/x.bin`.
+/// An absolute path, a URL, a backslash, a `..` that leaves the project, or
+/// `""` is an error.
+let of : (string) => t
+/// `relative` inside `path`, normalized by the same rules as `Path.of`:
+/// `Path.of("ss2/mesh") |> Path.join("a.bin")` is `ss2/mesh/a.bin`, and
+/// `Path.join("../tex/a.png")` steps up first. `relative` may hold several
+/// segments.
+let join : (string, t) => t
+/// The last segment: `"x.bin"` for `data/x.bin`, `""` for the project root.
+let name : (t) => string
+/// The extension of `Path.name`, without the dot: `"gz"` for `a.tar.gz`. `""`
+/// when there is none, including a dotfile (`.gitignore`) and a trailing dot.
+let ext : (t) => string
+/// The folder holding the path: `data` for `data/x.bin`. The parent of a
+/// top-level file is the project root, whose parent is itself.
+let parent : (t) => t
+/// The normalized text: `"data/x.bin"`, `"."` for the project root.
+/// `Path.of(Path.toString(p))` is `p`.
+let toString : (t) => string
