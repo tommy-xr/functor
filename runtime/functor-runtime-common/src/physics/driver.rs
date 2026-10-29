@@ -18,8 +18,8 @@
 //! superseded them.
 
 use super::{
-    with_world, Command, PhysicsEvent, PhysicsScene, Simulatable, Timeline, TimelineLog, World,
-    WorldId, DEFAULT_WORLD, FIXED_DT, MAX_SUBSTEPS_PER_FRAME,
+    with_world, Command, PhysicsCommand, PhysicsEvent, PhysicsScene, Simulatable, Timeline,
+    TimelineLog, World, WorldId, DEFAULT_WORLD, FIXED_DT, MAX_SUBSTEPS_PER_FRAME,
 };
 
 /// Snapshot cadence for the live recorder: every half second at 60Hz. Seeks
@@ -305,6 +305,24 @@ impl SteppedPhysics {
     pub fn seekable_range(&self) -> Option<(u64, u64)> {
         self.recorded_range()
             .map(|(lo, hi)| (if lo == 0 { 1 } else { lo }, hi))
+    }
+
+    /// Commands queued for the next step, e.g. an impulse a post-step raycast
+    /// answer returned. A rendered frame ends with them in flight, so the
+    /// coupled recorder keeps them with that frame.
+    pub fn pending_commands(&self) -> Vec<PhysicsCommand> {
+        with_world(self.world, |w| w.pending_commands().to_vec()).unwrap_or_default()
+    }
+
+    /// Replace the queued commands — restoring a recorded frame's in-flight
+    /// commands after a seek.
+    pub fn set_pending_commands(&mut self, commands: &[PhysicsCommand]) {
+        with_world(self.world, |w| {
+            w.take_pending_commands();
+            for command in commands {
+                w.queue_command(command.clone());
+            }
+        });
     }
 
     /// The world's current live fixed frame (== the next frame to record). A

@@ -1212,8 +1212,13 @@ impl FrameCtx<'_> {
             // `rendered_frame`), then the model — `record` advances the clock, so
             // both must land on the same frame (docs/time-travel.md T6b).
             self.recorder.record_inputs(std::mem::take(self.input_buf));
+            let in_flight = if self.has_physics {
+                self.physics_rt.pending_commands()
+            } else {
+                Vec::new()
+            };
             self.recorder
-                .record_timed(self.model, *self.physics_frame, frame_time);
+                .record_timed(self.model, *self.physics_frame, in_flight, frame_time);
         } else {
             // The shell runs one zero-delta bootstrap before frame zero so the
             // model/physics hooks settle before first draw. It is not a visible
@@ -3021,7 +3026,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             let value = Value::Number(live_model);
             recorded.push(value.to_string());
             recorder.record_inputs(Vec::new());
-            recorder.record_timed(&value, 0, FrameTime { dts, tts });
+            recorder.record_timed(&value, 0, Vec::new(), FrameTime { dts, tts });
         }
         let (lo, hi) = recorder.scene_frame_range().expect("retained history");
         assert!(lo > 0, "exercise replay after model-ring pruning");
@@ -3080,6 +3085,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             recorder.record_timed(
                 &Value::Number((frame + 2) as f64),
                 0,
+                Vec::new(),
                 FrameTime {
                     dts: 1.0 / 60.0,
                     tts: (frame + 1) as f32 / 60.0,
@@ -4104,6 +4110,56 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         for _ in 0..30 {
             h.frame_at(physics::FIXED_DT, Some(&walk));
         }
+        assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
+    }
+
+    /// A raycast answers after the step, and its `update` queues an impulse
+    /// for the NEXT step: the frame ends with that command in flight. Seeking
+    /// or rewinding to the frame must restore it, or the branch drops the kick.
+    #[test]
+    fn restoring_a_frame_keeps_its_in_flight_physics_commands() {
+        const SRC: &str = "\
+            let ballTag = Physics.tag(\"ball\")\n\
+            type Msg<'h> = | Hit(hit: 'h)\n\
+            let init = 0.0\n\
+            let tick = (m, dt, tts) =>\n\
+            \x20 (m, Physics.raycast(Vec3.make(0.0, 20.0, 0.0), Vec3.make(0.0, 0.0 - 1.0, 0.0), 40.0, Hit))\n\
+            let update = (m, msg) =>\n\
+            \x20 match msg with\n\
+            \x20 | Hit(h) => (m, Physics.applyImpulse(ballTag, Vec3.make(0.0, 0.2, 0.0)))\n\
+            let physics = (m) =>\n\
+            \x20 Physics.scene(Vec3.make(0.0, 0.0 - 9.81, 0.0),\n\
+            \x20   [ Physics.dynamic(ballTag, Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 3.0, 0.0)) ])\n\
+            let draw = (m, tts) =>\n\
+            \x20 Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0 - 5.0),\n\
+            \x20                              Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        let snapshot = || physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()).unwrap();
+        let mut ends = Vec::new();
+        for _ in 0..40 {
+            h.frame();
+            ends.push(snapshot());
+        }
+        assert!(!h.physics_rt.pending_commands().is_empty(), "the kick is in flight");
+
+        h.recorder
+            .seek_scene_to(20, &mut h.model, &mut h.physics_rt, &mut h.physics_frame, true)
+            .unwrap();
+        assert!(snapshot() == ends[20], "the scrub shows frame 20 as it ended");
+        h.recorder
+            .rewind_scene_to(
+                20,
+                &mut h.model,
+                &mut h.physics_rt,
+                &mut h.physics_frame,
+                true,
+                &mut h.prev_tts,
+            )
+            .unwrap();
+        assert!(snapshot() == ends[20], "the rewind restores frame 20 as it ended");
+        h.frame();
+        assert!(snapshot() == ends[21], "the branch replays frame 21 exactly");
         assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
     }
 

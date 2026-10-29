@@ -355,6 +355,11 @@ impl World {
         self.pending.push(command);
     }
 
+    /// The queued commands, still awaiting the next stepped frame.
+    pub fn pending_commands(&self) -> &[PhysicsCommand] {
+        &self.pending
+    }
+
     /// Drain the queued commands without applying them — the recorded drive
     /// (Phase 6) folds them into the frame's Timeline command list instead,
     /// so replay reproduces them.
