@@ -197,6 +197,7 @@ pub struct FusedMeshState {
     /// The floor height those colliders are snapped to, metres; absent until
     /// the floor has been seen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub floor_m: Option<f32>,
 }
 
