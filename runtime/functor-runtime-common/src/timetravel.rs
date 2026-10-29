@@ -770,8 +770,12 @@ impl SceneRecorder {
     /// If play resumes (`dts > 0`) while parked on an earlier frame, branch the
     /// timeline from there BEFORE the frame advances. Call at the top of `tick`.
     /// Returns `true` if a branch was committed, so the producer can drop any
-    /// in-flight frame work that must not cross the branch (deferred queries /
-    /// pending events — the reload discipline).
+    /// in-flight frame work that must not cross the branch (pending events —
+    /// the reload discipline).
+    ///
+    /// Input delivered while parked already updated the live `model`; the
+    /// input log records it on the branch's first frame, so the branch keeps
+    /// it rather than restoring the scrubbed snapshot over it.
     pub fn commit_scrub_if_resuming(
         &mut self,
         model: &mut Value,
@@ -781,7 +785,9 @@ impl SceneRecorder {
         prev_tts: &mut Option<f64>,
     ) -> bool {
         if let Some(k) = self.scrub_pos.take() {
+            let live = model.clone();
             let _ = self.rewind_scene_to(k, model, physics, physics_frame, has_physics, prev_tts);
+            *model = live;
             self.counterfactual_replay = false;
             true
         } else {

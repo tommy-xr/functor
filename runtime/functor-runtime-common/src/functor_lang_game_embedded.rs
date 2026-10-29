@@ -771,8 +771,10 @@ impl GameProducer for FunctorLangEmbeddedGame {
         );
         if result.is_ok() {
             // Same as rewind: the model was restored, so buffered input since
-            // the last recorded frame is orphaned and must not enter the branch.
+            // the last recorded frame is orphaned and must not enter the branch,
+            // nor the queries that input issued.
             self.input_buf.clear();
+            self.deferred_queries.clear();
             // The paused frame changed — clear the last-frame journal and cache
             // so the trace reflects the scrubbed frame.
             self.last_frame_journal.clear();
@@ -1873,6 +1875,49 @@ let draw = (model, tts) =>
         assert!(matches!(
             game.recorded_inputs_at(1).as_slice(),
             [crate::RecordedInput::Snapshot(recorded)] if recorded.mouse.x == 10
+        ));
+    }
+
+    /// An edge event delivered while parked on a scrubbed frame runs its hook
+    /// at once, and the input log records it on the branch's first frame. The
+    /// resume must keep its model change and the query it issued, or replaying
+    /// that log applies an input the branch never saw.
+    #[test]
+    fn input_while_parked_on_a_scrub_survives_the_resume() {
+        let source = r#"
+type Msg<'h> = | Hit(hit: 'h)
+let init = { presses: 0.0, answers: 0.0, ticks: 0.0 }
+let input = (model, key, isDown) =>
+  if isDown then
+    ({ model with presses: model.presses + 1.0 },
+     Physics.raycast(Vec3.make(0.0, 1.0, 0.0), Vec3.make(0.0, 0.0 - 1.0, 0.0), 5.0, Hit))
+  else model
+let update = (model, msg) => { model with answers: model.answers + 1.0 }
+let tick = (model, dt, tts) => { model with ticks: model.ticks + 1.0 }
+let draw = (model, tts) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), source.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("input game loads");
+        game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+        game.seek_scene_to(0).expect("frame zero remains seekable");
+
+        game.key_event(crate::Key::Space as i32, true);
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+
+        let model = game.state_debug();
+        assert!(model.contains("presses: 1"), "{model}");
+        assert!(model.contains("answers: 1"), "{model}");
+        assert!(model.contains("ticks: 2"), "{model}");
+        assert!(matches!(
+            game.recorded_inputs_at(1).as_slice(),
+            [crate::RecordedInput::Key { is_down: true, .. }]
         ));
     }
 

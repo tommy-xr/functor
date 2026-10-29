@@ -1147,7 +1147,9 @@ impl Game for FunctorLangGame {
             // the last recorded frame so a stray live event (buffered on a
             // 0-substep frame under the fixed-timestep loop) can't be recorded
             // into the resulting branch and diverge a ghost/replay (xreview).
+            // The queries that input issued go with it.
             self.input_buf.clear();
+            self.deferred_queries.clear();
         }
         result
     }

@@ -1065,6 +1065,8 @@ impl FrameCtx<'_> {
         // while the draggable bar is parked on an earlier frame, branch the
         // timeline from there BEFORE this frame advances — and drop any in-flight
         // frame work so it doesn't cross the branch (the reload discipline).
+        // Queries issued by input while parked are the branch's own: kept (a
+        // seek already dropped the ones from before it).
         let retry_tts_before_scrub = *self.prev_tts;
         if frame_time.dts > 0.0
             && self.recorder.commit_scrub_if_resuming(
@@ -1080,7 +1082,6 @@ impl FrameCtx<'_> {
                 retry_tts_before_scrub,
                 *self.prev_tts,
             );
-            self.deferred_queries.clear();
             self.pending_events.clear();
             // The restored model predates the current loading snapshot, so
             // "what the game last saw" no longer holds — invalidate the
