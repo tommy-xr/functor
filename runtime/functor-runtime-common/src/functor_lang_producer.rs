@@ -4114,19 +4114,21 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
     }
 
     /// A raycast answers after the step, and its `update` queues an impulse
-    /// for the NEXT step: the frame ends with that command in flight. Seeking
-    /// or rewinding to the frame must restore it, or the branch drops the kick.
+    /// for the NEXT step: the frame ends with that command in flight. Seeking,
+    /// rewinding, or resuming from a scrub must restore it, or the branch
+    /// drops the kick.
     #[test]
     fn restoring_a_frame_keeps_its_in_flight_physics_commands() {
+        // The kick grows each frame, so every frame's in-flight command differs.
         const SRC: &str = "\
             let ballTag = Physics.tag(\"ball\")\n\
             type Msg<'h> = | Hit(hit: 'h)\n\
             let init = 0.0\n\
             let tick = (m, dt, tts) =>\n\
-            \x20 (m, Physics.raycast(Vec3.make(0.0, 20.0, 0.0), Vec3.make(0.0, 0.0 - 1.0, 0.0), 40.0, Hit))\n\
+            \x20 (m + 1.0, Physics.raycast(Vec3.make(0.0, 20.0, 0.0), Vec3.make(0.0, 0.0 - 1.0, 0.0), 40.0, Hit))\n\
             let update = (m, msg) =>\n\
             \x20 match msg with\n\
-            \x20 | Hit(h) => (m, Physics.applyImpulse(ballTag, Vec3.make(0.0, 0.2, 0.0)))\n\
+            \x20 | Hit(h) => (m, Physics.applyImpulse(ballTag, Vec3.make(0.0, 0.01 * m, 0.0)))\n\
             let physics = (m) =>\n\
             \x20 Physics.scene(Vec3.make(0.0, 0.0 - 9.81, 0.0),\n\
             \x20   [ Physics.dynamic(ballTag, Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 3.0, 0.0)) ])\n\
@@ -4143,10 +4145,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         }
         assert!(!h.physics_rt.pending_commands().is_empty(), "the kick is in flight");
 
-        h.recorder
-            .seek_scene_to(20, &mut h.model, &mut h.physics_rt, &mut h.physics_frame, true)
-            .unwrap();
-        assert!(snapshot() == ends[20], "the scrub shows frame 20 as it ended");
+        // A rewind straight from the live tail.
         h.recorder
             .rewind_scene_to(
                 20,
@@ -4160,6 +4159,14 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         assert!(snapshot() == ends[20], "the rewind restores frame 20 as it ended");
         h.frame();
         assert!(snapshot() == ends[21], "the branch replays frame 21 exactly");
+
+        // A scrub, then Resume: the commit branches from the scrubbed frame.
+        h.recorder
+            .seek_scene_to(10, &mut h.model, &mut h.physics_rt, &mut h.physics_frame, true)
+            .unwrap();
+        assert!(snapshot() == ends[10], "the scrub shows frame 10 as it ended");
+        h.frame();
+        assert!(snapshot() == ends[11], "resuming replays frame 11 exactly");
         assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
     }
 

@@ -290,20 +290,6 @@ impl InputHistory {
     }
 }
 
-/// The coupled time-travel recorder shared by both Functor Lang shells (docs/time-travel.md
-/// T1–T3): records the MVU `model` and the physics fixed-frame in lockstep each
-/// rendered frame, and seeks/rewinds them together. It owns the recording rings
-/// and the scrub state; the producer keeps ownership of the `model` and the
-/// [`SteppedPhysics`] and hands them in, so this one implementation drives the
-/// desktop and web producers identically (no drift).
-///
-/// The master clock is the RENDERED frame; the physics world couples via
-/// `world_frame_history` (the fixed frame each rendered frame ended at). A
-/// **scrub** ([`Self::seek_scene_to`]) is non-destructive so the draggable bar
-/// can drag back and forth; the future is discarded only when play resumes from
-/// the scrubbed point ([`Self::commit_scrub_if_resuming`], which branches via
-/// [`Self::rewind_scene_to`]). Every coupled seek is **exact-or-refused** — it
-/// never lands the model and world on different times.
 /// Where the physics world stood when a rendered frame ended: its fixed frame
 /// and the commands queued after that frame's step (an impulse a raycast
 /// answer returned). The physics timeline records those as the NEXT frame's
@@ -314,6 +300,19 @@ struct WorldEnd {
     in_flight: Vec<PhysicsCommand>,
 }
 
+/// The coupled time-travel recorder shared by both Functor Lang shells (docs/time-travel.md
+/// T1–T3): records the MVU `model` and the physics fixed-frame in lockstep each
+/// rendered frame, and seeks/rewinds them together. It owns the recording rings
+/// and the scrub state; the producer keeps ownership of the `model` and the
+/// [`SteppedPhysics`] and hands them in, so this one implementation drives the
+/// desktop and web producers identically (no drift).
+///
+/// The master clock is the RENDERED frame; the physics world couples via
+/// `world_frame_history` (where the world stood as each rendered frame ended). A
+/// **scrub** ([`Self::seek_scene_to`]) is non-destructive so the draggable bar
+/// can drag back and forth; the future is discarded only when play resumes from
+/// the scrubbed point ([`Self::commit_scrub_if_resuming`]). Every coupled seek is **exact-or-refused** — it
+/// never lands the model and world on different times.
 pub struct SceneRecorder {
     model_history: History<Value>,
     /// The physics world at the end of each rendered frame, recorded in
@@ -868,9 +867,9 @@ impl SceneRecorder {
         self.branch_to(target, model, physics, physics_frame, has_physics, prev_tts, false)
     }
 
-    /// [`Self::rewind_scene_to`]. A COMMIT of the parked scrub keeps the
-    /// physics commands queued while parked (`keep_live_commands`), like the
-    /// input log keeps their input; a rewind restores the frame's own.
+    /// The body of [`Self::rewind_scene_to`] and the scrub commits. A commit
+    /// keeps the physics commands queued while parked (`keep_live_commands`),
+    /// as the input log keeps their input; a rewind restores the frame's own.
     #[allow(clippy::too_many_arguments)]
     fn branch_to(
         &mut self,
