@@ -39,7 +39,8 @@ zoom because input scripts cannot scroll.
 
 ## Ballistics
 
-A hitscan `Physics.raycast` from the muzzle. The bore starts 5 cm below the
+A hitscan `Physics.raycast` from the muzzle: a straight line with no bullet
+drop, so far shots land high instead of low. The bore starts 5 cm below the
 line of sight and crosses it at 100 m. It lands
 `sightHeight · (d / 100 − 1)` from the crosshair:
 

@@ -145,7 +145,7 @@ let init = {
   score: 0.0,
   lastShot: NoShot,
   callout: 0.0,
-  plates: plateSpecs |> List.map((p) => { id: p.id, x: p.x, z: p.z, ring: 0.0, hits: 0.0 }),
+  plates: plateSpecs |> List.map((p) => { id: p.id, x: p.x, z: p.z, ring: 0.0 }),
   marks: [],
 }
 
@@ -269,7 +269,7 @@ let update = (m, msg) =>
         score: m.score + gained,
         hits: if gained > 0.0 then m.hits + 1.0 else m.hits,
         plates: m.plates |> List.map((p) =>
-          if rang(p) then { p with ring: 1.0, hits: p.hits + 1.0 } else p),
+          if rang(p) then { p with ring: 1.0 } else p),
         marks: if h.hit then [mark, ..m.marks] |> List.take(maxMarks) else m.marks }
 
 // ----------------------------------------------------------------- physics
@@ -501,12 +501,12 @@ let reticle =
     Sprite.circle(pink, 2.5),
   ])
 
-let scopeFrame = (m) =>
+let scopeFrame = (m, scene) =>
   Frame.createLit(
     Camera3D.firstPerson(v3(eye), Angle.radians(aimYaw(m)), Angle.radians(aimPitch(m)),
                          Angle.degrees(zoomFov(m)))
       |> Camera3D.clip(1.0, 700.0),
-    rangeScene(m),
+    scene,
     lights)
     |> Frame.withClearColor(sky)
     |> Frame.withFog(haze)
@@ -555,7 +555,7 @@ let hud = (m) =>
       leftText(pink, 22.0, pad4(m.score)) |> Sprite.move(0.0 - 38.0, 0.0 - 6.0),
     ]) |> Sprite.move(320.0, 250.0),
     // the last shot's callout, fading
-    Sprite.text(if m.callout > 0.0 then cyan else dim, 14.0, calloutText(m))
+    Sprite.text(cyan, 14.0, calloutText(m))
       |> Sprite.fade(Math.clamp01(m.callout))
       |> Sprite.moveY(0.0 - 150.0),
     // a small hip crosshair that fades out as the rifle comes up
@@ -567,17 +567,19 @@ let hud = (m) =>
     ]) |> Sprite.fade(1.0 - m.shoulder),
   ])
 
+// The range is built once and shared by the main view and the scope.
 let draw = (m, tts) =>
+  let range = rangeScene(m) in
   let main =
     Frame.createLit(
       Camera3D.firstPerson(v3(eye), Angle.radians(aimYaw(m)), Angle.radians(aimPitch(m)),
                            Angle.degrees(hipFov))
         |> Camera3D.clip(0.05, 700.0),
-      Scene.group([rangeScene(m), rifleNode(m)]),
+      Scene.group([range, rifleNode(m)]),
       lights)
       |> Frame.withClearColor(sky)
       |> Frame.withFog(haze) in
-  (if shouldered(m) then main |> Frame.withRenderTarget(scopeFeed, scopeFrame(m)) else main)
+  (if shouldered(m) then main |> Frame.withRenderTarget(scopeFeed, scopeFrame(m, range)) else main)
     |> Frame.with2D(Camera2D.create(800.0, 600.0), hud(m))
 
 // ------------------------------------------------------------------ expects
