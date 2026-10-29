@@ -2,7 +2,7 @@
 //! polygons. Pure, immutable data, so the sim queries (`locate`, `segment`)
 //! are deterministic and replay-safe.
 
-use cgmath::{InnerSpace, Vector3};
+use cgmath::{InnerSpace, Matrix4, Vector3, Vector4};
 use serde::{Deserialize, Serialize};
 
 use crate::inspect::Aabb;
@@ -255,6 +255,127 @@ impl Cells {
         }
         false
     }
+}
+
+/// A screen rectangle in NDC: `[min x, min y, max x, max y]`.
+type Rect = [f32; 4];
+
+const FULL: Rect = [-1.0, -1.0, 1.0, 1.0];
+
+impl Cells {
+    /// The cells an eye at `eye` sees through portals, flooding from its
+    /// cell (every cell holding it, on a shared face) and narrowing a screen
+    /// rectangle at each portal. `clip` is the
+    /// eye's `projection * view * world`, `eye` in this cells' space. `None`
+    /// (draw every cell) when the eye is outside every cell, or the walk runs
+    /// long.
+    pub fn visible(&self, eye: Vector3<f32>, clip: &Matrix4<f32>) -> Option<Vec<bool>> {
+        let mut stack: Vec<(usize, Rect)> = (0..self.len())
+            .filter(|&cell| self.contains(cell, eye))
+            .map(|cell| (cell, FULL))
+            .collect();
+        if stack.is_empty() {
+            return None;
+        }
+        let mut reached: Vec<Option<Rect>> = vec![None; self.len()];
+        // Each visit reaches a new cell or grows its rectangle; cap the
+        // pathological case.
+        let mut budget = 16 * (self.len() + self.data.portals.len());
+        while let Some((cell, rect)) = stack.pop() {
+            // A cell reached again is re-walked with the union of its
+            // rectangles, unless the new one adds nothing.
+            let rect = match reached[cell] {
+                Some(seen) if contains(seen, rect) => continue,
+                Some(seen) => union(seen, rect),
+                None => rect,
+            };
+            reached[cell] = Some(rect);
+            budget = budget.checked_sub(1)?;
+            for &k in &self.outgoing[cell] {
+                let k = k as usize;
+                let distance = self.faces[k].0.distance(eye);
+                // Leaving a cell through a face needs the eye on its inner side.
+                // On the portal's plane its projection degenerates, so it
+                // passes the whole rectangle.
+                let through = if distance < -TOLERANCE {
+                    None
+                } else if distance <= TOLERANCE {
+                    Some(rect)
+                } else {
+                    project(clip, &self.data.portals[k].polygon).and_then(|p| intersect(rect, p))
+                };
+                if let Some(through) = through {
+                    stack.push((self.data.portals[k].to as usize, through));
+                }
+            }
+        }
+        Some(reached.iter().map(Option::is_some).collect())
+    }
+}
+
+/// A polygon's screen rectangle under `clip`, clipped to the part in front
+/// of the eye (`w > 0`) before the divide. `None` when it is all behind;
+/// the whole screen when it only grazes the eye (`0 < w < W_MIN`).
+fn project(clip: &Matrix4<f32>, polygon: &[[f32; 3]]) -> Option<Rect> {
+    const W_MIN: f32 = 1e-5;
+    let corners = polygon.iter().map(|&p| clip * v(p).extend(1.0));
+    let mut rect = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    let mut add = |c: Vector4<f32>| {
+        // A crossing point's w can round just below W_MIN.
+        let w = c.w.max(W_MIN);
+        let (x, y) = (c.x / w, c.y / w);
+        rect = [
+            rect[0].min(x),
+            rect[1].min(y),
+            rect[2].max(x),
+            rect[3].max(y),
+        ];
+    };
+    let ring: Vec<Vector4<f32>> = corners.collect();
+    for (i, &a) in ring.iter().enumerate() {
+        let b = ring[(i + 1) % ring.len()];
+        if a.w >= W_MIN {
+            add(a);
+        }
+        // An edge crossing w = W_MIN adds its crossing point.
+        if (a.w >= W_MIN) != (b.w >= W_MIN) {
+            add(a + (b - a) * ((W_MIN - a.w) / (b.w - a.w)));
+        }
+    }
+    if rect[0] <= rect[2] {
+        Some(rect)
+    } else {
+        ring.iter().any(|c| c.w > 0.0).then_some(FULL)
+    }
+}
+
+fn contains(outer: Rect, inner: Rect) -> bool {
+    outer[0] <= inner[0] && outer[1] <= inner[1] && inner[2] <= outer[2] && inner[3] <= outer[3]
+}
+
+fn union(a: Rect, b: Rect) -> Rect {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
+    ]
+}
+
+/// The overlap of two rectangles, if it has area.
+fn intersect(a: Rect, b: Rect) -> Option<Rect> {
+    let r = [
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+        a[2].min(b[2]),
+        a[3].min(b[3]),
+    ];
+    (r[0] < r[2] && r[1] < r[3]).then_some(r)
 }
 
 /// Whether `p` is inside every edge of the convex `polygon` (wound about
@@ -560,6 +681,178 @@ pub(crate) mod tests {
         let cells = Cells::new(data).unwrap();
         assert!(cells.segment(p(1.0, 1.0, 0.0), p(6.0, 1.0, 0.0)));
         assert!(!cells.segment(p(6.0, 1.0, 0.0), p(1.0, 1.0, 0.0)));
+    }
+
+    /// The cells seen from `eye` looking at `target` (90° square view).
+    fn seen(cells: &Cells, eye: [f32; 3], target: [f32; 3]) -> Option<Vec<bool>> {
+        use cgmath::{perspective, Deg, Point3};
+        let clip = perspective(Deg(90.0), 1.0, 0.1, 100.0)
+            * Matrix4::look_at_rh(Point3::from(eye), Point3::from(target), Vector3::unit_y());
+        cells.visible(v(eye), &clip)
+    }
+
+    #[test]
+    fn the_walk_sees_through_aligned_doorways_only() {
+        let cells = three_rooms();
+        let all = Some(vec![true, true, true]);
+        assert_eq!(seen(&cells, [1.0, 1.5, 0.0], [12.0, 1.5, 0.0]), all);
+        // Beside the doorway the next one is out of line: room 2 is hidden.
+        assert_eq!(
+            seen(&cells, [1.0, 1.5, 1.5], [12.0, 1.5, 1.5]),
+            Some(vec![true, true, false])
+        );
+        // Facing away, or at a side wall with doorways off to the sides.
+        assert_eq!(
+            seen(&cells, [2.0, 1.5, 0.0], [-10.0, 1.5, 0.0]),
+            Some(vec![true, false, false])
+        );
+        assert_eq!(
+            seen(&cells, [6.0, 1.5, 0.0], [6.0, 1.5, 10.0]),
+            Some(vec![false, true, false])
+        );
+        // Standing in a doorway (on its plane) sees through it.
+        assert_eq!(seen(&cells, [4.0, 1.0, 0.0], [12.0, 1.0, 0.0]), all);
+        // Outside every cell: draw everything.
+        assert_eq!(seen(&cells, [1.0, 5.0, 0.0], [12.0, 5.0, 0.0]), None);
+    }
+
+    #[test]
+    fn an_l_corner_hides_the_far_leg_until_the_corner() {
+        // Corridor 0 (x 0..4, z 0..2) → corner 1 (x 4..6) through a door at
+        // z 0..1; corner → leg 2 (z 2..6) through a door at x 5..6.
+        let cells = Cells::new(CellsData {
+            cells: vec![
+                room([0.0, 0.0, 0.0], [4.0, 3.0, 2.0]),
+                room([4.0, 0.0, 0.0], [6.0, 3.0, 2.0]),
+                room([4.0, 0.0, 2.0], [6.0, 3.0, 6.0]),
+            ],
+            portals: [
+                door(
+                    0,
+                    1,
+                    vec![
+                        [4.0, 0.0, 0.0],
+                        [4.0, 0.0, 1.0],
+                        [4.0, 2.0, 1.0],
+                        [4.0, 2.0, 0.0],
+                    ],
+                ),
+                door(
+                    1,
+                    2,
+                    vec![
+                        [5.0, 0.0, 2.0],
+                        [6.0, 0.0, 2.0],
+                        [6.0, 2.0, 2.0],
+                        [5.0, 2.0, 2.0],
+                    ],
+                ),
+            ]
+            .concat(),
+        })
+        .unwrap();
+        assert_eq!(
+            seen(&cells, [0.5, 1.0, 0.5], [6.0, 1.0, 0.5]),
+            Some(vec![true, true, false])
+        );
+        assert_eq!(
+            seen(&cells, [4.5, 1.0, 0.5], [5.5, 1.0, 6.0]),
+            Some(vec![false, true, true])
+        );
+    }
+
+    #[test]
+    fn a_cell_reached_again_through_a_wider_view_is_walked_again() {
+        // Two doorways from room 0 into room 1, and room 2 beyond only lined
+        // up with the second. The walk takes the first doorway first (last
+        // listed), reaching room 1 with a view that misses room 2's door.
+        let x_door = |x: f32, z: f32| {
+            vec![
+                [x, 0.0, z - 0.3],
+                [x, 0.0, z + 0.3],
+                [x, 2.0, z + 0.3],
+                [x, 2.0, z - 0.3],
+            ]
+        };
+        let rooms = (0..3)
+            .map(|i| {
+                room(
+                    [4.0 * i as f32, 0.0, -2.0],
+                    [4.0 * i as f32 + 4.0, 3.0, 2.0],
+                )
+            })
+            .collect();
+        let cells = Cells::new(CellsData {
+            cells: rooms,
+            portals: [
+                door(0, 1, x_door(4.0, 1.5)),
+                door(0, 1, x_door(4.0, -1.5)),
+                door(1, 2, x_door(8.0, 1.5)),
+            ]
+            .concat(),
+        })
+        .unwrap();
+        assert_eq!(
+            seen(&cells, [1.0, 1.0, 1.5], [12.0, 1.0, 1.5]),
+            Some(vec![true, true, true])
+        );
+    }
+
+    #[test]
+    fn each_eye_walks_from_its_own_cell() {
+        // Eyes 1.5 m apart, both facing +X: only the one in line sees room 2.
+        let cells = three_rooms();
+        assert_eq!(
+            seen(&cells, [1.0, 1.5, 0.0], [12.0, 1.5, 0.0]).unwrap()[2],
+            true
+        );
+        assert_eq!(
+            seen(&cells, [1.0, 1.5, 1.5], [12.0, 1.5, 1.5]).unwrap()[2],
+            false
+        );
+        // Eyes straddling a doorway: each starts in its own room.
+        assert_eq!(
+            seen(&cells, [3.97, 1.0, 0.0], [3.97, 1.0, 10.0]),
+            Some(vec![true, true, false])
+        );
+        assert_eq!(
+            seen(&cells, [4.03, 1.0, 0.0], [4.03, 1.0, 10.0]),
+            Some(vec![true, true, false])
+        );
+        assert_eq!(
+            seen(&cells, [3.0, 1.0, 1.5], [3.0, 1.0, 10.0]).unwrap()[1],
+            false
+        );
+    }
+
+    #[test]
+    fn an_eye_on_a_shared_wall_sees_its_own_room() {
+        // Rooms 0 and 1 with no portal between them: an eye 0.5 mm into room
+        // 1 is within room 0's tolerance too, and sees both.
+        let cells = Cells::new(CellsData {
+            cells: vec![
+                room([0.0, 0.0, -2.0], [4.0, 3.0, 2.0]),
+                room([4.0, 0.0, -2.0], [8.0, 3.0, 2.0]),
+            ],
+            portals: vec![],
+        })
+        .unwrap();
+        assert_eq!(
+            seen(&cells, [4.0005, 1.0, 0.0], [8.0, 1.0, 0.0]),
+            Some(vec![true, true])
+        );
+    }
+
+    #[test]
+    fn a_portal_grazing_the_eye_passes_the_whole_view() {
+        // A clip matrix whose w is 1e-6 at every corner: in front of the eye,
+        // too close to divide by.
+        let polygon = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut clip = Matrix4::from_scale(0.0);
+        clip.w.w = 1e-6;
+        assert_eq!(project(&clip, &polygon), Some(FULL));
+        clip.w.w = -1.0;
+        assert_eq!(project(&clip, &polygon), None);
     }
 
     #[test]

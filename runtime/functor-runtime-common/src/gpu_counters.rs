@@ -51,6 +51,9 @@ pub struct GpuCounters {
     // The current rendered frame's frustum tests (same contract). One word
     // (tested << 32 | culled).
     frame_cull: AtomicU64,
+    // The current rendered frame's portal walks (same contract). One word
+    // (walks << 48 | cells reached << 24 | subtrees hidden).
+    frame_cells: AtomicU64,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -107,6 +110,16 @@ pub struct CullCounts {
     pub culled: u64,
 }
 
+/// One frame's `Scene.cells` portal culling, summed over its eye and
+/// render-target passes: portal walks, the cells they reached, and
+/// `Scene.inCells` subtrees hidden.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CellsCounts {
+    pub walks: u64,
+    pub visible: u64,
+    pub hidden: u64,
+}
+
 /// One frame's `Scene.instanced` instance-buffer uploads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstanceUploads {
@@ -131,6 +144,7 @@ impl GpuCounters {
             frame_skinned: AtomicU64::new(0),
             frame_uniforms: AtomicU64::new(0),
             frame_cull: AtomicU64::new(0),
+            frame_cells: AtomicU64::new(0),
         }
     }
 
@@ -252,9 +266,33 @@ impl GpuCounters {
             .fetch_add(1 << 32 | u64::from(culled), Ordering::Relaxed);
     }
 
-    /// Zero the per-frame frustum tests (a new rendered frame began).
+    /// Zero the per-frame frustum tests and portal walks (a new rendered
+    /// frame began).
     pub fn begin_cull_frame(&self) {
         self.frame_cull.store(0, Ordering::Relaxed);
+        self.frame_cells.store(0, Ordering::Relaxed);
+    }
+
+    /// Record one portal walk that reached `visible` cells.
+    pub fn cells_walked(&self, visible: usize) {
+        self.frame_cells
+            .fetch_add(1 << 48 | (visible as u64) << 24, Ordering::Relaxed);
+    }
+
+    /// Record one `Scene.inCells` subtree hidden.
+    pub fn cells_hidden(&self) {
+        self.frame_cells.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The portal walks of the most recently rendered frame.
+    pub fn frame_cells(&self) -> CellsCounts {
+        let packed = self.frame_cells.load(Ordering::Relaxed);
+        let field = |shift: u32| (packed >> shift) & ((1 << 24) - 1);
+        CellsCounts {
+            walks: packed >> 48,
+            visible: field(24),
+            hidden: field(0),
+        }
     }
 
     /// The frustum tests of the most recently rendered frame.

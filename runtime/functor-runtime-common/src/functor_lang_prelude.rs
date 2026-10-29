@@ -12115,6 +12115,7 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             battery: None,
             skinned: Default::default(),
             cull: Default::default(),
+            cells: Default::default(),
             stages: None,
             build: None,
             xr: None,
@@ -13641,6 +13642,21 @@ Config.create())",
         assert!(err.contains("portal 0 `from` must be a cell id"), "{err}");
         let err = failure("Cells.make({ cells: [{ planes: [] }], portals: [] })");
         assert!(err.contains("cell 0 is unbounded"), "{err}");
+        let err = failure("Scene.inCells([1.5], Scene.cube())");
+        assert!(err.contains("Scene.inCells: an id must be a cell id"), "{err}");
+        // `Scene.cells` wraps its scene; `Scene.inCells` tags its subtree.
+        let src = format!(
+            "{prelude}let main = Scene.cells(world, Scene.inCells([1.0], Scene.cube()))\n"
+        );
+        let Ok(Value::HostData(data)) = eval_with_prelude(&src) else {
+            panic!("{:?}", eval_with_prelude(&src).map(|v| v.to_string()));
+        };
+        let scene = &data.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        let SceneObject::Cells(crate::CellsNode::Walk(cells), items) = &scene.obj else {
+            panic!("{scene:?}");
+        };
+        assert_eq!(cells.len(), 2);
+        assert!(matches!(&items[0].obj, SceneObject::Cells(crate::CellsNode::In(ids), _) if ids == &[1]));
     }
 
     /// `Encode` writes what `Decode` reads; a `Codec` round-trips records,

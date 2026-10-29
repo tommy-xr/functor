@@ -164,6 +164,26 @@ let instanced : (List<Instance.t>, t) => t
 /// a couple of seconds of frames is forgotten.
 let memo : (string, 'd, ('d) => t) => t
 
+/// Portal-cull `scene` against `cells` (in this node's space), separately
+/// for each eye: a node marked with `Scene.inCells` draws only when one of its
+/// cells is visible from that eye through portals. Unmarked nodes always
+/// draw, and so does everything when the eye is outside every cell. Hidden
+/// nodes still cast shadows and stay loaded on the GPU, so turning around
+/// costs no uploads. `Scene.opacity` subtrees and terrain always draw.
+/// `FUNCTOR_CULL=0` turns it off.
+///
+/// ```
+/// let draw = (model) => Scene.cells(level, Scene.group([
+///   walls,                                                    // always drawn
+///   Scene.inCells([2.0], crate) |> Scene.translate(cratePos), // drawn when room 2 shows
+/// ]))
+/// ```
+let cells : (Cells.t, t) => t
+/// Mark `scene` as inside the cells with these ids, for `Scene.cells`. A node
+/// spanning a doorway lists both cells. An id the cells don't have counts as
+/// visible.
+let inCells : (List<float>, t) => t
+
 /// Attach an animation pose to model nodes; the scene is last for piping.
 ///
 /// Without an attached pose, a skinned model plays its FIRST clip on the game

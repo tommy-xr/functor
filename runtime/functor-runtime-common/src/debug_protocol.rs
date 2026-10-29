@@ -145,8 +145,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// game's `config` requests `Xr.scene`.
 ///
 /// Also reports `cull` (`{tested, culled}`: the last rendered frame's frustum
-/// tests and skipped draws, summed over its passes) on `GET /state`.
-/// Additive — a runtime that doesn't report it omits it, which deserializes as zero.
+/// tests and skipped draws, summed over its passes) and `cells` (`{walks,
+/// visible, hidden}`: its `Scene.cells` portal walks, the cells they
+/// reached, and `Scene.inCells` subtrees hidden) on `GET /state`.
+/// Additive — a runtime that doesn't report them omits them, which deserializes as zero.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 25;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -429,6 +431,10 @@ pub struct RuntimeState {
     /// `default` because a runtime that doesn't report it omits it.
     #[serde(default)]
     pub cull: crate::gpu_counters::CullCounts,
+    /// The last rendered frame's portal culling (0 on a headless runtime).
+    /// `default` because a runtime that doesn't report it omits it.
+    #[serde(default)]
+    pub cells: crate::gpu_counters::CellsCounts,
     /// Mean stage cost over the shell's last completed stats window (v22).
     /// Omitted until a window completes, and by runtimes that render nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1299,6 +1305,11 @@ mod tests {
                 tested: 12,
                 culled: 9,
             },
+            cells: crate::gpu_counters::CellsCounts {
+                walks: 2,
+                visible: 5,
+                hidden: 3,
+            },
             stages: Some(StageTimings {
                 frames: 300,
                 sim_ms: 1.5,
@@ -1360,6 +1371,7 @@ mod tests {
                 "passthrough": { "mode": "composited" },
                 "skinned": { "draws": 8, "pose_evals": 4 },
                 "cull": { "tested": 12, "culled": 9 },
+                "cells": { "walks": 2, "visible": 5, "hidden": 3 },
                 "stages": { "frames": 300, "sim_ms": 1.5, "render_ms": 2.25, "sim_wait_ms": 0.0, "frame_ms": 11.25 },
                 "build": "pr | 0123abc",
                 "xr": {

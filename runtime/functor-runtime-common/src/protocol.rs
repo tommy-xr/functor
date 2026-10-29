@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: portal culling — the `SceneObject::Cells` variant (`Scene.cells`
+/// carries its cells and portals inline; `Scene.inCells` its cell ids).
+/// Emitted only by those two, so frames without them keep their shape.
+///
 /// v23: fused rooms — `Frame.fused_room` (`Frame.withFusedRoom`), defaulted
 /// and omitted when absent, so every other frame keeps its v22 shape.
 ///
@@ -798,6 +802,44 @@ mod tests {
         );
         let back: SceneObject = serde_json::from_str(&json).expect("deserialize opacity subtree");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    /// Portal-culling nodes carry their cells and ids inline; decoding
+    /// validates the cells again.
+    #[test]
+    fn cells_wire_is_pinned() {
+        use crate::cells::{Cell, Cells, CellsData, Plane};
+        use crate::{CellsNode, Scene3D, SceneObject};
+
+        let axis = |i: usize, sign: f32, d: f32| {
+            let mut n = [0.0; 3];
+            n[i] = sign;
+            Plane { n, d }
+        };
+        let cell = Cell {
+            planes: (0..3)
+                .flat_map(|i| [axis(i, 1.0, 0.0), axis(i, -1.0, 1.0)])
+                .collect(),
+        };
+        let cells = Cells::new(CellsData {
+            cells: vec![cell],
+            portals: vec![],
+        })
+        .unwrap();
+        let marked = Scene3D {
+            obj: SceneObject::Cells(CellsNode::In(vec![0]), vec![]),
+            xform: cgmath::Matrix4::from_scale(1.0),
+        };
+        let scene = SceneObject::Cells(CellsNode::Walk(std::sync::Arc::new(cells)), vec![marked]);
+        let json = serde_json::to_string(&scene).expect("serialize cells");
+        assert_eq!(
+            json,
+            r#"{"Cells":[{"Walk":{"cells":[{"planes":[{"n":[1.0,0.0,0.0],"d":0.0},{"n":[-1.0,0.0,0.0],"d":1.0},{"n":[0.0,1.0,0.0],"d":0.0},{"n":[0.0,-1.0,0.0],"d":1.0},{"n":[0.0,0.0,1.0],"d":0.0},{"n":[0.0,0.0,-1.0],"d":1.0}]}],"portals":[]}},[{"obj":{"Cells":[{"In":[0]},[]]},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}]]}"#
+        );
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize cells");
+        assert_eq!(back, scene);
+        let open = json.replace(r#"{"n":[0.0,0.0,-1.0],"d":1.0}"#, "");
+        assert!(serde_json::from_str::<SceneObject>(&open.replace(",]", "]")).is_err());
     }
 
     /// The instanced node's template + compact channel records are visible to
