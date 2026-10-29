@@ -1673,7 +1673,10 @@ still and do not fall through floor nobody has looked at. Pipe
 room fused while rendering frame N collides from frame N+1's step. Its walls
 are surfaces with no thickness, so a small fast body (a 5 cm ball thrown at a
 few m/s) needs `|> Physics.continuous` (continuous collision detection) or it
-can step straight through (`examples/room-bounce`).
+can step straight through (`examples/room-bounce`). `Physics.cast` against it
+returns the room's tag, the point and a normal facing the ray, so placing on
+the room is cast → `Scene.rotateX(acos ny)` → `Scene.rotateY(atan2(nx, nz))`
+→ `Scene.translate(hit)` (`examples/room-place`).
 
 **UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
 `Ui.*` tree into a render target (declared once with

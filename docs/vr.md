@@ -420,6 +420,43 @@ functor -d examples/room-bounce run native   # desktop stand-in room
   point, and G toggles the mesh. `shoot.script` replays a few shots for the
   goldens (its click positions assume `--capture-size 1600x1200`).
 
+### Placing on the room
+
+`examples/room-place` pins markers flush on whatever surface the aim ray
+meets:
+
+```sh
+functor -d examples/room-place run vr
+functor -d examples/room-place run native   # desktop stand-in room
+```
+
+`Physics.fusedRoom` makes the room hittable, and `Physics.cast` returns the
+point and the surface normal (it faces the ray: chunk triangles are
+two-sided):
+
+```functor
+let hit = Physics.cast(ray.origin, ray.direction, 10.0) in
+// stand a +Y-up node on the normal n: tilt, then turn toward it
+node
+  |> Scene.rotateX(Angle.radians(Math.acos(n.y)))
+  |> Scene.rotateY(Angle.radians(Math.atan2(n.x, n.z)))
+  |> Scene.translate(Vec3.make(hit.x, hit.y, hit.z))
+```
+
+- A ring shows where the right controller's aim ray meets the room. A ray
+  that hits nothing shows no ring. Each trigger press plants a pin standing
+  straight out of the surface. The newest 12 stay.
+- The aim comes from `snapshot.xr` when present (Quest, `--emulate-xr`, or a
+  `POST /input {"type":"xr"}` sample), else from the mouse. On desktop a
+  click or Space plants. The emulated controller has a fixed orientation, so
+  it only aims straight ahead. Inject `xr` samples to aim elsewhere.
+- The ring floats 2.5 cm off the surface: on desktop `Frame.withFusedRoom`
+  hides anything within 2 cm of the stand-in room it was fused from.
+- `place.script` sweeps the ring across the back wall, desk, floor and a side
+  wall, planting at each stop, then aims above the walls. The goldens
+  `room-place-aim` (frame 222) and `room-place-miss` (frame 260) capture it
+  at `--capture-size 1600x1200`.
+
 ### Mixed-reality parts viewer
 
 `examples/parts-mr` shows a printable part on your real desk at true scale
