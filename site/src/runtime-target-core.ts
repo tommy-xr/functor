@@ -9,13 +9,14 @@
 // fresh model on the external runtime, then later edits hot-reload there with
 // the model preserved.
 //
-// The wire types below mirror the runtime's HTTP debug protocol
-// (runtime/functor-runtime-common/src/debug_protocol.rs). As with the
+// The `/state` wire type is generated from the Rust debug protocol
+// (tools/functor-sdk/src/generated/protocol.ts). As with the
 // postMessage types in protocol.ts, response BODIES are asserted rather than
 // validated: the pre-migration code read these fields straight off
 // `response.json()`, and the few defensive runtime checks it did make (the
 // discovery handshake, `Number.isFinite(state.frame)`) are kept as they were.
 
+import type { RuntimeState as WireRuntimeState } from "../../tools/functor-sdk/src/generated/protocol.js";
 import type { ConsoleLevel, ProjectFile } from "./protocol.js";
 
 export const DEFAULT_RUNTIME_ENDPOINT = "http://127.0.0.1:8123";
@@ -38,37 +39,14 @@ export interface RuntimeDiscovery {
   endpoints: Record<string, string>;
 }
 
-/** A pixel rectangle in the runtime's output surface. */
-export interface RuntimeViewport {
-  width: number;
-  height: number;
-}
-
-/** One rendered view: desktop reports a single `main`, stereo XR one per eye. */
-export interface RuntimeView {
-  name: string;
-  viewport: RuntimeViewport;
-}
-
 /**
- * The `GET /state` snapshot. `input` (held keys, mouse, optional XR) is a
- * runtime-owned payload this client never reads, so it stays `unknown` here.
+ * The `GET /state` snapshot, loosened for the v2/v3 runtimes this client still
+ * links: they omit `pending_steps` and `model_debug`, and pre-v4 runtimes send
+ * the Debug text under `model` (this panel reads `model_debug`, falling back
+ * to a string `model`).
  */
-export interface RuntimeState {
-  frame: number;
-  tts: number;
-  /** v3 and later only — this client still links v2 runtimes, which omit it. */
-  pending_steps?: number;
-  viewport: RuntimeViewport;
-  views: RuntimeView[];
-  /** v4+: the structured JSON model view; pre-v4 runtimes send the Debug
-   * text under this key. This panel only displays a dump, so it reads
-   * `model_debug` and falls back to a pre-v4 string `model`. */
-  model: unknown;
-  /** v4 and later only — the Rust-`Debug` model dump. */
-  model_debug?: string;
-  input: unknown;
-}
+export type RuntimeState = Omit<WireRuntimeState, "pending_steps" | "model_debug"> &
+  Partial<Pick<WireRuntimeState, "pending_steps" | "model_debug">>;
 
 /** One project file as a caller may hand it over: a pair, or an IDE file. */
 export type ProjectFileInput = [string, string] | ProjectFile;

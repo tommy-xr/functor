@@ -33,7 +33,11 @@ impl TypeVisitor for Decls<'_> {
             return;
         }
         let name = T::ident(self.cfg);
-        let decl = format!("{}export {}", T::docs().unwrap_or_default(), T::decl(self.cfg));
+        let decl = format!(
+            "{}export {}",
+            T::docs().unwrap_or_default(),
+            T::decl(self.cfg)
+        );
         // A repeat is fine (a self-reference, or a serde shadow like
         // `JsonValue`); a different shape under one name would drop one.
         if let Some(seen) = self.out.insert(name.clone(), decl.clone()) {
