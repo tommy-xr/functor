@@ -189,7 +189,7 @@ on the line above its signature:
 ```
 /// The bytes of a file: `File.bytes("data/model.bin")`.
 impure[file]
-let bytes : (string) => Bytes.t
+let bytes : (Path.t) => Bytes.t
 ```
 
 - Classes are registered (`functor_lang::reads::ReadClass`: `file`, `physics`,
@@ -198,7 +198,7 @@ let bytes : (string) => Bytes.t
 - Docs quote the header with the signature (the JSON lists it as `reads`), and
   hover leads with it.
 - The host notes each read with `note_read(class)`; that run-time record is
-  what reload reuse and memos trust. A drift test pins each header to the
+  the authority (reload reuse today; `Scene.memo` checks physics reads). A drift test pins each header to the
   classes its built-in notes, and debug builds assert a noted class is declared.
 
 ## Module semantics summary

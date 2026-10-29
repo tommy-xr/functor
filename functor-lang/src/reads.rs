@@ -1,9 +1,10 @@
 //! Read classes: the ambient host state an impure built-in reads when called.
 //!
 //! A `.funi` declares them above a host signature, e.g. `impure[file]` over
-//! `let bytes : (string) => Bytes.t`. User code is never annotated. The host
-//! notes each read at run time, and that record is what reload reuse and
-//! memos trust; the declarations are what docs and hover show.
+//! `let bytes : (Path.t) => Bytes.t`. User code is never annotated. The host
+//! notes each read at run time, and that record is the authority (reload reuse
+//! today; `Scene.memo` checks physics reads); the declarations are what docs
+//! and hover show.
 
 use std::fmt;
 

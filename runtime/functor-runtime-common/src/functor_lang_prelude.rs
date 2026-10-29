@@ -5368,7 +5368,8 @@ thread_local! {
 
 /// Note a read of ambient host state at call time. Every such read in the
 /// prelude goes through here, and its built-in declares the class in its
-/// `.funi` (`impure[physics]` above `let position`) — debug builds assert it.
+/// `.funi` (`impure[physics]` above `let position`) — debug builds assert it
+/// while a built-in's host closure runs.
 fn note_read(class: ReadClass) {
     #[cfg(debug_assertions)]
     assert_declared(class);
@@ -7390,8 +7391,8 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         use std::collections::BTreeSet;
         let at = "Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 1.0";
         let samples = [
-            ("File.bytes", "File.bytes(\"missing.bin\")".to_string()),
-            ("File.exists", "File.exists(\"missing.bin\")".to_string()),
+            ("File.bytes", "File.bytes(Path.of(\"missing.bin\"))".to_string()),
+            ("File.exists", "File.exists(Path.of(\"missing.bin\"))".to_string()),
             (
                 "Typeface.file",
                 "Typeface.file(\"missing.ttf\")".to_string(),
@@ -7447,12 +7448,13 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
             let src = format!("let main = () => {call}");
             let module =
                 functor_lang::lower(functor_lang::parse(&src).expect("parse")).expect("lower");
-            let before = ReadClass::ALL.map(read_count);
+            let before = ReadClass::ALL.map(|class| (class, read_count(class)));
             // The call may fail (no project files, no world); the read is noted first.
             let _ = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost);
-            let noted: BTreeSet<ReadClass> = ReadClass::ALL
+            let noted: BTreeSet<ReadClass> = before
                 .into_iter()
-                .filter(|&class| read_count(class) != before[class as usize])
+                .filter(|&(class, count)| read_count(class) != count)
+                .map(|(class, _)| class)
                 .collect();
             let expected: BTreeSet<ReadClass> = declared[path].iter().copied().collect();
             assert_eq!(
