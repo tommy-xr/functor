@@ -155,14 +155,22 @@ function install(serial, apk, allowUninstall) {
   }
 }
 
-// The per-device record of the last CI APK installed: its head sha, keyed by
-// adb serial. The fallback when the runner can't report `/state.build`.
+// The per-device record of the last CI APK installed, keyed by adb serial:
+// `{ sha, installed }`, `installed` being the package's lastUpdateTime then.
+// The fallback when the runner can't report `/state.build`.
 const record = (serial) => join(homedir(), ".functor", "apk-installed", serial);
 
-/** The head sha of the PR APK last installed on `serial`, if recorded. */
+// The runner package's lastUpdateTime on `serial`, or undefined if absent.
+function installStamp(serial) {
+  return run("adb", ["-s", serial, "shell", "dumpsys", "package", PACKAGE]).match(/lastUpdateTime=(.+)/)?.[1].trim();
+}
+
+/** The head sha of the PR APK installed on `serial`, if recorded and the
+ * package hasn't been reinstalled or removed since (e.g. by `adb install`). */
 export function recordedApk(serial) {
   try {
-    return readFileSync(record(serial), "utf8").trim();
+    const { sha, installed } = JSON.parse(readFileSync(record(serial), "utf8"));
+    return installed && installed === installStamp(serial) ? sha : undefined;
   } catch {
     return undefined;
   }
@@ -174,7 +182,7 @@ export function installAndLaunch(apk, sha, allowUninstall, serial = deviceSerial
   rmSync(record(serial), { force: true }); // a failed install leaves it unknown
   install(serial, apk, allowUninstall);
   mkdirSync(dirname(record(serial)), { recursive: true });
-  writeFileSync(record(serial), `${sha}\n`);
+  writeFileSync(record(serial), `${JSON.stringify({ sha, installed: installStamp(serial) })}\n`);
   run("adb", ["-s", serial, "shell", "am", "start", "-S", "-n", ACTIVITY]);
   console.log(`launched ${PACKAGE} on ${serial}`);
   return serial;

@@ -89,7 +89,7 @@ f --pr 123 -d examples/hello run vr       # also installs PR 123's APK unless th
 and the APK before touching the headset, then installs the APK only when the
 headset's runner reports another build (`/state.build`), or, if the runner is
 down, when `~/.functor/apk-installed/<serial>` (written by `f` and `npm run pr`
-installs) records another. `--force-apk` reinstalls anyway, `--no-apk` skips
+installs; void once the package is reinstalled elsewhere) records another. `--force-apk` reinstalls anyway, `--no-apk` skips
 all APK handling, and `--allow-uninstall` works as above. Without `--pr`,
 `run vr` refuses a headset runner on another debug protocol than this
 checkout's, and warns when it runs a PR build or can't be reached. Put `f` on your PATH with

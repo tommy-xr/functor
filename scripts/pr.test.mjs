@@ -74,5 +74,5 @@ test("--apk --run installs, then runs vr on the chosen headset", async (t) => {
   assert.equal(await readFile(join(h.root, "installed-key"), "utf8"), "CI key");
   // The per-device record `f --pr` reads when the runner can't be asked.
   const record = join(h.root, ".functor", "apk-installed", "2G0YC5ZF87037Q");
-  assert.equal(await readFile(record, "utf8"), `${sha}\n`);
+  assert.equal(JSON.parse(await readFile(record, "utf8")).sha, sha);
 });

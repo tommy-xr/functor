@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { localBinary, parseArgs, wantsVr } from "./f.mjs";
@@ -10,7 +10,9 @@ import { cliPlatform } from "./pr-builds.mjs";
 import { harness as fakeHarness, sha } from "./pr-test-fakes.mjs";
 
 const script = fileURLToPath(new URL("./f.mjs", import.meta.url));
-const harness = (t) => fakeHarness(t, script);
+// f's runs default to a headset runner that's down (nothing listens on port 1).
+const runnerDown = (h) => ({ ...h, run: (args, env = {}, cwd) => h.run(args, { FUNCTOR_VR_HOST_PORT: "1", ...env }, cwd) });
+const harness = async (t) => runnerDown(await fakeHarness(t, script));
 // PR mode needs a platform CI builds a CLI for.
 const prMode = { skip: !cliPlatform() && "CI builds no CLI for this host" };
 
@@ -141,10 +143,11 @@ test("passes the binary's exit code and terminating signal through", prMode, asy
   assert.equal(await readFile(join(h.root, "got"), "utf8"), "INT\n");
 });
 
-// A fake headset runner answering `GET /` and `GET /state`; returns the env
-// pointing f at it.
-async function fakeRunner(t, protocol, build) {
+// A fake headset runner answering `GET /` and `GET /state` (with `stateStatus`);
+// returns the env pointing f at it.
+async function fakeRunner(t, protocol, build, stateStatus = 200) {
   const server = createServer((request, response) => {
+    if (request.url === "/state") response.statusCode = stateStatus;
     const body = request.url === "/" ? { protocol_version: protocol } : request.url === "/state" ? { build } : {};
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(body));
@@ -155,16 +158,16 @@ async function fakeRunner(t, protocol, build) {
 }
 
 const record = (h) => join(h.root, ".functor", "apk-installed", "2G0YC5ZF87037Q");
-const installed = async (h) => (await h.calls()).some((call) => call[0] === "adb" && call.includes("install"));
+const installs = async (h) => (await h.calls()).filter((call) => call[0] === "adb" && call.includes("install")).length;
 const vrArgs = ["--pr", "7", "-d", "ex", "run", "vr"];
 
 test("run vr downloads the CLI, then the APK, before any device call; installs an unknown APK", prMode, async (t) => {
   const h = await harness(t);
   const result = await h.run(vrArgs);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stderr, /installing PR #7 @ 0123456's APK \(runner unreachable, no install recorded; --no-apk skips\)/);
+  assert.match(result.stderr, /installing PR #7 @ 0123456's APK \(runner unreachable, no current install record; --no-apk skips\)/);
   assert.equal(await readFile(join(h.root, "installed-key"), "utf8"), "CI key");
-  assert.equal(await readFile(record(h), "utf8"), `${sha}\n`);
+  assert.equal(JSON.parse(await readFile(record(h), "utf8")).sha, sha);
   assert.equal(await readFile(join(h.root, "functor-args"), "utf8"), "2G0YC5ZF87037Q -d ex run vr\n");
   const calls = await h.calls();
   const index = (match) => calls.findIndex(match);
@@ -180,34 +183,38 @@ test("run vr skips the install when the headset already runs the PR's APK", prMo
   const result = await reported.run(vrArgs, await fakeRunner(t, 25, "pr | 0123456"));
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /headset already runs PR #7 @ 0123456 \(its runner reports `pr \| 0123456`\) — skipping install/);
-  assert.ok(!(await installed(reported)));
+  assert.equal(await installs(reported), 0);
   assert.equal(await readFile(join(reported.root, "functor-args"), "utf8"), "2G0YC5ZF87037Q -d ex run vr\n");
 
   // Its runner is down, but the last install recorded it.
   const recorded = await harness(t);
-  await mkdir(dirname(record(recorded)), { recursive: true });
-  await writeFile(record(recorded), `${sha}\n`);
+  await recorded.run(vrArgs);
   const fallback = await recorded.run(vrArgs);
   assert.equal(fallback.code, 0, fallback.stderr);
   assert.match(fallback.stderr, /already runs PR #7 @ 0123456 \(runner unreachable; last recorded install: 0123456\)/);
-  assert.ok(!(await installed(recorded)));
+  assert.equal(await installs(recorded), 1);
+
+  // A reinstall outside f (e.g. a local `adb install`) voids the record.
+  await writeFile(join(recorded.root, "installed-stamp"), "reinstalled");
+  const stale = await recorded.run(vrArgs);
+  assert.match(stale.stderr, /installing PR #7 @ 0123456's APK \(runner unreachable, no current install record/);
+  assert.equal(await installs(recorded), 2);
 });
 
 test("run vr installs over another build, and --force-apk over a matching one", prMode, async (t) => {
-  // The runner's report outranks a (stale) matching record.
+  // The runner's report outranks a matching record.
   const other = await harness(t);
-  await mkdir(dirname(record(other)), { recursive: true });
-  await writeFile(record(other), `${sha}\n`);
+  await other.run(vrArgs);
   const result = await other.run(vrArgs, await fakeRunner(t, 25, "pr | 1111111"));
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /installing PR #7 @ 0123456's APK \(its runner reports `pr \| 1111111`/);
-  assert.ok(await installed(other));
+  assert.equal(await installs(other), 2);
 
   const forced = await harness(t);
   const again = await forced.run([...vrArgs, "--force-apk"], await fakeRunner(t, 25, "pr | 0123456"));
   assert.equal(again.code, 0, again.stderr);
   assert.match(again.stderr, /installing PR #7 @ 0123456's APK \(--force-apk/);
-  assert.ok(await installed(forced));
+  assert.equal(await installs(forced), 1);
 });
 
 // f in a stand-in checkout: a fake local release build, on debug protocol v25.
@@ -225,15 +232,17 @@ async function localCheckout(t) {
   await mkdir(join(root, "target", "release"), { recursive: true });
   await copyFile(join(h.root, "fake-functor"), join(root, "target", "release", "functor"));
   await chmod(join(root, "target", "release", "functor"), 0o755);
-  return h;
+  return runnerDown(h);
 }
 
 test("local run vr refuses a headset runner on another protocol", async (t) => {
   const h = await localCheckout(t);
-  const result = await h.run(["-d", "ex", "run", "vr"], await fakeRunner(t, 24, "dev"));
-  assert.equal(result.code, 1);
-  assert.match(result.stderr, /speaks debug protocol v24, this checkout's CLI v25/);
-  assert.match(result.stderr, /npm run build:oculus:apk && adb install -r .*f --pr <n>/s);
+  for (const runner of [await fakeRunner(t, 24, "dev"), await fakeRunner(t, 24, undefined, 503)]) {
+    const result = await h.run(["-d", "ex", "run", "vr"], runner);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /speaks debug protocol v24, this checkout v25/);
+    assert.match(result.stderr, /npm run build:oculus:apk && adb install -r .*f --pr <n>/s);
+  }
   assert.ok(!(await h.calls()).some((call) => call[0] === "functor"));
 
   // --no-apk skips the check.

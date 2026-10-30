@@ -40,12 +40,13 @@ if (a[0] === "pr" && a[1] === "view" && a[2] === "7") {
 
 // One headset listed twice (USB + Wi-Fi), or two headsets with FAKE_DISTINCT.
 // <root>/installed-key holds the installed APK's contents; a different one is
-// a signing-key mismatch.
+// a signing-key mismatch. Each install writes a new <root>/installed-stamp,
+// which dumpsys reports as the package's lastUpdateTime.
 const FAKE_ADB = `#!/usr/bin/env node
 const fs = require("node:fs"), path = require("node:path");
 const root = process.env.FAKE_ROOT, a = process.argv.slice(2);
 fs.appendFileSync(path.join(root, "calls"), JSON.stringify(["adb", ...a]) + "\\n");
-const key = path.join(root, "installed-key");
+const key = path.join(root, "installed-key"), stamp = path.join(root, "installed-stamp");
 if (a[0] === "devices") {
   console.log("List of devices attached\\n2G0YC5ZF87037Q\\tdevice\\n192.168.1.9:5555\\tdevice\\n");
   process.exit(0);
@@ -63,10 +64,13 @@ if (cmd[0] === "install" && cmd[1] === "-r" && cmd[2] === "-g") {
     process.exit(1);
   }
   fs.writeFileSync(key, apk);
+  fs.writeFileSync(stamp, require("node:crypto").randomUUID());
   console.log("Success");
 } else if (cmd[0] === "uninstall" && cmd[1] === "dev.functor.runner") {
   fs.rmSync(key);
   console.log("Success");
+} else if (cmd[0] === "shell" && cmd[1] === "dumpsys" && cmd[3] === "dev.functor.runner") {
+  if (fs.existsSync(key)) console.log("    lastUpdateTime=" + fs.readFileSync(stamp, "utf8"));
 } else if (cmd[0] !== "forward" && (cmd[0] !== "shell" || cmd[1] !== "am")) process.exit(6);
 `;
 
@@ -111,7 +115,6 @@ export async function harness(t, script) {
         PATH: `${root}${delimiter}${process.env.PATH}`,
         HOME: root,
         FAKE_ROOT: root,
-        FUNCTOR_VR_HOST_PORT: "1", // nothing listens: the headset runner is down
         ...env,
       };
       child = execFile(process.execPath, [script, ...args], { env: environment, cwd }, (error, stdout, stderr) =>

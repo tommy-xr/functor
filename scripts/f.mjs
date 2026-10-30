@@ -100,7 +100,8 @@ export function localBinary(root) {
 }
 
 // What the headset's runner reports — `{ protocol, build }` from `GET /` and
-// `GET /state` — or undefined when it can't be reached.
+// `GET /state` (`build` undefined if that fails) — or undefined when it can't
+// be reached.
 async function headsetRuntime(serial) {
   const port = process.env.FUNCTOR_VR_HOST_PORT ?? VR_PORT; // tests point this at a fake
   const get = async (path) => {
@@ -108,14 +109,15 @@ async function headsetRuntime(serial) {
     if (!response.ok) throw new Error(`GET ${path}: ${response.status}`);
     return response.json();
   };
+  let protocol;
   try {
     run("adb", ["-s", serial, "forward", `tcp:${port}`, `tcp:${VR_PORT}`]);
-    const { protocol_version: protocol } = await get("/");
-    const { build } = await get("/state");
-    return { protocol, build };
+    ({ protocol_version: protocol } = await get("/"));
   } catch {
     return undefined;
   }
+  const build = await get("/state").then((state) => state.build, () => undefined);
+  return { protocol, build };
 }
 
 // Whether `serial` needs head `sha`'s APK, and why: its runner's build label
@@ -131,7 +133,7 @@ async function apkDecision(serial, sha) {
     install: recorded !== sha,
     why: recorded
       ? `runner unreachable; last recorded install: ${recorded.slice(0, 7)}`
-      : "runner unreachable, no install recorded",
+      : "runner unreachable, no current install record",
   };
 }
 
@@ -151,11 +153,14 @@ async function checkLocalHeadset() {
     console.error("f: the headset's runner isn't reachable, so it's unchecked against this CLI; continuing");
     return serial;
   }
-  const source = readFileSync(join(ROOT, "runtime/functor-runtime-common/src/debug_protocol.rs"), "utf8");
-  const local = Number(source.match(/DEBUG_PROTOCOL_VERSION: u32 = (\d+)/)[1]);
+  const file = join(ROOT, "runtime/functor-runtime-common/src/debug_protocol.rs");
+  const match = readFileSync(file, "utf8").match(/DEBUG_PROTOCOL_VERSION: u32 = (\d+)/);
+  if (!match) throw new Error(`no DEBUG_PROTOCOL_VERSION in ${file}`);
+  const local = Number(match[1]);
   if (runtime.protocol !== local) {
     throw new Error(
-      `the headset's runner speaks debug protocol v${runtime.protocol}, this checkout's CLI v${local}. ` +
+      `the headset's runner speaks debug protocol v${runtime.protocol}, this checkout v${local} ` +
+        `(if your local CLI predates the checkout, \`npm run build:cli\` first). ` +
         `Install a matching APK (${LOCAL_APK}), or run a PR's CLI + APK pair (f --pr <n> …).`,
     );
   }
