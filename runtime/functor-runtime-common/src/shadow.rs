@@ -290,6 +290,7 @@ pub fn render_shadow_pass(
 
         // Pass the light matrix as the "projection" with an identity view; the
         // depth material multiplies projection * view * world.
+        scene_context.shadow_pass.set(true);
         scene.render(
             &depth_ctx,
             scene_context,
@@ -298,6 +299,7 @@ pub fn render_shadow_pass(
             &identity,
             &depth_material,
         );
+        scene_context.shadow_pass.set(false);
 
         gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
     }
