@@ -74,7 +74,28 @@ npm run pr -- 123 --apk --run hello  # install the APK, then run examples/hello 
 It refuses fork PRs and a head commit whose build is missing, running or failed.
 Replacing an install signed with another key, or a newer one, needs
 `--allow-uninstall`. The example comes from this checkout, not the PR. Delete
-`~/.functor/pr-artifacts` to reclaim the cache. Tests: `npm run test:pr`.
+`~/.functor/pr-artifacts` (or `$FUNCTOR_PR_CACHE`) to reclaim the cache.
+Tests: `npm run test:pr`.
+
+`f` runs either CLI with any `functor` args, from any directory:
+
+```sh
+f -d examples/hello run native            # this checkout's target/{release,debug}/functor, the newer
+f --pr 123 -d examples/hello test         # PR 123's CI-built CLI (same cache)
+f --pr 123 -d examples/hello run vr       # also installs PR 123's APK unless the headset runs it
+```
+
+`--pr` may go anywhere before a `--`. With `run vr`, `f --pr` downloads the CLI
+and the APK before touching the headset, then installs the APK only when the
+headset's runner reports another build (`/state.build`), or, if the runner is
+down, when `~/.functor/apk-installed/<serial>` (written by `f` and `npm run pr`
+installs; void once the package is reinstalled elsewhere) records another. `--force-apk` reinstalls anyway, `--no-apk` skips
+all APK handling, and `--allow-uninstall` works as above. Without `--pr`,
+`run vr` refuses a headset runner on another debug protocol than this
+checkout's, and warns when it runs a PR build or can't be reached. Put `f` on your PATH with
+`npm link` (once, from the repo root) or `alias f="node ~/code/functor/scripts/f.mjs"`;
+`npm run f -- …` works too, but resolves `-d` from the repo root. The downloaded
+binary is not notarized.
 
 ## Building the CLI
 

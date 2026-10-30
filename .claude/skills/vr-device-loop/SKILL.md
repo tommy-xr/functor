@@ -58,6 +58,7 @@ picking the USB entry when a headset is listed twice:
 ```sh
 npm run pr -- 1234 --apk                      # install (adb install -r -g) + launch
 npm run pr -- 1234 --apk --run primitives     # then the PR's CLI runs examples/primitives
+node scripts/f.mjs --pr 1234 -d examples/primitives run vr   # same, any functor args
 ```
 
 It refuses a head commit whose build is missing, running or failed. An install
