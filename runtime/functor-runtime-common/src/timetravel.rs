@@ -51,10 +51,15 @@ pub enum ReloadHistory {
     RestartedAt(Frame),
 }
 
-/// Default rendered-frame retention (~15s at 60fps) — the window both game
-/// shells size their model `History` to, matching the physics recorder. Shared
-/// so the two shells can't silently diverge (docs/time-travel.md T1).
+/// Default rendered-frame retention (~15s at 60fps) — the one window the
+/// [`SceneRecorder`] prunes every participant to, matching the physics
+/// recorder (docs/time-travel.md T1).
 pub const DEFAULT_HISTORY_FRAMES: usize = 900;
+
+/// The oldest frame the retention window keeps once `frame` is recorded.
+fn retention_floor(frame: Frame) -> Frame {
+    (frame + 1).saturating_sub(DEFAULT_HISTORY_FRAMES as u64)
+}
 
 /// A bounded per-frame snapshot ring of `T`. Records the settled state of each
 /// consecutive frame and restores any frame still in the retained window. See
@@ -106,16 +111,18 @@ impl<T: Clone> History<T> {
     /// the base. When the ring is full the oldest frame is dropped, advancing
     /// the base.
     pub fn record(&mut self, frame: Frame, state: &T) {
+        self.record_owned(frame, state.clone());
+    }
+
+    /// [`Self::record`], taking ownership instead of cloning.
+    pub fn record_owned(&mut self, frame: Frame, state: T) {
         match self.next {
             None => self.base = frame,
             Some(next) => assert_eq!(frame, next, "history frames must be recorded consecutively"),
         }
-        self.snapshots.push_back(state.clone());
+        self.snapshots.push_back(state);
         if let Some(cap) = self.capacity {
-            while self.snapshots.len() > cap {
-                self.snapshots.pop_front();
-                self.base += 1;
-            }
+            self.prune_before((frame + 1).saturating_sub(cap as u64));
         }
         self.next = Some(self.base + self.snapshots.len() as u64);
     }
@@ -242,7 +249,7 @@ impl InputHistory {
         }
         self.next = Some(frame + 1);
         if self.has_sampled_snapshots {
-            let retain_from = (frame + 1).saturating_sub(DEFAULT_HISTORY_FRAMES as u64);
+            let retain_from = retention_floor(frame);
             if self.base.is_some_and(|base| retain_from > base) {
                 self.events = self.events.split_off(&retain_from);
                 self.base = Some(retain_from);
@@ -311,7 +318,7 @@ struct WorldEnd {
 
 /// The producer-owned live state a restore writes into. The producer still
 /// owns the model and the world; the recorder borrows them per operation.
-pub struct Live<'a> {
+pub(crate) struct Live<'a> {
     pub model: &'a mut Value,
     pub physics: &'a mut SteppedPhysics,
     /// The world's current fixed frame, as the producer tracks it.
@@ -320,7 +327,7 @@ pub struct Live<'a> {
 }
 
 /// What a rendered frame ended with: every participant's record input.
-pub struct FrameEnd<'a> {
+pub(crate) struct FrameEnd<'a> {
     pub model: &'a Value,
     pub physics_frame: u64,
     /// Physics commands queued for the next step.
@@ -330,7 +337,7 @@ pub struct FrameEnd<'a> {
 /// How a restore treats live work queued since the frame (paused input's
 /// model change, queued physics commands).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Restore {
+pub(crate) enum Restore {
     /// Non-destructive scrub: live state becomes the frame's, queued work is
     /// dropped, the future stays recorded.
     Seek,
@@ -344,7 +351,7 @@ pub enum Restore {
 /// One piece of state on the rendered-frame timeline (a "system" in the design
 /// docs). The [`SceneRecorder`] applies every operation to all participants
 /// together, so they can never land on different frames.
-pub trait Participant {
+pub(crate) trait Participant {
     /// Record how `frame` ended. Frames arrive consecutively.
     fn record(&mut self, frame: Frame, end: &FrameEnd);
     /// Rendered frames retained, inclusive; `None` before the first record.
@@ -439,9 +446,9 @@ impl PhysicsParticipant {
 
 impl Participant for PhysicsParticipant {
     fn record(&mut self, frame: Frame, end: &FrameEnd) {
-        self.world_frame_history.record(
+        self.world_frame_history.record_owned(
             frame,
-            &WorldEnd {
+            WorldEnd {
                 fixed: end.physics_frame,
                 in_flight: end.in_flight.to_vec(),
             },
@@ -574,9 +581,11 @@ impl SceneRecorder {
         }
     }
 
-    /// Couple another participant to the timeline. Add it before the first
-    /// record: the seekable window is the intersection of every range.
-    pub fn add_participant(&mut self, participant: Box<dyn Participant>) {
+    /// Couple another participant to the timeline, before the first record:
+    /// the seekable window is the intersection of every range.
+    #[cfg(test)]
+    fn add_participant(&mut self, participant: Box<dyn Participant>) {
+        debug_assert_eq!(self.rendered_frame, 0, "add participants before recording");
         self.others.push(participant);
     }
 
@@ -830,9 +839,9 @@ impl SceneRecorder {
     /// Commit a non-destructive scrub before an UNSAFE reload replaces the
     /// snapshot generation. Safe plain-data reloads must not call this: they
     /// retain both the selected cursor and its recorded future until Resume.
-    /// For an unsafe reload this preserves the state the user is inspecting
-    /// and branches the physics timeline in lockstep before `scrub_pos`
-    /// disappears.
+    /// For an unsafe reload this keeps the live model the user is inspecting
+    /// ([`Restore::Resume`]) and branches the physics timeline in lockstep
+    /// before `scrub_pos` disappears.
     pub fn commit_scrub_before_reload(
         &mut self,
         model: &mut Value,
@@ -889,7 +898,7 @@ impl SceneRecorder {
         self.tts_history.record(frame, &(frame_time.tts as f64));
         self.clock_history.record(frame, &frame_time);
         // One retention window for every participant and the display clock.
-        let floor = (frame + 1).saturating_sub(DEFAULT_HISTORY_FRAMES as u64);
+        let floor = retention_floor(frame);
         for participant in self.participants_mut() {
             participant.prune(floor);
         }
