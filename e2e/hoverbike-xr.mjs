@@ -13,6 +13,19 @@
 //   6. Right B respawns. Stepped turning: one 30° snap per push of the bars,
 //      at the faded step.
 //   7. Two runs end on an identical model.
+//
+// On foot (walk.fun, mount.fun), on the stand. Every ride above starts on
+// foot: the left stick walks up to the bike and a grab at the left grip gets
+// on (`board`).
+//
+//   a. A squeeze out of reach of the grip does nothing; within reach it
+//      fades, and on the bike that hand is latched; grabbing the right arms.
+//   b. Releasing the grips brakes but never gets off.
+//   c. Holding right B at speed is refused, and its release doesn't respawn.
+//   d. Stopped, holding right B for 0.5 s sets the walker down on the bike's
+//      left, on the floor, facing it, hands unlatched.
+//   e. The right stick snap turns the walker 30°; a tap of right B respawns.
+//   f. Two runs end on an identical model.
 //   8. Hidden-window captures: the cockpit at idle and with the vignette match
 //      their goldens and repeat byte for byte; against the same ride with the
 //      vignette off, the vignette's alpha is ~0 at the centre and equal around
@@ -44,6 +57,13 @@ const SNAP = 0.5236;
 const GRIP = { span: 0.31, height: 1.0, forward: 0.62 };
 const SEATED_EYE = { x: 0, y: 1.4, z: 0.15 };
 const CAPTURE_SIZE = "840x880"; // half a Quest 3 eye buffer: the comfort layer's aspect
+// Mirrors walk.fun, mount.fun and game.fun.
+const WALKER_EYE = { x: 0, y: 0.75, z: 0 }; // from the walker's capsule centre
+const FOOT_Y = 0.92; // the walker's capsule centre standing on the stand's floor
+const COLLIDER_LIFT = 0.95; // the bike's capsule centre above its emitter plane
+const REACH = 0.6;
+const HOLD = 0.5;
+const STAND_FOOT = { x: 609, z: 0 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -111,9 +131,11 @@ let head = HEAD;
 /**
  * One XR sample: both hands on the bars turned `angle` (left positive), with
  * each hand's squeeze and trigger; `rightGrip: false` drops the right grip's
- * pose (tracking loss). Buttons by name: `{ left: ["secondary"] }`.
+ * pose (tracking loss). Buttons by name: `{ left: ["secondary"] }`. On foot:
+ * `leftAt` places the left grip rig-local, `stick` is the left thumbstick
+ * and `turn` the right.
  */
-function xr({ angle = 0, ls = 0, rs = 0, lt = 0, rt = 0, rightGrip = true, buttons = {} } = {}) {
+function xr({ angle = 0, ls = 0, rs = 0, lt = 0, rt = 0, rightGrip = true, buttons = {}, leftAt = null, stick = [0, 0], turn = [0, 0] } = {}) {
   const at = (side) => toRig(head, SEATED_EYE, {
     x: side * GRIP.span * Math.cos(angle),
     y: GRIP.height,
@@ -121,9 +143,10 @@ function xr({ angle = 0, ls = 0, rs = 0, lt = 0, rt = 0, rightGrip = true, butto
   });
   const hand = (side, squeeze, trigger, tracked, pressed = []) => ({
     active: true,
-    grip: tracked ? { position: at(side), orientation: [0, 0, 0, 1] } : null,
+    grip: tracked ? { position: side === 1 && leftAt ? leftAt : at(side), orientation: [0, 0, 0, 1] } : null,
     trigger,
     squeeze,
+    thumbstick: side === 1 ? stick : turn,
     primary_pressed: pressed.includes("primary"),
     secondary_pressed: pressed.includes("secondary"),
     menu_pressed: pressed.includes("menu"),
@@ -135,6 +158,34 @@ function xr({ angle = 0, ls = 0, rs = 0, lt = 0, rt = 0, rightGrip = true, butto
     left: hand(1, ls, lt, true, buttons.left),
     right: hand(-1, rs, rt, rightGrip, buttons.right),
   };
+}
+
+/** game.fun's `rigPoint`: a point in a yaw-only frame (+x left, +z forward) in the world. */
+const rigPoint = (o, yaw, p) => ({
+  x: o.x + p.x * Math.cos(yaw) + p.z * Math.sin(yaw),
+  y: o.y + p.y,
+  z: o.z - p.x * Math.sin(yaw) + p.z * Math.cos(yaw),
+});
+/** Its inverse: a world point in the frame. */
+function inFrame(o, yaw, w) {
+  const dx = w.x - o.x;
+  const dz = w.z - o.z;
+  return { x: dx * Math.cos(yaw) - dz * Math.sin(yaw), y: w.y - o.y, z: dx * Math.sin(yaw) + dz * Math.cos(yaw) };
+}
+const toward = (from, to) => Math.atan2(to.x - from.x, to.z - from.z);
+const angleDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+
+/**
+ * On foot: the rig-local left-hand position `off` metres from the left grip,
+ * toward the walker's eye.
+ */
+function reachFor(m, off) {
+  const bike = { x: m.last.x, y: m.last.y - COLLIDER_LIFT, z: m.last.z };
+  const grip = rigPoint(bike, m.ride.yaw, { x: GRIP.span, y: GRIP.height, z: GRIP.forward });
+  const eye = rigPoint(m.footPrev, m.walker.yaw, WALKER_EYE);
+  const d = Math.hypot(eye.x - grip.x, eye.y - grip.y, eye.z - grip.z);
+  const at = { x: grip.x + ((eye.x - grip.x) * off) / d, y: grip.y + ((eye.y - grip.y) * off) / d, z: grip.z + ((eye.z - grip.z) * off) / d };
+  return toRig(head, WALKER_EYE, inFrame(m.footPrev, m.walker.yaw, at));
 }
 
 /** Hold an XR sample for `n` steps. */
@@ -170,16 +221,38 @@ async function onStand(base) {
   return step(base, 60);
 }
 
-const grab = async (base, extra = {}) => {
-  await hold(base, xr({ ls: 1, rs: 1, ...extra }));
-  return step(base, 1);
-};
+/** On foot: the left stick walks toward the bike (the spawn faces it) until near the seat. */
+async function walkUp(base) {
+  let m;
+  for (let i = 0; i < 100; i++) {
+    m = await hold(base, xr({ stick: [0, 1] }), 2);
+    if (m.near) break;
+  }
+  return hold(base, xr(), 4);
+}
+
+/**
+ * Walk up and get on: the left hand squeezes 0.3 m from its grip, the fade
+ * runs, then the right grabs its grip (both latched and armed). Pads to the
+ * same step phase every time (`steps` mod 6: the gauge's refresh).
+ */
+async function board(base) {
+  let m = await walkUp(base);
+  const at = reachFor(m, 0.3);
+  await hold(base, xr({ leftAt: at }));
+  await hold(base, xr({ leftAt: at, ls: 1 }));
+  m = await hold(base, xr({ ls: 1 }), 16);
+  if (m.mode.$ctor !== "Riding" || !m.vr.left.latched) throw new Error(`never got on (near ${m.near}, mode ${m.mode.$ctor})`);
+  m = await hold(base, xr({ ls: 1 }), 1 + (((5 - ((m.steps + 2) % 6)) % 6) + 6) % 6);
+  return hold(base, xr({ ls: 1, rs: 1 }));
+}
 
 async function respawn(base, sample) {
   await post(base, "/input", sample);
   await key(base, "r");
   await step(base, 2);
-  return step(base, 30);
+  await step(base, 30);
+  return board(base);
 }
 
 async function ride(port, check) {
@@ -194,10 +267,10 @@ async function ride(port, check) {
         && Math.abs(cal.x - HEAD.x) < 1e-9 && Math.abs(cal.z - HEAD.z) < 1e-9 && Math.abs(cal.yaw - HEAD.yaw) < 1e-6,
       `calibrated on the still head (yaw ${cal.yaw.toFixed(4)})`,
     );
-    check(!m.vr.left.latched && !m.vr.armed, `open hands on the grips: not latched`);
+    check(m.mode.$ctor === "OnFoot" && !m.vr.left.latched && !m.vr.armed, `on foot: open hands, not latched`);
 
-    // 2. Grab, then steer.
-    m = await grab(base);
+    // 2. Get on, then steer.
+    m = await board(base);
     check(m.vr.left.latched && m.vr.right.latched && m.vr.armed && Math.abs(m.vr.neutral) < 1e-6, `both grips latched and armed, neutral ${m.vr.neutral.toExponential(2)}`);
     m = await hold(base, xr({ ls: 1, rs: 1, angle: 0.03 }), 30);
     check(m.vr.steer === 0 && m.ride.yawRate === 0, `inside the dead zone: steer ${m.vr.steer}`);
@@ -208,7 +281,7 @@ async function ride(port, check) {
 
     // 3. A full-trigger ride, bars at neutral.
     m = await respawn(base, xr({ ls: 1, rs: 1 }));
-    check(m.vr.armed && m.speed === 0, `respawn keeps the grips`);
+    check(m.vr.armed && m.speed === 0, `respawn, walk up and get on again: armed`);
     const start = m.last;
     m = await hold(base, xr({ ls: 1, rs: 1, rt: 1 }), 180);
     const expect = throttleSpeed(3);
@@ -238,10 +311,11 @@ async function ride(port, check) {
     m = await hold(base, xr({ ls: 1, rs: 1 }), 2);
     check(m.vr.right.latched && m.vr.armed, `a fresh grab re-arms`);
 
-    // 6. Stepped turning, from rest. Right B respawns.
+    // 6. Stepped turning, from rest. A tap of right B respawns (on foot).
     await hold(base, xr({ ls: 1, rs: 1, buttons: { right: ["secondary"] } }), 1);
     m = await hold(base, xr({ ls: 1, rs: 1 }), 30);
-    check(m.speed === 0 && m.steps === 30 && Math.abs(m.last.z - start.z) < 1e-6, `right B respawns`);
+    check(m.speed === 0 && m.steps === 29 && m.mode.$ctor === "OnFoot" && Math.abs(m.last.z - start.z) < 1e-6, `a tap of right B respawns, on foot`);
+    m = await board(base);
     m = await hold(base, xr({ ls: 1, rs: 1, buttons: { left: ["secondary"] } }), 1);
     m = await hold(base, xr({ ls: 1, rs: 1 }), 1);
     check(m.vr.stepped && m.ride.yaw === 0, `left Y: stepped turning`);
@@ -282,12 +356,85 @@ async function captures(port, vignetteOff = false) {
       await hold(base, xr({ buttons: { left: vignetteOff ? ["primary"] : [] } }));
       await hold(base, xr());
     }
-    await grab(base);
+    await board(base);
     let m = await step(base, 30);
     const idle = await capture();
     m = await hold(base, xr({ ls: 1, rs: 1, rt: 1 }), 20);
     const moving = await capture();
     return { idle, moving, model: m };
+  } catch (e) {
+    throw new Error(`${e.message}\n--- runtime log ---\n${log()}`);
+  } finally {
+    proc.kill("SIGKILL");
+  }
+}
+
+async function onFoot(port, check) {
+  const base = `http://127.0.0.1:${port}`;
+  const { proc, log } = launch(port, ["--headless"]);
+  try {
+    let m = await onStand(base);
+    check(m.mode.$ctor === "OnFoot" && !m.vr.mounted && !m.vr.pending, `on foot on the stand, calibrated`);
+    m = await walkUp(base);
+    check(m.near && m.mode.$ctor === "OnFoot", `the left stick walks up to the seat`);
+
+    // a. Out of reach, then within.
+    const far = reachFor(m, REACH + 0.3);
+    await hold(base, xr({ leftAt: far }));
+    m = await hold(base, xr({ leftAt: far, ls: 1 }), 10);
+    check(m.mode.$ctor === "OnFoot" && m.fade.t < 0, `a squeeze ${(REACH + 0.3).toFixed(1)} m from the grip does nothing`);
+    const at = reachFor(m, 0.3);
+    await hold(base, xr({ leftAt: at }));
+    m = await hold(base, xr({ leftAt: at, ls: 1 }), 1);
+    check(m.fade.t >= 0 && m.fade.action.$ctor === "GetOn" && m.fade.action.hand === 1, `a squeeze 0.3 m from it: the fade starts`);
+    m = await hold(base, xr({ ls: 1 }), 6);
+    check(m.mode.$ctor === "Riding" && m.vr.mounted && m.vr.left.latched && !m.vr.right.latched && !m.vr.armed, `at the black: on the bike, the left hand latched`);
+    m = await hold(base, xr({ ls: 1 }), 12);
+    m = await hold(base, xr({ ls: 1, rs: 1 }));
+    check(m.vr.armed && m.fade.t < 0, `grabbing the right arms`);
+
+    // b. Grips released: braking, still riding.
+    m = await hold(base, xr({ ls: 1, rs: 1, rt: 1 }), 60);
+    const fast = m.speed;
+    m = await hold(base, xr(), 30);
+    check(m.mode.$ctor === "Riding" && m.fade.t < 0 && m.controls.brake === GRIP_LOSS_BRAKE && m.speed < fast, `grips released: braking (${fast.toFixed(2)} → ${m.speed.toFixed(2)} m/s), still riding`);
+
+    // c. Right B held at speed.
+    await hold(base, xr({ ls: 1, rs: 0 }));
+    await hold(base, xr({ ls: 1, rs: 1 }));
+    m = await hold(base, xr({ ls: 1, rs: 1, rt: 0 }));
+    m = await hold(base, xr({ ls: 1, rs: 1, rt: 1 }), 30);
+    const steps = m.steps;
+    m = await hold(base, xr({ ls: 1, rs: 1, rt: 1, buttons: { right: ["secondary"] } }), 40);
+    check(m.mode.$ctor === "Riding" && m.fade.t < 0 && m.off >= HOLD && m.speed > 2, `right B held at ${m.speed.toFixed(2)} m/s: refused`);
+    m = await hold(base, xr({ ls: 1, rs: 1 }), 2);
+    check(m.mode.$ctor === "Riding" && m.steps === steps + 42, `its release doesn't respawn`);
+
+    // d. Stop, hold right B.
+    m = await hold(base, xr({ ls: 1, rs: 1, lt: 1 }), 60);
+    check(m.speed === 0, `the left trigger stops it`);
+    m = await hold(base, xr({ ls: 1, rs: 1, buttons: { right: ["secondary"] } }), 30);
+    for (let i = 0; i < 3 && m.fade.t < 0; i++) m = await step(base, 1);
+    check(m.fade.t >= 0 && m.fade.action.$ctor === "GetOff" && Math.abs(m.off - HOLD) < 1e-6, `right B held ${m.off.toFixed(3)} s, stopped: the fade starts`);
+    m = await hold(base, xr(), 30);
+    const w = m.footPrev;
+    const bike = m.last;
+    const left = (w.x - bike.x) * Math.cos(m.ride.yaw) - (w.z - bike.z) * Math.sin(m.ride.yaw);
+    check(m.mode.$ctor === "OnFoot" && !m.vr.mounted && !m.vr.left.latched && !m.vr.right.latched, `on foot, hands let go`);
+    check(Math.abs(w.y - FOOT_Y) < 0.01 && left > 1.5, `set down on the bike's left (${left.toFixed(3)} m), on the floor (centre y ${w.y.toFixed(4)})`);
+    check(angleDiff(m.walker.yaw, toward(w, bike)) < 0.01, `facing the bike`);
+
+    // e. Snap turn, then a tap of right B.
+    const facing = m.walker.yaw;
+    m = await hold(base, xr({ turn: [1, 0] }), 20);
+    m = await hold(base, xr(), 2);
+    check(Math.abs(m.walker.yaw - (facing - SNAP)) < 1e-9, `the right stick snap turns 30° right`);
+    await hold(base, xr({ buttons: { right: ["secondary"] } }));
+    m = await hold(base, xr(), 2);
+    check(m.mode.$ctor === "OnFoot" && Math.abs(m.footPrev.x - STAND_FOOT.x) < 0.05 && Math.abs(m.footPrev.z - STAND_FOOT.z) < 0.05,
+      `a tap of right B respawns at the stand's start`);
+
+    return JSON.stringify((await get(base, "/state")).model);
   } catch (e) {
     throw new Error(`${e.message}\n--- runtime log ---\n${log()}`);
   } finally {
@@ -341,6 +488,10 @@ silent.quiet = () => {};
 const first = await ride(8961, check);
 const second = await ride(8962, silent);
 check(first === second, `two runs end on an identical model`);
+
+const footFirst = await onFoot(8966, check);
+const footSecond = await onFoot(8967, silent);
+check(footFirst === footSecond, `on foot: two runs end on an identical model`);
 
 head = { x: 0, y: 0, z: 0, yaw: 0 };
 const on = await captures(8963);
