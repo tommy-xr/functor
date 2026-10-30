@@ -2648,6 +2648,23 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
             ])))
         },
     );
+    // A forward-based camera that keeps roll: the mappedPose's forward is the
+    // gaze, its up the screen's up (authored +Z forward / +Y up basis).
+    reg.fn2(
+        "Camera3D.fromPose",
+        "Camera3D.fromPose(pose, fov) — a Camera3D.mappedPose record (position, forward, up) \
+and an Angle fov; up must not be parallel to forward",
+        |pose: Value, fov: FunctorLangAngle| {
+            let pose = crate::mapped_pose_from_value(&pose)
+                .map_err(|e| format!("Camera3D.fromPose: {e}"))?;
+            Camera::from_pose(pose.position, pose.forward, pose.up, fov.0)
+                .map(FunctorLangCamera)
+                .ok_or_else(|| {
+                    "Camera3D.fromPose: forward and up must be non-zero and not parallel"
+                        .to_string()
+                })
+        },
+    );
     reg.fn2(
         "Camera3D.toWorldRay",
         "Camera3D.toWorldRay(mouse, camera)",
@@ -7556,6 +7573,82 @@ doesn't declare it — add `impure[physics]` above it"
             "{ position: { x: 4, y: 2, z: -3 }, \
 forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         );
+    }
+
+    fn camera_of(src: &str) -> Camera {
+        let Value::HostData(data) = eval(src) else {
+            panic!("expected Camera host data");
+        };
+        data.as_any()
+            .downcast_ref::<FunctorLangCamera>()
+            .expect("Camera")
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn camera_from_pose_keeps_fov_and_clip() {
+        let camera = camera_of(
+            "let main = () =>\n\
+             Camera3D.fromPose(\n\
+               { position: { x: 1.0, y: 2.0, z: 3.0 }, forward: { x: 0.0, y: 0.0, z: 2.0 }, \
+                 up: { x: 1.0, y: 0.0, z: 0.0 } },\n\
+               Angle.degrees(6.0))\n\
+             |> Camera3D.clip(1.0, 700.0)",
+        );
+        assert_eq!(camera.eye, [1.0, 2.0, 3.0]);
+        assert_eq!(camera.target, [1.0, 2.0, 4.0]);
+        assert_eq!(camera.up, [1.0, 0.0, 0.0]);
+        assert!((camera.fov_radians - 6.0_f32.to_radians()).abs() < 1e-6);
+        assert_eq!((camera.near, camera.far), (1.0, 700.0));
+        assert_eq!(
+            fail_message(
+                "let main = () => Camera3D.fromPose(\n\
+                   { position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 1.0, z: 0.0 }, \
+                     up: { x: 0.0, y: 2.0, z: 0.0 } }, Angle.degrees(60.0))"
+            ),
+            "Camera3D.fromPose: forward and up must be non-zero and not parallel"
+        );
+        assert_eq!(
+            fail_message(
+                "let main = () => Camera3D.fromPose(\n\
+                   { position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 1.0, z: 0.0 } }, \
+                   Angle.degrees(60.0))"
+            ),
+            "Camera3D.fromPose: Camera3D.mappedPose is missing `up`"
+        );
+    }
+
+    // The pipeline a held scope uses: a tracked pose through the authored
+    // camera, then fromPose. Identity reproduces the authored firstPerson
+    // camera; a controller rolled +90° about rig +Z (its top turned to the
+    // player's left) rolls the camera's up to the world left of a +Z gaze.
+    #[test]
+    fn camera_from_mapped_tracked_pose_follows_the_controller() {
+        let pose = |q: &str| {
+            camera_of(&format!(
+                "let rig = Camera3D.firstPerson(Vec3.make(0.0, 1.5, 0.0), Angle.radians(0.0), \
+                   Angle.radians(0.0), Angle.degrees(60.0))\n\
+                 let main = () => Camera3D.fromPose(Camera3D.mapTrackedPose(rig, \
+                   {{ position: {{ x: 0.0, y: 0.0, z: 0.0 }}, orientation: {q} }}), \
+                   Angle.degrees(60.0))"
+            ))
+        };
+        let level = pose("{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }");
+        let fp = Camera::first_person(
+            [0.0, 1.5, 0.0],
+            crate::math::Angle::from_degrees(0.0),
+            crate::math::Angle::from_degrees(0.0),
+            crate::math::Angle::from_degrees(60.0),
+        );
+        let (a, b) = (level.view_matrix(), fp.view_matrix());
+        let (a, b): (&[f32; 16], &[f32; 16]) = (a.as_ref(), b.as_ref());
+        assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5), "{a:?} != {b:?}");
+
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let rolled = pose(&format!("{{ x: 0.0, y: 0.0, z: {half}, w: {half} }}"));
+        assert!(rolled.up[0] > 0.999, "rolled up {:?}", rolled.up);
+        assert!((rolled.target[2] - rolled.eye[2] - 1.0).abs() < 1e-5);
     }
 
     #[test]

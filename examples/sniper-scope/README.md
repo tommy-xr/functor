@@ -1,12 +1,14 @@
 # `examples/sniper-scope`
 
-A magnified rifle scope on a flat 200 m range. Desktop first-person for now;
-tracked-rifle VR controls come later.
+A magnified rifle scope on a flat 200 m range: desktop first-person, or a
+rifle held in the right hand in VR.
 
 ```sh
 functor -d examples/sniper-scope run native
+functor -d examples/sniper-scope run vr
 functor -d examples/sniper-scope test       # inline expects, no GPU
 npm run test:sniper-scope                   # scripted hit / miss / obstructed shots, headless
+npm run test:sniper-scope-vr                # injected XR poses: roll, head, trigger, tracking loss
 ```
 
 | Input | Action |
@@ -19,6 +21,23 @@ npm run test:sniper-scope                   # scripted hit / miss / obstructed s
 
 `Key` has no Shift variant yet, so breath is on `Space`. `Z` also changes the
 zoom because input scripts cannot scroll.
+
+## VR
+
+| Input | Action |
+| --- | --- |
+| right grip | holds the rifle |
+| A | toggle the shoulder (the scope goes live) |
+| B / Y | zoom preset |
+| trigger | fire (shouldered only); release it before the next shot |
+
+- **Scope camera.** `Camera3D.fromPose` at the rifle's scope axis, with the
+  grip's full orientation, so canting the rifle rolls the image.
+- **Tracking loss.** The rifle hides at its last pose, unshoulders, and a
+  trigger held when the hand returns waits for a release.
+- **Smoothing.** One EMA on the weapon pose, `poseSmoothing`, is 0 (off).
+- **Headset.** `config` asks for 120 Hz and `settings` pins foveation off.
+- No sway or breath in VR: the hand supplies its own.
 
 ## How the scope works
 

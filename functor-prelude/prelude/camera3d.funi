@@ -30,6 +30,21 @@ type mappedPose = { position: Input.point3, forward: Input.point3, up: Input.poi
 /// The returned position, forward, and up vectors are suitable for placing a
 /// controller representation or aiming a ray in the authored world.
 let mapTrackedPose : (t, Input.pose) => mappedPose
+/// A camera at a pose's position, looking along its `forward` and rolled so
+/// its `up` points up on screen — for a scope or a camera held in the hand.
+///
+/// The basis is `firstPerson`'s: forward `+Z` with up `+Y` is yaw = pitch = 0,
+/// so a `mapTrackedPose` result (whose tracked `-Z` already maps to authored
+/// forward) points this camera where the controller points, roll included.
+/// Unlike `firstPerson` it keeps roll and can aim straight up or down.
+/// `forward` need not be unit length and `up` need not be perpendicular to it.
+/// A zero, non-finite, or parallel `forward`/`up` is a teaching error. Clip
+/// planes default to 0.1 / 100; set them with `clip`.
+///
+/// ```functor
+/// let scope = Camera3D.fromPose(aim, Angle.degrees(6.0)) |> Camera3D.clip(1.0, 700.0)
+/// ```
+let fromPose : (mappedPose, Angle.t) => t
 
 /// Set near and far clipping distances; the camera is last for piping.
 ///

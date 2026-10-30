@@ -989,48 +989,74 @@ pub fn tracking_pose_value(pose: TrackingPose) -> functor_lang::Value {
     ])
 }
 
-/// Decode the plain-data `Input.pose` record accepted by camera-rig helpers.
-pub fn tracking_pose_from_value(value: &functor_lang::Value) -> Result<TrackingPose, String> {
-    fn field<'a>(
-        value: &'a functor_lang::Value,
-        name: &str,
-    ) -> Result<&'a functor_lang::Value, String> {
-        let functor_lang::Value::Record(fields) = value else {
-            return Err(format!(
-                "expected an Input.pose record, got {}",
-                value.kind_name()
-            ));
-        };
-        fields
-            .iter()
-            .find_map(|(field, value)| (field == name).then_some(value))
-            .ok_or_else(|| format!("Input.pose is missing `{name}`"))
-    }
-    let number = |value: &functor_lang::Value, name: &str| match value {
+/// One named field of a plain-data record; `what` names the record type in
+/// errors (`Input.pose is missing `position``).
+fn record_field<'a>(
+    value: &'a functor_lang::Value,
+    what: &str,
+    name: &str,
+) -> Result<&'a functor_lang::Value, String> {
+    let functor_lang::Value::Record(fields) = value else {
+        return Err(format!("expected an {what} record, got {}", value.kind_name()));
+    };
+    fields
+        .iter()
+        .find_map(|(field, value)| (field == name).then_some(value))
+        .ok_or_else(|| format!("{what} is missing `{name}`"))
+}
+
+/// A finite number field as f32; `name` is its dotted path for errors.
+fn finite_number(value: &functor_lang::Value, what: &str, name: &str) -> Result<f32, String> {
+    match value {
         functor_lang::Value::Number(value) if (*value as f32).is_finite() => Ok(*value as f32),
         functor_lang::Value::Number(value) => {
-            Err(format!("Input.pose `{name}` must be finite, got {value}"))
+            Err(format!("{what} `{name}` must be finite, got {value}"))
         }
         other => Err(format!(
-            "Input.pose `{name}` must be a number, got {}",
+            "{what} `{name}` must be a number, got {}",
             other.kind_name()
         )),
+    }
+}
+
+/// The `{x, y, z}` record in field `name`; errors name `name.axis`.
+fn point3_field(value: &functor_lang::Value, what: &str, name: &str) -> Result<[f32; 3], String> {
+    let point = record_field(value, what, name)?;
+    let axis = |axis: &str| {
+        finite_number(record_field(point, what, axis)?, what, &format!("{name}.{axis}"))
     };
-    let position = field(value, "position")?;
-    let orientation = field(value, "orientation")?;
+    Ok([axis("x")?, axis("y")?, axis("z")?])
+}
+
+/// Decode the plain-data `Input.pose` record accepted by camera-rig helpers.
+pub fn tracking_pose_from_value(value: &functor_lang::Value) -> Result<TrackingPose, String> {
+    const WHAT: &str = "Input.pose";
+    let position = point3_field(value, WHAT, "position")?;
+    let orientation = record_field(value, WHAT, "orientation")?;
+    let number = |name: &str| {
+        finite_number(
+            record_field(orientation, WHAT, name)?,
+            WHAT,
+            &format!("orientation.{name}"),
+        )
+    };
     Ok(TrackingPose::new(
-        [
-            number(field(position, "x")?, "position.x")?,
-            number(field(position, "y")?, "position.y")?,
-            number(field(position, "z")?, "position.z")?,
-        ],
-        [
-            number(field(orientation, "x")?, "orientation.x")?,
-            number(field(orientation, "y")?, "orientation.y")?,
-            number(field(orientation, "z")?, "orientation.z")?,
-            number(field(orientation, "w")?, "orientation.w")?,
-        ],
+        position,
+        [number("x")?, number("y")?, number("z")?, number("w")?],
     ))
+}
+
+/// Decode the plain-data `Camera3D.mappedPose` record (`position`, `forward`,
+/// `up`, each an `Input.point3`) that `Camera3D.fromPose` accepts.
+pub fn mapped_pose_from_value(
+    value: &functor_lang::Value,
+) -> Result<crate::MappedTrackingPose, String> {
+    const WHAT: &str = "Camera3D.mappedPose";
+    Ok(crate::MappedTrackingPose {
+        position: point3_field(value, WHAT, "position")?,
+        forward: point3_field(value, WHAT, "forward")?,
+        up: point3_field(value, WHAT, "up")?,
+    })
 }
 
 fn controller_value(controller: &XrControllerSnapshot) -> functor_lang::Value {

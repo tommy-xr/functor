@@ -363,7 +363,12 @@ let grab = (s) =>
   +Y up, and -Z forward. Each controller also carries `active`, analog
   trigger/squeeze/thumbstick state, and named button booleans. Missing XR,
   inactive controllers, and temporarily invalid poses are explicit
-  `Option.None`/`active: false`, never stale values. The snapshot also
+  `Option.None`/`active: false`, never stale values.
+  `Camera3D.mapTrackedPose(camera, pose)` maps one into the world as
+  `{position, forward, up}` (tracked -Z becomes authored forward), and
+  `Camera3D.fromPose(mapped, fov)` is a camera along that forward, rolled by
+  its up — the authored basis is `firstPerson`'s (+Z forward, +Y up), so a
+  held scope or camera follows the controller, cant included. The snapshot also
   contains `gamepad: Option.t<Input.gamepad>` — the primary connected pad's
   held state, `Option.None` while no pad is connected. Sticks are `point2` in
   `-1..1` with **up-positive `y`** (the XR thumbstick convention); triggers
@@ -999,7 +1004,7 @@ The generated modules:
 | `Scene` | 3D scene nodes: primitives, models, terrain, materials, transforms, instancing |
 | `Instance` | per-copy placement values (position/rotation/scale/tint) for `Scene.instanced` |
 | `Sprite` | pure 2D picture values: shapes, text, images, transforms |
-| `Camera3D` | 3D cameras (`lookAt`, `firstPerson`), clip planes, screen→world rays |
+| `Camera3D` | 3D cameras (`lookAt`, `firstPerson`, `fromPose`), clip planes, screen→world rays, tracked-pose mapping |
 | `Camera2D` | center-origin 2D camera: pan, zoom, screen→world |
 | `Frame` | what `draw` returns: 3D / lit / 2D frames, fog, skybox, clear color, render targets, 2D layers |
 | `Light` | ambient / directional / point / spot lights and shadow casting |
