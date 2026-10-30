@@ -960,6 +960,13 @@ impl RealEffects {
             rng_state: seed | 1,
         }
     }
+
+    /// `Effect.random` from a fixed seed (the fuzzer's repros); `now` stays live.
+    pub fn seeded(seed: u64) -> RealEffects {
+        RealEffects {
+            rng_state: seed | 1,
+        }
+    }
 }
 
 impl EffectRunner for RealEffects {

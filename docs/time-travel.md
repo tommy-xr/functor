@@ -290,8 +290,11 @@ branch-and-replay (on a fork with recorded answers, then live). Input is what
 the game reads: the `Key.*` constants its source names, mouse moves if it
 defines `mouseMove`, XR sticks if its sampled input mentions `xr`. A hot reload
 pushes an in-memory copy of the entry, either with an unused binding appended
-(no-op) or with its first float constant rewritten. Saves go to a scratch
-folder. Project files are never written.
+(no-op) or with its first float constant nudged up by 1, 2 or 3. If the program
+rejects the nudged value, the fuzzer checks that the old program and state stay.
+Each run starts from an empty scratch save store, and `Effect.random` is seeded,
+so a repro depends on its ops alone (`Effect.now` stays live). Project files are
+never written, not even the generated `assets.fun`.
 
 After every op it checks:
 
@@ -300,13 +303,14 @@ After every op it checks:
 - model, physics, and clock agree on the selected frame;
 - the input log holds what was fed;
 - a seek or rewind restores the frame's model, world bytes, in-flight physics
-  commands, and drawn frame;
+  commands, and drawn frame (or, if its `draw` failed, a failing draw);
 - a branch replay reproduces the recorded frames;
 - a no-op reload changes nothing;
-- **every recorder participant**: its range equals the seekable window, its live
-  digest equals its recorded digest after each record, seek and rewind, and a
-  rewind truncates it to the target. A new participant gets these checks by
-  implementing `Participant::recorded_digest` and `live_digest`.
+- **every recorder participant**, after each record, seek and rewind: its range
+  equals the seekable window (so a rewind truncates it to the target), and its
+  live digest equals the digest it recorded for the frame. A new participant
+  gets these checks by implementing `Participant::recorded_digest` and
+  `live_digest`.
 
 A failure is shrunk to a minimal op list. The command prints that list and a
 `functor … fuzz --replay '<ops>'` line that reproduces it, then exits

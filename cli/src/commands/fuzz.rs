@@ -30,12 +30,15 @@ pub fn execute(
         "" => project.entry.clone(),
         role => role.to_string(),
     };
-    let spec = Spec::derive(&name, sources, project.entry_role()).map_err(Error::other)?;
-    // `Persistence.save` writes a real slot: point the store at a scratch
-    // folder so the project's own saves are untouched. File reads keep
-    // resolving through the project reader `build` installed.
-    let saves = std::env::temp_dir().join(format!("functor-fuzz-{}", std::process::id()));
-    functor_runtime_common::storage::set_project_root(saves.clone());
+    // `Persistence.save` writes a real slot: each run gets an empty scratch
+    // store, so the project's own saves are untouched and a repro depends on
+    // its ops alone. File reads keep resolving through the project reader
+    // `build` installed.
+    let scratch = tempfile::tempdir()?;
+    let spec = Spec {
+        saves: Some(scratch.path().join("saves")),
+        ..Spec::derive(&name, sources, project.entry_role()).map_err(Error::other)?
+    };
     emit(Event::Info {
         message: format!(
             "fuzzing {name}: keys {:?}, mouse {}, xr {}, reload knob {}",
@@ -66,7 +69,6 @@ pub fn execute(
             (stats, found, budget)
         }
     };
-    let _ = std::fs::remove_dir_all(&saves);
     emit(Event::Info {
         message: format!("{name}: {budget}: {}", summary(&stats)),
     });

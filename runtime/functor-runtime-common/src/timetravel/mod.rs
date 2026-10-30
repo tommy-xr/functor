@@ -365,6 +365,12 @@ impl SceneRecorder {
         Value::all_reload_safe(&self.model.model_history.snapshots)
     }
 
+    /// Whether a reload now may restart history: a model snapshot, or the
+    /// live `model`, holds code.
+    pub fn reload_may_restart(&self, model: &Value) -> bool {
+        !self.reload_history_is_safe() || !model.is_reload_safe_snapshot()
+    }
+
     /// Classify and, when necessary, branch the coupled timeline before the
     /// producer rebinds its authoritative live model. The live model may have
     /// changed without a recorded frame while paused, so it participates in
@@ -382,7 +388,7 @@ impl SceneRecorder {
         prev_tts: &mut Option<f64>,
     ) -> bool {
         let live_model_is_safe = model.is_reload_safe_snapshot();
-        if !self.reload_history_is_safe() || !live_model_is_safe {
+        if self.reload_may_restart(model) {
             self.commit_scrub_before_reload(model, physics, physics_frame, has_physics, prev_tts);
         }
         live_model_is_safe

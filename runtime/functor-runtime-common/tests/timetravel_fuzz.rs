@@ -152,9 +152,10 @@ let draw = (model, tts) =>
     Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.loaded, 7.0), 0.0, 0.0)))
 "#;
 
-/// `(exact source text, template with {})`.
-fn knob(text: &str, template: &str) -> Option<(String, String)> {
-    Some((text.to_string(), template.to_string()))
+/// `text`, rewritten to `template` with 0.3, 0.6 or 0.9 for `{}`.
+fn knob(text: &str, template: &str) -> Option<(String, Vec<String>)> {
+    let values = ["0.3", "0.6", "0.9"].map(|v| template.replace("{}", v));
+    Some((text.to_string(), values.to_vec()))
 }
 
 fn fixture(src: &str) -> Vec<(String, String)> {
@@ -198,6 +199,7 @@ fn specs() -> Vec<Spec> {
         },
         Spec {
             keys: vec![F, K],
+            restarts: Some(true),
             knob: knob("|> Physics.restitution(0.4)", "|> Physics.restitution({})"),
             ..Spec::new("closure", fixture(CLOSURE_GAME))
         },

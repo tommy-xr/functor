@@ -367,16 +367,25 @@ impl FunctorLangEmbeddedGame {
     pub(crate) fn fuzz_hooks(&self) -> crate::timetravel::fuzz::Hooks {
         crate::timetravel::fuzz::Hooks {
             input: self.has_input,
-            sampled_input: self.has_sampled_input,
             mouse_move: self.has_mouse_move,
             physics: self.has_physics,
         }
     }
 
-    /// A reload now may restart history: a model snapshot (or the live
-    /// model) holds code.
+    /// Whether `sources` load as a program for `role` (no producer state
+    /// touched): tells a broken edit from a broken reload.
+    pub(crate) fn loads(sources: &[(String, String)], role: &EntryRole) -> Result<(), String> {
+        load_source(sources, role, None).map(|_| ())
+    }
+
+    /// Seed `Effect.random`, so a run's answers depend on `seed` alone.
+    pub(crate) fn seed_random(&mut self, seed: u64) {
+        self.effect_runner = RealEffects::seeded(seed);
+    }
+
+    /// See [`SceneRecorder::reload_may_restart`].
     pub(crate) fn reload_may_restart_history(&self) -> bool {
-        !self.recorder.reload_history_is_safe() || !self.model.is_reload_safe_snapshot()
+        self.recorder.reload_may_restart(&self.model)
     }
 
     /// Whether rendered `frame` logged a broker answer (`Effect.random`, …):

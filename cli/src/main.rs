@@ -153,13 +153,13 @@ enum Command {
     /// non-zero. Never writes project files. E.g. `functor -d examples/physics fuzz`.
     Fuzz {
         /// Seeds to run (1..=N).
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
         /// Ops per seed.
         #[arg(long, default_value_t = 100)]
         ops: usize,
         /// Run only this seed.
-        #[arg(long, conflicts_with = "replay")]
+        #[arg(long, conflicts_with_all = ["replay", "seeds"])]
         seed: Option<u64>,
         /// Run exactly these ops (a failure's printed repro) instead of seeds.
         #[arg(long, value_name = "OPS")]
@@ -560,7 +560,8 @@ async fn run(args: &Args) -> io::Result<()> {
                 seed,
                 replay,
             } => {
-                project.build(&working_directory_str, false)?;
+                // Fuzzing never writes the project, generated manifest included.
+                project.build_without_refresh(&working_directory_str, false)?;
                 commands::fuzz::execute(
                     &project,
                     &working_directory_str,

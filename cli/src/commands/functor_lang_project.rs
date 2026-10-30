@@ -501,6 +501,15 @@ paths are external — move the read into `init` or a top-level binding `config`
         verify_assets: bool,
     ) -> Result<functor_lang::project::Project, Error> {
         refresh_manifest(working_directory);
+        self.build_without_refresh(working_directory, verify_assets)
+    }
+
+    /// [`Self::build`] without regenerating `assets.fun`: writes nothing.
+    pub fn build_without_refresh(
+        &self,
+        working_directory: &str,
+        verify_assets: bool,
+    ) -> Result<functor_lang::project::Project, Error> {
         let path = self.entry_path(working_directory)?;
         // Project files (`Typeface.file`) and saves resolve from the entry's
         // folder, as in the native runner.

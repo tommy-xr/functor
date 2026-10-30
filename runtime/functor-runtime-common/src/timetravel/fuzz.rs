@@ -15,11 +15,13 @@
 //! copy of the entry source.
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::PathBuf;
 
 use super::fnv1a;
-use crate::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
+use crate::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform, ProducerPlatform};
 use crate::functor_lang_producer::EntryRole;
 use crate::physics::{self, DEFAULT_WORLD, FIXED_DT};
 use crate::protocol::GameProducer;
@@ -42,16 +44,21 @@ pub struct Spec {
     pub mouse: bool,
     /// XR thumbsticks and the primary button, through sampled input.
     pub xr: bool,
-    /// A tunable constant in the entry: `(exact source text, template with
-    /// {})`. A semantic reload rewrites it; a no-op reload only appends an
-    /// unused binding. `None`: every reload is a no-op one.
-    pub knob: Option<(String, String)>,
+    /// A tunable constant in the entry: `(exact source text, replacements)`.
+    /// A semantic reload swaps in one replacement; a no-op reload only appends
+    /// an unused binding. `None`: every reload is a no-op one.
+    pub knob: Option<(String, Vec<String>)>,
+    /// Point the save store here, emptied before every run, so a repro
+    /// depends on its ops alone. `None`: leave the store as configured.
+    pub saves: Option<PathBuf>,
+    /// Whether a reload may restart history (the model holds closures).
+    /// `None`: whatever the recorder predicts.
+    pub restarts: Option<bool>,
 }
 
 /// The optional hooks a loaded program defines.
 pub(crate) struct Hooks {
     pub input: bool,
-    pub sampled_input: bool,
     pub mouse_move: bool,
     pub physics: bool,
 }
@@ -67,26 +74,29 @@ impl Spec {
             mouse: false,
             xr: false,
             knob: None,
+            saves: None,
+            restarts: Some(false),
         }
     }
 
     /// Load the program once and drive what it reads: the keys its source
     /// names (every key if it reads keys but names none), the mouse if it
     /// defines `mouseMove`, XR sticks if its sampled input mentions `xr`. The
-    /// knob is the entry's first top-level float constant used elsewhere.
+    /// knob is the entry's first top-level nonzero float constant used
+    /// elsewhere, nudged up by 1, 2 or 3 (keeping whole numbers whole).
     pub fn derive(
         name: &str,
         sources: Vec<(String, String)>,
         role: EntryRole,
     ) -> Result<Spec, String> {
-        let hooks = FunctorLangEmbeddedGame::create_for_role(
+        let game = FunctorLangEmbeddedGame::create_for_role(
             sources.clone(),
             role.clone(),
             Box::new(NativePlatform),
-        )?
-        .fuzz_hooks();
+        )?;
+        let (hooks, sampled) = (game.fuzz_hooks(), game.samples_input());
         let all: String = sources.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("\n");
-        let reads_keys = hooks.input || hooks.sampled_input;
+        let reads_keys = hooks.input || sampled;
         let mut keys: Vec<Key> = Key::ALL
             .into_iter()
             .filter(|k| reads_keys && k.ctor_tag().is_some_and(|tag| mentions(&all, &tag)))
@@ -98,9 +108,10 @@ impl Spec {
         Ok(Spec {
             keys,
             mouse: hooks.mouse_move,
-            xr: hooks.sampled_input && mentions(&all, "xr"),
+            xr: sampled && mentions(&all, "xr"),
             knob,
             role,
+            restarts: None,
             ..Spec::new(name, sources)
         })
     }
@@ -122,15 +133,18 @@ fn mentions(text: &str, word: &str) -> bool {
     occurrences(text, word) > 0
 }
 
-/// The first top-level `let name = <float>` line whose name is used elsewhere.
-fn knob_in(entry: &str, all: &str) -> Option<(String, String)> {
+/// The first top-level `let name = <nonzero float>` line whose name is used
+/// elsewhere, with that value plus 1, 2 and 3.
+fn knob_in(entry: &str, all: &str) -> Option<(String, Vec<String>)> {
     entry.lines().find_map(|line| {
         let (name, value) = line.strip_prefix("let ")?.split_once(" = ")?;
         let value = value.trim_end();
         let plain = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-        let float = value.contains('.') && value.parse::<f64>().is_ok();
-        (plain && float && occurrences(all, name) > 1)
-            .then(|| (line.trim_end().to_string(), format!("let {name} = {{}}")))
+        let number = value.parse::<f64>().ok().filter(|v| *v != 0.0 && value.contains('.'))?;
+        (plain && occurrences(all, name) > 1).then(|| {
+            let nudged = [1.0, 2.0, 3.0].map(|d| format!("let {name} = {:?}", number + d));
+            (line.trim_end().to_string(), nudged.to_vec())
+        })
     })
 }
 
@@ -317,7 +331,7 @@ struct Rec {
     /// Physics commands in flight at the end of the frame.
     pending: Option<String>,
     tts: f64,
-    frame: Option<u64>,
+    frame: Option<Drawn>,
     /// The program revision it ran under (semantic reloads bump it).
     rev: u32,
     /// A reload ran while this frame's input was pending: the reload drops the
@@ -380,9 +394,27 @@ fn world_parts(w: &physics::World) -> (u64, u64, String) {
     (fnv1a(&core.snapshot()), w.frame(), format!("{pending:?}"))
 }
 
+/// A drawn frame's hash; `None` when `draw` failed. The producer then shows
+/// its last good frame, which depends on history, not on this frame.
+type Drawn = Option<u64>;
+
+/// [`NativePlatform`], noting whether the latest `draw` failed.
+struct FuzzPlatform(Rc<Cell<bool>>);
+
+impl ProducerPlatform for FuzzPlatform {
+    fn install_sinks(&self) {
+        NativePlatform.install_sinks()
+    }
+    fn set_draw_overlay(&mut self, error: Option<&str>) {
+        self.0.set(error.is_some());
+    }
+    fn on_reload(&mut self) {}
+}
+
 struct Shell<'a> {
     spec: &'a Spec,
     game: FunctorLangEmbeddedGame,
+    draw_failed: Rc<Cell<bool>>,
     /// The game defines `input` (key events reach it and its log) / `physics`
     /// (every played frame steps the world once).
     events: bool,
@@ -425,16 +457,19 @@ fn count(what: &'static str) {
 
 impl<'a> Shell<'a> {
     fn new(spec: &'a Spec) -> Result<Shell<'a>, String> {
-        let game = FunctorLangEmbeddedGame::create_for_role(
+        let draw_failed = Rc::new(Cell::new(false));
+        let mut game = FunctorLangEmbeddedGame::create_for_role(
             spec.sources.clone(),
             spec.role.clone(),
-            Box::new(NativePlatform),
+            Box::new(FuzzPlatform(draw_failed.clone())),
         )
         .map_err(|e| format!("{}: {e}", spec.name))?;
+        game.seed_random(1);
         let hooks = game.fuzz_hooks();
         let mut shell = Shell {
             spec,
             game,
+            draw_failed,
             events: hooks.input,
             physics: hooks.physics,
             clock: GameClock::new(None),
@@ -568,9 +603,10 @@ impl<'a> Shell<'a> {
         Ok(())
     }
 
-    fn draw_hash(&mut self, tts: f32) -> u64 {
+    fn draw_hash(&mut self, tts: f32) -> Drawn {
         let frame = self.game.render(FrameTime { dts: 0.0, tts });
-        fnv1a(&serde_json::to_vec(&frame).expect("frame serializes"))
+        (!self.draw_failed.get())
+            .then(|| fnv1a(&serde_json::to_vec(&frame).expect("frame serializes")))
     }
 
     fn feed(&mut self, input: RecordedInput) {
@@ -627,6 +663,13 @@ impl<'a> Shell<'a> {
         src
     }
 
+    /// The spec's sources with [`Self::source`] as the entry.
+    fn sources(&self) -> Vec<(String, String)> {
+        let mut sources = self.spec.sources.clone();
+        sources[0].1 = self.source();
+        sources
+    }
+
     fn range(&self) -> Option<(u64, u64)> {
         self.game.scene_frame_range()
     }
@@ -642,22 +685,13 @@ impl<'a> Shell<'a> {
     }
 
     /// Every recorder agrees on the selected frame.
-    fn check_lockstep(&mut self) -> Check {
+    fn check_lockstep(&self) -> Check {
         let Some(frame) = self.game.current_scene_frame() else {
             return Ok(());
         };
         let (lo, hi) = self.range().expect("a selected frame has a range");
         if frame < lo || frame > hi {
             return Err(self.fail(Kind::Lockstep, format!("frame {frame} outside {lo}..={hi}")));
-        }
-        // Every participant records, prunes and truncates together.
-        for state in self.game.participant_states() {
-            if state.range != Some((lo, hi)) {
-                return Err(self.fail(
-                    Kind::Participant,
-                    format!("{} retains {:?}, the window is {lo}..={hi}", state.name, state.range),
-                ));
-            }
         }
         let tts = self.game.current_scene_tts().expect("tts");
         let clock = self.clock.current_tts() as f64;
@@ -686,9 +720,18 @@ impl<'a> Shell<'a> {
     }
 
     /// Every participant's live state is what `frame` (the selected frame)
-    /// recorded: right after it records, and after a seek or rewind to it.
+    /// recorded — right after it records, and after a seek or rewind to it —
+    /// and every participant retains the seekable window (they record, prune
+    /// and truncate together).
     fn check_participants(&mut self, frame: u64) -> Check {
+        let window = self.range();
         for state in self.game.participant_states() {
+            if state.range != window {
+                return Err(self.fail(
+                    Kind::Participant,
+                    format!("{} retains {:?}, the window is {window:?}", state.name, state.range),
+                ));
+            }
             if state.recorded != Some(state.live) {
                 return Err(self.fail(
                     Kind::Participant,
@@ -799,7 +842,7 @@ impl<'a> Shell<'a> {
         let frame = self.game.current_scene_frame().expect("rewound");
         if self.range().map(|r| r.1) != Some(frame) {
             return Err(self.fail(
-                Kind::Participant,
+                Kind::Lockstep,
                 format!("rewind to {frame} kept {:?}", self.range()),
             ));
         }
@@ -853,10 +896,10 @@ impl<'a> Shell<'a> {
     }
 
     fn reload(&mut self, semantic: bool, n: u32) -> Check {
+        let previous_knob = self.knob.clone();
         let semantic = match (&self.spec.knob, semantic) {
-            (Some((_, template)), true) => {
-                let value = ["0.3", "0.6", "0.9"][n as usize % 3];
-                self.knob = Some(template.replace("{}", value));
+            (Some((_, replacements)), true) => {
+                self.knob = Some(replacements[n as usize % replacements.len()].clone());
                 true
             }
             _ => {
@@ -873,11 +916,33 @@ impl<'a> Shell<'a> {
         let generation = self.game.scene_timeline_generation();
         // History holding code (closures) can't cross a reload: it restarts at
         // the selected frame, by design.
-        let may_restart = self.game.reload_may_restart_history();
+        let may_restart = self
+            .spec
+            .restarts
+            .unwrap_or_else(|| self.game.reload_may_restart_history());
         count(if self.clock.is_paused() { "reloads while paused" } else { "reloads" });
         self.reloaded_pending |= !self.pending.is_empty();
         let status = match self.game.reload_source(&self.source()) {
             Ok(status) => status,
+            // The edited constant broke the program (a fresh load fails too):
+            // a rejected push keeps the old one, and nothing else.
+            Err(_) if semantic && FunctorLangEmbeddedGame::loads(&self.sources(), &self.spec.role).is_err() => {
+                self.knob = previous_knob;
+                count("reloads rejected");
+                let after = (
+                    self.game.state_debug(),
+                    self.range(),
+                    self.game.current_scene_frame(),
+                    world(),
+                );
+                if self.game.scene_timeline_generation() != generation || after != before {
+                    return Err(self.fail(
+                        Kind::Reload,
+                        format!("a rejected reload changed (model, range, frame, world): {before:?} -> {after:?}"),
+                    ));
+                }
+                return Ok(());
+            }
             Err(e) => return Err(self.fail(Kind::Reload, format!("reload rejected: {e}"))),
         };
         // An input-only game's reload while scrubbed rebuilds its history under
@@ -1074,6 +1139,11 @@ pub fn execute(spec: &Spec, ops: &[Op]) -> (Option<Failure>, Stats) {
             .stack_size(64 << 20)
             .spawn_scoped(scope, || {
                 QUIET.set(true);
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(dir) = &spec.saves {
+                    let _ = std::fs::remove_dir_all(dir);
+                    crate::storage::set_project_root(dir.clone());
+                }
                 let at = Cell::new(0);
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut shell = Shell::new(spec).map_err(|detail| Failure {
@@ -1176,11 +1246,12 @@ pub fn run(spec: &Spec, seeds: impl IntoIterator<Item = u64>, ops: usize) -> (St
             *verified.entry(what).or_default() += n;
         }
         let Some(failure) = failure else { continue };
-        let (repro, failure) = match failure.kind {
-            // Nothing to shrink: no op ran.
-            Kind::Load => (Vec::new(), failure),
-            _ => shrink(spec, sequence, failure),
-        };
+        if failure.kind == Kind::Load {
+            // No op ran, and every seed would fail the same way.
+            found.push(Found { seed, failure, repro: Vec::new() });
+            break;
+        }
+        let (repro, failure) = shrink(spec, sequence, failure);
         found.push(Found { seed, failure, repro });
     }
     (verified, found)
@@ -1219,12 +1290,28 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0
         .unwrap();
         assert_eq!(spec.keys, [Key::W]);
         assert!(!spec.mouse && !spec.xr);
-        assert_eq!(
-            spec.knob,
-            Some(("let speed = 2.0".into(), "let speed = {}".into()))
-        );
+        let (text, nudged) = spec.knob.clone().unwrap();
+        assert_eq!(text, "let speed = 2.0");
+        assert_eq!(nudged, ["let speed = 3.0", "let speed = 4.0", "let speed = 5.0"]);
         let (failure, stats) = execute(&spec, &gen_ops(1, 30));
         assert!(failure.is_none(), "{failure:?}");
         assert!(stats["participant checks"] > 0);
+    }
+
+    /// A program the fuzzer's no-op reload breaks (it appends a duplicate
+    /// `fuzzReload0`): a deterministic failure.
+    const BROKEN_BY_RELOAD: &str = "let fuzzReload0 = 1.0\nlet init = 0.0\n\
+let tick = (model, dt, tts) => model + 1.0\n\
+let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+
+    #[test]
+    fn a_shrunk_repro_fails_the_same_way() {
+        let spec = Spec::new("broken", vec![("game.fun".into(), BROKEN_BY_RELOAD.into())]);
+        let (_, found) = run(&spec, [1], 40);
+        let found = &found[0];
+        assert_eq!(found.failure.kind, Kind::Reload, "{}", found.failure);
+        assert!(matches!(found.repro[..], [Op::Reload { .. }]), "{:?}", found.repro);
+        let replayed = parse_ops(&format_ops(&found.repro)).unwrap();
+        assert_eq!(execute(&spec, &replayed).0.map(|f| f.kind), Some(Kind::Reload));
     }
 }

@@ -72,11 +72,9 @@ impl<T: Clone> History<T> {
     /// window — a silently clamped read would restore the wrong frame.
     pub fn seek(&self, frame: Frame) -> &T {
         let (oldest, newest) = self.recorded_range().expect("seek on an empty history");
-        assert!(
-            frame >= oldest && frame <= newest,
-            "seek({frame}) outside recorded history [{oldest}, {newest}]"
-        );
-        &self.snapshots[(frame - self.base) as usize]
+        self.get(frame).unwrap_or_else(|| {
+            panic!("seek({frame}) outside recorded history [{oldest}, {newest}]")
+        })
     }
 
     /// The stored state of `frame`, or `None` outside the retained window.
