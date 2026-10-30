@@ -82,11 +82,17 @@ Tests: `npm run test:pr`.
 ```sh
 f -d examples/hello run native            # this checkout's target/{release,debug}/functor, the newer
 f --pr 123 -d examples/hello test         # PR 123's CI-built CLI (same cache)
-f --pr 123 -d examples/hello run vr       # installs + launches PR 123's APK first
+f --pr 123 -d examples/hello run vr       # also installs PR 123's APK unless the headset runs it
 ```
 
-`--pr` may go anywhere before a `--`. With `run vr`, `--no-apk` keeps the
-installed APK and `--allow-uninstall` works as above. Put `f` on your PATH with
+`--pr` may go anywhere before a `--`. With `run vr`, `f --pr` downloads the CLI
+and the APK before touching the headset, then installs the APK only when the
+headset's runner reports another build (`/state.build`), or, if the runner is
+down, when `~/.functor/apk-installed/<serial>` (written by `f` and `npm run pr`
+installs) records another. `--force-apk` reinstalls anyway, `--no-apk` skips
+all APK handling, and `--allow-uninstall` works as above. Without `--pr`,
+`run vr` refuses a headset runner on another debug protocol than this
+checkout's, and warns when it runs a PR build or can't be reached. Put `f` on your PATH with
 `npm link` (once, from the repo root) or `alias f="node ~/code/functor/scripts/f.mjs"`;
 `npm run f -- …` works too, but resolves `-d` from the repo root. The downloaded
 binary is not notarized.

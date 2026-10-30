@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +26,7 @@ export function cliPlatform(platform = process.platform, arch = process.arch) {
 }
 
 // Output of a finished command; a failure carries its stdout + stderr.
-function run(command, args) {
+export function run(command, args) {
   try {
     return execFileSync(command, args, {
       cwd: ROOT,
@@ -118,7 +118,7 @@ export function cliPath(head, platform) {
 
 // ANDROID_SERIAL, else the single ready device. One headset listed twice
 // (USB and Wi-Fi) reports one hardware serial; then its USB entry wins.
-function deviceSerial() {
+export function deviceSerial() {
   if (process.env.ANDROID_SERIAL) return process.env.ANDROID_SERIAL;
   const ready = run("adb", ["devices"])
     .split("\n")
@@ -155,10 +155,26 @@ function install(serial, apk, allowUninstall) {
   }
 }
 
-/** Installs `apk` on the headset and launches it; returns the device serial. */
-export function installAndLaunch(apk, allowUninstall) {
-  const serial = deviceSerial();
+// The per-device record of the last CI APK installed: its head sha, keyed by
+// adb serial. The fallback when the runner can't report `/state.build`.
+const record = (serial) => join(homedir(), ".functor", "apk-installed", serial);
+
+/** The head sha of the PR APK last installed on `serial`, if recorded. */
+export function recordedApk(serial) {
+  try {
+    return readFileSync(record(serial), "utf8").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Installs head `sha`'s `apk` on the headset, records it, and launches it;
+ * returns the device serial. */
+export function installAndLaunch(apk, sha, allowUninstall, serial = deviceSerial()) {
+  rmSync(record(serial), { force: true }); // a failed install leaves it unknown
   install(serial, apk, allowUninstall);
+  mkdirSync(dirname(record(serial)), { recursive: true });
+  writeFileSync(record(serial), `${sha}\n`);
   run("adb", ["-s", serial, "shell", "am", "start", "-S", "-n", ACTIVITY]);
   console.log(`launched ${PACKAGE} on ${serial}`);
   return serial;

@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { harness as fakeHarness } from "./pr-test-fakes.mjs";
+import { harness as fakeHarness, sha } from "./pr-test-fakes.mjs";
 
 const script = fileURLToPath(new URL("./pr.mjs", import.meta.url));
 const harness = (t) => fakeHarness(t, script);
@@ -72,4 +72,7 @@ test("--apk --run installs, then runs vr on the chosen headset", async (t) => {
   const args = await readFile(join(h.root, "functor-args"), "utf8");
   assert.match(args, /^2G0YC5ZF87037Q -d .*examples[/\\]hello run vr\n$/);
   assert.equal(await readFile(join(h.root, "installed-key"), "utf8"), "CI key");
+  // The per-device record `f --pr` reads when the runner can't be asked.
+  const record = join(h.root, ".functor", "apk-installed", "2G0YC5ZF87037Q");
+  assert.equal(await readFile(record, "utf8"), `${sha}\n`);
 });

@@ -67,7 +67,7 @@ function main() {
     console.log(`functor CLI: ${cli}`);
   }
 
-  const serial = apk && installAndLaunch(apk, options.allowUninstall);
+  const serial = apk && installAndLaunch(apk, head.sha, options.allowUninstall);
   if (example) {
     const result = spawnSync(cli, ["-d", example, "run", apk ? "vr" : "native"], {
       stdio: "inherit",

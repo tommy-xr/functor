@@ -67,7 +67,7 @@ if (cmd[0] === "install" && cmd[1] === "-r" && cmd[2] === "-g") {
 } else if (cmd[0] === "uninstall" && cmd[1] === "dev.functor.runner") {
   fs.rmSync(key);
   console.log("Success");
-} else if (cmd[0] !== "shell" || cmd[1] !== "am") process.exit(6);
+} else if (cmd[0] !== "forward" && (cmd[0] !== "shell" || cmd[1] !== "am")) process.exit(6);
 `;
 
 // The CI-built `functor`: logs its args (with ANDROID_SERIAL) and cwd, then
@@ -111,6 +111,7 @@ export async function harness(t, script) {
         PATH: `${root}${delimiter}${process.env.PATH}`,
         HOME: root,
         FAKE_ROOT: root,
+        FUNCTOR_VR_HOST_PORT: "1", // nothing listens: the headset runner is down
         ...env,
       };
       child = execFile(process.execPath, [script, ...args], { env: environment, cwd }, (error, stdout, stderr) =>
