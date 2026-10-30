@@ -21,7 +21,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::Parser;
+use functor_runtime_common::data_watch::DataWatch;
 use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
+use functor_runtime_common::storage::ProjectReader;
 use functor_runtime_common::runtime_settings::ExternalPrefix;
 
 use super::project_files;
@@ -1076,7 +1078,7 @@ target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run
             true => project_files::Mounts::default(),
             false => project_files::Mounts::load(&self.mounts)?,
         };
-        let proxy = match probe_protocol_version(&addr) {
+        let mut proxy = match probe_protocol_version(&addr) {
             Some(version) if version >= FILE_PROXY_PROTOCOL_VERSION => Some(FileProxy::new(
                 project_files::Resolver::load(
                     entry_path.parent().unwrap_or(project_root),
@@ -1143,7 +1145,7 @@ project root, not from {}/",
                 // A load that failed on a file the headset lacks (top-level
                 // `File.bytes`) loads again once this machine has sent it.
                 Ok((status, body)) => {
-                    let fetched = match &proxy {
+                    let fetched = match &mut proxy {
                         Some(proxy) if fetch_rounds < 16 => proxy.serve(&addr)?,
                         _ => false,
                     };
@@ -1961,13 +1963,18 @@ const FILE_PROXY_PROTOCOL_VERSION: u64 = 24;
 const PROXY_ROUND_BYTES: u64 = 64 * 1024 * 1024;
 
 /// `run vr` serving the files the headset lacks (`GET`/`POST
-/// /project-files`), from the project folder or an `external` mapping.
+/// /project-files`), from the project folder or an `external` mapping, and
+/// re-sending the ones that change here.
 struct FileProxy {
     files: project_files::Resolver,
     /// Replies from an earlier `run vr` are refused as stale.
     session: u64,
     /// The entry's folder for `/load-project` (`None`: the project root).
     entry_dir: Option<String>,
+    /// What the headset got, by the version it got.
+    sent: DataWatch,
+    /// The headset refused an update (an older runtime); said once.
+    warned_old: bool,
 }
 
 impl FileProxy {
@@ -1980,6 +1987,8 @@ impl FileProxy {
             files,
             session: (now ^ std::process::id() as u64).max(1),
             entry_dir: Some(dir.trim_end_matches('/').to_string()).filter(|dir| !dir.is_empty()),
+            sent: DataWatch::new(),
+            warned_old: false,
         }
     }
 
@@ -2004,7 +2013,7 @@ impl FileProxy {
 
     /// Answer this session's queued requests once; whether new data arrived
     /// (so the game should reload).
-    fn serve(&self, addr: &str) -> Result<bool, Error> {
+    fn serve(&mut self, addr: &str) -> Result<bool, Error> {
         use functor_runtime_common::debug_protocol::{
             encode_project_file_reply, ProjectFileReply, ProjectFileRequests, ProjectFileStatus,
         };
@@ -2048,6 +2057,13 @@ restart `functor run vr`",
             );
             match posted {
                 Ok((200, _)) => {
+                    // Watch it from the version the headset now has.
+                    let version = match &reply.status {
+                        ProjectFileStatus::Bytes { version, .. }
+                        | ProjectFileStatus::Current { version } => Some(version.clone()),
+                        ProjectFileStatus::Missing { .. } => self.files.version(&reply.path),
+                    };
+                    self.sent.insert(reply.path.clone(), version);
                     changed |= ready;
                     sent += (len > 0) as usize;
                     confirmed += matches!(reply.status, ProjectFileStatus::Current { .. }) as usize;
@@ -2094,13 +2110,83 @@ restart `functor run vr`",
         Ok(changed)
     }
 
-    /// Serve requests off the watch loop until the process ends; `fetched`
-    /// tells it to reload. Errors retry (a cable reconnect), warning once.
-    fn spawn(self, addr: String, fetched: Arc<AtomicBool>) {
+    /// Re-send the files the headset got that have changed here (settled;
+    /// see `DataWatch`): new bytes, or `missing` once deleted. Whether any
+    /// arrived (so the game should reload).
+    fn update(&mut self, addr: &str, now: std::time::Instant) -> Result<bool, Error> {
+        use functor_runtime_common::data_watch::describe;
+        use functor_runtime_common::debug_protocol::{
+            encode_project_file_reply, ProjectFileRequest, ProjectFileStatus,
+        };
+        let files = &self.files;
+        let changed = self.sent.poll(now, |path| files.version(path));
+        if changed.is_empty() {
+            return Ok(false);
+        }
+        let (mut sent, mut bytes) = (0, 0);
+        for path in &changed {
+            let request = ProjectFileRequest {
+                path: path.clone(),
+                have: None,
+            };
+            let reply = self.files.reply(self.session, &request);
+            let len = match &reply.status {
+                ProjectFileStatus::Bytes { bytes, .. } => bytes.len() as u64,
+                _ => 0,
+            };
+            let body = encode_project_file_reply(&reply);
+            let upload = std::time::Duration::from_secs(30);
+            let posted =
+                http_post_bytes(addr, "/project-files", "application/octet-stream", &body, upload);
+            match posted {
+                Ok((200, _)) => {
+                    sent += 1;
+                    bytes += len;
+                }
+                Ok((409, body)) if body.contains("wasn't requested") => {
+                    if !std::mem::replace(&mut self.warned_old, true) {
+                        emit(Event::Warning {
+                            message: format!(
+                                "{path} changed, but the headset's functor runtime can't take changed files — reinstall the tool APK to reload on data changes"
+                            ),
+                        });
+                    }
+                }
+                // Another session: the device moved on.
+                Ok((409, _)) => {}
+                Ok((status, body)) => emit(Event::Warning {
+                    message: format!("the headset refused the changed {path} ({status}: {body})"),
+                }),
+                // A cable reconnect: send them again once it settles.
+                Err(e) => {
+                    self.sent.failed(&changed, now);
+                    return Err(e);
+                }
+            }
+        }
+        if sent > 0 {
+            emit(Event::Info {
+                message: format!(
+                    "↻ data changed: {} → sent {sent} file(s) ({:.1} MB); reloading",
+                    describe(&changed),
+                    bytes as f64 / (1024.0 * 1024.0)
+                ),
+            });
+        }
+        Ok(sent > 0)
+    }
+
+    /// Serve requests and re-send changed files off the watch loop until the
+    /// process ends; `fetched` tells it to reload. Errors retry (a cable
+    /// reconnect), warning once.
+    fn spawn(mut self, addr: String, fetched: Arc<AtomicBool>) {
         std::thread::spawn(move || {
             let mut warned = None;
             loop {
-                match self.serve(&addr) {
+                let served = self.serve(&addr).and_then(|changed| {
+                    Ok(self.update(&addr, std::time::Instant::now())? | changed)
+                });
+                match served {
                     Ok(changed) => {
                         warned = None;
                         if changed {
@@ -3259,6 +3345,99 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             files.read("ss2/mesh/a.bin").ok().as_deref(),
             Some(&b"mesh"[..])
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// `run vr` data reload against the same headless device: a repacked
+    /// mount re-sends only the entry that changed and asks for a reload; a
+    /// deleted one is sent as missing; unchanged entries are never re-sent.
+    #[test]
+    fn the_file_proxy_resends_changed_mounted_files() {
+        use functor_runtime_common::debug_protocol::{DebugRequest, ProjectSession};
+        use functor_runtime_common::device_files::DeviceFiles;
+        use functor_runtime_common::storage::ProjectReader;
+
+        let root = std::env::temp_dir().join(format!("functor-vr-resend-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("mounts.json"), r#"{"ss2": "game.zip!res/"}"#).unwrap();
+        let archive = root.join("game.zip");
+        let pack = |entries: &[(&str, &[u8])], secs: u64| {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            for (name, bytes) in entries {
+                zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                std::io::Write::write_all(&mut zip, bytes).unwrap();
+            }
+            let file = zip.finish().unwrap();
+            let mtime = std::time::SystemTime::now() + std::time::Duration::from_secs(secs);
+            file.set_modified(mtime).unwrap();
+        };
+        pack(&[("res/a.bin", b"a1"), ("res/b.bin", b"b1")], 0);
+        let external = functor_runtime_common::runtime_settings::ExternalPrefix {
+            prefix: "ss2/".to_string(),
+            mount: "ss2".to_string(),
+            device: None,
+            ignore_case: false,
+        };
+        let mounts = project_files::Mounts::read(&root.join("mounts.json")).unwrap();
+        let resolver = project_files::Resolver::load(&root, &[external], &mounts).unwrap();
+
+        // The device, recording which paths the host sent.
+        let files = Arc::new(DeviceFiles::new(
+            Arc::new(functor_runtime_common::asset::AssetCache::new()),
+            None,
+            1 << 20,
+        ));
+        let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (bound, rx) = functor_runtime_common::debug_http::spawn(("127.0.0.1", 0)).unwrap();
+        let (runtime, log) = (files.clone(), replies.clone());
+        std::thread::spawn(move || {
+            for request in rx {
+                match request {
+                    DebugRequest::ProjectFileRequests(response) => {
+                        let _ = response.send(Ok(runtime.requests()));
+                    }
+                    DebugRequest::ProjectFileReply(reply, response) => {
+                        log.lock().unwrap().push(reply.path.clone());
+                        let _ = response.send(runtime.accept(reply).map(|(status, _)| status));
+                    }
+                    _ => panic!("unexpected request"),
+                }
+            }
+        });
+        let addr = bound.to_string();
+        let mut proxy = FileProxy::new(resolver, "game.fun");
+        proxy.session = 21;
+        files.begin(Some(ProjectSession {
+            id: 21,
+            entry_dir: String::new(),
+        }));
+        let read = |path: &str| files.read(path).ok().map(|bytes| bytes.to_vec());
+        assert!(read("ss2/a.bin").is_none() && read("ss2/b.bin").is_none());
+        assert!(proxy.serve(&addr).unwrap());
+        assert_eq!(read("ss2/a.bin").as_deref(), Some(&b"a1"[..]));
+        replies.lock().unwrap().clear();
+
+        let t = std::time::Instant::now();
+        let at = |ms: u64| t + std::time::Duration::from_millis(ms);
+        assert!(!proxy.update(&addr, at(0)).unwrap(), "nothing changed");
+
+        // Repacked: a changed, b intact.
+        pack(&[("res/a.bin", b"a2"), ("res/b.bin", b"b1")], 2);
+        assert!(!proxy.update(&addr, at(100)).unwrap(), "settling");
+        assert!(proxy.update(&addr, at(300)).unwrap(), "sent: reload");
+        assert_eq!(*replies.lock().unwrap(), ["ss2/a.bin"]);
+        assert_eq!(read("ss2/a.bin").as_deref(), Some(&b"a2"[..]));
+        assert_eq!(read("ss2/b.bin").as_deref(), Some(&b"b1"[..]));
+
+        // a deleted: the headset hears it's gone.
+        pack(&[("res/b.bin", b"b1")], 4);
+        proxy.update(&addr, at(400)).unwrap();
+        assert!(proxy.update(&addr, at(600)).unwrap());
+        assert_eq!(*replies.lock().unwrap(), ["ss2/a.bin", "ss2/a.bin"]);
+        assert!(read("ss2/a.bin").is_none() && !files.exists("ss2/a.bin"));
+        assert!(!proxy.update(&addr, at(800)).unwrap());
         let _ = std::fs::remove_dir_all(root);
     }
 

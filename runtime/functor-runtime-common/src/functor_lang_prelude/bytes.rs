@@ -95,6 +95,7 @@ pub fn hide_files_under(dir: &std::path::Path) {
 /// already [`super::path::resolve`]d; `api` names the call in errors.
 pub(super) fn read_project_file(api: &str, path: &str) -> Result<Arc<[u8]>, String> {
     let read = read_project_file_untracked(api, path);
+    note_path(path);
     note_file_read(|| (format!("{READ}{path}"), read_identity(&read)));
     read
 }
@@ -126,6 +127,7 @@ fn read_project_file_untracked(api: &str, path: &str) -> Result<Arc<[u8]>, Strin
 /// (false for the root, and on hosts that can't read project files).
 fn project_file_exists(path: &str) -> bool {
     let exists = project_file_exists_untracked(path);
+    note_path(path);
     note_file_read(|| (format!("{EXISTS}{path}"), exists as u64));
     exists
 }
@@ -155,11 +157,30 @@ fn read_identity(read: &Result<Arc<[u8]>, String>) -> u64 {
 /// isn't one.
 pub(super) fn file_input_current(input: &functor_lang::reuse::HostInput) -> Option<bool> {
     if let Some(path) = input.key.strip_prefix(READ) {
+        note_path(path);
         let read = read_project_file_untracked("File.bytes", path);
         return Some(read_identity(&read) == input.identity);
     }
     let path = input.key.strip_prefix(EXISTS)?;
+    note_path(path);
     Some(project_file_exists_untracked(path) as u64 == input.identity)
+}
+
+thread_local! {
+    /// Project files read or re-checked since [`take_file_reads`]: with reload
+    /// reuse, a load reads only what changed and re-checks the rest.
+    static FILE_READS: std::cell::RefCell<std::collections::BTreeSet<String>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+}
+
+fn note_path(path: &str) {
+    FILE_READS.with(|reads| reads.borrow_mut().insert(path.to_string()));
+}
+
+/// The project files (resolved paths) this thread read since the last call,
+/// for a data-file reload to watch: take once before a load and once after.
+pub fn take_file_reads() -> std::collections::BTreeSet<String> {
+    FILE_READS.with(|reads| std::mem::take(&mut *reads.borrow_mut()))
 }
 
 /// Whether `path` resolves into the [`HIDDEN`] folder.

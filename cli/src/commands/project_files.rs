@@ -237,27 +237,6 @@ impl Resolver {
         }
     }
 
-    /// Changes when the file does: size + mtime on disk, crc + size in a zip.
-    fn version(&self, path: &str) -> Option<String> {
-        let on_disk = |root: &Path, path: &str| {
-            let meta = std::fs::metadata(storage::resolve_confined(root, path).ok()?).ok()?;
-            let mtime = meta
-                .modified()
-                .ok()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()?;
-            Some(format!("{}:{}", meta.len(), mtime.as_nanos()))
-        };
-        match self.external(path) {
-            None => on_disk(&self.root, path),
-            Some((external, rest)) => match &external.mount {
-                None => None,
-                Some(Mount::Dir(dir)) => on_disk(dir, &dir_path(dir, rest, external.ignore_case)),
-                Some(Mount::Zip(zip)) => zip.version(rest, external.ignore_case),
-            },
-        }
-    }
-
     /// A prefix `path` matches only ignoring case (`SS2/` for `ss2/`): on a
     /// case-insensitive disk it would quietly read the project folder.
     fn miscased(&self, path: &str) -> Option<&External> {
@@ -314,6 +293,20 @@ impl ProjectReader for Resolver {
                     storage::is_file_confined(dir, &dir_path(dir, rest, external.ignore_case))
                 }
                 Some(Mount::Zip(zip)) => zip.exists(rest, external.ignore_case),
+            },
+        }
+    }
+
+    /// Size + mtime on disk, crc + size in a zip.
+    fn version(&self, path: &str) -> Option<String> {
+        match self.external(path) {
+            None => storage::version_confined(&self.root, path),
+            Some((external, rest)) => match &external.mount {
+                None => None,
+                Some(Mount::Dir(dir)) => {
+                    storage::version_confined(dir, &dir_path(dir, rest, external.ignore_case))
+                }
+                Some(Mount::Zip(zip)) => zip.version(rest, external.ignore_case),
             },
         }
     }
@@ -729,6 +722,43 @@ mod tests {
             Err(ProjectReadError::Outside) => Err("outside".to_string()),
             Err(ProjectReadError::Unreadable(e)) => Err(e),
         }
+    }
+
+    /// A data-file reload over a zip mount: a repacked archive reports only
+    /// the entries whose crc or size changed; rewritten intact, none.
+    #[test]
+    fn data_watch_reports_only_changed_zip_entries() {
+        use functor_runtime_common::data_watch::DataWatch;
+        let project = TempProject::new("watch");
+        let zip = project.0.join("game.kpf");
+        write_zip(&zip, &[("res/a.bin", Some(b"a1")), ("res/b.bin", Some(b"b1"))]);
+        project.config(r#"{"ss2/": "SS2"}"#, Some(r#"{"ss2/": "game.kpf!res/"}"#));
+        let resolver = project.resolver();
+        let version = |path: &str| resolver.version(path);
+        let mut watch = DataWatch::new();
+        watch.watch(["ss2/a.bin".to_string(), "ss2/b.bin".to_string()], version);
+        let t = std::time::Instant::now();
+        let at = |ms: u64| t + std::time::Duration::from_millis(ms);
+        let touch = |secs: u64| {
+            let file = std::fs::File::options().write(true).open(&zip).unwrap();
+            let mtime = std::time::SystemTime::now() + std::time::Duration::from_secs(secs);
+            file.set_modified(mtime).unwrap();
+        };
+
+        let repacked: &[(&str, Option<&[u8]>)] = &[
+            ("res/a.bin", Some(b"a2")),
+            ("res/b.bin", Some(b"b1")),
+            ("res/c.bin", Some(b"c")),
+        ];
+        write_zip(&zip, repacked);
+        touch(2);
+        assert!(watch.poll(at(0), version).is_empty(), "settling");
+        assert_eq!(watch.poll(at(200), version), ["ss2/a.bin"]);
+
+        write_zip(&zip, repacked);
+        touch(4);
+        watch.poll(at(300), version);
+        assert!(watch.poll(at(500), version).is_empty(), "rewritten intact");
     }
 
     #[test]
