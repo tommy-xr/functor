@@ -100,6 +100,14 @@ const exampleNames = readdirSync(EXAMPLES, { withFileTypes: true })
   .map((e) => e.name)
   .sort();
 
+// Examples knowingly over the cap. Sharing one degrades to the .zip download
+// (`shareHref`); each still must round-trip, and must still be over the cap
+// (an entry that fits again is stale and fails).
+const OVER_CAP = new Set([
+  // Not on the site (no Share button) and needs PNGs the site doesn't serve.
+  "hoverbike",
+]);
+
 test("round-trips every example project, and each stays pasteable", async (t) => {
   assert.ok(exampleNames.length > 10, "expected the examples/ tree to be populated");
   for (const name of exampleNames) {
@@ -113,6 +121,13 @@ test("round-trips every example project, and each stays pasteable", async (t) =>
         `${String(raw).padStart(7)} raw ${String(encoded).padStart(6)} encoded`
     );
     assert.deepEqual(back, project, `${name} did not round-trip losslessly`);
+    if (OVER_CAP.has(name)) {
+      assert.ok(
+        encoded > MAX_ENCODED_CHARS,
+        `${name} now fits the ${MAX_ENCODED_CHARS} cap — drop it from OVER_CAP`
+      );
+      continue;
+    }
     assert.ok(
       encoded <= MAX_ENCODED_CHARS,
       `${name} encodes to ${encoded} chars, over the ${MAX_ENCODED_CHARS} cap`
