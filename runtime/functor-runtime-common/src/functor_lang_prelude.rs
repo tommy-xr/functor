@@ -13516,7 +13516,7 @@ the game dir"
         let config = |src: &str| eval_with_prelude(&format!("let main =\n  {src}\n"));
         let value = config(
             "Config.create() |> Config.external(\"ss2/\", Source.mount(\"ss2\") \
-|> Source.device(\"/sdcard/s/x.kpf!data/res/\")) |> Config.external(\"music/\", \
+|> Source.device(\"/sdcard/s/x.kpf!data/res/\") |> Source.ignoreCase) |> Config.external(\"music/\", \
 Source.mount(\"music\")) |> Config.xr(Xr.create() |> Xr.refreshRate(90))",
         )
         .unwrap();
@@ -13527,11 +13527,13 @@ Source.mount(\"music\")) |> Config.xr(Xr.create() |> Xr.refreshRate(90))",
                     prefix: "ss2/".into(),
                     mount: "ss2".into(),
                     device: Some("/sdcard/s/x.kpf!data/res/".into()),
+                    ignore_case: true,
                 },
                 ExternalPrefix {
                     prefix: "music/".into(),
                     mount: "music".into(),
                     device: None,
+                    ignore_case: false,
                 },
             ]
         );

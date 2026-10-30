@@ -1619,7 +1619,8 @@ evaluation keeps the last good value and reports once.
 (`{"ss2": "~/ss2/sshock2.kpf!data/res/"}`, `!` into a zip) or with
 `--mount ss2=PATH`; never put a local path in code. The CLI evaluates `config`
 alone before anything runs, so `config` can't read files. `run vr` sends the
-headset what it reads. `Source.device(path)` (standalone headset) is declared
+headset what it reads. Names match case-sensitively; `|> Source.ignoreCase`
+matches them ignoring case (game data authored on Windows). `Source.device(path)` (standalone headset) is declared
 only: `--target device` isn't implemented yet. Each `Xr` knob belongs to
 one bucket — `refreshRate`, `passthrough` and `scene` in `config`, `foveation` and
 `passthroughEnabled` in `settings` — and the other is a teaching error naming

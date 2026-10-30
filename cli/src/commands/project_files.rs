@@ -37,6 +37,43 @@ struct External {
     /// The `Source.mount` name.
     name: String,
     mount: Option<Mount>,
+    /// `Source.ignoreCase`.
+    ignore_case: bool,
+}
+
+/// `rest`, or with `Source.ignoreCase` the one path under `dir` that matches
+/// it ignoring ASCII case (an exact path wins; two that differ only in case
+/// match neither, as in a zip).
+fn dir_path(dir: &Path, rest: &str, ignore_case: bool) -> String {
+    if !ignore_case || dir.join(rest).exists() {
+        return rest.to_string();
+    }
+    // Every path matching the components so far, ignoring case.
+    let mut matches = vec![String::new()];
+    for part in rest.split('/') {
+        matches = matches
+            .iter()
+            .flat_map(|at| {
+                std::fs::read_dir(dir.join(at))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter(|name| name.eq_ignore_ascii_case(part))
+                    .map(move |name| {
+                        if at.is_empty() {
+                            name
+                        } else {
+                            format!("{at}/{name}")
+                        }
+                    })
+            })
+            .collect();
+    }
+    match matches.as_slice() {
+        [one] => one.clone(),
+        _ => rest.to_string(),
+    }
 }
 
 enum Mount {
@@ -140,6 +177,7 @@ impl Resolver {
                 prefix: external.prefix.clone(),
                 name: external.mount.clone(),
                 mount,
+                ignore_case: external.ignore_case,
             });
         }
         Ok(Resolver {
@@ -214,8 +252,8 @@ impl Resolver {
             None => on_disk(&self.root, path),
             Some((external, rest)) => match &external.mount {
                 None => None,
-                Some(Mount::Dir(dir)) => on_disk(dir, rest),
-                Some(Mount::Zip(zip)) => zip.version(rest),
+                Some(Mount::Dir(dir)) => on_disk(dir, &dir_path(dir, rest, external.ignore_case)),
+                Some(Mount::Zip(zip)) => zip.version(rest, external.ignore_case),
             },
         }
     }
@@ -257,9 +295,11 @@ impl ProjectReader for Resolver {
             },
             Some((external, rest)) => match &external.mount {
                 None => Err(ProjectReadError::Unreadable(external.unmapped())),
-                Some(Mount::Dir(dir)) => storage::read_confined(dir, rest),
+                Some(Mount::Dir(dir)) => {
+                    storage::read_confined(dir, &dir_path(dir, rest, external.ignore_case))
+                }
                 Some(Mount::Zip(zip)) => zip
-                    .read(rest, &external.prefix)
+                    .read(rest, &external.prefix, external.ignore_case)
                     .map_err(ProjectReadError::Unreadable),
             },
         }
@@ -270,8 +310,10 @@ impl ProjectReader for Resolver {
             None => self.miscased(path).is_none() && storage::is_file_confined(&self.root, path),
             Some((external, rest)) => match &external.mount {
                 None => false,
-                Some(Mount::Dir(dir)) => storage::is_file_confined(dir, rest),
-                Some(Mount::Zip(zip)) => zip.exists(rest),
+                Some(Mount::Dir(dir)) => {
+                    storage::is_file_confined(dir, &dir_path(dir, rest, external.ignore_case))
+                }
+                Some(Mount::Zip(zip)) => zip.exists(rest, external.ignore_case),
             },
         }
     }
@@ -340,8 +382,25 @@ struct ZipIndex {
     stamp: (u64, Option<std::time::SystemTime>),
     zip: zip::ZipArchive<std::fs::File>,
     entries: HashMap<String, Entry>,
-    /// Lowercased name → a real one, for the case-mismatch hint.
+    /// ASCII-lowercased name → a real one, for the case-mismatch hint and
+    /// `Source.ignoreCase`.
     folded: HashMap<String, String>,
+    /// Lowercased names more than one entry has: `Source.ignoreCase` reads none.
+    ambiguous: HashSet<String>,
+}
+
+impl ZipIndex {
+    /// The entry name `name` reads: itself, else (ignoring case) its one match.
+    fn resolve(&self, name: String, ignore_case: bool) -> String {
+        if !ignore_case || self.entries.contains_key(&name) {
+            return name;
+        }
+        let folded = name.to_ascii_lowercase();
+        match self.folded.get(&folded) {
+            Some(real) if !self.ambiguous.contains(&folded) => real.clone(),
+            _ => name,
+        }
+    }
 }
 
 enum Entry {
@@ -367,60 +426,76 @@ impl ZipMount {
     }
 
     /// The entry's crc and size: changes when its contents do.
-    fn version(&self, rest: &str) -> Option<String> {
+    fn version(&self, rest: &str, ignore_case: bool) -> Option<String> {
         let name = format!("{}{rest}", self.inner);
-        self.with_index(|index| match index.entries.get(&name) {
-            Some(Entry::File { size, crc, .. }) => Ok(Some(format!("zip:{crc:08x}:{size}"))),
-            _ => Ok(None),
+        self.with_index(|index| {
+            match index.entries.get(&index.resolve(name.clone(), ignore_case)) {
+                Some(Entry::File { size, crc, .. }) => Ok(Some(format!("zip:{crc:08x}:{size}"))),
+                _ => Ok(None),
+            }
         })
         .ok()
         .flatten()
     }
 
-    fn exists(&self, rest: &str) -> bool {
+    fn exists(&self, rest: &str, ignore_case: bool) -> bool {
         let name = format!("{}{rest}", self.inner);
-        self.with_index(|index| Ok(matches!(index.entries.get(&name), Some(Entry::File { .. }))))
-            .unwrap_or(false)
+        self.with_index(|index| {
+            let name = index.resolve(name, ignore_case);
+            Ok(matches!(index.entries.get(&name), Some(Entry::File { .. })))
+        })
+        .unwrap_or(false)
     }
 
     /// The entry for `File.bytes(prefix + rest)`.
-    fn read(&self, rest: &str, prefix: &str) -> Result<Arc<[u8]>, String> {
+    fn read(&self, rest: &str, prefix: &str, ignore_case: bool) -> Result<Arc<[u8]>, String> {
         let name = format!("{}{rest}", self.inner);
         let archive = self.archive.display();
-        self.with_index(|index| match index.entries.get(&name) {
-            Some(Entry::File {
-                index: at, size, ..
-            }) => {
-                let (at, size) = (*at, *size);
-                if size > self.max_entry {
-                    return Err(too_big(&name, size, self.max_entry));
+        self.with_index(|index| {
+            match index.entries.get(&index.resolve(name.clone(), ignore_case)) {
+                Some(Entry::File {
+                    index: at, size, ..
+                }) => {
+                    let (at, size) = (*at, *size);
+                    if size > self.max_entry {
+                        return Err(too_big(&name, size, self.max_entry));
+                    }
+                    let mut entry = index
+                        .zip
+                        .by_index(at)
+                        .map_err(|e| format!("{archive}: {e}"))?;
+                    let mut bytes = Vec::with_capacity(size as usize);
+                    // `take` caps a header that understates the size.
+                    Read::by_ref(&mut entry)
+                        .take(self.max_entry + 1)
+                        .read_to_end(&mut bytes)
+                        .map_err(|e| format!("{archive} {name}: {e}"))?;
+                    if bytes.len() as u64 > self.max_entry {
+                        return Err(too_big(&name, bytes.len() as u64, self.max_entry));
+                    }
+                    Ok(bytes.into())
                 }
-                let mut entry = index
-                    .zip
-                    .by_index(at)
-                    .map_err(|e| format!("{archive}: {e}"))?;
-                let mut bytes = Vec::with_capacity(size as usize);
-                // `take` caps a header that understates the size.
-                Read::by_ref(&mut entry)
-                    .take(self.max_entry + 1)
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| format!("{archive} {name}: {e}"))?;
-                if bytes.len() as u64 > self.max_entry {
-                    return Err(too_big(&name, bytes.len() as u64, self.max_entry));
+                Some(Entry::Symlink) => {
+                    Err(format!("{archive} entry {name} is a symlink; not read"))
                 }
-                Ok(bytes.into())
-            }
-            Some(Entry::Symlink) => Err(format!("{archive} entry {name} is a symlink; not read")),
-            None => {
-                let hint = index
-                    .folded
-                    .get(&name.to_lowercase())
-                    .map(|real| match real.strip_prefix(self.inner.as_str()) {
-                        Some(rest) => format!(" — names are case-sensitive: \"{prefix}{rest}\"?"),
-                        None => format!(" — names are case-sensitive: entry {real}?"),
-                    })
-                    .unwrap_or_default();
-                Err(format!("no entry {name} in {archive}{hint}"))
+                None if ignore_case && index.ambiguous.contains(&name.to_ascii_lowercase()) => {
+                    Err(format!(
+                        "{archive} has several entries named {name} ignoring case; name one exactly"
+                    ))
+                }
+                None => {
+                    let hint = index
+                        .folded
+                        .get(&name.to_ascii_lowercase())
+                        .map(|real| match real.strip_prefix(self.inner.as_str()) {
+                            Some(rest) => {
+                                format!(" — names are case-sensitive: \"{prefix}{rest}\"?")
+                            }
+                            None => format!(" — names are case-sensitive: entry {real}?"),
+                        })
+                        .unwrap_or_default();
+                    Err(format!("no entry {name} in {archive}{hint}"))
+                }
             }
         })
     }
@@ -453,6 +528,7 @@ ambiguous, so it isn't read",
         }
         let mut entries = HashMap::new();
         let mut folded = HashMap::new();
+        let mut ambiguous = HashSet::new();
         let mut decoded = HashSet::new();
         for index in 0..zip.len() {
             let entry = zip.by_index_raw(index).map_err(|e| e.to_string())?;
@@ -476,7 +552,12 @@ ambiguous, so it isn't read",
                     crc: entry.crc32(),
                 }
             };
-            folded.entry(name.to_lowercase()).or_insert(name.clone());
+            let real = folded
+                .entry(name.to_ascii_lowercase())
+                .or_insert(name.clone());
+            if *real != name {
+                ambiguous.insert(name.to_ascii_lowercase());
+            }
             entries.insert(name, state);
         }
         Ok(ZipIndex {
@@ -484,6 +565,7 @@ ambiguous, so it isn't read",
             zip,
             entries,
             folded,
+            ambiguous,
         })
     }
 }
@@ -586,6 +668,7 @@ mod tests {
                     prefix: prefix.clone(),
                     mount: prefix.trim_end_matches('/').to_string(),
                     device: None,
+                    ignore_case: false,
                 })
                 .collect()
         }
@@ -730,6 +813,72 @@ mod tests {
         assert_eq!(read(&whole, "ss2/data/other.bin"), Ok(vec![0]));
     }
 
+    /// `Source.ignoreCase`: a miscased name reads its one match, in a zip
+    /// and in a folder; an exact name wins, and two that differ only in case
+    /// match neither.
+    #[test]
+    fn ignore_case_reads_the_one_case_insensitive_match() {
+        let project = TempProject::new("fold");
+        write_zip(
+            &project.0.join("game.kpf"),
+            &[
+                ("data/res/fam/MedSci_1/WALL.PCX", Some(b"W")),
+                ("data/res/fam/Dup/a.pcx", Some(b"a")),
+                ("data/res/fam/Dup/A.pcx", Some(b"A")),
+            ],
+        );
+        project.config(
+            r#"{"ss2/": "SS2 data"}"#,
+            Some(r#"{"ss2/": "game.kpf!data/res/"}"#),
+        );
+        // The project's externals, declared with `Source.ignoreCase`.
+        let folding = |_: Resolver| {
+            let externals: Vec<ExternalPrefix> = project
+                .externals()
+                .into_iter()
+                .map(|external| ExternalPrefix {
+                    ignore_case: true,
+                    ..external
+                })
+                .collect();
+            let mounts = Mounts::read(&project.0.join("mounts.json")).unwrap();
+            Resolver::load(&project.0, &externals, &mounts).unwrap()
+        };
+        let strict = project.resolver();
+        assert!(read(&strict, "ss2/fam/medsci_1/wall.pcx").is_err());
+        let zip = folding(project.resolver());
+        assert_eq!(read(&zip, "ss2/fam/medsci_1/wall.pcx"), Ok(b"W".to_vec()));
+        assert!(zip.exists("ss2/fam/MEDSCI_1/Wall.pcx"));
+        assert_eq!(
+            zip.version("ss2/fam/medsci_1/wall.pcx"),
+            zip.version("ss2/fam/MedSci_1/WALL.PCX")
+        );
+        assert_eq!(read(&zip, "ss2/fam/Dup/A.pcx"), Ok(b"A".to_vec()));
+        let err = read(&zip, "ss2/fam/dup/A.PCX").unwrap_err();
+        assert!(err.contains("several entries"), "{err}");
+        assert!(!zip.exists("ss2/fam/Dup/a.PCX"));
+
+        let data = TempProject::new("fold-data");
+        data.write("fam/MedSci_1/WALL.PCX", b"D");
+        project.config(
+            r#"{"ss2/": "game data"}"#,
+            Some(&format!("{{\"ss2/\": {:?}}}", data.0.display().to_string())),
+        );
+        let dir = folding(project.resolver());
+        assert_eq!(read(&dir, "ss2/fam/medsci_1/wall.pcx"), Ok(b"D".to_vec()));
+        assert!(
+            dir.exists("ss2/FAM/medsci_1/WALL.pcx") && !dir.exists("ss2/fam/medsci_1/door.pcx")
+        );
+        // Folders that differ only in case (a case-sensitive disk) are as
+        // ambiguous as in a zip: `Dup/X.pcx` and `dup/x.pcx` both match.
+        data.write("fam/Dup/X.pcx", b"1");
+        if !data.0.join("fam/dup").exists() {
+            data.write("fam/dup/x.pcx", b"2");
+            assert!(!dir.exists("ss2/fam/DUP/X.PCX"));
+            assert_eq!(read(&dir, "ss2/fam/Dup/X.pcx"), Ok(b"1".to_vec()));
+        }
+    }
+
     /// Entries that could escape are never served: traversal and absolute
     /// names (unaskable) and symlinks.
     #[test]
@@ -843,10 +992,13 @@ mod tests {
             panic!("a zip mount");
         };
         mount.max_entry = 1024;
-        let err = mount.read("big.bin", "x/").unwrap_err();
+        let err = mount.read("big.bin", "x/", false).unwrap_err();
         assert!(err.contains("over the"), "{err}");
         mount.max_entry = 64 * 1024;
-        assert_eq!(mount.read("big.bin", "x/").map(|b| b.len()), Ok(64 * 1024));
+        assert_eq!(
+            mount.read("big.bin", "x/", false).map(|b| b.len()),
+            Ok(64 * 1024)
+        );
     }
 
     /// A declared but unmapped prefix teaches how to map it; `exists` is false.

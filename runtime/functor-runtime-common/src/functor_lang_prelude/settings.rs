@@ -41,6 +41,7 @@ struct ConfigData {
 struct SourceData {
     mount: String,
     device: Option<String>,
+    ignore_case: bool,
 }
 
 /// Plain data with no Functor Lang values inside, so a model may hold one
@@ -174,8 +175,19 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         Ok(FunctorLangSource(SourceData {
             mount: name,
             device: None,
+            ignore_case: false,
         }))
     });
+    reg.fn1(
+        "Source.ignoreCase",
+        "Source.ignoreCase(source)",
+        |source: FunctorLangSource| {
+            FunctorLangSource(SourceData {
+                ignore_case: true,
+                ..source.0
+            })
+        },
+    );
     reg.fn2(
         "Source.device",
         "Source.device(path, source)",
@@ -221,6 +233,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 prefix,
                 mount: source.0.mount,
                 device: source.0.device,
+                ignore_case: source.0.ignore_case,
             });
             game.external_key = {
                 use std::hash::{Hash, Hasher};
