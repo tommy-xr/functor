@@ -102,8 +102,11 @@ pub struct SceneContext {
     // primitives (shared, never swept) return at once. Terrain still draws.
     portal_visible: RefCell<Option<Vec<bool>>>,
     portal_hidden: Cell<bool>,
-    // Inside a `Scene.castShadows(false, …)` subtree with no nearer `true`:
-    // the depth pass skips its leaves. Set only while a depth pass walks.
+    // A shadow map is being filled (`shadow::render_shadow_pass`); other
+    // depth-only passes, like the stand-in room's, ignore `Scene.castShadows`.
+    pub(crate) shadow_pass: Cell<bool>,
+    // In a shadow pass, inside a `Scene.castShadows(false, …)` subtree with no
+    // nearer `true`: its leaves are skipped.
     shadow_off: Cell<bool>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
     // both eyes evaluate each model node once. Cleared when a new frame id
@@ -666,6 +669,7 @@ impl SceneContext {
             )),
             portal_visible: RefCell::new(None),
             portal_hidden: Cell::new(false),
+            shadow_pass: Cell::new(false),
             shadow_off: Cell::new(false),
             poses: RefCell::new(HashMap::new()),
             main_shadow: Cell::new(None),
@@ -2723,11 +2727,9 @@ impl Scene3D {
         view_matrix: &Matrix4<f32>,
         current_material: &Box<dyn Material>,
     ) {
-        let depth_pass = render_context.render_pass == RenderPass::DepthOnly;
         // Under `Scene.castShadows(false, …)` a leaf casts nothing; its forward
         // draw keeps it resident. Instanced nodes decide in their own arm.
-        if depth_pass
-            && scene_context.shadow_off.get()
+        if scene_context.shadow_off.get()
             && matches!(self.obj.resolved(), SceneObject::Geometry(_) | SceneObject::Model(_))
         {
             return;
@@ -2740,6 +2742,7 @@ impl Scene3D {
         // all geometry; the normals debug mode uses NormalDebugMaterial. The
         // depth override also keeps the lit shader from sampling the shadow map
         // while it is being written.
+        let depth_pass = render_context.render_pass == RenderPass::DepthOnly;
         let override_material: Option<Box<dyn Material>> = if depth_pass {
             let mut m = DepthMaterial::create();
             m.initialize(render_context);
@@ -3175,7 +3178,10 @@ impl Scene3D {
             // the depth pass draws it.
             SceneObject::CastShadows(casts, items) => {
                 let world = world_matrix * self.xform;
-                let outer = depth_pass.then(|| scene_context.shadow_off.replace(!casts));
+                let outer = scene_context
+                    .shadow_pass
+                    .get()
+                    .then(|| scene_context.shadow_off.replace(!casts));
                 for item in items {
                     item.render(
                         render_context,
@@ -3200,7 +3206,7 @@ impl Scene3D {
                 let recognized = instancing::recognize(template);
                 // A hardware template's own `Scene.castShadows` beats the
                 // enclosing one; an expanded template renders its own.
-                if depth_pass
+                if scene_context.shadow_pass.get()
                     && recognized.as_ref().is_some_and(|recognized| {
                         !recognized
                             .casts_shadows()
