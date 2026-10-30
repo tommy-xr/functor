@@ -2,9 +2,10 @@
 // every part on ONE skin, covered body regions removed, base-colour textures
 // downscaled and deduped, and the idle/walk/run clips retargeted in.
 //
-// Usage: node tools/character-presets/build.mjs --src <dir> [--out examples/outfits]
-//   <dir> holds the three free packs unzipped side by side (see README.md).
-//   Every source file is checked against SOURCE_SHA256 before use.
+// Usage: npm run build:characters -- --src <dir> [--out examples/outfits]
+//   <dir> holds the free packs unzipped side by side (examples/outfits/ASSETS.md
+//   lists them); every source file is checked against SOURCE_SHA256. Writes the
+//   .glbs plus `presets.lock.json`, the hashes `npm run fetch:assets` verifies.
 import { Document } from "@gltf-transform/core";
 import { MeshoptSimplifier } from "meshoptimizer";
 import { createHash } from "node:crypto";
@@ -181,14 +182,10 @@ function retarget(anim, source, target) {
 }
 
 // ---- geometry ----
-/** Accessor values as floats, undoing glTF normalized-integer encoding. */
+/** Accessor values as floats; the sources store every attribute as plain float. */
 function floats(accessor) {
-  const a = accessor.getArray();
-  if (!accessor.getNormalized()) return Float32Array.from(a);
-  const max = { 1: 127, 2: 32767 }[a.BYTES_PER_ELEMENT] ?? 1;
-  const unsigned = a instanceof Uint8Array || a instanceof Uint16Array;
-  const div = unsigned ? 2 ** (8 * a.BYTES_PER_ELEMENT) - 1 : max;
-  return Float32Array.from(a, (v) => Math.max(v / div, -1));
+  if (accessor.getNormalized()) throw new Error("normalized attributes are not supported");
+  return Float32Array.from(accessor.getArray());
 }
 
 /**
@@ -248,7 +245,7 @@ function groupByMaterial(parts) {
     groups.get(key).list.push(p);
   }
   return [...groups.values()].map((g) => {
-    const cat = (field, n) => {
+    const cat = (field) => {
       const total = g.list.reduce((s, p) => s + p[field].length, 0);
       const out = new (g.list[0][field].constructor)(total);
       let o = 0;
@@ -285,11 +282,44 @@ function compact(g) {
   };
 }
 
+/**
+ * Merge vertices split only by their normal (hard edges), averaging the
+ * normals, so the simplifier treats just the UV seams as seams.
+ */
+function weld(g) {
+  const key = new Map();
+  const nrm = Float32Array.from(g.nrm);
+  const remap = new Uint32Array(g.pos.length / 3);
+  for (let v = 0; v < remap.length; v++) {
+    const k = [...g.pos.subarray(v * 3, v * 3 + 3), ...g.uv.subarray(v * 2, v * 2 + 2),
+      ...g.joints.subarray(v * 4, v * 4 + 4), ...g.weights.subarray(v * 4, v * 4 + 4)].join(",");
+    const first = key.get(k);
+    if (first === undefined) key.set(k, (remap[v] = v));
+    else {
+      remap[v] = first;
+      for (let c = 0; c < 3; c++) nrm[first * 3 + c] += g.nrm[v * 3 + c];
+    }
+  }
+  for (let v = 0; v < remap.length; v++) {
+    const len = Math.hypot(nrm[v * 3], nrm[v * 3 + 1], nrm[v * 3 + 2]) || 1;
+    for (let c = 0; c < 3; c++) nrm[v * 3 + c] /= len;
+  }
+  return compact({ ...g, nrm, indices: g.indices.map((i) => remap[i]) });
+}
+
 function simplify(g, ratio) {
   if (ratio >= 1) return g;
-  const target = Math.floor((g.indices.length / 3) * ratio) * 3;
-  const [indices] = MeshoptSimplifier.simplify(g.indices, g.pos, 3, target, 1, ["Permissive"]);
-  return compact({ ...g, indices });
+  const w = weld(g);
+  const target = Math.floor((w.indices.length / 3) * ratio) * 3;
+  const n = w.pos.length / 3;
+  const attrs = new Float32Array(n * 5);
+  for (let v = 0; v < n; v++) attrs.set([...w.uv.subarray(v * 2, v * 2 + 2), ...w.nrm.subarray(v * 3, v * 3 + 3)], v * 5);
+  // Permissive: the outfits are mostly UV seams, which would otherwise pin the
+  // count far above target; the UV weight keeps collapses from smearing texture.
+  const weights = [4, 4, 0.5, 0.5, 0.5];
+  const [indices] = MeshoptSimplifier.simplifyWithAttributes(
+    w.indices, w.pos, 3, attrs, 5, weights, null, target, 1, ["Permissive"]);
+  return compact({ ...w, indices });
 }
 
 // ---- textures ----
@@ -340,21 +370,18 @@ function writePreset(skeletonDoc, groups, clips, lod) {
     .setInverseBindMatrices(doc.createAccessor().setType("MAT4").setArray(Float32Array.from(skinSrc.getInverseBindMatrices().getArray())).setBuffer(buffer));
   for (const n of jointNames) skin.addJoint(clones.get(n));
 
-  const accessor = (type, array, normalized = false) =>
-    doc.createAccessor().setType(type).setArray(array).setNormalized(normalized).setBuffer(buffer);
+  const accessor = (type, array) => doc.createAccessor().setType(type).setArray(array).setBuffer(buffer);
   const textures = new Map();
   const stats = { tris: 0, verts: 0, draws: 0, textureBytes: 0 };
   for (const g of groups) {
     const material = doc.createMaterial(g.material)
       .setBaseColorFactor(g.factor).setDoubleSided(g.doubleSided).setMetallicFactor(0).setRoughnessFactor(1);
     if (g.image) {
-      const key = sha256(g.image);
-      if (!textures.has(key)) {
-        const t = downscale(g.image, lod.texture);
-        textures.set(key, doc.createTexture(g.material).setImage(t.png).setMimeType("image/png"));
-      }
-      material.setBaseColorTexture(textures.get(key));
       const t = downscale(g.image, lod.texture);
+      if (!textures.has(t.png)) {
+        textures.set(t.png, doc.createTexture(g.material).setImage(t.png).setMimeType("image/png"));
+      }
+      material.setBaseColorTexture(textures.get(t.png));
       // The loader uploads a texture per mesh: RGBA8 + mips ≈ 4/3 × w × h × 4.
       stats.textureBytes += Math.round((t.w * t.h * 4 * 4) / 3);
     }
@@ -426,6 +453,10 @@ for (const [bodyName, bodyFile] of Object.entries(BODIES)) {
     }
   }
 }
+await writeFile(
+  path.join(args.out, "presets.lock.json"),
+  `${JSON.stringify(Object.fromEntries(report.map((r) => [r.file, r.sha256])), null, 2)}\n`,
+);
 console.log("| File | Triangles | Vertices | Draws | Texture MB (GPU) | File MB | SHA-256 |");
 console.log("| --- | ---: | ---: | ---: | ---: | ---: | --- |");
 for (const r of report) {

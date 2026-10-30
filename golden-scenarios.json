@@ -315,6 +315,33 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "outfits-idle-t1",
+      "sample": "outfits",
+      "fixedTime": 1.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
+      "name": "outfits-walk-t5",
+      "sample": "outfits",
+      "fixedTime": 5.3,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
+      "name": "outfits-run-t9",
+      "sample": "outfits",
+      "fixedTime": 9.3,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }
