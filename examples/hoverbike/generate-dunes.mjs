@@ -16,18 +16,21 @@
 //   start pad (100, -380) → straight north → crest at z = -180 (5 m, gentle
 //   both ways) → flat runout → the block at z = 40 → open dunes to turn in.
 //
-// Grades stay under ~9%: climbing at 24 m/s, the hover springs ride
-// springDamping × climb rate / springRate low (ride.fun), 0.44 m at the crest.
-import { deflateSync } from "node:zlib";
+// The script prints the steepest grade (under 9%): climbing at 24 m/s, the
+// hover springs ride springDamping × climb rate / springRate low (ride.fun).
+// Byte-identical output assumes the same Node (its zlib does the deflate).
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { encodePng } from "../../scripts/png.mjs";
 
 const SEED = 42;
 const SAMPLES = 1025;
 const SIZE = 1000; // m, square, centred on the origin
 const CELL = SIZE / (SAMPLES - 1);
-const MIN_HEIGHT = -20; // m: black
-const MAX_HEIGHT = 40; // m: white; 60 m over 16 bits is ~1 mm a step
+// A tight range, so the terrain's height bands span the dunes and the crest
+// top: 15 m over 16 bits is a quarter-millimetre step.
+const MIN_HEIGHT = -5; // m: black
+const MAX_HEIGHT = 10; // m: white
 
 const PAD = { x: 100, z: -380 };
 const CORRIDOR = { x: 100, z0: -440, z1: 60, flat: 22, blend: 70 };
@@ -93,71 +96,34 @@ const levels = new Uint16Array(SAMPLES * SAMPLES);
 for (let j = 0; j < SAMPLES; j += 1) {
   for (let i = 0; i < SAMPLES; i += 1) {
     const h = ground(-SIZE / 2 + i * CELL, -SIZE / 2 + j * CELL);
-    levels[j * SAMPLES + i] = Math.round(clamp((h - MIN_HEIGHT) / (MAX_HEIGHT - MIN_HEIGHT), 0, 1) * 65535);
+    if (h < MIN_HEIGHT || h > MAX_HEIGHT) throw new Error(`ground ${h} m at (${i}, ${j}) is outside the declared range`);
+    levels[j * SAMPLES + i] = Math.round(((h - MIN_HEIGHT) / (MAX_HEIGHT - MIN_HEIGHT)) * 65535);
   }
 }
 // What the runtime reads back at a sample.
 const decoded = (i, j) => MIN_HEIGHT + (levels[j * SAMPLES + i] / 65535) * (MAX_HEIGHT - MIN_HEIGHT);
 const sampleAt = (x, z) => decoded(Math.round((x + SIZE / 2) / CELL), Math.round((z + SIZE / 2) / CELL));
 
-// Steepest grade between neighbouring samples, over the map and along the
-// corridor's centre line.
+// Steepest grade of any collision triangle (the heightfield splits each cell
+// along its diagonal), over the map and along the corridor's centre line.
+const grade = (i, j) => {
+  const h = decoded(i, j);
+  const lower = Math.hypot(decoded(i + 1, j) - h, decoded(i, j + 1) - h);
+  const h11 = decoded(i + 1, j + 1);
+  const upper = Math.hypot(h11 - decoded(i, j + 1), h11 - decoded(i + 1, j));
+  return Math.max(lower, upper) / CELL;
+};
+const routeColumn = Math.round((CORRIDOR.x + SIZE / 2) / CELL);
 let steepest = 0;
 let steepestRoute = 0;
 for (let j = 0; j + 1 < SAMPLES; j += 1) {
-  for (let i = 0; i + 1 < SAMPLES; i += 1) {
-    const g = Math.max(Math.abs(decoded(i + 1, j) - decoded(i, j)), Math.abs(decoded(i, j + 1) - decoded(i, j))) / CELL;
-    steepest = Math.max(steepest, g);
-  }
-}
-const routeColumn = Math.round((CORRIDOR.x + SIZE / 2) / CELL);
-for (let j = 0; j + 1 < SAMPLES; j += 1) {
-  steepestRoute = Math.max(steepestRoute, Math.abs(decoded(routeColumn, j + 1) - decoded(routeColumn, j)) / CELL);
+  for (let i = 0; i + 1 < SAMPLES; i += 1) steepest = Math.max(steepest, grade(i, j));
+  steepestRoute = Math.max(steepestRoute, grade(routeColumn, j));
 }
 
-// ── PNG: 16-bit grayscale, "Up" filter (smooth ground compresses well) ──────
-const stride = SAMPLES * 2;
-const raw = Buffer.alloc((stride + 1) * SAMPLES);
-const row = Buffer.alloc(stride);
-const above = Buffer.alloc(stride);
-for (let j = 0; j < SAMPLES; j += 1) {
-  for (let i = 0; i < SAMPLES; i += 1) row.writeUInt16BE(levels[j * SAMPLES + i], i * 2);
-  const at = j * (stride + 1);
-  raw[at] = 2;
-  for (let b = 0; b < stride; b += 1) raw[at + 1 + b] = (row[b] - above[b]) & 0xff;
-  row.copy(above);
-}
-
-const crcTable = new Uint32Array(256);
-for (let n = 0; n < 256; n += 1) {
-  let c = n;
-  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  crcTable[n] = c >>> 0;
-}
-const crc32 = (bytes) => {
-  let crc = 0xffffffff;
-  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  return (crc ^ 0xffffffff) >>> 0;
-};
-const chunk = (name, data) => {
-  const body = Buffer.concat([Buffer.from(name, "ascii"), data]);
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  body.copy(out, 4);
-  out.writeUInt32BE(crc32(body), 8 + data.length);
-  return out;
-};
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(SAMPLES, 0);
-ihdr.writeUInt32BE(SAMPLES, 4);
-ihdr[8] = 16; // bit depth
-ihdr[9] = 0; // grayscale
-const png = Buffer.concat([
-  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-  chunk("IHDR", ihdr),
-  chunk("IDAT", deflateSync(raw, { level: 9 })),
-  chunk("IEND", Buffer.alloc(0)),
-]);
+const pixels = Buffer.alloc(SAMPLES * SAMPLES * 2);
+levels.forEach((level, k) => pixels.writeUInt16BE(level, k * 2));
+const png = encodePng(SAMPLES, SAMPLES, 16, 0, pixels);
 writeFileSync(fileURLToPath(new URL("dunes.png", import.meta.url)), png);
 
 // ── dunesLayout.fun ─────────────────────────────────────────────────────────
@@ -165,7 +131,8 @@ writeFileSync(fileURLToPath(new URL("dunes.png", import.meta.url)), png);
 // around the turn beyond the block. Each sits on the decoded ground.
 const posts = [];
 for (let z = -360; z <= 0; z += 40) posts.push({ x: CORRIDOR.x + 12, z }, { x: CORRIDOR.x - 12, z });
-for (let a = 0; a < 8; a += 1) {
+// The ring's first post would sit on the lane's centre line; it starts one on.
+for (let a = 1; a < 8; a += 1) {
   const t = (a / 8) * Math.PI;
   posts.push({ x: Math.round(CORRIDOR.x - 70 + 70 * Math.cos(t)), z: Math.round(110 + 50 * Math.sin(t)) });
 }
@@ -176,14 +143,12 @@ const num = (v) => {
 const fun = `// dunesLayout.fun — GENERATED by generate-dunes.mjs (seed ${SEED}); do not edit.
 // Rerun the script after changing the course; it rewrites this and dunes.png.
 
-let seed = ${num(SEED)}
 let size = ${num(SIZE)} // m, square, centred on the origin
 let minHeight = ${num(MIN_HEIGHT)}
 let maxHeight = ${num(MAX_HEIGHT)}
 // The start pad and the corridor north from it are flat at ground 0.
 let pad = { x: ${num(PAD.x)}, z: ${num(PAD.z)} }
 let crestZ = ${num(CREST.z)}
-let crestHeight = ${num(CREST.height)}
 let block = { x: ${num(BLOCK.x)}, z: ${num(BLOCK.z)}, ground: ${num(sampleAt(BLOCK.x, BLOCK.z))} }
 // Route posts on the ground: x, ground height, z.
 let posts = [

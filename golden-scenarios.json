@@ -337,16 +337,6 @@
       "captureAtFrame": 260
     },
     {
-      "name": "hoverbike-chase",
-      "sample": "hoverbike",
-      "debugRender": null,
-      "targets": [
-        "native"
-      ],
-      "inputScript": "ride.script",
-      "captureAtFrame": 150
-    },
-    {
       "name": "hoverbike-rider",
       "sample": "hoverbike",
       "debugRender": null,
@@ -354,7 +344,7 @@
         "native"
       ],
       "inputScript": "ride.script",
-      "captureAtFrame": 1000
+      "captureAtFrame": 1060
     },
     {
       "name": "hoverbike-crest",
@@ -364,7 +354,7 @@
         "native"
       ],
       "inputScript": "ride.script",
-      "captureAtFrame": 640
+      "captureAtFrame": 530
     }
   ]
 }

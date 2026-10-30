@@ -12,9 +12,9 @@
 //   c. Straight into the block at full throttle: it never passes its face.
 //   d. Full throttle out past the soft boundary: the bike stops under 25 m
 //      past it, and comes back in once the throttle is released.
-//   e. Two runs (one windowed but hidden, one headless) end on an identical
-//      model. The windowed run prints `/state.terrain` LOD stats along the
-//      route.
+//   e. Two runs (one windowed but hidden, one headless) give identical
+//      models at the end of b, c and d. The windowed run prints
+//      `/state.terrain` LOD stats along the route.
 //
 // The stand (T switches to it):
 //
@@ -147,16 +147,22 @@ function circumradius(a, b, c) {
   return (d(a, b) * d(b, c) * d(c, a)) / (4 * area);
 }
 
-async function ride(port, check) {
-  const base = `http://127.0.0.1:${port}`;
+/** Launch the sample at 60 Hz under the debug server; `log()` is its output so far. */
+function launch(port, mode) {
   const proc = spawn(
     BIN,
-    ["-d", SAMPLE, "run", "native", "--headless", "--display-hz", "60", "--debug-port", String(port)],
+    ["-d", SAMPLE, "run", "native", mode, "--display-hz", "60", "--debug-port", String(port)],
     { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";
   proc.stdout.on("data", (d) => (log += d));
   proc.stderr.on("data", (d) => (log += d));
+  return { proc, log: () => log };
+}
+
+async function ride(port, check) {
+  const base = `http://127.0.0.1:${port}`;
+  const { proc, log } = launch(port, "--headless");
   try {
     // Pause, then rewind to a fixed early frame so both runs start alike.
     await waitFrame(base, 12);
@@ -268,7 +274,7 @@ async function ride(port, check) {
 
     return JSON.stringify((await get(base, "/state")).model);
   } catch (e) {
-    throw new Error(`${e.message}\n--- runtime log ---\n${log}`);
+    throw new Error(`${e.message}\n--- runtime log ---\n${log()}`);
   } finally {
     proc.kill("SIGKILL");
   }
@@ -291,15 +297,10 @@ async function respawn(base) {
 
 async function dunes(port, check, mode) {
   const base = `http://127.0.0.1:${port}`;
-  const proc = spawn(
-    BIN,
-    ["-d", SAMPLE, "run", "native", mode, "--display-hz", "60", "--debug-port", String(port)],
-    { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  let log = "";
-  proc.stdout.on("data", (d) => (log += d));
-  proc.stderr.on("data", (d) => (log += d));
+  const { proc, log } = launch(port, mode);
   const lod = [];
+  // The model at the end of each scenario, compared across runs.
+  const snapshots = [];
   const sampleLod = async (where) => {
     if (mode !== "--hidden") return;
     const s = await get(base, "/state");
@@ -326,7 +327,12 @@ async function dunes(port, check, mode) {
       seen.every((m) => Math.abs(m.last.y - SPAWN.y) < 0.01 && Math.abs(m.last.x - SPAWN.x) < 1e-3 && Math.abs(m.last.z - SPAWN.z) < 1e-3),
       `cold load: held at the spawn through ${seen.length} observed frames (${waiting.length} waiting for ground, ready from frame ${firstReady?.frame})`,
     );
-    check(waiting.every((m) => m.ride.vy === 0 && m.speed === 0), `cold load: no motion before the probes see ground`);
+    check(
+      waiting.every((m) => m.ride.vy === 0 && m.speed === 0),
+      waiting.length
+        ? `cold load: no motion before the probes see ground`
+        : `cold load: the heightmap beat the first poll; the gate is covered by game.fun's expects`,
+    );
     check(Math.abs(seen.at(-1).clearance - HOVER) < 0.01, `cold load: rests at hover height (${seen.at(-1).clearance.toFixed(4)} m)`);
 
     // Pause, and respawn so both runs start from the same state whenever the
@@ -373,9 +379,9 @@ async function dunes(port, check, mode) {
         brakeFrom = before.last;
         v0 = before.speed;
       }
-      farthest = Math.max(farthest, m.clearance);
+      farthest = Math.max(farthest, ...m.probes);
       if (Math.abs(m.last.z - CREST_Z) < 80 && stage === "lane") {
-        crest = [Math.min(crest[0], m.clearance), Math.max(crest[1], m.clearance)];
+        crest = [Math.min(crest[0], ...m.probes), Math.max(crest[1], ...m.probes)];
         worstAy = Math.max(worstAy, Math.abs(m.ride.vy - before.ride.vy) / (2 * DT));
       }
       if (Math.abs(m.last.z - BLOCK.z) < BLOCK.d / 2 + RADIUS) passing ??= m;
@@ -390,13 +396,14 @@ async function dunes(port, check, mode) {
     await post(base, "/input", { type: "gamepad_clear" });
     await sampleLod("stop");
     check(farthest < PROBE_RANGE, `every probe keeps the ground in range along the route (highest ${farthest.toFixed(3)} m)`);
-    check(crest[0] > CLEAR_MIN && crest[1] < CLEAR_MAX, `over the crest at ${TOP} m/s, clearance ${crest.map((c) => c.toFixed(3)).join("..")} m (bounds ${CLEAR_MIN}..${CLEAR_MAX})`);
+    check(crest[0] > CLEAR_MIN && crest[1] < CLEAR_MAX, `over the crest at ${TOP} m/s, every probe's clearance ${crest.map((c) => c.toFixed(3)).join("..")} m (bounds ${CLEAR_MIN}..${CLEAR_MAX})`);
     check(worstAy < 3, `vertical acceleration over the crest ≤ 3 m/s² (worst ${worstAy.toFixed(3)})`);
     check(passing && passing.last.x > BLOCK.x + BLOCK.w / 2 + RADIUS && passing.speed > 0.95 * TOP, `passes the block clear at ${passing?.speed.toFixed(2)} m/s (x ${passing?.last.x.toFixed(2)})`);
     check(m.speed < 0.01 && Math.abs(m.ride.yaw + Math.PI / 2) < 0.15, `turns right and stops (yaw ${m.ride.yaw.toFixed(3)})`);
     const stopped = Math.hypot(m.last.x - brakeFrom.x, m.last.z - brakeFrom.z);
     const analytic = stoppingDistance(v0);
     check(Math.abs(stopped - analytic) < 0.1 * analytic, `stopping distance ${stopped.toFixed(2)} m (analytic ${analytic.toFixed(2)} from ${v0.toFixed(2)} m/s)`);
+    snapshots.push(m);
 
     // c. Straight into the block at full throttle.
     m = await respawn(base);
@@ -414,6 +421,7 @@ async function dunes(port, check, mode) {
     const face = BLOCK.z - BLOCK.d / 2;
     check(contact && contact.speed > 0.9 * TOP, `meets the block at ${contact?.speed.toFixed(2)} m/s`);
     check(maxZ < face - RADIUS + 0.05 && m.speed < 0.5, `the block stops it: max z ${maxZ.toFixed(4)} (face ${face}, radius ${RADIUS})`);
+    snapshots.push(m);
 
     // d. Turn on the pad to face +x, then full throttle out past the limit.
     m = await respawn(base);
@@ -431,8 +439,8 @@ async function dunes(port, check, mode) {
       const before = m;
       m = await step(base, 2);
       maxX = Math.max(maxX, m.last.x);
-      low = Math.min(low, m.clearance);
-      high = Math.max(high, m.clearance);
+      low = Math.min(low, ...m.probes);
+      high = Math.max(high, ...m.probes);
       if (m.last.x > SOFT_LIMIT && !entry) entry = before.speed;
       if (m.last.x > SOFT_LIMIT && m.speed < 0.2) break;
     }
@@ -451,9 +459,10 @@ async function dunes(port, check, mode) {
       for (const s of lod) console.log(`  ${s.where.padEnd(12)} patches ${String(s.patches).padStart(4)}  vertices ${s.vertices}`);
       console.log();
     }
-    return JSON.stringify((await get(base, "/state")).model);
+    snapshots.push((await get(base, "/state")).model);
+    return JSON.stringify(snapshots);
   } catch (e) {
-    throw new Error(`${e.message}\n--- runtime log ---\n${log}`);
+    throw new Error(`${e.message}\n--- runtime log ---\n${log()}`);
   } finally {
     proc.kill("SIGKILL");
   }
@@ -494,7 +503,7 @@ const check = (ok, what) => {
 
 const dunesFirst = await dunes(8954, check, "--hidden");
 const dunesSecond = await dunes(8955, () => {}, "--headless");
-check(dunesFirst === dunesSecond, `dunes: two runs end on an identical model`);
+check(dunesFirst === dunesSecond, `dunes: two runs give identical models after the route, the block and the boundary`);
 const first = await ride(8951, check);
 const second = await ride(8952, () => {});
 check(first === second, `stand: two runs end on an identical model`);
