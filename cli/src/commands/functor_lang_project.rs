@@ -2160,6 +2160,11 @@ restart `functor run vr`",
         }
         let (mut sent, mut bytes, mut failed) = (0, 0, None);
         for (at, path) in changed.iter().enumerate() {
+            // Mid-write (a retry skips the settle): send once it's readable.
+            if self.files.version(path).is_err() {
+                self.unsent.insert(path.clone());
+                continue;
+            }
             let request = ProjectFileRequest {
                 path: path.clone(),
                 have: None,
@@ -3478,6 +3483,17 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         proxy.update(&addr, at(1500)).unwrap();
         assert!(!proxy.update(&addr, at(1700)).unwrap(), "b intact");
         assert_eq!(replies.lock().unwrap().len(), 2);
+
+        // An unsent change waits out a rewrite rather than sending `missing`.
+        pack(&[("res/b.bin", b"b2")], 6);
+        proxy.update(&addr, at(1800)).unwrap();
+        assert!(proxy.update("127.0.0.1:1", at(2000)).is_err());
+        let whole = std::fs::read(&archive).unwrap();
+        std::fs::write(&archive, &whole[..whole.len() / 2]).unwrap();
+        assert!(!proxy.update(&addr, at(2100)).unwrap(), "held");
+        std::fs::write(&archive, &whole).unwrap();
+        assert!(proxy.update(&addr, at(2200)).unwrap());
+        assert_eq!(read("ss2/b.bin").as_deref(), Some(&b"b2"[..]));
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -85,8 +85,11 @@ impl DataWatch {
             return Vec::new();
         }
         self.polled = Some(now);
+        // Paths that can't tell right now: held until they can.
+        let mut unknown = BTreeSet::new();
         for (path, (_, seen)) in self.files.iter_mut() {
             let Ok(current) = version(path) else {
+                unknown.insert(path.clone());
                 continue;
             };
             if *seen != current {
@@ -100,13 +103,23 @@ impl DataWatch {
         }
         let mut changed = Vec::new();
         for (path, (reported, seen)) in self.files.iter_mut() {
-            if reported != seen {
+            if reported == seen {
+                continue;
+            }
+            if unknown.contains(path) {
+                self.moved = Some(now);
+            } else {
                 *reported = seen.clone();
                 changed.push(path.clone());
             }
         }
-        self.retried = changed.is_empty() && !self.retry.is_empty();
-        let mut out: BTreeSet<String> = std::mem::take(&mut self.retry);
+        let held: BTreeSet<String> = self.retry.intersection(&unknown).cloned().collect();
+        let mut out: BTreeSet<String> = std::mem::replace(&mut self.retry, held);
+        out.retain(|path| !unknown.contains(path));
+        if !self.retry.is_empty() {
+            self.moved = Some(now);
+        }
+        self.retried = changed.is_empty() && !out.is_empty();
         out.extend(changed);
         out.into_iter().collect()
     }
@@ -192,7 +205,7 @@ mod tests {
         );
 
         disk.set("other", Some("2"));
-        assert!(watch.poll(ms(t, 100), disk.version()).is_empty());
+        assert!(watch.poll(ms(t, 300), disk.version()).is_empty());
         assert!(watch.poll(ms(t, 400), disk.version()).is_empty());
 
         disk.set("a", Some("2"));
@@ -229,12 +242,22 @@ mod tests {
         watch.poll(ms(t, 300), disk.version());
         assert_eq!(watch.poll(ms(t, 500), disk.version()), ["a"]);
 
+        // A change seen, then its archive unreadable: held until readable.
+        disk.set("a", Some("3"));
+        watch.poll(ms(t, 550), disk.version());
+        disk.set("a", Some("torn"));
+        assert!(watch.poll(ms(t, 800), disk.version()).is_empty(), "held");
+        disk.set("a", Some("3"));
+        watch.poll(ms(t, 900), disk.version());
+        assert_eq!(watch.poll(ms(t, 1100), disk.version()), ["a"]);
+        let t = t + Duration::from_millis(1000);
+
         // An archive mid-write can't tell, however long: nothing reports;
         // finished with the entry intact, still nothing.
         disk.set("a", Some("torn"));
         watch.poll(ms(t, 600), disk.version());
         assert!(watch.poll(ms(t, 900), disk.version()).is_empty());
-        disk.set("a", Some("2"));
+        disk.set("a", Some("3"));
         watch.poll(ms(t, 1000), disk.version());
         assert!(watch.poll(ms(t, 1200), disk.version()).is_empty());
     }
