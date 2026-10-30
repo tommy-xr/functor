@@ -17,18 +17,18 @@ node examples/hoverbike/generate-dunes.mjs   # rewrite dunes.png + dunesLayout.f
 
 On foot:
 
-| | Keyboard and mouse | Quest Touch |
-| --- | --- | --- |
-| Walk | WASD | left stick (along your look) |
-| Look / turn | mouse | your head; right stick snaps 30° |
-| Get on (near the seat, facing it) | E | grab a handlebar |
-| Respawn | R | tap right B |
+| | Keyboard and mouse | Gamepad | Quest Touch |
+| --- | --- | --- | --- |
+| Walk | WASD | left stick | left stick (along your look) |
+| Look / turn | mouse | | your head; right stick snaps 30° |
+| Get on (near the seat, facing it) | E | south (A / ✕) | grab a handlebar |
+| Respawn | R | | tap right B (below 2 m/s when riding) |
 
 Riding:
 
 | | Keyboard | Gamepad |
 | --- | --- | --- |
-| Get off (below 2 m/s) | hold E | |
+| Get off (below 2 m/s) | hold E | hold south (A / ✕) |
 | Throttle | W | right trigger |
 | Brake | S | left trigger |
 | Steer | A / D | left stick |
@@ -48,7 +48,7 @@ With a headset:
 | Smooth / stepped turning | left Y |
 | Seated / standing | right A |
 | Recalibrate (hold still) | left menu |
-| Respawn / dunes or test stand | tap right B / right stick click |
+| Respawn / dunes or test stand | tap right B (below 2 m/s) / right stick click |
 
 ## The dune course
 

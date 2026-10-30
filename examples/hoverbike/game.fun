@@ -4,12 +4,13 @@
 //   functor -d examples/hoverbike run native
 //   functor -d examples/hoverbike test
 //
-// You start on foot behind the bike: WASD walks, the mouse looks. Near the
+// You start on foot beside the bike: WASD walks, the mouse looks. Near the
 // seat, E gets on; riding, hold E to get off (below 2 m/s). W/S throttle and
 // brake, A/D steer, C swaps the chase and rider cameras, R respawns (on foot,
-// bike parked), T switches between the dunes and the stand. Gamepad (riding):
-// right trigger throttle, left trigger brake, left stick steers, north button
-// (Y / triangle) swaps cameras.
+// bike parked), T switches between the dunes and the stand. Gamepad: on foot
+// the left stick walks; south button (A / cross) is E. Riding: right trigger
+// throttle, left trigger brake, left stick steers, north button (Y /
+// triangle) swaps cameras.
 //
 // With a headset (`bars.fun`): the left stick walks, the right stick snap
 // turns, and grabbing a handlebar near the seat gets on. Riding from the
@@ -103,6 +104,7 @@ type Model = {
   hover: float,
   riderCam: bool,
   swapHeld: bool,
+  southHeld: bool,
   respawn: bool,
   switchCourse: bool,
   // The headset rider: grips, calibration and comfort.
@@ -156,6 +158,7 @@ let init: Model = {
   hover: Ride.hoverHeight,
   riderCam: false,
   swapHeld: false,
+  southHeld: false,
   respawn: false,
   switchCourse: false,
   vr: Bars.rider,
@@ -188,8 +191,9 @@ let commands = (snap: Input.snapshot, m: Model) =>
 
 // With a headset: the left stick walks along the look, the right stick snap
 // turns, and a fresh squeeze asks to mount (`tick` checks it reaches a grip).
-// Right B held gets off; tapped, it respawns. The right stick click switches
-// course.
+// Right B held gets off; tapped, it respawns, except a press begun riding
+// too fast to get off (it counts as held, so letting go to slow down doesn't
+// respawn). The right stick click switches course.
 let sampledInput = (m: Model, snap: Input.snapshot) =>
   match snap.xr with
   | Option.Some(x) =>
@@ -203,9 +207,10 @@ let sampledInput = (m: Model, snap: Input.snapshot) =>
     commands(snap, { m with vr: vr, controls: controls,
                             wish: { forward: deadzone(x.left.thumbstick.y), right: deadzone(x.left.thumbstick.x),
                                     heading: heading, turn: -x.right.thumbstick.x },
-                            board: if m.board == Option.None then grab else m.board,
+                            board: grab,
                             off: Mount.hold(riding(m), b && not m.vr.buttons.respawn, b, Bars.sampleDt, m.off),
-                            tapB: Mount.held(b, Bars.sampleDt, m.tapB),
+                            tapB: if b && not m.vr.buttons.respawn && riding(m) && m.speed >= Mount.maxSpeed then Mount.holdTime
+                                  else Mount.held(b, Bars.sampleDt, m.tapB),
                             respawn: m.respawn || (not b && m.tapB >= 0.0 && not Mount.long(m.tapB)),
                             switchCourse: m.switchCourse || (vr.buttons.course && not m.vr.buttons.course) })
   | Option.None => commands(snap, flat(m, snap))
@@ -213,14 +218,18 @@ let sampledInput = (m: Model, snap: Input.snapshot) =>
 // Keyboard and gamepad.
 let flat = (m: Model, snap: Input.snapshot) =>
   let pad = (match snap.gamepad with
-    | Option.Some(g) => { throttle: g.rightTrigger, brake: g.leftTrigger, steer: -deadzone(g.leftStick.x), swap: g.north }
-    | Option.None => { throttle: 0.0, brake: 0.0, steer: 0.0, swap: false }) in
+    | Option.Some(g) => { throttle: g.rightTrigger, brake: g.leftTrigger, steer: -deadzone(g.leftStick.x), swap: g.north,
+                          walk: deadzone(g.leftStick.y), side: deadzone(g.leftStick.x), south: g.south }
+    | Option.None => { throttle: 0.0, brake: 0.0, steer: 0.0, swap: false, walk: 0.0, side: 0.0, south: false }) in
   let swap = pressed(Key.C, snap) || (pad.swap && not m.swapHeld) in
-  let e = pressed(Key.E, snap) in
+  // E, or the pad's south button.
+  let e = pressed(Key.E, snap) || (pad.south && not m.southHeld) in
   { m with
-    wish: { Walk.still with forward: level(Key.W, snap) - level(Key.S, snap), right: level(Key.D, snap) - level(Key.A, snap) },
-    board: if e then Option.Some(0.0) else m.board,
-    off: Mount.hold(riding(m), e, held(Key.E, snap), Bars.sampleDt, m.off),
+    wish: { Walk.still with forward: Math.clamp(-1.0, 1.0, level(Key.W, snap) - level(Key.S, snap) + pad.walk),
+                            right: Math.clamp(-1.0, 1.0, level(Key.D, snap) - level(Key.A, snap) + pad.side) },
+    board: if e then Option.Some(0.0) else Option.None,
+    off: Mount.hold(riding(m), e, held(Key.E, snap) || pad.south, Bars.sampleDt, m.off),
+    southHeld: pad.south,
     controls: { throttle: Math.max(level(Key.W, snap), pad.throttle),
                 brake: Math.max(level(Key.S, snap), pad.brake),
                 steer: Math.clamp(-1.0, 1.0, level(Key.A, snap) - level(Key.D, snap) + pad.steer) },
@@ -271,12 +280,12 @@ let collided = (m: Model, c: Physics.position, dt: float): Ride.State =>
   let commanded = Math.sqrt(s.vx * s.vx + s.vy * s.vy + s.vz * s.vz) in
   if m.steps > 0.0 && off > 0.05 && achieved <= commanded + 0.05 then { s with vx: ax, vy: ay, vz: az } else s
 
-// Back to a course's spawn: the bike at rest, the walker on foot behind it,
+// Back to a course's spawn: the bike at rest, the walker on foot beside it,
 // both waiting for ground again.
 let startOn = (course: Course, m: Model) =>
   let at = positionOf(spawnOf(course)) in
   ({ init with course: course, prev: poseOf(at, Ride.rest), last: at, footPrev: positionOf(footOf(course)),
-               riderCam: m.riderCam, swapHeld: m.swapHeld, controls: m.controls, mouse: m.mouse,
+               riderCam: m.riderCam, swapHeld: m.swapHeld, southHeld: m.southHeld, controls: m.controls, mouse: m.mouse,
                vr: Bars.dismount({ m.vr with vignette: 0.0 }) },
    Effect.batch([Physics.teleport(bikeTag, spawnOf(course)), Physics.teleport(walkerTag, footOf(course))]))
 
@@ -316,7 +325,6 @@ let advance = (m: Model, c: Physics.position, probes: List<Ride.Probe>, dt: floa
 
 let down = Vec3.make(0.0, -1.0, 0.0)
 let vecOf = (p: Physics.position) => Vec3.make(p.x, p.y, p.z)
-let pointOf = (v: Vec3.t): Input.point3 => { x: Vec3.x(v), y: Vec3.y(v), z: Vec3.z(v) }
 
 // One step on foot: snap turns (headset), then walk, fall and land.
 let walk = (m: Model, w: Physics.position, dt: float): (Model, Effect.t) =>
@@ -332,8 +340,8 @@ let seatAt = (c: Physics.position, yaw: float) => rigPoint(rigOrigin(c.x, c.y, c
 let toGrip = (m: Model, c: Physics.position, w: Physics.position, hand: float) =>
   let h = if hand > 0.0 then m.vr.left else m.vr.right in
   let g = if hand > 0.0 then Bars.leftGrip else Bars.rightGrip in
-  Mount.distance(pointOf(rigPoint(vecOf(w), m.walker.yaw, h.at.x, h.at.y, h.at.z)),
-                 pointOf(rigPoint(rigOrigin(c.x, c.y, c.z), m.ride.yaw, g.x, g.y, g.z)))
+  rigPoint(vecOf(w), m.walker.yaw, h.at.x, h.at.y, h.at.z)
+    |> Vec3.distance(rigPoint(rigOrigin(c.x, c.y, c.z), m.ride.yaw, g.x, g.y, g.z))
 
 // On foot: get on if asked and eligible, else walk.
 let onFoot = (m: Model, c: Physics.position, dt: float): (Model, Effect.t) =>
@@ -342,7 +350,7 @@ let onFoot = (m: Model, c: Physics.position, dt: float): (Model, Effect.t) =>
   let near = Mount.near(w.x, w.z, m.walker.yaw + m.wish.heading, Vec3.x(seat), Vec3.z(seat)) in
   let mounting = (match m.board with
     | Option.Some(hand) =>
-      if Mount.eligible(true, false, near, hand, not m.vr.pending, if hand == 0.0 then 0.0 else toGrip(m, c, w, hand))
+      if Mount.eligible(near, hand, not m.vr.pending, if hand == 0.0 then 0.0 else toGrip(m, c, w, hand))
       then Option.Some(hand) else Option.None
     | Option.None => Option.None) in
   match mounting with
@@ -372,8 +380,8 @@ let room = (course: Course, c: Physics.position, yaw: float) => (spot: Input.poi
   else
     let y = ground.y + Walk.centreHeight + 0.03 in
     let swept = Physics.shapeCast(walkerShape, Vec3.make(x, y + 1.0, z), down, 1.0) in
-    let gap = Physics.castExcluding(bikeTag, Vec3.make(c.x, ground.y + 1.2, c.z), Vec3.make(x - c.x, 0.0, z - c.z),
-                                    Math.sqrt((x - c.x) * (x - c.x) + (z - c.z) * (z - c.z))) in
+    let out = Vec3.make(x - c.x, 0.0, z - c.z) in
+    let gap = Physics.castExcluding(bikeTag, Vec3.make(c.x, ground.y + 1.2, c.z), out, Vec3.length(out)) in
     if swept.hit || gap.hit then Option.None else Option.Some({ x: x, y: y, z: z })
 
 // Riding: holding to get off, slow enough, starts the fade if there is room.
@@ -601,15 +609,14 @@ let veil = (level: float, eye: Vec3.t, look: Vec3.t) =>
   else
     let f = Vec3.normalize(look) in
     Scene.quad() |> Scene.color(black) |> Scene.scale(2.0)
-      |> Scene.rotateX(Angle.radians(Math.asin(Vec3.y(f))))
+      |> Scene.rotateX(Angle.radians(-Math.asin(Vec3.y(f))))
       |> Scene.rotateY(Angle.radians(Math.atan2(Vec3.x(f), Vec3.z(f))))
       |> Scene.translate(Vec3.add(eye, Vec3.scale(0.2, f)))
       |> Scene.opacity(level)
 
 // On foot the walker's capsule centre, `alpha` of the way from the last step.
 let walkerAt = (m: Model, alpha: float) =>
-  let w = Physics.position(walkerTag) in
-  Vec3.make(m.footPrev.x |> Math.lerp(w.x, alpha), m.footPrev.y |> Math.lerp(w.y, alpha), m.footPrev.z |> Math.lerp(w.z, alpha))
+  vecOf(m.footPrev) |> Vec3.lerp(vecOf(Physics.position(walkerTag)), alpha)
 
 let draw = (m: Model, tts, alpha: float) =>
   let p = between(m.prev, poseOf(Physics.position(bikeTag), m.ride), alpha) in

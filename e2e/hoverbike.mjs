@@ -38,7 +38,7 @@
 //   ii.  Ride a short way and stop. Holding E for 0.5 s fades and sets the
 //        walker down on the bike's left, on the ground, clear of the bike and
 //        the props, facing it.
-//   iii. Walk away and back; E gets on again.
+//   iii. Walk away, and back on the gamepad (left stick, south button).
 //   iv.  Holding E at speed is refused (slow down); braking while still
 //        holding gets off once below 2 m/s.
 //   v.   Two runs end on an identical model.
@@ -574,7 +574,7 @@ async function onFoot(port, check) {
     m = await step(base, 30);
     check(m.mode.$ctor === "Riding" && m.fade.t < 0, `held under ${HOLD} s: still riding`);
     for (let i = 0; i < 3 && m.fade.t < 0; i++) m = await step(base, 1);
-    check(m.fade.t >= 0 && m.fade.action.$ctor === "GetOff" && Math.abs(m.off - HOLD) < 1e-6, `held ${m.off.toFixed(3)} s: the fade starts`);
+    check(m.fade.t >= 0 && m.fade.action.$ctor === "Mount.GetOff" && Math.abs(m.off - HOLD) < 1e-6, `held ${m.off.toFixed(3)} s: the fade starts`);
     await key(base, "e", false);
     m = await step(base, 30);
     const w = m.footPrev;
@@ -595,8 +595,16 @@ async function onFoot(port, check) {
     await key(base, "s", false);
     m = await step(base, 2);
     check(!m.near && Math.hypot(m.footPrev.x - bike.x, m.footPrev.z - bike.z) > 3, `walks away (${Math.hypot(m.footPrev.x - bike.x, m.footPrev.z - bike.z).toFixed(2)} m)`);
-    m = await board(base);
-    check(m.mode.$ctor === "Riding", `walks back and gets on again`);
+    // Back on the gamepad: the left stick walks, the south button gets on.
+    for (let i = 0; i < 100 && !m.near; i++) {
+      await post(base, "/input", { type: "gamepad", left_stick: [0, 1] });
+      m = await step(base, 2);
+    }
+    await post(base, "/input", { type: "gamepad", south: true });
+    m = await step(base, 1);
+    await post(base, "/input", { type: "gamepad_clear" });
+    m = await step(base, 16);
+    check(m.mode.$ctor === "Riding", `walks back on the gamepad's left stick and gets on with its south button`);
 
     // iv. Refused at speed; braking while holding gets off.
     await key(base, "w", true);

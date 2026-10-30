@@ -21,7 +21,8 @@
 //   a. A squeeze out of reach of the grip does nothing; within reach it
 //      fades, and on the bike that hand is latched; grabbing the right arms.
 //   b. Releasing the grips brakes but never gets off.
-//   c. Holding right B at speed is refused, and its release doesn't respawn.
+//   c. Holding right B at speed is refused, and its release (short or long)
+//      doesn't respawn.
 //   d. Stopped, holding right B for 0.5 s sets the walker down on the bike's
 //      left, on the floor, facing it, hands unlatched.
 //   e. The right stick snap turns the walker 30°; a tap of right B respawns.
@@ -311,7 +312,9 @@ async function ride(port, check) {
     m = await hold(base, xr({ ls: 1, rs: 1 }), 2);
     check(m.vr.right.latched && m.vr.armed, `a fresh grab re-arms`);
 
-    // 6. Stepped turning, from rest. A tap of right B respawns (on foot).
+    // 6. Stepped turning, from rest. Stopped, a tap of right B respawns (on
+    // foot); at speed it wouldn't (c below).
+    await hold(base, xr({ ls: 1, rs: 1, lt: 1 }), 90);
     await hold(base, xr({ ls: 1, rs: 1, buttons: { right: ["secondary"] } }), 1);
     m = await hold(base, xr({ ls: 1, rs: 1 }), 30);
     check(m.speed === 0 && m.steps === 29 && m.mode.$ctor === "OnFoot" && Math.abs(m.last.z - start.z) < 1e-6, `a tap of right B respawns, on foot`);
@@ -386,7 +389,7 @@ async function onFoot(port, check) {
     const at = reachFor(m, 0.3);
     await hold(base, xr({ leftAt: at }));
     m = await hold(base, xr({ leftAt: at, ls: 1 }), 1);
-    check(m.fade.t >= 0 && m.fade.action.$ctor === "GetOn" && m.fade.action.hand === 1, `a squeeze 0.3 m from it: the fade starts`);
+    check(m.fade.t >= 0 && m.fade.action.$ctor === "Mount.GetOn" && m.fade.action.args[0] === 1, `a squeeze 0.3 m from it: the fade starts`);
     m = await hold(base, xr({ ls: 1 }), 6);
     check(m.mode.$ctor === "Riding" && m.vr.mounted && m.vr.left.latched && !m.vr.right.latched && !m.vr.armed, `at the black: on the bike, the left hand latched`);
     m = await hold(base, xr({ ls: 1 }), 12);
@@ -404,7 +407,11 @@ async function onFoot(port, check) {
     await hold(base, xr({ ls: 1, rs: 1 }));
     m = await hold(base, xr({ ls: 1, rs: 1, rt: 0 }));
     m = await hold(base, xr({ ls: 1, rs: 1, rt: 1 }), 30);
-    const steps = m.steps;
+    let steps = m.steps;
+    m = await hold(base, xr({ ls: 1, rs: 1, rt: 1, buttons: { right: ["secondary"] } }), 10);
+    m = await hold(base, xr({ ls: 1, rs: 1, rt: 1 }), 2);
+    check(m.mode.$ctor === "Riding" && m.steps === steps + 12, `a short press of right B at speed, let go: no respawn`);
+    steps = m.steps;
     m = await hold(base, xr({ ls: 1, rs: 1, rt: 1, buttons: { right: ["secondary"] } }), 40);
     check(m.mode.$ctor === "Riding" && m.fade.t < 0 && m.off >= HOLD && m.speed > 2, `right B held at ${m.speed.toFixed(2)} m/s: refused`);
     m = await hold(base, xr({ ls: 1, rs: 1 }), 2);
@@ -415,11 +422,11 @@ async function onFoot(port, check) {
     check(m.speed === 0, `the left trigger stops it`);
     m = await hold(base, xr({ ls: 1, rs: 1, buttons: { right: ["secondary"] } }), 30);
     for (let i = 0; i < 3 && m.fade.t < 0; i++) m = await step(base, 1);
-    check(m.fade.t >= 0 && m.fade.action.$ctor === "GetOff" && Math.abs(m.off - HOLD) < 1e-6, `right B held ${m.off.toFixed(3)} s, stopped: the fade starts`);
+    check(m.fade.t >= 0 && m.fade.action.$ctor === "Mount.GetOff" && Math.abs(m.off - HOLD) < 1e-6, `right B held ${m.off.toFixed(3)} s, stopped: the fade starts`);
     m = await hold(base, xr(), 30);
     const w = m.footPrev;
     const bike = m.last;
-    const left = (w.x - bike.x) * Math.cos(m.ride.yaw) - (w.z - bike.z) * Math.sin(m.ride.yaw);
+    const left = inFrame(bike, m.ride.yaw, w).x;
     check(m.mode.$ctor === "OnFoot" && !m.vr.mounted && !m.vr.left.latched && !m.vr.right.latched, `on foot, hands let go`);
     check(Math.abs(w.y - FOOT_Y) < 0.01 && left > 1.5, `set down on the bike's left (${left.toFixed(3)} m), on the floor (centre y ${w.y.toFixed(4)})`);
     check(angleDiff(m.walker.yaw, toward(w, bike)) < 0.01, `facing the bike`);
