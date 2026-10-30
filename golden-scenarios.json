@@ -344,7 +344,7 @@
         "native"
       ],
       "inputScript": "ride.script",
-      "captureAtFrame": 1060
+      "captureAtFrame": 1144
     },
     {
       "name": "hoverbike-crest",
@@ -354,7 +354,37 @@
         "native"
       ],
       "inputScript": "ride.script",
-      "captureAtFrame": 530
+      "captureAtFrame": 614
+    },
+    {
+      "name": "hoverbike-foot",
+      "sample": "hoverbike",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "mount.script",
+      "captureAtFrame": 115
+    },
+    {
+      "name": "hoverbike-fade",
+      "sample": "hoverbike",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "mount.script",
+      "captureAtFrame": 126
+    },
+    {
+      "name": "hoverbike-mounted",
+      "sample": "hoverbike",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "mount.script",
+      "captureAtFrame": 180
     }
   ]
 }
