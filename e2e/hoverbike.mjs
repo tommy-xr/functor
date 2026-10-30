@@ -1,5 +1,22 @@
-// Hoverbike E2E: a scripted ride on the flat test stand, headless over the
-// debug server with the clock paused and stepped (`/time advance`).
+// Hoverbike E2E: scripted rides on the dune course and the flat test stand,
+// over the debug server with the clock paused and stepped (`/time advance`).
+//
+// The dunes (the default course):
+//
+//   a. A cold load never drops the bike: until every probe sees the
+//      heightfield it holds at the spawn, then it settles at hover height.
+//   b. A route: straight, over the crest, past the block, a turn, a stop.
+//      Clearance over the crest stays inside [0.5, 2.0] m (no strike, no
+//      launch), vertical acceleration stays bounded, the block is passed
+//      without touching it, and braking stops within the analytic distance.
+//   c. Straight into the block at full throttle: it never passes its face.
+//   d. Full throttle out past the soft boundary: the bike stops under 25 m
+//      past it, and comes back in once the throttle is released.
+//   e. Two runs (one windowed but hidden, one headless) end on an identical
+//      model. The windowed run prints `/state.terrain` LOD stats along the
+//      route.
+//
+// The stand (T switches to it):
 //
 //   1. Settled hover clearance is 1.2 m ± 5 cm, and stays there while riding.
 //   2. Full throttle (W) follows the analytic thrust/drag speed curve.
@@ -14,7 +31,8 @@
 //   7. Live at a simulated 120 Hz, the drawn rig moves every frame: `draw`
 //      interpolates between the 60 Hz steps.
 //
-// Run (needs the CLI built; the wasm bundle is not required):
+// Run (needs the CLI built; the wasm bundle is not required; the hidden
+// window needs a GL display):
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/hoverbike.mjs
@@ -26,7 +44,7 @@ const BIN = `${ROOT}target/debug/functor`;
 const SAMPLE = "examples/hoverbike";
 const DT = 1 / 60;
 
-// Mirrors examples/hoverbike/ride.fun and game.fun.
+// Mirrors examples/hoverbike/ride.fun, game.fun, dunes.fun and dunesLayout.fun.
 const HOVER = 1.2;
 const THRUST = 12;
 const TOP = 24;
@@ -36,9 +54,19 @@ const BRAKE = 14;
 const MAX_YAW = 1;
 const MAX_LAT = 5;
 const GRIP = 4;
-const WALL = 15; // the east wall's inner face
+const STAND_X = 600; // stand.fun's originX
+const WALL = STAND_X + 15; // the east wall's inner face
 const NORTH = 210; // the north wall's inner face
 const RADIUS = 0.8; // the bike's capsule
+const SPAWN = { x: 100, y: 2.15, z: -380 }; // on the dunes' start pad
+const PROBE_RANGE = 3;
+const CREST_Z = -180;
+const BLOCK = { x: 100, z: 40, w: 8, d: 3 };
+const SOFT_LIMIT = 440;
+// Clearance bounds over the crest: the lowest-hanging fairing parts sit
+// ~0.2 m under the emitter plane, and probes reach 3 m.
+const CLEAR_MIN = 0.5;
+const CLEAR_MAX = 2.0;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -135,8 +163,12 @@ async function ride(port, check) {
     await step(base, 1);
     await post(base, "/rewind", { frame: 10 });
 
-    // 1. Settle.
-    let m = await step(base, 120);
+    // 1. Switch to the stand and settle.
+    await key(base, "t", true);
+    await key(base, "t", false);
+    let m = await step(base, 2);
+    check(m.course.$ctor === "OnStand" && Math.abs(m.last.x - (STAND_X + 5)) < 1e-3, `T switches to the stand`);
+    m = await step(base, 120);
     check(Math.abs(m.clearance - HOVER) < 0.05, `settled clearance ${m.clearance.toFixed(4)} m`);
     const start = m.last;
 
@@ -202,7 +234,7 @@ async function ride(port, check) {
     await key(base, "r", true);
     await key(base, "r", false);
     m = await step(base, 2);
-    check(m.steps <= 1 && Math.abs(m.last.x - start.x) < 1e-3 && Math.abs(m.last.z - start.z) < 1e-3, `R respawns at the start`);
+    check(m.steps <= 1 && m.course.$ctor === "OnStand" && Math.abs(m.last.x - start.x) < 1e-3 && Math.abs(m.last.z - start.z) < 1e-3, `R respawns at the stand's start`);
     await key(base, "a", true);
     await step(base, 8);
     await key(base, "a", false);
@@ -234,6 +266,191 @@ async function ride(port, check) {
     check(slideSpeed > 0.8 * TOP, `keeps its speed sliding (≥ ${slideSpeed.toFixed(2)} m/s)`);
     check(maxZ < NORTH - RADIUS + 0.05 && m.speed < 0.5, `the north wall stops it: max z ${maxZ.toFixed(4)}, speed ${m.speed.toFixed(3)}`);
 
+    return JSON.stringify((await get(base, "/state")).model);
+  } catch (e) {
+    throw new Error(`${e.message}\n--- runtime log ---\n${log}`);
+  } finally {
+    proc.kill("SIGKILL");
+  }
+}
+
+/** Hold a gamepad state (throttle, stick x: right positive) for the next steps. */
+const pad = (base, throttle, stick, brake = 0) =>
+  post(base, "/input", { type: "gamepad", right_trigger: throttle, left_trigger: brake, left_stick: [stick, 0] });
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+/** Stick input that turns the bike toward `yaw` (left is positive yaw; the stick's right turns right). */
+const steerTo = (m, yaw) => clamp((m.ride.yaw - yaw) * 4, -1, 1);
+
+/** Respawn (R) and settle: the bike waits for ground, then rests at hover height. */
+async function respawn(base) {
+  await key(base, "r", true);
+  await key(base, "r", false);
+  await step(base, 2);
+  return step(base, 30);
+}
+
+async function dunes(port, check, mode) {
+  const base = `http://127.0.0.1:${port}`;
+  const proc = spawn(
+    BIN,
+    ["-d", SAMPLE, "run", "native", mode, "--display-hz", "60", "--debug-port", String(port)],
+    { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  proc.stdout.on("data", (d) => (log += d));
+  proc.stderr.on("data", (d) => (log += d));
+  const lod = [];
+  const sampleLod = async (where) => {
+    if (mode !== "--hidden") return;
+    const s = await get(base, "/state");
+    lod.push({ where, ...s.terrain });
+  };
+  try {
+    // a. Cold load: watch every frame we can from the first, live.
+    const seen = [];
+    const deadline = Date.now() + 30000;
+    for (;;) {
+      if (Date.now() > deadline) throw new Error("the bike never sensed the dunes");
+      try {
+        const s = await get(base, "/state");
+        if (seen.at(-1)?.frame !== s.frame) seen.push({ frame: s.frame, ...s.model });
+        if (s.model.ready && s.frame > 30) break;
+      } catch {
+        // not listening yet
+      }
+      await sleep(5);
+    }
+    const waiting = seen.filter((m) => !m.ready);
+    const firstReady = seen.find((m) => m.ready);
+    check(
+      seen.every((m) => Math.abs(m.last.y - SPAWN.y) < 0.01 && Math.abs(m.last.x - SPAWN.x) < 1e-3 && Math.abs(m.last.z - SPAWN.z) < 1e-3),
+      `cold load: held at the spawn through ${seen.length} observed frames (${waiting.length} waiting for ground, ready from frame ${firstReady?.frame})`,
+    );
+    check(waiting.every((m) => m.ride.vy === 0 && m.speed === 0), `cold load: no motion before the probes see ground`);
+    check(Math.abs(seen.at(-1).clearance - HOVER) < 0.01, `cold load: rests at hover height (${seen.at(-1).clearance.toFixed(4)} m)`);
+
+    // Pause, and respawn so both runs start from the same state whenever the
+    // heightmap happened to land.
+    await step(base, 1);
+    let m = await respawn(base);
+    check(m.ready && m.course.$ctor === "OnDunes" && Math.abs(m.clearance - HOVER) < 0.01, `respawn: ready on the pad, clearance ${m.clearance.toFixed(4)} m`);
+    await sampleLod("pad");
+
+    // b. The route. Hold the lane (x = 100) at full throttle over the crest,
+    // swing 9 m left to pass the block, then turn right and brake to a stop.
+    let crest = [Infinity, -Infinity];
+    let farthest = 0;
+    let worstAy = 0;
+    let passing = null;
+    let stage = "lane";
+    let brakeFrom = null;
+    let v0 = 0;
+    const marks = new Set();
+    for (let i = 0; i < 1500; i++) {
+      const p = m.last;
+      let throttle = 1;
+      let stick = 0;
+      let brake = 0;
+      if (stage === "lane") {
+        const lane = p.z < -40 ? 100 : 109;
+        stick = steerTo(m, Math.atan2(lane - p.x, 30));
+        if (p.z > 70) stage = "turn";
+      } else if (stage === "turn") {
+        throttle = 0.5;
+        stick = 1;
+        if (m.ride.yaw < -Math.PI / 2 + 0.1) stage = "brake";
+      }
+      if (stage === "brake") {
+        throttle = 0;
+        stick = steerTo(m, -Math.PI / 2);
+        brake = 1;
+      }
+      await pad(base, throttle, stick, brake);
+      const before = m;
+      m = await step(base, 2);
+      if (stage === "brake" && !brakeFrom) {
+        // The first braked step reads where the braking starts.
+        brakeFrom = before.last;
+        v0 = before.speed;
+      }
+      farthest = Math.max(farthest, m.clearance);
+      if (Math.abs(m.last.z - CREST_Z) < 80 && stage === "lane") {
+        crest = [Math.min(crest[0], m.clearance), Math.max(crest[1], m.clearance)];
+        worstAy = Math.max(worstAy, Math.abs(m.ride.vy - before.ride.vy) / (2 * DT));
+      }
+      if (Math.abs(m.last.z - BLOCK.z) < BLOCK.d / 2 + RADIUS) passing ??= m;
+      for (const [name, z] of [["crest -80 m", CREST_Z - 80], ["crest", CREST_Z], ["crest +80 m", CREST_Z + 80], ["block", BLOCK.z]]) {
+        if (!marks.has(name) && m.last.z >= z) {
+          marks.add(name);
+          await sampleLod(name);
+        }
+      }
+      if (stage === "brake" && m.speed < 0.01) break;
+    }
+    await post(base, "/input", { type: "gamepad_clear" });
+    await sampleLod("stop");
+    check(farthest < PROBE_RANGE, `every probe keeps the ground in range along the route (highest ${farthest.toFixed(3)} m)`);
+    check(crest[0] > CLEAR_MIN && crest[1] < CLEAR_MAX, `over the crest at ${TOP} m/s, clearance ${crest.map((c) => c.toFixed(3)).join("..")} m (bounds ${CLEAR_MIN}..${CLEAR_MAX})`);
+    check(worstAy < 3, `vertical acceleration over the crest ≤ 3 m/s² (worst ${worstAy.toFixed(3)})`);
+    check(passing && passing.last.x > BLOCK.x + BLOCK.w / 2 + RADIUS && passing.speed > 0.95 * TOP, `passes the block clear at ${passing?.speed.toFixed(2)} m/s (x ${passing?.last.x.toFixed(2)})`);
+    check(m.speed < 0.01 && Math.abs(m.ride.yaw + Math.PI / 2) < 0.15, `turns right and stops (yaw ${m.ride.yaw.toFixed(3)})`);
+    const stopped = Math.hypot(m.last.x - brakeFrom.x, m.last.z - brakeFrom.z);
+    const analytic = stoppingDistance(v0);
+    check(Math.abs(stopped - analytic) < 0.1 * analytic, `stopping distance ${stopped.toFixed(2)} m (analytic ${analytic.toFixed(2)} from ${v0.toFixed(2)} m/s)`);
+
+    // c. Straight into the block at full throttle.
+    m = await respawn(base);
+    await key(base, "w", true);
+    let maxZ = -Infinity;
+    let contact = null;
+    for (let i = 0; i < 700; i++) {
+      const before = m;
+      m = await step(base, 2);
+      maxZ = Math.max(maxZ, m.last.z);
+      contact ??= m.speed < 0.5 * before.speed ? before : null;
+      if (contact && m.speed < 0.5) break;
+    }
+    await key(base, "w", false);
+    const face = BLOCK.z - BLOCK.d / 2;
+    check(contact && contact.speed > 0.9 * TOP, `meets the block at ${contact?.speed.toFixed(2)} m/s`);
+    check(maxZ < face - RADIUS + 0.05 && m.speed < 0.5, `the block stops it: max z ${maxZ.toFixed(4)} (face ${face}, radius ${RADIUS})`);
+
+    // d. Turn on the pad to face +x, then full throttle out past the limit.
+    m = await respawn(base);
+    for (let i = 0; i < 60; i++) {
+      await pad(base, 0, steerTo(m, Math.PI / 2));
+      m = await step(base, 2);
+    }
+    check(Math.abs(m.ride.yaw - Math.PI / 2) < 0.06 && m.speed < 0.1, `turns on the spot to face +x (yaw ${m.ride.yaw.toFixed(4)})`);
+    let maxX = -Infinity;
+    let low = Infinity;
+    let high = -Infinity;
+    let entry = 0;
+    for (let i = 0; i < 1200; i++) {
+      await pad(base, 1, steerTo(m, Math.PI / 2));
+      const before = m;
+      m = await step(base, 2);
+      maxX = Math.max(maxX, m.last.x);
+      low = Math.min(low, m.clearance);
+      high = Math.max(high, m.clearance);
+      if (m.last.x > SOFT_LIMIT && !entry) entry = before.speed;
+      if (m.last.x > SOFT_LIMIT && m.speed < 0.2) break;
+    }
+    // Throttle released: back inside.
+    for (let i = 0; i < 300 && m.last.x > SOFT_LIMIT; i++) {
+      await pad(base, 0, steerTo(m, Math.PI / 2));
+      m = await step(base, 2);
+    }
+    await post(base, "/input", { type: "gamepad_clear" });
+    check(entry > 0.9 * TOP && maxX < SOFT_LIMIT + 25, `boundary: crossed at ${entry.toFixed(2)} m/s, stopped ${(maxX - SOFT_LIMIT).toFixed(2)} m past it`);
+    check(m.last.x <= SOFT_LIMIT, `boundary: back inside once released (x ${m.last.x.toFixed(3)})`);
+    check(low > CLEAR_MIN && high < CLEAR_MAX, `boundary run over open dunes: clearance ${low.toFixed(3)}..${high.toFixed(3)} m`);
+
+    if (lod.length) {
+      console.log("\n/state.terrain along the route (hidden window, desktop):");
+      for (const s of lod) console.log(`  ${s.where.padEnd(12)} patches ${String(s.patches).padStart(4)}  vertices ${s.vertices}`);
+      console.log();
+    }
     return JSON.stringify((await get(base, "/state")).model);
   } catch (e) {
     throw new Error(`${e.message}\n--- runtime log ---\n${log}`);
@@ -275,9 +492,12 @@ const check = (ok, what) => {
   if (!ok) failures.push(what);
 };
 
+const dunesFirst = await dunes(8954, check, "--hidden");
+const dunesSecond = await dunes(8955, () => {}, "--headless");
+check(dunesFirst === dunesSecond, `dunes: two runs end on an identical model`);
 const first = await ride(8951, check);
 const second = await ride(8952, () => {});
-check(first === second, `two runs end on an identical model`);
+check(first === second, `stand: two runs end on an identical model`);
 await interpolates(8953);
 
 if (failures.length) {
