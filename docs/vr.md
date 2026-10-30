@@ -137,6 +137,12 @@ deadlines.
 With Touch action sampling enabled, a matched synthwave release rerun held 72
 FPS p5/min with 0.78 ms mean application time and zero stale/torn frames.
 
+At 90 or 120 Hz the fixed 60 Hz `tick` leaves frames with no step, so
+authored motion (a vehicle rig, the world under a moving camera) judders while
+head tracking stays smooth. Interpolate it with a three-parameter
+`draw = (model, tts, alpha)` — see "Interpolating between steps" in the
+`functor-lang` skill and `examples/interpolation`.
+
 ### Game options: `config` and `settings`
 
 A game declares headset options through two optional entry points, split by

@@ -319,6 +319,17 @@ curl -s $H/state | jq -r .model
 The device runtime rejects this command with **400**: Quest resamples the domain
 from live OpenXR tracking every frame, so an injected sample could never be seen.
 
+### `--display-hz` — a simulated display rate
+
+`--display-hz 120` advances the live clock by exactly `1/120` s per rendered
+frame instead of wall-clock time, so the fixed-step cadence and a three-parameter
+`draw`'s sub-step `alpha` are reproducible (120 Hz alternates alpha 0.5 / 0).
+`e2e/interpolation.mjs` uses it to check interpolated poses over `/scene`.
+Alpha is 0 whenever the clock is pinned, so a paused or stepped interpolating
+game's `/scene` shows the previous step while `/state.model` holds the current
+one. The flag conflicts with `--fixed-time` and `--input-script`, which pin the
+clock anyway.
+
 ### `--input-script` — deterministic offline input
 
 `POST /input` needs a live driver. For a *reproducible* run — a golden still, a

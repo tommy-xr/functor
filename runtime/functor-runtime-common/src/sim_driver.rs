@@ -38,6 +38,8 @@ use crate::protocol::GameProducer as Game;
 /// it will show.
 pub struct FrameRequest {
     pub time: FrameTime,
+    /// The presentation sub-step ([`crate::GameClock::alpha`]) `draw` sees.
+    pub alpha: f32,
     pub ui: bool,
     pub webview: bool,
     pub audio_scene: bool,
@@ -562,7 +564,7 @@ fn parse_drain<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Vec<T>
 /// shell reads preloads at the top of the next frame instead
 /// ([`SimDriver::drain_preloads`]).
 fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> SimSnapshot {
-    let frame = Arc::new(game.render(req.time.clone()));
+    let frame = Arc::new(game.render_at(req.time.clone(), req.alpha));
     let audio_scene = req.audio_scene.then(|| {
         serde_json::from_str::<AudioScene>(&game.audio_scene_json())
             .map_err(|e| eprintln!("[audio] bad scene json: {e}"))
@@ -614,5 +616,71 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
         caps: caps(game),
         settings: game.settings(),
         config: game.config(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
+    use crate::GameClock;
+
+    fn interpolated() -> Box<dyn Game> {
+        Box::new(
+            FunctorLangEmbeddedGame::create(
+                vec![(
+                    "game.fun".to_string(),
+                    crate::functor_lang_game_embedded::tests::INTERPOLATED.to_string(),
+                )],
+                Box::new(NativePlatform),
+            )
+            .expect("loads"),
+        )
+    }
+
+    /// Drive `sim` as the shells do over `deltas`; `(seq, drawn rig x)` per
+    /// snapshot returned.
+    fn drawn(mut sim: SimDriver, deltas: &[f32], lockstep: bool) -> Vec<(u64, f32)> {
+        let mut clock = GameClock::new(None);
+        let xs = deltas
+            .iter()
+            .filter_map(|&dt| {
+                for sub in clock.fixed_frames(dt) {
+                    sim.tick(sub);
+                }
+                let req = FrameRequest {
+                    time: FrameTime { dts: 0.0, tts: clock.current_tts() },
+                    alpha: clock.alpha(),
+                    ui: false,
+                    webview: false,
+                    audio_scene: false,
+                    physics_lines: false,
+                    conn_commands: false,
+                };
+                sim.frame(req, lockstep)
+                    .map(|snapshot| (snapshot.seq, snapshot.frame.camera.eye[0]))
+            })
+            .collect();
+        sim.quit();
+        xs
+    }
+
+    #[test]
+    fn pipelined_draws_the_same_interpolated_poses_as_inline() {
+        let deltas: Vec<f32> = [1.0 / 120.0, 1.0 / 90.0, 1.0 / 30.0]
+            .iter()
+            .flat_map(|&dt| std::iter::repeat(dt).take(12))
+            .collect();
+        let inline = drawn(SimDriver::inline(interpolated()), &deltas, false);
+        assert_eq!(drawn(SimDriver::spawn(interpolated), &deltas, true), inline);
+        // Pipelined presents frame N-1 while drawing N: each snapshot still
+        // carries the pose drawn with its own request's alpha.
+        let pipelined = drawn(SimDriver::spawn(interpolated), &deltas, false);
+        assert!(!pipelined.is_empty());
+        for (seq, x) in &pipelined {
+            assert_eq!(inline[*seq as usize - 1], (*seq, *x));
+        }
+        // At 120 Hz, frames between steps draw between the stepped poses.
+        assert!(inline[..12].iter().any(|(_, x)| x.fract() != 0.0), "{inline:?}");
     }
 }

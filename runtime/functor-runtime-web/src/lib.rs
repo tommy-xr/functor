@@ -1632,6 +1632,7 @@ async fn run_async() -> Result<(), JsValue> {
                 dts: 0.0,
                 tts: clock.current_tts(),
             };
+            let alpha = clock.alpha();
 
             // Deliver page input queued since the last frame (the Functor Lang path's
             // `functor_lang_*` exports), once per rendered frame before this frame's steps.
@@ -1747,7 +1748,7 @@ async fn run_async() -> Result<(), JsValue> {
             dispatch_audio_commands(&**game);
             dispatch_conn_commands(&mut **game, &ws_state);
 
-            let mut frame: Frame = game.render(frame_time.clone());
+            let mut frame: Frame = game.render_at(frame_time.clone(), alpha);
             scene_context.set_environment_depth_source(
                 functor_runtime_common::environment_depth::EnvironmentDepthSource::stand_in(
                     game.config(),

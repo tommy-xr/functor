@@ -1538,6 +1538,8 @@ A runner-hosted game (`functor -d <project-dir> run native`, with
 let init = { … }                       // the initial model (a value)
 let tick = (model, dt, tts) => model'  // per-frame step
 let draw = (model, tts) => Frame.create(camera, scene)
+                                            // or (model, tts, alpha) — see
+                                            // "Interpolating between steps"
 let input = (model, key, isDown) => model'  // OPTIONAL; key: Key.t — match
                                             // | Key.W / Key.Up / Key.Space /
                                             // Key.Num0..Num9 (never strings)
@@ -1576,6 +1578,30 @@ let settings = (model) =>                   // OPTIONAL; evaluated every frame,
   Settings.create()                         // applied by the shell on change
     |> Settings.xr(Xr.create() |> Xr.foveation(Xr.High))
 ```
+
+**Interpolating between steps.** `tick` runs at a fixed 60 Hz; `draw` runs
+once per displayed frame. On a faster display (120 Hz desktop, Quest) some
+frames run no step, so a pose read straight from the model holds for two
+frames and judders. A THREE-parameter `draw` also receives `alpha` in
+`[0, 1)`: how far this frame sits between the last step and the next. Keep the
+previous and current pose in the model and draw between them — the engine has
+no interpolation policy of its own:
+
+```functor
+let tick = (m: Model, dt: float, tts) => { m with prev: m.cur, cur: step(m.cur, dt) }
+let draw = (m: Model, tts, alpha: float) =>
+  Frame.create(camera, rig |> Scene.translate(m.prev |> Vec3.lerp(m.cur, alpha)))
+```
+
+This draws one step (≤16.7 ms) behind the sim. `tts` is still the time of
+`cur`; `tts - (1.0 - alpha) / 60.0` is the drawn pose's time, for any
+`sin(tts)`-style motion in the same `draw`. Reset `prev` to `cur` on a snap
+(teleport, respawn) so it doesn't sweep. `alpha` is exactly 0 under
+`--fixed-time`, while paused, stepped (`/time advance`), under
+`--input-script`, and while scrubbing, so captures and time travel never
+depend on the display — those frames draw `prev`. `--display-hz 120`
+simulates a display rate for reproducible checks (`examples/interpolation`,
+`e2e/interpolation.mjs`). Two-parameter `draw`s are unaffected.
 
 **Shell options are split by lifetime**, like `init`/`tick`. `config` is a
 plain value read at load: a hot reload that changes it prints `` `config`

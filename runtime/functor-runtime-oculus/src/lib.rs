@@ -1657,6 +1657,7 @@ pub fn android_main(app: AndroidApp) {
             dts: 0.0,
             tts: clock.current_tts(),
         };
+        let alpha = clock.alpha();
 
         // The game produces this frame (sampledInput → subscriptions → update
         // → tick → physics inside `tick`; `render` = the pure `draw`).
@@ -1697,6 +1698,7 @@ pub fn android_main(app: AndroidApp) {
         let fresh = sim.frame(
             FrameRequest {
                 time: frame_time,
+                alpha,
                 ui: false,
                 webview: false,
                 audio_scene: false,

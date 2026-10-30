@@ -425,7 +425,14 @@ pub trait GameProducer {
     /// UI (replays, producers whose games define no `ui`).
     fn ui_event(&mut self, _event: crate::ui::UiEvent) {}
 
-    fn render(&mut self, frame_time: crate::FrameTime) -> crate::Frame;
+    /// Draw the frame at `frame_time`. `alpha` is the presentation sub-step
+    /// ([`crate::GameClock::alpha`]) handed to a three-parameter `draw`.
+    fn render_at(&mut self, frame_time: crate::FrameTime, alpha: f32) -> crate::Frame;
+
+    /// [`Self::render_at`] on a step boundary (`alpha` 0).
+    fn render(&mut self, frame_time: crate::FrameTime) -> crate::Frame {
+        self.render_at(frame_time, 0.0)
+    }
 
     /// Record the shell-measured GL cost of the frame just presented — the wall
     /// time of the scene render pass (`render_ns`, interpreter → GL submission)

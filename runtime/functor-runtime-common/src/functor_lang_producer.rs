@@ -386,7 +386,18 @@ return them beside the model as `(model, effect)`",
         ));
     }
     require_function(path, session, names.tick, 3)?;
-    require_function(path, session, names.draw, 2)?;
+    // `draw(model, tts)`, or `draw(model, tts, alpha)` to interpolate.
+    match session.global(names.draw) {
+        Some(Value::Closure(c)) if c.params.len() != 2 && c.params.len() != 3 => {
+            return Err(format!(
+                "{path}: `{}` must take 2 parameters `(model, tts)` or 3 `(model, tts, alpha)`, takes {}",
+                names.draw,
+                c.params.len()
+            ))
+        }
+        Some(Value::Closure(_)) => {}
+        _ => require_function(path, session, names.draw, 2)?,
+    }
     // `input` is optional (many games are non-interactive), but when
     // present it must honor the contract: (model, key, isDown) => model.
     let has_input = session.global(names.input).is_some();
@@ -594,6 +605,18 @@ its launch config)"
 
     pub fn settings(&self) -> Option<GameSettings> {
         self.settings
+    }
+}
+
+/// `draw`'s arguments: `(model, tts)`, plus the presentation sub-step `alpha`
+/// when `draw` declares a third parameter. Auxiliary draws (inspector,
+/// time-travel trails) pass 0 — they render step-aligned models.
+pub fn draw_args(session: &Session, draw: &str, model: Value, tts: f64, alpha: f32) -> Vec<Value> {
+    match session.global(draw) {
+        Some(Value::Closure(c)) if c.params.len() == 3 => {
+            vec![model, Value::Number(tts), Value::Number(alpha as f64)]
+        }
+        _ => vec![model, Value::Number(tts)],
     }
 }
 
@@ -2455,7 +2478,7 @@ pub fn ghost_frames(
         // Match forward_step_scene's f32 division-boundary tts exactly, so
         // each redrawn frame's tts equals the tts its model was stepped at.
         let tts = start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt;
-        let args = vec![model_i.clone(), Value::Number(tts as f64)];
+        let args = draw_args(session, names.draw, model_i.clone(), tts as f64, 0.0);
         // A draw error or non-Frame return for a division is skipped, not fatal.
         if let Ok(value) = session.call(names.draw, args, &mut FunctorHost) {
             if let Some(frame) = frame_value(&value) {
@@ -2582,7 +2605,7 @@ pub fn history_frames(
             }
             _ => None,
         };
-        let args = vec![model.clone(), Value::Number(tts)];
+        let args = draw_args(session, names.draw, model.clone(), tts, 0.0);
         // Resolve `draw` through the ROLE's entry names, exactly as
         // `ghost_frames` does. A multi-entry project binds `clientDraw` /
         // `serverDraw`, so a hardcoded "draw" would fail every call — and
