@@ -22,9 +22,10 @@ let gripForward = 0.62
 let leftGrip: Input.point3 = { x: gripSpan, y: gripHeight, z: gripForward }
 let rightGrip: Input.point3 = { x: -gripSpan, y: gripHeight, z: gripForward }
 
-// Where the calibrated eye sits. Seated, the grips are 0.4 m below and ahead
-// of it; standing, the eye rises so they are 0.62 m below.
-let seatedEye: Input.point3 = { x: 0.0, y: 1.4, z: 0.22 }
+// Where the calibrated eye sits. Seated, the grips are 0.4 m below it and
+// 0.47 m ahead, about 40° down; standing, the eye rises so they are 0.62 m
+// below.
+let seatedEye: Input.point3 = { x: 0.0, y: 1.4, z: 0.15 }
 let standingEye: Input.point3 = { seatedEye with y: 1.62 }
 
 // ---- Calibration ---------------------------------------------------------
@@ -252,16 +253,18 @@ let envelope = (target: float, dt: float, level: float): float =>
   level + (target - level) * Math.min(1.0, (if target > level then attack else release) * dt)
 
 // The drawn vignette: its clear radius (in the comfort layer's units, the
-// eye buffer's half-height) closes from the corners, `apertureOpen`, to
-// `apertureMin` at full strength and level. The image is clear inside
-// `vignetteInner` of its half-width and opaque past `vignetteOuter`
-// (`generate-vignette.mjs`).
-let apertureOpen = 1.4
+// eye buffer's half-height) closes from `apertureOpen` to `apertureMin` at
+// full strength and level, fading in over the first `fadeInBy` of that so it
+// doesn't pop. The image is clear inside `vignetteInner` of its half-width
+// and opaque past `vignetteOuter` (`generate-vignette.mjs`).
+let apertureOpen = 1.2
 let apertureMin = 0.55
+let fadeInBy = 0.2
 let vignetteInner = 0.5
-let vignetteOuter = 0.86
+let vignetteOuter = 0.75
 let closure = (r: Rider) => r.vignette * r.strength / (strengthLevels - 1.0)
 let aperture = (closed: float) => apertureOpen |> Math.lerp(apertureMin, closed)
+let opacity = (closed: float) => Math.min(1.0, closed / fadeInBy)
 // The comfort layer's extent: a Quest 3 eye buffer's aspect (1680 × 1760).
 let layerWidth = 2.0 * 1680.0 / 1760.0
 let layerHeight = 2.0
