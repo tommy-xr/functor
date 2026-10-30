@@ -1,10 +1,13 @@
-// course.fun — the flat test stand: a walled 60 × 250 m pad, a lane of
+// stand.fun — the flat test stand: a walled 60 × 250 m pad, a lane of
 // low crates the bike hovers over, pillars and a barrier it can't.
 //
 // Every piece is a box (centre and full extents, metres), drawn and declared
-// as a fixed body from the same list. The open lane x ∈ [0, 15] runs north
-// from the spawn along the east wall, which `e2e/hoverbike.mjs` slides along;
-// x ∈ [-20, 15] south of z = 100 is clear for its test turn.
+// as a fixed body from the same list. Coordinates are local: the stand sits
+// `originX` along +x, clear of the dune course. The open lane x ∈ [0, 15] runs
+// north from the spawn along the east wall, which `e2e/hoverbike.mjs` slides
+// along; x ∈ [-20, 15] south of z = 100 is clear for its test turn.
+
+let originX = 600.0
 
 type Kind =
   | Floor
@@ -42,8 +45,8 @@ let blocks = [
 
 // Declared every frame from this one value, so the world never changes.
 let bodies = blocks |> List.indexedMap((i, b) =>
-  Physics.fixed(Physics.tag($"course{i}"), Physics.box(b.w, b.h, b.d))
-    |> Physics.at(Vec3.make(b.x, b.y, b.z)))
+  Physics.fixed(Physics.tag($"stand{i}"), Physics.box(b.w, b.h, b.d))
+    |> Physics.at(Vec3.make(originX + b.x, b.y, b.z)))
 
 let colorOf = (kind: Kind) =>
   match kind with
@@ -73,3 +76,4 @@ let scene = Scene.group([
   Scene.group(blocks |> List.filter((b) => b.kind != Floor) |> List.map(trim)),
   Scene.cube() |> Scene.emissive(Color.rgb(0.55, 0.25, 0.6)) |> Scene.instanced(gridLines),
 ])
+  |> Scene.translate(Vec3.make(originX, 0.0, 0.0))
