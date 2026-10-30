@@ -1,5 +1,5 @@
-// Crowd layout: `count` characters on rows that arc around the camera, so a
-// row's radius is its distance. Distance picks the tier:
+// Crowd layout: `count` characters on rows that arc around the camera's
+// ground point. Distance from the camera's eye picks the tier:
 //   near (< nearRadius): LOD0, each individually posed;
 //   mid (< midRadius):   LOD1, each individually posed;
 //   far:                 LOD2, one `Scene.instanced` batch per (preset, phase
@@ -45,6 +45,13 @@ let spacing = 1.0
 // Rows span this arc (radians) in front of the camera.
 let arc = 1.05
 
+// The crowd camera: above the arcs' center, so every seat in a row is the
+// same distance away.
+let eye = { x: 0.0, y: 3.0, z: 0.0 }
+
+// Distance is measured to a character's chest.
+let chest = 0.9
+
 let nearRadius = 7.0
 
 let midRadius = 12.0
@@ -63,25 +70,20 @@ let lodOf = (tier: Tier): float =>
   | Mid => 1.0
   | Far => 2.0
 
-let tierName = (tier: Tier): string =>
-  match tier with
-  | Near => "near"
-  | Mid => "mid"
-  | Far => "far"
-
 // Row k: its radius and how many characters fit along the arc at `spacing`.
 let rows = List.range(14.0) |> List.map((k) =>
   let radius = firstRadius + k * rowGap in
   { radius: radius, size: Math.floor(arc * radius / spacing) })
 
-// Seats in row order (nearest first), each turned to face the camera at the origin.
+// Seats in row order (nearest first), each turned to face the camera.
 let seats =
   rows |> List.concatMap((row) =>
     List.range(row.size) |> List.map((j) =>
       let angle = (j - (row.size - 1.0) / 2.0) * spacing / row.radius in
-      { x: row.radius * Math.sin(angle), z: row.radius * Math.cos(angle), yaw: angle + Math.pi }))
+      { x: eye.x + row.radius * Math.sin(angle), z: eye.z + row.radius * Math.cos(angle), yaw: angle + Math.pi }))
 
-let distanceOf = (seat: Seat): float => Math.sqrt(seat.x * seat.x + seat.z * seat.z)
+let distanceOf = (seat: Seat): float =>
+  Vec3.length(Vec3.make(seat.x - eye.x, chest - eye.y, seat.z - eye.z))
 
 // Character i's preset: alternating bodies, outfits mostly clothed.
 let kitOf = (i: float): Loadout.Kit =>
@@ -130,22 +132,25 @@ let layout = (count: float): Layout =>
   let all = members(count) in
   { members: all |> List.filter((m) => m.tier != Far), batches: batchesOf(all) }
 
-let countTier = (tier: Tier, count: float): float =>
-  members(count) |> List.filter((m) => m.tier == tier) |> List.length
+let countTier = (tier: Tier, all: List<Member>): float =>
+  all |> List.filter((m) => m.tier == tier) |> List.length
 
 // Tier assignment by distance.
 expect tierOf(5.0) == Near
 expect tierOf(7.0) == Mid
 expect tierOf(11.9) == Mid
 expect tierOf(12.0) == Far
+// The front row (5 m out, eye 2.1 m above chest) is near; row 3 (7.6 m) is mid.
+expect (seats |> List.head |> Option.map(distanceOf) |> Option.map(tierOf)) == Option.Some(Near)
+expect (seats |> List.nth(11.0) |> Option.map(distanceOf) |> Option.map(tierOf)) == Option.Some(Mid)
 expect List.length(seats) >= 100.0
 // 100 characters split ~10 near / ~40 mid / ~50 far.
-expect countTier(Near, 100.0) == 11.0
-expect countTier(Mid, 100.0) == 38.0
-expect countTier(Far, 100.0) == 51.0
+expect countTier(Near, members(100.0)) == 11.0
+expect countTier(Mid, members(100.0)) == 38.0
+expect countTier(Far, members(100.0)) == 51.0
 // Small crowds stay near.
-expect countTier(Near, 1.0) == 1.0
-expect countTier(Near, 25.0) == 11.0
+expect countTier(Near, members(1.0)) == 1.0
+expect countTier(Near, members(25.0)) == 11.0
 // Every far member lands in exactly one batch, at LOD2.
 expect (
   let l = layout(100.0) in

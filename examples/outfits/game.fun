@@ -46,7 +46,7 @@ let cycle = (xs, x) =>
   let at = xs |> List.indexedMap((j, y) => if y == x then j else -1.0) |> List.maximum |> Option.defaultValue(-1.0) in
   xs |> List.nth(Math.mod(at + 1.0, List.length(xs))) |> Option.defaultValue(x)
 
-let outfitOf = (model) => Loadout.outfitOf(model.kit) |> Option.defaultValue(Loadout.Bare)
+let outfitOf = (model) => Loadout.outfitOrBare(model.kit)
 
 let update = (model, msg: Msg) =>
   match msg with
@@ -142,7 +142,7 @@ let crowdScene = (model, tts: float): Scene.t =>
 
 let loadoutCamera = Camera3D.lookAt(Vec3.make(0.0, 1.35, -3.6), Vec3.make(0.0, 0.95, 0.0))
 
-let crowdCamera = Camera3D.lookAt(Vec3.make(0.0, 4.0, -1.5), Vec3.make(0.0, 0.4, 9.0))
+let crowdCamera = Camera3D.lookAt(Vec3.make(Crowd.eye.x, Crowd.eye.y, Crowd.eye.z), Vec3.make(0.0, 0.4, 9.0))
 
 let draw = (model, tts: float) =>
   match model.mode with
@@ -170,7 +170,7 @@ let loadoutPanel = (model) =>
       |> List.append(model.kit.wear |> List.map((w) => Ui.text($"{Loadout.slotName(w.slot)}: {Loadout.outfitName(w.item)}"))))
 
 let crowdPanel = (model) =>
-  let tally = (tier) => model.crowd.members |> List.filter((m) => m.tier == tier) |> List.length in
+  let tally = (tier) => Crowd.countTier(tier, model.crowd.members) in
   let far = model.crowd.batches |> List.map((b) => List.length(b.seats)) |> List.sum in
   Ui.column([
     Ui.row(counts |> List.map((c) => choice($"{c}", c == model.count, SetCount(c)))),

@@ -53,6 +53,9 @@ let presets = bodies |> List.concatMap((b) => outfits |> List.map((o) => dress(b
 let outfitOf = (kit: Kit): Option.t<Outfit> =>
   outfits |> List.find((o) => dress(kit.body, o) == kit)
 
+// The preset outfit, or Bare for a loadout no preset matches.
+let outfitOrBare = (kit: Kit): Outfit => outfitOf(kit) |> Option.defaultValue(Bare)
+
 // A loadout's one item per slot, at most one entry each.
 let isValid = (kit: Kit): bool =>
   List.length(kit.wear) == List.length(slots)
@@ -95,7 +98,7 @@ let lods = (body: Body, outfit: Outfit): List<Asset.Model> =>
 
 // The glb for a preset loadout at `lod`; a non-preset loadout shows the bare body.
 let asset = (kit: Kit, lod: float): Asset.Model =>
-  lods(kit.body, outfitOf(kit) |> Option.defaultValue(Bare))
+  lods(kit.body, outfitOrBare(kit))
     |> List.nth(lod)
     |> Option.defaultValue(Assets.male_base_lod0)
 
