@@ -2,30 +2,17 @@
 // geometry, textures, and clips. With several files, also diff every skin's
 // joint palette and inverse binds against the first file's first skin.
 //
-// Usage: node tools/character-presets/inspect.mjs <a.gltf|glb> [b ...] [--json]
+// Usage: node tools/character-presets/inspect.mjs <a.gltf|glb> [b ...]
 import path from "node:path";
 import { readSource } from "./read.mjs";
 
-const args = process.argv.slice(2);
-const asJson = args.includes("--json");
-const files = args.filter((a) => a !== "--json");
+const files = process.argv.slice(2);
 
-/** Image width/height from a PNG or JPEG header. */
-export function imageSize(bytes) {
-  if (bytes[0] === 0x89 && bytes[1] === 0x50) {
-    const v = new DataView(bytes.buffer, bytes.byteOffset);
-    return [v.getUint32(16), v.getUint32(20)];
-  }
-  for (let i = 2; i < bytes.length; ) {
-    const marker = bytes[i + 1];
-    const len = (bytes[i + 2] << 8) | bytes[i + 3];
-    if (marker >= 0xc0 && marker <= 0xc3) {
-      return [(bytes[i + 7] << 8) | bytes[i + 8], (bytes[i + 5] << 8) | bytes[i + 6]];
-    }
-    i += 2 + len;
-  }
-  return [0, 0];
-}
+/** Width/height from a PNG header (every source and output image is PNG). */
+const pngSize = (bytes) => {
+  const v = new DataView(bytes.buffer, bytes.byteOffset);
+  return [v.getUint32(16), v.getUint32(20)];
+};
 
 function describe(doc) {
   const root = doc.getRoot();
@@ -60,7 +47,7 @@ function describe(doc) {
     name: t.getName() || t.getURI(),
     mime: t.getMimeType(),
     bytes: t.getImage()?.byteLength ?? 0,
-    size: t.getImage() ? imageSize(t.getImage()) : null,
+    size: pngSize(t.getImage()),
   }));
   const animations = root.listAnimations().map((a) => {
     let duration = 0;
@@ -79,9 +66,7 @@ const maxDiff = (a, b) => Math.max(...a.map((v, i) => Math.abs(v - b[i])));
 const results = [];
 for (const f of files) results.push({ file: path.basename(f), ...describe((await readSource(f)).doc) });
 
-if (asJson) {
-  console.log(JSON.stringify(results, null, 1));
-} else {
+{
   const ref = results.find((r) => r.skins.length)?.skins[0];
   for (const r of results) {
     console.log(`\n== ${r.file}: ${r.nodes} nodes, ${r.skins.length} skin(s), ${r.meshes.length} mesh node(s)`);

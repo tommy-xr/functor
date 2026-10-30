@@ -6,7 +6,8 @@
 //
 // Usage: npm run fetch:assets
 
-import { writeFile, stat, mkdtemp, rm } from "node:fs/promises";
+import { writeFile, readFile, stat, mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -108,6 +109,16 @@ const POLYHAVEN_MODELS = [
   },
 ];
 
+// Character presets built by `npm run build:characters` (Quaternius, CC0) and
+// published as GitHub release assets; each download must match the SHA-256 the
+// build pinned in the dir's `presets.lock.json`.
+const RELEASE_TARGETS = [
+  {
+    dir: "examples/outfits",
+    baseUrl: "https://github.com/tommy-xr/functor/releases/download/characters-v1",
+  },
+];
+
 async function exists(filePath) {
   try {
     await stat(filePath);
@@ -188,6 +199,30 @@ for (const { dir, zipUrl, members } of ZIP_TARGETS) {
     failures++;
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+for (const { dir, baseUrl } of RELEASE_TARGETS) {
+  const lock = JSON.parse(await readFile(path.join(dir, "presets.lock.json"), "utf8"));
+  for (const [file, sha256] of Object.entries(lock)) {
+    const dest = path.join(dir, file);
+    if (await exists(dest)) {
+      console.log(`ok       ${dest}`);
+      continue;
+    }
+    process.stdout.write(`fetching ${dest} ... `);
+    try {
+      const response = await fetch(`${baseUrl}/${file}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status} from ${baseUrl}/${file}`);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const got = createHash("sha256").update(bytes).digest("hex");
+      if (got !== sha256) throw new Error(`SHA-256 ${got}, expected ${sha256}`);
+      await writeFile(dest, bytes);
+      console.log(`${(bytes.length / 1024 / 1024).toFixed(1)}MB`);
+    } catch (error) {
+      console.log(`FAILED (${error.message})`);
+      failures++;
+    }
   }
 }
 
