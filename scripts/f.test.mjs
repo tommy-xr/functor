@@ -38,7 +38,12 @@ test("detects a headset push", () => {
   assert.ok(wantsVr(["-d", "ex", "run", "vr"]));
   assert.ok(wantsVr(["develop", "vr", "--entry", "server"]));
   assert.ok(!wantsVr(["-d", "ex", "run", "native"]));
+  assert.ok(wantsVr(["run", "--entry", "server", "vr"]));
+  assert.ok(wantsVr(["--mount", "a=b", "develop", "--no-debug", "vr"]));
   assert.ok(!wantsVr(["vr"]));
+  assert.ok(!wantsVr(["-d", "run", "test", "vr"])); // `run` is -d's value
+  assert.ok(!wantsVr(["run", "vr", "--help"]));
+  assert.ok(!wantsVr(["test", "--", "run", "vr"]));
 });
 
 test("maps hosts to CI platforms", () => {
@@ -70,13 +75,13 @@ test("picks the newer local build, or explains how to make one", async (t) => {
 
 test("downloads a PR's CLI once, then runs it from the cache in the caller's cwd", prMode, async (t) => {
   const h = await harness(t);
-  const cache = join(h.root, "cache");
   const cwd = await mkdtemp(join(tmpdir(), "functor-f-cwd-"));
   t.after(() => rm(cwd, { recursive: true, force: true }));
+  const cache = join(cwd, "cache"); // given relative to the caller's cwd
   const args = ["-d", "examples/x", "--pr", "7", "--entry", "server", "test", "--", "--fixed-time", "1"];
 
   for (const _ of [1, 2]) {
-    const result = await h.run(args, { FUNCTOR_PR_CACHE: cache }, cwd);
+    const result = await h.run(args, { FUNCTOR_PR_CACHE: "cache" }, cwd);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, ""); // progress stays off functor's stdout
     assert.match(result.stderr, /using PR #7 @ 0123456\n/);
@@ -123,6 +128,13 @@ test("passes the binary's exit code and terminating signal through", prMode, asy
   const h = await harness(t);
   assert.equal((await h.run(["--pr", "7", "test"], { FAKE_EXIT: "3" })).code, 3);
   assert.equal((await h.run(["--pr", "7", "test"], { FAKE_SIGNAL: "TERM" })).signal, "SIGTERM");
+
+  // A SIGINT sent to f alone reaches the binary.
+  const waiting = h.run(["--pr", "7", "test"], { FAKE_WAIT: "1" });
+  while (!(await stat(join(h.root, "ready")).catch(() => false))) await new Promise((r) => setTimeout(r, 20));
+  waiting.child.kill("SIGINT");
+  assert.equal((await waiting).code, 130);
+  assert.equal(await readFile(join(h.root, "got"), "utf8"), "INT\n");
 });
 
 test("run vr installs the PR's APK first unless --no-apk", prMode, async (t) => {

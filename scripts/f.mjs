@@ -30,6 +30,9 @@ const USAGE = `usage: f [--pr <n> [--no-apk] [--allow-uninstall]] <functor args>
   f help             functor's own help
 
 Cache: ~/.functor/pr-artifacts (FUNCTOR_PR_CACHE overrides).`;
+// functor's global flags that take a value, e.g. `--entry server`.
+const VALUE_FLAGS = ["-d", "--dir", "--entry", "--mount"];
+const FORWARDED = ["SIGINT", "SIGQUIT", "SIGTERM", "SIGHUP"];
 
 /** Splits f's own flags from the functor args; everything from `--` on passes through. */
 export function parseArgs(argv) {
@@ -56,7 +59,14 @@ export function parseArgs(argv) {
 
 /** Whether the functor args push to a headset (`run vr` / `develop vr`). */
 export function wantsVr(args) {
-  return args.some((arg, i) => (arg === "run" || arg === "develop") && args[i + 1] === "vr");
+  // The positional words before `--`: `-d ex run --entry s vr` → run, vr.
+  const words = [];
+  for (let i = 0; i < args.length && args[i] !== "--"; i++) {
+    if (args[i] === "--help" || args[i] === "-h") return false;
+    if (VALUE_FLAGS.includes(args[i])) i++;
+    else if (!args[i].startsWith("-")) words.push(args[i]);
+  }
+  return (words[0] === "run" || words[0] === "develop") && words[1] === "vr";
 }
 
 /** The newer of `root`'s release and debug functor builds. */
@@ -81,23 +91,21 @@ export function localBinary(root) {
 // or re-raises its terminating signal.
 function exec(bin, args, env) {
   const child = spawn(bin, args, { stdio: "inherit", env });
-  // A terminal's Ctrl-C / Ctrl-\ already reaches the child (same process
-  // group), so only swallow those; forward the rest.
-  const handlers = {
-    SIGINT: () => {},
-    SIGQUIT: () => {},
-    SIGTERM: () => child.kill("SIGTERM"),
-    SIGHUP: () => child.kill("SIGHUP"),
-  };
-  for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
+  // Forward signals sent to f. A terminal's Ctrl-C then reaches the child
+  // twice (it is in the same process group), which functor tolerates.
+  const forward = (signal) => child.kill(signal);
+  for (const signal of FORWARDED) process.on(signal, forward);
   child.on("error", (error) => {
     console.error(`f: ${bin}: ${error.message}`);
     process.exit(1);
   });
   child.on("exit", (code, signal) => {
-    for (const [name, handler] of Object.entries(handlers)) process.off(name, handler);
     if (!signal) process.exit(code ?? 1);
-    process.exitCode = 128 + constants.signals[signal]; // if Node ignores it (SIGPIPE)
+    // Die by the same signal so a calling shell sees it; a core-dumping one
+    // (SIGABRT, SIGQUIT) or one Node ignores (SIGPIPE) becomes 128 + n.
+    process.exitCode = 128 + constants.signals[signal];
+    if (!["SIGINT", "SIGTERM", "SIGHUP", "SIGKILL"].includes(signal)) return;
+    for (const name of FORWARDED) process.off(name, forward);
     process.kill(process.pid, signal);
   });
 }
@@ -121,7 +129,12 @@ function main() {
   const cli = cliPath(head, platform);
   const vr = wantsVr(options.args);
   // Both downloads precede any device change, so a refusal touches nothing.
-  const apk = vr && options.apk && apkPath(head);
+  let apk;
+  try {
+    apk = vr && options.apk && apkPath(head);
+  } catch (error) {
+    throw new Error(`${error.message}\n(--no-apk runs against the headset's installed APK)`);
+  }
   console.error(`f: using PR #${options.pr} @ ${head.sha.slice(0, 7)}`);
   let env = process.env;
   if (apk) {

@@ -71,17 +71,23 @@ if (cmd[0] === "install" && cmd[1] === "-r" && cmd[2] === "-g") {
 `;
 
 // The CI-built `functor`: logs its args (with ANDROID_SERIAL) and cwd, then
-// exits FAKE_EXIT or kills itself with FAKE_SIGNAL.
+// exits FAKE_EXIT or kills itself with FAKE_SIGNAL. With FAKE_WAIT it touches
+// <root>/ready and waits for a SIGINT, which it logs to <root>/got.
 const FAKE_FUNCTOR = `#!/bin/sh
 echo '["functor"]' >> "$FAKE_ROOT/calls"
 echo "$ANDROID_SERIAL $*" > "$FAKE_ROOT/functor-args"
 pwd -P > "$FAKE_ROOT/functor-cwd"
 [ -n "$FAKE_SIGNAL" ] && kill -"$FAKE_SIGNAL" $$
+if [ -n "$FAKE_WAIT" ]; then
+  trap 'kill $!; echo INT > "$FAKE_ROOT/got"; exit 130' INT
+  sleep 10 & touch "$FAKE_ROOT/ready"; wait
+fi
 exit "\${FAKE_EXIT:-0}"
 `;
 
 // A temp root holding the fakes, and `run(args, env, cwd)`, which runs
-// `script` with them first on PATH and HOME at the root.
+// `script` with them first on PATH and HOME at the root; its promise carries
+// the process as `.child`.
 export async function harness(t, script) {
   const root = await mkdtemp(join(tmpdir(), "functor-pr-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -96,8 +102,9 @@ export async function harness(t, script) {
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line));
-  const run = (args, env = {}, cwd = undefined) =>
-    new Promise((resolve) => {
+  const run = (args, env = {}, cwd = undefined) => {
+    let child;
+    const result = new Promise((resolve) => {
       const { ANDROID_SERIAL, FUNCTOR_PR_CACHE, ...inherited } = process.env;
       const environment = {
         ...inherited,
@@ -106,9 +113,11 @@ export async function harness(t, script) {
         FAKE_ROOT: root,
         ...env,
       };
-      execFile(process.execPath, [script, ...args], { env: environment, cwd }, (error, stdout, stderr) =>
+      child = execFile(process.execPath, [script, ...args], { env: environment, cwd }, (error, stdout, stderr) =>
         resolve({ code: error ? error.code : 0, signal: error?.signal ?? null, stdout, stderr }),
       );
     });
+    return Object.assign(result, { child });
+  };
   return { root, calls, run };
 }

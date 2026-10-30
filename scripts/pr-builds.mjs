@@ -7,7 +7,7 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -26,7 +26,7 @@ export function cliPlatform(platform = process.platform, arch = process.arch) {
 }
 
 // Output of a finished command; a failure carries its stdout + stderr.
-export function run(command, args) {
+function run(command, args) {
   try {
     return execFileSync(command, args, {
       cwd: ROOT,
@@ -78,7 +78,7 @@ function finishedRun(workflow, { sha, branch }) {
 // ~/.functor/pr-artifacts), downloaded on first use. CI uploads it only after
 // its build passed, and one commit is one build, so a cached copy is never stale.
 function artifact(workflow, name, head) {
-  const cache = process.env.FUNCTOR_PR_CACHE || join(homedir(), ".functor", "pr-artifacts");
+  const cache = resolve(process.env.FUNCTOR_PR_CACHE || join(homedir(), ".functor", "pr-artifacts"));
   const dir = join(cache, head.sha, name);
   if (existsSync(dir)) return dir;
   const found = finishedRun(workflow, head);
