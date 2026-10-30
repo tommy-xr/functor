@@ -27,8 +27,8 @@ use functor_lang::{Session, Value};
 
 use crate::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog, EffectRunner,
-    EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
+    frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectRunner, EffectTree,
+    FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
     journal_arm, journal_swap, rebase_connect_retry_deadlines, reused_status, validate_contract,
@@ -39,7 +39,7 @@ use crate::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use crate::physics;
 use crate::protocol::GameProducer;
 use crate::runtime_settings::{GameConfig, GameSettings};
-use crate::timetravel::SceneRecorder;
+use crate::timetravel::{Entry, SceneRecorder};
 use crate::ui::View;
 use crate::webview::HtmlNode;
 use crate::{Frame, FrameTime};
@@ -160,8 +160,6 @@ pub struct FunctorLangEmbeddedGame {
     /// Performs `Effect.*` commands (B6). `RealEffects` is portable: its
     /// clock has a per-target implementation.
     effect_runner: RealEffects,
-    /// The structured effect log (bounded inside the drain).
-    effect_log: EffectLog,
     /// Physics queries deferred by the frame's pre-step drains, performed
     /// right after the physics step so their taggers answer against the
     /// fresh world ("commands apply at the step; queries answer after it").
@@ -179,10 +177,10 @@ pub struct FunctorLangEmbeddedGame {
     /// The coupled time-travel recorder (docs/time-travel.md T1–T3), shared
     /// with the other producers (one tested impl).
     recorder: SceneRecorder,
-    /// This frame's buffered input events (docs/time-travel.md T6b): appended
-    /// beside the live `session.call`, flushed into `recorder`'s input log by
-    /// `record_frame` (plain data, so the log survives a reload).
-    input_buf: Vec<crate::RecordedInput>,
+    /// Δ, the next frame's log (input and effect ops; see `FrameCtx::next`):
+    /// committed to `recorder` by `record_frame` (plain data, so it survives
+    /// a reload).
+    next: Vec<Entry>,
     /// Declared connection keys (`Sub.connect`/`Sub.listen`), reconciled each
     /// frame — see the desktop producer.
     live_conn_keys: std::collections::HashSet<String>,
@@ -325,6 +323,35 @@ fn load_source(
 
 
 impl FunctorLangEmbeddedGame {
+    /// Branch replay on a fork from the selected frame (a test and debug
+    /// harness): up to `frames` of the recorder's own log, recorded answers
+    /// included. Each replayed frame's model (`state_debug` text) and world;
+    /// `Err` at the first divergence, or when input since the frame changed
+    /// the live world the fork starts from.
+    /// See [`crate::functor_lang_producer::replay_frames`].
+    pub fn replay_scene(
+        &self,
+        frames: usize,
+    ) -> Result<Vec<(String, Option<physics::PhysicsSnapshot>)>, String> {
+        if !self.next.is_empty() {
+            return Err(
+                "branch replay needs the selected frame as recorded: input since it".into(),
+            );
+        }
+        let replayed = crate::functor_lang_producer::replay_frames(
+            &self.session,
+            &self.names,
+            &self.recorder,
+            self.has_physics,
+            self.has_subscriptions,
+            frames,
+        )?;
+        Ok(replayed
+            .into_iter()
+            .map(|(model, world)| (model.to_string(), world))
+            .collect())
+    }
+
     /// Build the producer from in-memory project sources (entry FIRST, then
     /// siblings). Errors come back fully rendered for the shell to fail loud
     /// with (a boot either gets a valid game or an error).
@@ -383,13 +410,12 @@ impl FunctorLangEmbeddedGame {
             has_subscriptions: loaded.has_subscriptions,
             prev_tts: None,
             effect_runner: RealEffects::new(),
-            effect_log: EffectLog::new(),
             deferred_queries: Vec::new(),
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
             physics_frame: 0,
             recorder: SceneRecorder::new(),
-            input_buf: Vec::new(),
+            next: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
             connect_retries: std::collections::HashMap::new(),
             asset_progress: None,
@@ -512,7 +538,7 @@ impl FunctorLangEmbeddedGame {
             &mut self.recorder,
             self.has_physics,
             self.has_subscriptions,
-            !self.input_buf.is_empty(),
+            !self.next.is_empty(),
         ) {
             Ok(frames) => frames.map(|frames| (frames, now_ms() - replay_started)),
             Err(error) => {
@@ -584,13 +610,12 @@ impl FunctorLangEmbeddedGame {
         self.webview_handlers.clear();
         self.options = ShellOptions::new(loaded.config, loaded.settings);
         self.effect_runner = RealEffects::new();
-        self.effect_log = EffectLog::new();
         self.deferred_queries.clear();
         self.pending_events.clear();
         self.physics_rt = physics::SteppedPhysics::new();
         self.physics_frame = 0;
         self.recorder = SceneRecorder::new();
-        self.input_buf.clear();
+        self.next.clear();
         self.last_frame = empty_frame();
         self.reporter.reset();
         // A reset is a cold start: the model is `init` again and the world was
@@ -614,13 +639,12 @@ impl FunctorLangEmbeddedGame {
             physics_frame: &mut self.physics_frame,
             recorder: &mut self.recorder,
             effect_runner: &mut self.effect_runner as &mut dyn EffectRunner,
-            effect_log: &mut self.effect_log,
             deferred_queries: &mut self.deferred_queries,
             pending_events: &mut self.pending_events,
             live_conn_keys: &mut self.live_conn_keys,
             connect_retries: &mut self.connect_retries,
             prev_tts: &mut self.prev_tts,
-            input_buf: &mut self.input_buf,
+            next: &mut self.next,
             has_physics: self.has_physics,
             has_subscriptions: self.has_subscriptions,
             asset_progress: self.asset_progress.clone(),
@@ -768,7 +792,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             self.delivered_asset_progress = None;
             // Model restored to `target`; drop orphaned buffered input so it
             // can't record into the branch.
-            self.input_buf.clear();
+            self.next.clear();
             // The scrubbed frame is a historical one whose journal we didn't
             // keep — report it honestly as empty invocations.
             self.last_frame_journal.clear();
@@ -789,7 +813,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             // Same as rewind: the model was restored, so buffered input since
             // the last recorded frame is orphaned and must not enter the branch,
             // nor the queries that input issued.
-            self.input_buf.clear();
+            self.next.clear();
             self.deferred_queries.clear();
             // The paused frame changed — clear the last-frame journal and cache
             // so the trace reflects the scrubbed frame.
@@ -808,7 +832,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
     }
 
     fn recorded_inputs_at(&self, rendered_frame: u64) -> Vec<crate::RecordedInput> {
-        self.recorder.inputs_at(rendered_frame).to_vec()
+        self.recorder.inputs_at(rendered_frame)
     }
 
     fn scene_timeline_generation(&self) -> u64 {
@@ -912,8 +936,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
         }
         // Buffer the raw event for the frame-indexed input log (T6b): flushed
         // into the recorder by `record_frame`, replayed by the forward-step.
-        self.input_buf
-            .push(crate::RecordedInput::Key { code, is_down });
+        self.next
+            .push(Entry::Input(crate::RecordedInput::Key { code, is_down }));
     }
 
     fn mouse_move(&mut self, x: i32, y: i32) {
@@ -932,8 +956,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error(self.names.mouse_move, &err),
         }
-        self.input_buf
-            .push(crate::RecordedInput::MouseMove { x, y });
+        self.next
+            .push(Entry::Input(crate::RecordedInput::MouseMove { x, y }));
     }
 
     fn mouse_wheel(&mut self, delta: i32) {
@@ -948,8 +972,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error(self.names.mouse_wheel, &err),
         }
-        self.input_buf
-            .push(crate::RecordedInput::MouseWheel { delta });
+        self.next
+            .push(Entry::Input(crate::RecordedInput::MouseWheel { delta }));
     }
 
     fn mouse_button(&mut self, button: i32, is_down: bool) {
@@ -970,8 +994,11 @@ impl GameProducer for FunctorLangEmbeddedGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error(self.names.mouse_button, &err),
         }
-        self.input_buf
-            .push(crate::RecordedInput::MouseButton { button, is_down });
+        self.next
+            .push(Entry::Input(crate::RecordedInput::MouseButton {
+                button,
+                is_down,
+            }));
     }
 
     fn ui_event(&mut self, event: crate::ui::UiEvent) {
@@ -987,7 +1014,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
         self.ui_handlers = handlers;
         // Buffer for the frame-indexed input log (T6b), like key events, so a
         // replay re-delivers the interaction.
-        self.input_buf.push(crate::RecordedInput::UiEvent(event));
+        self.next
+            .push(Entry::Input(crate::RecordedInput::UiEvent(event)));
     }
 
     fn webview_event(&mut self, event: crate::ui::UiEvent) {
@@ -999,8 +1027,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
         self.ctx().deliver_ui_event(&handlers, &event);
         self.webview_handlers = handlers;
         // Its own variant, so replay resolves against the webview handler table.
-        self.input_buf
-            .push(crate::RecordedInput::WebviewEvent(event));
+        self.next
+            .push(Entry::Input(crate::RecordedInput::WebviewEvent(event)));
     }
 
     fn render_at(&mut self, frame_time: FrameTime, alpha: f32) -> Frame {
@@ -2354,5 +2382,57 @@ let draw = (model, tts) =>
             .expect("rebuilt future remains seekable");
         let model = game.state_debug();
         assert!(model.contains("sum: 6"), "{model}");
+    }
+
+    /// Branch replay hands each `Effect.random` its recorded answer, and a
+    /// reload that inserts a call diverges loudly instead of shifting answers.
+    #[test]
+    fn branch_replay_reproduces_randoms_and_an_inserted_call_diverges() {
+        let game_src = |rolls: &str| {
+            format!(
+                r#"
+type Msg = | Rolled(r: float)
+let init = {{ r: 0.0, sum: 0.0 }}
+let update = (model, msg) =>
+  match msg with
+  | Rolled(r) => {{ model with r: r, sum: model.sum + r }}
+let tick = (model, dt, tts) => (model, Effect.batch([{rolls}]))
+let draw = (model, tts) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#
+            )
+        };
+        let one = game_src("Effect.random(Rolled)");
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), one.clone())],
+            Box::new(NativePlatform),
+        )
+        .expect("random game loads");
+        let mut recorded = Vec::new();
+        for frame in 0..4 {
+            game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
+            recorded.push(game.state_debug());
+        }
+        game.seek_scene_to(0).expect("frame zero is seekable");
+        let replayed: Vec<String> = game
+            .replay_scene(3)
+            .expect("same code replays")
+            .into_iter()
+            .map(|(model, _)| model)
+            .collect();
+        assert_eq!(replayed, recorded[1..]);
+        let tts = game.current_scene_tts().expect("selected frame");
+        assert_eq!(game.ghost_frames(3, 1.0 / 60.0, tts, None).len(), 3);
+
+        let two = game_src("Effect.random(Rolled), Effect.random(Rolled)");
+        game.reload_source(&two).expect("edit reloads");
+        let error = game.replay_scene(3).expect_err("an inserted call diverges");
+        assert!(error.contains("replay diverged"), "{error}");
+        assert!(
+            game.ghost_frames(3, 1.0 / 60.0, tts, None).is_empty(),
+            "the ghost ends where answers stop lining up"
+        );
     }
 }

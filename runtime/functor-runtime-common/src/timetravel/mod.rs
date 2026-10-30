@@ -29,7 +29,7 @@
 //! model *and* world together (docs/time-travel.md, "One frame, one clock").
 
 mod history;
-mod input;
+mod log;
 mod model;
 mod physics;
 
@@ -40,7 +40,8 @@ use crate::physics::{PhysicsCommand, SteppedPhysics};
 use crate::FrameTime;
 
 pub use history::History;
-use input::InputHistory;
+use log::FrameLog;
+pub use log::{args_digest, Entry, OpId};
 use model::ModelParticipant;
 use physics::PhysicsParticipant;
 
@@ -154,13 +155,11 @@ pub struct SceneRecorder {
     /// The shell's one unrecorded bootstrap execution (`dts == 0`) before
     /// frame zero. It can still mutate a valid model, so reconstruction must
     /// replay it (and any input delivered before it) ahead of recorded frames.
-    replay_prefix: Option<(FrameTime, Vec<RecordedInput>)>,
-    /// The frame-indexed input log (docs/time-travel.md T6, "The event log"):
-    /// each rendered frame's recorded input events, keyed in LOCKSTEP with
-    /// the participants. Sparse edge input stays session-long for replay from
-    /// edited `init`; continuously sampled coeffects use the same bounded
-    /// horizon as model/world history.
-    input_history: InputHistory,
+    replay_prefix: Option<(FrameTime, Vec<Entry>)>,
+    /// The frame log (docs/time-travel.md T6, "The event log"; design-systems
+    /// §2.4): each rendered frame's input and effect ops, keyed in LOCKSTEP
+    /// with the participants.
+    log: FrameLog,
     /// The rendered-frame index the next snapshot records at; monotonic.
     rendered_frame: u64,
     /// Bumps whenever existing recorded frames may have been replaced or a
@@ -201,7 +200,7 @@ impl SceneRecorder {
             tts_history: History::unbounded(),
             clock_history: History::unbounded(),
             replay_prefix: None,
-            input_history: InputHistory::new(),
+            log: FrameLog::new(),
             rendered_frame: 0,
             generation: 0,
             program_revision: 0,
@@ -296,8 +295,7 @@ impl SceneRecorder {
                 .scrub_pos
                 .zip(self.model.model_history.recorded_range())
                 .is_some_and(|(selected, (_, hi))| {
-                    selected < hi
-                        && self.input_history.supports_origin_replay_through(hi)
+                    selected < hi && self.log.supports_origin_replay_through(hi)
                 });
             return ReloadHistory::Preserved;
         }
@@ -378,16 +376,13 @@ impl SceneRecorder {
     /// branch rather than preserving a past failure: rewinding before a gap
     /// makes the remaining origin-to-tail history complete again.
     pub fn configure_origin_replay_for_sampled_input(&mut self, required: bool) {
-        let prefix_complete = self.replay_prefix.as_ref().is_none_or(|(_, inputs)| {
-            inputs
+        let prefix_complete = self.replay_prefix.as_ref().is_none_or(|(_, entries)| {
+            entries
                 .iter()
-                .any(|input| matches!(input, RecordedInput::Snapshot(_)))
+                .any(|entry| matches!(entry, Entry::Input(RecordedInput::Snapshot(_))))
         });
-        self.input_history.origin_replay_complete = !required
-            || (prefix_complete
-                && self
-                    .input_history
-                    .sampled_history_is_complete_from_origin());
+        self.log.origin_replay_complete =
+            !required || (prefix_complete && self.log.sampled_history_is_complete_from_origin());
     }
 
     /// Complete replay target after a safe reload. Sparse edge-input logs retain
@@ -401,7 +396,7 @@ impl SceneRecorder {
         let (lo, hi) = self.model.model_history.recorded_range().ok_or_else(|| {
             "counterfactual replay unavailable: no model history is retained".to_string()
         })?;
-        let (input_lo, input_hi) = self.input_history.recorded_range().ok_or_else(|| {
+        let (input_lo, input_hi) = self.log.recorded_range().ok_or_else(|| {
             "counterfactual replay unavailable: the session input log is empty".to_string()
         })?;
         if input_lo != 0 || input_hi < hi {
@@ -541,11 +536,12 @@ impl SceneRecorder {
         })
     }
 
-    /// Capture the shell's initial zero-delta settling execution. Later paused
-    /// renders are not simulation history and remain deliberately discarded.
-    pub fn record_replay_prefix(&mut self, frame_time: FrameTime, inputs: Vec<RecordedInput>) {
+    /// Capture the shell's initial zero-delta settling execution (its input and
+    /// effect ops). Later paused renders are not simulation history and remain
+    /// deliberately discarded.
+    pub fn record_replay_prefix(&mut self, frame_time: FrameTime, entries: Vec<Entry>) {
         if self.rendered_frame == 0 && self.replay_prefix.is_none() {
-            self.replay_prefix = Some((frame_time, inputs));
+            self.replay_prefix = Some((frame_time, entries));
         }
     }
 
@@ -561,31 +557,47 @@ impl SceneRecorder {
         }
     }
 
-    pub fn replay_inputs_at_step(&self, step: usize) -> &[RecordedInput] {
+    /// The log entries of origin-replay step `step` (the prefix, then frame
+    /// zero onward).
+    pub fn replay_entries_at_step(&self, step: usize) -> &[Entry] {
         match (&self.replay_prefix, step) {
-            (Some((_, inputs)), 0) => inputs,
-            (Some(_), step) => self.inputs_at((step - 1) as Frame),
-            (None, step) => self.inputs_at(step as Frame),
+            (Some((_, entries)), 0) => entries,
+            (Some(_), step) => self.logged((step - 1) as Frame).unwrap_or(&[]),
+            (None, step) => self.logged(step as Frame).unwrap_or(&[]),
         }
     }
 
-    /// Record this rendered frame's input events, keyed by the CURRENT
-    /// `rendered_frame` — so it lands on the same frame as the matching
-    /// [`Self::record`]. It does NOT advance the clock; call it JUST BEFORE
-    /// `record` (which does), so both key off the same frame. An empty `Vec` is
-    /// recorded for input-free frames, keeping the ring consecutive with the
-    /// model ring.
-    pub fn record_inputs(&mut self, inputs: Vec<RecordedInput>) {
-        self.input_history.record(self.rendered_frame, inputs);
+    /// Commit Δ (this rendered frame's input and effect ops) as the log of
+    /// the CURRENT `rendered_frame` — the frame the matching [`Self::record`]
+    /// lands on. It does NOT advance the clock; call it JUST BEFORE `record`
+    /// (which does). An empty `Vec` is recorded for quiet frames, keeping the
+    /// log consecutive with the model ring.
+    pub fn record_entries(&mut self, entries: Vec<Entry>) {
+        self.log
+            .record(self.rendered_frame, self.generation, entries);
     }
 
-    /// The recorded input events of `frame` — empty if that frame is outside the
-    /// retained input window (never recorded, or pruned).
-    pub fn inputs_at(&self, frame: u64) -> &[RecordedInput] {
-        match self.input_history.recorded_range() {
-            Some((lo, hi)) if frame >= lo && frame <= hi => self.input_history.at(frame),
-            _ => &[],
-        }
+    #[cfg(test)]
+    pub(crate) fn record_inputs(&mut self, inputs: Vec<RecordedInput>) {
+        self.record_entries(inputs.into_iter().map(Entry::Input).collect());
+    }
+
+    /// `frame`'s log; `None` outside the retained window (never recorded, or
+    /// pruned).
+    pub fn logged(&self, frame: Frame) -> Option<&[Entry]> {
+        let (lo, hi) = self.log.recorded_range()?;
+        (frame >= lo && frame <= hi).then(|| self.log.at(frame))
+    }
+
+    /// The recorded input events of `frame` — empty outside the retained
+    /// window.
+    pub fn inputs_at(&self, frame: u64) -> Vec<RecordedInput> {
+        self.logged(frame)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Entry::input)
+            .cloned()
+            .collect()
     }
 
     /// The recorded inputs for frames `start..=newest`, contiguous, so the
@@ -593,9 +605,9 @@ impl SceneRecorder {
     /// if nothing at/after `start` is retained. Frames before the retained floor
     /// are skipped; `start` is clamped up to the floor.
     pub fn inputs_from(&self, start: u64) -> Vec<Vec<RecordedInput>> {
-        match self.input_history.recorded_range() {
+        match self.log.recorded_range() {
             Some((lo, hi)) => (start.max(lo)..=hi)
-                .map(|f| self.input_history.at(f).to_vec())
+                .map(|f| self.log.inputs(f).cloned().collect())
                 .collect(),
             None => Vec::new(),
         }
@@ -605,22 +617,24 @@ impl SceneRecorder {
     /// the retained input horizon. Forward projection carries this level state
     /// through future ticks when there is no newer recorded sample.
     pub fn sampled_input_at_or_before(&self, frame: u64) -> Option<crate::InputSnapshot> {
-        let (lo, hi) = self.input_history.recorded_range()?;
+        let (lo, hi) = self.log.recorded_range()?;
         let end = frame.min(hi);
         if end < lo {
             return None;
         }
-        let mut snapshot =
-            self.input_history
-                .events
-                .range(lo..=end)
-                .rev()
-                .find_map(|(_, events)| {
-                    events.iter().rev().find_map(|event| match event {
-                        RecordedInput::Snapshot(snapshot) => Some(snapshot.as_ref().clone()),
-                        _ => None,
-                    })
-                })?;
+        let mut snapshot = self
+            .log
+            .events
+            .range(lo..=end)
+            .rev()
+            .find_map(|(_, events)| {
+                events.iter().rev().find_map(|event| match event {
+                    Entry::Input(RecordedInput::Snapshot(snapshot)) => {
+                        Some(snapshot.as_ref().clone())
+                    }
+                    _ => None,
+                })
+            })?;
         // The sample at `frame` has already been delivered. Projection carries
         // continuous levels/poses, never those consumed transitions.
         snapshot.clear_edges();
@@ -768,7 +782,7 @@ impl SceneRecorder {
         self.tts_history.truncate_from(frame + 1);
         // Truncate the input log too: a destructive branch discards the old
         // future consistently across every ring (docs/time-travel.md T6b).
-        self.input_history.truncate_from(frame + 1);
+        self.log.truncate_from(frame + 1);
         self.clock_history.truncate_from(frame + 1);
         self.rendered_frame = frame + 1;
         self.generation = self.generation.wrapping_add(1);

@@ -112,9 +112,9 @@ frame order is `sampledInput → subscriptions → update → tick → physics �
 input—including its one-step pressed/released sets—is recorded as plain data for deterministic
 forward replay; projection clears consumed edges while carrying held levels. This machinery is shared,
 prelude-level Rust in `functor_runtime_common::functor_lang_prelude` (`drain_effects`, an `EffectRunner`:
-`RealEffects` / `FakeEffects` / `ReplayEffects`), consumed by both producers — every performed
-effect lands in a structured log, so under a fake/replay runner the same program is exactly
-deterministic (the test seam).
+`RealEffects` / `FakeEffects` / `ReplayEffects`), consumed by both producers — every effect
+answer and outbound intent lands in the recorder's frame log, so a replay (fork, ghost) hands back
+the recorded answers and the same program is exactly deterministic (the test seam).
 
 **Sim/render pipelining (experimental, default off).** The desktop and Quest loops reach the
 producer only through `SimDriver` (`functor_runtime_common::sim_driver`): ordered `post`/`call`

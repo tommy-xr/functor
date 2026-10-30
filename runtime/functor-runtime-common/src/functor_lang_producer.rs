@@ -31,18 +31,18 @@ use functor_lang::{line_col, project::SourceMap, RunError, Session, Span, Value}
 
 use crate::asset::AssetProgress;
 use crate::functor_lang_prelude::{
-    asset_progress_value, assets_taggers, contains_effect, deliver_physics_events, drain_effects,
-    frame_value, http_response_value, needs_update, net_conn_subs, net_event_value,
-    perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
-    sub_messages_for_frame, take_audio_completion, take_http_tagger, take_preload_completion,
-    take_ui_handlers, config_of, settings_of, DryRunEffects, EffectLog, EffectRunner, EffectTree,
-    FunctorHost, NetEventKind, PrimingScope, UiHandler,
+    asset_progress_value, assets_taggers, config_of, contains_effect, deliver_physics_events,
+    drain_effects, frame_value, http_response_value, needs_update, net_conn_subs, net_event_value,
+    perform_deferred_queries, physics_event_taggers, physics_scene_value, settings_of,
+    split_model_effect, sub_messages_for_frame, take_audio_completion, take_http_tagger,
+    take_preload_completion, take_ui_handlers, EffectRunner, EffectTree, FunctorHost, NetEventKind,
+    PrimingScope, ReplayEffects, UiHandler,
 };
 use crate::input::RecordedInput;
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
 use crate::physics::{self, PhysicsEvent, SteppedPhysics};
 use crate::runtime_settings::{GameConfig, GameSettings};
-use crate::timetravel::SceneRecorder;
+use crate::timetravel::{Entry, SceneRecorder};
 use crate::{Frame, FrameTime};
 
 // ---------------------------------------------------------------------------
@@ -951,18 +951,18 @@ pub struct FrameCtx<'a> {
     pub physics_frame: &'a mut u64,
     pub recorder: &'a mut SceneRecorder,
     pub effect_runner: &'a mut dyn EffectRunner,
-    pub effect_log: &'a mut EffectLog,
     pub deferred_queries: &'a mut Vec<EffectTree>,
     pub pending_events: &'a mut Vec<PhysicsEvent>,
     pub live_conn_keys: &'a mut HashSet<String>,
     pub connect_retries: &'a mut HashMap<String, ConnectRetryState>,
     pub prev_tts: &'a mut Option<f64>,
-    /// This frame's buffered input events (docs/time-travel.md T6b): each shell
-    /// appends to it in `key_event`/`mouse_move`/`mouse_wheel`, and
-    /// [`Self::record_frame`] flushes a played frame's worth into the recorder's
-    /// input log (or drains-and-drops it on a paused frame). The dry-run
-    /// forward-step points this at a throwaway buffer.
-    pub input_buf: &'a mut Vec<RecordedInput>,
+    /// Δ, the next frame's log under construction (design-systems §2.4): each
+    /// shell appends input in `key_event`/`mouse_move`/…, the effect drains
+    /// append answers and outbound intents, and [`Self::record_frame`] commits
+    /// a played frame's worth to the recorder (or the bootstrap prefix). A
+    /// seek drops it with the model change it made; resume and reload keep it.
+    /// The dry-run forward-step points this at a throwaway buffer.
+    pub next: &'a mut Vec<Entry>,
     pub has_physics: bool,
     pub has_subscriptions: bool,
     /// The shell's current asset-loading snapshot (`AssetCache::progress()`),
@@ -1174,7 +1174,7 @@ impl FrameCtx<'_> {
                 self.model,
                 deferred,
                 self.effect_runner,
-                self.effect_log,
+                self.next,
                 &mut |message| reports.push(message),
                 self.suppress_outbound,
             );
@@ -1202,7 +1202,7 @@ impl FrameCtx<'_> {
                             &taggers,
                             &events,
                             self.effect_runner,
-                            self.effect_log,
+                            self.next,
                             &mut |message| reports.push(message),
                             self.suppress_outbound,
                         );
@@ -1234,7 +1234,7 @@ impl FrameCtx<'_> {
             // Record this frame's inputs FIRST (keyed at the recorder's current
             // `rendered_frame`), then the model — `record` advances the clock, so
             // both must land on the same frame (docs/time-travel.md T6b).
-            self.recorder.record_inputs(std::mem::take(self.input_buf));
+            self.recorder.record_entries(std::mem::take(self.next));
             let in_flight = if self.has_physics {
                 self.physics_rt.pending_commands()
             } else {
@@ -1249,7 +1249,7 @@ impl FrameCtx<'_> {
             // prefix an exact reconstruction. Later paused zero-delta renders
             // are not simulation history and are discarded by the recorder.
             self.recorder
-                .record_replay_prefix(frame_time, std::mem::take(self.input_buf));
+                .record_replay_prefix(frame_time, std::mem::take(self.next));
         }
     }
 
@@ -1302,7 +1302,7 @@ impl FrameCtx<'_> {
         &mut self,
         divisions: usize,
         steps_per_division: usize,
-        input_at: impl Fn(usize) -> Option<&'a [RecordedInput]>,
+        log_at: impl Fn(usize) -> StepLog<'a>,
         mut frame_time_at: impl FnMut(usize) -> FrameTime,
         capture_from_division: usize,
         mut sampled_input: Option<crate::InputSnapshot>,
@@ -1323,7 +1323,21 @@ impl FrameCtx<'_> {
                 // after the one step that consumes them.
                 let mut delivered_sample = false;
                 let mut projected_edges = crate::InputEdges::default();
-                if let Some(events) = input_at(step) {
+                let (events, recorded): (Option<Vec<&RecordedInput>>, _) = match log_at(step) {
+                    StepLog::Script(inputs) => (Some(inputs.iter().collect()), None),
+                    StepLog::Inputs(entries) => (
+                        Some(entries.iter().filter_map(Entry::input).collect()),
+                        None,
+                    ),
+                    StepLog::Recorded(entries) => (
+                        Some(entries.iter().filter_map(Entry::input).collect()),
+                        Some(entries),
+                    ),
+                    StepLog::Coast => (None, None),
+                };
+                // The step's recorded answers, consumed at its effect calls.
+                self.effect_runner.begin_frame(recorded);
+                if let Some(events) = events {
                     // A recorded UiEvent resolved against the LAST RENDER's
                     // handler table live — the tree the user saw, built from
                     // the settled model BEFORE this step's inputs. Rebuild
@@ -1528,8 +1542,10 @@ impl FrameCtx<'_> {
             Err(err) => self.reporter.frame_error(self.names.sampled_input, &err),
         }
         if record {
-            self.input_buf
-                .push(RecordedInput::Snapshot(Box::new(snapshot.clone())));
+            self.next
+                .push(Entry::Input(RecordedInput::Snapshot(Box::new(
+                    snapshot.clone(),
+                ))));
         }
     }
 
@@ -1575,7 +1591,7 @@ to receive their messages; dropping them",
             self.model,
             effects,
             self.effect_runner,
-            self.effect_log,
+            self.next,
             &mut |message| reports.push(message),
             self.suppress_outbound,
         );
@@ -1585,6 +1601,16 @@ to receive their messages; dropping them",
         for message in reports {
             self.reporter.report_once(message);
         }
+    }
+
+    /// [`Self::absorb`] an outside arrival's `update` (HTTP, WS, completions,
+    /// asset progress). Replay never re-delivers arrivals, so the ops their
+    /// handlers issue stay out of the frame log — else a replay would find
+    /// recorded ops nobody asks for.
+    fn absorb_delivery(&mut self, returned: Value) {
+        let logged = std::mem::take(self.next);
+        self.absorb(returned);
+        *self.next = logged;
     }
 
     /// Fire subscription timers over `(prev_tts, tts]` and fold their messages
@@ -1681,7 +1707,7 @@ to receive their messages; dropping them",
             let args = vec![self.model.clone(), msg];
             journal_push(self.names.update, &args, Provenance::Subscription);
             match self.session.call(self.names.update, args, &mut FunctorHost) {
-                Ok(returned) => self.absorb(returned),
+                Ok(returned) => self.absorb_delivery(returned),
                 Err(err) => self.reporter.frame_error(self.names.update, &err),
             }
         }
@@ -1942,7 +1968,7 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         let args = vec![self.model.clone(), msg];
         journal_push(self.names.update, &args, Provenance::NetEvent);
         match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
+            Ok(returned) => self.absorb_delivery(returned),
             Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
@@ -1966,7 +1992,7 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         let args = vec![self.model.clone(), msg];
         journal_push(self.names.update, &args, Provenance::HttpResponse);
         match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
+            Ok(returned) => self.absorb_delivery(returned),
             Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
@@ -2049,7 +2075,7 @@ carries no payload to tag; dropped",
         let args = vec![self.model.clone(), message];
         journal_push(self.names.update, &args, Provenance::AudioFinished);
         match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
+            Ok(returned) => self.absorb_delivery(returned),
             Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
@@ -2065,7 +2091,7 @@ carries no payload to tag; dropped",
         let args = vec![self.model.clone(), message];
         journal_push(self.names.update, &args, Provenance::PreloadSettled);
         match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
+            Ok(returned) => self.absorb_delivery(returned),
             Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
@@ -2076,23 +2102,60 @@ carries no payload to tag; dropped",
 /// they go nowhere.
 fn silent_emit(_: &str) {}
 
+/// Where a forward-step's per-step input and effect answers come from.
 enum ForwardInputs<'a> {
-    Dense(&'a [Vec<RecordedInput>]),
-    Recorder(&'a SceneRecorder),
+    /// Caller-supplied input (a ghost script, a test): nothing recorded, so
+    /// effects answer with deterministic stand-ins.
+    Script(&'a [Vec<RecordedInput>]),
+    /// Origin replay (counterfactual rebuild): the bootstrap prefix, then frame
+    /// zero onward. Inputs only: it runs edited code, and ops older than the
+    /// retention window are pruned, so its effects answer with stand-ins.
+    Origin(&'a SceneRecorder),
+    /// Branch replay from the selected frame: step `s` is frame `from + s`.
+    Log {
+        recorder: &'a SceneRecorder,
+        from: u64,
+    },
+}
+
+/// One forward step's log.
+enum StepLog<'a> {
+    Script(&'a [RecordedInput]),
+    /// Logged input, effect ops not checked.
+    Inputs(&'a [Entry]),
+    Recorded(&'a [Entry]),
+    /// Past the input: coast on held state.
+    Coast,
 }
 
 impl ForwardInputs<'_> {
-    fn at(&self, step: usize) -> Option<&[RecordedInput]> {
+    fn at(&self, step: usize) -> StepLog<'_> {
         match self {
-            ForwardInputs::Dense(inputs) => inputs.get(step).map(Vec::as_slice),
-            ForwardInputs::Recorder(recorder) => Some(recorder.replay_inputs_at_step(step)),
+            ForwardInputs::Script(inputs) => inputs
+                .get(step)
+                .map_or(StepLog::Coast, |inputs| StepLog::Script(inputs)),
+            ForwardInputs::Origin(recorder) => {
+                StepLog::Inputs(recorder.replay_entries_at_step(step))
+            }
+            ForwardInputs::Log { recorder, from } => recorder
+                .logged(from + step as u64)
+                .map_or(StepLog::Coast, StepLog::Recorded),
         }
     }
 }
 
 enum ForwardClock<'a> {
     Fixed { tts: f32, dts: f32 },
-    Recorder(&'a SceneRecorder),
+    /// Origin replay's recorded clock (prefix-aware).
+    Origin(&'a SceneRecorder),
+    /// The recorded clock from frame `from` (step `s` is frame `from + s`),
+    /// then fixed `dts` steps past the log.
+    Log {
+        recorder: &'a SceneRecorder,
+        from: u64,
+        tts: f32,
+        dts: f32,
+    },
 }
 
 impl ForwardClock<'_> {
@@ -2105,9 +2168,24 @@ impl ForwardClock<'_> {
                     dts: *dts,
                 }
             }
-            ForwardClock::Recorder(recorder) => recorder
+            ForwardClock::Origin(recorder) => recorder
                 .replay_frame_time_at_step(step)
                 .expect("counterfactual replay clock range was validated"),
+            ForwardClock::Log {
+                recorder,
+                from,
+                tts,
+                dts,
+            } => {
+                let time = recorder
+                    .frame_time_at(*from + step as u64)
+                    .unwrap_or(FrameTime {
+                        tts: *tts + *dts,
+                        dts: *dts,
+                    });
+                *tts = time.tts;
+                time
+            }
         }
     }
 }
@@ -2128,8 +2206,8 @@ impl Drop for DryWorld {
 /// The producer entry the shell / T6d call to run a deterministic headless
 /// forward-step (docs/time-travel.md T6b, forward-ghosting). It assembles a
 /// DRY-RUN [`FrameCtx`] over entirely THROWAWAY state — a cloned model, a
-/// silencing reporter, fresh logs/queues, a deterministic [`DryRunEffects`]
-/// runner, `suppress_outbound = true`, and (when the game has physics) a
+/// silencing reporter, fresh logs/queues, a [`ReplayEffects`] runner
+/// (recorded answers where `inputs` is the log, deterministic stand-ins past it), `suppress_outbound = true`, and (when the game has physics) a
 /// throwaway physics world seeded from a snapshot of the live
 /// [`physics::DEFAULT_WORLD`], driven by a fresh [`SteppedPhysics::for_world`]
 /// and scoped ACTIVE ([`physics::ActiveWorldScope`]) so game-code physics
@@ -2201,16 +2279,15 @@ fn forward_step_scene_with_error(
     let mut model = model.clone();
     let mut physics_frame = 0u64;
     let mut dry_recorder = SceneRecorder::new();
-    let mut effect_runner = DryRunEffects::new();
-    let mut effect_log = EffectLog::new();
+    let mut effect_runner = ReplayEffects::new();
     let mut deferred_queries: Vec<EffectTree> = Vec::new();
     let mut pending_events: Vec<PhysicsEvent> = Vec::new();
     let mut live_conn_keys: HashSet<String> = HashSet::new();
     let mut connect_retries: HashMap<String, ConnectRetryState> = HashMap::new();
     let mut prev_tts = prev_tts;
-    // Throwaway input buffer: the forward-step replays `inputs` directly and
-    // never records, so this stays empty — it just satisfies the borrow.
-    let mut input_buf: Vec<RecordedInput> = Vec::new();
+    // Throwaway Δ: the forward-step replays `inputs` directly and never
+    // records it.
+    let mut next: Vec<Entry> = Vec::new();
     // The dry run never tracks assets: no snapshot, throwaway delivered slot.
     let mut delivered_asset_progress: Option<AssetProgress> = None;
     let mut reporter = Reporter::new(
@@ -2221,7 +2298,7 @@ fn forward_step_scene_with_error(
         silent_emit,
     );
 
-    let result = {
+    let mut result = {
         let mut clock = clock;
         let mut model_revision = 0u64;
         let mut ctx = FrameCtx {
@@ -2233,13 +2310,12 @@ fn forward_step_scene_with_error(
             physics_frame: &mut physics_frame,
             recorder: &mut dry_recorder,
             effect_runner: &mut effect_runner as &mut dyn EffectRunner,
-            effect_log: &mut effect_log,
             deferred_queries: &mut deferred_queries,
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
             connect_retries: &mut connect_retries,
             prev_tts: &mut prev_tts,
-            input_buf: &mut input_buf,
+            next: &mut next,
             has_physics,
             has_subscriptions,
             asset_progress: None,
@@ -2257,10 +2333,20 @@ fn forward_step_scene_with_error(
         )
     };
 
+    // A divergence from the log outranks a game error: past it, nothing is
+    // a replay. Divisions from the step where answers stopped lining up on
+    // are dropped (a ghost ends there).
+    let error = effect_runner
+        .finish()
+        .map(str::to_string)
+        .or_else(|| reporter.last_error());
+    if let Some(step) = effect_runner.lost_at() {
+        result.truncate((step / steps_per_division).saturating_sub(capture_from_division));
+    }
     // Natural drop order (declaration-reverse, also on unwind) restores the
     // world scope FIRST, then `dry_world`'s `Drop` removes the throwaway world
     // — so `active_world()` never points at a removed world.
-    (result, reporter.last_error())
+    (result, error)
 }
 
 /// Deterministically project a scene over throwaway state. Runtime errors are
@@ -2294,11 +2380,60 @@ pub fn forward_step_scene(
         },
         divisions,
         steps_per_division,
-        ForwardInputs::Dense(inputs),
+        ForwardInputs::Script(inputs),
         0,
         None,
     )
     .0
+}
+
+/// Branch replay on a fork (design-systems §3.2): from the selected frame `k`'s
+/// recorded model, re-run the recorder's own log for frames `k+1..=k+n` over
+/// throwaway state — recorded input, recorded clock, and recorded effect
+/// answers consumed at their calls — and return each replayed frame's model
+/// and world. The live producer is untouched; the fork's world starts from the
+/// live one, so the caller must have just restored `k`. `Err` is the first
+/// divergence from the log (or game error): past it, the result is not a
+/// replay.
+pub fn replay_frames(
+    session: &Session,
+    names: &EntryNames,
+    recorder: &SceneRecorder,
+    has_physics: bool,
+    has_subscriptions: bool,
+    frames: usize,
+) -> Result<Vec<(Value, Option<physics::PhysicsSnapshot>)>, String> {
+    let (Some(k), Some((_, hi))) = (recorder.current_scene_frame(), recorder.scene_frame_range())
+    else {
+        return Ok(Vec::new());
+    };
+    let Some((model, tts, _)) = recorder.recorded_frame(k) else {
+        return Ok(Vec::new());
+    };
+    let n = frames.min((hi - k) as usize);
+    let (stepped, error) = forward_step_scene_with_error(
+        session,
+        names,
+        model,
+        has_physics,
+        has_subscriptions,
+        Some(tts),
+        ForwardClock::Log {
+            recorder,
+            from: k + 1,
+            tts: tts as f32,
+            dts: 1.0 / 60.0,
+        },
+        n,
+        1,
+        ForwardInputs::Log {
+            recorder,
+            from: k + 1,
+        },
+        0,
+        recorder.sampled_input_at_or_before(k),
+    );
+    error.map_or(Ok(stepped), Err)
 }
 
 /// Rebuild the complete retained pure-model timeline under the currently loaded
@@ -2340,10 +2475,10 @@ pub fn materialize_counterfactual_history(
         false,
         has_subscriptions,
         None,
-        ForwardClock::Recorder(recorder),
+        ForwardClock::Origin(recorder),
         steps,
         1,
-        ForwardInputs::Recorder(recorder),
+        ForwardInputs::Origin(recorder),
         prefix_len + lo as usize,
         None,
     );
@@ -2412,22 +2547,33 @@ pub fn ghost_frames(
     // per-rendered-frame = per-fine-step (both 1/60), so it feeds the fine
     // step index directly. Beyond the recorded window the step coasts. Under
     // F2 (`script_inputs = Some`) the caller's per-fine-step script slice is
-    // used directly, forward-stepping from the current anchor model.
-    let recorded;
-    let inputs: &[Vec<RecordedInput>] = match script_inputs {
-        Some(slice) => slice,
-        None => {
-            recorded = match recorder.current_scene_frame() {
-                Some(k) => recorder.inputs_from(k + 1),
-                None => Vec::new(),
-            };
-            &recorded
-        }
-    };
+    // used directly, forward-stepping from the current anchor model. The
+    // recorded log carries its effect answers, so the ghost reproduces them.
     // Fine sub-step at 1/60; round the division width to a whole number of
     // sub-steps (≥1). At the default 8 divisions over a ~2s window that's
-    // dt = 0.25 → ~15 fine steps per division.
+    // dt = 0.25 → ~15 fine steps per division. Inside the recorded log the
+    // steps take its recorded clock, so recorded answers line up.
     let sub_dt = 1.0f32 / 60.0;
+    let fixed = ForwardClock::Fixed {
+        tts: start_tts as f32,
+        dts: sub_dt,
+    };
+    let (inputs, clock) = match (script_inputs, recorder.current_scene_frame()) {
+        (Some(slice), _) => (ForwardInputs::Script(slice), fixed),
+        (None, Some(k)) => (
+            ForwardInputs::Log {
+                recorder,
+                from: k + 1,
+            },
+            ForwardClock::Log {
+                recorder,
+                from: k + 1,
+                tts: start_tts as f32,
+                dts: sub_dt,
+            },
+        ),
+        (None, None) => (ForwardInputs::Script(&[]), fixed),
+    };
     let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
     let sampled_input = recorder
         .current_scene_frame()
@@ -2442,13 +2588,10 @@ pub fn ghost_frames(
         // a scrubbed preview must not seed subscription windows from the old
         // live tail's `prev_tts`.
         recorder.current_scene_frame_tts().or(prev_tts),
-        ForwardClock::Fixed {
-            tts: start_tts as f32,
-            dts: sub_dt,
-        },
+        clock,
         divisions,
         steps_per_division,
-        ForwardInputs::Dense(inputs),
+        inputs,
         0,
         sampled_input,
     )
@@ -3215,7 +3358,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             },
             2,
             1,
-            ForwardInputs::Dense(&[]),
+            ForwardInputs::Script(&[]),
             0,
             Some(carried),
         );
@@ -3341,14 +3484,13 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         let mut physics_rt = SteppedPhysics::new();
         let mut physics_frame = 0u64;
         let mut recorder = SceneRecorder::new();
-        let mut effect_runner = DryRunEffects::new();
-        let mut effect_log = EffectLog::new();
+        let mut effect_runner = ReplayEffects::new();
         let mut deferred_queries: Vec<EffectTree> = Vec::new();
         let mut pending_events: Vec<PhysicsEvent> = Vec::new();
         let mut live_conn_keys: HashSet<String> = HashSet::new();
         let mut connect_retries: HashMap<String, ConnectRetryState> = HashMap::new();
         let mut prev_tts: Option<f64> = None;
-        let mut input_buf: Vec<RecordedInput> = Vec::new();
+        let mut next: Vec<Entry> = Vec::new();
         let mut delivered_asset_progress: Option<AssetProgress> = None;
         let mut reporter = Reporter::new(
             SpanSource::Single {
@@ -3367,13 +3509,12 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             physics_frame: &mut physics_frame,
             recorder: &mut recorder,
             effect_runner: &mut effect_runner as &mut dyn EffectRunner,
-            effect_log: &mut effect_log,
             deferred_queries: &mut deferred_queries,
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
             connect_retries: &mut connect_retries,
             prev_tts: &mut prev_tts,
-            input_buf: &mut input_buf,
+            next: &mut next,
             has_physics: false,
             has_subscriptions: false,
             asset_progress: None,
@@ -3510,7 +3651,6 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         let mut physics_frame = 0u64;
         let mut recorder = SceneRecorder::new();
         let mut effect_runner = FakeEffects::new(42.0, vec![0.0]);
-        let mut effect_log = EffectLog::new();
         let mut deferred_queries: Vec<EffectTree> = Vec::new();
         let mut pending_events: Vec<PhysicsEvent> = Vec::new();
         let mut live_conn_keys: HashSet<String> = HashSet::new();
@@ -3518,7 +3658,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         // prev_tts just below a period boundary so this frame crosses 1.0s and
         // fires the `Sub.every` timer.
         let mut prev_tts: Option<f64> = Some(0.9);
-        let mut input_buf: Vec<RecordedInput> = Vec::new();
+        let mut next: Vec<Entry> = Vec::new();
         let mut delivered_asset_progress: Option<AssetProgress> = None;
         let mut reporter = Reporter::new(
             SpanSource::Single {
@@ -3537,13 +3677,12 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             physics_frame: &mut physics_frame,
             recorder: &mut recorder,
             effect_runner: &mut effect_runner as &mut dyn EffectRunner,
-            effect_log: &mut effect_log,
             deferred_queries: &mut deferred_queries,
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
             connect_retries: &mut connect_retries,
             prev_tts: &mut prev_tts,
-            input_buf: &mut input_buf,
+            next: &mut next,
             has_physics: false,
             has_subscriptions: true,
             asset_progress: None,
@@ -3577,14 +3716,13 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         let mut physics_rt = SteppedPhysics::new();
         let mut physics_frame = 0u64;
         let mut recorder = SceneRecorder::new();
-        let mut effect_runner = DryRunEffects::new();
-        let mut effect_log = EffectLog::new();
+        let mut effect_runner = ReplayEffects::new();
         let mut deferred_queries: Vec<EffectTree> = Vec::new();
         let mut pending_events: Vec<PhysicsEvent> = Vec::new();
         let mut live_conn_keys: HashSet<String> = HashSet::new();
         let mut connect_retries: HashMap<String, ConnectRetryState> = HashMap::new();
         let mut prev_tts: Option<f64> = Some(tts - 0.1);
-        let mut input_buf: Vec<RecordedInput> = Vec::new();
+        let mut next: Vec<Entry> = Vec::new();
         let mut reporter = Reporter::new(
             SpanSource::Single {
                 src: ASSETS_SRC.to_string(),
@@ -3602,13 +3740,12 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             physics_frame: &mut physics_frame,
             recorder: &mut recorder,
             effect_runner: &mut effect_runner as &mut dyn EffectRunner,
-            effect_log: &mut effect_log,
             deferred_queries: &mut deferred_queries,
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
             connect_retries: &mut connect_retries,
             prev_tts: &mut prev_tts,
-            input_buf: &mut input_buf,
+            next: &mut next,
             has_physics: false,
             has_subscriptions: true,
             asset_progress: progress,
@@ -3808,13 +3945,12 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         physics_frame: u64,
         recorder: SceneRecorder,
         effect_runner: crate::functor_lang_prelude::FakeEffects,
-        effect_log: EffectLog,
         deferred_queries: Vec<EffectTree>,
         pending_events: Vec<PhysicsEvent>,
         live_conn_keys: HashSet<String>,
         connect_retries: HashMap<String, ConnectRetryState>,
         prev_tts: Option<f64>,
-        input_buf: Vec<RecordedInput>,
+        next: Vec<Entry>,
         delivered_asset_progress: Option<AssetProgress>,
         reporter: Reporter,
         tts: f32,
@@ -3837,13 +3973,12 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
                 physics_frame: 0,
                 recorder: SceneRecorder::new(),
                 effect_runner: crate::functor_lang_prelude::FakeEffects::new(0.0, vec![0.0]),
-                effect_log: EffectLog::new(),
                 deferred_queries: Vec::new(),
                 pending_events: Vec::new(),
                 live_conn_keys: HashSet::new(),
                 connect_retries: HashMap::new(),
                 prev_tts: None,
-                input_buf: Vec::new(),
+                next: Vec::new(),
                 delivered_asset_progress: None,
                 reporter: Reporter::new(
                     SpanSource::Single {
@@ -3866,13 +4001,12 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
                 physics_frame: &mut self.physics_frame,
                 recorder: &mut self.recorder,
                 effect_runner: &mut self.effect_runner as &mut dyn EffectRunner,
-                effect_log: &mut self.effect_log,
                 deferred_queries: &mut self.deferred_queries,
                 pending_events: &mut self.pending_events,
                 live_conn_keys: &mut self.live_conn_keys,
                 connect_retries: &mut self.connect_retries,
                 prev_tts: &mut self.prev_tts,
-                input_buf: &mut self.input_buf,
+                next: &mut self.next,
                 has_physics: true,
                 has_subscriptions: false,
                 asset_progress: None,

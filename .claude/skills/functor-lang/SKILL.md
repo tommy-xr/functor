@@ -1257,7 +1257,7 @@ you match on) exactly as you would any external data. A slot key is a NAME,
 not a path: letters, digits, `_` and `-`, 1–64 characters. Natively a slot is
 `<project>/.functor/saves/<slot>.json`, written atomically; on the web it is
 one project-scoped `localStorage` key. Both are ordinary effects — they drain
-through the broker, land in the structured effect log (`storage.save` /
+through the broker, land in the frame log (`storage.save` /
 `storage.load`), and are canned by the fake/replay runners, so a saving game
 still replays deterministically. Hot-reload preserves the model in dev, which
 HIDES the absence of a save: reach for these as soon as progress must survive

@@ -242,12 +242,13 @@ snapshots — no GPU, fully agent-verifiable.
       `SystemTime` panics), `FakeEffects`, `ReplayEffects` — applies the
       tagger via the new `Session::apply`, folds the message through
       `update`, and drains chained effects to a fixed point (1000/frame
-      cap). Every performed effect lands in the **structured EffectLog**
-      (`{kind, value}` — replay's input format). Taggers run same-frame, so
+      cap). Every answer (`now`, `random`, `load`) and outbound intent lands
+      in the **frame log** as an `Answer` / `Issued` entry (replay's input;
+      design-systems PR 2). Taggers run same-frame, so
       no closure outlives its session (no reload hazard). *Verify (done):*
       the broker contract as exact arithmetic — same program under fake and
       replay produces the same model, the fake run's log IS replay's input,
-      divergent replay fails loud with position; construction teaching
+      divergent replay reports the op; construction teaching
       errors; runaway-chain cap; SDK e2e through the real runner (key →
       Effect.random → chained Effect.now → both sentinels replaced).
 - [x] **Language: record updates + local mutability** (2026-07-02; design:
