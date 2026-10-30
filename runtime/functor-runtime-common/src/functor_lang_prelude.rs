@@ -5260,16 +5260,28 @@ functions or engine values"
         then: Box::new(move |built| {
             // A builder must be pure: any noted read is state deps can't capture.
             if let Some((class, reader)) = read_since(reads_before) {
-                let what = match class {
-                    ReadClass::File => "project files",
-                    ReadClass::Physics => "the live physics world",
-                    ReadClass::Ui => "UI handler slots",
+                // File data isn't plain, so it can't travel in deps; a
+                // top-level value can.
+                let (what, fix) = match class {
+                    ReadClass::File => (
+                        "project files",
+                        "read the file in a top-level value (`let level = File.bytes(…)`) \
+and use that value in the builder",
+                    ),
+                    ReadClass::Physics => (
+                        "the live physics world",
+                        "make that read outside the memo and pass the values the builder needs \
+in deps",
+                    ),
+                    ReadClass::Ui => (
+                        "UI handler slots",
+                        "build UI widgets outside the memo",
+                    ),
                 };
                 let reader = reader.map(|path| format!(" ({path})")).unwrap_or_default();
                 return Err(format!(
                     "{via}: the builder read {what}{reader} — an impure[{class}] read, which \
-deps cannot capture, so the cached {noun} would freeze — make that read outside the memo and \
-pass the values the builder needs in deps"
+deps cannot capture, so the cached {noun} would freeze — {fix}"
                 ));
             }
             let scene = finish(built)?;
@@ -5550,8 +5562,9 @@ fn read_counts() -> [u64; ReadClass::ALL.len()] {
     ReadClass::ALL.map(read_count)
 }
 
-/// The first class read since `before` ([`read_counts`]), with the built-in
-/// that last read it: `(Physics, Some("Physics.cast"))`.
+/// The first class (in [`ReadClass::ALL`] order) read since `before`
+/// ([`read_counts`]), with the built-in that last read it:
+/// `(Physics, Some("Physics.cast"))`.
 fn read_since(before: [u64; ReadClass::ALL.len()]) -> Option<(ReadClass, Option<&'static str>)> {
     let class = ReadClass::ALL
         .into_iter()
@@ -10176,10 +10189,6 @@ let frame = (n) => Scene.memo(\"memo-dag\", deep(60.0), build(n))
         // A builtin holds no code identity a reload could invalidate.
         let builtin = err("let frame = (n) => Scene.memo(\"k5\", [], List.fold((s, x) => s, Scene.cube()))");
         assert!(builtin.contains("must be a lambda or def"), "{builtin}");
-        let world = err("let frame = (n) => Scene.memo(\"k6\", n, (d) =>
-  let hit = Physics.cast(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 1.0) in
-  Scene.cube())");
-        assert!(world.contains("read the live physics world"), "{world}");
         let result = err("let frame = (n) => Scene.memo(\"k4\", n, (d) => d)");
         assert!(result.contains("must return a Scene, got a number"), "{result}");
     }
@@ -10192,7 +10201,8 @@ let frame = (n) => Scene.memo(\"memo-dag\", deep(60.0), build(n))
             (
                 "let m = { f: (p) => File.exists(p) } in \
                  Scene.memo(\"rc-file\", n, (d) => if m.f(Path.of(\"x.bin\")) then Scene.cube() else Scene.sphere())",
-                "read project files (File.exists) — an impure[file] read",
+                "read project files (File.exists) — an impure[file] read, which deps cannot \
+capture, so the cached scene would freeze — read the file in a top-level value",
             ),
             (
                 "Scene.memo(\"rc-physics\", n, (d) => \

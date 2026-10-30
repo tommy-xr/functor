@@ -198,7 +198,8 @@ let bytes : (Path.t) => Bytes.t
 - Docs quote the header with the signature (the JSON lists it as `reads`), and
   hover leads with it.
 - The host notes each read with `note_read(class)`; that run-time record is
-  the authority (reload reuse today; `Scene.memo` checks physics reads). A drift test pins each header to the
+  the authority (reload reuse; `Scene.memo` / `Physics.memo` refuse a builder that
+  reads any class). A drift test pins each header to the
   classes its built-in notes, and debug builds assert a noted class is declared.
 
 ## Module semantics summary
