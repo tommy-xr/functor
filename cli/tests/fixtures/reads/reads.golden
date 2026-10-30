@@ -1,0 +1,10 @@
+World.load : impure[file] — file: File.exists
+level : impure[file] — file: World.load → File.exists
+reader : impure[file] — file: File.exists
+applyTo : pure
+probe : impure[file] — file: reader → File.exists
+init : pure
+groundAt : impure[physics] — physics: Physics.cast
+tick : impure[physics] — physics: groundAt → Physics.cast
+draw : pure
+ui : impure[ui] — ui: Ui.button

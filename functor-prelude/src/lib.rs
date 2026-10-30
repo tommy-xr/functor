@@ -153,4 +153,47 @@ mod tests {
         assert_eq!(animator.kind(), BundledModuleKind::Implementation);
         assert!(animator.source().contains("let pose"));
     }
+
+    /// `reads::CLOSURE_HOLDERS` names the host types that can hold a
+    /// function: each is a prelude type, and a built-in taking a function
+    /// returns one, unless it only applies it (the memo builders).
+    #[test]
+    fn closure_holders_cover_every_builtin_that_keeps_a_function() {
+        use functor_lang::ast::TypeName;
+        use functor_lang::reads::CLOSURE_HOLDERS;
+        const APPLY_ONLY: [&str; 2] = ["Scene.memo", "Physics.memo"];
+        fn mentions(ty: &TypeName, hit: &dyn Fn(&str) -> bool) -> bool {
+            hit(&ty.name) || ty.args.iter().any(|arg| mentions(arg, hit))
+        }
+        let sources = vec![("game.fun".into(), "let main = () => 1.0\n".to_string())];
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            sources,
+            &bundled_modules(),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.render()));
+        let module = &project.module;
+        for holder in CLOSURE_HOLDERS {
+            assert!(
+                module.types.iter().any(|decl| decl.name == holder),
+                "`{holder}` is not a prelude type"
+            );
+        }
+        for sig in &module.signatures {
+            let Some((ret, params)) = (sig.ty.name == "=>")
+                .then(|| sig.ty.args.split_last())
+                .flatten()
+            else {
+                continue;
+            };
+            let takes_fn = params.iter().any(|p| mentions(p, &|name| name == "=>"));
+            if takes_fn && !APPLY_ONLY.contains(&sig.name.as_str()) {
+                assert!(
+                    mentions(ret, &|name| CLOSURE_HOLDERS.contains(&name)),
+                    "`{}` takes a function but returns no `reads::CLOSURE_HOLDERS` type — \
+add its type there, or to APPLY_ONLY if it only calls the function",
+                    sig.name
+                );
+            }
+        }
+    }
 }

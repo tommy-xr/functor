@@ -817,6 +817,46 @@ fn prelude_gives_host_calls_real_types() {
     server.child.wait().expect("wait for exit");
 }
 
+/// Hover on a user def leads with its inferred `impure[…]` classes, spread
+/// from the prelude's headers through the defs it calls.
+#[test]
+fn hover_shows_a_user_defs_inferred_reads() {
+    let mut server = Server::spawn();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} },
+    }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    let text = "let has = (p) => File.exists(Path.of(p))\n\
+                let tick = (m: float) => if has(\"a\") then m else 0.0\n";
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": URI, "languageId": "functor-lang", "version": 1, "text": text,
+        } },
+    }));
+    server.recv(); // publishDiagnostics (clean)
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 1, "character": 5 }, // `tick`
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(
+        response["result"]["contents"]["value"],
+        "```functor\nimpure[file]\ntick : (float) => float\n```",
+        "inferred reads lead the hover: {response}"
+    );
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
+}
+
 /// The live expect-test flow: didOpen pushes `running` immediately, then the
 /// async worker's settled statuses arrive with pass/fail/unrunnable states
 /// and the decomposed-comparison detail; an edit re-pushes `running` and
