@@ -9,6 +9,11 @@
 // trigger throttle, left trigger brake, left stick steers, north button
 // (Y / triangle) swaps cameras.
 //
+// With a headset (`bars.fun`) you ride from the calibrated eye: squeeze both
+// grips to hold the bars, turn them to steer, right trigger throttle, left
+// trigger brake. Left X: vignette strength; left Y: smooth or stepped
+// turning; right A: seated or standing; left menu: recalibrate (hold still).
+//
 // The bike is a `Physics.character`, so rapier collides and slides it against
 // the ground, walls and props. Each step `tick` casts the four hover probes,
 // the pure controller in `ride.fun` turns them into a velocity, and
@@ -77,6 +82,8 @@ type Model = {
   swapHeld: bool,
   respawn: bool,
   switchCourse: bool,
+  // The headset rider: grips, calibration and comfort.
+  vr: Bars.Rider,
 }
 
 let positionOf = (v: Vec3.t): Physics.position => { x: Vec3.x(v), y: Vec3.y(v), z: Vec3.z(v) }
@@ -104,6 +111,7 @@ let init: Model = {
   swapHeld: false,
   respawn: false,
   switchCourse: false,
+  vr: Bars.rider,
 }
 
 // ---- Input ---------------------------------------------------------------
@@ -113,7 +121,19 @@ let pressed = (k: Key.t, snap: Input.snapshot) => snap.pressedKeys |> List.any((
 let level = (k: Key.t, snap: Input.snapshot) => if held(k, snap) then 1.0 else 0.0
 let deadzone = (v: float) => if Math.abs(v) < 0.15 then 0.0 else v
 
+// Keys shared by every input path: respawn and course.
+let commands = (snap: Input.snapshot, m: Model) =>
+  { m with respawn: m.respawn || pressed(Key.R, snap), switchCourse: m.switchCourse || pressed(Key.T, snap) }
+
 let sampledInput = (m: Model, snap: Input.snapshot) =>
+  match snap.xr with
+  | Option.Some(x) =>
+    let (vr, controls) = Bars.read(m.speed < Bars.restSpeed, x, m.vr) in
+    commands(snap, { m with vr: vr, controls: controls })
+  | Option.None => commands(snap, flat(m, snap))
+
+// Keyboard and gamepad.
+let flat = (m: Model, snap: Input.snapshot) =>
   let pad = (match snap.gamepad with
     | Option.Some(g) => { throttle: g.rightTrigger, brake: g.leftTrigger, steer: -deadzone(g.leftStick.x), swap: g.north }
     | Option.None => { throttle: 0.0, brake: 0.0, steer: 0.0, swap: false }) in
@@ -124,8 +144,7 @@ let sampledInput = (m: Model, snap: Input.snapshot) =>
                 steer: Math.clamp(-1.0, 1.0, level(Key.A, snap) - level(Key.D, snap) + pad.steer) },
     riderCam: if swap then not m.riderCam else m.riderCam,
     swapHeld: pad.swap,
-    respawn: m.respawn || pressed(Key.R, snap),
-    switchCourse: m.switchCourse || pressed(Key.T, snap) }
+    vr: if m.vr.present then Bars.absent(m.vr) else m.vr }
 
 // ---- Simulation ----------------------------------------------------------
 
@@ -166,27 +185,36 @@ let collided = (m: Model, c: Physics.position, dt: float): Ride.State =>
 let startOn = (course: Course, m: Model) =>
   let at = positionOf(spawnOf(course)) in
   ({ init with course: course, prev: poseOf(at, Ride.rest), last: at,
-               riderCam: m.riderCam, swapHeld: m.swapHeld, controls: m.controls },
+               riderCam: m.riderCam, swapHeld: m.swapHeld, controls: m.controls,
+               vr: { m.vr with snap: Bars.idleSnap, vignette: 0.0 } },
    Physics.teleport(bikeTag, spawnOf(course)))
 
 // One step, from where the bike is and what its probes saw. Until the probes
 // have all seen ground the ride holds still; on the dunes, the boundary cuts
-// outward thrust and pulls the bike back in.
+// outward thrust and pulls the bike back in. Slow, stepped turning steers by
+// snaps instead: a snap turns the bike and the last pose together, so the
+// drawn rig doesn't sweep between them.
 let advance = (m: Model, c: Physics.position, probes: List<Ride.Probe>, dt: float): Model =>
   let ready = m.ready || Ride.sensed(probes) in
-  let ride =
+  let snapping = Bars.snapping(m.vr, m.speed) in
+  let controls = if snapping then { m.controls with steer: 0.0 } else m.controls in
+  let stepped =
     if not ready then m.ride
     else
       match m.course with
-      | OnDunes => Ride.step(Dunes.limit(c.x, c.z, m.ride.yaw, m.controls), probes, dt, collided(m, c, dt)) |> Dunes.recover(c.x, c.z, dt)
-      | OnStand => Ride.step(m.controls, probes, dt, collided(m, c, dt)) in
+      | OnDunes => Ride.step(Dunes.limit(c.x, c.z, m.ride.yaw, controls), probes, dt, collided(m, c, dt)) |> Dunes.recover(c.x, c.z, dt)
+      | OnStand => Ride.step(controls, probes, dt, collided(m, c, dt)) in
+  let (snap, turned) = Bars.turn(snapping && ready, m.vr.steer, dt, m.vr.snap) in
+  let ride = if turned == 0.0 then stepped else Bars.rotate(turned, stepped) in
   let distances = probes |> List.map((p) => if p.hit then p.distance else Ride.probeRange) in
   let clearance = List.sum(distances) / List.length(distances) in
   let speed = Ride.speedOf(ride) in
   let steps = m.steps + 1.0 in
   let refresh = Math.mod(steps, 6.0) == 0.0 in
-  { m with ready: ready, ride: ride, prev: poseOf(c, m.ride), last: c, probes: distances, clearance: clearance,
-           speed: speed, steps: steps,
+  let target = Bars.discomfort((speed - m.speed) / dt, ride.yawRate, speed, ride.vy) in
+  { m with ready: ready, ride: ride, prev: poseOf(c, { m.ride with yaw: m.ride.yaw + turned }), last: c,
+           probes: distances, clearance: clearance, speed: speed, steps: steps,
+           vr: { m.vr with snap: snap, vignette: Bars.envelope(target, dt, m.vr.vignette) },
            kmh: if refresh then Math.round(speed * 3.6) else m.kmh,
            hover: if refresh then Math.round(clearance * 10.0) / 10.0 else m.hover }
 
@@ -232,11 +260,19 @@ let sky = Color.rgb(0.1, 0.06, 0.16)
 let haze = Color.rgb(0.3, 0.17, 0.3)
 let speedo = RenderTarget.named("speedo") |> RenderTarget.sized(128.0, 64.0)
 
+// With a headset, a third line says what the rider must do next.
+let prompt = (r: Bars.Rider) =>
+  if r.pending then "hold still"
+  else if not (r.left.latched && r.right.latched) then "grab grips"
+  else if not r.armed then "let go of throttle"
+  else if r.stepped then "stepped turns"
+  else "smooth turns"
+
 let gaugeView = (m: Model) =>
   Ui.column([
     Ui.row([Ui.textColor(Bike.ion, $"{m.kmh}"), Ui.text("km/h")]),
     Ui.text($"hover {Text.fixed(m.hover, 1.0)} m"),
-  ])
+  ] |> List.append(if m.vr.present then [Ui.textColor(Bike.tag, prompt(m.vr))] else []))
 
 // `alpha` of the way from the last step's pose to the live one.
 let between = (a: Pose, b: Pose, alpha: float): Pose =>
@@ -256,6 +292,47 @@ let camera = (riderCam: bool, origin: Vec3.t, yaw: float) =>
     Camera3D.firstPerson(rigPoint(origin, yaw, 0.0, 1.46, -0.35), Angle.radians(yaw), 0deg, 75deg)
   else Camera3D.lookAt(rigPoint(origin, yaw, 0.0, 3.0, -7.5), rigPoint(origin, yaw, 0.0, 1.2, 3.0))
 
+// The headset camera: the rig-local origin placed so the calibrated head
+// lands on the eye, turned by the calibration's heading. Yaw-only, so the
+// horizon stays level; tracking composes the head on top.
+let headsetCamera = (r: Bars.Rider, origin: Vec3.t, yaw: float) =>
+  let o = Bars.rigOrigin(r) in
+  Camera3D.firstPerson(rigPoint(origin, yaw, o.x, o.y, o.z), Angle.radians(yaw - r.calibration.yaw), 0deg, 75deg)
+
+// The camera maps a rig-local pose where `Bars.toBike` says it is.
+expect (
+  let r = { Bars.rider with calibration: { x: 0.1, y: -0.08, z: 0.2, yaw: 0.6 }, standing: true } in
+  let origin = Vec3.make(3.0, 1.0, -2.0) in
+  let p: Input.point3 = { x: 0.3, y: -0.4, z: -0.5 } in
+  let mapped = Camera3D.mapTrackedPose(headsetCamera(r, origin, 0.7), Bars.pose(p)) in
+  let b = Bars.toBike(r.calibration, Bars.eyeOf(r), p) in
+  let w = rigPoint(origin, 0.7, b.x, b.y, b.z) in
+  Math.abs(mapped.position.x - Vec3.x(w)) < 0.0001 && Math.abs(mapped.position.y - Vec3.y(w)) < 0.0001
+    && Math.abs(mapped.position.z - Vec3.z(w)) < 0.0001
+)
+
+// Each tracked hand, where it really is: lit ion once latched.
+let hands = (r: Bars.Rider, origin: Vec3.t, yaw: float) =>
+  Scene.group([r.left, r.right] |> List.filter((h) => h.tracked) |> List.map((h) =>
+    Scene.sphere() |> Scene.scale(0.045) |> Scene.emissive(if h.latched then Bike.ion else Bike.tag)
+      |> Scene.translate(rigPoint(origin, yaw, h.at.x, h.at.y, h.at.z))))
+
+// The comfort layer over the frame: the vignette, its clear radius the
+// aperture, and the stepped turn's fade. Absent when both are clear.
+let vignette = Asset.texture("vignette.png")
+let black = Color.rgb(0.0, 0.0, 0.0)
+let withComfort = (r: Bars.Rider, frame) =>
+  let closed = Bars.closure(r) in
+  let fade = Bars.fade(r.snap) in
+  if not r.present || (closed < 0.01 && fade <= 0.0) then frame
+  else
+    let size = 2.0 * Bars.aperture(closed) / Bars.vignetteInner in
+    frame |> Frame.with2D(Camera2D.create(Bars.layerWidth, Bars.layerHeight),
+      Sprite.group([
+        if closed < 0.01 then Sprite.blank() else Sprite.image(size, size, vignette),
+        if fade <= 0.0 then Sprite.blank() else Sprite.rectangle(black, 4.0, 4.0) |> Sprite.fade(fade),
+      ]))
+
 let lights = [
   Light.ambient(Color.rgb(0.32, 0.28, 0.4)),
   Light.directional(Vec3.make(0.3, -0.6, -0.7), Color.rgb(1.0, 0.75, 0.65), 0.9),
@@ -264,19 +341,22 @@ let lights = [
 let draw = (m: Model, tts, alpha: float) =>
   let p = between(m.prev, poseOf(Physics.position(bikeTag), m.ride), alpha) in
   let origin = rigOrigin(p.x, p.y, p.z) in
-  let rig = Bike.draw(p.roll, p.pitch, m.probes, not m.riderCam, speedo)
+  let headset = m.vr.present in
+  let rig = Bike.draw(p.roll, p.pitch, m.probes, not m.riderCam && not headset, speedo)
     |> Scene.rotateY(Angle.radians(p.yaw)) |> Scene.translate(origin) in
-  let view = camera(m.riderCam, origin, p.yaw) in
+  let view = if headset then headsetCamera(m.vr, origin, p.yaw) else camera(m.riderCam, origin, p.yaw) in
+  let world = (course) => Scene.group([course, rig] |> List.append(if headset then [hands(m.vr, origin, p.yaw)] else [])) in
   (match m.course with
    | OnDunes =>
-     Frame.createLit(view |> Camera3D.clip(0.1, 450.0), Scene.group([Dunes.scene, rig]), Dunes.lights)
+     Frame.createLit(view |> Camera3D.clip(0.1, 450.0), world(Dunes.scene), Dunes.lights)
        |> Frame.withClearColor(haze)
        |> Frame.withFog(Fog.linear(120.0, 420.0, haze))
    | OnStand =>
-     Frame.createLit(view, Scene.group([Stand.scene, rig]), lights)
+     Frame.createLit(view, world(Stand.scene), lights)
        |> Frame.withClearColor(sky)
        |> Frame.withFog(Fog.linear(60.0, 260.0, sky)))
     |> Frame.withUiTarget(speedo, gaugeView(m))
+    |> withComfort(m.vr)
 
 let ui = (m: Model) =>
   Ui.column([
@@ -286,6 +366,6 @@ let ui = (m: Model) =>
   ])
     |> Ui.panel(Ui.bottomRight())
 
-// Quest: 120 Hz, no foveation. The handlebars come in a later change.
+// Quest: 120 Hz, no foveation.
 let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(120.0))
 let settings = (m: Model) => Settings.create() |> Settings.xr(Xr.create() |> Xr.foveation(Xr.Off))
