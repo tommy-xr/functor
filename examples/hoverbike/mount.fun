@@ -27,17 +27,15 @@ let near = (x: float, z: float, look: float, sx: float, sz: float): bool =>
 // ride above a standing walker's head, so the reach is generous.
 let reach = 0.6 // m
 
-let distance = (a: Input.point3, b: Input.point3) => Bars.distance(a, b)
-
 // A fresh squeeze: squeezing now, not the step before, tracked both times.
 let fresh = (before: Bars.Hand, now: Bars.Hand) =>
   now.tracked && before.tracked && now.squeezing && not before.squeezing
 
-// Whether a mount request goes through: on foot, not fading, near the seat;
+// Whether a mount request (on foot, not fading) goes through: near the seat;
 // and for a headset hand's grab (`hand` ≠ 0), calibrated, with that hand
 // `toGrip` from its grip.
-let eligible = (onFoot: bool, fading: bool, near: bool, hand: float, calibrated: bool, toGrip: float) =>
-  onFoot && not fading && near && (hand == 0.0 || (calibrated && toGrip < reach))
+let eligible = (near: bool, hand: float, calibrated: bool, toGrip: float) =>
+  near && (hand == 0.0 || (calibrated && toGrip < reach))
 
 // ---- The fade ------------------------------------------------------------
 
@@ -116,11 +114,9 @@ expect (
 )
 
 // Eligibility: E needs only to be near; a grab needs the calibration and the
-// reach; neither while riding or mid-fade.
-expect eligible(true, false, true, 0.0, false, 9.0) && eligible(true, false, true, 1.0, true, 0.5)
-expect not eligible(true, false, false, 0.0, true, 0.0) && not eligible(false, false, true, 0.0, true, 0.0)
-  && not eligible(true, true, true, 0.0, true, 0.0)
-expect not eligible(true, false, true, -1.0, true, 0.7) && not eligible(true, false, true, 1.0, false, 0.1)
+// reach.
+expect eligible(true, 0.0, false, 9.0) && eligible(true, 1.0, true, 0.5) && not eligible(false, 0.0, true, 0.0)
+expect not eligible(true, -1.0, true, 0.7) && not eligible(true, 1.0, false, 0.1)
 
 // The fade: its action lands on the step it is fully black, six steps in at
 // 60 Hz; it is clear again after 15 (to a float's width), and never black twice.
