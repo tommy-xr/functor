@@ -5252,18 +5252,24 @@ functions or engine values"
         ));
     }
     let args = vec![deps.clone()];
-    let reads_before = read_count(ReadClass::Physics);
+    let reads_before = read_counts();
     Ok(HostReturn::Apply(Box::new(HostApply {
         callee: builder,
         args,
         via,
         then: Box::new(move |built| {
-            if read_count(ReadClass::Physics) != reads_before {
+            // A builder must be pure: any noted read is state deps can't capture.
+            if let Some((class, reader)) = read_since(reads_before) {
+                let what = match class {
+                    ReadClass::File => "project files",
+                    ReadClass::Physics => "the live physics world",
+                    ReadClass::Ui => "UI handler slots",
+                };
+                let reader = reader.map(|path| format!(" ({path})")).unwrap_or_default();
                 return Err(format!(
-                    "{via}: the builder read the live physics world \
-(Physics.position / linearVelocity / cast / transformed), which deps cannot capture, so \
-the cached {noun} would freeze — make that read outside the memo and pass the values the \
-builder needs in deps"
+                    "{via}: the builder read {what}{reader} — an impure[{class}] read, which \
+deps cannot capture, so the cached {noun} would freeze — make that read outside the memo and \
+pass the values the builder needs in deps"
                 ));
             }
             let scene = finish(built)?;
@@ -5515,6 +5521,9 @@ thread_local! {
     /// compare counts around an evaluation to see what it read.
     static READS: [std::cell::Cell<u64>; ReadClass::ALL.len()] =
         const { [const { std::cell::Cell::new(0) }; ReadClass::ALL.len()] };
+    /// The built-in behind each class's latest read, for errors.
+    static LAST_READER: [std::cell::Cell<Option<&'static str>>; ReadClass::ALL.len()] =
+        const { [const { std::cell::Cell::new(None) }; ReadClass::ALL.len()] };
 }
 
 /// Note a read of ambient host state at call time. Every such read in the
@@ -5528,10 +5537,26 @@ fn note_read(class: ReadClass) {
         let count = &reads[class as usize];
         count.set(count.get() + 1);
     });
+    let reader = crate::host_registry::running();
+    LAST_READER.with(|last| last[class as usize].set(reader));
 }
 
 fn read_count(class: ReadClass) -> u64 {
     READS.with(|reads| reads[class as usize].get())
+}
+
+/// The read counts of every class, to compare around an evaluation.
+fn read_counts() -> [u64; ReadClass::ALL.len()] {
+    ReadClass::ALL.map(read_count)
+}
+
+/// The first class read since `before` ([`read_counts`]), with the built-in
+/// that last read it: `(Physics, Some("Physics.cast"))`.
+fn read_since(before: [u64; ReadClass::ALL.len()]) -> Option<(ReadClass, Option<&'static str>)> {
+    let class = ReadClass::ALL
+        .into_iter()
+        .find(|&class| read_count(class) != before[class as usize])?;
+    Some((class, LAST_READER.with(|last| last[class as usize].get())))
 }
 
 /// Reads of every class but `file` (whose reads are recorded as inputs).
@@ -7591,6 +7616,30 @@ doesn't declare it — add `impure[physics]` above it"
             Value::Bool(true)
         });
         let _ = reg.call("Physics.peek", &[], Span::new(0, 0));
+    }
+
+    /// So does one noted in a [`HostReturn::Apply`] continuation.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "`Physics.peekLater` reads physics state")]
+    fn an_undeclared_read_in_a_continuation_fails_the_debug_assertion() {
+        let mut reg = crate::host_registry::Registry::default();
+        reg.fn0("Physics.peekLater", "Physics.peekLater()", || {
+            Ok::<_, String>(HostReturn::Apply(Box::new(HostApply {
+                callee: Value::Bool(true),
+                args: Vec::new(),
+                via: "Physics.peekLater",
+                then: Box::new(|value| {
+                    note_read(ReadClass::Physics);
+                    Ok(value)
+                }),
+            })))
+        });
+        let Some(Ok(HostReturn::Apply(apply))) = reg.call("Physics.peekLater", &[], Span::new(0, 0))
+        else {
+            panic!("expected an Apply");
+        };
+        let _ = (apply.then)(Value::Bool(true));
     }
 
     // The C1 verify criterion (docs/functor-lang.md): an .fun snippet emits exactly
@@ -10077,7 +10126,7 @@ let physics = (doorY) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [
                 "[Physics.memo(\"pm-e11\", 0.0, (d) => \
                   if Physics.cast(Vec3.make(0.0, 1.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 2.0).hit \
                   then [] else [fixed(\"a\")])]",
-                "Physics.memo: the builder read the live physics world",
+                "Physics.memo: the builder read the live physics world (Physics.cast)",
             ),
             (
                 "[Physics.memo(\"pm-e12\", 0.0, (d) => [Physics.heightfield(Physics.tag(\"t\"), \
@@ -10133,6 +10182,44 @@ let frame = (n) => Scene.memo(\"memo-dag\", deep(60.0), build(n))
         assert!(world.contains("read the live physics world"), "{world}");
         let result = err("let frame = (n) => Scene.memo(\"k4\", n, (d) => d)");
         assert!(result.contains("must return a Scene, got a number"), "{result}");
+    }
+
+    /// A builder that reads any class is refused, naming the class and the
+    /// built-in — even through a closure the builder captured (`m.f`).
+    #[test]
+    fn scene_memo_refuses_a_builder_that_reads_any_class() {
+        let cases = [
+            (
+                "let m = { f: (p) => File.exists(p) } in \
+                 Scene.memo(\"rc-file\", n, (d) => if m.f(Path.of(\"x.bin\")) then Scene.cube() else Scene.sphere())",
+                "read project files (File.exists) — an impure[file] read",
+            ),
+            (
+                "Scene.memo(\"rc-physics\", n, (d) => \
+                 let hit = Physics.shapeCast(Physics.sphere(0.5), Vec3.make(0.0, 0.0, 0.0), \
+                 Vec3.make(0.0, -1.0, 0.0), 1.0) in Scene.cube())",
+                "read the live physics world (Physics.shapeCast) — an impure[physics] read",
+            ),
+            (
+                "Scene.memo(\"rc-ui\", n, (d) => let b = Ui.button(\"go\", 1.0) in Scene.cube())",
+                "read UI handler slots (Ui.button) — an impure[ui] read",
+            ),
+        ];
+        for (body, expected) in cases {
+            let src = format!("let frame = (n) => {body}");
+            let Err(error) = memo_frame(&memo_session(&src), 1.0) else {
+                panic!("expected an error: {src}");
+            };
+            assert!(
+                error.starts_with("Scene.memo: the builder") && error.contains(expected),
+                "{src}\n  expected: {expected}\n  got: {error}"
+            );
+        }
+        take_ui_handlers();
+        // A pure builder beside them still caches.
+        let pure = memo_session(MEMO_SOURCE);
+        let a = memo_frame(&pure, 2.0).unwrap();
+        assert_eq!(scene_ptr(&a), scene_ptr(&memo_frame(&pure, 2.0).unwrap()));
     }
 
     const SHARED_SOURCE: &str = "

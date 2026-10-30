@@ -336,11 +336,22 @@ impl Registry {
         span: Span,
     ) -> Option<Result<HostReturn, RunError>> {
         self.fns.get_key_value(path).map(|(&path, ext)| {
-            // Debug builds name the running external, so a read it notes can
-            // be checked against its `.funi` `impure[…]` header.
-            #[cfg(debug_assertions)]
+            // Name the running external, so a read it notes can be checked
+            // against its `.funi` `impure[…]` header and named in errors.
             let _running = Running::enter(path);
-            (ext.call)(path, args, span)
+            let result = (ext.call)(path, args, span);
+            // Its continuation runs as it too; the callback it applies doesn't.
+            match result {
+                Ok(HostReturn::Apply(mut apply)) => {
+                    let then = apply.then;
+                    apply.then = Box::new(move |value| {
+                        let _running = Running::enter(path);
+                        then(value)
+                    });
+                    Ok(HostReturn::Apply(apply))
+                }
+                other => other,
+            }
         })
     }
 
@@ -361,31 +372,26 @@ impl Registry {
     }
 }
 
-#[cfg(debug_assertions)]
 thread_local! {
     static RUNNING: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 
-/// The external whose host closure is running, if any (debug builds). A
-/// callback it hands back through [`HostReturn::Apply`] runs after it returns,
-/// so it is not counted as running.
-#[cfg(debug_assertions)]
+/// The external whose host closure (or [`HostReturn::Apply`] continuation)
+/// is running, if any. The callback it hands back runs between the two, as
+/// user code, so it is not counted as running.
 pub(crate) fn running() -> Option<&'static str> {
     RUNNING.with(std::cell::Cell::get)
 }
 
 /// Sets [`running`] for one call, restoring the outer value on drop.
-#[cfg(debug_assertions)]
 struct Running(Option<&'static str>);
 
-#[cfg(debug_assertions)]
 impl Running {
     fn enter(path: &'static str) -> Running {
         Running(RUNNING.with(|running| running.replace(Some(path))))
     }
 }
 
-#[cfg(debug_assertions)]
 impl Drop for Running {
     fn drop(&mut self) {
         RUNNING.with(|running| running.set(self.0));

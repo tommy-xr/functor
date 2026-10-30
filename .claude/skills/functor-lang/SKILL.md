@@ -1148,8 +1148,8 @@ The builder is a lambda or def taking `deps` as its ONE (remaining) argument
 (a zero-arg lambda or a builtin is an error), and must read only `deps` plus
 top-level defs — a value it captures or is partially applied to in `draw`
 (`tts`, the camera) is not compared, so the result would go stale; a builder
-that reads the live physics world (`Physics.transformed`/`position`/`cast`) is
-an error for the same reason. `deps` must
+that calls any `impure[…]` built-in (`File.bytes`, `Physics.position`,
+`Ui.button`, …) is an error for the same reason. `deps` must
 be plain data: a function or engine value (`Vec3`, `Color`, `Scene`) in it is a
 teaching error. Give every site its own `key`. The cache is shell state (never
 in the model, invisible to replay); producers sweep keys unused for ~120 frames.
