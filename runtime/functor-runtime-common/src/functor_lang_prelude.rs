@@ -2563,6 +2563,18 @@ row 0 has {cols} heights, row {r} has {}",
             }))
         },
     );
+    // Per-subtree shadow casting (scene-last, so it pipes). Always a node:
+    // `true` must be able to re-enable casting inside a `false` subtree.
+    reg.fn2(
+        "Scene.castShadows",
+        "Scene.castShadows(casts, scene)",
+        |casts: bool, scene: FunctorLangScene| {
+            Ok(FunctorLangScene(Scene3D {
+                obj: SceneObject::CastShadows(casts, vec![scene.0]),
+                xform: Matrix4::from_scale(1.0),
+            }))
+        },
+    );
     // Stamp a template subtree once per instance — semantically the group of
     // transformed, tinted copies; hardware-instanced when the renderer
     // recognizes the template. `Scene.opacity` INSIDE the template is
@@ -10413,6 +10425,29 @@ let frame = (k) => Scene.group([Scene.memo(\"bench-{n}\", 0.0, world), Scene.cub
             node("0.2, 0.4, 0.8"),
             node("0.8, 0.4, 0.2")
         )));
+    }
+
+    /// `Scene.castShadows` wraps its subtree in a node carrying the flag, for
+    /// either value, and `Scene.equals` compares the flag.
+    #[test]
+    fn cast_shadows_wraps_and_compares() {
+        let value = eval(
+            "let main = () => Scene.cube() |> Scene.castShadows(true) |> Scene.castShadows(false)",
+        );
+        let scene = scene_of(&value).expect("a Scene");
+        let SceneObject::CastShadows(false, outer) = &scene.obj else {
+            panic!("expected CastShadows(false), got {:?}", scene.obj);
+        };
+        let SceneObject::CastShadows(true, inner) = &outer[0].obj else {
+            panic!("expected CastShadows(true), got {:?}", outer[0].obj);
+        };
+        assert!(matches!(inner[0].obj, SceneObject::Geometry(Shape::Cube)));
+        let off = "Scene.castShadows(false, Scene.cube())";
+        assert!(equality(&format!("Scene.equals({off}, {off})")));
+        assert!(!equality(&format!(
+            "Scene.equals({off}, Scene.castShadows(true, Scene.cube()))"
+        )));
+        assert!(!equality(&format!("Scene.equals({off}, Scene.cube())")));
     }
 
     // --- Scene.equals / Frame.equals (structural equality for draw tests) ---
