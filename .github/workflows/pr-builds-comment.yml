@@ -4,12 +4,12 @@ name: PR Builds Comment
 # artifacts. GitHub loads this workflow and its script from main, not from the
 # PR; it reads run/artifact metadata only and never checks out PR code. Each
 # run rebuilds the comment for the PR's current head, so finish order and stale
-# runs don't matter.
+# runs don't matter. `requested` flips a new head to "building…" right away.
 
 on:
   workflow_run:
     workflows: ["Build CLI", "Build Android"]
-    types: [completed]
+    types: [requested, completed]
 
 permissions: {}
 

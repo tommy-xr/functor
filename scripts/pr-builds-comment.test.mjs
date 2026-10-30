@@ -9,9 +9,10 @@ const oldSha = "fedcba9876543210fedcba9876543210fedcba98";
 const runUrl = (id) => `https://github.com/${repository}/actions/runs/${id}`;
 const artifactUrl = (run, id) => `${runUrl(run)}/artifacts/${id}`;
 
+const WORKFLOWS = { "Build CLI": ".github/workflows/build-cli.yml", "Build Android": ".github/workflows/build-android.yml" };
 const run = (id, name, overrides = {}) => ({
   id,
-  name,
+  path: WORKFLOWS[name],
   head_sha: sha,
   status: "completed",
   conclusion: "success",

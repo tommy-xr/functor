@@ -25,9 +25,9 @@ const WORKFLOWS = {
   "Build Android": ".github/workflows/build-android.yml",
 };
 const TARGETS = [
-  { label: "CLI macOS arm64", workflow: "Build CLI", artifact: (sha) => `functor-cli-macos-arm64-${sha}` },
-  { label: "CLI Linux x64", workflow: "Build CLI", artifact: (sha) => `functor-cli-linux-x64-${sha}` },
-  { label: "Quest APK", workflow: "Build Android", artifact: (sha) => `functor-apk-${sha}` },
+  { label: "CLI macOS arm64", workflow: WORKFLOWS["Build CLI"], artifact: (sha) => `functor-cli-macos-arm64-${sha}` },
+  { label: "CLI Linux x64", workflow: WORKFLOWS["Build CLI"], artifact: (sha) => `functor-cli-linux-x64-${sha}` },
+  { label: "Quest APK", workflow: WORKFLOWS["Build Android"], artifact: (sha) => `functor-apk-${sha}` },
 ];
 
 // Pure: the comment body for `sha` from both workflows' runs and their
@@ -37,7 +37,7 @@ const TARGETS = [
 export const render = ({ repository, pr, sha, runs, artifacts }) => {
   const line = (target) => {
     const candidates = runs
-      .filter((run) => run.name === target.workflow && run.head_sha === sha && run.conclusion !== "skipped")
+      .filter((run) => run.path === target.workflow && run.head_sha === sha && run.conclusion !== "skipped")
       .sort((a, b) => b.id - a.id);
     const ids = new Set(candidates.map((run) => run.id));
     const artifact = artifacts.find(
@@ -203,7 +203,7 @@ const comment = async (args) => {
     const data = await githubRequest(
       `/repos/${repository}/actions/workflows/${file}/runs?head_sha=${sha}&per_page=20`,
     );
-    runs.push(...(data?.workflow_runs ?? []).filter((run) => run.path === path));
+    runs.push(...(data?.workflow_runs ?? []).filter((run) => run.path === path && isAllowedRepository(run.head_repository)));
   }
   const artifacts = [];
   for (const run of runs) {
