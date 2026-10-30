@@ -1,0 +1,65 @@
+name: PR Builds Comment
+
+# Upserts a sticky PR comment linking the head's Build CLI / Build Android
+# artifacts. GitHub loads this workflow and its script from main, not from the
+# PR; it reads run/artifact metadata only and never checks out PR code. Each
+# run rebuilds the comment for the PR's current head, so finish order and stale
+# runs don't matter. `requested` flips a new head to "building…" right away.
+
+on:
+  workflow_run:
+    workflows: ["Build CLI", "Build Android"]
+    types: [requested, completed]
+
+permissions: {}
+
+jobs:
+  authorize:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      authorized: ${{ steps.authorize.outputs.authorized }}
+      pr_number: ${{ steps.authorize.outputs.pr_number }}
+    steps:
+      - name: Check out trusted script
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Authorize source run
+        id: authorize
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pr-builds-comment.mjs authorize-run --run-id "${{ github.event.workflow_run.id }}"
+
+  comment:
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    # Serialize per PR; each run re-queries the current head, so never cancel.
+    concurrency:
+      group: pr-builds-comment-${{ github.repository }}-${{ needs.authorize.outputs.pr_number }}
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted script
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Upsert sticky PR comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pr-builds-comment.mjs comment --pr "${{ needs.authorize.outputs.pr_number }}"

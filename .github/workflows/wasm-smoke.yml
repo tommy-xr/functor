@@ -57,6 +57,9 @@ jobs:
       - name: Test npm run pr
         run: npm run test:pr
 
+      - name: Test PR builds comment
+        run: npm run test:pr-builds-comment
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
