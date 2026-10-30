@@ -277,6 +277,35 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "sniper-scope-hip",
+      "sample": "sniper-scope",
+      "fixedTime": 1.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
+      "name": "sniper-scope-12deg",
+      "sample": "sniper-scope",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "shoulder.script",
+      "captureAtFrame": 45
+    },
+    {
+      "name": "sniper-scope-6deg",
+      "sample": "sniper-scope",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "shoulder.script",
+      "captureAtFrame": 90
     }
   ]
 }

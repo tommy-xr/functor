@@ -451,6 +451,14 @@ functor -d examples/parts-mr run native --emulate-xr   # desktop stand-in room
   `Solid.*` works. The authored camera's eye height and field of view only
   frame the desktop view.
 
+### Sniper scope (desktop first)
+
+`examples/sniper-scope` is a magnified rifle scope: a second camera renders
+into a 512² render target shown on a lens at the back of a hollow tube. It is
+desktop-only for now; tracked-rifle VR controls come later. Under XR every
+render-target pass currently runs once per eye, so a scope pass costs twice.
+See its `README.md`.
+
 ### Pipelined sim thread and XR thread hints
 
 The APK can run the game logic on its own sim thread, like desktop

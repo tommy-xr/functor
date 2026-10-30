@@ -230,6 +230,30 @@ impl Camera {
         Camera::look_at(eye, target, [0.0, 1.0, 0.0], fov)
     }
 
+    /// A camera at `position` looking along `forward`, rolled so `up` points
+    /// up on screen (e.g. a `MappedTrackingPose`). The authored basis matches
+    /// [`Camera::first_person`]: forward `+Z` with up `+Y` is yaw = pitch = 0.
+    ///
+    /// `forward` need not be unit length; `up` is re-orthogonalized against
+    /// it. Returns `None` for non-finite input, a zero `forward`/`up`, or an
+    /// `up` within ~0.06° of parallel to `forward` (no defined roll).
+    pub fn from_pose(position: [f32; 3], forward: [f32; 3], up: [f32; 3], fov: Angle) -> Option<Camera> {
+        let eye = Vector3::from(position);
+        let forward = Vector3::from(forward);
+        let up = Vector3::from(up);
+        let finite = |v: Vector3<f32>| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+        if !finite(eye) || !forward.magnitude().is_normal() || !up.magnitude().is_normal() {
+            return None;
+        }
+        let forward = forward.normalize();
+        let right = forward.cross(up.normalize());
+        if !(right.magnitude() > 1e-3) {
+            return None;
+        }
+        let up = right.normalize().cross(forward);
+        Some(Camera::look_at(eye.into(), (eye + forward).into(), up.into(), fov))
+    }
+
     /// Split this camera into (left, right) eye cameras for stereo rendering,
     /// separated by `ipd` (inter-pupillary distance, world units) along the
     /// camera's right vector. Both eye and target shift together, keeping the
@@ -992,5 +1016,85 @@ mod tests {
         let via_viewport = cam.projection_matrix(viewport.aspect());
         assert!(approx(direct.x.x, via_viewport.x.x));
         assert!(approx(direct.y.y, via_viewport.y.y));
+    }
+
+    fn assert_same_view(a: &Camera, b: &Camera) {
+        let (a, b) = (a.view_matrix(), b.view_matrix());
+        let (a, b): (&[f32; 16], &[f32; 16]) = (a.as_ref(), b.as_ref());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert!((x - y).abs() < 1e-5, "{a:?} != {b:?}");
+        }
+    }
+
+    /// Where a world point lands on a square viewport, in NDC (+x right, +y up).
+    fn ndc(camera: &Camera, p: [f32; 3]) -> (f32, f32) {
+        let clip = camera.projection_matrix(1.0) * camera.view_matrix() * Point3::from(p).to_homogeneous();
+        (clip.x / clip.w, clip.y / clip.w)
+    }
+
+    // The authored pose basis is first_person's: +Z forward and +Y up is
+    // yaw = pitch = 0, and yaw/pitch poses reproduce first_person exactly.
+    #[test]
+    fn from_pose_matches_first_person_for_unrolled_poses() {
+        let eye = [2.0, 1.5, -3.0];
+        let fov = Angle::from_degrees(12.0);
+        let pose = |f: [f32; 3], u: [f32; 3]| Camera::from_pose(eye, f, u, fov).unwrap();
+        let fp = |yaw: f32, pitch: f32| {
+            Camera::first_person(eye, Angle::from_degrees(yaw), Angle::from_degrees(pitch), fov)
+        };
+        assert_same_view(&pose([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), &fp(0.0, 0.0));
+        // Unnormalized forward and a non-orthogonal up give the same camera.
+        assert_same_view(&pose([0.0, 0.0, 5.0], [0.0, 2.0, 0.3]), &fp(0.0, 0.0));
+        let (s, c) = 30f32.to_radians().sin_cos();
+        assert_same_view(&pose([s, 0.0, c], [0.0, 1.0, 0.0]), &fp(30.0, 0.0));
+        assert_same_view(&pose([0.0, s, c], [0.0, c, -s]), &fp(0.0, 30.0));
+        let p = pose([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
+        assert_eq!(p.fov_radians, fov.radians());
+        assert_eq!((p.near, p.far), (0.1, 100.0));
+    }
+
+    // Roll: the screen's up follows `up`. Rolled 90° so up is world +X (the
+    // left of a +Z gaze), a point to the left shows at the TOP and a point
+    // above shows on the RIGHT. A mirrored basis flips one of the two.
+    #[test]
+    fn from_pose_rolls_the_view_about_forward() {
+        let camera = Camera::from_pose([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], Angle::from_degrees(60.0)).unwrap();
+        let (x, y) = ndc(&camera, [1.0, 0.0, 5.0]);
+        assert!(x.abs() < 1e-5 && y > 0.1, "left point at ({x}, {y})");
+        let (x, y) = ndc(&camera, [0.0, 1.0, 5.0]);
+        assert!(x > 0.1 && y.abs() < 1e-5, "upper point at ({x}, {y})");
+
+        // Unrolled, for contrast: left is screen-left, above is screen-top.
+        let level = Camera::from_pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], Angle::from_degrees(60.0)).unwrap();
+        assert!(ndc(&level, [1.0, 0.0, 5.0]).0 < -0.1);
+        assert!(ndc(&level, [0.0, 1.0, 5.0]).1 > 0.1);
+    }
+
+    // Straight up or down is a valid aim (first_person degenerates there):
+    // `up` alone sets which way the image is turned.
+    #[test]
+    fn from_pose_aims_vertically() {
+        let fov = Angle::from_degrees(60.0);
+        let up = Camera::from_pose([0.0; 3], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0], fov).unwrap();
+        let (x, y) = ndc(&up, [0.0, 10.0, 0.0]);
+        assert!(x.abs() < 1e-5 && y.abs() < 1e-5);
+        assert!(ndc(&up, [0.0, 10.0, -1.0]).1 > 0.05);
+        let down = Camera::from_pose([0.0; 3], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], fov).unwrap();
+        assert!(ndc(&down, [0.0, -10.0, 1.0]).1 > 0.05);
+    }
+
+    #[test]
+    fn from_pose_rejects_degenerate_poses() {
+        let fov = Angle::from_degrees(60.0);
+        let pose = |p: [f32; 3], f: [f32; 3], u: [f32; 3]| Camera::from_pose(p, f, u, fov);
+        assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]).is_none());
+        assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.0, -3.0]).is_none());
+        assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, 1e-4, 1.0]).is_none());
+        assert!(pose([0.0; 3], [0.0; 3], [0.0, 1.0, 0.0]).is_none());
+        assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0; 3]).is_none());
+        assert!(pose([f32::NAN, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]).is_none());
+        assert!(pose([0.0; 3], [0.0, f32::INFINITY, 1.0], [0.0, 1.0, 0.0]).is_none());
+        // Nearly, but not, parallel still defines a roll.
+        assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.01, 1.0]).is_some());
     }
 }
