@@ -200,6 +200,13 @@ let bytes : (Path.t) => Bytes.t
 - The host notes each read with `note_read(class)`; that run-time record is
   the authority (reload reuse today; `Scene.memo` checks physics reads). A drift test pins each header to the
   classes its built-in notes, and debug builds assert a noted class is declared.
+- User defs get their classes inferred (`functor_lang::reads::infer`): a def
+  reaches the classes of every built-in it names and every def it uses, except
+  a def whose type holds no functions (a record of data, a `Scene.t`), which
+  was already computed. Hover leads a def with them, and `functor reads` lists
+  every def's classes with the path to each built-in. This is report-only: an
+  `unknown` annotation can hide a function from the pass, so the run-time
+  record stays the authority.
 
 ## Module semantics summary
 
