@@ -56,7 +56,7 @@ let outfitOf = (kit: Kit): Option.t<Outfit> =>
 // A loadout's one item per slot, at most one entry each.
 let isValid = (kit: Kit): bool =>
   List.length(kit.wear) == List.length(slots)
-    && slots |> List.all((s) => (kit.wear |> List.filter((w) => w.slot == s) |> List.length) == 1.0)
+    && (slots |> List.all((s) => (kit.wear |> List.filter((w) => w.slot == s) |> List.length) == 1.0))
 
 let bodyName = (body: Body): string =>
   match body with

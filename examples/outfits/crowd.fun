@@ -150,7 +150,7 @@ expect countTier(Near, 25.0) == 11.0
 expect (
   let l = layout(100.0) in
   (l.batches |> List.map((b) => List.length(b.seats)) |> List.sum) == 51.0
-    && l.batches |> List.all((b) => b.look.lod == 2.0)
+    && (l.batches |> List.all((b) => b.look.lod == 2.0))
     && List.length(l.batches) <= 6.0 * farBuckets
 )
 // Phases are deterministic, in range, and shared within a far bucket.
