@@ -155,13 +155,16 @@ mod tests {
     }
 
     /// `reads::CLOSURE_HOLDERS` names the host types that can hold a
-    /// function: each is a prelude type, and a built-in taking a function
-    /// returns one, unless it only applies it (the memo builders).
+    /// function: each is a prelude type, and a built-in taking a function or
+    /// a holder returns a holder or a type variable, unless it keeps none of it
+    /// (the memo builders only call theirs). Type-variable taggers
+    /// (`Ui.slider`'s) aren't seen here; their built-ins return holders.
     #[test]
     fn closure_holders_cover_every_builtin_that_keeps_a_function() {
         use functor_lang::ast::TypeName;
         use functor_lang::reads::CLOSURE_HOLDERS;
-        const APPLY_ONLY: [&str; 2] = ["Scene.memo", "Physics.memo"];
+        // Built-ins that take a function or holder but keep none of it.
+        const KEEPS_NONE: [&str; 3] = ["Scene.memo", "Physics.memo", "Frame.equals"];
         fn mentions(ty: &TypeName, hit: &dyn Fn(&str) -> bool) -> bool {
             hit(&ty.name) || ty.args.iter().any(|arg| mentions(arg, hit))
         }
@@ -185,12 +188,16 @@ mod tests {
             else {
                 continue;
             };
-            let takes_fn = params.iter().any(|p| mentions(p, &|name| name == "=>"));
-            if takes_fn && !APPLY_ONLY.contains(&sig.name.as_str()) {
+            let holder = |name: &str| CLOSURE_HOLDERS.contains(&name);
+            let may_hold = |name: &str| holder(name) || name.starts_with('\'');
+            let takes_fn = params
+                .iter()
+                .any(|p| mentions(p, &|name| name == "=>" || holder(name)));
+            if takes_fn && !KEEPS_NONE.contains(&sig.name.as_str()) {
                 assert!(
-                    mentions(ret, &|name| CLOSURE_HOLDERS.contains(&name)),
-                    "`{}` takes a function but returns no `reads::CLOSURE_HOLDERS` type — \
-add its type there, or to APPLY_ONLY if it only calls the function",
+                    mentions(ret, &may_hold),
+                    "`{}` takes a function or holder but returns no holder or type variable — \
+add its type there, or to KEEPS_NONE if it keeps none of it",
                     sig.name
                 );
             }

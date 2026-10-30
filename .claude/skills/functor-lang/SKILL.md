@@ -426,7 +426,7 @@ let grab = (s) =>
   built-in, through the defs it calls in any module; using a top-level value
   whose type holds no functions (data, a `Scene.t`) doesn't count.
   `functor -d <dir> reads` lists every def's classes with the path to the
-  built-in (`level : impure[file] — file: World.load → File.bytes`).
+  built-in (`level : impure[file] — file: World.load → File.exists`).
   Report-only: nothing is annotated, and the runtime's tracking decides.
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
   source text (multi-file is native-only for now).

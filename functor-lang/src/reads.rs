@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use crate::ast::{TypeBody, TypeName};
+use crate::ast::TypeName;
 use crate::ir::{Expr, ExprKind, Module};
 use crate::types::{ExprTypes, Type};
 
@@ -46,6 +46,12 @@ impl ReadClass {
     }
 }
 
+/// A `.funi`-style header for `classes`: `impure[file, physics]`.
+pub fn header(classes: &[ReadClass]) -> String {
+    let names: Vec<&str> = classes.iter().map(|class| class.name()).collect();
+    format!("impure[{}]", names.join(", "))
+}
+
 impl fmt::Display for ReadClass {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
@@ -55,7 +61,8 @@ impl fmt::Display for ReadClass {
 /// Prelude host types whose values hold Functor Lang functions (taggers,
 /// handlers): a value of one can run code that reads, so it never stops the
 /// spread. Every other host type is plain data to [`infer`].
-pub const CLOSURE_HOLDERS: [&str; 5] = ["Effect.t", "Sub.t", "Ui.view", "Html.node", "Attr.t"];
+pub const CLOSURE_HOLDERS: [&str; 6] =
+    ["Effect.t", "Sub.t", "Ui.view", "Html.node", "Attr.t", "Frame.t"];
 
 /// Where a def's read of one class comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,8 +119,8 @@ impl Inferred {
 /// included, so a function passed along is charged where it's named), plus
 /// those of every def it names — unless that def's checked type is
 /// closure-free (`float`, records of data, `Scene.t`, …): such a value is
-/// already computed, and using it runs no code. A function, type variable,
-/// `unknown` or [`CLOSURE_HOLDERS`] value keeps spreading.
+/// already computed, and using it runs no code. A function, `unknown` or
+/// [`CLOSURE_HOLDERS`] value keeps spreading.
 pub fn infer(module: &Module, types: &ExprTypes) -> Inferred {
     let builtins: HashMap<&str, &[ReadClass]> = module
         .signatures
@@ -126,8 +133,7 @@ pub fn infer(module: &Module, types: &ExprTypes) -> Inferred {
     let mut uses: Vec<(&str, Vec<&str>)> = Vec::new();
     let mut spreads: HashSet<&str> = HashSet::new();
     for def in &module.defs {
-        let mut names = Names::default();
-        names.expr(&def.value);
+        let names = Names::of(&def.value);
         let reads = defs.entry(def.name.clone()).or_default();
         for path in &names.externals {
             for &class in builtins.get(path.as_str()).copied().unwrap_or_default() {
@@ -163,7 +169,8 @@ pub fn infer(module: &Module, types: &ExprTypes) -> Inferred {
     Inferred { defs }
 }
 
-/// The externals and globals an expression names, in first-seen order.
+/// The externals and globals an expression names, each once, in source
+/// order. A worklist, so a deep spine can't overflow the stack.
 #[derive(Default)]
 struct Names<'m> {
     externals: Vec<String>,
@@ -171,37 +178,33 @@ struct Names<'m> {
 }
 
 impl<'m> Names<'m> {
-    fn expr(&mut self, expr: &'m Expr) {
-        match &expr.kind {
-            ExprKind::External(path) => {
-                let path = path.join(".");
-                if !self.externals.contains(&path) {
-                    self.externals.push(path);
+    fn of(expr: &'m Expr) -> Names<'m> {
+        let mut names = Names::default();
+        let mut work = vec![expr];
+        while let Some(expr) = work.pop() {
+            match &expr.kind {
+                ExprKind::External(path) => {
+                    let path = path.join(".");
+                    if !names.externals.contains(&path) {
+                        names.externals.push(path);
+                    }
                 }
-            }
-            ExprKind::Global(name) => {
-                if !self.globals.contains(&name.as_str()) {
-                    self.globals.push(name);
+                ExprKind::Global(name) if !names.globals.contains(&name.as_str()) => {
+                    names.globals.push(name);
                 }
+                _ => {}
             }
-            ExprKind::Lambda { body, .. } => self.expr(body),
-            ExprKind::Match { scrutinee, arms } => {
-                self.expr(scrutinee);
-                for arm in arms {
-                    self.expr(&arm.body);
-                }
-            }
-            _ => {
-                for child in crate::hover::children(expr) {
-                    self.expr(child);
-                }
-            }
+            // Reversed onto the stack, so names come out in source order.
+            let next = work.len();
+            crate::rebind::each_child(expr, &mut |child| work.push(child));
+            work[next..].reverse();
         }
+        names
     }
 }
 
-/// Which declared types hold only data: no function, type-variable,
-/// `unknown` or [`CLOSURE_HOLDERS`] field, nominal fields followed
+/// Which declared types hold only data: no function, `unknown` or
+/// [`CLOSURE_HOLDERS`] field, nominal fields followed
 /// (recursive types included).
 struct PlainTypes {
     plain: HashMap<String, bool>,
@@ -223,14 +226,7 @@ impl PlainTypes {
                 if !plain[&decl.name] {
                     continue;
                 }
-                let fields: Vec<&TypeName> = match &decl.body {
-                    TypeBody::Record(fields) => fields.iter().map(|f| &f.ty).collect(),
-                    TypeBody::Variants(variants) => variants
-                        .iter()
-                        .flat_map(|v| v.fields.iter().map(|f| &f.ty))
-                        .collect(),
-                    TypeBody::Abstract | TypeBody::Host => Vec::new(),
-                };
+                let fields = crate::goto::type_body_fields(&decl.body);
                 if !fields.iter().all(|ty| name_is_plain(ty, &plain)) {
                     plain.insert(decl.name.clone(), false);
                     changed = true;
@@ -250,7 +246,11 @@ impl PlainTypes {
             Type::Record(name, args) | Type::Variant(name, args) => {
                 self.plain.get(name) == Some(&true) && args.iter().all(|arg| self.holds(arg))
             }
-            Type::Fn(..) | Type::Var(_) | Type::Unknown => false,
+            // A variable still free in a checked top-level value is
+            // unconstrained (`Ok(1.0) : Result.t<float, 'e>`, `[] : List<'a>`),
+            // so nothing but `unknown` can put a function there.
+            Type::Var(_) => true,
+            Type::Fn(..) | Type::Unknown => false,
         }
     }
 }
@@ -287,15 +287,14 @@ pub fn report(project: &crate::project::Project, inferred: &Inferred) -> String 
             out.push_str(&format!("{} : pure\n", def.name));
             continue;
         }
-        let names: Vec<&str> = classes.iter().map(|class| class.name()).collect();
         let paths: Vec<String> = classes
             .iter()
             .map(|&class| format!("{class}: {}", inferred.path(&def.name, class).join(" → ")))
             .collect();
         out.push_str(&format!(
-            "{} : impure[{}] — {}\n",
+            "{} : {} — {}\n",
             def.name,
-            names.join(", "),
+            header(&classes),
             paths.join("; ")
         ));
     }
