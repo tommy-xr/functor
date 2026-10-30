@@ -34,6 +34,7 @@ With a headset:
 | Smooth / stepped turning | left Y |
 | Seated / standing | right A |
 | Recalibrate (hold still) | left menu |
+| Respawn / dunes or test stand | right B / right stick click |
 
 ## The dune course
 
@@ -111,7 +112,8 @@ drives them with injected XR samples.
   `generate-vignette.mjs`) drawn with `Frame.with2D`. It closes quickly and
   opens slowly with acceleration, yaw rate, lateral acceleration and vertical
   speed over crests, and is absent when clear. On Quest it is drawn the same
-  in both eyes, centred on each eye buffer.
+  in both eyes, centred on each eye buffer rather than each eye's (asymmetric)
+  view axis; whether that fuses comfortably is a check in the headset.
 - **Turning.** Smooth, at the controller's bounded yaw rate, by default.
   Stepped turning snaps 30° below 2 m/s (bike and rig together, behind a
   short fade), and is smooth above it.
