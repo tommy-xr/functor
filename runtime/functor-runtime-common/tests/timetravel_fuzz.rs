@@ -42,6 +42,9 @@ struct Spec {
     closures: bool,
     /// It defines `physics`, so every played frame steps the world once.
     physics: bool,
+    /// Its frames log effect answers (`Effect.random`, …). A live branch
+    /// re-rolls them (fresh IO), so only the fork replay reproduces them.
+    answers: bool,
     mouse: bool,
     xr: bool,
     /// A tunable constant: `(exact source text, template with {})`. A semantic
@@ -130,6 +133,81 @@ let draw = (model, tts) =>
                  Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.n, 7.0), 0.0, 0.0))]))
 "#;
 
+/// `Effect.random` from `tick` and from input: every frame logs answers.
+const RANDOM_GAME: &str = r#"
+type Msg = | Rolled(r: float)
+let scale = 1.0
+let init = { r: 0.0, sum: 0.0 }
+let input = (model, key, isDown) =>
+  match key with
+  | Key.Space => if isDown then (model, Effect.random(Rolled)) else model
+  | _ => model
+let update = (model, msg) =>
+  match msg with
+  | Rolled(r) => { model with r: r, sum: model.sum + r * scale }
+let tick = (model, dt, tts) => (model, Effect.random(Rolled))
+let draw = (model, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube() |> Scene.translate(Vec3.make(model.r, 0.0, 0.0)))
+"#;
+
+/// `Effect.now` from `tick` and from input: the wall clock, per frame.
+const NOW_GAME: &str = r#"
+type Msg = | Stamped(t: float)
+let offset = 0.0
+let init = { t: 0.0, stamps: 0.0 }
+let input = (model, key, isDown) =>
+  match key with
+  | Key.T => if isDown then (model, Effect.now(Stamped)) else model
+  | _ => model
+let update = (model, msg) =>
+  match msg with
+  | Stamped(t) => { model with t: t + offset, stamps: model.stamps + 1.0 }
+let tick = (model, dt, tts) => (model, Effect.now(Stamped))
+let draw = (model, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.t, 7.0), 0.0, 0.0)))
+"#;
+
+/// Saves on even frames, loads on odd ones: a fork's first load reads what
+/// the store held THEN, not what the live tail saved since.
+const SAVE_GAME: &str = r#"
+let step = 1.0
+let init = { n: 0.0, loaded: 0.0 }
+let update = (model, msg) =>
+  match msg with
+  | Option.Some(v) => { model with loaded: v }
+  | Option.None => model
+let tick = (model, dt, tts) =>
+  if Math.mod(model.n, 2.0) == 0.0
+  then ({ model with n: model.n + step }, Persistence.save("fuzz", model.n))
+  else ({ model with n: model.n + step }, Persistence.load("fuzz", (o) => o))
+let draw = (model, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.loaded, 7.0), 0.0, 0.0)))
+"#;
+
+/// An effect-answer fixture: no physics, no mouse or XR.
+fn answers_spec(
+    name: &'static str,
+    src: &str,
+    keys: &'static [Key],
+    knob: (&'static str, &'static str),
+) -> Spec {
+    Spec {
+        name,
+        sources: vec![("game.fun".to_string(), src.to_string())],
+        keys,
+        events: !keys.is_empty(),
+        physics: false,
+        closures: false,
+        answers: true,
+        mouse: false,
+        xr: false,
+        knob,
+    }
+}
+
 fn specs() -> Vec<Spec> {
     use Key::*;
     vec![
@@ -140,6 +218,7 @@ fn specs() -> Vec<Spec> {
             events: false,
             physics: true,
             closures: false,
+            answers: false,
             mouse: false,
             xr: true,
             knob: ("let walkSpeed = 3.0", "let walkSpeed = {}"),
@@ -151,6 +230,7 @@ fn specs() -> Vec<Spec> {
             events: true,
             physics: true,
             closures: false,
+            answers: false,
             mouse: false,
             xr: false,
             knob: ("|> Physics.restitution(0.55))", "|> Physics.restitution({}))"),
@@ -162,6 +242,7 @@ fn specs() -> Vec<Spec> {
             events: true,
             physics: false,
             closures: false,
+            answers: false,
             mouse: false,
             xr: false,
             knob: ("let runSpeed = 8.0", "let runSpeed = {}"),
@@ -179,6 +260,7 @@ fn specs() -> Vec<Spec> {
             events: false,
             physics: false,
             closures: false,
+            answers: false,
             mouse: false,
             xr: false,
             knob: ("let spacing = 1.2", "let spacing = {}"),
@@ -190,6 +272,7 @@ fn specs() -> Vec<Spec> {
             events: true,
             physics: true,
             closures: false,
+            answers: false,
             mouse: true,
             xr: false,
             knob: ("let walkSpeed = 6.0", "let walkSpeed = {}"),
@@ -201,6 +284,7 @@ fn specs() -> Vec<Spec> {
             events: true,
             physics: true,
             closures: true,
+            answers: false,
             mouse: false,
             xr: false,
             knob: ("|> Physics.restitution(0.4)", "|> Physics.restitution({})"),
@@ -212,10 +296,29 @@ fn specs() -> Vec<Spec> {
             events: true,
             physics: true,
             closures: false,
+            answers: false,
             mouse: false,
             xr: false,
             knob: ("|> Physics.restitution(0.5)", "|> Physics.restitution({})"),
         },
+        answers_spec(
+            "random",
+            RANDOM_GAME,
+            &[Space],
+            ("let scale = 1.0", "let scale = {}"),
+        ),
+        answers_spec(
+            "now",
+            NOW_GAME,
+            &[T],
+            ("let offset = 0.0", "let offset = {}"),
+        ),
+        answers_spec(
+            "save-load",
+            SAVE_GAME,
+            &[],
+            ("let step = 1.0", "let step = {}"),
+        ),
     ]
 }
 
@@ -250,7 +353,9 @@ enum Op {
     /// Hot reload; `semantic` rewrites the spec's knob, else an unused binding.
     Reload { semantic: bool, n: u32 },
     /// Branch `back` frames from the newest and replay the recorder's own
-    /// input log over `frames` frames: must reproduce what was recorded.
+    /// log over `frames` frames — on a fork (recorded answers consumed), then
+    /// live (input fed through the shell): each must reproduce what was
+    /// recorded.
     Replay { back: u16, frames: u8 },
 }
 
@@ -352,6 +457,8 @@ enum Kind {
     Fidelity,
     /// Branch-and-replay of the recorder's input log diverged.
     ReplayDiverged,
+    /// The fork replay of the recorder's log diverged.
+    ForkDiverged,
     /// The recorder's input log differs from what the shell fed.
     InputLog,
     /// An exact seek inside the scrubber range was refused.
@@ -378,11 +485,13 @@ fn hash(bytes: &[u8]) -> u64 {
 /// pending commands)`. Pending commands are checked on their own: input
 /// between frames legitimately queues them on the live world.
 fn world() -> Option<(u64, u64, String)> {
-    physics::with_world(DEFAULT_WORLD, |w| {
-        let mut core = w.clone();
-        let pending = core.take_pending_commands();
-        (hash(&core.snapshot()), w.frame(), format!("{pending:?}"))
-    })
+    physics::with_world(DEFAULT_WORLD, |w| world_parts(w))
+}
+
+fn world_parts(w: &physics::World) -> (u64, u64, String) {
+    let mut core = w.clone();
+    let pending = core.take_pending_commands();
+    (hash(&core.snapshot()), w.frame(), format!("{pending:?}"))
 }
 
 struct Shell<'a> {
@@ -895,6 +1004,11 @@ impl<'a> Shell<'a> {
         {
             return Ok(());
         }
+        self.fork_replay(k, n)?;
+        if self.spec.answers {
+            // A live branch asks the world afresh: nothing to reproduce.
+            return Ok(());
+        }
         count("replays");
         let logged: Vec<Vec<RecordedInput>> =
             (k + 1..=k + n).map(|f| self.game.recorded_inputs_at(f)).collect();
@@ -937,6 +1051,57 @@ impl<'a> Shell<'a> {
         self.oracle.split_off(&(k + n + 1));
         self.held = window[n as usize].held.clone();
         self.edges = InputEdges::default();
+        Ok(())
+    }
+}
+
+impl Shell<'_> {
+    /// Scrub to `k`, then replay the recorder's own log for `k+1..=k+n` on a
+    /// fork: each frame's model and world must equal what it recorded.
+    fn fork_replay(&mut self, k: u64, n: u64) -> Check {
+        self.seek(k)?;
+        self.clock.pause();
+        let replayed = self
+            .game
+            .replay_scene(n as usize)
+            .map_err(|e| self.fail(Kind::ForkDiverged, format!("fork from {k}: {e}")))?;
+        if replayed.len() as u64 != n {
+            return Err(self.fail(
+                Kind::ForkDiverged,
+                format!("fork from {k}: replayed {} of {n} frames", replayed.len()),
+            ));
+        }
+        for (i, (model, world)) in replayed.into_iter().enumerate() {
+            let frame = k + 1 + i as u64;
+            let rec = &self.oracle[&frame];
+            let mut diffs = Vec::new();
+            if rec.model.as_ref() != Some(&model) {
+                diffs.push(format!("model\n  was {:?}\n  now {model}", rec.model));
+            }
+            let now = world.map(|world| {
+                let id = physics::create_world([0.0, -9.81, 0.0]);
+                let parts = physics::with_world(id, |w| {
+                    w.restore_checkpoint(&world);
+                    world_parts(w)
+                });
+                physics::remove_world(id);
+                parts.expect("just created")
+            });
+            if self.spec.physics && rec.world != now.as_ref().map(|w| w.0) {
+                diffs.push("world bytes".to_string());
+            }
+            if self.spec.physics && rec.pending != now.map(|w| w.2) {
+                diffs.push("in-flight physics commands".to_string());
+            }
+            if !diffs.is_empty() {
+                return Err(self.fail(
+                    Kind::ForkDiverged,
+                    format!("fork from {k}, frame {frame}: {}", diffs.join("; ")),
+                ));
+            }
+            count("fork frames verified");
+        }
+        count("fork replays");
         Ok(())
     }
 }
@@ -1056,6 +1221,11 @@ fn fuzz(game: &str, default_seeds: u64, default_ops: u64) {
         }
     }
     let spec = specs().into_iter().find(|s| s.name == game).expect("spec");
+    // `Persistence.save` writes a real slot: keep it out of the repo. One
+    // root for the process, as the store is process-global.
+    static SAVES: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let saves = SAVES.get_or_init(|| tempfile::tempdir().expect("save root"));
+    functor_runtime_common::storage::set_project_root(saves.path().to_path_buf());
     let seeds = env("TIMETRAVEL_FUZZ_SEEDS", default_seeds);
     let ops = env("TIMETRAVEL_FUZZ_OPS", default_ops) as usize;
     let first = env("TIMETRAVEL_FUZZ_SEED0", 1);
@@ -1115,4 +1285,19 @@ fn fuzz_closure() {
 #[test]
 fn fuzz_memo() {
     fuzz("memo", 2, 60);
+}
+
+#[test]
+fn fuzz_random() {
+    fuzz("random", 2, 60);
+}
+
+#[test]
+fn fuzz_now() {
+    fuzz("now", 2, 60);
+}
+
+#[test]
+fn fuzz_save_load() {
+    fuzz("save-load", 2, 60);
 }

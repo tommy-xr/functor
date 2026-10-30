@@ -3146,7 +3146,7 @@ Escape again to quit"
                     // replay the recorder's (empty-at-head) log and predict an
                     // input-free future the game won't play. The slice anchors at
                     // the fine step after the newest recorded frame, mirroring
-                    // the `inputs_from(k + 1)` anchor of the recorded-log path.
+                    // the `k + 1` anchor of the recorded-log path.
                     let script_slice: Option<Vec<Vec<RecordedInput>>> =
                         input_script.as_ref().map(|script| {
                             let sub_dt = 1.0f32 / 60.0;

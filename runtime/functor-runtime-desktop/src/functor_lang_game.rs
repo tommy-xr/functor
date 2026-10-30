@@ -36,8 +36,8 @@ use functor_lang::{Session, Value};
 use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    frame_value, html_node_value, take_ui_handlers, view_value, EffectLog, EffectRunner,
-    EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
+    frame_value, html_node_value, take_ui_handlers, view_value, EffectRunner, EffectTree,
+    FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
     journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, reused_status,
@@ -48,7 +48,7 @@ use functor_runtime_common::functor_lang_producer::{
 use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use functor_runtime_common::physics;
 use functor_runtime_common::runtime_settings::{GameConfig, GameSettings};
-use functor_runtime_common::timetravel::SceneRecorder;
+use functor_runtime_common::timetravel::{Entry, SceneRecorder};
 use functor_runtime_common::ui::View;
 use functor_runtime_common::webview::HtmlNode;
 use functor_runtime_common::{Frame, FrameTime};
@@ -165,9 +165,6 @@ pub struct FunctorLangGame {
     /// drain logic itself is `functor_lang_prelude::drain_effects` (tested there
     /// with fake/replay runners).
     effect_runner: RealEffects,
-    /// The structured effect log (last `EFFECT_LOG_CAP` performed effects) —
-    /// LLM-readable, and the input format for replay.
-    effect_log: EffectLog,
     /// Physics queries deferred by the frame's pre-step drains, performed
     /// right after the physics step so their taggers answer against the
     /// fresh world ("commands apply at the step; queries answer after it").
@@ -186,11 +183,10 @@ pub struct FunctorLangGame {
     /// settled `model` + physics fixed-frame each rendered frame and seeks/
     /// rewinds them together. Shared with the web producer (one tested impl).
     recorder: SceneRecorder,
-    /// This frame's buffered input events (docs/time-travel.md T6b): appended in
-    /// `key_event`/`mouse_move`/`mouse_wheel` beside the live `session.call`, and
-    /// flushed into `recorder`'s input log by `record_frame` (plain data, so the
-    /// log survives a hot reload).
-    input_buf: Vec<functor_runtime_common::RecordedInput>,
+    /// Δ, the next frame's log (input and effect ops; see `FrameCtx::next`):
+    /// committed to `recorder` by `record_frame` (plain data, so it survives
+    /// a hot reload).
+    next: Vec<Entry>,
     /// Endpoint keys of the connections currently declared by
     /// `subscriptions` (`Sub.connect`/`Sub.listen`) — diffed each frame to
     /// open newly-declared ones and close dropped ones. The shell's
@@ -524,13 +520,12 @@ impl FunctorLangGame {
             options: ShellOptions::new(loaded.config, loaded.settings),
             last_soundscape_json: empty_soundscape_json(),
             effect_runner: RealEffects::new(),
-            effect_log: EffectLog::new(),
             deferred_queries: Vec::new(),
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
             physics_frame: 0,
             recorder: SceneRecorder::new(),
-            input_buf: Vec::new(),
+            next: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
             connect_retries: std::collections::HashMap::new(),
             asset_progress: None,
@@ -576,13 +571,12 @@ impl FunctorLangGame {
             physics_frame: &mut self.physics_frame,
             recorder: &mut self.recorder,
             effect_runner: &mut self.effect_runner as &mut dyn EffectRunner,
-            effect_log: &mut self.effect_log,
             deferred_queries: &mut self.deferred_queries,
             pending_events: &mut self.pending_events,
             live_conn_keys: &mut self.live_conn_keys,
             connect_retries: &mut self.connect_retries,
             prev_tts: &mut self.prev_tts,
-            input_buf: &mut self.input_buf,
+            next: &mut self.next,
             has_physics: self.has_physics,
             has_subscriptions: self.has_subscriptions,
             asset_progress: self.asset_progress.clone(),
@@ -708,7 +702,7 @@ impl FunctorLangGame {
                 &mut self.recorder,
                 self.has_physics,
                 self.has_subscriptions,
-                !self.input_buf.is_empty(),
+                !self.next.is_empty(),
             ) {
                 Ok(frames) => {
                     frames.map(|frames| (frames, replay_started.elapsed().as_secs_f64() * 1000.0))
@@ -762,13 +756,12 @@ impl FunctorLangGame {
         self.webview_handlers.clear();
         self.options = ShellOptions::new(loaded.config, loaded.settings);
         self.effect_runner = RealEffects::new();
-        self.effect_log = EffectLog::new();
         self.deferred_queries.clear();
         self.pending_events.clear();
         self.physics_rt = physics::SteppedPhysics::new();
         self.physics_frame = 0;
         self.recorder = SceneRecorder::new();
-        self.input_buf.clear();
+        self.next.clear();
         self.last_frame = empty_frame();
         self.reporter.reset();
         self.frames = 0;
@@ -1063,7 +1056,7 @@ impl Game for FunctorLangGame {
             // on a 0-substep frame under the fixed-timestep loop) is now orphaned
             // and must not be recorded into the branch — it would diverge a
             // ghost/replay taken there (xreview).
-            self.input_buf.clear();
+            self.next.clear();
         }
         result
     }
@@ -1176,7 +1169,7 @@ impl Game for FunctorLangGame {
             // 0-substep frame under the fixed-timestep loop) can't be recorded
             // into the resulting branch and diverge a ghost/replay (xreview).
             // The queries that input issued go with it.
-            self.input_buf.clear();
+            self.next.clear();
             self.deferred_queries.clear();
         }
         result
@@ -1240,8 +1233,11 @@ impl Game for FunctorLangGame {
         }
         // Buffer the raw event for the frame-indexed input log (T6b): flushed
         // into the recorder by `record_frame`, replayed by the forward-step.
-        self.input_buf
-            .push(functor_runtime_common::RecordedInput::Key { code, is_down });
+        self.next
+            .push(Entry::Input(functor_runtime_common::RecordedInput::Key {
+                code,
+                is_down,
+            }));
     }
     fn mouse_move(&mut self, x: i32, y: i32) {
         if !self.has_mouse_move {
@@ -1260,8 +1256,9 @@ impl Game for FunctorLangGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error(self.names.mouse_move, &err),
         }
-        self.input_buf
-            .push(functor_runtime_common::RecordedInput::MouseMove { x, y });
+        self.next.push(Entry::Input(
+            functor_runtime_common::RecordedInput::MouseMove { x, y },
+        ));
     }
 
     fn mouse_wheel(&mut self, delta: i32) {
@@ -1277,8 +1274,9 @@ impl Game for FunctorLangGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error(self.names.mouse_wheel, &err),
         }
-        self.input_buf
-            .push(functor_runtime_common::RecordedInput::MouseWheel { delta });
+        self.next.push(Entry::Input(
+            functor_runtime_common::RecordedInput::MouseWheel { delta },
+        ));
     }
 
     fn mouse_button(&mut self, button: i32, is_down: bool) {
@@ -1300,8 +1298,9 @@ impl Game for FunctorLangGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error(self.names.mouse_button, &err),
         }
-        self.input_buf
-            .push(functor_runtime_common::RecordedInput::MouseButton { button, is_down });
+        self.next.push(Entry::Input(
+            functor_runtime_common::RecordedInput::MouseButton { button, is_down },
+        ));
     }
 
     fn ui_event(&mut self, event: functor_runtime_common::ui::UiEvent) {
@@ -1317,8 +1316,9 @@ impl Game for FunctorLangGame {
         self.ui_handlers = handlers;
         // Buffer for the frame-indexed input log (T6b), like key events, so a
         // replay re-delivers the interaction.
-        self.input_buf
-            .push(functor_runtime_common::RecordedInput::UiEvent(event));
+        self.next.push(Entry::Input(
+            functor_runtime_common::RecordedInput::UiEvent(event),
+        ));
     }
 
     fn webview_event(&mut self, event: functor_runtime_common::ui::UiEvent) {
@@ -1331,8 +1331,9 @@ impl Game for FunctorLangGame {
         self.webview_handlers = handlers;
         // Buffer for the frame-indexed input log like `ui_event` — its own
         // variant, so replay resolves against the webview handler table.
-        self.input_buf
-            .push(functor_runtime_common::RecordedInput::WebviewEvent(event));
+        self.next.push(Entry::Input(
+            functor_runtime_common::RecordedInput::WebviewEvent(event),
+        ));
     }
 
     fn render_at(&mut self, frame_time: FrameTime, alpha: f32) -> Frame {
@@ -3029,7 +3030,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     /// The INTERACTIVE scrubber+ghost path end-to-end (docs/time-travel.md T6d):
     /// record a live run+jump at the fixed 1/60 step, SCRUB back to a pre-jump
     /// frame, then resolve the fork exactly as `functor_lang_producer::ghost_frames` does —
-    /// `k = current_scene_frame()`, `inputs_from(k + 1)`, forward-step from the
+    /// `k = current_scene_frame()`, the log's input from `k + 1`, forward-step from the
     /// scrubbed `model` — and assert the strobe's per-division models reproduce the
     /// RECORDED future exactly. Unlike `platformer_forward_step_...` (which hand-picks a
     /// fork model + input slice) this exercises `seek_scene_to` +
@@ -3492,7 +3493,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         // A live input on a 0-SUBSTEP frame: buffered, but no tick drains it.
         game.key_event(Key::Up as i32, true);
         assert!(
-            !game.input_buf.is_empty(),
+            !game.next.is_empty(),
             "input must be buffered when no tick follows it"
         );
 
@@ -3500,7 +3501,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         // and must be dropped (the fix), not recorded into the branch.
         game.seek_scene_to(1).expect("seek to an earlier frame");
         assert!(
-            game.input_buf.is_empty(),
+            game.next.is_empty(),
             "seek must drop input orphaned by the model restore"
         );
     }

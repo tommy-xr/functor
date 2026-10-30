@@ -189,6 +189,7 @@ use crate::scene3d::{
 };
 use crate::skybox::SkyboxDescription;
 use crate::terrain::TerrainDescription;
+use crate::timetravel::{args_digest, Entry};
 use crate::ui::{self, View};
 use crate::webview::HtmlNode;
 use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
@@ -446,7 +447,7 @@ pub enum EffectTree {
     /// runner read like [`Self::Now`]: the tagger receives
     /// `Option.Some(value)` or `Option.None` (absent OR unreadable/corrupt —
     /// a broken save must not kill a running game), and the result lands in
-    /// the effect log, so a replay feeds back exactly what was loaded.
+    /// the frame log, so a replay feeds back exactly what was loaded.
     Load {
         slot: String,
         tagger: Value,
@@ -509,27 +510,33 @@ pub enum EffectTree {
 pub struct FunctorLangEffect(pub EffectTree);
 
 /// Performs effects. `Real` asks the world; `Fake` gives fixed values
-/// (tests); `Replay` feeds back a recorded [`EffectLog`] — same program,
+/// (tests); `Replay` answers from the recorded frame log — same program,
 /// three worlds, one contract (docs/functor-lang.md B6).
 pub trait EffectRunner {
     fn now(&mut self) -> f64;
     fn random(&mut self) -> f64;
     /// The raycast result record (`{hit, x, y, z, nx, ny, nz, distance,
-    /// tag}` — `hit: false` with zeroed fields for a miss). `Real` asks the
-    /// singleton physics world; `Fake`/`Replay` return canned/recorded
-    /// records — physics queries are testable without a world at all.
+    /// tag}` — `hit: false` with zeroed fields for a miss). `Real` and
+    /// `Replay` ask the active physics world (an ask is recomputed, never
+    /// recorded); `Fake` returns canned records — physics queries are
+    /// testable without a world at all.
     fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue;
     /// Persist a save slot (`Persistence.save`). `Real` writes the platform store;
     /// `Fake` records the write in memory (so a test can assert what a game
-    /// saved without touching a disk); `Replay` drops it — a replay must not
-    /// rewrite the world it is replaying. An error is returned for the drain
-    /// to report; the game keeps running.
+    /// saved without touching a disk); `Replay` keeps it in its own overlay —
+    /// a replay must not rewrite the world it is replaying. An error is
+    /// returned for the drain to report; the game keeps running.
     fn save(&mut self, slot: &str, payload: &EffectValue) -> Result<(), String>;
     /// Read a save slot (`Persistence.load`) as `Option.Some(value)` /
     /// `Option.None` — see [`save_slot_value`]. `Real` asks the platform
     /// store; `Fake` answers from what it recorded (empty = `None`); `Replay`
-    /// replays the recorded result.
+    /// replays the recorded answer.
     fn load(&mut self, slot: &str) -> EffectValue;
+    /// An outbound intent was issued (logged as [`Entry::Issued`]). `Replay`
+    /// checks it against the log; the others ignore it.
+    fn issued(&mut self, _kind: &'static str, _args: u64) {}
+    /// A replayed frame starts: its recorded log, or `None` past the log.
+    fn begin_frame(&mut self, _recorded: Option<&[Entry]>) {}
 }
 
 /// The tagger-facing `Option` for a loaded save slot. The ctors are the
@@ -612,10 +619,6 @@ fn active_world_raycast(origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> Effec
             .flatten(),
     )
 }
-
-/// The structured effect log keeps this many most-recent records — enforced
-/// INSIDE the drain, so the bound holds even mid-frame.
-pub const EFFECT_LOG_CAP: usize = 256;
 
 /// A serializable key for an [`EffectValue::Map`]. It mirrors Functor Lang's
 /// deliberately bounded scalar key domain.
@@ -918,16 +921,6 @@ impl From<f64> for EffectValue {
     }
 }
 
-/// One performed effect: what kind, and what value the tagger received —
-/// the structured effect log (LLM-readable, and the input to replay).
-#[derive(Clone, Debug, PartialEq)]
-pub struct EffectRecord {
-    pub kind: &'static str,
-    pub value: EffectValue,
-}
-
-pub type EffectLog = Vec<EffectRecord>;
-
 /// The real world: system clock, xorshift PRNG seeded from it (no new
 /// dependency; game-quality randomness, not crypto).
 pub struct RealEffects {
@@ -1072,90 +1065,124 @@ impl EffectRunner for FakeEffects {
     }
 }
 
-/// The dry-run forward-step's runner (docs/time-travel.md T6b): ENVIRONMENT
-/// reads (`now`/`random`) are deterministic — the projection must not depend
-/// on wall clock or entropy — but a raycast is a WORLD read, not an
-/// environment read, so it answers against the ACTIVE world (the forward-step
-/// scopes that to its throwaway projected world) exactly like the live runner.
-pub struct DryRunEffects {
-    env: FakeEffects,
-    /// Slots the PROJECTION wrote, newest last. A dry run must not touch the
-    /// player's store, but within the projection a save must still be
-    /// visible to a later load — otherwise the projected model diverges from
-    /// the live one for the one program shape (save-then-load) this exists
-    /// to project faithfully. Reads fall through to the real store.
-    saves: Vec<(String, EffectValue)>,
-}
-
-impl DryRunEffects {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> DryRunEffects {
-        DryRunEffects {
-            env: FakeEffects::new(0.0, vec![0.0]),
-            saves: Vec::new(),
-        }
-    }
-}
-
-impl EffectRunner for DryRunEffects {
-    fn now(&mut self) -> f64 {
-        self.env.now()
-    }
-    fn random(&mut self) -> f64 {
-        self.env.random()
-    }
-    fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
-        active_world_raycast(origin, dir, max_dist)
-    }
-    fn save(&mut self, slot: &str, payload: &EffectValue) -> Result<(), String> {
-        // A projection must not touch the player's save — it writes to its own
-        // throwaway overlay instead, exactly as it steps a throwaway world.
-        self.saves.push((slot.to_string(), payload.clone()));
-        Ok(())
-    }
-    fn load(&mut self, slot: &str) -> EffectValue {
-        // A slot READ is a world read, not an environment read — same rule as
-        // `raycast`: the projection sees the store the live game sees, with
-        // its own uncommitted writes on top.
-        match self.saves.iter().rev().find(|(key, _)| key == slot) {
-            Some((_, value)) => save_slot_value(Some(value.clone())),
-            None => read_saved_slot(slot),
-        }
-    }
-}
-
-/// Replays a recorded log in order. A kind mismatch means the program
-/// diverged from the recording — fail loud with the position.
+/// The fork's runner (branch replay, ghost, counterfactual; design-systems
+/// §2.4): each `now` / `random` / `Persistence.load` hands back the recorded
+/// answer of the frame being replayed, and each outbound intent is checked
+/// against the recorded one — positionally, by kind and args digest. A
+/// mismatch is a divergence. Once answers stop lining up (a missing, extra or
+/// different call), and on frames with no log (a projection past the recorded
+/// window, a scripted ghost), answers are deterministic stand-ins — `now` and
+/// `random` 0, `load` the replay's own saves or `Option.None` — never the live
+/// world. Raycasts are asks, recomputed against the ACTIVE world (the fork's
+/// throwaway world). Saves go to the replay's own overlay, never the player's
+/// store.
 pub struct ReplayEffects {
-    log: EffectLog,
-    next: usize,
+    /// The current frame's unconsumed recorded ops; `None` = unrecorded.
+    ops: Option<std::collections::VecDeque<Entry>>,
+    /// The stand-in answers and the save overlay.
+    stand_in: FakeEffects,
+    /// Frames begun so far.
+    frames: usize,
+    divergence: Option<String>,
+    /// The frame (0-based) where answers stopped lining up with the log.
+    lost_at: Option<usize>,
 }
 
 impl ReplayEffects {
-    pub fn new(log: EffectLog) -> ReplayEffects {
-        ReplayEffects { log, next: 0 }
-    }
-    fn take(&mut self, kind: &'static str) -> EffectValue {
-        let record = self
-            .log
-            .get(self.next)
-            .unwrap_or_else(|| panic!("replay log exhausted at effect {}", self.next));
-        assert_eq!(
-            record.kind, kind,
-            "replay diverged at effect {}: recorded {}, program asked for {kind}",
-            self.next, record.kind
-        );
-        self.next += 1;
-        record.value.clone()
+    /// No recorded frame until [`EffectRunner::begin_frame`] gives one.
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> ReplayEffects {
+        ReplayEffects {
+            ops: None,
+            stand_in: FakeEffects::new(0.0, vec![0.0]),
+            frames: 0,
+            divergence: None,
+            lost_at: None,
+        }
     }
 
-    fn take_number(&mut self, kind: &'static str) -> f64 {
-        match self.take(kind) {
-            EffectValue::Number(n) => n,
-            other => panic!(
-                "replay diverged at effect {}: recorded a non-number {other:?} for {kind}",
-                self.next - 1
-            ),
+    /// Replay one recorded frame (the fork feeds frames itself).
+    #[cfg(test)]
+    pub fn from_log(recorded: &[Entry]) -> ReplayEffects {
+        let mut replay = ReplayEffects::new();
+        replay.begin_frame(Some(recorded));
+        replay
+    }
+
+    /// The first divergence, after checking the current frame was used up.
+    pub fn finish(&mut self) -> Option<&str> {
+        self.end_frame();
+        self.divergence.as_deref()
+    }
+
+    /// The frame where answers stopped lining up, if they did.
+    pub fn lost_at(&self) -> Option<usize> {
+        self.lost_at
+    }
+
+    fn diverge(&mut self, message: String) {
+        self.divergence.get_or_insert(message);
+    }
+
+    /// Diverge and stop consuming the log: its answers no longer line up.
+    fn lose(&mut self, message: String) {
+        self.diverge(message);
+        self.lost_at.get_or_insert(self.frames.saturating_sub(1));
+        self.ops = None;
+    }
+
+    fn end_frame(&mut self) {
+        let left = self.ops.as_ref().and_then(|ops| {
+            ops.front()
+                .and_then(Entry::op)
+                .map(|(op, kind, _)| (ops.len(), op, kind))
+        });
+        if let Some((n, op, kind)) = left {
+            self.lose(format!(
+                "replay diverged at {op:?}: the program never asked for the recorded {kind} \
+({n} recorded op(s) unused)"
+            ));
+        }
+    }
+
+    /// Consume the next recorded op if the frame is recorded: its answer
+    /// value, or `None` for a stand-in (unrecorded, diverged, or an intent).
+    fn take(&mut self, kind: &'static str, args: u64) -> Option<EffectValue> {
+        let ops = self.ops.as_mut()?;
+        let Some(entry) = ops.pop_front() else {
+            self.lose(format!(
+                "replay diverged: the program asked for {kind} past its frame's recorded ops"
+            ));
+            return None;
+        };
+        let (op, recorded, recorded_args) = entry.op().expect("only ops are queued");
+        if recorded != kind {
+            self.lose(format!(
+                "replay diverged at {op:?}: recorded {recorded}, program asked for {kind}"
+            ));
+            return None;
+        }
+        let message = format!("replay diverged at {op:?}: {kind} with different arguments");
+        match entry {
+            Entry::Answer { value, .. } if recorded_args == args => Some(value),
+            Entry::Answer { .. } => {
+                self.lose(message);
+                None
+            }
+            // An intent carries no answer, so later answers still line up.
+            _ => {
+                if recorded_args != args {
+                    self.diverge(message);
+                }
+                None
+            }
+        }
+    }
+
+    fn take_number(&mut self, kind: &'static str) -> Option<f64> {
+        match self.take(kind, args_digest(&())) {
+            Some(EffectValue::Number(n)) => Some(n),
+            _ => None,
         }
     }
 }
@@ -1163,22 +1190,37 @@ impl ReplayEffects {
 impl EffectRunner for ReplayEffects {
     fn now(&mut self) -> f64 {
         self.take_number("now")
+            .unwrap_or_else(|| self.stand_in.now())
     }
     fn random(&mut self) -> f64 {
         self.take_number("random")
+            .unwrap_or_else(|| self.stand_in.random())
     }
-    fn raycast(&mut self, _origin: [f32; 3], _dir: [f32; 3], _max_dist: f32) -> EffectValue {
-        self.take("physics.raycast")
+    fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
+        active_world_raycast(origin, dir, max_dist)
     }
-    fn save(&mut self, _slot: &str, _payload: &EffectValue) -> Result<(), String> {
-        // A replay must not rewrite the world it is replaying — but it DOES
-        // consume the recording's `storage.save` record, so the log stays
-        // index-aligned and a save/load sequence replays exactly.
-        self.take("storage.save");
-        Ok(())
+    fn save(&mut self, slot: &str, payload: &EffectValue) -> Result<(), String> {
+        self.stand_in.save(slot, payload)
     }
-    fn load(&mut self, _slot: &str) -> EffectValue {
-        self.take("storage.load")
+    fn load(&mut self, slot: &str) -> EffectValue {
+        self.take("storage.load", args_digest(&slot))
+            .unwrap_or_else(|| self.stand_in.load(slot))
+    }
+    fn issued(&mut self, kind: &'static str, args: u64) {
+        self.take(kind, args);
+    }
+    fn begin_frame(&mut self, recorded: Option<&[Entry]>) {
+        self.end_frame();
+        self.frames += 1;
+        if self.lost_at.is_none() {
+            self.ops = recorded.map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.op().is_some())
+                    .cloned()
+                    .collect()
+            });
+        }
     }
 }
 
@@ -6226,7 +6268,7 @@ pub fn deliver_physics_events(
     taggers: &[Value],
     events: &[physics::PhysicsEvent],
     runner: &mut dyn EffectRunner,
-    log: &mut EffectLog,
+    log: &mut Vec<Entry>,
     report: &mut dyn FnMut(String),
     suppress_outbound: bool,
 ) {
@@ -6345,8 +6387,8 @@ pub fn contains_effect(value: &Value) -> bool {
 /// Perform `first` and drain to a fixed point: each performed effect's
 /// tagger result is folded through `update`, whose return may carry MORE
 /// effects — capped so a self-sustaining chain cannot hang the frame (the
-/// F# executor's `maxEffectsPerFrame` discipline). Every performed effect
-/// is appended to `log` (the structured effect log; replay's input).
+/// F# executor's `maxEffectsPerFrame` discipline). Every answer and outbound
+/// intent is appended to `log` (the frame's Δ; replay's input).
 /// Errors report through `report` (deduped by the producer) and drop that
 /// effect — one bad tagger must not stall the rest. `update_name` is the
 /// ROLE's resolved update binding (`EntryNames::update` — `serverUpdate`
@@ -6363,7 +6405,7 @@ pub fn drain_effects(
     model: &mut Value,
     first: EffectTree,
     runner: &mut dyn EffectRunner,
-    log: &mut EffectLog,
+    log: &mut Vec<Entry>,
     report: &mut dyn FnMut(String),
     suppress_outbound: bool,
 ) -> Vec<EffectTree> {
@@ -6429,7 +6471,7 @@ pub fn perform_deferred_queries(
     model: &mut Value,
     deferred: Vec<EffectTree>,
     runner: &mut dyn EffectRunner,
-    log: &mut EffectLog,
+    log: &mut Vec<Entry>,
     report: &mut dyn FnMut(String),
     suppress_outbound: bool,
 ) {
@@ -6449,13 +6491,19 @@ pub fn perform_deferred_queries(
     );
 }
 
+/// Log an outbound intent as an `Issued` op; a replay runner validates it.
+fn issue(runner: &mut dyn EffectRunner, log: &mut Vec<Entry>, kind: &'static str, args: u64) {
+    runner.issued(kind, args);
+    log.push(Entry::issued(kind, args));
+}
+
 fn drain_mode(
     session: &functor_lang::Session,
     update_name: &'static str,
     model: &mut Value,
     queue: Vec<EffectTree>,
     runner: &mut dyn EffectRunner,
-    log: &mut EffectLog,
+    log: &mut Vec<Entry>,
     report: &mut dyn FnMut(String),
     // `Some` = pre-step drain: hold queries here instead of performing.
     // `None` = post-step drain: answer queries now.
@@ -6492,7 +6540,9 @@ dropping the rest"
         // `kind` is the structured log's wire label; `api` is what a game
         // author actually typed, so a message about a failed tagger names a
         // function that exists (`Persistence.load`, not `Effect.storage.load`).
-        let (kind, api, value, tagger) = match tree {
+        // `args` is the op's digest; `None` for an ask (a raycast), which is
+        // recomputed on replay, never logged.
+        let (kind, api, value, tagger, args) = match tree {
             EffectTree::None => continue,
             EffectTree::Batch(items) => {
                 // Preserve declaration order against the LIFO queue.
@@ -6502,21 +6552,9 @@ dropping the rest"
                 continue;
             }
             EffectTree::Physics(command) => {
-                // Fire-and-forget: queue on the singleton world, log the kind
-                // and the target tag (there is no result value to feed a
-                // tagger), continue. Not routed through the runner — commands
-                // are per-frame *inputs* recorded by the physics Timeline,
-                // not environment reads that replay must fake.
-                let kind = match &command {
-                    physics::PhysicsCommand::ApplyImpulse { .. } => "physics.applyImpulse",
-                    physics::PhysicsCommand::ApplyForce { .. } => "physics.applyForce",
-                    physics::PhysicsCommand::SetVelocity { .. } => "physics.setVelocity",
-                    physics::PhysicsCommand::SetVelocityXZ { .. } => "physics.setVelocityXZ",
-                    physics::PhysicsCommand::SetVelocityY { .. } => "physics.setVelocityY",
-                    physics::PhysicsCommand::Teleport { .. } => "physics.teleport",
-                    physics::PhysicsCommand::Move { .. } => "physics.move",
-                };
-                let tag = command.tag_and_kind().0.to_string();
+                // Fire-and-forget: queue on the singleton world, continue. Not
+                // a frame-log op — commands are per-frame *inputs* recorded by
+                // the physics Timeline, not environment reads replay must fake.
                 // Outbound suppression protects the LIVE world (a dry run must
                 // not kick real bodies) — but a dry-run world SCOPE routes
                 // commands to its own throwaway world, which is exactly where a
@@ -6525,32 +6563,19 @@ dropping the rest"
                 if !suppress_outbound || target != physics::DEFAULT_WORLD {
                     physics::with_world(target, |w| w.queue_command(command));
                 }
-                log.push(EffectRecord {
-                    kind,
-                    value: EffectValue::Text(tag),
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
-                }
                 continue;
             }
             EffectTree::Send { conn, text } => {
                 // Fire-and-forget, like a physics command: queue a Send on the
                 // shell's connection manager (drained via
-                // net_drain_conn_commands). Logged for the effect record.
+                // net_drain_conn_commands). Logged as an `Issued` op.
                 if !suppress_outbound {
                     crate::net::push_conn_command(crate::net::ConnCommand::Send {
                         conn: conn as crate::net::ConnectionId,
                         payload: text.clone().into_bytes(),
                     });
                 }
-                log.push(EffectRecord {
-                    kind: "net.send",
-                    value: EffectValue::Text(text),
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
-                }
+                issue(runner, log, "net.send", args_digest(&(conn, &text)));
                 continue;
             }
             EffectTree::SendMsg { conn, payload } => {
@@ -6564,13 +6589,7 @@ dropping the rest"
                         payload: encode_typed_msg(&payload).into_bytes(),
                     });
                 }
-                log.push(EffectRecord {
-                    kind: "net.sendMsg",
-                    value: payload,
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
-                }
+                issue(runner, log, "net.sendMsg", args_digest(&(conn, &payload)));
                 continue;
             }
             EffectTree::Http {
@@ -6582,24 +6601,23 @@ dropping the rest"
                 // Fire-and-forget request (like Send): mint a token, register
                 // the tagger by it, and queue the HttpRequest for the shell to
                 // perform. The response lands frames later; the producer's HTTP
-                // pump applies the tagger then. Logged for the effect record.
+                // pump applies the tagger then. Logged as an `Issued` op.
+                issue(
+                    runner,
+                    log,
+                    "net.http",
+                    args_digest(&(&method, &url, &body)),
+                );
                 if !suppress_outbound {
                     let token = crate::net::next_token();
                     register_http_tagger(token, tagger);
                     crate::net::push_command(crate::net::NetCommand::HttpRequest {
                         token,
                         method,
-                        url: url.clone(),
+                        url,
                         headers: Vec::new(),
                         body: body.into_bytes(),
                     });
-                }
-                log.push(EffectRecord {
-                    kind: "net.http",
-                    value: EffectValue::Text(url),
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
                 }
                 continue;
             }
@@ -6615,20 +6633,14 @@ dropping the rest"
                         position,
                     });
                 }
-                log.push(EffectRecord {
-                    kind: "audio.play",
-                    value: EffectValue::Text(sound),
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
-                }
+                issue(runner, log, "audio.play", args_digest(&(&sound, position)));
                 continue;
             }
             EffectTree::PlayAudioThen { sound, message } => {
                 // Fire-and-forget request (like Http): mint a token, register
                 // the completion MESSAGE by it, and queue a tokened one-shot.
                 // The finish lands frames later; the producer's audio-finished
-                // hook delivers the message then. Logged for the effect record.
+                // hook delivers the message then. Logged as an `Issued` op.
                 if !suppress_outbound {
                     let token = crate::audio::next_token();
                     register_audio_completion(token, message);
@@ -6637,32 +6649,20 @@ dropping the rest"
                         sound.clone(),
                     ));
                 }
-                log.push(EffectRecord {
-                    kind: "audio.playThen",
-                    value: EffectValue::Text(sound),
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
-                }
+                issue(runner, log, "audio.playThen", args_digest(&sound));
                 continue;
             }
             EffectTree::PreloadAsset { kind, locator } => {
                 // Fire-and-forget prefetch: queue a PreloadCommand for the
                 // shell's driver (drained via preload_drain_commands). No
                 // token — nothing folds back through update.
+                issue(runner, log, "asset.preload", args_digest(&(kind, &locator)));
                 if !suppress_outbound {
                     crate::asset::preload::push_command(crate::asset::preload::PreloadCommand {
                         kind,
                         locator: locator.clone(),
                         token: None,
                     });
-                }
-                log.push(EffectRecord {
-                    kind: "asset.preload",
-                    value: EffectValue::Text(locator),
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
                 }
                 continue;
             }
@@ -6675,6 +6675,12 @@ dropping the rest"
                 // MESSAGE by it, queue a tokened command. Settlement lands
                 // frames later; the producer's preload-settled hook delivers
                 // the message then.
+                issue(
+                    runner,
+                    log,
+                    "asset.preloadThen",
+                    args_digest(&(kind, &locator)),
+                );
                 if !suppress_outbound {
                     let token = crate::asset::preload::next_token();
                     register_preload_completion(token, message);
@@ -6683,13 +6689,6 @@ dropping the rest"
                         locator: locator.clone(),
                         token: Some(token),
                     });
-                }
-                log.push(EffectRecord {
-                    kind: "asset.preloadThen",
-                    value: EffectValue::Text(locator),
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
                 }
                 continue;
             }
@@ -6715,32 +6714,24 @@ dropping the rest"
                     "Physics.raycast",
                     runner.raycast(origin, dir, max_dist),
                     tagger,
+                    None,
                 ),
             },
             EffectTree::Save { slot, payload } => {
-                // Tagger-less, like a physics command: perform the write and
-                // log the STRUCTURED payload, so what a game persisted is
-                // observable (and replayable) as data. A failed write is
-                // reported and dropped — a full disk must not kill the game.
+                // Tagger-less: perform the write and log an `Issued` op. A
+                // failed write is reported and dropped — a full disk must not
+                // kill the game.
                 //
-                // Unlike the outbound arms below, a save is NOT gated on
-                // `suppress_outbound`: the RUNNER is already the world seam
-                // here (a dry run holds a `DryRunEffects`, whose `save` is a
-                // no-op; a replay consumes its record instead of writing), and
-                // routing it through the runner unconditionally is what keeps
-                // a replayed save/load pair index-aligned with its recording.
+                // Unlike the other outbound arms, a save is NOT gated on
+                // `suppress_outbound`: the RUNNER is the world seam here (a
+                // replay writes its own overlay, so a later load in the same
+                // replay still sees it).
                 if let Err(error) = runner.save(&slot, &payload) {
                     report(format!(
                         "[functor-lang] Persistence.save(\"{slot}\") failed: {error}"
                     ));
                 }
-                log.push(EffectRecord {
-                    kind: "storage.save",
-                    value: payload,
-                });
-                if log.len() > EFFECT_LOG_CAP {
-                    log.remove(0);
-                }
+                issue(runner, log, "storage.save", args_digest(&(&slot, &payload)));
                 continue;
             }
             EffectTree::Load { slot, tagger } => (
@@ -6748,14 +6739,30 @@ dropping the rest"
                 "Persistence.load",
                 runner.load(&slot),
                 tagger,
+                Some(args_digest(&slot)),
             ),
-            EffectTree::Now { tagger } => ("now", "Effect.now", runner.now().into(), tagger),
-            EffectTree::Random { tagger } => {
-                ("random", "Effect.random", runner.random().into(), tagger)
-            }
+            EffectTree::Now { tagger } => (
+                "now",
+                "Effect.now",
+                runner.now().into(),
+                tagger,
+                Some(args_digest(&())),
+            ),
+            EffectTree::Random { tagger } => (
+                "random",
+                "Effect.random",
+                runner.random().into(),
+                tagger,
+                Some(args_digest(&())),
+            ),
         };
         let value: EffectValue = value;
-        let functor_lang_value = match value.to_functor_lang() {
+        let converted = value.to_functor_lang();
+        // Logged even if unusable: the call happened, so a replay consumes it.
+        if let Some(args) = args {
+            log.push(Entry::answer(kind, args, value));
+        }
+        let functor_lang_value = match converted {
             Ok(value) => value,
             Err(error) => {
                 report(format!(
@@ -6764,10 +6771,6 @@ dropping the rest"
                 continue;
             }
         };
-        log.push(EffectRecord { kind, value });
-        if log.len() > EFFECT_LOG_CAP {
-            log.remove(0);
-        }
         let msg = match session.apply(
             tagger,
             vec![functor_lang_value],
@@ -8824,7 +8827,7 @@ Asset.model(\"shark.glb\") at the data boundary"
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let mut model = session.global("init").unwrap();
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         for name in ["shoot", "blast"] {
             let effect = effect_of(&session.global(name).unwrap()).unwrap().0.clone();
             let _ = drain_effects(
@@ -11717,7 +11720,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         let session = functor_lang::Session::load(&module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
         let mut model = Value::Number(0.0);
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let mut runner = FakeEffects::new(0.0, vec![]);
         let deferred = drain_effects(
             &session,
@@ -11866,7 +11869,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             let session = functor_lang::Session::load(&module, &mut FunctorHost)
                 .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
             let mut model = Value::Number(0.0);
-            let mut log = EffectLog::new();
+            let mut log: Vec<Entry> = Vec::new();
             let mut runner = FakeEffects::new(0.0, vec![]);
             let deferred = drain_effects(
                 &session,
@@ -11956,7 +11959,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         let session = functor_lang::Session::load(&module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
         let mut model = Value::Number(0.0);
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let mut runner = FakeEffects::new(0.0, vec![]);
         let deferred = drain_effects(
             &session,
@@ -11969,10 +11972,8 @@ Physics.fusedRoom(tag) without moving or rotating it";
             false,
         );
         assert!(deferred.is_empty(), "nothing should defer here");
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0].kind, "physics.applyImpulse");
-        // The structured log records the TARGET, not a filler number.
-        assert_eq!(log[0].value, EffectValue::Text("ball".to_string()));
+        // A world command, not a frame-log op: the physics Timeline records it.
+        assert!(log.is_empty());
 
         // The command sits queued on world 0; a declared body + step applies it.
         crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
@@ -11991,18 +11992,18 @@ Physics.fusedRoom(tag) without moving or rotating it";
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 
-    // The per-axis commands log their OWN kind (not the whole-vector one), and
+    // The per-axis commands queue their OWN kind (not the whole-vector one), and
     // the masked write reaches the world preserving the axis it does not name.
     #[test]
     fn per_axis_velocity_commands_log_their_kind_and_preserve_the_other_axes() {
         for (src, kind) in [
             (
                 "let main = () => Physics.setVelocityXZ(\"ball\", 3.0, 4.0)",
-                "physics.setVelocityXZ",
+                "setVelocityXZ",
             ),
             (
                 "let main = () => Physics.setVelocityY(\"ball\", 9.0)",
-                "physics.setVelocityY",
+                "setVelocityY",
             ),
         ] {
             crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
@@ -12017,7 +12018,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             let session = functor_lang::Session::load(&module, &mut FunctorHost)
                 .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
             let mut model = Value::Number(0.0);
-            let mut log = EffectLog::new();
+            let mut log: Vec<Entry> = Vec::new();
             let mut runner = FakeEffects::new(0.0, vec![]);
             let deferred = drain_effects(
                 &session,
@@ -12030,9 +12031,13 @@ Physics.fusedRoom(tag) without moving or rotating it";
                 false,
             );
             assert!(deferred.is_empty(), "nothing should defer here");
-            assert_eq!(log.len(), 1);
-            assert_eq!(log[0].kind, kind, "wrong effect-log kind for `{src}`");
-            assert_eq!(log[0].value, EffectValue::Text("ball".to_string()));
+            let queued = crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+                w.pending_commands()
+                    .iter()
+                    .map(|c| c.tag_and_kind().1)
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(queued, Some(vec![kind]), "wrong command for `{src}`");
         }
 
         // And the masked write really is masked once it reaches the world: a
@@ -12048,7 +12053,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         let session = functor_lang::Session::load(&module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
         let mut model = Value::Number(0.0);
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let mut runner = FakeEffects::new(0.0, vec![]);
         let _ = drain_effects(
             &session,
@@ -12220,8 +12225,19 @@ Physics.fusedRoom(tag) without moving or rotating it";
         assert_eq!(fires, expected, "over ({first}, {last}]");
     }
 
+    /// `(kind, answer)` per logged op — `None` for an outbound intent.
+    fn ops(log: &[Entry]) -> Vec<(&'static str, Option<EffectValue>)> {
+        log.iter()
+            .map(|entry| match entry {
+                Entry::Answer { kind, value, .. } => (*kind, Some(value.clone())),
+                Entry::Issued { kind, .. } => (*kind, None),
+                Entry::Input(input) => panic!("a drain logs no input: {input:?}"),
+            })
+            .collect()
+    }
+
     /// The B6 broker contract: the same program under fake and replay
-    /// runners produces the SAME model — the fake run's structured log IS
+    /// runners produces the SAME model — the fake run's frame log IS
     /// replay's input. (Real differs only in the values the world supplies.)
     #[test]
     fn same_program_under_fake_and_replay() {
@@ -12244,7 +12260,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         };
         let run = |runner: &mut dyn EffectRunner| {
             let mut model = init();
-            let mut log = EffectLog::new();
+            let mut log: Vec<Entry> = Vec::new();
             let returned = session
                 .call("roll", vec![model.clone()], &mut FunctorHost)
                 .expect("roll");
@@ -12267,39 +12283,36 @@ Physics.fusedRoom(tag) without moving or rotating it";
         let (fake_model, fake_log) = run(&mut FakeEffects::new(99.5, vec![0.25]));
         assert_eq!(fake_model, "{ rolls: 0.25, at: 99.5 }");
         assert_eq!(
-            fake_log,
+            ops(&fake_log),
             vec![
-                EffectRecord {
-                    kind: "random",
-                    value: EffectValue::Number(0.25)
-                },
-                EffectRecord {
-                    kind: "now",
-                    value: EffectValue::Number(99.5)
-                },
+                ("random", Some(EffectValue::Number(0.25))),
+                ("now", Some(EffectValue::Number(99.5))),
             ]
         );
         // Replay the log: same model, no world consulted.
-        let (replay_model, replay_log) = run(&mut ReplayEffects::new(fake_log.clone()));
+        let mut replay = ReplayEffects::from_log(&fake_log);
+        let (replay_model, replay_log) = run(&mut replay);
+        assert_eq!(replay.finish(), None);
         assert_eq!(replay_model, fake_model);
-        assert_eq!(replay_log, fake_log);
+        assert_eq!(ops(&replay_log), ops(&fake_log));
         // The real world: same SHAPE (both effects performed, chain drained),
         // world-supplied values.
         let (real_model, real_log) = run(&mut RealEffects::new());
-        assert_eq!(real_log.len(), 2);
-        assert_eq!(real_log[0].kind, "random");
-        let EffectValue::Number(r0) = real_log[0].value else {
+        let real = ops(&real_log);
+        assert_eq!(real.len(), 2);
+        assert_eq!(real[0].0, "random");
+        let Some(EffectValue::Number(r0)) = real[0].1 else {
             panic!("random should log a number");
         };
         assert!((0.0..1.0).contains(&r0));
-        assert_eq!(real_log[1].kind, "now");
+        assert_eq!(real[1].0, "now");
         assert!(real_model.starts_with("{ rolls: 0."));
     }
 
     /// The Phase 4 query path end to end: a raycast effect DEFERS through the
     /// pre-step drain, then answers post-step against the live world, its
-    /// record folding through `update` — and the fake/replay runners answer
-    /// without a world at all.
+    /// record folding through `update` — a replay recomputes it (an ask), and
+    /// the fake runner answers without a world at all.
     #[test]
     fn raycast_effects_defer_then_answer_post_step() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
@@ -12340,7 +12353,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         });
 
         let mut model = Value::Number(0.0);
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let mut runner = RealEffects::new();
         let mut fail = |m: String| panic!("unexpected report: {m}");
 
@@ -12362,8 +12375,8 @@ Physics.fusedRoom(tag) without moving or rotating it";
             &mut fail,
             false,
         );
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0].kind, "physics.raycast");
+        // An ask, not a frame-log op: replay recomputes it.
+        assert!(log.is_empty());
         let Value::Record(fields) = &model else {
             panic!("update should have received the hit record");
         };
@@ -12378,11 +12391,10 @@ Physics.fusedRoom(tag) without moving or rotating it";
         assert!(matches!(field("tag"), Value::String(s) if &*s == "slab"));
         assert!(matches!(field("y"), Value::Number(n) if (n - 0.5).abs() < 1e-4));
 
-        // Replay: the recorded log answers with no world consulted.
-        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        // Replay: recomputed against the active world, same answer.
         let mut replay_model = Value::Number(0.0);
-        let mut replay_log = EffectLog::new();
-        let mut replay = ReplayEffects::new(log.clone());
+        let mut replay_log: Vec<Entry> = Vec::new();
+        let mut replay = ReplayEffects::from_log(&log);
         let deferred = drain_effects(
             &session,
             "update",
@@ -12408,8 +12420,10 @@ Physics.fusedRoom(tag) without moving or rotating it";
             &mut fail,
             false,
         );
-        assert_eq!(replay_log, log, "replay must reproduce the log");
+        assert!(replay_log.is_empty());
+        assert_eq!(replay.finish(), None);
         assert_eq!(replay_model.to_string(), model.to_string());
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
 
         // Fake: canned hits, no world.
         let mut fake = FakeEffects::new(0.0, vec![]).with_ray_hits(vec![ray_result_value(None)]);
@@ -12478,7 +12492,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         .expect("a contact");
 
         let mut model = Value::Record(Rc::new(vec![("contacts".to_string(), Value::Number(0.0))]));
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let mut runner = FakeEffects::new(0.0, vec![]);
         deliver_physics_events(
             &session,
@@ -12792,15 +12806,53 @@ Physics.fusedRoom(tag) without moving or rotating it";
         assert_eq!(back.model, state.model);
     }
 
-    /// A diverged replay fails loud with the position, not silently wrong.
+    /// A diverged replay reports the op, answers with a stand-in, and stops
+    /// consuming the log: a swapped call, an inserted call, a dropped call.
     #[test]
-    #[should_panic(expected = "replay diverged at effect 0")]
-    fn replay_divergence_fails_loud() {
-        ReplayEffects::new(vec![EffectRecord {
-            kind: "now",
-            value: EffectValue::Number(1.0),
-        }])
-        .random();
+    fn replay_divergence_is_reported_at_the_op() {
+        let now = || Entry::answer("now", args_digest(&()), EffectValue::Number(1.0));
+        let mut swapped = ReplayEffects::from_log(&[now()]);
+        assert_eq!(swapped.random(), 0.0);
+        let message = swapped.finish().expect("diverged");
+        assert!(
+            message.contains("recorded now, program asked for random"),
+            "{message}"
+        );
+
+        let mut inserted = ReplayEffects::from_log(&[now()]);
+        assert_eq!(inserted.now(), 1.0);
+        inserted.now();
+        let message = inserted.finish().expect("diverged");
+        assert!(
+            message.contains("past its frame's recorded ops"),
+            "{message}"
+        );
+
+        let mut dropped = ReplayEffects::from_log(&[now(), now()]);
+        dropped.now();
+        let message = dropped.finish().expect("diverged");
+        assert!(
+            message.contains("never asked for the recorded now"),
+            "{message}"
+        );
+
+        // A changed intent diverges, but later answers still line up.
+        let mut moved = ReplayEffects::from_log(&[
+            Entry::issued(
+                "storage.save",
+                args_digest(&("slot", &EffectValue::Number(1.0))),
+            ),
+            now(),
+        ]);
+        moved.issued(
+            "storage.save",
+            args_digest(&("slot", &EffectValue::Number(2.0))),
+        );
+        assert_eq!(moved.now(), 1.0);
+        let message = moved.finish().expect("diverged");
+        assert!(message.contains("with different arguments"), "{message}");
+        assert_eq!(moved.lost_at(), None);
+        assert_eq!(swapped.lost_at(), Some(0));
     }
 
     /// Effect construction refuses non-function taggers, and batches refuse
@@ -12844,7 +12896,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             Err(failure) => panic!("load failed: {}", failure.error.message),
         };
         let mut model = Value::Number(0.0);
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let mut reports = Vec::new();
         let deferred = drain_effects(
             &session,
@@ -12859,9 +12911,8 @@ Physics.fusedRoom(tag) without moving or rotating it";
             false,
         );
         assert!(deferred.is_empty(), "nothing should defer here");
-        // The log bound is enforced INSIDE the drain (not after), and the
-        // cap fires before performing the over-limit effect.
-        assert_eq!(log.len(), EFFECT_LOG_CAP, "log bounded mid-drain");
+        // The cap fires before performing (or logging) the over-limit effect.
+        assert_eq!(log.len(), 1000);
         assert!(reports.iter().any(|r| r.contains("per-frame cap")));
     }
 
@@ -12876,7 +12927,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             Err(failure) => panic!("load failed: {}", failure.error.message),
         };
         let mut model = Value::Number(0.0);
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let mut reports = Vec::new();
         let deferred = drain_effects(
             &session,
@@ -13550,7 +13601,7 @@ the game dir"
         let (_, effect) =
             split_model_effect(Value::Tuple(std::rc::Rc::new(vec![Value::Number(0.0), fx])));
         let mut model = Value::Number(0.0);
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         drain_effects(
             &session,
             "update",
@@ -13661,7 +13712,7 @@ the game dir"
                 .apply(tick, vec![model, Value::Number(0.5), Value::Number(0.5)], "tick", &mut FunctorHost)
                 .unwrap(),
         );
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let _ = drain_effects(
             &session,
             "update",
@@ -13673,9 +13724,7 @@ the game dir"
             false,
         );
         let expected = EffectValue::Variant("Ping".into(), vec![EffectValue::Number(2.0)]);
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0].kind, "net.sendMsg");
-        assert_eq!(log[0].value, expected);
+        assert_eq!(ops(&log), vec![("net.sendMsg", None)]);
         let cmds = crate::net::drain_conn_commands();
         assert_eq!(cmds.len(), 1);
         match &cmds[0] {
@@ -13707,7 +13756,7 @@ the game dir"
     /// A save/load program, run under whichever runner a test hands it: the
     /// first tick saves the model, the second loads it into a FRESH model —
     /// the "quit and relaunch" shape, minus the process boundary.
-    fn run_save_then_load(runner: &mut dyn EffectRunner) -> (String, EffectLog) {
+    fn run_save_then_load(runner: &mut dyn EffectRunner) -> (String, Vec<Entry>) {
         let src = "let init = { score: 0.0, tags: [\"a\"] }\n\
                    let update = (m, msg) =>\n\
                      match msg with\n\
@@ -13719,7 +13768,7 @@ the game dir"
             .unwrap_or_else(|e| panic!("load: {}", e.render()));
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let mut drain = |model: &mut Value, name: &str| {
             let (next, fx) = split_model_effect(
                 session
@@ -15175,16 +15224,13 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             ("tags".into(), EffectValue::List(vec![EffectValue::Text("a".into())])),
         ]);
         assert_eq!(
-            log,
+            ops(&log),
             vec![
-                EffectRecord {
-                    kind: "storage.save",
-                    value: expected.clone()
-                },
-                EffectRecord {
-                    kind: "storage.load",
-                    value: save_slot_value(Some(expected.clone()))
-                },
+                ("storage.save", None),
+                (
+                    "storage.load",
+                    Some(save_slot_value(Some(expected.clone())))
+                ),
             ]
         );
         // The artifact a player's save actually is: one JSON file under the
@@ -15226,7 +15272,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         assert_eq!(restored, "{ score: 42, tags: [\"a\"] }");
         assert_eq!(fake.saves.len(), 1);
         assert_eq!(fake.saves[0].0, "autosave");
-        assert_eq!(log[0].kind, "storage.save");
+        assert_eq!(ops(&log)[0], ("storage.save", None));
         // An untouched slot is absent, and a pre-seeded one boots restored.
         assert_eq!(
             FakeEffects::new(0.0, vec![0.0]).load("nothing-here"),
@@ -15242,8 +15288,8 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
     }
 
     /// Replay determinism: a recorded save/load log replays to the SAME model
-    /// and the same log, with no store consulted — and the replay does not
-    /// rewrite the slot it is replaying.
+    /// and the same log, with no store consulted — the replay does not rewrite
+    /// the slot it is replaying, and past the log it never reads it either.
     #[test]
     fn a_recorded_save_load_sequence_replays_exactly() {
         let (fake_model, fake_log) = run_save_then_load(&mut FakeEffects::new(0.0, vec![0.0]));
@@ -15254,12 +15300,22 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         // the assertions below (and this directory) would show it.
         let dir = tempfile::tempdir().unwrap();
         crate::storage::set_project_root(dir.path().to_path_buf());
-        let (replay_model, replay_log) = run_save_then_load(&mut ReplayEffects::new(fake_log.clone()));
+        let mut replay = ReplayEffects::from_log(&fake_log);
+        let (replay_model, replay_log) = run_save_then_load(&mut replay);
+        assert_eq!(replay.finish(), None);
         assert_eq!(replay_model, fake_model);
-        assert_eq!(replay_log, fake_log);
+        assert_eq!(ops(&replay_log), ops(&fake_log));
         assert!(
             !dir.path().join(".functor/saves").exists(),
             "a replay must not write the store it is replaying"
+        );
+        RealEffects::new()
+            .save("autosave", &EffectValue::Number(1.0))
+            .unwrap();
+        assert_eq!(
+            ReplayEffects::new().load("autosave"),
+            save_slot_value(None),
+            "past the log, a replay answers a stand-in, not the live store"
         );
     }
 
@@ -15339,7 +15395,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         crate::storage::set_project_root(dir.path().to_path_buf());
-        let (restored, _) = run_save_then_load(&mut DryRunEffects::new());
+        let (restored, _) = run_save_then_load(&mut ReplayEffects::new());
         assert_eq!(restored, "{ score: 42, tags: [\"a\"] }");
         assert!(
             !dir.path().join(".functor/saves").exists(),
@@ -15422,7 +15478,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         // Perform the fetch effect: queues the request + registers the tagger.
         let fetch = effect_of(&session.global("fetch").unwrap()).unwrap().0.clone();
         let mut model = session.global("init").unwrap();
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let _ = drain_effects(
             &session,
             "update",
@@ -15442,7 +15498,10 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             }
             other => panic!("expected one HttpRequest, got: {other:?}"),
         };
-        assert_eq!(log.last().map(|r| r.kind), Some("net.http"));
+        assert_eq!(
+            log.last().and_then(Entry::op).map(|op| op.1),
+            Some("net.http")
+        );
 
         // The response lands: route it through the registered tagger → update.
         let tagger = take_http_tagger(token).expect("a tagger for the token");
@@ -15483,7 +15542,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let mut model = session.global("init").unwrap();
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
 
         let fetch = effect_of(&session.global("fetch").unwrap()).unwrap().0.clone();
         let shoot = effect_of(&session.global("shoot").unwrap()).unwrap().0.clone();
@@ -15502,7 +15561,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
 
         // Logged both — the model-facing record is unaffected by suppression.
         assert_eq!(
-            log.iter().map(|r| r.kind).collect::<Vec<_>>(),
+            ops(&log).into_iter().map(|op| op.0).collect::<Vec<_>>(),
             vec!["net.http", "audio.play"]
         );
         // But nothing escaped: no net/http command, no audio command, no tagger.
@@ -15529,7 +15588,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let mut model = session.global("init").unwrap();
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
 
         let shoot = effect_of(&session.global("shoot").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
@@ -15542,7 +15601,10 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
-        assert_eq!(log.last().map(|r| r.kind), Some("audio.play"));
+        assert_eq!(
+            log.last().and_then(Entry::op).map(|op| op.1),
+            Some("audio.play")
+        );
 
         let blast = effect_of(&session.global("blast").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
@@ -15596,7 +15658,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let mut model = session.global("init").unwrap();
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
 
         let ping = effect_of(&session.global("ping").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
@@ -15609,7 +15671,10 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
-        assert_eq!(log.last().map(|r| r.kind), Some("audio.playThen"));
+        assert_eq!(
+            log.last().and_then(Entry::op).map(|op| op.1),
+            Some("audio.playThen")
+        );
 
         // One tokened one-shot was queued.
         let token = match crate::audio::drain_commands().as_slice() {
@@ -15659,7 +15724,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let mut model = session.global("init").unwrap();
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
 
         let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
@@ -15672,7 +15737,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
-        let kinds: Vec<&str> = log.iter().map(|r| r.kind).collect();
+        let kinds: Vec<&str> = ops(&log).into_iter().map(|op| op.0).collect();
         assert!(kinds.contains(&"asset.preload"), "{kinds:?}");
         assert!(kinds.contains(&"asset.preloadThen"), "{kinds:?}");
 
@@ -15745,7 +15810,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let mut model = session.global("init").unwrap();
-        let mut log = EffectLog::new();
+        let mut log: Vec<Entry> = Vec::new();
         let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
@@ -15757,7 +15822,10 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             &mut |m| panic!("unexpected report: {m}"),
             true, // suppress_outbound
         );
-        assert_eq!(log.last().map(|r| r.kind), Some("asset.preloadThen"));
+        assert_eq!(
+            log.last().and_then(Entry::op).map(|op| op.1),
+            Some("asset.preloadThen")
+        );
         assert!(crate::asset::preload::drain_commands().is_empty());
     }
 
@@ -15997,7 +16065,7 @@ a number",
         crate::net::drain_conn_commands(); // clear
         let (mut m, fx) = split_model_effect(returned);
         if let Some(tree) = fx {
-            let mut log = EffectLog::new();
+            let mut log: Vec<Entry> = Vec::new();
             let _ = drain_effects(
                 session,
                 label,

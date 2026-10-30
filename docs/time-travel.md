@@ -571,7 +571,12 @@ into a more powerful authoring tool:
    responses, audio commands/completions, random/time results, and physics query
    results. Replay supplies recorded inbound results and suppresses real outbound
    work, so scrubbing or rebuilding history never repeats a purchase, request,
-   message, or sound.
+   message, or sound. *Done:* the frame log records `Effect.now` / `random` /
+   `Persistence.load` answers and every outbound intent (save, HTTP, sends,
+   sounds, preloads) per occurrence; branch replay, ghosts and counterfactual
+   rebuilds consume them positionally and report a divergence. Raycasts are
+   recomputed against the restored world. Inbound deliveries (HTTP/WS
+   responses, completions) remain.
 
 Together these enable **reconstruction under edited code**: restore a keyframe
 (or `init`), replay recorded inputs and effect results through the new program,
