@@ -303,6 +303,7 @@ pub fn discovery_json() -> String {
 
 /// A pixel rectangle in the runtime's output surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RuntimeViewport {
     pub width: u32,
     pub height: u32,
@@ -318,6 +319,7 @@ impl RuntimeViewport {
 /// entry per eye. `name` is descriptive rather than a closed enum so future
 /// runtimes can add views without revising the protocol.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RuntimeView {
     pub name: String,
     pub viewport: RuntimeViewport,
@@ -338,6 +340,7 @@ impl RuntimeView {
 /// the target-neutral representation of mono or stereo output; `viewport` is
 /// retained as the primary/legacy output extent for SDK compatibility.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RuntimeState {
     pub frame: u64,
     pub tts: f32,
@@ -392,10 +395,12 @@ pub struct RuntimeState {
     /// Where the game logic runs (`inline` on the render thread, or
     /// `pipelined` on its own sim thread) and that thread's scheduling class
     /// (v16). Omitted by runtimes that don't report it.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_thread: Option<String>,
     /// The headset display's refresh rate (v15). `None` — and omitted from the
     /// JSON — on runtimes that do not control one, such as desktop.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_refresh_rate: Option<DisplayRefreshRate>,
     /// The last rendered frame's `Scene.instanced` instance-buffer uploads
@@ -405,10 +410,12 @@ pub struct RuntimeState {
     pub instance_uploads: crate::gpu_counters::InstanceUploads,
     /// The game's launch-time `config` (v18), fixed at load. Omitted when the
     /// game defines none.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<crate::runtime_settings::GameConfig>,
     /// The game's latest `settings(model)` (v18), which a headset runtime
     /// applies on change. Omitted when the game defines no `settings` hook.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<crate::runtime_settings::GameSettings>,
     /// The last rendered frame's terrain draws (0 on a headless runtime).
@@ -417,10 +424,12 @@ pub struct RuntimeState {
     pub terrain: crate::gpu_counters::TerrainDraws,
     /// How the shell shows the real world behind passthrough frames (v20).
     /// Omitted unless the game's `config` requests passthrough.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passthrough: Option<crate::runtime_settings::PassthroughState>,
     /// The device battery (v21), sampled at most once per second. Omitted on
     /// runtimes without one, such as desktop.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub battery: Option<BatteryState>,
     /// The last rendered frame's skinned-model work (0 on a headless
@@ -437,14 +446,17 @@ pub struct RuntimeState {
     pub cells: crate::gpu_counters::CellsCounts,
     /// Mean stage cost over the shell's last completed stats window (v22).
     /// Omitted until a window completes, and by runtimes that render nothing.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stages: Option<StageTimings>,
     /// Which runtime build is answering (v23): `pr | <sha7>` for a CI-built
     /// Quest APK, `dev` for a local one. Omitted by runtimes that don't report it.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
     /// The headset's scene understanding (v25): `depth`, its environment
     /// depth. Omitted unless the game's `config` requests `Xr.scene`.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xr: Option<crate::runtime_settings::XrState>,
 }
@@ -455,6 +467,7 @@ pub struct RuntimeState {
 /// render stage includes swapchain waits and frame submission; desktop's
 /// excludes the buffer swap.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct StageTimings {
     pub frames: u64,
     pub sim_ms: f64,
@@ -499,6 +512,7 @@ impl StageWindow {
 
 /// A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DisplayRefreshRate {
     /// The rate the display is running at, as last confirmed by the runtime.
     pub current: f32,
@@ -511,9 +525,14 @@ pub struct DisplayRefreshRate {
 /// A device battery reading, as `GET /state` reports it. A field the device
 /// does not report is `null`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BatteryState {
     pub level_pct: Option<i32>,
     /// `charging`, `discharging`, `not charging`, `full`, or `unknown`.
+    #[cfg_attr(
+        feature = "ts",
+        ts(type = r#""charging" | "discharging" | "not charging" | "full" | "unknown""#)
+    )]
     pub status: String,
     /// Connected to any charger (AC, USB, wireless, or dock).
     pub plugged: bool,
@@ -587,6 +606,7 @@ impl RuntimeState {
 
 /// An event injected by `POST /input`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputCommand {
     Key { key: String, down: bool },
@@ -1331,6 +1351,8 @@ mod tests {
                     triangles: 64,
                     fused_frames: 3,
                     voxel_m: 0.5,
+                    colliders: 2,
+                    floor_m: None,
                 },
             }),
         };
@@ -1376,7 +1398,10 @@ mod tests {
                 "build": "pr | 0123abc",
                 "xr": {
                     "depth": { "mode": "emulated", "width": 1920, "height": 1080, "frames": 5 },
-                    "mesh": { "chunks": 2, "triangles": 64, "fused_frames": 3, "voxel_m": 0.5 }
+                    "mesh": {
+                        "chunks": 2, "triangles": 64, "fused_frames": 3, "voxel_m": 0.5,
+                        "colliders": 2
+                    }
                 }
             })
         );

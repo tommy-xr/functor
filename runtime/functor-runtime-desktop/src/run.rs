@@ -771,6 +771,13 @@ pub struct Args {
     #[arg(long, default_value_t = 1.0 / 60.0, value_parser = parse_script_dt)]
     script_dt: f32,
 
+    /// Simulate a display at this refresh rate: each rendered frame advances
+    /// the live clock by exactly `1/HZ` instead of wall-clock time, so the
+    /// fixed-step cadence and `draw`'s sub-step alpha are reproducible (e.g.
+    /// `--display-hz 120` alternates alpha 0.5 / 0).
+    #[arg(long, value_parser = parse_display_hz, conflicts_with_all = ["fixed_time", "input_script"])]
+    display_hz: Option<f32>,
+
     /// Capture `--capture-frame` at this exact deterministic sim frame (0-based),
     /// then exit — instead of the wall-clock `--capture-time` trigger. Intended
     /// with `--input-script`, so captures at frames 0, 3, 6, … are reproducible
@@ -898,6 +905,14 @@ fn parse_script_dt(s: &str) -> Result<f32, String> {
     let v: f32 = s.parse().map_err(|e| format!("{e}"))?;
     if !v.is_finite() || v <= 0.0 {
         return Err("must be a positive, finite timestep in seconds".into());
+    }
+    Ok(v)
+}
+
+fn parse_display_hz(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|e| format!("{e}"))?;
+    if !v.is_finite() || v <= 0.0 {
+        return Err("must be a positive, finite refresh rate in Hz".into());
     }
     Ok(v)
 }
@@ -1124,7 +1139,7 @@ fn service_debug_request(
                     xr: functor_runtime_common::runtime_settings::XrState::emulated(
                         g.config(),
                         stand_in_depth,
-                        fused_room,
+                        fused_room.with_colliders(),
                     ),
                 });
             });
@@ -1424,6 +1439,7 @@ fn run_headless(
     emulate_xr: bool,
     input_script: Option<HashMap<u64, Vec<RecordedInput>>>,
     script_dt: f32,
+    display_hz: Option<f32>,
     net_transport: NetTransportArg,
     sim_thread: String,
 ) {
@@ -1475,12 +1491,13 @@ fn run_headless(
         // .md): 0..N fixed 1/60 steps per iteration (one per debug `/time advance`,
         // one {dts:0} under a pin, none while paused). `time` carries the settled
         // render `tts` for /scene + /state.
-        let sub_frames = clock.fixed_frames(elapsed - last_time);
+        let sub_frames = clock.fixed_frames(display_hz.map_or(elapsed - last_time, |hz| 1.0 / hz));
         last_time = elapsed;
         let time = FrameTime {
             dts: 0.0,
             tts: clock.current_tts(),
         };
+        let alpha = clock.alpha();
 
         // Same per-frame ordering as the windowed loop (the source of truth),
         // minus everything that needs GL.
@@ -1536,6 +1553,7 @@ fn run_headless(
             .frame(
                 FrameRequest {
                     time,
+                    alpha,
                     ui: false,
                     webview: false,
                     audio_scene: false,
@@ -1752,6 +1770,7 @@ sockets)."
             args.emulate_xr,
             input_script,
             args.script_dt,
+            args.display_hz,
             args.net_transport,
             sim_thread,
         );
@@ -2113,6 +2132,7 @@ Escape releases while captured"
         let mut stage_window = functor_runtime_common::debug_protocol::StageWindow::default();
         let mut stage_timings = None;
         let mut last_rendered = Instant::now();
+        let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
@@ -2136,12 +2156,14 @@ Escape releases while captured"
             // render/draw). Capture still keys off wall-clock `elapsed_time` so the
             // loop runs long enough for assets to load before a shot.
             let real_delta = elapsed_time - last_time;
-            let sub_frames = clock.fixed_frames(real_delta);
+            let sub_frames = clock.fixed_frames(args.display_hz.map_or(real_delta, |hz| 1.0 / hz));
             last_time = elapsed_time;
             let time = FrameTime {
                 dts: 0.0,
                 tts: clock.current_tts(),
             };
+            // How far this frame sits between fixed steps, for `draw`.
+            let alpha = clock.alpha();
 
             // Surface frame hitches (a real delta past 33ms = under 30fps) — the
             // signature of a preview's N forward-steps starving the loop, which
@@ -2179,6 +2201,12 @@ Escape releases while captured"
             let loads_pending = scene_context.has_pending_loads();
 
             feedback |= heightmap_mirror.sync(&mut sim);
+            // The room the last render fused, for `Physics.fusedRoom`.
+            fused_room_mirror.sync(
+                &mut sim,
+                &scene_context,
+                shown.as_ref().is_some_and(|s| s.wants_fused_room),
+            );
 
             // Asset hot-reload, the twin of the .fun check above: a model/
             // texture saved on disk is evicted from the caches so the next
@@ -2929,6 +2957,7 @@ Escape again to quit"
             let fresh = sim.frame(
                 FrameRequest {
                     time,
+                    alpha,
                     ui: show_game_ui,
                     webview: show_game_ui,
                     audio_scene: audio_player.is_some(),
@@ -2975,6 +3004,7 @@ Escape again to quit"
                     snapshot.config,
                 ),
             );
+            scene_context.set_fused_room_wanted(snapshot.wants_fused_room);
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.
@@ -3829,6 +3859,10 @@ Escape again to quit"
                 lockstep = feedback
                     || functor_runtime_common::sim_driver::assets_busy(&pushed, &asset_cache.progress())
                     || loads_pending
+                    // Fused inline, a room fused while rendering frame N
+                    // reaches physics at N+1's step, as inline.
+                    || (functor_runtime_common::runtime_settings::scene_requested(snapshot.config)
+                        && scene_context.fusion_inline())
                     // Widget events must resolve against the view shown.
                     || snapshot.webview_html.is_some()
                     || functor_runtime_common::sim_driver::has_widgets(&snapshot.ui)

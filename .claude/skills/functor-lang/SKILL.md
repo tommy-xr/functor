@@ -406,7 +406,13 @@ let grab = (s) =>
 - **Hot reload watches every project file**: editing, adding, or removing
   ANY `.fun` in the directory reloads with the model preserved (stored
   closures rebind per module — a def moved between files is a rename and
-  keeps its old body with a warning).
+  keeps its old body with a warning). A top-level **value** whose code,
+  type, referenced defs (transitively, any module) and `File.bytes` /
+  `File.exists` reads are unchanged keeps its old value instead of
+  re-evaluating — put an expensive decode in its own module/def and editing a
+  constant elsewhere reloads in milliseconds. Never kept: functions, opaque
+  non-plain values, anything that read the live physics world. A kept value
+  doesn't re-run, so its `Debug.log` lines don't print again.
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
   source text (multi-file is native-only for now).
 
@@ -1003,12 +1009,13 @@ The generated modules:
 | `Vec3` | branded 3D vectors and their arithmetic |
 | `Angle` | branded angles (`degrees` / `radians`; suffixes `deg` / `rad`) |
 | `Time` | branded durations (`seconds` / `millis` / `micros` / `minutes` / `hours`; suffixes `s` / `ms` / `us` / `min` / `hr`) |
-| `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator); `Texture.fromPixels` — one from decoded pixels (`Rgba8`/`Rgb8`/`Rgb555le`, `Srgb` colour or `Linear` data such as lightmaps); `Texture.atlas` — pack pixel images into one padded texture, returning UV rects |
+| `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator); `Texture.fromPixels` — one from decoded pixels (`Rgba8`/`Rgb8`/`Rgb555le`, `Srgb` colour or `Linear` data such as lightmaps); `Texture.atlas` — pack pixel images (each with optional switchable layers) into one padded texture, returning UV rects; `Texture.withLayers` — an atlas with its layers mixed in at given intensities |
 | `RenderTarget` | named offscreen targets for render-to-texture |
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
+| `Path` | branded, normalized project-relative paths — what `File.bytes` / `File.exists` take (`"data/x.bin" \|> Path.of \|> File.bytes`; a bare string is a check error) |
 | `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at |
 | `Model` | models built from decoded data — skinned (`Model.skinned`) or static world geometry in textured groups (`Model.static`) — drawn with `Scene.modelOf` |
-| `Lightmap` | `Lightmap.unwrap` — lightmap UVs (`uvs2`) for `Model.staticData`: planar charts packed into one atlas at a fixed `texelsPerMeter`, seam vertices duplicated; `bakeJob` — what `functor bake` reads from a top-level `let bakes` (it writes `<name>.png` + `<name>.mesh.bin`); `readMesh` loads the baked mesh back (`Texture.fromPng(…, Texture.Linear)` the light) |
+| `Lightmap` | `Lightmap.unwrap` — lightmap UVs (`uvs2`) for `Model.staticData`: planar charts packed into one atlas at a fixed `texelsPerMeter`, seam vertices duplicated; `bakeJob` — what `functor bake` reads from a top-level `let bakes` (it writes `<name>.png` + `<name>.mesh.bin`); `readMesh` loads the baked mesh back (`Texture.fromPng(…, Texture.Srgb)` the light) |
 | `Terrain` | finite asset-backed heightfield terrain shared by rendering and physics |
 | `Physics` | shapes, bodies, the `physics` hook's world, live reads, commands, raycasts, events |
 | `Effect` | one-shot commands returned beside a model (time, random, HTTP, net sends, sounds, preloads) |
@@ -1051,6 +1058,7 @@ teaching error at check or construction time:
 Angle.degrees(60.0)  Time.seconds(0.5)  Color.rgb(1.0, 0.2, 0.2)
 Vec3.make(0.0, 1.0, 0.0)  Fog.linear(…)  Skybox.files(…)
 RenderTarget.named("id")  Physics.tag("player")  Asset.model(…)  Anim.clip(…)
+Path.of("data/x.bin")
 ```
 
 Declare the identity-shaped ones (`RenderTarget.named`, `Physics.tag`) ONCE as a
@@ -1202,7 +1210,10 @@ the lightmap with `Light.baked` (they still light everything else). A
 `Texture.Linear` lightmap is multiplied as stored; an `Srgb` one (or any
 file) is decoded first, which matches multiplying in gamma space. Pack
 per-surface lightmaps with `Texture.atlas` and point `uvs2` into its rects.
-See `examples/lightmap`.
+See `examples/lightmap`. For flickering or switchable lights, give atlas
+images `layers` (one per light id) and draw `Scene.modelOf(room) |>
+Scene.withLightmap(Texture.withLayers(model.lights, atlas.texture))` with
+the intensities as model state; see `examples/lightmap-layers`.
 
 **The `Net` module is built in but not in the generated reference.** Its types
 need no declaration, and these are the variants to match:
@@ -1530,6 +1541,8 @@ A runner-hosted game (`functor -d <project-dir> run native`, with
 let init = { … }                       // the initial model (a value)
 let tick = (model, dt, tts) => model'  // per-frame step
 let draw = (model, tts) => Frame.create(camera, scene)
+                                            // or (model, tts, alpha) — see
+                                            // "Interpolating between steps"
 let input = (model, key, isDown) => model'  // OPTIONAL; key: Key.t — match
                                             // | Key.W / Key.Up / Key.Space /
                                             // Key.Num0..Num9 (never strings)
@@ -1569,6 +1582,30 @@ let settings = (model) =>                   // OPTIONAL; evaluated every frame,
     |> Settings.xr(Xr.create() |> Xr.foveation(Xr.High))
 ```
 
+**Interpolating between steps.** `tick` runs at a fixed 60 Hz; `draw` runs
+once per displayed frame. On a faster display (120 Hz desktop, Quest) some
+frames run no step, so a pose read straight from the model holds for two
+frames and judders. A THREE-parameter `draw` also receives `alpha` in
+`[0, 1)`: how far this frame sits between the last step and the next. Keep the
+previous and current pose in the model and draw between them — the engine has
+no interpolation policy of its own:
+
+```functor
+let tick = (m: Model, dt: float, tts) => { m with prev: m.cur, cur: step(m.cur, dt) }
+let draw = (m: Model, tts, alpha: float) =>
+  Frame.create(camera, rig |> Scene.translate(m.prev |> Vec3.lerp(m.cur, alpha)))
+```
+
+This draws one step (≤16.7 ms) behind the sim. `tts` is still the time of
+`cur`; `tts - (1.0 - alpha) / 60.0` is the drawn pose's time, for any
+`sin(tts)`-style motion in the same `draw`. Reset `prev` to `cur` on a snap
+(teleport, respawn) so it doesn't sweep. `alpha` is exactly 0 under
+`--fixed-time`, while paused, stepped (`/time advance`), under
+`--input-script`, and while scrubbing, so captures and time travel never
+depend on the display — those frames draw `prev`. `--display-hz 120`
+simulates a display rate for reproducible checks (`examples/interpolation`,
+`e2e/interpolation.mjs`). Two-parameter `draw`s are unaffected.
+
 **Shell options are split by lifetime**, like `init`/`tick`. `config` is a
 plain value read at load: a hot reload that changes it prints `` `config`
 changed — restart to apply `` and keeps the running value (on Quest, a new
@@ -1577,12 +1614,13 @@ model, so it hot-reloads, replays, and never stores state of its own; a failing
 evaluation keeps the last good value and reports once.
 
 **External data** (files the player owns, never shipped) is declared in
-`config`: `Config.external("ss2/", Source.mount("ss2"))`. `File.bytes("ss2/…")`
-then reads this machine's `ss2` mount, set in `~/.config/functor/mounts.json`
+`config`: `Config.external("ss2/", Source.mount("ss2"))`.
+`File.bytes(Path.of("ss2/…"))` then reads this machine's `ss2` mount, set in `~/.config/functor/mounts.json`
 (`{"ss2": "~/ss2/sshock2.kpf!data/res/"}`, `!` into a zip) or with
 `--mount ss2=PATH`; never put a local path in code. The CLI evaluates `config`
 alone before anything runs, so `config` can't read files. `run vr` sends the
-headset what it reads. `Source.device(path)` (standalone headset) is declared
+headset what it reads. Names match case-sensitively; `|> Source.ignoreCase`
+matches them ignoring case (game data authored on Windows). `Source.device(path)` (standalone headset) is declared
 only: `--target device` isn't implemented yet. Each `Xr` knob belongs to
 one bucket — `refreshRate`, `passthrough` and `scene` in `config`, `foveation` and
 `passthroughEnabled` in `settings` — and the other is a teaching error naming
@@ -1618,7 +1656,16 @@ whatever that depth finds (`examples/scene-grid`); without `Xr.scene(true)` it
 draws nothing. `frame |> Frame.withFusedRoom(cell, color)` draws the same grid
 on a mesh the runtime fuses from that depth over time (8 cm voxels; it keeps
 surfaces out of view and forgets moved furniture in a second or two;
-`GET /state.xr.mesh`).
+`GET /state.xr.mesh`). `Physics.fusedRoom(tag)` (a body for the `physics`
+hook, drawn or not) makes that mesh solid: one static triangle mesh per
+chunk, plus an infinite floor plane at the detected floor (the lowest level
+surface at least 1 m below the highest the headset has been), so balls rest
+still and do not fall through floor nobody has looked at. Pipe
+`Physics.restitution`/`friction`; `Physics.at`/`rotate*` on it are errors; a
+room fused while rendering frame N collides from frame N+1's step. Its walls
+are surfaces with no thickness, so a small fast body (a 5 cm ball thrown at a
+few m/s) needs `|> Physics.continuous` (continuous collision detection) or it
+can step straight through (`examples/room-bounce`).
 
 **UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
 `Ui.*` tree into a render target (declared once with

@@ -104,6 +104,27 @@ let trimesh : (triangles) => shape
 /// unrotated, unscaled `Scene.terrain`, using the same translation.
 let heightfield : (tag, Terrain.t) => body
 
+/// Create a fixed body from the room fused from the environment depth.
+///
+/// Needs `config`'s `Xr.scene(true)`: the runtime fuses the headset's depth
+/// (the stand-in room's on desktop and web) into a mesh, as
+/// `Frame.withFusedRoom` draws it, and this body collides with it — the
+/// room need not be drawn. Each 64 cm chunk is a static triangle mesh,
+/// rebuilt when that chunk re-meshes, so balls bounce off the real walls and
+/// furniture as soon as they are seen. The floor — the lowest level surface
+/// of at least 0.5 m² at least 1 m below the highest the headset has been —
+/// is an infinite plane instead of the fused floor's ripple, so a resting
+/// ball stays still and nothing falls through floor nobody has looked at
+/// yet. It is found by height below the head, not at `y = 0`: a headset's
+/// stage origin is not always on the floor.
+///
+/// New surfaces reach the body at the physics step after they fuse. The
+/// room is already in world space: `Physics.at` and the rotations are
+/// errors. Pipe `Physics.friction` and `Physics.restitution` to tune
+/// contacts; a ray or contact on any chunk reports this tag. Walls are
+/// surfaces with no thickness: give fast, small bodies `Physics.continuous`.
+let fusedRoom : (tag) => body
+
 /// Create a dynamic body affected by forces and collisions.
 let dynamic : (tag, shape) => body
 /// Create a kinematic body driven explicitly by the game.
@@ -189,6 +210,17 @@ let sensor : (body) => body
 /// grounding probe makes. The body is last for piping.
 let upright : (body) => body
 
+/// Sweep a fast body along each physics step (continuous collision
+/// detection), so it cannot pass through a thin surface between two steps;
+/// the body is last for piping.
+///
+/// Without it a body is tested only where each step lands it, and one that
+/// moves farther than its own radius per step (a 5 cm ball at a few metres a
+/// second, at 60 steps a second) can end a step past a wall that is only a
+/// surface, like `Physics.fusedRoom`'s. It costs only while the body is
+/// fast. Changing it reconciles onto the live body.
+let continuous : (body) => body
+
 /// Declare a physics world from gravity and bodies.
 let scene : (Vec3.t, List<body>) => world
 
@@ -212,9 +244,9 @@ let scene : (Vec3.t, List<body>) => world
 ///   plain data (pass a revision number, not `Bytes` or textures), the builder
 ///   reads only `deps` and top-level definitions (reading the live world is an
 ///   error), and a key unused for a couple of seconds is forgotten.
-/// - Fixed and kinematic bodies only: a dynamic body or a heightfield inside
-///   is an error. A kinematic body that moves belongs flat, since its deps
-///   would change every frame.
+/// - Fixed and kinematic bodies only: a dynamic body, a heightfield or a
+///   fused room inside is an error. A kinematic body that moves belongs
+///   flat, since its deps would change every frame.
 /// - Each tag belongs to one place. A flat body reusing a group's tag, two
 ///   groups sharing a tag, or one key twice in a scene is an error.
 ///   Reads and commands address group bodies by tag like flat ones.
@@ -226,16 +258,19 @@ let memo : (string, 'd, ('d) => List<body>) => body
 ///
 /// Answers with the LAST stepped world, so a pre-step caller (`tick`, the
 /// `physics` hook) sees the previous step and `draw` sees this frame's.
+impure[physics]
 let position : (tag) => position
 
 /// Read a body's live, stepped linear velocity.
 ///
 /// The read counterpart of `Physics.setVelocity`. (`Physics.velocity` is the
 /// body-builder attribute that sets an *initial* velocity.)
+impure[physics]
 let linearVelocity : (tag) => velocity
 
 /// Whether a character's last move ended on walkable ground (`false` before
 /// its first move). A world read like `Physics.position`.
+impure[physics]
 let grounded : (tag) => bool
 
 /// Cast a ray against the world and get the nearest hit immediately.
@@ -246,6 +281,7 @@ let grounded : (tag) => bool
 /// in `tick` that is the previous step, in `draw` this frame's. A miss is
 /// `hit: false` with zeroed fields, not an error. `dir` need not be
 /// normalized, so `maxDist` is in world units.
+impure[physics]
 let cast : (Vec3.t, Vec3.t, float) => rayHit
 
 /// `Physics.cast`, ignoring one body — the grounding probe.
@@ -253,6 +289,7 @@ let cast : (Vec3.t, Vec3.t, float) => rayHit
 /// A ray cast from inside a character's own capsule would otherwise hit that
 /// capsule at distance 0 and report the character standing on itself. Excluding
 /// a tag that isn't in the world excludes nothing.
+impure[physics]
 let castExcluding : (tag, Vec3.t, Vec3.t, float) => rayHit
 
 /// Sweep a box, sphere or capsule and get the first body it touches.
@@ -263,15 +300,18 @@ let castExcluding : (tag, Vec3.t, Vec3.t, float) => rayHit
 /// overlapping something hits it at distance 0 unless it moves out of it.
 /// Like `Physics.cast` it answers in place from the last step, and hits both
 /// sides of a trimesh face.
+impure[physics]
 let shapeCast : (shape, Vec3.t, Vec3.t, float) => rayHit
 
 /// `Physics.shapeCast`, ignoring one body: a sweep from a character's own
 /// position would otherwise hit its own collider.
+impure[physics]
 let shapeCastExcluding : (tag, shape, Vec3.t, Vec3.t, float) => rayHit
 
 /// Apply a body's live transform to a scene node.
 ///
 /// The scene is last for piping.
+impure[physics]
 let transformed : (tag, Scene.t) => Scene.t
 
 /// Apply an instantaneous impulse to a body.

@@ -76,6 +76,11 @@
 /// carries its cells and portals inline; `Scene.inCells` its cell ids).
 /// Emitted only by those two, so frames without them keep their shape.
 ///
+/// Also: lightmap layers — `layers` on a pixel texture (`Texture.atlas`
+/// images with layers; omitted when none), the `TextureDescription::Layered`
+/// variant (`Texture.withLayers`) and the `MeshOverride::Lightmap` model
+/// override (`Scene.withLightmap`). Other frames keep their shape.
+///
 /// v23: fused rooms — `Frame.fused_room` (`Frame.withFusedRoom`), defaulted
 /// and omitted when absent, so every other frame keeps its v22 shape.
 ///
@@ -425,7 +430,14 @@ pub trait GameProducer {
     /// UI (replays, producers whose games define no `ui`).
     fn ui_event(&mut self, _event: crate::ui::UiEvent) {}
 
-    fn render(&mut self, frame_time: crate::FrameTime) -> crate::Frame;
+    /// Draw the frame at `frame_time`. `alpha` is the presentation sub-step
+    /// ([`crate::GameClock::alpha`]) handed to a three-parameter `draw`.
+    fn render_at(&mut self, frame_time: crate::FrameTime, alpha: f32) -> crate::Frame;
+
+    /// [`Self::render_at`] on a step boundary (`alpha` 0).
+    fn render(&mut self, frame_time: crate::FrameTime) -> crate::Frame {
+        self.render_at(frame_time, 0.0)
+    }
 
     /// Record the shell-measured GL cost of the frame just presented — the wall
     /// time of the scene render pass (`render_ns`, interpreter → GL submission)
@@ -1080,6 +1092,31 @@ mod tests {
         );
         let back: TextureDescription = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // A layered atlas carries its layers inline; `Texture.withLayers`
+    // adds the intensities.
+    #[test]
+    fn layered_texture_wire_is_pinned() {
+        use crate::texture::{ColorSpace, Layer, LayeredImage, PixelData, PixelEncoding};
+        use crate::TextureDescription;
+
+        let pixels = PixelData::new(1, 1, PixelEncoding::Rgba8, ColorSpace::Linear, &[1, 2, 3, 4]);
+        let layer = Layer { id: 7.0, rgba8: vec![5, 6, 7, 8] };
+        let image = LayeredImage { x: 0, y: 0, width: 1, height: 1, padding: 0, layers: vec![layer] };
+        let texture = TextureDescription::Layered {
+            base: std::sync::Arc::new(pixels.unwrap().with_layers(vec![image]).unwrap()),
+            intensities: vec![(7.0, 0.5)],
+        };
+        let json = serde_json::to_string(&texture).unwrap();
+        assert_eq!(
+            json,
+            r#"{"Layered":{"base":{"width":1,"height":1,"colorSpace":"Linear","rgba8":[1,2,3,4],"layers":[{"x":0,"y":0,"width":1,"height":1,"padding":0,"layers":[{"id":7.0,"rgba8":[5,6,7,8]}]}]},"intensities":[[7.0,0.5]]}}"#
+        );
+        let back: TextureDescription = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        let outside = json.replace(r#""x":0"#, r#""x":1"#);
+        assert!(serde_json::from_str::<TextureDescription>(&outside).is_err());
     }
 
     // The `Asset.whilePending` wire vocabulary (protocol v2): the model

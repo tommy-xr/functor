@@ -64,7 +64,7 @@ impl Game for ReplayGame {
     fn mouse_move(&mut self, _x: i32, _y: i32) {}
     fn mouse_wheel(&mut self, _delta: i32) {}
 
-    fn render(&mut self, frame_time: FrameTime) -> Frame {
+    fn render_at(&mut self, frame_time: FrameTime, _alpha: f32) -> Frame {
         self.index = (frame_time.tts * PLAYBACK_FPS).floor().max(0.0) as usize % self.frames.len();
         self.frames[self.index].clone()
     }

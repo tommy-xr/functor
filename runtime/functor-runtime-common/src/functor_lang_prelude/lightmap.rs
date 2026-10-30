@@ -94,12 +94,15 @@ fn mesh_fields(mesh: &ModelSource) -> [(&'static str, Value); 5] {
     ]
 }
 
-/// One `Lightmap.bakeJob`: a validated mesh and the lights to bake into it.
+/// One `Lightmap.bakeJob`: a validated mesh, the lights to bake into it,
+/// each group's authored (sRGB) albedo, and the light stored as 1.
 #[derive(Debug, Clone)]
 pub struct BakeJob {
     pub name: String,
     pub mesh: ModelSource,
     pub lights: Vec<Light>,
+    pub albedo: Vec<[f32; 3]>,
+    pub scale: f32,
 }
 
 /// The jobs in a `List<Lightmap.bakeJob>` value (`functor bake`'s `bakes`),
@@ -160,7 +163,35 @@ pub fn bake_jobs(value: &Value) -> Result<Vec<BakeJob>, String> {
                     .map_err(|e| e.message)
             })
             .collect::<Result<_, _>>()?;
-        out.push(BakeJob { name, mesh, lights });
+        let Value::List(albedo) = get("albedo")? else {
+            return Err(format!("{what}.albedo: expected a list of colours"));
+        };
+        let albedo = albedo
+            .iter()
+            .enumerate()
+            .map(|(c, color)| {
+                color_of(color, &format!("{what}.albedo[{c}]"), span)
+                    .map(|(r, g, b)| [r, g, b])
+                    .map_err(|e| e.message)
+            })
+            .collect::<Result<_, _>>()?;
+        let scale = match get("scale")? {
+            Value::Number(n) if n.is_finite() && *n > 0.0 => *n as f32,
+            Value::Number(n) => return Err(format!("{what}.scale: must be above 0, got {n}")),
+            other => {
+                return Err(format!(
+                    "{what}.scale: expected a number, got {}",
+                    other.kind_name()
+                ))
+            }
+        };
+        out.push(BakeJob {
+            name,
+            mesh,
+            lights,
+            albedo,
+            scale,
+        });
     }
     Ok(out)
 }
@@ -196,7 +227,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     );
     reg.fn1(
         "Lightmap.readMesh",
-        "Lightmap.readMesh(File.bytes(\"baked/room.mesh.bin\"))",
+        "Lightmap.readMesh(File.bytes(Path.of(\"baked/room.mesh.bin\")))",
         |data: FunctorLangBytes| {
             let mesh = read_mesh(data.0.as_slice()).map_err(|e| format!("Lightmap.readMesh: {e}"))?;
             let groups = mesh

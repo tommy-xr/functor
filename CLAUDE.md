@@ -87,6 +87,8 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 - `update = (model, msg) => model'` — OPTIONAL; handles messages (ADT variants) from subscriptions/effects
 - `subscriptions = (model) => Sub.every(...)` — OPTIONAL declarative timers, polled each frame (requires `update`)
 - `draw = (model, tts) => Frame.create(camera, scene)` — pure frame description: a `Camera3D` plus a scene
+  (or `(model, tts, alpha)`: `alpha` in [0,1) is how far the frame sits between fixed steps, for
+  interpolating prev→cur poses; 0 when paused/stepped/scripted/`--fixed-time`)
 - `physics = (model) => Physics.scene(...)`, `soundScape = (model) => AudioScene.create(...)`,
   `ui = (model) => …` — OPTIONAL hooks
 
@@ -143,7 +145,13 @@ project files' mtime each frame and on change reparses → rechecks → builds a
 **the model preserved** (it is a plain value the host holds). Closures stored *inside* the model
 rebind to the edited code, carrying their captured values over (matched by the enclosing def's
 name; a renamed/deleted def keeps its old body with a loud `[functor-lang]` warning). A broken edit prints
-once and keeps the old program running. The physics world (like the model) survives reload. Pending
+once and keeps the old program running. The new `Session` keeps each top-level value whose code,
+type, referenced defs (transitively) and project-file reads are unchanged, so an edit to a constant
+doesn't re-run an expensive decode (`functor_lang::reuse`; plain-data values only, never one that
+read the live physics world). **A host function that reads host state at call time must declare
+`impure[class]` above its `.funi` signature and call `note_read(class)`** (classes: `file`,
+`physics`, `ui`; side effects stay `Effect.t` values) — or reload reuse keeps stale values. A drift
+test and a debug assertion check the two agree. The physics world (like the model) survives reload. Pending
 effects are reset on reload (an in-flight HTTP tagger would dangle). Native watches every project
 `.fun`; on wasm, hot-reload is native-only (reload the page, or push source via a
 `{ type: "functor-lang-set-source", source }` postMessage). See the `functor-lang` skill for the exact rules.
@@ -381,6 +389,9 @@ is in the test's doc comment.
 **Tests** are Rust: the runtime in `functor-runtime-common`
 (`cargo test -p functor_runtime_common`, includes the Functor Lang prelude) and the language in the `functor_lang`
 crate (`cargo test -p functor-lang`; `UPDATE_GOLDENS=1` regenerates its snapshots).
+The SDK's debug-protocol TS types (`tools/functor-sdk/src/generated/protocol.ts`) are
+generated from the Rust wire structs; after changing one, regenerate with
+`UPDATE_TS=1 cargo test -p functor_runtime_common --features ts ts_bindings` (CI fails if stale).
 
 ## Visual changes
 

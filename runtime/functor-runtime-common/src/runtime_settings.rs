@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Fixed foveated rendering level (`Xr.Off` … `Xr.High`): how coarsely the
 /// eye-buffer periphery is shaded. Maps 1:1 onto `XR_FB_foveation`'s levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum FoveationLevel {
     Off,
@@ -21,6 +22,7 @@ pub enum FoveationLevel {
 
 /// The launch-time `config` value.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct GameConfig {
     #[serde(default)]
     pub xr: XrConfig,
@@ -41,12 +43,17 @@ pub struct ExternalPrefix {
     pub mount: String,
     /// `Source.device(path)`: where a standalone headset finds it.
     pub device: Option<String>,
+    /// `Source.ignoreCase`: a path under `prefix` that names no file exactly
+    /// reads the one file it names ignoring ASCII case.
+    pub ignore_case: bool,
 }
 
 /// `config`'s XR knobs, read before the XR session starts rendering the game.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct XrConfig {
     /// Display refresh rate to request, in Hz. `None` = the shell's default.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_rate: Option<f32>,
     /// `Xr.passthrough(true)`: the game may show the real world — the headset
@@ -62,6 +69,7 @@ pub struct XrConfig {
 
 /// The per-frame `settings(model)` value.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct GameSettings {
     #[serde(default)]
     pub xr: XrSettings,
@@ -69,12 +77,15 @@ pub struct GameSettings {
 
 /// `settings`' XR knobs, applied live on change.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct XrSettings {
     /// A pinned foveation level. `None` = the shell's default (dynamic).
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foveation: Option<FoveationLevel>,
     /// `Xr.passthroughEnabled(on)`: run or pause the camera feed `config`
     /// prepared. `None` = on whenever `config` requested passthrough.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passthrough: Option<bool>,
 }
@@ -98,6 +109,7 @@ pub fn passthrough_wanted(config: Option<GameConfig>, settings: Option<GameSetti
 /// How a shell is showing the real world behind `Frame.withPassthrough`
 /// frames, as `GET /state.passthrough` reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum PassthroughMode {
     /// The headset's camera feed is composited under the eye buffer.
@@ -114,9 +126,11 @@ pub enum PassthroughMode {
 /// `GET /state.passthrough` (debug protocol v20): present when the game's
 /// `config` requests passthrough.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PassthroughState {
     pub mode: PassthroughMode,
     /// Why the feed is unavailable, when it is.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
@@ -138,6 +152,7 @@ impl PassthroughState {
 /// Where a shell's environment depth comes from, as `GET /state.xr.depth`
 /// reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentDepthMode {
     /// The headset delivered a depth image this frame.
@@ -153,6 +168,7 @@ pub enum EnvironmentDepthMode {
 /// `GET /state.xr.depth` (debug protocol v25): present when the game's
 /// `config` requests `Xr.scene`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct EnvironmentDepthState {
     pub mode: EnvironmentDepthMode,
     /// The depth image's size in texels; 0 until one exists.
@@ -161,6 +177,7 @@ pub struct EnvironmentDepthState {
     /// Depth images acquired (device) or stand-in depth passes rendered
     /// (emulated) since launch.
     pub frames: u64,
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
@@ -168,6 +185,7 @@ pub struct EnvironmentDepthState {
 /// `GET /state.xr.mesh` (debug protocol v25): the room fused from the
 /// environment depth (`Frame.withFusedRoom`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FusedMeshState {
     /// Chunks with surface (each 8 voxels on a side).
     pub chunks: usize,
@@ -176,10 +194,34 @@ pub struct FusedMeshState {
     pub fused_frames: u64,
     /// Voxel edge, metres.
     pub voxel_m: f32,
+    /// Chunk colliders of a `Physics.fusedRoom` body (0 without one).
+    #[serde(default)]
+    pub colliders: usize,
+    /// The floor height those colliders are snapped to, metres; absent until
+    /// the floor has been seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub floor_m: Option<f32>,
+}
+
+impl FusedMeshState {
+    /// With the physics world's fused room colliders — read on the
+    /// producer's thread, where the world lives.
+    pub fn with_colliders(mut self) -> Self {
+        let colliders = crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.fused_room_colliders()
+        });
+        if let Some(Some((colliders, floor))) = colliders {
+            self.colliders = colliders;
+            self.floor_m = floor;
+        }
+        self
+    }
 }
 
 /// `GET /state.xr`: headset scene state, omitted while it has nothing to say.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct XrState {
     pub depth: EnvironmentDepthState,
     pub mesh: FusedMeshState,
@@ -264,13 +306,18 @@ mod tests {
                 triangles: 120,
                 fused_frames: 2,
                 voxel_m: 0.08,
+                colliders: 3,
+                floor_m: Some(0.0),
             },
         };
         assert_eq!(
             serde_json::to_value(depth).unwrap(),
             serde_json::json!({
                 "depth": { "mode": "device", "width": 320, "height": 320, "frames": 7 },
-                "mesh": { "chunks": 3, "triangles": 120, "fused_frames": 2, "voxel_m": 0.08f32 }
+                "mesh": {
+                    "chunks": 3, "triangles": 120, "fused_frames": 2, "voxel_m": 0.08f32,
+                    "colliders": 3, "floor_m": 0.0
+                }
             })
         );
         let state = PassthroughState {

@@ -34,6 +34,7 @@ use crate::ir::{
     BindingId, Def, ExpectDef, Expr, ExprKind, Module, Pattern, PatternKind, StringPart,
 };
 use crate::pmap::{PMap, Search};
+use crate::reuse::{HostInput, Planner, Records, ReuseStats};
 use crate::span::Span;
 use crate::value::{canonicalize_map_entries, Closure, Env, MapKey, Value};
 use crate::RunError;
@@ -333,6 +334,53 @@ pub trait Host {
 
     /// Perform a host call. Only invoked for paths `provides` accepted.
     fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<HostReturn, RunError>;
+
+    /// Reload reuse ([`Session::load_reusing`]): start recording what the
+    /// host calls of one top-level def's evaluation read.
+    fn begin_inputs(&mut self) {}
+
+    /// Stop recording: `Some(inputs)` when every host call since
+    /// [`Self::begin_inputs`] answered from its arguments and `inputs` alone,
+    /// `None` when one read host state that can change between loads. The
+    /// default can't tell, so a def that called this host is never reused.
+    fn end_inputs(&mut self) -> Option<Vec<HostInput>> {
+        None
+    }
+
+    /// Whether every recorded input still reads the same.
+    fn inputs_current(&mut self, inputs: &[HostInput]) -> bool {
+        inputs.is_empty()
+    }
+}
+
+/// Forwards to a host, counting calls — a def that made none read nothing
+/// from it, whatever the host can record.
+struct Counted<'h> {
+    host: &'h mut dyn Host,
+    calls: &'h std::cell::Cell<u64>,
+}
+
+impl Host for Counted<'_> {
+    fn provides(&self, path: &str) -> bool {
+        self.host.provides(path)
+    }
+
+    fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<HostReturn, RunError> {
+        self.calls.set(self.calls.get() + 1);
+        self.host.call(path, args, span)
+    }
+
+    fn begin_inputs(&mut self) {
+        self.host.begin_inputs()
+    }
+
+    fn end_inputs(&mut self) -> Option<Vec<HostInput>> {
+        self.host.end_inputs()
+    }
+
+    fn inputs_current(&mut self, inputs: &[HostInput]) -> bool {
+        self.host.inputs_current(inputs)
+    }
 }
 
 /// What a host call produces: its value, or a Functor Lang function the host
@@ -556,6 +604,9 @@ pub fn run_expects_budgeted(
 pub struct Session {
     globals: HashMap<String, Value>,
     brand_ops: BrandOps,
+    /// What [`Session::load_reusing`] learned, for the next reload to reuse;
+    /// `None` from the other loaders.
+    records: Option<Records>,
 }
 
 /// Declared unit operators, resolved to callable VALUES and keyed by the
@@ -652,7 +703,74 @@ impl Session {
             Ok(()) => Ok(Session {
                 brand_ops: interp.brand_ops.clone(),
                 globals: interp.globals,
+                records: None,
             }),
+            Err(error) => Err(RunFailure {
+                error,
+                trace: interp.trace,
+            }),
+        }
+    }
+
+    /// [`Session::load`] for a hot reload: each top-level def whose value
+    /// can't have changed since `previous` keeps that value instead of
+    /// evaluating again (rules: [`crate::reuse`]). `types` is each def's
+    /// checked type ([`crate::reuse::def_types`]). The session records what
+    /// it evaluated, so pass it as `previous` next time; with `previous`
+    /// `None` (a cold start) every def evaluates.
+    pub fn load_reusing(
+        module: &Module,
+        host: &mut dyn Host,
+        previous: Option<&Session>,
+        types: HashMap<String, String>,
+    ) -> Result<(Session, ReuseStats), RunFailure> {
+        let calls = std::cell::Cell::new(0);
+        let mut counted = Counted {
+            host,
+            calls: &calls,
+        };
+        let previous = previous.and_then(|p| Some((&p.globals, p.records.as_ref()?)));
+        let mut interp = Interp {
+            globals: HashMap::new(),
+            mut_slots: HashMap::new(),
+            trace: Vec::new(),
+            tracing: Tracing::Off,
+            recorder: None,
+            depth: 0,
+            call_depth: 0,
+            fuel: None,
+            brand_ops: BrandOps::default(),
+            brand_ops_complete: true,
+            host: &mut counted,
+        };
+        // Unit operators resolve first, by probing each unit's constructor.
+        // Reuse needs those probes to read nothing from the host and to settle
+        // every operator now: one waiting on a def's value resolves mid-load,
+        // outside any def's record.
+        interp.host.begin_inputs();
+        let probed = interp.load_unit_operators(module);
+        let probe_inputs = interp.host.end_inputs();
+        if let Err(error) = probed {
+            return Err(RunFailure {
+                error,
+                trace: interp.trace,
+            });
+        }
+        let units_pure = interp.brand_ops_complete
+            && (calls.get() == 0 || probe_inputs.is_some_and(|inputs| inputs.is_empty()));
+        let mut planner = Planner::new(module, previous, types, units_pure, &mut *interp.host);
+        let loaded = interp
+            .eval_defs_reusing(module, &mut planner, &calls)
+            .and_then(|_| interp.settle_unit_operators(module));
+        match loaded {
+            Ok(()) => Ok((
+                Session {
+                    brand_ops: interp.brand_ops.clone(),
+                    globals: interp.globals,
+                    records: Some(planner.records),
+                },
+                planner.stats,
+            )),
             Err(error) => Err(RunFailure {
                 error,
                 trace: interp.trace,
@@ -898,18 +1016,54 @@ impl Interp<'_> {
             let value = self.eval(&def.value, &Env::empty())?;
             self.globals.insert(def.name.clone(), value.clone());
             bindings.push((def.name.clone(), value));
-            // A unit whose own constructor is a top-level `let` could not be
-            // probed before the defs ran; retry as soon as more globals exist,
-            // so the very next initializer can use its operators. Normal
-            // programs (every prelude unit) resolve up front and never enter
-            // this branch.
-            if !self.brand_ops_complete {
-                let (ops, complete) = self.load_brand_ops(module)?;
-                self.brand_ops = ops;
-                self.brand_ops_complete = complete;
-            }
+            self.retry_unit_operators(module)?;
         }
         Ok(bindings)
+    }
+
+    /// A unit whose own constructor is a top-level `let` could not be probed
+    /// before the defs ran; retry as soon as more globals exist, so the very
+    /// next initializer can use its operators. Normal programs (every prelude
+    /// unit) resolve up front and never retry.
+    fn retry_unit_operators(&mut self, module: &Module) -> Result<(), RunError> {
+        if !self.brand_ops_complete {
+            let (ops, complete) = self.load_brand_ops(module)?;
+            self.brand_ops = ops;
+            self.brand_ops_complete = complete;
+        }
+        Ok(())
+    }
+
+    /// [`Self::eval_defs`] for [`Session::load_reusing`]: each def is reused
+    /// when `planner` allows, else evaluated with its host inputs recorded.
+    fn eval_defs_reusing(
+        &mut self,
+        module: &Module,
+        planner: &mut Planner,
+        calls: &std::cell::Cell<u64>,
+    ) -> Result<(), RunError> {
+        for def in &module.defs {
+            let value = match planner.reuse(def) {
+                Some(value) => value,
+                None => {
+                    let before = calls.get();
+                    self.host.begin_inputs();
+                    let value = self.eval(&def.value, &Env::empty());
+                    let inputs = self.host.end_inputs();
+                    let value = value?;
+                    let inputs = if calls.get() == before {
+                        Some(Vec::new())
+                    } else {
+                        inputs
+                    };
+                    planner.record(def, inputs);
+                    value
+                }
+            };
+            self.globals.insert(def.name.clone(), value);
+            self.retry_unit_operators(module)?;
+        }
+        Ok(())
     }
 
     /// Evaluate one `expect`. A top-level comparison is decomposed — the two

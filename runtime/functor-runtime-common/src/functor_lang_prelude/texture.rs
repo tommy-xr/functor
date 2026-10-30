@@ -1,10 +1,10 @@
-//! `Texture.fromPixels` and `Texture.atlas` — textures from decoded pixels
-//! (see `texture.funi`).
+//! `Texture.fromPixels`, `Texture.atlas` and `Texture.withLayers` — textures
+//! from decoded pixels (see `texture.funi`).
 
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::texture::{ColorSpace, PixelData, PixelEncoding};
+use crate::texture::{ColorSpace, Layer, LayeredImage, PixelData, PixelEncoding};
 
 use super::bytes::FunctorLangBytes;
 use super::*;
@@ -75,8 +75,9 @@ impl crate::host_registry::FromArg for ColorSpaceArg {
     }
 }
 
-/// A `Texture.pixels` record, validated and converted. Errors start `what: `.
-fn pixels_of(value: &Value, what: &str, span: Span) -> Result<PixelData, RunError> {
+/// A `Texture.pixels` record, validated and converted, with its encoding.
+/// Errors start `what: `.
+fn pixels_of(value: &Value, what: &str, span: Span) -> Result<(PixelData, PixelEncoding), RunError> {
     let fields = record(value, what, span)?;
     let ctor = |name: &str| match field(fields, name, what, span)? {
         Value::Variant { ctor, args } if args.is_empty() => Ok(ctor.to_string()),
@@ -105,20 +106,64 @@ fn pixels_of(value: &Value, what: &str, span: Span) -> Result<PixelData, RunErro
         color_space,
         bytes.0.as_slice(),
     )
+    .map(|pixels| (pixels, encoding))
     .or_else(|e| fail(what, e, span))
+}
+
+/// An image's `layers`: each converted from `image`'s size and `encoding`,
+/// ids distinct.
+fn layers_of(
+    value: &Value,
+    image: &PixelData,
+    encoding: PixelEncoding,
+    what: &str,
+    span: Span,
+) -> Result<Vec<Layer>, RunError> {
+    let Value::List(layers) = value else {
+        return fail(what, "layers: expected a list".to_string(), span);
+    };
+    let mut out: Vec<Layer> = Vec::with_capacity(layers.len());
+    for (j, layer) in layers.iter().enumerate() {
+        let what = format!("{what}: layers[{j}]");
+        let fields = record(layer, &what, span)?;
+        let id = match field(fields, "id", &what, span)? {
+            Value::Number(id) if id.is_finite() => *id,
+            Value::Number(id) => return fail(&what, format!("id must be finite, got {id}"), span),
+            other => return fail(&what, format!("id: expected a number, got {}", other.kind_name()), span),
+        };
+        if let Some(k) = out.iter().position(|l| l.id == id) {
+            return fail(&what, format!("id {id} repeats layers[{k}]"), span);
+        }
+        let bytes: FunctorLangBytes = crate::host_registry::FromArg::from_arg(
+            field(fields, "pixels", &what, span)?,
+            &format!("{what}: pixels"),
+            span,
+        )?;
+        let pixels = PixelData::new(
+            image.width(),
+            image.height(),
+            encoding,
+            image.color_space(),
+            bytes.0.as_slice(),
+        )
+        .or_else(|e| fail(&what, e, span))?;
+        out.push(Layer { id, rgba8: pixels.rgba8().to_vec() });
+    }
+    Ok(out)
 }
 
 struct PixelsArg(PixelData);
 
 impl crate::host_registry::FromArg for PixelsArg {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
-        pixels_of(value, path, span).map(PixelsArg)
+        pixels_of(value, path, span).map(|(pixels, _)| PixelsArg(pixels))
     }
 }
 
-/// `Texture.atlas`'s record: images converted, padding and size checked.
+/// `Texture.atlas`'s record: images and their layers converted, padding and
+/// size checked.
 struct AtlasArg {
-    images: Vec<PixelData>,
+    images: Vec<(PixelData, Vec<Layer>)>,
     padding: u32,
     max_size: u32,
 }
@@ -135,12 +180,9 @@ impl crate::host_registry::FromArg for AtlasArg {
             .map(|(i, image)| {
                 let what = format!("{path}: images[{i}]");
                 let image = record(image, &what, span)?;
-                // Switchable layers arrive with `Texture.withLayers`.
-                match field(image, "layers", &what, span)? {
-                    Value::List(layers) if layers.is_empty() => {}
-                    _ => return fail(&what, "layers aren't supported yet; pass []".into(), span),
-                }
-                pixels_of(field(image, "pixels", &what, span)?, &what, span)
+                let (pixels, encoding) = pixels_of(field(image, "pixels", &what, span)?, &what, span)?;
+                let layers = layers_of(field(image, "layers", &what, span)?, &pixels, encoding, &what, span)?;
+                Ok((pixels, layers))
             })
             .collect::<Result<_, _>>()?;
         let padding = finite_record_number(fields, "padding", "atlas", path, span)?;
@@ -173,7 +215,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     );
     reg.fn2(
         "Texture.fromPng",
-        "Texture.fromPng(File.bytes(\"baked/room.png\"), Texture.Linear)",
+        "Texture.fromPng(File.bytes(Path.of(\"baked/room.png\")), Texture.Srgb)",
         |png: FunctorLangBytes, space: ColorSpaceArg| {
             let fail = |e: String| format!("Texture.fromPng: {e}");
             let image = image::load_from_memory_with_format(png.0.as_slice(), image::ImageFormat::Png)
@@ -189,13 +231,30 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Texture.atlas",
         "Texture.atlas({ images, padding, maxSize })",
         |a: AtlasArg| {
-            let images: Vec<&PixelData> = a.images.iter().collect();
+            let images: Vec<&PixelData> = a.images.iter().map(|(image, _)| image).collect();
             let (atlas, placed) = crate::texture::atlas(&images, a.padding, a.max_size)
                 .map_err(|e| format!("Texture.atlas: {e}"))?;
             let side = atlas.width() as f64;
-            // UVs inset half a texel, so bilinear taps stay inside the image.
-            let rects = a
+            // Images with layers keep them, placed where the image landed.
+            let layered = a
                 .images
+                .iter()
+                .zip(&placed)
+                .filter(|((_, layers), _)| !layers.is_empty())
+                .map(|((image, layers), p)| LayeredImage {
+                    x: p.x,
+                    y: p.y,
+                    width: image.width(),
+                    height: image.height(),
+                    padding: a.padding,
+                    layers: layers.clone(),
+                })
+                .collect();
+            let atlas = atlas
+                .with_layers(layered)
+                .map_err(|e| format!("Texture.atlas: {e}"))?;
+            // UVs inset half a texel, so bilinear taps stay inside the image.
+            let rects = images
                 .iter()
                 .zip(placed)
                 .map(|(image, p)| {
@@ -219,4 +278,49 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             ]))
         },
     );
+    reg.fn2(
+        "Texture.withLayers",
+        "Texture.withLayers(intensities, atlas)",
+        |levels: IntensitiesArg, texture: FunctorLangTexture| {
+            // A layered texture gets new intensities for the same atlas.
+            let (TextureDescription::Data(base) | TextureDescription::Layered { base, .. }) =
+                texture.0
+            else {
+                return Err("Texture.withLayers: expected a Texture.atlas or Texture.fromPixels \
+texture"
+                    .to_string());
+            };
+            Ok(FunctorLangTexture(TextureDescription::Layered {
+                base,
+                intensities: levels.0,
+            }))
+        },
+    );
+}
+
+/// `Texture.withLayers`'s `Map<float, float>`: intensities finite and from 0.
+struct IntensitiesArg(Vec<(f64, f32)>);
+
+impl crate::host_registry::FromArg for IntensitiesArg {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        use functor_lang::value::MapKey;
+        let Value::Map(entries) = value else {
+            return fail(path, format!("expected a Map<float, float>, got {}", value.kind_name()), span);
+        };
+        let out = entries
+            .iter()
+            .map(|(key, value)| match (key, value) {
+                (MapKey::Number(id), Value::Number(level)) if (*level as f32).is_finite() && *level >= 0.0 => {
+                    Ok((*id, *level as f32))
+                }
+                (MapKey::Number(id), Value::Number(level)) => fail(
+                    path,
+                    format!("layer {id}: intensity must be a finite number from 0, got {level}"),
+                    span,
+                ),
+                _ => fail(path, "expected a Map<float, float>".to_string(), span),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(IntensitiesArg(out))
+    }
 }

@@ -35,10 +35,11 @@ type colorSpace =
 /// `Texture.file` (on `Scene.quad`, the bottom edge).
 type pixels = { width: float, height: float, format: format, colorSpace: colorSpace, pixels: Bytes.t }
 
-/// A switchable contribution to an atlas image (same size and format).
+/// A switchable contribution to an atlas image: the image's size and
+/// format, mixed in by `withLayers` under its `id` (e.g. one per light).
 type layer = { id: float, pixels: Bytes.t }
 
-/// One image to pack. `layers` must be `[]` for now.
+/// One image to pack, with its layers (`[]` for none; ids distinct).
 type image = { pixels: pixels, layers: List<layer> }
 
 /// Where an image landed: its first texel (`x`, `y`: row 0, column 0) and
@@ -61,11 +62,26 @@ let file : (string) => t
 /// sprites, terrain, `Asset.whilePending` and `Effect.preload` need a file
 /// asset.
 let fromPixels : (pixels) => Asset.Texture
-/// A texture from a PNG's bytes, in `colorSpace`: `Linear` for a lightmap
-/// `functor bake` wrote (`Texture.fromPng(File.bytes("baked/room.png"),
-/// Texture.Linear)`), `Srgb` for colour. Bad bytes are an error.
+/// A texture from a PNG's bytes, in `colorSpace`: `Srgb` for colour and for
+/// a lightmap `functor bake` wrote
+/// (`Texture.fromPng(File.bytes(Path.of("baked/room.png")), Texture.Srgb)`),
+/// `Linear` for data stored as is. Bad bytes are an error.
 let fromPng : (Bytes.t, colorSpace) => Asset.Texture
 /// Pack images into one texture (lightmaps): the smallest power-of-two
 /// square that fits, by a deterministic skyline packer. Every image must
 /// share the first's colour space; too much for `maxSize` is an error.
 let atlas : (atlasInput) => atlasOutput
+/// The atlas with its layers mixed in: each texel is base + Σ intensity ×
+/// layer, per channel as stored, clamped to 255 (alpha stays the base's).
+/// An id missing from `intensities` is 0; an id no layer has is ignored.
+/// Build it in `draw` from model state, so time travel shows the right
+/// lights. Applied to a `withLayers` texture, it replaces the intensities.
+/// Only images whose intensities changed re-upload. The atlas has one GPU
+/// copy: two sets of intensities in one frame are correct but re-upload,
+/// and within one draw (e.g. the atlas also as a base texture) the last
+/// bound wins.
+///
+/// ```
+/// let lit = Texture.withLayers(Map.fromList([(1.0, 0.5)]), lm.texture)
+/// ```
+let withLayers : (Map<float, float>, Asset.Texture) => Asset.Texture

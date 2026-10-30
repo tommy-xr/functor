@@ -93,7 +93,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
         &["Config", "Source", "Settings", "Xr"],
     ),
     (ApiGroup::Engine, "Parts", &["Solid", "Sketch", "Typeface", "Mesh"]),
-    (ApiGroup::Engine, "Binary data", &["File", "Bytes", "Binary"]),
+    (ApiGroup::Engine, "Binary data", &["File", "Path", "Bytes", "Binary"]),
     (ApiGroup::Stdlib, "Collections", &["List", "Map"]),
     (ApiGroup::Stdlib, "Text", &["Text"]),
     (
@@ -148,6 +148,9 @@ pub struct ApiItem {
     pub kind: ApiItemKind,
     pub declaration: String,
     pub docs: Option<String>,
+    /// The `impure[…]` read classes of a host built-in (`["file"]`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -494,15 +497,19 @@ fn extract_module(
     let program = parsed.map_err(|error| error_at(error.span, error.message))?;
     let mut items = Vec::new();
     for item in program.items {
+        let mut reads = Vec::new();
         let (item_name, kind, span, declaration) = match item {
             Item::Type(decl) => {
                 let declaration = declaration_at(&source, decl.span)
                     .ok_or_else(|| error_at(decl.span, invalid_span(&decl.name)))?;
                 (decl.name, ApiItemKind::Type, decl.span, declaration)
             }
+            // The span starts at an `impure[…]` header, so the declaration
+            // quotes it above the signature.
             Item::Sig(decl) => {
                 let declaration = declaration_at(&source, decl.span)
                     .ok_or_else(|| error_at(decl.span, invalid_span(&decl.name)))?;
+                reads = decl.reads.iter().map(|class| class.name()).collect();
                 (decl.name, ApiItemKind::Value, decl.span, declaration)
             }
             // An executable module's public surface is its `let`s; the
@@ -538,6 +545,7 @@ fn extract_module(
             kind,
             declaration,
             docs: public_doc_comment_in_source(&source, span),
+            reads,
         });
     }
     Ok(ApiModule {
@@ -665,6 +673,23 @@ mod tests {
         let markdown = render_markdown(&reference);
         assert!(markdown.contains("#### Widget"));
         assert!(markdown.contains("##### `Widget.make`"));
+    }
+
+    /// An `impure[…]` header stays documented by the `///` block above it,
+    /// quotes into the declaration, and lists its classes for the JSON.
+    #[test]
+    fn impure_headers_reach_the_declaration_and_reads() {
+        let source = "//! Reads.\n\
+                      \n\
+                      /// The bytes.\n\
+                      impure[file]\n\
+                      let bytes : (string) => float\n";
+        let reference =
+            generate_from_modules([("Disk".to_string(), source.to_string())]).unwrap();
+        let item = &reference.modules[0].items[0];
+        assert_eq!(item.declaration, "impure[file]\nlet bytes : (string) => float");
+        assert_eq!(item.docs.as_deref(), Some("The bytes."));
+        assert_eq!(item.reads, vec!["file"]);
     }
 
     /// Both halves of the embedded API are complete and fully documented. The

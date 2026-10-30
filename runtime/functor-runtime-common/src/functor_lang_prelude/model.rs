@@ -423,4 +423,11 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             }))
         },
     );
+    reg.fn2(
+        "Scene.withLightmap",
+        "Scene.withLightmap(texture, scene)",
+        |texture: FunctorLangTexture, scene: FunctorLangScene| {
+            FunctorLangScene(scene.0.with_lightmap(texture.0))
+        },
+    );
 }

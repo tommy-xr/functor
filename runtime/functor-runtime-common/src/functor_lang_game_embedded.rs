@@ -31,7 +31,7 @@ use crate::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
-    journal_arm, journal_swap, rebase_connect_retry_deadlines, validate_contract,
+    journal_arm, journal_swap, rebase_connect_retry_deadlines, reused_status, validate_contract,
     ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Reporter, ShellOptions,
     SpanSource,
 };
@@ -240,6 +240,8 @@ struct Loaded {
     has_webview: bool,
     config: Option<GameConfig>,
     settings: Option<GameSettings>,
+    /// How many top-level values a reload kept (`functor_lang::reuse`).
+    reuse: functor_lang::reuse::ReuseStats,
 }
 
 /// Load, check, and contract-validate a game PROJECT — the in-memory
@@ -247,8 +249,15 @@ struct Loaded {
 /// (`create`) and the push path (`reload_source`/`reload_project`). `sources`
 /// is every project file as `(path, source)`, the ENTRY first, then siblings
 /// (`file = module`, so `pieces.fun` is module `Pieces`). Errors come back as
-/// fully rendered strings (`path:line:col: message`).
-fn load_source(sources: &[(String, String)], role: &EntryRole) -> Result<Loaded, String> {
+/// fully rendered strings (`path:line:col: message`). `previous`: the running
+/// session, on a hot reload — values it can vouch for are reused
+/// (`Session::load_reusing`); a changed pushed data file invalidates its
+/// readers.
+fn load_source(
+    sources: &[(String, String)],
+    role: &EntryRole,
+    previous: Option<&Session>,
+) -> Result<Loaded, String> {
     let path = sources
         .first()
         .map(|(p, _)| p.clone())
@@ -272,18 +281,21 @@ fn load_source(sources: &[(String, String)], role: &EntryRole) -> Result<Loaded,
     let source_map = project.sources;
     // Type diagnostics are advisory in the dev loop: warn, keep going
     // (the CLI's `build` is the strict gate).
-    for diag in functor_lang::check(&module) {
+    let (diagnostics, types) = functor_lang::check_with_types(&module);
+    for diag in diagnostics {
         log::warn!(
             "warning: {}",
             source_map.render(diag.span.start, &diag.message)
         );
     }
-    let session = Session::load(&module, &mut FunctorHost).map_err(|f| {
-        format!(
-            "cannot load {}",
-            source_map.render(f.error.span.start, &f.error.message)
-        )
-    })?;
+    let types = functor_lang::reuse::def_types(&module, &types);
+    let (session, reuse) = Session::load_reusing(&module, &mut FunctorHost, previous, types)
+        .map_err(|f| {
+            format!(
+                "cannot load {}",
+                source_map.render(f.error.span.start, &f.error.message)
+            )
+        })?;
     // The producer contract (init a value, tick/draw functions of the right
     // arity, optional hooks well-shaped) is shared with the desktop producer
     // and the CLI's build gate — errors name the ROLE'S resolved bindings
@@ -307,8 +319,10 @@ fn load_source(sources: &[(String, String)], role: &EntryRole) -> Result<Loaded,
         has_webview: contract.has_webview,
         config: contract.config,
         settings: contract.settings,
+        reuse,
     })
 }
+
 
 impl FunctorLangEmbeddedGame {
     /// Build the producer from in-memory project sources (entry FIRST, then
@@ -338,7 +352,7 @@ impl FunctorLangEmbeddedGame {
             .first()
             .map(|(p, _)| p.clone())
             .unwrap_or_else(|| "game.fun".to_string());
-        let loaded = load_source(&sources, &role)?;
+        let loaded = load_source(&sources, &role, None)?;
         log::info!("[functor-lang] loaded {path}");
         // Arm the paused-inspector journal on this thread: from now on every
         // live model-updating call is journaled (a cheap Rc-clone push).
@@ -652,7 +666,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
         } else {
             sources.push((self.path.clone(), source.to_string()));
         }
-        let loaded = load_source(&sources, &self.role)?;
+        let loaded = load_source(&sources, &self.role, Some(&self.session))?;
+        let reused = reused_status(&loaded.reuse, &loaded.sources);
         self.sources = sources;
         let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
@@ -662,7 +677,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
         };
         let history = replay_status(history_replay);
         let status = format!(
-            "reloaded {} from pushed source in {:.2}ms (model preserved{stored}{history})",
+            "reloaded {} from pushed source in {:.2}ms ({reused}model preserved{stored}{history})",
             self.path,
             now_ms() - started
         );
@@ -687,7 +702,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = now_ms();
-        let loaded = load_source(files, &self.role)?;
+        let loaded = load_source(files, &self.role, Some(&self.session))?;
+        let reused = reused_status(&loaded.reuse, &loaded.sources);
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         let (rebound, history_replay) = self.swap_in(loaded);
@@ -699,7 +715,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
         let history = replay_status(history_replay);
         let status = format!(
             "reloaded {} ({} file(s)) from pushed project in {:.2}ms \
-(model preserved{stored}{history})",
+({reused}model preserved{stored}{history})",
             self.path,
             files.len(),
             now_ms() - started
@@ -713,7 +729,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = now_ms();
-        let loaded = load_source(files, &self.role)?;
+        let loaded = load_source(files, &self.role, None)?;
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         self.reset_in(loaded);
@@ -771,8 +787,10 @@ impl GameProducer for FunctorLangEmbeddedGame {
         );
         if result.is_ok() {
             // Same as rewind: the model was restored, so buffered input since
-            // the last recorded frame is orphaned and must not enter the branch.
+            // the last recorded frame is orphaned and must not enter the branch,
+            // nor the queries that input issued.
             self.input_buf.clear();
+            self.deferred_queries.clear();
             // The paused frame changed — clear the last-frame journal and cache
             // so the trace reflects the scrubbed frame.
             self.last_frame_journal.clear();
@@ -985,7 +1003,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             .push(crate::RecordedInput::WebviewEvent(event));
     }
 
-    fn render(&mut self, frame_time: FrameTime) -> Frame {
+    fn render_at(&mut self, frame_time: FrameTime, alpha: f32) -> Frame {
         // While scrubbing, draw at the scrubbed frame's recorded `tts` so
         // `tts`-driven visuals rewind with the model; live play uses the real
         // clock (docs/time-travel.md).
@@ -993,7 +1011,14 @@ impl GameProducer for FunctorLangEmbeddedGame {
             .recorder
             .scrub_render_tts()
             .unwrap_or(frame_time.tts as f64);
-        let args = vec![self.model.clone(), Value::Number(tts)];
+        // Scrubbing pauses the clock, so a scrubbed frame gets alpha 0.
+        let args = crate::functor_lang_producer::draw_args(
+            &self.session,
+            self.names.draw,
+            self.model.clone(),
+            tts,
+            alpha,
+        );
         match self.session.call(self.names.draw, args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => {
@@ -1156,7 +1181,13 @@ AudioScene.empty), got {}",
         let tts = self.recorder.current_scene_frame_tts().unwrap_or(0.0);
         // Draw is pure and never journaled; the builder replays it once
         // against the frozen model so the render pass is inspectable too.
-        let draw_args = vec![self.model.clone(), Value::Number(tts)];
+        let draw_args = crate::functor_lang_producer::draw_args(
+            &self.session,
+            self.names.draw,
+            self.model.clone(),
+            tts,
+            0.0,
+        );
         let ring: Vec<(u64, Vec<JournalEntry>)> = self.journal_ring.iter().cloned().collect();
         let json = crate::inspector::build_trace_doc_with_coverage(
             true,
@@ -1261,7 +1292,7 @@ fn empty_frame() -> Frame {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const BOOT: &str = r#"
@@ -1280,6 +1311,46 @@ let draw = (model, tts) =>
 
     fn frame_time(tts: f32, dts: f32) -> FrameTime {
         FrameTime { tts, dts }
+    }
+
+    /// A rig at `x = steps`, drawn at `lerp(prev, cur, alpha)` — the camera eye
+    /// carries the drawn x.
+    pub(crate) const INTERPOLATED: &str = r#"
+let init = { prev: 0.0, cur: 0.0 }
+let tick = (model, dt, tts) => { prev: model.cur, cur: model.cur + 1.0 }
+let draw = (model, tts, alpha) =>
+  Frame.create(
+    Camera3D.lookAt(
+      Vec3.make(model.prev + (model.cur - model.prev) * alpha, 0.0, -5.0),
+      Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+
+    #[test]
+    fn a_three_parameter_draw_receives_the_presentation_alpha() {
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), INTERPOLATED.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("loads");
+        let ft = frame_time(1.0 / 60.0, 1.0 / 60.0);
+        game.tick(ft);
+        game.tick(ft);
+        // prev = 1, cur = 2.
+        assert_eq!(game.render_at(ft, 0.25).camera.eye[0], 1.25);
+        assert_eq!(game.render(ft).camera.eye[0], 1.0, "render is alpha 0");
+    }
+
+    #[test]
+    fn draw_takes_two_or_three_parameters() {
+        let four = INTERPOLATED.replace("(model, tts, alpha) =>", "(model, tts, alpha, extra) =>");
+        let err = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), four)],
+            Box::new(NativePlatform),
+        )
+        .err()
+        .expect("a four-parameter draw is a contract error");
+        assert!(err.contains("`draw` must take 2 parameters `(model, tts)` or 3 `(model, tts, alpha)`, takes 4"), "{err}");
     }
 
     // The draw-eval drain: a `Frame.withUiTarget` button's handler must never
@@ -1352,6 +1423,61 @@ let settings = (model) =>
         game.load_project(&edited).expect("loads");
         assert_eq!(game.config().unwrap().xr.refresh_rate, Some(72.0));
         assert_eq!(foveation(&game), Some(FoveationLevel::High), "settings(init)");
+    }
+
+    /// A reload keeps a top-level value whose code, dependencies and project
+    /// files are unchanged — the SAME value, not evaluated again — and
+    /// evaluates its readers again when a pushed data file changes. A value
+    /// reading the live physics world is never kept.
+    #[test]
+    fn reload_reuses_values_until_a_file_they_read_changes() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::storage::set_project_reader(None);
+            }
+        }
+        let _reset = Reset;
+        let cache = std::sync::Arc::new(crate::asset::AssetCache::new());
+        cache.replace_uploaded("data/level.bin", vec![1, 2, 3]);
+        cache.replace_uploaded("data/other.bin", vec![9]);
+        crate::storage::set_project_reader(Some(cache.clone()));
+        const LEVEL: &str = "let data = File.bytes(Path.of(\"data/level.bin\"))
+let size = Bytes.length(data)
+let probe = Physics.cast(Vec3.make(0.0, 10.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 100.0)
+";
+        let files = |speed: f64| {
+            vec![
+                ("game.fun".to_string(), format!("{BOOT}\nlet speed = {speed:?}\nlet size = Level.size\n")),
+                ("level.fun".to_string(), LEVEL.to_string()),
+            ]
+        };
+        let mut game =
+            FunctorLangEmbeddedGame::create(files(1.0), Box::new(NativePlatform)).expect("loads");
+        let global = |game: &FunctorLangEmbeddedGame, name: &str| game.session.global(name).unwrap();
+        let same = |a: &Value, b: &Value| match (a, b) {
+            (Value::HostData(a), Value::HostData(b)) => std::rc::Rc::ptr_eq(a, b),
+            (Value::Record(a), Value::Record(b)) => std::rc::Rc::ptr_eq(a, b),
+            _ => panic!("not a shared value"),
+        };
+        let (data, probe) = (global(&game, "Level.data"), global(&game, "Level.probe"));
+
+        let status = game.reload_project(&files(2.0)).expect("reloads");
+        assert!(status.contains("reused 4 of 6 bindings"), "{status}");
+        assert!(same(&data, &global(&game, "Level.data")), "an unchanged read is kept");
+        assert!(!same(&probe, &global(&game, "Level.probe")), "a live read never is");
+
+        cache.replace_uploaded("data/other.bin", vec![8]);
+        game.reload_project(&files(2.0)).expect("reloads");
+        assert!(same(&data, &global(&game, "Level.data")), "an unrelated file changed");
+
+        cache.replace_uploaded("data/level.bin", vec![1, 2, 3, 4]);
+        game.reload_project(&files(2.0)).expect("reloads");
+        assert!(!same(&data, &global(&game, "Level.data")), "the file it read changed");
+        assert!(matches!(global(&game, "size"), Value::Number(n) if n == 4.0), "and its readers");
     }
 
     #[test]
@@ -1829,6 +1955,59 @@ let draw = (model, tts) =>
         ));
     }
 
+    /// Lightmap layer intensities are model state: seeking back to a frame
+    /// redraws exactly that frame's `Texture.withLayers` (switch and flicker).
+    #[test]
+    fn a_scrub_redraws_the_frames_layer_intensities() {
+        let source = r#"
+let px = { width: 1.0, height: 1.0, format: Texture.Rgb8, colorSpace: Texture.Linear, pixels: Bytes.fromU8([0.0, 0.0, 0.0]) }
+let layer = (id) => { id: id, pixels: Bytes.fromU8([255.0, 255.0, 255.0]) }
+let lm = Texture.atlas({ images: [{ pixels: px, layers: [layer(1.0), layer(2.0)] }], padding: 0.0, maxSize: 4.0 })
+let room = Model.static({
+  positions: Bytes.fromF32le([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+  normals: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+  uvs: Bytes.fromF32le([]), uvs2: Bytes.fromF32le([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
+  triangles: Bytes.fromU32le([0.0, 1.0, 2.0]), groups: [],
+  lightmap: Option.Some({ texture: lm.texture, scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) })
+})
+let init = { on: false, lights: Map.fromList([]) }
+let tick = (model, dt, tts) =>
+  let on = if model.on then false else true in
+  { on: on, lights: Map.fromList([(1.0, if on then 1.0 else 0.0), (2.0, 0.5 + 0.5 * Math.sin(tts * 13.0))]) }
+let draw = (model, tts) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 0.0, 3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.modelOf(room) |> Scene.withLightmap(Texture.withLayers(model.lights, lm.texture)))
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), source.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("layered game loads");
+        let intensities = |frame: &Frame| match &frame.scene.obj {
+            crate::SceneObject::Model(model) => match &model.overrides[..] {
+                [(_, crate::scene3d::MeshOverride::Lightmap(crate::TextureDescription::Layered {
+                    intensities,
+                    ..
+                }))] => intensities.clone(),
+                other => panic!("expected a layered lightmap, got {other:?}"),
+            },
+            other => panic!("expected a model, got {other:?}"),
+        };
+        let mut seen = Vec::new();
+        for i in 1..=4 {
+            let ft = frame_time(i as f32 * 0.1, 0.1);
+            game.tick(ft.clone());
+            let frame = game.render(ft);
+            seen.push((game.current_scene_frame().unwrap(), intensities(&frame)));
+        }
+        assert_ne!(seen[0].1, seen[1].1, "the switch and flicker move");
+        for (at, want) in seen.iter().rev() {
+            game.seek_scene_to(*at).expect("seekable");
+            assert_eq!(&intensities(&game.render(frame_time(9.0, 0.1))), want, "frame {at}");
+        }
+    }
+
     #[test]
     fn sampled_input_is_applied_after_a_resuming_scrub_restores_the_model() {
         let source = r#"
@@ -1874,6 +2053,91 @@ let draw = (model, tts) =>
             game.recorded_inputs_at(1).as_slice(),
             [crate::RecordedInput::Snapshot(recorded)] if recorded.mouse.x == 10
         ));
+    }
+
+    /// Each key press counts and fires a raycast; each answer counts.
+    const PARKED_INPUT_GAME: &str = r#"
+type Msg<'h> = | Hit(hit: 'h)
+let init = { presses: 0.0, answers: 0.0, ticks: 0.0 }
+let input = (model, key, isDown) =>
+  if isDown then
+    ({ model with presses: model.presses + 1.0 },
+     Physics.raycast(Vec3.make(0.0, 1.0, 0.0), Vec3.make(0.0, 0.0 - 1.0, 0.0), 5.0, Hit))
+  else model
+let update = (model, msg) => { model with answers: model.answers + 1.0 }
+let tick = (model, dt, tts) => { model with ticks: model.ticks + 1.0 }
+let draw = (model, tts) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+
+    fn parked_input_game() -> FunctorLangEmbeddedGame {
+        FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), PARKED_INPUT_GAME.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("input game loads")
+    }
+
+    /// An edge event delivered while parked on a scrubbed frame runs its hook
+    /// at once, and the input log records it on the branch's first frame. The
+    /// resume must keep its model change and the query it issued, or replaying
+    /// that log applies an input the branch never saw.
+    #[test]
+    fn input_while_parked_on_a_scrub_survives_the_resume() {
+        let mut game = parked_input_game();
+        game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+        game.seek_scene_to(0).expect("frame zero remains seekable");
+
+        game.key_event(crate::Key::Space as i32, true);
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+
+        let model = game.state_debug();
+        assert!(model.contains("presses: 1"), "{model}");
+        assert!(model.contains("answers: 1"), "{model}");
+        assert!(model.contains("ticks: 2"), "{model}");
+        assert!(matches!(
+            game.recorded_inputs_at(1).as_slice(),
+            [crate::RecordedInput::Key { is_down: true, .. }]
+        ));
+    }
+
+    /// A seek discards input since the frame — its model change, its log
+    /// entry, and the query it issued.
+    #[test]
+    fn a_seek_drops_input_from_before_it() {
+        let mut game = parked_input_game();
+        game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+        game.key_event(crate::Key::Space as i32, true);
+        game.seek_scene_to(0).expect("frame zero remains seekable");
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+
+        let model = game.state_debug();
+        assert!(model.contains("presses: 0"), "{model}");
+        assert!(model.contains("answers: 0"), "{model}");
+        assert!(game.recorded_inputs_at(1).is_empty());
+    }
+
+    /// Input delivered since the last frame belongs to the next one, where the
+    /// log records it. A reload in between must not fold it into the last
+    /// frame's snapshot too, or a replay from there applies it twice.
+    #[test]
+    fn reload_keeps_pending_input_out_of_the_recorded_snapshot() {
+        let mut game = parked_input_game();
+        game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
+        game.key_event(crate::Key::Space as i32, true);
+        game.reload_source(&format!("{PARKED_INPUT_GAME}\n// edited\n"))
+            .expect("reload");
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+        assert!(game.state_debug().contains("presses: 1"));
+        assert_eq!(game.recorded_inputs_at(1).len(), 1, "logged on frame 1");
+
+        game.seek_scene_to(0).expect("seek");
+        let model = game.state_debug();
+        assert!(model.contains("presses: 0"), "{model}");
     }
 
     #[test]

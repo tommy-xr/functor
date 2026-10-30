@@ -386,7 +386,18 @@ return them beside the model as `(model, effect)`",
         ));
     }
     require_function(path, session, names.tick, 3)?;
-    require_function(path, session, names.draw, 2)?;
+    // `draw(model, tts)`, or `draw(model, tts, alpha)` to interpolate.
+    match session.global(names.draw) {
+        Some(Value::Closure(c)) if c.params.len() != 2 && c.params.len() != 3 => {
+            return Err(format!(
+                "{path}: `{}` must take 2 parameters `(model, tts)` or 3 `(model, tts, alpha)`, takes {}",
+                names.draw,
+                c.params.len()
+            ))
+        }
+        Some(Value::Closure(_)) => {}
+        _ => require_function(path, session, names.draw, 2)?,
+    }
     // `input` is optional (many games are non-interactive), but when
     // present it must honor the contract: (model, key, isDown) => model.
     let has_input = session.global(names.input).is_some();
@@ -507,6 +518,14 @@ return them beside the model as `(model, effect)`",
     })
 }
 
+/// A reload status line's reuse count, over the project's own files (bundled
+/// modules carry `<stdlib>`/`<prelude>` paths): `reused 41 of 47 bindings; `.
+pub fn reused_status(reuse: &functor_lang::reuse::ReuseStats, sources: &SourceMap) -> String {
+    let (reused, values) =
+        reuse.count(|span| !sources.file_at(span.start).path.to_string_lossy().starts_with('<'));
+    format!("reused {reused} of {values} bindings; ")
+}
+
 /// The producer side of the `config` value and `settings(model)` hook, one
 /// implementation for every producer. `config` is fixed at load; `settings`
 /// is re-evaluated each frame and keeps its last good value on error.
@@ -586,6 +605,18 @@ its launch config)"
 
     pub fn settings(&self) -> Option<GameSettings> {
         self.settings
+    }
+}
+
+/// `draw`'s arguments: `(model, tts)`, plus the presentation sub-step `alpha`
+/// when `draw` declares a third parameter. Auxiliary draws (inspector,
+/// time-travel trails) pass 0 — they render step-aligned models.
+pub fn draw_args(session: &Session, draw: &str, model: Value, tts: f64, alpha: f32) -> Vec<Value> {
+    match session.global(draw) {
+        Some(Value::Closure(c)) if c.params.len() == 3 => {
+            vec![model, Value::Number(tts), Value::Number(alpha as f64)]
+        }
+        _ => vec![model, Value::Number(tts)],
     }
 }
 
@@ -1065,6 +1096,8 @@ impl FrameCtx<'_> {
         // while the draggable bar is parked on an earlier frame, branch the
         // timeline from there BEFORE this frame advances — and drop any in-flight
         // frame work so it doesn't cross the branch (the reload discipline).
+        // Queries issued by input while parked are the branch's own: kept (a
+        // seek already dropped the ones from before it).
         let retry_tts_before_scrub = *self.prev_tts;
         if frame_time.dts > 0.0
             && self.recorder.commit_scrub_if_resuming(
@@ -1080,9 +1113,8 @@ impl FrameCtx<'_> {
                 retry_tts_before_scrub,
                 *self.prev_tts,
             );
-            self.deferred_queries.clear();
             self.pending_events.clear();
-            // The restored model predates the current loading snapshot, so
+            // The scrubbed model predates the current loading snapshot, so
             // "what the game last saw" no longer holds — invalidate the
             // marker so the branch's first frame redelivers current progress
             // (a rewound loading screen must learn its assets already
@@ -1203,8 +1235,13 @@ impl FrameCtx<'_> {
             // `rendered_frame`), then the model — `record` advances the clock, so
             // both must land on the same frame (docs/time-travel.md T6b).
             self.recorder.record_inputs(std::mem::take(self.input_buf));
+            let in_flight = if self.has_physics {
+                self.physics_rt.pending_commands()
+            } else {
+                Vec::new()
+            };
             self.recorder
-                .record_timed(self.model, *self.physics_frame, frame_time);
+                .record_timed(self.model, *self.physics_frame, in_flight, frame_time);
         } else {
             // The shell runs one zero-delta bootstrap before frame zero so the
             // model/physics hooks settle before first draw. It is not a visible
@@ -2441,7 +2478,7 @@ pub fn ghost_frames(
         // Match forward_step_scene's f32 division-boundary tts exactly, so
         // each redrawn frame's tts equals the tts its model was stepped at.
         let tts = start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt;
-        let args = vec![model_i.clone(), Value::Number(tts as f64)];
+        let args = draw_args(session, names.draw, model_i.clone(), tts as f64, 0.0);
         // A draw error or non-Frame return for a division is skipped, not fatal.
         if let Ok(value) = session.call(names.draw, args, &mut FunctorHost) {
             if let Some(frame) = frame_value(&value) {
@@ -2568,7 +2605,7 @@ pub fn history_frames(
             }
             _ => None,
         };
-        let args = vec![model.clone(), Value::Number(tts)];
+        let args = draw_args(session, names.draw, model.clone(), tts, 0.0);
         // Resolve `draw` through the ROLE's entry names, exactly as
         // `ghost_frames` does. A multi-entry project binds `clientDraw` /
         // `serverDraw`, so a hardcoded "draw" would fail every call — and
@@ -3012,7 +3049,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             let value = Value::Number(live_model);
             recorded.push(value.to_string());
             recorder.record_inputs(Vec::new());
-            recorder.record_timed(&value, 0, FrameTime { dts, tts });
+            recorder.record_timed(&value, 0, Vec::new(), FrameTime { dts, tts });
         }
         let (lo, hi) = recorder.scene_frame_range().expect("retained history");
         assert!(lo > 0, "exercise replay after model-ring pruning");
@@ -3071,6 +3108,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             recorder.record_timed(
                 &Value::Number((frame + 2) as f64),
                 0,
+                Vec::new(),
                 FrameTime {
                     dts: 1.0 / 60.0,
                     tts: (frame + 1) as f32 / 60.0,
@@ -3110,6 +3148,10 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             .seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek rebuilt recorded future");
         assert_eq!(model.to_string(), "4", "other snapshots are reconstructed");
+        recorder
+            .seek_scene_to(1, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek the rebuilt selected frame");
+        assert_eq!(model.to_string(), "3", "the selected snapshot holds no paused input");
     }
 
     #[test]
@@ -4055,6 +4097,100 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             assert!(h.physics_rt.seek_to_frame(frame).is_empty());
             assert!(snapshot() == expected, "frame {frame} replays bit-exact");
         }
+    }
+
+    /// Scrubbing back, then back to the newest frame (the desktop scrubber's
+    /// "drag past the end" path), must restore the live world too: that frame
+    /// ended at the live tail, but the earlier scrub parked the world
+    /// mid-history. Resuming then records consecutively.
+    #[test]
+    fn the_character_example_resumes_after_scrubbing_back_to_the_newest_frame() {
+        const SRC: &str = include_str!("../../../examples/character/game.fun");
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        let walk = crate::InputSnapshot {
+            held_keys: vec![crate::Key::W],
+            ..crate::InputSnapshot::default()
+        };
+        let snapshot = || physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()).unwrap();
+        for _ in 0..60 {
+            h.frame_at(physics::FIXED_DT, Some(&walk));
+        }
+        let tail = snapshot();
+        let (_, newest) = h.recorder.scene_frame_range().unwrap();
+
+        let seek = |h: &mut PhysicsHarness, frame| {
+            h.recorder
+                .seek_scene_to(frame, &mut h.model, &mut h.physics_rt, &mut h.physics_frame, true)
+                .unwrap();
+        };
+        seek(&mut h, newest - 23);
+        assert!(snapshot() != tail, "the scrub parks the world mid-history");
+        seek(&mut h, newest);
+        assert!(snapshot() == tail, "the newest frame restores the live tail");
+
+        // Resume: commits the scrub at the newest frame and keeps recording.
+        for _ in 0..30 {
+            h.frame_at(physics::FIXED_DT, Some(&walk));
+        }
+        assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
+    }
+
+    /// A raycast answers after the step, and its `update` queues an impulse
+    /// for the NEXT step: the frame ends with that command in flight. Seeking,
+    /// rewinding, or resuming from a scrub must restore it, or the branch
+    /// drops the kick.
+    #[test]
+    fn restoring_a_frame_keeps_its_in_flight_physics_commands() {
+        // The kick grows each frame, so every frame's in-flight command differs.
+        const SRC: &str = "\
+            let ballTag = Physics.tag(\"ball\")\n\
+            type Msg<'h> = | Hit(hit: 'h)\n\
+            let init = 0.0\n\
+            let tick = (m, dt, tts) =>\n\
+            \x20 (m + 1.0, Physics.raycast(Vec3.make(0.0, 20.0, 0.0), Vec3.make(0.0, 0.0 - 1.0, 0.0), 40.0, Hit))\n\
+            let update = (m, msg) =>\n\
+            \x20 match msg with\n\
+            \x20 | Hit(h) => (m, Physics.applyImpulse(ballTag, Vec3.make(0.0, 0.01 * m, 0.0)))\n\
+            let physics = (m) =>\n\
+            \x20 Physics.scene(Vec3.make(0.0, 0.0 - 9.81, 0.0),\n\
+            \x20   [ Physics.dynamic(ballTag, Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 3.0, 0.0)) ])\n\
+            let draw = (m, tts) =>\n\
+            \x20 Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0 - 5.0),\n\
+            \x20                              Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        let snapshot = || physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()).unwrap();
+        let mut ends = Vec::new();
+        for _ in 0..40 {
+            h.frame();
+            ends.push(snapshot());
+        }
+        assert!(!h.physics_rt.pending_commands().is_empty(), "the kick is in flight");
+
+        // A rewind straight from the live tail.
+        h.recorder
+            .rewind_scene_to(
+                20,
+                &mut h.model,
+                &mut h.physics_rt,
+                &mut h.physics_frame,
+                true,
+                &mut h.prev_tts,
+            )
+            .unwrap();
+        assert!(snapshot() == ends[20], "the rewind restores frame 20 as it ended");
+        h.frame();
+        assert!(snapshot() == ends[21], "the branch replays frame 21 exactly");
+
+        // A scrub, then Resume: the commit branches from the scrubbed frame.
+        h.recorder
+            .seek_scene_to(10, &mut h.model, &mut h.physics_rt, &mut h.physics_frame, true)
+            .unwrap();
+        assert!(snapshot() == ends[10], "the scrub shows frame 10 as it ended");
+        h.frame();
+        assert!(snapshot() == ends[11], "resuming replays frame 11 exactly");
+        assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
     }
 
     /// At 90 Hz most ticks run without a physics step after the last, so they

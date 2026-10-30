@@ -44,6 +44,14 @@ pub enum TextureDescription {
     /// wire; equal only to the same built value. Its colour space picks the
     /// sampling, whatever the material slot.
     Data(Arc<PixelData>),
+    /// `Texture.withLayers`: `base` with its layers mixed in at
+    /// `intensities` (`(id, intensity)`; a missing id is 0).
+    /// Binding recomposes, on the base's one GPU copy, only the images whose
+    /// intensities changed since it last bound.
+    Layered {
+        base: Arc<PixelData>,
+        intensities: Vec<(f64, f32)>,
+    },
 }
 
 /// The runtime's compiled-in textures. An enum rather than a magic path so a

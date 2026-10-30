@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, VecDeque};
 use functor_lang::Value;
 
 use crate::input::RecordedInput;
-use crate::physics::SteppedPhysics;
+use crate::physics::{PhysicsCommand, SteppedPhysics};
 use crate::FrameTime;
 
 /// A fixed-step frame number — the same index space as
@@ -132,8 +132,7 @@ impl<T: Clone> History<T> {
     }
 
     /// Replace one retained snapshot without changing the window or its next
-    /// frame. Reload uses this to make the current snapshot authoritative when
-    /// paused input changed the live model between recorded frames.
+    /// frame. A counterfactual reload rebuilds history under new code with it.
     pub fn replace(&mut self, frame: Frame, state: &T) {
         let (oldest, newest) = self.recorded_range().expect("replace in an empty history");
         assert!(
@@ -291,6 +290,16 @@ impl InputHistory {
     }
 }
 
+/// Where the physics world stood when a rendered frame ended: its fixed frame
+/// and the commands queued after that frame's step (an impulse a raycast
+/// answer returned). The physics timeline records those as the NEXT frame's
+/// input, so restoring this frame must put them back in flight.
+#[derive(Clone)]
+struct WorldEnd {
+    fixed: u64,
+    in_flight: Vec<PhysicsCommand>,
+}
+
 /// The coupled time-travel recorder shared by both Functor Lang shells (docs/time-travel.md
 /// T1–T3): records the MVU `model` and the physics fixed-frame in lockstep each
 /// rendered frame, and seeks/rewinds them together. It owns the recording rings
@@ -299,17 +308,16 @@ impl InputHistory {
 /// desktop and web producers identically (no drift).
 ///
 /// The master clock is the RENDERED frame; the physics world couples via
-/// `world_frame_history` (the fixed frame each rendered frame ended at). A
+/// `world_frame_history` (where the world stood as each rendered frame ended). A
 /// **scrub** ([`Self::seek_scene_to`]) is non-destructive so the draggable bar
 /// can drag back and forth; the future is discarded only when play resumes from
-/// the scrubbed point ([`Self::commit_scrub_if_resuming`], which branches via
-/// [`Self::rewind_scene_to`]). Every coupled seek is **exact-or-refused** — it
+/// the scrubbed point ([`Self::commit_scrub_if_resuming`]). Every coupled seek is **exact-or-refused** — it
 /// never lands the model and world on different times.
 pub struct SceneRecorder {
     model_history: History<Value>,
-    /// The physics fixed-frame reached at the end of each rendered frame,
-    /// recorded in LOCKSTEP with `model_history`.
-    world_frame_history: History<u64>,
+    /// The physics world at the end of each rendered frame, recorded in
+    /// LOCKSTEP with `model_history`.
+    world_frame_history: History<WorldEnd>,
     /// The render clock `tts` (total time) of each rendered frame, recorded in
     /// LOCKSTEP with `model_history`. A scrubbed frame draws at its recorded
     /// `tts` so `tts`-driven visuals (orbiting lights, `sin(tts)` bobbing)
@@ -393,16 +401,11 @@ impl SceneRecorder {
         self.program_revision = self.program_revision.wrapping_add(1);
         let current_frame = self.current_scene_frame();
         if live_model_was_safe && self.reload_history_is_safe() {
-            // Input can update the live model while paused, without producing
-            // a new recorded frame. Make the snapshot at the visible cursor
-            // match that authoritative live state before retaining history.
+            // Snapshots stay as recorded. Input delivered while paused lives
+            // in the rebound live model, which the next frame carries on from
+            // (Resume keeps it); the input log records it on that frame.
             // Keep `scrub_pos`: reload is non-destructive, and Resume remains
             // the operation that branches away the recorded future.
-            if let Some(frame) = current_frame {
-                self.model_history.replace(frame, rebound_model);
-                self.world_frame_history
-                    .replace(frame, &physics_fixed_frame);
-            }
             // Ordinary hot reload at the live tail preserves the live model;
             // only an explicitly scrubbed historical branch is counterfactual.
             self.counterfactual_replay = self
@@ -417,9 +420,10 @@ impl SceneRecorder {
 
         self.counterfactual_replay = false;
         self.scrub_pos = None;
-        let Some((frame, tts)) = current_frame.map(|frame| {
+        let Some((frame, tts, in_flight)) = current_frame.map(|frame| {
             let tts = *self.tts_history.seek(frame);
-            (frame, tts)
+            let in_flight = self.world_frame_history.seek(frame).in_flight.clone();
+            (frame, tts, in_flight)
         }) else {
             // An unsafe snapshot implies a non-empty history, so this is only a
             // defensive fallback if that invariant changes later.
@@ -431,7 +435,13 @@ impl SceneRecorder {
         self.generation = self.generation.wrapping_add(1);
 
         self.model_history.record(frame, rebound_model);
-        self.world_frame_history.record(frame, &physics_fixed_frame);
+        self.world_frame_history.record(
+            frame,
+            &WorldEnd {
+                fixed: physics_fixed_frame,
+                in_flight,
+            },
+        );
         self.tts_history.record(frame, &tts);
         ReloadHistory::RestartedAt(frame)
     }
@@ -536,7 +546,9 @@ impl SceneRecorder {
     }
 
     /// Replace the complete retained model timeline with models replayed under
-    /// the current program, returning the rebuilt selected model. The input,
+    /// the current program, returning the rebuilt selected model — or
+    /// `selected_override` unchanged when given (the live model holding input
+    /// since the frame). The input,
     /// world-frame, and `tts` rings keep their existing frame alignment.
     pub fn materialize_counterfactual_history(
         &mut self,
@@ -563,17 +575,14 @@ impl SceneRecorder {
             );
         }
         for (frame, rebuilt) in (lo..=hi).zip(models) {
-            self.model_history.replace(
-                frame,
-                if frame == selected {
-                    selected_override.unwrap_or(rebuilt)
-                } else {
-                    rebuilt
-                },
-            );
+            self.model_history.replace(frame, rebuilt);
         }
         self.counterfactual_replay = false;
-        Ok(Some(self.model_history.seek(selected).clone()))
+        Ok(Some(
+            selected_override
+                .unwrap_or_else(|| self.model_history.seek(selected))
+                .clone(),
+        ))
     }
 
     /// Commit a non-destructive scrub before an UNSAFE reload replaces the
@@ -591,7 +600,7 @@ impl SceneRecorder {
         prev_tts: &mut Option<f64>,
     ) {
         if let Some(frame) = self.scrub_pos {
-            let _ = self.rewind_scene_to(frame, model, physics, physics_frame, has_physics, prev_tts);
+            let _ = self.branch_to(frame, model, physics, physics_frame, has_physics, prev_tts, true);
         }
     }
 
@@ -608,6 +617,7 @@ impl SceneRecorder {
         self.record_timed(
             model,
             physics_fixed_frame,
+            Vec::new(),
             FrameTime {
                 dts: 1.0 / 60.0,
                 tts: tts as f32,
@@ -615,11 +625,23 @@ impl SceneRecorder {
         );
     }
 
-    /// Production recording path: retain the exact clock values the model saw.
-    pub fn record_timed(&mut self, model: &Value, physics_fixed_frame: u64, frame_time: FrameTime) {
+    /// Production recording path: retain the exact clock values the model saw,
+    /// and the physics commands still in flight at the end of the frame.
+    pub fn record_timed(
+        &mut self,
+        model: &Value,
+        physics_fixed_frame: u64,
+        in_flight: Vec<PhysicsCommand>,
+        frame_time: FrameTime,
+    ) {
         self.model_history.record(self.rendered_frame, model);
-        self.world_frame_history
-            .record(self.rendered_frame, &physics_fixed_frame);
+        self.world_frame_history.record(
+            self.rendered_frame,
+            &WorldEnd {
+                fixed: physics_fixed_frame,
+                in_flight,
+            },
+        );
         self.tts_history
             .record(self.rendered_frame, &(frame_time.tts as f64));
         self.clock_history.record(self.rendered_frame, &frame_time);
@@ -762,7 +784,7 @@ impl SceneRecorder {
             (
                 self.model_history.seek(frame),
                 *self.tts_history.seek(frame),
-                *self.world_frame_history.seek(frame),
+                self.world_frame_history.seek(frame).fixed,
             )
         })
     }
@@ -770,8 +792,14 @@ impl SceneRecorder {
     /// If play resumes (`dts > 0`) while parked on an earlier frame, branch the
     /// timeline from there BEFORE the frame advances. Call at the top of `tick`.
     /// Returns `true` if a branch was committed, so the producer can drop any
-    /// in-flight frame work that must not cross the branch (deferred queries /
-    /// pending events — the reload discipline).
+    /// in-flight frame work that must not cross the branch (pending events —
+    /// the reload discipline).
+    ///
+    /// Input injected while parked (debug `POST /input`) already updated the
+    /// live `model`; the input log records it on the branch's first frame, so
+    /// the branch keeps it rather than restoring the scrubbed snapshot over
+    /// it. (Network and preload results delivered while parked are kept too,
+    /// unlogged, as at the live tail.)
     pub fn commit_scrub_if_resuming(
         &mut self,
         model: &mut Value,
@@ -781,7 +809,9 @@ impl SceneRecorder {
         prev_tts: &mut Option<f64>,
     ) -> bool {
         if let Some(k) = self.scrub_pos.take() {
-            let _ = self.rewind_scene_to(k, model, physics, physics_frame, has_physics, prev_tts);
+            let live = model.clone();
+            let _ = self.branch_to(k, model, physics, physics_frame, has_physics, prev_tts, true);
+            *model = live;
             self.counterfactual_replay = false;
             true
         } else {
@@ -813,6 +843,10 @@ impl SceneRecorder {
             let _ = physics.seek_to_frame(fixed);
             *physics_frame = physics.current_fixed_frame();
         }
+        if has_physics {
+            // Also drops any command queued since: the scrub shows `frame`.
+            physics.set_pending_commands(&self.world_frame_history.seek(frame).in_flight);
+        }
         self.scrub_pos = Some(frame);
         Ok(format!("scrubbed to rendered frame {frame}"))
     }
@@ -830,6 +864,23 @@ impl SceneRecorder {
         has_physics: bool,
         prev_tts: &mut Option<f64>,
     ) -> Result<String, String> {
+        self.branch_to(target, model, physics, physics_frame, has_physics, prev_tts, false)
+    }
+
+    /// The body of [`Self::rewind_scene_to`] and the scrub commits. A commit
+    /// keeps the physics commands queued while parked (`keep_live_commands`),
+    /// as the input log keeps their input; a rewind restores the frame's own.
+    #[allow(clippy::too_many_arguments)]
+    fn branch_to(
+        &mut self,
+        target: u64,
+        model: &mut Value,
+        physics: &mut SteppedPhysics,
+        physics_frame: &mut u64,
+        has_physics: bool,
+        prev_tts: &mut Option<f64>,
+        keep_live_commands: bool,
+    ) -> Result<String, String> {
         let (lo, hi) = self
             .model_history
             .recorded_range()
@@ -840,6 +891,9 @@ impl SceneRecorder {
         if let Some(fixed) = physics_target {
             let _ = physics.rewind_to_frame(fixed);
             *physics_frame = physics.current_fixed_frame();
+        }
+        if has_physics && !keep_live_commands {
+            physics.set_pending_commands(&self.world_frame_history.seek(frame).in_flight);
         }
         // Rewind the SUBSCRIPTION-TIMER window with the model, or `Sub.every`
         // breaks across the branch. Timers fire over `(prev_tts, tts]`; leaving
@@ -890,10 +944,16 @@ impl SceneRecorder {
         if !has_physics {
             return Ok(None);
         }
-        let want = *self.world_frame_history.seek(frame);
+        let want = self.world_frame_history.seek(frame).fixed;
         match physics.seekable_range() {
             None => Ok(None),
-            Some((_, hi)) if want > hi => Ok(None),
+            // The frame ended at the live tail. No seek if the world is still
+            // there; after a scrub parked it mid-history, restore the tail, or
+            // the next record would skip the frames in between.
+            Some((_, hi)) if want > hi => {
+                debug_assert_eq!(want, hi + 1, "a rendered frame ended past the live tail");
+                Ok((physics.current_fixed_frame() != want).then_some(want))
+            }
             Some((flo, hi)) if want >= flo && want <= hi => Ok(Some(want)),
             _ => Err(format!(
                 "cannot seek to rendered frame {frame}: its physics frame {want} has \
@@ -1361,12 +1421,12 @@ mod tests {
     }
 
     #[test]
-    fn preserved_reload_refreshes_the_current_snapshot_from_the_live_model() {
+    fn preserved_reload_keeps_the_recorded_snapshot() {
         let mut rec = SceneRecorder::new();
         rec.record(&Value::Number(1.0), 0, 0.0);
 
-        // Paused input may update the live model without advancing/recording a
-        // frame. Reload must not leave frame 0 pointing at the stale value.
+        // Paused input may update the live model without recording a frame.
+        // The log records it on the next frame, so frame 0 stays as recorded.
         let live_model = Value::Number(99.0);
         assert_eq!(
             rec.finish_reload(&live_model, 0, true),
@@ -1378,7 +1438,7 @@ mod tests {
         let mut physics_frame = 0;
         rec.seek_scene_to(0, &mut restored, &mut physics, &mut physics_frame, false)
             .expect("seek");
-        assert_eq!(restored.to_string(), live_model.to_string());
+        assert_eq!(restored.to_string(), "1");
     }
 
     #[test]

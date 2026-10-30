@@ -1,5 +1,7 @@
-// A Cornell box lit by `functor bake`: one lamp with hard shadows, plus
-// ambient light darkened into corners and under the blocks (occlusion).
+// A Cornell box lit by `functor bake`: one lamp with hard shadows, its light
+// bounced off the walls (the red and green tint the floor and blocks beside
+// them), plus ambient light darkened into corners and under the blocks
+// (occlusion).
 // `bakes` below is what the baker reads; it writes baked/room.png (light)
 // and baked/room.mesh.bin (the mesh with lightmap UVs), and room-ao, ambient
 // alone. Rebake after an edit:
@@ -42,16 +44,22 @@ let corners = (q: quad): List<Vec3.t> =>
   [q.o, q.o |> Vec3.add(q.a), q.o |> Vec3.add(q.a) |> Vec3.add(q.b), q.o |> Vec3.add(q.b)]
 let facing = (q: quad): Vec3.t => q.a |> Vec3.cross(q.b) |> Vec3.normalize
 
-// Classic Cornell albedos, as sRGB.
-let solid = (r: float, g: float, b: float) => Option.Some(Texture.fromPixels({
+// Classic Cornell albedos, as sRGB bytes: drawn as one-texel textures, and
+// the same colours tint the baker's bounced light.
+let whitePaint = (223.0, 223.0, 223.0)
+let redPaint = (207.0, 72.0, 63.0)
+let greenPaint = (105.0, 179.0, 85.0)
+let solid = (paint) => let (r, g, b) = paint in Option.Some(Texture.fromPixels({
   width: 1.0, height: 1.0, format: Texture.Rgb8, colorSpace: Texture.Srgb, pixels: Bytes.fromU8([r, g, b]) }))
+let colour = (paint) => let (r, g, b) = paint in Color.rgb(r / 255.0, g / 255.0, b / 255.0)
 let group = (first: float, count: float, texture) => { first: first, count: count, texture: texture, unlit: false }
 let whiteCount = 2.0 * List.length(white)
 let groups = [
-  group(0.0, whiteCount, solid(223.0, 223.0, 223.0)),
-  group(whiteCount, 2.0, solid(207.0, 72.0, 63.0)),
-  group(whiteCount + 2.0, 2.0, solid(105.0, 179.0, 85.0))
+  group(0.0, whiteCount, solid(whitePaint)),
+  group(whiteCount, 2.0, solid(redPaint)),
+  group(whiteCount + 2.0, 2.0, solid(greenPaint))
 ]
+let albedo = [whitePaint, redPaint, greenPaint] |> List.map(colour)
 
 let roomData = {
   positions: Bytes.fromF32le(quads |> List.concatMap((q) => corners(q) |> List.concatMap(components))),
@@ -66,26 +74,28 @@ let roomData = {
 }
 
 // The lights, marked `Light.baked`: lightmapped surfaces already hold them.
-// Bright enough to light the room, dim enough that no texel passes 1 (the
-// lightmap clips there), even on the ceiling half a metre above the lamp.
+// The ceiling half a metre above the lamp, with bounced light, passes 1,
+// hence `scale` 2 below. Ambient is low: bounced light fills the shadows.
 let lampAt = v(0.0, 2.5, 0.0 - 2.0)
-let ambient = Light.ambient(Color.rgb(0.35, 0.35, 0.35))
+let ambient = Light.ambient(Color.rgb(0.2, 0.2, 0.2))
 let lamp = Light.point(lampAt, Color.rgb(1.0, 0.92, 0.8), 0.85, 6.0) |> Light.castShadows
 let bakedLights = [ambient |> Light.baked, lamp |> Light.baked]
 
+// `scale`: the lightmap stores light ÷ scale; `load` multiplies it back.
 let bakes = [
-  { name: "room", mesh: roomData, lights: bakedLights },
-  { name: "room-ao", mesh: roomData, lights: [Light.ambient(Color.rgb(1.0, 1.0, 1.0))] }
+  { name: "room", mesh: roomData, lights: bakedLights, albedo: albedo, scale: 2.0 },
+  { name: "room-ao", mesh: roomData, lights: [Light.ambient(Color.rgb(1.0, 1.0, 1.0))], albedo: albedo, scale: 1.0 }
 ]
 
 // The baked room, once `functor bake` has run.
-let load = (name: string) =>
-  let mesh = Lightmap.readMesh(File.bytes($"baked/{name}.mesh.bin")) in
+let bakeDir = Path.of("baked")
+let load = (name: string, scale: float) =>
+  let mesh = bakeDir |> Path.join($"{name}.mesh.bin") |> File.bytes |> Lightmap.readMesh in
   Model.static({ mesh with groups: groups, lightmap: Option.Some({
-    texture: Texture.fromPng(File.bytes($"baked/{name}.png"), Texture.Linear),
-    scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
-let baked = if File.exists("baked/room.png") && File.exists("baked/room-ao.png")
-  then Option.Some((load("room"), load("room-ao")))
+    texture: Texture.fromPng(bakeDir |> Path.join($"{name}.png") |> File.bytes, Texture.Srgb),
+    scale: scale, floor: Color.rgb(0.0, 0.0, 0.0) }) })
+let baked = if File.exists(Path.join("room.png", bakeDir)) && File.exists(Path.join("room-ao.png", bakeDir))
+  then Option.Some((load("room", 2.0), load("room-ao", 1.0)))
   else Option.None
 let realtime = Model.static(roomData)
 

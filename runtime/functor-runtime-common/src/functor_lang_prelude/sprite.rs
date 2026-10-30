@@ -318,7 +318,7 @@ fn sprite_texture_parts(texture: FunctorLangTexture) -> Result<(String, Vec<Stri
         TextureDescription::Builtin(_) => {
             Err("Sprite images expect an image asset, not a built-in texture".to_string())
         }
-        TextureDescription::Data(_) => Err(
+        TextureDescription::Data(_) | TextureDescription::Layered { .. } => Err(
             "Sprite images expect an image asset; Texture.fromPixels textures draw on \
 3D materials (Scene.litTexture, Scene.emissiveTexture)"
                 .to_string(),

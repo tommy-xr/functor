@@ -54,6 +54,7 @@
 
 use crate::ast::*;
 use crate::lexer::{describe, lex, Token, TokenKind};
+use crate::reads::ReadClass;
 use crate::span::Span;
 use crate::ParseError;
 
@@ -235,6 +236,10 @@ impl Parser {
                 // `unit` stays usable as an ordinary name.
                 TokenKind::Ident(name) if name == "unit" => {
                     items.push(self.unit_item()?)
+                }
+                // …and `impure` (a `.funi` signature's read classes).
+                TokenKind::Ident(name) if name == "impure" => {
+                    items.push(self.impure_sig()?)
                 }
                 _ => {
                     return self
@@ -521,7 +526,12 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 });
             }
             let span = kw.span.to(ty.span);
-            return Ok(Item::Sig(SigDecl { name, ty, span }));
+            return Ok(Item::Sig(SigDecl {
+                name,
+                ty,
+                reads: Vec::new(),
+                span,
+            }));
         }
         self.expect(TokenKind::Eq, "`=`")?;
         let value = self.expr()?;
@@ -531,6 +541,58 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             ty,
             value,
             span,
+        }))
+    }
+
+    /// `impure[file]` above a `.funi` signature: the ambient host state the
+    /// built-in reads when called (see [`crate::reads`]).
+    fn impure_sig(&mut self) -> Result<Item, ParseError> {
+        let kw = self.bump();
+        if !self.interface {
+            return Err(ParseError {
+                message: "`impure[…]` declares what a host built-in reads, in a `.funi` \
+interface — `.fun` code is never annotated"
+                    .to_string(),
+                span: kw.span,
+            });
+        }
+        self.expect(TokenKind::LBracket, "`[` after `impure`")?;
+        let mut reads = Vec::new();
+        loop {
+            let (name, span) = self.expect_ident("a read class (`file`, `physics`, `ui`)")?;
+            let Some(class) = ReadClass::from_name(&name) else {
+                let known: Vec<&str> = ReadClass::ALL.iter().map(|c| c.name()).collect();
+                return Err(ParseError {
+                    message: format!(
+                        "unknown read class `{name}` — the registered classes are {}",
+                        known.join(", ")
+                    ),
+                    span,
+                });
+            };
+            if reads.contains(&class) {
+                return Err(ParseError {
+                    message: format!("read class `{name}` is listed twice"),
+                    span,
+                });
+            }
+            reads.push(class);
+            if self.peek_kind() != &TokenKind::Comma {
+                break;
+            }
+            self.bump();
+        }
+        self.expect(TokenKind::RBracket, "`]` after the read classes")?;
+        if self.peek_kind() != &TokenKind::Let {
+            return self.error("a `let name : Type` signature after `impure[…]`");
+        }
+        let Item::Sig(sig) = self.let_item()? else {
+            unreachable!("an interface `let` parses as a signature");
+        };
+        Ok(Item::Sig(SigDecl {
+            reads,
+            span: kw.span.to(sig.span),
+            ..sig
         }))
     }
 

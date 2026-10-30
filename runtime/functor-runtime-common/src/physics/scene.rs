@@ -41,6 +41,10 @@ pub enum Shape {
         /// keeps any prior live collider, or defers the initial spawn.
         data: Option<Arc<HeightmapData>>,
     },
+    /// The room fused from the environment depth (`Physics.fusedRoom`): one
+    /// static triangle mesh per chunk, in world space. Empty until the shell
+    /// has fused some; resolved when the scene is recorded.
+    FusedRoom { room: Arc<super::RoomMeshes> },
 }
 
 /// How the body participates in simulation.
@@ -103,6 +107,11 @@ pub struct Body {
     /// tumble when it lands, scuffs a ledge, or leans on a wall.
     #[serde(default)]
     pub rotation_locked: bool,
+    /// Continuous collision detection: a fast body is swept along its step
+    /// instead of tested where it lands, so it cannot pass through a thin
+    /// surface (a fused room's walls) between two steps.
+    #[serde(default)]
+    pub continuous: bool,
     pub authority: Authority,
     /// `Some` for a `Physics.character`: a kinematic capsule that
     /// `PhysicsCommand::Move` walks through the world.
@@ -143,6 +152,7 @@ impl Body {
             angular_damping: 0.0,
             sensor: false,
             rotation_locked: false,
+            continuous: false,
             authority: Authority::Local,
             character: None,
         }
@@ -223,6 +233,12 @@ impl Body {
         self
     }
 
+    /// Sweep the body along each step (continuous collision detection).
+    pub fn as_continuous(mut self) -> Body {
+        self.continuous = true;
+        self
+    }
+
     pub fn with_authority(mut self, authority: Authority) -> Body {
         self.authority = authority;
         self
@@ -277,22 +293,25 @@ impl PhysicsScene {
         PhysicsScene::create(DEFAULT_GRAVITY, Vec::new())
     }
 
-    /// Resolve shell-owned heightmap samples into the immutable scene that
-    /// will be recorded and simulated this fixed frame. Groups hold no
-    /// heightfields, so they pass through by reference.
+    /// Resolve shell-owned data — heightmap samples and the fused room — into
+    /// the immutable scene that will be recorded and simulated this fixed
+    /// frame. Groups hold neither, so they pass through by reference.
     ///
     /// This happens before timeline recording rather than in
-    /// `World::reconcile`: replay must consume the exact asset revision that
-    /// live simulation saw, independent of later loads or hot reloads.
-    pub(crate) fn hydrated_heightfields(&self) -> PhysicsScene {
+    /// `World::reconcile`: replay must consume the exact revision that live
+    /// simulation saw, independent of later loads, fusion or hot reloads.
+    pub(crate) fn hydrated(&self) -> PhysicsScene {
         let mut scene = self.clone();
         for body in &mut scene.bodies {
-            let Shape::Heightfield { geometry, data } = &mut body.shape else {
-                continue;
-            };
-            crate::terrain::request_heightmap(geometry.source.clone());
-            if let Some(latest) = crate::terrain::hydrated_heightmap(&geometry.source) {
-                *data = Some(latest);
+            match &mut body.shape {
+                Shape::Heightfield { geometry, data } => {
+                    crate::terrain::request_heightmap(geometry.source.clone());
+                    if let Some(latest) = crate::terrain::hydrated_heightmap(&geometry.source) {
+                        *data = Some(latest);
+                    }
+                }
+                Shape::FusedRoom { room } => *room = super::room::fused_room(),
+                _ => {}
             }
         }
         scene

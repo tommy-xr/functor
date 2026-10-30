@@ -119,6 +119,7 @@ struct GridProgram {
 struct Fused {
     updates: Vec<(ChunkKey, Option<MeshData>)>,
     fused_frames: u64,
+    top_eye_y: Option<f32>,
 }
 
 enum Fuser {
@@ -140,10 +141,14 @@ pub(crate) struct FusedRoom {
     last_capture: Option<u64>,
     fuser: Fuser,
     fused_frames: u64,
+    /// The highest the depth camera has been ([`Volume::top_eye_y`]).
+    top_eye_y: Option<f32>,
     meshes: BTreeMap<ChunkKey, Arc<MeshData>>,
     triangles: usize,
     /// `meshes` as one group, rebuilt when they change.
     scene: Option<Scene3D>,
+    /// `meshes` for `Physics.fusedRoom`, rebuilt when they change.
+    colliders: Option<Arc<crate::physics::RoomMeshes>>,
 }
 
 fn fuse_thread(frames: mpsc::Receiver<(Vec<u8>, Matrix4<f32>)>, fused: Arc<Mutex<Fused>>) {
@@ -167,6 +172,7 @@ fn fuse_thread(frames: mpsc::Receiver<(Vec<u8>, Matrix4<f32>)>, fused: Arc<Mutex
         let mut out = fused.lock().expect("fusion state");
         out.updates.extend(updates);
         out.fused_frames = volume.fused_frames;
+        out.top_eye_y = volume.top_eye_y;
     }
 }
 
@@ -191,9 +197,11 @@ impl FusedRoom {
             last_capture: None,
             fuser,
             fused_frames: 0,
+            top_eye_y: None,
             meshes: BTreeMap::new(),
             triangles: 0,
             scene: None,
+            colliders: None,
         }
     }
 
@@ -256,6 +264,7 @@ impl FusedRoom {
             Fuser::Thread { fused, .. } => {
                 let mut fused = fused.lock().expect("fusion state");
                 self.fused_frames = fused.fused_frames;
+                self.top_eye_y = fused.top_eye_y;
                 std::mem::take(&mut fused.updates)
             }
         };
@@ -268,6 +277,7 @@ impl FusedRoom {
                 let size = READBACK_SIZE as usize;
                 volume.integrate(&DepthFrame::from_rgba8(size, size, &rgba, view_projection));
                 self.fused_frames = volume.fused_frames;
+                self.top_eye_y = volume.top_eye_y;
                 let updates = volume.extract_dirty();
                 self.apply(updates);
             }
@@ -290,6 +300,24 @@ impl FusedRoom {
         }
         self.triangles = self.meshes.values().map(|m| m.triangles.len()).sum();
         self.scene = None;
+        self.colliders = None;
+    }
+
+    /// The meshes for `Physics.fusedRoom`: the same `Arc` until they change.
+    pub(crate) fn room_meshes(&mut self) -> Arc<crate::physics::RoomMeshes> {
+        let (meshes, top_eye_y) = (&self.meshes, self.top_eye_y);
+        // A higher head can admit a floor: rebuild for it too.
+        if self.colliders.as_ref().is_some_and(|c| c.top_eye_y != top_eye_y) {
+            self.colliders = None;
+        }
+        self.colliders
+            .get_or_insert_with(|| {
+                Arc::new(crate::physics::RoomMeshes {
+                    chunks: meshes.clone(),
+                    top_eye_y,
+                })
+            })
+            .clone()
     }
 
     /// `GET /state.xr.mesh`.
@@ -299,6 +327,7 @@ impl FusedRoom {
             triangles: self.triangles,
             fused_frames: self.fused_frames,
             voxel_m: VOXEL,
+            ..Default::default()
         }
     }
 

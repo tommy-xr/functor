@@ -211,6 +211,31 @@ fn asset_consumers_take_asset_values_only() {
     );
 }
 
+/// `File.*` takes a `Path.t`: the pipeline forms check clean, and a bare
+/// string is a check error that teaches the wrapper.
+#[test]
+fn file_reads_take_paths_only() {
+    let diags = check(
+        "let a = \"data/x.bin\" |> Path.of |> File.bytes\n\
+         let b = (name: string) => \"ss2/mesh\" |> Path.of |> Path.join($\"{name}.bin\") |> File.bytes\n\
+         let c : bool = File.exists(Path.parent(Path.of(\"a/b\")))\n\
+         let d : string = Path.ext(Path.of(\"a.bin\"))",
+    );
+    assert!(diags.is_empty(), "path forms should check clean: {diags:?}");
+    let diags = check("let a = File.bytes(\"data/x.bin\")");
+    assert_eq!(
+        diags,
+        ["argument 1 of `File.bytes`: expected Path.t, got string — build a `Path.t` from the \
+string with `Path.of(\"…\")`"]
+    );
+    // The hint is any host brand's one string constructor, not Path's alone.
+    let diags = check("let s = Effect.play(\"boom.ogg\")");
+    assert!(
+        diags.iter().any(|m| m.ends_with("with `Asset.sound(\"…\")`")),
+        "{diags:?}"
+    );
+}
+
 /// `Asset.whilePending` is gradually typed but ties its result to the asset
 /// argument, so a chained locator still flows into `Scene.model` cleanly.
 #[test]

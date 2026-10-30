@@ -98,6 +98,8 @@ pub struct Volume {
     dirty: BTreeSet<ChunkKey>,
     /// Depth frames integrated so far.
     pub fused_frames: u64,
+    /// The highest the depth camera (the head) has been, world metres.
+    pub top_eye_y: Option<f32>,
 }
 
 fn voxel_index(x: i32, y: i32, z: i32) -> usize {
@@ -203,6 +205,7 @@ impl Volume {
         }
         // The camera centre is the point clip space sends to infinity.
         let eye = unproject(&inverse, Vector4::new(0.0, 0.0, 1.0, 0.0));
+        self.top_eye_y = Some(self.top_eye_y.map_or(eye.y, |top| top.max(eye.y)));
 
         // Each pixel's surface depth along the view axis (clip `w`; NaN:
         // none), and the chunks the in-range surfaces' truncation bands reach.
@@ -527,13 +530,13 @@ fn cube_triangles(config: usize) -> Vec<[u8; 3]> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use cgmath::{Deg, Point3};
     use std::collections::HashMap;
 
     /// A camera at `eye` looking at `target`, 90° square, 0.1–20 m.
-    fn view_projection(eye: [f32; 3], target: [f32; 3]) -> Matrix4<f32> {
+    pub(crate) fn view_projection(eye: [f32; 3], target: [f32; 3]) -> Matrix4<f32> {
         cgmath::perspective(Deg(90.0), 1.0, 0.1, 20.0)
             * Matrix4::look_at_rh(Point3::from(eye), Point3::from(target), Vector3::unit_y())
     }
@@ -544,7 +547,7 @@ mod tests {
         depth_frame_sized(view_projection, boxes, 96)
     }
 
-    fn depth_frame_sized(
+    pub(crate) fn depth_frame_sized(
         view_projection: Matrix4<f32>,
         boxes: &[([f32; 3], [f32; 3])],
         size: usize,
@@ -688,6 +691,7 @@ mod tests {
             assert!((p[2] - 2.03).abs() < 0.01, "vertex off the wall: {p:?}");
         }
         assert_eq!(volume.fused_frames, 1);
+        assert!((volume.top_eye_y.unwrap() - 1.5).abs() < 1e-3, "{:?}", volume.top_eye_y);
     }
 
     /// Seen at a grazing angle the floor's depth changes fast from pixel to

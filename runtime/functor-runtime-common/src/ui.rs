@@ -140,6 +140,7 @@ pub struct UiEvent {
 /// (a button); the payload-carrying kinds pair with a tagger applied to the
 /// new value (a slider / text input).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum UiEventKind {
     Clicked,
     SliderChanged(f64),

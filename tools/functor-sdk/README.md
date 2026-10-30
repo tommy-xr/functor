@@ -85,10 +85,15 @@ const png = await game.capture();// PNG bytes of the frame
 `state.input` is one extensible sampled-input record. It carries held keys,
 fixed-step key transitions (`pressed_keys` / `released_keys`), and the last
 mouse position with held/pressed/released button sets (`mouse.buttons`,
-`mouse.pressed`, `mouse.released`). Edge fields are absent on older runtimes,
-so the SDK types keep them optional. XR targets add typed rig-local head and
+`mouse.pressed`, `mouse.released`). XR targets add typed rig-local head and
 controller state (`game.xrInput()`). Future gamepad and mobile-touch domains
 can extend the same record without target-specific clients.
+
+The wire types (`RuntimeState`, `InputSnapshot`, `InputCommand`, …) are generated
+from the runtime's Rust structs into `src/generated/protocol.ts`, so they
+describe the current runtime; an older runtime may omit newer fields (gate on
+`GET /`'s `protocol_version`). After changing a wire struct, regenerate with
+`UPDATE_TS=1 cargo test -p functor_runtime_common --features ts ts_bindings`.
 
 `FunctorRunner.connect(url)` attaches to an already-running runtime instead of
 spawning one (and won't kill it on dispose).

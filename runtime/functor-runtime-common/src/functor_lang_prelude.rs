@@ -138,6 +138,7 @@
 //! Physics.linearDamping/angularDamping(n, body)             -> Body
 //! Physics.sensor(body)                                      -> Body
 //! Physics.upright(body)                                     -> Body
+//! Physics.continuous(body)                                  -> Body
 //! Physics.scene(Vec3.make(gx, gy, gz), [body, …])                      -> PhysicsScene
 //! Physics.position(tag)                                     -> {x, y, z}
 //! Physics.transformed(tag, scene)                           -> Scene
@@ -172,6 +173,7 @@
 //!   place, *then* moves — the order the source reads.
 
 use cgmath::Matrix4;
+use functor_lang::reads::ReadClass;
 use functor_lang::value::HostData;
 use functor_lang::{Host, HostApply, HostReturn, RunError, Span, Value};
 use std::rc::Rc;
@@ -196,6 +198,7 @@ pub mod cells;
 pub mod lightmap;
 pub mod mesh;
 pub mod model;
+pub mod path;
 pub mod solid;
 mod sprite;
 mod texture;
@@ -1202,6 +1205,10 @@ impl HostData for FunctorLangTexture {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    // A locator, a render-target id, or shared pixels: plain data.
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
 }
 
 /// Which asset family a branded [`FunctorLangAsset`] locates. Consumers check
@@ -1469,6 +1476,10 @@ impl HostData for FunctorLangShape {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    // Collision geometry, no handles or live state (`physics::Shape`).
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
 }
 
 impl HostData for FunctorLangBody {
@@ -1660,6 +1671,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_terrain(&mut reg);
         solid::register(&mut reg);
         bytes::register(&mut reg);
+        path::register(&mut reg);
         mesh::register(&mut reg);
         cells::register(&mut reg);
         model::register(&mut reg);
@@ -2958,6 +2970,7 @@ fn rotate_physics_body(
 translation-only; use Physics.at with an unrotated Scene.terrain"
         ));
     }
+    fused_room_stays_put(path, &body)?;
 
     let angle: cgmath::Rad<f32> = angle.0.into();
     // One canonical turn keeps equivalent angles (90° and 450°) on the same
@@ -3010,6 +3023,17 @@ fn canonical_quaternion(mut q: [f32; 4]) -> [f32; 4] {
         }
     }
     q
+}
+
+/// The fused room is where the room is: it cannot be moved or rotated.
+fn fused_room_stays_put(path: &str, body: &FunctorLangBody) -> Result<(), String> {
+    match &body.0.shape {
+        physics::Shape::FusedRoom { .. } => Err(format!(
+            "{path}: the fused room is already in world space — declare \
+Physics.fusedRoom(tag) without moving or rotating it"
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn register_physics(reg: &mut crate::host_registry::Registry) {
@@ -3106,6 +3130,20 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
             ))
         },
     );
+    reg.fn1(
+        "Physics.fusedRoom",
+        "Physics.fusedRoom(tag)",
+        |tag: std::rc::Rc<str>| {
+            // Empty here; the physics adapter resolves the shell's latest
+            // fused room whenever it consumes a scene.
+            FunctorLangBody(physics::Body::fixed(
+                tag.to_string(),
+                physics::Shape::FusedRoom {
+                    room: Default::default(),
+                },
+            ))
+        },
+    );
     // Bodies (tag, shape). The tag brand is erased at runtime, so it arrives
     // as the plain string (Rc<str>, allocation-light like `Physics.tag`).
     fn body_ctor(
@@ -3184,8 +3222,9 @@ capsule for the moving body"
         "Physics.at",
         "Physics.at(v, body)",
         |v: FunctorLangVec3, body: FunctorLangBody| {
+            fused_room_stays_put("Physics.at", &body)?;
             let (x, y, z) = v.0;
-            FunctorLangBody(body.0.at([x, y, z]))
+            Ok(FunctorLangBody(body.0.at([x, y, z])))
         },
     );
     reg.fn2(
@@ -3272,6 +3311,11 @@ capsule for the moving body"
         "Physics.upright(body)",
         |body: FunctorLangBody| FunctorLangBody(body.0.as_upright()),
     );
+    reg.fn1(
+        "Physics.continuous",
+        "Physics.continuous(body)",
+        |body: FunctorLangBody| FunctorLangBody(body.0.as_continuous()),
+    );
     reg.fn2(
         "Physics.scene",
         "Physics.scene(Vec3.make(gx, gy, gz), [body, …])",
@@ -3332,7 +3376,7 @@ capsule for the moving body"
     // A world read like `Physics.position`; `false` before a character's
     // first move (and while priming).
     reg.fn1("Physics.grounded", "Physics.grounded(tag)", |tag: std::rc::Rc<str>| {
-        note_world_read();
+        note_read(ReadClass::Physics);
         physics::with_world(physics::active_world(), |w| w.grounded(&tag))
             .flatten()
             .or_else(|| PRIMING.with(|p| p.get()).then_some(false))
@@ -5021,6 +5065,12 @@ bodies only; declare dynamic bodies flat in Physics.scene",
                 body.tag
             ));
         }
+        if matches!(body.shape, physics::Shape::FusedRoom { .. }) {
+            return Err(format!(
+                "Physics.memo: \"{}\" is a fused room — declare it flat in Physics.scene",
+                body.tag
+            ));
+        }
         bodies.push(body);
     }
     bodies.sort_by(|a, b| a.tag.cmp(&b.tag));
@@ -5075,6 +5125,9 @@ fn memo_site(
         })
     });
     if let Some(scene) = hit {
+        // The skipped builder's reads go unrecorded, so a top-level value
+        // built through a hit can't vouch for its inputs.
+        note_unrecorded_inputs();
         return Ok(HostReturn::Value(scene));
     }
     // Only a miss walks the deps: a hit compared equal to deps that passed.
@@ -5087,13 +5140,13 @@ functions or engine values"
         ));
     }
     let args = vec![deps.clone()];
-    let reads_before = WORLD_READS.with(|reads| reads.get());
+    let reads_before = read_count(ReadClass::Physics);
     Ok(HostReturn::Apply(Box::new(HostApply {
         callee: builder,
         args,
         via,
         then: Box::new(move |built| {
-            if WORLD_READS.with(|reads| reads.get()) != reads_before {
+            if read_count(ReadClass::Physics) != reads_before {
                 return Err(format!(
                     "{via}: the builder read the live physics world \
 (Physics.position / linearVelocity / cast / transformed), which deps cannot capture, so \
@@ -5328,9 +5381,152 @@ impl crate::host_registry::FromArg for FunctorLangUiAnchor {
     }
 }
 
+thread_local! {
+    /// What the evaluating top-level def has read so far, between
+    /// [`FunctorHost`]'s `begin_inputs` and `end_inputs`; `None` outside.
+    static DEF_INPUTS: std::cell::RefCell<Option<DefInputs>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// One def's reads: project files (`File.bytes`, `File.exists`,
+/// `Typeface.file`), and the [`live_reads`] count it started at — any other
+/// class's read makes the value non-reusable.
+struct DefInputs {
+    files: Vec<functor_lang::reuse::HostInput>,
+    live_reads: u64,
+    /// It read something no input describes.
+    unrecorded: bool,
+}
+
+thread_local! {
+    /// Reads so far, indexed by [`ReadClass`]: reload reuse and the memos
+    /// compare counts around an evaluation to see what it read.
+    static READS: [std::cell::Cell<u64>; ReadClass::ALL.len()] =
+        const { [const { std::cell::Cell::new(0) }; ReadClass::ALL.len()] };
+}
+
+/// Note a read of ambient host state at call time. Every such read in the
+/// prelude goes through here, and its built-in declares the class in its
+/// `.funi` (`impure[physics]` above `let position`) — debug builds assert it
+/// while a built-in's host closure runs.
+fn note_read(class: ReadClass) {
+    #[cfg(debug_assertions)]
+    assert_declared(class);
+    READS.with(|reads| {
+        let count = &reads[class as usize];
+        count.set(count.get() + 1);
+    });
+}
+
+fn read_count(class: ReadClass) -> u64 {
+    READS.with(|reads| reads[class as usize].get())
+}
+
+/// Reads of every class but `file` (whose reads are recorded as inputs).
+fn live_reads() -> u64 {
+    ReadClass::ALL
+        .into_iter()
+        .filter(|&class| class != ReadClass::File)
+        .map(read_count)
+        .sum()
+}
+
+/// Panics unless the running built-in's `.funi` signature declares `class`.
+#[cfg(debug_assertions)]
+fn assert_declared(class: ReadClass) {
+    let Some(path) = crate::host_registry::running() else {
+        return;
+    };
+    let declared = declared_reads()
+        .get(path)
+        .is_some_and(|reads| reads.contains(&class));
+    assert!(
+        declared,
+        "`{path}` reads {class} state, but its .funi signature doesn't declare it — \
+add `impure[{class}]` above it"
+    );
+}
+
+/// Each prelude signature's `impure[…]` classes, by path (`File.bytes`).
+#[cfg(any(debug_assertions, test))]
+fn declared_reads() -> &'static std::collections::HashMap<String, Vec<ReadClass>> {
+    static DECLARED: std::sync::OnceLock<std::collections::HashMap<String, Vec<ReadClass>>> =
+        std::sync::OnceLock::new();
+    DECLARED.get_or_init(|| {
+        let mut declared = std::collections::HashMap::new();
+        for (module, src) in functor_prelude::modules() {
+            let program = functor_lang::parse_interface(&src).expect("the prelude parses");
+            for item in program.items {
+                if let functor_lang::ast::Item::Sig(sig) = item {
+                    if !sig.reads.is_empty() {
+                        declared.insert(format!("{module}.{}", sig.name), sig.reads);
+                    }
+                }
+            }
+        }
+        declared
+    })
+}
+
+/// Mark the evaluating def, if any, as non-reusable.
+fn note_unrecorded_inputs() {
+    DEF_INPUTS.with(|inputs| {
+        if let Some(inputs) = inputs.borrow_mut().as_mut() {
+            inputs.unrecorded = true;
+        }
+    });
+}
+
+/// A project-file read: noted, and recorded as an input of the evaluating
+/// def, if one is.
+fn note_file_read(input: impl FnOnce() -> (String, u64)) {
+    note_read(ReadClass::File);
+    DEF_INPUTS.with(|inputs| {
+        if let Some(inputs) = inputs.borrow_mut().as_mut() {
+            let (key, identity) = input();
+            inputs
+                .files
+                .push(functor_lang::reuse::HostInput { key, identity });
+        }
+    });
+}
+
+/// Reload reuse (`functor_lang::reuse`): a top-level value is a pure function
+/// of its arguments here except for its noted reads ([`note_read`]): project
+/// files, recorded with their contents' hash, and any other class (the live
+/// physics world, UI handler slots), which no input captures. Everything else
+/// the prelude reads at call time is the call's arguments; input, time and
+/// other live state reach a game through its hooks or `Effect`s, never
+/// through a top-level value. A NEW host function that reads ambient state at
+/// call time must call `note_read` with its class and declare that class in
+/// its `.funi` (`impure[physics]`), or a reload will keep a value computed
+/// from its stale answer.
 impl Host for FunctorHost {
     fn provides(&self, path: &str) -> bool {
         registry().provides(path)
+    }
+
+    fn begin_inputs(&mut self) {
+        let live_reads = live_reads();
+        DEF_INPUTS.with(|inputs| {
+            *inputs.borrow_mut() = Some(DefInputs {
+                files: Vec::new(),
+                live_reads,
+                unrecorded: false,
+            })
+        });
+    }
+
+    fn end_inputs(&mut self) -> Option<Vec<functor_lang::reuse::HostInput>> {
+        let inputs = DEF_INPUTS.with(|inputs| inputs.borrow_mut().take())?;
+        let live = live_reads() != inputs.live_reads;
+        (!live && !inputs.unrecorded).then_some(inputs.files)
+    }
+
+    fn inputs_current(&mut self, inputs: &[functor_lang::reuse::HostInput]) -> bool {
+        inputs
+            .iter()
+            .all(|input| bytes::file_input_current(input) == Some(true))
     }
 
     fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<HostReturn, RunError> {
@@ -5824,6 +6020,8 @@ thread_local! {
 /// Register a widget's handler for the `ui(model)` evaluation in progress and
 /// return its slot index (see [`UI_HANDLERS`]).
 pub fn push_ui_handler(handler: UiHandler) -> u32 {
+    // The slot depends on the widgets built before it this evaluation.
+    note_read(ReadClass::Ui);
     UI_HANDLERS.with(|h| {
         let mut handlers = h.borrow_mut();
         handlers.push(handler);
@@ -6796,22 +6994,12 @@ impl Drop for PrimingScope {
     }
 }
 
-thread_local! {
-    /// Synchronous physics-world reads so far — `Scene.memo` refuses a builder
-    /// that made any, since its deps cannot capture live world state.
-    static WORLD_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-fn note_world_read() {
-    WORLD_READS.with(|reads| reads.set(reads.get() + 1));
-}
-
 /// Live pose of a body in the ACTIVE world (normally the singleton world the
 /// shell steps — same process, same crate statics as this prelude; under a
 /// dry-run forward-step scope, the throwaway projected world, so ghost draws
 /// read the stepped poses — docs/time-travel.md T6b).
 fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
-    note_world_read();
+    note_read(ReadClass::Physics);
     physics::with_world(physics::active_world(), |w| w.body_transform(tag))
         .flatten()
         .or_else(|| {
@@ -6825,7 +7013,7 @@ fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
 /// of `Physics.setVelocity`, on the same world-scope rules as
 /// [`live_transform`].
 fn live_velocity(tag: &str) -> Option<[f32; 3]> {
-    note_world_read();
+    note_read(ReadClass::Physics);
     physics::with_world(physics::active_world(), |w| w.body_velocity(tag))
         .flatten()
         .or_else(|| PRIMING.with(|p| p.get()).then_some([0.0; 3]))
@@ -6869,7 +7057,7 @@ fn sync_query(
         return Err(format!("{what} maxDist must be positive, got {max_dist}"));
     }
     let max_dist = max_dist as f32;
-    note_world_read();
+    note_read(ReadClass::Physics);
     let (origin, dir) = ([ox, oy, oz], [dx, dy, dz]);
     let hit = physics::with_world(physics::active_world(), |w| match shape {
         Some(shape) => w.shape_cast(shape, origin, dir, max_dist, exclude),
@@ -7231,6 +7419,105 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
                 "registered arity for `{path}` must match its .funi signature"
             );
         }
+    }
+
+    /// Drift guard: each `.funi` `impure[…]` header equals the classes its
+    /// built-in notes when called. Every header needs a sample call here, so
+    /// a declared class nothing notes fails; a noted class nothing declares
+    /// fails `note_read`'s debug assertion.
+    #[test]
+    fn impure_headers_match_the_reads_each_builtin_notes() {
+        use std::collections::BTreeSet;
+        let at = "Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 1.0";
+        let samples = [
+            ("File.bytes", "File.bytes(Path.of(\"missing.bin\"))".to_string()),
+            ("File.exists", "File.exists(Path.of(\"missing.bin\"))".to_string()),
+            (
+                "Typeface.file",
+                "Typeface.file(\"missing.ttf\")".to_string(),
+            ),
+            (
+                "Physics.position",
+                "Physics.position(\"nobody\")".to_string(),
+            ),
+            (
+                "Physics.linearVelocity",
+                "Physics.linearVelocity(\"nobody\")".to_string(),
+            ),
+            (
+                "Physics.grounded",
+                "Physics.grounded(\"nobody\")".to_string(),
+            ),
+            ("Physics.cast", format!("Physics.cast({at})")),
+            (
+                "Physics.castExcluding",
+                format!("Physics.castExcluding(\"nobody\", {at})"),
+            ),
+            (
+                "Physics.shapeCast",
+                format!("Physics.shapeCast(Physics.sphere(0.5), {at})"),
+            ),
+            (
+                "Physics.shapeCastExcluding",
+                format!("Physics.shapeCastExcluding(\"nobody\", Physics.sphere(0.5), {at})"),
+            ),
+            (
+                "Physics.transformed",
+                "Physics.transformed(\"nobody\", Scene.cube())".to_string(),
+            ),
+            ("Ui.button", "Ui.button(\"go\", 1.0)".to_string()),
+            (
+                "Ui.slider",
+                "Ui.slider(0.0, 1.0, 0.5, (v) => v)".to_string(),
+            ),
+            ("Ui.textInput", "Ui.textInput(\"t\", (s) => s)".to_string()),
+            ("Attr.onClick", "Attr.onClick(1.0)".to_string()),
+            ("Attr.onInput", "Attr.onInput((s) => s)".to_string()),
+        ];
+        let declared = declared_reads();
+        assert_eq!(
+            samples
+                .iter()
+                .map(|(path, _)| *path)
+                .collect::<BTreeSet<_>>(),
+            declared.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            "every `impure[…]` built-in needs exactly one sample call here"
+        );
+        for (path, call) in samples {
+            let src = format!("let main = () => {call}");
+            let module =
+                functor_lang::lower(functor_lang::parse(&src).expect("parse")).expect("lower");
+            let before = ReadClass::ALL.map(|class| (class, read_count(class)));
+            // The call may fail (no project files, no world); the read is noted first.
+            let _ = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost);
+            let noted: BTreeSet<ReadClass> = before
+                .into_iter()
+                .filter(|&(class, count)| read_count(class) != count)
+                .map(|(class, _)| class)
+                .collect();
+            let expected: BTreeSet<ReadClass> = declared[path].iter().copied().collect();
+            assert_eq!(
+                noted, expected,
+                "`{path}`: noted reads vs its `impure[…]` header"
+            );
+        }
+        take_ui_handlers();
+    }
+
+    /// A built-in that notes a read its `.funi` doesn't declare fails loudly.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(
+        expected = "`Physics.peek` reads physics state, but its .funi signature \
+doesn't declare it — add `impure[physics]` above it"
+    )]
+    fn an_undeclared_read_fails_the_debug_assertion() {
+        let mut reg = crate::host_registry::Registry::default();
+        reg.fn0("Physics.peek", "Physics.peek()", || {
+            note_read(ReadClass::Physics);
+            Value::Bool(true)
+        });
+        let _ = reg.call("Physics.peek", &[], Span::new(0, 0));
     }
 
     // The C1 verify criterion (docs/functor-lang.md): an .fun snippet emits exactly
@@ -10715,6 +11002,39 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
         );
     }
 
+    #[test]
+    fn physics_fused_room_is_a_fixed_body_that_stays_put() {
+        let value = eval(
+            "let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
+               Physics.fusedRoom(Physics.tag(\"room\")) |> Physics.restitution(0.7),\n\
+             ])",
+        );
+        let scene = physics_scene_value(&value).expect("a PhysicsScene");
+        let room = &scene.bodies[0];
+        assert_eq!((room.kind, room.restitution), (physics::BodyKind::Fixed, 0.7));
+        let physics::Shape::FusedRoom { room } = &room.shape else {
+            panic!("expected a fused room");
+        };
+        assert!(room.chunks.is_empty(), "the shell's room resolves at the step");
+
+        let moved = "Physics.at: the fused room is already in world space — declare \
+Physics.fusedRoom(tag) without moving or rotating it";
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.fusedRoom(Physics.tag(\"room\")) \
+|> Physics.at(Vec3.make(0.0, 1.0, 0.0))"
+            ),
+            moved
+        );
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.fusedRoom(Physics.tag(\"room\")) \
+|> Physics.rotateY(Angle.degrees(5.0))"
+            ),
+            moved.replace("Physics.at", "Physics.rotateY")
+        );
+    }
+
     // End to end across the seam: reconcile + step the singleton world the
     // way the FunctorLangGame driver does, then read it back from Functor Lang — the in-process
     // live read that is the whole point of the Functor Lang surface.
@@ -13141,7 +13461,7 @@ the game dir"
              Binary.Index(2.0)] }) == \"polygons[17].indices[2] at byte 1462: needs 2 bytes, 1 left\"",
         ];
         for check in checks {
-            let src = format!("let d = File.bytes(\"data.bin\")\nlet main = {check}\n");
+            let src = format!("let d = File.bytes(Path.of(\"data.bin\"))\nlet main = {check}\n");
             assert!(
                 matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
                 "{check}: {:?}",
@@ -13153,19 +13473,39 @@ the game dir"
                 .err()
                 .expect("should fail")
         };
-        let err = failure("Binary.require(Bytes.u32le(32.0, File.bytes(\"data.bin\")))");
+        let err = failure("Binary.require(Bytes.u32le(32.0, File.bytes(Path.of(\"data.bin\"))))");
         assert!(err.contains("at byte 32: needs 4 bytes, 2 left"), "{err}");
-        let src = "let main = File.exists(\"data.bin\") && not File.exists(\"missing.bin\") \
-                   && not File.exists(\"../data.bin\")\n";
+        let src = "let main = File.exists(Path.of(\"data.bin\")) && not File.exists(Path.of(\"missing.bin\"))\n";
         assert!(
             matches!(eval_with_prelude(src), Ok(Value::Bool(true))),
             "{:?}",
             eval_with_prelude(src).map(|v| v.to_string())
         );
-        let err = failure("File.bytes(\"missing.bin\")");
+        let err = failure("File.bytes(Path.of(\"missing.bin\"))");
         assert!(err.contains("can't read missing.bin"), "{err}");
-        let err = failure("File.bytes(\"../data.bin\")");
+        let err = failure("File.bytes(Path.of(\"../data.bin\"))");
         assert!(err.contains("inside the project"), "{err}");
+        // A bare string through the gradual seam still gets the wrapper taught.
+        let err = eval_with_prelude("let s : unknown = \"data.bin\"\nlet main = File.bytes(s)\n")
+            .err()
+            .expect("should fail");
+        assert!(err.contains("wrap it: Path.of(\"data.bin\")"), "{err}");
+        let err = failure("File.bytes(Path.of(\".\"))");
+        assert!(err.contains("project root is a folder"), "{err}");
+        let src = "let p = Path.of(\"./x/data.bin/\")\n\
+                   let main = [Path.toString(p), Path.name(p), Path.ext(p), \
+                   Path.toString(Path.parent(Path.parent(p))), \
+                   Path.toString(p |> Path.parent |> Path.join(\"../data.bin\"))] \
+                   == [\"x/data.bin\", \"data.bin\", \"bin\", \".\", \"data.bin\"] \
+                   && File.exists(\"x\" |> Path.of |> Path.join(\"../data.bin\")) \
+                   && not File.exists(Path.of(\".\"))\n";
+        assert!(
+            matches!(eval_with_prelude(src), Ok(Value::Bool(true))),
+            "{:?}",
+            eval_with_prelude(src).map(|v| v.to_string())
+        );
+        let err = failure("Path.of(\"x\") |> Path.join(\"/etc/passwd\")");
+        assert!(err.contains("Path.join(\"/etc/passwd\"): an absolute path"), "{err}");
     }
 
     /// `Config.external` declares prefixes by source; `Config.xr` keeps them,
@@ -13176,7 +13516,7 @@ the game dir"
         let config = |src: &str| eval_with_prelude(&format!("let main =\n  {src}\n"));
         let value = config(
             "Config.create() |> Config.external(\"ss2/\", Source.mount(\"ss2\") \
-|> Source.device(\"/sdcard/s/x.kpf!data/res/\")) |> Config.external(\"music/\", \
+|> Source.device(\"/sdcard/s/x.kpf!data/res/\") |> Source.ignoreCase) |> Config.external(\"music/\", \
 Source.mount(\"music\")) |> Config.xr(Xr.create() |> Xr.refreshRate(90))",
         )
         .unwrap();
@@ -13187,11 +13527,13 @@ Source.mount(\"music\")) |> Config.xr(Xr.create() |> Xr.refreshRate(90))",
                     prefix: "ss2/".into(),
                     mount: "ss2".into(),
                     device: Some("/sdcard/s/x.kpf!data/res/".into()),
+                    ignore_case: true,
                 },
                 ExternalPrefix {
                     prefix: "music/".into(),
                     mount: "music".into(),
                     device: None,
+                    ignore_case: false,
                 },
             ]
         );
@@ -13248,11 +13590,10 @@ Config.create())",
         cache.replace_uploaded("data/pushed.bin", vec![5, 6, 7]);
         crate::storage::set_project_reader(Some(cache));
         let result = eval_with_prelude(
-            "let main = Bytes.length(File.bytes(\"data/pushed.bin\")) == 3.0 \
-             && File.exists(\"data/pushed.bin\") && not File.exists(\"other.bin\") \
-             && not File.exists(\"../data/pushed.bin\")\n",
+            "let main = Bytes.length(File.bytes(Path.of(\"data/pushed.bin\"))) == 3.0 \
+             && File.exists(Path.of(\"data/pushed.bin\")) && not File.exists(Path.of(\"other.bin\"))\n",
         );
-        let missing = eval_with_prelude("let main = File.bytes(\"other.bin\")\n");
+        let missing = eval_with_prelude("let main = File.bytes(Path.of(\"other.bin\"))\n");
         assert!(
             matches!(result, Ok(Value::Bool(true))),
             "{:?}",
@@ -13293,12 +13634,12 @@ Config.create())",
                Decode.field(\"count\", Decode.u32le), Decode.field(\"start\", Decode.u32le))\n\
              let points = header |> Decode.andThen((h: header) => \
                Decode.field(\"points\", Decode.at(h.start, Decode.list(h.count, vec3))))\n\
-             let data = File.bytes(\"points.bin\")\n";
+             let data = File.bytes(Path.of(\"points.bin\"))\n";
         let checks = [
             "Decode.run(points, data) == Result.Ok([6.0, 15.0])",
             "Decode.run(Decode.map2((a, b) => a + b, Decode.u8, Decode.skipThen(3.0, Decode.u8)), data) \
              == Result.Ok(80.0 + 2.0)",
-            "(Decode.run(Decode.list(100000.0, Decode.u8), File.bytes(\"big.bin\")) \
+            "(Decode.run(Decode.list(100000.0, Decode.u8), File.bytes(Path.of(\"big.bin\"))) \
              |> Result.map(List.length)) == Result.Ok(100000.0)",
             "match Decode.run(Decode.field(\"head\", Decode.list(3.0, Decode.list(2.0, Decode.f64le))), data) with \
              | Result.Error(e) => Binary.describe(e) == \"head[2][1] at byte 40: needs 8 bytes, 0 left\" \
@@ -13308,9 +13649,9 @@ Config.create())",
              && Decode.run(Decode.succeed(1.0), data) == Result.Ok(1.0)",
             "Decode.run(Decode.bytes(4.0) |> Decode.map(Bytes.length), data) == Result.Ok(4.0)",
             "Decode.run(List.range(40.0) |> List.fold((d, i) => Decode.map2((a, b) => a + b, d, \
-             Decode.u8), Decode.succeed(0.0)), File.bytes(\"big.bin\")) == Result.Ok(280.0)",
+             Decode.u8), Decode.succeed(0.0)), File.bytes(Path.of(\"big.bin\"))) == Result.Ok(280.0)",
             "(Decode.run(Decode.sequence(List.range(5000.0) |> List.map((i) => Decode.u8)), \
-             File.bytes(\"big.bin\")) |> Result.map(List.sum)) == Result.Ok(35000.0)",
+             File.bytes(Path.of(\"big.bin\"))) |> Result.map(List.sum)) == Result.Ok(35000.0)",
             "Result.isError(Decode.run(Decode.skipThen(100.0, Decode.succeed(1.0)), data)) \
              && Result.isError(Decode.run(Decode.skipThen(-1.0, Decode.u8), data)) \
              && Result.isError(Decode.run(Decode.at(41.0, Decode.succeed(1.0)), data)) \
@@ -13524,7 +13865,7 @@ Config.create())",
             .collect();
         std::fs::write(dir.path().join("cube.bin"), &corners).unwrap();
         // Five faces as quads — no top, so the box is open.
-        let prelude = "let box = Mesh.fromPolygons(File.bytes(\"cube.bin\"), \
+        let prelude = "let box = Mesh.fromPolygons(File.bytes(Path.of(\"cube.bin\")), \
              [[0.0, 2.0, 3.0, 1.0], [0.0, 1.0, 5.0, 4.0], [1.0, 3.0, 7.0, 5.0], \
              [3.0, 2.0, 6.0, 7.0], [2.0, 0.0, 4.0, 6.0]])\n\
              let moved = Mesh.transformVertices(0.0, 8.0, \
@@ -13579,13 +13920,13 @@ Config.create())",
             std::sync::Arc::as_ptr(mesh) as usize
         };
         assert_eq!(render(&scenes[0]), render(&scenes[1]));
-        let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0, 9.0]])");
+        let err = failure("Mesh.fromPolygons(File.bytes(Path.of(\"cube.bin\")), [[0.0, 1.0, 9.0]])");
         assert!(err.contains("polygon 0 uses vertex 9, but there are 8"), "{err}");
-        let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0]])");
+        let err = failure("Mesh.fromPolygons(File.bytes(Path.of(\"cube.bin\")), [[0.0, 1.0]])");
         assert!(err.contains("needs 3 or more"), "{err}");
         // A degenerate polygon (repeated corner) adds no triangles.
         let src = format!("{prelude}let main = Mesh.triangleCount(Mesh.fromPolygons(\
-            File.bytes(\"cube.bin\"), [[0.0, 1.0, 0.0], [0.0, 1.0, 3.0]]))\n");
+            File.bytes(Path.of(\"cube.bin\")), [[0.0, 1.0, 0.0], [0.0, 1.0, 3.0]]))\n");
         assert!(matches!(eval_with_prelude(&src), Ok(Value::Number(n)) if n == 1.0));
         let err = failure("Solid.fromMesh({ height: 20.0 }, box)");
         assert!(err.contains("missing field `nozzle`"), "{err}");
@@ -14188,10 +14529,10 @@ maxSize 16; lower texelsPerMeter or padding"
 
     const BAKES: &str = "let bakes = [{ name: \"room\", mesh: roomData, lights: \
 [Light.ambient(Color.rgb(0.2, 0.2, 0.2)), Light.point(Vec3.make(0.0, 1.0, 1.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 4.0) \
-|> Light.castShadows] }]\n";
+|> Light.castShadows], albedo: [Color.rgb(0.8, 0.8, 0.8), Color.rgb(0.8, 0.2, 0.1)], scale: 2.0 }]\n";
 
     /// `functor bake`'s jobs: the mesh validated (its `uvs2` and lightmap
-    /// dropped, since the bake replaces them) and the lights as they are.
+    /// dropped, since the bake replaces them), the lights and albedo as they are.
     #[test]
     fn bake_jobs_read_the_bakes_list() {
         let value = eval_with_prelude(&format!("{ROOM}{BAKES}let main = bakes\n")).unwrap();
@@ -14203,6 +14544,8 @@ maxSize 16; lower texelsPerMeter or padding"
         assert!(job.mesh.uvs2.is_empty() && job.mesh.lightmap.is_none());
         assert!(matches!(job.lights[0], Light::Ambient { .. }));
         assert!(job.lights[1].casts_shadows());
+        assert_eq!(job.albedo, [[0.8, 0.8, 0.8], [0.8, 0.2, 0.1]]);
+        assert_eq!(job.scale, 2.0);
     }
 
     #[test]
@@ -14232,6 +14575,10 @@ maxSize 16; lower texelsPerMeter or padding"
         assert!(
             fail(("lights: [", "lights: [3.0, ")).starts_with("bakes[0].lights[0]"),
             "a non-light names its index"
+        );
+        assert!(
+            fail(("albedo: [", "albedo: [3.0, ")).starts_with("bakes[0].albedo[0]"),
+            "a non-colour names its index"
         );
         assert_eq!(
             lightmap::bake_jobs(&Value::Number(1.0)).unwrap_err(),
@@ -14375,6 +14722,92 @@ colour space"
             atlas("[{ pixels: { px with width: 3.0 }, layers: [] }]"),
             "Texture.atlas: images[0]: pixels: 6 bytes, but 3×1 Rgb8 needs 9 (3 per pixel)"
         );
+    }
+
+    const LAYERED: &str = "let layer = (id, v) => { id: id, pixels: Bytes.fromU8([v, v, v, v, v, v]) }\n\
+let lm = Texture.atlas({ images: [{ pixels: px, layers: [] }, { pixels: px, layers: [layer(3.0, 1.0), layer(1.0, 2.0)] }], \
+padding: 1.0, maxSize: 64.0 })\n";
+
+    /// `Texture.atlas` keeps each image's layers where it landed;
+    /// `Texture.withLayers` pairs the atlas with intensities, replacing any it
+    /// already has.
+    #[test]
+    fn with_layers_pairs_an_atlas_with_intensities() {
+        let src = format!(
+            "{PIXELS}{LAYERED}let main = Texture.withLayers(Map.fromList([(3.0, 0.5), (1.0, 1.0)]), \
+Texture.withLayers(Map.fromList([(1.0, 0.0)]), lm.texture))\n"
+        );
+        let Value::HostData(texture) = eval_with_prelude(&src).unwrap() else {
+            panic!("expected a texture");
+        };
+        let texture = &texture.as_any().downcast_ref::<FunctorLangTexture>().unwrap().0;
+        let TextureDescription::Layered { base, intensities } = texture else {
+            panic!("expected a layered texture, got {texture:?}");
+        };
+        assert_eq!(intensities, &[(1.0, 1.0), (3.0, 0.5)]);
+        let [image] = base.layers() else {
+            panic!("one layered image, got {:?}", base.layers());
+        };
+        let ids: Vec<f64> = image.layers.iter().map(|l| l.id).collect();
+        assert_eq!((image.width, image.height, image.padding, ids), (2, 1, 1, vec![3.0, 1.0]));
+        assert_eq!(image.layers[1].rgba8, [2, 2, 2, 255, 2, 2, 2, 255]);
+    }
+
+    #[test]
+    fn layer_errors_name_the_layer() {
+        let run = |main: &str| {
+            eval_with_prelude(&format!("{PIXELS}{LAYERED}let main = {main}\n"))
+                .err()
+                .expect("should fail")
+        };
+        let atlas = |layers: &str| {
+            run(&format!(
+                "Texture.atlas({{ images: [{{ pixels: px, layers: {layers} }}], padding: 0.0, maxSize: 64.0 }})"
+            ))
+        };
+        assert_eq!(
+            atlas("[{ id: 1.0, pixels: Bytes.fromU8([1.0, 2.0, 3.0]) }]"),
+            "Texture.atlas: images[0]: layers[0]: pixels: 3 bytes, but 2×1 Rgb8 needs 6 (3 per pixel)"
+        );
+        assert_eq!(
+            atlas("[layer(4.0, 1.0), layer(4.0, 2.0)]"),
+            "Texture.atlas: images[0]: layers[1]: id 4 repeats layers[0]"
+        );
+        assert_eq!(
+            run("Texture.withLayers(Map.fromList([(1.0, 0.0 - 1.0)]), lm.texture)"),
+            "Texture.withLayers: layer 1: intensity must be a finite number from 0, got -1"
+        );
+        assert_eq!(
+            run("Texture.withLayers(Map.fromList([(1.0, 1.0)]), Asset.texture(\"a.png\"))"),
+            "Texture.withLayers: expected a Texture.atlas or Texture.fromPixels texture"
+        );
+    }
+
+    /// `Scene.withLightmap` overrides only lightmapped static models' texture.
+    #[test]
+    fn with_lightmap_overrides_lightmapped_static_models() {
+        use crate::scene3d::{MeshOverride, MeshSelector};
+        let src = format!(
+            "{ROOM}let bare = Model.static({{ roomData with lightmap: Option.None }})\n\
+let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
+|> Scene.withLightmap(Texture.withLayers(Map.fromList([(1.0, 1.0)]), px))\n"
+        );
+        let Value::HostData(scene) = eval_with_prelude(&src).unwrap() else {
+            panic!("expected a scene");
+        };
+        let scene = &scene.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        let SceneObject::Group(items) = &scene.obj else {
+            panic!("expected a group, got {:?}", scene.obj);
+        };
+        let overrides = |i: usize| match &items[i].obj {
+            SceneObject::Model(model) => model.overrides.clone(),
+            other => panic!("expected a model, got {other:?}"),
+        };
+        assert!(matches!(
+            overrides(0).as_slice(),
+            [(MeshSelector::All, MeshOverride::Lightmap(TextureDescription::Layered { .. }))]
+        ));
+        assert!(overrides(1).is_empty(), "no lightmap, no override");
     }
 
     /// The persistence spine on the REAL store: `Persistence.save` writes the

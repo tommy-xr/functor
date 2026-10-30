@@ -88,7 +88,7 @@ fn file_bytes_feed_expects() {
     let dir = project("bytes", "Typeface.sans()");
     std::fs::write(dir.join("data.bin"), [7u8, 0, 0, 0]).unwrap();
     let src = std::fs::read_to_string(dir.join("part.fun")).unwrap()
-        + "expect Bytes.u32le(0.0, File.bytes(\"data.bin\")) == Result.Ok(7.0)\n";
+        + "expect Bytes.u32le(0.0, File.bytes(Path.of(\"data.bin\"))) == Result.Ok(7.0)\n";
     std::fs::write(dir.join("part.fun"), &src).unwrap();
     let test = |dir: &Path| {
         Command::new(env!("CARGO_BIN_EXE_functor"))
@@ -121,7 +121,7 @@ fn a_decoded_mesh_exports_as_a_closed_part() {
     std::fs::write(dir.join("cube.bin"), corners).unwrap();
     std::fs::write(
         dir.join("part.fun"),
-        "let part = Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 2.0, 3.0, 1.0], \
+        "let part = Mesh.fromPolygons(File.bytes(Path.of(\"cube.bin\")), [[0.0, 2.0, 3.0, 1.0], \
          [0.0, 1.0, 5.0, 4.0], [1.0, 3.0, 7.0, 5.0], [3.0, 2.0, 6.0, 7.0], [2.0, 0.0, 4.0, 6.0]]) \
          |> Solid.fromMesh({ height: 20.0, nozzle: 0.8 })\n",
     )

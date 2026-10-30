@@ -18,8 +18,8 @@
 //! superseded them.
 
 use super::{
-    with_world, Command, PhysicsEvent, PhysicsScene, Simulatable, Timeline, TimelineLog, World,
-    WorldId, DEFAULT_WORLD, FIXED_DT, MAX_SUBSTEPS_PER_FRAME,
+    with_world, Command, PhysicsCommand, PhysicsEvent, PhysicsScene, Simulatable, Timeline,
+    TimelineLog, World, WorldId, DEFAULT_WORLD, FIXED_DT, MAX_SUBSTEPS_PER_FRAME,
 };
 
 /// Snapshot cadence for the live recorder: every half second at 60Hz. Seeks
@@ -155,7 +155,7 @@ impl SteppedPhysics {
     /// hand-updating it outside the pipeline would put the determinism the
     /// Timeline depends on at risk for one frame of probe latency.
     pub fn prime(&mut self, scene: &PhysicsScene) {
-        let scene = scene.hydrated_heightfields();
+        let scene = scene.hydrated();
         with_world(self.world, |w| {
             w.reconcile(&scene);
             // Reconcile is declaration only — no step runs, so nothing may
@@ -212,10 +212,11 @@ impl SteppedPhysics {
                 // (the same discipline as World::step_frame).
                 self.accumulator %= FIXED_DT;
             }
-            // Resolve terrain once at the live shell boundary, then move that
-            // exact immutable scene into the command log. Replays must never
-            // consult whatever asset revision happens to be loaded later.
-            let mut scene = scene.map(|scene| scene.hydrated_heightfields());
+            // Resolve terrain and the fused room once at the live shell
+            // boundary, then move that exact immutable scene into the command
+            // log. Replays must never consult whatever revision happens to be
+            // loaded later.
+            let mut scene = scene.map(|scene| scene.hydrated());
             let (events, warnings) = with_world(self.world, |w| {
                 let mut events = Vec::new();
                 for i in 0..steps {
@@ -255,7 +256,7 @@ impl SteppedPhysics {
     /// path (docs/time-travel.md T1), called in-process by the shell when a
     /// time-travel branch commits. Returns any clamp/range warnings. The
     /// coupled caller checks [`Self::seekable_range`] first so this only ever
-    /// runs on an exactly-restorable frame.
+    /// runs on an exactly-restorable frame (or the live tail, one past it).
     pub fn rewind_to_frame(&mut self, frame: u64) -> Vec<String> {
         let mut warnings = Vec::new();
         self.rewind_to(frame, &mut warnings);
@@ -282,7 +283,9 @@ impl SteppedPhysics {
             return warnings;
         }
         let floor = if lo == 0 { 1 } else { lo };
-        let target = frame.clamp(floor, hi);
+        // `hi + 1` is the live tail: a scrub back to the newest rendered frame
+        // must restore it, since an earlier scrub parked the world mid-history.
+        let target = frame.clamp(floor, hi + 1);
         with_world(self.world, |w| {
             self.timeline.seek(target, w);
             // The replayed steps re-emit events/warnings nobody should re-observe.
@@ -296,12 +299,30 @@ impl SteppedPhysics {
     /// (frame 0's pre-step is the world before any STEP — empty, or the
     /// cold-start primed declaration — so 1 is the real
     /// floor) through the newest recorded frame. `None` until something has
-    /// stepped. The coupled scene rewind (docs/time-travel.md T1) uses this to
+    /// stepped. Seeks also accept one past it: the live tail. The coupled scene rewind (docs/time-travel.md T1) uses this to
     /// refuse rather than silently clamp — a clamp would land the world on a
     /// different frame than the model, desyncing the two.
     pub fn seekable_range(&self) -> Option<(u64, u64)> {
         self.recorded_range()
             .map(|(lo, hi)| (if lo == 0 { 1 } else { lo }, hi))
+    }
+
+    /// Commands queued for the next step, e.g. an impulse a post-step raycast
+    /// answer returned. A rendered frame ends with them in flight, so the
+    /// coupled recorder keeps them with that frame.
+    pub fn pending_commands(&self) -> Vec<PhysicsCommand> {
+        with_world(self.world, |w| w.pending_commands().to_vec()).unwrap_or_default()
+    }
+
+    /// Replace the queued commands — restoring a recorded frame's in-flight
+    /// commands after a seek.
+    pub fn set_pending_commands(&mut self, commands: &[PhysicsCommand]) {
+        with_world(self.world, |w| {
+            w.take_pending_commands();
+            for command in commands {
+                w.queue_command(command.clone());
+            }
+        });
     }
 
     /// The world's current live fixed frame (== the next frame to record). A
@@ -331,7 +352,8 @@ impl SteppedPhysics {
         // Pre-step of fixed frame 0 is the world before any step, so the floor
         // is frame 1 (= the world after its first step).
         let floor = if lo == 0 { 1 } else { lo };
-        let target = frame.clamp(floor, hi);
+        // Up to the live tail (`hi + 1`), as in `seek_to_frame`.
+        let target = frame.clamp(floor, hi + 1);
         with_world(self.world, |w| {
             // Commands queued THIS frame (before the rewind) survive the
             // restore: a rewind+command in one frame lands the command at the
@@ -511,11 +533,15 @@ mod tests {
         for t in 0..5 {
             sp.advance(&scene_at(t), FIXED_DT);
         }
-        // Past the newest end: clamped, no warning. (Rewinding to the OLDEST
+        // Past the newest end: clamped to the live tail, no warning, nothing
+        // truncated. (Rewinding to the OLDEST
         // frame truncates the entire history — by design: the future is
         // discarded — so the far-future clamp is tested first.)
+        let range = sp.seekable_range();
         let warnings = sp.rewind_to_frame(9_999);
         assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(sp.seekable_range(), range);
+        assert_eq!(sp.current_fixed_frame(), 5);
         // Below the recorded floor: clamped to it, no warning, no panic.
         let warnings = sp.rewind_to_frame(0);
         assert!(warnings.is_empty(), "{warnings:?}");

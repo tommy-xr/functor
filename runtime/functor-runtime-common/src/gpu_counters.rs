@@ -87,6 +87,7 @@ pub struct GpuWindow {
 /// frame draws the shared patch set once per eye, so it counts twice).
 /// `vertices` is patches × the patch mesh's vertex count (grid + skirt).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TerrainDraws {
     pub patches: u64,
     pub vertices: u64,
@@ -96,6 +97,7 @@ pub struct TerrainDraws {
 /// eye): mesh draw calls (an instanced draw counts once), and pose
 /// evaluations (one per skinned model per pass).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SkinnedWork {
     pub draws: u64,
     pub pose_evals: u64,
@@ -105,6 +107,7 @@ pub struct SkinnedWork {
 /// targets, each eye): draws tested against the pass's frustum, and those
 /// skipped. A hardware-instanced node counts once.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CullCounts {
     pub tested: u64,
     pub culled: u64,
@@ -114,6 +117,7 @@ pub struct CullCounts {
 /// render-target passes: portal walks, the cells they reached, and
 /// `Scene.inCells` subtrees hidden.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CellsCounts {
     pub walks: u64,
     pub visible: u64,
@@ -122,6 +126,7 @@ pub struct CellsCounts {
 
 /// One frame's `Scene.instanced` instance-buffer uploads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct InstanceUploads {
     pub count: u64,
     pub bytes: u64,

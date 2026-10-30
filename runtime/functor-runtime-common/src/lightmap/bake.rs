@@ -2,23 +2,30 @@
 //! texel of an unwrapped mesh. Lights use the engine's falloff
 //! (`light::distance_falloff`, `cone_falloff`), shadow rays go through a parry
 //! trimesh BVH (`castShadows` lights only, as at runtime), and ambient light
-//! is darkened by occlusion. Each chart is then dilated into its padding.
+//! is darkened by occlusion. Bounces then gather light reflected off the
+//! lit surfaces, and are denoised within each chart. Each chart is finally
+//! dilated into its padding.
 //!
-//! Deterministic: a texel's samples come from `(seed, texel, sample)` and its
-//! value from no other texel, so the bytes don't depend on the thread count.
+//! Deterministic: a texel's samples come from `(seed, texel, sample)` and
+//! each pass reads only the previous pass's finished lightmap, so the bytes
+//! don't depend on the thread count. Nearest hits break ties by triangle
+//! index, so they don't depend on the BVH's layout either.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rapier3d::parry::math::Vector;
+use rapier3d::parry::partitioning::TraversalAction;
+use rapier3d::parry::query::details::local_ray_intersection_with_triangle;
 use rapier3d::parry::query::{Ray, RayCast};
 use rapier3d::parry::shape::TriMesh;
 
 use super::{unwrap, UnwrapOptions, Unwrapped};
+use crate::color_space::{linear_to_srgb, srgb_to_linear3};
 use crate::light::{cone_falloff, distance_falloff, radiance, Light};
 use crate::model::ModelSource;
 
 /// Bumped when the same inputs would bake different texels.
-pub const BAKE_VERSION: u32 = 1;
+pub const BAKE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BakeOptions {
@@ -27,6 +34,11 @@ pub struct BakeOptions {
     pub ao_samples: u32,
     /// How far an occlusion ray looks for geometry.
     pub ao_distance: f32,
+    /// Times light reflects off lit surfaces before it is stored; 0 is
+    /// direct light only.
+    pub bounces: u32,
+    /// Rays per texel per bounce.
+    pub gi_samples: u32,
     pub seed: u64,
     /// Worker threads (at least 1); the output doesn't depend on it.
     pub threads: usize,
@@ -42,9 +54,12 @@ pub struct Baked {
 }
 
 impl Baked {
-    /// RGBA8, clamped at 1; alpha is 255 on filled texels, 0 on background.
-    pub fn rgba8(&self) -> Vec<u8> {
-        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    /// RGBA8 of `light / scale`, clamped at 1 and sRGB-encoded, so the darks
+    /// keep their steps (linear 0.1 is code 89, not 26); the game decodes it
+    /// with `Texture.Srgb` and multiplies `scale` back. Alpha is 255 on
+    /// filled texels, 0 on background.
+    pub fn rgba8(&self, scale: f32) -> Vec<u8> {
+        let byte = |v: f32| (linear_to_srgb((v / scale).clamp(0.0, 1.0)) * 255.0).round() as u8;
         self.light
             .iter()
             .zip(&self.filled)
@@ -53,13 +68,38 @@ impl Baked {
     }
 }
 
-/// Unwrap a validated static mesh and bake `lights` into it. Returns the
-/// unwrapped mesh (`uvs2` filled, no lightmap) and its lightmap.
+/// Unwrap a validated static mesh and bake `lights` into it. `albedo` is
+/// an authored (sRGB) colour per group (one if it has none): the share of
+/// light each group reflects. Returns the unwrapped mesh (`uvs2` filled, no
+/// lightmap) and its lightmap.
 pub fn bake_mesh(
     source: &ModelSource,
     lights: &[Light],
+    albedo: &[[f32; 3]],
     options: &BakeOptions,
 ) -> Result<(ModelSource, Baked), String> {
+    let groups = source.groups.len().max(1);
+    if albedo.len() != groups {
+        return Err(format!(
+            "albedo: one colour per group: expected {groups}, got {}",
+            albedo.len()
+        ));
+    }
+    if let Some((g, c)) = albedo
+        .iter()
+        .enumerate()
+        .find(|(_, c)| !c.iter().all(|v| (0.0..=1.0).contains(v)))
+    {
+        return Err(format!(
+            "albedo[{g}]: a reflectance, each channel from 0 to 1, got {c:?}"
+        ));
+    }
+    // Per triangle, linear.
+    let mut reflect = vec![srgb_to_linear3(albedo[0]); source.triangles.len()];
+    for (group, &color) in source.groups.iter().zip(albedo) {
+        let range = group.first as usize..(group.first + group.count) as usize;
+        reflect[range].fill(srgb_to_linear3(color));
+    }
     let unwrapped = unwrap(&source.positions, &source.triangles, options.unwrap)?;
     let baked = bake(
         &source.positions,
@@ -67,6 +107,7 @@ pub fn bake_mesh(
         &source.triangles,
         &unwrapped,
         lights,
+        &reflect,
         options,
     )?;
     Ok((unwrapped_source(source, &unwrapped), baked))
@@ -102,13 +143,15 @@ pub(crate) struct Sample {
 }
 
 /// Bake `lights` into `unwrapped`, the unwrap of `triangles` over
-/// `positions` (with one normal per position).
+/// `positions` (with one normal per position). `albedo` is linear, one per
+/// triangle.
 pub fn bake(
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],
     triangles: &[[u32; 3]],
     unwrapped: &Unwrapped,
     lights: &[Light],
+    albedo: &[[f32; 3]],
     options: &BakeOptions,
 ) -> Result<Baked, String> {
     if !(options.ao_distance.is_finite() && options.ao_distance > 0.0) {
@@ -117,17 +160,76 @@ pub fn bake(
             options.ao_distance
         ));
     }
-    let scene = Scene::new(positions, normals, triangles, unwrapped, lights, options)?;
+    let scene = Scene::new(
+        positions, normals, triangles, unwrapped, lights, albedo, options,
+    )?;
     let samples = rasterize(unwrapped);
+    let threads = options.threads;
+    let padding = options.unwrap.padding;
+    let direct = par_map(&samples, threads, |s| scene.light_at(s));
+    let mut light: Vec<[f32; 3]> = direct.iter().map(|(l, a)| add(*l, *a)).collect();
 
-    // Texels in chunks, claimed in turn by each worker; each lands at its
-    // sample's index, so the merge is order-free.
+    // Each bounce gathers the last one's light (first, the direct lights';
+    // ambient already stands in for bounced light) off the surfaces it hits.
+    if options.bounces > 0 && options.gi_samples > 0 {
+        let mut last: Vec<[f32; 3]> = direct.iter().map(|(l, _)| *l).collect();
+        let mut indirect = vec![[0.0f32; 3]; samples.len()];
+        for bounce in 0..options.bounces {
+            // Nothing left to bounce (e.g. ambient light alone).
+            if last.iter().all(|c| *c == [0.0; 3]) {
+                break;
+            }
+            let lit = lightmap(unwrapped, &samples, &last, padding);
+            last = par_map(&samples, threads, |s| scene.gather(s, &lit, bounce));
+            indirect
+                .iter_mut()
+                .zip(&last)
+                .for_each(|(i, l)| *i = add(*i, *l));
+        }
+        let size = unwrapped.size as usize;
+        let mut chart = vec![u32::MAX; size * size];
+        let mut grid = vec![[0.0f32; 3]; size * size];
+        for (s, value) in samples.iter().zip(&indirect) {
+            chart[s.texel as usize] = unwrapped.chart_of[s.triangle as usize];
+            grid[s.texel as usize] = *value;
+        }
+        let smooth = denoise(unwrapped.size, &chart, &grid, threads);
+        for (s, l) in samples.iter().zip(&mut light) {
+            *l = add(*l, smooth[s.texel as usize]);
+        }
+    }
+    Ok(lightmap(unwrapped, &samples, &light, padding))
+}
+
+/// One value per sample, placed at its texel and dilated into each chart's
+/// padding.
+fn lightmap(u: &Unwrapped, samples: &[Sample], values: &[[f32; 3]], padding: u32) -> Baked {
+    let size = u.size;
+    let mut baked = Baked {
+        size,
+        light: vec![[0.0; 3]; (size * size) as usize],
+        filled: vec![false; (size * size) as usize],
+    };
+    for (s, value) in samples.iter().zip(values) {
+        baked.light[s.texel as usize] = *value;
+        baked.filled[s.texel as usize] = true;
+    }
+    dilate(&mut baked, u, padding);
+    baked
+}
+
+/// `f` of each item, on `threads` workers that claim chunks in turn; each
+/// result lands at its item's index, so the output is order-free.
+fn par_map<T: Sync, R: Send + Copy + Default>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
     const CHUNK: usize = 256;
-    let chunks = samples.len().div_ceil(CHUNK);
+    let chunks = items.len().div_ceil(CHUNK);
     let next = AtomicUsize::new(0);
-    let mut light = vec![[0.0f32; 3]; samples.len()];
-    let done: Vec<Vec<(usize, Vec<[f32; 3]>)>> = std::thread::scope(|s| {
-        let workers: Vec<_> = (0..options.threads.max(1))
+    let done: Vec<Vec<(usize, Vec<R>)>> = std::thread::scope(|s| {
+        let workers: Vec<_> = (0..threads.max(1))
             .map(|_| {
                 s.spawn(|| {
                     let mut out = Vec::new();
@@ -136,11 +238,8 @@ pub fn bake(
                         if chunk >= chunks {
                             return out;
                         }
-                        let range = chunk * CHUNK..((chunk + 1) * CHUNK).min(samples.len());
-                        out.push((
-                            range.start,
-                            samples[range].iter().map(|s| scene.light_at(s)).collect(),
-                        ));
+                        let range = chunk * CHUNK..((chunk + 1) * CHUNK).min(items.len());
+                        out.push((range.start, items[range].iter().map(&f).collect()));
                     }
                 })
             })
@@ -150,22 +249,82 @@ pub fn bake(
             .map(|w| w.join().expect("a bake worker panicked"))
             .collect()
     });
+    let mut results = vec![R::default(); items.len()];
     for (start, values) in done.into_iter().flatten() {
-        light[start..start + values.len()].copy_from_slice(&values);
+        results[start..start + values.len()].copy_from_slice(&values);
     }
+    results
+}
 
-    let size = unwrapped.size;
-    let mut baked = Baked {
-        size,
-        light: vec![[0.0; 3]; (size * size) as usize],
-        filled: vec![false; (size * size) as usize],
+fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn luminance(c: [f32; 3]) -> f32 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
+/// Smooths Monte Carlo noise in bounced light: an à-trous filter (5 × 5
+/// B3-spline taps at strides 1, 2 and 4) that only reads texels of the same
+/// chart (`chart`, `u32::MAX` where none) and weighs each tap down by its
+/// relative difference in brightness, so seams, corners and real gradients
+/// stay. Brightness is compared after a 5 × 5 mean, so a lone dark or bright
+/// texel (noise) still blends. Each pass reads only the last.
+pub(crate) fn denoise(
+    size: u32,
+    chart: &[u32],
+    light: &[[f32; 3]],
+    threads: usize,
+) -> Vec<[f32; 3]> {
+    const KERNEL: [f32; 5] = [1.0 / 16.0, 1.0 / 4.0, 3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0];
+    // A tap 50% brighter or darker keeps e^-1 of its weight.
+    const SIGMA: f32 = 0.5;
+    let size = size as i64;
+    let texels: Vec<usize> = (0..chart.len()).filter(|&i| chart[i] != u32::MAX).collect();
+    // The same-chart texels within `reach` taps of `i`, `stride` apart.
+    let around = |i: usize, reach: i64, stride: i64| {
+        let (x, y) = (i as i64 % size, i as i64 / size);
+        (-reach..=reach)
+            .flat_map(move |dy| (-reach..=reach).map(move |dx| (dx, dy)))
+            .filter_map(move |(dx, dy)| {
+                let (qx, qy) = (x + dx * stride, y + dy * stride);
+                let inside = qx >= 0 && qy >= 0 && qx < size && qy < size;
+                let q = (qy * size + qx) as usize;
+                (inside && chart[q] == chart[i]).then_some((dx, dy, q))
+            })
     };
-    for (s, value) in samples.iter().zip(light) {
-        baked.light[s.texel as usize] = value;
-        baked.filled[s.texel as usize] = true;
+    let mut guide = vec![0.0f32; light.len()];
+    let means = par_map(&texels, threads, |&i| {
+        let (sum, count) = around(i, 2, 1).fold((0.0f32, 0.0f32), |(s, c), (_, _, q)| {
+            (s + luminance(light[q]), c + 1.0)
+        });
+        sum / count
+    });
+    for (&i, mean) in texels.iter().zip(means) {
+        guide[i] = mean;
     }
-    dilate(&mut baked, unwrapped, options.unwrap.padding);
-    Ok(baked)
+    let mut out = light.to_vec();
+    for stride in [1i64, 2, 4] {
+        let prev = out.clone();
+        let filtered = par_map(&texels, threads, |&i| {
+            let l = guide[i];
+            let (mut sum, mut total) = ([0.0f32; 3], 0.0f32);
+            for (dx, dy, q) in around(i, 2, stride) {
+                let lq = guide[q];
+                let relative = (l - lq).abs() / (SIGMA * 0.5 * (l + lq) + 1e-4);
+                let w = KERNEL[(dx + 2) as usize]
+                    * KERNEL[(dy + 2) as usize]
+                    * (-relative * relative).exp();
+                sum = add(sum, prev[q].map(|c| c * w));
+                total += w;
+            }
+            sum.map(|c| c / total)
+        });
+        for (&i, value) in texels.iter().zip(filtered) {
+            out[i] = value;
+        }
+    }
+    out
 }
 
 /// Each texel whose centre lies in one of its chart's triangles (the lowest
@@ -355,10 +514,13 @@ struct Scene<'a> {
     texels: Vec<[[f64; 2]; 3]>,
     size: u32,
     lights: &'a [Light],
+    /// Linear, per triangle.
+    albedo: &'a [[f32; 3]],
     /// Longer than any path through the scene (directional shadow rays).
     far: f32,
     ao_samples: u32,
     ao_distance: f32,
+    gi_samples: u32,
     seed: u64,
 }
 
@@ -373,6 +535,7 @@ impl<'a> Scene<'a> {
         triangles: &'a [[u32; 3]],
         unwrapped: &Unwrapped,
         lights: &'a [Light],
+        albedo: &'a [[f32; 3]],
         options: &BakeOptions,
     ) -> Result<Self, String> {
         // A parry trimesh BVH, as `Physics.trimesh` will build; one shared
@@ -402,9 +565,11 @@ impl<'a> Scene<'a> {
                 .collect(),
             size: unwrapped.size,
             lights,
+            albedo,
             far: diagonal * 2.0 + 1.0,
             ao_samples: options.ao_samples,
             ao_distance: options.ao_distance,
+            gi_samples: options.gi_samples,
             seed: options.seed,
         })
     }
@@ -463,17 +628,18 @@ impl<'a> Scene<'a> {
     }
 
     /// Linear light arriving at a texel, averaged over its sub-samples: each
-    /// light's `radiance × N·L × falloff`, shadowed if it casts shadows, plus
-    /// ambient × the unoccluded share.
-    fn light_at(&self, s: &Sample) -> [f32; 3] {
+    /// light's `radiance × N·L × falloff`, shadowed if it casts shadows; and
+    /// apart, ambient × the unoccluded share.
+    fn light_at(&self, s: &Sample) -> ([f32; 3], [f32; 3]) {
         let h = hash(self.seed, s.texel as u64);
         let points: [_; SUBSAMPLES] = std::array::from_fn(|j| self.point(s, j, h));
         let mut total = Vector::ZERO;
+        let mut ambient = Vector::ZERO;
         let mut occlusion = None;
         for light in self.lights {
             if let Light::Ambient { color, .. } = *light {
                 let open = *occlusion.get_or_insert_with(|| self.unoccluded(&points, h));
-                total += v(radiance(color, 1.0)) * open;
+                ambient += v(radiance(color, 1.0)) * open;
                 continue;
             }
             for &Point {
@@ -540,7 +706,74 @@ impl<'a> Scene<'a> {
                 total += v(color) * (ndotl * atten / SUBSAMPLES as f32);
             }
         }
-        total.to_array()
+        (total.to_array(), ambient.to_array())
+    }
+
+    /// Light reflected onto texel `s` by the surfaces around it, whose
+    /// incoming light is `lit`: the mean, over `gi_samples` cosine-weighted
+    /// rays, of the albedo × light where each first hits a front face. That
+    /// is a Lambertian bounce in the lightmap's units (the shader draws a
+    /// surface as albedo × light). Misses and back faces add nothing.
+    fn gather(&self, s: &Sample, lit: &Baked, bounce: u32) -> [f32; 3] {
+        let h = hash(self.seed, s.texel as u64);
+        let points: [_; SUBSAMPLES] = std::array::from_fn(|j| self.point(s, j, h));
+        // A rotation per texel and bounce, apart from occlusion's.
+        let r = hash(h, 16 + bounce as u64);
+        let (r1, r2) = (unit(r), unit(hash(r, 1)));
+        let n = self.gi_samples;
+        let mut sum = Vector::ZERO;
+        for k in 0..n {
+            let Point { origin, face, .. } = points[k as usize % SUBSAMPLES];
+            let dir = cosine_dir(face, k, n, r1, r2);
+            let Some((tri, weights)) = self.nearest(origin, dir, self.far) else {
+                continue;
+            };
+            let corners = self.triangles[tri as usize];
+            let [a, b, c] = corners.map(|i| v(self.positions[i as usize]));
+            let normal = (0..3).fold(Vector::ZERO, |acc, k| {
+                acc + v(self.normals[corners[k] as usize]) * weights[k]
+            });
+            let mut facing = (b - a).cross(c - a);
+            if facing.dot(normal) < 0.0 {
+                facing = -facing;
+            }
+            if facing.dot(dir) >= 0.0 {
+                continue;
+            }
+            let texels = self.texels[tri as usize];
+            let at = [0, 1].map(|k| (0..3).map(|j| texels[j][k] * weights[j] as f64).sum());
+            sum += v(self.albedo[tri as usize]) * v(bilinear(lit, at));
+        }
+        (sum / n as f32).to_array()
+    }
+
+    /// The first triangle along unit `dir` within `max`, and the hit's
+    /// barycentric weights. A tie (a ray through a shared edge) goes to the
+    /// lowest triangle, so hits don't depend on the BVH's layout.
+    fn nearest(&self, origin: Vector, dir: Vector, max: f32) -> Option<(u32, [f32; 3])> {
+        let ray = Ray::new(origin, dir);
+        let mut best: Option<(f32, u32, [f32; 3])> = None;
+        self.mesh.bvh().traverse(|node| {
+            let limit = best.map_or(max, |b| b.0);
+            if node.cast_ray(&ray, limit) > limit {
+                return TraversalAction::Prune;
+            }
+            if let Some(t) = node.leaf_data() {
+                let tri = self.mesh.triangle(t);
+                if let Some((hit, w)) =
+                    local_ray_intersection_with_triangle(tri.a, tri.b, tri.c, &ray)
+                {
+                    let toi = hit.time_of_impact;
+                    let better =
+                        best.map_or(toi <= max, |(bt, bi, _)| toi < bt || (toi == bt && t < bi));
+                    if better {
+                        best = Some((toi, t, w.to_array()));
+                    }
+                }
+            }
+            TraversalAction::Continue
+        });
+        best.map(|(_, t, w)| (t, w))
     }
 
     /// The share of `ao_samples` cosine-weighted rays, spread over the
@@ -555,16 +788,53 @@ impl<'a> Scene<'a> {
         let open = (0..n)
             .filter(|&k| {
                 let Point { origin, face, .. } = points[k as usize % SUBSAMPLES];
-                let (t, b) = basis(face);
-                let u1 = ((k as f32 + 0.5) / n as f32 + r1).fract();
-                let u2 = (radical_inverse(k) + r2).fract();
-                let (r, phi) = (u1.sqrt(), u2 * std::f32::consts::TAU);
-                let dir =
-                    t * (r * phi.cos()) + b * (r * phi.sin()) + face * (1.0 - u1).max(0.0).sqrt();
-                !self.blocked(origin, dir.normalize_or_zero(), self.ao_distance)
+                let dir = cosine_dir(face, k, n, r1, r2);
+                !self.blocked(origin, dir, self.ao_distance)
             })
             .count();
         open as f32 / n as f32
+    }
+}
+
+/// Direction `k` of `n` cosine-weighted about unit `face`: a Hammersley set
+/// rotated by `(r1, r2)` in [0, 1).
+fn cosine_dir(face: Vector, k: u32, n: u32, r1: f32, r2: f32) -> Vector {
+    let (t, b) = basis(face);
+    let u1 = ((k as f32 + 0.5) / n as f32 + r1).fract();
+    let u2 = (radical_inverse(k) + r2).fract();
+    let (r, phi) = (u1.sqrt(), u2 * std::f32::consts::TAU);
+    let dir = t * (r * phi.cos()) + b * (r * phi.sin()) + face * (1.0 - u1).max(0.0).sqrt();
+    dir.normalize_or_zero()
+}
+
+/// `lit` filtered bilinearly at `at`, in texels; background texels don't
+/// count.
+fn bilinear(lit: &Baked, at: [f64; 2]) -> [f32; 3] {
+    let size = lit.size as i64;
+    let (x, y) = (at[0] - 0.5, at[1] - 0.5);
+    let (x0, y0) = (x.floor() as i64, y.floor() as i64);
+    let (fx, fy) = ((x - x0 as f64) as f32, (y - y0 as f64) as f32);
+    let (mut sum, mut total) = ([0.0f32; 3], 0.0f32);
+    for (dx, dy, w) in [
+        (0, 0, (1.0 - fx) * (1.0 - fy)),
+        (1, 0, fx * (1.0 - fy)),
+        (0, 1, (1.0 - fx) * fy),
+        (1, 1, fx * fy),
+    ] {
+        let (qx, qy) = (x0 + dx, y0 + dy);
+        if qx < 0 || qy < 0 || qx >= size || qy >= size {
+            continue;
+        }
+        let q = (qy * size + qx) as usize;
+        if lit.filled[q] && w > 0.0 {
+            sum = add(sum, lit.light[q].map(|c| c * w));
+            total += w;
+        }
+    }
+    if total > 0.0 {
+        sum.map(|c| c / total)
+    } else {
+        [0.0; 3]
     }
 }
 
@@ -667,6 +937,8 @@ mod tests {
             },
             ao_samples,
             ao_distance: 1.0,
+            bounces: 0,
+            gi_samples: 64,
             seed: 7,
             threads: 4,
         }
@@ -678,7 +950,17 @@ mod tests {
         baked: Baked,
     }
 
+    /// Linear albedo: Cornell white, red and green.
+    const WHITE: [f32; 3] = [0.73, 0.73, 0.73];
+    const RED: [f32; 3] = [0.63, 0.065, 0.05];
+    const GREEN: [f32; 3] = [0.14, 0.45, 0.09];
+
     fn run(mesh: Mesh, lights: &[Light], options: BakeOptions) -> Bake {
+        let albedo = vec![WHITE; mesh.triangles.len()];
+        run_with(mesh, lights, &albedo, options)
+    }
+
+    fn run_with(mesh: Mesh, lights: &[Light], albedo: &[[f32; 3]], options: BakeOptions) -> Bake {
         let unwrapped = unwrap(&mesh.positions, &mesh.triangles, options.unwrap).unwrap();
         let baked = bake(
             &mesh.positions,
@@ -686,6 +968,7 @@ mod tests {
             &mesh.triangles,
             &unwrapped,
             lights,
+            albedo,
             &options,
         )
         .unwrap();
@@ -806,14 +1089,15 @@ mod tests {
         assert_eq!(b.near([-1.95, 0.0, -3.95], UP).0, [1.0; 3]);
     }
 
-    /// Same seed, same bytes at any thread count; another seed differs.
+    /// Same seed, same bytes at any thread count, bounces and denoising
+    /// included; another seed differs.
     #[test]
     fn bakes_are_deterministic() {
         let lights = [Light::ambient(0.3, 0.3, 0.3), lamp().cast_shadows()];
         let bytes = |threads, seed| {
             let mut o = options(16);
-            (o.threads, o.seed) = (threads, seed);
-            run(cornell(), &lights, o).baked.rgba8()
+            (o.threads, o.seed, o.bounces, o.gi_samples) = (threads, seed, 2, 16);
+            run(cornell(), &lights, o).baked.rgba8(1.0)
         };
         let one = bytes(1, 7);
         assert_eq!(one, bytes(8, 7));
@@ -828,7 +1112,7 @@ mod tests {
         let mut far = cornell();
         far.positions.push([10_000.0, 0.0, 0.0]);
         far.normals.push([0.0, 1.0, 0.0]);
-        let bytes = |m| run(m, &lights, options(16)).baked.rgba8();
+        let bytes = |m| run(m, &lights, options(16)).baked.rgba8(1.0);
         assert_eq!(bytes(far), bytes(cornell()));
     }
 
@@ -847,7 +1131,7 @@ mod tests {
             }
         }
         assert_eq!(b.baked.filled, inside);
-        let rgba = b.baked.rgba8();
+        let rgba = b.baked.rgba8(1.0);
         for (i, &inside) in inside.iter().enumerate() {
             let expected = if inside { [255; 4] } else { [0; 4] };
             assert_eq!(rgba[i * 4..i * 4 + 4], expected, "texel {i}");
@@ -868,10 +1152,201 @@ mod tests {
         }
     }
 
-    /// Bake times: the Cornell box at 32 texels a metre and 64 occlusion
-    /// rays, and medsci1's scale (~26k triangles) at 8 and 16. Timing only:
-    /// add `--config 'profile.dev.package.functor_runtime_common.opt-level=3'`
-    /// (and parry3d, glam), then `-- --ignored --nocapture`.
+    /// The Cornell box's albedo: red left wall, green right, white elsewhere.
+    fn cornell_albedo(m: &Mesh) -> Vec<[f32; 3]> {
+        (0..m.triangles.len())
+            .map(|t| match t / 2 {
+                3 => RED,
+                4 => GREEN,
+                _ => WHITE,
+            })
+            .collect()
+    }
+
+    /// Bounced light takes the colour of what it bounced off: in the box
+    /// without its block, under a lamp at mid-height, the floor beside the
+    /// red wall turns red and beside the green wall green (whose albedo is a
+    /// third as saturated). With no bounce, the white lamp's light stays white.
+    #[test]
+    fn bounced_light_takes_the_walls_colour() {
+        let room = || {
+            let mut m = cornell();
+            m.triangles.truncate(10);
+            m
+        };
+        let lights = [Light::point(0.0, 1.5, -2.0, 1.0, 1.0, 1.0, 1.0, 6.0)];
+        let albedo = &cornell_albedo(&cornell())[..10];
+        let mut o = options(0);
+        o.bounces = 1;
+        let b = run_with(room(), &lights, albedo, o);
+        let (left, _) = b.near([-1.9, 0.0, -1.0], UP);
+        let (right, _) = b.near([1.9, 0.0, -1.0], UP);
+        assert!(left[0] / left[1] > 1.15, "beside red: {left:?}");
+        assert!(right[1] / right[0] > 1.05, "beside green: {right:?}");
+        o.bounces = 0;
+        let b = run_with(room(), &lights, albedo, o);
+        let (left, _) = b.near([-1.9, 0.0, -1.0], UP);
+        assert_eq!(left[0], left[1], "direct only: {left:?}");
+    }
+
+    /// Each bounce adds light, less each time (albedo < 1), so the total
+    /// converges.
+    #[test]
+    fn bounces_add_less_and_less() {
+        let lights = [lamp().cast_shadows()];
+        let total = |bounces| {
+            let mut o = options(0);
+            (o.bounces, o.gi_samples) = (bounces, 32);
+            let b = run(cornell(), &lights, o);
+            b.baked.light.iter().map(|c| luminance(*c)).sum::<f32>()
+        };
+        let totals: Vec<f32> = (0..=4).map(total).collect();
+        let steps: Vec<f32> = totals.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(steps.iter().all(|&d| d > 0.0), "{totals:?}");
+        assert!(steps.windows(2).all(|d| d[1] < d[0]), "{totals:?}");
+        assert!(steps[3] < 0.3 * steps[0], "{totals:?}");
+    }
+
+    /// Denoising averages within a chart and never reads across one: a
+    /// bright chart beside a noisy dark one stays as it was, the dark one
+    /// gets smoother but no brighter, and texels of no chart aren't read.
+    #[test]
+    fn denoise_stays_within_its_chart() {
+        let size = 16u32;
+        let n = (size * size) as usize;
+        let chart: Vec<u32> = (0..n)
+            .map(|i| match i % 16 {
+                15 => u32::MAX,
+                x if x < 8 => 0,
+                _ => 1,
+            })
+            .collect();
+        let light: Vec<[f32; 3]> = (0..n)
+            .map(|i| match chart[i] {
+                0 => [1.0; 3],
+                1 => [0.1 + 0.05 * (unit(hash(3, i as u64)) - 0.5); 3],
+                _ => [100.0; 3],
+            })
+            .collect();
+        let out = denoise(size, &chart, &light, 2);
+        let spread = |values: &[[f32; 3]]| {
+            let dark: Vec<f32> = (0..n)
+                .filter(|&i| chart[i] == 1)
+                .map(|i| values[i][0])
+                .collect();
+            let mean = dark.iter().sum::<f32>() / dark.len() as f32;
+            let max = dark.iter().cloned().fold(0.0, f32::max);
+            (
+                dark.iter().map(|d| (d - mean).powi(2)).sum::<f32>() / dark.len() as f32,
+                max,
+            )
+        };
+        for i in 0..n {
+            match chart[i] {
+                0 => assert!(
+                    (out[i][0] - 1.0).abs() < 1e-6,
+                    "bright texel {i}: {:?}",
+                    out[i]
+                ),
+                u32::MAX => assert_eq!(out[i], light[i]),
+                _ => {}
+            }
+        }
+        let (before, _) = spread(&light);
+        let (after, max) = spread(&out);
+        assert!(max < 0.125, "the dark chart read the bright one: {max}");
+        assert!(after < 0.25 * before, "{after} vs {before}");
+    }
+
+    /// Sparse noise (a gather that missed every lit surface) blends in: a
+    /// chart at 0.1 with one texel in eight at 0 comes out with no texel
+    /// under 0.07.
+    #[test]
+    fn denoise_blends_sparse_speckles() {
+        let size = 16u32;
+        let n = (size * size) as usize;
+        let light: Vec<[f32; 3]> = (0..n)
+            .map(|i| {
+                if hash(5, i as u64) % 8 == 0 {
+                    [0.0; 3]
+                } else {
+                    [0.1; 3]
+                }
+            })
+            .collect();
+        assert!(light.iter().any(|c| c[0] == 0.0));
+        let out = denoise(size, &vec![0; n], &light, 2);
+        let min = out.iter().map(|c| c[0]).fold(1.0, f32::min);
+        assert!(min > 0.07, "{min}");
+    }
+
+    /// sRGB bytes keep the darks: a 0–0.1 linear ramp gets over three times
+    /// as many levels as linear bytes would give, and `scale` divides
+    /// before encoding.
+    #[test]
+    fn srgb_encoding_keeps_dark_steps() {
+        let ramp = Baked {
+            size: 32,
+            light: (0..1024).map(|i| [0.1 * i as f32 / 1023.0; 3]).collect(),
+            filled: vec![true; 1024],
+        };
+        let levels = |bytes: Vec<u8>| {
+            let mut red: Vec<u8> = bytes.chunks(4).map(|p| p[0]).collect();
+            red.dedup();
+            red.len()
+        };
+        let linear = levels(
+            ramp.light
+                .iter()
+                .flat_map(|c| [(c[0] * 255.0).round() as u8, 0, 0, 255])
+                .collect(),
+        );
+        let srgb = levels(ramp.rgba8(1.0));
+        assert_eq!(linear, 27);
+        assert!(srgb > 3 * linear, "{srgb} levels vs {linear}");
+        // Halved by `scale` 2, then decoded: 1.0 is stored as linear 0.5.
+        let one = Baked {
+            size: 1,
+            light: vec![[1.0; 3]],
+            filled: vec![true],
+        };
+        let byte = one.rgba8(2.0)[0];
+        assert!(
+            (crate::color_space::srgb_u8_to_linear(byte) - 0.5).abs() < 0.005,
+            "{byte}"
+        );
+    }
+
+    /// A ray through the edge two triangles share hits the lower one,
+    /// whichever order the mesh lists them in.
+    #[test]
+    fn nearest_hit_ties_go_to_the_lowest_triangle() {
+        for flip in [false, true] {
+            let mut m = Mesh::default();
+            m.quad([-1.0, 0.0, 1.0], [2.0, 0.0, 0.0], [0.0, 0.0, -2.0]);
+            if flip {
+                m.triangles.swap(0, 1);
+            }
+            let o = options(0);
+            let u = unwrap(&m.positions, &m.triangles, o.unwrap).unwrap();
+            let albedo = [WHITE; 2];
+            let scene =
+                Scene::new(&m.positions, &m.normals, &m.triangles, &u, &[], &albedo, &o).unwrap();
+            // (0, 0, 0) is on the shared diagonal.
+            let hit = scene.nearest(
+                Vector::new(0.0, 1.0, 0.0),
+                Vector::new(0.0, -1.0, 0.0),
+                10.0,
+            );
+            assert_eq!(hit.map(|h| h.0), Some(0), "flipped: {flip}");
+        }
+    }
+
+    /// Bake times: the Cornell box at 32 texels a metre and medsci1's scale
+    /// (~26k triangles) at 8 and 16, each direct only and with bounces.
+    /// Timing only: add `--config
+    /// 'profile.dev.package.functor_runtime_common.opt-level=3'` (and parry3d,
+    /// glam), then `-- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn bake_times() {
@@ -879,8 +1354,7 @@ mod tests {
         let time = |name: &str,
                     (positions, normals, triangles): (&[[f32; 3]], &[[f32; 3]], &[[u32; 3]]),
                     lights: &[Light],
-                    tpm: f64,
-                    ao: u32| {
+                    (tpm, ao, bounces, gi): (f64, u32, u32, u32)| {
             let o = BakeOptions {
                 unwrap: UnwrapOptions {
                     texels_per_meter: tpm,
@@ -888,15 +1362,18 @@ mod tests {
                     max_size: 4096,
                 },
                 ao_samples: ao,
+                bounces,
+                gi_samples: gi,
                 threads,
                 ..options(0)
             };
+            let albedo = vec![WHITE; triangles.len()];
             let start = std::time::Instant::now();
             let u = unwrap(positions, triangles, o.unwrap).unwrap();
             let unwrapped = start.elapsed();
-            bake(positions, normals, triangles, &u, lights, &o).unwrap();
+            bake(positions, normals, triangles, &u, lights, &albedo, &o).unwrap();
             eprintln!(
-                "{name}: {} triangles, {} charts, {s}×{s}, {} texels, {} lights, {ao} AO rays, {threads} threads: unwrap {unwrapped:?}, total {:?}",
+                "{name}: {} triangles, {} charts, {s}×{s}, {} texels, {} lights, {ao} AO rays, {bounces} bounces × {gi} rays, {threads} threads: unwrap {unwrapped:?}, total {:?}",
                 triangles.len(),
                 u.charts.len(),
                 rasterize(&u).len(),
@@ -905,16 +1382,6 @@ mod tests {
                 s = u.size,
             );
         };
-        let box_lights = [Light::ambient(0.3, 0.3, 0.3), lamp().cast_shadows()];
-        let m = cornell();
-        time(
-            "cornell",
-            (&m.positions, &m.normals, &m.triangles),
-            &box_lights,
-            32.0,
-            64,
-        );
-
         let (positions, triangles) = super::super::unwrap::tests::level(72);
         let normals = triangles
             .iter()
@@ -930,14 +1397,24 @@ mod tests {
             })
             .chain([Light::ambient(0.2, 0.2, 0.25)])
             .collect();
-        for (tpm, ao) in [(8.0, 16), (16.0, 64)] {
+        let level = (&positions[..], &normals[..], &triangles[..]);
+        let box_lights = [Light::ambient(0.3, 0.3, 0.3), lamp().cast_shadows()];
+        let m = cornell();
+        for setting in [(32.0, 64, 0, 0), (32.0, 64, 1, 64), (32.0, 64, 2, 64)] {
             time(
-                "level",
-                (&positions, &normals, &triangles),
-                &lights,
-                tpm,
-                ao,
+                "cornell",
+                (&m.positions, &m.normals, &m.triangles),
+                &box_lights,
+                setting,
             );
+        }
+        for setting in [
+            (8.0, 16, 0, 0),
+            (8.0, 16, 1, 32),
+            (16.0, 64, 0, 0),
+            (16.0, 64, 1, 32),
+        ] {
+            time("level", level, &lights, setting);
         }
     }
 }

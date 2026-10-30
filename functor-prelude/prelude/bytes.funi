@@ -6,7 +6,7 @@
 //! error into a located one.
 //!
 //! ```
-//! let data = File.bytes("data/model.bin")
+//! let data = "data/model.bin" |> Path.of |> File.bytes
 //! let count = Bytes.u32le(4.0, data) |> Binary.require
 //! ```
 

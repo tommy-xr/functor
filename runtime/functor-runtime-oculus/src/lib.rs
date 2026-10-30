@@ -817,7 +817,10 @@ fn service_debug_request(
                     cells,
                     stages,
                     build: Some(BUILD_LABEL.to_string()),
-                    xr,
+                    xr: xr.map(|mut xr| {
+                        xr.mesh = xr.mesh.with_colliders();
+                        xr
+                    }),
                 });
             });
         }
@@ -1412,6 +1415,7 @@ pub fn android_main(app: AndroidApp) {
     let mut lockstep = true;
     let mut preloads = Vec::new();
     let mut heightmap_mirror = functor_runtime_common::sim_driver::HeightmapMirror::default();
+    let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
     let mut shown: Option<SimSnapshot> = None;
     // The `settings` foveation level last applied (`None` = the default).
     let mut applied_foveation: Option<FoveationLevel> = None;
@@ -1653,6 +1657,7 @@ pub fn android_main(app: AndroidApp) {
             dts: 0.0,
             tts: clock.current_tts(),
         };
+        let alpha = clock.alpha();
 
         // The game produces this frame (sampledInput → subscriptions → update
         // → tick → physics inside `tick`; `render` = the pure `draw`).
@@ -1673,6 +1678,12 @@ pub fn android_main(app: AndroidApp) {
         }
         let loads_pending = scene_context.has_pending_loads();
         feedback |= heightmap_mirror.sync(&mut sim);
+        // The room the last render fused, for `Physics.fusedRoom`.
+        fused_room_mirror.sync(
+            &mut sim,
+            &scene_context,
+            shown.as_ref().is_some_and(|s| s.wants_fused_room),
+        );
         for sub_frame in &sub_frames {
             if caps.samples_input || sim.is_threaded() {
                 debug.input_edges.apply_to(&mut debug.input);
@@ -1687,6 +1698,7 @@ pub fn android_main(app: AndroidApp) {
         let fresh = sim.frame(
             FrameRequest {
                 time: frame_time,
+                alpha,
                 ui: false,
                 webview: false,
                 audio_scene: false,
@@ -1721,6 +1733,7 @@ pub fn android_main(app: AndroidApp) {
             ),
         );
         scene_context.set_passthrough_composited(passthrough.composited());
+        scene_context.set_fused_room_wanted(snapshot.wants_fused_room);
         // Likewise the depth provider while `config` asks for `Xr.scene`.
         environment_depth.update(
             &session,

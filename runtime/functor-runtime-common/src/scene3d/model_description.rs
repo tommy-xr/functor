@@ -34,6 +34,8 @@ pub enum MeshOverride {
         deserialize_with = "deserialize_matrix"
     )]
     Transform(Matrix4<f32>),
+    /// `Scene.withLightmap`: a static model's lightmap texture for this draw.
+    Lightmap(super::TextureDescription),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

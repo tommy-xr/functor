@@ -11,6 +11,7 @@ use crate::TrackingPose;
 /// capabilities into stringly-typed maps or adding target-specific producer
 /// methods.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct InputSnapshot {
     /// Keys currently held, in canonical discriminant order.
     pub held_keys: Vec<Key>,
@@ -29,6 +30,7 @@ pub struct InputSnapshot {
     ///
     /// Omitted rather than serialized as `null` on non-XR targets, preserving
     /// the existing desktop `/state` wire shape.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xr: Option<XrInputSnapshot>,
     /// Live state of the primary connected gamepad when the target supplies
@@ -36,6 +38,7 @@ pub struct InputSnapshot {
     /// can key control hints off it.
     ///
     /// Omitted rather than serialized as `null` when absent, like `xr`.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamepad: Option<GamepadSnapshot>,
     /// Live touch contacts when the target supplies them. `Some` signals
@@ -48,6 +51,7 @@ pub struct InputSnapshot {
     /// debug-injected.
     ///
     /// Omitted rather than serialized as `null` when absent, like `xr`.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub touch: Option<TouchSnapshot>,
 }
@@ -58,6 +62,7 @@ pub struct InputSnapshot {
 /// ordinal stable for the contact's lifetime — shells remap the platform's
 /// arbitrary identifiers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default, deny_unknown_fields)]
 pub struct TouchPoint {
     pub id: u32,
@@ -76,6 +81,7 @@ pub struct TouchPoint {
 /// (the platform stole the gesture) reports through `released` — a touch
 /// never leaks held.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default, deny_unknown_fields)]
 pub struct TouchSnapshot {
     pub touches: Vec<TouchPoint>,
@@ -85,6 +91,7 @@ pub struct TouchSnapshot {
 
 /// One touch contact transition at the shell boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum TouchPhase {
     /// A new contact landed.
@@ -121,6 +128,7 @@ impl TouchPhase {
 /// the extent beside the position makes pointer mapping independent of
 /// framebuffer/Retina scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MouseSnapshot {
     pub x: i32,
     pub y: i32,
@@ -152,6 +160,7 @@ pub struct MouseSnapshot {
 /// `snapshot.mouse.pressed.left`) rather than iterating them. Further buttons
 /// (back/forward) can join as sibling fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct MouseButtons {
     pub left: bool,
     pub right: bool,
@@ -444,6 +453,7 @@ pub fn apply_touch_transition(
 /// inactive), so a debug-injected sample (`POST /input` `{"type":"xr",…}`) can
 /// name only the hand and controls it drives.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default, deny_unknown_fields)]
 pub struct XrInputSnapshot {
     /// Center-eye pose relative to the rig reference.
@@ -458,6 +468,7 @@ pub struct XrInputSnapshot {
 /// hand. Each pose is independently optional because OpenXR may have buttons
 /// while positional tracking is temporarily invalid.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default, deny_unknown_fields)]
 pub struct XrControllerSnapshot {
     pub active: bool,
@@ -500,6 +511,7 @@ pub struct XrControllerSnapshot {
 /// (`POST /input` `{"type":"gamepad",…}`) can name only the controls it
 /// drives.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default, deny_unknown_fields)]
 pub struct GamepadSnapshot {
     pub left_stick: [f32; 2],
@@ -625,6 +637,7 @@ impl GamepadSnapshot {
 /// `Input.ofKeyCode` — keep the two in sync when adding keys.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Key {
     Unknown = 0,
     A = 1,

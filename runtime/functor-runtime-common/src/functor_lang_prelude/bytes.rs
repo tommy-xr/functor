@@ -6,6 +6,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use super::path::FunctorLangPath;
 use super::*;
 
 /// An immutable byte range; slices share the underlying storage.
@@ -90,15 +91,19 @@ pub fn hide_files_under(dir: &std::path::Path) {
     *HIDDEN.lock().unwrap_or_else(|e| e.into_inner()) = std::fs::canonicalize(dir).ok();
 }
 
-/// The bytes of a file in the project (the entry file's folder). `api` and
-/// `example` shape the errors: `Typeface.file("…"): use a path inside the
-/// project, like "fonts/MyFont.ttf"`.
-pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<Arc<[u8]>, String> {
+/// The bytes of a file in the project (the entry file's folder). `path` is
+/// already [`super::path::resolve`]d; `api` names the call in errors.
+pub(super) fn read_project_file(api: &str, path: &str) -> Result<Arc<[u8]>, String> {
+    let read = read_project_file_untracked(api, path);
+    note_file_read(|| (format!("{READ}{path}"), read_identity(&read)));
+    read
+}
+
+fn read_project_file_untracked(api: &str, path: &str) -> Result<Arc<[u8]>, String> {
     use crate::storage::ProjectReadError;
-    let outside = || format!("{api}({path:?}): use a path inside the project, like {example:?}");
-    // The same portable rule as project assets; the platform's reader keeps
-    // symlinks from reaching outside too.
-    crate::debug_protocol::validate_project_asset_path(path).map_err(|_| outside())?;
+    if path.is_empty() {
+        return Err(format!("{api}: the project root is a folder, not a file"));
+    }
     if is_hidden(path) {
         return Err(format!("{api}: {path} is hidden while `functor bake` rewrites it"));
     }
@@ -109,17 +114,52 @@ pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<
         )
     })?;
     reader.read(path).map_err(|e| match e {
-        ProjectReadError::Outside => outside(),
+        // The platform's reader keeps symlinks from reaching outside.
+        ProjectReadError::Outside => {
+            format!("{api}({path:?}): a symlink out of the project — use a path inside the project")
+        }
         ProjectReadError::Unreadable(e) => format!("{api}: can't read {path} in the project ({e})"),
     })
 }
 
-/// Whether `path` names a file in the project (false for paths outside it,
-/// and on hosts that can't read project files).
+/// Whether the [`super::path::resolve`]d `path` names a file in the project
+/// (false for the root, and on hosts that can't read project files).
 fn project_file_exists(path: &str) -> bool {
-    crate::debug_protocol::validate_project_asset_path(path).is_ok()
+    let exists = project_file_exists_untracked(path);
+    note_file_read(|| (format!("{EXISTS}{path}"), exists as u64));
+    exists
+}
+
+fn project_file_exists_untracked(path: &str) -> bool {
+    !path.is_empty()
         && crate::storage::project_reader().is_some_and(|reader| reader.exists(path))
         && !is_hidden(path)
+}
+
+/// [`functor_lang::reuse::HostInput`] key prefixes: a file's contents, and
+/// whether it exists.
+const READ: &str = "read:";
+const EXISTS: &str = "exists:";
+
+/// A read's identity: a content hash, or 0 for a failed read.
+fn read_identity(read: &Result<Arc<[u8]>, String>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    read.as_ref().map_or(0, |data| {
+        let mut hasher = std::hash::DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish() | 1
+    })
+}
+
+/// Whether a project-file input still reads the same; `None` for a key that
+/// isn't one.
+pub(super) fn file_input_current(input: &functor_lang::reuse::HostInput) -> Option<bool> {
+    if let Some(path) = input.key.strip_prefix(READ) {
+        let read = read_project_file_untracked("File.bytes", path);
+        return Some(read_identity(&read) == input.identity);
+    }
+    let path = input.key.strip_prefix(EXISTS)?;
+    Some(project_file_exists_untracked(path) as u64 == input.identity)
 }
 
 /// Whether `path` resolves into the [`HIDDEN`] folder.
@@ -287,12 +327,12 @@ macro_rules! writer {
 }
 
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
-    reg.fn1("File.bytes", "File.bytes(path)", |path: String| {
-        read_project_file("File.bytes", &path, "data/model.bin")
+    reg.fn1("File.bytes", "File.bytes(path)", |path: FunctorLangPath| {
+        read_project_file("File.bytes", &path.0)
             .map(|data| FunctorLangBytes(ByteView::from_shared(data)))
     });
-    reg.fn1("File.exists", "File.exists(path)", |path: String| {
-        Value::Bool(project_file_exists(&path))
+    reg.fn1("File.exists", "File.exists(path)", |path: FunctorLangPath| {
+        Value::Bool(project_file_exists(&path.0))
     });
     reg.fn1(
         "Bytes.length",
