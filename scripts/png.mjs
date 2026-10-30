@@ -21,12 +21,12 @@ const chunk = (name, data) => {
 };
 
 /**
- * Encode raw, unfiltered big-endian samples. `colorType` 0 = grey, 2 = RGB.
+ * Encode raw, unfiltered big-endian samples. `colorType` 0 = grey, 2 = RGB, 6 = RGBA.
  * Every row uses the "Up" filter (each byte minus the one above): smooth images
  * make those differences small, so they deflate much tighter than raw rows.
  */
 export function encodePng(width, height, bitDepth, colorType, pixels) {
-  const channels = { 0: 1, 2: 3 }[colorType];
+  const channels = { 0: 1, 2: 3, 6: 4 }[colorType];
   const stride = (width * channels * bitDepth) / 8;
   const raw = Buffer.alloc((stride + 1) * height);
   for (let y = 0; y < height; y += 1) {
