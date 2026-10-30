@@ -1,0 +1,9 @@
+# Get on: walk up to the parked bike's side, stop near the seat, press E. The
+# goldens catch the "E to ride" card, the black step of the fade, and the
+# rider seated after it.
+#   functor -d examples/hoverbike run native -- --input-script mount.script \
+#     --capture-frame /tmp/f.png --capture-at-frame 115 --capture-size 1600x1200
+10 W down
+100 W up
+120 E down
+121 E up

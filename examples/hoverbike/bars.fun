@@ -27,6 +27,8 @@ let rightGrip: Input.point3 = { x: -gripSpan, y: gripHeight, z: gripForward }
 // below.
 let seatedEye: Input.point3 = { x: 0.0, y: 1.4, z: 0.15 }
 let standingEye: Input.point3 = { seatedEye with y: 1.62 }
+// On foot the frame is the walker's, and the eye is its standing eye.
+let footEye = Walk.eye
 
 // ---- Calibration ---------------------------------------------------------
 
@@ -146,6 +148,9 @@ type Buttons = { menu: bool, stance: bool, strength: bool, turning: bool, respaw
 type Rider = {
   // A headset sample arrived this step.
   present: bool,
+  // On the bike: points are in the bike's frame and the hands can latch.
+  // On foot they are in the walker's.
+  mounted: bool,
   calibration: Calibration,
   standing: bool,
   // A calibration is wanted: one is taken once head and bike are still,
@@ -171,6 +176,7 @@ type Rider = {
 
 let rider: Rider = {
   present: false,
+  mounted: false,
   calibration: uncalibrated,
   standing: false,
   pending: true,
@@ -194,7 +200,19 @@ let absent = (r: Rider): Rider =>
   { r with present: false, pending: true, still: 0.0, left: loose, right: loose, armed: false, steer: 0.0,
            snap: idleSnap }
 
-let eyeOf = (r: Rider) => if r.standing then standingEye else seatedEye
+// Getting on, at the black of the fade: points move to the bike's frame, and
+// the hand whose grab mounted (1 left, -1 right, 0 none) stays latched while
+// it squeezes. Power still waits for both grips and a released throttle.
+let mountOn = (hand: float, r: Rider): Rider =>
+  { r with mounted: true, armed: false, steer: 0.0, snap: idleSnap,
+           left: { r.left with latched: hand > 0.0 }, right: { r.right with latched: hand < 0.0 } }
+
+// Getting off: the hands let go.
+let dismount = (r: Rider): Rider =>
+  { r with mounted: false, armed: false, steer: 0.0, snap: idleSnap,
+           left: { r.left with latched: false }, right: { r.right with latched: false } }
+
+let eyeOf = (r: Rider) => if not r.mounted then footEye else if r.standing then standingEye else seatedEye
 
 let sampleDt = 1.0 / 60.0 // `read` runs once per fixed step
 
@@ -223,9 +241,9 @@ let read = (atRest: bool, x: Input.xr, r: Rider): (Rider, Ride.Controls) =>
   let calibrate = wanted && still >= calibrateAfter - 0.000001 in
   let pending = wanted && not calibrate in
   let calibration = if calibrate then anchor else r.calibration in
-  let eye = if standing then standingEye else seatedEye in
-  let left = hand(calibration, eye, leftGrip, not pending, x.left, r.left) in
-  let right = hand(calibration, eye, rightGrip, not pending, x.right, r.right) in
+  let eye = eyeOf({ r with standing: standing }) in
+  let left = hand(calibration, eye, leftGrip, r.mounted && not pending, x.left, r.left) in
+  let right = hand(calibration, eye, rightGrip, r.mounted && not pending, x.right, r.right) in
   let armed = left.latched && right.latched && (r.armed || x.right.trigger < triggerRest) in
   let angle = barAngle(left.at, right.at) in
   let neutral = if armed && not r.armed then angle else r.neutral in
@@ -285,23 +303,30 @@ let snapping = (r: Rider, speed: float) => r.present && r.stepped && speed < ste
 // float sum of the steps, so the turn lands on the black step.)
 let black = (t: float) => t >= fadeOut - 0.000001
 
+// One step of a fade `t` in: the next `t` (-1 once faded back in) and
+// whether this is the step it went black. Mounting and dismounting
+// (`mount.fun`) fade the same way.
+let fadeStep = (dt: float, t: float): (float, bool) =>
+  let next = t + dt in
+  ((if next >= fadeOut + fadeIn then -1.0 else next), not black(t) && black(next))
+
 // One step of a snap: the next state, and the yaw to turn the bike by this
 // step (the snap's angle on the step the fade goes black, else 0).
 let turn = (active: bool, steer: float, dt: float, s: Snap): (Snap, float) =>
   if s.t >= 0.0 then
-    let t = s.t + dt in
-    ((if t >= fadeOut + fadeIn then { s with t: -1.0 } else { s with t: t }),
-     if not black(s.t) && black(t) then s.angle else 0.0)
+    let (t, went) = fadeStep(dt, s.t) in
+    ({ s with t: t }, if went then s.angle else 0.0)
   else
     let ready = s.ready || Math.abs(steer) < snapOff in
     if active && ready && Math.abs(steer) > snapOn then ({ t: 0.0, angle: Math.sign(steer) * snapAngle, ready: false }, 0.0)
     else ({ s with ready: ready }, 0.0)
 
-// How black the snap's fade is, 0..1.
-let fade = (s: Snap): float =>
-  if s.t < 0.0 then 0.0
-  else if not black(s.t) then s.t / fadeOut
-  else Math.clamp01(1.0 - (s.t - fadeOut) / fadeIn)
+// How black a fade `t` in is, 0..1.
+let fadeAt = (t: float): float =>
+  if t < 0.0 then 0.0
+  else if not black(t) then t / fadeOut
+  else Math.clamp01(1.0 - (t - fadeOut) / fadeIn)
+let fade = (s: Snap): float => fadeAt(s.t)
 
 // Turn the bike's heading and velocity together by `angle`.
 let rotate = (angle: float, s: Ride.State): Ride.State =>
@@ -336,8 +361,8 @@ let open = sample(0.0, 0.0, 0.0, 0.0)
 let feed = (samples: List<Input.xr>, r: Rider): (Rider, Ride.Controls) =>
   samples |> List.fold((acc, x) => let (r1, _) = acc in read(true, x, r1), (r, Ride.idle))
 let repeat = (n: float, x: Input.xr) => List.range(n) |> List.map((i) => x)
-// Settled: calibrated after holding still, hands open on the grips.
-let settled = let (r, _) = feed(repeat(40.0, open), rider) in r
+// Settled on the bike: calibrated after holding still, hands open on the grips.
+let settled = let (r, _) = feed(repeat(40.0, open), { rider with mounted: true }) in r
 let riderOf = (rc: (Rider, Ride.Controls)) => let (r, _) = rc in r
 let controlsOf = (rc: (Rider, Ride.Controls)) => let (_, c) = rc in c
 // Grab both grips from settled, then hold this sample.
@@ -545,3 +570,21 @@ expect (
   Math.abs(s.vx - 2.0 * Math.sin(snapAngle)) < 0.000001 && Math.abs(s.vz - 2.0 * Math.cos(snapAngle)) < 0.000001
     && s.yaw == snapAngle
 )
+
+// Getting on and off.
+let onFoot = riderOf(feed(repeat(40.0, open), rider))
+// On foot nothing latches, even a fresh squeeze at a grip.
+expect (
+  let r = riderOf(feed([gripping(0.0, 0.0)], onFoot)) in
+  not r.mounted && not r.pending && not r.left.latched && not r.right.latched
+)
+// Mounted by the left hand's grab: it stays latched while it squeezes, the
+// right latches on a fresh grab, and power waits for both.
+expect (
+  let foot = riderOf(feed([sample(0.0, 1.0, 0.0, 0.0)], onFoot)) in
+  let (r1, c1) = read(true, sample(0.0, 1.0, 0.0, 0.0), mountOn(1.0, foot)) in
+  let r2 = riderOf(read(true, gripping(0.0, 0.0), r1)) in
+  r1.mounted && r1.left.latched && not r1.right.latched && not r1.armed && c1.throttle == 0.0 && r2.armed
+)
+// Getting off lets go.
+expect (let r = dismount(riderOf(ride(1.0, gripping(0.0, 0.0)))) in not r.mounted && not r.left.latched && not r.armed)
