@@ -30,13 +30,13 @@ pass or stop for. Posts mark the lane, amber over the crest.
 
 - **Generated.** `generate-dunes.mjs` (seed 42) writes the 16-bit
   `dunes.png` and `dunesLayout.fun`, the constants the game places things
-  with (pad, crest, block, posts on the ground). Rerunning it reproduces both
-  byte for byte.
+  with (pad, crest, block, posts on the ground). Rerunning it (same Node)
+  reproduces both byte for byte.
 - **Resolution.** 1025² samples over 1 km is ~0.98 m a cell: the finest
   `Physics.heightfield` keeps (1025 per axis), and about the bike's emitter
   footprint (0.9 × 1.5 m). The 4 km terrain's ~4 m cells would facet slopes
   into steps that kick the hover springs.
-- **Gentle.** Grades stay under 7.4%. Climbing, the springs ride low by
+- **Gentle.** Grades stay under 8.4% (6.8% on the lane). Climbing, the springs ride low by
   `springDamping × climb rate / springRate` (an expect checks this against an
   inclined plane): 0.66 m clearance at top speed on 8%, never near the ground.
 - **One descriptor.** `Scene.terrain` and `Physics.heightfield` share
@@ -44,11 +44,13 @@ pass or stop for. Posts mark the lane, amber over the crest.
 - **Readiness.** After every spawn, riding waits until all four probes see
   ground. On a cold load the heightfield's collider appears only once its PNG
   decodes; until then the bike holds still instead of falling.
-- **Boundary.** Past 440 m on either axis the throttle cuts out, outward
+- **Boundary.** Past 440 m on either axis, thrust outward cuts out, outward
   speed brakes and a spring pulls the bike back. It stops within 25 m; the
-  terrain runs on to 500 m.
+  terrain runs on to 500 m. Facing back in, the throttle still works.
 - **Rendering.** Fog closes the view at 420 m, inside a 450 m far plane;
-  `Terrain.maxPixelError(4)`, a few dozen instanced posts, no shadows.
+  `Terrain.maxPixelError(4)`, a few dozen instanced posts, no shadows. A low
+  side sun and height bands keyed to the dunes (pale sand from 4 m) make the
+  gentle relief read.
 
 ## How it works
 

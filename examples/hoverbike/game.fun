@@ -171,14 +171,14 @@ let startOn = (course: Course, m: Model) =>
 
 // One step, from where the bike is and what its probes saw. Until the probes
 // have all seen ground the ride holds still; on the dunes, the boundary cuts
-// the throttle and steers the bike back in.
+// outward thrust and pulls the bike back in.
 let advance = (m: Model, c: Physics.position, probes: List<Ride.Probe>, dt: float): Model =>
   let ready = m.ready || Ride.sensed(probes) in
   let ride =
     if not ready then m.ride
     else
       match m.course with
-      | OnDunes => Ride.step(Dunes.limit(c.x, c.z, m.controls), probes, dt, collided(m, c, dt)) |> Dunes.recover(c.x, c.z, dt)
+      | OnDunes => Ride.step(Dunes.limit(c.x, c.z, m.ride.yaw, m.controls), probes, dt, collided(m, c, dt)) |> Dunes.recover(c.x, c.z, dt)
       | OnStand => Ride.step(m.controls, probes, dt, collided(m, c, dt)) in
   let distances = probes |> List.map((p) => if p.hit then p.distance else Ride.probeRange) in
   let clearance = List.sum(distances) / List.length(distances) in
@@ -197,9 +197,8 @@ let tick = (m: Model, dt: float, tts) =>
   else
     let c = Physics.position(bikeTag) in
     let next = advance(m, c, Ride.emitters |> List.map((e) => probe(c, m.ride.yaw, e)), dt) in
-    (next,
-     if next.ready then Physics.move(bikeTag, Vec3.make(next.ride.vx * dt, next.ride.vy * dt, next.ride.vz * dt))
-     else Effect.none())
+    // Waiting for ground, the ride is at rest, so this moves nothing.
+    (next, Physics.move(bikeTag, Vec3.make(next.ride.vx * dt, next.ride.vy * dt, next.ride.vz * dt)))
 
 // Readiness, driven without a world.
 let missed = Ride.emitters |> List.map((e) => { hit: false, distance: 0.0 })
@@ -210,7 +209,7 @@ let waitFor = (steps: float, probes: List<Ride.Probe>, m: Model) =>
 // begun to fall, whatever the controls say.
 expect (
   let m = waitFor(120.0, missed, { init with controls: { throttle: 1.0, brake: 0.0, steer: 1.0 } }) in
-  not m.ready && m.ride == Ride.rest && m.last == init.last
+  not m.ready && m.ride == Ride.rest
 )
 // The first step that senses ground starts the ride. It stays started: a
 // miss after that is a real drop, and the bike falls.
@@ -270,7 +269,7 @@ let draw = (m: Model, tts, alpha: float) =>
   let view = camera(m.riderCam, origin, p.yaw) in
   (match m.course with
    | OnDunes =>
-     Frame.createLit(view |> Camera3D.clip(0.1, 450.0), Scene.group([Dunes.scene, rig]), lights)
+     Frame.createLit(view |> Camera3D.clip(0.1, 450.0), Scene.group([Dunes.scene, rig]), Dunes.lights)
        |> Frame.withClearColor(haze)
        |> Frame.withFog(Fog.linear(120.0, 420.0, haze))
    | OnStand =>

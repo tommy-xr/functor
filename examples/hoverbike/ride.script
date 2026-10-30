@@ -1,9 +1,9 @@
-# A scripted ride for the goldens: wait a second on the pad (riding starts
-# once the dunes' collider is in), then full throttle north up the lane. The
-# chase camera tops the crest near frame 640; the rider camera then sees the
-# block ahead.
+# A scripted ride for the goldens: wait two seconds on the pad (riding starts
+# once the dunes' collider is in, normally within a few frames), then full
+# throttle north up the lane. The chase camera climbs toward the crest near
+# frame 530; the rider camera then sees the block ahead.
 #   functor -d examples/hoverbike run native -- --input-script ride.script \
-#     --capture-frame /tmp/f.png --capture-at-frame 640 --capture-size 1600x1200
-60 W down
-700 C down
-701 C up
+#     --capture-frame /tmp/f.png --capture-at-frame 530 --capture-size 1600x1200
+120 W down
+760 C down
+761 C up
