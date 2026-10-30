@@ -61,6 +61,11 @@ let lift = (vy: float, p: Probe): float =>
 let verticalAccel = (probes: List<Probe>, vy: float): float =>
   (probes |> List.map((p) => lift(vy, p)) |> List.sum) / List.length(probes) - gravity
 
+// Every probe sees ground in range. Riding waits for this: on a cold load a
+// heightfield's collider appears only once its heightmap decodes, and until
+// then the probes miss and the bike would fall.
+let sensed = (probes: List<Probe>) => probes |> List.all((p) => p.hit && p.distance < probeRange)
+
 // The steepest turn allowed at a speed: `maxYawRate`, or less once
 // speed × yaw rate would pass `maxLateralAccel`.
 let yawLimit = (speed: float): float => Math.min(maxYawRate, maxLateralAccel / Math.max(speed, 0.001))
@@ -211,6 +216,40 @@ expect (
   let after = latest(simulate(1.0, always(idle), hoverHeight, { rest with vx: 6.0 })).s in
   Math.abs(after.vx - 6.0 * Math.exp(-grip)) < 0.0001 && after.yaw == 0.0
 )
+
+// Readiness: any miss, or a hit beyond range, is not ground yet.
+expect sensed(flatProbes(hoverHeight))
+expect not sensed(flatProbes(probeRange + 0.5))
+expect not sensed(flatProbes(hoverHeight) |> List.drop(1.0) |> List.append([{ hit: false, distance: 0.0 }]))
+
+// ---- Inclined-plane oracle ----------------------------------------------
+
+// Ground rising along +z at `grade` (0.05 = 5%); the bike heads up it. Each
+// probe reads its own emitter's height over the plane, so the front pair
+// reads lower than the back.
+type Climb = { t: float, y: float, z: float, s: State }
+let climb = (seconds: float, grade: float, v: float) =>
+  List.range(Math.round(seconds * 60.0)) |> List.fold((acc, i) =>
+    let c = acc |> List.head |> Option.defaultValue({ t: 0.0, y: hoverHeight, z: 0.0, s: cruising(v) }) in
+    let probes = emitters |> List.map((e) => { hit: true, distance: c.y - grade * (c.z + e.z) }) in
+    let s = step({ throttle: holding(v), brake: 0.0, steer: 0.0 }, probes, dt60, c.s) in
+    [{ t: (i + 1.0) * dt60, y: c.y + s.vy * dt60, z: c.z + s.vz * dt60, s: s }, ..acc], [])
+
+// Holding speed v up a steady grade, the bike rises at v × grade and its
+// clearance settles where the spring carries the damper's share of that
+// climb: hoverHeight − springDamping × v × grade / springRate. Downhill it
+// rides high by the same amount. Checked within 1 cm after 4 s.
+let slopeClearance = (grade: float, v: float) => hoverHeight - springDamping * v * grade / springRate
+let followsSlope = (grade: float, v: float) =>
+  let settled = climb(6.0, grade, v) |> List.filter((c) => c.t >= 4.0) in
+  settled |> List.all((c) =>
+    Math.abs((c.y - grade * c.z) - slopeClearance(grade, v)) < 0.01
+      && Math.abs(c.s.vy - v * grade) < 0.01)
+expect followsSlope(0.05, 20.0)
+expect followsSlope(-0.05, 20.0)
+expect followsSlope(0.08, 24.0)
+// The same lag the course is sized for: 8% at top speed rides 0.54 m low.
+expect Math.abs(slopeClearance(0.08, topSpeed) - 0.6624) < 0.0001
 
 // Comfort over a ride (throttle, hard left, hard right, brake): yaw rate,
 // yaw acceleration, lateral acceleration (speed × yaw rate), lean, and vertical
