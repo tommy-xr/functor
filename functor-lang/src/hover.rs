@@ -24,10 +24,7 @@ use crate::types::{ExprTypes, Type};
 pub fn hover_text(module: &Module, types: &ExprTypes, offset: usize) -> Option<(Span, String)> {
     // A built-in's `.funi` header, or a def's inferred classes in that shape.
     let inferred = crate::reads::infer(module, types);
-    let header = |classes: &[ReadClass]| {
-        let names: Vec<&str> = classes.iter().map(|class| class.name()).collect();
-        format!("impure[{}]\n", names.join(", "))
-    };
+    let header = |classes: &[ReadClass]| format!("{}\n", crate::reads::header(classes));
     let headers: HashMap<&str, String> = module
         .signatures
         .iter()

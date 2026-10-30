@@ -143,6 +143,33 @@ fn closure_free_values_stop_the_spread() {
     assert_eq!(inferred.path("effects", ReadClass::File), ["fx", "File.exists"]);
 }
 
+/// A value whose type is still generic (`Result.t<float, 'e>`, `List<'a>`)
+/// is data too: nothing but `unknown` can put a function there.
+#[test]
+fn generic_data_values_stop_the_spread() {
+    let (_, inferred) = load(&[(
+        "game.fun",
+        "let size = if File.exists(\"a\") then Result.Ok(File.size(\"a\")) else Result.Ok(0.0)\n\
+         let none = if File.exists(\"b\") then [] else []\n\
+         let tick = (m) => match size with | Result.Ok(s) => s + m | Result.Error(e) => m\n\
+         let count = (m) => List.length(none) + m\n",
+    )]);
+    assert_eq!(classes(&inferred, "size"), ["file"]);
+    assert!(classes(&inferred, "tick").is_empty());
+    assert!(classes(&inferred, "count").is_empty());
+}
+
+/// Every name counts, called or not: a local lambda that is never called
+/// still charges its def (an over-approximation PR 4 may narrow).
+#[test]
+fn a_named_but_uncalled_local_lambda_still_counts() {
+    let (_, inferred) = load(&[(
+        "game.fun",
+        "let tick = (m) => let f = (x) => File.exists(x) in m\n",
+    )]);
+    assert_eq!(classes(&inferred, "tick"), ["file"]);
+}
+
 /// The pass is sound only modulo `unknown`: erasing a function's type hides
 /// it. The run-time `note_read` is the authority for exactly this reason.
 #[test]
