@@ -517,3 +517,4 @@ rules: release only, compare the **min** column.
   No models are checked in (`*.glb` is gitignored there); fetch them with `npm run fetch:assets`. A
   missing asset logs an error and renders as the fallback (empty) asset.
 - `AGENTS.md` is a symlink to this file — edit `CLAUDE.md` only.
+
