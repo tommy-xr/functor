@@ -334,7 +334,17 @@
         "native"
       ],
       "inputScript": "ride.script",
-      "captureAtFrame": 240
+      "captureAtFrame": 1000
+    },
+    {
+      "name": "hoverbike-crest",
+      "sample": "hoverbike",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "ride.script",
+      "captureAtFrame": 640
     }
   ]
 }
