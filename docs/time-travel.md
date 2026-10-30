@@ -31,11 +31,12 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   see the design note below).
 - **PRs:** `History` primitive #218, per-frame model recording #219, coupled
   seek #222, `POST /rewind` #225, the scrubber + web parity #226.
-- **Fuzzed.** `runtime/functor-runtime-common/tests/timetravel_fuzz.rs` drives
-  example games through seeded random play, pause, scrub, branch, and hot
-  reload, checking after every step that model, physics, and clock agree on the
-  frame, that a seek restores exactly what the frame recorded, and that
-  replaying the input log from a branch reproduces the recorded future.
+- **Fuzzed.** `functor fuzz` (and `runtime/functor-runtime-common/tests/timetravel_fuzz.rs`
+  over the examples) drives a game through seeded random play, pause, scrub,
+  branch, and hot reload, checking after every step that model, physics, and
+  clock agree on the frame, that a seek restores exactly what the frame
+  recorded, and that replaying the input log from a branch reproduces the
+  recorded future. See [Fuzzing](#fuzzing).
 
 ### Design decisions that emerged (diverged from the original plan)
 
@@ -270,6 +271,46 @@ discipline:
   sending it over the wire. A data-native, serializable model (needed for that,
   and already flagged in `docs/debug-runtime.md` and `protocol.rs`) is a separate,
   larger effort and explicitly **not** required for anything here.
+
+## Fuzzing
+
+`functor fuzz` runs the time-travel fuzzer over any project, headless:
+
+```sh
+functor -d examples/physics fuzz                      # 4 seeds x 100 ops
+functor -d . fuzz --entry walk --seeds 1 --ops 50 --mount 'ss2=~/ss2/sshock2.kpf!data/res/'
+functor -d examples/physics fuzz --seed 3             # one seed
+functor -d examples/physics fuzz --replay 'play:40:7 seek:back:32 rewind:oldest'
+```
+
+It loads the entry like `run` (external mounts included), then plays seeded op
+sequences: play with random input, pause, resume, step, seek (back, oldest,
+newest, past the end), drag past the end, debug rewind, hot reload, and
+branch-and-replay (on a fork with recorded answers, then live). Input is what
+the game reads: the `Key.*` constants its source names, mouse moves if it
+defines `mouseMove`, XR sticks if its sampled input mentions `xr`. A hot reload
+pushes an in-memory copy of the entry, either with an unused binding appended
+(no-op) or with its first float constant rewritten. Saves go to a scratch
+folder. Project files are never written.
+
+After every op it checks:
+
+- no panic;
+- each recorded frame is the selected frame + 1, with one physics step;
+- model, physics, and clock agree on the selected frame;
+- the input log holds what was fed;
+- a seek or rewind restores the frame's model, world bytes, in-flight physics
+  commands, and drawn frame;
+- a branch replay reproduces the recorded frames;
+- a no-op reload changes nothing;
+- **every recorder participant**: its range equals the seekable window, its live
+  digest equals its recorded digest after each record, seek and rewind, and a
+  rewind truncates it to the target. A new participant gets these checks by
+  implementing `Participant::recorded_digest` and `live_digest`.
+
+A failure is shrunk to a minimal op list. The command prints that list and a
+`functor … fuzz --replay '<ops>'` line that reproduces it, then exits
+non-zero.
 
 ## The event log: one spine, two directions
 

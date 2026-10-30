@@ -1,4 +1,6 @@
-use super::{Frame, FrameEnd, History, Live, Participant, Restore, DEFAULT_HISTORY_FRAMES};
+use super::{
+    args_digest, Frame, FrameEnd, History, Live, Participant, Restore, DEFAULT_HISTORY_FRAMES,
+};
 use crate::physics::PhysicsCommand;
 
 /// Where the physics world stood when a rendered frame ended: its fixed frame
@@ -51,6 +53,10 @@ impl PhysicsParticipant {
 }
 
 impl Participant for PhysicsParticipant {
+    fn name(&self) -> &'static str {
+        "physics"
+    }
+
     fn record(&mut self, frame: Frame, end: &FrameEnd) {
         self.world_frame_history.record_owned(
             frame,
@@ -99,5 +105,19 @@ impl Participant for PhysicsParticipant {
 
     fn clear(&mut self) {
         self.world_frame_history = History::unbounded();
+    }
+
+    fn recorded_digest(&self, frame: Frame) -> Option<u64> {
+        let end = self.world_frame_history.get(frame)?;
+        Some(args_digest(&(end.fixed, &end.in_flight)))
+    }
+
+    fn live_digest(&self, live: &Live) -> u64 {
+        // As the producer records it: no commands without the hook.
+        let in_flight = match live.has_physics {
+            true => live.physics.pending_commands(),
+            false => Vec::new(),
+        };
+        args_digest(&(*live.physics_frame, &in_flight))
     }
 }

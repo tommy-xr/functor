@@ -28,6 +28,7 @@
 //! later increment unifies the two under one clock so a single `seek` restores
 //! model *and* world together (docs/time-travel.md, "One frame, one clock").
 
+pub mod fuzz;
 mod history;
 mod log;
 mod model;
@@ -41,7 +42,7 @@ use crate::FrameTime;
 
 pub use history::History;
 use log::FrameLog;
-pub use log::{args_digest, Entry, OpId};
+pub use log::{args_digest, fnv1a, Entry, OpId};
 use model::ModelParticipant;
 use physics::PhysicsParticipant;
 
@@ -106,6 +107,8 @@ pub(crate) enum Restore {
 /// docs). The [`SceneRecorder`] applies every operation to all participants
 /// together, so they can never land on different frames.
 pub(crate) trait Participant {
+    /// Short name for reports (`"model"`, `"physics"`).
+    fn name(&self) -> &'static str;
     /// Record how `frame` ended. Frames arrive consecutively.
     fn record(&mut self, frame: Frame, end: &FrameEnd);
     /// Rendered frames retained, inclusive; `None` before the first record.
@@ -124,6 +127,22 @@ pub(crate) trait Participant {
     fn prune(&mut self, floor: Frame);
     /// Drop all history: a reload starting a new generation.
     fn clear(&mut self);
+    /// Digest of what `frame` recorded; `None` outside [`Self::range`].
+    fn recorded_digest(&self, frame: Frame) -> Option<u64>;
+    /// Digest of `live` in [`Self::recorded_digest`]'s terms. The two agree
+    /// right after `record`, and after a `Seek` or `Rewind` restore — the
+    /// fuzzer checks every participant against that.
+    fn live_digest(&self, live: &Live) -> u64;
+}
+
+/// One participant's retained range and digests at the selected frame (the
+/// fuzzer's per-participant checks).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ParticipantState {
+    pub name: &'static str,
+    pub range: Option<(Frame, Frame)>,
+    pub recorded: Option<u64>,
+    pub live: u64,
 }
 
 /// The coupled time-travel recorder shared by both Functor Lang shells (docs/time-travel.md
@@ -230,6 +249,19 @@ impl SceneRecorder {
         ]
         .into_iter()
         .chain(self.others.iter_mut().map(|p| p.as_mut() as &mut dyn Participant))
+    }
+
+    /// Every participant's [`ParticipantState`] at the selected frame.
+    pub(crate) fn participant_states(&self, live: &Live) -> Vec<ParticipantState> {
+        let frame = self.current_scene_frame();
+        self.participants()
+            .map(|p| ParticipantState {
+                name: p.name(),
+                range: p.range(),
+                recorded: frame.and_then(|f| p.recorded_digest(f)),
+                live: p.live_digest(live),
+            })
+            .collect()
     }
 
     /// The seekable window: the frames every participant retains.
@@ -1283,6 +1315,9 @@ mod tests {
     }
 
     impl Participant for Probe {
+        fn name(&self) -> &'static str {
+            "probe"
+        }
         fn record(&mut self, frame: Frame, _end: &FrameEnd) {
             self.history.borrow_mut().record(frame, &(frame * 10));
         }
@@ -1308,6 +1343,12 @@ mod tests {
         }
         fn clear(&mut self) {
             *self.history.borrow_mut() = History::unbounded();
+        }
+        fn recorded_digest(&self, frame: Frame) -> Option<u64> {
+            self.history.borrow().get(frame).copied()
+        }
+        fn live_digest(&self, _live: &Live) -> u64 {
+            self.live.get()
         }
     }
 
@@ -1339,6 +1380,20 @@ mod tests {
         rec.seek_scene_to(15, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek");
         assert_eq!((model.to_string().as_str(), live.get()), ("15", 150));
+        let states = rec.participant_states(&Live {
+            model: &mut model,
+            physics: &mut physics,
+            physics_frame: &mut physics_frame,
+            has_physics: false,
+        });
+        assert_eq!(
+            states.iter().map(|s| s.name).collect::<Vec<_>>(),
+            ["model", "physics", "probe"]
+        );
+        for state in &states {
+            assert_eq!(state.range, Some((10, total - 1)), "{state:?}");
+            assert_eq!(state.recorded, Some(state.live), "{state:?}");
+        }
 
         // One participant's refusal refuses the whole seek, touching nothing.
         refuse.set(Some(17));

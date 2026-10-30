@@ -79,6 +79,14 @@ impl<T: Clone> History<T> {
         &self.snapshots[(frame - self.base) as usize]
     }
 
+    /// The stored state of `frame`, or `None` outside the retained window.
+    pub fn get(&self, frame: Frame) -> Option<&T> {
+        let (oldest, newest) = self.recorded_range()?;
+        (oldest..=newest)
+            .contains(&frame)
+            .then(|| &self.snapshots[(frame - self.base) as usize])
+    }
+
     /// Replace one retained snapshot without changing the window or its next
     /// frame. A counterfactual reload rebuilds history under new code with it.
     pub fn replace(&mut self, frame: Frame, state: &T) {

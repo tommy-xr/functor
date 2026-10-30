@@ -84,11 +84,14 @@ impl Entry {
 /// FNV-1a digest of an effect op's arguments, over their `Debug` text: stable
 /// within a build, which is all in-session replay needs.
 pub fn args_digest(args: &impl std::fmt::Debug) -> u64 {
-    format!("{args:?}")
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325, |h, b| {
-            (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
-        })
+    fnv1a(format!("{args:?}").as_bytes())
+}
+
+/// FNV-1a: stable across toolchains, so digests and fuzz seeds reproduce.
+pub fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// The frame log (design-systems §2.4): each rendered frame's input and effect

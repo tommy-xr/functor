@@ -144,6 +144,27 @@ enum Command {
     /// reporting each failure at its source location. Exits non-zero if any
     /// expect fails. E.g. `functor -d examples/platformer test`.
     Test,
+    /// Fuzz time travel headlessly (no GPU): seeded random play, pause,
+    /// step, seek, rewind, in-memory hot reload and replay over the entry,
+    /// checking after every op that model, physics, clock and every recorder
+    /// participant agree and that a seek restores what the frame recorded.
+    /// Input is what the game reads (keys it names, mouse, XR sticks). A
+    /// failure prints its shrunk ops and a `--replay` command, and exits
+    /// non-zero. Never writes project files. E.g. `functor -d examples/physics fuzz`.
+    Fuzz {
+        /// Seeds to run (1..=N).
+        #[arg(long, default_value_t = 4)]
+        seeds: u64,
+        /// Ops per seed.
+        #[arg(long, default_value_t = 100)]
+        ops: usize,
+        /// Run only this seed.
+        #[arg(long, conflicts_with = "replay")]
+        seed: Option<u64>,
+        /// Run exactly these ops (a failure's printed repro) instead of seeds.
+        #[arg(long, value_name = "OPS")]
+        replay: Option<String>,
+    },
     /// Export the project's printable part headlessly (no GPU): the entry's
     /// `let part = …` Solid, in millimetres. `.stl` writes one mesh; `.3mf`
     /// writes each `--part` as a named part on its own filament, in order, so
@@ -486,6 +507,7 @@ async fn run(args: &Args) -> io::Result<()> {
         &args.command,
         Command::Build { .. }
             | Command::Test
+            | Command::Fuzz { .. }
             | Command::Export { .. }
             | Command::Bake { .. }
             | Command::Run { .. }
@@ -531,6 +553,25 @@ async fn run(args: &Args) -> io::Result<()> {
             Command::Test => {
                 let loaded = project.build(&working_directory_str, false)?;
                 project.test(&loaded)
+            }
+            Command::Fuzz {
+                seeds,
+                ops,
+                seed,
+                replay,
+            } => {
+                project.build(&working_directory_str, false)?;
+                commands::fuzz::execute(
+                    &project,
+                    &working_directory_str,
+                    &commands::fuzz::Options {
+                        seeds: *seeds,
+                        ops: *ops,
+                        seed: *seed,
+                        replay: replay.as_deref(),
+                        command: repro_command(args, &working_directory_str),
+                    },
+                )
             }
             Command::Export { output, parts, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
@@ -631,6 +672,7 @@ async fn run(args: &Args) -> io::Result<()> {
         // isn't Functor Lang has no build/run/develop/push path.
         Command::Build { .. }
         | Command::Test
+        | Command::Fuzz { .. }
         | Command::Export { .. }
         | Command::Bake { .. }
         | Command::Run { .. }
@@ -695,6 +737,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Docs { .. } => "docs",
         Command::Build { .. } => "build",
         Command::Test => "test",
+        Command::Fuzz { .. } => "fuzz",
         Command::Export { .. } => "export",
         Command::Bake { .. } => "bake",
         Command::Run { .. } => "run",
@@ -704,6 +747,20 @@ fn command_name(command: &Command) -> &'static str {
         Command::Import => "import",
         Command::Push { .. } => "push",
     }
+}
+
+/// `functor -d DIR [--entry E] [--mount M]…`: the prefix that re-runs this
+/// project the same way.
+fn repro_command(args: &Args, working_directory: &str) -> String {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', r"'\''"));
+    let mut line = format!("functor -d {}", quote(working_directory));
+    if let Some(entry) = &args.entry {
+        line += &format!(" --entry {}", quote(entry));
+    }
+    for mount in &args.mounts {
+        line += &format!(" --mount {}", quote(mount));
+    }
+    line
 }
 
 fn command_env(command: &Command) -> Option<String> {
