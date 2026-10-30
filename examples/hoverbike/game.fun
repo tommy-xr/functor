@@ -395,6 +395,27 @@ let arrive = (m: Model): (Model, Effect.t) =>
               vr: Bars.dismount(m.vr) },
      Physics.teleport(walkerTag, Vec3.make(x, y, z)))
 
+// Riding, releasing the grips never gets off; holding at speed waits; with no
+// ground beside the bike (`functor test` has no world), it stays on.
+expect (
+  let riding = { init with mode: Riding } in
+  let c = positionOf(dunesSpawn) in
+  let released = onBike({ riding with controls: { throttle: 0.0, brake: Bars.gripLossBrake, steer: 0.0 } }, c) in
+  let fast = onBike({ riding with off: 0.6, speed: 3.0 }, c) in
+  let nowhere = onBike({ riding with off: 0.6, speed: 1.0 }, c) in
+  not Mount.fading(released.fade) && not Mount.fading(fast.fade) && not fast.noRoom
+    && not Mount.fading(nowhere.fade) && nowhere.noRoom && nowhere.mode == Riding
+)
+// At the black: getting on rides, the grabbing hand latched; getting off
+// stands the walker at the landing, facing as asked, hands let go.
+expect (
+  let (on, _) = arrive({ init with fade: Mount.start(Mount.GetOn(-1.0)) }) in
+  let (off, _) = arrive({ on with fade: Mount.start(Mount.GetOff(1.0, 2.0, 3.0, 0.5)) }) in
+  on.mode == Riding && on.vr.mounted && on.vr.right.latched && not on.vr.left.latched
+    && off.mode == OnFoot && off.walker.yaw == 0.5 && off.footPrev.x == 1.0 && off.footPrev.z == 3.0
+    && not off.vr.mounted && not off.vr.right.latched
+)
+
 let tick = (m: Model, dt: float, tts) =>
   if dt <= 0.0 then (m, Effect.none())
   else if m.switchCourse then startOn(if m.course == OnDunes then OnStand else OnDunes, m)
@@ -523,6 +544,23 @@ expect (
   let w = rigPoint(origin, 0.7, b.x, b.y, b.z) in
   Math.abs(mapped.position.x - Vec3.x(w)) < 0.0001 && Math.abs(mapped.position.y - Vec3.y(w)) < 0.0001
     && Math.abs(mapped.position.z - Vec3.z(w)) < 0.0001
+)
+
+// Seat-eye placement: once on, the calibrated head (where it was, the way it
+// faced) lands on the seat eye, looking along the bike's heading; on foot,
+// on the walker's eye, looking along the walker's.
+let lands = (r: Bars.Rider, eye: Input.point3, yaw: float) =>
+  let c = r.calibration in
+  let head: Input.pose = { position: { x: c.x, y: c.y, z: c.z }, orientation: Bars.yawed(c.yaw) } in
+  let origin = Vec3.make(3.0, 1.0, -2.0) in
+  let mapped = Camera3D.mapTrackedPose(headsetCamera(r, origin, yaw), head) in
+  let w = rigPoint(origin, yaw, eye.x, eye.y, eye.z) in
+  Math.abs(mapped.position.x - Vec3.x(w)) < 0.0001 && Math.abs(mapped.position.y - Vec3.y(w)) < 0.0001
+    && Math.abs(mapped.position.z - Vec3.z(w)) < 0.0001
+    && Math.abs(mapped.forward.x - Math.sin(yaw)) < 0.0001 && Math.abs(mapped.forward.z - Math.cos(yaw)) < 0.0001
+expect (
+  let foot = { Bars.rider with calibration: { x: 0.1, y: -0.08, z: 0.2, yaw: 0.6 } } in
+  lands(foot, Walk.eye, -1.2) && lands(Bars.mountOn(1.0, foot), Bars.seatedEye, 0.7)
 )
 
 // Each tracked hand, where it really is: lit ion once latched. Sampled each

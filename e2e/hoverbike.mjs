@@ -31,6 +31,18 @@
 //   7. Live at a simulated 120 Hz, the drawn rig moves every frame: `draw`
 //      interpolates between the 60 Hz steps.
 //
+// On foot (game.fun, walk.fun, mount.fun). Every ride above starts by walking
+// up to the bike and pressing E (`board`); R puts the rider back on foot.
+//
+//   i.   Spawn on foot on the pad, away from the bike; walk up; E gets on.
+//   ii.  Ride a short way and stop. Holding E for 0.5 s fades and sets the
+//        walker down on the bike's left, on the ground, clear of the bike and
+//        the props, facing it.
+//   iii. Walk away and back; E gets on again.
+//   iv.  Holding E at speed is refused (slow down); braking while still
+//        holding gets off once below 2 m/s.
+//   v.   Two runs end on an identical model.
+//
 // Run (needs the CLI built; the wasm bundle is not required; the hidden
 // window needs a GL display):
 //
@@ -58,6 +70,10 @@ const STAND_X = 600; // stand.fun's originX
 const WALL = STAND_X + 15; // the east wall's inner face
 const NORTH = 210; // the north wall's inner face
 const RADIUS = 0.8; // the bike's capsule
+const WALKER_RADIUS = 0.3; // walk.fun
+const FOOT_Y = 0.92; // the walker's capsule centre standing on ground at 0
+const HOLD = 0.5; // mount.fun's holdTime
+const MAX_OFF_SPEED = 2; // mount.fun's maxSpeed
 const SPAWN = { x: 100, y: 2.15, z: -380 }; // on the dunes' start pad
 const PROBE_RANGE = 3;
 const CREST_Z = -180;
@@ -111,6 +127,28 @@ async function step(base, n) {
 }
 
 const key = (base, k, down) => post(base, "/input", { type: "key", key: k, down });
+const tap = async (base, k) => {
+  await key(base, k, true);
+  await key(base, k, false);
+};
+
+/**
+ * Walk up to the bike and get on: W until near the seat (the spawn faces
+ * it), then E and the fade. Returns the model, riding.
+ */
+async function board(base) {
+  await key(base, "w", true);
+  let m;
+  for (let i = 0; i < 200; i++) {
+    m = await step(base, 2);
+    if (m.near) break;
+  }
+  await key(base, "w", false);
+  await tap(base, "e");
+  m = await step(base, 16);
+  if (m.mode.$ctor !== "Riding") throw new Error(`never got on (near ${m.near}, at ${JSON.stringify(m.footPrev)})`);
+  return m;
+}
 
 /** The analytic speed curve from rest at full throttle (see ride.fun). */
 function throttleSpeed(t) {
@@ -177,6 +215,7 @@ async function ride(port, check) {
     m = await step(base, 120);
     check(Math.abs(m.clearance - HOVER) < 0.05, `settled clearance ${m.clearance.toFixed(4)} m`);
     const start = m.last;
+    m = await board(base);
 
     // 2. Full throttle for 3 s, straight ahead.
     await key(base, "w", true);
@@ -240,7 +279,8 @@ async function ride(port, check) {
     await key(base, "r", true);
     await key(base, "r", false);
     m = await step(base, 2);
-    check(m.steps <= 1 && m.course.$ctor === "OnStand" && Math.abs(m.last.x - start.x) < 1e-3 && Math.abs(m.last.z - start.z) < 1e-3, `R respawns at the stand's start`);
+    check(m.steps <= 1 && m.course.$ctor === "OnStand" && m.mode.$ctor === "OnFoot" && Math.abs(m.last.x - start.x) < 1e-3 && Math.abs(m.last.z - start.z) < 1e-3, `R respawns at the stand's start, on foot`);
+    m = await board(base);
     await key(base, "a", true);
     await step(base, 8);
     await key(base, "a", false);
@@ -287,12 +327,13 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 /** Stick input that turns the bike toward `yaw` (left is positive yaw; the stick's right turns right). */
 const steerTo = (m, yaw) => clamp((m.ride.yaw - yaw) * 4, -1, 1);
 
-/** Respawn (R) and settle: the bike waits for ground, then rests at hover height. */
+/** Respawn (R) and settle (the bike waits for ground, then rests at hover height), then get on. */
 async function respawn(base) {
   await key(base, "r", true);
   await key(base, "r", false);
   await step(base, 2);
-  return step(base, 30);
+  await step(base, 30);
+  return board(base);
 }
 
 async function dunes(port, check, mode) {
@@ -483,6 +524,9 @@ async function interpolates(port) {
   );
   try {
     await waitFrame(base, 5);
+    await step(base, 1);
+    await board(base);
+    await post(base, "/time", { type: "resume" });
     await key(base, "w", true);
     await waitFrame(base, (await get(base, "/state")).frame + 120);
     const zs = [];
@@ -495,12 +539,102 @@ async function interpolates(port) {
   }
 }
 
+/** The walker's yaw toward a point, as mount.fun's `toward`. */
+const toward = (from, to) => Math.atan2(to.x - from.x, to.z - from.z);
+const angleDiff = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+
+async function onFoot(port, check) {
+  const base = `http://127.0.0.1:${port}`;
+  const { proc, log } = launch(port, "--headless");
+  try {
+    await waitFrame(base, 12);
+    await step(base, 1);
+    await post(base, "/rewind", { frame: 10 });
+    let m = await step(base, 60);
+
+    // i. On foot, then on.
+    const spawn = m.footPrev;
+    check(m.mode.$ctor === "OnFoot" && !m.near && m.walker.ready && Math.abs(spawn.y - FOOT_Y) < 0.01 && Math.hypot(spawn.x - SPAWN.x, spawn.z - SPAWN.z) > 3,
+      `spawns on foot on the pad, ${Math.hypot(spawn.x - SPAWN.x, spawn.z - SPAWN.z).toFixed(2)} m from the bike (centre y ${spawn.y.toFixed(4)})`);
+    await tap(base, "e");
+    m = await step(base, 10);
+    check(m.mode.$ctor === "OnFoot" && m.fade.t < 0, `E away from the bike does nothing`);
+    m = await board(base);
+    check(m.mode.$ctor === "Riding" && m.speed === 0, `walks up and gets on with E`);
+
+    // ii. Ride a short way, stop, hold E.
+    await key(base, "w", true);
+    m = await step(base, 60);
+    await key(base, "w", false);
+    await key(base, "s", true);
+    for (let i = 0; i < 60 && m.speed > 0; i++) m = await step(base, 2);
+    await key(base, "s", false);
+    check(m.speed === 0 && m.last.z - SPAWN.z > 3, `rides ${(m.last.z - SPAWN.z).toFixed(2)} m and stops`);
+    await key(base, "e", true);
+    m = await step(base, 30);
+    check(m.mode.$ctor === "Riding" && m.fade.t < 0, `held under ${HOLD} s: still riding`);
+    for (let i = 0; i < 3 && m.fade.t < 0; i++) m = await step(base, 1);
+    check(m.fade.t >= 0 && m.fade.action.$ctor === "GetOff" && Math.abs(m.off - HOLD) < 1e-6, `held ${m.off.toFixed(3)} s: the fade starts`);
+    await key(base, "e", false);
+    m = await step(base, 30);
+    const w = m.footPrev;
+    const bike = m.last;
+    const apart = Math.hypot(w.x - bike.x, w.z - bike.z);
+    const left = (w.x - bike.x) * Math.cos(m.ride.yaw) - (w.z - bike.z) * Math.sin(m.ride.yaw);
+    check(m.mode.$ctor === "OnFoot" && Math.abs(w.y - FOOT_Y) < 0.01, `set down on the ground (centre y ${w.y.toFixed(4)})`);
+    check(apart > RADIUS + WALKER_RADIUS + 0.4 && left > 1.5, `on the bike's left, ${apart.toFixed(3)} m from it, clear of its capsule`);
+    const props = [BLOCK, ...[-360, -320].flatMap((z) => [{ x: 112, z }, { x: 88, z }])];
+    const nearest = Math.min(...props.map((p) => Math.hypot(w.x - p.x, w.z - p.z)));
+    check(nearest > 3, `clear of the props (nearest ${nearest.toFixed(2)} m)`);
+    check(angleDiff(m.walker.yaw, toward(w, bike)) < 0.01, `facing the bike (yaw ${m.walker.yaw.toFixed(4)})`);
+    check(m.speed === 0 && Math.abs(m.last.z - bike.z) < 1e-9, `the bike stays where it stopped`);
+
+    // iii. Walk away, then back on.
+    await key(base, "s", true);
+    m = await step(base, 90);
+    await key(base, "s", false);
+    m = await step(base, 2);
+    check(!m.near && Math.hypot(m.footPrev.x - bike.x, m.footPrev.z - bike.z) > 3, `walks away (${Math.hypot(m.footPrev.x - bike.x, m.footPrev.z - bike.z).toFixed(2)} m)`);
+    m = await board(base);
+    check(m.mode.$ctor === "Riding", `walks back and gets on again`);
+
+    // iv. Refused at speed; braking while holding gets off.
+    await key(base, "w", true);
+    m = await step(base, 60);
+    await key(base, "e", true);
+    m = await step(base, 40);
+    check(m.mode.$ctor === "Riding" && m.fade.t < 0 && m.off >= HOLD && m.speed > MAX_OFF_SPEED, `held at ${m.speed.toFixed(2)} m/s: refused (asks to slow down)`);
+    await key(base, "w", false);
+    await key(base, "s", true);
+    let before = m;
+    for (let i = 0; i < 120 && m.fade.t < 0; i++) {
+      before = m;
+      m = await step(base, 1);
+    }
+    await key(base, "s", false);
+    await key(base, "e", false);
+    check(m.fade.t >= 0 && m.speed < MAX_OFF_SPEED && before.speed >= MAX_OFF_SPEED,
+      `still holding, gets off on the first step below ${MAX_OFF_SPEED} m/s (${before.speed.toFixed(3)} → ${m.speed.toFixed(3)})`);
+    m = await step(base, 20);
+    check(m.mode.$ctor === "OnFoot", `and lands on foot`);
+
+    return JSON.stringify((await get(base, "/state")).model);
+  } catch (e) {
+    throw new Error(`${e.message}\n--- runtime log ---\n${log()}`);
+  } finally {
+    proc.kill("SIGKILL");
+  }
+}
+
 const failures = [];
 const check = (ok, what) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${what}`);
   if (!ok) failures.push(what);
 };
 
+const footFirst = await onFoot(8956, check);
+const footSecond = await onFoot(8957, () => {});
+check(footFirst === footSecond, `on foot: two runs end on an identical model`);
 const dunesFirst = await dunes(8954, check, "--hidden");
 const dunesSecond = await dunes(8955, () => {}, "--headless");
 check(dunesFirst === dunesSecond, `dunes: two runs give identical models after the route, the block and the boundary`);
