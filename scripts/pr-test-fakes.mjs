@@ -98,15 +98,14 @@ export async function harness(t, script) {
       .map((line) => JSON.parse(line));
   const run = (args, env = {}, cwd = undefined) =>
     new Promise((resolve) => {
+      const { ANDROID_SERIAL, FUNCTOR_PR_CACHE, ...inherited } = process.env;
       const environment = {
-        ...process.env,
+        ...inherited,
         PATH: `${root}${delimiter}${process.env.PATH}`,
         HOME: root,
         FAKE_ROOT: root,
         ...env,
       };
-      delete environment.ANDROID_SERIAL;
-      delete environment.FUNCTOR_PR_CACHE;
       execFile(process.execPath, [script, ...args], { env: environment, cwd }, (error, stdout, stderr) =>
         resolve({ code: error ? error.code : 0, signal: error?.signal ?? null, stdout, stderr }),
       );
