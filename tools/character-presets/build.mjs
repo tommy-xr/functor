@@ -123,9 +123,10 @@ function skeleton(skin) {
 
 /**
  * Retarget a clip onto `target` (both rigs share joint names): each joint keeps
- * the source's world-space rotation RELATIVE TO ITS BIND pose, so differing
- * rest orientations don't skew the pose. Translations become target rest +
- * source delta (only the pelvis moves); constant channels are dropped.
+ * the source's world-space rotation RELATIVE TO ITS REST pose (= bind pose in
+ * every source), so differing rest orientations don't skew the pose. Every
+ * joint gets a rotation channel; translations become target rest + source
+ * delta (only the pelvis moves) and constant translations are dropped.
  */
 function retarget(anim, source, target) {
   const channels = new Map();
@@ -140,6 +141,11 @@ function retarget(anim, source, target) {
     channels.set(`${c.getTargetNode().getName()}/${c.getTargetPath()}`, c.getSampler().getOutput().getArray());
   }
   const order = [...target.keys()]; // parents precede children in skin order
+  for (const name of order) {
+    if (!source.has(name)) throw new Error(`joint ${name} missing from the clip's rig`);
+    const p = target.get(name).parent;
+    if (p && order.indexOf(p) > order.indexOf(name)) throw new Error(`${name} precedes its parent`);
+  }
   const rotations = new Map(order.map((n) => [n, new Float32Array(times.length * 4)]));
   const translations = new Map();
   for (let k = 0; k < times.length; k++) {
@@ -172,6 +178,11 @@ function retarget(anim, source, target) {
     const rest = source.get(name).node.getTranslation();
     const moves = tr.some((v, i) => Math.abs(v - rest[i % 3]) > 1e-5);
     if (!moves) continue;
+    // The delta is in the parent's frame: only valid if both parents rest alike.
+    const sp = source.get(name).parent, tp = target.get(name).parent;
+    if (sp && Math.abs(qmul(qinv(source.get(sp).rest), target.get(tp).rest)[3]) < 0.99999) {
+      throw new Error(`${name}: parent rest rotations differ; the translation delta needs rotating`);
+    }
     const base = target.get(name).node.getTranslation();
     translations.set(name, tr.map((v, i) => base[i % 3] + v - rest[i % 3]));
   }
@@ -206,6 +217,8 @@ function extract(doc, canonical, keepTri = () => true) {
       return i;
     });
     for (const prim of mesh.listPrimitives()) {
+      if (prim.getMode() !== 4 || prim.getAttribute("JOINTS_1")) throw new Error(`${node.getName()}: unsupported primitive`);
+      if (prim.getMaterial().getBaseColorTextureInfo()?.getTexCoord()) throw new Error("base colour must use TEXCOORD_0");
       const pos = floats(prim.getAttribute("POSITION"));
       const nrm = floats(prim.getAttribute("NORMAL"));
       const uv = floats(prim.getAttribute("TEXCOORD_0"));
@@ -234,6 +247,24 @@ function extract(doc, canonical, keepTri = () => true) {
     }
   }
   return parts;
+}
+
+/** Throw unless every joint the kept vertices use rests at the same place on both skins. */
+function checkBindPositions(parts, from, to) {
+  const at = (skin) => new Map(skin.listJoints().map((j) => [j.getName(), j.getWorldMatrix().slice(12, 15)]));
+  const a = at(from), b = at(to);
+  const canonical = to.listJoints().map((j) => j.getName());
+  for (const p of parts) {
+    for (const v of p.indices) {
+      for (let k = 0; k < 4; k++) {
+        if (!p.weights[v * 4 + k]) continue;
+        const name = canonical[p.joints[v * 4 + k]];
+        if (a.get(name).some((x, i) => Math.abs(x - b.get(name)[i]) > 1e-3)) {
+          throw new Error(`kept body vertex uses ${name}, which rests elsewhere on the outfit rig`);
+        }
+      }
+    }
+  }
 }
 
 /** Concatenate parts that share a texture + factor: one draw per material. */
@@ -284,7 +315,8 @@ function compact(g) {
 
 /**
  * Merge vertices split only by their normal (hard edges), averaging the
- * normals, so the simplifier treats just the UV seams as seams.
+ * normals, so the simplifier treats just the UV seams as seams. LOD1/2 shade
+ * those edges smooth.
  */
 function weld(g) {
   const key = new Map();
@@ -310,7 +342,7 @@ function weld(g) {
 function simplify(g, ratio) {
   if (ratio >= 1) return g;
   const w = weld(g);
-  const target = Math.floor((w.indices.length / 3) * ratio) * 3;
+  const target = Math.max(3, Math.floor((w.indices.length / 3) * ratio) * 3);
   const n = w.pos.length / 3;
   const attrs = new Float32Array(n * 5);
   for (let v = 0; v < n; v++) attrs.set([...w.uv.subarray(v * 2, v * 2 + 2), ...w.nrm.subarray(v * 3, v * 3 + 3)], v * 5);
@@ -408,7 +440,7 @@ function writePreset(skeletonDoc, groups, clips, lod) {
       anim.addSampler(sampler).addChannel(doc.createAnimationChannel().setTargetNode(clones.get(node)).setTargetPath(pathName).setSampler(sampler));
     };
     for (const [node, values] of clip.rotations) add(node, "rotation", "VEC4", values);
-    for (const [node, values] of clip.translations) add(node, "translation", "VEC3", Float32Array.from(values));
+    for (const [node, values] of clip.translations) add(node, "translation", "VEC3", values);
   }
   return { doc, stats };
 }
@@ -427,15 +459,16 @@ for (const [bodyName, bodyFile] of Object.entries(BODIES)) {
   const body = sources.get(bodyFile);
   for (const [outfitName, outfitFiles] of Object.entries(OUTFITS)) {
     const outfit = outfitFiles ? sources.get(outfitFiles[bodyName]) : null;
-    // The canonical skin is the outfit's: the head's joints (Head, neck,
-    // spine, clavicles) bind identically on both rigs; the limbs don't.
+    // The canonical skin is the outfit's. The head's joints sit at the same
+    // bind positions on both rigs (checked below); a differing rest ROTATION
+    // (male clavicles, 2.5°) is absorbed by the bind-relative retarget.
     const rig = outfit ?? body;
     const rigSkin = rig.getRoot().listSkins()[0];
     if (rig.getRoot().listSkins().length !== 1) throw new Error("expected one skin per source");
     const canonical = rigSkin.listJoints().map((j) => j.getName());
-    const parts = outfit
-      ? [...extract(body, canonical, (w) => w.some((x) => x >= HEAD_WEIGHT)), ...extract(outfit, canonical)]
-      : extract(body, canonical);
+    const head = outfit ? extract(body, canonical, (w) => w.some((x) => x >= HEAD_WEIGHT)) : [];
+    if (outfit) checkBindPositions(head, body.getRoot().listSkins()[0], rigSkin);
+    const parts = outfit ? [...head, ...extract(outfit, canonical)] : extract(body, canonical);
     const groups = groupByMaterial(parts);
     const target = skeleton(rigSkin);
     const clips = {};

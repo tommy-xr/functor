@@ -77,7 +77,7 @@ order, parents, inverse-bind differences, geometry, textures and clips.
 4. **LODs:** LOD1 and LOD2 keep 12% and 3% of the triangles, simplified by
    meshoptimizer with UV/normal error weights.
 
-Output is byte-identical across runs.
+Output is byte-identical across runs on the same Node version (22.20 built the pinned hashes; PNG deflate comes from Node's zlib).
 
 | File | Triangles | Vertices | Draws | Texture MB (GPU) | File MB |
 | --- | ---: | ---: | ---: | ---: | ---: |
