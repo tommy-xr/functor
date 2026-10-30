@@ -5,7 +5,7 @@
 //   far:                 LOD2, one `Scene.instanced` batch per (preset, phase
 //                        bucket). Copies in a batch share ONE pose, so far
 //                        characters with the same preset and bucket move in
-//                        lockstep: at most farBuckets distinct poses per preset.
+//                        lockstep: farBuckets (2) poses per preset, ≤ 12 batches.
 // Everything here is plain data, computed once per `count` change.
 
 type Tier =
@@ -25,6 +25,7 @@ type Member = {
   look: Look,
   phase: float,
   run: float,
+  bucket: float,
 }
 
 type Batch = {
@@ -56,7 +57,7 @@ let nearRadius = 7.0
 
 let midRadius = 12.0
 
-let farBuckets = 4.0
+let farBuckets = 2.0
 
 // A deterministic per-index fraction in [0, 1): the golden-ratio sequence.
 let fraction = (i: float): float => Math.mod(i * 0.618034, 1.0)
@@ -75,10 +76,11 @@ let rows = List.range(14.0) |> List.map((k) =>
   let radius = firstRadius + k * rowGap in
   { radius: radius, size: Math.floor(arc * radius / spacing) })
 
-// Seats in row order (nearest first), each turned to face the camera.
+// Seats in row order (nearest first), each row filling from its center out,
+// each seat turned to face the camera.
 let seats =
   rows |> List.concatMap((row) =>
-    List.range(row.size) |> List.map((j) =>
+    List.range(row.size) |> List.sortBy((j) => Math.abs(j - (row.size - 1.0) / 2.0)) |> List.map((j) =>
       let angle = (j - (row.size - 1.0) / 2.0) * spacing / row.radius in
       { x: eye.x + row.radius * Math.sin(angle), z: eye.z + row.radius * Math.cos(angle), yaw: angle + Math.pi }))
 
@@ -97,7 +99,7 @@ let phaseOf = (i: float): float => fraction(i + 0.5) * 2.0
 
 let runOf = (i: float): float => 0.25 + 0.5 * fraction(i)
 
-// A far character's bucket, and the shared phase/run of each bucket.
+// A character's far bucket, and the shared phase/run of each bucket.
 let bucketOf = (i: float): float => Math.floor(fraction(i + 0.5) * farBuckets)
 
 let bucketPhase = (b: float): float => (b + 0.5) / farBuckets * 2.0
@@ -106,10 +108,7 @@ let bucketRun = (b: float): float => 0.25 + 0.5 * (b + 0.5) / farBuckets
 
 let memberAt = (i: float, seat: Seat): Member =>
   let tier = tierOf(distanceOf(seat)) in
-  let look = { kit: kitOf(i), lod: lodOf(tier) } in
-  match tier with
-  | Far => { key: $"char/{i}", seat: seat, tier: tier, look: look, phase: bucketPhase(bucketOf(i)), run: bucketRun(bucketOf(i)) }
-  | _ => { key: $"char/{i}", seat: seat, tier: tier, look: look, phase: phaseOf(i), run: runOf(i) }
+  { key: $"char/{i}", seat: seat, tier: tier, look: { kit: kitOf(i), lod: lodOf(tier) }, phase: phaseOf(i), run: runOf(i), bucket: bucketOf(i) }
 
 let members = (count: float): List<Member> =>
   seats |> List.take(count) |> List.indexedMap(memberAt)
@@ -119,7 +118,7 @@ let batchesOf = (all: List<Member>): List<Batch> =>
   let far = all |> List.filter((m) => m.tier == Far) in
   Loadout.presets |> List.concatMap((kit) =>
     List.range(farBuckets) |> List.concatMap((b) =>
-      let group = far |> List.filter((m) => m.look.kit == kit && m.phase == bucketPhase(b)) in
+      let group = far |> List.filter((m) => m.look.kit == kit && m.bucket == b) in
       if List.isEmpty(group) then []
       else [{
         key: $"far/{Loadout.presetName(kit, 2.0)}/{b}",
@@ -156,17 +155,20 @@ expect (
   let l = layout(100.0) in
   (l.batches |> List.map((b) => List.length(b.seats)) |> List.sum) == 51.0
     && (l.batches |> List.all((b) => b.look.lod == 2.0))
-    && List.length(l.batches) <= 6.0 * farBuckets
+    && List.length(l.batches) == 12.0
 )
-// Phases are deterministic, in range, and shared within a far bucket.
-expect phaseOf(7.0) == phaseOf(7.0)
+// A partial last row fills from its center: at 100 its 8 seats straddle x = 0.
+expect (
+  let last = members(100.0) |> List.drop(92.0) |> List.map((m) => m.seat.x) in
+  (last |> List.filter((x) => x < 0.0) |> List.length) == 4.0
+)
+// Phases are pinned to the index, in range, and bucketed into farBuckets.
+expect phaseOf(0.0) == fraction(0.5) * 2.0
+expect runOf(3.0) == 0.25 + 0.5 * fraction(3.0)
 expect List.range(100.0) |> List.all((i) => phaseOf(i) >= 0.0 && phaseOf(i) < 2.0)
 expect List.range(100.0) |> List.all((i) => runOf(i) >= 0.25 && runOf(i) <= 0.75)
-expect layout(100.0) == layout(100.0)
-expect (
-  members(100.0) |> List.filter((m) => m.tier == Far)
-    |> List.all((m) => List.range(farBuckets) |> List.any((b) => m.phase == bucketPhase(b)))
-)
+expect List.range(100.0) |> List.all((i) => bucketOf(i) == 0.0 || bucketOf(i) == 1.0)
+expect (layout(100.0).batches |> List.head |> Option.map((b) => b.key)) == Option.Some("far/male_base_lod2/0")
 // Near/mid characters are individually phased: no two share a playhead.
 expect (
   let ps = layout(100.0).members |> List.map((m) => m.phase) in

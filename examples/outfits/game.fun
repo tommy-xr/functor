@@ -32,13 +32,22 @@ let counts = [1.0, 25.0, 50.0, 100.0]
 
 let startCount = 100.0
 
+// One layout per count, as top-level values rather than model state, so a
+// hot-reloaded crowd.fun edit shows at once.
+let layouts = counts |> List.map((c) => (c, Crowd.layout(c)))
+
+let crowdOf = (model): Crowd.Layout =>
+  layouts
+    |> List.find((entry) => (let (c, _) = entry in c == model.count))
+    |> Option.map((entry) => (let (_, l) = entry in l))
+    |> Option.defaultWith(() => Crowd.layout(model.count))
+
 let init = {
   mode: LoadoutView,
   kit: Loadout.dress(Loadout.Male, Loadout.Ranger),
   gait: Idle,
   count: startCount,
   shadows: true,
-  crowd: Crowd.layout(startCount),
 }
 
 // The next item after `x` in `xs`, wrapping.
@@ -54,7 +63,7 @@ let update = (model, msg: Msg) =>
   | SetBody(body) => { model with kit: Loadout.dress(body, outfitOf(model)) }
   | SetOutfit(outfit) => { model with kit: Loadout.dress(model.kit.body, outfit) }
   | SetGait(gait) => { model with gait: gait }
-  | SetCount(count) => { model with count: count, crowd: Crowd.layout(count) }
+  | SetCount(count) => { model with count: count }
   | ToggleShadows => { model with shadows: not model.shadows }
 
 let input = (model, key, isDown) =>
@@ -134,10 +143,11 @@ let loadoutScene = (model, tts: float): Scene.t =>
   ])
 
 let crowdScene = (model, tts: float): Scene.t =>
+  let crowd = crowdOf(model) in
   Scene.group([
     ground,
-    Scene.group(model.crowd.members |> List.map((m) => member(m, tts))),
-    Scene.group(model.crowd.batches |> List.map((b) => batch(b, tts))),
+    Scene.group(crowd.members |> List.map((m) => member(m, tts))),
+    Scene.group(crowd.batches |> List.map((b) => batch(b, tts))),
   ])
 
 let loadoutCamera = Camera3D.lookAt(Vec3.make(0.0, 1.35, -3.6), Vec3.make(0.0, 0.95, 0.0))
@@ -170,11 +180,12 @@ let loadoutPanel = (model) =>
       |> List.append(model.kit.wear |> List.map((w) => Ui.text($"{Loadout.slotName(w.slot)}: {Loadout.outfitName(w.item)}"))))
 
 let crowdPanel = (model) =>
-  let tally = (tier) => Crowd.countTier(tier, model.crowd.members) in
-  let far = model.crowd.batches |> List.map((b) => List.length(b.seats)) |> List.sum in
+  let crowd = crowdOf(model) in
+  let tally = (tier) => Crowd.countTier(tier, crowd.members) in
+  let far = crowd.batches |> List.map((b) => List.length(b.seats)) |> List.sum in
   Ui.column([
     Ui.row(counts |> List.map((c) => choice($"{c}", c == model.count, SetCount(c)))),
-    Ui.text($"near {tally(Crowd.Near)} · mid {tally(Crowd.Mid)} · far {far} in {List.length(model.crowd.batches)} batches"),
+    Ui.text($"near {tally(Crowd.Near)} · mid {tally(Crowd.Mid)} · far {far} in {List.length(crowd.batches)} batches"),
     choice(if model.shadows then "shadows on" else "shadows off", model.shadows, ToggleShadows),
   ])
 
@@ -191,5 +202,5 @@ expect (update(init, SetOutfit(Loadout.Peasant)).kit) == Loadout.dress(Loadout.M
 // Switching body keeps the outfit.
 expect outfitOf(update(update(init, SetOutfit(Loadout.Peasant)), SetBody(Loadout.Female))) == Loadout.Peasant
 expect (input(init, Key.C, true)).count == 1.0
-expect (input(init, Key.C, true)).crowd == Crowd.layout(1.0)
+expect crowdOf(input(init, Key.C, true)) == Crowd.layout(1.0)
 expect (input(init, Key.O, true)) == update(init, SetOutfit(Loadout.Peasant))

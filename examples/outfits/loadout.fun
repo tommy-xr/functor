@@ -56,10 +56,9 @@ let outfitOf = (kit: Kit): Option.t<Outfit> =>
 // The preset outfit, or Bare for a loadout no preset matches.
 let outfitOrBare = (kit: Kit): Outfit => outfitOf(kit) |> Option.defaultValue(Bare)
 
-// A loadout's one item per slot, at most one entry each.
+// A valid loadout wears exactly one item per slot.
 let isValid = (kit: Kit): bool =>
-  List.length(kit.wear) == List.length(slots)
-    && (slots |> List.all((s) => (kit.wear |> List.filter((w) => w.slot == s) |> List.length) == 1.0))
+  slots |> List.all((s) => (kit.wear |> List.filter((w) => w.slot == s) |> List.length) == 1.0)
 
 let bodyName = (body: Body): string =>
   match body with
