@@ -12,8 +12,8 @@
 // Assets: `npm run fetch:assets`.
 
 type Mode =
-  | Loadout
-  | Crowd
+  | LoadoutView
+  | CrowdView
 
 type Gait =
   | Idle
@@ -33,7 +33,7 @@ let counts = [1.0, 25.0, 50.0, 100.0]
 let startCount = 100.0
 
 let init = {
-  mode: Loadout,
+  mode: LoadoutView,
   kit: Loadout.dress(Loadout.Male, Loadout.Ranger),
   gait: Idle,
   count: startCount,
@@ -61,7 +61,7 @@ let input = (model, key, isDown) =>
   if not isDown then model
   else
     match key with
-    | Key.M => update(model, SetMode(if model.mode == Loadout then Crowd else Loadout))
+    | Key.M => update(model, SetMode(if model.mode == LoadoutView then CrowdView else LoadoutView))
     | Key.B => update(model, SetBody(cycle(Loadout.bodies, model.kit.body)))
     | Key.O => update(model, SetOutfit(cycle(Loadout.outfits, outfitOf(model))))
     | Key.Num1 => update(model, SetGait(Idle))
@@ -146,8 +146,8 @@ let crowdCamera = Camera3D.lookAt(Vec3.make(0.0, 4.0, -1.5), Vec3.make(0.0, 0.4,
 
 let draw = (model, tts: float) =>
   match model.mode with
-  | Loadout => Frame.createLit(loadoutCamera, loadoutScene(model, tts), lights(model))
-  | Crowd => Frame.createLit(crowdCamera, crowdScene(model, tts), lights(model))
+  | LoadoutView => Frame.createLit(loadoutCamera, loadoutScene(model, tts), lights(model))
+  | CrowdView => Frame.createLit(crowdCamera, crowdScene(model, tts), lights(model))
 
 // --- UI -------------------------------------------------------------------
 
@@ -180,8 +180,8 @@ let crowdPanel = (model) =>
 
 let ui = (model) =>
   Ui.column([
-    Ui.row([choice("loadout", model.mode == Loadout, SetMode(Loadout)), choice("crowd", model.mode == Crowd, SetMode(Crowd))]),
-    if model.mode == Loadout then loadoutPanel(model) else crowdPanel(model),
+    Ui.row([choice("loadout", model.mode == LoadoutView, SetMode(LoadoutView)), choice("crowd", model.mode == CrowdView, SetMode(CrowdView))]),
+    if model.mode == LoadoutView then loadoutPanel(model) else crowdPanel(model),
     Ui.text("keys: M mode, B body, O outfit, 1-3 gait, C count, S shadows"),
   ]) |> Ui.panel(Ui.topLeft())
 
