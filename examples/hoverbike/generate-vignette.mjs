@@ -11,7 +11,7 @@ import { encodePng } from "../../scripts/png.mjs";
 const SIZE = 256;
 // Mirrors bars.fun's `vignetteInner` / `vignetteOuter`.
 const INNER = 0.5;
-const OUTER = 0.86;
+const OUTER = 0.75;
 
 const smoothstep = (a, b, v) => {
   const t = Math.max(0, Math.min(1, (v - a) / (b - a)));

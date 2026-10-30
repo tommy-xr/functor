@@ -186,7 +186,7 @@ let startOn = (course: Course, m: Model) =>
   let at = positionOf(spawnOf(course)) in
   ({ init with course: course, prev: poseOf(at, Ride.rest), last: at,
                riderCam: m.riderCam, swapHeld: m.swapHeld, controls: m.controls,
-               vr: { m.vr with snap: Bars.idleSnap, vignette: 0.0 } },
+               vr: { m.vr with snap: Bars.idleSnap, vignette: 0.0, steer: 0.0 } },
    Physics.teleport(bikeTag, spawnOf(course)))
 
 // One step, from where the bike is and what its probes saw. Until the probes
@@ -294,10 +294,12 @@ let camera = (riderCam: bool, origin: Vec3.t, yaw: float) =>
 
 // The headset camera: the rig-local origin placed so the calibrated head
 // lands on the eye, turned by the calibration's heading. Yaw-only, so the
-// horizon stays level; tracking composes the head on top.
+// horizon stays level; tracking composes the head on top. The headset owns
+// the field of view; 96°, a Quest 3 eye's vertical, frames the desktop view
+// like it.
 let headsetCamera = (r: Bars.Rider, origin: Vec3.t, yaw: float) =>
   let o = Bars.rigOrigin(r) in
-  Camera3D.firstPerson(rigPoint(origin, yaw, o.x, o.y, o.z), Angle.radians(yaw - r.calibration.yaw), 0deg, 75deg)
+  Camera3D.firstPerson(rigPoint(origin, yaw, o.x, o.y, o.z), Angle.radians(yaw - r.calibration.yaw), 0deg, 96deg)
 
 // The camera maps a rig-local pose where `Bars.toBike` says it is.
 expect (
@@ -314,7 +316,7 @@ expect (
 // Each tracked hand, where it really is: lit ion once latched.
 let hands = (r: Bars.Rider, origin: Vec3.t, yaw: float) =>
   Scene.group([r.left, r.right] |> List.filter((h) => h.tracked) |> List.map((h) =>
-    Scene.sphere() |> Scene.scale(0.045) |> Scene.emissive(if h.latched then Bike.ion else Bike.tag)
+    Scene.sphere() |> Scene.scale(0.035) |> Scene.emissive(if h.latched then Bike.ion else Bike.tag)
       |> Scene.translate(rigPoint(origin, yaw, h.at.x, h.at.y, h.at.z))))
 
 // The comfort layer over the frame: the vignette, its clear radius the
@@ -329,7 +331,7 @@ let withComfort = (r: Bars.Rider, frame) =>
     let size = 2.0 * Bars.aperture(closed) / Bars.vignetteInner in
     frame |> Frame.with2D(Camera2D.create(Bars.layerWidth, Bars.layerHeight),
       Sprite.group([
-        if closed < 0.01 then Sprite.blank() else Sprite.image(size, size, vignette),
+        if closed < 0.01 then Sprite.blank() else Sprite.image(size, size, vignette) |> Sprite.fade(Bars.opacity(closed)),
         if fade <= 0.0 then Sprite.blank() else Sprite.rectangle(black, 4.0, 4.0) |> Sprite.fade(fade),
       ]))
 
