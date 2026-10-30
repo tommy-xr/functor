@@ -35,18 +35,19 @@ let unwrap : (Model.staticData, options) => unwrapped
 
 /// One lightmap for `functor bake`, which reads a top-level
 /// `let bakes : List<Lightmap.bakeJob>`, unwraps each `mesh` (its `uvs2` are
-/// replaced) and writes `<name>.png` (linear light, RGBA8) and
+/// replaced) and writes `<name>.png` (light, sRGB-encoded RGBA8) and
 /// `<name>.mesh.bin` (the unwrapped mesh) for the game to load:
 ///
 /// ```
-/// let bakes = [{ name: "room", mesh: roomData, lights: roomLights }]
+/// let bakes = [{ name: "room", mesh: roomData, lights: roomLights,
+///   albedo: [Color.rgb(0.87, 0.87, 0.87), Color.rgb(0.81, 0.28, 0.25)], scale: 1.0 }]
 /// // `functor bake` evaluates the whole project, so guard the load: the
 /// // first bake runs before its files exist, and while it runs the files it
 /// // writes read as missing.
 /// let room = if File.exists(Path.of("baked/room.png")) then
 ///   Model.static({ Lightmap.readMesh(File.bytes(Path.of("baked/room.mesh.bin"))) with
 ///     groups: roomData.groups,
-///     lightmap: Option.Some({ texture: Texture.fromPng(File.bytes(Path.of("baked/room.png")), Texture.Linear),
+///     lightmap: Option.Some({ texture: Texture.fromPng(File.bytes(Path.of("baked/room.png")), Texture.Srgb),
 ///       scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
 ///   else Model.static(roomData)
 /// ```
@@ -54,10 +55,15 @@ let unwrap : (Model.staticData, options) => unwrapped
 /// The baked texels hold light, not colour: the shader multiplies in each
 /// group's texture. Lights work as at runtime (same falloff; only
 /// `castShadows` lights cast shadows); ambient light is darkened where
-/// geometry is near (occlusion). Mark the same lights `Light.baked` in the
-/// game so lightmapped surfaces don't get them twice. Light above 1 clips:
-/// lower it and raise the lightmap's `scale`.
-type bakeJob = { name: string, mesh: Model.staticData, lights: List<Light.t> }
+/// geometry is near (occlusion). Light then bounces (`--bounces`) off the
+/// surfaces it lit, tinted by `albedo`: one colour per group (one if there
+/// are none), the share of light it reflects, e.g. its texture's average
+/// colour. Ambient light doesn't bounce; it already stands in for bounced
+/// light. Mark the same lights `Light.baked` in the game so lightmapped
+/// surfaces don't get them twice. The PNG stores light ÷ `scale`, so light
+/// above `scale` clips (`functor bake` reports the peak): load it with the
+/// same `scale` in the lightmap, e.g. 2.0 for light up to 2.
+type bakeJob = { name: string, mesh: Model.staticData, lights: List<Light.t>, albedo: List<Color.t>, scale: float }
 
 /// The mesh in a `.mesh.bin` that `functor bake` wrote: `Model.staticData`
 /// with its `uvs2`, groups without textures (the triangles keep their order,

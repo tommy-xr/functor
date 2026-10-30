@@ -215,7 +215,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     );
     reg.fn2(
         "Texture.fromPng",
-        "Texture.fromPng(File.bytes(Path.of(\"baked/room.png\")), Texture.Linear)",
+        "Texture.fromPng(File.bytes(Path.of(\"baked/room.png\")), Texture.Srgb)",
         |png: FunctorLangBytes, space: ColorSpaceArg| {
             let fail = |e: String| format!("Texture.fromPng: {e}");
             let image = image::load_from_memory_with_format(png.0.as_slice(), image::ImageFormat::Png)
