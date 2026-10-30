@@ -60,7 +60,9 @@ struct State {
 impl State {
     /// The host answered `path` this session (bytes, confirmed or missing).
     fn got(&self, path: &str) -> bool {
-        self.confirmed.contains(path) || self.ready.contains_key(path) || self.missing.contains_key(path)
+        self.confirmed.contains(path)
+            || self.ready.contains_key(path)
+            || self.missing.contains_key(path)
     }
 }
 
@@ -617,11 +619,16 @@ mod tests {
         );
         files.begin(Some(session(1, "")));
         let _ = read(&files, "ss2/a.bin");
-        files.accept(reply(1, "ss2/a.bin", bytes("v1", b"one"))).unwrap();
+        files
+            .accept(reply(1, "ss2/a.bin", bytes("v1", b"one")))
+            .unwrap();
         let held = files.read("ss2/a.bin").ok().unwrap();
 
         let updated = files.accept(reply(1, "ss2/a.bin", bytes("v2", b"two")));
-        assert_eq!(updated, Ok(("stored ss2/a.bin".into(), Some("ss2/a.bin".into()))));
+        assert_eq!(
+            updated,
+            Ok(("stored ss2/a.bin".into(), Some("ss2/a.bin".into())))
+        );
         assert_eq!(read(&files, "ss2/a.bin"), Ok(b"two".to_vec()));
         assert_eq!(&*held, b"one", "the old copy stays valid while held");
 
@@ -629,10 +636,15 @@ mod tests {
             message: "deleted".into(),
         };
         let gone = files.accept(reply(1, "ss2/a.bin", gone));
-        assert_eq!(gone, Ok(("missing ss2/a.bin".into(), Some("ss2/a.bin".into()))));
+        assert_eq!(
+            gone,
+            Ok(("missing ss2/a.bin".into(), Some("ss2/a.bin".into())))
+        );
         assert_eq!(read(&files, "ss2/a.bin"), Err("deleted".to_string()));
         assert!(!files.exists("ss2/a.bin"));
-        files.accept(reply(1, "ss2/a.bin", bytes("v3", b"three"))).unwrap();
+        files
+            .accept(reply(1, "ss2/a.bin", bytes("v3", b"three")))
+            .unwrap();
         assert_eq!(read(&files, "ss2/a.bin"), Ok(b"three".to_vec()));
         assert_eq!(paths(&files), []);
 
@@ -645,7 +657,10 @@ mod tests {
         assert!(unasked.unwrap_err().contains("wasn't requested"));
         files.begin(Some(session(2, "")));
         let stale = files.accept(reply(2, "ss2/a.bin", bytes("v4", b"four")));
-        assert!(stale.unwrap_err().contains("wasn't requested"), "a new session starts over");
+        assert!(
+            stale.unwrap_err().contains("wasn't requested"),
+            "a new session starts over"
+        );
     }
 
     /// Over the cap, the least recently used files go first.

@@ -23,8 +23,8 @@ use std::sync::Arc;
 use clap::Parser;
 use functor_runtime_common::data_watch::DataWatch;
 use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
-use functor_runtime_common::storage::ProjectReader;
 use functor_runtime_common::runtime_settings::ExternalPrefix;
+use functor_runtime_common::storage::ProjectReader;
 
 use super::project_files;
 use crate::output::{emit, Event, Severity};
@@ -2136,8 +2136,13 @@ restart `functor run vr`",
             };
             let body = encode_project_file_reply(&reply);
             let upload = std::time::Duration::from_secs(30);
-            let posted =
-                http_post_bytes(addr, "/project-files", "application/octet-stream", &body, upload);
+            let posted = http_post_bytes(
+                addr,
+                "/project-files",
+                "application/octet-stream",
+                &body,
+                upload,
+            );
             match posted {
                 Ok((200, _)) => {
                     sent += 1;

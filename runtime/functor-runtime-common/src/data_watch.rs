@@ -169,9 +169,18 @@ mod tests {
         disk.set("a", Some("2"));
         assert!(watch.poll(ms(t, 500), disk.version()).is_empty(), "moving");
         disk.set("b", Some("2"));
-        assert!(watch.poll(ms(t, 600), disk.version()).is_empty(), "still moving");
-        assert!(watch.poll(ms(t, 650), disk.version()).is_empty(), "throttled");
-        assert!(watch.poll(ms(t, 700), disk.version()).is_empty(), "settling");
+        assert!(
+            watch.poll(ms(t, 600), disk.version()).is_empty(),
+            "still moving"
+        );
+        assert!(
+            watch.poll(ms(t, 650), disk.version()).is_empty(),
+            "throttled"
+        );
+        assert!(
+            watch.poll(ms(t, 700), disk.version()).is_empty(),
+            "settling"
+        );
         assert_eq!(watch.poll(ms(t, 800), disk.version()), ["a", "b"]);
         assert!(watch.poll(ms(t, 1000), disk.version()).is_empty());
     }
@@ -230,7 +239,10 @@ mod tests {
         let changed = watch.poll(ms(t, 200), disk.version());
         assert_eq!(changed, ["a"]);
         watch.failed(&changed, ms(t, 200));
-        assert!(watch.poll(ms(t, 300), disk.version()).is_empty(), "settling");
+        assert!(
+            watch.poll(ms(t, 300), disk.version()).is_empty(),
+            "settling"
+        );
         let retried = watch.poll(ms(t, 400), disk.version());
         assert_eq!(retried, ["a"]);
         watch.failed(&retried, ms(t, 400));
@@ -247,6 +259,9 @@ mod tests {
     #[test]
     fn describe_names_the_first_path() {
         assert_eq!(describe(&["a".into()]), "a");
-        assert_eq!(describe(&["a".into(), "b".into(), "c".into()]), "a (+2 more)");
+        assert_eq!(
+            describe(&["a".into(), "b".into(), "c".into()]),
+            "a (+2 more)"
+        );
     }
 }

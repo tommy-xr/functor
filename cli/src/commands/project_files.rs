@@ -731,7 +731,10 @@ mod tests {
         use functor_runtime_common::data_watch::DataWatch;
         let project = TempProject::new("watch");
         let zip = project.0.join("game.kpf");
-        write_zip(&zip, &[("res/a.bin", Some(b"a1")), ("res/b.bin", Some(b"b1"))]);
+        write_zip(
+            &zip,
+            &[("res/a.bin", Some(b"a1")), ("res/b.bin", Some(b"b1"))],
+        );
         project.config(r#"{"ss2/": "SS2"}"#, Some(r#"{"ss2/": "game.kpf!res/"}"#));
         let resolver = project.resolver();
         let version = |path: &str| resolver.version(path);

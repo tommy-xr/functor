@@ -620,7 +620,8 @@ impl FunctorLangGame {
     /// Watch exactly the data files the program just read.
     fn watch_data(&mut self, paths: std::collections::BTreeSet<String>) {
         let reader = functor_runtime_common::storage::project_reader();
-        self.data_watch.watch(paths, |path| data_version(&reader, path));
+        self.data_watch
+            .watch(paths, |path| data_version(&reader, path));
     }
 
     /// Load the program as it stands, around any pushed sources.
@@ -638,7 +639,9 @@ impl FunctorLangGame {
     /// status line, or `None` when nothing changed.
     fn check_data_reload(&mut self, now: Instant) -> Option<Result<String, String>> {
         let reader = functor_runtime_common::storage::project_reader();
-        let changed = self.data_watch.poll(now, |path| data_version(&reader, path));
+        let changed = self
+            .data_watch
+            .poll(now, |path| data_version(&reader, path));
         if changed.is_empty() {
             return None;
         }
@@ -2218,7 +2221,8 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         storage::set_project_reader(Some(std::sync::Arc::new(DirReader(dir.clone()))));
         let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
         assert_eq!(game.data_watch.len(), 2, "a.bin and b.bin");
-        let global = |game: &FunctorLangGame, name: &str| game.session.global(name).unwrap().to_string();
+        let global =
+            |game: &FunctorLangGame, name: &str| game.session.global(name).unwrap().to_string();
         let t = Instant::now();
         let at = |ms: u64| t + std::time::Duration::from_millis(ms);
         assert!(game.check_data_reload(at(0)).is_none());

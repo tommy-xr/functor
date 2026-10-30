@@ -530,7 +530,13 @@ pub fn reuse_counts(
     reuse: &functor_lang::reuse::ReuseStats,
     sources: &SourceMap,
 ) -> (usize, usize) {
-    reuse.count(|span| !sources.file_at(span.start).path.to_string_lossy().starts_with('<'))
+    reuse.count(|span| {
+        !sources
+            .file_at(span.start)
+            .path
+            .to_string_lossy()
+            .starts_with('<')
+    })
 }
 
 /// The producer side of the `config` value and `settings(model)` hook, one
