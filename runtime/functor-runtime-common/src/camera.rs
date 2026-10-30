@@ -163,6 +163,38 @@ pub struct MappedTrackingPose {
     pub up: [f32; 3],
 }
 
+impl MappedTrackingPose {
+    /// The rigid transform placing an authored local frame at this pose:
+    /// origin at `position`, local `+Z` along `forward`, `+Y` along `up`
+    /// (re-orthogonalized against `forward`). Right-handed, so local `+X`
+    /// lands on `up × forward`, the pose's left.
+    ///
+    /// `None` for non-finite input, a zero `forward`/`up`, or an `up` within
+    /// ~0.06° of parallel to `forward` (no defined roll).
+    pub fn to_matrix(&self) -> Option<Matrix4<f32>> {
+        let position = Vector3::from(self.position);
+        let forward = Vector3::from(self.forward);
+        let up = Vector3::from(self.up);
+        let finite = position.x.is_finite() && position.y.is_finite() && position.z.is_finite();
+        if !finite || !forward.magnitude().is_normal() || !up.magnitude().is_normal() {
+            return None;
+        }
+        let z = forward.normalize();
+        let x = up.normalize().cross(z);
+        if !(x.magnitude() > 1e-3) {
+            return None;
+        }
+        let x = x.normalize();
+        let y = z.cross(x);
+        Some(Matrix4::from_cols(
+            x.extend(0.0),
+            y.extend(0.0),
+            z.extend(0.0),
+            position.extend(1.0),
+        ))
+    }
+}
+
 /// A world-space ray derived from a point on a camera's logical surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldRay {
