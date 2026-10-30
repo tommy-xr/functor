@@ -283,8 +283,8 @@ struct Loaded {
     settings: Option<GameSettings>,
     /// How many top-level values a reload kept (`functor_lang::reuse`).
     reuse: functor_lang::reuse::ReuseStats,
-    /// The project files the load read or re-checked.
-    file_reads: std::collections::BTreeSet<String>,
+    /// The project files the load read or re-checked, by version when read.
+    file_reads: std::collections::BTreeMap<String, Option<String>>,
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
@@ -439,8 +439,10 @@ fn finish_load(
 fn data_version(
     reader: &Option<std::sync::Arc<dyn functor_runtime_common::storage::ProjectReader>>,
     path: &str,
-) -> Option<String> {
-    reader.as_ref()?.version(path)
+) -> Result<Option<String>, String> {
+    reader
+        .as_ref()
+        .map_or(Ok(None), |reader| reader.version(path))
 }
 
 
@@ -505,9 +507,8 @@ impl FunctorLangGame {
         let source_hashes = inspector_sources(&loaded.sources);
         let sources = project_sources_of(&loaded.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
-        let reader = functor_runtime_common::storage::project_reader();
         let mut data_watch = DataWatch::new();
-        data_watch.watch(loaded.file_reads, |path| data_version(&reader, path));
+        data_watch.watch(loaded.file_reads);
         let mut game = FunctorLangGame {
             path: path.to_string(),
             role,
@@ -606,22 +607,10 @@ impl FunctorLangGame {
         }
     }
 
-    /// Swap in a freshly loaded program, KEEPING THE MODEL — the shared tail
-    /// of both reload paths (file watch and network push). `init` from the
-    /// new program is deliberately unused: state survives the edit, and
-    /// closures stored in the model rebind to the edited code (B5 part 2,
-    /// `functor_lang::rebind_value`). The physics world is deliberately KEPT too, like
-    /// the model: it lives in this process's registry, so bodies stay where
-    /// they are across the edit and the next frame's declaration re-diffs
-    /// against them (removing the `physics` hook drops the world). `prev_tts`
-    /// is kept as well: `Sub.every` fires on the global time grid, so timers
-    /// tick right through a reload. Returns the number of stored closures
-    /// rebound, for the status line.
-    /// Watch exactly the data files the program just read.
-    fn watch_data(&mut self, paths: std::collections::BTreeSet<String>) {
-        let reader = functor_runtime_common::storage::project_reader();
-        self.data_watch
-            .watch(paths, |path| data_version(&reader, path));
+    /// Also watch what a failed load read: creating a file it lacked retries.
+    fn watch_failed_reads(&mut self) {
+        let reads = functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
+        self.data_watch.extend(reads);
     }
 
     /// Load the program as it stands, around any pushed sources.
@@ -659,6 +648,7 @@ impl FunctorLangGame {
             Err(message) => {
                 // Maybe read mid-write: try again once it settles.
                 self.data_watch.failed(&changed, now);
+                self.watch_failed_reads();
                 Err(format!(
                     "data changed: {what} → reload failed, keeping old program: {message}"
                 ))
@@ -672,8 +662,20 @@ impl FunctorLangGame {
         Some(result)
     }
 
+    /// Swap in a freshly loaded program, KEEPING THE MODEL — the shared tail
+    /// of both reload paths (file watch and network push). `init` from the
+    /// new program is deliberately unused: state survives the edit, and
+    /// closures stored in the model rebind to the edited code (B5 part 2,
+    /// `functor_lang::rebind_value`). The physics world is deliberately KEPT too, like
+    /// the model: it lives in this process's registry, so bodies stay where
+    /// they are across the edit and the next frame's declaration re-diffs
+    /// against them (removing the `physics` hook drops the world). `prev_tts`
+    /// is kept as well: `Sub.every` fires on the global time grid, so timers
+    /// tick right through a reload. Returns the number of stored closures
+    /// rebound, for the status line.
     fn swap_in(&mut self, mut loaded: Loaded) -> (usize, Option<(usize, f64)>) {
-        self.watch_data(std::mem::take(&mut loaded.file_reads));
+        self.data_watch
+            .watch(std::mem::take(&mut loaded.file_reads));
         let retry_tts_before_reload = self.prev_tts;
         let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
@@ -792,7 +794,8 @@ impl FunctorLangGame {
     }
 
     fn reset_in(&mut self, mut loaded: Loaded) {
-        self.watch_data(std::mem::take(&mut loaded.file_reads));
+        self.data_watch
+            .watch(std::mem::take(&mut loaded.file_reads));
         self.ctx().close_all_connections();
         physics::remove_world(physics::DEFAULT_WORLD);
         clear_http_taggers();
@@ -963,6 +966,7 @@ impl Game for FunctorLangGame {
                 });
             }
             Err(message) => {
+                self.watch_failed_reads();
                 events::emit(RuntimeEvent::HotReload {
                     ok: false,
                     message: format!("reload failed, keeping old program: {message}"),
@@ -2195,8 +2199,8 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             fn exists(&self, path: &str) -> bool {
                 storage::is_file_confined(&self.0, path)
             }
-            fn version(&self, path: &str) -> Option<String> {
-                storage::version_confined(&self.0, path)
+            fn version(&self, path: &str) -> Result<Option<String>, String> {
+                Ok(storage::version_confined(&self.0, path))
             }
         }
 
@@ -2214,28 +2218,40 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             &entry,
             format!(
                 "{BASE}let a = Bytes.length(File.bytes(Path.of(\"a.bin\")))\n\
-                 let b = Bytes.length(File.bytes(Path.of(\"b.bin\")))\n"
+                 let b = Bytes.length(File.bytes(Path.of(\"b.bin\")))\n\
+                 let c = if File.exists(Path.of(\"flag\")) then \
+                 Bytes.length(File.bytes(Path.of(\"c.bin\"))) else 0.0\n"
             ),
         )
         .unwrap();
         storage::set_project_reader(Some(std::sync::Arc::new(DirReader(dir.clone()))));
         let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
-        assert_eq!(game.data_watch.len(), 2, "a.bin and b.bin");
+        assert_eq!(game.data_watch.len(), 3, "a.bin, b.bin and flag");
         let global =
             |game: &FunctorLangGame, name: &str| game.session.global(name).unwrap().to_string();
         let t = Instant::now();
         let at = |ms: u64| t + std::time::Duration::from_millis(ms);
         assert!(game.check_data_reload(at(0)).is_none());
+        assert!(game.check_data_reload(at(200)).is_none(), "unchanged");
 
         std::fs::write(dir.join("unread.bin"), b"uu").unwrap();
-        assert!(game.check_data_reload(at(200)).is_none());
-        assert!(game.check_data_reload(at(400)).is_none(), "unread: no reload");
+        assert!(game.check_data_reload(at(300)).is_none());
+        assert!(
+            game.check_data_reload(at(400)).is_none(),
+            "unread: no reload"
+        );
 
         std::fs::write(dir.join("a.bin"), b"aaaa").unwrap();
         assert!(game.check_data_reload(at(500)).is_none(), "settling");
         let status = game.check_data_reload(at(700)).unwrap().unwrap();
-        assert!(status.starts_with("data changed: a.bin → reloaded in "), "{status}");
-        assert!(status.ends_with("(reused 2 of 3)"), "only `a` re-ran: {status}");
+        assert!(
+            status.starts_with("data changed: a.bin → reloaded in "),
+            "{status}"
+        );
+        assert!(
+            status.ends_with("(reused 3 of 4)"),
+            "only `a` re-ran: {status}"
+        );
         assert_eq!(global(&game, "a"), "4");
 
         // An editor's save: write a temp file, rename it over.
@@ -2257,6 +2273,22 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let status = game.check_data_reload(at(1600)).unwrap().unwrap();
         assert!(status.contains("data changed: a.bin"), "{status}");
         assert_eq!(global(&game, "a"), "1");
+
+        // A new dependency the failed load lacked loads once created.
+        std::fs::write(dir.join("flag"), b"").unwrap();
+        game.check_data_reload(at(1700));
+        let failed = game.check_data_reload(at(1900)).unwrap().unwrap_err();
+        assert!(failed.contains("c.bin"), "{failed}");
+        game.check_data_reload(at(2000));
+        assert!(
+            game.check_data_reload(at(2200)).unwrap().is_err(),
+            "the retry"
+        );
+        std::fs::write(dir.join("c.bin"), b"cc").unwrap();
+        game.check_data_reload(at(2300));
+        let status = game.check_data_reload(at(2500)).unwrap().unwrap();
+        assert!(status.contains("data changed: c.bin"), "{status}");
+        assert_eq!(global(&game, "c"), "2");
 
         storage::set_project_reader(None);
         let _ = std::fs::remove_dir_all(&dir);

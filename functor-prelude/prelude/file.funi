@@ -15,8 +15,9 @@
 //! first asks: `File.exists` is false until then, and the game reloads once
 //! they arrive.
 //!
-//! Changing a file the game read (on disk or in a mounted archive) reloads it,
-//! on desktop and through `functor run vr`; only bindings that read it re-run.
+//! Changing a file a top-level binding read (on disk or in a mounted archive)
+//! reloads the game, on desktop and through `functor run vr`; only bindings
+//! that read it re-run.
 
 /// The bytes of a file: `"data/model.bin" |> Path.of |> File.bytes`.
 impure[file]

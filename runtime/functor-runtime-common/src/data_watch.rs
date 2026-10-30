@@ -33,23 +33,29 @@ impl DataWatch {
         DataWatch::default()
     }
 
-    /// Watch exactly `paths`; new ones start at their current version (the
-    /// program just read them).
-    pub fn watch(
-        &mut self,
-        paths: impl IntoIterator<Item = String>,
-        version: impl Fn(&str) -> Option<String>,
-    ) {
+    /// Watch exactly the files a load read, each from the version it had when
+    /// read (`take_file_reads`): an edit landing mid-load still reports.
+    pub fn watch(&mut self, reads: BTreeMap<String, Option<String>>) {
         let mut files = BTreeMap::new();
-        for path in paths {
-            let entry = self.files.remove(&path).unwrap_or_else(|| {
-                let now = version(&path);
-                (now.clone(), now)
-            });
-            files.insert(path, entry);
+        for (path, read) in reads {
+            let seen = match self.files.remove(&path) {
+                Some((_, seen)) => seen,
+                None => read.clone(),
+            };
+            files.insert(path, (read, seen));
         }
         self.files = files;
         self.retry.retain(|path| self.files.contains_key(path));
+    }
+
+    /// Also watch the new files among `reads` (a failed load's: creating a
+    /// file it lacked should load it).
+    pub fn extend(&mut self, reads: BTreeMap<String, Option<String>>) {
+        for (path, read) in reads {
+            self.files
+                .entry(path)
+                .or_insert_with(|| (read.clone(), read));
+        }
     }
 
     /// Watch `path` from `version` on (what was last sent of it).
@@ -68,14 +74,21 @@ impl DataWatch {
     /// Poll (at most every [`POLL`]); once changes have settled, the paths
     /// whose version differs from the last report, sorted. An entry that
     /// changed and changed back (an archive rewritten with it intact) isn't
-    /// reported.
-    pub fn poll(&mut self, now: Instant, version: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    /// reported, nor is one whose version can't be told (`Err`: its archive
+    /// is mid-write) until it can.
+    pub fn poll(
+        &mut self,
+        now: Instant,
+        version: impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Vec<String> {
         if self.polled.is_some_and(|at| now.duration_since(at) < POLL) {
             return Vec::new();
         }
         self.polled = Some(now);
         for (path, (_, seen)) in self.files.iter_mut() {
-            let current = version(path);
+            let Ok(current) = version(path) else {
+                continue;
+            };
             if *seen != current {
                 *seen = current;
                 self.moved = Some(now);
@@ -143,8 +156,20 @@ mod tests {
                 None => files.remove(path),
             };
         }
-        fn version(&self) -> impl Fn(&str) -> Option<String> + '_ {
-            |path| self.0.borrow().get(path).cloned()
+        /// `"torn"` reads as can't-tell.
+        fn version(&self) -> impl Fn(&str) -> Result<Option<String>, String> + '_ {
+            |path| match self.0.borrow().get(path) {
+                Some(v) if v == "torn" => Err("mid-write".to_string()),
+                v => Ok(v.cloned()),
+            }
+        }
+        /// `paths` as just read, at their current versions.
+        fn reads(&self, paths: &[&str]) -> BTreeMap<String, Option<String>> {
+            let version = self.version();
+            paths
+                .iter()
+                .map(|p| (p.to_string(), version(p).unwrap()))
+                .collect()
         }
     }
 
@@ -158,9 +183,13 @@ mod tests {
     fn changes_settle_then_report_once() {
         let disk = Disk::new(&[("a", "1"), ("b", "1"), ("other", "1")]);
         let mut watch = DataWatch::new();
-        watch.watch(["a".to_string(), "b".to_string()], disk.version());
+        watch.watch(disk.reads(&["a", "b"]));
         let t = Instant::now();
         assert!(watch.poll(t, disk.version()).is_empty());
+        assert!(
+            watch.poll(ms(t, 200), disk.version()).is_empty(),
+            "unchanged"
+        );
 
         disk.set("other", Some("2"));
         assert!(watch.poll(ms(t, 100), disk.version()).is_empty());
@@ -191,7 +220,7 @@ mod tests {
     fn deletes_recreates_and_round_trips() {
         let disk = Disk::new(&[("a", "1")]);
         let mut watch = DataWatch::new();
-        watch.watch(["a".to_string()], disk.version());
+        watch.watch(disk.reads(&["a"]));
         let t = Instant::now();
         disk.set("a", None);
         watch.poll(t, disk.version());
@@ -200,31 +229,50 @@ mod tests {
         watch.poll(ms(t, 300), disk.version());
         assert_eq!(watch.poll(ms(t, 500), disk.version()), ["a"]);
 
-        // A torn archive (unreadable) then the same entry again.
-        disk.set("a", None);
+        // An archive mid-write can't tell, however long: nothing reports;
+        // finished with the entry intact, still nothing.
+        disk.set("a", Some("torn"));
         watch.poll(ms(t, 600), disk.version());
-        disk.set("a", Some("2"));
-        watch.poll(ms(t, 700), disk.version());
         assert!(watch.poll(ms(t, 900), disk.version()).is_empty());
+        disk.set("a", Some("2"));
+        watch.poll(ms(t, 1000), disk.version());
+        assert!(watch.poll(ms(t, 1200), disk.version()).is_empty());
     }
 
-    /// Re-deriving the set keeps known versions (a pending change still
-    /// reports), starts new paths at their current version, drops the rest.
+    /// Re-deriving the set takes each path's version as read: a change the
+    /// load already read isn't reported again, one it missed (or one after
+    /// its read) is; unread paths drop out. A failed load's new paths are
+    /// added without disturbing the rest.
     #[test]
-    fn rewatching_keeps_known_paths() {
-        let disk = Disk::new(&[("a", "1"), ("b", "1")]);
+    fn rewatching_starts_from_what_was_read() {
+        let disk = Disk::new(&[("a", "1"), ("b", "1"), ("c", "1")]);
         let mut watch = DataWatch::new();
-        watch.watch(["a".to_string()], disk.version());
+        watch.watch(disk.reads(&["a", "b"]));
         let t = Instant::now();
         disk.set("a", Some("2"));
+        disk.set("b", Some("2"));
         watch.poll(t, disk.version());
-        watch.watch(["a".to_string(), "b".to_string()], disk.version());
-        assert_eq!(watch.len(), 2);
-        assert_eq!(watch.poll(ms(t, 200), disk.version()), ["a"]);
-        watch.watch(["b".to_string()], disk.version());
+        // The reload read a's new version, but b's old one (b then changed).
+        let mut reads = disk.reads(&["a"]);
+        reads.insert("b".to_string(), Some("1".to_string()));
+        watch.watch(reads);
+        assert_eq!(watch.poll(ms(t, 200), disk.version()), ["b"]);
+
+        watch.watch(disk.reads(&["b"]));
         disk.set("a", Some("3"));
         watch.poll(ms(t, 300), disk.version());
-        assert!(watch.poll(ms(t, 500), disk.version()).is_empty());
+        assert!(
+            watch.poll(ms(t, 500), disk.version()).is_empty(),
+            "a unwatched"
+        );
+
+        let mut failed = disk.reads(&["b"]);
+        failed.insert("d".to_string(), None);
+        watch.extend(failed);
+        assert_eq!(watch.len(), 2);
+        disk.set("d", Some("1"));
+        watch.poll(ms(t, 600), disk.version());
+        assert_eq!(watch.poll(ms(t, 800), disk.version()), ["d"], "created");
     }
 
     /// A failed reload retries once after the settle, not again.
@@ -232,7 +280,7 @@ mod tests {
     fn a_failed_reload_retries_once() {
         let disk = Disk::new(&[("a", "1")]);
         let mut watch = DataWatch::new();
-        watch.watch(["a".to_string()], disk.version());
+        watch.watch(disk.reads(&["a"]));
         let t = Instant::now();
         disk.set("a", Some("2"));
         watch.poll(t, disk.version());

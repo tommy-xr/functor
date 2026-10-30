@@ -149,10 +149,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// visible, hidden}`: its `Scene.cells` portal walks, the cells they
 /// reached, and `Scene.inCells` subtrees hidden) on `GET /state`.
 /// Additive — a runtime that doesn't report them omits them, which deserializes as zero.
-/// Also: `POST /project-files` takes an unasked reply for a file the session
-/// already got — the host's copy changed (`functor run vr` refreshes it);
-/// an older runtime refuses it with 409.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 25;
+///
+/// 26: `POST /project-files` also takes an unasked reply (bytes or missing)
+/// for a file the session already got — the host's copy changed, and
+/// `functor run vr` sends it from v26.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 26;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a

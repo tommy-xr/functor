@@ -264,9 +264,10 @@ pub trait ProjectReader: Send + Sync {
     /// Without reading the file.
     fn exists(&self, path: &str) -> bool;
     /// What changes when the file does (size + mtime on disk, crc + size in
-    /// a zip); `None` when it's missing or this reader can't tell.
-    fn version(&self, _path: &str) -> Option<String> {
-        None
+    /// a zip); `None` when it's missing (or this reader doesn't track
+    /// versions), an error when it can't tell right now (an archive mid-write).
+    fn version(&self, _path: &str) -> Result<Option<String>, String> {
+        Ok(None)
     }
 }
 
@@ -310,8 +311,8 @@ impl ProjectReader for ProjectDirReader {
     fn exists(&self, path: &str) -> bool {
         is_file_confined(&project_dir(), path)
     }
-    fn version(&self, path: &str) -> Option<String> {
-        version_confined(&project_dir(), path)
+    fn version(&self, path: &str) -> Result<Option<String>, String> {
+        Ok(version_confined(&project_dir(), path))
     }
 }
 

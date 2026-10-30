@@ -186,6 +186,11 @@ impl Resolver {
         })
     }
 
+    /// Whether `path` is under an `external` prefix.
+    pub fn is_external(&self, path: &str) -> bool {
+        self.external(path).is_some()
+    }
+
     fn external<'a>(&self, path: &'a str) -> Option<(&External, &'a str)> {
         self.externals.iter().find_map(|external| {
             path.strip_prefix(external.prefix.as_str())
@@ -198,7 +203,7 @@ impl Resolver {
     /// machine's version, else the bytes, else why not.
     pub fn reply(&self, session: u64, request: &ProjectFileRequest) -> ProjectFileReply {
         let path = &request.path;
-        let version = self.version(path);
+        let version = self.version(path).ok().flatten();
         // What the push never sends, the proxy doesn't either.
         let hidden = path.split('/').any(|part| part.starts_with('.'));
         let status = match (&request.have, version) {
@@ -298,14 +303,15 @@ impl ProjectReader for Resolver {
     }
 
     /// Size + mtime on disk, crc + size in a zip.
-    fn version(&self, path: &str) -> Option<String> {
+    fn version(&self, path: &str) -> Result<Option<String>, String> {
         match self.external(path) {
-            None => storage::version_confined(&self.root, path),
+            None => Ok(storage::version_confined(&self.root, path)),
             Some((external, rest)) => match &external.mount {
-                None => None,
-                Some(Mount::Dir(dir)) => {
-                    storage::version_confined(dir, &dir_path(dir, rest, external.ignore_case))
-                }
+                None => Ok(None),
+                Some(Mount::Dir(dir)) => Ok(storage::version_confined(
+                    dir,
+                    &dir_path(dir, rest, external.ignore_case),
+                )),
                 Some(Mount::Zip(zip)) => zip.version(rest, external.ignore_case),
             },
         }
@@ -355,6 +361,7 @@ impl Mount {
             },
             max_entry: MAX_ENTRY_BYTES,
             index: Mutex::new(None),
+            broken: Mutex::new(None),
         }))
     }
 }
@@ -369,7 +376,12 @@ struct ZipMount {
     max_entry: u64,
     /// Rebuilt when the archive's size or mtime changes.
     index: Mutex<Option<ZipIndex>>,
+    /// Why the archive at this stamp couldn't be indexed (mid-write, say),
+    /// so polling it doesn't re-parse it per entry.
+    broken: Mutex<Option<(Stamp, String)>>,
 }
+
+type Stamp = (u64, Option<std::time::SystemTime>);
 
 struct ZipIndex {
     stamp: (u64, Option<std::time::SystemTime>),
@@ -412,23 +424,36 @@ impl ZipMount {
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
         if index.as_ref().is_none_or(|index| index.stamp != stamp) {
             *index = None;
+            let mut broken = self.broken.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, why)) = broken.as_ref().filter(|(at, _)| *at == stamp) {
+                return Err(why.clone());
+            }
             let file = std::fs::File::open(&self.archive).map_err(|e| unreadable(&e))?;
-            *index = Some(ZipIndex::build(stamp, file).map_err(|e| unreadable(&e))?);
+            match ZipIndex::build(stamp, file) {
+                Ok(built) => *index = Some(built),
+                Err(e) => {
+                    *broken = Some((stamp, unreadable(&e)));
+                    return Err(unreadable(&e));
+                }
+            }
         }
         f(index.as_mut().expect("just built"))
     }
 
-    /// The entry's crc and size: changes when its contents do.
-    fn version(&self, rest: &str, ignore_case: bool) -> Option<String> {
+    /// The entry's crc and size: changes when its contents do. An archive
+    /// that's there but can't be read (mid-write) can't tell.
+    fn version(&self, rest: &str, ignore_case: bool) -> Result<Option<String>, String> {
         let name = format!("{}{rest}", self.inner);
-        self.with_index(|index| {
+        let version = self.with_index(|index| {
             match index.entries.get(&index.resolve(name.clone(), ignore_case)) {
                 Some(Entry::File { size, crc, .. }) => Ok(Some(format!("zip:{crc:08x}:{size}"))),
                 _ => Ok(None),
             }
-        })
-        .ok()
-        .flatten()
+        });
+        match version {
+            Err(_) if !self.archive.exists() => Ok(None),
+            version => version,
+        }
     }
 
     fn exists(&self, rest: &str, ignore_case: bool) -> bool {
@@ -739,7 +764,9 @@ mod tests {
         let resolver = project.resolver();
         let version = |path: &str| resolver.version(path);
         let mut watch = DataWatch::new();
-        watch.watch(["ss2/a.bin".to_string(), "ss2/b.bin".to_string()], version);
+        let read =
+            ["ss2/a.bin", "ss2/b.bin"].map(|path| (path.to_string(), version(path).unwrap()));
+        watch.watch(read.into());
         let t = std::time::Instant::now();
         let at = |ms: u64| t + std::time::Duration::from_millis(ms);
         let touch = |secs: u64| {
