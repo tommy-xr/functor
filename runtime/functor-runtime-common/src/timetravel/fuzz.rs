@@ -921,7 +921,6 @@ impl<'a> Shell<'a> {
             .restarts
             .unwrap_or_else(|| self.game.reload_may_restart_history());
         count(if self.clock.is_paused() { "reloads while paused" } else { "reloads" });
-        self.reloaded_pending |= !self.pending.is_empty();
         let status = match self.game.reload_source(&self.source()) {
             Ok(status) => status,
             // The edited constant broke the program (a fresh load fails too):
@@ -945,6 +944,7 @@ impl<'a> Shell<'a> {
             }
             Err(e) => return Err(self.fail(Kind::Reload, format!("reload rejected: {e}"))),
         };
+        self.reloaded_pending |= !self.pending.is_empty();
         // An input-only game's reload while scrubbed rebuilds its history under
         // the new code, by design.
         let rebuilt = status.contains("history recomputed");
