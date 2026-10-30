@@ -10,7 +10,8 @@
 //      re-grab with the trigger held stays unpowered until it is released.
 //   5. Losing a grip's tracking does the same; tracking back with the squeeze
 //      held doesn't relatch, a fresh grab does.
-//   6. Stepped turning: one 30° snap per push of the bars, at the faded step.
+//   6. Right B respawns. Stepped turning: one 30° snap per push of the bars,
+//      at the faded step.
 //   7. Two runs end on an identical model.
 //   8. Hidden-window captures: the cockpit at idle and with the vignette match
 //      their goldens and repeat byte for byte; against the same ride with the
@@ -126,6 +127,7 @@ function xr({ angle = 0, ls = 0, rs = 0, lt = 0, rt = 0, rightGrip = true, butto
     primary_pressed: pressed.includes("primary"),
     secondary_pressed: pressed.includes("secondary"),
     menu_pressed: pressed.includes("menu"),
+    thumbstick_pressed: pressed.includes("stick"),
   });
   return {
     type: "xr",
@@ -220,7 +222,7 @@ async function ride(port, check) {
     const before = m.speed;
     m = await step(base, 30);
     const decel = (before - m.speed) / (30 * DT);
-    check(decel > GRIP_LOSS_BRAKE * BRAKE && decel < 0.5 * BRAKE + DRAG_LIN * v0 + DRAG_QUAD * v0 * v0, `brakes gently: ${decel.toFixed(2)} m/s² (full brake ${BRAKE})`);
+    check(decel > GRIP_LOSS_BRAKE * BRAKE && decel < 0.5 * BRAKE + DRAG_LIN * v0 + DRAG_QUAD * v0 * v0, `brakes gently: ${decel.toFixed(2)} m/s² with drag (grip-loss brake ${(GRIP_LOSS_BRAKE * BRAKE).toFixed(1)}, full ${BRAKE})`);
     m = await hold(base, xr({ ls: 1, rs: 1, rt: 1 }), 2);
     check(m.vr.right.latched && !m.vr.armed && m.controls.throttle === 0, `re-grab with the trigger held: latched, unpowered`);
     m = await hold(base, xr({ ls: 1, rs: 1, rt: 0 }), 1);
@@ -236,8 +238,10 @@ async function ride(port, check) {
     m = await hold(base, xr({ ls: 1, rs: 1 }), 2);
     check(m.vr.right.latched && m.vr.armed, `a fresh grab re-arms`);
 
-    // 6. Stepped turning, from rest.
-    m = await respawn(base, xr({ ls: 1, rs: 1 }));
+    // 6. Stepped turning, from rest. Right B respawns.
+    await hold(base, xr({ ls: 1, rs: 1, buttons: { right: ["secondary"] } }), 1);
+    m = await hold(base, xr({ ls: 1, rs: 1 }), 30);
+    check(m.speed === 0 && m.steps === 30 && Math.abs(m.last.z - start.z) < 1e-6, `right B respawns`);
     m = await hold(base, xr({ ls: 1, rs: 1, buttons: { left: ["secondary"] } }), 1);
     m = await hold(base, xr({ ls: 1, rs: 1 }), 1);
     check(m.vr.stepped && m.ride.yaw === 0, `left Y: stepped turning`);

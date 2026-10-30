@@ -125,11 +125,14 @@ let deadzone = (v: float) => if Math.abs(v) < 0.15 then 0.0 else v
 let commands = (snap: Input.snapshot, m: Model) =>
   { m with respawn: m.respawn || pressed(Key.R, snap), switchCourse: m.switchCourse || pressed(Key.T, snap) }
 
+// With a headset, right B respawns and the right stick click switches course.
 let sampledInput = (m: Model, snap: Input.snapshot) =>
   match snap.xr with
   | Option.Some(x) =>
     let (vr, controls) = Bars.read(m.speed < Bars.restSpeed, x, m.vr) in
-    commands(snap, { m with vr: vr, controls: controls })
+    commands(snap, { m with vr: vr, controls: controls,
+                            respawn: m.respawn || (vr.buttons.respawn && not m.vr.buttons.respawn),
+                            switchCourse: m.switchCourse || (vr.buttons.course && not m.vr.buttons.course) })
   | Option.None => commands(snap, flat(m, snap))
 
 // Keyboard and gamepad.
@@ -261,8 +264,9 @@ let haze = Color.rgb(0.3, 0.17, 0.3)
 let speedo = RenderTarget.named("speedo") |> RenderTarget.sized(128.0, 64.0)
 
 // With a headset, a third line says what the rider must do next.
-let prompt = (r: Bars.Rider) =>
-  if r.pending then "hold still"
+let prompt = (m: Model) =>
+  let r = m.vr in
+  if r.pending then (if m.speed < Bars.restSpeed then "hold still" else "stop to calibrate")
   else if not (r.left.latched && r.right.latched) then "grab grips"
   else if not r.armed then "let go of throttle"
   else if r.stepped then "stepped turns"
@@ -272,7 +276,7 @@ let gaugeView = (m: Model) =>
   Ui.column([
     Ui.row([Ui.textColor(Bike.ion, $"{m.kmh}"), Ui.text("km/h")]),
     Ui.text($"hover {Text.fixed(m.hover, 1.0)} m"),
-  ] |> List.append(if m.vr.present then [Ui.textColor(Bike.tag, prompt(m.vr))] else []))
+  ] |> List.append(if m.vr.present then [Ui.textColor(Bike.tag, prompt(m))] else []))
 
 // `alpha` of the way from the last step's pose to the live one.
 let between = (a: Pose, b: Pose, alpha: float): Pose =>
@@ -313,7 +317,8 @@ expect (
     && Math.abs(mapped.position.z - Vec3.z(w)) < 0.0001
 )
 
-// Each tracked hand, where it really is: lit ion once latched.
+// Each tracked hand, where it really is: lit ion once latched. Sampled each
+// fixed step, so at 120 Hz the markers move in 60 Hz steps.
 let hands = (r: Bars.Rider, origin: Vec3.t, yaw: float) =>
   Scene.group([r.left, r.right] |> List.filter((h) => h.tracked) |> List.map((h) =>
     Scene.sphere() |> Scene.scale(0.035) |> Scene.emissive(if h.latched then Bike.ion else Bike.tag)
@@ -363,7 +368,7 @@ let draw = (m: Model, tts, alpha: float) =>
 let ui = (m: Model) =>
   Ui.column([
     gaugeView(m),
-    Ui.text(if m.riderCam then "rider cam (C)" else "chase cam (C)"),
+    Ui.text(if m.vr.present then "headset" else if m.riderCam then "rider cam (C)" else "chase cam (C)"),
     Ui.text(if m.course == OnDunes then "dunes (T)" else "stand (T)"),
   ])
     |> Ui.panel(Ui.bottomRight())

@@ -67,8 +67,8 @@ let calibrateAfter = 0.5 // s
 let restSpeed = 0.1 // m/s
 
 let near = (a: Calibration, b: Calibration) =>
-  Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)) < stillRadius
-    && Math.abs(a.yaw - b.yaw) < stillYaw
+  distance({ x: a.x, y: a.y, z: a.z }, { x: b.x, y: b.y, z: b.z }) < stillRadius
+    && Math.abs(Math.atan2(Math.sin(a.yaw - b.yaw), Math.cos(a.yaw - b.yaw))) < stillYaw
 
 // ---- Grips ---------------------------------------------------------------
 
@@ -107,12 +107,12 @@ let barAngle = (left: Input.point3, right: Input.point3): float =>
 let deadZone = 0.05 // rad, about 3°
 let fullLock = 0.35 // rad, about 20°
 let steerOf = (angle: float): float =>
-  Math.sign(angle) * Math.clamp(0.0, 1.0, (Math.abs(angle) - deadZone) / (fullLock - deadZone))
+  Math.sign(angle) * Math.clamp01((Math.abs(angle) - deadZone) / (fullLock - deadZone))
 
 // An exponential moving average: each 60 Hz sample moves the steer this
 // fraction of the way to its target.
 let smoothing = 0.25
-let ema = (target: float, v: float) => v + (target - v) * smoothing
+let ema = (target: float, v: float) => v |> Math.lerp(target, smoothing)
 
 // A trigger below `triggerRest` is released. Arming waits for the throttle
 // to be: re-grabbing with it held doesn't lurch.
@@ -141,7 +141,7 @@ let fadeIn = 0.15 // s
 type Snap = { t: float, angle: float, ready: bool }
 let idleSnap: Snap = { t: -1.0, angle: 0.0, ready: true }
 
-type Buttons = { menu: bool, stance: bool, strength: bool, turning: bool }
+type Buttons = { menu: bool, stance: bool, strength: bool, turning: bool, respawn: bool, course: bool }
 
 type Rider = {
   // A headset sample arrived this step.
@@ -183,14 +183,16 @@ let rider: Rider = {
   steer: 0.0,
   strength: defaultStrength,
   stepped: false,
-  buttons: { menu: false, stance: false, strength: false, turning: false },
+  buttons: { menu: false, stance: false, strength: false, turning: false, respawn: false, course: false },
   vignette: 0.0,
   snap: idleSnap,
 }
 
-// The headset went away: drop the hands and power, keep the settings.
+// The headset went away: drop the hands, power and any snap in flight; keep
+// the settings.
 let absent = (r: Rider): Rider =>
-  { r with present: false, pending: true, still: 0.0, left: loose, right: loose, armed: false, steer: 0.0 }
+  { r with present: false, pending: true, still: 0.0, left: loose, right: loose, armed: false, steer: 0.0,
+           snap: idleSnap }
 
 let eyeOf = (r: Rider) => if r.standing then standingEye else seatedEye
 
@@ -198,21 +200,27 @@ let sampleDt = 1.0 / 60.0 // `read` runs once per fixed step
 
 // One XR sample: buttons, calibration, grips, then the controls. Left X
 // cycles the vignette strength, left Y the turning mode, right A the stance
-// (which recalibrates), and the left menu button recalibrates. `atRest` says
-// the bike is still enough to calibrate.
+// (which recalibrates), and the left menu button recalibrates; the last two
+// only with the bike at rest (`atRest`), so a stray press never drops the
+// grips mid-ride. The settling time counts only while head and bike are both
+// still, and restarts on each request. (`game.fun` reads right B and the
+// right stick click, respawn and course, from `buttons`.)
 let read = (atRest: bool, x: Input.xr, r: Rider): (Rider, Ride.Controls) =>
   let buttons = { menu: x.left.menuPressed, stance: x.right.primaryPressed,
-                  strength: x.left.primaryPressed, turning: x.left.secondaryPressed } in
+                  strength: x.left.primaryPressed, turning: x.left.secondaryPressed,
+                  respawn: x.right.secondaryPressed, course: x.right.thumbstickPressed } in
   let pressed = (now: bool, before: bool) => now && not before in
-  let standing = if pressed(buttons.stance, r.buttons.stance) then not r.standing else r.standing in
-  let wanted = not r.present || r.pending || pressed(buttons.menu, r.buttons.menu) || standing != r.standing in
+  let standing = if atRest && pressed(buttons.stance, r.buttons.stance) then not r.standing else r.standing in
+  let requested = (atRest && pressed(buttons.menu, r.buttons.menu)) || standing != r.standing in
+  let wanted = not r.present || r.pending || requested in
   let (anchor, still) = (match x.head with
     | Option.None => (r.anchor, 0.0)
     | Option.Some(p) =>
       let head = headOf(p) in
-      if r.present && near(head, r.anchor) then (r.anchor, r.still + sampleDt) else (head, 0.0)) in
+      if r.present && atRest && not requested && near(head, r.anchor) then (r.anchor, r.still + sampleDt)
+      else (head, 0.0)) in
   // (The tolerance absorbs the float sum of `sampleDt`s.)
-  let calibrate = wanted && atRest && still >= calibrateAfter - 0.000001 in
+  let calibrate = wanted && still >= calibrateAfter - 0.000001 in
   let pending = wanted && not calibrate in
   let calibration = if calibrate then anchor else r.calibration in
   let eye = if standing then standingEye else seatedEye in
@@ -243,14 +251,14 @@ let rigOrigin = (r: Rider): Input.point3 => toBike(r.calibration, eyeOf(r), { x:
 // forward acceleration, yaw rate, lateral acceleration (speed × yaw rate)
 // and vertical speed over crests. The level follows the strongest, quickly
 // closing (`attack`) and slowly opening (`release`).
-let ramp = (onset: float, full: float, v: float) => Math.clamp(0.0, 1.0, (v - onset) / (full - onset))
+let ramp = (onset: float, full: float, v: float) => Math.clamp01((v - onset) / (full - onset))
 let discomfort = (accel: float, yawRate: float, speed: float, vy: float): float =>
   Math.max(Math.max(ramp(1.0, 6.0, Math.abs(accel)), ramp(0.15, 0.8, Math.abs(yawRate))),
            Math.max(ramp(1.0, 4.5, speed * Math.abs(yawRate)), ramp(0.3, 1.5, Math.abs(vy))))
 let attack = 10.0 // 1/s
 let release = 1.5 // 1/s
 let envelope = (target: float, dt: float, level: float): float =>
-  level + (target - level) * Math.min(1.0, (if target > level then attack else release) * dt)
+  level |> Ride.approach(target, if target > level then attack else release, dt)
 
 // The drawn vignette: its clear radius (in the comfort layer's units, the
 // eye buffer's half-height) closes from `apertureOpen` to `apertureMin` at
@@ -273,13 +281,17 @@ let layerHeight = 2.0
 
 let snapping = (r: Rider, speed: float) => r.present && r.stepped && speed < steppedSpeed
 
+// Whether a snap `t` in has faded fully black. (The tolerance absorbs the
+// float sum of the steps, so the turn lands on the black step.)
+let black = (t: float) => t >= fadeOut - 0.000001
+
 // One step of a snap: the next state, and the yaw to turn the bike by this
 // step (the snap's angle on the step the fade goes black, else 0).
 let turn = (active: bool, steer: float, dt: float, s: Snap): (Snap, float) =>
   if s.t >= 0.0 then
     let t = s.t + dt in
     ((if t >= fadeOut + fadeIn then { s with t: -1.0 } else { s with t: t }),
-     if s.t < fadeOut && t >= fadeOut then s.angle else 0.0)
+     if not black(s.t) && black(t) then s.angle else 0.0)
   else
     let ready = s.ready || Math.abs(steer) < snapOff in
     if active && ready && Math.abs(steer) > snapOn then ({ t: 0.0, angle: Math.sign(steer) * snapAngle, ready: false }, 0.0)
@@ -288,8 +300,8 @@ let turn = (active: bool, steer: float, dt: float, s: Snap): (Snap, float) =>
 // How black the snap's fade is, 0..1.
 let fade = (s: Snap): float =>
   if s.t < 0.0 then 0.0
-  else if s.t < fadeOut then s.t / fadeOut
-  else Math.max(0.0, 1.0 - (s.t - fadeOut) / fadeIn)
+  else if not black(s.t) then s.t / fadeOut
+  else Math.clamp01(1.0 - (s.t - fadeOut) / fadeIn)
 
 // Turn the bike's heading and velocity together by `angle`.
 let rotate = (angle: float, s: Ride.State): Ride.State =>
@@ -354,6 +366,26 @@ expect (
   let r = riderOf(feed(repeat(40.0, { open with head: Option.Some(head) }), { settled with pending: true })) in
   not r.pending && distance({ x: r.calibration.x, y: r.calibration.y, z: r.calibration.z }, head.position) < 0.000001
     && Math.abs(r.calibration.yaw - 0.3) < 0.000001
+)
+// Stance and recalibration are ignored while the bike moves: the grips stay.
+expect (
+  let armed = riderOf(ride(1.0, gripping(0.0, 0.0))) in
+  let press = { gripping(0.0, 0.0) with right: { gripping(0.0, 0.0).right with primaryPressed: true } } in
+  let r = riderOf(read(false, press, armed)) in
+  r.armed && not r.standing && not r.pending
+)
+// A head turned past ±π from where it settled still reads as near it.
+expect near({ uncalibrated with yaw: 3.13 }, { uncalibrated with yaw: -3.13 })
+// Nor does a moving bike, and a request restarts the settling: a head long
+// still doesn't recalibrate the moment the menu is pressed, or the moment
+// the bike stops.
+expect (
+  let menu = { open with left: { open.left with menuPressed: true } } in
+  riderOf(feed([menu], settled)).pending && not riderOf(feed([menu] |> List.append(repeat(35.0, open)), settled)).pending
+)
+expect (
+  let moving = List.range(40.0) |> List.fold((r, i) => riderOf(read(false, open, r)), { settled with pending: true }) in
+  riderOf(feed([open], moving)).pending && not riderOf(feed(repeat(35.0, open), moving)).pending
 )
 // A moving head never settles, so the calibration waits.
 expect (
@@ -455,6 +487,8 @@ expect (
   cycle.strength == Math.mod(defaultStrength + 2.0, strengthLevels)
 )
 expect riderOf(feed([{ open with left: { open.left with secondaryPressed: true } }], settled)).stepped
+// Losing the headset mid-snap drops the snap: the desktop rider isn't turned.
+expect absent({ settled with snap: { t: 0.05, angle: snapAngle, ready: false } }).snap == idleSnap
 
 // Vignette envelope: closes fast, opens slowly, and stays within 0..1.
 let hold = (target: float, seconds: float, level: float) =>
@@ -488,7 +522,14 @@ let snaps = (steers: List<float>) =>
     (s2, yaw + turned, [fade(s2), ..fades]), (idleSnap, 0.0, []))
 expect (
   let (s, yaw, fades) = snaps(steady(60.0, 1.0)) in
-  Math.abs(yaw - snapAngle) < 0.000001 && (List.maximum(fades) |> Option.defaultValue(0.0)) > 0.99 && fade(s) == 0.0
+  Math.abs(yaw - snapAngle) < 0.000001 && List.maximum(fades) == Option.Some(1.0) && fade(s) == 0.0
+)
+// The turn lands on the step the fade is fully black: one step starts the
+// snap, six reach `fadeOut`.
+expect (
+  let (s, turned) = List.range(7.0) |> List.fold((acc, i) =>
+    let (s0, _) = acc in turn(true, 1.0, Ride.dt60, s0), (idleSnap, 0.0)) in
+  turned == snapAngle && fade(s) == 1.0
 )
 expect (
   let pull = steady(30.0, -1.0) in
