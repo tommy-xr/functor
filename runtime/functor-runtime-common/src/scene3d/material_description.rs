@@ -359,6 +359,11 @@ pub(super) fn bind_texture_description(
             let texture = scene_context.pixel_texture(context.gl, pixels);
             context.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         },
+        TextureDescription::Layered { base, intensities } => unsafe {
+            context.gl.active_texture(glow::TEXTURE0 + unit);
+            let texture = scene_context.layered_texture(context.gl, base, intensities);
+            context.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        },
         TextureDescription::RenderTarget(id) => {
             // Select the unit BEFORE any lazy fallback creation: creating the
             // fallback binds/unbinds TEXTURE_2D on the active unit, which would

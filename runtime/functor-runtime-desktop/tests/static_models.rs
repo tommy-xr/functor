@@ -8,7 +8,9 @@
 //! - the shadow pass and the instanced (stamped) path draw it;
 //! - a lightmapped texel is base × lightmap × scale, in either lightmap
 //!   colour space, sampled clamped without mips; `floor` is a minimum; `Light.baked` lights skip
-//!   lightmapped surfaces but still light others; unbaked lights add.
+//!   lightmapped surfaces but still light others; unbaked lights add;
+//! - `Scene.withLightmap` swaps the lightmap texture, e.g. for a layered
+//!   composition of the model's own atlas.
 //!
 //! Self-skipping like `skinned_data` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -26,7 +28,7 @@ use functor_runtime_common::color_space::{linear_to_srgb, srgb_u8_to_linear};
 use functor_runtime_common::model::{GroupSource, LightmapSource, ModelData, ModelSource};
 use functor_runtime_common::render::VertexPositionTextureLightmap;
 use functor_runtime_common::shadow::ShadowMap;
-use functor_runtime_common::texture::{ColorSpace, PixelData, PixelEncoding};
+use functor_runtime_common::texture::{ColorSpace, Layer, LayeredImage, PixelData, PixelEncoding};
 use functor_runtime_common::{
     render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, InstanceData, Light,
     MaterialDescription, ModelDescription, ModelHandle, Scene3D, SceneContext, SceneObject,
@@ -52,6 +54,8 @@ fn main() {
     println!("test lightmap_texels ... ok");
     baked_and_unbaked_lights(&mut harness);
     println!("test baked_and_unbaked_lights ... ok");
+    with_lightmap(&mut harness);
+    println!("test with_lightmap ... ok");
 }
 
 /// A 1×1 sRGB texture.
@@ -156,6 +160,36 @@ fn lightmap_texels(harness: &mut Harness) {
     );
     let image = harness.render(&frame(&room, 1, false, vec![]));
     assert_near(rgb(&image, 32, 64), [128, 64, 0], "floor");
+}
+
+/// A white quad whose own lightmap is a black 1×1 atlas with one white
+/// layer: drawn as is it is black; `with_lightmap` of that layer at 0.5
+/// lights it to linear 0.5, and of another texture uses that one.
+fn with_lightmap(harness: &mut Harness) {
+    let base = PixelData::new(1, 1, PixelEncoding::Rgb8, ColorSpace::Linear, &[0; 3]).unwrap();
+    let image = LayeredImage {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        padding: 0,
+        layers: vec![Layer { id: 1.0, rgba8: vec![255; 4] }],
+    };
+    let atlas = Arc::new(base.with_layers(vec![image]).unwrap());
+    let room = lightmapped(solid([255, 255, 255]), TextureDescription::Data(atlas.clone()), 1.0, [0.0; 3]);
+    let draw = |harness: &mut Harness, lightmap: Option<TextureDescription>| {
+        let mut frame = frame(&room, 1, false, vec![]);
+        if let Some(lightmap) = lightmap {
+            frame.scene = frame.scene.with_lightmap(lightmap);
+        }
+        rgb(&harness.render(&frame), 32, 64)
+    };
+    assert_near(draw(harness, None), [0, 0, 0], "own lightmap");
+    let half = TextureDescription::Layered { base: atlas.clone(), intensities: vec![(1.0, 0.5)] };
+    assert_near(draw(harness, Some(half)), [188, 188, 188], "layer at 0.5");
+    let grey = solid_in([64, 64, 64], ColorSpace::Linear);
+    assert_near(draw(harness, Some(grey)), [137, 137, 137], "another texture");
+    assert_near(draw(harness, None), [0, 0, 0], "own lightmap again");
 }
 
 /// A `Light.baked` ambient leaves the lightmapped quad as the lightmap has

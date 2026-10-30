@@ -1955,6 +1955,59 @@ let draw = (model, tts) =>
         ));
     }
 
+    /// Lightmap layer intensities are model state: seeking back to a frame
+    /// redraws exactly that frame's `Texture.withLayers` (switch and flicker).
+    #[test]
+    fn a_scrub_redraws_the_frames_layer_intensities() {
+        let source = r#"
+let px = { width: 1.0, height: 1.0, format: Texture.Rgb8, colorSpace: Texture.Linear, pixels: Bytes.fromU8([0.0, 0.0, 0.0]) }
+let layer = (id) => { id: id, pixels: Bytes.fromU8([255.0, 255.0, 255.0]) }
+let lm = Texture.atlas({ images: [{ pixels: px, layers: [layer(1.0), layer(2.0)] }], padding: 0.0, maxSize: 4.0 })
+let room = Model.static({
+  positions: Bytes.fromF32le([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+  normals: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+  uvs: Bytes.fromF32le([]), uvs2: Bytes.fromF32le([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
+  triangles: Bytes.fromU32le([0.0, 1.0, 2.0]), groups: [],
+  lightmap: Option.Some({ texture: lm.texture, scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) })
+})
+let init = { on: false, lights: Map.fromList([]) }
+let tick = (model, dt, tts) =>
+  let on = if model.on then false else true in
+  { on: on, lights: Map.fromList([(1.0, if on then 1.0 else 0.0), (2.0, 0.5 + 0.5 * Math.sin(tts * 13.0))]) }
+let draw = (model, tts) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 0.0, 3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.modelOf(room) |> Scene.withLightmap(Texture.withLayers(model.lights, lm.texture)))
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), source.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("layered game loads");
+        let intensities = |frame: &Frame| match &frame.scene.obj {
+            crate::SceneObject::Model(model) => match &model.overrides[..] {
+                [(_, crate::scene3d::MeshOverride::Lightmap(crate::TextureDescription::Layered {
+                    intensities,
+                    ..
+                }))] => intensities.clone(),
+                other => panic!("expected a layered lightmap, got {other:?}"),
+            },
+            other => panic!("expected a model, got {other:?}"),
+        };
+        let mut seen = Vec::new();
+        for i in 1..=4 {
+            let ft = frame_time(i as f32 * 0.1, 0.1);
+            game.tick(ft.clone());
+            let frame = game.render(ft);
+            seen.push((game.current_scene_frame().unwrap(), intensities(&frame)));
+        }
+        assert_ne!(seen[0].1, seen[1].1, "the switch and flicker move");
+        for (at, want) in seen.iter().rev() {
+            game.seek_scene_to(*at).expect("seekable");
+            assert_eq!(&intensities(&game.render(frame_time(9.0, 0.1))), want, "frame {at}");
+        }
+    }
+
     #[test]
     fn sampled_input_is_applied_after_a_resuming_scrub_restores_the_model() {
         let source = r#"

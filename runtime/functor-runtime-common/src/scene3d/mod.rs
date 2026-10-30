@@ -370,12 +370,13 @@ fn bind_model_base_color(
 }
 
 /// Draw a static data model: one draw per group with its base texture (and
-/// the model's lightmap), or one draw of every triangle under a pass/debug
-/// `override_material`.
+/// the model's lightmap, its texture replaced by `lightmap_texture` if set),
+/// or one draw of every triangle under a pass/debug `override_material`.
 fn draw_static_model(
     render_context: &RenderContext,
     scene_context: &SceneContext,
     data: &crate::model::ModelData,
+    lightmap_texture: Option<&TextureDescription>,
     matrix: &Matrix4<f32>,
     projection_matrix: &Matrix4<f32>,
     view_matrix: &Matrix4<f32>,
@@ -407,7 +408,7 @@ fn draw_static_model(
     // bleed into each other.
     if let Some(lightmap) = &source.lightmap {
         material_description::bind_texture_description(
-            &lightmap.texture,
+            lightmap_texture.unwrap_or(&lightmap.texture),
             3,
             SpriteSampling::Linear,
             &scene_context.texture_pipeline,
@@ -443,6 +444,45 @@ fn draw_static_model(
     if source.lightmap.is_some() {
         unsafe { gl.bind_sampler(3, None) };
     }
+}
+
+/// Re-upload each of `pixels`' layered images whose levels in `entry` differ
+/// from `levels`, then record `levels`.
+fn recompose(
+    gl: &glow::Context,
+    entry: &mut RetainedTexture,
+    pixels: &crate::texture::PixelData,
+    levels: &[f32],
+) {
+    unsafe { gl.bind_texture(glow::TEXTURE_2D, Some(entry.texture)) };
+    let mut start = 0;
+    for image in pixels.layers() {
+        let range = start..start + image.layers.len();
+        start = range.end;
+        if entry.levels[range.clone()] == levels[range.clone()] {
+            continue;
+        }
+        let block = crate::texture::compose_block(pixels, image, &levels[range]);
+        unsafe {
+            gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                block.x as i32,
+                block.y as i32,
+                block.width as i32,
+                block.height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&block.rgba8)),
+            );
+        }
+        crate::gpu_counters::gpu_counters().uploaded(block.rgba8.len());
+    }
+    // An `Srgb` atlas is mipmapped; its mips follow level 0.
+    if pixels.color_space() == crate::texture::ColorSpace::Srgb {
+        unsafe { gl.generate_mipmap(glow::TEXTURE_2D) };
+    }
+    entry.levels = levels.to_vec();
 }
 
 /// A pose evaluated this frame, with the inputs it is a pure function of.
@@ -904,10 +944,23 @@ impl SceneContext {
     /// The GL texture for `pixels`, uploaded on first use this residency.
     /// Wrap and filtering are set here, from its colour space: `Srgb` is
     /// mipmapped and repeats, `Linear` (lightmaps) is clamped with no mips.
+    /// A layered atlas binds as its base (every layer at 0).
     pub fn pixel_texture(
         &self,
         gl: &glow::Context,
         pixels: &crate::texture::PixelData,
+    ) -> glow::Texture {
+        self.layered_texture(gl, pixels, &[])
+    }
+
+    /// The GL texture for `base` with its layers at `intensities`. It shares `base`'s one GPU copy: only images whose levels differ
+    /// from what that copy holds are recomposed and uploaded, so unchanged
+    /// intensities upload nothing.
+    pub fn layered_texture(
+        &self,
+        gl: &glow::Context,
+        pixels: &crate::texture::PixelData,
+        intensities: &[(f64, f32)],
     ) -> glow::Texture {
         use crate::asset::RenderableAsset;
         let frame = self.current_frame.get();
@@ -931,10 +984,29 @@ impl SceneContext {
                 e.insert(RetainedTexture {
                     texture: pixels.texture_data().hydrate(gl, &options),
                     last_used: frame,
+                    levels: vec![0.0; pixels.layers().iter().map(|i| i.layers.len()).sum()],
+                    // Not this frame: the first composition isn't a second.
+                    composed_frame: frame.wrapping_sub(1),
                 })
             }
         };
         entry.last_used = frame;
+        if !pixels.layers().is_empty() {
+            let levels = crate::texture::layer_levels(pixels.layers(), intensities);
+            if levels != entry.levels {
+                if entry.composed_frame == frame {
+                    self.warn_once_with(&format!("layers-{}", pixels.id()), || {
+                        format!(
+                            "[texture] one layered atlas bound at two intensities in a \
+frame: correct, but each bind re-uploads (atlas {})",
+                            pixels.id()
+                        )
+                    });
+                }
+                recompose(gl, entry, pixels, &levels);
+                entry.composed_frame = frame;
+            }
+        }
         entry.texture
     }
 
@@ -2037,6 +2109,10 @@ enum DataModelGpu {
 struct RetainedTexture {
     texture: glow::Texture,
     last_used: u64,
+    // A layered atlas's composition on the GPU (one level per layer; all 0
+    // is the base), and the frame it last changed.
+    levels: Vec<f32>,
+    composed_frame: u64,
 }
 
 /// Triangle-mesh geometry: positions plus counter-clockwise (outward-facing)
@@ -2407,53 +2483,47 @@ impl Scene3D {
     /// Set the animation expression on every `Model` node in this subtree —
     /// `Scene.animate`'s semantics. Piping right after `Scene.model` targets
     /// that one model; applying over a group animates each model in it.
-    pub fn with_animation(self, expr: crate::anim::AnimExpr) -> Self {
-        let obj = match self.obj.into_resolved() {
-            SceneObject::Model(mut description) => {
-                description.animation = Some(expr);
-                SceneObject::Model(description)
+    pub fn with_animation(mut self, expr: crate::anim::AnimExpr) -> Self {
+        self.for_each_model(&mut |model| model.animation = Some(expr.clone()));
+        self
+    }
+
+    /// Replace every lightmapped static model's lightmap texture in this
+    /// subtree — `Scene.withLightmap`. Other models are left as they are.
+    pub fn with_lightmap(mut self, texture: TextureDescription) -> Self {
+        self.for_each_model(&mut |model| {
+            let ModelHandle::Data(data) = &model.handle else { return };
+            if data.source().lightmap.is_none() {
+                return;
             }
-            SceneObject::Group(items) => SceneObject::Group(
-                items
-                    .into_iter()
-                    .map(|item| item.with_animation(expr.clone()))
-                    .collect(),
-            ),
-            SceneObject::Material(material, items) => SceneObject::Material(
-                material,
-                items
-                    .into_iter()
-                    .map(|item| item.with_animation(expr.clone()))
-                    .collect(),
-            ),
-            SceneObject::Opacity(alpha, items) => SceneObject::Opacity(
-                alpha,
-                items
-                    .into_iter()
-                    .map(|item| item.with_animation(expr.clone()))
-                    .collect(),
-            ),
-            SceneObject::Cells(node, items) => SceneObject::Cells(
-                node,
-                items
-                    .into_iter()
-                    .map(|item| item.with_animation(expr.clone()))
-                    .collect(),
-            ),
-            // The template is the animation target: `Scene.model(x) |>
-            // Scene.animate(pose) |> Scene.instanced(xs)` animates every
-            // stamped copy identically (exactly what the expansion would do).
-            SceneObject::Instanced {
-                template,
-                instances,
-            } => SceneObject::Instanced {
-                template: Box::new(template.with_animation(expr)),
-                instances,
-            },
-            leaf @ (SceneObject::Geometry(_) | SceneObject::Terrain(_)) => leaf,
+            model.overrides.retain(|(_, o)| !matches!(o, MeshOverride::Lightmap(_)));
+            model
+                .overrides
+                .push((MeshSelector::All, MeshOverride::Lightmap(texture.clone())));
+        });
+        self
+    }
+
+    /// Apply `f` to every `Model` node in this subtree, including an
+    /// instanced template (every stamped copy gets the change).
+    fn for_each_model(&mut self, f: &mut impl FnMut(&mut ModelDescription)) {
+        // A shared (memoized) subtree is copied out before it is edited.
+        if matches!(self.obj, SceneObject::Shared(_)) {
+            let shared = std::mem::replace(&mut self.obj, SceneObject::Group(Vec::new()));
+            self.obj = shared.into_resolved();
+        }
+        match &mut self.obj {
+            SceneObject::Model(description) => f(description),
+            SceneObject::Group(items)
+            | SceneObject::Material(_, items)
+            | SceneObject::Opacity(_, items)
+            | SceneObject::Cells(_, items) => {
+                items.iter_mut().for_each(|item| item.for_each_model(f))
+            }
+            SceneObject::Instanced { template, .. } => template.for_each_model(f),
+            SceneObject::Geometry(_) | SceneObject::Terrain(_) => {}
             SceneObject::Shared(_) => unreachable!("resolved"),
-        };
-        Scene3D { obj, ..self }
+        }
     }
 
     /// Whether this subtree contains any [`SceneObject::Opacity`] node — the
@@ -2682,11 +2752,16 @@ impl Scene3D {
         match self.obj.resolved() {
             SceneObject::Model(ModelDescription {
                 handle: ModelHandle::Data(data),
+                overrides,
                 ..
             }) if data.is_static() => draw_static_model(
                 render_context,
                 scene_context,
                 data,
+                overrides.iter().find_map(|(_, o)| match o {
+                    MeshOverride::Lightmap(texture) => Some(texture),
+                    _ => None,
+                }),
                 &(world_matrix * self.xform),
                 projection_matrix,
                 view_matrix,
@@ -2807,6 +2882,8 @@ impl Scene3D {
                             MeshOverride::Transform(xform) => {
                                 matrix = matrix * xform;
                             }
+                            // Static models only; they draw above.
+                            MeshOverride::Lightmap(_) => {}
                         }
                     }
 

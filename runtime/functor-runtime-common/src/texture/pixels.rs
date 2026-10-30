@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use super::{PixelFormat, TextureData};
+use super::{LayeredImage, PixelFormat, TextureData};
 
 /// The largest side accepted: what every GPU we ship on (desktop, browsers,
 /// Quest) supports in practice, though GLES 3 / WebGL2 promise only 2048.
@@ -54,6 +54,8 @@ pub struct PixelData {
     id: u64,
     color_space: ColorSpace,
     data: TextureData,
+    // An atlas's switchable layers (`Texture.withLayers`); usually empty.
+    layers: Vec<LayeredImage>,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -113,7 +115,20 @@ impl PixelData {
                 height,
                 format: PixelFormat::RGBA,
             },
+            layers: Vec::new(),
         }
+    }
+
+    /// Attach an atlas's layered images, checked against its size.
+    pub fn with_layers(mut self, layers: Vec<LayeredImage>) -> Result<PixelData, String> {
+        super::check_layers(&layers, self.width(), self.height())?;
+        self.layers = layers;
+        Ok(self)
+    }
+
+    /// The atlas images that carry layers, in packing order.
+    pub fn layers(&self) -> &[LayeredImage] {
+        &self.layers
     }
 
     /// Unique per built texture, never reused: the render-side cache key.
@@ -171,18 +186,26 @@ impl std::fmt::Debug for PixelData {
             .field("width", &self.data.width)
             .field("height", &self.data.height)
             .field("color_space", &self.color_space)
+            .field("layered_images", &self.layers.len())
             .finish()
     }
 }
 
-/// The wire form: size, colour space and RGBA8 bytes inline.
+/// The wire form: size, colour space and RGBA8 bytes inline, plus any
+/// layers (omitted when none).
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PixelWire<B> {
+struct PixelWire<B, L: AsRef<[LayeredImage]>> {
     width: u32,
     height: u32,
     color_space: ColorSpace,
     rgba8: B,
+    #[serde(default, skip_serializing_if = "no_layers")]
+    layers: L,
+}
+
+fn no_layers<L: AsRef<[LayeredImage]>>(layers: &L) -> bool {
+    layers.as_ref().is_empty()
 }
 
 impl Serialize for PixelData {
@@ -192,6 +215,7 @@ impl Serialize for PixelData {
             height: self.height(),
             color_space: self.color_space,
             rgba8: self.rgba8(),
+            layers: self.layers(),
         }
         .serialize(serializer)
     }
@@ -200,7 +224,7 @@ impl Serialize for PixelData {
 // Reading it back validates and gives a fresh identity.
 impl<'de> Deserialize<'de> for PixelData {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let w = PixelWire::<Vec<u8>>::deserialize(deserializer)?;
+        let w = PixelWire::<Vec<u8>, Vec<LayeredImage>>::deserialize(deserializer)?;
         let checked = check_side("width", w.width as f64)
             .and(check_side("height", w.height as f64))
             .and_then(|_| match w.width as usize * w.height as usize * 4 {
@@ -208,12 +232,9 @@ impl<'de> Deserialize<'de> for PixelData {
                 need => Err(format!("rgba8: {} bytes, need {need}", w.rgba8.len())),
             });
         checked.map_err(serde::de::Error::custom)?;
-        Ok(PixelData::from_rgba8(
-            w.width,
-            w.height,
-            w.color_space,
-            w.rgba8,
-        ))
+        PixelData::from_rgba8(w.width, w.height, w.color_space, w.rgba8)
+            .with_layers(w.layers)
+            .map_err(serde::de::Error::custom)
     }
 }
 
