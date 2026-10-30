@@ -36,7 +36,7 @@ const DEFAULT_ENTRY = "game.fun";
 /**
  * The longest `#code=` payload we will hand out, in characters. Chat clients,
  * issue trackers and mail clients all mangle links well before a browser's own
- * URL limit, and every example in the repo encodes far under this (this file's
+ * URL limit, and every example the site ships encodes far under this (this file's
  * test pins that, against this constant). A project over the cap gets pointed at
  * the zip download instead — `shareHref` (share.ts) is what enforces it.
  *
