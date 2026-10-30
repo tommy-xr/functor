@@ -2172,7 +2172,8 @@ restart `functor run vr`",
         if sent > 0 {
             emit(Event::Info {
                 message: format!(
-                    "↻ data changed: {} → sent {sent} file(s) ({:.1} MB); reloading",
+                    "{} data changed: {} → sent {sent} file(s) ({:.1} MB); reloading",
+                    crate::output::g_reload(),
                     describe(&changed),
                     bytes as f64 / (1024.0 * 1024.0)
                 ),

@@ -652,7 +652,7 @@ impl FunctorLangGame {
                 let (reused, values) = reuse_counts(&loaded.reuse, &loaded.sources);
                 self.swap_in(loaded);
                 Ok(format!(
-                    "↻ data changed: {what} → reloaded in {:.0} ms (reused {reused} of {values})",
+                    "data changed: {what} → reloaded in {:.0} ms (reused {reused} of {values})",
                     started.elapsed().as_secs_f64() * 1000.0
                 ))
             }
@@ -660,7 +660,7 @@ impl FunctorLangGame {
                 // Maybe read mid-write: try again once it settles.
                 self.data_watch.failed(&changed, now);
                 Err(format!(
-                    "↻ data changed: {what} → reload failed, keeping old program: {message}"
+                    "data changed: {what} → reload failed, keeping old program: {message}"
                 ))
             }
         };
@@ -2234,7 +2234,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         std::fs::write(dir.join("a.bin"), b"aaaa").unwrap();
         assert!(game.check_data_reload(at(500)).is_none(), "settling");
         let status = game.check_data_reload(at(700)).unwrap().unwrap();
-        assert!(status.starts_with("↻ data changed: a.bin → reloaded in "), "{status}");
+        assert!(status.starts_with("data changed: a.bin → reloaded in "), "{status}");
         assert!(status.ends_with("(reused 2 of 3)"), "only `a` re-ran: {status}");
         assert_eq!(global(&game, "a"), "4");
 
