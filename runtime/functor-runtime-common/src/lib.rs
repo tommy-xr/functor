@@ -56,6 +56,7 @@ mod camera;
 pub mod cells;
 pub mod color_space;
 pub mod composite;
+pub mod data_watch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod debug_http;
 pub mod debug_protocol;

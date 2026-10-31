@@ -263,6 +263,12 @@ pub trait ProjectReader: Send + Sync {
     fn read(&self, path: &str) -> Result<std::sync::Arc<[u8]>, ProjectReadError>;
     /// Without reading the file.
     fn exists(&self, path: &str) -> bool;
+    /// What changes when the file does (size + mtime on disk, crc + size in
+    /// a zip); `None` when it's missing (or this reader doesn't track
+    /// versions), an error when it can't tell right now (an archive mid-write).
+    fn version(&self, _path: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
 }
 
 pub enum ProjectReadError {
@@ -305,6 +311,9 @@ impl ProjectReader for ProjectDirReader {
     fn exists(&self, path: &str) -> bool {
         is_file_confined(&project_dir(), path)
     }
+    fn version(&self, path: &str) -> Result<Option<String>, String> {
+        Ok(version_confined(&project_dir(), path))
+    }
 }
 
 /// `root/path`, resolving symlinks so none reaches outside `root`.
@@ -338,6 +347,18 @@ pub fn read_confined(
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn is_file_confined(root: &std::path::Path, path: &str) -> bool {
     resolve_confined(root, path).is_ok_and(|full| full.is_file())
+}
+
+/// [`ProjectReader::version`] of the file at `root/path`: `"size:mtime_ns"`.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn version_confined(root: &std::path::Path, path: &str) -> Option<String> {
+    let meta = std::fs::metadata(resolve_confined(root, path).ok()?).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(format!("{}:{}", meta.len(), mtime.as_nanos()))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

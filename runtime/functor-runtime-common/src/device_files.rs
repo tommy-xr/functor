@@ -5,7 +5,8 @@
 //! `GET /project-files`, answers each request (`POST /project-files`), then
 //! reloads the game once. Fetched files persist in app storage under the
 //! host's version (size + mtime, or a zip entry's crc + size), so the next
-//! session confirms them instead of resending.
+//! session confirms them instead of resending. When one changes on the host,
+//! `functor run vr` sends the new copy (or `missing`) unasked, then reloads.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -54,6 +55,15 @@ struct State {
     /// The host doesn't have it either: its reason.
     missing: HashMap<String, String>,
     index: Index,
+}
+
+impl State {
+    /// The host answered `path` this session (bytes, confirmed or missing).
+    fn got(&self, path: &str) -> bool {
+        self.confirmed.contains(path)
+            || self.ready.contains_key(path)
+            || self.missing.contains_key(path)
+    }
 }
 
 /// `index.json` in the store.
@@ -141,14 +151,21 @@ impl DeviceFiles {
         }
     }
 
-    /// `POST /project-files`. Returns a status line and, when new bytes are
-    /// ready, the project-root locator whose decoded asset to evict.
+    /// `POST /project-files`: an answer to a request, or an update of a file
+    /// the host answered this session. Returns a status line and, when new
+    /// bytes are ready (or a held file is gone), the project-root locator
+    /// whose decoded asset to evict.
     pub fn accept(&self, reply: ProjectFileReply) -> Result<(String, Option<String>), String> {
         let mut state = self.lock();
         let Some(session) = state.session.clone().filter(|s| s.id == reply.session) else {
             return Err(format!("stale reply for {} (another session)", reply.path));
         };
-        if !state.pending.contains_key(&reply.path) {
+        // The host also sends changed copies of files it gave this session.
+        let update = matches!(
+            reply.status,
+            ProjectFileStatus::Bytes { .. } | ProjectFileStatus::Missing { .. }
+        ) && state.got(&reply.path);
+        if !state.pending.contains_key(&reply.path) && !update {
             return Err(format!("{} wasn't requested", reply.path));
         }
         // A reply is the host at work, even when the last poll was a while ago.
@@ -179,9 +196,8 @@ impl DeviceFiles {
                     }
                 });
                 let mut state = self.lock();
-                if state.session.as_ref().map(|s| s.id) != Some(session.id)
-                    || state.pending.remove(&path).is_none()
-                {
+                let expected = state.pending.remove(&path).is_some() || state.got(&path);
+                if state.session.as_ref().map(|s| s.id) != Some(session.id) || !expected {
                     if let Some(blob) = written {
                         let _ = std::fs::remove_file(blob);
                     }
@@ -189,9 +205,11 @@ impl DeviceFiles {
                 }
                 // Stored files are read back on use, so memory holds only what
                 // the game does.
+                state.missing.remove(&path);
                 match written {
                     Some(blob) => {
                         self.store_blob(&mut state, &path, &version, len as u64, blob);
+                        state.ready.remove(&path);
                         state.held.insert(path.clone(), Arc::downgrade(&bytes));
                         state.confirmed.insert(path.clone());
                     }
@@ -224,8 +242,11 @@ impl DeviceFiles {
             ProjectFileStatus::Missing { message } => {
                 state.pending.remove(&path);
                 log::info!("the host has no {path}: {message}");
+                // Gone on the host since: drop this session's copy too.
+                let had = state.ready.remove(&path).is_some() | state.confirmed.remove(&path);
+                state.held.remove(&path);
                 state.missing.insert(path.clone(), message);
-                Ok((format!("missing {path}"), None))
+                Ok((format!("missing {path}"), had.then_some(locator)))
             }
         }
     }
@@ -584,6 +605,62 @@ mod tests {
         drop(files);
         drop(open());
         assert!(!store.path().join("99.bin").exists());
+    }
+
+    /// The host may send a changed copy of a file it gave this session, or
+    /// say it's gone, unasked; anything else unasked is still refused.
+    #[test]
+    fn the_host_updates_files_it_gave_this_session() {
+        let store = tempfile::tempdir().unwrap();
+        let files = DeviceFiles::new(
+            Arc::new(AssetCache::new()),
+            Some(store.path().into()),
+            DEFAULT_STORE_BYTES,
+        );
+        files.begin(Some(session(1, "")));
+        let _ = read(&files, "ss2/a.bin");
+        files
+            .accept(reply(1, "ss2/a.bin", bytes("v1", b"one")))
+            .unwrap();
+        let held = files.read("ss2/a.bin").ok().unwrap();
+
+        let updated = files.accept(reply(1, "ss2/a.bin", bytes("v2", b"two")));
+        assert_eq!(
+            updated,
+            Ok(("stored ss2/a.bin".into(), Some("ss2/a.bin".into())))
+        );
+        assert_eq!(read(&files, "ss2/a.bin"), Ok(b"two".to_vec()));
+        assert_eq!(&*held, b"one", "the old copy stays valid while held");
+
+        let gone = ProjectFileStatus::Missing {
+            message: "deleted".into(),
+        };
+        let gone = files.accept(reply(1, "ss2/a.bin", gone));
+        assert_eq!(
+            gone,
+            Ok(("missing ss2/a.bin".into(), Some("ss2/a.bin".into())))
+        );
+        assert_eq!(read(&files, "ss2/a.bin"), Err("deleted".to_string()));
+        assert!(!files.exists("ss2/a.bin"));
+        files
+            .accept(reply(1, "ss2/a.bin", bytes("v3", b"three")))
+            .unwrap();
+        assert_eq!(read(&files, "ss2/a.bin"), Ok(b"three".to_vec()));
+        assert_eq!(paths(&files), []);
+
+        let current = ProjectFileStatus::Current {
+            version: "v3".into(),
+        };
+        let unasked = files.accept(reply(1, "ss2/a.bin", current));
+        assert!(unasked.unwrap_err().contains("wasn't requested"));
+        let unasked = files.accept(reply(1, "ss2/b.bin", bytes("v", b"x")));
+        assert!(unasked.unwrap_err().contains("wasn't requested"));
+        files.begin(Some(session(2, "")));
+        let stale = files.accept(reply(2, "ss2/a.bin", bytes("v4", b"four")));
+        assert!(
+            stale.unwrap_err().contains("wasn't requested"),
+            "a new session starts over"
+        );
     }
 
     /// Over the cap, the least recently used files go first.

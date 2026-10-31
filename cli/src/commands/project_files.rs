@@ -186,6 +186,11 @@ impl Resolver {
         })
     }
 
+    /// Whether `path` is under an `external` prefix.
+    pub fn is_external(&self, path: &str) -> bool {
+        self.external(path).is_some()
+    }
+
     fn external<'a>(&self, path: &'a str) -> Option<(&External, &'a str)> {
         self.externals.iter().find_map(|external| {
             path.strip_prefix(external.prefix.as_str())
@@ -198,7 +203,7 @@ impl Resolver {
     /// machine's version, else the bytes, else why not.
     pub fn reply(&self, session: u64, request: &ProjectFileRequest) -> ProjectFileReply {
         let path = &request.path;
-        let version = self.version(path);
+        let version = self.version(path).ok().flatten();
         // What the push never sends, the proxy doesn't either.
         let hidden = path.split('/').any(|part| part.starts_with('.'));
         let status = match (&request.have, version) {
@@ -234,27 +239,6 @@ impl Resolver {
             session,
             path: path.clone(),
             status,
-        }
-    }
-
-    /// Changes when the file does: size + mtime on disk, crc + size in a zip.
-    fn version(&self, path: &str) -> Option<String> {
-        let on_disk = |root: &Path, path: &str| {
-            let meta = std::fs::metadata(storage::resolve_confined(root, path).ok()?).ok()?;
-            let mtime = meta
-                .modified()
-                .ok()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()?;
-            Some(format!("{}:{}", meta.len(), mtime.as_nanos()))
-        };
-        match self.external(path) {
-            None => on_disk(&self.root, path),
-            Some((external, rest)) => match &external.mount {
-                None => None,
-                Some(Mount::Dir(dir)) => on_disk(dir, &dir_path(dir, rest, external.ignore_case)),
-                Some(Mount::Zip(zip)) => zip.version(rest, external.ignore_case),
-            },
         }
     }
 
@@ -317,6 +301,21 @@ impl ProjectReader for Resolver {
             },
         }
     }
+
+    /// Size + mtime on disk, crc + size in a zip.
+    fn version(&self, path: &str) -> Result<Option<String>, String> {
+        match self.external(path) {
+            None => Ok(storage::version_confined(&self.root, path)),
+            Some((external, rest)) => match &external.mount {
+                None => Ok(None),
+                Some(Mount::Dir(dir)) => Ok(storage::version_confined(
+                    dir,
+                    &dir_path(dir, rest, external.ignore_case),
+                )),
+                Some(Mount::Zip(zip)) => zip.version(rest, external.ignore_case),
+            },
+        }
+    }
 }
 
 impl Mount {
@@ -362,6 +361,7 @@ impl Mount {
             },
             max_entry: MAX_ENTRY_BYTES,
             index: Mutex::new(None),
+            broken: Mutex::new(None),
         }))
     }
 }
@@ -376,7 +376,12 @@ struct ZipMount {
     max_entry: u64,
     /// Rebuilt when the archive's size or mtime changes.
     index: Mutex<Option<ZipIndex>>,
+    /// Why the archive at this stamp couldn't be indexed (mid-write, say),
+    /// so polling it doesn't re-parse it per entry.
+    broken: Mutex<Option<(Stamp, String)>>,
 }
+
+type Stamp = (u64, Option<std::time::SystemTime>);
 
 struct ZipIndex {
     stamp: (u64, Option<std::time::SystemTime>),
@@ -419,23 +424,36 @@ impl ZipMount {
         let mut index = self.index.lock().unwrap_or_else(|e| e.into_inner());
         if index.as_ref().is_none_or(|index| index.stamp != stamp) {
             *index = None;
+            let mut broken = self.broken.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, why)) = broken.as_ref().filter(|(at, _)| *at == stamp) {
+                return Err(why.clone());
+            }
             let file = std::fs::File::open(&self.archive).map_err(|e| unreadable(&e))?;
-            *index = Some(ZipIndex::build(stamp, file).map_err(|e| unreadable(&e))?);
+            match ZipIndex::build(stamp, file) {
+                Ok(built) => *index = Some(built),
+                Err(e) => {
+                    *broken = Some((stamp, unreadable(&e)));
+                    return Err(unreadable(&e));
+                }
+            }
         }
         f(index.as_mut().expect("just built"))
     }
 
-    /// The entry's crc and size: changes when its contents do.
-    fn version(&self, rest: &str, ignore_case: bool) -> Option<String> {
+    /// The entry's crc and size: changes when its contents do. An archive
+    /// that's there but can't be read (mid-write) can't tell.
+    fn version(&self, rest: &str, ignore_case: bool) -> Result<Option<String>, String> {
         let name = format!("{}{rest}", self.inner);
-        self.with_index(|index| {
+        let version = self.with_index(|index| {
             match index.entries.get(&index.resolve(name.clone(), ignore_case)) {
                 Some(Entry::File { size, crc, .. }) => Ok(Some(format!("zip:{crc:08x}:{size}"))),
                 _ => Ok(None),
             }
-        })
-        .ok()
-        .flatten()
+        });
+        match version {
+            Err(_) if !self.archive.exists() => Ok(None),
+            version => version,
+        }
     }
 
     fn exists(&self, rest: &str, ignore_case: bool) -> bool {
@@ -729,6 +747,48 @@ mod tests {
             Err(ProjectReadError::Outside) => Err("outside".to_string()),
             Err(ProjectReadError::Unreadable(e)) => Err(e),
         }
+    }
+
+    /// A data-file reload over a zip mount: a repacked archive reports only
+    /// the entries whose crc or size changed; rewritten intact, none.
+    #[test]
+    fn data_watch_reports_only_changed_zip_entries() {
+        use functor_runtime_common::data_watch::DataWatch;
+        let project = TempProject::new("watch");
+        let zip = project.0.join("game.kpf");
+        write_zip(
+            &zip,
+            &[("res/a.bin", Some(b"a1")), ("res/b.bin", Some(b"b1"))],
+        );
+        project.config(r#"{"ss2/": "SS2"}"#, Some(r#"{"ss2/": "game.kpf!res/"}"#));
+        let resolver = project.resolver();
+        let version = |path: &str| resolver.version(path);
+        let mut watch = DataWatch::new();
+        let read =
+            ["ss2/a.bin", "ss2/b.bin"].map(|path| (path.to_string(), version(path).unwrap()));
+        watch.watch(read.into());
+        let t = std::time::Instant::now();
+        let at = |ms: u64| t + std::time::Duration::from_millis(ms);
+        let touch = |secs: u64| {
+            let file = std::fs::File::options().write(true).open(&zip).unwrap();
+            let mtime = std::time::SystemTime::now() + std::time::Duration::from_secs(secs);
+            file.set_modified(mtime).unwrap();
+        };
+
+        let repacked: &[(&str, Option<&[u8]>)] = &[
+            ("res/a.bin", Some(b"a2")),
+            ("res/b.bin", Some(b"b1")),
+            ("res/c.bin", Some(b"c")),
+        ];
+        write_zip(&zip, repacked);
+        touch(2);
+        assert!(watch.poll(at(0), version).is_empty(), "settling");
+        assert_eq!(watch.poll(at(200), version), ["ss2/a.bin"]);
+
+        write_zip(&zip, repacked);
+        touch(4);
+        watch.poll(at(300), version);
+        assert!(watch.poll(at(500), version).is_empty(), "rewritten intact");
     }
 
     #[test]

@@ -149,7 +149,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// visible, hidden}`: its `Scene.cells` portal walks, the cells they
 /// reached, and `Scene.inCells` subtrees hidden) on `GET /state`.
 /// Additive — a runtime that doesn't report them omits them, which deserializes as zero.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 25;
+///
+/// 26: `POST /project-files` also takes an unasked reply (bytes or missing)
+/// for a file the session already got — the host's copy changed, and
+/// `functor run vr` sends it from v26.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 26;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -258,7 +262,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/project-files",
-        description: "answer one request from GET /project-files: a binary envelope (u32 header length, JSON header {session, path, status: bytes|current|missing, version?, message?}, then the bytes); 409 for another session or an unrequested path",
+        description: "answer one request from GET /project-files: a binary envelope (u32 header length, JSON header {session, path, status: bytes|current|missing, version?, message?}, then the bytes); also an unasked update (bytes or missing) of a file this session got; 409 for another session or an unrequested path",
     },
     DebugRoute {
         method: "POST",

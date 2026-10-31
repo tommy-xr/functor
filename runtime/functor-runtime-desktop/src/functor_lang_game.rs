@@ -33,6 +33,7 @@ use std::time::Instant;
 
 use functor_lang::project::SourceMap;
 use functor_lang::{Session, Value};
+use functor_runtime_common::data_watch::{self, DataWatch};
 use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
@@ -40,8 +41,8 @@ use functor_runtime_common::functor_lang_prelude::{
     FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
-    journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, reused_status,
-    validate_contract,
+    journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, reuse_counts,
+    reused_status, validate_contract,
     ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Provenance, Reporter,
     ShellOptions, SpanSource,
 };
@@ -88,6 +89,9 @@ pub struct FunctorLangGame {
     /// siblings; any on-disk project edit clears it (disk is the newer whole
     /// project in the desktop shell's last-write-wins model).
     pushed_project: Option<Vec<(String, String)>>,
+    /// The data files the current program read (`File.bytes`/`File.exists`,
+    /// through mounts): a change reloads it.
+    data_watch: DataWatch,
     /// The `.fun` sources the CURRENT program was built from — file name and
     /// text, entry first, project files only. Serves `GET /project`: after a
     /// pushed edit (`reload_source`/`reload_project`) these differ from what
@@ -279,6 +283,8 @@ struct Loaded {
     settings: Option<GameSettings>,
     /// How many top-level values a reload kept (`functor_lang::reuse`).
     reuse: functor_lang::reuse::ReuseStats,
+    /// The project files the load read or re-checked, by version when read.
+    file_reads: std::collections::BTreeMap<String, Option<String>>,
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
@@ -393,6 +399,7 @@ fn finish_load(
     let types = functor_lang::reuse::def_types(&project.module, &types);
     let module = project.module;
     let sources = project.sources;
+    functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
     let (session, reuse) = Session::load_reusing(&module, &mut FunctorHost, previous, types)
         .map_err(|f| {
             format!(
@@ -424,7 +431,18 @@ fn finish_load(
         config: contract.config,
         settings: contract.settings,
         reuse,
+        file_reads: functor_runtime_common::functor_lang_prelude::bytes::take_file_reads(),
     })
+}
+
+/// A project file's version through the installed reader (mounts included).
+fn data_version(
+    reader: &Option<std::sync::Arc<dyn functor_runtime_common::storage::ProjectReader>>,
+    path: &str,
+) -> Result<Option<String>, String> {
+    reader
+        .as_ref()
+        .map_or(Ok(None), |reader| reader.version(path))
 }
 
 
@@ -489,6 +507,8 @@ impl FunctorLangGame {
         let source_hashes = inspector_sources(&loaded.sources);
         let sources = project_sources_of(&loaded.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
+        let mut data_watch = DataWatch::new();
+        data_watch.watch(loaded.file_reads);
         let mut game = FunctorLangGame {
             path: path.to_string(),
             role,
@@ -496,6 +516,7 @@ impl FunctorLangGame {
             stamp,
             pushed_entry: None,
             pushed_project: None,
+            data_watch,
             sources,
             module: loaded.module,
             session: loaded.session,
@@ -586,6 +607,61 @@ impl FunctorLangGame {
         }
     }
 
+    /// Also watch what a failed load read: creating a file it lacked retries.
+    fn watch_failed_reads(&mut self) {
+        let reads = functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
+        self.data_watch.extend(reads);
+    }
+
+    /// Load the program as it stands, around any pushed sources.
+    fn load_current(&self) -> Result<Loaded, String> {
+        let previous = Some(&self.session);
+        match (&self.pushed_project, &self.pushed_entry) {
+            (Some(files), _) => load_sources(files, &self.role, previous),
+            (None, Some(src)) => load_source(&self.path, src.clone(), &self.role, previous),
+            (None, None) => load_game(&self.path, &self.role, previous),
+        }
+    }
+
+    /// Reload once a data file the program read has changed and settled
+    /// (`data_watch`); reuse re-runs only the bindings that read it. The
+    /// status line, or `None` when nothing changed.
+    fn check_data_reload(&mut self, now: Instant) -> Option<Result<String, String>> {
+        let reader = functor_runtime_common::storage::project_reader();
+        let changed = self
+            .data_watch
+            .poll(now, |path| data_version(&reader, path));
+        if changed.is_empty() {
+            return None;
+        }
+        let started = Instant::now();
+        let what = data_watch::describe(&changed);
+        let result = match self.load_current() {
+            Ok(loaded) => {
+                let (reused, values) = reuse_counts(&loaded.reuse, &loaded.sources);
+                self.swap_in(loaded);
+                Ok(format!(
+                    "data changed: {what} → reloaded in {:.0} ms (reused {reused} of {values})",
+                    started.elapsed().as_secs_f64() * 1000.0
+                ))
+            }
+            Err(message) => {
+                // Maybe read mid-write: try again once it settles.
+                self.data_watch.failed(&changed, now);
+                self.watch_failed_reads();
+                Err(format!(
+                    "data changed: {what} → reload failed, keeping old program: {message}"
+                ))
+            }
+        };
+        let (ok, message) = match &result {
+            Ok(message) => (true, message.clone()),
+            Err(message) => (false, message.clone()),
+        };
+        events::emit(RuntimeEvent::HotReload { ok, message });
+        Some(result)
+    }
+
     /// Swap in a freshly loaded program, KEEPING THE MODEL — the shared tail
     /// of both reload paths (file watch and network push). `init` from the
     /// new program is deliberately unused: state survives the edit, and
@@ -597,7 +673,9 @@ impl FunctorLangGame {
     /// is kept as well: `Sub.every` fires on the global time grid, so timers
     /// tick right through a reload. Returns the number of stored closures
     /// rebound, for the status line.
-    fn swap_in(&mut self, loaded: Loaded) -> (usize, Option<(usize, f64)>) {
+    fn swap_in(&mut self, mut loaded: Loaded) -> (usize, Option<(usize, f64)>) {
+        self.data_watch
+            .watch(std::mem::take(&mut loaded.file_reads));
         let retry_tts_before_reload = self.prev_tts;
         let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
@@ -715,7 +793,9 @@ impl FunctorLangGame {
         (report.rebound, history_replay)
     }
 
-    fn reset_in(&mut self, loaded: Loaded) {
+    fn reset_in(&mut self, mut loaded: Loaded) {
+        self.data_watch
+            .watch(std::mem::take(&mut loaded.file_reads));
         self.ctx().close_all_connections();
         physics::remove_world(physics::DEFAULT_WORLD);
         clear_http_taggers();
@@ -846,6 +926,7 @@ impl Game for FunctorLangGame {
         // keeps the old program running.
         let stamp = project_stamp(&self.path);
         if stamp == self.stamp {
+            self.check_data_reload(Instant::now());
             return;
         }
         // Any disk edit is newer than a closed whole-project push, so return
@@ -864,11 +945,7 @@ impl Game for FunctorLangGame {
             self.pushed_entry = None;
         }
         let started = Instant::now();
-        let loaded = match &self.pushed_entry {
-            Some(src) => load_source(&self.path, src.clone(), &self.role, Some(&self.session)),
-            None => load_game(&self.path, &self.role, Some(&self.session)),
-        };
-        match loaded {
+        match self.load_current() {
             Ok(loaded) => {
                 let reused = reused_status(&loaded.reuse, &loaded.sources);
                 let (rebound, history_replay) = self.swap_in(loaded);
@@ -889,6 +966,7 @@ impl Game for FunctorLangGame {
                 });
             }
             Err(message) => {
+                self.watch_failed_reads();
                 events::emit(RuntimeEvent::HotReload {
                     ok: false,
                     message: format!("reload failed, keeping old program: {message}"),
@@ -2103,6 +2181,116 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert!(status.contains("(reused 3 of 4 bindings; model preserved"), "{status}");
         assert!(std::rc::Rc::ptr_eq(&before, &table(&game)));
         assert_eq!(game.session.global("speed").unwrap().to_string(), "2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A changed data file the program read reloads it once settled, re-running
+    /// only the binding that read it; an unread file doesn't; a rename-save
+    /// does; a delete fails the reload and the recreate (with the retry) loads.
+    #[test]
+    fn data_file_changes_reload_only_their_readers() {
+        use functor_runtime_common::storage::{self, ProjectReadError, ProjectReader};
+        /// Reads `dir`, independent of the process-wide project root.
+        struct DirReader(PathBuf);
+        impl ProjectReader for DirReader {
+            fn read(&self, path: &str) -> Result<std::sync::Arc<[u8]>, ProjectReadError> {
+                storage::read_confined(&self.0, path)
+            }
+            fn exists(&self, path: &str) -> bool {
+                storage::is_file_confined(&self.0, path)
+            }
+            fn version(&self, path: &str) -> Result<Option<String>, String> {
+                Ok(storage::version_confined(&self.0, path))
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-data-reload",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(dir.join("a.bin"), b"aa").unwrap();
+        std::fs::write(dir.join("b.bin"), b"bbb").unwrap();
+        std::fs::write(dir.join("unread.bin"), b"u").unwrap();
+        let entry = dir.join("game.fun");
+        std::fs::write(
+            &entry,
+            format!(
+                "{BASE}let a = Bytes.length(File.bytes(Path.of(\"a.bin\")))\n\
+                 let b = Bytes.length(File.bytes(Path.of(\"b.bin\")))\n\
+                 let c = if File.exists(Path.of(\"flag\")) then \
+                 Bytes.length(File.bytes(Path.of(\"c.bin\"))) else 0.0\n"
+            ),
+        )
+        .unwrap();
+        storage::set_project_reader(Some(std::sync::Arc::new(DirReader(dir.clone()))));
+        let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
+        assert_eq!(game.data_watch.len(), 3, "a.bin, b.bin and flag");
+        let global =
+            |game: &FunctorLangGame, name: &str| game.session.global(name).unwrap().to_string();
+        let t = Instant::now();
+        let at = |ms: u64| t + std::time::Duration::from_millis(ms);
+        assert!(game.check_data_reload(at(0)).is_none());
+        assert!(game.check_data_reload(at(200)).is_none(), "unchanged");
+
+        std::fs::write(dir.join("unread.bin"), b"uu").unwrap();
+        assert!(game.check_data_reload(at(300)).is_none());
+        assert!(
+            game.check_data_reload(at(400)).is_none(),
+            "unread: no reload"
+        );
+
+        std::fs::write(dir.join("a.bin"), b"aaaa").unwrap();
+        assert!(game.check_data_reload(at(500)).is_none(), "settling");
+        let status = game.check_data_reload(at(700)).unwrap().unwrap();
+        assert!(
+            status.starts_with("data changed: a.bin → reloaded in "),
+            "{status}"
+        );
+        assert!(
+            status.ends_with("(reused 3 of 4)"),
+            "only `a` re-ran: {status}"
+        );
+        assert_eq!(global(&game, "a"), "4");
+
+        // An editor's save: write a temp file, rename it over.
+        std::fs::write(dir.join("b.tmp"), b"bbbbb").unwrap();
+        std::fs::rename(dir.join("b.tmp"), dir.join("b.bin")).unwrap();
+        game.check_data_reload(at(800));
+        let status = game.check_data_reload(at(1000)).unwrap().unwrap();
+        assert!(status.contains("data changed: b.bin"), "{status}");
+        assert_eq!(global(&game, "b"), "5");
+
+        // Deleted: the reload fails and keeps the program; recreated, it loads.
+        std::fs::remove_file(dir.join("a.bin")).unwrap();
+        game.check_data_reload(at(1100));
+        let failed = game.check_data_reload(at(1300)).unwrap().unwrap_err();
+        assert!(failed.contains("keeping old program"), "{failed}");
+        assert_eq!(global(&game, "a"), "4");
+        std::fs::write(dir.join("a.bin"), b"a").unwrap();
+        game.check_data_reload(at(1400));
+        let status = game.check_data_reload(at(1600)).unwrap().unwrap();
+        assert!(status.contains("data changed: a.bin"), "{status}");
+        assert_eq!(global(&game, "a"), "1");
+
+        // A new dependency the failed load lacked loads once created.
+        std::fs::write(dir.join("flag"), b"").unwrap();
+        game.check_data_reload(at(1700));
+        let failed = game.check_data_reload(at(1900)).unwrap().unwrap_err();
+        assert!(failed.contains("c.bin"), "{failed}");
+        game.check_data_reload(at(2000));
+        assert!(
+            game.check_data_reload(at(2200)).unwrap().is_err(),
+            "the retry"
+        );
+        std::fs::write(dir.join("c.bin"), b"cc").unwrap();
+        game.check_data_reload(at(2300));
+        let status = game.check_data_reload(at(2500)).unwrap().unwrap();
+        assert!(status.contains("data changed: c.bin"), "{status}");
+        assert_eq!(global(&game, "c"), "2");
+
+        storage::set_project_reader(None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
