@@ -165,6 +165,10 @@ enum Command {
         #[arg(long, value_name = "OPS")]
         replay: Option<String>,
     },
+    /// Print each top-level definition's inferred `impure[…]` read classes
+    /// (report only: the runtime's read tracking is the authority), with the
+    /// path to each built-in. E.g. `functor -d examples/lightmap-bake reads`.
+    Reads,
     /// Export the project's printable part headlessly (no GPU): the entry's
     /// `let part = …` Solid, in millimetres. `.stl` writes one mesh; `.3mf`
     /// writes each `--part` as a named part on its own filament, in order, so
@@ -508,6 +512,7 @@ async fn run(args: &Args) -> io::Result<()> {
         Command::Build { .. }
             | Command::Test
             | Command::Fuzz { .. }
+            | Command::Reads
             | Command::Export { .. }
             | Command::Bake { .. }
             | Command::Run { .. }
@@ -573,6 +578,13 @@ async fn run(args: &Args) -> io::Result<()> {
                         command: repro_command(args, &working_directory_str),
                     },
                 )
+            }
+            Command::Reads => {
+                let loaded = project.build(&working_directory_str, false)?;
+                let (_, types) = loaded.check_with_types();
+                let inferred = functor_lang::reads::infer(&loaded.module, &types);
+                print!("{}", functor_lang::reads::report(&loaded, &inferred));
+                Ok(())
             }
             Command::Export { output, parts, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
@@ -674,6 +686,7 @@ async fn run(args: &Args) -> io::Result<()> {
         Command::Build { .. }
         | Command::Test
         | Command::Fuzz { .. }
+        | Command::Reads
         | Command::Export { .. }
         | Command::Bake { .. }
         | Command::Run { .. }
@@ -739,6 +752,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Build { .. } => "build",
         Command::Test => "test",
         Command::Fuzz { .. } => "fuzz",
+        Command::Reads => "reads",
         Command::Export { .. } => "export",
         Command::Bake { .. } => "bake",
         Command::Run { .. } => "run",

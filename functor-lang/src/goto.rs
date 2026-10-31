@@ -263,7 +263,7 @@ fn offer(span: Span, target: Option<&Span>, consider: &mut impl FnMut(Span, Span
 }
 
 /// All the annotated fields of a `type` body, record or variant.
-fn type_body_fields(body: &TypeBody) -> Vec<&TypeName> {
+pub(crate) fn type_body_fields(body: &TypeBody) -> Vec<&TypeName> {
     match body {
         TypeBody::Record(fields) => fields.iter().map(|f| &f.ty).collect(),
         TypeBody::Variants(variants) => variants
