@@ -93,9 +93,9 @@ expects; `e2e/hoverbike.mjs` and `e2e/hoverbike-xr.mjs` drive both ways.
   over the seat says "E to ride" (or "grab the bars"). E, or a fresh squeeze
   within 0.3 m of a grip, fades to black over 0.1 s; on the black step the
   view moves to the seat (the calibrated eye lands on the seat eye, facing
-  the bike's heading) and the grabbing hand stays latched. It stays black
-  1.3 s while the bike rises to ride height, then fades back in over 0.15 s.
-  The view never moves smoothly into the seat, or up with the bike.
+  the bike's heading), the grabbing hand stays latched, and the parked bike
+  snaps up to ride height, still. It fades back in over 0.15 s. The view
+  never moves smoothly into the seat, or up with the bike.
 - **Getting off.** Hold E or right B for 0.5 s, below 2 m/s (faster, the
   gauge says "slow down" and getting off waits). The walker lands on the
   bike's left, else its right, else behind it: each spot needs the course's
