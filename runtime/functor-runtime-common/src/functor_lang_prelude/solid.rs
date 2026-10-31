@@ -167,7 +167,7 @@ pub(super) fn render_data(mesh: &functor_solid::Mesh) -> Arc<MeshData> {
 thread_local! {
     /// Solid → mesh. `draw` converts the same top-level `let part` every
     /// frame, and booleans are costly to re-evaluate: this meshes it once
-    /// (for `toScene`, `volume`, `bounds`) and hands the renderer the same
+    /// (for `toScene`, `volume`, `bounds`, `check`) and hands the renderer the same
     /// `Arc` each time, so the GPU mesh is reused too. Pure memoization: it
     /// cannot change any result.
     static RENDER_MESHES: RefCell<WeakMemo<Solid, Meshed>> = RefCell::new(WeakMemo::default());
@@ -440,6 +440,29 @@ which won't print as one solid — overlap them or move them apart"
                 .bounds()
                 .ok_or("Solid.bounds: the solid is empty (e.g. an intersection of solids that don't overlap)")?;
             Ok::<_, String>(bounds_value(b))
+        },
+    );
+    // Export's own check, so `expect` catches what `functor export` refuses.
+    reg.fn1(
+        "Solid.check",
+        "Solid.check(solid)",
+        |s: FunctorLangSolid| {
+            let problems = match meshed(&s.0) {
+                Ok(m) => m.mesh.print_problems("the part"),
+                Err(e) => vec![e],
+            };
+            crate::input::record([
+                ("ok", Value::Bool(problems.is_empty())),
+                (
+                    "problems",
+                    Value::List(Rc::new(
+                        problems
+                            .into_iter()
+                            .map(|p| Value::String(p.into()))
+                            .collect(),
+                    )),
+                ),
+            ])
         },
     );
 }
