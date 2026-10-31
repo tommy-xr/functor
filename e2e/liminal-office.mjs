@@ -4,8 +4,10 @@
 //   1. a scripted route: apron → lobby → corridor → office 106 → back out;
 //   2. an outside → in push against a solid facade wall is blocked;
 //   3. inside, portal culling hides rooms (`/state.cells.hidden > 0`);
-//   4. culling on and off (FUNCTOR_CULL=0) capture identical frames at views 1–3;
-//   5. the entrance and corridor goldens render byte-identically across runs
+//   4. the hour: rewinding restores it and its lighting; by day, daylight
+//      brightens office 103 (window) while the corridor stays fixture-lit;
+//   5. culling on and off (FUNCTOR_CULL=0) capture identical frames at views 1–4;
+//   6. the night and day goldens render byte-identically across runs
 //      (`npm run test:golden` compares them to golden/, with a tolerance).
 //
 //   cargo build -p functor-cli --no-default-features
@@ -14,6 +16,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateSync } from "node:zlib";
 import { BIN, ROOT, check, failures, sleep } from "./mcp-rpc.mjs";
 
 const DIR = join(ROOT, "examples/liminal-office");
@@ -47,6 +50,7 @@ function launch(port, env = {}) {
   };
   const game = {
     proc,
+    post,
     log: () => log,
     state,
     async ready() {
@@ -152,9 +156,112 @@ async function wallPush(game) {
   check(m.at.z < -0.4 && m.at.z > -0.6 && m.cell === APRON, `outside → in push blocked at the wall (z ${m.at.z.toFixed(3)}, cell ${m.cell})`);
 }
 
+// Mean luma (0–255) of an 8-bit RGB/RGBA PNG over the rect given as
+// fractions of the image, [x0, y0, x1, y1].
+function meanLuma(png, [x0, y0, x1, y1]) {
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  const channels = { 2: 3, 6: 4 }[png[25]];
+  if (png[24] !== 8 || !channels || png[28] !== 0) throw new Error("expected a non-interlaced 8-bit RGB(A) PNG");
+  const idat = [];
+  for (let at = 8; at < png.length; ) {
+    const len = png.readUInt32BE(at);
+    if (png.toString("latin1", at + 4, at + 8) === "IDAT") idat.push(png.subarray(at + 8, at + 8 + len));
+    at += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const rows = [];
+  let prev = Buffer.alloc(stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+    for (let i = 0; i < stride; i++) {
+      const a = i >= channels ? line[i - channels] : 0;
+      const b = prev[i];
+      const c = i >= channels ? prev[i - channels] : 0;
+      const p = a + b - c;
+      const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
+      line[i] = (line[i] + [0, a, b, (a + b) >> 1, paeth][filter]) & 255;
+    }
+    rows.push(line);
+    prev = line;
+  }
+  let sum = 0;
+  let n = 0;
+  for (let y = Math.floor(y0 * height); y < Math.floor(y1 * height); y++) {
+    for (let x = Math.floor(x0 * width); x < Math.floor(x1 * width); x++) {
+      const p = rows[y].subarray(x * channels);
+      sum += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+      n++;
+    }
+  }
+  return sum / n;
+}
+
+// The hour is model state: N toggles midnight ⇄ noon, T steps an hour, and a
+// rewind restores both the hour and the bake it draws with.
+async function hours(game) {
+  // Hold each hour for 10 frames and rewind to the middle of that run:
+  // `/state.frame` and the recorder's frame numbers are a couple apart.
+  const press = async (key) => {
+    await game.hold(key, 10);
+    return { frame: (await game.state()).frame - 5, hour: (await game.model()).hour };
+  };
+  check((await game.model()).hour === 0, "starts at midnight");
+  const one = await press("t");
+  check(one.hour === 1, `T steps the hour (hour ${one.hour})`);
+  const noon = await press("n");
+  check(noon.hour === 12, `N jumps to noon (hour ${noon.hour})`);
+  const day = await game.capture();
+  const midnight = await press("n");
+  check(midnight.hour === 0, `N jumps back to midnight (hour ${midnight.hour})`);
+  const night = await game.capture();
+  check(!day.equals(night), "noon and midnight draw differently");
+
+  await game.post("/rewind", { frame: noon.frame });
+  let hour = (await game.model()).hour;
+  check(hour === 12, `rewinding to frame ${noon.frame} restores noon (hour ${hour})`);
+  check((await game.capture()).equals(day), "the rewound frame draws as it did (day bake)");
+  await game.post("/rewind", { frame: one.frame });
+  hour = (await game.model()).hour;
+  check(hour === 1, `rewinding to frame ${one.frame} restores 1:00 (hour ${hour})`);
+  await press("n"); // 1:00 is night: on to noon,
+  await press("n"); // then midnight
+  check((await game.model()).hour === 0, "back at midnight");
+}
+
+// Daylight reaches only what an opening connects to: office 103's floor
+// brightens by day; the windowless corridor stays fixture-lit.
+async function daylight(game) {
+  const at = async (view) => {
+    await game.view(view);
+    const night = await game.capture();
+    await game.hold("n", 1);
+    const day = await game.capture();
+    await game.hold("n", 1);
+    return { night, day };
+  };
+  // View 4 looks at the window; the floor band below it excludes the sky.
+  const room = await at(4);
+  const floor = [0, 0.5, 1, 0.75];
+  const [roomNight, roomDay] = [meanLuma(room.night, floor), meanLuma(room.day, floor)];
+  check(roomDay > 1.2 * roomNight, `office 103's floor brightens by day (luma ${roomNight.toFixed(1)} → ${roomDay.toFixed(1)})`);
+  // View 2 looks down the corridor, away from the lobby.
+  const corridor = await at(2);
+  const whole = [0, 0, 1, 1];
+  const [corridorNight, corridorDay] = [meanLuma(corridor.night, whole), meanLuma(corridor.day, whole)];
+  check(Math.abs(corridorDay / corridorNight - 1) < 0.02, `the corridor stays fixture-lit (luma ${corridorNight.toFixed(1)} → ${corridorDay.toFixed(1)})`);
+}
+
+// Views 1–4 at midnight, then at noon.
 async function viewCaptures(game, culling) {
   const shots = [];
-  for (const n of [1, 2, 3]) {
+  for (const n of [1, 2, 3, 4, "n", 1, 2, 3, 4, "n"]) {
+    if (n === "n") {
+      await game.hold("n", 1);
+      continue;
+    }
     await game.view(n);
     const s = await game.state();
     if (culling && n > 1) check(s.cells.hidden > 0, `view ${n} hides rooms (cells ${JSON.stringify(s.cells)})`);
@@ -183,17 +290,24 @@ try {
   await game.ready();
   await route(game);
   await wallPush(game);
+  await hours(game);
+  await daylight(game);
   const culled = await viewCaptures(game, true);
 
   const unculled = launch(8192, { FUNCTOR_CULL: "0" });
   games.push(unculled);
   await unculled.ready();
   const all = await viewCaptures(unculled, false);
-  [1, 2, 3].forEach((n, i) => check(culled[i].equals(all[i]), `view ${n}: culling on and off capture the same frame`));
+  culled.forEach((shot, i) => check(shot.equals(all[i]), `${i < 4 ? "night" : "noon"} view ${(i % 4) + 1}: culling on and off capture the same frame`));
 
+  const scripted = (script) => ["--input-script", join(DIR, script), "--capture-at-frame", "30"];
   const goldens = {
     "liminal-office-entrance": ["--fixed-time", "1", "--capture-time", "1.0"],
-    "liminal-office-corridor": ["--input-script", join(DIR, "views.script"), "--capture-at-frame", "30"],
+    "liminal-office-corridor": scripted("views.script"),
+    "liminal-office-window": scripted("window.script"),
+    "liminal-office-entrance-day": scripted("noon-entrance.script"),
+    "liminal-office-corridor-day": scripted("noon-corridor.script"),
+    "liminal-office-window-day": scripted("noon-window.script"),
   };
   for (const [name, args] of Object.entries(goldens)) {
     check(golden(name, args).equals(golden(name, args)), `${name}: byte-identical across runs`);

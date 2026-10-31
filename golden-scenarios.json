@@ -240,6 +240,46 @@
       "captureAtFrame": 30
     },
     {
+      "name": "liminal-office-window",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "window.script",
+      "captureAtFrame": 30
+    },
+    {
+      "name": "liminal-office-entrance-day",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "noon-entrance.script",
+      "captureAtFrame": 30
+    },
+    {
+      "name": "liminal-office-corridor-day",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "noon-corridor.script",
+      "captureAtFrame": 30
+    },
+    {
+      "name": "liminal-office-window-day",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "noon-window.script",
+      "captureAtFrame": 30
+    },
+    {
       "name": "scene-grid-t2",
       "sample": "scene-grid",
       "fixedTime": 2.0,
