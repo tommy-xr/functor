@@ -189,7 +189,7 @@ use crate::scene3d::{
 };
 use crate::skybox::SkyboxDescription;
 use crate::terrain::TerrainDescription;
-use crate::timetravel::{args_digest, Entry};
+use crate::timetravel::{args_digest, Channel, Entry, OpId, Requests};
 use crate::ui::{self, View};
 use crate::webview::HtmlNode;
 use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
@@ -422,11 +422,11 @@ pub enum EffectTree {
     },
     /// An HTTP request (`Effect.httpGet`/`httpPost`). Unlike `Now`/`Random`
     /// (same-frame) or `Raycast` (same-frame deferred), the response lands
-    /// FRAMES later: performing it mints a token, queues a
-    /// `NetCommand::HttpRequest`, and registers `tagger` by token
-    /// ([`register_http_tagger`]). When the shell pushes the response
-    /// back, the producer's per-frame pump applies the tagger to a
-    /// `Net.HttpResponse` and folds the message through `update`.
+    /// FRAMES later: performing it queues a tokened
+    /// `NetCommand::HttpRequest` and leaves `tagger` pending in the
+    /// recorder's [`Requests`]. When the shell pushes the response back, the
+    /// producer applies the tagger to a `Net.HttpResponse` and folds the
+    /// message through `update`.
     Http {
         method: crate::net::HttpMethod,
         url: String,
@@ -473,9 +473,8 @@ pub enum EffectTree {
     },
     /// A one-shot whose completion is reported back frames later
     /// (`Effect.playThen`). Like [`Http`], the request is fire-and-forget but
-    /// the RESULT needs `update`: performing it mints a token, registers
-    /// `message` by it ([`register_audio_completion`]), and queues a tokened
-    /// one-shot. When the shell reports the sound finished
+    /// the RESULT needs `update`: performing it leaves `message` pending in
+    /// [`Requests`] and queues a tokened one-shot. When the shell reports the sound finished
     /// (`audio_push_finished`), the producer delivers `message` VERBATIM
     /// through `update` — unlike `Http`, there is no tagger to apply (F#'s
     /// `playThen` takes a message value, not a function).
@@ -533,8 +532,11 @@ pub trait EffectRunner {
     /// replays the recorded answer.
     fn load(&mut self, slot: &str) -> EffectValue;
     /// An outbound intent was issued (logged as [`Entry::Issued`]). `Replay`
-    /// checks it against the log; the others ignore it.
-    fn issued(&mut self, _kind: &'static str, _args: u64) {}
+    /// checks it against the log and names the recorded op; the others
+    /// answer `None`.
+    fn issued(&mut self, _kind: &'static str, _args: u64) -> Option<OpId> {
+        None
+    }
     /// A replayed frame starts: its recorded log, or `None` past the log.
     fn begin_frame(&mut self, _recorded: Option<&[Entry]>) {}
 }
@@ -1155,6 +1157,12 @@ impl ReplayEffects {
     /// Consume the next recorded op if the frame is recorded: its answer
     /// value, or `None` for a stand-in (unrecorded, diverged, or an intent).
     fn take(&mut self, kind: &'static str, args: u64) -> Option<EffectValue> {
+        self.take_op(kind, args).and_then(|(_, value)| value)
+    }
+
+    /// [`Self::take`], naming the recorded op too (`None` past the log or
+    /// once lost).
+    fn take_op(&mut self, kind: &'static str, args: u64) -> Option<(OpId, Option<EffectValue>)> {
         let ops = self.ops.as_mut()?;
         let Some(entry) = ops.pop_front() else {
             self.lose(format!(
@@ -1171,7 +1179,7 @@ impl ReplayEffects {
         }
         let message = format!("replay diverged at {op:?}: {kind} with different arguments");
         match entry {
-            Entry::Answer { value, .. } if recorded_args == args => Some(value),
+            Entry::Answer { value, .. } if recorded_args == args => Some((op, Some(value))),
             Entry::Answer { .. } => {
                 self.lose(message);
                 None
@@ -1181,7 +1189,7 @@ impl ReplayEffects {
                 if recorded_args != args {
                     self.diverge(message);
                 }
-                None
+                Some((op, None))
             }
         }
     }
@@ -1213,8 +1221,8 @@ impl EffectRunner for ReplayEffects {
         self.take("storage.load", args_digest(&slot))
             .unwrap_or_else(|| self.stand_in.load(slot))
     }
-    fn issued(&mut self, kind: &'static str, args: u64) {
-        self.take(kind, args);
+    fn issued(&mut self, kind: &'static str, args: u64) -> Option<OpId> {
+        self.take_op(kind, args).map(|(op, _)| op)
     }
     fn begin_frame(&mut self, recorded: Option<&[Entry]>) {
         self.end_frame();
@@ -5954,164 +5962,6 @@ pub fn http_response_value(result: &crate::net::HttpResult) -> Value {
         .expect("host-built HTTP responses have no map keys")
 }
 
-thread_local! {
-    /// In-flight `Effect.httpGet`/`httpPost` taggers, keyed by request token —
-    /// the Functor Lang analogue of the F# `net::registry`. Populated when the effect is
-    /// performed (see `EffectTree::Http`); drained by the producer's HTTP
-    /// arrival hook when the response lands. The map is self-draining: the
-    /// shell's dispatch (`net_dispatch::perform_http`) returns EXACTLY ONE
-    /// completion per request — a `Response` for any HTTP status or an `Error`
-    /// for a transport failure — so every registered token is later taken. It
-    /// is bounded by concurrently in-flight requests, and cleared on hot reload
-    /// (an in-flight tagger closes over the OLD session and must not outlive
-    /// it — the same rule the producer applies to deferred queries).
-    static PENDING_HTTP: std::cell::RefCell<std::collections::HashMap<u64, Value>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// Register an HTTP tagger for `token` (see [`PENDING_HTTP`]).
-pub fn register_http_tagger(token: u64, tagger: Value) {
-    PENDING_HTTP.with(|m| m.borrow_mut().insert(token, tagger));
-}
-
-/// Take the tagger registered for a completed request's `token`, if any (a hot
-/// reload clears the map, so a late response can arrive orphaned — dropped).
-pub fn take_http_tagger(token: u64) -> Option<Value> {
-    PENDING_HTTP.with(|m| m.borrow_mut().remove(&token))
-}
-
-/// Drop all in-flight HTTP taggers (called on hot reload).
-pub fn clear_http_taggers() {
-    PENDING_HTTP.with(|m| m.borrow_mut().clear());
-}
-
-thread_local! {
-    /// In-flight `Effect.playThen` completion MESSAGES, keyed by the one-shot's
-    /// token — the audio analogue of [`PENDING_HTTP`]. Populated when the effect
-    /// is performed (see `EffectTree::PlayAudioThen`); drained by the producer's
-    /// audio-finished hook when the sound ends (`audio_push_finished`). Unlike
-    /// the HTTP map this holds a plain message VALUE, delivered verbatim (F#'s
-    /// `playThen` takes a message, not a tagger). Bounded by the sounds in
-    /// flight, and cleared on hot reload (a stored message may close over the
-    /// OLD session — the same rule the producer applies to HTTP taggers).
-    static PENDING_AUDIO: std::cell::RefCell<std::collections::HashMap<u64, Value>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// Cap on in-flight `playThen` completion messages. Unlike [`PENDING_HTTP`]
-/// — whose shell dispatch returns EXACTLY ONE completion per token, so the map
-/// self-drains — an audio finish is BEST-EFFORT: a sound that never starts (no
-/// device, decode failure, a headless run that drops the command), or a backend
-/// that does not report finishes (wasm today), leaves its message un-taken. This
-/// bound keeps a game that fires `playThen` in a loop from growing the map
-/// without limit; on overflow the OLDEST pending message (lowest token) is
-/// evicted — its completion, if it ever arrives, is then dropped like a
-/// hot-reloaded one.
-const PENDING_AUDIO_CAP: usize = 4096;
-
-/// Register a `playThen` completion message for `token` (see [`PENDING_AUDIO`]).
-pub fn register_audio_completion(token: u64, message: Value) {
-    PENDING_AUDIO.with(|m| {
-        let mut map = m.borrow_mut();
-        map.insert(token, message);
-        // Best-effort finishes mean this map is not self-draining; evict the
-        // oldest entry rather than grow unbounded (see PENDING_AUDIO_CAP).
-        while map.len() > PENDING_AUDIO_CAP {
-            if let Some(oldest) = map.keys().copied().min() {
-                map.remove(&oldest);
-            } else {
-                break;
-            }
-        }
-    });
-}
-
-/// Take the completion message for a finished one-shot's `token`, if any (a hot
-/// reload clears the map, so a late finish can arrive orphaned — dropped).
-pub fn take_audio_completion(token: u64) -> Option<Value> {
-    PENDING_AUDIO.with(|m| m.borrow_mut().remove(&token))
-}
-
-/// Drop all in-flight `playThen` completion messages (called on hot reload).
-pub fn clear_audio_completions() {
-    PENDING_AUDIO.with(|m| m.borrow_mut().clear());
-}
-
-thread_local! {
-    /// In-flight `Effect.preloadThen` completion MESSAGES, keyed by the
-    /// preload's token — the asset analogue of [`PENDING_AUDIO`], with the
-    /// same rules: a plain message VALUE delivered verbatim; bounded (a
-    /// shell that drops the command leaves its message un-taken); cleared on
-    /// hot reload (a stored message may close over the OLD session).
-    static PENDING_PRELOAD: std::cell::RefCell<std::collections::HashMap<u64, Value>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// An opaque copy of one pending `preloadThen` completion message for a
-/// whole-shell time-travel snapshot. The message stays private so shells can
-/// retain and restore it without depending on Functor Lang's runtime values.
-#[derive(Clone)]
-pub struct PreloadCompletionSnapshot {
-    token: u64,
-    message: Value,
-}
-
-/// Register a `preloadThen` completion message for `token` (see
-/// [`PENDING_PRELOAD`]; the cap and eviction mirror
-/// [`register_audio_completion`]).
-pub fn register_preload_completion(token: u64, message: Value) {
-    PENDING_PRELOAD.with(|m| {
-        let mut map = m.borrow_mut();
-        map.insert(token, message);
-        while map.len() > PENDING_AUDIO_CAP {
-            if let Some(oldest) = map.keys().copied().min() {
-                map.remove(&oldest);
-            } else {
-                break;
-            }
-        }
-    });
-}
-
-/// Take the completion message for a settled preload's `token`, if any.
-pub fn take_preload_completion(token: u64) -> Option<Value> {
-    PENDING_PRELOAD.with(|m| m.borrow_mut().remove(&token))
-}
-
-/// Clone the still-pending messages for `tokens` into a whole-shell snapshot.
-/// Missing tokens are hot-reload orphans and are deliberately omitted.
-pub fn snapshot_preload_completions(tokens: &[u64]) -> Vec<PreloadCompletionSnapshot> {
-    PENDING_PRELOAD.with(|m| {
-        let map = m.borrow();
-        tokens
-            .iter()
-            .filter_map(|token| {
-                map.get(token).cloned().map(|message| PreloadCompletionSnapshot {
-                    token: *token,
-                    message,
-                })
-            })
-            .collect()
-    })
-}
-
-/// Restore completion messages captured by [`snapshot_preload_completions`].
-/// The caller must reject snapshots from a previous program revision: a
-/// message may close over the session that created it.
-pub fn restore_preload_completions(snapshots: Vec<PreloadCompletionSnapshot>) {
-    PENDING_PRELOAD.with(|m| {
-        let mut map = m.borrow_mut();
-        for snapshot in snapshots {
-            map.insert(snapshot.token, snapshot.message);
-        }
-    });
-}
-
-/// Drop all in-flight `preloadThen` completion messages (hot reload).
-pub fn clear_preload_completions() {
-    PENDING_PRELOAD.with(|m| m.borrow_mut().clear());
-}
-
 /// What an interactive UI widget delivers when the shell reports an
 /// interaction on it (docs/ui-interaction.md): either a message VALUE handed
 /// to `update` verbatim (a button — the `Sub.every` shape) or a TAGGER applied
@@ -6128,10 +5978,10 @@ thread_local! {
     /// with the returned slot index (construction order). The producer drains
     /// it with [`take_ui_handlers`] right after the evaluation and keeps it
     /// beside the frame's cached `View`, so an event the shell reports later
-    /// resolves against the exact table that produced the tree it saw. Unlike
-    /// [`PENDING_HTTP`] this never spans frames — it is rebuilt every `ui`
-    /// evaluation — so hot reload needs no clearing here (the producer drops
-    /// its own kept copy instead).
+    /// resolves against the exact table that produced the tree it saw. It
+    /// never spans frames — it is rebuilt every `ui` evaluation — so hot
+    /// reload needs no clearing here (the producer drops its own kept copy
+    /// instead).
     static UI_HANDLERS: std::cell::RefCell<Vec<UiHandler>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -6178,7 +6028,7 @@ pub fn restore_ui_handlers(handlers: Vec<UiHandler>) {
     UI_HANDLERS.with(|h| *h.borrow_mut() = handlers);
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetEventKind {
     Connected,
     Message,
@@ -6276,6 +6126,7 @@ pub fn deliver_physics_events(
     events: &[physics::PhysicsEvent],
     runner: &mut dyn EffectRunner,
     log: &mut Vec<Entry>,
+    requests: &mut Requests,
     report: &mut dyn FnMut(String),
     suppress_outbound: bool,
 ) {
@@ -6315,6 +6166,7 @@ pub fn deliver_physics_events(
                             vec![more],
                             runner,
                             log,
+                            requests,
                             report,
                             None,
                             suppress_outbound,
@@ -6413,6 +6265,7 @@ pub fn drain_effects(
     first: EffectTree,
     runner: &mut dyn EffectRunner,
     log: &mut Vec<Entry>,
+    requests: &mut Requests,
     report: &mut dyn FnMut(String),
     suppress_outbound: bool,
 ) -> Vec<EffectTree> {
@@ -6424,6 +6277,7 @@ pub fn drain_effects(
         vec![first],
         runner,
         log,
+        requests,
         report,
         Some(&mut deferred),
         suppress_outbound,
@@ -6479,6 +6333,7 @@ pub fn perform_deferred_queries(
     deferred: Vec<EffectTree>,
     runner: &mut dyn EffectRunner,
     log: &mut Vec<Entry>,
+    requests: &mut Requests,
     report: &mut dyn FnMut(String),
     suppress_outbound: bool,
 ) {
@@ -6492,6 +6347,7 @@ pub fn perform_deferred_queries(
         deferred,
         runner,
         log,
+        requests,
         report,
         None,
         suppress_outbound,
@@ -6499,9 +6355,18 @@ pub fn perform_deferred_queries(
 }
 
 /// Log an outbound intent as an `Issued` op; a replay runner validates it.
-fn issue(runner: &mut dyn EffectRunner, log: &mut Vec<Entry>, kind: &'static str, args: u64) {
-    runner.issued(kind, args);
+/// Returns the recorded op a replay matched it to, and its ordinal among
+/// the log's ops (its id once the frame commits).
+fn issue(
+    runner: &mut dyn EffectRunner,
+    log: &mut Vec<Entry>,
+    kind: &'static str,
+    args: u64,
+) -> (Option<OpId>, u32) {
+    let ordinal = log.iter().filter(|entry| entry.op().is_some()).count() as u32;
+    let recorded = runner.issued(kind, args);
     log.push(Entry::issued(kind, args));
+    (recorded, ordinal)
 }
 
 fn drain_mode(
@@ -6511,6 +6376,7 @@ fn drain_mode(
     queue: Vec<EffectTree>,
     runner: &mut dyn EffectRunner,
     log: &mut Vec<Entry>,
+    requests: &mut Requests,
     report: &mut dyn FnMut(String),
     // `Some` = pre-step drain: hold queries here instead of performing.
     // `None` = post-step drain: answer queries now.
@@ -6605,19 +6471,18 @@ dropping the rest"
                 body,
                 tagger,
             } => {
-                // Fire-and-forget request (like Send): mint a token, register
-                // the tagger by it, and queue the HttpRequest for the shell to
-                // perform. The response lands frames later; the producer's HTTP
-                // pump applies the tagger then. Logged as an `Issued` op.
-                issue(
+                // Fire-and-forget request (like Send): logged as an `Issued`
+                // op, its tagger pending by that op, the HttpRequest queued
+                // under a fresh token for the shell to perform. The response
+                // lands frames later and reaches the tagger then.
+                let (recorded, ordinal) = issue(
                     runner,
                     log,
                     "net.http",
                     args_digest(&(&method, &url, &body)),
                 );
-                if !suppress_outbound {
+                let token = (!suppress_outbound).then(|| {
                     let token = crate::net::next_token();
-                    register_http_tagger(token, tagger);
                     crate::net::push_command(crate::net::NetCommand::HttpRequest {
                         token,
                         method,
@@ -6625,7 +6490,9 @@ dropping the rest"
                         headers: Vec::new(),
                         body: body.into_bytes(),
                     });
-                }
+                    token
+                });
+                requests.issue(recorded, ordinal, Channel::Http, token, tagger);
                 continue;
             }
             EffectTree::PlayAudio { sound, position } => {
@@ -6644,19 +6511,20 @@ dropping the rest"
                 continue;
             }
             EffectTree::PlayAudioThen { sound, message } => {
-                // Fire-and-forget request (like Http): mint a token, register
-                // the completion MESSAGE by it, and queue a tokened one-shot.
-                // The finish lands frames later; the producer's audio-finished
-                // hook delivers the message then. Logged as an `Issued` op.
-                if !suppress_outbound {
+                // Fire-and-forget request (like Http), with a completion
+                // MESSAGE pending instead of a tagger: delivered verbatim when
+                // the shell reports the one-shot finished.
+                let (recorded, ordinal) =
+                    issue(runner, log, "audio.playThen", args_digest(&sound));
+                let token = (!suppress_outbound).then(|| {
                     let token = crate::audio::next_token();
-                    register_audio_completion(token, message);
                     crate::audio::push_command(crate::audio::AudioCommand::play_one_shot_token(
                         token,
                         sound.clone(),
                     ));
-                }
-                issue(runner, log, "audio.playThen", args_digest(&sound));
+                    token
+                });
+                requests.issue(recorded, ordinal, Channel::Audio, token, message);
                 continue;
             }
             EffectTree::PreloadAsset { kind, locator } => {
@@ -6678,25 +6546,24 @@ dropping the rest"
                 locator,
                 message,
             } => {
-                // The playThen shape: mint a token, register the completion
-                // MESSAGE by it, queue a tokened command. Settlement lands
-                // frames later; the producer's preload-settled hook delivers
-                // the message then.
-                issue(
+                // The playThen shape: the completion MESSAGE pending, a
+                // tokened command queued; delivered when the load settles.
+                let (recorded, ordinal) = issue(
                     runner,
                     log,
                     "asset.preloadThen",
                     args_digest(&(kind, &locator)),
                 );
-                if !suppress_outbound {
+                let token = (!suppress_outbound).then(|| {
                     let token = crate::asset::preload::next_token();
-                    register_preload_completion(token, message);
                     crate::asset::preload::push_command(crate::asset::preload::PreloadCommand {
                         kind,
                         locator: locator.clone(),
                         token: Some(token),
                     });
-                }
+                    token
+                });
+                requests.issue(recorded, ordinal, Channel::Preload, token, message);
                 continue;
             }
             EffectTree::Raycast {
@@ -8844,6 +8711,7 @@ Asset.model(\"shark.glb\") at the data boundary"
                 effect,
                 &mut FakeEffects::new(0.0, vec![]),
                 &mut log,
+                &mut Requests::default(),
                 &mut |m| panic!("unexpected report: {m}"),
                 false,
             );
@@ -11736,6 +11604,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             tree.clone(),
             &mut runner,
             &mut log,
+            &mut Requests::default(),
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -11885,6 +11754,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
                 tree.clone(),
                 &mut runner,
                 &mut log,
+                &mut Requests::default(),
                 &mut |m| panic!("unexpected report: {m}"),
                 true, // suppress_outbound
             );
@@ -11975,6 +11845,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             tree.clone(),
             &mut runner,
             &mut log,
+            &mut Requests::default(),
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -12034,6 +11905,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
                 tree.clone(),
                 &mut runner,
                 &mut log,
+                &mut Requests::default(),
                 &mut |m| panic!("unexpected report: {m}"),
                 false,
             );
@@ -12069,6 +11941,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             tree.clone(),
             &mut runner,
             &mut log,
+            &mut Requests::default(),
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -12238,7 +12111,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             .map(|entry| match entry {
                 Entry::Answer { kind, value, .. } => (*kind, Some(value.clone())),
                 Entry::Issued { kind, .. } => (*kind, None),
-                Entry::Input(input) => panic!("a drain logs no input: {input:?}"),
+                other => panic!("a drain logs only ops: {other:?}"),
             })
             .collect()
     }
@@ -12280,6 +12153,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
                 fx.expect("an effect"),
                 runner,
                 &mut log,
+                &mut Requests::default(),
                 &mut |msg| panic!("unexpected report: {msg}"),
                 false,
             );
@@ -12366,7 +12240,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
 
         // Pre-step drain: DEFERRED — nothing performed, nothing logged.
         let deferred =
-            drain_effects(&session, "update", &mut model, tree, &mut runner, &mut log, &mut fail, false);
+            drain_effects(&session, "update", &mut model, tree, &mut runner, &mut log, &mut Requests::default(), &mut fail, false);
         assert_eq!(deferred.len(), 1);
         assert!(log.is_empty());
         assert!(matches!(model, Value::Number(_)), "model must be untouched");
@@ -12379,6 +12253,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             deferred,
             &mut runner,
             &mut log,
+            &mut Requests::default(),
             &mut fail,
             false,
         );
@@ -12414,6 +12289,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             },
             &mut replay,
             &mut replay_log,
+            &mut Requests::default(),
             &mut fail,
             false,
         );
@@ -12424,6 +12300,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             deferred,
             &mut replay,
             &mut replay_log,
+            &mut Requests::default(),
             &mut fail,
             false,
         );
@@ -12509,6 +12386,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             &[event],
             &mut runner,
             &mut log,
+            &mut Requests::default(),
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -12914,6 +12792,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             },
             &mut FakeEffects::new(0.0, vec![0.5]),
             &mut log,
+            &mut Requests::default(),
             &mut |msg| reports.push(msg),
             false,
         );
@@ -12943,6 +12822,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             EffectTree::Batch(vec![EffectTree::None; 1500]),
             &mut FakeEffects::new(0.0, vec![0.5]),
             &mut log,
+            &mut Requests::default(),
             &mut |msg| reports.push(msg),
             false,
         );
@@ -13616,6 +13496,7 @@ the game dir"
             effect.expect("a Send effect"),
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
+            &mut Requests::default(),
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -13727,6 +13608,7 @@ the game dir"
             fx.expect("an effect"),
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
+            &mut Requests::default(),
             &mut |r| panic!("unexpected report: {r}"),
             false,
         );
@@ -13790,6 +13672,7 @@ the game dir"
                 fx.expect("an effect"),
                 runner,
                 &mut log,
+                &mut Requests::default(),
                 &mut |m| panic!("unexpected report: {m}"),
                 false,
             );
@@ -15464,7 +15347,6 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
     #[test]
     fn http_request_response_round_trip() {
         let _ = crate::net::drain_commands(); // clear the shared queue
-        clear_http_taggers();
         let src = "\
             type Phase = | Loading | Done(status: Float, body: String) | Failed(text: String)\n\
             type Model = { phase: Phase }\n\
@@ -15482,10 +15364,11 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
 
-        // Perform the fetch effect: queues the request + registers the tagger.
+        // Perform the fetch effect: queues the request, its tagger pending.
         let fetch = effect_of(&session.global("fetch").unwrap()).unwrap().0.clone();
         let mut model = session.global("init").unwrap();
         let mut log: Vec<Entry> = Vec::new();
+        let mut requests = Requests::default();
         let _ = drain_effects(
             &session,
             "update",
@@ -15493,6 +15376,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             fetch,
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
+            &mut requests,
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -15510,21 +15394,28 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             Some("net.http")
         );
 
-        // The response lands: route it through the registered tagger → update.
-        let tagger = take_http_tagger(token).expect("a tagger for the token");
-        let resp = http_response_value(&crate::net::HttpResult {
+        // The response lands: route it through the pending tagger → update.
+        let result = crate::net::HttpResult {
             token,
             status: 200,
             body: b"hello!".to_vec(),
             error: None,
-        });
+        };
+        let arrival = crate::timetravel::Arrival::Http(result.clone());
+        let crate::timetravel::Delivered::Op(_, tagger) = requests.deliver(&arrival, 0, 0) else {
+            panic!("a pending tagger for the token")
+        };
+        let resp = http_response_value(&result);
         let msg = session.apply(tagger, vec![resp], "http", &mut FunctorHost).unwrap();
         let (model, _) =
             split_model_effect(session.call("update", vec![model, msg], &mut FunctorHost).unwrap());
         assert_eq!(model.to_string(), "{ phase: Done(200, \"hello!\") }");
 
-        // The token is consumed (a duplicate/late response finds no tagger).
-        assert!(take_http_tagger(token).is_none());
+        // Answered once: a duplicate/late response finds nothing pending.
+        assert!(matches!(
+            requests.deliver(&arrival, 0, 0),
+            crate::timetravel::Delivered::Dropped
+        ));
     }
 
     /// `suppress_outbound` (docs/time-travel.md T6b, the dry-run forward-step):
@@ -15539,7 +15430,6 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             .unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands(); // clear the shared queues
         let _ = crate::audio::drain_commands();
-        clear_http_taggers();
         let src = "\
             let init = 0.0\n\
             let fetch = Effect.httpGet(\"http://127.0.0.1:9000/hello\", (r) => r)\n\
@@ -15561,6 +15451,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
                 effect,
                 &mut FakeEffects::new(0.0, vec![]),
                 &mut log,
+                &mut Requests::default(),
                 &mut |m| panic!("unexpected report: {m}"),
                 true, // suppress_outbound
             );
@@ -15605,6 +15496,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             shoot,
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
+            &mut Requests::default(),
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -15621,6 +15513,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             blast,
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
+            &mut Requests::default(),
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -15644,17 +15537,16 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         );
     }
 
-    /// `Effect.playThen(sound, msg)` mints a token, queues a tokened one-shot,
-    /// and registers the completion MESSAGE by that token; when the sound
-    /// finishes, taking the message and folding it through `update` moves the
-    /// model — the message is delivered verbatim (no tagger to apply).
+    /// `Effect.playThen(sound, msg)` queues a tokened one-shot with the
+    /// completion MESSAGE pending; when the sound finishes, folding that
+    /// message through `update` moves the model — the message is delivered
+    /// verbatim (no tagger to apply).
     #[test]
     fn play_then_registers_message_and_completes_through_update() {
         let _guard = crate::audio::OUTBOUND_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _ = crate::audio::drain_commands(); // clear the shared queue
-        clear_audio_completions();
         let src = "\
             type Model = | Playing | Finished\n\
             let init = Playing\n\
@@ -15668,6 +15560,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let mut log: Vec<Entry> = Vec::new();
 
         let ping = effect_of(&session.global("ping").unwrap()).unwrap().0.clone();
+        let mut requests = Requests::default();
         let _ = drain_effects(
             &session,
             "update",
@@ -15675,6 +15568,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             ping,
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
+            &mut requests,
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -15692,9 +15586,12 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             other => panic!("expected one tokened PlayOneShot, got: {other:?}"),
         };
 
-        // The sound finishes: take the registered message and fold it through
-        // `update` (delivered verbatim — no tagger).
-        let message = take_audio_completion(token).expect("a message for the token");
+        // The sound finishes: fold the pending message through `update`
+        // (delivered verbatim — no tagger).
+        let finished = crate::timetravel::Arrival::AudioFinished(token);
+        let crate::timetravel::Delivered::Op(_, message) = requests.deliver(&finished, 0, 0) else {
+            panic!("a pending message for the token")
+        };
         let (model, _) = split_model_effect(
             session
                 .call("update", vec![model, message], &mut FunctorHost)
@@ -15702,14 +15599,17 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         );
         assert_eq!(model.to_string(), "Finished");
 
-        // The token is consumed (a duplicate/late finish finds no message).
-        assert!(take_audio_completion(token).is_none());
+        // Answered once: a duplicate/late finish finds nothing pending.
+        assert!(matches!(
+            requests.deliver(&finished, 0, 0),
+            crate::timetravel::Delivered::Dropped
+        ));
     }
 
     // --- Effect.preload / preloadThen (Track B.5) ---
 
     /// `Effect.preload` queues a shell command for the right pipeline and
-    /// logs; `preloadThen` additionally registers its completion message,
+    /// logs; `preloadThen` additionally leaves its completion message pending,
     /// which the settled hook folds through `update` verbatim — the playThen
     /// shape, driven end to end with no shell.
     #[test]
@@ -15718,7 +15618,6 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _ = crate::asset::preload::drain_commands(); // clear the shared queue
-        clear_preload_completions();
         let src = "\
             type Model = | Cold | Warm\n\
             let init = Cold\n\
@@ -15734,6 +15633,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let mut log: Vec<Entry> = Vec::new();
 
         let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
+        let mut requests = Requests::default();
         let _ = drain_effects(
             &session,
             "update",
@@ -15741,6 +15641,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             warm,
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
+            &mut requests,
             &mut |m| panic!("unexpected report: {m}"),
             false,
         );
@@ -15770,14 +15671,12 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             other => panic!("expected texture+tokened model commands, got: {other:?}"),
         };
 
-        // Whole-shell history snapshots the still-pending completion without
-        // exposing the Functor Lang message value to the shell.
-        let completion_snapshot = snapshot_preload_completions(&[token]);
-        assert_eq!(completion_snapshot.len(), 1);
-
-        // The load settles: take the registered message and fold it through
-        // `update` (delivered verbatim — no tagger).
-        let message = take_preload_completion(token).expect("a message for the token");
+        // The load settles: fold the pending message through `update`
+        // (delivered verbatim — no tagger).
+        let settled = crate::timetravel::Arrival::PreloadSettled(token);
+        let crate::timetravel::Delivered::Op(_, message) = requests.deliver(&settled, 0, 0) else {
+            panic!("a pending message for the token")
+        };
         let (model, _) = split_model_effect(
             session
                 .call("update", vec![model, message], &mut FunctorHost)
@@ -15785,18 +15684,11 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         );
         assert_eq!(model.to_string(), "Warm");
 
-        // Consumed: a duplicate/late settle finds no message.
-        assert!(take_preload_completion(token).is_none());
-
-        // Restoring the shell snapshot re-arms exactly that historical token.
-        restore_preload_completions(completion_snapshot);
-        assert_eq!(
-            take_preload_completion(token)
-                .expect("restored message")
-                .to_string(),
-            "Warm"
-        );
-        assert!(take_preload_completion(token).is_none());
+        // Answered once: a duplicate/late settle finds nothing pending.
+        assert!(matches!(
+            requests.deliver(&settled, 0, 0),
+            crate::timetravel::Delivered::Dropped
+        ));
     }
 
     /// Under a suppressed-outbound runner (fake/dry-run/replay) preloads log
@@ -15807,7 +15699,6 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _ = crate::asset::preload::drain_commands();
-        clear_preload_completions();
         let src = "\
             let init = 0.0\n\
             let warm = Effect.preloadThen(Asset.model(\"boss.glb\"), 1.0)\n\
@@ -15826,6 +15717,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
             warm,
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
+            &mut Requests::default(),
             &mut |m| panic!("unexpected report: {m}"),
             true, // suppress_outbound
         );
@@ -15859,26 +15751,6 @@ a number",
         ] {
             assert_eq!(fail_message(src), want, "for {src}");
         }
-    }
-
-    /// `PENDING_AUDIO` is bounded: because audio finishes are best-effort (a
-    /// sound may never start or report), the completion map is NOT self-draining
-    /// like `PENDING_HTTP`. Registering past the cap evicts the oldest (lowest
-    /// token), so a game that fires `playThen` in a loop can't grow it without
-    /// limit.
-    #[test]
-    fn pending_audio_completions_are_bounded() {
-        clear_audio_completions();
-        // Fill past the cap; oldest tokens should be evicted.
-        for token in 1..=(PENDING_AUDIO_CAP as u64 + 10) {
-            register_audio_completion(token, Value::Number(token as f64));
-        }
-        // The 10 oldest are gone; the map holds exactly the cap.
-        assert!(take_audio_completion(1).is_none());
-        assert!(take_audio_completion(10).is_none());
-        // A recent token survives.
-        assert!(take_audio_completion(PENDING_AUDIO_CAP as u64 + 10).is_some());
-        clear_audio_completions();
     }
 
     /// A `soundScape` returning a two-voice `AudioScene` (an ambient bed with a
@@ -16080,6 +15952,7 @@ a number",
                 tree,
                 &mut FakeEffects::new(0.0, vec![]),
                 &mut log,
+                &mut Requests::default(),
                 &mut |r| panic!("unexpected report: {r}"),
                 false,
             );

@@ -24,11 +24,10 @@ The MVU loop's hot-reload behavior shapes the API:
   **only the model** (a plain value the host holds); the queue is reset to empty.
   An `Effect` may carry a closure — which is what lets HTTP use the Elm `expect`
   shape (the request carries a `tagger : Result -> Msg`).
-- **An in-flight request's tagger cannot survive a reload.** The request→response
-  tagger is held in a token-keyed registry, not in the model. On hot reload the
-  model is preserved (and closures stored *inside* it rebind), but a pending
-  request loses its tagger and the response is dropped with a warning (a
-  deliberate, dev-only trade).
+- **An in-flight request's tagger survives a reload.** The request→response
+  tagger waits in the recorder's pending table, not in the model, and rebinds to
+  the edited code like a closure in the model, so the response lands. A tagger
+  that cannot rebind cancels its request with a warning.
 - **Subs are recomputed every frame and not persisted.** For *persistent
   connections* (WebSocket/TCP/UDP, Phase 2+), a `Sub` still carries the inbound
   decoder and the connection identity, so a live socket is matched across

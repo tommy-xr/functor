@@ -8,7 +8,7 @@ use crate::input::RecordedInput;
 /// `frame`, on the branch `epoch` (the recorder's generation). Ops queued
 /// between frames are provisional until the frame records them, so the id is
 /// stamped then: paused input's ops belong to whichever frame Δ becomes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OpId {
     pub epoch: u64,
     pub frame: Frame,
