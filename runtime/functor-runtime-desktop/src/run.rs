@@ -1189,17 +1189,20 @@ fn service_debug_request(
             });
         }
         debug_server::DebugRequest::ReloadSource(source, resp) => {
+            // A heavy reload answers when it lands off the frame thread.
             sim.post(move |g| {
-                let _ = resp.send(g.reload_source(&source));
+                let result = g.reload_source(&source);
+                functor_runtime_common::protocol::answer_reload(g, result, resp);
             });
         }
         debug_server::DebugRequest::ReloadProject(files, role, resp) => {
             sim.post(move |g| {
-                let _ = resp.send(functor_runtime_common::protocol::reload_with_role(
+                let result = functor_runtime_common::protocol::reload_with_role(
                     g,
                     role,
                     |g| g.reload_project(&files),
-                ));
+                );
+                functor_runtime_common::protocol::answer_reload(g, result, resp);
             });
         }
         // Desktop reads the project (and `external` mappings) from disk.

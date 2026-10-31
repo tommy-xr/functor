@@ -153,3 +153,112 @@ fn a_push_during_a_load_restarts_it_with_the_new_files() {
     run.status.expect("loads");
     assert!(game.state_debug().contains("sum: 499500"), "the pushed files: {}", game.state_debug());
 }
+
+/// `slow` again each frame, so a reload's new value shows; `frames` counts
+/// ticks, so a kept model keeps counting.
+const PLAYING: &str = r#"
+let total = TOTAL
+let slow = List.fold((acc, i) => Job.report(i / total, acc + i), 0.0, List.range(total))
+let init = { sum: 0.0, frames: 0.0 }
+let tick = (m, dt, tts) => { sum: slow, frames: m.frames + 1.0 }
+let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+"#;
+
+fn frames(game: &FunctorLangEmbeddedGame) -> f64 {
+    let model = game.state_debug();
+    let at = model.find("frames: ").expect("frames") + "frames: ".len();
+    model[at..].split([',', ' ', '}']).next().unwrap().parse().expect("a number")
+}
+
+/// What a paced 60 Hz loop saw while a reload ran on the loader: frames
+/// the old program ticked, the longest gap (the push's frame included),
+/// and how the reload ended.
+fn reload_playing(game: &mut FunctorLangEmbeddedGame, push: String) -> (f64, Duration, Result<String, String>) {
+    let started = Instant::now();
+    let mut last = Instant::now();
+    let mut longest_gap = Duration::ZERO;
+    let (done, landed) = std::sync::mpsc::channel();
+    let before = frames(game);
+    let mut ticked_while_reloading = 0.0;
+    let mut status = None;
+    for frame in 1.. {
+        let time = FrameTime { tts: frame as f32 / 60.0, dts: 1.0 / 60.0 };
+        game.check_hot_reload(time.clone());
+        if frame == 3 {
+            let begun = game.reload_project(&[("game.fun".to_string(), push.clone())]).expect("links");
+            assert!(begun.contains("off the frame thread"), "{begun}");
+            let done = done.clone();
+            game.when_loaded(Box::new(move |status| {
+                let _ = done.send(status);
+            }));
+        }
+        game.tick(time.clone());
+        let _ = game.render_at(time, 0.0);
+        if frame >= 3 && status.is_none() {
+            ticked_while_reloading = frames(game) - before;
+        }
+        status = status.or_else(|| landed.try_recv().ok());
+        let now = Instant::now();
+        longest_gap = longest_gap.max(now - last);
+        last = now;
+        if status.is_some() {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(120), "the reload never landed");
+        if let Some(rest) = (started + BUDGET * frame).checked_duration_since(Instant::now()) {
+            std::thread::sleep(rest);
+        }
+    }
+    (ticked_while_reloading, longest_gap, status.expect("ended above"))
+}
+
+#[test]
+fn a_heavy_reload_runs_off_the_frame_while_the_old_program_plays() {
+    let source = PLAYING.replace("TOTAL", "200000.0");
+    let mut game = FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), source)], Box::new(NativePlatform))
+        .expect("loads")
+        .load_in_background();
+    let (ticked, longest_gap, status) = reload_playing(&mut game, PLAYING.replace("TOTAL", "210000.0"));
+    let status = status.expect("reloads");
+    eprintln!(
+        "reload: {status}; the old program ticked {ticked} frames meanwhile, longest gap {:.1} ms",
+        longest_gap.as_secs_f64() * 1000.0
+    );
+    assert!(status.contains("model preserved"), "{status}");
+    assert!(ticked >= 5.0, "the old program ticked {ticked} frames");
+    assert!(longest_gap <= BUDGET * 2, "a {:.1} ms gap between frames", longest_gap.as_secs_f64() * 1000.0);
+    // The model kept counting, and the next tick runs the new `slow`.
+    let ft = FrameTime { tts: 100.0, dts: 1.0 / 60.0 };
+    game.tick(ft);
+    let model = game.state_debug();
+    assert!(model.contains("sum: 22049895000"), "{model}");
+    assert!(frames(&game) > ticked, "{model}");
+}
+
+#[test]
+fn a_heavy_reload_that_fails_keeps_the_old_program() {
+    let source = PLAYING.replace("TOTAL", "200000.0");
+    let mut game = FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), source)], Box::new(NativePlatform))
+        .expect("loads")
+        .load_in_background();
+    let broken = PLAYING.replace("TOTAL", "210000.0").replace("acc + i", "acc + i + Text.length(1.0)");
+    let (ticked, _, status) = reload_playing(&mut game, broken);
+    let error = status.expect_err("fails");
+    assert!(error.contains("game.fun:"), "{error}");
+    assert!(ticked >= 1.0);
+    let ft = FrameTime { tts: 100.0, dts: 1.0 / 60.0 };
+    game.tick(ft);
+    assert!(game.state_debug().contains("sum: 19999900000"), "the old program: {}", game.state_debug());
+}
+
+#[test]
+fn a_light_reload_stays_on_the_frame() {
+    let source = PLAYING.replace("TOTAL", "200000.0");
+    let mut game = FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), source.clone())], Box::new(NativePlatform))
+        .expect("loads")
+        .load_in_background();
+    let edited = source.replace("Vec3.make(0.0, 0.0, -5.0)", "Vec3.make(0.0, 1.0, -5.0)");
+    let status = game.reload_project(&[("game.fun".to_string(), edited)]).expect("reloads");
+    assert!(status.starts_with("reloaded"), "{status}");
+    assert!(!game.load_pending());
+}

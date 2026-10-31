@@ -33,6 +33,7 @@ use std::time::Instant;
 
 use functor_lang::project::SourceMap;
 use functor_lang::{Session, Value};
+use functor_runtime_common::jobs::load::Costs;
 use functor_runtime_common::jobs::JobProgram;
 use functor_runtime_common::data_watch::{self, DataWatch};
 use functor_runtime_common::events::{self, RuntimeEvent};
@@ -254,6 +255,16 @@ pub struct FunctorLangGame {
     /// Until the game's first load lands: the stand-in program (the
     /// engine's loading view) runs, and this draws instead of it.
     boot: Option<Boot>,
+    /// A reload on the loader; the program plays until it lands.
+    reloading: Option<Reloading>,
+    /// Who to tell how it ends.
+    load_waiters: Vec<functor_runtime_common::protocol::LoadWaiter>,
+    /// Each def's last evaluation time: a reload that must evaluate a slow
+    /// one runs on the loader.
+    costs: Costs,
+    /// Whether a heavy reload runs on the loader while the program plays
+    /// (an interactive window); else it runs here.
+    background: bool,
 }
 
 const STATS_EVERY: u64 = 300;
@@ -300,18 +311,6 @@ fn load_game(path: &str, role: &EntryRole, previous: Option<&Session>) -> Result
     load_project(path, None, role, previous)
 }
 
-/// The source-shaped half of [`load_game`]: the pushed source stands in for
-/// the ENTRY file (the network reload path, `reload_source`); sibling
-/// modules still load from disk.
-fn load_source(
-    path: &str,
-    src: String,
-    role: &EntryRole,
-    previous: Option<&Session>,
-) -> Result<Loaded, String> {
-    load_project(path, Some(src), role, previous)
-}
-
 /// `previous`: the running session, on a hot reload — values it can vouch
 /// for are reused (`Session::load_reusing`).
 fn load_project(
@@ -320,21 +319,20 @@ fn load_project(
     role: &EntryRole,
     previous: Option<&Session>,
 ) -> Result<Loaded, String> {
+    finish_load(path, link_disk(path, entry_src)?, role, previous)
+}
+
+/// Link the project on disk; a pushed buffer (network reload) stands in for
+/// the entry file, and siblings still load from disk.
+fn link_disk(path: &str, entry_src: Option<String>) -> Result<functor_lang::project::Project, String> {
     let entry = std::path::Path::new(path);
-    // A pushed buffer (network reload) stands in for the entry file; siblings
-    // still load from disk.
     let overrides = match entry_src {
         Some(src) => std::collections::HashMap::from([(entry.to_path_buf(), src)]),
         None => std::collections::HashMap::new(),
     };
     // Link the engine's executable `.fun` modules and host `.funi` interfaces.
-    let project = functor_lang::project::load_with_bundled_modules(
-        entry,
-        &overrides,
-        &functor_prelude::bundled_modules(),
-    )
-    .map_err(|e| format!("cannot load {}", e.render()))?;
-    finish_load(path, project, role, previous)
+    functor_lang::project::load_with_bundled_modules(entry, &overrides, &functor_prelude::bundled_modules())
+        .map_err(|e| format!("cannot load {}", e.render()))
 }
 
 /// Load an exact in-memory project: entry first, then sibling modules. This
@@ -345,10 +343,16 @@ fn load_sources(
     role: &EntryRole,
     previous: Option<&Session>,
 ) -> Result<Loaded, String> {
+    let (path, project) = link_files(files)?;
+    finish_load(&path, project, role, previous)
+}
+
+/// Link an in-memory project; its entry's path with it.
+fn link_files(files: &[(String, String)]) -> Result<(String, functor_lang::project::Project), String> {
     let path = files
         .first()
-        .map(|(path, _)| path.as_str())
-        .unwrap_or("game.fun");
+        .map(|(path, _)| path.clone())
+        .unwrap_or_else(|| "game.fun".to_string());
     let sources = files
         .iter()
         .map(|(path, source)| (PathBuf::from(path), source.clone()))
@@ -358,7 +362,7 @@ fn load_sources(
         &functor_prelude::bundled_modules(),
     )
     .map_err(|e| format!("cannot load {}", e.render()))?;
-    finish_load(path, project, role, previous)
+    Ok((path, project))
 }
 
 /// The project's OWN files out of a linked source map: bundled prelude and
@@ -389,6 +393,30 @@ fn finish_load(
     role: &EntryRole,
     previous: Option<&Session>,
 ) -> Result<Loaded, String> {
+    match try_finish(path, project, role, previous, &mut Costs::default(), false)? {
+        Attempt::Loaded(loaded) => Ok(*loaded),
+        Attempt::Heavy { .. } => unreachable!("only a deferrable load stops"),
+    }
+}
+
+/// How [`try_finish`] went.
+enum Attempt {
+    Loaded(Box<Loaded>),
+    /// `defer` stopped it before this heavy def: the loader should run it.
+    Heavy { project: functor_lang::project::Project, names: EntryNames, def: String },
+}
+
+/// [`finish_load`], timing each def into `costs`; with `defer`, stopping
+/// before a heavy one.
+fn try_finish(
+    path: &str,
+    project: functor_lang::project::Project,
+    role: &EntryRole,
+    previous: Option<&Session>,
+    costs: &mut Costs,
+    defer: bool,
+) -> Result<Attempt, String> {
+    use functor_runtime_common::jobs::load::Inline;
     // An inline-module role resolves against the linked project, so a reload
     // that renamed or deleted the block fails here — naming the block — rather
     // than reporting its every entry binding as missing.
@@ -402,18 +430,44 @@ fn finish_load(
         );
     }
     let types = functor_lang::reuse::def_types(&project.module, &types);
-    let module = project.module;
-    let sources = project.sources;
     functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
-    let (session, reuse) = Session::load_reusing(&module, &mut FunctorHost, previous, types)
-        .map_err(|f| {
-            format!(
+    let loaded = functor_runtime_common::jobs::load::load_inline(
+        &project.module,
+        &mut FunctorHost,
+        previous,
+        types,
+        costs,
+        defer,
+    );
+    // A failure leaves its reads for `watch_failed_reads`.
+    let (session, reuse) = match loaded {
+        Inline::Loaded(session, reuse) => (session, reuse),
+        Inline::Heavy(def) => return Ok(Attempt::Heavy { project, names, def }),
+        Inline::Failed(f) => {
+            return Err(format!(
                 "cannot load {}",
-                sources.render(f.error.span.start, &f.error.message)
-            )
-        })?;
+                project.sources.render(f.error.span.start, &f.error.message)
+            ))
+        }
+    };
     let file_reads = functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
-    contract(path, names, module, sources, session, reuse, file_reads)
+    let loaded = contract(path, names, project.module, project.sources, session, reuse, file_reads)?;
+    Ok(Attempt::Loaded(Box::new(loaded)))
+}
+
+/// A reload running on the loader while the program plays.
+struct Reloading {
+    job: functor_runtime_common::jobs::load::LoadHandle,
+    path: String,
+    project: functor_lang::project::Project,
+    names: EntryNames,
+    started: Instant,
+}
+
+/// How a reload went: done here, or running on the loader (its status).
+enum Reloaded {
+    Now(Box<Loaded>),
+    Later(String),
 }
 
 /// The producer contract (init a value, tick/draw functions of the right
@@ -545,6 +599,7 @@ impl FunctorLangGame {
         let stand_in = load_sources(&stand_in, &EntryRole::Prefix(String::new()), None)
             .expect("the engine's loading view loads");
         let mut game = Self::from_loaded(path, role, stamp, stand_in);
+        game.background = true;
         if let Err(message) = game.begin_boot() {
             eprintln!("error: {message}");
             std::process::exit(1);
@@ -650,6 +705,10 @@ impl FunctorLangGame {
             sim_wait_ns: 0,
             loader: Default::default(),
             boot: None,
+            reloading: None,
+            load_waiters: Vec::new(),
+            costs: Costs::default(),
+            background: false,
         };
         // Cold start (docs/physics.md): declare the initial world before the
         // first frame, so frame 1's physics reads answer instead of raising.
@@ -708,7 +767,7 @@ impl FunctorLangGame {
             functor_runtime_common::jobs::load::Outcome::Evaluated(mut evaluated) => {
                 functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
                 let mut file_reads = std::mem::take(&mut evaluated.file_reads);
-                match evaluated.adopt(&project.module, &mut FunctorHost) {
+                match evaluated.adopt(&project.module, &mut FunctorHost, &mut self.costs) {
                     Ok((session, reuse)) => {
                         file_reads.extend(functor_runtime_common::functor_lang_prelude::bytes::take_file_reads());
                         contract(&self.path, names, project.module, project.sources, session, reuse, file_reads)
@@ -822,13 +881,120 @@ impl FunctorLangGame {
         self.data_watch.extend(reads);
     }
 
-    /// Load the program as it stands, around any pushed sources.
-    fn load_current(&self) -> Result<Loaded, String> {
-        let previous = Some(&self.session);
+    /// Link the program as it stands, around any pushed sources.
+    fn link_current(&self) -> Result<(String, functor_lang::project::Project), String> {
         match (&self.pushed_project, &self.pushed_entry) {
-            (Some(files), _) => load_sources(files, &self.role, previous),
-            (None, Some(src)) => load_source(&self.path, src.clone(), &self.role, previous),
-            (None, None) => load_game(&self.path, &self.role, previous),
+            (Some(files), _) => link_files(files),
+            (None, entry) => Ok((self.path.clone(), link_disk(&self.path, entry.clone())?)),
+        }
+    }
+
+    /// Reload `project` keeping the model: here, or, when that would
+    /// evaluate a heavy def, on the loader while the program plays.
+    fn reload_linked(&mut self, path: String, project: functor_lang::project::Project) -> Result<Reloaded, String> {
+        // A reload still on the loader is older than this one.
+        self.supersede_reload();
+        let defer = self.background && self.boot.is_none();
+        let attempt = try_finish(&path, project, &self.role, Some(&self.session), &mut self.costs, defer)?;
+        let (project, names, def) = match attempt {
+            Attempt::Loaded(loaded) => return Ok(Reloaded::Now(loaded)),
+            Attempt::Heavy { project, names, def } => (project, names, def),
+        };
+        let source = std::sync::Arc::new(functor_runtime_common::jobs::ProgramSource::of(&project.sources));
+        let Some(job) = self.loader.start(source, self.recorder.job_reader()) else {
+            return finish_load(&path, project, &self.role, Some(&self.session)).map(|l| Reloaded::Now(Box::new(l)));
+        };
+        let status = format!(
+            "reloading {path} off the frame thread (it evaluates `{def}` again); the running \
+program plays until it lands"
+        );
+        self.reloading = Some(Reloading { job, path, project, names, started: Instant::now() });
+        Ok(Reloaded::Later(status))
+    }
+
+    /// Drop the reload on the loader (its job stops), telling its waiters.
+    fn supersede_reload(&mut self) {
+        if self.reloading.take().is_some() {
+            for done in std::mem::take(&mut self.load_waiters) {
+                done(Err("superseded by a newer reload".to_string()));
+            }
+        }
+    }
+
+    /// Swap in the reload on the loader once it has landed: between frames,
+    /// like any reload.
+    fn poll_reload(&mut self) {
+        let Some(reloading) = &self.reloading else { return };
+        let Some(outcome) = reloading.job.take() else { return };
+        let reloading = self.reloading.take().expect("checked above");
+        if self.reads_changed(&outcome) {
+            // A file changed after the loader read it: reload again.
+            let result = self.link_current().and_then(|(path, project)| self.reload_linked(path, project));
+            match result {
+                Ok(Reloaded::Now(loaded)) => self.finish_reload(Ok(*loaded), reloading.started),
+                Ok(Reloaded::Later(_)) => {}
+                Err(message) => self.finish_reload(Err(message), reloading.started),
+            }
+            return;
+        }
+        let adopting = Instant::now();
+        let Reloading { path, project, names, started, .. } = reloading;
+        let result = match outcome {
+            functor_runtime_common::jobs::load::Outcome::Evaluated(mut evaluated) => {
+                let mut file_reads = std::mem::take(&mut evaluated.file_reads);
+                functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
+                match evaluated.adopt(&project.module, &mut FunctorHost, &mut self.costs) {
+                    Ok((session, reuse)) => {
+                        file_reads.extend(functor_runtime_common::functor_lang_prelude::bytes::take_file_reads());
+                        contract(&path, names, project.module, project.sources, session, reuse, file_reads)
+                    }
+                    Err(f) => Err(format!(
+                        "cannot load {}",
+                        project.sources.render(f.error.span.start, &f.error.message)
+                    )),
+                }
+            }
+            functor_runtime_common::jobs::load::Outcome::Failed { message, file_reads } => {
+                self.data_watch.extend(file_reads);
+                Err(message)
+            }
+            functor_runtime_common::jobs::load::Outcome::Inline(why) => {
+                eprintln!("[functor-lang] {why}, so it loads on the frame thread");
+                finish_load(&path, project, &self.role, Some(&self.session))
+            }
+        };
+        eprintln!(
+            "[functor-lang] reload landed: {:.1} ms on the frame thread",
+            adopting.elapsed().as_secs_f64() * 1000.0
+        );
+        self.finish_reload(result, started);
+    }
+
+    /// Swap in a reload that ran on the loader, report it, and tell its
+    /// waiters.
+    fn finish_reload(&mut self, result: Result<Loaded, String>, started: Instant) {
+        let result = result.map(|loaded| {
+            let reused = reused_status(&loaded.reuse, &loaded.sources);
+            let (rebound, history_replay) = self.swap_in(loaded);
+            let stored = if rebound > 0 {
+                format!("; {rebound} stored closure(s) rebound")
+            } else {
+                String::new()
+            };
+            let history = replay_status(history_replay);
+            format!(
+                "reloaded {} off the frame thread in {:.0}ms ({reused}model preserved{stored}{history})",
+                self.path,
+                started.elapsed().as_secs_f64() * 1000.0
+            )
+        });
+        let (ok, message) = match &result {
+            Ok(message) => (true, message.clone()),
+            Err(message) => (false, format!("reload failed, keeping old program: {message}")),
+        };
+        events::emit(RuntimeEvent::HotReload { ok, message });
+        for done in std::mem::take(&mut self.load_waiters) {
+            done(result.clone());
         }
     }
 
@@ -845,10 +1011,12 @@ impl FunctorLangGame {
         }
         let started = Instant::now();
         let what = data_watch::describe(&changed);
-        let result = match self.load_current() {
-            Ok(loaded) => {
+        let reloaded = self.link_current().and_then(|(path, project)| self.reload_linked(path, project));
+        let result = match reloaded {
+            Ok(Reloaded::Later(status)) => Ok(format!("data changed: {what} → {status}")),
+            Ok(Reloaded::Now(loaded)) => {
                 let (reused, values) = reuse_counts(&loaded.reuse, &loaded.sources);
-                self.swap_in(loaded);
+                self.swap_in(*loaded);
                 Ok(format!(
                     "data changed: {what} → reloaded in {:.0} ms (reused {reused} of {values})",
                     started.elapsed().as_secs_f64() * 1000.0
@@ -1011,8 +1179,10 @@ impl FunctorLangGame {
     }
 
     fn reset_in(&mut self, mut loaded: Loaded) {
-        // A new game supersedes the first load, running or failed.
+        // A new game supersedes the first load, running or failed, and a
+        // reload on the loader.
         self.boot = None;
+        self.supersede_reload();
         self.data_watch
             .watch(std::mem::take(&mut loaded.file_reads));
         self.ctx().close_all_connections();
@@ -1135,6 +1305,7 @@ impl Game for FunctorLangGame {
         if self.boot.is_some() {
             return self.check_boot();
         }
+        self.poll_reload();
         // Poll every project file's mtime (a few stats per frame is ~free)
         // and swap in a new session on change — editing a SIBLING module
         // hot-reloads exactly like editing the entry (B8). THE MODEL IS
@@ -1166,10 +1337,14 @@ impl Game for FunctorLangGame {
             self.pushed_entry = None;
         }
         let started = Instant::now();
-        match self.load_current() {
-            Ok(loaded) => {
+        let reloaded = self.link_current().and_then(|(path, project)| self.reload_linked(path, project));
+        match reloaded {
+            Ok(Reloaded::Later(status)) => {
+                events::emit(RuntimeEvent::HotReload { ok: true, message: status });
+            }
+            Ok(Reloaded::Now(loaded)) => {
                 let reused = reused_status(&loaded.reuse, &loaded.sources);
-                let (rebound, history_replay) = self.swap_in(loaded);
+                let (rebound, history_replay) = self.swap_in(*loaded);
                 let stored = if rebound > 0 {
                     format!("; {rebound} stored closure(s) rebound")
                 } else {
@@ -1193,6 +1368,17 @@ impl Game for FunctorLangGame {
                     message: format!("reload failed, keeping old program: {message}"),
                 });
             }
+        }
+    }
+
+    fn load_pending(&self) -> bool {
+        self.reloading.is_some()
+    }
+
+    fn when_loaded(&mut self, done: functor_runtime_common::protocol::LoadWaiter) {
+        match self.reloading {
+            Some(_) => self.load_waiters.push(done),
+            None => done(Ok("loaded".to_string())),
         }
     }
 
@@ -1221,16 +1407,24 @@ impl Game for FunctorLangGame {
             files[0].1 = source.to_string();
             files
         });
-        let loaded = match &pushed_project {
-            Some(files) => load_sources(files, &self.role, Some(&self.session)),
-            None => load_source(&self.path, source.to_string(), &self.role, Some(&self.session)),
-        }?;
+        let (path, project) = match &pushed_project {
+            Some(files) => link_files(files)?,
+            None => (self.path.clone(), link_disk(&self.path, Some(source.to_string()))?),
+        };
+        let reloaded = self.reload_linked(path, project)?;
         if let Some(files) = pushed_project {
             self.pushed_project = Some(files);
             self.pushed_entry = None;
         } else {
             self.pushed_entry = Some(source.to_string());
         }
+        let loaded = match reloaded {
+            Reloaded::Now(loaded) => *loaded,
+            Reloaded::Later(status) => {
+                self.stamp = stamp;
+                return Ok(status);
+            }
+        };
         let reused = reused_status(&loaded.reuse, &loaded.sources);
         let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
@@ -1266,10 +1460,18 @@ impl Game for FunctorLangGame {
         }
         let started = Instant::now();
         let stamp = project_stamp(&self.path);
-        let loaded = load_sources(files, &self.role, Some(&self.session))?;
-        let reused = reused_status(&loaded.reuse, &loaded.sources);
+        let (path, project) = link_files(files)?;
+        let reloaded = self.reload_linked(path, project)?;
         self.pushed_project = Some(files.to_vec());
         self.pushed_entry = None;
+        let loaded = match reloaded {
+            Reloaded::Now(loaded) => *loaded,
+            Reloaded::Later(status) => {
+                self.stamp = stamp;
+                return Ok(status);
+            }
+        };
+        let reused = reused_status(&loaded.reuse, &loaded.sources);
         let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
             format!("; {rebound} stored closure(s) rebound")
@@ -2415,6 +2617,77 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Reads `dir`, independent of the process-wide project root.
+    struct DirReader(PathBuf);
+
+    impl functor_runtime_common::storage::ProjectReader for DirReader {
+        fn read(&self, path: &str) -> Result<std::sync::Arc<[u8]>, functor_runtime_common::storage::ProjectReadError> {
+            functor_runtime_common::storage::read_confined(&self.0, path)
+        }
+        fn exists(&self, path: &str) -> bool {
+            functor_runtime_common::storage::is_file_confined(&self.0, path)
+        }
+        fn version(&self, path: &str) -> Result<Option<String>, String> {
+            Ok(functor_runtime_common::storage::version_confined(&self.0, path))
+        }
+    }
+
+    /// Held by a test that installs a process-wide project reader.
+    static READER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A reload that must evaluate a file reader runs on the loader while
+    /// the program plays; it lands with the model kept.
+    #[test]
+    fn a_data_reload_runs_off_the_frame_while_the_program_plays() {
+        let dir = std::env::temp_dir().join(format!("functor-lang-game-test-{}-bg-reload", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let entry = dir.join("game.fun");
+        std::fs::write(dir.join("data.bin"), [1u8, 2, 3]).expect("data");
+        let _reader = READER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        functor_runtime_common::storage::set_project_reader(Some(std::sync::Arc::new(DirReader(dir.clone()))));
+        std::fs::write(
+            &entry,
+            "let size = Bytes.length(File.bytes(Path.of(\"data.bin\")))\n\
+             let init = { size: 0.0, frames: 0.0 }\n\
+             let tick = (m, dt, tts) => { size: size, frames: m.frames + 1.0 }\n\
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+        )
+        .expect("write entry");
+        let mut game = FunctorLangGame::create_loading_for_role(entry.to_str().expect("utf-8"), EntryRole::Prefix(String::new()));
+        let mut frame = 0;
+        let mut step = |game: &mut FunctorLangGame| {
+            frame += 1;
+            let time = FrameTime { tts: frame as f32 / 60.0, dts: 1.0 / 60.0 };
+            game.check_hot_reload(time.clone());
+            game.tick(time);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        while let Some(screen) = game.boot_screen() {
+            assert!(screen.failed().is_none(), "{:?}", screen.failed());
+            step(&mut game);
+        }
+        step(&mut game);
+        assert!(game.state_debug().contains("size: 3"), "{}", game.state_debug());
+        std::fs::write(dir.join("data.bin"), [1u8; 5]).expect("edit data");
+        let mut ticked_while_reloading = false;
+        for _ in 0..20_000 {
+            step(&mut game);
+            if game.load_pending() {
+                ticked_while_reloading = true;
+            }
+            if game.state_debug().contains("size: 5") {
+                break;
+            }
+        }
+        assert!(ticked_while_reloading, "the reload ran on the loader");
+        let model = game.state_debug();
+        assert!(model.contains("size: 5"), "{model}");
+        assert!(!model.contains("frames: 1,") && !model.contains("frames: 0"), "the model was kept: {model}");
+        functor_runtime_common::storage::set_project_reader(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A pushed project during the first load replaces it: the boot stops
     /// and never lands over the pushed game.
     #[test]
@@ -2444,20 +2717,8 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     /// does; a delete fails the reload and the recreate (with the retry) loads.
     #[test]
     fn data_file_changes_reload_only_their_readers() {
-        use functor_runtime_common::storage::{self, ProjectReadError, ProjectReader};
-        /// Reads `dir`, independent of the process-wide project root.
-        struct DirReader(PathBuf);
-        impl ProjectReader for DirReader {
-            fn read(&self, path: &str) -> Result<std::sync::Arc<[u8]>, ProjectReadError> {
-                storage::read_confined(&self.0, path)
-            }
-            fn exists(&self, path: &str) -> bool {
-                storage::is_file_confined(&self.0, path)
-            }
-            fn version(&self, path: &str) -> Result<Option<String>, String> {
-                Ok(storage::version_confined(&self.0, path))
-            }
-        }
+        use functor_runtime_common::storage;
+        let _reader = READER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let dir = std::env::temp_dir().join(format!(
             "functor-lang-game-test-{}-data-reload",

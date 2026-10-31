@@ -995,17 +995,20 @@ desktop runtime's --headless/--debug-port path"
             });
         }
         DebugRequest::ReloadSource(source, response) => {
+            // A heavy reload answers when it lands off the frame thread.
             sim.post(move |g| {
-                let _ = response.send(g.reload_source(&source));
+                let result = g.reload_source(&source);
+                functor_runtime_common::protocol::answer_reload(g, result, response);
             });
         }
         DebugRequest::ReloadProject(files, role, response) => {
             sim.post(move |g| {
-                let _ = response.send(functor_runtime_common::protocol::reload_with_role(
+                let result = functor_runtime_common::protocol::reload_with_role(
                     g,
                     role,
                     |g| g.reload_project(&files),
-                ));
+                );
+                functor_runtime_common::protocol::answer_reload(g, result, response);
             });
         }
         DebugRequest::LoadProject(files, role, host, response) => {
@@ -1398,7 +1401,9 @@ pub fn android_main(app: AndroidApp) {
                 vec![("boot.fun".to_string(), BOOT_SCENE.to_string())],
                 Box::new(NativePlatform),
             )
-            .expect("embedded boot scene loads"),
+            .expect("embedded boot scene loads")
+            // A heavy reload runs on the loader while the headset plays on.
+            .load_in_background(),
         )
     };
     // Launch-time opt-in, like desktop `--pipelined` (the APK has no command
