@@ -14,22 +14,26 @@ use std::collections::HashMap;
 
 use crate::ast::TypeName;
 use crate::ir::{Expr, ExprKind, Module, Pattern, PatternKind};
+use crate::reads::ReadClass;
 use crate::span::Span;
 use crate::types::{ExprTypes, Type};
 
 /// The hover for `offset`, if any: the span the hover applies to plus its
 /// text (`name : Type` shaped; an impure built-in's `impure[…]` header line
-/// leads it).
+/// leads it, and so does a user def's inferred one).
 pub fn hover_text(module: &Module, types: &ExprTypes, offset: usize) -> Option<(Span, String)> {
-    // An impure built-in's hover leads with its `.funi` header line.
+    // A built-in's `.funi` header, or a def's inferred classes in that shape.
+    let inferred = crate::reads::infer(module, types);
+    let header = |classes: &[ReadClass]| format!("{}\n", crate::reads::header(classes));
     let headers: HashMap<&str, String> = module
         .signatures
         .iter()
         .filter(|sig| !sig.reads.is_empty())
-        .map(|sig| {
-            let names: Vec<&str> = sig.reads.iter().map(|class| class.name()).collect();
-            (sig.name.as_str(), format!("impure[{}]\n", names.join(", ")))
-        })
+        .map(|sig| (sig.name.as_str(), header(&sig.reads)))
+        .chain(module.defs.iter().filter_map(|def| {
+            let classes = inferred.classes(&def.name);
+            (!classes.is_empty()).then(|| (def.name.as_str(), header(&classes)))
+        }))
         .collect();
     let mut best: Option<(Span, String)> = None;
     let mut consider = |span: Span, text: String| {
@@ -49,9 +53,10 @@ pub fn hover_text(module: &Module, types: &ExprTypes, offset: usize) -> Option<(
         // value (i.e. the `let name =` part).
         if def.span.start <= offset && offset < def.value.span.start {
             let ty = types.expr(def.value.id).cloned().unwrap_or(Type::Unknown);
+            let header = headers.get(def.name.as_str()).map_or("", String::as_str);
             consider(
                 Span::new(def.span.start, def.value.span.start),
-                format!("{} : {ty}", def.name),
+                format!("{header}{} : {ty}", def.name),
             );
         }
         visit(&def.value, types, &headers, &mut consider);
@@ -67,8 +72,12 @@ fn visit(
 ) {
     let ty = types.expr(expr.id).cloned().unwrap_or(Type::Unknown);
     match &expr.kind {
-        ExprKind::Local { name, .. } | ExprKind::Global(name) => {
+        ExprKind::Local { name, .. } => {
             consider(expr.span, format!("{name} : {ty}"));
+        }
+        ExprKind::Global(name) => {
+            let header = headers.get(name.as_str()).map_or("", String::as_str);
+            consider(expr.span, format!("{header}{name} : {ty}"));
         }
         // A constructor reference hovers with its signature
         // (`Circle : (Float) => Shape`; nullary: `Point : Shape`).

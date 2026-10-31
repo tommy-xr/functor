@@ -421,6 +421,13 @@ let grab = (s) =>
   constant elsewhere reloads in milliseconds. Never kept: functions, opaque
   non-plain values, anything that read the live physics world. A kept value
   doesn't re-run, so its `Debug.log` lines don't print again.
+- **Which host state a def reads is inferred.** Hover leads a def with
+  `impure[file]` / `impure[physics]` / `impure[ui]` when it can reach such a
+  built-in, through the defs it calls in any module; using a top-level value
+  whose type holds no functions (data, a `Scene.t`) doesn't count.
+  `functor -d <dir> reads` lists every def's classes with the path to the
+  built-in (`level : impure[file] — file: World.load → File.exists`).
+  Report-only: nothing is annotated, and the runtime's tracking decides.
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
   source text (multi-file is native-only for now).
 
