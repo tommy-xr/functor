@@ -478,11 +478,18 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
             SceneObject::Terrain(_) => out.push_str("terrain"),
             SceneObject::Instanced { .. } => out.push_str("instanced"),
             SceneObject::Cells(..) => out.push_str("cells"),
-            SceneObject::Opacity(_, items) | SceneObject::CastShadows(_, items) => {
-                out.push_str(match node.obj.resolved() {
-                    SceneObject::Opacity(..) => "opacity[",
-                    _ => "castShadows[",
-                });
+            SceneObject::CastShadows(_, items) => {
+                out.push_str("castShadows[");
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(' ');
+                    }
+                    describe(item, depth + 1, out);
+                }
+                out.push(']');
+            }
+            SceneObject::Opacity(_, items) => {
+                out.push_str("opacity[");
                 for (index, item) in items.iter().enumerate() {
                     if index > 0 {
                         out.push(' ');
