@@ -465,6 +465,14 @@ struct Boot {
     started: Instant,
 }
 
+/// Show a first load's failure (its job, if any, stops).
+fn boot_failed(boot: &mut Option<Boot>, message: String) {
+    if let Some(boot) = boot {
+        boot.job = None;
+        boot.screen.fail(message);
+    }
+}
+
 /// How long [`FunctorLangGame::create_loading_for_role`] waits for the load
 /// before the loading screen shows: a small game is ready by then.
 const BOOT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
@@ -688,6 +696,14 @@ impl FunctorLangGame {
         let adopting = Instant::now();
         let project = boot.project.take().expect("linked at begin");
         let names = boot.names;
+        if self.reads_changed(&outcome) {
+            // A file changed after the loader read it: load again there.
+            if let Err(message) = self.begin_boot() {
+                eprintln!("error: {message}");
+                boot_failed(&mut self.boot, message);
+            }
+            return;
+        }
         let result = match outcome {
             functor_runtime_common::jobs::load::Outcome::Evaluated(mut evaluated) => {
                 functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
@@ -732,26 +748,37 @@ impl FunctorLangGame {
         }
     }
 
-    /// While booting: retry a failed first load once the project or a file
-    /// it read changes.
+    /// While booting: an edit restarts the first load (running or failed);
+    /// a changed file it read retries a failed one.
     fn check_boot(&mut self) {
         self.poll_boot();
-        if self.boot.as_ref().is_none_or(|boot| boot.job.is_some()) {
-            return;
-        }
+        let Some(boot) = &self.boot else { return };
+        let failed = boot.job.is_none();
         let stamp = project_stamp(&self.path);
-        let reader = functor_runtime_common::storage::project_reader();
-        let data_changed = !self.data_watch.poll(Instant::now(), |path| data_version(&reader, path)).is_empty();
+        let data_changed = failed && {
+            let reader = functor_runtime_common::storage::project_reader();
+            !self.data_watch.poll(Instant::now(), |path| data_version(&reader, path)).is_empty()
+        };
         if stamp == self.stamp && !data_changed {
             return;
         }
         self.stamp = stamp;
         if let Err(message) = self.begin_boot() {
             eprintln!("error: {message}");
-            if let Some(boot) = &mut self.boot {
-                boot.screen.fail(message);
-            }
+            boot_failed(&mut self.boot, message);
         }
+    }
+
+    /// Whether a file a load job read has a new version since.
+    fn reads_changed(&self, outcome: &functor_runtime_common::jobs::load::Outcome) -> bool {
+        let functor_runtime_common::jobs::load::Outcome::Evaluated(evaluated) = outcome else {
+            return false;
+        };
+        let reader = functor_runtime_common::storage::project_reader();
+        evaluated
+            .file_reads
+            .iter()
+            .any(|(path, version)| data_version(&reader, path).ok().as_ref() != Some(version))
     }
 
     /// The loading screen while booting (tests).
@@ -858,7 +885,7 @@ impl FunctorLangGame {
     fn swap_in(&mut self, mut loaded: Loaded) -> (usize, Option<(usize, f64)>) {
         // Before the game's first load lands, the running program is the
         // loading view's stand-in: nothing to keep.
-        if self.boot.take().is_some() {
+        if self.boot.is_some() {
             self.reset_in(loaded);
             return (0, None);
         }
@@ -984,6 +1011,8 @@ impl FunctorLangGame {
     }
 
     fn reset_in(&mut self, mut loaded: Loaded) {
+        // A new game supersedes the first load, running or failed.
+        self.boot = None;
         self.data_watch
             .watch(std::mem::take(&mut loaded.file_reads));
         self.ctx().close_all_connections();
@@ -2383,6 +2412,30 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(game.state_debug().contains("4999950000"), "{}", game.state_debug());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pushed project during the first load replaces it: the boot stops
+    /// and never lands over the pushed game.
+    #[test]
+    fn a_pushed_project_during_boot_replaces_it() {
+        let dir = std::env::temp_dir().join(format!("functor-lang-game-test-{}-boot-push", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let entry = dir.join("game.fun");
+        let slow = "let slow = List.fold((acc, i) => acc + i, 0.0, List.range(3000000.0))\n";
+        std::fs::write(&entry, format!("{slow}{BASE}")).expect("write entry");
+        let mut game = FunctorLangGame::create_loading_for_role(entry.to_str().expect("utf-8"), EntryRole::Prefix(String::new()));
+        assert!(game.boot_screen().is_some(), "still booting");
+        let pushed = BASE.replace("n: 0.0", "n: 7.0");
+        game.load_project(&[("other.fun".to_string(), pushed)]).expect("loads");
+        assert!(game.boot_screen().is_none());
+        for n in 0..30 {
+            let time = FrameTime { tts: n as f32 / 60.0, dts: 1.0 / 60.0 };
+            game.check_hot_reload(time.clone());
+            game.tick(time);
+        }
+        assert!(game.state_debug().contains("n: 7"), "{}", game.state_debug());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

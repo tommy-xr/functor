@@ -256,6 +256,11 @@ pub trait GameProducer {
         false
     }
 
+    /// Install the load running off the frame thread if it has landed, and
+    /// tell its waiters. The shell calls it between frames, so it can
+    /// restart its clock before the new game's first.
+    fn poll_load(&mut self) {}
+
     /// Call `done` with the status of the load running off the frame
     /// thread once it lands; at once, with `Ok`, when none is.
     fn when_loaded(&mut self, done: LoadWaiter) {
@@ -631,6 +636,9 @@ pub trait GameProducer {
     fn quit(&mut self);
 }
 
+/// Told how a load off the frame thread ended ([`GameProducer::when_loaded`]).
+pub type LoadWaiter = Box<dyn FnOnce(Result<String, String>) + Send>;
+
 /// `POST /load-project` under the same-file entry role that push DECLARED —
 /// a NEW game, so it may name any role.
 ///
@@ -639,9 +647,6 @@ pub trait GameProducer {
 /// the previous role, so the live program and the role that produced it stay
 /// in agreement — the next role-less push still runs the role in force rather
 /// than a role the runtime never managed to load.
-/// Told how a load off the frame thread ended ([`GameProducer::when_loaded`]).
-pub type LoadWaiter = Box<dyn FnOnce(Result<String, String>) + Send>;
-
 pub fn load_with_role(
     game: &mut dyn GameProducer,
     role: Option<crate::functor_lang_producer::EntryRole>,

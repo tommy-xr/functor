@@ -771,6 +771,9 @@ meets a `{}` value, so it must be pure",
         }
     }
 
+    let loading_deps = crate::reuse::CodeIndex::new(module)
+        .deps_of(entry.loading)
+        .unwrap_or_default();
     for def in &module.defs {
         let name = def.name.as_str();
         let at = |set: Set| inferred.sets.get(&(def.name.clone(), set));
@@ -810,7 +813,23 @@ frame — build the view in `ui`",
             };
             report(step.span, class, message);
         }
-        // `loading` draws before the load it shows has finished.
+        // `loading` draws before the load it shows has finished, so neither
+        // it nor a value it uses may read.
+        if name != entry.loading && !cx.functions.contains(name) && loading_deps.contains(name) {
+            for (&class, step) in at(Set::Now).into_iter().flatten() {
+                report(
+                    step.span,
+                    class,
+                    format!(
+                        "`{}` uses `{name}`, which reads {} at load ({}): the loading screen \
+draws before the top-level values have loaded — draw from its `progress`, `tts` and plain values",
+                        entry.loading,
+                        what(class),
+                        path(name, step, class)
+                    ),
+                );
+            }
+        }
         if name == entry.loading {
             for (&class, step) in at(Set::Later).into_iter().flatten() {
                 report(

@@ -34,8 +34,6 @@ pub struct Evaluated {
     pub file_reads: BTreeMap<String, Option<String>>,
     /// Value defs that couldn't cross, with what each took on the loader.
     main_only: Vec<(String, f64)>,
-    /// The loader's wall time, compile included.
-    pub elapsed_ms: f64,
 }
 
 impl Evaluated {
@@ -113,35 +111,21 @@ pub struct Loader {
     requests: Option<mpsc::Sender<Request>>,
 }
 
-/// The loader's stack: like a job worker's (dropping a deep value recurses).
-const LOADER_STACK: usize = 256 << 20;
-
 impl Loader {
-    /// Whether loads run off this thread here (not on the web).
-    pub fn available() -> bool {
-        cfg!(not(target_arch = "wasm32"))
-    }
-
     /// Evaluate `source`'s top-level values on the loader, reading files
-    /// through `reader`. `None` when the thread can't start.
+    /// through `reader`. `None` when the thread can't start (the web).
     pub fn start(&mut self, source: Arc<ProgramSource>, reader: Option<Arc<dyn ProjectReader>>) -> Option<LoadHandle> {
-        let shared = Arc::new(Shared::default());
-        let mut request = Request { source, reader, shared: shared.clone() };
-        for _ in 0..2 {
-            let requests = match &self.requests {
-                Some(requests) => requests.clone(),
-                None => self.requests.insert(spawn()?).clone(),
-            };
-            match requests.send(request) {
-                Ok(()) => return Some(LoadHandle { shared }),
-                // The thread died (a panic it couldn't catch): start another.
-                Err(mpsc::SendError(back)) => {
-                    request = back;
-                    self.requests = None;
-                }
-            }
+        if cfg!(target_arch = "wasm32") {
+            return None;
         }
-        None
+        let shared = Arc::new(Shared::default());
+        let requests = match &self.requests {
+            Some(requests) => requests,
+            None => self.requests.insert(spawn()?),
+        };
+        // `serve` catches panics, so the thread outlives every request.
+        requests.send(Request { source, reader, shared: shared.clone() }).ok()?;
+        Some(LoadHandle { shared })
     }
 }
 
@@ -149,7 +133,7 @@ fn spawn() -> Option<mpsc::Sender<Request>> {
     let (send, requests) = mpsc::channel::<Request>();
     let spawned = std::thread::Builder::new()
         .name("functor-load".to_string())
-        .stack_size(LOADER_STACK)
+        .stack_size(super::WORKER_STACK)
         .spawn(move || {
             super::waited_on();
             serve(requests)
@@ -199,10 +183,9 @@ struct Watch<'p> {
 }
 
 impl LoadWatch for Watch<'_> {
-    fn evaluating(&mut self, index: usize, total: usize, _name: &str) -> bool {
+    fn evaluating(&mut self, index: usize, total: usize, _name: &str) {
         self.progress.set(index as f64 / total.max(1) as f64);
         self.started = now_ms();
-        true
     }
 
     fn evaluated(&mut self, name: &str) {
@@ -227,7 +210,7 @@ fn evaluate(request: &Request, previous: Option<&Session>) -> (Outcome, Option<S
         }
     };
     // Type diagnostics are advisory in the dev loop, as on the frame thread.
-    let (diagnostics, types) = functor_lang::check_with_types(&project.module);
+    let (diagnostics, types) = project.check_with_types();
     for diag in diagnostics {
         log::warn!("warning: {}", project.sources.render(diag.span.start, &diag.message));
     }
@@ -277,7 +260,6 @@ fn evaluate(request: &Request, previous: Option<&Session>) -> (Outcome, Option<S
         stats,
         file_reads,
         main_only,
-        elapsed_ms: now_ms() - started,
     };
     (Outcome::Evaluated(Box::new(evaluated)), Some(session))
 }

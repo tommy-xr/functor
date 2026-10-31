@@ -52,7 +52,7 @@ fn run(game: &mut FunctorLangEmbeddedGame) -> Run {
     let mut after = 0;
     for frame in 1.. {
         let time = FrameTime { tts: frame as f32 / 60.0, dts: 1.0 / 60.0 };
-        game.check_hot_reload(time.clone());
+        game.poll_load();
         game.tick(time.clone());
         let _ = game.render_at(time, 0.0);
         if let Some(screen) = game.load_screen() {
@@ -139,4 +139,17 @@ fn the_games_loading_hook_draws_the_screen() {
     let frame = game.render_at(time, 0.0);
     assert!(game.load_pending(), "still loading");
     assert!(format!("{:?}", frame.camera).contains("42.0"), "the hook's camera: {:?}", frame.camera);
+}
+
+#[test]
+fn a_push_during_a_load_restarts_it_with_the_new_files() {
+    let mut game = boot();
+    let first = SLOW.replace("TOTAL", "300000.0");
+    game.begin_load_project(&[("game.fun".to_string(), first)]).expect("links");
+    let second = SLOW.replace("TOTAL", "1000.0");
+    let status = game.reload_project(&[("game.fun".to_string(), second)]).expect("links");
+    assert!(status.contains("off the frame thread"), "{status}");
+    let run = run(&mut game);
+    run.status.expect("loads");
+    assert!(game.state_debug().contains("sum: 499500"), "the pushed files: {}", game.state_debug());
 }
