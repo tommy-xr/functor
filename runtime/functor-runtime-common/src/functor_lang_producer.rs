@@ -521,9 +521,22 @@ return them beside the model as `(model, effect)`",
 /// A reload status line's reuse count, over the project's own files (bundled
 /// modules carry `<stdlib>`/`<prelude>` paths): `reused 41 of 47 bindings; `.
 pub fn reused_status(reuse: &functor_lang::reuse::ReuseStats, sources: &SourceMap) -> String {
-    let (reused, values) =
-        reuse.count(|span| !sources.file_at(span.start).path.to_string_lossy().starts_with('<'));
+    let (reused, values) = reuse_counts(reuse, sources);
     format!("reused {reused} of {values} bindings; ")
+}
+
+/// `(reused, values)` over the project's own files (see [`reused_status`]).
+pub fn reuse_counts(
+    reuse: &functor_lang::reuse::ReuseStats,
+    sources: &SourceMap,
+) -> (usize, usize) {
+    reuse.count(|span| {
+        !sources
+            .file_at(span.start)
+            .path
+            .to_string_lossy()
+            .starts_with('<')
+    })
 }
 
 /// The producer side of the `config` value and `settings(model)` hook, one

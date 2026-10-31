@@ -94,6 +94,7 @@ pub fn hide_files_under(dir: &std::path::Path) {
 /// The bytes of a file in the project (the entry file's folder). `path` is
 /// already [`super::path::resolve`]d; `api` names the call in errors.
 pub(super) fn read_project_file(api: &str, path: &str) -> Result<Arc<[u8]>, String> {
+    note_path(path);
     let read = read_project_file_untracked(api, path);
     note_file_read(|| (format!("{READ}{path}"), read_identity(&read)));
     read
@@ -125,6 +126,7 @@ fn read_project_file_untracked(api: &str, path: &str) -> Result<Arc<[u8]>, Strin
 /// Whether the [`super::path::resolve`]d `path` names a file in the project
 /// (false for the root, and on hosts that can't read project files).
 fn project_file_exists(path: &str) -> bool {
+    note_path(path);
     let exists = project_file_exists_untracked(path);
     note_file_read(|| (format!("{EXISTS}{path}"), exists as u64));
     exists
@@ -155,11 +157,40 @@ fn read_identity(read: &Result<Arc<[u8]>, String>) -> u64 {
 /// isn't one.
 pub(super) fn file_input_current(input: &functor_lang::reuse::HostInput) -> Option<bool> {
     if let Some(path) = input.key.strip_prefix(READ) {
+        note_path(path);
         let read = read_project_file_untracked("File.bytes", path);
         return Some(read_identity(&read) == input.identity);
     }
     let path = input.key.strip_prefix(EXISTS)?;
+    note_path(path);
     Some(project_file_exists_untracked(path) as u64 == input.identity)
+}
+
+thread_local! {
+    /// Project files read or re-checked since [`take_file_reads`], each with
+    /// its version before the first read (with reload reuse, a load reads
+    /// only what changed and re-checks the rest).
+    static FILE_READS: std::cell::RefCell<std::collections::BTreeMap<String, Option<String>>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Note `path` as read; call before reading, so an edit mid-read shows as a
+/// later version.
+fn note_path(path: &str) {
+    if FILE_READS.with(|reads| reads.borrow().contains_key(path)) {
+        return;
+    }
+    let version = crate::storage::project_reader()
+        .and_then(|reader| reader.version(path).ok())
+        .flatten();
+    FILE_READS.with(|reads| reads.borrow_mut().insert(path.to_string(), version));
+}
+
+/// The project files (resolved paths) this thread read since the last call,
+/// with their versions, for a data-file reload to watch: take once before a
+/// load and once after.
+pub fn take_file_reads() -> std::collections::BTreeMap<String, Option<String>> {
+    FILE_READS.with(|reads| std::mem::take(&mut *reads.borrow_mut()))
 }
 
 /// Whether `path` resolves into the [`HIDDEN`] folder.
