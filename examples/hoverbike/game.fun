@@ -31,7 +31,7 @@
 let bikeTag = Physics.tag("bike")
 
 // The collider: an upright capsule from 5 cm above the emitter plane to the
-// rider's shoulders. Hovering, its bottom rides 1.25 m up, far outside the
+// rider's shoulders. Hovering, its bottom rides 1.25 m up (0.35 m parked), outside the
 // character's ground reach (2 × offset + 5 cm), so `grounded`, `snap` and the
 // step-up never engage, and `maxSlope` only matters on contact. `snap` and
 // `stepHeight` are 0 so even a bottomed-out bike isn't pulled down or lifted.
@@ -42,13 +42,20 @@ let colliderHalfHeight = 0.1
 let colliderLift = 0.95 // capsule centre above the emitter plane
 // Literals, not derived from the tunables or the layout: the declaration is
 // the body's spawn, and changing it on a hot reload would teleport the bike.
-let dunesSpawn = Vec3.make(100.0, 2.15, -380.0)
-let standSpawn = Vec3.make(605.0, 2.15, 0.0)
-// Both put the emitter plane at hover height over flat ground at 0: the
+let dunesSpawn = Vec3.make(100.0, 1.25, -380.0)
+let standSpawn = Vec3.make(605.0, 1.25, 0.0)
+// Both park the emitter plane at the idle height over flat ground at 0: the
 // dunes' start pad and the stand's floor.
 expect Vec3.x(dunesSpawn) == DunesLayout.pad.x && Vec3.z(dunesSpawn) == DunesLayout.pad.z
-  && Math.abs(Vec3.y(dunesSpawn) - (Ride.hoverHeight + colliderLift)) < 0.000001
+  && Math.abs(Vec3.y(dunesSpawn) - (Ride.idleHeight + colliderLift)) < 0.000001
 expect Vec3.x(standSpawn) == Stand.originX + 5.0 && Vec3.y(standSpawn) == Vec3.y(dunesSpawn)
+
+// A walker against the parked bike's capsule, on the line through a grip,
+// has the grip within a relaxed arm's reach (0.6 m) of the eye.
+expect (
+  let out = colliderRadius + Walk.radius - Math.sqrt(Bars.gripSpan * Bars.gripSpan + Bars.gripForward * Bars.gripForward) in
+  Math.sqrt(out * out + Mount.gripDrop * Mount.gripDrop) < 0.6
+)
 
 let bike =
   Physics.character(bikeTag, Physics.capsule(colliderHalfHeight, colliderRadius),
@@ -150,12 +157,12 @@ let init: Model = {
   controls: Ride.idle,
   prev: poseOf(positionOf(dunesSpawn), Ride.rest),
   last: positionOf(dunesSpawn),
-  probes: Ride.emitters |> List.map((e) => Ride.hoverHeight),
-  clearance: Ride.hoverHeight,
+  probes: Ride.emitters |> List.map((e) => Ride.idleHeight),
+  clearance: Ride.idleHeight,
   speed: 0.0,
   steps: 0.0,
   kmh: 0.0,
-  hover: Ride.hoverHeight,
+  hover: Ride.idleHeight,
   riderCam: false,
   swapHeld: false,
   southHeld: false,
@@ -294,18 +301,20 @@ let startOn = (course: Course, m: Model) =>
 // outward thrust and pulls the bike back in. Slow, stepped turning steers by
 // snaps instead: a snap turns the bike and the last pose together, so the
 // drawn rig doesn't sweep between them.
-// Unridden, the bike is parked: full brake, so it stays where it stopped.
+// Unridden, the bike is parked: full brake, so it stays where it stopped, and
+// low (`Mount.height`).
 let parked: Ride.Controls = { throttle: 0.0, brake: 1.0, steer: 0.0 }
 let advance = (m: Model, c: Physics.position, probes: List<Ride.Probe>, dt: float): Model =>
   let ready = m.ready || Ride.sensed(probes) in
   let snapping = riding(m) && Bars.snapping(m.vr, m.speed) in
   let controls = if not riding(m) then parked else if snapping then { m.controls with steer: 0.0 } else m.controls in
+  let height = Mount.height(m.mode == Riding, m.fade) in
   let stepped =
     if not ready then m.ride
     else
       match m.course with
-      | OnDunes => Ride.step(Dunes.limit(c.x, c.z, m.ride.yaw, controls), probes, dt, collided(m, c, dt)) |> Dunes.recover(c.x, c.z, dt)
-      | OnStand => Ride.step(controls, probes, dt, collided(m, c, dt)) in
+      | OnDunes => Ride.step(Dunes.limit(c.x, c.z, m.ride.yaw, controls), height, probes, dt, collided(m, c, dt)) |> Dunes.recover(c.x, c.z, dt)
+      | OnStand => Ride.step(controls, height, probes, dt, collided(m, c, dt)) in
   // On foot, the walker turns by the snaps instead.
   let (snap, turned) = if m.mode == Riding then Bars.turn(snapping && ready, m.vr.steer, dt, m.vr.snap) else (m.vr.snap, 0.0) in
   let ride = if turned == 0.0 then stepped else Bars.rotate(turned, stepped) in
@@ -314,7 +323,8 @@ let advance = (m: Model, c: Physics.position, probes: List<Ride.Probe>, dt: floa
   let speed = Ride.speedOf(ride) in
   let steps = m.steps + 1.0 in
   let refresh = Math.mod(steps, 6.0) == 0.0 in
-  let target = Bars.discomfort((speed - m.speed) / dt, ride.yawRate, speed, ride.vy) in
+  // Only a rider feels the bike move, not the walker watching it sink.
+  let target = if riding(m) then Bars.discomfort((speed - m.speed) / dt, ride.yawRate, speed, ride.vy) else 0.0 in
   { m with ready: ready, ride: ride, prev: poseOf(c, { m.ride with yaw: m.ride.yaw + turned }), last: c,
            probes: distances, clearance: clearance, speed: speed, steps: steps,
            vr: { m.vr with snap: snap, vignette: Bars.envelope(target, dt, m.vr.vignette) },
@@ -394,10 +404,20 @@ let onBike = (m: Model, c: Physics.position): Model =>
     | Option.None => { m with noRoom: true }
 
 // At the fade's black: on the bike, its eye at the seat; or on foot at the
-// landing, facing the bike.
-let arrive = (m: Model): (Model, Effect.t) =>
+// landing, facing the bike. Getting on also snaps the bike (at `c`) up to
+// ride height (`Mount.snap`) by a teleport, which lands after this step's
+// move; the last pose and position follow it so nothing sweeps or reads it
+// as a collision. Unless every probe sees ground this step there is no
+// height to snap to, and it stays put.
+let arrive = (m: Model, c: Physics.position): (Model, Effect.t) =>
   match m.fade.action with
-  | Mount.GetOn(hand) => ({ m with mode: Riding, near: false, off: -1.0, vr: Bars.mountOn(hand, m.vr) }, Effect.none())
+  | Mount.GetOn(hand) =>
+    let on = { m with mode: Riding, near: false, off: -1.0, vr: Bars.mountOn(hand, m.vr) } in
+    if not (m.ready && (m.probes |> List.all((d) => d < Ride.probeRange))) then (on, Effect.none())
+    else
+      let (dy, ride) = Mount.snap(m.clearance, m.ride) in
+      let at = { c with y: c.y + dy } in
+      ({ on with ride: ride, prev: { m.prev with y: at.y }, last: at }, Physics.teleport(bikeTag, vecOf(at)))
   | Mount.GetOff(x, y, z, yaw) =>
     ({ m with mode: OnFoot, walker: { Walk.standing with yaw: yaw, ready: true }, footPrev: { x: x, y: y, z: z },
               vr: Bars.dismount(m.vr) },
@@ -414,14 +434,26 @@ expect (
   not Mount.fading(released.fade) && not Mount.fading(fast.fade) && not fast.noRoom
     && not Mount.fading(nowhere.fade) && nowhere.noRoom && nowhere.mode == Riding
 )
-// At the black: getting on rides, the grabbing hand latched; getting off
-// stands the walker at the landing, facing as asked, hands let go.
+// At the black: getting on rides, the grabbing hand latched, the bike snapped
+// up by what its clearance lacks and still; getting off stands the walker at
+// the landing, facing as asked, hands let go, the bike left where it is.
 expect (
-  let (on, _) = arrive({ init with fade: Mount.start(Mount.GetOn(-1.0)) }) in
-  let (off, _) = arrive({ on with fade: Mount.start(Mount.GetOff(1.0, 2.0, 3.0, 0.5)) }) in
+  let c = positionOf(dunesSpawn) in
+  let parked = { init with ready: true, ride: { Ride.rest with vy: -0.2 } } in
+  let (on, _) = arrive({ parked with fade: Mount.start(Mount.GetOn(-1.0)) }, c) in
+  let (off, _) = arrive({ on with fade: Mount.start(Mount.GetOff(1.0, 2.0, 3.0, 0.5)) }, on.last) in
+  let lift = Ride.hoverHeight - Ride.idleHeight in
   on.mode == Riding && on.vr.mounted && on.vr.right.latched && not on.vr.left.latched
+    && Math.abs(on.last.y - c.y - lift) < 0.000001 && on.prev.y == on.last.y && on.ride.vy == 0.0
     && off.mode == OnFoot && off.walker.yaw == 0.5 && off.footPrev.x == 1.0 && off.footPrev.z == 3.0
-    && not off.vr.mounted && not off.vr.right.latched
+    && not off.vr.mounted && not off.vr.right.latched && off.last == on.last
+)
+// Not yet on the ground, or a probe missing it, getting on leaves the bike
+// where it is.
+expect (
+  let at = (m: Model) => let (on, _) = arrive({ m with fade: Mount.start(Mount.GetOn(1.0)) }, positionOf(dunesSpawn)) in on in
+  let missing = { init with ready: true, probes: [Ride.idleHeight, Ride.idleHeight, Ride.idleHeight, Ride.probeRange] } in
+  at(init).mode == Riding && at(init).last == init.last && at(missing).last == init.last
 )
 
 let tick = (m: Model, dt: float, tts) =>
@@ -434,7 +466,7 @@ let tick = (m: Model, dt: float, tts) =>
     let (fade, black) = Mount.step(dt, m.fade) in
     let stepped = { rode with fade: fade } in
     let (next, moved) =
-      if black then arrive(stepped)
+      if black then arrive(stepped, c)
       else if Mount.fading(fade) then (stepped, Effect.none())
       else
         match m.mode with
@@ -446,7 +478,7 @@ let tick = (m: Model, dt: float, tts) =>
 
 // Readiness, driven without a world.
 let missed = Ride.emitters |> List.map((e) => { hit: false, distance: 0.0 })
-let onGround = Ride.flatProbes(Ride.hoverHeight)
+let onGround = Ride.flatProbes(Ride.idleHeight)
 let waitFor = (steps: float, probes: List<Ride.Probe>, m: Model) =>
   List.range(steps) |> List.fold((acc, i) => advance(acc, acc.last, probes, Ride.dt60), m)
 // Two seconds without ground: still waiting, and the bike hasn't moved or
@@ -461,6 +493,14 @@ expect (
   let m = waitFor(1.0, onGround, waitFor(30.0, missed, init)) in
   let dropped = waitFor(1.0, missed, m) in
   m.ready && dropped.ready && dropped.ride.vy < 0.0
+)
+// The bike sinking beside the walker never closes the vignette; ridden, the
+// same motion does.
+expect (
+  let moving = (vy: float) => { init with ready: true, ride: { Ride.rest with vy: vy } } in
+  let sinking = waitFor(1.0, Ride.flatProbes(Ride.hoverHeight), moving(-1.5)) in
+  let ridden = waitFor(1.0, Ride.flatProbes(Ride.hoverHeight), { moving(-1.5) with mode: Riding }) in
+  sinking.vr.vignette == 0.0 && ridden.vr.vignette > 0.0
 )
 // A respawn or course switch waits again, at the new spawn.
 expect (

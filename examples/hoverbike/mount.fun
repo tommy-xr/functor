@@ -23,9 +23,16 @@ let near = (x: float, z: float, look: float, sx: float, sz: float): bool =>
   let d = Math.sqrt(dx * dx + dz * dz) in
   d < range && (d < 0.001 || (dx * Math.sin(look) + dz * Math.cos(look)) / d > facing)
 
-// With a headset, a fresh squeeze within `reach` of a grip grabs it. The grips
-// ride above a standing walker's head, so the reach is generous.
-let reach = 0.6 // m
+// With a headset, a fresh squeeze within `reach` of a grip grabs it: a hand on
+// the grip, give or take the controller's size and the calibration.
+let reach = 0.3 // m
+
+// Parked, the grips sit 0.37 m below the walker's eye. Calibration puts any
+// player's head at that eye, so for real eye heights of 1.6–1.75 m that is
+// below the shoulder (≈ 0.126 × eye height under the eye) and above the hip
+// (≈ 0.43 × eye height under it): a grab without reaching up or stooping.
+let gripDrop = Walk.centreHeight + Walk.eye.y - (Ride.idleHeight + Bars.gripHeight)
+expect gripDrop > 0.126 * 1.75 && gripDrop < 0.43 * 1.6
 
 // A fresh squeeze: squeezing now, not the step before, tracked both times.
 let fresh = (before: Bars.Hand, now: Bars.Hand) =>
@@ -50,6 +57,10 @@ type Fade = { t: float, action: Action }
 let clear: Fade = { t: -1.0, action: GetOn(0.0) }
 let start = (a: Action): Fade => { t: 0.0, action: a }
 let fading = (f: Fade) => f.t >= 0.0
+let gettingOn = (a: Action) =>
+  match a with
+  | GetOn(_) => true
+  | GetOff(_, _, _, _) => false
 
 // One step: the next fade, and whether its action happens on this step.
 let step = (dt: float, f: Fade): (Fade, bool) =>
@@ -57,6 +68,17 @@ let step = (dt: float, f: Fade): (Fade, bool) =>
   else
     let (t, black) = Bars.fadeStep(dt, f.t) in
     ({ f with t: t }, black)
+
+// The hover target: ride height while ridden, and through getting off's
+// fade; else the idle height. So the bike sinks once getting off has faded
+// back in.
+let height = (riding: bool, f: Fade) =>
+  if riding || (fading(f) && not gettingOn(f.action)) then Ride.hoverHeight else Ride.idleHeight
+
+// Getting on, on the black step the parked bike snaps up to ride height: by
+// what its probes read short of it (`clearance`), vertical velocity zeroed,
+// so it rests there. Unseen while black, so no spring rise.
+let snap = (clearance: float, s: Ride.State): (float, Ride.State) => (Ride.hoverHeight - clearance, { s with vy: 0.0 })
 
 // ---- Getting off ---------------------------------------------------------
 
@@ -115,22 +137,67 @@ expect (
 
 // Eligibility: E needs only to be near; a grab needs the calibration and the
 // reach.
-expect eligible(true, 0.0, false, 9.0) && eligible(true, 1.0, true, 0.5) && not eligible(false, 0.0, true, 0.0)
-expect not eligible(true, -1.0, true, 0.7) && not eligible(true, 1.0, false, 0.1)
+expect eligible(true, 0.0, false, 9.0) && eligible(true, 1.0, true, 0.25) && not eligible(false, 0.0, true, 0.0)
+expect not eligible(true, -1.0, true, 0.35) && not eligible(true, 1.0, false, 0.1)
 
 // The fade: its action lands on the step it is fully black, six steps in at
-// 60 Hz; it is clear again after 15 (to a float's width), and never black twice.
+// 60 Hz; it is clear again after 15 (0.25 s, to a float's width), getting on
+// and off alike, and never black twice.
 let run = (n: float, f: Fade) =>
   List.range(n) |> List.fold((acc, i) =>
     let (g, blacks, levels) = acc in
     let (h, b) = step(Ride.dt60, g) in
     (h, (if b then [i, ..blacks] else blacks), [Bars.fadeAt(h.t), ..levels]), (f, [], []))
-expect (
-  let (f, blacks, levels) = run(20.0, start(GetOn(1.0))) in
+let fadesLike = (a: Action) =>
+  let (f, blacks, levels) = run(20.0, start(a)) in
   blacks == [5.0] && List.nth(14.0, levels) == Option.Some(1.0) && not fading(f)
     && List.head(levels) == Option.Some(0.0) && List.length(levels |> List.filter((l) => l > 0.001)) == 14.0
-)
+expect fadesLike(GetOn(1.0)) && fadesLike(GetOff(0.0, 0.0, 0.0, 0.0))
 expect (let (f, b) = step(Ride.dt60, clear) in not b && f == clear)
+
+// The bike's height through a fade, as `tick` steps it over flat ground: the
+// target from the mode and fade before the step, then the fade, whose black
+// step switches the mode and, getting on, snaps the bike from where its
+// probes read at the step's start. Oldest first.
+type Lift = { h: float, s: Ride.State, f: Fade, riding: bool, level: float }
+let lifting = (n: float, riding: bool, h0: float, f0: Fade): List<Lift> =>
+  List.range(n) |> List.fold((acc, i) =>
+    let l = acc |> List.head |> Option.defaultValue({ h: h0, s: Ride.rest, f: f0, riding: riding, level: 0.0 }) in
+    let stepped = Ride.step(Ride.idle, height(l.riding, l.f), Ride.flatProbes(l.h), Ride.dt60, l.s) in
+    let (f, black) = step(Ride.dt60, l.f) in
+    let on = black && gettingOn(f.action) in
+    let (h, s) = if on then (let (dy, snapped) = snap(l.h, stepped) in (l.h + dy, snapped))
+      else (l.h + stepped.vy * Ride.dt60, stepped) in
+    [{ h: h, s: s, f: f, riding: if black then gettingOn(f.action) else l.riding, level: Bars.fadeAt(f.t) }, ..acc],
+    []) |> List.reverse
+let within = (to: float, tolerance: float, l: Lift) => Math.abs(l.h - to) < tolerance
+
+// Parked, it stays at the idle height.
+expect lifting(120.0, false, Ride.idleHeight, clear) |> List.all((l) => within(Ride.idleHeight, 0.000001, l))
+// Getting on: nothing moves before the black step, which snaps the bike to
+// ride height; from the first fade-in step on it stays there within 1.5 cm,
+// with no vertical velocity to speak of.
+expect (
+  let run = lifting(120.0, false, Ride.idleHeight, start(GetOn(1.0))) in
+  let before = run |> List.take(5.0) in
+  let after = run |> List.drop(6.0) in
+  let first = after |> List.head |> Option.defaultValue({ h: 0.0, s: Ride.rest, f: clear, riding: false, level: 0.0 }) in
+  (before |> List.all((l) => within(Ride.idleHeight, 0.000001, l)))
+    && first.level > 0.8 && first.level < 1.0 && first.riding
+    && (after |> List.all((l) => within(Ride.hoverHeight, 0.015, l) && Math.abs(l.s.vy) < 0.01))
+)
+// Getting off: it holds ride height through the fade, then sinks to the idle
+// height and settles there, its error never growing.
+expect (
+  let run = lifting(300.0, true, Ride.hoverHeight, start(GetOff(0.0, 0.0, 0.0, 0.0))) in
+  let fade = run |> List.take(15.0) in
+  let parked = run |> List.drop(15.0) in
+  let error = (from: float, n: float) =>
+    parked |> List.drop(from) |> List.take(n) |> List.map((l) => Math.abs(l.h - Ride.idleHeight)) |> List.maximum |> Option.defaultValue(9.0) in
+  (fade |> List.all((l) => within(Ride.hoverHeight, 0.000001, l)))
+    && (parked |> List.all((l) => not l.riding && not fading(l.f)))
+    && error(180.0, 105.0) < 0.01 && error(225.0, 60.0) <= error(165.0, 60.0)
+)
 
 // The dismount hold: counts only from a press while riding; fires at 0.5 s
 // below 2 m/s; faster, it asks to slow down and fires once slow.

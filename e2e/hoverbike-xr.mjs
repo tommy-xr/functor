@@ -18,8 +18,10 @@
 // foot: the left stick walks up to the bike and a grab at the left grip gets
 // on (`board`).
 //
-//   a. A squeeze out of reach of the grip does nothing; within reach it
-//      fades, and on the bike that hand is latched; grabbing the right arms.
+//   a. The parked bike's grips sit between a standing player's hip and
+//      shoulder. A squeeze out of reach of the grip does nothing; within
+//      reach it fades, and on the bike that hand is latched; grabbing the
+//      right arms.
 //   b. Releasing the grips brakes but never gets off.
 //   c. Holding right B at speed is refused, and its release (short or long)
 //      doesn't respawn.
@@ -62,7 +64,8 @@ const CAPTURE_SIZE = "840x880"; // half a Quest 3 eye buffer: the comfort layer'
 const WALKER_EYE = { x: 0, y: 0.75, z: 0 }; // from the walker's capsule centre
 const FOOT_Y = 0.92; // the walker's capsule centre standing on the stand's floor
 const COLLIDER_LIFT = 0.95; // the bike's capsule centre above its emitter plane
-const REACH = 0.6;
+const REACH = 0.3;
+const IDLE = 0.3; // the parked hover height (ride.fun)
 const HOLD = 0.5;
 const STAND_FOOT = { x: 609, z: 0 };
 
@@ -233,13 +236,13 @@ async function walkUp(base) {
 }
 
 /**
- * Walk up and get on: the left hand squeezes 0.3 m from its grip, the fade
+ * Walk up and get on: the left hand squeezes 0.15 m from its grip, the fade
  * runs, then the right grabs its grip (both latched and armed). Pads to the
  * same step phase every time (`steps` mod 6: the gauge's refresh).
  */
 async function board(base) {
   let m = await walkUp(base);
-  const at = reachFor(m, 0.3);
+  const at = reachFor(m, 0.15);
   await hold(base, xr({ leftAt: at }));
   await hold(base, xr({ leftAt: at, ls: 1 }));
   m = await hold(base, xr({ ls: 1 }), 16);
@@ -380,19 +383,32 @@ async function onFoot(port, check) {
     check(m.mode.$ctor === "OnFoot" && !m.vr.mounted && !m.vr.pending, `on foot on the stand, calibrated`);
     m = await walkUp(base);
     check(m.near && m.mode.$ctor === "OnFoot", `the left stick walks up to the seat`);
+    // Calibration puts the head at the walker's eye, so the grip's drop below
+    // it is what a real player reaches. By stature, eye ≈ 0.936, shoulder
+    // ≈ 0.818 and hip ≈ 0.53: the shoulder is ≈ 0.126 × eye height under the
+    // eye, the hip ≈ 0.43 ×. For eye heights 1.6–1.75 m the grip must sit
+    // below the tallest's shoulder and above the shortest's hip.
+    const gripY = m.last.y - COLLIDER_LIFT + GRIP.height;
+    const drop = m.footPrev.y + WALKER_EYE.y - gripY;
+    check(Math.abs(m.clearance - IDLE) < 0.01 && drop > 0.126 * 1.75 && drop < 0.43 * 1.6,
+      `parked grips ${gripY.toFixed(3)} m up, ${drop.toFixed(3)} m below the eye: under the shoulder (≥ ${(0.126 * 1.75).toFixed(3)}), over the hip (≤ ${(0.43 * 1.6).toFixed(3)})`);
 
     // a. Out of reach, then within.
     const far = reachFor(m, REACH + 0.3);
     await hold(base, xr({ leftAt: far }));
     m = await hold(base, xr({ leftAt: far, ls: 1 }), 10);
     check(m.mode.$ctor === "OnFoot" && m.fade.t < 0, `a squeeze ${(REACH + 0.3).toFixed(1)} m from the grip does nothing`);
-    const at = reachFor(m, 0.3);
+    const at = reachFor(m, 0.15);
     await hold(base, xr({ leftAt: at }));
     m = await hold(base, xr({ leftAt: at, ls: 1 }), 1);
-    check(m.fade.t >= 0 && m.fade.action.$ctor === "Mount.GetOn" && m.fade.action.args[0] === 1, `a squeeze 0.3 m from it: the fade starts`);
+    check(m.fade.t >= 0 && m.fade.action.$ctor === "Mount.GetOn" && m.fade.action.args[0] === 1, `a squeeze 0.15 m from it: the fade starts`);
     m = await hold(base, xr({ ls: 1 }), 6);
     check(m.mode.$ctor === "Riding" && m.vr.mounted && m.vr.left.latched && !m.vr.right.latched && !m.vr.armed, `at the black: on the bike, the left hand latched`);
-    m = await hold(base, xr({ ls: 1 }), 12);
+    m = await hold(base, xr({ ls: 1 }), 1);
+    check(Math.abs(m.clearance - 1.2) < 0.015 && Math.abs(m.ride.vy) < 0.01,
+      `snapped to ride height while black (clearance ${m.clearance.toFixed(4)} m, vy ${m.ride.vy.toExponential(2)})`);
+    m = await hold(base, xr({ ls: 1 }), 11);
+    check(m.fade.t < 0 && m.vr.vignette === 0, `faded in, riding: no vignette from the snap`);
     m = await hold(base, xr({ ls: 1, rs: 1 }));
     check(m.vr.armed && m.fade.t < 0, `grabbing the right arms`);
 
