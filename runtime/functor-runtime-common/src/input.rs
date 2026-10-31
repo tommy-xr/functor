@@ -1047,7 +1047,7 @@ pub fn tracking_pose_from_value(value: &functor_lang::Value) -> Result<TrackingP
 }
 
 /// Decode the plain-data `Camera3D.mappedPose` record (`position`, `forward`,
-/// `up`, each an `Input.point3`) that `Camera3D.fromPose` accepts.
+/// `up`, each an `Input.point3`) that `Camera3D.fromPose` and `Scene.atPose` accept.
 pub fn mapped_pose_from_value(
     value: &functor_lang::Value,
 ) -> Result<crate::MappedTrackingPose, String> {

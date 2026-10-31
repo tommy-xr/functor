@@ -167,32 +167,57 @@ impl MappedTrackingPose {
     /// The rigid transform placing an authored local frame at this pose:
     /// origin at `position`, local `+Z` along `forward`, `+Y` along `up`
     /// (re-orthogonalized against `forward`). Right-handed, so local `+X`
-    /// lands on `up × forward`, the pose's left.
-    ///
-    /// `None` for non-finite input, a zero `forward`/`up`, or an `up` within
-    /// ~0.06° of parallel to `forward` (no defined roll).
+    /// lands on `up × forward`, the pose's left. `None` when `pose_basis`
+    /// rejects the pose.
     pub fn to_matrix(&self) -> Option<Matrix4<f32>> {
-        let position = Vector3::from(self.position);
-        let forward = Vector3::from(self.forward);
-        let up = Vector3::from(self.up);
-        let finite = position.x.is_finite() && position.y.is_finite() && position.z.is_finite();
-        if !finite || !forward.magnitude().is_normal() || !up.magnitude().is_normal() {
-            return None;
-        }
-        let z = forward.normalize();
-        let x = up.normalize().cross(z);
-        if !(x.magnitude() > 1e-3) {
-            return None;
-        }
-        let x = x.normalize();
-        let y = z.cross(x);
+        let b = pose_basis(self.position, self.forward, self.up)?;
         Some(Matrix4::from_cols(
-            x.extend(0.0),
-            y.extend(0.0),
-            z.extend(0.0),
-            position.extend(1.0),
+            b.left.extend(0.0),
+            b.up.extend(0.0),
+            b.forward.extend(0.0),
+            b.position.extend(1.0),
         ))
     }
+}
+
+/// Smallest `|up × forward|` (unit vectors: the sine of their angle, here
+/// ~0.06°) a pose may have. Below it the roll comes from rounding noise: f32
+/// error in the cross product (~1e-7) over this length is ~1e-4 rad of roll.
+const MIN_POSE_SIN: f32 = 1e-3;
+
+/// A pose's orthonormal frame: unit `forward` (local `+Z`), `up` (local `+Y`,
+/// re-orthogonalized against `forward`), and `left = up × forward` (local `+X`).
+struct PoseBasis {
+    position: Vector3<f32>,
+    left: Vector3<f32>,
+    up: Vector3<f32>,
+    forward: Vector3<f32>,
+}
+
+/// Validate and orthonormalize a pose — the one rule `Camera3D.fromPose` and
+/// `Scene.atPose` share. `None` for a non-finite `position`, a zero or
+/// non-finite `forward`/`up`, or an `up` within `MIN_POSE_SIN` of parallel
+/// to `forward` (no defined roll). `forward` need not be unit length.
+fn pose_basis(position: [f32; 3], forward: [f32; 3], up: [f32; 3]) -> Option<PoseBasis> {
+    let position = Vector3::from(position);
+    let forward = Vector3::from(forward);
+    let up = Vector3::from(up);
+    let finite = position.x.is_finite() && position.y.is_finite() && position.z.is_finite();
+    if !finite || !forward.magnitude().is_normal() || !up.magnitude().is_normal() {
+        return None;
+    }
+    let forward = forward.normalize();
+    let left = up.normalize().cross(forward);
+    if !(left.magnitude() > MIN_POSE_SIN) {
+        return None;
+    }
+    let left = left.normalize();
+    Some(PoseBasis {
+        position,
+        left,
+        up: forward.cross(left),
+        forward,
+    })
 }
 
 /// A world-space ray derived from a point on a camera's logical surface.
@@ -266,24 +291,11 @@ impl Camera {
     /// up on screen (e.g. a `MappedTrackingPose`). The authored basis matches
     /// [`Camera::first_person`]: forward `+Z` with up `+Y` is yaw = pitch = 0.
     ///
-    /// `forward` need not be unit length; `up` is re-orthogonalized against
-    /// it. Returns `None` for non-finite input, a zero `forward`/`up`, or an
-    /// `up` within ~0.06° of parallel to `forward` (no defined roll).
+    /// `up` is re-orthogonalized against `forward`; `None` when
+    /// `pose_basis` rejects the pose.
     pub fn from_pose(position: [f32; 3], forward: [f32; 3], up: [f32; 3], fov: Angle) -> Option<Camera> {
-        let eye = Vector3::from(position);
-        let forward = Vector3::from(forward);
-        let up = Vector3::from(up);
-        let finite = |v: Vector3<f32>| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
-        if !finite(eye) || !forward.magnitude().is_normal() || !up.magnitude().is_normal() {
-            return None;
-        }
-        let forward = forward.normalize();
-        let right = forward.cross(up.normalize());
-        if !(right.magnitude() > 1e-3) {
-            return None;
-        }
-        let up = right.normalize().cross(forward);
-        Some(Camera::look_at(eye.into(), (eye + forward).into(), up.into(), fov))
+        let b = pose_basis(position, forward, up)?;
+        Some(Camera::look_at(b.position.into(), (b.position + b.forward).into(), b.up.into(), fov))
     }
 
     /// Split this camera into (left, right) eye cameras for stereo rendering,
@@ -328,6 +340,10 @@ impl Camera {
 
     /// Return the normalized authored axes, or `None` when they cannot define
     /// a finite view basis.
+    ///
+    /// Looser than `pose_basis` (any nonzero cross) on purpose: it vets
+    /// cameras that already render, and `MIN_POSE_SIN` would stop picking and
+    /// tracking for some, e.g. `firstPerson` at pitch ±90° (cross ~4e-8).
     pub(crate) fn world_basis(&self) -> Option<CameraBasis> {
         let eye = Vector3::from(self.eye);
         let gaze = Vector3::from(self.target) - eye;
@@ -1128,5 +1144,34 @@ mod tests {
         assert!(pose([0.0; 3], [0.0, f32::INFINITY, 1.0], [0.0, 1.0, 0.0]).is_none());
         // Nearly, but not, parallel still defines a roll.
         assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.01, 1.0]).is_some());
+    }
+
+    // `Camera3D.fromPose` and `Scene.atPose` share one basis: the same poses
+    // pass (either side of the parallel threshold too), and the camera's
+    // forward and up are exactly the matrix's +Z and +Y columns.
+    #[test]
+    fn from_pose_and_to_matrix_share_one_basis() {
+        let (above_s, above_c) = 2e-3f32.sin_cos();
+        let (below_s, below_c) = 5e-4f32.sin_cos();
+        let position = [1.0, 2.0, 3.0];
+        for (forward, up, valid) in [
+            ([0.3, -0.4, 2.0], [0.1, 1.0, 0.2], true),
+            ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0], true),
+            ([0.0, 0.0, 1.0], [0.0, above_s, above_c], true),
+            ([0.0, 0.0, 1.0], [0.0, below_s, below_c], false),
+            ([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], false),
+        ] {
+            let camera = Camera::from_pose(position, forward, up, Angle::from_degrees(60.0));
+            let matrix = MappedTrackingPose { position, forward, up }.to_matrix();
+            assert_eq!(camera.is_some(), valid, "{forward:?} {up:?}");
+            assert_eq!(matrix.is_some(), valid, "{forward:?} {up:?}");
+            if let (Some(camera), Some(m)) = (camera, matrix) {
+                let target: [f32; 3] = (m.w.truncate() + m.z.truncate()).into();
+                assert_eq!(camera.eye, position);
+                assert_eq!(camera.target, target);
+                let up: [f32; 3] = m.y.truncate().into();
+                assert_eq!(camera.up, up);
+            }
+        }
     }
 }
