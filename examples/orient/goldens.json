@@ -1,0 +1,10 @@
+[
+  {
+    "name": "orient-t1.5",
+    "fixedTime": 1.5,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  }
+]
