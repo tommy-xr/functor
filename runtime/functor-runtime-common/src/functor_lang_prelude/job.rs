@@ -44,31 +44,25 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
 /// top-level, an input that can't cross, no program to compile).
 pub(crate) fn spec(program: Option<&JobProgram>, key: String, f: &Value, input: &Value) -> JobSpec {
     let call = match program {
-        None => Err(error("Job.Unsupported", "Job.run: this host runs no jobs".to_string())),
+        None => Err(Shareable::error("Job.Unsupported", "Job.run: this host runs no jobs".to_string())),
         Some(program) => program
             .roots
             .name_of(f)
-            .map_err(|why| error("Job.Failed", format!("Job.run needs a top-level function; this is {why}")))
+            .map_err(|why| Shareable::error("Job.Failed", format!("Job.run needs a top-level function; this is {why}")))
             .and_then(|name| {
                 let input = Shareable::from_value(input)
-                    .map_err(|why| error("Job.NotShareable", format!("Job.run input: {why}")))?;
+                    .map_err(|why| Shareable::error("Job.NotShareable", format!("Job.run input: {why}")))?;
                 Ok(RunCall { program: program.source.clone(), f: name.to_string(), input })
             }),
     };
     JobSpec::Run(Arc::new(RunSpec { key, call }))
 }
 
-/// `Result.Error(ctor(message))`, `ctor` a `Job.error` constructor.
-fn error(ctor: &str, message: String) -> Shareable {
-    let error = Shareable::Variant(ctor.into(), vec![Shareable::Text(message.into())].into());
-    Shareable::Variant("Result.Error".into(), vec![error].into())
-}
-
 /// A `Job.run` the pool couldn't finish (a full queue, a panic).
 pub(crate) fn failed(e: JobError) -> Shareable {
     match e {
-        JobError::Failed(m) => error("Job.Failed", m),
-        JobError::Crashed(m) => error("Job.Crashed", m),
+        JobError::Failed(m) => Shareable::error("Job.Failed", m),
+        JobError::Crashed(m) => Shareable::error("Job.Crashed", m),
     }
 }
 
@@ -120,7 +114,7 @@ pub(crate) fn run(
     COMPILED.with(|cache| {
         let mut cache = cache.borrow_mut();
         let compiled = compiled(&mut cache, call)?;
-        let prepared = compiled.prepare(&call.f, ctx)?;
+        let prepared = compiled.prepare(&call.f, ctx, reads)?;
         let mut host = JobHost;
         host.begin_inputs();
         let out = prepared.session.call_cancellable(
@@ -134,9 +128,9 @@ pub(crate) fn run(
             a.extend(b);
             a
         }));
-        let value = out.map_err(|e| error("Job.Failed", compiled.sources.render(e.span.start, &e.message)))?;
+        let value = out.map_err(|e| Shareable::error("Job.Failed", compiled.sources.render(e.span.start, &e.message)))?;
         let value = Shareable::from_value(&value)
-            .map_err(|why| error("Job.NotShareable", format!("Job.run result: {why}")))?;
+            .map_err(|why| Shareable::error("Job.NotShareable", format!("Job.run result: {why}")))?;
         Ok(Shareable::Variant("Result.Ok".into(), vec![value].into()))
     })
     .unwrap_or_else(|e| e)
@@ -152,7 +146,7 @@ fn compiled<'c>(cache: &'c mut Option<Compiled>, call: &RunCall) -> Result<&'c m
             files.collect(),
             &functor_prelude::bundled_modules(),
         )
-        .map_err(|e| error("Job.Failed", format!("Job.run: the project doesn't load: {}", e.render())))?;
+        .map_err(|e| Shareable::error("Job.Failed", format!("Job.run: the project doesn't load: {}", e.render())))?;
         log::info!(
             "[functor-lang] job worker compiled the project in {:.1} ms",
             now_ms() - started
@@ -170,23 +164,28 @@ fn compiled<'c>(cache: &'c mut Option<Compiled>, call: &RunCall) -> Result<&'c m
 }
 
 impl Compiled {
-    /// A session with `f`'s dependencies evaluated (once per function).
-    fn prepare(&mut self, f: &str, ctx: &JobCtx) -> Result<std::rc::Rc<Prepared>, Shareable> {
+    /// A session with `f`'s dependencies evaluated (once per function, per
+    /// revision: a data-file edit reloads, which is a new revision). On a
+    /// failure, `reads` gets what evaluating them read, so a reload that
+    /// fixes a file runs the job again.
+    fn prepare(&mut self, f: &str, ctx: &JobCtx, reads: &ReadSlot) -> Result<std::rc::Rc<Prepared>, Shareable> {
         if let Some(prepared) = self.prepared.get(f) {
             return Ok(prepared.clone());
         }
         let deps = self.index.deps_of(f).ok_or_else(|| {
-            error("Job.Failed", format!("Job.run: `{f}` is no longer a top-level function"))
+            Shareable::error("Job.Failed", format!("Job.run: `{f}` is no longer a top-level function"))
         })?;
         let started = now_ms();
         let mut host = JobHost;
         host.begin_inputs();
         let loaded = Session::load_cancellable(&self.module, &|name| deps.contains(name), &mut host, ctx.stop_flag());
-        let reads = host.end_inputs();
+        let deps_reads = host.end_inputs();
         let session = loaded.map_err(|failure| {
+            let _ = reads.set(deps_reads.clone());
             let message = self.sources.render(failure.error.span.start, &failure.error.message);
-            error("Job.Failed", format!("Job.run: evaluating what `{f}` uses failed: {message}"))
+            Shareable::error("Job.Failed", format!("Job.run: evaluating what `{f}` uses failed: {message}"))
         })?;
+        let reads = deps_reads;
         log::info!(
             "[functor-lang] job worker evaluated `{f}`'s {} dependencies in {:.1} ms",
             deps.len(),
@@ -209,7 +208,7 @@ pub(crate) fn spin_up(call: &RunCall) -> (f64, f64) {
     let compiled = compiled(&mut cache, call).ok().expect("compiles");
     let compile = now_ms() - started;
     let started = now_ms();
-    compiled.prepare(&call.f, &ctx).ok().expect("dependencies evaluate");
+    compiled.prepare(&call.f, &ctx, &ReadSlot::default()).ok().expect("dependencies evaluate");
     (compile, now_ms() - started)
 }
 
@@ -231,9 +230,9 @@ impl Host for JobHost {
     fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<HostReturn, RunError> {
         let before = read_counts();
         let result = FunctorHost.call(path, args, span);
-        let live = [ReadClass::Physics, ReadClass::Ui]
+        let live = ReadClass::ALL
             .into_iter()
-            .find(|&class| read_count(class) != before[class as usize]);
+            .find(|&class| class != ReadClass::File && read_count(class) != before[class as usize]);
         match live {
             Some(class) => Err(RunError {
                 message: format!(

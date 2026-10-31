@@ -1413,15 +1413,7 @@ let draw = (m, tts) =>
   Frame.create(Camera3D.lookAt(Vec3.make(m.size, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 "#;
 
-    /// Counts dispatches on their way to the shared pool.
-    struct Counted(std::cell::Cell<usize>);
-
-    impl crate::jobs::Dispatch for Counted {
-        fn dispatch(&self, job: crate::jobs::Job) {
-            self.0.set(self.0.get() + 1);
-            crate::jobs::Dispatch::dispatch(crate::jobs::Pool::shared(), job);
-        }
-    }
+    use crate::jobs::Counted;
 
     #[test]
     fn a_file_load_on_the_pool_replays_exactly_without_reading_again() {

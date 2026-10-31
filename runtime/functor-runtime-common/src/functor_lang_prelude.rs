@@ -6629,9 +6629,12 @@ dropping the rest"
                 // Like `File.load`: one in flight per key, the result a
                 // logged delivery. A function or input that can't run is
                 // answered with its error next frame, never silently.
+                // The digest names the function too, so a replay calling
+                // another one under the key diverges loudly.
                 let admitted = !requests.job_in_flight(crate::jobs::JobKind::Run, &key);
                 let kind = if admitted { "job.run" } else { "job.run.dropped" };
-                let (recorded, ordinal) = issue(runner, log, kind, args_digest(&key));
+                let named = requests.jobs().program().and_then(|p| p.roots.name_of(&f).ok().map(str::to_string));
+                let (recorded, ordinal) = issue(runner, log, kind, args_digest(&(&key, named)));
                 if admitted {
                     let spec = job::spec(requests.jobs().program(), key, &f, &input);
                     requests.issue_job(recorded, ordinal, spec, tagger, !suppress_outbound);

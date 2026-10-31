@@ -18,7 +18,6 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 pub use shareable::{HostValue, Key, Shareable, NODE_CAP};
 
-
 use crate::storage::ProjectReader;
 
 /// Which dispatch of which op a result answers. `id` names the op for its
@@ -472,6 +471,12 @@ impl JobPort {
         self.program.as_deref()
     }
 
+    /// A fork's port: the same program (a replay's `Job.run` digest names
+    /// its function), nothing in flight.
+    pub(crate) fn fork(&self) -> JobPort {
+        JobPort { program: self.program.clone(), ..JobPort::default() }
+    }
+
     /// The reader a job dispatched now reads through.
     pub(crate) fn reader(&self) -> Option<Arc<dyn ProjectReader>> {
         self.reader.clone().or_else(crate::storage::project_reader)
@@ -495,6 +500,18 @@ impl JobPort {
 
 #[cfg(test)]
 mod run_tests;
+
+/// Counts dispatches on their way to the shared pool (tests).
+#[cfg(test)]
+pub(crate) struct Counted(pub std::cell::Cell<usize>);
+
+#[cfg(test)]
+impl Dispatch for Counted {
+    fn dispatch(&self, job: Job) {
+        self.0.set(self.0.get() + 1);
+        Pool::shared().dispatch(job);
+    }
+}
 
 #[cfg(test)]
 mod tests {

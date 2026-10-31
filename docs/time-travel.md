@@ -389,9 +389,11 @@ evaluates only the defs `f` reaches, calls it, and sends the result back as a
 code runs like a top-level value: file reads are fine, physics and UI reads
 fail the job. `Job.cancel` stops evaluation within a few thousand calls. A hot
 reload that changes the code `f` reaches stops the job and runs it again on the
-new program, as the op's next attempt; otherwise it keeps running, and its
-result is delivered only if every file it read still reads the same (else it
-runs again). A panic is `Crashed`, and the worker thread is replaced.
+new program, as the op's next attempt; otherwise (or once its result has
+arrived) it is kept, and its result is delivered only if every file it read
+still reads the same (else it runs again). A worker caches each function's
+evaluated dependencies per revision; a data-file edit reloads, which starts a
+new one. A panic is `Crashed`, and the worker thread is replaced.
 
 Two fidelity tiers follow, and they are why coeffect replay (T8) is a separate
 phase from the input log (T6):

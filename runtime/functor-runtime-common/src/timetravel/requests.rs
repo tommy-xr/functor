@@ -448,7 +448,7 @@ impl Requests {
             if same || arrived.contains(&ticket) {
                 job.recheck = true;
             } else {
-                job.stop.signal();
+                // Replacing its stop flag stops the old attempt.
                 redispatch(&self.jobs, ticket.id, job);
             }
         }
@@ -676,6 +676,11 @@ impl Requests {
             return Delivered::Dropped;
         };
         pending.answer = Some(Answer { frame, seq, arrival: arrival.clone() });
+        // Answered, a `Job.run` never runs again (a branch re-parks the
+        // answer), so its input needn't outlive it in the pending table.
+        if let Some(JobOp { spec: JobSpec::Run(run), .. }) = &mut pending.job {
+            *run = std::sync::Arc::new(RunSpec { key: run.key.clone(), call: Err(Shareable::Bool(false)) });
+        }
         Delivered::Op(op, pending.continuation.clone())
     }
 
@@ -683,7 +688,6 @@ impl Requests {
     /// longer read the same: it runs again instead (unknown reads count as
     /// changed).
     fn stale_after_reload(&mut self, arrival: &Arrival) -> bool {
-        let reader = self.jobs.reader();
         let pendings = self.ops.values_mut().chain(self.provisional.iter_mut().map(|(_, p)| p));
         let Some(pending) = pendings.into_iter().find(|p| arrival.answers(p)) else {
             return false;
@@ -693,7 +697,7 @@ impl Requests {
             return false;
         }
         let current = match job.reads.as_ref().and_then(|slot| slot.get()) {
-            Some(Some(inputs)) => crate::functor_lang_prelude::job::reads_current(reader, inputs),
+            Some(Some(inputs)) => crate::functor_lang_prelude::job::reads_current(self.jobs.reader(), inputs),
             Some(None) => false,
             None => true,
         };
@@ -736,7 +740,7 @@ impl Requests {
                 (*op, Pending { token: None, answer: None, job, ..p.clone() })
             })
             .collect();
-        Requests { ops, ..Requests::default() }
+        Requests { ops, jobs: self.jobs.fork(), ..Requests::default() }
     }
 
     /// Park an arrival. Over the cap the oldest connection event goes first;

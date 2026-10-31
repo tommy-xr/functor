@@ -250,16 +250,6 @@ fn a_result_that_read_a_changed_file_runs_again_after_a_reload() {
     assert!(rig.model().contains("got: 5"), "{}", rig.model());
 }
 
-/// Counts dispatches on their way to the shared pool.
-struct Counted(std::cell::Cell<usize>);
-
-impl Dispatch for Counted {
-    fn dispatch(&self, job: Job) {
-        self.0.set(self.0.get() + 1);
-        Pool::shared().dispatch(job);
-    }
-}
-
 #[test]
 fn a_job_on_the_pool_replays_exactly_without_running_again() {
     let mut rig = Rig::new(&game_source(DOUBLE, "21.0"));
