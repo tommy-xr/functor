@@ -108,7 +108,7 @@ let marker = (b: Body.State, h: Body.Hand, color) =>
 let twinFrame = (b: Body.State) =>
   let at = (x: float, y: float, z: float) => Quat.toVec3(Body.toWorldPoint(b, Quat.v3(x, y, z))) in
   Frame.createLit(
-    Camera3D.lookAt(at(0.0, 1.05, 3.0), at(0.0, 0.95, 0.0)),
+    Camera3D.lookAt(at(0.0, 1.0, 2.6), at(0.0, 0.95, 0.0)),
     Scene.group([
       room,
       avatar(b),
@@ -122,14 +122,14 @@ let twinFrame = (b: Body.State) =>
 // turned to face back down -Z.
 let panel =
   Scene.group([
-    Scene.cube() |> Scene.scaleXYZ(1.3, 1.3, 0.04) |> Scene.lit(Color.rgb(0.07, 0.08, 0.1)),
+    Scene.cube() |> Scene.scaleXYZ(1.5, 1.5, 0.04) |> Scene.lit(Color.rgb(0.07, 0.08, 0.1)),
     Scene.quad()
       |> Scene.screen(twin)
       |> Scene.rotateY(180deg)
-      |> Scene.scale(1.2)
+      |> Scene.scale(1.4)
       |> Scene.translate(Vec3.make(0.0, 0.0, -0.025)),
   ])
-    |> Scene.translate(Vec3.make(0.0, 1.45, 2.2))
+    |> Scene.translate(Vec3.make(0.0, 1.5, 1.9))
 
 let draw = (m: Model, tts: float) =>
   let camera = match m.xr with | Option.Some(_) => rig | Option.None => headCamera(m.body) in
