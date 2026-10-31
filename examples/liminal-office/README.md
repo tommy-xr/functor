@@ -101,7 +101,7 @@ openings (the windows of 103 and 203, and the entrance); the panels stay on.
 Ambient can't model sky light: its occlusion reaches 1 m, so it would light
 windowless rooms too. So each opening gets two grids of shadowed spots outside
 it, bake only: a patch of sky above its head aimed at the floor inside, and a
-patch of sky-lit ground (a quarter of the sky's light) aimed at the ceiling.
+patch of sky-lit ground (a quarter of the sky's light per m²) aimed at the ceiling.
 The facade's walls shadow them, so daylight reaches only what an opening
 connects to. The bake has no sun: every daylight is placed relative to its
 opening, so the bake holds at any yaw of the building. The frame's sun

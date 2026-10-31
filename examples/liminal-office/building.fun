@@ -689,7 +689,8 @@ let outsideFacade = (s: Side, u: float, y: float, out: float): Vec3.t =>
 // ceiling 2 m inside.
 type Patch = { out: float, aboveHead: bool, height: float, aimY: float, color: Color.t, perSquareMetre: float }
 let skyPatch = { out: 1.0, aboveHead: true, height: 2.0, aimY: 0.0, color: Color.rgb(0.72, 0.84, 1.0), perSquareMetre: 0.6 }
-// The ground reflects a quarter of the sky's light, in the sky's colour.
+// The ground reflects a quarter of the sky's light per square metre, in the
+// sky's colour (grey pavement under an overcast sky).
 let groundAlbedo = 0.25
 let groundPatch = { out: 2.0, aboveHead: false, height: 0.5, aimY: ceiling, color: skyPatch.color, perSquareMetre: groundAlbedo * skyPatch.perSquareMetre }
 
