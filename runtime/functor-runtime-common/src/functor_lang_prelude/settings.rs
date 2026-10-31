@@ -19,6 +19,7 @@ struct XrKnobs {
     refresh_rate: Option<f32>,
     passthrough: Option<bool>,
     scene: Option<bool>,
+    floor_locked: Option<bool>,
     foveation: Option<FoveationLevel>,
     passthrough_enabled: Option<bool>,
 }
@@ -137,6 +138,16 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             ..xr.0
         })
     });
+    reg.fn2(
+        "Xr.floorLocked",
+        "Xr.floorLocked(on, xr)",
+        |on: bool, xr: FunctorLangXr| {
+            FunctorLangXr(XrKnobs {
+                floor_locked: Some(on),
+                ..xr.0
+            })
+        },
+    );
     reg.fn2(
         "Xr.passthroughEnabled",
         "Xr.passthroughEnabled(on, xr)",
@@ -267,6 +278,7 @@ on change — return it from `settings = (model) => Settings.create() |> Setting
                 refresh_rate: xr.0.refresh_rate,
                 passthrough: xr.0.passthrough.unwrap_or(false),
                 scene: xr.0.scene.unwrap_or(false),
+                floor_locked: xr.0.floor_locked.unwrap_or(false),
             };
             Ok(FunctorLangConfig(config))
         },
@@ -297,6 +309,13 @@ in `let config = Config.create() |> Config.xr(…)`, then pause or resume the fe
             if xr.0.scene.is_some() {
                 return Err(
                     "Settings.xr: `Xr.scene` is read once at launch — declare it in \
+`let config = Config.create() |> Config.xr(…)`, not `settings`"
+                        .to_string(),
+                );
+            }
+            if xr.0.floor_locked.is_some() {
+                return Err(
+                    "Settings.xr: `Xr.floorLocked` is read once at launch — declare it in \
 `let config = Config.create() |> Config.xr(…)`, not `settings`"
                         .to_string(),
                 );

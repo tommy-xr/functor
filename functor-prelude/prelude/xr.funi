@@ -1,7 +1,7 @@
 //! Headset options, built once and handed to `Config.xr` or `Settings.xr`.
 //!
 //! Each knob belongs to one bucket, by when the shell can honour it:
-//! `refreshRate`, `passthrough` and `scene` are read once at load, so they go in
+//! `refreshRate`, `passthrough`, `scene` and `floorLocked` are read once at load, so they go in
 //! `config`; `foveation` and `passthroughEnabled` apply live, so they go in
 //! `settings`. A knob in the wrong bucket is a teaching error naming the
 //! right one. Shells without a headset ignore
@@ -56,6 +56,26 @@ let passthrough : (bool, t) => t
 /// the frame's stand-in room (`Frame.withStandInRoom`) supplies the depth
 /// instead.
 let scene : (bool, t) => t
+/// Anchor the headset's tracking to the floor under you, for an opaque game
+/// that needs your real height. The options are last for piping.
+///
+/// A `config` knob. Without it the rig centres on your head's full pose when
+/// tracking starts: `xr.head` starts at the origin, and "up" keeps any tilt
+/// your head had then. With it the rig centres on the floor under your head,
+/// level and facing your heading:
+/// - `Frame.camera`'s eye stands for that floor point, so keep the camera level
+///   and author it at your player's feet. The headset draws your eye at
+///   `Frame.camera`'s eye plus `xr.head`.
+/// - Rig-local `y = 0` is the floor, so `xr.head`'s `y` is your eye height
+///   above it.
+/// - A recentre (the headset's own, or a new tracking space) moves only your
+///   heading and floor position; heights survive it.
+///
+/// On Quest the floor comes from the stage (`STAGE`) space. Without one the
+/// floor is assumed 1.6 m below the head where tracking starts. Desktop
+/// `--emulate-xr` stands the emulated head at `--xr-eye-height` (default
+/// 1.6 m) and draws from it. Web ignores it.
+let floorLocked : (bool, t) => t
 /// Run (`true`) or pause (`false`) the camera feed `Xr.passthrough` prepared;
 /// the options are last for piping.
 ///

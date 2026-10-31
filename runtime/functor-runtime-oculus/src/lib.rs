@@ -42,8 +42,8 @@ use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::runtime_settings::FoveationLevel;
 use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use functor_runtime_common::{
-    Frame, FrameTime, GameClock, InputSnapshot, Key, SceneContext, TrackingPose, Viewport,
-    XrControllerSnapshot, XrInputSnapshot,
+    rig_reference, Frame, FrameTime, GameClock, InputSnapshot, Key, SceneContext, TrackingPose,
+    Viewport, XrControllerSnapshot, XrInputSnapshot,
 };
 use khronos_egl as egl;
 use openxr as xr;
@@ -1605,12 +1605,15 @@ pub fn android_main(app: AndroidApp) {
                 log::info!("camera rig centered: Frame.camera is the reference center-eye pose");
             }
         }
-        tracking_reference = passthrough::room_locked(
-            tracking_reference,
-            debug.config,
-            debug.last_frame.as_deref(),
-            stage_type == xr::ReferenceSpaceType::STAGE,
-        );
+        // Level/floor-lock the reference as `config` asks (`rig_reference`).
+        tracking_reference = tracking_reference.map(|pose| {
+            rig_reference(
+                pose,
+                debug.config,
+                debug.last_frame.as_deref().map(|f| f.camera.eye[1]),
+                stage_type == xr::ReferenceSpaceType::STAGE,
+            )
+        });
         debug.input.xr = session_focused
             .then(|| {
                 tracking_reference
@@ -1744,12 +1747,14 @@ pub fn android_main(app: AndroidApp) {
             environment_depth.acquire(&stage, xr_frame_state.predicted_display_time);
         let frame = snapshot.frame.clone();
         // Re-lock to the camera this frame renders, not the previous one.
-        tracking_reference = passthrough::room_locked(
-            tracking_reference,
-            debug.config,
-            Some(&*frame),
-            stage_type == xr::ReferenceSpaceType::STAGE,
-        );
+        tracking_reference = tracking_reference.map(|pose| {
+            rig_reference(
+                pose,
+                debug.config,
+                Some(frame.camera.eye[1]),
+                stage_type == xr::ReferenceSpaceType::STAGE,
+            )
+        });
         let anchor = Some((tracking_reference, frame.camera.clone()));
         if fused_room_anchor.is_some() && fused_room_anchor != anchor {
             scene_context.reset_fused_room(&gl);
