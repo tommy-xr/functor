@@ -34,8 +34,11 @@ let posts: List<Box> = DunesLayout.posts |> List.map((p) =>
 let fixedBox = (name: string, b: Box) =>
   Physics.fixed(Physics.tag(name), Physics.box(b.w, b.h, b.d)) |> Physics.at(Vec3.make(b.x, b.y, b.z))
 
+// The ground's tag: a dismount lands only on it.
+let groundTag = Physics.tag("dunes")
+
 let bodies = [
-  Physics.heightfield(Physics.tag("dunes"), ground),
+  Physics.heightfield(groundTag, ground),
   fixedBox("block", block),
   ..(posts |> List.indexedMap((i, p) => fixedBox($"post{i}", p)))
 ]
