@@ -75,7 +75,9 @@ let scene : (bool, t) => t
 /// On Quest the floor comes from the stage (`STAGE`) space. Without one the
 /// floor is assumed 1.6 m below the head where tracking starts. Desktop
 /// `--emulate-xr` stands the emulated head at `--xr-eye-height` (default
-/// 1.6 m) and draws from it. Web ignores it.
+/// 1.6 m) and draws from it. With no head to compose (plain desktop, web)
+/// the view is `Frame.camera` itself, so add an eye height when
+/// `Input.snapshot`'s `xr` is `None`.
 let floorLocked : (bool, t) => t
 /// Run (`true`) or pause (`false`) the camera feed `Xr.passthrough` prepared;
 /// the options are last for piping.

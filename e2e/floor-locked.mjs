@@ -40,9 +40,13 @@ async function sampled(dir, extraArgs) {
   let log = "";
   proc.stdout.on("data", (d) => (log += d));
   proc.stderr.on("data", (d) => (log += d));
+  // Registered now: an early exit must still settle cleanup and stop polling.
+  let exited = false;
+  const exit = new Promise((r) => proc.once("close", () => r((exited = true))));
+  proc.once("error", (e) => (log += String(e)));
   try {
     const deadline = Date.now() + 30000;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !exited) {
       try {
         const s = await state();
         if (s.model?.eye?.$ctor === "Option.Some") return s;
@@ -54,7 +58,7 @@ async function sampled(dir, extraArgs) {
     throw new Error(`no XR head sampled in ${dir}\n${log.slice(-2000)}`);
   } finally {
     proc.kill("SIGKILL");
-    await new Promise((r) => proc.once("exit", r));
+    await exit;
   }
 }
 

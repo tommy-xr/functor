@@ -1403,6 +1403,10 @@ pub fn android_main(app: AndroidApp) {
     // The first valid center-eye pose becomes the tracking origin for the
     // authored `Frame.camera`. It survives source reload and session doze so
     // model-driven locomotion and physical room-scale motion remain additive.
+    // `tracking_centre` is the raw center-eye pose the rig centred on;
+    // `tracking_reference` is derived from it each frame (`rig_reference`), so
+    // a load that changes `config` changes the rig without a recentre.
+    let mut tracking_centre: Option<TrackingPose> = None;
     let mut tracking_reference: Option<TrackingPose> = None;
     let mut tracking_reference_reset_at: Option<xr::Time> = None;
     // What placed the depth in the world when the fused room was built: a
@@ -1557,7 +1561,7 @@ pub fn android_main(app: AndroidApp) {
         if tracking_reference_reset_at.is_some_and(|change_time| {
             xr_frame_state.predicted_display_time.as_nanos() >= change_time.as_nanos()
         }) {
-            tracking_reference = None;
+            tracking_centre = None;
             tracking_reference_reset_at = None;
         }
 
@@ -1599,14 +1603,14 @@ pub fn android_main(app: AndroidApp) {
                 .and_then(|right| TrackingPose::midpoint(left, tracking_pose_from_view(right)))
                 .or_else(|| TrackingPose::midpoint(left, left))
         });
-        if tracking_reference.is_none() {
-            tracking_reference = center_pose;
-            if tracking_reference.is_some() {
+        if tracking_centre.is_none() {
+            tracking_centre = center_pose;
+            if tracking_centre.is_some() {
                 log::info!("camera rig centered: Frame.camera is the reference center-eye pose");
             }
         }
         // Level/floor-lock the reference as `config` asks (`rig_reference`).
-        tracking_reference = tracking_reference.map(|pose| {
+        tracking_reference = tracking_centre.map(|pose| {
             rig_reference(
                 pose,
                 debug.config,
@@ -1747,7 +1751,7 @@ pub fn android_main(app: AndroidApp) {
             environment_depth.acquire(&stage, xr_frame_state.predicted_display_time);
         let frame = snapshot.frame.clone();
         // Re-lock to the camera this frame renders, not the previous one.
-        tracking_reference = tracking_reference.map(|pose| {
+        tracking_reference = tracking_centre.map(|pose| {
             rig_reference(
                 pose,
                 debug.config,

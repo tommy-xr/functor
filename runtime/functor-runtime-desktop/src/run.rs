@@ -30,6 +30,14 @@ use crate::{
     asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
 };
 
+/// Parse `--xr-eye-height`: a positive, finite number of metres.
+fn parse_eye_height(raw: &str) -> Result<f32, String> {
+    match raw.trim().parse::<f32>() {
+        Ok(m) if m.is_finite() && m > 0.0 => Ok(m),
+        _ => Err(format!("expected a positive height in metres, got `{raw}`")),
+    }
+}
+
 /// Parse `WIDTHxHEIGHT` for `--capture-size`.
 fn parse_capture_size(raw: &str) -> Result<(u32, u32), String> {
     let (w, h) = raw
@@ -712,7 +720,11 @@ pub struct Args {
 
     /// Under `--emulate-xr`, a floor-locked game's (`Xr.floorLocked`) emulated
     /// standing eye height, in metres above the floor: `xr.head`'s `y`.
-    #[arg(long, default_value_t = functor_runtime_common::STANDING_EYE_HEIGHT)]
+    #[arg(
+        long,
+        default_value_t = functor_runtime_common::STANDING_EYE_HEIGHT,
+        value_parser = parse_eye_height
+    )]
     xr_eye_height: f32,
 
     /// Create the GL window hidden: it is never shown, never takes focus, and
@@ -2203,6 +2215,11 @@ Escape releases while captured"
             if !sim.is_threaded() {
                 caps = sim.caps();
             }
+            let xr_head_y = crate::desktop_xr_emulator::head_y(
+                args.emulate_xr,
+                caps.xr_floor_locked,
+                args.xr_eye_height,
+            );
 
             // The loading snapshot for `Sub.assets`: pushed every frame, the
             // producer only acts when it changed since the game last saw it.
@@ -2949,11 +2966,7 @@ Escape again to quit"
                             game_mouse_pos,
                             held_buttons,
                             &input_edges,
-                            crate::desktop_xr_emulator::head_y(
-                                args.emulate_xr,
-                                caps.xr_floor_locked,
-                                args.xr_eye_height,
-                            ),
+                            xr_head_y,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
@@ -3255,12 +3268,7 @@ Escape again to quit"
                     caps.xr_floor_locked,
                     match &xr_override {
                         Some(injected) => injected.head,
-                        None => crate::desktop_xr_emulator::head_y(
-                            args.emulate_xr,
-                            caps.xr_floor_locked,
-                            args.xr_eye_height,
-                        )
-                        .map(crate::desktop_xr_emulator::head_pose),
+                        None => xr_head_y.map(crate::desktop_xr_emulator::head_pose),
                     },
                 ),
             };
@@ -3813,11 +3821,7 @@ Escape again to quit"
                             game_mouse_pos,
                             held_buttons,
                             &input_edges,
-                            crate::desktop_xr_emulator::head_y(
-                                args.emulate_xr,
-                                caps.xr_floor_locked,
-                                args.xr_eye_height,
-                            ),
+                            xr_head_y,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
@@ -3874,11 +3878,7 @@ Escape again to quit"
                             game_mouse_pos,
                             held_buttons,
                             &input_edges,
-                            crate::desktop_xr_emulator::head_y(
-                                args.emulate_xr,
-                                caps.xr_floor_locked,
-                                args.xr_eye_height,
-                            ),
+                            xr_head_y,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
