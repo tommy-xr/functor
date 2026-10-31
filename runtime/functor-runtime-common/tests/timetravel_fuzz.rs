@@ -183,6 +183,42 @@ let draw = (model, tts) =>
     Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum, 7.0), model.got * 0.01, 0.0)))
 "#;
 
+/// `File.load` on the fuzzer's fake job pool: on demand from `tick` (asked
+/// every frame until it lands, then now and then), from input (one, a
+/// same-path pair, a missing file), and cancels (alone, and cancel-then-load
+/// in one batch). Each tagger captures which ask it answers.
+const JOBS_GAME: &str = r#"
+type Msg = | Loaded(i: float, r: Result.t<Bytes.t, File.error>)
+let scale = 1.0
+let a = Path.of("data/a.bin")
+let b = Path.of("data/b.bin")
+let gone = Path.of("data/gone.bin")
+let init = { want: 0.0, got: 0.0, sum: 0.0, bytes: 0.0, missing: 0.0, n: 0.0 }
+let input = (model, key, isDown) =>
+  match key with
+  | Key.Space => if isDown then ({ model with want: model.want + 1.0 }, File.load(b, (r) => Loaded(model.want, r))) else model
+  | Key.G => if isDown then (model, Effect.batch([File.load(b, (r) => Loaded(1.0, r)), File.load(b, (r) => Loaded(2.0, r))])) else model
+  | Key.C => if isDown then (model, File.cancel(b)) else model
+  | Key.R => if isDown then (model, Effect.batch([File.cancel(a), File.load(a, (r) => Loaded(0.5, r))])) else model
+  | Key.M => if isDown then (model, File.load(gone, (r) => Loaded(0.25, r))) else model
+  | _ => model
+let update = (model, msg) =>
+  match msg with
+  | Loaded(i, r) =>
+    (match r with
+     | Result.Ok(data) => { model with got: model.got + 1.0, sum: model.sum + i * scale, bytes: model.bytes + Bytes.length(data) }
+     | Result.Error(e) =>
+       (match e with
+        | File.Missing(m) => { model with missing: model.missing + 1.0 }
+        | _ => model))
+let tick = (model, dt, tts) =>
+  let next = { model with n: model.n + 1.0 } in
+  if model.got < 1.0 || Math.mod(model.n, 30.0) == 0.0 then (next, File.load(a, (r) => Loaded(model.n, r))) else next
+let draw = (model, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum, 7.0), model.got * 0.01, model.bytes * 0.001 + model.missing)))
+"#;
+
 /// `text`, rewritten to `template` with 0.3, 0.6 or 0.9 for `{}`.
 fn knob(text: &str, template: &str) -> Option<(String, Vec<String>)> {
     let values = ["0.3", "0.6", "0.9"].map(|v| template.replace("{}", v));
@@ -259,6 +295,12 @@ fn specs() -> Vec<Spec> {
             http: true,
             ..Spec::new("http", fixture(HTTP_GAME))
         },
+        Spec {
+            keys: vec![Space, G, C, R, M],
+            knob: knob("let scale = 1.0", "let scale = {}"),
+            jobs: true,
+            ..Spec::new("jobs", fixture(JOBS_GAME))
+        },
     ]
 }
 
@@ -277,9 +319,16 @@ fn fuzz(game: &str, default_seeds: u64, default_ops: u64) {
     }
     let spec = specs().into_iter().find(|s| s.name == game).expect("spec");
     // `Persistence.save` writes a real slot: keep it out of the repo. One
-    // root for the process, as the store is process-global.
+    // root for the process, as the store is process-global; it holds the
+    // files the jobs fixture loads.
     static SAVES: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let saves = SAVES.get_or_init(|| tempfile::tempdir().expect("save root"));
+    let saves = SAVES.get_or_init(|| {
+        let root = tempfile::tempdir().expect("save root");
+        std::fs::create_dir(root.path().join("data")).unwrap();
+        std::fs::write(root.path().join("data/a.bin"), [1u8; 3]).unwrap();
+        std::fs::write(root.path().join("data/b.bin"), [2u8; 5]).unwrap();
+        root
+    });
     functor_runtime_common::storage::set_project_root(saves.path().to_path_buf());
     let seeds = env("TIMETRAVEL_FUZZ_SEEDS", default_seeds);
     let ops = env("TIMETRAVEL_FUZZ_OPS", default_ops) as usize;
@@ -355,3 +404,9 @@ fn fuzz_save_load() {
 fn fuzz_http() {
     fuzz("http", 3, 80);
 }
+
+#[test]
+fn fuzz_jobs() {
+    fuzz("jobs", 3, 80);
+}
+

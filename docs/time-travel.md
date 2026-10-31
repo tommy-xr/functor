@@ -310,6 +310,9 @@ After every op it checks:
   `Effect.httpGet`/`httpPost`): no request is dispatched twice or without its
   op, none hangs (pending with nothing in flight or parked), a reload keeps
   every request in flight, and a fork replay dispatches nothing;
+- with jobs on a seeded fake pool (any game that calls `File.load`): no job
+  is dispatched twice or runs without its op, none hangs, a re-dispatch never
+  runs an op whose answer is parked, and a fork replay dispatches nothing;
 - **every recorder participant**, after each record, seek and rewind: its range
   equals the seekable window (so a rewind truncates it to the target), and its
   live digest equals the digest it recorded for the frame. A new participant
@@ -360,6 +363,21 @@ leaves their deliveries out, but a branch still re-parks them. A branch re-parks
 the cut future's responses for the requests it keeps, and a reload rebinds the
 waiting continuations. A branch is refused while a connection is open: the peer
 does not rewind with us.
+
+**Jobs** (`File.load`) are requests to a process-wide worker pool, and their
+results are deliveries like responses: logged, so a replay or scrub hands back
+the recorded bytes and never reads again. Results land at the start of a
+played frame (while paused they wait); each producer has its own mailbox, and
+a job reads through the project reader captured when it was dispatched. Every result carries its op's attempt, and one from an earlier
+attempt drops. While a job with a key (for `File.load`, the path) is in flight,
+another with that key is dropped; `File.cancel` first to replace it. Admission
+and cancels see the frame Δ belongs to: while scrubbed, the shown frame. A
+seek or branch that undoes a cancel restores the op, and one whose worker
+stopped runs again from its saved request: the only re-run, sound because a
+job is pure. A branch from before an answer re-parks it instead. History keeps
+at most 256 MB of job results (each buffer counted once); past that, the window
+starts at the delivery that crossed it. On the web jobs run inline at dispatch
+(the page blocks), and `File.load` answers `Unsupported`.
 
 Two fidelity tiers follow, and they are why coeffect replay (T8) is a separate
 phase from the input log (T6):

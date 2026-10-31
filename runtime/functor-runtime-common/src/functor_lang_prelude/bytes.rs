@@ -417,6 +417,16 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("File.exists", "File.exists(path)", |path: FunctorLangPath| {
         Value::Bool(project_file_exists(&path.0))
     });
+    reg.fn2(
+        "File.load",
+        "File.load(path, tagger)",
+        |path: FunctorLangPath, tagger: Tagger| {
+            FunctorLangEffect(EffectTree::FileLoad { path: path.0.to_string(), tagger: tagger.0 })
+        },
+    );
+    reg.fn1("File.cancel", "File.cancel(path)", |path: FunctorLangPath| {
+        FunctorLangEffect(EffectTree::FileCancel { path: path.0.to_string() })
+    });
     reg.fn1(
         "Bytes.length",
         "Bytes.length(bytes)",
