@@ -352,6 +352,50 @@ impl FunctorLangEmbeddedGame {
             .collect())
     }
 
+    /// Every timeline participant's range and digests (the fuzzer's checks).
+    pub(crate) fn participant_states(&mut self) -> Vec<crate::timetravel::ParticipantState> {
+        let live = crate::timetravel::Live {
+            model: &mut self.model,
+            physics: &mut self.physics_rt,
+            physics_frame: &mut self.physics_frame,
+            has_physics: self.has_physics,
+        };
+        self.recorder.participant_states(&live)
+    }
+
+    /// Which optional hooks the loaded program defines (the fuzzer's input).
+    pub(crate) fn fuzz_hooks(&self) -> crate::timetravel::fuzz::Hooks {
+        crate::timetravel::fuzz::Hooks {
+            input: self.has_input,
+            mouse_move: self.has_mouse_move,
+            physics: self.has_physics,
+        }
+    }
+
+    /// Whether `sources` load as a program for `role` (no producer state
+    /// touched): tells a broken edit from a broken reload.
+    pub(crate) fn loads(sources: &[(String, String)], role: &EntryRole) -> Result<(), String> {
+        load_source(sources, role, None).map(|_| ())
+    }
+
+    /// Seed `Effect.random`, so a run's answers depend on `seed` alone.
+    pub(crate) fn seed_random(&mut self, seed: u64) {
+        self.effect_runner = RealEffects::seeded(seed);
+    }
+
+    /// See [`SceneRecorder::reload_may_restart`].
+    pub(crate) fn reload_may_restart_history(&self) -> bool {
+        self.recorder.reload_may_restart(&self.model)
+    }
+
+    /// Whether rendered `frame` logged a broker answer (`Effect.random`, …):
+    /// a live replay asks the world afresh there.
+    pub(crate) fn logged_answers(&self, frame: u64) -> bool {
+        self.recorder
+            .logged(frame)
+            .is_some_and(|entries| entries.iter().any(|e| matches!(e, Entry::Answer { .. })))
+    }
+
     /// Build the producer from in-memory project sources (entry FIRST, then
     /// siblings). Errors come back fully rendered for the shell to fail loud
     /// with (a boot either gets a valid game or an error).

@@ -52,3 +52,5 @@ base64 = "0.22"
 # Reads entries from zip archives (e.g. `.kpf`) mapped as external prefixes.
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 schemars = "1.2"
+# `functor fuzz`'s scratch save store.
+tempfile = "3"

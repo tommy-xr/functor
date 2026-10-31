@@ -373,7 +373,7 @@ fn capitalized(name: &str) -> String {
 }
 
 impl FunctorLangProject {
-    fn entry_path(&self, working_directory: &str) -> Result<PathBuf, Error> {
+    pub(crate) fn entry_path(&self, working_directory: &str) -> Result<PathBuf, Error> {
         let path = Path::new(working_directory).join(&self.entry);
         if !path.exists() {
             return Err(Error::new(
@@ -501,6 +501,15 @@ paths are external — move the read into `init` or a top-level binding `config`
         verify_assets: bool,
     ) -> Result<functor_lang::project::Project, Error> {
         refresh_manifest(working_directory);
+        self.build_without_refresh(working_directory, verify_assets)
+    }
+
+    /// [`Self::build`] without regenerating `assets.fun`: writes nothing.
+    pub fn build_without_refresh(
+        &self,
+        working_directory: &str,
+        verify_assets: bool,
+    ) -> Result<functor_lang::project::Project, Error> {
         let path = self.entry_path(working_directory)?;
         // Project files (`Typeface.file`) and saves resolve from the entry's
         // folder, as in the native runner.
@@ -635,7 +644,7 @@ paths are external — move the read into `init` or a top-level binding `config`
     /// takes it: an inline `module` block (the preferred same-file form) or a
     /// binding prefix. The config refuses both at once, so the choice is
     /// unambiguous here.
-    fn entry_role(&self) -> functor_runtime_common::functor_lang_producer::EntryRole {
+    pub(crate) fn entry_role(&self) -> functor_runtime_common::functor_lang_producer::EntryRole {
         functor_runtime_common::functor_lang_producer::EntryRole::from_parts(
             &self.module,
             &self.prefix,
@@ -1928,6 +1937,11 @@ fn post_asset_manifest(addr: &str, paths: &[&str]) -> Result<(u16, String), Erro
 /// so names are enough). Serialized once: the watch loop's change-compare
 /// and the POST body are the same string.
 fn read_project_json(entry_path: &Path) -> Result<String, Error> {
+    serde_json::to_string(&read_project_files(entry_path)?).map_err(Error::other)
+}
+
+/// The project's `.fun`/`.funi` files as `(file name, source)`, entry FIRST.
+pub(crate) fn read_project_files(entry_path: &Path) -> Result<Vec<(String, String)>, Error> {
     let mut files = Vec::new();
     for path in functor_lang::project::project_files(entry_path)? {
         let name = path
@@ -1937,7 +1951,7 @@ fn read_project_json(entry_path: &Path) -> Result<String, Error> {
             .to_string();
         files.push((name, std::fs::read_to_string(&path)?));
     }
-    serde_json::to_string(&files).map_err(Error::other)
+    Ok(files)
 }
 
 /// The entry's folder relative to the project root: `""`, or `"src/"`
