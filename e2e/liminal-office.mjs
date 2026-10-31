@@ -9,8 +9,9 @@
 //      more upstairs than in the lobby. (The baked rooms are `Model.static`
 //      data models, which the renderer draws whether or not the walk hides
 //      them; these numbers are the walk's, not the GPU's.)
-//   5. the hour: rewinding restores it and its lighting; by day, daylight
-//      brightens office 103 (window) while the corridor stays fixture-lit;
+//   5. the hour: rewinding restores it and its lighting; the XR controller's
+//      X and Y step and flip it; by day, daylight brightens office 103
+//      (window) while the corridor stays fixture-lit;
 //   6. culling on and off (FUNCTOR_CULL=0) capture identical frames at views
 //      1–8, the stairwell looking up and down among them;
 //   7. the night and day goldens render byte-identically across runs
@@ -329,6 +330,28 @@ async function hours(game) {
   check((await game.model()).hour === 0, "back at midnight");
 }
 
+// In a headset, the left controller's X steps the hour and Y jumps midnight ⇄
+// noon, once per press however long it's held.
+async function xrHours(game) {
+  const pad = (buttons) => game.post("/input", { type: "xr", head: { position: [0, 0, 0] }, left: { active: true, ...buttons }, right: { active: true } });
+  const press = async (buttons) => {
+    await pad(buttons);
+    await game.step(10);
+    await pad({});
+    await game.step(1);
+    return (await game.model()).hour;
+  };
+  check((await game.model()).hour === 0, "XR: starts at midnight");
+  let hour = await press({ primary_pressed: true });
+  check(hour === 1, `XR: holding X steps one hour (hour ${hour})`);
+  hour = await press({ secondary_pressed: true });
+  check(hour === 12, `XR: Y jumps to noon (hour ${hour})`);
+  hour = await press({ secondary_pressed: true });
+  check(hour === 0, `XR: Y jumps back to midnight (hour ${hour})`);
+  await game.post("/input", { type: "xr_clear" });
+  await game.step(1);
+}
+
 // Daylight reaches only what an opening connects to: office 103's floor
 // brightens by day; the windowless corridor stays fixture-lit.
 async function daylight(game) {
@@ -390,6 +413,7 @@ try {
   await wallPush(game);
   await stairs(game);
   await hours(game);
+  await xrHours(game);
   await daylight(game);
   const culled = await viewCaptures(game, true);
 
