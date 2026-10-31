@@ -62,6 +62,10 @@ const LODS = [
 // knee, so only the pair covers them.
 const HEAD_JOINTS = new Set(["Head", "neck_01"]);
 const HEAD_WEIGHT = 0.5;
+// Legs triangles with at least this much spine weight (summed over corners) also draw with the torso.
+const WAIST_OVERLAP = 0.3;
+// Rebinding moves the male body up to 36 mm; more means a mismatched source.
+const MAX_REBIND = 0.05;
 const REGIONS = ["head", "torso", "arms", "legs", "shins", "feet"];
 const regionOf = (joint) =>
   HEAD_JOINTS.has(joint) ? "head"
@@ -304,6 +308,9 @@ const ibms = (skin) => {
  * largest displacement in metres.
  */
 function rebind(prims, from, to) {
+  if (from.listJoints().some((j, i) => j.getName() !== to.listJoints()[i]?.getName())) {
+    throw new Error("rebind needs the same joint order on both skins");
+  }
   const src = ibms(from);
   const dst = ibms(to);
   // Bind world matrices of `to`: the joints' rest pose must equal the bind.
@@ -357,14 +364,16 @@ function splitRegions(g, canonical) {
     const tri = [g.indices[t], g.indices[t + 1], g.indices[t + 2]];
     const ws = tri.map(corner);
     let region = "head";
+    const sum = (r) => ws.reduce((s, w) => s + w.get(r), 0);
     if (!ws.some((w) => w.get("head") >= HEAD_WEIGHT)) {
       let best = -1;
-      for (const r of REGIONS) {
-        const sum = ws.reduce((s, w) => s + w.get(r), 0);
-        if (sum > best) (best = sum), (region = r);
-      }
+      for (const r of REGIONS) if (sum(r) > best) (best = sum(r)), (region = r);
     }
     lists.get(region).push(...tri);
+    // Trousers start below the pelvis cut, so the torso also draws the waist
+    // band (legs triangles with some spine weight). Tops reach below the cut,
+    // so the reverse would poke through them.
+    if (region === "legs" && sum("torso") >= WAIST_OVERLAP) lists.get("torso").push(...tri);
   }
   return REGIONS.map((r) => {
     if (!lists.get(r).length) throw new Error(`body region ${r} is empty`);
@@ -372,11 +381,14 @@ function splitRegions(g, canonical) {
   });
 }
 
+/** Primitives with equal keys draw identically (texture, factor, sidedness). */
+const materialKey = (p) => `${p.image ? sha256(p.image) : "none"}|${p.factor.join(",")}|${p.doubleSided}`;
+
 /** Concatenate parts that share a texture + factor: one draw per material. */
 function groupByMaterial(parts) {
   const groups = new Map();
   for (const p of parts) {
-    const key = `${p.image ? sha256(p.image) : "none"}|${p.factor.join(",")}|${p.doubleSided}`;
+    const key = materialKey(p);
     if (!groups.has(key)) groups.set(key, { ...p, list: [] });
     groups.get(key).list.push(p);
   }
@@ -512,7 +524,7 @@ function writePreset(skeletonDoc, parts, clips, lod) {
   const textures = new Map();
   const materials = new Map();
   const material = (g) => {
-    const key = `${g.material}|${g.image ? sha256(g.image) : "none"}|${g.factor.join(",")}|${g.doubleSided}`;
+    const key = materialKey(g);
     if (materials.has(key)) return materials.get(key);
     const m = doc.createMaterial(g.material)
       .setBaseColorFactor(g.factor).setDoubleSided(g.doubleSided).setMetallicFactor(0).setRoughnessFactor(1);
@@ -569,14 +581,14 @@ const sources = await loadAll([
   UAL1,
   ...Object.values(BODIES).flatMap((b) => [b.body, ...Object.values(b.hair).map(hairFile), ...Object.values(b.outfits)]),
 ]);
-const ual = sources.get(UAL1);
-const ualSkeleton = skeleton(ual.getRoot().listSkins()[0]);
-await mkdir(args.out, { recursive: true });
-const report = [];
 const skinOf = (doc) => {
   if (doc.getRoot().listSkins().length !== 1) throw new Error("expected one skin per source");
   return doc.getRoot().listSkins()[0];
 };
+const ual = sources.get(UAL1);
+const ualSkeleton = skeleton(skinOf(ual));
+await mkdir(args.out, { recursive: true });
+const report = [];
 const capital = (s) => s[0].toUpperCase() + s.slice(1);
 for (const [bodyName, spec] of Object.entries(BODIES)) {
   // The canonical skin is the outfits' (male outfits and hair share one rig;
@@ -588,6 +600,7 @@ for (const [bodyName, spec] of Object.entries(BODIES)) {
     const doc = sources.get(file);
     const prims = extract(doc, canonical);
     const moved = rebind(prims, skinOf(doc), rigSkin);
+    if (moved > MAX_REBIND) throw new Error(`${file}: rebinding moves vertices ${moved} m`);
     if (moved) console.error(`${bodyName}: ${path.basename(file)} rebound, max ${(moved * 1000).toFixed(1)} mm`);
     return prims;
   };
@@ -597,7 +610,10 @@ for (const [bodyName, spec] of Object.entries(BODIES)) {
   for (const p of load(spec.body)) {
     const part = BODY_NODES[p.node];
     if (!part) throw new Error(`unexpected body node ${p.node}`);
-    if (part === "regions") bodyMesh = p;
+    if (part === "regions") {
+      if (bodyMesh) throw new Error("expected one body primitive");
+      bodyMesh = p;
+    }
     else add(part, p);
   }
   for (const [part, file] of Object.entries(spec.hair)) for (const p of load(hairFile(file))) add(part, p);
@@ -610,7 +626,8 @@ for (const [bodyName, spec] of Object.entries(BODIES)) {
     });
     for (const slot of SLOT_ORDER) for (const x of pieces) if (x.slot === slot) add(`${outfit}_${slot}`, x.p);
   }
-  const body = groupByMaterial([bodyMesh]);
+  if (!bodyMesh) throw new Error("body mesh missing");
+  const body = compact(bodyMesh);
   const others = [...named].map(([name, prims]) => ({ name, groups: groupByMaterial(prims) }));
   const target = skeleton(rigSkin);
   const clips = {};
@@ -622,7 +639,7 @@ for (const [bodyName, spec] of Object.entries(BODIES)) {
   for (const [i, lod] of LODS.entries()) {
     // The body simplifies whole, then splits, so its regions share every seam.
     const parts = [
-      ...splitRegions(simplify(body[0], lod.ratio), canonical),
+      ...splitRegions(simplify(body, lod.ratio), canonical),
       ...others.map((p) => ({ name: p.name, groups: p.groups.map((g) => simplify(g, lod.ratio)) })),
     ];
     const { doc, stats } = writePreset(rig, parts, clips, lod);

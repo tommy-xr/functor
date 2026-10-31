@@ -7,6 +7,7 @@ gitignored; `presets.lock.json` pins each file's SHA-256.
 
 There is one glb per body and LOD (`male_lod0.glb` … `female_lod2.glb`). Each
 holds every piece as a named part; `Scene.modelParts` picks the loadout.
+Without it, every part draws at once: both outfits, all hair and the bare body.
 
 ## Sources
 
@@ -105,19 +106,28 @@ the region with the most weight over its corners:
 - **Shins** need both: trousers stop mid-calf and boots start below the knee.
   Trousers alone show the shin below the hem; boots alone show it above.
 - **Hair** sits under the hood: hide it while `ranger_hood` is worn.
-- **Known gap:** a bare torso over trousers leaves a thin jagged band at the
-  waistband, most visible on the female Peasant. The trousers sit lower than
-  the torso/pelvis weight cut, and no single cut suits every top and trouser.
-  Full outfits, and every other single-slot swap tried, are clean.
+- **Waist band:** trousers start below the pelvis cut, so `body_torso` also
+  holds the legs triangles with ≥0.3 spine weight (summed over corners). A
+  bare torso over trousers then shows the underwear's waistband instead of a
+  gap. The reverse isn't done: tops reach below the cut, and the band would
+  poke through them.
+- **Known limits:**
+  - The female Peasant's low-rise trousers interpenetrate a bare torso at the
+    waist.
+  - With a top and bare legs, the underwear can poke through a top's hem.
+  - The garments are fitted to a hidden body, and no weight cut matches every
+    garment edge. Full outfits are clean; so are the other single-slot swaps
+    tried.
 
 ### Parts
 
-Triangles at LOD 0 / 1 / 2. A part with two materials is two draws.
+Triangles at LOD 0 / 1 / 2. A part with two materials is two draws. `body_torso`
+repeats the waist band from `body_legs`.
 
 | Part | Materials | Male | Female |
 | --- | --- | ---: | ---: |
 | `body_head` | MI_Superhero_* | 2912 / 264 / 71 | 3088 / 280 / 66 |
-| `body_torso` | MI_Superhero_* | 1406 / 243 / 65 | 1698 / 226 / 62 |
+| `body_torso` | MI_Superhero_* | 1652 / 286 / 84 | 1936 / 270 / 84 |
 | `body_arms` | MI_Superhero_* | 4592 / 466 / 112 | 4408 / 432 / 111 |
 | `body_legs` | MI_Superhero_* | 1218 / 214 / 46 | 1286 / 242 / 61 |
 | `body_shins` | MI_Superhero_* | 1110 / 134 / 36 | 1020 / 152 / 50 |
@@ -144,12 +154,12 @@ Triangles at LOD 0 / 1 / 2. A part with two materials is two draws.
 
 | File | Parts | Triangles | Vertices | Primitives | File MB |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `male_lod0.glb` | 21 | 57359 | 44269 | 23 | 5.49 |
-| `male_lod1.glb` | 21 | 6867 | 6625 | 23 | 1.58 |
-| `male_lod2.glb` | 21 | 1696 | 1950 | 23 | 0.69 |
-| `female_lod0.glb` | 21 | 62614 | 51093 | 22 | 6.47 |
-| `female_lod1.glb` | 21 | 7490 | 7759 | 22 | 1.87 |
-| `female_lod2.glb` | 21 | 1859 | 2239 | 22 | 0.78 |
+| `male_lod0.glb` | 21 | 57605 | 44432 | 23 | 5.50 |
+| `male_lod1.glb` | 21 | 6910 | 6665 | 23 | 1.59 |
+| `male_lod2.glb` | 21 | 1715 | 1974 | 23 | 0.69 |
+| `female_lod0.glb` | 21 | 62852 | 51242 | 22 | 6.48 |
+| `female_lod1.glb` | 21 | 7534 | 7806 | 22 | 1.87 |
+| `female_lod2.glb` | 21 | 1881 | 2265 | 22 | 0.78 |
 
 ### Draw cost
 

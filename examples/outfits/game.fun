@@ -42,8 +42,10 @@ let clipName = (gait: Gait): string =>
   | Walk => Assets.male_lod0Clips.walk.name
   | Run => Assets.male_lod0Clips.run.name
 
-// Loadouts: every LOD shares these part names. Unlisted parts (other hair,
-// the other outfit) stay hidden; a worn piece hides the body region under it.
+// Loadouts: every LOD shares these part names. Each glb holds every part, so a
+// model without `Scene.modelParts` draws all of them at once. Each loadout
+// leaves out the other hair, the other outfit, and the body regions its pieces
+// cover.
 let parts = Assets.male_lod0Parts
 let head = [parts.body_head, parts.eyes, parts.eyebrows]
 let bare = [parts.body_torso, parts.body_arms, parts.body_legs, parts.body_shins, parts.body_feet, parts.hair_simple_parted]
