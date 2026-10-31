@@ -2,6 +2,7 @@ use cgmath::{perspective, vec3, InnerSpace, Matrix4, Point3, Quaternion, Rad, Ro
 use serde::{Deserialize, Serialize};
 
 use crate::math::Angle;
+use crate::runtime_settings::{floor_locked_requested, passthrough_requested, GameConfig};
 
 /// A pose reported by a tracking system, in its right-handed local space.
 ///
@@ -128,6 +129,46 @@ impl TrackingPose {
             inverse_reference * tracked_orientation,
         ))
     }
+}
+
+/// The standing eye height, in metres above the floor, that a floor-locked rig
+/// assumes where tracking has no floor, and the desktop `--emulate-xr` head's
+/// default.
+pub const STANDING_EYE_HEIGHT: f32 = 1.6;
+
+/// The reference tracked poses are taken relative to, from the center-eye
+/// pose the rig centred on. Shells derive it every frame, so a `config`
+/// change applies without a recentre; it is also idempotent.
+///
+/// - `Xr.floorLocked`: the floor under the head, level and yaw-only.
+///   `Frame.camera` stands for that floor point, so rig-local `head.y` is the
+///   eye's height above the floor, and a recentre moves only yaw and XZ. A
+///   floor-origin (STAGE) space puts the floor at tracking `y = 0`. Without
+///   one (LOCAL, whose origin is the head at launch or recentre), the floor is
+///   assumed [`STANDING_EYE_HEIGHT`] below that origin.
+/// - `Xr.passthrough` on STAGE: level and yaw-only at `authored_eye_y`, so the
+///   real floor is world `y = 0` under a level authored camera.
+/// - Otherwise the pose itself, tilt included.
+pub fn rig_reference(
+    centre: TrackingPose,
+    config: Option<GameConfig>,
+    authored_eye_y: Option<f32>,
+    floor_origin: bool,
+) -> TrackingPose {
+    let height = if floor_locked_requested(config) {
+        Some(if floor_origin {
+            0.0
+        } else {
+            -STANDING_EYE_HEIGHT
+        })
+    } else if floor_origin && passthrough_requested(config) {
+        authored_eye_y
+    } else {
+        None
+    };
+    height
+        .and_then(|height| centre.floor_locked(height))
+        .unwrap_or(centre)
 }
 
 /// Reduce an orientation to its yaw-only component, for a recenter
@@ -1005,6 +1046,125 @@ mod tests {
         let floor = TrackingPose::new([0.3, 0.0, -0.2], locked.orientation);
         let local = floor.relative_to(locked).unwrap();
         assert!((local.position[1] + 1.6).abs() < 1e-6);
+    }
+
+    fn floor_locked_config(passthrough: bool) -> Option<GameConfig> {
+        Some(GameConfig {
+            xr: crate::runtime_settings::XrConfig {
+                passthrough,
+                floor_locked: true,
+                ..Default::default()
+            },
+            ..GameConfig::default()
+        })
+    }
+
+    /// A head turned 40° left, pitched 30° down and rolled 10°: how a user
+    /// might be standing when the rig centres.
+    fn tilted_head(position: [f32; 3]) -> TrackingPose {
+        let q = Quaternion::from_angle_y(Rad(40f32.to_radians()))
+            * Quaternion::from_angle_x(Rad(-30f32.to_radians()))
+            * Quaternion::from_angle_z(Rad(10f32.to_radians()));
+        TrackingPose::new(position, [q.v.x, q.v.y, q.v.z, q.s])
+    }
+
+    fn up_of(pose: TrackingPose) -> Vector3<f32> {
+        pose.unit_orientation()
+            .unwrap()
+            .rotate_vector(Vector3::unit_y())
+    }
+
+    #[test]
+    fn floor_locked_rig_levels_a_tilted_head_over_the_floor() {
+        let head = tilted_head([0.3, 1.7, -0.2]);
+        let reference = rig_reference(head, floor_locked_config(false), Some(1.6), true);
+        // Floor y = 0, up = gravity.
+        assert_eq!(reference.position, [0.3, 0.0, -0.2]);
+        assert!((up_of(reference) - Vector3::unit_y()).magnitude() < 1e-5);
+        // Rig-local head.y is the eye height; the floor is rig-local y = 0.
+        let local = head.relative_to(reference).unwrap();
+        assert!((local.position[1] - 1.7).abs() < 1e-5);
+        assert!(local.position[0].abs() < 1e-5 && local.position[2].abs() < 1e-5);
+        let floor = TrackingPose::new([1.0, 0.0, 2.0], head.orientation);
+        assert!(floor.relative_to(reference).unwrap().position[1].abs() < 1e-5);
+        // Through a level camera, the eye is `authored eye + head.y` high.
+        let camera = Camera::look_at(
+            [5.0, 0.5, 2.0],
+            [5.0, 0.5, 1.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(60.0),
+        );
+        let mapped = camera.map_tracking_pose(reference, head).unwrap();
+        assert!((mapped.position[1] - 2.2).abs() < 1e-5);
+        // Idempotent: shells re-apply it every frame.
+        let again = rig_reference(reference, floor_locked_config(false), Some(1.6), true);
+        assert_eq!(again.position, reference.position);
+        assert!((up_of(again) - up_of(reference)).magnitude() < 1e-6);
+        // It also wins over passthrough's authored-eye height.
+        let both = rig_reference(head, floor_locked_config(true), Some(1.6), true);
+        assert_eq!(both.position, reference.position);
+    }
+
+    #[test]
+    fn without_floor_locked_the_rig_keeps_the_full_head_pose() {
+        let head = tilted_head([0.3, 1.7, -0.2]);
+        for config in [None, Some(GameConfig::default())] {
+            for floor_origin in [true, false] {
+                let reference = rig_reference(head, config, Some(1.6), floor_origin);
+                assert_eq!(reference, head);
+                // So head.y starts at 0 and "up" carries the tilt.
+                let local = head.relative_to(reference).unwrap();
+                assert!(local.position.iter().all(|c| c.abs() < 1e-6));
+                assert!((up_of(reference) - Vector3::unit_y()).magnitude() > 0.1);
+            }
+        }
+    }
+
+    #[test]
+    fn floor_locked_recentre_keeps_height_and_moves_only_yaw() {
+        let config = floor_locked_config(false);
+        let first = rig_reference(tilted_head([0.3, 1.7, -0.2]), config, None, true);
+        // Recentre while crouched, elsewhere, facing another way, tilted.
+        let q = Quaternion::from_angle_y(Rad(-100f32.to_radians()))
+            * Quaternion::from_angle_x(Rad(20f32.to_radians()));
+        let crouched = TrackingPose::new([1.0, 1.1, 0.5], [q.v.x, q.v.y, q.v.z, q.s]);
+        let second = rig_reference(crouched, config, None, true);
+        assert_eq!(second.position[1], first.position[1]);
+        assert!((up_of(second) - Vector3::unit_y()).magnitude() < 1e-5);
+        // Height survives: the crouched head still reads 1.1 m, not 0.
+        let local = crouched.relative_to(second).unwrap();
+        assert!((local.position[1] - 1.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn floor_locked_without_a_stage_assumes_a_standing_eye_height() {
+        // LOCAL's origin is the head at launch: the floor is unknown.
+        let head = tilted_head([0.0, 0.05, 0.0]);
+        let reference = rig_reference(head, floor_locked_config(false), Some(1.6), false);
+        assert_eq!(reference.position, [0.0, -STANDING_EYE_HEIGHT, 0.0]);
+        assert!((up_of(reference) - Vector3::unit_y()).magnitude() < 1e-5);
+        let local = head.relative_to(reference).unwrap();
+        assert!((local.position[1] - (STANDING_EYE_HEIGHT + 0.05)).abs() < 1e-5);
+        let again = rig_reference(reference, floor_locked_config(false), Some(1.6), false);
+        assert_eq!(again.position, reference.position);
+    }
+
+    #[test]
+    fn passthrough_rig_locks_to_the_authored_eye_on_stage_only() {
+        let config = Some(GameConfig {
+            xr: crate::runtime_settings::XrConfig {
+                passthrough: true,
+                ..Default::default()
+            },
+            ..GameConfig::default()
+        });
+        let head = tilted_head([0.3, 1.7, -0.2]);
+        assert_eq!(
+            rig_reference(head, config, Some(1.6), true).position,
+            [0.3, 1.6, -0.2]
+        );
+        assert_eq!(rig_reference(head, config, Some(1.6), false), head);
+        assert_eq!(rig_reference(head, config, None, true), head);
     }
 
     #[test]
