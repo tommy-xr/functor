@@ -573,7 +573,7 @@ async function staticDraws(game, label) {
   const groups = await tested(times(GROUPS));
   const once = await tested(ROOM_OF);
   const m = await game.model();
-  return { label, models: once.live - none.live, draws: groups.live - none.live, hidden: once.hidden, walks: once.walks, active: m.active.filter((a) => a).length };
+  return { label, models: once.live - none.live, draws: groups.live - none.live, hidden: once.hidden, walks: once.walks, active: m.active.filter((a) => a).length, on: m.active.flatMap((a, k) => (a ? [k] : [])) };
 }
 
 async function drawCounts(game) {
@@ -592,7 +592,8 @@ async function drawCounts(game) {
   await walkToPoint(game, [CROSS, CROSS]);
   await game.face(Math.atan2(22, 12));
   rows.push(await staticDraws(game, "crossroads, facing copy 0's entrance"));
-  await game.view(1);
+  // Walked, not view 1: at the crossroads every copy is equally near.
+  await walkToPoint(game, toWorld(COPIES[0], 10, -11));
   await game.face(Math.PI);
   rows.push(await staticDraws(game, "between copies 0 and 1 (copy 0's apron, facing copy 1's window)"));
   await game.view(0);
@@ -602,7 +603,7 @@ async function drawCounts(game) {
   for (const r of rows) {
     // Unculled, every active copy would submit all of the office's draws.
     check(r.models > 0 && r.draws >= r.models && r.draws < r.active * UNCULLED_DRAWS,
-      `${r.label}: ${r.models} static models, ${r.draws} static draws (${r.active} active, ${r.hidden} hidden, ${r.walks} walks)`);
+      `${r.label}: ${r.models} static models, ${r.draws} static draws (copies ${r.on} active, ${r.hidden} hidden, ${r.walks} walks)`);
   }
   // A copy's view draws what the office alone's does: the corridor, in copy 0
   // and in the copy turned 180°.
