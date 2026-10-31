@@ -67,6 +67,7 @@
     "test:code-garden": "cargo build -p functor-cli --no-default-features && node e2e/code-garden.mjs",
     "test:netpong": "cargo build -p functor-cli --no-default-features && node e2e/netpong.mjs",
     "test:interpolation": "cargo build -p functor-cli --no-default-features && node e2e/interpolation.mjs",
+    "test:hoverbike": "cargo build -p functor-cli --no-default-features && node e2e/hoverbike.mjs",
     "demo:time-travel": "node site/demos/time-travel.mjs",
     "demo:detached-camera": "node site/demos/detached-camera.mjs",
     "demo:instant-feedback": "node site/demos/instant-feedback.mjs",
