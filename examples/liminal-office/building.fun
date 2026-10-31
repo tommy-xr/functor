@@ -515,7 +515,22 @@ let stairOpening = (f: Flight): List<Vec3.t> =>
   let x1 = flightEnd(f) in
   [v(r.x0, y, r.z0), v(x1, y, r.z0), v(x1, y, r.z1), v(r.x0, y, r.z1)]
 
-// The doors' portals, and a horizontal one at each stair opening.
+// The outside room a window looks onto, if layout.fun has one there.
+let outsideOf = (w: Window): Option.t<float> =>
+  List.range(List.length(rooms)) |> List.find((o) =>
+    not isInside(roomAt(o)) && sideBetween(roomAt(w.room).rect, roomAt(o).rect) == Option.Some(w.side))
+// A window's opening as a polygon on its wall line.
+let windowOpening = (w: Window): List<Vec3.t> =>
+  let r = roomAt(w.room) in
+  let l = lineOf(w.side, r.rect) in
+  let h = windowHole(w) in
+  let y0 = baseOf(r) + h.bottom in
+  let y1 = baseOf(r) + h.top in
+  if w.side == North || w.side == South then [v(h.lo, y0, l), v(h.hi, y0, l), v(h.hi, y1, l), v(h.lo, y1, l)]
+  else [v(l, y0, h.lo), v(l, y0, h.hi), v(l, y1, h.hi), v(l, y1, h.lo)]
+
+// Portals: each door, each window onto an outside room (the street sees in),
+// and a horizontal one at each stair opening.
 let level = Cells.make({
   cells: List.range(List.length(rooms)) |> List.map(cellOf),
   portals: List.flatten([
@@ -523,6 +538,13 @@ let level = Cells.make({
       { from: d.a, to: d.b, polygon: doorway(d) },
       { from: d.b, to: d.a, polygon: List.reverse(doorway(d)) },
     ]),
+    windows |> List.concatMap((w) =>
+      match outsideOf(w) with
+      | Option.Some(o) => [
+          { from: o, to: w.room, polygon: windowOpening(w) },
+          { from: w.room, to: o, polygon: List.reverse(windowOpening(w)) },
+        ]
+      | Option.None => []),
     flights |> List.concatMap((f) => [
       { from: f.lower, to: f.upper, polygon: stairOpening(f) },
       { from: f.upper, to: f.lower, polygon: List.reverse(stairOpening(f)) },

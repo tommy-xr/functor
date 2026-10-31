@@ -89,8 +89,8 @@ let views = [
   { x: 10.0, level: 0.0, z: 6.8, yaw: 0.0, pitch: 0.0 },
   { x: 18.5, level: 0.0, z: 14.5, yaw: -1.3, pitch: 0.0 },
   { x: 7.6, level: 0.0, z: 7.0, yaw: -1.1, pitch: -0.2 },
-  { x: 11.9, level: 0.0, z: 22.4, yaw: 2.0, pitch: 0.45 },
-  { x: 19.3, level: 1.0, z: 23.0, yaw: -2.0, pitch: -0.5 },
+  { x: 11.9, level: 0.0, z: 21.2, yaw: 1.75, pitch: 0.4 },
+  { x: 18.9, level: 1.0, z: 20.8, yaw: -1.4, pitch: -0.45 },
   { x: 10.0, level: 1.0, z: 0.8, yaw: 0.0, pitch: 0.0 },
   { x: 7.6, level: 1.0, z: 7.0, yaw: -1.1, pitch: -0.2 },
 ]

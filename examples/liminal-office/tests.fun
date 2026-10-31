@@ -49,9 +49,14 @@ expect interiorIds |> List.all((i) => [North, South, East, West] |> List.all((s)
   let holes = Building.holesIn(i, s) in
   List.zip(holes, List.drop(1.0, holes)) |> List.all((p) => let (next, prev) = p in prev.hi < next.lo)))
 
-// Every room is reachable from the apron, through doors and up the stairs.
+// Every room is reachable from the apron: through doors, up the stairs, or
+// (the street beyond them) through windows.
 let neighbours = (i: float): List<float> =>
   List.flatten([
+    windows |> List.concatMap((w) =>
+      match Building.outsideOf(w) with
+      | Option.Some(o) => if w.room == i then [o] else if o == i then [w.room] else []
+      | Option.None => []),
     doors |> List.concatMap((d) => if d.a == i then [d.b] else if d.b == i then [d.a] else []),
     flights |> List.concatMap((f) => if f.lower == i then [f.upper] else if f.upper == i then [f.lower] else []),
   ])
@@ -126,6 +131,12 @@ expect not Cells.segment(Vec3.make(19.0, 1.6, 24.0), Vec3.make(19.0, up, 24.0), 
 expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(10.0, up, 10.0), Building.level)
 // Upstairs, through doorways as below.
 expect Cells.segment(Vec3.make(10.0, up, 3.0), Vec3.make(15.6, up, 3.0), Building.level)
+// Every window is a portal from the street: sight runs in through one,
+// not through the wall beside it.
+expect windows |> List.all((w) => Building.outsideOf(w) != Option.None)
+expect Cells.segment(Vec3.make(-5.0, 1.6, 9.3), Vec3.make(4.0, 1.6, 9.3), Building.level)
+expect Cells.segment(Vec3.make(-5.0, up, 9.3), Vec3.make(4.0, up, 9.3), Building.level)
+expect not Cells.segment(Vec3.make(-5.0, 1.6, 16.0), Vec3.make(4.0, 1.6, 16.0), Building.level)
 
 // ---- The mesh and its cells ----------------------------------------------------
 

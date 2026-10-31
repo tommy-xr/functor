@@ -86,6 +86,8 @@ let rooms = [
   upstairs("205", Office, rect(0.0, 13.0, 8.8, 20.0), pair(rect(0.0, 13.0, 8.8, 20.0), false)),
   upstairs("206", Office, rect(11.2, 13.0, 20.0, 20.0), pair(rect(11.2, 13.0, 20.0, 20.0), true)),
   upstairs("207", Office, rect(0.0, 20.0, 8.8, 29.0), pair(rect(0.0, 20.0, 8.8, 29.0), false)),
+  // The street west of the building, which sees in through the windows.
+  room("west yard", Outside, rect(0.0 - 12.0, 0.0, 0.0, 29.0), []),
 ]
 
 let door = (a: float, b: float, at: float): Door => { a: a, b: b, at: at, width: 1.0, height: 2.1 }
