@@ -895,8 +895,11 @@ impl Requests {
         let mut due: Vec<(OpId, String, f64)> = replayed
             .into_iter()
             .filter_map(|(op, fraction)| {
-                let (_, key) = self.ops.get(&op)?.job.as_ref()?.spec.key();
-                Some((op, key.to_string(), fraction))
+                let key = self.ops.get(&op).and_then(|p| p.job.as_ref()).map(|j| j.spec.key().1);
+                if key.is_none() {
+                    log::warn!("[functor-lang] replay diverged at {op:?}: logged progress for an op the replay never issued");
+                }
+                Some((op, key?.to_string(), fraction))
             })
             .collect();
         if self.view.is_some() {
@@ -921,6 +924,14 @@ impl Requests {
         let job = p.job.as_ref().filter(|j| j.live() && p.answer.is_none())?;
         let latest = job.progress.as_ref()?.latest()?;
         (job.shown.map(|(shown, _)| shown) != Some(latest)).then_some(latest)
+    }
+
+    /// Whether `op` is still a job in flight: an earlier message this frame
+    /// may have cancelled it, or a replay's edited code never let it run.
+    pub(crate) fn progress_live(&self, op: OpId) -> bool {
+        self.ops
+            .get(&op)
+            .is_some_and(|p| p.answer.is_none() && p.job.as_ref().is_some_and(JobOp::live))
     }
 
     /// `op`'s taggers received `fraction` on `frame`.

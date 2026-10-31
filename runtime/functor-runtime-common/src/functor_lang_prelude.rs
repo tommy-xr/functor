@@ -368,18 +368,18 @@ pub enum SubTree {
     Assets {
         tagger: Value,
     },
-    /// A persistent client connection (`Sub.connect`) or server listener
-    /// (`Sub.listen`), keyed by its endpoint url/addr. NOT fired on the time
-    /// grid — the producer reconciles declared keys against the live set
-    /// each frame (open/close) and routes inbound `Net.NetEvent`s to the
-    /// matching key's tagger through `update` (the physics-events pattern,
-    /// but routed BY KEY). `listen` is the server side.
     /// A `Job.run`'s progress (`Job.progress`), by job key: the tagger
     /// receives the latest fraction whenever it changes, like `Assets`.
     JobProgress {
         key: String,
         tagger: Value,
     },
+    /// A persistent client connection (`Sub.connect`) or server listener
+    /// (`Sub.listen`), keyed by its endpoint url/addr. NOT fired on the time
+    /// grid — the producer reconciles declared keys against the live set
+    /// each frame (open/close) and routes inbound `Net.NetEvent`s to the
+    /// matching key's tagger through `update` (the physics-events pattern,
+    /// but routed BY KEY). `listen` is the server side.
     Connect {
         key: String,
         listen: bool,
