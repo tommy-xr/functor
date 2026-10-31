@@ -2209,6 +2209,10 @@ pub enum SceneObject {
     /// `Scene.cells` / `Scene.inCells` — portal culling; see [`CellsNode`].
     /// Otherwise a group.
     Cells(CellsNode, Vec<Scene3D>),
+    /// `Scene.castShadows` — whether the subtree draws into the shadow map.
+    /// Otherwise a group: it still renders and receives shadows. The nearest
+    /// enclosing node wins, so `true` re-enables casting inside a `false`.
+    CastShadows(bool, Vec<Scene3D>),
     /// A `Scene.memo` result, held by reference so a node wrapping it (a
     /// group, a transform) copies a pointer, not the subtree. Transparent:
     /// it compares, serializes and draws as the object it holds.
@@ -2261,6 +2265,7 @@ impl PartialEq for SceneObject {
             (Group(a), Group(b)) => a == b,
             (Opacity(x, a), Opacity(y, b)) => x == y && a == b,
             (Cells(n, a), Cells(m, b)) => n == m && a == b,
+            (CastShadows(x, a), CastShadows(y, b)) => x == y && a == b,
             (
                 Instanced {
                     template: t,
@@ -2278,7 +2283,8 @@ impl PartialEq for SceneObject {
             | (Group(_), _)
             | (Opacity(..), _)
             | (Instanced { .. }, _)
-            | (Cells(..), _) => false,
+            | (Cells(..), _)
+            | (CastShadows(..), _) => false,
         }
     }
 }
@@ -2585,7 +2591,8 @@ impl Scene3D {
             SceneObject::Group(items)
             | SceneObject::Material(_, items)
             | SceneObject::Opacity(_, items)
-            | SceneObject::Cells(_, items) => {
+            | SceneObject::Cells(_, items)
+            | SceneObject::CastShadows(_, items) => {
                 items.iter_mut().for_each(|item| item.for_each_model(f))
             }
             SceneObject::Instanced { template, .. } => template.for_each_model(f),
@@ -2603,7 +2610,8 @@ impl Scene3D {
             SceneObject::Opacity(..) => true,
             SceneObject::Group(items)
             | SceneObject::Material(_, items)
-            | SceneObject::Cells(_, items) => items.iter().any(Scene3D::has_opacity),
+            | SceneObject::Cells(_, items)
+            | SceneObject::CastShadows(_, items) => items.iter().any(Scene3D::has_opacity),
             // The prelude rejects `Scene.opacity` inside a template, so an
             // instanced node is opaque; an OUTER `Scene.opacity` wrapping it
             // is seen at that outer node like any other subtree.
@@ -2637,7 +2645,8 @@ impl Scene3D {
             }
             SceneObject::Group(items)
             | SceneObject::Opacity(_, items)
-            | SceneObject::Cells(_, items) => {
+            | SceneObject::Cells(_, items)
+            | SceneObject::CastShadows(_, items) => {
                 let w = world * self.xform;
                 for item in items {
                     item.accumulate_leaf_origins(&w, sum, count);
@@ -2707,7 +2716,9 @@ impl Scene3D {
                     centroid,
                 });
             }
-            SceneObject::Group(items) | SceneObject::Cells(_, items) => {
+            SceneObject::Group(items)
+            | SceneObject::Cells(_, items)
+            | SceneObject::CastShadows(_, items) => {
                 let w = world * self.xform;
                 for item in items {
                     item.collect_transparent(&w, material, out);
@@ -2776,6 +2787,14 @@ impl Scene3D {
         view_matrix: &Matrix4<f32>,
         current_material: &Box<dyn Material>,
     ) {
+        // Under `Scene.castShadows(false, …)` a leaf casts nothing; its forward
+        // draw keeps it resident. Instanced nodes decide in their own arm.
+        if render_context.shadow_off.get()
+            && matches!(self.obj.resolved(), SceneObject::Geometry(_) | SceneObject::Model(_))
+        {
+            return;
+        }
+
         let skinning_data = vec![];
 
         // A pass/mode can replace every node's own material with one shared
@@ -3221,11 +3240,44 @@ impl Scene3D {
                     }
                 }
             }
+            // `Scene.castShadows`: a group that sets, for its subtree, whether
+            // the depth pass draws it.
+            SceneObject::CastShadows(casts, items) => {
+                let world = world_matrix * self.xform;
+                let outer = render_context
+                    .shadow_casters
+                    .then(|| render_context.shadow_off.replace(!casts));
+                for item in items {
+                    item.render(
+                        render_context,
+                        scene_context,
+                        &world,
+                        projection_matrix,
+                        view_matrix,
+                        current_material,
+                    )
+                }
+                if let Some(outer) = outer {
+                    render_context.shadow_off.set(outer);
+                }
+            }
             SceneObject::Instanced {
                 template,
                 instances,
             } => {
                 if instances.is_empty() {
+                    return;
+                }
+                let recognized = instancing::recognize(template);
+                // A hardware template's own `Scene.castShadows` beats the
+                // enclosing one; an expanded template renders its own.
+                if render_context.shadow_casters
+                    && recognized.as_ref().is_some_and(|recognized| {
+                        !recognized
+                            .casts_shadows()
+                            .unwrap_or(!render_context.shadow_off.get())
+                    })
+                {
                     return;
                 }
                 let xform = world_matrix * self.xform;
@@ -3251,7 +3303,7 @@ impl Scene3D {
                     };
                     scene_context.culled(projection_matrix, view_matrix, &xform, &bounds)
                 };
-                match instancing::recognize(template) {
+                match recognized {
                     Some(instancing::RecognizedTemplate::Primitive(recognized)) => {
                         let bounds = primitive_bounds(recognized.primitive)
                             .map(|bounds| bounds.transform(&recognized.local));

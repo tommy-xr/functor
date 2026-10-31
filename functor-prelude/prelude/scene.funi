@@ -106,6 +106,19 @@ let screen : (RenderTarget.t, t) => t
 ///   rasterized — so fading fully out costs nothing.
 let opacity : (float, t) => t
 
+/// Whether `scene` draws into the shadow map (cast by the first
+/// shadow-casting light). `false` keeps a subtree out of the shadow pass —
+/// e.g. distant crowd members, whose shadows cost a second draw each. It
+/// still renders and still RECEIVES shadows. The nearest enclosing call wins,
+/// so `true` re-enables casting inside a `false` subtree. Works on models
+/// (skinned or not), primitives, `Scene.instanced` (outside or inside the
+/// template) and `Scene.memo`.
+///
+/// ```
+/// let far = crowd |> Scene.instanced(farSpots) |> Scene.castShadows(false)
+/// ```
+let castShadows : (bool, t) => t
+
 /// Stamp a scene once per instance — one node for thousands of copies.
 ///
 /// `scene |> Scene.instanced(instances)` is semantically a group holding one

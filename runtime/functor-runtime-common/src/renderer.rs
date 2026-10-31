@@ -961,6 +961,8 @@ fn forward_pass(
         lod_fog: fog.filter(|_| skybox.is_none()),
         pass_serial: crate::next_pass_serial(),
         fog_cull_distance,
+        shadow_casters: false,
+        shadow_off: std::cell::Cell::new(false),
     };
 
     // The transparent debug material deliberately reuses authored shading.

@@ -72,6 +72,9 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: per-subtree shadow casting — the `SceneObject::CastShadows` variant
+/// (`Scene.castShadows`), emitted only by it.
+///
 /// Also: portal culling — the `SceneObject::Cells` variant (`Scene.cells`
 /// carries its cells and portals inline; `Scene.inCells` its cell ids).
 /// Emitted only by those two, so frames without them keep their shape.
@@ -818,6 +821,21 @@ mod tests {
         );
         let back: SceneObject = serde_json::from_str(&json).expect("deserialize opacity subtree");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    /// `Scene.castShadows` is a flag and its children.
+    #[test]
+    fn cast_shadows_wire_is_pinned() {
+        use crate::{Scene3D, SceneObject};
+
+        let scene = SceneObject::CastShadows(false, vec![Scene3D::cube()]);
+        let json = serde_json::to_string(&scene).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"CastShadows":[false,[{"obj":{"Geometry":"Cube"},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}]]}"#
+        );
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, scene);
     }
 
     /// Portal-culling nodes carry their cells and ids inline; decoding
