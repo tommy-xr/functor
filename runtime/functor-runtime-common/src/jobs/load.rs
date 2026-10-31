@@ -150,7 +150,10 @@ fn spawn() -> Option<mpsc::Sender<Request>> {
     let spawned = std::thread::Builder::new()
         .name("functor-load".to_string())
         .stack_size(LOADER_STACK)
-        .spawn(move || serve(requests));
+        .spawn(move || {
+            super::waited_on();
+            serve(requests)
+        });
     match spawned {
         Ok(_) => Some(send),
         Err(e) => {

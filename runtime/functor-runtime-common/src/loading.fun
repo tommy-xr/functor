@@ -8,8 +8,8 @@ let tick = (m, dt, tts) => m
 
 let camera = Camera3D.lookAt(Vec3.make(0.0, 1.6, 0.5), Vec3.make(0.0, 1.2, -2.5))
 let lights = [
-  Light.ambient(Color.rgb(0.3, 0.3, 0.35)),
-  Light.directional(Vec3.make(-0.4, -1.0, 0.3), Color.rgb(0.9, 0.85, 0.8), 1.0)
+  Light.ambient(Color.rgb(0.35, 0.35, 0.4)),
+  Light.directional(Vec3.make(-0.4, -0.6, -1.0), Color.rgb(0.9, 0.88, 0.85), 1.0)
 ]
 
 // A bar from the left edge; the fill is thicker, so it encloses the track.
