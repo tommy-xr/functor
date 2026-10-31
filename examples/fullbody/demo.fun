@@ -54,7 +54,7 @@ let leftTracked = (t: float): bool => t < 6.9 || t > 7.6
 // slow sway the hips lag behind.
 let head = (t: float): Body.Pose =>
   let down = 58.0 * (1.0 - ease(t, 3.8, 4.4)) + 58.0 * ease(t, 7.6, 8.0) + 6.0 in
-  let sway = 30.0 * Math.sin(2.0 * Math.pi * t / loop) in
+  let sway = if t < 4.0 then 35.0 * Math.sin(Math.pi * t / 2.0) else 8.0 * Math.sin(Math.pi * (t - 4.0) / 2.0) in
   let q = Quat.mul(turn(sway), pitch(down)) in
   let neck = Quat.nlerp(Quat.identity, q, Rig.neckBend) in
   pose(Quat.add(Rig.neck, Body.eyeOffset(1.0, neck, q)), q)
