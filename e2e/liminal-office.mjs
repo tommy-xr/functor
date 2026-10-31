@@ -294,6 +294,9 @@ function maxDiff(a, b) {
 // The hour is model state: N toggles midnight ⇄ noon, T steps an hour, and a
 // rewind restores both the hour and the bake it draws with.
 async function hours(game) {
+  // Stand still at view 1 first, so the rewound pose matches to the pixel.
+  await game.view(1);
+  await game.step(30);
   // Hold each hour for 10 frames and rewind to the middle of that run:
   // `/state.frame` and the recorder's frame numbers are a couple apart.
   const press = async (key) => {
