@@ -87,5 +87,32 @@
     ],
     "inputScript": "noon-upstairs.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-block-street",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "block-street.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-block-street-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "noon-block-street.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-block-window",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "block-window.script",
+    "captureAtFrame": 30
   }
 ]
