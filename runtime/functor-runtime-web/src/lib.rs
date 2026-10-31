@@ -797,7 +797,7 @@ fn respatialize_voice(voice: &WebVoice) {
 
 /// Aim the listener from the frame camera and reconcile the desired soundscape
 /// against the live voices each frame: spawn new ones, stop gone ones, update
-/// changed gain/position in place. Skips entirely (and never spins up an
+/// changed gain/position in place, restart a changed sound. Skips entirely (and never spins up an
 /// AudioContext) when nothing is playing and nothing is wanted.
 fn update_soundscape(game: &dyn GameProducer, camera: &functor_runtime_common::Camera) {
     // Track the listener from the camera every frame (cheap, no AudioContext

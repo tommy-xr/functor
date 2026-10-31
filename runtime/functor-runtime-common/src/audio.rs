@@ -295,16 +295,18 @@ pub enum SceneUpdate {
     Spawn(AudioSource),
     /// A voice with this key is already live; apply the new gain/position.
     Update(AudioSource),
-    /// Stop and drop the live voice for `key` (no longer in the scene).
+    /// Stop and drop the live voice for `key` (no longer in the scene, or
+    /// restarting with a new sound).
     Stop(String),
 }
 
 /// Pure diff between the live voices (keyed by their last-applied source) and the
 /// `desired` scene. Produces stops (gone), spawns (new), and updates (changed) —
-/// the shell maps each to a backend op. A voice whose `sound` changed restarts
-/// (a stop then a spawn), since the shell can't swap a playing voice's file. Deterministic order (stops, then spawns
-/// /updates by key) so it's golden-testable. A key repeated in `desired` keeps
-/// its first occurrence (later duplicates are ignored).
+/// the shell maps each to a backend op. A voice whose `sound` changed restarts:
+/// a stop then a spawn, since a shell can't swap a playing voice's file.
+/// Deterministic order (gone keys' stops sorted, then declaration order) so
+/// it's golden-testable. A key repeated in `desired` keeps its first
+/// occurrence (later duplicates are ignored).
 pub fn reconcile(live: &HashMap<String, AudioSource>, desired: &AudioScene) -> Vec<SceneUpdate> {
     let mut seen: Vec<&String> = Vec::new();
     let mut wanted: Vec<&AudioSource> = Vec::new();
