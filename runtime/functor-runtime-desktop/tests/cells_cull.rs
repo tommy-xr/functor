@@ -119,7 +119,7 @@ fn turning_back_uploads_nothing(h: &mut Harness) {
                         lit(Scene3D::sphere(), [0.9, 0.9, 0.2]).transform(Matrix4::from_scale(0.2)),
                         row,
                     ),
-                    static_quad(x, 1.9),
+                    static_quad(x + 1.0, 1.2),
                 ]),
             )
         })

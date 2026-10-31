@@ -298,7 +298,7 @@ fn xbot() -> Scene3D {
 }
 
 /// A `Model.static` quad on `corners`: one group with a pixel texture,
-/// lightmapped by another.
+/// lightmapped by a layered one.
 fn static_quad(corners: [[f32; 3]; 4]) -> Scene3D {
     let pixels = |space, rgb: [u8; 3]| {
         let pixels = PixelData::new(1, 1, PixelEncoding::Rgb8, space, &rgb);
@@ -318,8 +318,15 @@ fn static_quad(corners: [[f32; 3]; 4]) -> Scene3D {
             texture: Some(pixels(ColorSpace::Srgb, [200, 80, 40])),
             unlit: false,
         }],
+        // Layered, so its residency (keyed by the base) is covered too.
         lightmap: Some(LightmapSource {
-            texture: pixels(ColorSpace::Linear, [255, 255, 255]),
+            texture: TextureDescription::Layered {
+                base: Arc::new(
+                    PixelData::new(1, 1, PixelEncoding::Rgb8, ColorSpace::Linear, &[255; 3])
+                        .expect("valid pixels"),
+                ),
+                intensities: vec![],
+            },
             scale: 1.0,
             floor: [0.0; 3],
         }),
