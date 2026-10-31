@@ -75,6 +75,10 @@
 /// Also: per-subtree shadow casting — the `SceneObject::CastShadows` variant
 /// (`Scene.castShadows`), emitted only by it.
 ///
+/// Also: joint orientation — the `AnimExpr::Orient` variant (`Anim.orient`)
+/// nested in `ModelDescription.animation`. Emitted only by that call, so
+/// frames without it keep their shape.
+///
 /// Also: portal culling — the `SceneObject::Cells` variant (`Scene.cells`
 /// carries its cells and portals inline; `Scene.inCells` its cell ids).
 /// Emitted only by those two, so frames without them keep their shape.
@@ -927,6 +931,25 @@ mod tests {
         );
         let back: AnimExpr = serde_json::from_str(&json).expect("deserialize two-bone reach");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn joint_orient_animation_wire_is_pinned() {
+        use crate::anim::AnimExpr;
+
+        let orient = AnimExpr::Orient {
+            joint: "hand".to_string(),
+            rotation: [0.0, 0.5, 0.0, 0.5],
+            weight: 0.75,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let json = serde_json::to_string(&orient).expect("serialize orient");
+        assert_eq!(
+            json,
+            r#"{"Orient":{"joint":"hand","rotation":[0.0,0.5,0.0,0.5],"weight":0.75,"expr":"Rest"}}"#
+        );
+        let back: AnimExpr = serde_json::from_str(&json).expect("deserialize orient");
+        assert_eq!(back, orient);
     }
 
     // A representative draw3d output: every Shape variant, every SceneObject

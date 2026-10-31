@@ -22,6 +22,8 @@
 //!   evaluating the expression below it.
 //! - `Reach` rotates a direct two-bone chain so its end joint approaches a
 //!   model-space target, preserving the evaluated pose's elbow bend side.
+//! - `Orient` sets one joint's complete model-space rotation after
+//!   evaluating the expression below it (a wrist matching a controller).
 //!
 //! Evaluation carries a per-joint influence weight so `Mask` composes
 //! through `Blend`/`Add`: a joint no input drives falls back to the bind
@@ -98,6 +100,16 @@ pub enum AnimExpr {
         middle: String,
         end: String,
         target: [f32; 3],
+        weight: f32,
+        expr: Box<AnimExpr>,
+    },
+    /// Set one joint's model-space rotation (`[x, y, z, w]`, normalized at
+    /// evaluation; `q` and `-q` are the same) after evaluating `expr`,
+    /// keeping its translation and scale. `weight` slerps from the
+    /// evaluated rotation.
+    Orient {
+        joint: String,
+        rotation: [f32; 4],
         weight: f32,
         expr: Box<AnimExpr>,
     },
@@ -339,6 +351,19 @@ fn eval(model: Rig, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning)) ->
             }
             inner
         }
+        AnimExpr::Orient {
+            joint,
+            rotation,
+            weight,
+            expr,
+        } => {
+            let mut inner = eval(model, expr, on_warning);
+            match model.skeleton.slot_by_name(joint) {
+                Some(slot) => apply_orient(&model.skeleton, &mut inner, slot, *rotation, *weight),
+                None => on_warning(AnimWarning::MissingJoint(joint)),
+            }
+            inner
+        }
     }
 }
 
@@ -432,6 +457,64 @@ fn apply_look_at(
         weight,
     );
     joint.rotation = (local_correction * joint.rotation).normalize();
+    pose.joints[slot] = Some((joint, 1.0));
+}
+
+/// The rotation part of a settled transform: its X and Y axes
+/// Gram-Schmidt-orthonormalized (Z = X × Y). Exact for rotation times a
+/// per-axis scale; a sheared ancestor (non-uniform scale above a rotation)
+/// gets the orthonormal frame nearest its X axis.
+fn rotation_of(transform: Matrix4<f32>) -> Option<Quaternion<f32>> {
+    let x = normalized_f64(transform.x.truncate())?;
+    let y = transform.y.truncate();
+    let y = normalized_f64(y - x * y.dot(x))?;
+    Some(Quaternion::from(Matrix3::from_cols(x, y, x.cross(y))).normalize())
+}
+
+/// Set `slot`'s model-space rotation over the settled parent, keeping its
+/// local translation and scale. A zero/non-finite quaternion is ignored (the
+/// prelude rejects one at the call).
+fn apply_orient(
+    skeleton: &Skeleton,
+    pose: &mut WeightedPose,
+    slot: usize,
+    rotation: [f32; 4],
+    weight: f32,
+) {
+    if !(weight > 0.0) {
+        return;
+    }
+    // Normalize in f64 so a huge-but-finite quaternion cannot overflow.
+    let [x, y, z, w] = rotation.map(f64::from);
+    let length = (x * x + y * y + z * z + w * w).sqrt();
+    if !length.is_finite() || length <= 1e-12 {
+        return;
+    }
+    let target = Quaternion::new(
+        (w / length) as f32,
+        (x / length) as f32,
+        (y / length) as f32,
+        (z / length) as f32,
+    );
+    let parent = match skeleton.slot_parent(slot) {
+        Some(parent) => match rotation_of(resolved_absolute(skeleton, pose, parent).transform) {
+            Some(parent) => parent,
+            None => return,
+        },
+        None => Quaternion::one(),
+    };
+    let mut joint = resolved_joint_pose(skeleton, pose, slot);
+    // Local = parent⁻¹ · target, sign-aligned with the evaluated rotation so
+    // `q` and `-q` take the same shortest path.
+    let mut local = (parent.conjugate() * target).normalize();
+    if joint.rotation.dot(local) < 0.0 {
+        local = -local;
+    }
+    joint.rotation = if weight >= 1.0 {
+        local
+    } else {
+        joint.rotation.slerp(local, weight)
+    };
     pose.joints[slot] = Some((joint, 1.0));
 }
 
@@ -1570,6 +1653,284 @@ mod tests {
         assert_eq!(joint_translation(&transforms, 2), vec3(2.0, 0.0, 0.0));
     }
 
+    fn orient(joint: &str, q: Quaternion<f32>, weight: f32, expr: AnimExpr) -> AnimExpr {
+        AnimExpr::Orient {
+            joint: joint.to_string(),
+            rotation: [q.v.x, q.v.y, q.v.z, q.s],
+            weight,
+            expr: Box::new(expr),
+        }
+    }
+
+    fn rotate(joint: &str, euler: [f32; 3], expr: AnimExpr) -> AnimExpr {
+        AnimExpr::Rotate {
+            joint: joint.to_string(),
+            euler,
+            expr: Box::new(expr),
+        }
+    }
+
+    /// The angle between two rotations, sign-blind (`q` and `-q` are 0 apart).
+    fn angle_between(a: Quaternion<f32>, b: Quaternion<f32>) -> f32 {
+        2.0 * a.normalize().dot(b.normalize()).abs().min(1.0).acos()
+    }
+
+    fn joint_rotation(transforms: &[Matrix4<f32>], index: usize) -> Quaternion<f32> {
+        rotation_of(transforms[index]).expect("a rotation")
+    }
+
+    /// `root` with two children: `left` at +X and `right` at -X.
+    fn branch_model() -> Model {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 3]);
+        builder.add_joint(0, 0, "root".to_string(), None, Matrix4::identity());
+        builder.add_joint(
+            1,
+            1,
+            "left".to_string(),
+            Some(0),
+            Matrix4::from_translation(Vector3::unit_x()),
+        );
+        builder.add_joint(
+            2,
+            2,
+            "right".to_string(),
+            Some(0),
+            Matrix4::from_translation(-Vector3::unit_x()),
+        );
+        Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        }
+    }
+
+    fn wrist_target() -> Quaternion<f32> {
+        Quaternion::from_angle_x(Deg(30.0)) * Quaternion::from_angle_y(Deg(-50.0))
+    }
+
+    fn reach_to(target: [f32; 3], expr: AnimExpr) -> AnimExpr {
+        AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target,
+            weight: 1.0,
+            expr: Box::new(expr),
+        }
+    }
+
+    #[test]
+    fn orient_sets_the_model_space_rotation_under_rotated_parents() {
+        let model = reach_model();
+        let base = rotate(
+            "upper",
+            [0.3, 0.7, -0.4],
+            rotate("lower", [1.1, 0.0, 0.2], AnimExpr::Rest),
+        );
+        let before = skinning_transforms(&model, &base, &mut no_warning);
+        let q = wrist_target();
+        let after = skinning_transforms(&model, &orient("end", q, 1.0, base), &mut no_warning);
+        assert!(angle_between(joint_rotation(&after, 2), q) < 1e-5);
+        // Only the end joint changed, and its origin did not move.
+        assert_eq!(&after[..2], &before[..2]);
+        assert!((joint_translation(&after, 2) - joint_translation(&before, 2)).magnitude() < 1e-6);
+    }
+
+    #[test]
+    fn orient_keeps_scale_under_a_scaled_rotated_parent() {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 2]);
+        builder.add_joint(
+            0,
+            0,
+            "shoulder".to_string(),
+            None,
+            Matrix4::from_angle_z(Deg(40.0)) * Matrix4::from_scale(2.0),
+        );
+        builder.add_joint(
+            1,
+            1,
+            "wrist".to_string(),
+            Some(0),
+            Matrix4::from_translation(Vector3::unit_x())
+                * Matrix4::from_nonuniform_scale(1.0, 0.5, 1.0),
+        );
+        let model = Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        };
+        let q = wrist_target();
+        let rest = skinning_transforms(&model, &AnimExpr::Rest, &mut no_warning);
+        let after = skinning_transforms(
+            &model,
+            &orient("wrist", q, 1.0, AnimExpr::Rest),
+            &mut no_warning,
+        );
+        assert!(angle_between(joint_rotation(&after, 1), q) < 1e-5);
+        // Axis lengths: the parent's scale 2 times the wrist's own (1, 0.5, 1).
+        let lengths = [after[1].x, after[1].y, after[1].z].map(|axis| axis.truncate().magnitude());
+        for (length, expected) in lengths.into_iter().zip([2.0, 1.0, 2.0]) {
+            assert!((length - expected).abs() < 1e-5, "axis lengths {lengths:?}");
+        }
+        assert!((joint_translation(&after, 1) - joint_translation(&rest, 1)).magnitude() < 1e-6);
+    }
+
+    #[test]
+    fn orient_rolls_the_wrist_about_its_bone() {
+        // The end bone points along +X; a 90° roll about X keeps +X and turns
+        // the joint's +Y onto +Z.
+        let model = reach_model();
+        let expr = orient(
+            "end",
+            Quaternion::from_angle_x(Deg(90.0)),
+            1.0,
+            AnimExpr::Rest,
+        );
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        assert!((transforms[2].x.truncate() - Vector3::unit_x()).magnitude() < 1e-6);
+        assert!((transforms[2].y.truncate() - Vector3::unit_z()).magnitude() < 1e-6);
+        assert_eq!(joint_translation(&transforms, 2), vec3(2.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn orient_treats_q_and_negated_q_alike() {
+        let model = reach_model();
+        let base = rotate("lower", [0.0, 0.0, 2.5], AnimExpr::Rest);
+        let q = wrist_target();
+        for weight in [0.5, 1.0] {
+            let positive = skinning_transforms(
+                &model,
+                &orient("end", q, weight, base.clone()),
+                &mut no_warning,
+            );
+            let negative = skinning_transforms(
+                &model,
+                &orient("end", -q, weight, base.clone()),
+                &mut no_warning,
+            );
+            assert_eq!(positive, negative, "weight {weight}");
+        }
+    }
+
+    #[test]
+    fn orient_weight_slerps_from_the_evaluated_rotation() {
+        let model = reach_model();
+        let q = Quaternion::from_angle_y(Deg(80.0));
+        let at = |weight| {
+            skinning_transforms(
+                &model,
+                &orient("end", q, weight, AnimExpr::Rest),
+                &mut no_warning,
+            )
+        };
+        let rest = skinning_transforms(&model, &AnimExpr::Rest, &mut no_warning);
+        assert_eq!(at(0.0), rest);
+        let half = joint_rotation(&at(0.5), 2);
+        assert!(angle_between(half, Quaternion::from_angle_y(Deg(40.0))) < 1e-5);
+        assert!(angle_between(joint_rotation(&at(1.0), 2), q) < 1e-6);
+        assert_eq!(at(1.0), at(7.0), "weight clamps to 1");
+    }
+
+    #[test]
+    fn orient_after_reach_keeps_the_reached_position() {
+        let model = reach_model();
+        let target = [0.0, 2.0_f32.sqrt(), 0.0];
+        let q = wrist_target();
+        let after = skinning_transforms(
+            &model,
+            &orient("end", q, 1.0, reach_to(target, AnimExpr::Rest)),
+            &mut no_warning,
+        );
+        assert!((joint_translation(&after, 2) - Vector3::from(target)).magnitude() < 1e-5);
+        assert!(angle_between(joint_rotation(&after, 2), q) < 1e-5);
+        // The other order lets reach's chain rotation carry the wrist away.
+        let before = skinning_transforms(
+            &model,
+            &reach_to(target, orient("end", q, 1.0, AnimExpr::Rest)),
+            &mut no_warning,
+        );
+        assert!((joint_translation(&before, 2) - Vector3::from(target)).magnitude() < 1e-5);
+        assert!(angle_between(joint_rotation(&before, 2), q) > 0.1);
+    }
+
+    #[test]
+    fn orient_composes_with_mask_and_blend() {
+        let model = branch_model();
+        let q = wrist_target();
+        // A mask beneath cannot drop the joint orient drives.
+        let beneath = orient(
+            "right",
+            q,
+            1.0,
+            AnimExpr::Mask {
+                joints: vec!["left".to_string()],
+                expr: Box::new(AnimExpr::Rest),
+            },
+        );
+        let transforms = skinning_transforms(&model, &beneath, &mut no_warning);
+        assert!(angle_between(joint_rotation(&transforms, 2), q) < 1e-6);
+        // An enclosing mask that excludes it returns it to bind.
+        let enclosing = AnimExpr::Mask {
+            joints: vec!["left".to_string()],
+            expr: Box::new(orient("right", q, 1.0, AnimExpr::Rest)),
+        };
+        let transforms = skinning_transforms(&model, &enclosing, &mut no_warning);
+        assert!(angle_between(joint_rotation(&transforms, 2), Quaternion::one()) < 1e-6);
+        // An even blend with rest lands halfway.
+        let blended = AnimExpr::Blend(vec![
+            (orient("right", q, 1.0, AnimExpr::Rest), 1.0),
+            (AnimExpr::Rest, 1.0),
+        ]);
+        let transforms = skinning_transforms(&model, &blended, &mut no_warning);
+        let half = Quaternion::one().slerp(q, 0.5);
+        assert!(angle_between(joint_rotation(&transforms, 2), half) < 1e-5);
+    }
+
+    #[test]
+    fn orient_on_unknown_joint_warns_and_is_ignored() {
+        let model = reach_model();
+        let mut missing = Vec::new();
+        let expr = orient("wrist", wrist_target(), 1.0, AnimExpr::Rest);
+        let transforms = skinning_transforms(&model, &expr, &mut |warning| {
+            if let AnimWarning::MissingJoint(name) = warning {
+                missing.push(name.to_string());
+            }
+        });
+        assert_eq!(missing, vec!["wrist"]);
+        assert_eq!(
+            transforms,
+            skinning_transforms(&model, &AnimExpr::Rest, &mut no_warning)
+        );
+    }
+
+    #[test]
+    fn orient_normalizes_a_non_unit_quaternion() {
+        let model = reach_model();
+        let q = wrist_target();
+        let unit = skinning_transforms(
+            &model,
+            &orient("end", q, 1.0, AnimExpr::Rest),
+            &mut no_warning,
+        );
+        for scale in [3.0, 1e-3, 1e30] {
+            let scaled = skinning_transforms(
+                &model,
+                &orient("end", q * scale, 1.0, AnimExpr::Rest),
+                &mut no_warning,
+            );
+            assert!(
+                (joint_rotation(&scaled, 2) - joint_rotation(&unit, 2)).magnitude() < 1e-6,
+                "scale {scale}"
+            );
+        }
+        // Zero encodes no rotation: ignored (the prelude rejects it).
+        let zero = orient("end", Quaternion::zero(), 1.0, AnimExpr::Rest);
+        assert_eq!(
+            skinning_transforms(&model, &zero, &mut no_warning),
+            skinning_transforms(&model, &AnimExpr::Rest, &mut no_warning)
+        );
+    }
+
     #[test]
     fn add_layers_a_delta_on_top_of_the_base() {
         // Base: slide at 1s → (1,0,0). Layer: lift at 1s → delta (0,2,0)
@@ -1810,6 +2171,19 @@ mod tests {
                     }),
                 }),
             },
+            AnimExpr::Orient {
+                joint: "j7".to_string(),
+                rotation: [0.3, -0.5, 0.2, 0.8],
+                weight: 0.7,
+                expr: boxed(AnimExpr::Reach {
+                    root: "j1".to_string(),
+                    middle: "j3".to_string(),
+                    end: "j7".to_string(),
+                    target: [0.2, 0.1, 0.9],
+                    weight: 1.0,
+                    expr: boxed(rig_blend(0.71, 0.4)),
+                }),
+            },
         ];
         let mut outputs: Vec<Vec<Matrix4<f32>>> = exprs
             .iter()
@@ -1838,7 +2212,7 @@ mod tests {
                 sum
             })
             .collect();
-        let expected: [f64; 16] = [
+        let expected: [f64; 17] = [
             138.222271,
             -23.687245,
             -3.746612,
@@ -1853,6 +2227,7 @@ mod tests {
             8.291764,
             17.016888,
             384.925620,
+            36.829165,
             -1.762920,
             138.222228,
         ];

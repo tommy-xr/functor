@@ -1028,7 +1028,7 @@ The generated modules:
 | `RenderTarget` | named offscreen targets for render-to-texture |
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
 | `Path` | branded, normalized project-relative paths — what `File.bytes` / `File.exists` take (`"data/x.bin" \|> Path.of \|> File.bytes`; a bare string is a check error) |
-| `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at |
+| `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at, two-bone `reach`, and `orient` — a joint's complete model-space rotation as an `Input.quaternion` `{ x, y, z, w }` (non-unit normalized, `q` ≡ `-q`), applied after the pose below it, so `orient` over `reach` keeps the reached position. There are no quaternion operators: compose a tracked orientation with the four-line Hamilton product in `Anim.orient`'s docs |
 | `Model` | models built from decoded data — skinned (`Model.skinned`) or static world geometry in textured groups (`Model.static`) — drawn with `Scene.modelOf` |
 | `Lightmap` | `Lightmap.unwrap` — lightmap UVs (`uvs2`) for `Model.staticData`: planar charts packed into one atlas at a fixed `texelsPerMeter`, seam vertices duplicated; `bakeJob` — what `functor bake` reads from a top-level `let bakes` (it writes `<name>.png` + `<name>.mesh.bin`); `readMesh` loads the baked mesh back (`Texture.fromPng(…, Texture.Srgb)` the light) |
 | `Terrain` | finite asset-backed heightfield terrain shared by rendering and physics |
