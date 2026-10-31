@@ -23,15 +23,23 @@ let eyes = Quat.scale(0.5, Quat.add(bindAt(j.mixamorig_LeftEye), bindAt(j.mixamo
 /// Eye height of the unscaled rig (1.66 m): calibration scales by the user's.
 let eyeHeight = eyes.y
 
-/// The eyes relative to the neck joint, the pivot the head and neck turn about.
-let eyeInNeck = Quat.sub(eyes, neck)
+let head = bindAt(j.mixamorig_Head)
 
-/// How far ahead of the avatar's eyes the camera sits, in metres. With the
-/// camera's 5 cm near plane this keeps every head vertex out of view in any
-/// head pose: the head turns rigidly with the headset, so they never move
-/// closer than this. (Xbot has no head-less mesh, and nothing culls back
-/// faces, so the head can't simply be left out.)
-let faceClearance = 0.05
+/// The eyes relative to the head joint, and the head relative to the neck.
+let eyeInHead = Quat.sub(eyes, head)
+let headInNeck = Quat.sub(head, neck)
+
+/// The share of the head's rotation (relative to the chest) the neck takes;
+/// the skull takes the rest. Nodding about two joints moves the eyes about as
+/// far forward as a person's do.
+let neckBend = 0.5
+
+/// How far ahead of the avatar's eyes the camera sits, in metres. Xbot's face
+/// is 4.5 cm ahead of its eye joints, so this puts the whole head within the
+/// camera's 5 cm near plane, and the head turns rigidly with the headset, so
+/// no head vertex is ever drawn in first person. (Xbot has no head-less mesh,
+/// and nothing culls back faces, so the head can't simply be left out.)
+let faceClearance = 0.02
 
 let spine = [j.mixamorig_Spine, j.mixamorig_Spine1, j.mixamorig_Spine2]
 
@@ -124,12 +132,12 @@ let thumb = (side: Side): List<string> =>
 /// hand, 1 a fist. Fingers point along ±X with the palm down, so a curl
 /// turns about Z (the sign follows the side).
 let curl = (side: Side, names: List<string>, amount: float, anim: Anim.t): Anim.t =>
-  let angle = Angle.degrees((10.0 + 75.0 * Math.clamp01(amount)) * (match side with | Left => 0.0 - 1.0 | Right => 1.0)) in
+  let angle = Angle.degrees((30.0 + 55.0 * Math.clamp01(amount)) * (match side with | Left => 0.0 - 1.0 | Right => 1.0)) in
   names |> List.fold((a, name) => Anim.rotate(name, 0deg, 0deg, angle, a), anim)
 
 /// The thumb closes over the fingers: it points along +Z, so it turns about X.
 let curlThumb = (side: Side, amount: float, anim: Anim.t): Anim.t =>
-  let angle = Angle.degrees(5.0 + 35.0 * Math.clamp01(amount)) in
+  let angle = Angle.degrees(15.0 + 30.0 * Math.clamp01(amount)) in
   thumb(side) |> List.fold((a, name) => Anim.rotate(name, angle, 0deg, 0deg, a), anim)
 
 // The grip-to-wrist rotations put the fingers along the grip's forward, the
@@ -148,3 +156,4 @@ expect (
 // With no twist the chain reproduces the bind neck.
 expect Quat.length(Quat.sub(neckUnder(0.0), neck)) < 0.00001
 expect Math.abs(eyeHeight - 1.6606) < 0.001
+expect Quat.length(Quat.sub(Quat.add(neck, Quat.add(headInNeck, eyeInHead)), eyes)) < 0.000001

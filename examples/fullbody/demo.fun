@@ -53,11 +53,11 @@ let leftTracked = (t: float): bool => t < 6.9 || t > 7.6
 // The head looks down at the hands, then up at the inspection panel, with a
 // slow sway the hips lag behind.
 let head = (t: float): Body.Pose =>
-  let down = 55.0 * (1.0 - ease(t, 3.8, 4.4)) + 55.0 * ease(t, 7.6, 8.0) + 6.0 in
+  let down = 58.0 * (1.0 - ease(t, 3.8, 4.4)) + 58.0 * ease(t, 7.6, 8.0) + 6.0 in
   let sway = 30.0 * Math.sin(2.0 * Math.pi * t / loop) in
   let q = Quat.mul(turn(sway), pitch(down)) in
-  let neckAt = Rig.neck in
-  pose(Quat.add(neckAt, Quat.rotate(q, Quat.add(Rig.eyeInNeck, v3(0.0, 0.0, Rig.faceClearance)))), q)
+  let neck = Quat.nlerp(Quat.identity, q, Rig.neckBend) in
+  pose(Quat.add(Rig.neck, Body.eyeOffset(1.0, neck, q)), q)
 
 // Back to tracking space (the same half turn undoes itself).
 let tracked = (p: Body.Pose): Input.pose => {

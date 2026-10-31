@@ -7,11 +7,12 @@ let close = (a: Input.point3, b: Input.point3, eps: float): bool => Quat.length(
 
 let noHand: Body.HandSample = { grip: Option.None, trigger: 0.0, squeeze: 0.0 }
 
-// A head hanging off a neck pivot `scale` times Xbot's, turned and pitched.
+// The headset of a person `scale` times Xbot's size standing at the origin,
+// facing +Z, head turned and pitched (the chest still facing ahead).
 let headAt = (scale: float, turnDeg: float, pitchDeg: float): Body.Pose =>
   let q = Quat.mul(Quat.yaw(Body.degrees(turnDeg)), Quat.axisAngle(v3(1.0, 0.0, 0.0), Body.degrees(pitchDeg))) in
-  let eye = Quat.add(Quat.scale(scale, Rig.eyeInNeck), v3(0.0, 0.0, Rig.faceClearance)) in
-  { position: Quat.add(Quat.scale(scale, Rig.neck), Quat.rotate(q, eye)), rotation: q }
+  let neck = Quat.nlerp(Quat.identity, q, Rig.neckBend) in
+  { position: Quat.add(Quat.scale(scale, Rig.neck), Body.eyeOffset(scale, neck, q)), rotation: q }
 
 let sample = (head: Body.Pose, left: Body.HandSample, right: Body.HandSample): Body.Sample =>
   { head: Option.Some(head), left: left, right: right, calibrate: false }
@@ -73,7 +74,7 @@ expect (
   let level = { position: v3(0.0, 1.75, 0.0), rotation: Quat.identity } in
   let a = Body.step(Body.init, sample(level, noHand, noHand), dt) in
   let k = 1.75 / Rig.eyeHeight in
-  let b = Body.step(Body.init, sample(headAt(k, 30.0, 60.0), noHand, noHand), dt) in
+  let b = Body.step(Body.init, sample(headAt(k, 0.0, 60.0), noHand, noHand), dt) in
   near(a.scale, k, 0.000001) && near(a.root.y, 0.0, 0.000001)
     && near(b.scale, k, 0.000001) && near(b.root.y, 0.0, 0.000001)
 )
@@ -87,7 +88,7 @@ expect (
 )
 
 // Absurd heights clamp.
-expect Body.scaleFor({ position: v3(0.0, 4.0, 0.0), rotation: Quat.identity }) == 1.5
+expect Body.scaleFor({ position: v3(0.0, 4.0, 0.0), rotation: Quat.identity }, Quat.identity) == 1.5
 
 // --- tracking loss ---
 
@@ -156,8 +157,7 @@ expect (
   let head = headAt(1.1, 35.0, 50.0) in
   let s = Body.step(Body.init, sample(head, noHand, noHand), dt) in
   let f = solvedIn(s, Rig.j.mixamorig_Head) in
-  let headBind = Rig.bindAt(Rig.j.mixamorig_Head) in
-  let eyeModel = Quat.add(f.position, Quat.rotate(s.headRotation, Quat.sub(Rig.eyes, headBind))) in
+  let eyeModel = Quat.add(f.position, Quat.rotate(s.headRotation, Rig.eyeInHead)) in
   let wanted = Quat.sub(head.position, Quat.rotate(head.rotation, v3(0.0, 0.0, Rig.faceClearance))) in
   close(Body.toWorldPoint(s, eyeModel), wanted, 0.002)
 )
