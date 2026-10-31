@@ -39,6 +39,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+          # PRs restore main's cache without saving their own (shared 10 GB budget).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build runtime wasm bundle
         run: wasm-pack build --target web

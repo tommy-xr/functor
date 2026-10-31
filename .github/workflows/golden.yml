@@ -62,6 +62,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+          # PRs restore main's cache without saving their own (shared 10 GB budget).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Post-E3 the single `functor` binary always includes the native
       # GLFW/OpenGL runtime (in-process `functor run native`), so building the
