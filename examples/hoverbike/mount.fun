@@ -54,7 +54,7 @@ type Action =
 
 // Getting on stays black for `rise` after the black step, while the parked
 // bike lifts to ride height (`height`): the spring takes about 1.3 s to carry
-// it the 0.9 m to within 1 cm, so the view never rises once it fades in.
+// it the 0.9 m to within 1.5 cm, so the view never rises once it fades in.
 let rise = 1.3 // s
 
 // `t` is the time on `Bars.fadeStep`'s timeline, negative when idle; it
