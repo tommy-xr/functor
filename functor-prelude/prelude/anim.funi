@@ -63,3 +63,32 @@ let lookAt : (string, Vec3.t, Angle.t, float, t) => t
 /// nearest extension. The evaluated pose below supplies the elbow bend side,
 /// `root` must have uniform scale, and `weight` is clamped to `0..1`.
 let reach : (string, string, string, Vec3.t, float, t) => t
+
+/// Set one joint's complete orientation to a model-space rotation after
+/// evaluating the pose below it — a wrist matching a tracked controller.
+///
+/// The joint's axes end up along `rotation`'s whatever its ancestors do, and
+/// its translation and scale are kept, so `orient` over `Anim.reach` keeps
+/// the reached wrist position and replaces only its rotation. `rotation` is
+/// an `{ x, y, z, w }` quaternion in model space (the space of `lookAt` and
+/// `reach` targets, before the node's `Scene` transforms). A quaternion and
+/// its negation are the same rotation; a non-unit one is normalized, and a
+/// zero one is a teaching error. `weight` is clamped to `0..1` and slerps
+/// from the evaluated rotation. The joint is fully driven, exactly as with
+/// `Anim.rotate`; an enclosing mask can still exclude it.
+///
+/// A tracked `Input.pose.orientation` is rig-local. If the avatar's `Scene`
+/// rotations turn model space into rig space by `n`, pass
+/// `n⁻¹ ⊗ orientation ⊗ offset`, where `offset` is the joint's rest frame
+/// relative to the controller (rig-specific: measure it once). `n⁻¹` negates
+/// `x`, `y` and `z`; the product is
+///
+/// ```functor
+/// let qmul = (a: Input.quaternion, b: Input.quaternion): Input.quaternion => {
+///   x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+///   y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+///   z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+///   w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+/// }
+/// ```
+let orient : (string, Input.quaternion, float, t) => t

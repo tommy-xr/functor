@@ -315,6 +315,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "orient-t1.5",
+      "sample": "orient",
+      "fixedTime": 1.5,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }

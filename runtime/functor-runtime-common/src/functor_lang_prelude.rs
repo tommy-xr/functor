@@ -48,6 +48,8 @@
 //!   (post-pass aim of local +Z at a model-space Vec3 target)
 //! Anim.reach(root, middle, end, target, weight, anim)      -> Anim
 //!   (post-pass two-bone reach preserving the evaluated bend side)
+//! Anim.orient(joint, rotation, weight, anim)               -> Anim
+//!   (post-pass complete model-space rotation of one joint)
 //! Frame.create(camera, scene)                               -> Frame
 //! Camera2D.create(width, height)                             -> Camera2D
 //! Camera2D.at(x, y, camera) / Camera2D.zoom(k, camera)       -> Camera2D
@@ -313,6 +315,31 @@ impl crate::host_registry::FromArg for FunctorLangMappedPose {
             forward: point("forward")?,
             up: point("up")?,
         }))
+    }
+}
+
+/// An `Input.quaternion` record (`x`, `y`, `z`, `w`, each finite), as
+/// `Anim.orient` takes it: `[x, y, z, w]`.
+struct FunctorLangQuaternion([f32; 4]);
+
+impl crate::host_registry::FromArg for FunctorLangQuaternion {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let Value::Record(fields) = value else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected an Input.quaternion record, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        let component = |name| finite_record_number(fields, name, "quaternion", path, span);
+        Ok(FunctorLangQuaternion([
+            component("x")?,
+            component("y")?,
+            component("z")?,
+            component("w")?,
+        ]))
     }
 }
 
@@ -3962,6 +3989,28 @@ with uniform root scale, a model-space Vec3 target, and weight";
                 middle,
                 end,
                 target: [target.0 .0, target.0 .1, target.0 .2],
+                weight: weight as f32,
+                expr: Box::new(anim.0),
+            }))
+        },
+    );
+    // A post-pass setting one joint's complete model-space rotation (a wrist
+    // matching a controller). Non-unit quaternions normalize at evaluation;
+    // a zero one names no rotation, so it is refused here.
+    const ORIENT: &str = "Anim.orient(\"jointName\", rotation, weight, anim) — a non-empty \
+joint name, a non-zero model-space Input.quaternion ({ x, y, z, w }; identity is \
+{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }), and weight";
+    reg.fn4(
+        "Anim.orient",
+        ORIENT,
+        |joint: String, rotation: FunctorLangQuaternion, weight: f64, anim: FunctorLangAnim| {
+            let length2: f64 = rotation.0.iter().map(|c| f64::from(*c).powi(2)).sum();
+            if joint.is_empty() || !(length2 > 1e-24) {
+                return Err(format!("usage: {ORIENT}"));
+            }
+            Ok(FunctorLangAnim(AnimExpr::Orient {
+                joint,
+                rotation: rotation.0,
                 weight: weight as f32,
                 expr: Box::new(anim.0),
             }))
@@ -10710,6 +10759,53 @@ Anim.clip(\"walk\", tts)"
         );
     }
 
+    #[test]
+    fn anim_orient_builds_data_and_teaches_bad_quaternions() {
+        let value = eval(
+            "let main = () => Anim.rest() |> Anim.orient(\"wrist_r\", { x: 0.0, y: 0.0, z: 0.0, w: 2.0 }, 0.5)",
+        );
+        let anim = anim_of(&value, "Anim", Span::new(0, 0)).expect("an Anim");
+        assert_eq!(
+            anim,
+            &AnimExpr::Orient {
+                joint: "wrist_r".to_string(),
+                rotation: [0.0, 0.0, 0.0, 2.0],
+                weight: 0.5,
+                expr: Box::new(AnimExpr::Rest),
+            }
+        );
+        let usage =
+            "usage: Anim.orient(\"jointName\", rotation, weight, anim) — a non-empty joint \
+name, a non-zero model-space Input.quaternion ({ x, y, z, w }; identity is \
+{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }), and weight";
+        for args in [
+            "\"wrist\", { x: 0.0, y: 0.0, z: 0.0, w: 0.0 }",
+            "\"\", { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }",
+        ] {
+            assert_eq!(
+                fail_message(&format!(
+                    "let main = () => Anim.rest() |> Anim.orient({args}, 1.0)"
+                )),
+                usage,
+                "{args}"
+            );
+        }
+        let missing = fail_message(
+            "let main = () => Anim.rest() |> Anim.orient(\"wrist\", { x: 0.0, y: 0.0, z: 0.0 }, 1.0)",
+        );
+        assert_eq!(
+            missing,
+            "Anim.orient: expected a quaternion record, missing `w`"
+        );
+        let vec3 = fail_message(
+            "let main = () => Anim.rest() |> Anim.orient(\"wrist\", Vec3.make(0.0, 0.0, 1.0), 1.0)",
+        );
+        assert!(
+            vec3.contains("expected an Input.quaternion record"),
+            "{vec3}"
+        );
+    }
+
     // [registry migration pins] the deliberate teaching-text deltas, made
     // loud: usage sigs are registry-derived and must START with the path, so
     // the legacy pipe-form spellings (anim |> Anim.mask(…)) are positional
@@ -14556,6 +14652,69 @@ Config.create())",
         let aimed = "Anim.lookAt(\"lower\", Vec3.make(1.0, 1.0, 0.0), 120deg, 1.0, Anim.rest())";
         assert_near(aimed, 2, [0.0, 1.0, -1.0]);
         assert_near(aimed, 1, [0.0, 2.0, 0.0]);
+    }
+
+    /// `Model.pose` under `Anim.orient`: `lower` takes the model-space
+    /// rotation whatever `upper` does, keeping its position; `q` and `-q`,
+    /// and a non-unit `q`, pose alike; an unknown joint is an error.
+    #[test]
+    fn skinned_model_orient_matches_hand_computed_positions() {
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let quarter = "{ x: 0.0, y: 0.0, z: s, w: s }";
+        // `upper` turned 90° about Z puts `lower` at (-1, 0, 0); unoriented,
+        // the tip follows to (-2, 0, 0).
+        let turned = "Anim.rotate(\"upper\", 0deg, 0deg, 90deg, Anim.rest())";
+        assert_near(turned, 1, [-2.0, 0.0, 0.0]);
+        for identity in ["id", "{ x: 0.0, y: 0.0, z: 0.0, w: 0.0 - 1.0 }"] {
+            let level = format!("Anim.orient(\"lower\", {identity}, 1.0, {turned})");
+            assert_near(&level, 1, [-1.0, 1.0, 0.0]);
+            assert_near(&level, 2, [0.0, 0.0, 0.0]);
+        }
+        // A non-unit quaternion normalizes: `lower` turned 90° about Z.
+        let doubled =
+            "Anim.orient(\"lower\", { x: 0.0, y: 0.0, z: 2.0 * s, w: 2.0 * s }, 1.0, Anim.rest())";
+        assert_near(doubled, 1, [-1.0, 1.0, 0.0]);
+        assert_near(doubled, 2, [0.0, 2.0, 0.0]);
+        // Half weight is 45°.
+        let half = format!("Anim.orient(\"lower\", {quarter}, 0.5, Anim.rest())");
+        assert_near(&half, 1, [-h, 1.0 + h, 0.0]);
+        // The documented product: n⁻¹ ⊗ q with n = q is identity.
+        let product = format!(
+            "{ARM}let qmul = (a: Input.quaternion, b: Input.quaternion): Input.quaternion => {{\n\
+               x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,\n\
+               y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,\n\
+               z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,\n\
+               w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z\n\
+             }}\n\
+             let main = Model.pose(Anim.orient(\"lower\", qmul({{ x: 0.0, y: 0.0, z: 0.0 - s, w: s }}, {quarter}), 1.0, {turned}), arm)\n"
+        );
+        let Value::HostData(data) = eval_with_prelude(&product).unwrap() else {
+            panic!("expected Bytes");
+        };
+        let bytes = data
+            .as_any()
+            .downcast_ref::<FunctorLangBytes>()
+            .expect("Bytes");
+        let tip: [f32; 3] = std::array::from_fn(|k| {
+            f32::from_le_bytes(
+                bytes.0.as_slice()[12 + 4 * k..16 + 4 * k]
+                    .try_into()
+                    .unwrap(),
+            )
+        });
+        assert!(
+            tip.iter()
+                .zip([-1.0, 1.0, 0.0])
+                .all(|(a, e)| (a - e).abs() < 1e-4),
+            "{tip:?}"
+        );
+        let unknown = eval_with_prelude(&format!(
+            "{ARM}let main = Model.pose(Anim.orient(\"wrist\", id, 1.0, Anim.rest()), arm)\n"
+        ));
+        assert_eq!(
+            unknown.err().unwrap(),
+            "Model.pose: no joint named \"wrist\""
+        );
     }
 
     /// `Model.inspect`, and the data's wire form: its source, revalidated
