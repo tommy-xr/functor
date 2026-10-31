@@ -1,0 +1,4 @@
+layout=1390471110
+sources=layout.fun building.fun
+bakeVersion=2
+settings=texelsPerMeter=12 aoSamples=64 aoDistance=1 bounces=2 giSamples=32 seed=0 maxSize=2048
