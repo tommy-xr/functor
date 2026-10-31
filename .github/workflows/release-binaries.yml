@@ -51,12 +51,12 @@ jobs:
             bin: functor
             lsp_bin: functor-lang-lsp
             lsp_target: x86_64-unknown-linux-musl
-          - os: macos-14 # Apple Silicon (native)
+          - os: macos-15 # Apple Silicon (native)
             target: aarch64-apple-darwin
             bin: functor
             lsp_bin: functor-lang-lsp
             lsp_target: aarch64-apple-darwin
-          - os: macos-14 # Intel, cross-compiled on the arm64 runner
+          - os: macos-15 # Intel, cross-compiled on the arm64 runner
             target: x86_64-apple-darwin
             bin: functor
             lsp_bin: functor-lang-lsp
