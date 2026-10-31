@@ -102,4 +102,4 @@ let fixtures = [
 ]
 
 // Where the player starts: on the apron, facing the entrance (+Z).
-let spawn = { x: 10.0, z: 0.0 - 7.0 }
+let spawn = { x: 10.0, z: 0.0 - 11.0 }

@@ -398,7 +398,7 @@ let buildingBodies = (rev: float): List<Physics.body> =>
 // ---- Exterior ------------------------------------------------------------------
 
 let rgb = (r: float, g: float, b: float): Color.t => Color.rgb(r / 255.0, g / 255.0, b / 255.0)
-let concrete = rgb(52.0, 52.0, 60.0)
+let concrete = rgb(72.0, 72.0, 82.0)
 let glass = rgb(26.0, 32.0, 44.0)
 let cyan = rgb(110.0, 240.0, 230.0)
 
@@ -469,7 +469,7 @@ let roofline =
   ]) |> Scene.color(cyan)
 
 // Sodium street lamps by the apron.
-let lampHeads = [v(3.0, 4.8, -9.0), v(17.0, 4.8, -9.0)]
+let lampHeads = [v(4.4, 4.8, -4.0), v(15.6, 4.8, -4.0)]
 let lampPosts = lampHeads |> List.map((p) =>
   let x = Vec3.x(p) in
   let z = Vec3.z(p) in
@@ -480,8 +480,9 @@ let lampPosts = lampHeads |> List.map((p) =>
 
 let apron = roomAt(0.0).rect
 let ground = Scene.group([
-  Scene.plane() |> Scene.scaleXYZ(240.0, 1.0, 240.0) |> Scene.translate(v(10.0, 0.0, 10.0)) |> Scene.lit(rgb(40.0, 36.0, 46.0)),
-  slab(apron.x0, 0.0, apron.z0, apron.x1, 0.02, apron.z1 - half) |> Scene.lit(rgb(96.0, 94.0, 102.0)),
+  // Below the interior floors (y = 0), which would otherwise z-fight it.
+  Scene.plane() |> Scene.scaleXYZ(240.0, 1.0, 240.0) |> Scene.translate(v(10.0, -0.03, 10.0)) |> Scene.lit(rgb(40.0, 36.0, 46.0)),
+  slab(apron.x0, -0.03, apron.z0, apron.x1, 0.0, apron.z1 - half) |> Scene.lit(rgb(96.0, 94.0, 102.0)),
 ])
 
 let exterior = Scene.group([ground, facadeSlabs, windows, canopy, roofline, lampPosts])

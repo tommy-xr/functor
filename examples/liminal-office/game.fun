@@ -38,11 +38,11 @@ let bakes = [{ name: "night", mesh: Building.interiorData, lights: bakeLights,
 let night = Color.rgb(22.0 / 255.0, 17.0 / 255.0, 34.0 / 255.0)
 let frameLights = List.flatten([
   [Light.ambient(Color.rgb(0.09, 0.08, 0.14)) |> Light.baked,
-   Light.directional(v(0.3, -0.8, 0.5), Color.rgb(0.35, 0.38, 0.55), 0.35) |> Light.baked,
+   Light.directional(v(0.3, -0.8, 0.5), Color.rgb(0.35, 0.38, 0.55), 0.6) |> Light.baked,
    // The lobby's light spilling onto the apron.
    Light.point(v(10.0, 2.0, 0.9), Color.rgb(0.85, 0.95, 0.8), 1.2, 9.0) |> Light.baked],
   Building.lampHeads |> List.map((p) =>
-    Light.point(p |> Vec3.add(v(0.0, -0.2, 0.0)), Color.rgb(1.0, 0.7, 0.38), 1.0, 13.0) |> Light.baked),
+    Light.point(p |> Vec3.add(v(0.0, -0.2, 0.0)), Color.rgb(1.0, 0.68, 0.36), 0.9, 14.0) |> Light.baked),
 ])
 // Without a bake, light the interior flatly so it stays walkable.
 let unbakedLight = Light.ambient(Color.rgb(0.55, 0.57, 0.5))
@@ -82,7 +82,7 @@ type View = { x: float, z: float, yaw: float, pitch: float }
 let views = [
   { x: Layout.spawn.x, z: Layout.spawn.z, yaw: 0.0, pitch: 0.06 },
   { x: 10.0, z: 6.8, yaw: 0.0, pitch: 0.0 },
-  { x: 17.5, z: 16.5, yaw: Math.pi / 2.0 + 0.6, pitch: -0.05 },
+  { x: 18.5, z: 14.5, yaw: -1.3, pitch: 0.0 },
 ]
 
 let spawnAt = v(Layout.spawn.x, centreAboveFeet, Layout.spawn.z)
