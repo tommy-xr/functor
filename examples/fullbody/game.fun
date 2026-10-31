@@ -55,7 +55,7 @@ let tick = (m: Model, dt: float, tts: float): Model =>
 
 // --- drawing ---
 
-let fov = Angle.degrees(70.0)
+let fov = Angle.degrees(90.0)
 
 // The rig: level at the feet, as `Xr.floorLocked` wants. A headset draws the
 // eye at this camera plus the tracked head.

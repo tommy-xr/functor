@@ -32,6 +32,7 @@ type State = {
   yaw: float,
   twist: float,
   root: Input.point3,
+  neckRotation: Input.quaternion,
   headRotation: Input.quaternion,
   left: Hand,
   right: Hand,
@@ -48,6 +49,7 @@ let init: State = {
   yaw: 0.0,
   twist: 0.0,
   root: Quat.v3(0.0, 0.0, 0.0),
+  neckRotation: Quat.identity,
   headRotation: Quat.identity,
   left: restHand,
   right: restHand,
@@ -93,12 +95,24 @@ let fromXr = (calibrate: bool, xr: Input.xr): Sample => {
 
 // --- step ---
 
-/// Scale the rig so this head stands its feet on the floor. The eyes hang off
-/// the neck pivot, so a pitched head calibrates the same as a level one.
-let scaleFor = (head: Pose): float =>
-  let lift = Quat.rotate(head.rotation, Quat.v3(0.0, 0.0, Rig.faceClearance)).y in
-  let eye = Quat.rotate(head.rotation, Rig.eyeInNeck).y in
-  Math.clamp(0.5, 1.5, (head.position.y - lift) / (Rig.neck.y + eye))
+/// The neck's world rotation: `Rig.neckBend` of the way from the chest
+/// (which takes the spine's share of the twist) to the head.
+let neckRotation = (yaw: float, twist: float, head: Input.quaternion): Input.quaternion =>
+  Quat.nlerp(Quat.yaw(yaw + List.sum(Rig.spineTwist) * twist), head, Rig.neckBend)
+
+/// The camera relative to the neck joint, for the head's and neck's world
+/// rotations: the forward kinematics the solver inverts to hang the body.
+let eyeOffset = (scale: float, neck: Input.quaternion, head: Input.quaternion): Input.point3 =>
+  Quat.add(
+    Quat.rotate(neck, Quat.scale(scale, Rig.headInNeck)),
+    Quat.rotate(head, Quat.add(Quat.scale(scale, Rig.eyeInHead), Quat.v3(0.0, 0.0, Rig.faceClearance))))
+
+/// Scale the rig so this head stands its feet on the floor. It accounts for
+/// the head's pitch, so looking down calibrates the same as looking ahead.
+let scaleFor = (head: Pose, neck: Input.quaternion): float =>
+  let fixed = eyeOffset(0.0, neck, head.rotation) in
+  let perScale = Quat.sub(eyeOffset(1.0, neck, head.rotation), fixed) in
+  Math.clamp(0.5, 1.5, (head.position.y - fixed.y) / (Rig.neck.y + perScale.y))
 
 /// The hips' heading chases the head's once it turns past the deadzone, at a
 /// bounded rate, and never trails it by more than `maxTwist`.
@@ -144,16 +158,16 @@ let step = (s: State, x: Sample, dt: float): State =>
   | Option.None => { s with calibrateHeld: x.calibrate, clock: s.clock + dt }
   | Option.Some(h) =>
     let snap = match x.head with | Option.Some(fresh) => jumped(s.head, fresh) | Option.None => false in
-    let calibrate = (x.calibrate && not s.calibrateHeld) || not s.calibrated in
-    let scale = if calibrate then scaleFor(h) else s.scale in
     let heading = Quat.heading(h.rotation) in
     let yaw = if snap then heading else slewYaw(s.yaw, heading, dt) in
     let twist = Quat.wrap(heading - yaw) in
+    let neck = neckRotation(yaw, twist, h.rotation) in
+    let calibrate = (x.calibrate && not s.calibrateHeld) || not s.calibrated in
+    let scale = if calibrate then scaleFor(h, neck) else s.scale in
     let body = Quat.yaw(yaw) in
     let unturn = Quat.conj(body) in
-    // Hang the body from the neck pivot behind the eyes.
-    let neckAt = Quat.sub(h.position, Quat.rotate(h.rotation,
-      Quat.add(Quat.scale(scale, Rig.eyeInNeck), Quat.v3(0.0, 0.0, Rig.faceClearance)))) in
+    // Hang the body from the neck joint behind the eyes.
+    let neckAt = Quat.sub(h.position, eyeOffset(scale, neck, h.rotation)) in
     let root = Quat.sub(neckAt, Quat.rotate(body, Quat.scale(scale, Rig.neckUnder(twist)))) in
     let toModel = (p: Pose): Pose => {
       position: Quat.scale(1.0 / scale, Quat.rotate(unturn, Quat.sub(p.position, root))),
@@ -167,6 +181,7 @@ let step = (s: State, x: Sample, dt: float): State =>
       yaw: yaw,
       twist: twist,
       root: root,
+      neckRotation: Quat.mul(unturn, neck),
       headRotation: Quat.mul(unturn, h.rotation),
       left: stepHand(Rig.Left, toModel, scale, dt, x.left, s.left),
       right: stepHand(Rig.Right, toModel, scale, dt, x.right, s.right),
@@ -202,7 +217,8 @@ let pose = (s: State): Anim.t =>
   Rig.idleLegs(s.clock)
     |> twistSpine(s.twist)
     |> Rig.restArms
-    |> Anim.orient(Rig.j.mixamorig_Neck, s.headRotation, 1.0)
+    |> Anim.orient(Rig.j.mixamorig_Neck, s.neckRotation, 1.0)
+    |> Anim.orient(Rig.j.mixamorig_Head, s.headRotation, 1.0)
     |> reachHand(Rig.Left, s.left)
     |> reachHand(Rig.Right, s.right)
 
