@@ -82,7 +82,8 @@ pub fn sample(
     let height = surface_size.1.max(1) as f32;
     let normalized_x = ((mouse_pos.0 as f32 - width * 0.5) / (width * 0.5)).clamp(-1.0, 1.0);
     let normalized_y = ((height * 0.5 - mouse_pos.1 as f32) / (height * 0.5)).clamp(-1.0, 1.0);
-    let pose = |[x, y, z]: [f32; 3]| Some(TrackingPose::new([x, head_y + y, z], [0.0, 0.0, 0.0, 1.0]));
+    let pose =
+        |[x, y, z]: [f32; 3]| Some(TrackingPose::new([x, head_y + y, z], [0.0, 0.0, 0.0, 1.0]));
     let left_pose = pose([-0.24, -0.12, -0.55]);
     let right_pose = pose([
         0.24 + normalized_x * 0.28,
