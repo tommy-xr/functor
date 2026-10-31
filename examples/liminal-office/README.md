@@ -21,9 +21,10 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `1` `2` `3` `4` | jump to the entrance, corridor, office, window view |
 | `5` `6` `7` `8` | stair foot (looking up), landing (looking down), upstairs corridor, upstairs window |
 | `T` | next hour |
-| `N` | midnight ⇄ noon (keyboard only: no VR binding yet) |
+| `N` | midnight ⇄ noon |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
+| VR `X` / `Y` | next hour / midnight ⇄ noon |
 
 ## One layout, four consumers
 
@@ -95,15 +96,16 @@ by day; dawn 5–8 h, dusk 17–20 h):
   the fog's near end, ambient, moon → sun (colour, intensity, direction), neon
   and lamp glow. The frame's sun and ambient are `Light.baked` at every hour.
 
-The day bake is the night bake plus daylight through the facade's openings
-(the windows of 103 and 203, and the entrance); the panels stay on. Ambient
-can't model sky light: its occlusion reaches 1 m, so it would light
+The day bake is the night bake plus overcast daylight through the facade's
+openings (the windows of 103 and 203, and the entrance); the panels stay on.
+Ambient can't model sky light: its occlusion reaches 1 m, so it would light
 windowless rooms too. So each opening gets two grids of shadowed spots outside
 it, bake only: a patch of sky above its head aimed at the floor inside, and a
-patch of sunlit ground aimed at the ceiling. The facade's walls shadow them,
-so daylight reaches only what an opening connects to. A directional sun with
-shadows adds a sun patch. Its direction is `Building.sunDirection`, which the
-frame's sun turns to by day.
+patch of sky-lit ground (a quarter of the sky's light) aimed at the ceiling.
+The facade's walls shadow them, so daylight reaches only what an opening
+connects to. The bake has no sun: every daylight is placed relative to its
+opening, so the bake holds at any yaw of the building. The frame's sun
+(`Hours.sunDirection`) lights only the outdoors.
 
 ## Rebaking
 

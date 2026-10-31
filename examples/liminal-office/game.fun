@@ -10,7 +10,7 @@
 // walk. 1–8 jump to views: entrance, corridor, office, window; stair foot,
 // landing, upstairs corridor, upstairs window. T steps the hour; N jumps
 // between midnight and noon. VR: the left thumbstick walks and strafes; the
-// right turns and walks.
+// right turns and walks; X steps the hour, Y jumps midnight ⇄ noon.
 //
 // layout.fun is the one layout authority; building.fun derives the mesh,
 // cells, colliders and exterior from it. The interior's light is baked
@@ -101,6 +101,8 @@ let init = {
   yaw: 0.0, pitch: 0.06, look: NoMouse, vy: 0.0,
   // The hour, 0 ≤ hour < 24: midnight.
   hour: 0.0,
+  // The left controller's X and Y at the last sample: a press is a change.
+  padX: false, padY: false,
   walk: 0.0, strafe: 0.0, turn: 0.0,
   // A requested view (1–8), applied by the next tick; 0 for none.
   goto: 0.0,
@@ -121,11 +123,18 @@ let deadzone = (x: float): float => if Math.abs(x) < 0.15 then 0.0 else x
 let unit = (x: float): float => Math.clamp(-1.0, 1.0, x)
 let still = { x: 0.0, y: 0.0 }
 
+// T and X: the next hour. N and Y: midnight ⇄ noon.
+let nextHour = (hour: float): float => Math.mod(hour + 1.0, 24.0)
+let dayOrNight = (hour: float): float => if Hours.isDay(hour) then 0.0 else 12.0
+
 let sampledInput = (model, snap: Input.snapshot) =>
   let pad = (match snap.xr with
-    | Option.Some(xr) => { stick: xr.left.thumbstick, look: xr.right.thumbstick }
-    | Option.None => { stick: still, look: still }) in
+    | Option.Some(xr) => { stick: xr.left.thumbstick, look: xr.right.thumbstick, x: xr.left.primaryPressed, y: xr.left.secondaryPressed }
+    | Option.None => { stick: still, look: still, x: false, y: false }) in
+  let stepped = if pad.x && not model.padX then nextHour(model.hour) else model.hour in
   { model with
+    hour: if pad.y && not model.padY then dayOrNight(stepped) else stepped,
+    padX: pad.x, padY: pad.y,
     // In a headset the head pitches; a tilted camera would tilt the horizon.
     pitch: if snap.xr == Option.None then model.pitch else 0.0,
     walk: unit(axis(Key.S, Key.W, snap) + axis(Key.Down, Key.Up, snap) + deadzone(pad.stick.y) + deadzone(pad.look.y)),
@@ -153,9 +162,8 @@ let input = (model, key, isDown: bool) =>
     | Key.Num6 => { model with goto: 6.0 }
     | Key.Num7 => { model with goto: 7.0 }
     | Key.Num8 => { model with goto: 8.0 }
-    // T: the next hour. N: midnight ⇄ noon.
-    | Key.T => { model with hour: Math.mod(model.hour + 1.0, 24.0) }
-    | Key.N => { model with hour: if Hours.isDay(model.hour) then 0.0 else 12.0 }
+    | Key.T => { model with hour: nextHour(model.hour) }
+    | Key.N => { model with hour: dayOrNight(model.hour) }
     | _ => model
 
 let eyeOf = (p: Physics.position): Vec3.t => v(p.x, p.y + eyeAboveCentre, p.z)

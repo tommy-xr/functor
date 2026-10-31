@@ -115,7 +115,7 @@ let inBox = (i: float, p: Vec3.t): bool =>
   Vec3.x(p) >= r.rect.x0 - e && Vec3.x(p) <= r.rect.x1 + e && Vec3.z(p) >= r.rect.z0 - e && Vec3.z(p) <= r.rect.z1 + e
     && Vec3.y(p) >= y0 - e && Vec3.y(p) <= y1 + e
 expect ids |> List.all((i) => Building.cellFaces(i) |> List.all((f) => Building.corners(f.q) |> List.all((p) => inBox(i, p))))
-// Stacked windows share their patch of sunlit ground in the day bake.
+// Stacked windows share their patch of sky-lit ground in the day bake.
 expect windows |> List.all((w) => Building.stacked(w.side, Building.windowHole(w)) == 2.0)
 
 // ---- Cells and portals -------------------------------------------------------
@@ -230,7 +230,7 @@ expect not Hours.isDay(6.0) && Hours.isDay(6.5) && Hours.isDay(7.0)
 expect Hours.isDay(18.0) && not Hours.isDay(19.0)
 
 // The outdoor lerp's endpoints: night exactly as before the hour existed
-// (so night frames don't change), day with the bake's sun.
+// (so night frames don't change), day with the outdoor sun.
 let night = Hours.outdoorAt(0.0)
 let noon = Hours.outdoorAt(1.0)
 expect night.sky == Hours.nightSky && night.fogNear == 35.0 && night.sunIntensity == 0.6
@@ -238,6 +238,6 @@ expect night.neon == 1.0 && night.lamps == 1.0
 expect Vec3.length(night.sunDirection |> Vec3.sub(Hours.moonDirection)) == 0.0
 expect noon.sky == Hours.daySky && noon.fogNear == 70.0 && noon.sunIntensity == 2.6
 expect noon.neon == 0.7 && noon.lamps == 0.0
-expect Vec3.length(noon.sunDirection |> Vec3.sub(Building.sunDirection)) < 0.000001
+expect Vec3.length(noon.sunDirection |> Vec3.sub(Hours.sunDirection)) < 0.000001
 // Halfway, the sky is dusk.
 expect Hours.outdoorAt(0.5).sky == Hours.duskSky
