@@ -320,7 +320,10 @@ fn measure_job_costs() {
         let started = std::time::Instant::now();
         let program = JobProgram::new(&project.module, &project.sources);
         let admit_ms = started.elapsed().as_secs_f64() * 1e3;
-        let deps = functor_lang::reuse::CodeIndex::new(&project.module).deps_of(f).unwrap().len();
+        let deps = functor_lang::reuse::CodeIndex::new(&project.module).deps_of(f).unwrap_or_else(|| {
+            let near: Vec<&str> = project.module.defs.iter().map(|d| d.name.as_str()).filter(|n| n.contains("load")).collect();
+            panic!("no `{f}`: {near:?}")
+        }).len();
         let call = RunCall { program: program.source.clone(), f: f.to_string(), input: Shareable::Number(0.0) };
         let runs: Vec<(f64, f64)> = (0..5).map(|_| crate::functor_lang_prelude::job::spin_up(&call)).collect();
         let compile = median(runs.iter().map(|r| r.0).collect());
