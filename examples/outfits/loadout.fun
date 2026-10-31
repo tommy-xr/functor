@@ -1,6 +1,6 @@
-// Loadout DATA: a body plus what each slot wears. It is slot-shaped so part
-// toggles can later replace the whole-glb presets without changing it; today
-// a loadout renders only when it matches a preset (`outfitOf`).
+// Loadout DATA: a body plus what each slot wears. It is slot-shaped so
+// per-slot toggles can fill it later; today a loadout draws only when it
+// matches a preset (`outfitOf`), as that preset's parts.
 
 type Body =
   | Male
@@ -79,29 +79,44 @@ let slotName = (slot: Slot): string =>
   | Legs => "legs"
   | Feet => "feet"
 
-// Preset glbs at LOD 0/1/2 (ASSETS.md).
-let lods = (body: Body, outfit: Outfit): List<Asset.Model> =>
+// The glbs at LOD 0/1/2: one per body, holding every piece as a part (ASSETS.md).
+let lods = (body: Body): List<Asset.Model> =>
   match body with
-  | Male => (
-    match outfit with
-    | Bare => [Assets.male_base_lod0, Assets.male_base_lod1, Assets.male_base_lod2]
-    | Ranger => [Assets.male_ranger_lod0, Assets.male_ranger_lod1, Assets.male_ranger_lod2]
-    | Peasant => [Assets.male_peasant_lod0, Assets.male_peasant_lod1, Assets.male_peasant_lod2]
-  )
-  | Female => (
-    match outfit with
-    | Bare => [Assets.female_base_lod0, Assets.female_base_lod1, Assets.female_base_lod2]
-    | Ranger => [Assets.female_ranger_lod0, Assets.female_ranger_lod1, Assets.female_ranger_lod2]
-    | Peasant => [Assets.female_peasant_lod0, Assets.female_peasant_lod1, Assets.female_peasant_lod2]
-  )
+  | Male => [Assets.male_lod0, Assets.male_lod1, Assets.male_lod2]
+  | Female => [Assets.female_lod0, Assets.female_lod1, Assets.female_lod2]
 
-// The glb for a preset loadout at `lod`; a non-preset loadout shows the bare body.
 let asset = (kit: Kit, lod: float): Asset.Model =>
-  lods(kit.body, outfitOrBare(kit))
-    |> List.nth(lod)
-    |> Option.defaultValue(Assets.male_base_lod0)
+  lods(kit.body) |> List.nth(lod) |> Option.defaultValue(Assets.male_lod0)
 
-// The glb file stem, e.g. "female_ranger_lod1".
+// Part names both bodies share; only the hairstyles differ.
+let shared = Assets.male_lod0Parts
+
+// The face draws in every loadout.
+let face = [shared.body_head, shared.eyes, shared.eyebrows]
+
+// A preset's hair: none under the Ranger's hood, else the body's default style.
+let hairOf = (body: Body, outfit: Outfit): List<string> =>
+  match outfit with
+  | Ranger => []
+  | _ => (
+    match body with
+    | Male => [Assets.male_lod0Parts.hair_simple_parted]
+    | Female => [Assets.female_lod0Parts.hair_buns]
+  )
+
+// An outfit's pieces; Bare shows every body region instead.
+let outfitParts = (outfit: Outfit): List<string> =>
+  match outfit with
+  | Bare => [shared.body_torso, shared.body_arms, shared.body_legs, shared.body_shins, shared.body_feet]
+  | Ranger => [shared.ranger_hood, shared.ranger_pauldrons, shared.ranger_body, shared.ranger_arms, shared.ranger_legs, shared.ranger_feet]
+  | Peasant => [shared.peasant_body, shared.peasant_arms, shared.peasant_legs, shared.peasant_feet]
+
+// The parts a loadout draws (`Scene.modelParts`); a non-preset loadout draws bare.
+let parts = (kit: Kit): List<string> =>
+  let outfit = outfitOrBare(kit) in
+  face |> List.append(hairOf(kit.body, outfit)) |> List.append(outfitParts(outfit))
+
+// A preset's label, e.g. "female_ranger_lod1".
 let presetName = (kit: Kit, lod: float): string =>
   match outfitOf(kit) with
   | Option.Some(o) => $"{bodyName(kit.body)}_{outfitName(o)}_lod{lod}"
@@ -122,3 +137,11 @@ expect (
 expect not isValid({ body: Male, wear: [{ slot: Head, item: Bare }] })
 expect presetName(dress(Female, Ranger), 1.0) == "female_ranger_lod1"
 expect presetName(dress(Male, Bare), 2.0) == "male_base_lod2"
+expect parts(dress(Male, Ranger)) == [shared.body_head, shared.eyes, shared.eyebrows, shared.ranger_hood, shared.ranger_pauldrons, shared.ranger_body, shared.ranger_arms, shared.ranger_legs, shared.ranger_feet]
+expect parts(dress(Female, Peasant)) |> List.any((p) => p == Assets.female_lod0Parts.hair_buns)
+expect List.length(parts(dress(Male, Bare))) == 9.0
+// A mixed loadout draws bare.
+expect (
+  let mixed = { body: Female, wear: slots |> List.map((s) => { slot: s, item: if s == Feet then Peasant else Ranger }) } in
+  parts(mixed) == parts(dress(Female, Bare))
+)

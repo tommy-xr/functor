@@ -87,8 +87,8 @@ let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(120.0))
 
 let settings = (model) => Settings.create() |> Settings.xr(Xr.create() |> Xr.foveation(Xr.Off))
 
-// Every preset shares these clip names.
-let clips = Assets.male_base_lod0Clips
+// Every glb shares these clip names.
+let clips = Assets.male_lod0Clips
 
 let gaitClip = (gait: Gait): string =>
   match gait with
@@ -96,9 +96,10 @@ let gaitClip = (gait: Gait): string =>
   | Walk => clips.walk.name
   | Run => clips.run.name
 
-// A character's static subtree, built once per memo key. Presets are a single
-// model; part toggles will make it a group without changing the deps.
-let figure = (look: Crowd.Look): Scene.t => Scene.model(Loadout.asset(look.kit, look.lod))
+// A character's static subtree, built once per memo key: its body's glb,
+// filtered to the loadout's parts (unfiltered, every part would draw).
+let figure = (look: Crowd.Look): Scene.t =>
+  Scene.model(Loadout.asset(look.kit, look.lod)) |> Scene.modelParts(Loadout.parts(look.kit))
 
 let walkRun = (phase: float, run: float, tts: float): Anim.t =>
   Anim.blend([
