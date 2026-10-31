@@ -401,7 +401,8 @@ let physics = (model) =>
   radius in one 1/60 s step can end a step behind one, so give small, fast
   bodies `|> Physics.continuous` (continuous collision detection).
 - Chunks are built as `Physics.trimesh` meshes are, so contacts are
-  one-sided: a body that meets a wall from behind passes through it.
+  one-sided: a body that meets a wall from behind (inside the wall or
+  furniture, the side the headset never saw) passes through it.
   Rays hit both sides.
 
 ### Room-bounce
