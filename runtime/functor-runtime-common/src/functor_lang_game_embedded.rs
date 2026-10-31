@@ -461,6 +461,7 @@ impl FunctorLangEmbeddedGame {
         journal_arm();
         let source_hashes = inspector_sources(&loaded.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
+        let job_program = crate::jobs::JobProgram::new(&loaded.module, &loaded.sources);
         let mut game = FunctorLangEmbeddedGame {
             reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_log),
             last_frame_journal: Vec::new(),
@@ -514,6 +515,7 @@ impl FunctorLangEmbeddedGame {
         // this thread left behind first — otherwise a same-tag body from the
         // previous session would answer this session's priming reads.
         physics::remove_world(physics::DEFAULT_WORLD);
+        game.recorder.set_job_program(job_program);
         game.ctx().prime_physics();
         Ok(game)
     }
@@ -552,7 +554,8 @@ impl FunctorLangEmbeddedGame {
             log::warn!("[functor-lang] reload: {warning}");
         }
         // In-flight requests rebind like the model, so their responses land.
-        for cancelled in self.recorder.rebind_requests(&self.module, &loaded.module) {
+        let job_program = crate::jobs::JobProgram::new(&loaded.module, &loaded.sources);
+        for cancelled in self.recorder.rebind_requests(&self.module, &loaded.module, job_program) {
             log::warn!("[functor-lang] {cancelled}");
         }
         // Recompute the inspector source hashes for the edited files, and drop
@@ -652,6 +655,7 @@ impl FunctorLangEmbeddedGame {
     fn reset_in(&mut self, loaded: Loaded) {
         self.ctx().close_all_connections();
         physics::remove_world(physics::DEFAULT_WORLD);
+        let job_program = crate::jobs::JobProgram::new(&loaded.module, &loaded.sources);
 
         self.source_hashes = inspector_sources(&loaded.sources);
         self.last_frame_journal.clear();
@@ -691,6 +695,7 @@ impl FunctorLangEmbeddedGame {
         self.physics_rt = physics::SteppedPhysics::new();
         self.physics_frame = 0;
         self.recorder = SceneRecorder::new();
+        self.recorder.set_job_program(job_program);
         self.next.clear();
         self.last_frame = empty_frame();
         self.reporter.reset();
@@ -1408,15 +1413,7 @@ let draw = (m, tts) =>
   Frame.create(Camera3D.lookAt(Vec3.make(m.size, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 "#;
 
-    /// Counts dispatches on their way to the shared pool.
-    struct Counted(std::cell::Cell<usize>);
-
-    impl crate::jobs::Dispatch for Counted {
-        fn dispatch(&self, job: crate::jobs::Job) {
-            self.0.set(self.0.get() + 1);
-            crate::jobs::Dispatch::dispatch(crate::jobs::Pool::shared(), job);
-        }
-    }
+    use crate::jobs::Counted;
 
     #[test]
     fn a_file_load_on_the_pool_replays_exactly_without_reading_again() {

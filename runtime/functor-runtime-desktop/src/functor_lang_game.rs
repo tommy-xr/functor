@@ -33,6 +33,7 @@ use std::time::Instant;
 
 use functor_lang::project::SourceMap;
 use functor_lang::{Session, Value};
+use functor_runtime_common::jobs::JobProgram;
 use functor_runtime_common::data_watch::{self, DataWatch};
 use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_prelude::{
@@ -506,6 +507,7 @@ impl FunctorLangGame {
         let source_hashes = inspector_sources(&loaded.sources);
         let sources = project_sources_of(&loaded.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
+        let job_program = JobProgram::new(&loaded.module, &loaded.sources);
         let mut data_watch = DataWatch::new();
         data_watch.watch(loaded.file_reads);
         let mut game = FunctorLangGame {
@@ -573,6 +575,7 @@ impl FunctorLangGame {
         // this thread left behind first — otherwise a same-tag body from the
         // previous session would answer this session's priming reads.
         physics::remove_world(physics::DEFAULT_WORLD);
+        game.recorder.set_job_program(job_program);
         game.ctx().prime_physics();
         game
     }
@@ -698,7 +701,8 @@ impl FunctorLangGame {
             eprintln!("[functor-lang] reload: {warning}");
         }
         // In-flight requests rebind like the model, so their responses land.
-        for cancelled in self.recorder.rebind_requests(&self.module, &loaded.module) {
+        let job_program = JobProgram::new(&loaded.module, &loaded.sources);
+        for cancelled in self.recorder.rebind_requests(&self.module, &loaded.module, job_program) {
             eprintln!("[functor-lang] {cancelled}");
         }
         // Recompute the inspector source hashes for the edited files, and drop
@@ -798,6 +802,7 @@ impl FunctorLangGame {
             .watch(std::mem::take(&mut loaded.file_reads));
         self.ctx().close_all_connections();
         physics::remove_world(physics::DEFAULT_WORLD);
+        let job_program = JobProgram::new(&loaded.module, &loaded.sources);
 
         self.source_hashes = inspector_sources(&loaded.sources);
         self.sources = project_sources_of(&loaded.sources);
@@ -838,6 +843,7 @@ impl FunctorLangGame {
         self.physics_rt = physics::SteppedPhysics::new();
         self.physics_frame = 0;
         self.recorder = SceneRecorder::new();
+        self.recorder.set_job_program(job_program);
         self.next.clear();
         self.last_frame = empty_frame();
         self.reporter.reset();
