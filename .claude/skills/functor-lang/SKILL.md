@@ -1195,6 +1195,17 @@ misspelled clip or joint from a silent bind pose into a check error; glTF names
 sanitize deterministically (`mixamorig:Head` → `mixamorig_Head`, with `_2`,
 `_3`, … for collisions).
 
+**Model parts: `scene |> Scene.modelParts(names)` draws only the named parts**
+of the glTF models in `scene` — a part is one mesh node with all its
+primitives, named after the node (else its mesh; repeats get `_2`, `_3`, …).
+Models with 2+ parts get an exact-name `Assets.<model>Parts` record
+(`Assets.xbotParts.beta_Surface`); `functor inspect model x.glb` lists them.
+Hidden parts draw in no pass (no colour, no shadow, both eyes, instanced
+copies too) and the pose is still evaluated once per model node. Nested calls
+INTERSECT: an outer `modelParts` can only hide more. A name the model lacks
+matches nothing and warns once. Data models (`Model.skinned`/`Model.static`)
+have no parts and stay whole.
+
 **Skinned models can come from data instead of glTF.** `Model.skinned(data)`
 takes packed little-endian `Bytes` (positions, normals, uvs, 4 joint indices +
 4 weights per vertex, triangles) plus records for the skeleton (parents first,
