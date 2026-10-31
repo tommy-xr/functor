@@ -354,6 +354,15 @@ let vy = (if grounded && model.jump then jumpSpeed
 `examples/character` is the worked level (stairs, a ledge too tall, ramps, a
 wall; keyboard and VR thumbsticks).
 
+A character needn't walk. `examples/hoverbike` hovers one: four downward
+`Physics.castExcluding` probes feed a spring/damper controller that owns the
+whole velocity, vertical included. Its capsule rides well above the ground, so
+`grounded`, `snap` and the step-up never engage (it sets `snap` and
+`stepHeight` to 0 anyway), and `Physics.move` only collides and slides it
+against walls and props. Where a move comes up short, the game adopts the
+velocity the move achieved, so the bike slides along a wall instead of pushing
+into it.
+
 ## API (F# — reference design, deferred)
 
 **Per-frame draw context.** `draw3d` takes a `DrawContext` record (not a bare
