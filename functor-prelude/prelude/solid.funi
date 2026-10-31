@@ -41,6 +41,24 @@ let sphere : (float) => t
 
 /// Sweep a 2D sketch up from z = 0 to `height` mm into a solid.
 let extrude : (float, Sketch.t) => t
+/// How `extrudeWith` finishes an edge, all round the outline: `Sharp`, a 45°
+/// `Bevel` (chamfer) reaching `size` mm down the wall and in from it, or a
+/// `Round` (fillet) of `radius` mm.
+type edge = | Sharp | Bevel(size: float) | Round(radius: float)
+/// An extrusion's top and bottom edge finishes.
+type edges = { top: edge, bottom: edge }
+/// `extrude`, with its top and bottom edges bevelled or rounded — exact, not
+/// stepped. In from a wall by `d`, the edge's cross-section is
+/// `Sketch.offset(-d)` of the sketch: convex corners stay sharp, concave ones
+/// round. Top and bottom may reach at most the height together, and only as
+/// far in as the sketch can shrink without splitting or vanishing; the error
+/// names the most that fits.
+///
+/// ```
+/// let bezel = Sketch.roundedRect(200.0, 130.0, 18.0)
+///   |> Solid.extrudeWith({ top: Solid.Bevel(2.5), bottom: Solid.Round(1.0) }, 6.0)
+/// ```
+let extrudeWith : (edges, float, Sketch.t) => t
 
 /// Move a solid by an offset in millimetres; the solid is last for piping.
 let translate : (Vec3.t, t) => t

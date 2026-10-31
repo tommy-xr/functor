@@ -186,7 +186,7 @@ impl Sketch {
 /// Points closer than this (mm) are one point: far below any printable
 /// feature, yet above f32 resolution for parts under ~1 m, so exported files
 /// never carry two copies of one position.
-const WELD_TOLERANCE: f64 = 1e-4;
+pub(crate) const WELD_TOLERANCE: f64 = 1e-4;
 
 /// Merge points within [`WELD_TOLERANCE`] — an offset can leave neighbours a
 /// few nanometres apart. Returns the kept points and each input's new index.

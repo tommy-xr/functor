@@ -13,6 +13,7 @@
 
 mod csg;
 pub use csg::simplify;
+mod edged;
 mod mesh;
 pub mod model;
 pub mod print;
@@ -27,6 +28,7 @@ use std::sync::{Arc, OnceLock};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
+pub use edged::EdgeShape;
 pub use mesh::{face_normal, triangulate_polygon, Bounds, Mesh};
 pub use sketch::Sketch;
 pub use text::{text, text_width, Font};
@@ -57,8 +59,15 @@ pub enum Solid {
         turns: usize,
         radius: f64,
     },
-    /// A 2D profile swept from z = 0 to z = `height`.
-    Extrude { sketch: Arc<Sketch>, height: f64 },
+    /// A 2D profile swept from z = 0 to z = `height`, its top and bottom
+    /// edges finished all round. Build a finished one with
+    /// [`Solid::extrude_with`].
+    Extrude {
+        sketch: Arc<Sketch>,
+        height: f64,
+        top: EdgeShape,
+        bottom: EdgeShape,
+    },
     Transform {
         matrix: Matrix4<f64>,
         child: Arc<Solid>,
@@ -173,6 +182,23 @@ got {diameter}, {pitch}, {length}, {offset}"
         ))
     }
 
+    /// `sketch` swept from z = 0 to `height`, with its top and bottom edges
+    /// finished; fails now (not when meshed) if they don't fit.
+    pub fn extrude_with(
+        sketch: Arc<Sketch>,
+        height: f64,
+        top: EdgeShape,
+        bottom: EdgeShape,
+    ) -> Result<Solid, String> {
+        sketch.extrude_edged(height, top, bottom)?;
+        Ok(Solid::Extrude {
+            sketch,
+            height,
+            top,
+            bottom,
+        })
+    }
+
     /// Cut `child` in two along the plane `normal·p = offset`: (the side the
     /// normal points to, the other side). Normal and offset are scaled
     /// together, so `([0, 0, 2], 10)` is the plane z = 5.
@@ -283,7 +309,12 @@ got {normal:?} and {offset}"
                     xform,
                 )
             }
-            Solid::Extrude { sketch, height } => out.append(&sketch.extrude(*height), xform),
+            Solid::Extrude {
+                sketch,
+                height,
+                top,
+                bottom,
+            } => out.append(&sketch.extrude_edged(*height, *top, *bottom)?, xform),
             Solid::Transform { matrix, child } => return child.append_to(out, xform * matrix),
             Solid::Group(children) => {
                 for child in children {

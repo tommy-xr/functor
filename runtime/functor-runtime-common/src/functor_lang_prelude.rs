@@ -14456,6 +14456,44 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
         );
     }
 
+    /// `Solid.extrudeWith` bevels and rounds exactly, pipes the sketch, and
+    /// names the limit when an edge doesn't fit.
+    #[test]
+    fn extrude_with_finishes_edges() {
+        let prelude = "let pi = 3.14159265358979\n\
+             let near = (a: float, b: float) => Math.abs(a / b - 1.0) < 0.005\n\
+             let disc = Sketch.circle(10.0)\n";
+        let checks = [
+            // 8 mm of cylinder under a 2 mm frustum from r = 10 to 8.
+            "near(Solid.volume(disc |> Solid.extrudeWith({ top: Solid.Bevel(2.0), bottom: Solid.Sharp }, 10.0)), \
+               pi * 100.0 * 8.0 + pi * 2.0 * (100.0 + 80.0 + 64.0) / 3.0)",
+            "Solid.check(Solid.extrudeWith({ top: Solid.Round(2.0), bottom: Solid.Bevel(1.0) }, 5.0, disc)).ok",
+            "Vec3.z(Solid.bounds(Solid.extrudeWith({ top: Solid.Round(2.0), bottom: Solid.Round(2.0) }, 4.0, disc)).max) == 4.0",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+        for (src, want) in [
+            (
+                "Solid.extrudeWith({ top: Solid.Bevel(3.0), bottom: Solid.Round(2.0) }, 4.0, disc)",
+                "Solid.extrudeWith: the top Solid.Bevel(3) and bottom Solid.Round(2) reach 5 mm",
+            ),
+            (
+                "Solid.extrudeWith({ top: Solid.Sharp, bottom: Solid.Bevel(3.0) }, 9.0, Sketch.rect(20.0, 4.0))",
+                "at most 1.99 mm fits",
+            ),
+        ] {
+            let src = format!("{prelude}let main = Solid.volume({src})\n");
+            let err = eval_with_prelude(&src).err().expect("should fail");
+            assert!(err.contains(want), "{src}: {err}");
+        }
+    }
+
     /// `Mesh.*` from raw f32 positions + polygons, then `Solid.fromMesh`
     /// closes an open box and scales it to the asked height.
     #[test]
