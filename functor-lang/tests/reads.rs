@@ -369,3 +369,21 @@ fn expects_may_read_files_but_not_physics() {
 expects run at load, outside any frame"]
     );
 }
+
+/// A value built by a function holds only the code the function returns: a
+/// file read made while building it (`mesh`) ran at load.
+#[test]
+fn a_built_value_holds_only_its_results_code() {
+    let errors = phase(
+        "type Viewer = { tick: (float) => float, mesh: float }\n\
+         let make = (p): Viewer => { tick: (m) => m + Physics.height(p), mesh: File.size(p) }\n\
+         let viewer = make(\"v.bin\")\n\
+         let tick = (m) => viewer.tick(m) + viewer.mesh\n\
+         let draw = (m) => make(\"w.bin\").tick(m)\n",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(
+        errors[0].starts_with("5: `draw` reads project files (draw → make → File.size)"),
+        "{errors:#?}"
+    );
+}
