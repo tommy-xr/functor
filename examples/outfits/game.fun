@@ -66,8 +66,8 @@ let outfitOf = (model) => Loadout.outfitOrBare(model.kit)
 let update = (model, msg: Msg) =>
   match msg with
   | SetMode(mode) => { model with mode: mode }
-  | SetBody(body) => { model with kit: Loadout.redress(model.kit, body, outfitOf(model)) }
-  | SetOutfit(outfit) => { model with kit: Loadout.redress(model.kit, model.kit.body, outfit) }
+  | SetBody(body) => { model with kit: Loadout.rebody(model.kit, body) }
+  | SetOutfit(outfit) => { model with kit: Loadout.redress(model.kit, outfit) }
   | SetSlot(slot, item) => { model with kit: Loadout.wear(model.kit, slot, item) }
   | SetHair(hair) => { model with kit: { model.kit with hair: hair } }
   | SetBeard(beard) => { model with kit: { model.kit with beard: beard } }
@@ -86,6 +86,7 @@ let input = (model, key, isDown) =>
     match key with
     | Key.M => update(model, SetMode(if model.mode == LoadoutView then CrowdView else LoadoutView))
     | Key.B => update(model, SetBody(cycle(Loadout.bodies, model.kit.body)))
+    // A mixed loadout counts as Bare, so O dresses it as the Ranger.
     | Key.O => update(model, SetOutfit(cycle(Loadout.outfits, outfitOf(model))))
     | Key.Num4 => nextItem(model, Loadout.Head)
     | Key.Num5 => nextItem(model, Loadout.Torso)
@@ -249,6 +250,8 @@ expect Loadout.itemOf((input(input(init, Key.Num4, true), Key.Num4, true)).kit, 
 // The look survives a body or outfit change where the body offers it.
 expect not (update(update(init, SetBrows(false)), SetOutfit(Loadout.Peasant))).kit.brows
 expect (update(update(init, SetHair(Loadout.Buzzed)), SetBody(Loadout.Female))).kit.hair == Loadout.Buzzed
+// A body change keeps a mixed loadout's slots.
+expect (let m = input(init, Key.Num5, true) in (input(m, Key.B, true)).kit.wear == m.kit.wear)
 expect (input(init, Key.H, true)).kit.hair == Loadout.Bald
 // Only the male has a beard.
 expect (input(init, Key.G, true)).kit.beard

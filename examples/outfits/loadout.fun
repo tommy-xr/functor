@@ -70,15 +70,18 @@ let dress = (body: Body, outfit: Outfit): Kit =>
     wear: slots |> List.map((s) => { slot: s, item: if contains(itemsFor(s), outfit) then outfit else Bare }),
   }
 
-// `kit` dressed whole in `outfit` on `body`, keeping its hair, beard and
-// brows where that body offers them.
-let redress = (kit: Kit, body: Body, outfit: Outfit): Kit =>
+// `kit` on `body`, keeping its slots, and its hair and beard where that body
+// offers them. Every slot item fits both bodies.
+let rebody = (kit: Kit, body: Body): Kit =>
   {
-    dress(body, outfit) with
+    kit with
+    body: body,
     hair: if contains(hairsFor(body), kit.hair) then kit.hair else defaultHair(body),
     beard: kit.beard && body == Male,
-    brows: kit.brows,
   }
+
+// `kit` dressed whole in `outfit`, keeping its look.
+let redress = (kit: Kit, outfit: Outfit): Kit => { kit with wear: dress(kit.body, outfit).wear }
 
 // Every whole outfit on every body: 2 × 3.
 let presets = bodies |> List.concatMap((b) => outfits |> List.map((o) => dress(b, o)))
@@ -219,8 +222,9 @@ let parts = (kit: Kit): List<string> =>
     |> List.append(onlyIf(not wears(kit, Head), hairParts(kit.body, kit.hair)))
     |> List.append(kit.wear |> List.concatMap((w) => slotParts(w.slot, w.item)))
 
-// Every part in a body's glb, from its typed record: pinned to the 21
-// ASSETS.md lists, so a part a rebuild adds or renames fails a test.
+// Every part of a body's glb, listed by hand from its typed record: the tests
+// check each option selects only these, and some option selects each one. A
+// part a rebuild adds must be added here.
 let inventory = (body: Body): List<string> =>
   let s = shared in
   let common = [
@@ -272,7 +276,6 @@ expect not isValid({ dress(Male, Bare) with wear: [{ slot: Head, item: Bare }] }
 
 // Every option resolves to real parts of its body's glb, and every part is
 // some option's.
-expect List.length(inventory(Male)) == 21.0 && List.length(inventory(Female)) == 21.0
 expect bodies |> List.all((b) => slots |> List.all((s) => itemsFor(s) |> List.all((i) =>
   (i == Bare) == List.isEmpty(slotParts(s, i)) && (slotParts(s, i) |> List.all((p) => contains(inventory(b), p))))))
 expect bodies |> List.all((b) => hairsFor(b) |> List.all((h) =>
@@ -300,8 +303,10 @@ expect (let k = { dress(Male, Ranger) with beard: true } in has(k, Assets.male_l
 expect not has({ dress(Male, Bare) with brows: false }, shared.eyebrows)
 expect not has({ dress(Male, Bare) with hair: Bald }, Assets.male_lod0Parts.hair_simple_parted)
 
-// Re-dressing keeps the look a body offers.
-expect (let k = redress({ dress(Female, Bare) with hair: Long, brows: false }, Female, Ranger) in k.hair == Long && not k.brows)
-expect redress({ dress(Female, Bare) with hair: Long }, Male, Bare).hair == Parted
-expect not redress({ dress(Male, Bare) with beard: true }, Female, Bare).beard
-expect redress({ dress(Male, Bare) with hair: Buzzed }, Female, Bare).hair == Buzzed
+// Re-dressing keeps the look; a body change keeps the slots, and the look the
+// body offers.
+expect (let k = redress({ dress(Female, Bare) with hair: Long, brows: false }, Ranger) in k.hair == Long && not k.brows)
+expect rebody(hoodedPeasant, Female).wear == hoodedPeasant.wear
+expect rebody({ dress(Female, Bare) with hair: Long }, Male).hair == Parted
+expect not rebody({ dress(Male, Bare) with beard: true }, Female).beard
+expect rebody({ dress(Male, Bare) with hair: Buzzed }, Female).hair == Buzzed
