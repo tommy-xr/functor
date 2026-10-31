@@ -397,6 +397,8 @@ try {
   games.push(unculled);
   await unculled.ready();
   const all = await viewCaptures(unculled, false);
+  // A regression check for now: the renderer draws `Model.static` data models
+  // unculled, so the interior matches by construction until that engine fix.
   culled.forEach((shot, i) => check(shot.equals(all[i]), `${i < 8 ? "night" : "noon"} view ${(i % 8) + 1}: culling on and off capture the same frame`));
 
   const scripted = (script) => ["--input-script", join(DIR, script), "--capture-at-frame", "30"];

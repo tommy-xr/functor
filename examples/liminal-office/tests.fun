@@ -6,7 +6,6 @@ open Layout
 let n = List.length(rooms)
 let ids = List.range(n)
 let interiorIds = ids |> List.filter((i) => Building.isInside(Building.roomAt(i)))
-let roomOf = Building.roomAt
 
 let overlap = (a: Rect, b: Rect): float =>
   Math.max(0.0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0))
@@ -19,17 +18,17 @@ let near = Building.near
 // Rooms on one level don't overlap; every inside room is within the
 // footprint, on level 0 or 1.
 expect pairs |> List.all((p) =>
-  let (i, j) = p in roomOf(i).level != roomOf(j).level || overlap(roomOf(i).rect, roomOf(j).rect) < 0.0001)
-expect interiorIds |> List.all((i) => within(footprint, roomOf(i).rect))
+  let (i, j) = p in Building.roomAt(i).level != Building.roomAt(j).level || overlap(Building.roomAt(i).rect, Building.roomAt(j).rect) < 0.0001)
+expect interiorIds |> List.all((i) => within(footprint, Building.roomAt(i).rect))
 expect rooms |> List.all((r) => r.level == 0.0 || r.level == 1.0)
 // Both floors have rooms; upstairs is all inside.
-expect interiorIds |> List.any((i) => roomOf(i).level == 1.0)
+expect interiorIds |> List.any((i) => Building.roomAt(i).level == 1.0)
 expect rooms |> List.all((r) => r.level == 0.0 || Building.isInside(r))
 
 // The stretch of wall two rooms share, along it.
 let shared = (d: Door): Building.Hole =>
-  let a = roomOf(d.a).rect in
-  let b = roomOf(d.b).rect in
+  let a = Building.roomAt(d.a).rect in
+  let b = Building.roomAt(d.b).rect in
   let side = Building.sideBetween(a, b) in
   if side == Option.Some(North) || side == Option.Some(South)
   then { lo: Math.max(a.x0, b.x0), hi: Math.min(a.x1, b.x1), bottom: 0.0, top: 0.0 }
@@ -37,8 +36,8 @@ let shared = (d: Door): Building.Hole =>
 
 // Doors join two rooms on one level across a shared wall, inside its span
 // with a jamb's worth of wall on each side, and are big enough to walk through.
-expect doors |> List.all((d) => roomOf(d.a).level == roomOf(d.b).level)
-expect doors |> List.all((d) => Building.sideBetween(roomOf(d.a).rect, roomOf(d.b).rect) != Option.None)
+expect doors |> List.all((d) => Building.roomAt(d.a).level == Building.roomAt(d.b).level)
+expect doors |> List.all((d) => Building.sideBetween(Building.roomAt(d.a).rect, Building.roomAt(d.b).rect) != Option.None)
 expect doors |> List.all((d) =>
   let s = shared(d) in
   let h = Building.holeOf(d) in
@@ -67,7 +66,7 @@ expect List.length(reached) == n
 
 // Clearances: rooms and the corridor leave room for the 0.6 m capsule.
 expect interiorIds |> List.all((i) =>
-  let r = Building.inner(roomOf(i).rect) in Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 2.0)
+  let r = Building.inner(Building.roomAt(i).rect) in Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 2.0)
 // Panels sit inside their room, clear of the walls.
 expect rooms |> List.all((r) =>
   let c = Building.inner(r.rect) in
@@ -77,15 +76,15 @@ expect rooms |> List.all((r) =>
 
 // A flight's rooms are one stairwell: the same rect, a level apart.
 expect flights |> List.all((f) =>
-  let lo = roomOf(f.lower) in
-  let up = roomOf(f.upper) in
+  let lo = Building.roomAt(f.lower) in
+  let up = Building.roomAt(f.upper) in
   lo.kind == Stair && up.kind == Stair && lo.rect == up.rect && up.level == lo.level + 1.0)
 // The flight runs along the south wall, with room to step on at its foot
 // and a landing at its head, and lies inside the stairwell.
 let landingWidth = (f: Flight): float =>
-  Building.inner(roomOf(f.lower).rect).x1 - Building.flightEnd(f) - Building.parapetThickness
+  Building.inner(Building.roomAt(f.lower).rect).x1 - Building.flightEnd(f) - Building.parapetThickness
 expect flights |> List.all((f) =>
-  let r = Building.inner(roomOf(f.lower).rect) in
+  let r = Building.inner(Building.roomAt(f.lower).rect) in
   near(f.z0, r.z0) && f.z1 < r.z1 && f.x0 - r.x0 >= 1.0 && landingWidth(f) >= 1.2)
 // Clear width between the wall and the parapet; headroom under the landing.
 expect flights |> List.all((f) => f.z1 - Building.parapetThickness - f.z0 >= 1.2)
@@ -102,21 +101,29 @@ expect flights |> List.all((f) =>
     && near(Building.rampY(f, Building.flightEnd(f)), storey))
 // The upper room's door opens onto the landing's walkway.
 expect flights |> List.all((f) =>
-  let r = Building.inner(roomOf(f.upper).rect) in
+  let r = Building.inner(Building.roomAt(f.upper).rect) in
   doors |> List.filter((d) => d.a == f.upper || d.b == f.upper) |> List.all((d) =>
     let h = Building.holeOf(d) in
     h.lo >= Building.flightEnd(f) + Building.parapetThickness && h.hi <= r.x1))
-// Each stair face lies in exactly one of the two rooms' cells.
-expect flights |> List.all((f) =>
-  List.length(Building.stairFaces(f.lower)) + List.length(Building.stairFaces(f.upper))
-    == List.length(Building.flightFaces(f)))
+// Every face of a cell's mesh lies inside that cell, so what a cell draws
+// is only ever seen from it or through its portals: the stairs split at
+// the upper floor, doors and windows at their wall's centre line.
+let inBox = (i: float, p: Vec3.t): bool =>
+  let r = Building.roomAt(i) in
+  let (y0, y1) = if Building.isInside(r) then (Building.baseOf(r), Building.baseOf(r) + Building.wallTop(i)) else (0.0, Building.outsideTop) in
+  let e = 0.0001 in
+  Vec3.x(p) >= r.rect.x0 - e && Vec3.x(p) <= r.rect.x1 + e && Vec3.z(p) >= r.rect.z0 - e && Vec3.z(p) <= r.rect.z1 + e
+    && Vec3.y(p) >= y0 - e && Vec3.y(p) <= y1 + e
+expect ids |> List.all((i) => Building.cellFaces(i) |> List.all((f) => Building.corners(f.q) |> List.all((p) => inBox(i, p))))
+// Stacked windows share their patch of sunlit ground in the day bake.
+expect windows |> List.all((w) => Building.stacked(w.side, Building.windowHole(w)) == 2.0)
 
 // ---- Cells and portals -------------------------------------------------------
 
 // Each room's middle, at eye height, is in its own cell; the spawn is on the apron.
 let middle = (i: float): Vec3.t =>
-  let r = roomOf(i).rect in
-  Vec3.make((r.x0 + r.x1) / 2.0, Building.baseOf(roomOf(i)) + 1.6, (r.z0 + r.z1) / 2.0)
+  let r = Building.roomAt(i).rect in
+  Vec3.make((r.x0 + r.x1) / 2.0, Building.baseOf(Building.roomAt(i)) + 1.6, (r.z0 + r.z1) / 2.0)
 expect ids |> List.all((i) => Cells.locate(middle(i), Building.level) == Option.Some(i))
 expect Cells.locate(Vec3.make(spawn.x, 1.6, spawn.z), Building.level) == Option.Some(0.0)
 // Sight runs through doorways and stops at walls.
@@ -185,7 +192,7 @@ let depth = (d: Door, i: float): float =>
   | Option.Some(f) => Vec3.length(Vec3.cross(f.q.b, f.q.a)) / d.width
   | Option.None => 0.0
 expect doors |> List.all((d) =>
-  let wall = if Building.isInside(roomOf(d.a)) then partition else facade in
+  let wall = if Building.isInside(Building.roomAt(d.a)) then partition else facade in
   Math.abs(depth(d, d.a) + depth(d, d.b) - wall) < 0.0001 && Math.abs(depth(d, d.a) - depth(d, d.b)) < 0.0001)
 
 // Collider tags are unique.
@@ -195,7 +202,7 @@ expect tags |> List.indexedMap((i, t) => List.drop(i + 1.0, tags) |> List.any((u
 // Windows sit in an outside wall of an inside room, clear of its corners,
 // with a sill and a head under the ceiling.
 expect windows |> List.all((w) =>
-  let r = roomOf(w.room) in
+  let r = Building.roomAt(w.room) in
   let c = Building.inner(r.rect) in
   let (lo, hi) = if w.side == North || w.side == South then (c.x0, c.x1) else (c.z0, c.z1) in
   Building.isInside(r) && Building.onFootprint(w.side, r.rect)
@@ -204,8 +211,8 @@ expect windows |> List.all((w) =>
 // Each window has a sill collider: its floor to its sill, across the
 // window, in its wall.
 expect windows |> List.all((w) =>
-  let l = Building.lineOf(w.side, roomOf(w.room).rect) in
-  let y = Building.baseOf(roomOf(w.room)) in
+  let l = Building.lineOf(w.side, Building.roomAt(w.room).rect) in
+  let y = Building.baseOf(Building.roomAt(w.room)) in
   Building.blocks |> List.any((b) =>
     near(b.y - b.h / 2.0, y) && near(b.y + b.h / 2.0, y + w.sill)
       && (if w.side == North || w.side == South then near(b.z, l) && near(b.x, w.at) && near(b.w, w.width)

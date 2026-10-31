@@ -261,12 +261,28 @@ let doorHalf = (d: Door, i: float): List<Face> =>
       else revealFaces(side, l, l + t, h, frame, top, floorMatOf(room)) in
     half |> List.map((f) => lift(baseOf(room), f))
 
-// A window's reveal through the whole facade, painted like the walls.
-let windowFaces = (w: Window): List<Face> =>
-  let r = roomAt(w.room).rect in
-  let l = lineOf(w.side, r) in
-  let t = halfWall(w.side, r) in
-  revealFaces(w.side, l - t, l + t, windowHole(w), wall, wall, wall)
+// The outside room a window looks onto, if layout.fun has one there.
+let outsideOf = (w: Window): Option.t<float> =>
+  List.range(List.length(rooms)) |> List.find((o) =>
+    not isInside(roomAt(o)) && sideBetween(roomAt(w.room).rect, roomAt(o).rect) == Option.Some(w.side))
+
+// Cell `i`'s share of the window reveals, painted like the walls: the inner
+// half of those in its walls, the outer half of those looking onto it (an
+// outside room). With no outside room there, the room has the whole reveal.
+let windowHalves = (i: float): List<Face> =>
+  windows |> List.concatMap((w) =>
+    let room = roomAt(w.room) in
+    let l = lineOf(w.side, room.rect) in
+    let t = halfWall(w.side, room.rect) in
+    // The room is below the line when the line is its North or East side.
+    let below = w.side == North || w.side == East in
+    let half = (l0: float, l1: float) =>
+      revealFaces(w.side, l0, l1, windowHole(w), wall, wall, wall) |> List.map((f) => lift(baseOf(room), f)) in
+    let outside = outsideOf(w) in
+    if w.room == i then
+      (if outside == Option.None then half(l - t, l + t) else if below then half(l - t, l) else half(l, l + t))
+    else if outside == Option.Some(i) then (if below then half(l, l + t) else half(l - t, l))
+    else [])
 
 let panelW = 0.6
 let panelL = 1.2
@@ -295,8 +311,7 @@ let signFace = (f: Fixture): Face =>
   | StairSign => plate(sodium, f.room, f.side, f.at, 0.7, 2.2, 2.42, 0.02)
 let lampFace = (l: Lamp): Face => plate(sodium, l.room, l.side, l.at, 0.5, l.y - 0.1, l.y + 0.1, 0.03)
 
-// Room `i`'s own faces: floor, ceiling, walls, panels, signs, lamps and
-// window reveals.
+// Room `i`'s own faces: floor, ceiling, walls, panels, signs and lamps.
 let roomFaces = (i: float): List<Face> =>
   let room = roomAt(i) in
   if not isInside(room) then []
@@ -314,7 +329,6 @@ let roomFaces = (i: float): List<Face> =>
       room.panels |> List.map((p) => panelFace(room.rect, p)),
       fixtures |> List.filter((f) => f.room == i) |> List.map(signFace),
       lamps |> List.filter((l) => l.room == i) |> List.map(lampFace),
-      windows |> List.filter((w) => w.room == i) |> List.concatMap(windowFaces),
     ]) |> List.map((f) => lift(baseOf(room), f))
 
 // ---- Stairs ------------------------------------------------------------------
@@ -381,11 +395,13 @@ let stairFaces = (i: float): List<Face> =>
 // ---- The interior mesh -----------------------------------------------------
 
 // Every face in cell `i` (room `i`), sorted by material (one group each):
-// the room's own, its halves of its doors, and its share of the stairs.
+// the room's own, its halves of its doors and windows, and its share of the
+// stairs.
 let cellFaces = (i: float): List<Face> =>
   List.flatten([
     roomFaces(i),
     doors |> List.filter((d) => d.a == i || d.b == i) |> List.concatMap((d) => doorHalf(d, i)),
+    windowHalves(i),
     stairFaces(i),
   ]) |> List.sortBy((f) => f.mat)
 
@@ -520,10 +536,6 @@ let stairOpening = (f: Flight): List<Vec3.t> =>
   let x1 = flightEnd(f) in
   [v(r.x0, y, r.z0), v(x1, y, r.z0), v(x1, y, r.z1), v(r.x0, y, r.z1)]
 
-// The outside room a window looks onto, if layout.fun has one there.
-let outsideOf = (w: Window): Option.t<float> =>
-  List.range(List.length(rooms)) |> List.find((o) =>
-    not isInside(roomAt(o)) && sideBetween(roomAt(w.room).rect, roomAt(o).rect) == Option.Some(w.side))
 let windowOpening = (w: Window): List<Vec3.t> =>
   let r = roomAt(w.room) in
   opening(w.side, lineOf(w.side, r.rect), baseOf(r), windowHole(w))
@@ -610,8 +622,10 @@ let rampY = (f: Flight, x: float): float =>
   Math.clamp(0.0, storey, (x - (f.x0 - f.tread)) * riserOf(f) / f.tread)
 let rampFace = (f: Flight): Face =>
   let start = f.x0 - f.tread in
+  let end = flightEnd(f) in
   let zp = f.z1 - parapetThickness in
-  face(carpet, v(start, baseOf(roomAt(f.lower)), zp), v(flightEnd(f) - start, storey, 0.0), v(0.0, 0.0, f.z0 - zp))
+  face(carpet, v(start, baseOf(roomAt(f.lower)) + rampY(f, start), zp),
+    v(end - start, rampY(f, end) - rampY(f, start), 0.0), v(0.0, 0.0, f.z0 - zp))
 let rampShape = (f: Flight): Physics.shape =>
   Physics.trimesh({ positions: positionsOf([rampFace(f)]), triangles: quadTriangles(1.0) })
 
@@ -694,8 +708,14 @@ let patchLights = (s: Side, base: float, h: Hole, p: Patch): List<Light.t> =>
     let at = outsideFacade(s, lo + (Math.mod(k, nu) + 0.5) * du, y0 + (Math.floor(k / nu) + 0.5) * dv, p.out) in
     Light.spot(at, Vec3.normalize(target |> Vec3.sub(at)), p.color, p.perSquareMetre * du * dv, 12.0, 80deg)
       |> Light.castShadows)
+// Openings stacked over each other on `s` see one patch of ground, so they
+// share its light: each emits its share.
+let stacked = (s: Side, h: Hole): float =>
+  levels |> List.map((l) => openingsIn(l, s) |> List.filter((o) => near(o.lo, h.lo) && near(o.hi, h.hi)) |> List.length)
+    |> List.sum
 let openingLights = (s: Side, base: float, h: Hole): List<Light.t> =>
-  List.flatten([patchLights(s, base, h, skyPatch), patchLights(s, base, h, groundPatch)])
+  let ground = { groundPatch with perSquareMetre: groundPatch.perSquareMetre / stacked(s, h) } in
+  List.flatten([patchLights(s, base, h, skyPatch), patchLights(s, base, h, ground)])
 
 let daylightLights = List.flatten([
   [Light.directional(sunDirection, Color.rgb(1.0, 0.93, 0.8), 3.0) |> Light.castShadows],
