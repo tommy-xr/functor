@@ -76,7 +76,7 @@ let runFrom = (seconds: float, throttle: float, x0: float, yaw: float, v: float)
   List.range(Math.round(seconds * 60.0)) |> List.fold((acc, i) =>
     let r = acc |> List.head |> Option.defaultValue({ t: 0.0, x: x0, s: { Ride.rest with yaw: yaw, vx: v * Math.sin(yaw) } }) in
     let c = limit(r.x, 0.0, r.s.yaw, { throttle: throttle, brake: 0.0, steer: 0.0 }) in
-    let s = Ride.step(c, Ride.flatProbes(Ride.hoverHeight), Ride.dt60, r.s) |> recover(r.x, 0.0, Ride.dt60) in
+    let s = Ride.step(c, Ride.hoverHeight, Ride.flatProbes(Ride.hoverHeight), Ride.dt60, r.s) |> recover(r.x, 0.0, Ride.dt60) in
     [{ t: (i + 1.0) * Ride.dt60, x: r.x + s.vx * Ride.dt60, s: s }, ..acc], [])
 let furthest = (run: List<Run>) => run |> List.map((r) => r.x) |> List.maximum |> Option.defaultValue(0.0)
 let endsInside = (run: List<Run>) => run |> List.head |> Option.map((r) => r.x <= softLimit) |> Option.defaultValue(false)

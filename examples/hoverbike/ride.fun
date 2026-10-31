@@ -11,7 +11,11 @@
 
 // Hover: each emitter is a spring/damper on its own downward ray.
 let gravity = 9.81
-let hoverHeight = 1.2 // m, emitter plane to ground at rest
+let hoverHeight = 1.2 // m, emitter plane to ground at rest, ridden
+// Parked, the springs aim lower so a standing walker's hands meet the grips
+// (`Bars.gripHeight` up from the emitter plane): 1.3 m off the ground, chest
+// height (`mount.fun` pins it below the shoulder and above the hip).
+let idleHeight = 0.3 // m
 let probeRange = 3.0 // m; a probe that sees nothing nearer gives no lift
 let springRate = 25.0 // m/s² per m of compression: 0.8 Hz
 let springDamping = 7.0 // m/s² per m/s: damping ratio 0.7
@@ -51,15 +55,16 @@ type Probe = { hit: bool, distance: float }
 let rest: State = { vx: 0.0, vy: 0.0, vz: 0.0, yaw: 0.0, yawRate: 0.0, roll: 0.0, pitch: 0.0 }
 let idle: Controls = { throttle: 0.0, brake: 0.0, steer: 0.0 }
 
-// One emitter's upward acceleration. Gravity is fed forward, so the bike
-// rests exactly at `hoverHeight`; emitters only push, and a miss gives nothing.
-let lift = (vy: float, p: Probe): float =>
+// One emitter's upward acceleration toward a target `height`. Gravity is fed
+// forward, so the bike rests exactly at it; emitters only push, and a miss
+// gives nothing.
+let lift = (height: float, vy: float, p: Probe): float =>
   if p.hit && p.distance < probeRange then
-    Math.clamp(0.0, maxLift, gravity + springRate * (hoverHeight - p.distance) - springDamping * vy)
+    Math.clamp(0.0, maxLift, gravity + springRate * (height - p.distance) - springDamping * vy)
   else 0.0
 
-let verticalAccel = (probes: List<Probe>, vy: float): float =>
-  (probes |> List.map((p) => lift(vy, p)) |> List.sum) / List.length(probes) - gravity
+let verticalAccel = (height: float, probes: List<Probe>, vy: float): float =>
+  (probes |> List.map((p) => lift(height, vy, p)) |> List.sum) / List.length(probes) - gravity
 
 // Every probe sees ground in range. Riding waits for this: on a cold load a
 // heightfield's collider appears only once its heightmap decodes, and until
@@ -80,7 +85,8 @@ let approach = (target: float, rate: float, dt: float, v: float): float =>
 
 let speedOf = (s: State) => Math.sqrt(s.vx * s.vx + s.vz * s.vz)
 
-let step = (c: Controls, probes: List<Probe>, dt: float, s: State): State =>
+// `height` is the hover target: `hoverHeight` ridden, `idleHeight` parked.
+let step = (c: Controls, height: float, probes: List<Probe>, dt: float, s: State): State =>
   let speed = speedOf(s) in
   // Capped at the most speed this step can reach, so speed × yaw rate stays
   // under `maxLateralAccel` after the step too.
@@ -96,7 +102,7 @@ let step = (c: Controls, probes: List<Probe>, dt: float, s: State): State =>
   let side2 = side * Math.exp(-grip * dt) in
   let accel = if dt > 0.0 then (forward2 - forward) / dt else 0.0 in
   { vx: forward2 * fx + side2 * fz,
-    vy: s.vy + verticalAccel(probes, s.vy) * dt,
+    vy: s.vy + verticalAccel(height, probes, s.vy) * dt,
     vz: forward2 * fz - side2 * fx,
     yaw: yaw,
     yawRate: yawRate,
@@ -115,14 +121,18 @@ let flatProbes = (h: float): List<Probe> =>
 
 type Sample = { t: float, h: float, x: float, z: float, s: State, ay: float }
 
-// `seconds` of 60 Hz steps from emitter height h0, newest sample first.
-// Positions advance by the new velocity, as `Physics.move(v × dt)` does.
-let simulate = (seconds: float, controlsAt: (float) => Controls, h0: float, s0: State): List<Sample> =>
+// `seconds` of 60 Hz steps from emitter height h0 toward a hover target,
+// newest sample first. Positions advance by the new velocity, as
+// `Physics.move(v × dt)` does.
+let simulateTo = (height: float, seconds: float, controlsAt: (float) => Controls, h0: float, s0: State): List<Sample> =>
   List.range(Math.round(seconds * 60.0)) |> List.fold((acc, i) =>
     let last = acc |> List.head |> Option.defaultValue({ t: 0.0, h: h0, x: 0.0, z: 0.0, s: s0, ay: 0.0 }) in
-    let s = step(controlsAt(last.t), flatProbes(last.h), dt60, last.s) in
+    let s = step(controlsAt(last.t), height, flatProbes(last.h), dt60, last.s) in
     [{ t: (i + 1.0) * dt60, h: last.h + s.vy * dt60, x: last.x + s.vx * dt60, z: last.z + s.vz * dt60,
        s: s, ay: (s.vy - last.s.vy) / dt60 }, ..acc], [])
+// Ridden.
+let simulate = (seconds: float, controlsAt: (float) => Controls, h0: float, s0: State): List<Sample> =>
+  simulateTo(hoverHeight, seconds, controlsAt, h0, s0)
 
 let latest = (samples: List<Sample>): Sample =>
   samples |> List.head |> Option.defaultValue({ t: 0.0, h: 0.0, x: 0.0, z: 0.0, s: rest, ay: 0.0 })
@@ -136,15 +146,27 @@ let between = (t0: float, t1: float, samples: List<Sample>) =>
 let hoverError = (x: Sample) => Math.abs(x.h - hoverHeight)
 let always = (c: Controls) => (t: float) => c
 
-// Hover settles within ±5 cm in 3 s from below, from above, and from high
-// enough to free-fall, and the error never grows again.
-let settles = (h0: float) =>
-  let run = simulate(6.0, always(idle), h0, rest) in
-  maxOf(hoverError, between(3.0, 6.0, run)) < 0.05
-    && maxOf(hoverError, between(4.5, 6.0, run)) <= maxOf(hoverError, between(3.0, 4.5, run))
+// Hover settles within ±5 cm of its target in 3 s from below, from above,
+// and from high enough to free-fall, and the error never grows again.
+let settlesTo = (height: float, h0: float) =>
+  let run = simulateTo(height, 6.0, always(idle), h0, rest) in
+  let error = (x: Sample) => Math.abs(x.h - height) in
+  maxOf(error, between(3.0, 6.0, run)) < 0.05
+    && maxOf(error, between(4.5, 6.0, run)) <= maxOf(error, between(3.0, 4.5, run))
+let settles = (h0: float) => settlesTo(hoverHeight, h0)
 expect settles(0.3)
 expect settles(1.8)
 expect settles(2.9)
+// Parked: it rests at the idle height, and sinks to it from ride height (or
+// from a free fall) without the error growing.
+expect verticalAccel(idleHeight, flatProbes(idleHeight), 0.0) == 0.0
+expect settlesTo(idleHeight, hoverHeight) && settlesTo(idleHeight, 2.9)
+// Sinking from ride height, the springs only stop pushing: the bike falls at
+// most 1 g and never touches the ground.
+expect (
+  let run = simulateTo(idleHeight, 3.0, always(idle), hoverHeight, rest) in
+  (run |> List.all((x) => x.h > 0.2 && x.ay >= -gravity - 0.001))
+)
 // Damping ratio pinned by the overshoot: rising 0.9 m overshoots under 5 cm.
 expect maxOf((x) => x.h, simulate(3.0, always(idle), 0.3, rest)) < hoverHeight + 0.05
 // A fall from the edge of probe range neither grounds the bike nor slams it:
@@ -155,11 +177,11 @@ expect (
 )
 
 // A miss, or a hit beyond range, lifts nothing: the bike falls at 1 g.
-expect lift(0.0, { hit: false, distance: 0.0 }) == 0.0
-expect lift(0.0, { hit: true, distance: probeRange + 0.1 }) == 0.0
-expect verticalAccel(flatProbes(probeRange + 1.0), 0.0) == -gravity
+expect lift(hoverHeight, 0.0, { hit: false, distance: 0.0 }) == 0.0
+expect lift(hoverHeight, 0.0, { hit: true, distance: probeRange + 0.1 }) == 0.0
+expect verticalAccel(hoverHeight, flatProbes(probeRange + 1.0), 0.0) == -gravity
 // At rest height the lift exactly carries the bike.
-expect verticalAccel(flatProbes(hoverHeight), 0.0) == 0.0
+expect verticalAccel(hoverHeight, flatProbes(hoverHeight), 0.0) == 0.0
 
 // Throttle against drag: dv/dt = T − a·v − b·v² has roots v₊ = topSpeed and
 // v₋ < 0, and (v − v₊)/(v − v₋) decays as exp(−b(v₊ − v₋)t).
@@ -232,7 +254,7 @@ let climb = (seconds: float, grade: float, v: float) =>
   List.range(Math.round(seconds * 60.0)) |> List.fold((acc, i) =>
     let c = acc |> List.head |> Option.defaultValue({ t: 0.0, y: hoverHeight, z: 0.0, s: cruising(v) }) in
     let probes = emitters |> List.map((e) => { hit: true, distance: c.y - grade * (c.z + e.z) }) in
-    let s = step({ throttle: holding(v), brake: 0.0, steer: 0.0 }, probes, dt60, c.s) in
+    let s = step({ throttle: holding(v), brake: 0.0, steer: 0.0 }, hoverHeight, probes, dt60, c.s) in
     [{ t: (i + 1.0) * dt60, y: c.y + s.vy * dt60, z: c.z + s.vz * dt60, s: s }, ..acc], [])
 
 // Holding speed v up a steady grade, the bike rises at v × grade and its
