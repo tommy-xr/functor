@@ -414,9 +414,7 @@ impl FunctorLangProject {
         project: &functor_lang::project::Project,
     ) -> Result<Vec<ExternalPrefix>, Error> {
         use functor_lang::ir::ExprKind;
-        use functor_runtime_common::functor_lang_prelude::{
-            externals_of, FunctorHost, FILE_READERS,
-        };
+        use functor_runtime_common::functor_lang_prelude::{externals_of, FunctorHost};
         let names = self
             .entry_role()
             .resolve(&self.entry, project)
@@ -430,12 +428,21 @@ impl FunctorLangProject {
         if !defs.contains_key(names.config) {
             return Ok(Vec::new());
         }
+        // The `impure[file]` built-ins. Every def `config` names is
+        // evaluated now, data values too, so any read among them counts.
+        let file_readers: std::collections::HashSet<&str> = project
+            .module
+            .signatures
+            .iter()
+            .filter(|sig| sig.reads.contains(&functor_lang::reads::ReadClass::File))
+            .map(|sig| sig.name.as_str())
+            .collect();
         // The names `expr` uses, and its first file read if any.
         let scan = |expr: &functor_lang::ir::Expr, pending: &mut Vec<String>| {
             let mut reads = None;
             crate::util::asset_verify::walk(expr, &mut |expr| match &expr.kind {
                 ExprKind::Global(name) => pending.push(name.clone()),
-                ExprKind::External(path) if FILE_READERS.contains(&path.join(".").as_str()) => {
+                ExprKind::External(path) if file_readers.contains(path.join(".").as_str()) => {
                     reads.get_or_insert((path.join("."), expr.span));
                 }
                 _ => {}
@@ -536,7 +543,7 @@ paths are external — move the read into `init` or a top-level binding `config`
                 return Err(Error::other(format!("cannot load the {display} project")));
             }
         };
-        let diags = project.check();
+        let diags = self.check(&project)?;
         for diag in &diags {
             let (file, line, col) = project.sources.resolve(diag.span.start);
             // The source is already in memory (the SourceFile) — no extra IO.
@@ -607,6 +614,29 @@ paths are external — move the read into `init` or a top-level binding `config`
             )));
         }
         self.finish_build(project)
+    }
+
+    /// The project's check errors: types, then (once they check) where this
+    /// role's reads may run ([`functor_lang::reads::phase_errors`]).
+    fn check(
+        &self,
+        project: &functor_lang::project::Project,
+    ) -> Result<Vec<functor_lang::CheckError>, Error> {
+        let (errors, types) = project.check_with_types();
+        if !errors.is_empty() {
+            return Ok(errors);
+        }
+        let names = self
+            .entry_role()
+            .resolve(&self.entry, project)
+            .map_err(Error::other)?;
+        let hooks = names.hooks();
+        let entry = functor_lang::reads::Entry {
+            hooks: &hooks,
+            init: names.init,
+            config: names.config,
+        };
+        Ok(functor_lang::reads::phase_errors(&project.module, &types, &entry))
     }
 
     /// The successful-build tail: report what loaded.
@@ -3378,7 +3408,14 @@ examples move?",
                     &functor_prelude::bundled_modules(),
                 ) {
                     Ok(loaded) => {
-                        for diag in loaded.check() {
+                        let diags = match project.check(&loaded) {
+                            Ok(diags) => diags,
+                            Err(e) => {
+                                failures.push(format!("{label}: {e}"));
+                                continue;
+                            }
+                        };
+                        for diag in diags {
                             let (file, line, col) = loaded.sources.resolve(diag.span.start);
                             failures.push(format!(
                                 "{label}: {}:{line}:{col}: {}",

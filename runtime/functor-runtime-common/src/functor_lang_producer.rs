@@ -118,6 +118,27 @@ impl EntryNames {
         settings: "settings",
     };
 
+    /// The bindings the runtime calls with the model, each frame or event
+    /// (`settings` too: it's reconciled live).
+    pub fn hooks(&self) -> [&'static str; 14] {
+        [
+            self.tick,
+            self.draw,
+            self.update,
+            self.input,
+            self.sampled_input,
+            self.mouse_move,
+            self.mouse_wheel,
+            self.mouse_button,
+            self.subscriptions,
+            self.physics,
+            self.sound_scape,
+            self.ui,
+            self.webview,
+            self.settings,
+        ]
+    }
+
     /// The name-mapping rule: `prefix` + the Capitalized canonical base, as
     /// camelCase (`"server"` → `serverInit`, `serverSampledInput`, …). An
     /// empty prefix resolves to the unprefixed names.

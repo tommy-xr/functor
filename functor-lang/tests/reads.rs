@@ -19,7 +19,8 @@ fn prelude() -> Vec<BundledModule> {
         ),
         BundledModule::interface(
             "Effect",
-            "type t = host\nlet none : () => t\nlet log : (float) => t\n",
+            "type t = host\nlet none : () => t\nlet log : (float) => t\n\
+             let after : (() => bool) => t\n",
         ),
     ]
 }
@@ -123,7 +124,7 @@ fn closure_free_values_stop_the_spread() {
          let level: Level = { size: File.size(\"a\"), tags: [] }\n\
          let tree = Node(Leaf, Leaf, File.size(\"b\"))\n\
          let lazy = Later((x) => Done(File.size(\"c\")))\n\
-         let fx = if File.exists(\"d\") then Effect.none() else Effect.log(1.0)\n\
+         let fx = Effect.after(() => File.exists(\"d\"))\n\
          let pair = (File.size(\"e\"), Physics.height(\"f\"))\n\
          let draw = (m) => level.size + m\n\
          let walk = (t) => match tree with | Node(l, r, s) => s | Leaf => 0.0\n\
