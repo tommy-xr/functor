@@ -4005,7 +4005,7 @@ joint name, a non-zero model-space Input.quaternion ({ x, y, z, w }; identity is
         ORIENT,
         |joint: String, rotation: FunctorLangQuaternion, weight: f64, anim: FunctorLangAnim| {
             let length2: f64 = rotation.0.iter().map(|c| f64::from(*c).powi(2)).sum();
-            if joint.is_empty() || !(length2 > 1e-24) {
+            if joint.is_empty() || !(length2 > 0.0) {
                 return Err(format!("usage: {ORIENT}"));
             }
             Ok(FunctorLangAnim(AnimExpr::Orient {
@@ -14678,36 +14678,52 @@ Config.create())",
         // Half weight is 45°.
         let half = format!("Anim.orient(\"lower\", {quarter}, 0.5, Anim.rest())");
         assert_near(&half, 1, [-h, 1.0 + h, 0.0]);
-        // The documented product: n⁻¹ ⊗ q with n = q is identity.
-        let product = format!(
-            "{ARM}let qmul = (a: Input.quaternion, b: Input.quaternion): Input.quaternion => {{\n\
-               x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,\n\
-               y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,\n\
-               z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,\n\
-               w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z\n\
-             }}\n\
-             let main = Model.pose(Anim.orient(\"lower\", qmul({{ x: 0.0, y: 0.0, z: 0.0 - s, w: s }}, {quarter}), 1.0, {turned}), arm)\n"
-        );
-        let Value::HostData(data) = eval_with_prelude(&product).unwrap() else {
-            panic!("expected Bytes");
+        // The documented product, defined in Functor Lang: `n⁻¹ ⊗ q` with
+        // n = q is identity, and a non-commuting pair applies `b` first
+        // (`x90 ⊗ z90` carries `lower`'s +X to +Z; `z90 ⊗ x90` to +Y).
+        let product_pose = |q: &str, base: &str, vertex: usize| -> [f32; 3] {
+            let source = format!(
+                "{ARM}let qmul = (a: Input.quaternion, b: Input.quaternion): Input.quaternion => {{\n\
+                   x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,\n\
+                   y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,\n\
+                   z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,\n\
+                   w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z\n\
+                 }}\n\
+                 let main = Model.pose(Anim.orient(\"lower\", {q}, 1.0, {base}), arm)\n"
+            );
+            let Value::HostData(data) = eval_with_prelude(&source).unwrap() else {
+                panic!("expected Bytes");
+            };
+            let bytes = data
+                .as_any()
+                .downcast_ref::<FunctorLangBytes>()
+                .expect("Bytes");
+            let at = 12 * vertex;
+            std::array::from_fn(|k| {
+                f32::from_le_bytes(
+                    bytes.0.as_slice()[at + 4 * k..at + 4 * k + 4]
+                        .try_into()
+                        .unwrap(),
+                )
+            })
         };
-        let bytes = data
-            .as_any()
-            .downcast_ref::<FunctorLangBytes>()
-            .expect("Bytes");
-        let tip: [f32; 3] = std::array::from_fn(|k| {
-            f32::from_le_bytes(
-                bytes.0.as_slice()[12 + 4 * k..16 + 4 * k]
-                    .try_into()
-                    .unwrap(),
-            )
-        });
-        assert!(
-            tip.iter()
-                .zip([-1.0, 1.0, 0.0])
-                .all(|(a, e)| (a - e).abs() < 1e-4),
-            "{tip:?}"
-        );
+        let x90 = "{ x: s, y: 0.0, z: 0.0, w: s }";
+        for (q, base, vertex, expected) in [
+            (
+                format!("qmul({{ x: 0.0, y: 0.0, z: 0.0 - s, w: s }}, {quarter})"),
+                turned,
+                1,
+                [-1.0, 1.0, 0.0],
+            ),
+            (format!("qmul({x90}, {quarter})"), "Anim.rest()", 2, [0.0, 1.0, 1.0]),
+            (format!("qmul({quarter}, {x90})"), "Anim.rest()", 2, [0.0, 2.0, 0.0]),
+        ] {
+            let actual = product_pose(&q, base, vertex);
+            assert!(
+                actual.iter().zip(expected).all(|(a, e)| (a - e).abs() < 1e-4),
+                "{q}: vertex {vertex} is {actual:?}, expected {expected:?}"
+            );
+        }
         let unknown = eval_with_prelude(&format!(
             "{ARM}let main = Model.pose(Anim.orient(\"wrist\", id, 1.0, Anim.rest()), arm)\n"
         ));

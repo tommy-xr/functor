@@ -460,10 +460,9 @@ fn apply_look_at(
     pose.joints[slot] = Some((joint, 1.0));
 }
 
-/// The rotation part of a settled transform: its X and Y axes
-/// Gram-Schmidt-orthonormalized (Z = X × Y). Exact for rotation times a
-/// per-axis scale; a sheared ancestor (non-uniform scale above a rotation)
-/// gets the orthonormal frame nearest its X axis.
+/// The rotation whose X axis is `transform`'s and whose XY plane holds its Y
+/// axis (Gram-Schmidt, Z = X × Y) — the rotation part when there is no
+/// shear.
 fn rotation_of(transform: Matrix4<f32>) -> Option<Quaternion<f32>> {
     let x = normalized_f64(transform.x.truncate())?;
     let y = transform.y.truncate();
@@ -472,8 +471,10 @@ fn rotation_of(transform: Matrix4<f32>) -> Option<Quaternion<f32>> {
 }
 
 /// Set `slot`'s model-space rotation over the settled parent, keeping its
-/// local translation and scale. A zero/non-finite quaternion is ignored (the
-/// prelude rejects one at the call).
+/// local translation and scale. Exact under rotated or uniformly scaled
+/// ancestors; otherwise the joint's X axis and XY plane match (a mirrored
+/// ancestor flips Z). A zero/non-finite quaternion is ignored (the prelude
+/// rejects one at the call).
 fn apply_orient(
     skeleton: &Skeleton,
     pose: &mut WeightedPose,
@@ -487,7 +488,7 @@ fn apply_orient(
     // Normalize in f64 so a huge-but-finite quaternion cannot overflow.
     let [x, y, z, w] = rotation.map(f64::from);
     let length = (x * x + y * y + z * z + w * w).sqrt();
-    if !length.is_finite() || length <= 1e-12 {
+    if !length.is_finite() || length <= 0.0 {
         return;
     }
     let target = Quaternion::new(
@@ -496,20 +497,19 @@ fn apply_orient(
         (y / length) as f32,
         (z / length) as f32,
     );
-    let parent = match skeleton.slot_parent(slot) {
-        Some(parent) => match rotation_of(resolved_absolute(skeleton, pose, parent).transform) {
-            Some(parent) => parent,
+    let parent_inverse = match skeleton.slot_parent(slot) {
+        Some(parent) => match resolved_absolute(skeleton, pose, parent).transform.invert() {
+            Some(inverse) => inverse,
             None => return,
         },
-        None => Quaternion::one(),
+        None => Matrix4::one(),
+    };
+    // Local = parent⁻¹ · target, through the rotation MATRIX: it is quadratic
+    // in the quaternion, so `q` and `-q` give the same local bit for bit.
+    let Some(local) = rotation_of(parent_inverse * Matrix4::from(target)) else {
+        return;
     };
     let mut joint = resolved_joint_pose(skeleton, pose, slot);
-    // Local = parent⁻¹ · target, sign-aligned with the evaluated rotation so
-    // `q` and `-q` take the same shortest path.
-    let mut local = (parent.conjugate() * target).normalize();
-    if joint.rotation.dot(local) < 0.0 {
-        local = -local;
-    }
     joint.rotation = if weight >= 1.0 {
         local
     } else {
@@ -1775,6 +1775,33 @@ mod tests {
         assert!((joint_translation(&after, 1) - joint_translation(&rest, 1)).magnitude() < 1e-6);
     }
 
+    /// Under a non-uniform or mirrored parent no rotation can match all three
+    /// axes; the joint's X axis and XY plane still do.
+    #[test]
+    fn orient_keeps_x_and_the_xy_plane_under_skewing_parents() {
+        let q = wrist_target();
+        let want = Matrix3::from(q);
+        for parent in [
+            Matrix4::from_nonuniform_scale(2.0, 1.0, 1.0),
+            Matrix4::from_angle_y(Deg(30.0)) * Matrix4::from_nonuniform_scale(-1.0, 1.0, 1.0),
+        ] {
+            let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 2]);
+            builder.add_joint(0, 0, "parent".to_string(), None, parent);
+            builder.add_joint(1, 1, "wrist".to_string(), Some(0), Matrix4::identity());
+            let model = Model {
+                meshes: vec![],
+                skeleton: builder.build(),
+                animations: vec![],
+            };
+            let after =
+                skinning_transforms(&model, &orient("wrist", q, 1.0, AnimExpr::Rest), &mut no_warning);
+            let x = after[1].x.truncate().normalize();
+            let y = after[1].y.truncate();
+            assert!((x - want.x).magnitude() < 1e-5, "{parent:?}: x {x:?}");
+            assert!(y.dot(want.z).abs() < 1e-5 && y.dot(want.y) > 0.0, "{parent:?}: y {y:?}");
+        }
+    }
+
     #[test]
     fn orient_rolls_the_wrist_about_its_bone() {
         // The end bone points along +X; a 90° roll about X keeps +X and turns
@@ -1810,6 +1837,11 @@ mod tests {
             );
             assert_eq!(positive, negative, "weight {weight}");
         }
+        // Exactly 180° from the evaluated rotation, a sign tie must not pick
+        // opposite half-way turns.
+        let half_turn = Quaternion::new(0.0, 1.0, 0.0, 0.0);
+        let at = |q| skinning_transforms(&model, &orient("end", q, 0.5, AnimExpr::Rest), &mut no_warning);
+        assert_eq!(at(half_turn), at(-half_turn));
     }
 
     #[test]
@@ -1912,7 +1944,7 @@ mod tests {
             &orient("end", q, 1.0, AnimExpr::Rest),
             &mut no_warning,
         );
-        for scale in [3.0, 1e-3, 1e30] {
+        for scale in [3.0, 1e-3, 1e-20, 1e30] {
             let scaled = skinning_transforms(
                 &model,
                 &orient("end", q * scale, 1.0, AnimExpr::Rest),
