@@ -567,11 +567,15 @@ let rampFace = (f: Flight): Face =>
 let rampShape = (f: Flight): Physics.shape =>
   Physics.trimesh({ positions: positionsOf([rampFace(f)]), triangles: quadTriangles(1.0) })
 
-let buildingBodies = (rev: float): List<Physics.body> =>
+// Every collider, in the building's space, for the caller to place as a
+// fixed body: the wall boxes, the floors and each flight's ramp.
+type Collider = { tag: string, shape: Physics.shape, at: Vec3.t }
+let colliders: List<Collider> =
+  let origin = v(0.0, 0.0, 0.0) in
   List.flatten([
-    blocks |> List.map((b) => Physics.fixed(Physics.tag(b.tag), Physics.box(b.w, b.h, b.d)) |> Physics.at(v(b.x, b.y, b.z))),
-    [Physics.fixed(Physics.tag("floors"), floorShape)],
-    flights |> List.indexedMap((k, f) => Physics.fixed(Physics.tag($"ramp-{k}"), rampShape(f))),
+    blocks |> List.map((b) => { tag: b.tag, shape: Physics.box(b.w, b.h, b.d), at: v(b.x, b.y, b.z) }),
+    [{ tag: "floors", shape: floorShape, at: origin }],
+    flights |> List.indexedMap((k, f) => { tag: $"ramp-{k}", shape: rampShape(f), at: origin }),
   ])
 
 // ---- The bake job --------------------------------------------------------------
