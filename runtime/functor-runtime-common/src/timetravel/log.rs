@@ -160,21 +160,26 @@ impl FrameLog {
                 self.events = self.events.split_off(&retain_from);
                 self.base = Some(retain_from);
             }
-        } else if retain_from > self.ops_floor {
-            let aged: Vec<Frame> = self
-                .events
-                .range(self.ops_floor..retain_from)
-                .map(|(f, _)| *f)
-                .collect();
-            for frame in aged {
-                let entries = self.events.get_mut(&frame).expect("key just listed");
-                entries.retain(|entry| entry.input().is_some());
-                if entries.is_empty() {
-                    self.events.remove(&frame);
-                }
-            }
+        } else {
+            self.drop_ops_before(retain_from);
         }
         self.ops_floor = self.ops_floor.max(retain_from);
+    }
+
+    /// Keep only input before `floor`: ops and deliveries age out.
+    pub(super) fn drop_ops_before(&mut self, floor: Frame) {
+        if floor <= self.ops_floor {
+            return;
+        }
+        let aged: Vec<Frame> = self.events.range(self.ops_floor..floor).map(|(f, _)| *f).collect();
+        for frame in aged {
+            let entries = self.events.get_mut(&frame).expect("key just listed");
+            entries.retain(|entry| entry.input().is_some());
+            if entries.is_empty() {
+                self.events.remove(&frame);
+            }
+        }
+        self.ops_floor = floor;
     }
 
     pub(super) fn recorded_range(&self) -> Option<(Frame, Frame)> {

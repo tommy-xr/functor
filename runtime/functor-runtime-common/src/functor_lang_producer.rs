@@ -723,6 +723,8 @@ pub enum Provenance {
     /// A `preloadThen` load settled (loaded or failed) — the shell's preload
     /// driver reported it.
     PreloadSettled,
+    /// A job's result (`File.load`) arrived from the pool.
+    JobResult,
     UiEvent,
     /// The frame's pure render pass — never journaled during play; the trace
     /// builder synthesizes one draw invocation against the frozen model.
@@ -783,6 +785,7 @@ impl Provenance {
             Provenance::HttpResponse => format!("http response: {}", msg()),
             Provenance::AudioFinished => format!("audio finished: {}", msg()),
             Provenance::PreloadSettled => format!("preload settled: {}", msg()),
+            Provenance::JobResult => format!("job result: {}", msg()),
             Provenance::UiEvent => format!("ui event: {}", msg()),
             Provenance::Draw => "draw".to_string(),
         }
@@ -1198,6 +1201,7 @@ impl FrameCtx<'_> {
             }
         }
         self.deliver_parked();
+        self.deliver_job_results();
         if let Some(snapshot) = sampled_input {
             self.deliver_sampled_input(snapshot, true);
         }
@@ -1272,6 +1276,16 @@ impl FrameCtx<'_> {
         result
     }
 
+    /// Job results finished since the last frame, in finishing order. They
+    /// land at the start of a played frame (while paused they wait), parked
+    /// if scrubbed like any arrival.
+    fn deliver_job_results(&mut self) {
+        let finished = self.recorder.requests().jobs().mailbox().take();
+        for (ticket, value) in finished {
+            self.push_arrival(Arrival::Job { ticket, value });
+        }
+    }
+
     /// Deliver the parked arrivals, oldest first, unless still scrubbed.
     fn deliver_parked(&mut self) {
         if self.recorder.is_scrubbed() {
@@ -1332,6 +1346,15 @@ impl FrameCtx<'_> {
             ) {
                 Ok(msg) => (msg, Provenance::HttpResponse),
                 Err(err) => return self.reporter.frame_error("http response", &err),
+            },
+            Arrival::Job { value, .. } => match self.session.apply(
+                continuation,
+                vec![value.to_value()],
+                "job result",
+                &mut FunctorHost,
+            ) {
+                Ok(msg) => (msg, Provenance::JobResult),
+                Err(err) => return self.reporter.frame_error("job result", &err),
             },
             Arrival::AudioFinished(_) => (continuation, Provenance::AudioFinished),
             Arrival::PreloadSettled(_) => (continuation, Provenance::PreloadSettled),

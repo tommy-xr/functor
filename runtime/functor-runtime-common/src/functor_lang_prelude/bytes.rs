@@ -106,6 +106,16 @@ pub(super) fn read_project_file(api: &str, path: &str) -> Result<Arc<[u8]>, Stri
 }
 
 fn read_project_file_untracked(api: &str, path: &str) -> Result<Arc<[u8]>, String> {
+    read_with(crate::storage::project_reader().as_deref(), api, path)
+}
+
+/// [`read_project_file_untracked`] through `reader` (`None`: this host
+/// can't read project files).
+fn read_with(
+    reader: Option<&dyn crate::storage::ProjectReader>,
+    api: &str,
+    path: &str,
+) -> Result<Arc<[u8]>, String> {
     use crate::storage::ProjectReadError;
     if path.is_empty() {
         return Err(format!("{api}: the project root is a folder, not a file"));
@@ -113,12 +123,7 @@ fn read_project_file_untracked(api: &str, path: &str) -> Result<Arc<[u8]>, Strin
     if is_hidden(path) {
         return Err(format!("{api}: {path} is hidden while `functor bake` rewrites it"));
     }
-    let reader = crate::storage::project_reader().ok_or_else(|| {
-        format!(
-            "{api}({path:?}): project files load on desktop, in `functor export` and on Quest \
-(`functor run vr`), not on the web yet"
-        )
-    })?;
+    let reader = reader.ok_or_else(|| unsupported(api, path))?;
     reader.read(path).map_err(|e| match e {
         // The platform's reader keeps symlinks from reaching outside.
         ProjectReadError::Outside => {
@@ -126,6 +131,48 @@ fn read_project_file_untracked(api: &str, path: &str) -> Result<Arc<[u8]>, Strin
         }
         ProjectReadError::Unreadable(e) => format!("{api}: can't read {path} in the project ({e})"),
     })
+}
+
+fn unsupported(api: &str, path: &str) -> String {
+    format!(
+        "{api}({path:?}): project files load on desktop, in `functor export` and on Quest \
+(`functor run vr`), not on the web yet"
+    )
+}
+
+/// `File.load`'s result, read through `reader` on a job worker:
+/// `Result.Ok(bytes)`, or `Result.Error` of a `File.error`. Not a recorded
+/// read: the result is a logged delivery, so reload reuse never sees it.
+pub(crate) fn load_file(
+    reader: Option<&dyn crate::storage::ProjectReader>,
+    path: &str,
+) -> crate::jobs::Shareable {
+    use crate::jobs::{HostValue, Shareable};
+    let Some(reader) = reader else {
+        return file_error("File.Unsupported", unsupported("File.load", path));
+    };
+    if !path.is_empty() && !reader.exists(path) {
+        return file_error("File.Missing", format!("File.load: no file {path} in the project"));
+    }
+    match read_with(Some(reader), "File.load", path) {
+        Ok(data) => Shareable::Variant(
+            "Result.Ok".into(),
+            vec![Shareable::Host(HostValue::Bytes(ByteView::from_shared(data)))].into(),
+        ),
+        Err(message) => file_error("File.Failed", message),
+    }
+}
+
+/// A `File.load` that didn't run (a full queue, a crash), as its result.
+pub(crate) fn load_failed(message: String) -> crate::jobs::Shareable {
+    file_error("File.Failed", message)
+}
+
+/// `Result.Error(ctor(message))`, `ctor` a `File.error` constructor.
+fn file_error(ctor: &str, message: String) -> crate::jobs::Shareable {
+    use crate::jobs::Shareable;
+    let error = Shareable::Variant(ctor.into(), vec![Shareable::Text(message.into())].into());
+    Shareable::Variant("Result.Error".into(), vec![error].into())
 }
 
 /// Whether the [`super::path::resolve`]d `path` names a file in the project

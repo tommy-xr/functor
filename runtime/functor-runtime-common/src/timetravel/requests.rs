@@ -10,11 +10,14 @@
 //! world will not resend).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use functor_lang::Value;
 
 use super::{Frame, OpId};
 use crate::asset::AssetProgress;
+use crate::jobs::{JobPort, JobSpec, Shareable, Ticket};
 use crate::functor_lang_prelude::NetEventKind;
 use crate::net::HttpResult;
 
@@ -24,6 +27,7 @@ pub enum Channel {
     Http,
     Audio,
     Preload,
+    Job,
 }
 
 /// An outside arrival, as a shell pushes it — and as a frame log's
@@ -43,6 +47,8 @@ pub enum Arrival {
     /// A changed `Sub.assets` snapshot. Logged, never mailed: the frame
     /// reads the shell's latest snapshot.
     Assets(AssetProgress),
+    /// A job's result: what its continuation receives.
+    Job { ticket: Ticket, value: Shareable },
 }
 
 impl Arrival {
@@ -80,8 +86,26 @@ impl Arrival {
             Arrival::Http(result) => Some((Channel::Http, result.token)),
             Arrival::AudioFinished(token) => Some((Channel::Audio, *token)),
             Arrival::PreloadSettled(token) => Some((Channel::Preload, *token)),
+            Arrival::Job { ticket, .. } => Some((Channel::Job, ticket.id)),
             Arrival::Net { .. } | Arrival::Assets(_) => None,
         }
+    }
+
+    /// Whether it may answer `pending`: the op on its channel and token,
+    /// and for a job, the op's live attempt.
+    fn answers(&self, pending: &Pending) -> bool {
+        let Some((channel, token)) = self.token() else {
+            return false;
+        };
+        let live_attempt = match (&pending.job, self) {
+            (None, _) => true,
+            (Some(job), Arrival::Job { ticket, .. }) => job.live() && job.attempt == ticket.attempt,
+            (Some(_), _) => false,
+        };
+        pending.answer.is_none()
+            && pending.channel == channel
+            && pending.token == Some(token)
+            && live_attempt
     }
 }
 
@@ -106,6 +130,70 @@ struct Pending {
     issued: Frame,
     /// What answered it; `None` while in flight.
     answer: Option<Answer>,
+    /// A job op's request and run state.
+    job: Option<JobOp>,
+}
+
+/// What a job op needs beyond a request: its spec (to dispatch it again),
+/// which attempt is live, and whether the game cancelled it.
+#[derive(Clone)]
+struct JobOp {
+    spec: JobSpec,
+    attempt: u32,
+    stop: Stop,
+    cancelled: Cancelled,
+}
+
+impl JobOp {
+    fn live(&self) -> bool {
+        self.cancelled == Cancelled::No
+    }
+}
+
+enum InFlight {
+    Provisional(usize),
+    Committed(OpId),
+}
+
+/// When the game cancelled a job: in Δ (a seek undoes it), or on a frame
+/// (a branch from before it restores the op).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Cancelled {
+    No,
+    /// `was`: the later cancel it replaced (Δ cancelled, while scrubbed, an
+    /// op the shown future cancels); undoing Δ puts it back.
+    InDelta { was: Option<Frame> },
+    At(Frame),
+}
+
+/// A running attempt's stop flag. Dropping the op stops its job; a clone
+/// (a fork's copy) never owns it.
+#[derive(Default)]
+struct Stop(Option<Arc<AtomicBool>>);
+
+impl Stop {
+    /// Whether its attempt was dispatched here and not stopped.
+    fn running(&self) -> bool {
+        self.0.as_ref().is_some_and(|flag| !flag.load(Ordering::Relaxed))
+    }
+
+    fn signal(&self) {
+        if let Some(flag) = &self.0 {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Clone for Stop {
+    fn clone(&self) -> Stop {
+        Stop(None)
+    }
+}
+
+impl Drop for Stop {
+    fn drop(&mut self) {
+        self.signal();
+    }
 }
 
 /// The arrival that answered an op, kept so a branch or dropped Δ that
@@ -149,6 +237,10 @@ pub struct Requests {
     /// Open connections as `(key, conn)`: a branch commit is refused while
     /// any is (design-systems D4).
     open: BTreeSet<(String, i32)>,
+    /// Where this producer's jobs run and their results land.
+    jobs: JobPort,
+    /// See [`Self::set_view`].
+    view: Option<Frame>,
 }
 
 impl Requests {
@@ -168,7 +260,12 @@ impl Requests {
             continuation,
             issued: 0,
             answer: None,
+            job: None,
         };
+        self.insert(recorded, ordinal, pending);
+    }
+
+    fn insert(&mut self, recorded: Option<OpId>, ordinal: u32, pending: Pending) {
         match recorded {
             Some(op) => {
                 self.ops.insert(op, Pending { issued: op.frame, ..pending });
@@ -177,12 +274,149 @@ impl Requests {
         }
     }
 
+    /// Whether a job with `key` is in flight on the working table: the
+    /// committed ops and Δ's, in drain order (design J2: a same-key request
+    /// is dropped while one is pending).
+    pub fn job_in_flight(&self, key: &str) -> bool {
+        self.find_in_flight(key).is_some()
+    }
+
+    /// The job op with `key` in flight for Δ (at most one): Δ's own, else
+    /// a committed one.
+    fn find_in_flight(&self, key: &str) -> Option<InFlight> {
+        let keyed = |p: &Pending| p.job.as_ref().is_some_and(|j| j.spec.key() == key);
+        let live = |p: &Pending| keyed(p) && p.job.as_ref().is_some_and(JobOp::live);
+        if let Some(at) = self.provisional.iter().position(|(_, p)| live(p)) {
+            return Some(InFlight::Provisional(at));
+        }
+        let (op, _) = self.ops.iter().find(|(_, p)| keyed(p) && self.in_flight_now(p))?;
+        Some(InFlight::Committed(*op))
+    }
+
+    /// Whether committed job op `p` is in flight for Δ: at the tail, or
+    /// while scrubbed at the frame shown (Δ is that branch's first frame).
+    fn in_flight_now(&self, p: &Pending) -> bool {
+        let Some(job) = &p.job else { return false };
+        match self.view {
+            None => p.answer.is_none() && job.live(),
+            Some(k) => {
+                p.issued <= k
+                    && p.answer.as_ref().is_none_or(|a| a.frame > k)
+                    && match job.cancelled {
+                        Cancelled::No => true,
+                        Cancelled::InDelta { .. } => false,
+                        Cancelled::At(at) => at > k,
+                    }
+            }
+        }
+    }
+
+    /// The scrubbed frame (`None` at the tail), from the recorder.
+    pub(super) fn set_view(&mut self, view: Option<Frame>) {
+        self.view = view;
+    }
+
+    /// Register a job op like [`Self::issue`], dispatching it unless
+    /// replaying (`dispatch` false: its answer comes from the log).
+    pub fn issue_job(
+        &mut self,
+        recorded: Option<OpId>,
+        ordinal: u32,
+        spec: JobSpec,
+        continuation: Value,
+        dispatch: bool,
+    ) {
+        let (token, stop) = if dispatch {
+            let ticket = Ticket { id: crate::jobs::next_id(), attempt: 1 };
+            (Some(ticket.id), Stop(Some(self.jobs.start(&spec, ticket))))
+        } else {
+            (None, Stop::default())
+        };
+        let job = JobOp { spec, attempt: 1, stop, cancelled: Cancelled::No };
+        let pending = Pending {
+            channel: Channel::Job,
+            token,
+            continuation,
+            issued: 0,
+            answer: None,
+            job: Some(job),
+        };
+        self.insert(recorded, ordinal, pending);
+    }
+
+    /// Cancel the in-flight job with `key`: no message is delivered for it.
+    /// A committed op is kept, so a seek or branch from before the cancel
+    /// restores (and re-dispatches) it.
+    pub fn cancel_job(&mut self, key: &str) {
+        match self.find_in_flight(key) {
+            Some(InFlight::Provisional(at)) => {
+                self.provisional.remove(at);
+            }
+            Some(InFlight::Committed(op)) => {
+                let job = self.ops.get_mut(&op).and_then(|p| p.job.as_mut()).expect("found");
+                let was = match job.cancelled {
+                    Cancelled::At(at) => Some(at),
+                    _ => None,
+                };
+                // The worker stops when Δ commits: a seek that drops Δ first
+                // finds it still running.
+                job.cancelled = Cancelled::InDelta { was };
+            }
+            None => {}
+        }
+    }
+
+    /// Set each job op's cancel to `undo(cancel)` where that is `Some`. An
+    /// op back in flight whose result isn't here (answered, parked or
+    /// finished) lost its worker, so [`Self::dispatch_restored`] runs it
+    /// again.
+    fn restore(&mut self, undo: impl Fn(Cancelled) -> Option<Cancelled>) {
+        let mut here = self.jobs.mailbox().tickets();
+        here.extend(self.parked_jobs());
+        for pending in self.ops.values_mut() {
+            let Some(job) = pending.job.as_mut() else { continue };
+            let Some(cancelled) = undo(job.cancelled) else { continue };
+            job.cancelled = cancelled;
+            let arrived = pending
+                .token
+                .is_some_and(|id| here.contains(&Ticket { id, attempt: job.attempt }));
+            if job.live() && pending.answer.is_none() && !arrived && !job.stop.running() {
+                job.stop = Stop::default();
+            }
+        }
+    }
+
+    /// Dispatch each restored job op as a new attempt, so a stale result
+    /// from an earlier one drops. Called once a seek or branch is done, so
+    /// an op it then cuts never runs.
+    pub(super) fn dispatch_restored(&mut self) {
+        for pending in self.ops.values_mut().filter(|p| p.answer.is_none()) {
+            let (Some(id), Some(job)) = (pending.token, pending.job.as_mut()) else { continue };
+            // Never dispatched (a replay's op): its answer is the log's.
+            if job.live() && job.stop.0.is_none() {
+                job.attempt += 1;
+                let ticket = Ticket { id, attempt: job.attempt };
+                job.stop = Stop(Some(self.jobs.start(&job.spec, ticket)));
+            }
+        }
+    }
+
+    /// This producer's job dispatcher, mailbox and reader.
+    pub fn jobs(&self) -> &JobPort {
+        &self.jobs
+    }
+
+    pub fn jobs_mut(&mut self) -> &mut JobPort {
+        &mut self.jobs
+    }
+
     /// Δ committed as `frame` on branch `epoch`.
     pub(super) fn commit(&mut self, epoch: u64, frame: Frame) {
         for (ordinal, pending) in self.provisional.drain(..) {
             let op = OpId { epoch, frame, ordinal };
             self.ops.insert(op, Pending { issued: frame, ..pending });
         }
+        self.stamp_cancels(frame);
         self.delta.clear();
         self.evict_over_cap(false);
     }
@@ -195,8 +429,19 @@ impl Requests {
             self.unrecorded = self.unrecorded.wrapping_add(1);
             self.ops.insert(op, Pending { issued: frame, ..pending });
         }
+        self.stamp_cancels(frame);
         self.delta.truncate(MAILBOX_CAP);
         self.evict_over_cap(true);
+    }
+
+    /// Δ's cancels happened on `frame`.
+    fn stamp_cancels(&mut self, frame: Frame) {
+        for job in self.ops.values_mut().filter_map(|p| p.job.as_mut()) {
+            if let Cancelled::InDelta { .. } = job.cancelled {
+                job.cancelled = Cancelled::At(frame);
+                job.stop.signal();
+            }
+        }
     }
 
     /// `answered`: also bound answered ops — only on unrecorded frames,
@@ -222,6 +467,8 @@ impl Requests {
         }
         if answered {
             evict(&|p| p.answer.is_some(), &|p| p.answer.as_ref().map_or(0, |a| a.seq));
+            // Cancelled jobs, which only a prune would free.
+            evict(&|p| p.job.as_ref().is_some_and(|j| !j.live()), &|p| p.issued);
         }
     }
 
@@ -232,6 +479,12 @@ impl Requests {
         // Ops Δ issued on an unrecorded (zero-delta) frame go with it too.
         self.ops.retain(|op, p| {
             !(op.frame == UNRECORDED && p.issued == frame && p.answer.is_none())
+        });
+        // Its cancels are undone, like its answers.
+        self.restore(|c| match c {
+            Cancelled::InDelta { was } => Some(was.map_or(Cancelled::No, Cancelled::At)),
+            Cancelled::At(at) if at == frame => Some(Cancelled::No),
+            _ => None,
         });
         let mut again = self.take_answers(|answer| answer.frame == frame);
         again.append(&mut self.delta);
@@ -252,6 +505,15 @@ impl Requests {
         cut_disconnects: Option<Vec<Arrival>>,
     ) {
         self.ops.retain(|_, p| p.issued < frame);
+        // A job cancelled in the cut future is in flight again; its worker
+        // stopped, so it runs again from its spec.
+        self.restore(|c| match c {
+            Cancelled::At(at) if at >= frame => Some(Cancelled::No),
+            Cancelled::InDelta { was: Some(at) } if at >= frame => {
+                Some(Cancelled::InDelta { was: None })
+            }
+            _ => None,
+        });
         let mut again = self.take_answers(|answer| answer.frame >= frame);
         if let Some(disconnects) = cut_disconnects {
             self.mailbox
@@ -278,8 +540,13 @@ impl Requests {
 
     /// Forget ops answered before `floor`: no seekable frame reaches them.
     pub(super) fn prune(&mut self, floor: Frame) {
-        self.ops
-            .retain(|_, p| p.answer.as_ref().is_none_or(|a| a.frame >= floor));
+        self.ops.retain(|_, p| {
+            let cancelled_before = p
+                .job
+                .as_ref()
+                .is_some_and(|j| matches!(j.cancelled, Cancelled::At(at) if at < floor));
+            p.answer.as_ref().is_none_or(|a| a.frame >= floor) && !cancelled_before
+        });
     }
 
     /// Rebind every continuation to the new program (like the model), the
@@ -335,13 +602,11 @@ impl Requests {
     pub(crate) fn deliver(&mut self, arrival: &Arrival, epoch: u64, frame: Frame) -> Delivered {
         let seq = self.seq;
         self.seq += 1;
-        let Some((channel, token)) = arrival.token() else {
+        if arrival.token().is_none() {
             self.delta.push((seq, arrival.clone()));
             return Delivered::Unsolicited;
-        };
-        let answers = |p: &Pending| {
-            p.answer.is_none() && p.channel == channel && p.token == Some(token)
-        };
+        }
+        let answers = |p: &Pending| arrival.answers(p);
         let found = match self.ops.iter_mut().find(|(_, p)| answers(p)) {
             Some((op, pending)) => Some((*op, pending)),
             None => self
@@ -360,7 +625,10 @@ impl Requests {
     /// A replay's re-delivery of recorded op `op`: its continuation, if it
     /// is pending on the fork.
     pub(crate) fn deliver_recorded(&mut self, op: OpId, arrival: &Arrival) -> Option<Value> {
-        let pending = self.ops.get_mut(&op).filter(|p| p.answer.is_none())?;
+        let pending = self
+            .ops
+            .get_mut(&op)
+            .filter(|p| p.answer.is_none() && p.job.as_ref().is_none_or(JobOp::live))?;
         // A fork never re-parks: the frame and order are unused.
         pending.answer = Some(Answer { frame: op.frame, seq: 0, arrival: arrival.clone() });
         Some(pending.continuation.clone())
@@ -372,9 +640,20 @@ impl Requests {
             .ops
             .iter()
             .filter(|(_, p)| {
-                p.issued <= frame && p.answer.as_ref().is_none_or(|a| a.frame > frame)
+                // Δ's cancel is after `frame`; one it replaced still counts.
+                let cancelled_by = p.job.as_ref().is_some_and(|j| {
+                    matches!(j.cancelled,
+                        Cancelled::At(at) | Cancelled::InDelta { was: Some(at) } if at <= frame)
+                });
+                p.issued <= frame
+                    && p.answer.as_ref().is_none_or(|a| a.frame > frame)
+                    && !cancelled_by
             })
-            .map(|(op, p)| (*op, Pending { token: None, answer: None, ..p.clone() }))
+            .map(|(op, p)| {
+                // Cancelled after `frame`: in flight there.
+                let job = p.job.clone().map(|j| JobOp { cancelled: Cancelled::No, ..j });
+                (*op, Pending { token: None, answer: None, job, ..p.clone() })
+            })
             .collect();
         Requests { ops, ..Requests::default() }
     }
@@ -393,12 +672,10 @@ impl Requests {
         }
         while self.mailbox.len() > MAILBOX_CAP {
             let at = self.mailbox.iter().position(|a| a.token().is_none()).unwrap_or(0);
-            if let Some((channel, token)) = self.mailbox.remove(at).and_then(|a| a.token()) {
-                let answers = |p: &Pending| {
-                    p.answer.is_none() && p.channel == channel && p.token == Some(token)
-                };
-                self.ops.retain(|_, p| !answers(p));
-                self.provisional.retain(|(_, p)| !answers(p));
+            // A dropped answer takes its op (never a newer attempt's).
+            if let Some(arrival) = self.mailbox.remove(at) {
+                self.ops.retain(|_, p| !arrival.answers(p));
+                self.provisional.retain(|(_, p)| !arrival.answers(p));
             }
         }
     }
@@ -444,8 +721,34 @@ impl Requests {
         let ops = self.ops.values();
         let provisional = self.provisional.iter().map(|(_, p)| p);
         ops.chain(provisional)
-            .filter(|p| p.answer.is_none())
+            .filter(|p| p.answer.is_none() && p.job.as_ref().is_none_or(JobOp::live))
             .filter_map(|p| Some((p.channel, p.token?)))
+            .collect()
+    }
+
+    /// The live attempt of each job op in flight (the fuzzer's hung-op
+    /// check).
+    #[cfg(test)]
+    pub(crate) fn pending_jobs(&self) -> Vec<Ticket> {
+        let ops = self.ops.values();
+        let provisional = self.provisional.iter().map(|(_, p)| p);
+        ops.chain(provisional)
+            .filter(|p| p.answer.is_none())
+            .filter_map(|p| {
+                let job = p.job.as_ref().filter(|j| j.live())?;
+                Some(Ticket { id: p.token?, attempt: job.attempt })
+            })
+            .collect()
+    }
+
+    /// Tickets of parked job results.
+    pub(crate) fn parked_jobs(&self) -> Vec<Ticket> {
+        self.mailbox
+            .iter()
+            .filter_map(|arrival| match arrival {
+                Arrival::Job { ticket, .. } => Some(*ticket),
+                _ => None,
+            })
             .collect()
     }
 
@@ -459,6 +762,7 @@ impl Requests {
     pub(crate) fn arrivals_after(&self, frame: Frame) -> bool {
         !self.delta.is_empty()
             || !self.mailbox.is_empty()
+            || !self.jobs.mailbox().tickets().is_empty()
             || self.ops.values().any(|p| p.answer.as_ref().is_some_and(|a| a.frame > frame))
     }
 }
@@ -637,5 +941,295 @@ mod tests {
             .to_vec();
         assert_ne!(ids[0], ids[1]);
         assert!(ids.iter().all(|op| op.frame == UNRECORDED));
+    }
+
+    // ── Jobs, over a fake dispatcher ────────────────────────────────────
+
+    use crate::jobs::FakeJobs;
+    use std::rc::Rc;
+
+    /// An in-memory project: `path` reads as `text`.
+    struct Files(&'static str, &'static str);
+
+    impl crate::storage::ProjectReader for Files {
+        fn read(&self, path: &str) -> Result<Arc<[u8]>, crate::storage::ProjectReadError> {
+            if path == self.0 {
+                Ok(Arc::from(self.1.as_bytes()))
+            } else {
+                Err(crate::storage::ProjectReadError::Unreadable("missing".into()))
+            }
+        }
+        fn exists(&self, path: &str) -> bool {
+            path == self.0
+        }
+    }
+
+    fn with_fake(files: Files) -> (Requests, Rc<FakeJobs>) {
+        let fake = Rc::new(FakeJobs::default());
+        let mut requests = Requests::default();
+        requests.jobs_mut().set_dispatch(fake.clone());
+        requests.jobs_mut().set_reader(Some(Arc::new(files)));
+        (requests, fake)
+    }
+
+    /// A branch keeping frames before `frame`, as the recorder runs it.
+    fn branch(requests: &mut Requests, frame: Frame) {
+        requests.truncate_from(frame, Some(Vec::new()));
+        requests.dispatch_restored();
+    }
+
+    fn load(path: &str) -> JobSpec {
+        JobSpec::FileLoad { path: path.into() }
+    }
+
+    fn issue_load(requests: &mut Requests, path: &str) {
+        requests.issue_job(None, 0, load(path), tagger(0.0), true);
+    }
+
+    /// Complete every held job, then deliver what landed in the mailbox.
+    fn finish(requests: &mut Requests, fake: &FakeJobs, frame: Frame) -> Vec<Delivered> {
+        for ticket in fake.held() {
+            fake.complete(ticket);
+        }
+        deliver_mail(requests, frame)
+    }
+
+    fn deliver_mail(requests: &mut Requests, frame: Frame) -> Vec<Delivered> {
+        let mail = requests.jobs().mailbox().take();
+        mail.into_iter()
+            .map(|(ticket, value)| requests.deliver(&Arrival::Job { ticket, value }, 0, frame))
+            .collect()
+    }
+
+    fn ok_text(value: &Shareable) -> String {
+        let Shareable::Variant(ctor, args) = value else { panic!("{value:?}") };
+        assert_eq!(&**ctor, "Result.Ok", "{value:?}");
+        let Shareable::Host(crate::jobs::HostValue::Bytes(bytes)) = &args[0] else { panic!() };
+        String::from_utf8(bytes.as_slice().to_vec()).unwrap()
+    }
+
+    #[test]
+    fn a_job_result_answers_its_op_once() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        assert_eq!(fake.dispatched().len(), 1);
+        fake.complete(fake.held()[0]);
+        let mail = requests.jobs().mailbox().take();
+        assert_eq!(ok_text(&mail[0].1), "hi");
+        let arrival = Arrival::Job { ticket: mail[0].0, value: mail[0].1.clone() };
+        assert!(matches!(requests.deliver(&arrival, 0, 1), Delivered::Op(..)));
+        assert!(matches!(requests.deliver(&arrival, 0, 1), Delivered::Dropped));
+        assert!(requests.pending_tokens().is_empty());
+    }
+
+    #[test]
+    fn admission_reads_the_working_table_in_drain_order() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        // `run, run` in one drain: the second sees the first (provisional).
+        issue_load(&mut requests, "a.txt");
+        assert!(requests.job_in_flight("a.txt"));
+        // `cancel, run`: the cancel takes the provisional op, so the run is
+        // admitted.
+        requests.cancel_job("a.txt");
+        assert!(!requests.job_in_flight("a.txt"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        assert_eq!(fake.dispatched().len(), 2);
+        assert_eq!(requests.pending_tokens().len(), 1);
+        // The cancelled provisional op's job was stopped: it posts nothing.
+        let delivered = finish(&mut requests, &fake, 1);
+        assert_eq!(delivered.len(), 1);
+        assert!(matches!(delivered[0], Delivered::Op(..)));
+    }
+
+    #[test]
+    fn a_result_from_a_stale_attempt_drops() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        let first = fake.held()[0];
+        requests.cancel_job("a.txt");
+        requests.commit(0, 1);
+        // A branch from frame 0 restores the op: attempt 2 runs.
+        branch(&mut requests, 1);
+        let attempts: Vec<u32> = fake.dispatched().iter().map(|t| t.attempt).collect();
+        assert_eq!(attempts, vec![1, 2]);
+        // Attempt 1 raced its stop flag and posted anyway: stale.
+        let stale = Arrival::Job { ticket: first, value: Shareable::Bool(true) };
+        assert!(matches!(requests.deliver(&stale, 0, 1), Delivered::Dropped));
+        assert!(matches!(finish(&mut requests, &fake, 1)[..], [Delivered::Op(..)]));
+    }
+
+    #[test]
+    fn mailbox_overflow_dropping_a_stale_result_keeps_the_live_attempt() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        let first = fake.held()[0];
+        requests.cancel_job("a.txt");
+        requests.commit(0, 1);
+        branch(&mut requests, 1);
+        requests.park(Arrival::Job { ticket: first, value: Shareable::Bool(true) });
+        for token in 100..100 + MAILBOX_CAP as u64 {
+            requests.park(http(token));
+        }
+        let live = Ticket { id: first.id, attempt: 2 };
+        assert_eq!(requests.pending_jobs(), vec![live]);
+    }
+
+    #[test]
+    fn a_result_that_finished_before_the_cancel_is_kept_when_the_cancel_is_undone() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        // Finished, not yet delivered, when the game cancels.
+        fake.complete(fake.held()[0]);
+        requests.cancel_job("a.txt");
+        requests.commit(0, 1);
+        branch(&mut requests, 1);
+        assert_eq!(fake.dispatched().len(), 1, "not run again");
+        assert!(matches!(deliver_mail(&mut requests, 1)[..], [Delivered::Op(..)]));
+    }
+
+    #[test]
+    fn a_replacement_finishing_first_wins_and_the_old_attempt_drops() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        let first = fake.held()[0];
+        requests.cancel_job("a.txt");
+        requests.commit(0, 1);
+        branch(&mut requests, 1);
+        let second = fake.held()[1];
+        fake.complete(second);
+        assert!(matches!(deliver_mail(&mut requests, 1)[..], [Delivered::Op(..)]));
+        // The old attempt was stopped; even run, it posts nothing.
+        fake.complete(first);
+        assert!(requests.jobs().mailbox().take().is_empty());
+    }
+
+    #[test]
+    fn a_branch_before_a_cancel_redispatches_and_after_it_does_not() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        requests.commit(0, 1);
+        requests.cancel_job("a.txt");
+        requests.commit(0, 2);
+        // Branch keeping frames before 3: the cancel survives.
+        branch(&mut requests, 3);
+        assert_eq!(fake.dispatched().len(), 1);
+        assert!(requests.pending_tokens().is_empty());
+        // Branch keeping frames before 2: the cancel is cut.
+        branch(&mut requests, 2);
+        assert_eq!(fake.dispatched().len(), 2);
+        assert!(matches!(finish(&mut requests, &fake, 2)[..], [Delivered::Op(..)]));
+    }
+
+    #[test]
+    fn while_scrubbed_admission_and_cancels_see_the_shown_frame() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        requests.cancel_job("a.txt");
+        requests.commit(0, 5);
+        // Scrubbed at frame 3 the op is in flight: Δ there is the branch's.
+        requests.set_view(Some(3));
+        assert!(requests.job_in_flight("a.txt"));
+        requests.cancel_job("a.txt");
+        assert!(!requests.job_in_flight("a.txt"));
+        // A seek drops Δ: the shown future's own cancel stands.
+        requests.drop_delta(6);
+        requests.dispatch_restored();
+        requests.set_view(None);
+        assert!(!requests.job_in_flight("a.txt"));
+        assert_eq!(fake.dispatched().len(), 1);
+    }
+
+    #[test]
+    fn a_seek_undoes_a_cancel_in_delta() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        requests.cancel_job("a.txt");
+        requests.drop_delta(1);
+        requests.dispatch_restored();
+        assert_eq!(fake.dispatched().len(), 1, "its worker never stopped");
+        assert!(matches!(finish(&mut requests, &fake, 1)[..], [Delivered::Op(..)]));
+    }
+
+    #[test]
+    fn a_branch_reparks_a_cut_answer_without_redispatching() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        assert!(matches!(finish(&mut requests, &fake, 3)[..], [Delivered::Op(..)]));
+        requests.commit(0, 3);
+        branch(&mut requests, 2);
+        assert_eq!(fake.dispatched().len(), 1, "never re-run");
+        let parked = requests.take_mailbox();
+        assert_eq!(parked.len(), 1);
+        assert!(matches!(requests.deliver(&parked[0], 0, 2), Delivered::Op(..)));
+    }
+
+    #[test]
+    fn a_cut_op_stops_its_job_and_a_replay_dispatches_nothing() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        requests.commit(0, 0);
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 1);
+        branch(&mut requests, 1);
+        assert!(finish(&mut requests, &fake, 1).is_empty(), "stopped: no result");
+        // A replay registers the op without dispatching it.
+        requests.issue_job(Some(OpId { epoch: 1, frame: 1, ordinal: 0 }), 0, load("a.txt"), tagger(0.0), false);
+        assert_eq!(fake.dispatched().len(), 1);
+    }
+
+    #[test]
+    fn a_fork_holds_jobs_in_flight_at_its_frame_and_stops_none() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        requests.commit(0, 0);
+        requests.cancel_job("a.txt");
+        requests.commit(0, 2);
+        let op = OpId { epoch: 0, frame: 0, ordinal: 0 };
+        let value = Shareable::Bool(true);
+        let arrival = Arrival::Job { ticket: Ticket { id: 0, attempt: 1 }, value };
+        // At frame 1 the op was in flight (cancelled at 2); at frame 2 not.
+        assert!(requests.fork(1).deliver_recorded(op, &arrival).is_some());
+        assert!(requests.fork(2).deliver_recorded(op, &arrival).is_none());
+        // Dropping the forks stopped nothing live: a branch restores the op
+        // and its new attempt runs.
+        branch(&mut requests, 1);
+        assert!(matches!(finish(&mut requests, &fake, 1)[..], [Delivered::Op(..)]));
+    }
+
+    #[test]
+    fn two_producers_read_their_own_files_and_get_their_own_results() {
+        let (mut a, fake_a) = with_fake(Files("x.txt", "from a"));
+        let (mut b, fake_b) = with_fake(Files("x.txt", "from b"));
+        issue_load(&mut a, "x.txt");
+        issue_load(&mut b, "x.txt");
+        for fake in [&fake_a, &fake_b] {
+            fake.complete(fake.held()[0]);
+        }
+        let (mail_a, mail_b) = (a.jobs().mailbox().take(), b.jobs().mailbox().take());
+        assert_eq!(ok_text(&mail_a[0].1), "from a");
+        assert_eq!(ok_text(&mail_b[0].1), "from b");
+        // A's result doesn't answer B's op.
+        let stray = Arrival::Job { ticket: mail_a[0].0, value: mail_a[0].1.clone() };
+        assert!(matches!(b.deliver(&stray, 0, 0), Delivered::Dropped));
+    }
+
+    #[test]
+    fn a_missing_file_is_a_missing_error() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "b.txt");
+        fake.complete(fake.held()[0]);
+        let mail = requests.jobs().mailbox().take();
+        let Shareable::Variant(ctor, args) = &mail[0].1 else { panic!() };
+        assert_eq!(&**ctor, "Result.Error");
+        assert!(matches!(&args[0], Shareable::Variant(e, _) if &**e == "File.Missing"));
     }
 }
