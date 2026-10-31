@@ -1,0 +1,20 @@
+[
+  {
+    "name": "room-place-aim",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "place.script",
+    "captureAtFrame": 222
+  },
+  {
+    "name": "room-place-miss",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "place.script",
+    "captureAtFrame": 260
+  }
+]

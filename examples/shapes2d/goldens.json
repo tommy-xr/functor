@@ -1,0 +1,10 @@
+[
+  {
+    "name": "shapes2d-t26",
+    "fixedTime": 2.6,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  }
+]

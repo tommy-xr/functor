@@ -1,0 +1,20 @@
+[
+  {
+    "name": "room-bounce-flight",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "shoot.script",
+    "captureAtFrame": 180
+  },
+  {
+    "name": "room-bounce-rest",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "shoot.script",
+    "captureAtFrame": 420
+  }
+]

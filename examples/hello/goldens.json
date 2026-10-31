@@ -1,0 +1,26 @@
+[
+  {
+    "name": "hello-t2",
+    "fixedTime": 2.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  },
+  {
+    "name": "hello-normals-t2",
+    "fixedTime": 2.0,
+    "debugRender": "normals",
+    "targets": [
+      "native"
+    ]
+  },
+  {
+    "name": "hello-tangents-t2",
+    "fixedTime": 2.0,
+    "debugRender": "tangents",
+    "targets": [
+      "native"
+    ]
+  }
+]

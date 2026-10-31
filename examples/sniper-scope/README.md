@@ -88,7 +88,7 @@ so a mirrored scope image shows up next to the main view.
 
 ## Goldens
 
-`golden-scenarios.json` renders three scenarios: the hip view at a fixed
+`goldens.json` renders three scenarios: the hip view at a fixed
 time, and the shouldered view at 12° and at 6°. `--fixed-time` pins the
 model at `init`, which is the hip view. The shouldered states come from
 `shoulder.script` at fixed frames, using the scripted fixed-step path.

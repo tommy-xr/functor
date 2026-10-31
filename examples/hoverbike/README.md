@@ -161,6 +161,6 @@ drives them with injected XR samples.
   short fade), and is smooth above it.
 
 `dunes.fun` is the course, `stand.fun` the test stand, `bike.fun` the mesh.
-The goldens (`hoverbike-crest`, `hoverbike-rider` in `golden-scenarios.json`)
+The goldens (`hoverbike-crest`, `hoverbike-rider` in `goldens.json`)
 replay `ride.script`; `hoverbike-foot`, `hoverbike-fade` and
 `hoverbike-mounted` replay `mount.script` (the card, the black step, seated).

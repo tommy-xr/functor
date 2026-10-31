@@ -1,8 +1,9 @@
 //! Golden-image regression tests for the sample games.
 //!
-//! The scenarios are defined once in `golden-scenarios.json` at the repo root
-//! and **shared** with the wasm Playwright test (`e2e/golden-wasm.spec.mjs`), so
-//! a scenario added there is validated on both targets. Each scenario renders a
+//! The scenarios live in each example's `examples/<sample>/goldens.json`
+//! (docs/goldens.md) and are **shared** with the wasm Playwright test
+//! (`e2e/golden-wasm.spec.mjs`), so a scenario added there is validated on both
+//! targets. Each scenario renders a
 //! sample at a fixed frame time (so the pose is deterministic) via
 //! `functor ... run native --fixed-time` — or, for a state only input reaches,
 //! at a fixed frame of an input script (native only) — optionally with a
@@ -48,13 +49,15 @@ const TOLERANCE: u8 = 16;
 // wasm harness uses the analogous `maxDiffPixelRatio` in playwright.config.mjs.)
 const MAX_DIFF_FRACTION: f64 = 0.01;
 
-/// One golden scenario, deserialized from `golden-scenarios.json`. Mirrors the
-/// shape consumed by the wasm Playwright harness.
+/// One golden scenario, deserialized from an `examples/<sample>/goldens.json`.
+/// Mirrors the shape the wasm harness validates (`scripts/goldens.mjs`).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Scenario {
     /// Reference-image basename (native: `examples/<sample>/golden/<name>.png`).
     name: String,
-    /// Sample directory under `examples/`.
+    /// Sample directory under `examples/`: the directory holding the file.
+    #[serde(skip)]
     sample: String,
     /// Frame time to pin (seconds) for a deterministic pose; absent for a
     /// scripted scenario.
@@ -74,11 +77,6 @@ struct Scenario {
     capture_at_frame: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Manifest {
-    scenarios: Vec<Scenario>,
-}
-
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -86,13 +84,40 @@ fn repo_root() -> PathBuf {
         .expect("resolve repo root")
 }
 
+/// Every `examples/*/goldens.json` scenario, ordered by sample directory then
+/// file order. Panics on a duplicate name or the retired root manifest.
 fn load_scenarios() -> Vec<Scenario> {
-    let manifest_path = repo_root().join("golden-scenarios.json");
-    let raw = std::fs::read_to_string(&manifest_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
-    let manifest: Manifest = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", manifest_path.display()));
-    manifest.scenarios
+    let root = repo_root();
+    assert!(
+        !root.join("golden-scenarios.json").exists(),
+        "golden-scenarios.json is retired: move its scenarios to examples/<sample>/goldens.json"
+    );
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("examples"))
+        .expect("read examples/")
+        .map(|entry| entry.expect("examples/ entry").path().join("goldens.json"))
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+
+    let mut scenarios: Vec<Scenario> = Vec::new();
+    for path in files {
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let list: Vec<Scenario> = serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let sample = path.parent().unwrap().file_name().unwrap().to_string_lossy();
+        for mut scenario in list {
+            assert!(
+                !scenarios.iter().any(|s| s.name == scenario.name),
+                "duplicate golden scenario name '{}' ({})",
+                scenario.name,
+                path.display()
+            );
+            scenario.sample = sample.to_string();
+            scenarios.push(scenario);
+        }
+    }
+    scenarios
 }
 
 /// Path to the `functor` CLI binary, next to this test binary

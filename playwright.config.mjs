@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // Headless golden-image test for the wasm runtime, the counterpart to the native
-// `golden.rs`. Both iterate the shared scenario list in golden-scenarios.json.
+// `golden.rs`. Both iterate the scenarios in each example's goldens.json.
 // The wasm bundle is renderer-specific (browser + GL backend), so snapshots are
 // committed and compared with a tolerance, and this runs locally/manually (it
 // needs the wasm build + a browser), not in CI.

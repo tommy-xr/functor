@@ -60,6 +60,9 @@ jobs:
       - name: Test PR builds comment
         run: npm run test:pr-builds-comment
 
+      - name: Test golden scenario manifests
+        run: npm run test:goldens
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
