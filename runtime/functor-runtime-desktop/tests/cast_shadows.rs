@@ -105,6 +105,7 @@ fn main() {
             overrides: vec![],
             animation: Some(AnimExpr::Rest),
             while_pending: vec![],
+            parts: Vec::new(),
         })
     };
     let draws = |harness: &mut Harness, node: Scene3D| {
