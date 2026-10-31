@@ -442,6 +442,29 @@ which won't print as one solid — overlap them or move them apart"
             Ok::<_, String>(bounds_value(b))
         },
     );
+    // Export's own check, so `expect` catches what `functor export` refuses.
+    reg.fn1(
+        "Solid.check",
+        "Solid.check(solid)",
+        |s: FunctorLangSolid| {
+            let problems = match meshed(&s.0) {
+                Ok(m) => m.mesh.print_problems("the part"),
+                Err(e) => vec![e],
+            };
+            Value::Record(Rc::new(vec![
+                ("ok".to_string(), Value::Bool(problems.is_empty())),
+                (
+                    "problems".to_string(),
+                    Value::List(Rc::new(
+                        problems
+                            .into_iter()
+                            .map(|p| Value::String(p.into()))
+                            .collect(),
+                    )),
+                ),
+            ]))
+        },
+    );
 }
 
 fn register_sketch(reg: &mut crate::host_registry::Registry) {

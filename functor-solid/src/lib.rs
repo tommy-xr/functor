@@ -468,6 +468,50 @@ mod tests {
         assert_eq!(apart.shared_positions(), 0);
     }
 
+    /// Export's checks: a clean solid passes; pieces meeting exactly at an
+    /// edge or corner, empty and too-large parts, and open meshes don't.
+    #[test]
+    fn print_problems_match_what_export_refuses() {
+        let problems = |s: Solid| s.mesh().unwrap().print_problems("`part`");
+        let cube = || arc(Solid::Box { size: [2.0; 3] });
+        assert_eq!(
+            problems(Solid::Box { size: [2.0; 3] }),
+            Vec::<String>::new()
+        );
+        let near = arc(cube().translate([1.0, 1.0, 0.0]));
+        assert!(problems(Solid::boolean(BoolOp::Union, vec![cube(), near.clone()])).is_empty());
+        assert!(problems(Solid::Group(vec![cube(), near])).is_empty());
+
+        let edge = problems(Solid::Group(vec![
+            cube(),
+            arc(cube().translate([2.0, 2.0, 0.0])),
+        ]));
+        assert_eq!(edge.len(), 1, "{edge:?}");
+        assert!(
+            edge[0].starts_with("`part` would not slice as a solid: 2 vertices of separate pieces"),
+            "{edge:?}"
+        );
+        let corner = problems(Solid::Group(vec![cube(), arc(cube().translate([2.0; 3]))]));
+        assert!(
+            corner[0].contains(": 1 vertices of separate pieces"),
+            "{corner:?}"
+        );
+
+        let apart = arc(cube().translate([5.0, 0.0, 0.0]));
+        assert_eq!(
+            problems(Solid::boolean(BoolOp::Intersect, vec![cube(), apart])),
+            ["`part` is empty"]
+        );
+        assert!(problems(Solid::Box { size: [1e39; 3] })[0].contains("too large to export"));
+
+        let mut open = Solid::Box { size: [2.0; 3] }.mesh().unwrap();
+        open.triangles.pop();
+        assert_eq!(
+            open.print_problems("`part`"),
+            ["`part` would not slice as a solid: 3 edges are open or shared by more than two faces"]
+        );
+    }
+
     #[test]
     fn mirroring_scale_keeps_triangles_facing_outward() {
         let mesh = arc(Solid::Box { size: [2.0; 3] })

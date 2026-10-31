@@ -92,6 +92,13 @@ let toScene : (t) => Scene.t
 let volume : (t) => float
 /// The bounding box of the exported mesh.
 let bounds : (t) => bounds
+/// Whether `functor export` would write a solid: `ok`, or the reasons it
+/// refuses it (pieces touching exactly at an edge or corner, an empty or open
+/// mesh, a failed boolean). `expect Solid.check(part).problems == []` shows
+/// them when a test fails.
+type check = { ok: bool, problems: List<string> }
+/// Run export's checks on a solid, without exporting it.
+let check : (t) => check
 /// Options for `fromMesh`: the printed height and the nozzle width, in mm.
 type printOptions = { height: float, nozzle: float }
 /// A printable solid from any mesh — open, self-intersecting or paper-thin is

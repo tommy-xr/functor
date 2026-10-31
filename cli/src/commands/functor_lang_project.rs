@@ -2512,31 +2512,10 @@ pub(crate) fn size_label(mesh: &functor_solid::Mesh) -> String {
 
 /// Refuse a part slicers would not read as one closed solid.
 pub(crate) fn check_printable(binding: &str, mesh: &functor_solid::Mesh) -> Result<(), Error> {
-    if mesh.triangles.is_empty() {
-        return Err(Error::other(format!("`{binding}` is empty")));
+    match mesh.print_problems(&format!("`{binding}`")).as_slice() {
+        [] => Ok(()),
+        problems => Err(Error::other(problems.join("; "))),
     }
-    let overflows = |x: &f64| !(*x as f32).is_finite();
-    if mesh.vertices.iter().flatten().any(overflows) {
-        return Err(Error::other(format!(
-            "`{binding}` is too large to export: coordinates must fit in 32-bit floats"
-        )));
-    }
-    let shared = mesh.shared_positions();
-    if shared > 0 {
-        return Err(Error::other(format!(
-            "`{binding}` would not slice as a solid: {shared} vertices of separate pieces \
-land on the same point, joining them at a corner or edge. Overlap the pieces in the \
-`Solid.group` slightly (or move them apart) instead of letting them touch exactly."
-        )));
-    }
-    let open = mesh.non_manifold_edges();
-    if open > 0 {
-        return Err(Error::other(format!(
-            "`{binding}` would not slice as a solid: {open} edges are open or shared by \
-more than two faces"
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

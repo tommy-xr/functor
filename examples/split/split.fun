@@ -55,6 +55,9 @@ let exploded = Solid.group([
 expect Vec3.z(Solid.bounds(tower).max) > bed
 expect List.all((s) => Vec3.z(Solid.bounds(s).max) <= bed && Math.abs(Vec3.z(Solid.bounds(s).min)) < 0.001, [top, bottom, pins])
 
+// Each part passes the checks `functor export` runs.
+expect List.all((s) => Solid.check(s).ok, [top, bottom, pins])
+
 // The halves hold all of the tower but the two holes.
 expect Math.abs(Solid.volume(upper) + Solid.volume(lower) - (Solid.volume(tower) - 2.0 * Solid.volume(Connector.hole(fit, dowel)))) < 0.01
 

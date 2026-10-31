@@ -112,6 +112,38 @@ impl Mesh {
             .filter(|v| !seen.insert(v.map(|x| (x as f32).to_bits())))
             .count()
     }
+
+    /// Why slicers would not read this mesh as one closed solid, each
+    /// sentence naming `subject` (e.g. "`shell`"); empty when it prints.
+    /// The one check behind `functor export` and `Solid.check`.
+    pub fn print_problems(&self, subject: &str) -> Vec<String> {
+        if self.triangles.is_empty() {
+            return vec![format!("{subject} is empty")];
+        }
+        let mut problems = Vec::new();
+        let overflows = |x: &f64| !(*x as f32).is_finite();
+        if self.vertices.iter().flatten().any(overflows) {
+            problems.push(format!(
+                "{subject} is too large to export: coordinates must fit in 32-bit floats"
+            ));
+        }
+        let shared = self.shared_positions();
+        if shared > 0 {
+            problems.push(format!(
+                "{subject} would not slice as a solid: {shared} vertices of separate pieces \
+land on the same point, joining them at a corner or edge. Overlap the pieces in the \
+`Solid.group` slightly (or move them apart) instead of letting them touch exactly."
+            ));
+        }
+        let open = self.non_manifold_edges();
+        if open > 0 {
+            problems.push(format!(
+                "{subject} would not slice as a solid: {open} edges are open or shared by \
+more than two faces"
+            ));
+        }
+        problems
+    }
 }
 
 /// Triangles covering a planar polygon (3D corners in order, either winding),
