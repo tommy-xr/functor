@@ -243,6 +243,30 @@ pub trait GameProducer {
         Err("this producer does not support project loading (not an .fun game)".to_string())
     }
 
+    /// [`Self::load_project`] off the frame thread where the producer can:
+    /// a loading screen draws (and the running program pauses) until the
+    /// new one is ready ([`Self::when_loaded`]). A link error returns at
+    /// once. Default: load now.
+    fn begin_load_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        self.load_project(files)
+    }
+
+    /// Whether a load is running off the frame thread.
+    fn load_pending(&self) -> bool {
+        false
+    }
+
+    /// Install the load running off the frame thread if it has landed, and
+    /// tell its waiters. The shell calls it between frames, so it can
+    /// restart its clock before the new game's first.
+    fn poll_load(&mut self) {}
+
+    /// Call `done` with the status of the load running off the frame
+    /// thread once it lands; at once, with `Ok`, when none is.
+    fn when_loaded(&mut self, done: LoadWaiter) {
+        done(Ok("loaded".to_string()));
+    }
+
     /// Adopt the same-file entry ROLE a project push declared, returning the
     /// role it replaced so a rejected push can put it back (see
     /// [`load_with_role`] / [`reload_with_role`], which both shells route their
@@ -611,6 +635,9 @@ pub trait GameProducer {
 
     fn quit(&mut self);
 }
+
+/// Told how a load off the frame thread ended ([`GameProducer::when_loaded`]).
+pub type LoadWaiter = Box<dyn FnOnce(Result<String, String>) + Send>;
 
 /// `POST /load-project` under the same-file entry role that push DECLARED —
 /// a NEW game, so it may name any role.

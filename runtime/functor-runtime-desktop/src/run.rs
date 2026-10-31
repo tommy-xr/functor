@@ -1680,13 +1680,27 @@ pub fn run(args: Args) {
         &args.entry_module,
         &args.entry_prefix,
     );
+    // A deterministic run (scripted input, a capture, a fixed clock) and a
+    // headless one (an agent reads `/state`) load before their first frame;
+    // a windowed one draws the loading screen while the load job runs.
+    let load_first = args.headless
+        || args.input_script.is_some()
+        || args.capture_at_frame.is_some()
+        || args.capture_frame.is_some()
+        || args.fixed_time.is_some()
+        || args.display_hz.is_some();
     // The producer is created where it runs: under --pipelined that is the
     // sim thread, which it never leaves.
     let make_game = move || -> Box<dyn Game> {
         if replay {
             Box::new(replay_game::ReplayGame::create(game_path.as_str()))
-        } else {
+        } else if load_first {
             Box::new(functor_lang_game::FunctorLangGame::create_for_role(
+                game_path.as_str(),
+                role,
+            ))
+        } else {
+            Box::new(functor_lang_game::FunctorLangGame::create_loading_for_role(
                 game_path.as_str(),
                 role,
             ))

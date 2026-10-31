@@ -646,6 +646,8 @@ pub struct Entry<'a> {
     pub init: &'a str,
     /// Read before anything else runs.
     pub config: &'a str,
+    /// Draws the loading screen while the top-level values load.
+    pub loading: &'a str,
 }
 
 /// Where each read class may run, as check errors:
@@ -655,8 +657,8 @@ pub struct Entry<'a> {
 ///   the load's snapshot.
 /// - `physics` and `ui` only in hooks: no world is stepped at load, and UI
 ///   handler slots belong to one frame.
-/// - `init`, `config`, unit constructors and operators, and `Scene.memo` /
-///   `Physics.memo` builders read nothing.
+/// - `init`, `config`, `loading`, unit constructors and operators, and
+///   `Scene.memo` / `Physics.memo` builders read nothing.
 /// - A `Job.run` function reads like a top-level value: files, not
 ///   `physics` or `ui`.
 ///
@@ -769,6 +771,9 @@ meets a `{}` value, so it must be pure",
         }
     }
 
+    let loading_deps = crate::reuse::CodeIndex::new(module)
+        .deps_of(entry.loading)
+        .unwrap_or_default();
     for def in &module.defs {
         let name = def.name.as_str();
         let at = |set: Set| inferred.sets.get(&(def.name.clone(), set));
@@ -807,6 +812,37 @@ frame — build the view in `ui`",
                 ),
             };
             report(step.span, class, message);
+        }
+        // `loading` draws before the load it shows has finished, so neither
+        // it nor a value it uses may read.
+        if name != entry.loading && !cx.functions.contains(name) && loading_deps.contains(name) {
+            for (&class, step) in at(Set::Now).into_iter().flatten() {
+                report(
+                    step.span,
+                    class,
+                    format!(
+                        "`{}` uses `{name}`, which reads {} at load ({}): the loading screen \
+draws before the top-level values have loaded — draw from its `progress`, `tts` and plain values",
+                        entry.loading,
+                        what(class),
+                        path(name, step, class)
+                    ),
+                );
+            }
+        }
+        if name == entry.loading {
+            for (&class, step) in at(Set::Later).into_iter().flatten() {
+                report(
+                    step.span,
+                    class,
+                    format!(
+                        "`{name}` can't read {} ({}): it draws the loading screen before the \
+top-level values have loaded — draw from its `progress`, `tts` and plain values",
+                        what(class),
+                        path(name, step, class)
+                    ),
+                );
+            }
         }
         if entry.hooks.contains(&name) {
             if let Some(step) = at(Set::Later).and_then(|reads| reads.get(&ReadClass::File)) {

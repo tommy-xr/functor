@@ -407,6 +407,21 @@ attempt (a reload, a restored cancel) gets a fresh slot, so the old attempt's
 reports drop; a branch that cuts the progress last shown delivers the latest
 again on its first frame.
 
+**The load job.** A shell's first load (desktop startup, a Quest
+`/load-project`) evaluates the top-level values on a loader thread while the
+frame thread draws the loading screen: the game's `loading(progress, tts)`, or
+the engine's spinner. Progress is defs started over all defs, or a
+`Job.report` inside one, and the screen never shows it going back. The frame
+thread links the project itself, then adopts each value that crossed (a
+`Shareable`) and evaluates the rest (functions, mostly; a slow one warns). The
+loader keeps its last load, so the next reuses what it can. `loading` reads
+nothing (the checker says so, and a read falls back to the spinner): it draws
+before the values exist. A load that reads the physics world or UI slots at
+top level runs on the frame thread instead. A failure keeps the running
+program; on desktop, with none yet, the screen shows the error until an edit
+fixes it. Runs that need fixed frame numbers (scripted input, captures, a fixed
+clock) load before their first frame, and the web loads inline.
+
 Two fidelity tiers follow, and they are why coeffect replay (T8) is a separate
 phase from the input log (T6):
 

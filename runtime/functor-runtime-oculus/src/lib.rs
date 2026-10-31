@@ -653,6 +653,9 @@ struct DebugLoopState {
     config: Option<functor_runtime_common::runtime_settings::GameConfig>,
     /// The last completed stage window, for `/state.stages`.
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
+    /// The `/load-project` waiting on a load job, and where its status
+    /// arrives: answered when it lands.
+    pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
 }
 
 /// Ask the runtime for `hz`, which must be one of the display's offered rates.
@@ -717,6 +720,45 @@ fn request_launch_refresh_rate(
         }
     }
     refused
+}
+
+/// A finished `/load-project`: on success the game launches, so restart
+/// the clock and honour its `config`. Warnings join the status.
+#[allow(clippy::too_many_arguments)]
+fn launch(
+    mut result: Result<String, String>,
+    session: &xr::Session<xr::OpenGlEs>,
+    sim: &mut SimDriver,
+    clock: &mut GameClock,
+    debug: &mut DebugLoopState,
+    scene_context: &SceneContext,
+    passthrough: &passthrough::Passthrough,
+    environment_depth: &environment_depth::EnvironmentDepth,
+) -> Result<String, String> {
+    // A fresh load primes physics, which requests its heightmaps outside
+    // any frame.
+    sim.queue_terrain_requests(scene_context);
+    if result.is_ok() {
+        clock.restart();
+        debug.frame_count = 0;
+        let config = sim.call(|g| g.config());
+        debug.config = config;
+        let config_hz = config.and_then(|c| c.xr.refresh_rate);
+        let refused = debug
+            .display_refresh_rate
+            .as_mut()
+            .and_then(|display| request_launch_refresh_rate(session, display, config_hz));
+        let warnings = refused
+            .into_iter()
+            .chain(passthrough.load_warning(config))
+            .chain(environment_depth.load_warning(config));
+        if let Ok(status) = &mut result {
+            for warning in warnings {
+                status.push_str(&format!(" — warning: {warning}"));
+            }
+        }
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -970,37 +1012,34 @@ desktop runtime's --headless/--debug-port path"
             // Files the device lacks are asked of this host, if any (before
             // the load reads them).
             device_files.begin(host);
-            // Waits: a successful load restarts the shell's clock.
-            let mut result = sim.call(move |g| {
+            // The load job evaluates off the frame: the loading screen draws
+            // until it lands, and the request is answered then.
+            let (done, landed) = mpsc::channel();
+            let begun = sim.call(move |g| {
                 functor_runtime_common::protocol::load_with_role(g, role, |g| {
-                    g.load_project(&files)
+                    g.begin_load_project(&files)
+                })
+                .map(|status| {
+                    let pending = g.load_pending();
+                    if pending {
+                        g.when_loaded(Box::new(move |status| {
+                            let _ = done.send(status);
+                        }));
+                    }
+                    (status, pending)
                 })
             });
-            // A fresh load primes physics, which requests its heightmaps
-            // outside any frame.
-            sim.queue_terrain_requests(scene_context);
-            if result.is_ok() {
-                clock.restart();
-                debug.frame_count = 0;
-                // A load is the game's launch: honour its `config`.
-                let config = sim.call(|g| g.config());
-                debug.config = config;
-                let config_hz = config.and_then(|c| c.xr.refresh_rate);
-                let refused = debug
-                    .display_refresh_rate
-                    .as_mut()
-                    .and_then(|display| request_launch_refresh_rate(session, display, config_hz));
-                let warnings = refused
-                    .into_iter()
-                    .chain(passthrough.load_warning(config))
-                    .chain(environment_depth.load_warning(config));
-                if let Ok(status) = &mut result {
-                    for warning in warnings {
-                        status.push_str(&format!(" — warning: {warning}"));
+            match begun {
+                Ok((_, true)) => {
+                    if let Some((superseded, _)) = debug.pending_load.replace((response, landed)) {
+                        let _ = superseded.send(Err("superseded by a newer /load-project".to_string()));
                     }
                 }
+                done => {
+                    let result = launch(done.map(|(status, _)| status), session, sim, clock, debug, scene_context, passthrough, environment_depth);
+                    let _ = response.send(result);
+                }
             }
-            let _ = response.send(result);
         }
         DebugRequest::ReloadAsset(asset, response) => {
             let changed = asset_cache.replace_uploaded(&asset.path, asset.bytes);
@@ -1540,6 +1579,19 @@ pub fn android_main(app: AndroidApp) {
                     &passthrough,
                     &environment_depth,
                 );
+            }
+        }
+        // A load job that landed answers its `/load-project`: installed
+        // here, between frames (and while the session is stopped), so the
+        // clock restarts before the new game's first frame.
+        if debug.pending_load.is_some() {
+            sim.call(|g| g.poll_load());
+        }
+        let landed = debug.pending_load.as_ref().and_then(|(_, landed)| landed.try_recv().ok());
+        if let Some(result) = landed {
+            let result = launch(result, &session, &mut sim, &mut clock, &mut debug, &scene_context, &passthrough, &environment_depth);
+            if let Some((response, _)) = debug.pending_load.take() {
+                let _ = response.send(result);
             }
         }
 
