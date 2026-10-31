@@ -666,10 +666,6 @@ let night: Lightmap.bakeJob = {
 
 // ---- Daylight: the day bake only -----------------------------------------------
 
-// The sun's fixed direction (travelling east, down and north; 33° up): the
-// day bake's shadows and the frame's sun agree.
-let sunDirection = v(0.7, -0.55, 0.45)
-
 // A point `u` along footprint side `s`, `y` up, `out` metres outside the
 // wall's centre line.
 let outsideFacade = (s: Side, u: float, y: float, out: float): Vec3.t =>
@@ -679,19 +675,24 @@ let outsideFacade = (s: Side, u: float, y: float, out: float): Vec3.t =>
   | East => v(footprint.x1 + out, y, u)
   | West => v(footprint.x0 - out, y, u)
 
-// What each facade opening sees: a patch of sky above its head and of
-// sunlit ground below, each a grid of shadowed spots about 0.5 m apart, 1 m
-// wider than the opening each side, aimed into the room. The facade's own
-// walls shadow them, so the sky lights a soft, window-shaped patch on the
-// floor and lower walls inside, and the ground the ceiling by the opening.
-// Ambient can't stand in: its occlusion reaches only 1 m, so it would light
-// windowless rooms too.
+// An overcast day: no sun, so the bake holds at any yaw of the building
+// (every daylight below is placed relative to its opening). Each facade
+// opening sees a patch of sky above its head and of sky-lit ground below,
+// each a grid of shadowed spots about 0.5 m apart, 1 m wider than the
+// opening each side, aimed into the room. The facade's own walls shadow
+// them, so the sky lights a soft, window-shaped patch on the floor and lower
+// walls inside, and the ground the ceiling by the opening. Ambient can't
+// stand in: its occlusion reaches only 1 m, so it would light windowless
+// rooms too.
 // A patch `out` m outside the wall's centre line, `height` m tall from the
 // opening's head (sky) or the street (ground), aimed at the floor or the
 // ceiling 2 m inside.
 type Patch = { out: float, aboveHead: bool, height: float, aimY: float, color: Color.t, perSquareMetre: float }
 let skyPatch = { out: 1.0, aboveHead: true, height: 2.0, aimY: 0.0, color: Color.rgb(0.72, 0.84, 1.0), perSquareMetre: 0.6 }
-let groundPatch = { out: 2.0, aboveHead: false, height: 0.5, aimY: ceiling, color: Color.rgb(0.75, 0.72, 0.64), perSquareMetre: 0.3 }
+// The ground reflects a quarter of the sky's light per square metre, in the
+// sky's colour (grey pavement under an overcast sky).
+let groundAlbedo = 0.25
+let groundPatch = { out: 2.0, aboveHead: false, height: 0.5, aimY: ceiling, color: skyPatch.color, perSquareMetre: groundAlbedo * skyPatch.perSquareMetre }
 
 // `p`'s spots for opening `h` in side `s`, on the storey whose floor is
 // `base` up. The ground is always the street.
@@ -717,11 +718,8 @@ let openingLights = (s: Side, base: float, h: Hole): List<Light.t> =>
   let ground = { groundPatch with perSquareMetre: groundPatch.perSquareMetre / stacked(s, h) } in
   List.flatten([patchLights(s, base, h, skyPatch), patchLights(s, base, h, ground)])
 
-let daylightLights = List.flatten([
-  [Light.directional(sunDirection, Color.rgb(1.0, 0.93, 0.8), 3.0) |> Light.castShadows],
-  levels |> List.concatMap((l) => [North, South, East, West] |> List.concatMap((s) =>
-    openingsIn(l, s) |> List.concatMap((h) => openingLights(s, l * storey, h)))),
-])
+let daylightLights = levels |> List.concatMap((l) => [North, South, East, West] |> List.concatMap((s) =>
+  openingsIn(l, s) |> List.concatMap((h) => openingLights(s, l * storey, h))))
 
 // Day: the same mesh, so the same charts; the panels stay on.
 let day: Lightmap.bakeJob = { night with name: "day", lights: List.flatten([night.lights, daylightLights]) }

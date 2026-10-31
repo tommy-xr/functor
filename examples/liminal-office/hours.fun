@@ -23,9 +23,11 @@ let daySky = { r: 178.0 / 255.0, g: 192.0 / 255.0, b: 204.0 / 255.0 }
 let skyAt = (d: float): Rgb =>
   if d < 0.5 then mix(nightSky, duskSky, 2.0 * d) else mix(duskSky, daySky, 2.0 * d - 1.0)
 
-// The moon's direction; by day the light turns to `Building.sunDirection`,
-// the day bake's sun.
+// The moon's direction, and the sun's (travelling east, down and north; 33°
+// up), which by day lights only the outdoors: the interior's day bake is
+// overcast.
 let moonDirection = Vec3.make(0.3, -0.8, 0.5)
+let sunDirection = Vec3.make(0.7, -0.55, 0.45)
 
 // The outdoors at `d` = daylight: the sky, the fog's near end, the frame's
 // ambient and moon-to-sun light, and how strongly the neon and the sodium
@@ -37,7 +39,7 @@ let outdoorAt = (d: float): Outdoor => {
   ambient: mix({ r: 0.09, g: 0.08, b: 0.14 }, { r: 1.1, g: 1.12, b: 1.16 }, d),
   sun: mix({ r: 0.35, g: 0.38, b: 0.55 }, { r: 1.0, g: 0.93, b: 0.8 }, d),
   sunIntensity: 0.6 |> Math.lerp(2.6, d),
-  sunDirection: moonDirection |> Vec3.lerp(Building.sunDirection, d),
+  sunDirection: moonDirection |> Vec3.lerp(sunDirection, d),
   neon: 1.0 |> Math.lerp(0.7, d),
   lamps: 1.0 |> Math.lerp(0.0, d),
 }
