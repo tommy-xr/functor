@@ -26,9 +26,8 @@ use functor_lang::project::SourceMap;
 use functor_lang::{Session, Value};
 
 use crate::functor_lang_prelude::{
-    audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectRunner, EffectTree,
-    FunctorHost, NetEventKind, RealEffects, UiHandler,
+    audio_scene_of, frame_value, html_node_value, now_ms, take_ui_handlers, view_value,
+    EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
     journal_arm, journal_swap, rebase_connect_retry_deadlines, reused_status, validate_contract,
@@ -39,7 +38,7 @@ use crate::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use crate::physics;
 use crate::protocol::GameProducer;
 use crate::runtime_settings::{GameConfig, GameSettings};
-use crate::timetravel::{Entry, SceneRecorder};
+use crate::timetravel::{Arrival, Entry, SceneRecorder};
 use crate::ui::View;
 use crate::webview::HtmlNode;
 use crate::{Frame, FrameTime};
@@ -516,6 +515,10 @@ impl FunctorLangEmbeddedGame {
         for warning in &report.warnings {
             log::warn!("[functor-lang] reload: {warning}");
         }
+        // In-flight requests rebind like the model, so their responses land.
+        for cancelled in self.recorder.rebind_requests(&self.module, &loaded.module) {
+            log::warn!("[functor-lang] {cancelled}");
+        }
         // Recompute the inspector source hashes for the edited files, and drop
         // the journal + cached trace: they refer to the OLD program's spans
         // and execution (reload clears both, like the other producers).
@@ -555,14 +558,10 @@ impl FunctorLangEmbeddedGame {
             // (the physics-world / `ui` rule).
             self.last_soundscape_json = empty_soundscape_json();
         }
-        // A deferred query or in-flight HTTP request holds a tagger — a
-        // closure into the OLD session; drop them rather than let them dangle.
-        // A `playThen` completion message closes over the old session too.
+        // A deferred query holds a tagger — a closure into the OLD session;
+        // drop them rather than let them dangle.
         self.deferred_queries.clear();
         self.pending_events.clear();
-        clear_http_taggers();
-        clear_audio_completions();
-        clear_preload_completions();
         // The widget handler table holds msgs/taggers into the OLD session;
         // the next render's `ui(model)` rebuilds it against the new one.
         self.ui_handlers.clear();
@@ -617,9 +616,6 @@ impl FunctorLangEmbeddedGame {
     fn reset_in(&mut self, loaded: Loaded) {
         self.ctx().close_all_connections();
         physics::remove_world(physics::DEFAULT_WORLD);
-        clear_http_taggers();
-        clear_audio_completions();
-        clear_preload_completions();
 
         self.source_hashes = inspector_sources(&loaded.sources);
         self.last_frame_journal.clear();
@@ -814,29 +810,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
     /// Coupled scene rewind — delegated to the shared [`SceneRecorder`]
     /// (docs/time-travel.md T1), identical to the other producers.
     fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
-        let retry_tts_before_rewind = self.prev_tts;
-        let result = self.recorder.rewind_scene_to(
-            target,
-            &mut self.model,
-            &mut self.physics_rt,
-            &mut self.physics_frame,
-            self.has_physics,
-            &mut self.prev_tts,
-        );
+        let result = self.ctx().rewind_scene_to(target);
         if result.is_ok() {
-            rebase_connect_retry_deadlines(
-                &mut self.connect_retries,
-                retry_tts_before_rewind,
-                self.prev_tts,
-            );
-            self.deferred_queries.clear();
-            self.pending_events.clear();
-            // The restored model predates the current loading snapshot —
-            // redeliver it on the next frame (see before_physics).
-            self.delivered_asset_progress = None;
-            // Model restored to `target`; drop orphaned buffered input so it
-            // can't record into the branch.
-            self.next.clear();
             // The scrubbed frame is a historical one whose journal we didn't
             // keep — report it honestly as empty invocations.
             self.last_frame_journal.clear();
@@ -846,19 +821,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
     }
 
     fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
-        let result = self.recorder.seek_scene_to(
-            target,
-            &mut self.model,
-            &mut self.physics_rt,
-            &mut self.physics_frame,
-            self.has_physics,
-        );
+        let result = self.ctx().seek_scene_to(target);
         if result.is_ok() {
-            // Same as rewind: the model was restored, so buffered input since
-            // the last recorded frame is orphaned and must not enter the branch,
-            // nor the queries that input issued.
-            self.next.clear();
-            self.deferred_queries.clear();
             // The paused frame changed — clear the last-frame journal and cache
             // so the trace reflects the scrubbed frame.
             self.last_frame_journal.clear();
@@ -1282,20 +1246,11 @@ AudioScene.empty), got {}",
         crate::net::drain_commands_json()
     }
     fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
-        self.ctx().deliver_http_result(crate::net::HttpResult {
-            token: token as u64,
-            status: status as u16,
-            body: body.into_bytes(),
-            error: None,
-        });
+        self.ctx()
+            .push_arrival(Arrival::http_response(token, status, body));
     }
     fn net_push_http_error(&mut self, token: i32, message: String) {
-        self.ctx().deliver_http_result(crate::net::HttpResult {
-            token: token as u64,
-            status: 0,
-            body: Vec::new(),
-            error: Some(message),
-        });
+        self.ctx().push_arrival(Arrival::http_error(token, message));
     }
     fn audio_drain_commands(&self) -> String {
         // One-shot commands (Effect.play/playAt/playThen); the shell's audio
@@ -1327,12 +1282,13 @@ AudioScene.empty), got {}",
             .deliver_net_event(key, NetEventKind::Error, conn, message);
     }
     fn audio_push_finished(&mut self, token: i32) {
-        self.ctx().deliver_audio_completion(token as u64);
+        self.ctx()
+            .push_arrival(Arrival::AudioFinished(token as u64));
     }
 
     // preload_drain_commands: the trait default drains the shared queue.
     fn preload_push_settled(&mut self, token: u64) {
-        self.ctx().deliver_preload_completion(token);
+        self.ctx().push_arrival(Arrival::PreloadSettled(token));
     }
 
     fn quit(&mut self) {
@@ -2478,5 +2434,82 @@ let draw = (model, tts) =>
             game.ghost_frames(3, 1.0 / 60.0, tts, None).is_empty(),
             "the ghost ends where answers stop lining up"
         );
+    }
+
+    /// `Space` fires a GET whose tagger names the press; `update` counts.
+    const HTTP_GAME: &str = r#"
+type Msg = | Got(i: float, resp: Net.HttpResponse)
+let init = { sent: 0.0, got: 0.0, last: 0.0 }
+let input = (model, key, isDown) =>
+  match key with
+  | Key.Space => if isDown then ({ model with sent: model.sent + 1.0 }, Effect.httpGet("http://fake/a", (r) => Got(model.sent, r))) else model
+  | _ => model
+let update = (model, msg) =>
+  match msg with
+  | Got(i, resp) => { model with got: model.got + 1.0, last: i }
+let tick = (model, dt, tts) => model
+let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+"#;
+
+    fn http_game() -> FunctorLangEmbeddedGame {
+        FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), HTTP_GAME.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("http game loads")
+    }
+
+    /// Press `Space` and play a frame: the request's token.
+    fn request(game: &mut FunctorLangEmbeddedGame, frame: u32) -> i32 {
+        game.key_event(crate::Key::Space as i32, true);
+        game.key_event(crate::Key::Space as i32, false);
+        game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
+        match crate::net::drain_commands().as_slice() {
+            [crate::net::NetCommand::HttpRequest { token, .. }] => *token as i32,
+            other => panic!("expected one request, got {other:?}"),
+        }
+    }
+
+    /// A reload keeps a request in flight: its tagger is rebound and the
+    /// response lands.
+    #[test]
+    fn a_reload_keeps_requests_in_flight() {
+        let _ = crate::net::drain_commands();
+        let mut game = http_game();
+        let token = request(&mut game, 0);
+        let edited = HTTP_GAME.replace("got: model.got + 1.0", "got: model.got + 10.0");
+        game.reload_source(&edited).expect("edit reloads");
+        game.net_push_http_response(token, 200, String::new());
+        assert!(game.state_debug().contains("got: 10"), "{}", game.state_debug());
+    }
+
+    /// A rewind keeps a request issued before the target, and drops one
+    /// issued after it.
+    #[test]
+    fn a_rewind_keeps_only_requests_issued_before_it() {
+        let _ = crate::net::drain_commands();
+        let mut game = http_game();
+        let kept = request(&mut game, 0);
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+        let cut = request(&mut game, 2);
+        game.rewind_scene_to(1).expect("rewind");
+        game.net_push_http_response(cut, 200, String::new());
+        assert!(game.state_debug().contains("got: 0"), "{}", game.state_debug());
+        game.net_push_http_response(kept, 200, String::new());
+        let model = game.state_debug();
+        assert!(model.contains("got: 1") && model.contains("last: 0"), "{model}");
+    }
+
+    /// Two producers on one thread keep their own pending requests.
+    #[test]
+    fn producers_do_not_share_pending_requests() {
+        let _ = crate::net::drain_commands();
+        let mut a = http_game();
+        let mut b = http_game();
+        let token = request(&mut a, 0);
+        b.net_push_http_response(token, 200, String::new());
+        assert!(b.state_debug().contains("got: 0"), "{}", b.state_debug());
+        a.net_push_http_response(token, 200, String::new());
+        assert!(a.state_debug().contains("got: 1"), "{}", a.state_debug());
     }
 }

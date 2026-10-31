@@ -36,9 +36,8 @@ use functor_lang::{Session, Value};
 use functor_runtime_common::data_watch::{self, DataWatch};
 use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_prelude::{
-    audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    frame_value, html_node_value, take_ui_handlers, view_value, EffectRunner, EffectTree,
-    FunctorHost, NetEventKind, RealEffects, UiHandler,
+    audio_scene_of, frame_value, html_node_value, take_ui_handlers, view_value, EffectRunner,
+    EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
     journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, reuse_counts,
@@ -49,7 +48,7 @@ use functor_runtime_common::functor_lang_producer::{
 use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use functor_runtime_common::physics;
 use functor_runtime_common::runtime_settings::{GameConfig, GameSettings};
-use functor_runtime_common::timetravel::{Entry, SceneRecorder};
+use functor_runtime_common::timetravel::{Arrival, Entry, SceneRecorder};
 use functor_runtime_common::ui::View;
 use functor_runtime_common::webview::HtmlNode;
 use functor_runtime_common::{Frame, FrameTime};
@@ -694,6 +693,10 @@ impl FunctorLangGame {
         for warning in &report.warnings {
             eprintln!("[functor-lang] reload: {warning}");
         }
+        // In-flight requests rebind like the model, so their responses land.
+        for cancelled in self.recorder.rebind_requests(&self.module, &loaded.module) {
+            eprintln!("[functor-lang] {cancelled}");
+        }
         // Recompute the inspector source hashes for the edited files, and drop
         // the journal + cached trace: they refer to the OLD program's spans and
         // execution (visual-debugger PR2 — hot-reload clears both).
@@ -748,17 +751,10 @@ impl FunctorLangGame {
         self.options
             .reload(loaded.config, loaded.settings, &mut self.reporter);
         self.reporter.reset();
-        // A deferred query or in-flight HTTP request holds a tagger — a closure
-        // into the OLD session; drop them rather than let them dangle. A late
-        // HTTP response for a dropped token arrives orphaned and is ignored.
+        // A deferred query holds a tagger — a closure into the OLD session;
+        // drop them rather than let them dangle.
         self.deferred_queries.clear();
         self.pending_events.clear();
-        clear_http_taggers();
-        // In-flight `playThen` completion messages close over the OLD session
-        // too — drop them alongside the HTTP taggers (a late finish for a
-        // dropped token arrives orphaned and is ignored).
-        clear_audio_completions();
-        clear_preload_completions();
         // The widget handler table holds msgs/taggers into the OLD session;
         // the next render's `ui(model)` rebuilds it against the new one. A
         // click landing in the gap resolves an unknown slot and is dropped.
@@ -798,9 +794,6 @@ impl FunctorLangGame {
             .watch(std::mem::take(&mut loaded.file_reads));
         self.ctx().close_all_connections();
         physics::remove_world(physics::DEFAULT_WORLD);
-        clear_http_taggers();
-        clear_audio_completions();
-        clear_preload_completions();
 
         self.source_hashes = inspector_sources(&loaded.sources);
         self.sources = project_sources_of(&loaded.sources);
@@ -1094,47 +1087,17 @@ impl Game for FunctorLangGame {
         Ok(status)
     }
 
-    /// Coupled scene rewind — delegated to the shared [`SceneRecorder`]
+    /// Coupled scene rewind — the shared [`FrameCtx::rewind_scene_to`]
     /// (docs/time-travel.md T1). Restores model + world to `target` and branches
-    /// the future; exact-or-refused. After a successful branch, drop any
-    /// in-flight frame work so it doesn't carry across (the reload discipline).
+    /// the future; exact-or-refused.
     fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
-        let retry_tts_before_rewind = self.prev_tts;
-        let result = self.recorder.rewind_scene_to(
-            target,
-            &mut self.model,
-            &mut self.physics_rt,
-            &mut self.physics_frame,
-            self.has_physics,
-            &mut self.prev_tts,
-        );
+        let result = self.ctx().rewind_scene_to(target);
         if result.is_ok() {
-            rebase_connect_retry_deadlines(
-                &mut self.connect_retries,
-                retry_tts_before_rewind,
-                self.prev_tts,
-            );
-            // No in-flight frame work should carry across the branch (matches
-            // the reload discipline); between-frame callers have these empty.
-            self.deferred_queries.clear();
-            self.pending_events.clear();
-            // The restored model predates the current loading snapshot —
-            // redeliver it on the next frame (see before_physics).
-            self.delivered_asset_progress = None;
-            clear_http_taggers();
-            clear_audio_completions();
-            clear_preload_completions();
             // The paused frame moved to `target`, for which we hold no journal
             // (only the last real frame's) — drop the stale trace so the
             // inspector reports the rewound frame with no invocations (PR2).
             self.last_frame_journal.clear();
             self.cached_trace = None;
-            // Drop any input buffered since the last recorded frame: the model was
-            // just restored to `target`, so a stray live event (e.g. one buffered
-            // on a 0-substep frame under the fixed-timestep loop) is now orphaned
-            // and must not be recorded into the branch — it would diverge a
-            // ghost/replay taken there (xreview).
-            self.next.clear();
         }
         result
     }
@@ -1225,30 +1188,17 @@ impl Game for FunctorLangGame {
         )
     }
 
-    /// Non-destructive scrub — delegated to the shared [`SceneRecorder`]
+    /// Non-destructive scrub — the shared [`FrameCtx::seek_scene_to`]
     /// (docs/time-travel.md T3): restore model + world for display without
     /// truncating, so the draggable bar can seek back and forth.
     fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
-        let result = self.recorder.seek_scene_to(
-            target,
-            &mut self.model,
-            &mut self.physics_rt,
-            &mut self.physics_frame,
-            self.has_physics,
-        );
+        let result = self.ctx().seek_scene_to(target);
         if result.is_ok() {
             // The scrubbed frame changed: drop the stale journal + cached trace
             // (we hold a journal only for the last real frame, not the scrubbed
             // target) — PR2, like `rewind_scene_to`.
             self.last_frame_journal.clear();
             self.cached_trace = None;
-            // The model was restored to `target`; drop any input buffered since
-            // the last recorded frame so a stray live event (buffered on a
-            // 0-substep frame under the fixed-timestep loop) can't be recorded
-            // into the resulting branch and diverge a ghost/replay (xreview).
-            // The queries that input issued go with it.
-            self.next.clear();
-            self.deferred_queries.clear();
         }
         result
     }
@@ -1660,21 +1610,10 @@ AudioScene.empty), got {}",
     }
     fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
         self.ctx()
-            .deliver_http_result(functor_runtime_common::net::HttpResult {
-                token: token as u64,
-                status: status as u16,
-                body: body.into_bytes(),
-                error: None,
-            });
+            .push_arrival(Arrival::http_response(token, status, body));
     }
     fn net_push_http_error(&mut self, token: i32, message: String) {
-        self.ctx()
-            .deliver_http_result(functor_runtime_common::net::HttpResult {
-                token: token as u64,
-                status: 0,
-                body: Vec::new(),
-                error: Some(message),
-            });
+        self.ctx().push_arrival(Arrival::http_error(token, message));
     }
     fn audio_drain_commands(&self) -> String {
         // One-shot commands (Effect.play/playAt/playThen), performed by the
@@ -1707,12 +1646,13 @@ AudioScene.empty), got {}",
             .deliver_net_event(key, NetEventKind::Error, conn, message);
     }
     fn audio_push_finished(&mut self, token: i32) {
-        self.ctx().deliver_audio_completion(token as u64);
+        self.ctx()
+            .push_arrival(Arrival::AudioFinished(token as u64));
     }
 
     // preload_drain_commands: the trait default drains the shared queue.
     fn preload_push_settled(&mut self, token: u64) {
-        self.ctx().deliver_preload_completion(token);
+        self.ctx().push_arrival(Arrival::PreloadSettled(token));
     }
 
     fn quit(&mut self) {

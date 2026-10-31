@@ -91,9 +91,8 @@ pub fn drain_commands_json() -> String {
 // --- Completion: token minting for `Effect.playThen` ---
 //
 // A `playThen` one-shot correlates its completion with the play via a token.
-// The Functor Lang producer holds the pending completion MESSAGE keyed by that token in
-// its own per-session registry (`functor_lang_prelude::register_audio_completion`); this
-// module just mints the tokens.
+// The recorder's pending table (`timetravel::Requests`) holds the completion
+// MESSAGE by that token; this module just mints the tokens.
 
 thread_local! {
     static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
