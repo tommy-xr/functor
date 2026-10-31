@@ -1101,7 +1101,7 @@ off and no shadow — see the `Scene.opacity` reference for what that granularit
 does and does not fix. The 2D analogue is `Sprite.fade`.
 
 **Shadow casting is per light AND per subtree** — `Light.castShadows` picks the
-lights; `s |> Scene.castShadows(false)` keeps a subtree out of every shadow map
+lights; `s |> Scene.castShadows(false)` keeps a subtree out of the shadow map
 (it still renders and receives shadows). The nearest enclosing call wins, so
 `Scene.castShadows(true, …)` re-enables casting inside a `false` subtree. Use it
 for mid/far crowd members: each shadow caster is a second draw.

@@ -102,12 +102,6 @@ pub struct SceneContext {
     // primitives (shared, never swept) return at once. Terrain still draws.
     portal_visible: RefCell<Option<Vec<bool>>>,
     portal_hidden: Cell<bool>,
-    // A shadow map is being filled (`shadow::render_shadow_pass`); other
-    // depth-only passes, like the stand-in room's, ignore `Scene.castShadows`.
-    pub(crate) shadow_pass: Cell<bool>,
-    // In a shadow pass, inside a `Scene.castShadows(false, …)` subtree with no
-    // nearer `true`: its leaves are skipped.
-    shadow_off: Cell<bool>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
     // both eyes evaluate each model node once. Cleared when a new frame id
     // begins; see `cached_pose_joints` for the key.
@@ -724,8 +718,6 @@ impl SceneContext {
             )),
             portal_visible: RefCell::new(None),
             portal_hidden: Cell::new(false),
-            shadow_pass: Cell::new(false),
-            shadow_off: Cell::new(false),
             poses: RefCell::new(HashMap::new()),
             main_shadow: Cell::new(None),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -2217,7 +2209,7 @@ pub enum SceneObject {
     /// `Scene.cells` / `Scene.inCells` — portal culling; see [`CellsNode`].
     /// Otherwise a group.
     Cells(CellsNode, Vec<Scene3D>),
-    /// `Scene.castShadows` — whether the subtree draws into shadow maps.
+    /// `Scene.castShadows` — whether the subtree draws into the shadow map.
     /// Otherwise a group: it still renders and receives shadows. The nearest
     /// enclosing node wins, so `true` re-enables casting inside a `false`.
     CastShadows(bool, Vec<Scene3D>),
@@ -2797,7 +2789,7 @@ impl Scene3D {
     ) {
         // Under `Scene.castShadows(false, …)` a leaf casts nothing; its forward
         // draw keeps it resident. Instanced nodes decide in their own arm.
-        if scene_context.shadow_off.get()
+        if render_context.shadow_off.get()
             && matches!(self.obj.resolved(), SceneObject::Geometry(_) | SceneObject::Model(_))
         {
             return;
@@ -3252,10 +3244,9 @@ impl Scene3D {
             // the depth pass draws it.
             SceneObject::CastShadows(casts, items) => {
                 let world = world_matrix * self.xform;
-                let outer = scene_context
-                    .shadow_pass
-                    .get()
-                    .then(|| scene_context.shadow_off.replace(!casts));
+                let outer = render_context
+                    .shadow_casters
+                    .then(|| render_context.shadow_off.replace(!casts));
                 for item in items {
                     item.render(
                         render_context,
@@ -3267,7 +3258,7 @@ impl Scene3D {
                     )
                 }
                 if let Some(outer) = outer {
-                    scene_context.shadow_off.set(outer);
+                    render_context.shadow_off.set(outer);
                 }
             }
             SceneObject::Instanced {
@@ -3280,11 +3271,11 @@ impl Scene3D {
                 let recognized = instancing::recognize(template);
                 // A hardware template's own `Scene.castShadows` beats the
                 // enclosing one; an expanded template renders its own.
-                if scene_context.shadow_pass.get()
+                if render_context.shadow_casters
                     && recognized.as_ref().is_some_and(|recognized| {
                         !recognized
                             .casts_shadows()
-                            .unwrap_or(!scene_context.shadow_off.get())
+                            .unwrap_or(!render_context.shadow_off.get())
                     })
                 {
                     return;

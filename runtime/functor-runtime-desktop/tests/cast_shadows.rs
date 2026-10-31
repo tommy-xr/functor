@@ -49,16 +49,7 @@ fn main() {
         slab(),
     ]));
     if let Ok(dir) = std::env::var("CAST_SHADOWS_PNG") {
-        for (name, b) in [("opted-out", cast(false, cube_b())), ("casting", cube_b())] {
-            let mut view = frame(vec![floor(), cube_a(), b, slab()]);
-            view.camera = Camera::look_at(
-                [3.0, 7.0, -4.0],
-                [0.4, 0.3, 0.0],
-                [0.0, 1.0, 0.0],
-                Angle::from_degrees(60.0),
-            );
-            save_png(&harness.render(&view), &format!("{dir}/{name}.png"));
-        }
+        save_media(&mut harness, &dir);
     }
     let open = luma(&pixels, OPEN);
     assert!(luma(&pixels, A_SHADOW) < 0.7 * open, "A cast no shadow");
@@ -161,18 +152,61 @@ fn cast(casts: bool, scene: Scene3D) -> Scene3D {
 }
 
 fn lit(scene: Scene3D) -> Scene3D {
+    colored(scene, [0.8, 0.8, 0.8])
+}
+
+fn colored(scene: Scene3D, [r, g, b]: [f32; 3]) -> Scene3D {
     Scene3D {
-        obj: SceneObject::Material(MaterialDescription::lit(0.8, 0.8, 0.8, 1.0), vec![scene]),
+        obj: SceneObject::Material(MaterialDescription::lit(r, g, b, 1.0), vec![scene]),
         xform: Matrix4::from_scale(1.0),
     }
 }
 
 /// A lit unit cube scaled by `size` and centred at `at`.
 fn box_at(at: [f32; 3], size: [f32; 3]) -> Scene3D {
+    placed(lit(Scene3D::cube()), at, size)
+}
+
+fn placed(scene: Scene3D, at: [f32; 3], size: [f32; 3]) -> Scene3D {
     Scene3D {
-        obj: SceneObject::Group(vec![lit(Scene3D::cube())]),
+        obj: SceneObject::Group(vec![scene]),
         xform: Matrix4::from_translation(vec3(at[0], at[1], at[2]))
             * Matrix4::from_nonuniform_scale(size[0], size[1], size[2]),
+    }
+}
+
+/// PR media: B opts out (or casts) while a pillar upwind shadows the lower
+/// half of B's lit face. A low sun keeps the pillar's own
+/// ground shadow inside B's footprint, so B's shadow reads on its own.
+fn save_media(harness: &mut Harness, dir: &str) {
+    let orange = |at| placed(colored(Scene3D::cube(), [1.0, 0.5, 0.1]), at, [1.0; 3]);
+    let pillar = placed(
+        colored(Scene3D::cube(), [0.1, 0.7, 1.0]),
+        [-2.0, 0.8, 2.0],
+        [0.3, 1.6, 1.2],
+    );
+    for (name, b) in [
+        ("opted-out", cast(false, orange([0.0, 0.5, 2.0]))),
+        ("casting", orange([0.0, 0.5, 2.0])),
+    ] {
+        let mut view = frame(vec![floor(), b, pillar.clone()]);
+        view.lights = vec![
+            Light::ambient(0.3, 0.3, 0.3),
+            Light::Directional {
+                direction: [1.0, -0.7, 0.0],
+                color: [1.0, 1.0, 1.0],
+                intensity: 1.0,
+                casts_shadows: true,
+                baked: false,
+            },
+        ];
+        view.camera = Camera::look_at(
+            [-3.0, 4.0, -1.5],
+            [0.6, 0.2, 2.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(60.0),
+        );
+        save_png(&harness.render(&view), &format!("{dir}/{name}.png"));
     }
 }
 

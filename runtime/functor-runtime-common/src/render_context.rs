@@ -218,6 +218,12 @@ pub struct RenderContext<'a> {
     /// fog, camera and the view/projection every draw receives are constant
     /// for a context, so [`PassUniforms`] uploads them once per program.
     pub pass_serial: u64,
+    /// This pass fills a shadow map, so `Scene.castShadows(false, …)`
+    /// subtrees are skipped. Other depth-only passes leave it `false`.
+    pub shadow_casters: bool,
+    /// In a `shadow_casters` pass, inside a `Scene.castShadows(false, …)`
+    /// subtree with no nearer `true`. A `Cell` like `opacity`.
+    pub shadow_off: std::cell::Cell<bool>,
 }
 
 /// A fresh [`RenderContext::pass_serial`]; never 0 (a program's "no pass yet").
