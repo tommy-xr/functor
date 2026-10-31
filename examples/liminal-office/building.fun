@@ -636,7 +636,7 @@ let lampLight = (l: Lamp): Light.t =>
   let lens = lampFace(l) in
   let centre = lens.q.o |> Vec3.add(Vec3.scale(0.5, lens.q.a)) |> Vec3.add(Vec3.scale(0.5, lens.q.b)) in
   let at = centre |> Vec3.add(Vec3.scale(0.3, normalOf(lens.q))) |> Vec3.add(v(0.0, baseOf(roomAt(l.room)) - 0.15, 0.0)) in
-  Light.point(at, Color.rgb(1.0, 0.62, 0.3), 1.3, 8.0) |> Light.castShadows
+  Light.point(at, Color.rgb(1.0, 0.62, 0.3), 0.5, 7.0) |> Light.castShadows
 
 // The lightmap stores light ÷ `bakeScale`; the game loads both bakes with it.
 let bakeScale = 2.0
