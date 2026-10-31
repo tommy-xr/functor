@@ -304,42 +304,90 @@ struct CompositeUniforms {
 /// Resolve a model asset for drawing: the per-frame cache poll (which is ALSO
 /// the liveness poll for `Asset.whilePending` chains, so it must run every
 /// frame) followed by placeholder resolution. Shared by the ordinary Model
-/// draw arm and the instanced-model arm so the two cannot drift.
+/// draw arm and the instanced-model arm so the two cannot drift. Also says
+/// whether it is the loaded primary (not a placeholder or the fallback).
 fn resolve_model_for_draw(
     render_context: &RenderContext,
     scene_context: &SceneContext,
     file: &str,
     while_pending: &[String],
-) -> Arc<Model> {
+) -> (Arc<Model>, bool) {
     let model: Arc<AssetHandle<Model>> = render_context
         .asset_cache
         .load_asset_with_pipeline(scene_context.model_pipeline.clone(), file);
-    crate::asset::resolve_while_pending(
+    match crate::asset::resolve_while_pending_state(
         &render_context.asset_cache,
         &scene_context.model_pipeline,
         &model,
         while_pending,
-    )
+    ) {
+        crate::asset::WhilePendingState::Loaded(asset) => (asset, true),
+        crate::asset::WhilePendingState::Loading(Some(asset)) => (asset, false),
+        crate::asset::WhilePendingState::Loading(None) | crate::asset::WhilePendingState::Failed => {
+            (model.fallback(), false)
+        }
+    }
 }
 
 /// Resolve a model node of either handle for drawing, with the name its
-/// warnings use. Not for static data models, which `draw_static_model` draws.
+/// warnings use and whether `Scene.modelParts` applies to it (false for a
+/// `whilePending` placeholder, whose parts are another model's: it draws
+/// whole). Not for static data models, which `draw_static_model` draws.
 fn resolve_handle_for_draw<'a>(
     render_context: &RenderContext,
     scene_context: &SceneContext,
     description: &'a ModelDescription,
-) -> (Arc<Model>, &'a str) {
+) -> (Arc<Model>, &'a str, bool) {
     match &description.handle {
-        ModelHandle::File(file) => (
-            resolve_model_for_draw(
+        ModelHandle::File(file) => {
+            let (model, primary) = resolve_model_for_draw(
                 render_context,
                 scene_context,
                 file,
                 &description.while_pending,
-            ),
-            file,
-        ),
-        ModelHandle::Data(data) => (scene_context.data_model(data), data.label()),
+            );
+            if primary
+                && !description.parts.is_empty()
+                && render_context.render_pass != RenderPass::DepthOnly
+            {
+                warn_unknown_parts(scene_context, &model, description, file);
+            }
+            (model, file, primary)
+        }
+        ModelHandle::Data(data) => (scene_context.data_model(data), data.label(), true),
+    }
+}
+
+/// Whether `mesh` draws under the node's `Scene.modelParts` selection;
+/// `selected` is false for a placeholder (see `resolve_handle_for_draw`).
+fn draws_mesh(
+    description: &ModelDescription,
+    selected: bool,
+    mesh: &crate::model::ModelMesh,
+) -> bool {
+    !selected || description.draws_part(&mesh.part)
+}
+
+/// Warn once per name that a `Scene.modelParts` selection names no part of
+/// the loaded model; such a name matches nothing.
+fn warn_unknown_parts(
+    scene_context: &SceneContext,
+    model: &Model,
+    description: &ModelDescription,
+    file: &str,
+) {
+    for name in description.parts.iter().flatten() {
+        if !model.meshes.iter().any(|mesh| mesh.part == *name) {
+            scene_context.warn_once_with(&format!("model-part:{file}:{name}"), || {
+                let mut parts: Vec<&str> = model.meshes.iter().map(|m| m.part.as_str()).collect();
+                parts.dedup();
+                format!(
+                    "[scene] model \"{file}\" has no part named \"{name}\" — \
+Scene.modelParts draws nothing for it (its parts: {}; Assets.<name>Parts has them typed)",
+                    parts.join(", ")
+                )
+            });
+        }
     }
 }
 
@@ -492,7 +540,9 @@ struct CachedPose {
     animation: Option<crate::anim::AnimExpr>,
     tts: f32,
     joints: Arc<[Matrix4<f32>]>,
-    // The posed model's bounds in model space (`None`: unknown, draw).
+    // The posed bounds of the parts `parts` selects, in model space
+    // (`None`: unknown, draw).
+    parts: Vec<Vec<String>>,
     bounds: Option<Aabb>,
 }
 
@@ -504,29 +554,32 @@ impl CachedPose {
         model: &Arc<Model>,
         animation: &Option<crate::anim::AnimExpr>,
         tts: f32,
+        parts: &[Vec<String>],
     ) -> bool {
         Arc::ptr_eq(&self.model, model)
             && self.tts.to_bits() == tts.to_bits()
             && self.animation == *animation
+            && self.parts == parts
     }
 }
 
 /// `model_pose_joints` and the posed bounds, memoized for the frame. Keyed by
 /// the node's `ModelDescription` address, which is stable while the frame is drawn; a
-/// hit must also match the model, expression and clock, so an address reused
-/// within the frame (an `expand_instanced` temporary) re-evaluates instead of
-/// aliasing another node's pose.
+/// hit must also match the model, expression, clock and part selection, so an
+/// address reused within the frame (an `expand_instanced` temporary)
+/// re-evaluates instead of aliasing another node's pose or bounds.
 fn cached_pose_joints(
     render_context: &RenderContext,
     scene_context: &SceneContext,
     hydrated_model: &Arc<Model>,
     description: &ModelDescription,
+    selected: bool,
     file: &str,
 ) -> (Arc<[Matrix4<f32>]>, Option<Aabb>) {
     let key = description as *const ModelDescription as usize;
     let tts = render_context.frame_time.tts;
     if let Some(cached) = scene_context.poses.borrow().get(&key) {
-        if cached.matches(hydrated_model, &description.animation, tts) {
+        if cached.matches(hydrated_model, &description.animation, tts, &description.parts) {
             return (cached.joints.clone(), cached.bounds);
         }
     }
@@ -538,11 +591,12 @@ fn cached_pose_joints(
         file,
     )
     .into();
-    // Only culling reads them.
+    // Only culling reads them; unselected parts don't count.
     let bounds = scene_context.cull.get().then(|| {
         hydrated_model
             .meshes
             .iter()
+            .filter(|mesh| draws_mesh(description, selected, mesh))
             .try_fold(Aabb::empty(), |acc, mesh| Some(acc.union(&mesh.bounds.posed(&joints)?)))
     });
     let bounds = bounds.flatten();
@@ -553,6 +607,7 @@ fn cached_pose_joints(
             animation: description.animation.clone(),
             tts,
             joints: joints.clone(),
+            parts: description.parts.clone(),
             bounds,
         },
     );
@@ -2488,6 +2543,19 @@ impl Scene3D {
         self
     }
 
+    /// Draw only the named parts of every glTF model in this subtree —
+    /// `Scene.modelParts`. Nested selections intersect: a part draws only if
+    /// every enclosing call names it. Models built from data have no parts
+    /// and stay whole.
+    pub fn with_parts(mut self, names: Vec<String>) -> Self {
+        self.for_each_model(&mut |model| {
+            if matches!(model.handle, ModelHandle::File(_)) {
+                model.parts.push(names.clone());
+            }
+        });
+        self
+    }
+
     /// Replace every lightmapped static model's lightmap texture in this
     /// subtree — `Scene.withLightmap`. Other models are left as they are.
     pub fn with_lightmap(mut self, texture: TextureDescription) -> Self {
@@ -2772,7 +2840,7 @@ impl Scene3D {
                 // chain renders its first loaded placeholder instead of
                 // the empty fallback (chainless models resolve exactly
                 // like the old `get()`).
-                let (hydrated_model, str) =
+                let (hydrated_model, str, selected) =
                     resolve_handle_for_draw(render_context, scene_context, model_description);
                 // Resolving kept it resident; portal-hidden, skip the pose too.
                 if scene_context.portal_hidden.get() {
@@ -2845,13 +2913,19 @@ impl Scene3D {
                         scene_context,
                         &hydrated_model,
                         model_description,
+                        selected,
                         str,
                     )
                 } else {
                     (Arc::from([]), None)
                 };
 
-                for mesh in hydrated_model.meshes.iter() {
+                // `Scene.modelParts`: unselected parts draw in no pass.
+                for mesh in hydrated_model
+                    .meshes
+                    .iter()
+                    .filter(|mesh| draws_mesh(model_description, selected, mesh))
+                {
                     // Go through selectors, and adjust
                     // let override_material_description = Some(MaterialDescription::Texture(
                     //     TextureDescription::File("vr_glove_color.jpg".to_string()),
@@ -3195,7 +3269,7 @@ impl Scene3D {
                         );
                     }
                     Some(instancing::RecognizedTemplate::Model(recognized)) => {
-                        let (hydrated_model, file) = resolve_handle_for_draw(
+                        let (hydrated_model, file, selected) = resolve_handle_for_draw(
                             render_context,
                             scene_context,
                             recognized.description,
@@ -3221,11 +3295,15 @@ impl Scene3D {
                                 scene_context,
                                 &hydrated_model,
                                 recognized.description,
+                                selected,
                                 file,
                             )
                         } else {
-                            let bounds =
-                                hydrated_model.meshes.iter().fold(Aabb::empty(), |acc, mesh| {
+                            let bounds = hydrated_model
+                                .meshes
+                                .iter()
+                                .filter(|mesh| draws_mesh(recognized.description, selected, mesh))
+                                .fold(Aabb::empty(), |acc, mesh| {
                                     acc.union(&mesh.bounds.local.transform(&mesh.transform))
                                 });
                             (Arc::from([]), Some(bounds))
@@ -3235,11 +3313,15 @@ impl Scene3D {
                         if culled(&mut renderer, bounds) {
                             return;
                         }
+                        let draws = |mesh: &crate::model::ModelMesh| {
+                            draws_mesh(recognized.description, selected, mesh)
+                        };
                         if is_skinned {
                             renderer.draw_skinned_model(
                                 render_context,
                                 &key,
                                 &hydrated_model,
+                                &draws,
                                 &|mesh| {
                                     bind_model_base_color(
                                         &recognized.description.handle,
@@ -3260,6 +3342,7 @@ impl Scene3D {
                                 render_context,
                                 &key,
                                 &hydrated_model,
+                                &draws,
                                 &recognized.local,
                                 instances,
                                 &xform,
@@ -4148,6 +4231,7 @@ mod opacity_tests {
             overrides: vec![],
             animation: None,
             while_pending: vec![],
+            parts: Vec::new(),
         });
         let scene = opacity(0.5, model).with_animation(crate::anim::AnimExpr::Clip {
             name: "walk".to_string(),
@@ -4215,13 +4299,15 @@ mod pose_cache_tests {
             animation: clip(0.5),
             tts: 2.0,
             joints: Arc::from([]),
+            parts: vec![vec!["Body".to_string()]],
             bounds: None,
         };
-        assert!(cached.matches(&model, &clip(0.5), 2.0));
+        assert!(cached.matches(&model, &clip(0.5), 2.0, &cached.parts));
         // A reused address with another model, expression or clock misses.
-        assert!(!cached.matches(&self::model(), &clip(0.5), 2.0));
-        assert!(!cached.matches(&model, &clip(0.75), 2.0));
-        assert!(!cached.matches(&model, &None, 2.0));
-        assert!(!cached.matches(&model, &clip(0.5), 2.5));
+        assert!(!cached.matches(&self::model(), &clip(0.5), 2.0, &cached.parts));
+        assert!(!cached.matches(&model, &clip(0.75), 2.0, &cached.parts));
+        assert!(!cached.matches(&model, &None, 2.0, &cached.parts));
+        assert!(!cached.matches(&model, &clip(0.5), 2.5, &cached.parts));
+        assert!(!cached.matches(&model, &clip(0.5), 2.0, &[]), "another selection misses");
     }
 }

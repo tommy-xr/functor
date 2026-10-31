@@ -6,7 +6,8 @@ use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::model::{
-    build_skeleton_from_skin, document_hierarchy, HierarchyNode, Model, ModelMesh, Skeleton,
+    build_skeleton_from_skin, document_hierarchy, part_names, HierarchyNode, Model, ModelMesh,
+    Skeleton,
 };
 use crate::render::VertexPositionTextureSkinned;
 use crate::{
@@ -84,6 +85,7 @@ impl AssetPipeline<Model> for ModelPipeline {
         // The full node hierarchy, so the skeleton can include ancestor
         // nodes above the skin root (see `build_skeleton_from_skin`).
         let hierarchy = document_hierarchy(&document);
+        let parts = part_names(&document);
 
         for scene in document.scenes() {
             for node in scene.nodes() {
@@ -92,6 +94,7 @@ impl AssetPipeline<Model> for ModelPipeline {
                     &buffers_data,
                     &images_data,
                     &hierarchy,
+                    &parts,
                     &mut meshes,
                     &mut maybe_skeleton,
                 );
@@ -123,17 +126,17 @@ fn process_node(
     buffers: &[gltf::buffer::Data],
     images: &[TextureData],
     hierarchy: &HashMap<usize, HierarchyNode>,
+    parts: &HashMap<usize, String>,
     meshes: &mut Vec<ModelMesh>,
     maybe_skeleton: &mut Option<Skeleton>,
 ) {
     if let Some(mesh) = node.mesh() {
         let transform_array = node.transform().matrix();
         let transform = Matrix4::from(transform_array);
+        let part = &parts[&node.index()];
 
         for primitive in mesh.primitives() {
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-
-            let _name = mesh.name().unwrap_or(&"<no name>").to_owned();
 
             let positions = reader
                 .read_positions()
@@ -282,6 +285,7 @@ fn process_node(
                 bounds,
                 base_color_texture: texture,
                 transform,
+                part: part.clone(),
             };
 
             meshes.push(model_mesh);
@@ -311,7 +315,7 @@ fn process_node(
     }
 
     for child in node.children() {
-        process_node(&child, buffers, images, hierarchy, meshes, maybe_skeleton);
+        process_node(&child, buffers, images, hierarchy, parts, meshes, maybe_skeleton);
     }
 }
 
@@ -424,6 +428,27 @@ fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data])
 mod tests {
     use super::*;
     use crate::asset::AssetPipelineContext;
+
+    // A part is a mesh node with all its primitives, named per `part_names`.
+    #[test]
+    fn meshes_carry_their_part() {
+        use crate::model::test_glb::{glb, TestNode};
+        let model = ModelPipeline.process(
+            glb(
+                &[
+                    TestNode::named("Body").boxes(&[([0.0; 3], [1.0; 3]), ([2.0; 3], [3.0; 3])]),
+                    TestNode::named("Body"),
+                    TestNode::unnamed(),
+                ],
+                true,
+            ),
+            &AssetCache::new(),
+            AssetPipelineContext {},
+        );
+        let parts: Vec<&str> = model.meshes.iter().map(|mesh| mesh.part.as_str()).collect();
+        assert_eq!(parts, ["Body", "Body", "Body_2", "mesh"]);
+        assert!(model.skeleton.get_joint_count() > 0, "skinned");
+    }
 
     // Unparseable bytes must become the empty model, not a panic (asset
     // hot-reload can catch a .glb mid-write; the render thread polls asset

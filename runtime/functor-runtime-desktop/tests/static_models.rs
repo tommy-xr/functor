@@ -372,6 +372,7 @@ fn frame(model: &Arc<ModelData>, nodes: usize, instanced: bool, lights: Vec<Ligh
             overrides: vec![],
             animation: None,
             while_pending: vec![],
+            parts: Vec::new(),
         })
     };
     let items = (0..nodes)

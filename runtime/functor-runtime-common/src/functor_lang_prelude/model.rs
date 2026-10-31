@@ -420,6 +420,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 overrides: Vec::new(),
                 animation: None,
                 while_pending: Vec::new(),
+                parts: Vec::new(),
             }))
         },
     );

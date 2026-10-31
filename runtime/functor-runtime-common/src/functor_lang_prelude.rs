@@ -2368,6 +2368,7 @@ manifest's Assets.<name>, or Asset.model(\"file.glb\")";
             overrides: Vec::new(),
             animation: None,
             while_pending: path.while_pending,
+            parts: Vec::new(),
         }))
     });
     reg.fn1(
@@ -2597,6 +2598,15 @@ instanced node instead: scene |> Scene.instanced(instances) |> Scene.opacity(alp
         "Scene.animate(anim, scene) — e.g. scene |> Scene.animate(Anim.clip(\"walk\", tts))",
         |anim: FunctorLangAnim, scene: FunctorLangScene| {
             FunctorLangScene(scene.0.with_animation(anim.0))
+        },
+    );
+    // Draw only the named parts of the glTF model(s) in a scene (scene-last);
+    // nested selections intersect.
+    reg.fn2(
+        "Scene.modelParts",
+        "Scene.modelParts(names, scene) — e.g. scene |> Scene.modelParts([Assets.heroParts.body])",
+        |names: Vec<String>, scene: FunctorLangScene| {
+            FunctorLangScene(scene.0.with_parts(names))
         },
     );
     // Transforms (scene-last). Each wraps the scene in a Group carrying the
@@ -9700,6 +9710,68 @@ Vec3.make(x, y, z)"
             }
             other => panic!("expected a Clip animation, got {other:?}"),
         }
+    }
+
+    // Scene.modelParts lands on glTF models (through groups, memo and an
+    // instanced template), nests as an intersection, compares structurally,
+    // and round-trips the wire; geometry is untouched.
+    #[test]
+    fn scene_model_parts_selects_and_intersects() {
+        let value = eval(
+            "let hero = () => Scene.model(Asset.model(\"hero.glb\"))\n\
+             let inner = () => Scene.memo(\"hero\", 0.0, (_) => hero() |> Scene.modelParts([\"Body\", \"Hat\"]))\n\
+             let main = () => Scene.group([\n\
+               inner(),\n\
+               hero() |> Scene.instanced([Instance.at(Vec3.make(0.0, 0.0, 0.0))]),\n\
+             ]) |> Scene.modelParts([\"Body\"])",
+        );
+        let scene = scene_of(&value).expect("a Scene");
+        let SceneObject::Group(children) = &scene.obj else {
+            panic!("expected a Group, got {:?}", scene.obj);
+        };
+        let SceneObject::Model(memoized) = children[0].obj.resolved() else {
+            panic!("expected a Model, got {:?}", children[0].obj);
+        };
+        assert_eq!(memoized.parts, [vec!["Body", "Hat"], vec!["Body"]]);
+        assert!(memoized.draws_part("Body"));
+        assert!(!memoized.draws_part("Hat"), "the outer selection hides Hat");
+        let SceneObject::Instanced { template, .. } = &children[1].obj else {
+            panic!("expected Instanced, got {:?}", children[1].obj);
+        };
+        let SceneObject::Model(stamped) = &template.obj else {
+            panic!("expected a Model template, got {:?}", template.obj);
+        };
+        assert_eq!(stamped.parts, [vec!["Body"]]);
+
+        let equal = |a: &str, b: &str| {
+            let src = format!(
+                "let m = () => Scene.model(Asset.model(\"hero.glb\"))\n\
+                 let main = () => Scene.equals({a}, {b})"
+            );
+            matches!(eval(&src), functor_lang::Value::Bool(true))
+        };
+        assert!(equal(
+            "m() |> Scene.modelParts([\"Body\"])",
+            "m() |> Scene.modelParts([\"Body\"])"
+        ));
+        assert!(!equal("m() |> Scene.modelParts([\"Body\"])", "m()"));
+        assert!(!equal(
+            "m() |> Scene.modelParts([\"Body\"])",
+            "m() |> Scene.modelParts([\"Hat\"])"
+        ));
+
+        let json = serde_json::to_string(&scene).expect("serialize");
+        assert!(json.contains(r#""parts":[["Body","Hat"],["Body"]]"#), "json: {json}");
+        let back: Scene3D = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(&back, scene);
+
+        let data = eval(
+            "let main = () => Scene.cube() |> Scene.modelParts([\"Body\"])",
+        );
+        assert!(matches!(
+            scene_of(&data).expect("a Scene").obj,
+            SceneObject::Geometry(Shape::Cube)
+        ));
     }
 
     // Applied over a group, Scene.animate reaches the Model nodes inside it

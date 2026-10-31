@@ -91,6 +91,7 @@ fn scene_frame(count: usize) -> Frame {
             overrides: vec![],
             animation: None,
             while_pending: vec![],
+            parts: Vec::new(),
         })
         .translate_x(i as f32 * 1.2 - 0.6)
     };

@@ -250,6 +250,7 @@ fn xbot() -> Scene3D {
         overrides: vec![],
         animation: None,
         while_pending: vec![],
+        parts: Vec::new(),
     })
 }
 

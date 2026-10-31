@@ -1,5 +1,8 @@
 mod data;
+mod parts;
 mod skeleton;
+#[cfg(test)]
+pub(crate) mod test_glb;
 
 use crate::{
     animation::Animation, geometry::IndexedMesh, render::VertexPositionTextureSkinned,
@@ -8,6 +11,7 @@ use crate::{
 use cgmath::Matrix4;
 
 pub use data::*;
+pub use parts::*;
 pub use skeleton::*;
 
 /// The joint palette size of every skinned shader (`#define MAX_JOINTS`).
@@ -23,6 +27,10 @@ pub struct ModelMesh {
 
     /// Frustum-culling bounds, from the vertices at load.
     pub bounds: crate::scene3d::MeshBounds,
+
+    /// The part this primitive belongs to (see [`part_names`]); empty for a
+    /// model built from data, which has no parts.
+    pub part: String,
 }
 
 pub struct Model {

@@ -3,9 +3,10 @@
 //!
 //! Turns a scanned project's assets into the generated `assets.fun` module:
 //! one branded constant per asset (`let xbot = Asset.model("Xbot.glb")`), plus
-//! declared clip- and joint-record constants per model
-//! (`Assets.xbotClips.walk.name`, `Assets.xbotJoints.mixamorig_Head`). A typo is
-//! a check-time error instead of a silently-bind-posed clip or ignored joint.
+//! declared clip-, joint- and part-record constants per model
+//! (`Assets.xbotClips.walk.name`, `Assets.xbotJoints.mixamorig_Head`,
+//! `Assets.xbotParts.alpha_Surface`). A typo is a check-time error instead of a
+//! silently-bind-posed clip, ignored joint or unselected part.
 //! The generated file is meant to be CHECKED IN: it typechecks without the
 //! binary assets present (models are fetched, not committed), and `run`/`build`
 //! regenerate it when assets change.
@@ -38,13 +39,14 @@ pub struct AssetEntry {
     pub locator: String,
 }
 
-/// A model entry additionally carries its `(clip name, duration s)` pairs and
-/// exact skeleton joint names.
+/// A model entry additionally carries its `(clip name, duration s)` pairs,
+/// exact skeleton joint names, and part names (`Scene.modelParts`).
 pub struct ModelEntry {
     pub name: String,
     pub locator: String,
     pub clips: Vec<(String, f32)>,
     pub joints: Vec<String>,
+    pub parts: Vec<String>,
 }
 
 /// Everything the generator needs: the scanned assets by kind. The generator
@@ -95,6 +97,8 @@ pub fn listed_files(source: &str) -> Option<Vec<String>> {
 /// let xbotClips: XbotClips = { walk: { name: "walk", duration: 0.9667 }, … }
 /// type XbotJoints = { mixamorig_Head: string, … }
 /// let xbotJoints: XbotJoints = { mixamorig_Head: "mixamorig:Head", … }
+/// type XbotParts = { alpha_Surface: string, … } // models with 2+ parts
+/// let xbotParts: XbotParts = { alpha_Surface: "Alpha_Surface", … }
 /// // Textures.
 /// let dirt = Asset.texture("dirt.png")
 /// // Sounds.
@@ -102,7 +106,8 @@ pub fn listed_files(source: &str) -> Option<Vec<String>> {
 /// ```
 ///
 /// Duplicate clip names keep only the first (document-order) clip — the one
-/// `Anim.clip`'s first-match lookup actually plays.
+/// `Anim.clip`'s first-match lookup actually plays. A single-part model gets
+/// no parts record: selecting its only part is the whole model.
 pub fn generate(input: &ManifestInput) -> Option<String> {
     let mut models: Vec<&ModelEntry> = input.models.iter().collect();
     let mut textures: Vec<&AssetEntry> = input.textures.iter().collect();
@@ -161,6 +166,8 @@ clips via Assets.<name>Clips.<clip>; joints via Assets.<name>Joints.<joint>\n",
         std::collections::HashMap::new();
     let mut declared_joint_field_sets: std::collections::HashMap<Vec<String>, String> =
         std::collections::HashMap::new();
+    let mut declared_part_field_sets: std::collections::HashMap<Vec<String>, String> =
+        std::collections::HashMap::new();
 
     if !models.is_empty() {
         out.push_str("\n// Models.\n");
@@ -207,29 +214,22 @@ clips via Assets.<name>Clips.<clip>; joints via Assets.<name>Joints.<joint>\n",
 
         if !model.joints.is_empty() {
             let joints_ident = idents.claim(&format!("{ident}Joints"));
-            let fields = joint_fields(&model.joints);
-            let mut field_names: Vec<String> =
-                fields.iter().map(|(field, _)| field.clone()).collect();
-            field_names.sort();
-            let joints_type = match declared_joint_field_sets.get(&field_names) {
-                Some(existing) => existing.clone(),
-                None => {
-                    let declared = capitalize(&joints_ident);
-                    out.push_str(&format!("\ntype {} = {{\n", declared));
-                    for (field, _) in &fields {
-                        out.push_str(&format!("  {}: string,\n", field));
-                    }
-                    out.push_str("}\n");
-                    declared_joint_field_sets.insert(field_names, declared.clone());
-                    declared
-                }
-            };
+            push_name_record(
+                &mut out,
+                &mut declared_joint_field_sets,
+                &joints_ident,
+                &model.joints,
+            );
+        }
 
-            out.push_str(&format!("\nlet {}: {} = {{\n", joints_ident, joints_type));
-            for (field, name) in &fields {
-                out.push_str(&format!("  {}: \"{}\",\n", field, escape_string(name),));
-            }
-            out.push_str("}\n");
+        if model.parts.len() > 1 {
+            let parts_ident = idents.claim(&format!("{ident}Parts"));
+            push_name_record(
+                &mut out,
+                &mut declared_part_field_sets,
+                &parts_ident,
+                &model.parts,
+            );
         }
     }
 
@@ -256,6 +256,39 @@ clips via Assets.<name>Clips.<clip>; joints via Assets.<name>Joints.<joint>\n",
     }
 
     Some(out)
+}
+
+/// Emit a record of exact-name string fields (`let <ident>: <Type> = { … }`),
+/// declaring its type unless `declared` already has one with the same field
+/// set — the shape of both the joint and the part records.
+fn push_name_record(
+    out: &mut String,
+    declared: &mut std::collections::HashMap<Vec<String>, String>,
+    ident: &str,
+    names: &[String],
+) {
+    let fields = joint_fields(names);
+    let mut field_names: Vec<String> = fields.iter().map(|(field, _)| field.clone()).collect();
+    field_names.sort();
+    let record_type = match declared.get(&field_names) {
+        Some(existing) => existing.clone(),
+        None => {
+            let declared_type = capitalize(ident);
+            out.push_str(&format!("\ntype {} = {{\n", declared_type));
+            for (field, _) in &fields {
+                out.push_str(&format!("  {}: string,\n", field));
+            }
+            out.push_str("}\n");
+            declared.insert(field_names, declared_type.clone());
+            declared_type
+        }
+    };
+
+    out.push_str(&format!("\nlet {}: {} = {{\n", ident, record_type));
+    for (field, name) in &fields {
+        out.push_str(&format!("  {}: \"{}\",\n", field, escape_string(name),));
+    }
+    out.push_str("}\n");
 }
 
 /// Clip names appearing more than once in a model. `Anim.clip` selects by
@@ -303,7 +336,7 @@ fn clip_fields(clips: &[(String, f32)]) -> Vec<(String, String, f32)> {
         .collect()
 }
 
-/// The sanitized joint fields (`(field ident, exact joint name)`) of one
+/// The sanitized joint (or part) fields (`(field ident, exact name)`) of one
 /// model, sorted by original name with collisions disambiguated in that
 /// order. Duplicate exact names keep only the first because only one
 /// name-based constant can address them.
@@ -456,6 +489,7 @@ mod tests {
                     locator: file.to_string(),
                     clips: clips.iter().map(|(n, d)| (n.to_string(), *d)).collect(),
                     joints: Vec::new(),
+                    parts: Vec::new(),
                 })
                 .collect(),
             textures: textures.iter().map(|f| local(f)).collect(),
@@ -560,6 +594,7 @@ let boom = Asset.sound(\"boom.ogg\")
                 locator: "hero.glb".to_string(),
                 clips: vec![("idle".to_string(), 1.0)],
                 joints: vec!["head".to_string()],
+                parts: Vec::new(),
             }],
             textures: vec![
                 AssetEntry {
@@ -612,6 +647,7 @@ let boom = Asset.sound(\"boom.ogg\")
                     "mixamorig Head".to_string(),
                     "mixamorig:Head".to_string(),
                 ],
+                parts: Vec::new(),
             }],
             files: vec!["Xbot.glb".to_string()],
             ..Default::default()
@@ -626,6 +662,51 @@ let boom = Asset.sound(\"boom.ogg\")
         assert!(src.contains("  mixamorig_Head_2: \"mixamorig:Head\","));
         assert_eq!(src.matches("\"mixamorig:Head\"").count(), 1);
         functor_lang::parse(&src).expect("joint constants must generate parseable code");
+    }
+
+    // Multi-part models get an exact-name parts record after their joints;
+    // a single-part model emits nothing new, so its manifest is unchanged.
+    #[test]
+    fn multi_part_models_generate_a_parts_record() {
+        let entry = |name: &str, parts: &[&str]| ModelEntry {
+            name: name.to_string(),
+            locator: format!("{name}.glb"),
+            clips: Vec::new(),
+            joints: vec!["root".to_string()],
+            parts: parts.iter().map(|p| p.to_string()).collect(),
+        };
+        let input = ManifestInput {
+            models: vec![
+                entry("hero", &["MI_Hair_1", "MI_Ranger", "Body", "Body_2"]),
+                entry("rock", &["Rock"]),
+            ],
+            files: vec!["hero.glb".to_string(), "rock.glb".to_string()],
+            ..Default::default()
+        };
+        let src = generate(&input).unwrap();
+        assert!(
+            src.contains(
+                "\nlet heroJoints: HeroJoints = {\n  root: \"root\",\n}\n\n\
+type HeroParts = {\n  body: string,\n  body_2: string,\n  mI_Hair_1: string,\n  mI_Ranger: string,\n}\n\n\
+let heroParts: HeroParts = {\n  body: \"Body\",\n  body_2: \"Body_2\",\n  \
+mI_Hair_1: \"MI_Hair_1\",\n  mI_Ranger: \"MI_Ranger\",\n}\n"
+            ),
+            "{src}"
+        );
+        assert!(!src.contains("rockParts"), "{src}");
+        let without_parts = ManifestInput {
+            models: vec![entry("rock", &[])],
+            files: vec!["rock.glb".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            generate(&without_parts),
+            generate(&ManifestInput {
+                models: vec![entry("rock", &["Rock"])],
+                files: vec!["rock.glb".to_string()],
+                ..Default::default()
+            })
+        );
     }
 
     #[test]
@@ -654,6 +735,7 @@ let boom = Asset.sound(\"boom.ogg\")
                 locator: "bot.glb".to_string(),
                 clips: vec![("head".to_string(), 1.0)],
                 joints: vec!["head".to_string()],
+                parts: Vec::new(),
             }],
             files: vec!["bot.glb".to_string()],
             ..Default::default()
@@ -797,6 +879,7 @@ let boom = Asset.sound(\"boom.ogg\")
                 locator: "https://cdn.example.com/meshes/ExplodingBarrel.glb".to_string(),
                 clips: vec![("explode".to_string(), 1.5)],
                 joints: Vec::new(),
+                parts: Vec::new(),
             }],
             files: vec!["barrel.asset.json".to_string()],
             ..Default::default()
