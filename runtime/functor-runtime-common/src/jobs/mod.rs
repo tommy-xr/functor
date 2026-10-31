@@ -51,6 +51,11 @@ pub struct JobCtx {
 }
 
 impl JobCtx {
+    #[cfg(test)]
+    pub(crate) fn new(stop: Arc<AtomicBool>) -> JobCtx {
+        JobCtx { stop }
+    }
+
     /// Whether the op was cancelled or discarded: a long task should return.
     pub fn cancelled(&self) -> bool {
         self.stop.load(Ordering::Relaxed)

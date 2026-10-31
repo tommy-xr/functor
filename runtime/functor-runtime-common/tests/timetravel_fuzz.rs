@@ -183,17 +183,20 @@ let draw = (model, tts) =>
     Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum, 7.0), model.got * 0.01, 0.0)))
 "#;
 
-/// `File.load` on the fuzzer's fake job pool: on demand from `tick` (asked
+/// Jobs on the fuzzer's fake pool. `File.load` on demand from `tick` (asked
 /// every frame until it lands, then now and then), from input (one, a
 /// same-path pair, a missing file), and cancels (alone, and cancel-then-load
-/// in one batch). Each tagger captures which ask it answers.
+/// in one batch). `Job.run` of `work` (which reads a file and the reload
+/// knob, so a semantic reload re-runs it) from `tick`, a cancel-then-run
+/// batch and a cancel. Each tagger captures which ask it answers.
 const JOBS_GAME: &str = r#"
-type Msg = | Loaded(i: float, r: Result.t<Bytes.t, File.error>)
+type Msg = | Loaded(i: float, r: Result.t<Bytes.t, File.error>) | Ran(i: float, r: Result.t<float, Job.error>)
 let scale = 1.0
 let a = Path.of("data/a.bin")
 let b = Path.of("data/b.bin")
 let gone = Path.of("data/gone.bin")
-let init = { want: 0.0, got: 0.0, sum: 0.0, bytes: 0.0, missing: 0.0, n: 0.0 }
+let work = (n: float): float => n * scale + Bytes.length(File.bytes(a))
+let init = { want: 0.0, got: 0.0, sum: 0.0, bytes: 0.0, missing: 0.0, n: 0.0, ran: 0.0, out: 0.0 }
 let input = (model, key, isDown) =>
   match key with
   | Key.Space => if isDown then ({ model with want: model.want + 1.0 }, File.load(b, (r) => Loaded(model.want, r))) else model
@@ -201,6 +204,8 @@ let input = (model, key, isDown) =>
   | Key.C => if isDown then (model, File.cancel(b)) else model
   | Key.R => if isDown then (model, Effect.batch([File.cancel(a), File.load(a, (r) => Loaded(0.5, r))])) else model
   | Key.M => if isDown then (model, File.load(gone, (r) => Loaded(0.25, r))) else model
+  | Key.J => if isDown then (model, Effect.batch([Job.cancel("w"), Job.run("w", work, model.n, (r) => Ran(model.n, r))])) else model
+  | Key.K => if isDown then (model, Job.cancel("w")) else model
   | _ => model
 let update = (model, msg) =>
   match msg with
@@ -211,12 +216,18 @@ let update = (model, msg) =>
        (match e with
         | File.Missing(m) => { model with missing: model.missing + 1.0 }
         | _ => model))
+  | Ran(i, r) =>
+    (match r with
+     | Result.Ok(v) => { model with ran: model.ran + 1.0, out: model.out + v }
+     | Result.Error(e) => model)
 let tick = (model, dt, tts) =>
   let next = { model with n: model.n + 1.0 } in
-  if model.got < 1.0 || Math.mod(model.n, 30.0) == 0.0 then (next, File.load(a, (r) => Loaded(model.n, r))) else next
+  let load = if model.got < 1.0 || Math.mod(model.n, 30.0) == 0.0 then File.load(a, (r) => Loaded(model.n, r)) else Effect.none() in
+  let run = if Math.mod(model.n, 7.0) == 0.0 then Job.run("w", work, model.n, (r) => Ran(model.n, r)) else Effect.none() in
+  (next, Effect.batch([load, run]))
 let draw = (model, tts) =>
   Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
-    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum, 7.0), model.got * 0.01, model.bytes * 0.001 + model.missing)))
+    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum + model.out, 7.0), model.got * 0.01, model.bytes * 0.001 + model.missing + model.ran * 0.01)))
 "#;
 
 /// `text`, rewritten to `template` with 0.3, 0.6 or 0.9 for `{}`.
@@ -296,7 +307,7 @@ fn specs() -> Vec<Spec> {
             ..Spec::new("http", fixture(HTTP_GAME))
         },
         Spec {
-            keys: vec![Space, G, C, R, M],
+            keys: vec![Space, G, C, R, M, J, K],
             knob: knob("let scale = 1.0", "let scale = {}"),
             jobs: true,
             ..Spec::new("jobs", fixture(JOBS_GAME))

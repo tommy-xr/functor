@@ -198,6 +198,21 @@ impl Compiled {
     }
 }
 
+/// A measurement: compiling `call`'s revision and evaluating its
+/// function's dependencies on this thread, in ms (cold each time).
+#[cfg(test)]
+pub(crate) fn spin_up(call: &RunCall) -> (f64, f64) {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ctx = JobCtx::new(stop);
+    let mut cache = None;
+    let started = now_ms();
+    let compiled = compiled(&mut cache, call).ok().expect("compiles");
+    let compile = now_ms() - started;
+    let started = now_ms();
+    compiled.prepare(&call.f, &ctx).ok().expect("dependencies evaluate");
+    (compile, now_ms() - started)
+}
+
 /// Whether every input a job read still reads the same through `reader`.
 pub(crate) fn reads_current(reader: Option<Arc<dyn ProjectReader>>, inputs: &[HostInput]) -> bool {
     let _reader = crate::storage::scope_reader(reader);

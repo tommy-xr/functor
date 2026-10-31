@@ -82,7 +82,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
     (
         ApiGroup::Engine,
         "Effects & messaging",
-        &["Effect", "Sub", "Persistence"],
+        &["Effect", "Sub", "Persistence", "Job"],
     ),
     (ApiGroup::Engine, "Audio", &["AudioScene", "AudioSource"]),
     (ApiGroup::Engine, "UI", &["Ui", "Html", "Attr", "Style"]),

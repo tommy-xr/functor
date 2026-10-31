@@ -285,3 +285,97 @@ fn a_job_on_the_pool_replays_exactly_without_running_again() {
     assert_eq!(replayed, models);
     assert_eq!(counted.0.get(), 1, "a replay never runs the job");
 }
+
+/// Spin-up and per-job cost, for the PR body: `FUNCTOR_SPINUP` lists
+/// `dir:entry:f` (comma-separated). Run in release with `--ignored
+/// --nocapture`.
+#[test]
+#[ignore]
+fn measure_job_costs() {
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    for spec in std::env::var("FUNCTOR_SPINUP").expect("FUNCTOR_SPINUP").split(',') {
+        let mut parts = spec.split(':');
+        let (dir, entry, f) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
+        let dir = std::path::Path::new(dir);
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".fun") && n != entry)
+            .collect();
+        names.sort();
+        names.insert(0, entry.to_string());
+        let files: Vec<(std::path::PathBuf, String)> = names
+            .iter()
+            .map(|n| (dir.join(n), std::fs::read_to_string(dir.join(n)).unwrap()))
+            .collect();
+        let lines: usize = files.iter().map(|(_, s)| s.lines().count()).sum();
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            files,
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.render()));
+        let started = std::time::Instant::now();
+        let program = JobProgram::new(&project.module, &project.sources);
+        let admit_ms = started.elapsed().as_secs_f64() * 1e3;
+        let deps = functor_lang::reuse::CodeIndex::new(&project.module).deps_of(f).unwrap().len();
+        let call = RunCall { program: program.source.clone(), f: f.to_string(), input: Shareable::Number(0.0) };
+        let runs: Vec<(f64, f64)> = (0..5).map(|_| crate::functor_lang_prelude::job::spin_up(&call)).collect();
+        let compile = median(runs.iter().map(|r| r.0).collect());
+        let deps_ms = median(runs.iter().map(|r| r.1).collect());
+        println!(
+            "spin-up {} ({} files, {lines} lines, {} defs linked; `{f}` reaches {deps}): \
+compile {compile:.1} ms, deps {deps_ms:.1} ms; JobProgram::new {admit_ms:.2} ms",
+            dir.display(),
+            names.len(),
+            project.module.defs.len(),
+        );
+    }
+
+    // Per-job overhead: a trivial job's round trip on a warm pool worker.
+    let source = game_source("let work = (x) => x", "0.0");
+    let project = functor_lang::project::load_sources_with_bundled_modules(
+        vec![("game.fun".into(), source)],
+        &functor_prelude::bundled_modules(),
+    )
+    .ok()
+    .unwrap();
+    let program = JobProgram::new(&project.module, &project.sources);
+    let pool = Pool::start(1);
+    let mailbox = Mailbox::default();
+    for (label, input) in [
+        ("a number", Shareable::Number(1.0)),
+        ("a 10k-number list", Shareable::from_value(&functor_lang::Value::List(Rc::new(
+            (0..10_000).map(|i| functor_lang::Value::Number(i as f64)).collect(),
+        ))).unwrap()),
+    ] {
+        let mut times = Vec::new();
+        for id in 0..201u64 {
+            let spec = Arc::new(RunSpec {
+                key: "k".into(),
+                call: Ok(RunCall { program: program.source.clone(), f: "work".into(), input: input.clone() }),
+            });
+            let (task, fail, _) = JobSpec::Run(spec).task(None);
+            let stop = Arc::new(AtomicBool::new(false));
+            let started = std::time::Instant::now();
+            pool.dispatch(Job { ticket: Ticket { id, attempt: 1 }, task, fail, stop, mailbox: mailbox.clone() });
+            let got = loop {
+                if let Some((_, value)) = mailbox.take().pop() {
+                    break value;
+                }
+                std::hint::spin_loop();
+            };
+            let us = started.elapsed().as_secs_f64() * 1e6;
+            // Main-side adoption is part of the cost.
+            let started = std::time::Instant::now();
+            let _ = got.to_value();
+            let adopt = started.elapsed().as_secs_f64() * 1e6;
+            if id > 0 {
+                times.push(us + adopt);
+            }
+        }
+        println!("per-job round trip, warm worker, {label}: median {:.0} µs", median(times));
+    }
+}

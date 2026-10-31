@@ -310,7 +310,8 @@ After every op it checks:
   `Effect.httpGet`/`httpPost`): no request is dispatched twice or without its
   op, none hangs (pending with nothing in flight or parked), a reload keeps
   every request in flight, and a fork replay dispatches nothing;
-- with jobs on a seeded fake pool (any game that calls `File.load`): no job
+- with jobs on a seeded fake pool (any game that calls `File.load` or
+  `Job.run`): no job
   is dispatched twice or runs without its op, none hangs, a re-dispatch never
   runs an op whose answer is parked, and a fork replay dispatches nothing;
 - **every recorder participant**, after each record, seek and rewind: its range
@@ -378,6 +379,19 @@ job is pure. A branch from before an answer re-parks it instead. History keeps
 at most 256 MB of job results (each buffer counted once); past that, the window
 starts at the delivery that crossed it. On the web jobs run inline at dispatch
 (the page blocks), and `File.load` answers `Unsupported`.
+
+**`Job.run(key, f, input, tagger)`** runs Functor code as a job. `f` must be a
+top-level function (the checker says so; a closure built at run time is
+answered with `Failed`). Values are `Rc`, so nothing of the session crosses: the
+worker compiles the producer's current project itself (once per revision),
+evaluates only the defs `f` reaches, calls it, and sends the result back as a
+`Shareable` (an input or result holding a function is `NotShareable`). Job
+code runs like a top-level value: file reads are fine, physics and UI reads
+fail the job. `Job.cancel` stops evaluation within a few thousand calls. A hot
+reload that changes the code `f` reaches stops the job and runs it again on the
+new program, as the op's next attempt; otherwise it keeps running, and its
+result is delivered only if every file it read still reads the same (else it
+runs again). A panic is `Crashed`, and the worker thread is replaced.
 
 Two fidelity tiers follow, and they are why coeffect replay (T8) is a separate
 phase from the input log (T6):
