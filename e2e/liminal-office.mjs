@@ -27,10 +27,10 @@
 //      pushed variants of game.fun draw each cell model 0×, 1× or once per
 //      material group, and `/state.cull`'s tested − culled differences count
 //      the static models and their group draws that actually submitted;
-//  10. GPU residency (`--json` frame stats): four active copies hold the
-//      same live buffers and textures as the office alone, upload nothing
-//      while standing, and the hour switch misses the cache the same number
-//      of times.
+//  10. shared uploads (`--json` frame stats): after copy 0's pass, the same
+//      pass through copies 1–3 misses no GPU cache, uploads nothing and adds
+//      no live GL object; the noon switch misses as often with four copies
+//      active as with the office alone.
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/liminal-office.mjs
@@ -497,8 +497,9 @@ const WINDOW_RECT = [0.4, 0.4, 0.6, 0.55];
 const FLOOR = [0, 0.5, 1, 0.75];
 
 // Copy c's office 103 window: from the street (the lit room shows through
-// it; the sill stops a walk in), then from inside at night and noon.
-async function inspectWindow(game, c) {
+// it; the sill stops a walk in), then from inside at night and noon
+// (`hours`) or just at night.
+async function inspectWindow(game, c, hours = true) {
   await walkToPoint(game, toWorld(c, -4, -6));
   await walkToPoint(game, toWorld(c, -4, 9.3));
   await faceYaw(game, headingOf(c, Math.PI / 2));
@@ -510,11 +511,14 @@ async function inspectWindow(game, c) {
   check(lx < -0.3 && m.cell === WEST_YARD, `copy ${c.k}: the window's sill stops a walk in (local x ${lx.toFixed(2)}, cell ${m.cell})`);
   await game.view(4);
   const night = await game.capture();
-  await game.hold("n", 1);
-  const noon = await game.capture();
-  await game.hold("n", 1);
+  let noon = night;
+  if (hours) {
+    await game.hold("n", 1);
+    noon = await game.capture();
+    await game.hold("n", 1);
+  }
   await game.view(1); // back out onto this copy's apron
-  return { outside: meanLuma(outside, WINDOW_RECT), night: meanLuma(night, FLOOR), noon: meanLuma(noon, FLOOR), shots: { outside, night, noon } };
+  return { outside: meanLuma(outside, WINDOW_RECT), night: meanLuma(night, FLOOR), noon: meanLuma(noon, FLOOR) };
 }
 
 async function blockTour(game) {
@@ -614,33 +618,51 @@ async function statsAfter(game, n) {
   return JSON.parse(lines[lines.length - 1]);
 }
 
-// The block's copies share the office's uploads: live GL objects equal the
-// office alone's, standing still uploads nothing, and switching to noon misses
-// the cache as often with four copies active as with one.
+// The copies share one office's uploads. A cell mesh uploads the first time
+// any copy draws it, so after copy 0's pass (its lobby, corridor, facade and
+// window), the same pass through copies 1–3 misses the GPU caches never,
+// uploads nothing, and grows no live GL object. Switching to noon misses as
+// often with four copies active as with the office alone.
 async function residency(game) {
+  const windows = () => game.log().split("\n").filter((l) => l.includes('"frame_stats"')).map((l) => JSON.parse(l));
+  const live = (s) => `${s.gpu_live_buffers} buffers, ${s.gpu_live_textures} textures, ${s.gpu_live_vaos} VAOs`;
   await game.view(1);
   await statsAfter(game, 300);
   const office = await statsAfter(game, 300);
   await game.hold("n", 1);
   const officeNoon = await statsAfter(game, 300);
   await game.hold("n", 1);
+
   await game.hold("b", 1);
-  await game.view(9);
-  await walkToPoint(game, [CROSS, CROSS]);
-  await faceYaw(game, Math.atan2(22, 12));
-  check((await game.model()).active.every((a) => a), "residency: all four copies active");
+  const pass = async (c) => {
+    await enterCopy(game, c);
+    await inspectWindow(game, c, false);
+    for (const p of legs[c.k] ?? []) await walkToPoint(game, p);
+  };
+  await pass(COPIES[0]);
+  await statsAfter(game, 300); // the window holding the end of copy 0's pass
+  const primed = await statsAfter(game, 300);
+  const from = windows().length;
+  for (const c of COPIES.slice(1)) await pass(c);
   await statsAfter(game, 300);
-  const block = await statsAfter(game, 300);
+  const later = windows().slice(from);
+  const misses = later.reduce((n, w) => n + w.gpu_cache_misses, 0);
+  const bytes = later.reduce((n, w) => n + w.gpu_bytes_per_frame * w.over_n_frames, 0);
+  const after = later[later.length - 1];
+  check(office.gpu_cache_misses === 0 && primed.gpu_cache_misses === 0 && primed.gpu_bytes_per_frame === 0,
+    `standing still uploads nothing (office ${office.gpu_cache_misses} misses; block ${primed.gpu_cache_misses} misses, ${primed.gpu_bytes_per_frame} B/frame)`);
+  check(later.length >= 3 && misses === 0 && bytes === 0, `copies 1–3's passes (${later.length} stats windows) miss ${misses} times and upload ${bytes} bytes after copy 0's`);
+  check(after.gpu_live_buffers === primed.gpu_live_buffers && after.gpu_live_textures === primed.gpu_live_textures && after.gpu_live_vaos === primed.gpu_live_vaos,
+    `live GL objects after all four copies equal those after copy 0's (${live(after)} vs ${live(primed)}; the office from its entrance: ${live(office)})`);
+
+  await walkToPoint(game, [CROSS, CROSS]);
+  check((await game.model()).active.every((a) => a), "residency: all four copies active at the crossroads");
+  await statsAfter(game, 300);
   await game.hold("n", 1);
   const blockNoon = await statsAfter(game, 300);
-  const live = (s) => `${s.gpu_live_buffers} buffers, ${s.gpu_live_textures} textures, ${s.gpu_live_vaos} VAOs`;
-  check(block.gpu_live_buffers === office.gpu_live_buffers && block.gpu_live_textures === office.gpu_live_textures && block.gpu_live_vaos === office.gpu_live_vaos,
-    `four copies hold what one does (${live(block)} vs ${live(office)})`);
-  check(block.gpu_cache_misses === 0 && block.gpu_bytes_per_frame === 0 && office.gpu_cache_misses === 0,
-    `standing uploads nothing (block ${block.gpu_cache_misses} misses, ${block.gpu_bytes_per_frame} B/frame; office ${office.gpu_cache_misses})`);
   check(blockNoon.gpu_cache_misses === officeNoon.gpu_cache_misses,
-    `the noon switch misses as often with four copies as with one (${blockNoon.gpu_cache_misses} vs ${officeNoon.gpu_cache_misses}; ${blockNoon.gpu_bytes_per_frame} vs ${officeNoon.gpu_bytes_per_frame} B/frame)`);
-  return { office, officeNoon, block, blockNoon };
+    `the noon switch misses as often with four copies active as with one (${blockNoon.gpu_cache_misses} vs ${officeNoon.gpu_cache_misses}; ${blockNoon.gpu_bytes_per_frame} vs ${officeNoon.gpu_bytes_per_frame} B/frame)`);
+  return { office: live(office), primed: live(primed), after: live(after), misses, bytes, officeNoon, blockNoon };
 }
 
 // Render a golden the way runtime/functor-runtime-desktop/tests/golden.rs does.
