@@ -223,6 +223,17 @@ impl ModelData {
         IndexedMesh::create(vertices, s.triangles.iter().flatten().copied().collect())
     }
 
+    /// The box around the vertices the triangles use, in model space. A part
+    /// sliced from a baked model keeps the whole vertex array, so a box of
+    /// every vertex would be the whole building's and never cull.
+    pub(crate) fn triangle_bounds(&self) -> crate::scene3d::Aabb {
+        let mut bounds = crate::scene3d::Aabb::empty();
+        for &v in self.source.triangles.iter().flatten() {
+            bounds.extend(self.source.positions[v as usize].into());
+        }
+        bounds
+    }
+
     /// Bind-space positions skinned by `palette` (one matrix per joint), as
     /// the vertex shader blends them.
     pub fn skin_positions(&self, palette: &[Matrix4<f32>]) -> Vec<[f32; 3]> {
@@ -817,6 +828,53 @@ mod tests {
         let back: ModelData = serde_json::from_str(&json).unwrap();
         assert!(back.is_static());
         assert_eq!(back.source(), data.source());
+    }
+
+    #[test]
+    fn a_part_bounds_only_the_vertices_its_triangles_use() {
+        use crate::scene3d::{cull::outside, Aabb};
+        use cgmath::{perspective, Deg, Point3};
+        // A part of a 100 m model: the whole vertex array, one triangle near
+        // the origin.
+        let mut s = static_source();
+        s.positions.extend([[100.0, 0.0, 0.0], [100.0, 0.0, -100.0]]);
+        s.normals.extend([[0.0, 0.0, 1.0]; 2]);
+        s.uvs.extend([[0.0; 2]; 2]);
+        s.uvs2.extend([[0.5; 2]; 2]);
+        s.triangles = vec![[0, 1, 2]];
+        s.groups.truncate(1);
+        let part = ModelData::new(s).unwrap();
+        let local = part.triangle_bounds();
+        assert_eq!(local, Aabb::new([0.0; 3], [1.0, 1.0, 0.0]));
+        // Placed 10 m down -Z and turned 90 degrees about Y: +X maps to -Z.
+        let world =
+            Matrix4::from_translation(vec3(0.0, 0.0, -10.0)) * Matrix4::from_angle_y(Deg(90.0));
+        let placed = local.transform(&world);
+        let near = |a: Vector3<f32>, b: [f32; 3]| (a - Vector3::from(b)).magnitude() < 1e-5;
+        assert!(
+            near(placed.min, [0.0, 0.0, -11.0]) && near(placed.max, [0.0, 1.0, -10.0]),
+            "{placed:?}"
+        );
+        // An eye at the origin facing -X misses the part, though the whole
+        // vertex array's box reaches into view.
+        let clip = perspective(Deg(60.0), 1.0, 0.1, 200.0)
+            * Matrix4::look_at_rh(
+                Point3::new(0.0, 0.5, 0.0),
+                Point3::new(-1.0, 0.5, 0.0),
+                Vector3::unit_y(),
+            );
+        assert!(outside(&(clip * world), &local));
+        let mut whole = Aabb::empty();
+        part.source()
+            .positions
+            .iter()
+            .for_each(|&p| whole.extend(p.into()));
+        assert!(!outside(&(clip * world), &whole));
+        // No triangles: an empty box, which never culls.
+        let mut s = static_source();
+        s.triangles.clear();
+        s.groups.clear();
+        assert!(ModelData::new(s).unwrap().triangle_bounds().is_empty());
     }
 
     #[test]
