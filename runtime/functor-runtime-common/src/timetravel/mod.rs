@@ -33,6 +33,7 @@ mod history;
 mod log;
 mod model;
 mod physics;
+mod requests;
 
 use functor_lang::Value;
 
@@ -43,6 +44,7 @@ use crate::FrameTime;
 pub use history::History;
 use log::FrameLog;
 pub use log::{args_digest, fnv1a, Entry, OpId};
+pub use requests::{Arrival, Channel, Delivered, Requests};
 use model::ModelParticipant;
 use physics::PhysicsParticipant;
 
@@ -181,6 +183,8 @@ pub struct SceneRecorder {
     log: FrameLog,
     /// The rendered-frame index the next snapshot records at; monotonic.
     rendered_frame: u64,
+    /// In-flight ops (design-systems §2.4).
+    requests: Requests,
     /// Bumps whenever existing recorded frames may have been replaced or a
     /// reload starts a new snapshot generation. Timeline marker consumers use
     /// this to rebuild from authoritative input history instead of guessing a
@@ -221,6 +225,7 @@ impl SceneRecorder {
             replay_prefix: None,
             log: FrameLog::new(),
             rendered_frame: 0,
+            requests: Requests::default(),
             generation: 0,
             program_revision: 0,
             counterfactual_replay: false,
@@ -292,6 +297,9 @@ impl SceneRecorder {
         }
         for participant in self.participants_mut() {
             participant.restore(frame, how, live);
+        }
+        if how != Restore::Resume {
+            self.requests.drop_delta();
         }
         Ok(frame)
     }
@@ -578,6 +586,8 @@ impl SceneRecorder {
     /// effect ops). Later paused renders are not simulation history and remain
     /// deliberately discarded.
     pub fn record_replay_prefix(&mut self, frame_time: FrameTime, entries: Vec<Entry>) {
+        self.requests
+            .commit_unrecorded(self.generation, self.rendered_frame);
         if self.rendered_frame == 0 && self.replay_prefix.is_none() {
             self.replay_prefix = Some((frame_time, entries));
         }
@@ -611,8 +621,30 @@ impl SceneRecorder {
     /// (which does). An empty `Vec` is recorded for quiet frames, keeping the
     /// log consecutive with the model ring.
     pub fn record_entries(&mut self, entries: Vec<Entry>) {
+        self.requests.commit(self.generation, self.rendered_frame);
         self.log
             .record(self.rendered_frame, self.generation, entries);
+    }
+
+    /// The pending table.
+    pub(crate) fn requests_mut(&mut self) -> &mut Requests {
+        &mut self.requests
+    }
+
+    /// Deliver `arrival` in Δ (see [`Requests`]).
+    pub fn deliver(&mut self, arrival: &Arrival) -> Delivered {
+        self.requests
+            .deliver(arrival, self.generation, self.rendered_frame)
+    }
+
+    /// Rebind every in-flight continuation to a reloaded program; the
+    /// cancellations, as messages.
+    pub fn rebind_requests(
+        &mut self,
+        old: &functor_lang::ir::Module,
+        new: &functor_lang::ir::Module,
+    ) -> Vec<String> {
+        self.requests.rebind(old, new)
     }
 
     #[cfg(test)]
@@ -818,6 +850,7 @@ impl SceneRecorder {
             participant.truncate_from(frame + 1);
         }
         self.tts_history.truncate_from(frame + 1);
+        self.requests.truncate_from(frame + 1);
         // Truncate the input log too: a destructive branch discards the old
         // future consistently across every ring (docs/time-travel.md T6b).
         self.log.truncate_from(frame + 1);

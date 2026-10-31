@@ -11,8 +11,8 @@
 //!
 //! `Effect.preloadThen` correlates its completion MESSAGE with the load via a
 //! token, exactly like `Effect.playThen`: this module mints tokens, the
-//! producer holds the pending message (`functor_lang_prelude::
-//! register_preload_completion`), and the shell reports settlement through
+//! recorder's pending table (`timetravel::Requests`) holds the message, and
+//! the shell reports settlement through
 //! `GameProducer::preload_push_settled`. Settled means loaded OR failed —
 //! the message always arrives; `Sub.assets`' `failed` list carries which.
 

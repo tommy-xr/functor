@@ -34,15 +34,14 @@ use crate::functor_lang_prelude::{
     asset_progress_value, assets_taggers, config_of, contains_effect, deliver_physics_events,
     drain_effects, frame_value, http_response_value, needs_update, net_conn_subs, net_event_value,
     perform_deferred_queries, physics_event_taggers, physics_scene_value, settings_of,
-    split_model_effect, sub_messages_for_frame, take_audio_completion, take_http_tagger,
-    take_preload_completion, take_ui_handlers, EffectRunner, EffectTree, FunctorHost, NetEventKind,
-    PrimingScope, ReplayEffects, UiHandler,
+    split_model_effect, sub_messages_for_frame, take_ui_handlers, EffectRunner, EffectTree,
+    FunctorHost, NetEventKind, PrimingScope, ReplayEffects, UiHandler,
 };
 use crate::input::RecordedInput;
-use crate::net::{push_conn_command, ConnCommand, HttpResult};
+use crate::net::{push_conn_command, ConnCommand};
 use crate::physics::{self, PhysicsEvent, SteppedPhysics};
 use crate::runtime_settings::{GameConfig, GameSettings};
-use crate::timetravel::{Entry, SceneRecorder};
+use crate::timetravel::{Arrival, Delivered, Entry, SceneRecorder};
 use crate::{Frame, FrameTime};
 
 // ---------------------------------------------------------------------------
@@ -1175,6 +1174,7 @@ impl FrameCtx<'_> {
                 deferred,
                 self.effect_runner,
                 self.next,
+                self.recorder.requests_mut(),
                 &mut |message| reports.push(message),
                 self.suppress_outbound,
             );
@@ -1203,6 +1203,7 @@ impl FrameCtx<'_> {
                             &events,
                             self.effect_runner,
                             self.next,
+                            self.recorder.requests_mut(),
                             &mut |message| reports.push(message),
                             self.suppress_outbound,
                         );
@@ -1592,6 +1593,7 @@ to receive their messages; dropping them",
             effects,
             self.effect_runner,
             self.next,
+            self.recorder.requests_mut(),
             &mut |message| reports.push(message),
             self.suppress_outbound,
         );
@@ -1843,6 +1845,54 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         let _ = self.with_physics_scene(|ctx, scene| ctx.physics_rt.prime(scene));
     }
 
+    /// Coupled debug rewind, for every producer: restore every participant
+    /// to `target` and branch the future away (in-flight requests follow the
+    /// recorder's rule), then drop the frame work that must not cross it.
+    pub fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let retry_tts_before_rewind = *self.prev_tts;
+        let result = self.recorder.rewind_scene_to(
+            target,
+            self.model,
+            self.physics_rt,
+            self.physics_frame,
+            self.has_physics,
+            self.prev_tts,
+        );
+        if result.is_ok() {
+            rebase_connect_retry_deadlines(
+                self.connect_retries,
+                retry_tts_before_rewind,
+                *self.prev_tts,
+            );
+            self.deferred_queries.clear();
+            self.pending_events.clear();
+            // The restored model predates the current loading snapshot —
+            // redeliver it on the next frame (see `before_physics`).
+            *self.delivered_asset_progress = None;
+            // Input since the last frame is orphaned and must not record into
+            // the branch.
+            self.next.clear();
+        }
+        result
+    }
+
+    /// Non-destructive scrub, for every producer: restore every participant
+    /// to `target`; Δ (input since the frame, and the queries it issued) goes.
+    pub fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let result = self.recorder.seek_scene_to(
+            target,
+            self.model,
+            self.physics_rt,
+            self.physics_frame,
+            self.has_physics,
+        );
+        if result.is_ok() {
+            self.next.clear();
+            self.deferred_queries.clear();
+        }
+        result
+    }
+
     /// Close every connection this producer still has open (a reload that
     /// dropped `subscriptions`, or shutdown). CloseKey is queued for each; the
     /// live set is cleared.
@@ -1973,24 +2023,30 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         }
     }
 
-    /// Route a completed HTTP request to the tagger registered when the request
-    /// fired (frames ago), folding the resulting message through `update`. An
-    /// orphaned token — a hot reload dropped its tagger while the request was in
-    /// flight — is silently ignored.
-    pub fn deliver_http_result(&mut self, result: HttpResult) {
-        let Some(tagger) = take_http_tagger(result.token) else {
-            return;
+    /// An answer a shell pushed (an HTTP response, a completion): folded
+    /// through its pending op's continuation — an HTTP tagger applied to the
+    /// response, or a completion message delivered verbatim. An answer whose
+    /// op is no longer pending (a branch or seek discarded it, a reload
+    /// cancelled it) is dropped.
+    pub fn push_arrival(&mut self, arrival: Arrival) {
+        let Delivered::Op(_, continuation) = self.recorder.deliver(&arrival) else {
+            return log::debug!("[functor-lang] dropped a late arrival: {arrival:?}");
         };
-        let value = http_response_value(&result);
-        let msg = match self
-            .session
-            .apply(tagger, vec![value], "http response", &mut FunctorHost)
-        {
-            Ok(msg) => msg,
-            Err(err) => return self.reporter.frame_error("http response", &err),
+        let (msg, provenance) = match &arrival {
+            Arrival::Http(result) => match self.session.apply(
+                continuation,
+                vec![http_response_value(result)],
+                "http response",
+                &mut FunctorHost,
+            ) {
+                Ok(msg) => (msg, Provenance::HttpResponse),
+                Err(err) => return self.reporter.frame_error("http response", &err),
+            },
+            Arrival::AudioFinished(_) => (continuation, Provenance::AudioFinished),
+            Arrival::PreloadSettled(_) => (continuation, Provenance::PreloadSettled),
         };
         let args = vec![self.model.clone(), msg];
-        journal_push(self.names.update, &args, Provenance::HttpResponse);
+        journal_push(self.names.update, &args, provenance);
         match self.session.call(self.names.update, args, &mut FunctorHost) {
             Ok(returned) => self.absorb_delivery(returned),
             Err(err) => self.reporter.frame_error(self.names.update, &err),
@@ -2059,39 +2115,6 @@ carries no payload to tag; dropped",
         journal_push(self.names.update, &args, Provenance::UiEvent);
         match self.session.call(self.names.update, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error(self.names.update, &err),
-        }
-    }
-
-    /// Route a finished `playThen` one-shot to the completion MESSAGE registered
-    /// when it fired (frames ago), folding it through `update`. Unlike
-    /// `deliver_http_result` there is no tagger: the message is delivered
-    /// verbatim. An orphaned token — a reload dropped its message mid-flight —
-    /// is silently ignored.
-    pub fn deliver_audio_completion(&mut self, token: u64) {
-        let Some(message) = take_audio_completion(token) else {
-            return;
-        };
-        let args = vec![self.model.clone(), message];
-        journal_push(self.names.update, &args, Provenance::AudioFinished);
-        match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb_delivery(returned),
-            Err(err) => self.reporter.frame_error(self.names.update, &err),
-        }
-    }
-
-    /// Route a SETTLED `preloadThen` (loaded or failed) to the completion
-    /// MESSAGE registered when it fired — the audio-completion shape:
-    /// delivered verbatim, orphaned tokens (a reload dropped the message
-    /// mid-flight) silently ignored.
-    pub fn deliver_preload_completion(&mut self, token: u64) {
-        let Some(message) = take_preload_completion(token) else {
-            return;
-        };
-        let args = vec![self.model.clone(), message];
-        journal_push(self.names.update, &args, Provenance::PreloadSettled);
-        match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb_delivery(returned),
             Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
