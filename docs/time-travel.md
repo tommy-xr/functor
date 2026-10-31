@@ -387,7 +387,7 @@ worker compiles the producer's current project itself (once per revision),
 evaluates only the defs `f` reaches, calls it, and sends the result back as a
 `Shareable` (an input or result holding a function is `NotShareable`). Job
 code runs like a top-level value: file reads are fine, physics and UI reads
-fail the job. `Job.cancel` stops evaluation within a few thousand calls. A hot
+fail the job (the checker flags them too). `Job.cancel` stops evaluation within a few thousand calls. A hot
 reload that changes the code `f` reaches stops the job and runs it again on the
 new program, as the op's next attempt; otherwise (or once its result has
 arrived) it is kept, and its result is delivered only if every file it read

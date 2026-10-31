@@ -22,9 +22,13 @@ fn prelude() -> Vec<BundledModule> {
             "type view = host\nimpure[ui]\nlet button : (string, float) => view\n",
         ),
         BundledModule::interface(
+            "Job",
+            "let run : (string, ('i) => 'o, 'i, ('r) => 'msg) => Effect.t\n",
+        ),
+        BundledModule::interface(
             "Effect",
             "type t = host\nlet none : () => t\nlet log : (float) => t\n\
-             let after : (() => bool) => t\n",
+             let after : (() => bool) => t\nlet batch : (List<t>) => t\n",
         ),
     ]
 }
@@ -450,4 +454,20 @@ fn returned_code_follows_aliases_and_locals() {
          let tick = (m) => alias.step(m) + saved(m) + boxed(m)\n",
     );
     assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn a_job_function_may_read_files_but_not_live_state() {
+    let errors = phase(
+        "type Msg = | Done(r: float)\n\
+         let size = (p) => File.size(p)\n\
+         let fine = (p) => size(p)\n\
+         let live = (p) => Physics.height(p)\n\
+         let tick = (m) => (m, Effect.batch([Job.run(\"a\", fine, \"x\", Done), Job.run(\"b\", live, \"x\", Done)]))\n",
+    );
+    assert_eq!(
+        errors,
+        ["5: a `Job.run` function can't read the live physics world (job → live → Physics.height): it \
+runs on a worker, off the frame — read it in a hook and put it in the input"]
+    );
 }
