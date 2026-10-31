@@ -271,6 +271,16 @@ fn lower_priority() {
     }
 }
 
+/// Work the player waits on (a load): user-initiated QoS on macOS, below the
+/// frame's threads but off the efficiency cores a spawned thread may get.
+fn waited_on() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: plain libc call on the calling thread; no pointers involved.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INITIATED, 0);
+    }
+}
+
 impl Dispatch for Pool {
     fn dispatch(&self, job: Job) {
         if self.workers == 0 {
