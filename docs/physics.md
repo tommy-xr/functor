@@ -361,7 +361,9 @@ whole velocity, vertical included. Its capsule rides well above the ground, so
 `stepHeight` to 0 anyway), and `Physics.move` only collides and slides it
 against walls and props. Where a move comes up short, the game adopts the
 velocity the move achieved, so the bike slides along a wall instead of pushing
-into it.
+into it. It rides a `Physics.heightfield` dune course and holds still after
+each spawn until every probe has hit: a heightfield's collider appears only
+once its heightmap decodes, so on a cold load the first probes miss.
 
 ## API (F# — reference design, deferred)
 
