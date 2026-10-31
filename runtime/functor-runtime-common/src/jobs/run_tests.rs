@@ -526,3 +526,20 @@ fn a_branch_that_cuts_the_shown_progress_shows_the_latest_again() {
     rig.assert_seen("[0.25, 0.5]");
     assert_eq!(rig.fake.dispatched().len(), 1, "the job kept running");
 }
+
+#[test]
+fn progress_that_cancels_another_job_stops_that_jobs_progress_the_same_frame() {
+    let ask = r#"if m.n == 2.0 then (next, Effect.batch([Job.run("k", work, 21.0, Done), Job.run("o", work, 1.0, Done)])) else next"#;
+    let source = progress_source(ask).replace(
+        "| Prog(p) => { m with seen: List.append([p], m.seen) }",
+        "| Prog(p) => ({ m with seen: List.append([p], m.seen) }, Job.cancel(\"o\"))",
+    );
+    let mut rig = Rig::new(&source);
+    rig.tick(4);
+    let held = rig.fake.held();
+    rig.fake.report(held[0], 0.2);
+    rig.fake.report(held[1], 0.7);
+    rig.tick(1);
+    rig.assert_seen("[0.2]");
+    assert!(rig.model().contains("other: []"), "{}", rig.model());
+}

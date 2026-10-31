@@ -2020,6 +2020,10 @@ to receive their messages; dropping them",
         for (op, key, fraction) in due {
             let mut delivered = false;
             for (_, tagger) in taggers.iter().filter(|(k, _)| *k == key) {
+                // An earlier tagger's `update` may have cancelled it.
+                if !self.recorder.requests().progress_live(op) {
+                    break;
+                }
                 match self.session.apply(
                     tagger.clone(),
                     vec![Value::Number(fraction)],
