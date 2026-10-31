@@ -201,7 +201,8 @@ let animate : (Anim.t, t) => t
 /// intersect: a part draws only if every enclosing `modelParts` names it, so
 /// an outer call can only hide more. A name the loaded model lacks matches
 /// nothing and warns once. Models built from data (`Model.skinned`,
-/// `Model.static`) have no parts and stay whole.
+/// `Model.static`) have no parts and stay whole, as does an
+/// `Asset.whilePending` placeholder while the model loads.
 ///
 /// ```
 /// let hero = Scene.model(Assets.ranger)
