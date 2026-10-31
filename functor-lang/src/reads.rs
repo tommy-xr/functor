@@ -74,6 +74,8 @@ enum Set {
     /// When a function def is called once: its body runs, but a lambda it
     /// only builds (a record field, a variant payload) doesn't.
     Call,
+    /// The code a function def's result holds (`{ tick: (m) => … }`).
+    Returns,
     /// Later, through code the def's value holds: a function's whole body, a
     /// value's stored lambdas. Empty for a value of data.
     Later,
@@ -138,7 +140,10 @@ impl Inferred {
                 }
                 Via::Def(name, set) => {
                     path.push(name.as_str());
-                    at = self.sets.get(&(name.clone(), *set)).and_then(|reads| reads.get(&class));
+                    at = self
+                        .sets
+                        .get(&(name.clone(), *set))
+                        .and_then(|reads| reads.get(&class));
                 }
             }
         }
@@ -171,9 +176,9 @@ impl Inferred {
 /// the run-time `note_read` stays the authority, because `unknown` can hide
 /// a function from this pass.
 ///
-/// Three sets per def: what a value reads while it evaluates at load, what
-/// a function reads when called, and what code the def's value holds can
-/// read later. A use charges the set that runs: `f(x)` and `List.map(f, xs)`
+/// Sets per def: what a value reads while it evaluates at load, what a
+/// function reads when called, and what code the def's value (or a
+/// function's result) holds can read later. A use charges the set that runs: `f(x)` and `List.map(f, xs)`
 /// run `f`'s body, `{ tick: f }` only holds it. A value of data (`float`,
 /// records of data, `Scene.t`, …) holds no code, so using it reads nothing;
 /// a function, `unknown` or [`CLOSURE_HOLDERS`] value can.
@@ -230,6 +235,9 @@ impl<'m> Context<'m> {
                 let mut call = self.walker();
                 call.now(body, false);
                 edges.push(((name.clone(), Set::Call), call.uses));
+                let mut returns = self.walker();
+                returns.held(body);
+                edges.push(((name.clone(), Set::Returns), returns.uses));
                 let mut later = self.walker();
                 later.all(&def.value);
                 edges.push(((name, Set::Later), later.uses));
@@ -426,15 +434,28 @@ impl<'m> Walker<'_, 'm> {
     }
 
     /// The code the def at the root of `expr` holds (`api` in `api.has`,
-    /// `make` in `make(a)`), which calling `expr`'s value may run.
+    /// `make`'s result in `make(a)`), which calling `expr`'s value may run.
     fn held_root(&mut self, mut expr: &'m Expr, span: Span) {
+        let mut called = false;
         loop {
             match &expr.kind {
                 ExprKind::FieldAccess { object, .. } => expr = object,
-                ExprKind::Call { callee, .. } => expr = callee,
-                ExprKind::Global(name) => return self.def(name, Set::Later, span),
+                ExprKind::Call { callee, .. } => {
+                    called = true;
+                    expr = callee;
+                }
+                ExprKind::Global(name) => return self.def(name, self.result(name, called), span),
                 _ => return,
             }
+        }
+    }
+
+    /// The set holding `name`'s code: its result's when `called`.
+    fn result(&self, name: &str, called: bool) -> Set {
+        if called && self.cx.functions.contains(name) {
+            Set::Returns
+        } else {
+            Set::Later
         }
     }
 
@@ -447,8 +468,9 @@ impl<'m> Walker<'_, 'm> {
         }
     }
 
-    /// The code an evaluated value holds: its lambdas and stored functions.
-    /// A part of data type (`mesh: loadMesh(p)`) holds none.
+    /// The code an evaluated value holds: its lambdas, stored functions and
+    /// what the calls building it return. A part of data type (`mesh:
+    /// loadMesh(p)`) holds none.
     fn held(&mut self, expr: &'m Expr) {
         if self
             .cx
@@ -462,6 +484,15 @@ impl<'m> Walker<'_, 'm> {
             ExprKind::Lambda { .. } => self.all(expr),
             ExprKind::External(path) => self.builtin(path, expr.span),
             ExprKind::Global(name) => self.def(name, Set::Later, expr.span),
+            ExprKind::Call { callee, args } => {
+                match &callee.kind {
+                    ExprKind::Global(name) => self.def(name, self.result(name, true), callee.span),
+                    _ => self.held(callee),
+                }
+                for arg in args {
+                    self.held(arg);
+                }
+            }
             _ => crate::rebind::each_child(expr, &mut |child| self.held(child)),
         }
     }
