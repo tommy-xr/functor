@@ -20,28 +20,7 @@
 use functor_runtime_common::runtime_settings::{
     passthrough_requested, GameConfig, PassthroughMode, PassthroughState,
 };
-use functor_runtime_common::{Frame, TrackingPose};
 use openxr as xr;
-
-/// The camera-rig reference for a frame. A passthrough game's rig (`config`'s
-/// `Xr.passthrough`) is room-locked: upright whatever the head's tilt when it
-/// centered, with its height re-derived from the authored camera's eye so the
-/// stage floor is world `y = 0` (a level camera keeps the room level). Only a
-/// floor-origin (STAGE) space has a floor to lock to; elsewhere, and for other
-/// games, the head-centered reference is unchanged.
-pub fn room_locked(
-    reference: Option<TrackingPose>,
-    config: Option<GameConfig>,
-    last_frame: Option<&Frame>,
-    floor_origin: bool,
-) -> Option<TrackingPose> {
-    match (reference, last_frame) {
-        (Some(pose), Some(frame)) if floor_origin && passthrough_requested(config) => {
-            pose.floor_locked(frame.camera.eye[1]).or(reference)
-        }
-        _ => reference,
-    }
-}
 
 /// How this headset can show its camera feed.
 #[derive(Clone, Copy, Debug, PartialEq)]

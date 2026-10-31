@@ -65,6 +65,10 @@ pub struct XrConfig {
     /// run; elsewhere the frame's stand-in room stands in for it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub scene: bool,
+    /// `Xr.floorLocked(true)`: anchor tracked poses to the floor under the
+    /// head, level and yaw-only, instead of the full first head pose.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub floor_locked: bool,
 }
 
 /// The per-frame `settings(model)` value.
@@ -98,6 +102,11 @@ pub fn passthrough_requested(config: Option<GameConfig>) -> bool {
 /// Whether the game's `config` requests scene understanding (`Xr.scene(true)`).
 pub fn scene_requested(config: Option<GameConfig>) -> bool {
     config.is_some_and(|c| c.xr.scene)
+}
+
+/// Whether the game's `config` requests a floor-locked rig (`Xr.floorLocked(true)`).
+pub fn floor_locked_requested(config: Option<GameConfig>) -> bool {
+    config.is_some_and(|c| c.xr.floor_locked)
 }
 
 /// Whether the camera feed should run: `config` asked for it and the latest
@@ -260,6 +269,7 @@ mod tests {
                 refresh_rate: Some(90.0),
                 passthrough: false,
                 scene: false,
+                floor_locked: false,
             },
             external_key: 7,
         };
@@ -286,12 +296,13 @@ mod tests {
                 refresh_rate: None,
                 passthrough: true,
                 scene: true,
+                floor_locked: true,
             },
             ..GameConfig::default()
         };
         assert_eq!(
             serde_json::to_value(config).unwrap(),
-            serde_json::json!({ "xr": { "passthrough": true, "scene": true } })
+            serde_json::json!({ "xr": { "passthrough": true, "scene": true, "floor_locked": true } })
         );
         let depth = XrState {
             depth: EnvironmentDepthState {
@@ -338,6 +349,7 @@ mod tests {
                     refresh_rate: None,
                     passthrough: on,
                     scene: false,
+                    floor_locked: false,
                 },
                 ..GameConfig::default()
             })

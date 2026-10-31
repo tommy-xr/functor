@@ -3311,6 +3311,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
                 refresh_rate: Some(72.0),
                 passthrough: false,
                 scene: false,
+                floor_locked: false,
             },
             ..GameConfig::default()
         };
