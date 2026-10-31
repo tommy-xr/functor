@@ -5,7 +5,8 @@
 //   2. an outside → in push against a solid facade wall is blocked;
 //   3. inside, portal culling hides rooms (`/state.cells.hidden > 0`);
 //   4. culling on and off (FUNCTOR_CULL=0) capture identical frames at views 1–3;
-//   5. the entrance and corridor goldens re-render byte-identically.
+//   5. the entrance and corridor goldens render byte-identically across runs
+//      (`npm run test:golden` compares them to golden/, with a tolerance).
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/liminal-office.mjs
@@ -114,6 +115,8 @@ async function route(game) {
   await game.hold("w", 390);
   m = await game.model();
   check(m.cell === CORRIDOR && near(m.at.x, 10, 0.05), `walked up the corridor (cell ${m.cell}, x ${m.at.x.toFixed(2)}, z ${m.at.z.toFixed(2)})`);
+  // The street is 3 cm lower, so standing at floor height means the floor trimesh holds.
+  check(m.at.y > 0.9, `the floor trimesh carries the player (y ${m.at.y.toFixed(3)})`);
   const s = await game.state();
   check(s.cells.hidden > 0, `the corridor hides rooms (cells ${JSON.stringify(s.cells)})`);
 
@@ -139,13 +142,14 @@ async function route(game) {
 // From the apron, step left of the entrance and walk into the solid facade.
 async function wallPush(game) {
   await game.turn(Math.PI); // face +z again
-  await game.hold("d", 150); // strafe to x ≈ 4.5, in front of office 101
+  await game.hold("d", 95); // strafe to x ≈ 6.5: the lobby's facade, clear of the lamp posts
   let m = await game.model();
-  check(m.at.x < 6 && m.at.x > 3, `lined up on a solid wall (x ${m.at.x.toFixed(2)})`);
+  check(m.at.x > 6.2 && m.at.x < 7, `lined up on a solid wall (x ${m.at.x.toFixed(2)})`);
   await game.hold("w", 420);
   m = await game.model();
-  // The facade's outer face is z = -0.15; the capsule's radius is 0.3.
-  check(m.at.z < -0.4 && m.cell === APRON, `outside → in push blocked (z ${m.at.z.toFixed(3)}, cell ${m.cell})`);
+  // The facade's outer face is z = -0.15 and the capsule's radius 0.3: it
+  // reached the wall and stopped there.
+  check(m.at.z < -0.4 && m.at.z > -0.6 && m.cell === APRON, `outside → in push blocked at the wall (z ${m.at.z.toFixed(3)}, cell ${m.cell})`);
 }
 
 async function viewCaptures(game, culling) {
@@ -192,9 +196,7 @@ try {
     "liminal-office-corridor": ["--input-script", join(DIR, "views.script"), "--capture-at-frame", "30"],
   };
   for (const [name, args] of Object.entries(goldens)) {
-    const first = golden(name, args);
-    check(first.equals(golden(name, args)), `${name}: byte-identical across runs`);
-    check(first.equals(readFileSync(join(DIR, "golden", `${name}.png`))), `${name}: matches golden/${name}.png`);
+    check(golden(name, args).equals(golden(name, args)), `${name}: byte-identical across runs`);
   }
 } catch (e) {
   failures.push(String(e));

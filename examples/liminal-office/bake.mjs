@@ -88,13 +88,26 @@ if (process.argv.includes("--check")) {
     rmSync(temp, { recursive: true, force: true });
   }
 } else {
+  // Hash before and after: an edit during the bake would otherwise certify the
+  // old bake against the new layout.
+  const hash = layoutHash();
   const seconds = bake(baked);
+  if (layoutHash() !== hash) {
+    console.error(`${SOURCES.join(" or ")} changed during the bake: rerun it`);
+    process.exit(1);
+  }
   const text = pngText(join(baked, "night.png"));
+  const version = text["functor-bake-version"];
+  const settings = text["functor-bake-settings"];
+  if (!version || !settings) {
+    console.error("night.png has no functor-bake-version / functor-bake-settings text chunks");
+    process.exit(1);
+  }
   const record = [
-    `layout=${layoutHash()}`,
+    `layout=${hash}`,
     `sources=${SOURCES.join(" ")}`,
-    `bakeVersion=${text["functor-bake-version"]}`,
-    `settings=${text["functor-bake-settings"]}`,
+    `bakeVersion=${version}`,
+    `settings=${settings}`,
     "",
   ].join("\n");
   writeFileSync(join(baked, "provenance.txt"), record);
