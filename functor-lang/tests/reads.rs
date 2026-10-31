@@ -18,6 +18,10 @@ fn prelude() -> Vec<BundledModule> {
             "impure[physics]\nlet height : (string) => float\nlet gravity : () => float\n",
         ),
         BundledModule::interface(
+            "Ui",
+            "type view = host\nimpure[ui]\nlet button : (string, float) => view\n",
+        ),
+        BundledModule::interface(
             "Effect",
             "type t = host\nlet none : () => t\nlet log : (float) => t\n\
              let after : (() => bool) => t\n",
@@ -213,5 +217,155 @@ fn hover_shows_a_defs_inferred_classes() {
     assert_eq!(
         hover("has(\"x\")").as_deref(),
         Some("impure[file]\nhas : (string) => bool")
+    );
+}
+
+/// [`functor_lang::reads::phase_errors`] for the plain entry contract, each
+/// as `line: message`.
+fn phase(src: &str) -> Vec<String> {
+    let (project, _) = load(&[("game.fun", src)]);
+    let (_, types) = project.check_with_types();
+    let entry = functor_lang::reads::Entry {
+        hooks: &["tick", "draw", "ui"],
+        init: "init",
+        config: "config",
+    };
+    functor_lang::reads::phase_errors(&project.module, &types, &entry)
+        .into_iter()
+        .map(|error| {
+            let (_, line, _) = project.sources.resolve(error.span.start);
+            format!("{line}: {}", error.message)
+        })
+        .collect()
+}
+
+#[test]
+fn a_file_read_reached_from_a_hook_is_an_error() {
+    let errors = phase(
+        "let load = (p) => File.size(p)\n\
+         let clip = (p) => load(p) * 2.0\n\
+         let level = clip(\"level.bin\")\n\
+         let tick = (m) => m + clip(\"walk.anim\") + level\n",
+    );
+    assert_eq!(
+        errors,
+        ["4: `tick` reads project files (tick → clip → load → File.size), but files are read \
+only at load, so the answer isn't pinned for replay — read it in a top-level value and use \
+that value in `tick`"]
+    );
+}
+
+#[test]
+fn physics_and_ui_reads_at_load_are_errors() {
+    let errors = phase(
+        "let eye = (t) => Physics.height(t) + 1.0\n\
+         let start = eye(\"player\")\n\
+         let menu = Ui.button(\"go\", 1.0)\n\
+         let tick = (m) => m + eye(\"player\")\n",
+    );
+    assert_eq!(
+        errors,
+        [
+            "2: `start` reads the live physics world at load (start → eye → Physics.height), \
+but no world has been stepped yet — read it in a hook (`tick`, `draw`, …), or compute it \
+from data",
+            "3: `menu` builds UI handlers at load (menu → Ui.button), but their slots belong \
+to one frame — build the view in `ui`",
+        ]
+    );
+}
+
+/// Fable H1: a lambda passed to a call may run now; one stored in a record,
+/// list or variant only runs when called later. File data a value holds is
+/// already read, so a hook using it reads nothing.
+#[test]
+fn only_lambdas_that_may_run_count_at_load() {
+    let errors = phase(
+        "type Viewer = { tick: (float) => float, size: float }\n\
+         let viewer: Viewer = { tick: (m) => m + Physics.height(\"a\"), size: File.size(\"v\") }\n\
+         let held = [(m) => Physics.height(\"b\")]\n\
+         type Box = | Boxed(f: (float) => float)\n\
+         let boxed = Boxed((m) => Physics.height(\"c\"))\n\
+         let mapped = List.map((t) => Physics.height(t), [\"d\"])\n\
+         let local = let f = (t) => Physics.height(t) in f(\"e\")\n\
+         let tick = (m) => viewer.tick(m) + viewer.size\n",
+    );
+    assert_eq!(errors.len(), 2, "{errors:#?}");
+    assert!(errors[0].starts_with("6: `mapped` reads the live physics world"), "{errors:#?}");
+    assert!(errors[1].starts_with("7: `local` reads the live physics world"), "{errors:#?}");
+}
+
+#[test]
+fn init_and_config_read_nothing() {
+    let errors = phase(
+        "let level = File.size(\"level.bin\")\n\
+         let init = { size: level, probe: File.size(\"x\") }\n\
+         let config = if File.exists(\"y\") then 1.0 else 0.0\n",
+    );
+    assert_eq!(
+        errors,
+        [
+            "2: `init` can't read project files (init → File.size): read them in a top-level \
+value (`let level = …`) and use that value in `init`",
+            "3: `config` can't read project files (config → File.exists): it's read first, to \
+learn which paths are external — read them in a top-level value `config` doesn't use",
+        ]
+    );
+}
+
+#[test]
+fn memo_builders_read_nothing() {
+    let errors = phase(
+        "let build = (d) => if Physics.height(\"a\") > d then Scene.cube() else Scene.cube()\n\
+         let pure = (d) => Scene.cube()\n\
+         let draw = (m) => Scene.group([\n\
+           Scene.memo(\"a\", m, build),\n\
+           Scene.memo(\"b\", m, (d) => if File.exists(\"c\") then Scene.cube() else Scene.cube()),\n\
+           Scene.memo(\"c\", m, pure)])\n",
+    );
+    assert_eq!(
+        errors,
+        [
+            "4: a Scene.memo builder can't read the live physics world (builder → build → \
+Physics.height): deps can't capture it, so the cached result would freeze — make that read \
+outside the memo and pass the values the builder needs in deps",
+            // The memo error stands for the hook's file error at the same read.
+            "5: a Scene.memo builder can't read project files (builder → File.exists): deps \
+can't capture it, so the cached result would freeze — read the file in a top-level value and \
+use that value in the builder",
+        ]
+    );
+}
+
+#[test]
+fn unit_constructors_and_operators_read_nothing() {
+    let errors = phase(
+        "type len = | Len(m: float)\n\
+         let meters = (x): len => Len(x * File.size(\"scale\"))\n\
+         let add = (a: len, b: len): len => Len(Physics.height(\"a\"))\n\
+         unit u = meters\n\
+         unit u (+) = add\n",
+    );
+    assert_eq!(
+        errors,
+        [
+            "4: the `u` unit can't read project files (u → meters → File.size): it runs \
+wherever a `1u` literal appears, so it must be pure",
+            "5: the `u` unit's (+) can't read the live physics world ((+) → add → \
+Physics.height): it runs wherever (+) meets a `u` value, so it must be pure",
+        ]
+    );
+}
+
+#[test]
+fn expects_may_read_files_but_not_physics() {
+    let errors = phase(
+        "expect File.size(\"a\") > 0.0\n\
+         expect Physics.height(\"b\") > 0.0\n",
+    );
+    assert_eq!(
+        errors,
+        ["2: this `expect` can't read the live physics world (expect → Physics.height): \
+expects run at load, outside any frame"]
     );
 }

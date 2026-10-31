@@ -201,13 +201,28 @@ let bytes : (Path.t) => Bytes.t
   the authority (reload reuse; `Scene.memo` / `Physics.memo` refuse a builder that
   reads any class). A drift test pins each header to the
   classes its built-in notes, and debug builds assert a noted class is declared.
-- User defs get their classes inferred (`functor_lang::reads::infer`): a def
-  reaches the classes of every built-in it names and every def it uses, except
-  a def whose type holds no functions (a record of data, a `Scene.t`), which
-  was already computed. Hover leads a def with them, and `functor reads` lists
-  every def's classes with the path to each built-in. This is report-only: an
-  `unknown` annotation can hide a function from the pass, so the run-time
-  record stays the authority.
+- User defs get their classes inferred (`functor_lang::reads::infer`): what a
+  value reads at load, what a function reads when called, and what code a
+  value holds can read later. A call runs its callee and may run a lambda
+  passed to it (`List.map((p) => File.bytes(p), ps)`); a lambda stored in a
+  record, list or variant only runs when called. A value whose type holds no
+  functions (a record of data, a `Scene.t`) was already computed, so using it
+  reads nothing. Hover leads a def with its classes, and `functor reads` lists
+  them with the path to each built-in.
+- `functor build` checks where each class may run
+  (`functor_lang::reads::phase_errors`), naming the path in each error
+  (`tick → loadClip → File.bytes`):
+
+  | Where | `file` | `physics`, `ui` |
+  |---|---|---|
+  | top-level values, `expect`s (load) | allowed | error |
+  | hooks (`tick`, `draw`, `ui`, …) and what they call | error | allowed |
+  | `init`, `config`, unit constructors and operators, `Scene.memo` / `Physics.memo` builders | error | error |
+
+  A file read in a hook isn't pinned to the load's snapshot; no physics world
+  is stepped at load; UI handler slots belong to one frame. The pass can't see
+  through `unknown`, so the run-time record stays the authority (memos refuse
+  impure builders at run time too).
 
 ## Module semantics summary
 

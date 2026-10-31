@@ -571,7 +571,7 @@ paths are external — move the read into `init` or a top-level binding `config`
         }
         if !diags.is_empty() {
             return Err(Error::other(format!(
-                "{} type error(s) in the {display} project",
+                "{} check error(s) in the {display} project",
                 diags.len()
             )));
         }
