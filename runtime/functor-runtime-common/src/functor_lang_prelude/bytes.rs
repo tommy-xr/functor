@@ -40,6 +40,11 @@ impl ByteView {
     pub fn as_slice(&self) -> &[u8] {
         &self.data[self.start..self.start + self.len]
     }
+
+    /// The whole buffer this view keeps alive.
+    pub fn backing(&self) -> &Arc<[u8]> {
+        &self.data
+    }
 }
 
 /// Little-endian `N`-component entries of `T` (`size` bytes each).

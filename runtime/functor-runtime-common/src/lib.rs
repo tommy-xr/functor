@@ -77,6 +77,7 @@ mod input;
 pub mod inspect;
 pub mod inspector;
 pub mod io;
+pub mod jobs;
 mod light;
 pub mod lightmap;
 pub mod manifest;
