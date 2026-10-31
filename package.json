@@ -31,7 +31,7 @@
     "test:golden": "npm run fetch:assets && npm run build:cli:debug && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture --test-threads=1",
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots",
-    "test:goldens": "node --test scripts/goldens.test.mjs",
+    "test:golden-manifests": "node --test scripts/goldens.test.mjs",
     "test:wasm-smoke": "node e2e/wasm-smoke.mjs",
     "test:gamepad-wasm": "node e2e/gamepad-wasm.mjs",
     "test:touch-wasm": "node e2e/touch-wasm.mjs",

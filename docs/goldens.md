@@ -12,7 +12,7 @@ must be unique across all samples.
 
 ```json
 [
-  { "name": "lighting-t2", "fixedTime": 2.0, "debugRender": null, "targets": ["native", "wasm"] },
+  { "name": "scene-grid-t2", "fixedTime": 2.0, "debugRender": null, "targets": ["native"] },
   { "name": "scene-grid-off", "debugRender": null, "targets": ["native"],
     "inputScript": "toggle.script", "captureAtFrame": 120 }
 ]
@@ -30,5 +30,5 @@ Reference images: native at `examples/<sample>/golden/<name>.png`, wasm at
 `e2e/golden-wasm.spec.mjs-snapshots/<name>-wasm-<platform>.png`. The
 regeneration command is in `golden.rs`'s doc comment.
 
-`npm run test:goldens` (run in CI) checks every file's shape and name
+`npm run test:golden-manifests` (run in CI) checks every file's shape and name
 uniqueness, and fails if the retired root `golden-scenarios.json` reappears.

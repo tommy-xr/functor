@@ -2,18 +2,22 @@
 // loads cleanly, and the loader rejects the retired root file, duplicates, and
 // malformed entries.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import { loadGoldenScenarios } from "./goldens.mjs";
 
 const timed = (name) => ({ name, fixedTime: 2.0, debugRender: null, targets: ["native"] });
 
+const roots = [];
+after(() => roots.forEach((root) => rmSync(root, { recursive: true, force: true })));
+
 /** A throwaway repo root with `examples/<sample>/goldens.json` per entry. */
 function fixture(samples, rootFiles = {}) {
   const root = mkdtempSync(join(tmpdir(), "goldens-"));
+  roots.push(root);
   for (const [sample, list] of Object.entries(samples)) {
     mkdirSync(join(root, "examples", sample), { recursive: true });
     writeFileSync(join(root, "examples", sample, "goldens.json"), JSON.stringify(list));

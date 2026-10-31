@@ -50,7 +50,8 @@ const TOLERANCE: u8 = 16;
 const MAX_DIFF_FRACTION: f64 = 0.01;
 
 /// One golden scenario, deserialized from an `examples/<sample>/goldens.json`.
-/// Mirrors the shape the wasm harness validates (`scripts/goldens.mjs`).
+/// Mirrors the shape the wasm harness validates: a new field must also be added
+/// to `KEYS` in `scripts/goldens.mjs`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scenario {
