@@ -405,10 +405,20 @@ let onBike = (m: Model, c: Physics.position): Model =>
     | Option.None => { m with noRoom: true }
 
 // At the fade's black: on the bike, its eye at the seat; or on foot at the
-// landing, facing the bike.
-let arrive = (m: Model): (Model, Effect.t) =>
+// landing, facing the bike. Getting on also snaps the bike (at `c`) up to
+// ride height (`Mount.snap`) by a teleport, which lands after this step's
+// move; the last pose and position follow it so nothing sweeps or reads it
+// as a collision. Before the probes have seen ground there is no height to
+// snap to, and it stays put.
+let arrive = (m: Model, c: Physics.position): (Model, Effect.t) =>
   match m.fade.action with
-  | Mount.GetOn(hand) => ({ m with mode: Riding, near: false, off: -1.0, vr: Bars.mountOn(hand, m.vr) }, Effect.none())
+  | Mount.GetOn(hand) =>
+    let on = { m with mode: Riding, near: false, off: -1.0, vr: Bars.mountOn(hand, m.vr) } in
+    if not m.ready then (on, Effect.none())
+    else
+      let (dy, ride) = Mount.snap(m.clearance, m.ride) in
+      let at = { c with y: c.y + dy } in
+      ({ on with ride: ride, prev: { m.prev with y: at.y }, last: at }, Physics.teleport(bikeTag, vecOf(at)))
   | Mount.GetOff(x, y, z, yaw) =>
     ({ m with mode: OnFoot, walker: { Walk.standing with yaw: yaw, ready: true }, footPrev: { x: x, y: y, z: z },
               vr: Bars.dismount(m.vr) },
@@ -425,15 +435,23 @@ expect (
   not Mount.fading(released.fade) && not Mount.fading(fast.fade) && not fast.noRoom
     && not Mount.fading(nowhere.fade) && nowhere.noRoom && nowhere.mode == Riding
 )
-// At the black: getting on rides, the grabbing hand latched; getting off
-// stands the walker at the landing, facing as asked, hands let go.
+// At the black: getting on rides, the grabbing hand latched, the bike snapped
+// up by what its clearance lacks and still; getting off stands the walker at
+// the landing, facing as asked, hands let go, the bike left where it is.
 expect (
-  let (on, _) = arrive({ init with fade: Mount.start(Mount.GetOn(-1.0)) }) in
-  let (off, _) = arrive({ on with fade: Mount.start(Mount.GetOff(1.0, 2.0, 3.0, 0.5)) }) in
+  let c = positionOf(dunesSpawn) in
+  let parked = { init with ready: true, ride: { Ride.rest with vy: -0.2 } } in
+  let (on, _) = arrive({ parked with fade: Mount.start(Mount.GetOn(-1.0)) }, c) in
+  let (off, _) = arrive({ on with fade: Mount.start(Mount.GetOff(1.0, 2.0, 3.0, 0.5)) }, on.last) in
+  let lift = Ride.hoverHeight - Ride.idleHeight in
   on.mode == Riding && on.vr.mounted && on.vr.right.latched && not on.vr.left.latched
+    && Math.abs(on.last.y - c.y - lift) < 0.000001 && on.prev.y == on.last.y && on.ride.vy == 0.0
     && off.mode == OnFoot && off.walker.yaw == 0.5 && off.footPrev.x == 1.0 && off.footPrev.z == 3.0
-    && not off.vr.mounted && not off.vr.right.latched
+    && not off.vr.mounted && not off.vr.right.latched && off.last == on.last
 )
+// Not yet on the ground, getting on leaves the bike where it is.
+expect (let (on, _) = arrive({ init with fade: Mount.start(Mount.GetOn(1.0)) }, positionOf(dunesSpawn)) in
+  on.mode == Riding && on.last == init.last)
 
 let tick = (m: Model, dt: float, tts) =>
   if dt <= 0.0 then (m, Effect.none())
@@ -445,7 +463,7 @@ let tick = (m: Model, dt: float, tts) =>
     let (fade, black) = Mount.step(dt, m.fade) in
     let stepped = { rode with fade: fade } in
     let (next, moved) =
-      if black then arrive(stepped)
+      if black then arrive(stepped, c)
       else if Mount.fading(fade) then (stepped, Effect.none())
       else
         match m.mode with

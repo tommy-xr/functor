@@ -35,8 +35,8 @@
 // up to the bike and pressing E (`board`); R puts the rider back on foot.
 //
 //   i.   Spawn on foot on the pad, away from the bike; walk up; E gets on.
-//        The parked bike rises to ride height while the fade is black: at
-//        the first fade-in step it is there, and stays.
+//        The fade takes 0.25 s; on its black step the parked bike snaps to
+//        ride height: from the first fade-in step it is there, and still.
 //   ii.  Ride a short way and stop. Holding E for 0.5 s fades and sets the
 //        walker down on the bike's left, on the ground, clear of the bike and
 //        the props, facing it. The bike holds ride height through the fade,
@@ -63,8 +63,8 @@ const DT = 1 / 60;
 const HOVER = 1.2;
 const IDLE = 0.3; // parked
 const FADE_OUT = 0.1; // bars.fun's fadeOut
-// mount.fun's fade: 15 steps, plus `rise` (1.3 s) held black getting on.
-const MOUNT_STEPS = 16 + 78;
+// mount.fun's fade: 15 steps (0.25 s), plus the one that starts it.
+const MOUNT_STEPS = 16;
 const THRUST = 12;
 const TOP = 24;
 const DRAG_LIN = 0.3;
@@ -572,14 +572,20 @@ async function onFoot(port, check) {
     const trace = [];
     m = await board(base, trace);
     check(m.mode.$ctor === "Riding" && m.speed === 0, `walks up and gets on with E`);
-    // Each step's clearance is read at its start, so it trails the step.
+    // A second on the bike, then. Each step's clearance is read at its
+    // start, so it trails the step.
+    for (let i = 0; i < 60; i++) trace.push((m = await step(base, 1)));
     const black = trace.findIndex((t) => t.mode.$ctor === "Riding");
-    const shown = trace.slice(black + 1).findIndex((t) => t.fade.t < 0 || t.fade.t > FADE_OUT + 0.001) + black + 1;
+    const shown = trace.findIndex((t, i) => i > black && t.fade.t > FADE_OUT + 0.001);
     const after = trace.slice(shown);
+    const fadeSteps = trace.filter((t) => t.fade.t >= 0).length;
+    check(fadeSteps === 15, `the fade lasts ${fadeSteps} steps (${(fadeSteps / 60).toFixed(3)} s)`);
     check(trace.slice(0, black + 1).every((t) => Math.abs(t.clearance - IDLE) < 0.005),
       `parked at ${IDLE} m until the black step (step ${black})`);
-    check(shown > black + 70 && after.every((t) => Math.abs(t.clearance - HOVER) < 0.015),
-      `risen while black: from the first fade-in step (${shown}) clearance ${Math.min(...after.map((t) => t.clearance)).toFixed(4)}..${Math.max(...after.map((t) => t.clearance)).toFixed(4)} m`);
+    check(shown === black + 1 && after.every((t) => Math.abs(t.clearance - HOVER) < 0.015),
+      `snapped while black: from the first fade-in step (${shown}) clearance ${Math.min(...after.map((t) => t.clearance)).toFixed(4)}..${Math.max(...after.map((t) => t.clearance)).toFixed(4)} m`);
+    const vy = Math.max(...trace.slice(black).map((t) => Math.abs(t.ride.vy)));
+    check(vy < 0.01, `no vertical velocity from the snap on (|vy| ≤ ${vy.toExponential(2)} m/s)`);
 
     // ii. Ride a short way, stop, hold E.
     await key(base, "w", true);

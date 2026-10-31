@@ -52,36 +52,33 @@ type Action =
   | GetOn(hand: float)
   | GetOff(x: float, y: float, z: float, yaw: float)
 
-// Getting on stays black for `rise` after the black step, while the parked
-// bike lifts to ride height (`height`): the spring takes about 1.3 s to carry
-// it the 0.9 m to within 1.5 cm, so the view never rises once it fades in.
-let rise = 1.3 // s
-
-// `t` is the time on `Bars.fadeStep`'s timeline, negative when idle; it
-// stops at the black while `hold` counts down.
-type Fade = { t: float, hold: float, action: Action }
-let clear: Fade = { t: -1.0, hold: 0.0, action: GetOn(0.0) }
+// `t` is the time since the fade began, negative when idle.
+type Fade = { t: float, action: Action }
+let clear: Fade = { t: -1.0, action: GetOn(0.0) }
+let start = (a: Action): Fade => { t: 0.0, action: a }
+let fading = (f: Fade) => f.t >= 0.0
 let gettingOn = (a: Action) =>
   match a with
   | GetOn(_) => true
   | GetOff(_, _, _, _) => false
-let start = (a: Action): Fade => { t: 0.0, hold: if gettingOn(a) then rise else 0.0, action: a }
-let fading = (f: Fade) => f.t >= 0.0
 
 // One step: the next fade, and whether its action happens on this step.
-// (The tolerance absorbs the float sum of the held steps.)
 let step = (dt: float, f: Fade): (Fade, bool) =>
   if f.t < 0.0 then (f, false)
-  else if Bars.black(f.t) && f.hold > 0.000001 then ({ f with hold: f.hold - dt }, false)
   else
     let (t, black) = Bars.fadeStep(dt, f.t) in
     ({ f with t: t }, black)
 
 // The hover target: ride height while ridden, and through getting off's
-// fade; else the idle height. So the bike rises from getting on's black step
-// (unseen) and sinks once getting off has faded back in.
+// fade; else the idle height. So the bike sinks once getting off has faded
+// back in.
 let height = (riding: bool, f: Fade) =>
   if riding || (fading(f) && not gettingOn(f.action)) then Ride.hoverHeight else Ride.idleHeight
+
+// Getting on, on the black step the parked bike snaps up to ride height: by
+// what its probes read short of it (`clearance`), vertical velocity zeroed,
+// so it rests there. Unseen while black, so no spring rise.
+let snap = (clearance: float, s: Ride.State): (float, Ride.State) => (Ride.hoverHeight - clearance, { s with vy: 0.0 })
 
 // ---- Getting off ---------------------------------------------------------
 
@@ -144,52 +141,50 @@ expect eligible(true, 0.0, false, 9.0) && eligible(true, 1.0, true, 0.25) && not
 expect not eligible(true, -1.0, true, 0.35) && not eligible(true, 1.0, false, 0.1)
 
 // The fade: its action lands on the step it is fully black, six steps in at
-// 60 Hz; getting off is clear again after 15 (to a float's width), getting on
-// after 15 plus the 78 held black; never black twice.
+// 60 Hz; it is clear again after 15 (0.25 s, to a float's width), getting on
+// and off alike, and never black twice.
 let run = (n: float, f: Fade) =>
   List.range(n) |> List.fold((acc, i) =>
     let (g, blacks, levels) = acc in
     let (h, b) = step(Ride.dt60, g) in
     (h, (if b then [i, ..blacks] else blacks), [Bars.fadeAt(h.t), ..levels]), (f, [], []))
-expect (
-  let (f, blacks, levels) = run(20.0, start(GetOff(0.0, 0.0, 0.0, 0.0))) in
+let fadesLike = (a: Action) =>
+  let (f, blacks, levels) = run(20.0, start(a)) in
   blacks == [5.0] && List.nth(14.0, levels) == Option.Some(1.0) && not fading(f)
     && List.head(levels) == Option.Some(0.0) && List.length(levels |> List.filter((l) => l > 0.001)) == 14.0
-)
-expect (
-  let (f, blacks, levels) = run(100.0, start(GetOn(1.0))) in
-  let held = levels |> List.filter((l) => l > 0.999) in
-  blacks == [5.0] && not fading(f) && List.length(held) == 79.0
-    && List.length(levels |> List.filter((l) => l > 0.001)) == 92.0
-)
+expect fadesLike(GetOn(1.0)) && fadesLike(GetOff(0.0, 0.0, 0.0, 0.0))
 expect (let (f, b) = step(Ride.dt60, clear) in not b && f == clear)
 
 // The bike's height through a fade, as `tick` steps it over flat ground: the
 // target from the mode and fade before the step, then the fade, whose black
-// step switches the mode. Oldest first.
+// step switches the mode and, getting on, snaps the bike from where its
+// probes read at the step's start. Oldest first.
 type Lift = { h: float, s: Ride.State, f: Fade, riding: bool, level: float }
 let lifting = (n: float, riding: bool, h0: float, f0: Fade): List<Lift> =>
   List.range(n) |> List.fold((acc, i) =>
     let l = acc |> List.head |> Option.defaultValue({ h: h0, s: Ride.rest, f: f0, riding: riding, level: 0.0 }) in
-    let s = Ride.step(Ride.idle, height(l.riding, l.f), Ride.flatProbes(l.h), Ride.dt60, l.s) in
+    let stepped = Ride.step(Ride.idle, height(l.riding, l.f), Ride.flatProbes(l.h), Ride.dt60, l.s) in
     let (f, black) = step(Ride.dt60, l.f) in
-    [{ h: l.h + s.vy * Ride.dt60, s: s, f: f, riding: if black then gettingOn(f.action) else l.riding, level: Bars.fadeAt(f.t) }, ..acc],
+    let on = black && gettingOn(f.action) in
+    let (h, s) = if on then (let (dy, snapped) = snap(l.h, stepped) in (l.h + dy, snapped))
+      else (l.h + stepped.vy * Ride.dt60, stepped) in
+    [{ h: h, s: s, f: f, riding: if black then gettingOn(f.action) else l.riding, level: Bars.fadeAt(f.t) }, ..acc],
     []) |> List.reverse
 let within = (to: float, tolerance: float, l: Lift) => Math.abs(l.h - to) < tolerance
 
 // Parked, it stays at the idle height.
 expect lifting(120.0, false, Ride.idleHeight, clear) |> List.all((l) => within(Ride.idleHeight, 0.000001, l))
-// Getting on: nothing moves before the black; the rise happens while it is
-// black; from the first fade-in step on, the bike is at ride height within
-// 1.5 cm, nearly still, and only settles from there.
+// Getting on: nothing moves before the black step, which snaps the bike to
+// ride height; from the first fade-in step on it stays there within 1.5 cm,
+// with no vertical velocity to speak of.
 expect (
-  let run = lifting(240.0, false, Ride.idleHeight, start(GetOn(1.0))) in
-  let before = run |> List.take(6.0) in
-  let after = run |> List.drop(6.0) |> List.filter((l) => l.level < 0.999) in
+  let run = lifting(120.0, false, Ride.idleHeight, start(GetOn(1.0))) in
+  let before = run |> List.take(5.0) in
+  let after = run |> List.drop(6.0) in
   let first = after |> List.head |> Option.defaultValue({ h: 0.0, s: Ride.rest, f: clear, riding: false, level: 0.0 }) in
   (before |> List.all((l) => within(Ride.idleHeight, 0.000001, l)))
-    && first.level > 0.8 && first.riding && within(Ride.hoverHeight, 0.015, first) && Math.abs(first.s.vy) < 0.1
-    && (after |> List.all((l) => within(Ride.hoverHeight, 0.015, l)))
+    && first.level > 0.8 && first.level < 1.0 && first.riding
+    && (after |> List.all((l) => within(Ride.hoverHeight, 0.015, l) && Math.abs(l.s.vy) < 0.01))
 )
 // Getting off: it holds ride height through the fade, then sinks to the idle
 // height and settles there, its error never growing.

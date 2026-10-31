@@ -66,8 +66,6 @@ const FOOT_Y = 0.92; // the walker's capsule centre standing on the stand's floo
 const COLLIDER_LIFT = 0.95; // the bike's capsule centre above its emitter plane
 const REACH = 0.3;
 const IDLE = 0.3; // the parked hover height (ride.fun)
-// Getting on holds the fade black for mount.fun's `rise` (1.3 s) more.
-const RISE_STEPS = 78;
 const HOLD = 0.5;
 const STAND_FOOT = { x: 609, z: 0 };
 
@@ -247,7 +245,7 @@ async function board(base) {
   const at = reachFor(m, 0.15);
   await hold(base, xr({ leftAt: at }));
   await hold(base, xr({ leftAt: at, ls: 1 }));
-  m = await hold(base, xr({ ls: 1 }), 16 + RISE_STEPS);
+  m = await hold(base, xr({ ls: 1 }), 16);
   if (m.mode.$ctor !== "Riding" || !m.vr.left.latched) throw new Error(`never got on (near ${m.near}, mode ${m.mode.$ctor})`);
   m = await hold(base, xr({ ls: 1 }), 1 + (((5 - ((m.steps + 2) % 6)) % 6) + 6) % 6);
   return hold(base, xr({ ls: 1, rs: 1 }));
@@ -406,7 +404,10 @@ async function onFoot(port, check) {
     check(m.fade.t >= 0 && m.fade.action.$ctor === "Mount.GetOn" && m.fade.action.args[0] === 1, `a squeeze 0.15 m from it: the fade starts`);
     m = await hold(base, xr({ ls: 1 }), 6);
     check(m.mode.$ctor === "Riding" && m.vr.mounted && m.vr.left.latched && !m.vr.right.latched && !m.vr.armed, `at the black: on the bike, the left hand latched`);
-    m = await hold(base, xr({ ls: 1 }), 12 + RISE_STEPS);
+    m = await hold(base, xr({ ls: 1 }), 1);
+    check(Math.abs(m.clearance - 1.2) < 0.015 && Math.abs(m.ride.vy) < 0.01 && m.vr.vignette === 0,
+      `snapped to ride height while black (clearance ${m.clearance.toFixed(4)} m, vy ${m.ride.vy.toExponential(2)}), no vignette`);
+    m = await hold(base, xr({ ls: 1 }), 11);
     m = await hold(base, xr({ ls: 1, rs: 1 }));
     check(m.vr.armed && m.fade.t < 0, `grabbing the right arms`);
 
