@@ -1,7 +1,7 @@
-// Everything derived from layout.fun except the exterior (exterior.fun): the
-// interior surfaces (one mesh, baked together, then cut into one mesh per
-// cell), the bake jobs and their lights, the culling cells and portals, and
-// the wall, floor and stair colliders. Editing this file makes the committed
+// Everything derived from layout.fun except the exterior (exterior.fun) and
+// the culling cells (portals.fun): the interior surfaces (one mesh, baked
+// together, then cut into one mesh per cell), the bake jobs and their lights,
+// and the wall, floor and stair colliders. Editing this file makes the committed
 // bake stale (provenance.fun hashes it with layout.fun).
 
 open Layout
@@ -500,68 +500,6 @@ let cellData = (data: Model.staticData, run: Run): Model.staticData =>
 type CellModel = { cell: float, model: Model.t }
 let cellModels = (data: Model.staticData): List<CellModel> =>
   runsOf(data) |> List.map((run) => { cell: run.cell, model: Model.static(cellData(data, run)) })
-
-// ---- Cells and portals -------------------------------------------------------
-
-let box3 = (r: Rect, y0: float, y1: float): Cells.cell => { planes: [
-  { n: v(1.0, 0.0, 0.0), d: 0.0 - r.x0 }, { n: v(-1.0, 0.0, 0.0), d: r.x1 },
-  { n: v(0.0, 1.0, 0.0), d: 0.0 - y0 },   { n: v(0.0, -1.0, 0.0), d: y1 },
-  { n: v(0.0, 0.0, 1.0), d: 0.0 - r.z0 }, { n: v(0.0, 0.0, -1.0), d: r.z1 },
-] }
-let outsideTop = 8.0
-
-// Room `i`'s cell: its rect, from its floor up to its walls' top.
-let cellOf = (i: float): Cells.cell =>
-  let r = roomAt(i) in
-  if isInside(r) then box3(r.rect, baseOf(r), baseOf(r) + wallTop(i)) else box3(r.rect, 0.0, outsideTop)
-
-// Hole `h` in the wall on line `l` along `side`, from a floor at `y`, as a
-// polygon on that line.
-let opening = (side: Side, l: float, y: float, h: Hole): List<Vec3.t> =>
-  let y0 = y + h.bottom in
-  let y1 = y + h.top in
-  if side == North || side == South then [v(h.lo, y0, l), v(h.hi, y0, l), v(h.hi, y1, l), v(h.lo, y1, l)]
-  else [v(l, y0, h.lo), v(l, y0, h.hi), v(l, y1, h.hi), v(l, y1, h.lo)]
-
-let doorway = (d: Door): List<Vec3.t> =>
-  let ra = roomAt(d.a).rect in
-  match sideBetween(ra, roomAt(d.b).rect) with
-  | Option.None => []
-  | Option.Some(side) => opening(side, lineOf(side, ra), baseOf(roomAt(d.a)), holeOf(d))
-
-// A flight's stair opening: the floor of its upper room less the landing.
-let stairOpening = (f: Flight): List<Vec3.t> =>
-  let r = inner(roomAt(f.lower).rect) in
-  let y = baseOf(roomAt(f.upper)) in
-  let x1 = flightEnd(f) in
-  [v(r.x0, y, r.z0), v(x1, y, r.z0), v(x1, y, r.z1), v(r.x0, y, r.z1)]
-
-let windowOpening = (w: Window): List<Vec3.t> =>
-  let r = roomAt(w.room) in
-  opening(w.side, lineOf(w.side, r.rect), baseOf(r), windowHole(w))
-
-// Portals: each door, each window onto an outside room (the street sees in),
-// and a horizontal one at each stair opening.
-let level = Cells.make({
-  cells: List.range(List.length(rooms)) |> List.map(cellOf),
-  portals: List.flatten([
-    doors |> List.concatMap((d) => [
-      { from: d.a, to: d.b, polygon: doorway(d) },
-      { from: d.b, to: d.a, polygon: List.reverse(doorway(d)) },
-    ]),
-    windows |> List.concatMap((w) =>
-      match outsideOf(w) with
-      | Option.Some(o) => [
-          { from: o, to: w.room, polygon: windowOpening(w) },
-          { from: w.room, to: o, polygon: List.reverse(windowOpening(w)) },
-        ]
-      | Option.None => []),
-    flights |> List.concatMap((f) => [
-      { from: f.lower, to: f.upper, polygon: stairOpening(f) },
-      { from: f.upper, to: f.lower, polygon: List.reverse(stairOpening(f)) },
-    ]),
-  ]),
-})
 
 // ---- Collision ---------------------------------------------------------------
 

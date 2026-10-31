@@ -182,7 +182,7 @@ let tick = (model, dt: float, tts: float) =>
   let observed = { model with
     at: p,
     grounded: Physics.grounded(playerTag),
-    cell: Cells.locate(eyeOf(p), Building.level) |> Option.defaultValue(-1.0),
+    cell: Cells.locate(eyeOf(p), Portals.level) |> Option.defaultValue(-1.0),
     near: fromBuilding(p.x, p.z) < interiorRange,
     baked: baked } in
   match List.nth(model.goto - 1.0, views) with
@@ -214,7 +214,7 @@ let draw = (model, tts: float) =>
   let camera = Camera3D.firstPerson(eyeOf(p), Angle.radians(model.yaw), Angle.radians(model.pitch), 70deg)
     |> Camera3D.clip(0.05, 160.0) in
   let rooms = if Hours.isDay(model.hour) then dayRooms else nightRooms in
-  let scene = Scene.cells(Building.level, Scene.group([
+  let scene = Scene.cells(Portals.level, Scene.group([
     Exterior.exteriorAt(o.neon, o.lamps),
     if model.near then Scene.group(rooms) else Scene.group([]),
   ])) in

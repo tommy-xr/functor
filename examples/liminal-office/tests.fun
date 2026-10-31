@@ -110,7 +110,7 @@ expect flights |> List.all((f) =>
 // the upper floor, doors and windows at their wall's centre line.
 let inBox = (i: float, p: Vec3.t): bool =>
   let r = Building.roomAt(i) in
-  let (y0, y1) = if Building.isInside(r) then (Building.baseOf(r), Building.baseOf(r) + Building.wallTop(i)) else (0.0, Building.outsideTop) in
+  let (y0, y1) = if Building.isInside(r) then (Building.baseOf(r), Building.baseOf(r) + Building.wallTop(i)) else (0.0, Portals.outsideTop) in
   let e = 0.0001 in
   Vec3.x(p) >= r.rect.x0 - e && Vec3.x(p) <= r.rect.x1 + e && Vec3.z(p) >= r.rect.z0 - e && Vec3.z(p) <= r.rect.z1 + e
     && Vec3.y(p) >= y0 - e && Vec3.y(p) <= y1 + e
@@ -124,26 +124,26 @@ expect windows |> List.all((w) => Building.stacked(w.side, Building.windowHole(w
 let middle = (i: float): Vec3.t =>
   let r = Building.roomAt(i).rect in
   Vec3.make((r.x0 + r.x1) / 2.0, Building.baseOf(Building.roomAt(i)) + 1.6, (r.z0 + r.z1) / 2.0)
-expect ids |> List.all((i) => Cells.locate(middle(i), Building.level) == Option.Some(i))
-expect Cells.locate(Vec3.make(spawn.x, 1.6, spawn.z), Building.level) == Option.Some(0.0)
+expect ids |> List.all((i) => Cells.locate(middle(i), Portals.level) == Option.Some(i))
+expect Cells.locate(Vec3.make(spawn.x, 1.6, spawn.z), Portals.level) == Option.Some(0.0)
 // Sight runs through doorways and stops at walls.
-expect Cells.segment(Vec3.make(10.0, 1.6, -6.0), Vec3.make(10.0, 1.6, 20.0), Building.level)
-expect Cells.segment(Vec3.make(10.0, 1.6, 16.5), Vec3.make(15.6, 1.6, 16.5), Building.level)
-expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(15.6, 1.6, 16.5), Building.level)
+expect Cells.segment(Vec3.make(10.0, 1.6, -6.0), Vec3.make(10.0, 1.6, 20.0), Portals.level)
+expect Cells.segment(Vec3.make(10.0, 1.6, 16.5), Vec3.make(15.6, 1.6, 16.5), Portals.level)
+expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(15.6, 1.6, 16.5), Portals.level)
 // The stair opening is a portal between floors: sight runs up through it,
 // but not through the landing, nor through any other floor.
 let up = storey + 1.6
-expect Cells.segment(Vec3.make(12.0, 1.6, 23.0), Vec3.make(15.0, up, 25.0), Building.level)
-expect not Cells.segment(Vec3.make(19.0, 1.6, 24.0), Vec3.make(19.0, up, 24.0), Building.level)
-expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(10.0, up, 10.0), Building.level)
+expect Cells.segment(Vec3.make(12.0, 1.6, 23.0), Vec3.make(15.0, up, 25.0), Portals.level)
+expect not Cells.segment(Vec3.make(19.0, 1.6, 24.0), Vec3.make(19.0, up, 24.0), Portals.level)
+expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(10.0, up, 10.0), Portals.level)
 // Upstairs, through doorways as below.
-expect Cells.segment(Vec3.make(10.0, up, 3.0), Vec3.make(15.6, up, 3.0), Building.level)
+expect Cells.segment(Vec3.make(10.0, up, 3.0), Vec3.make(15.6, up, 3.0), Portals.level)
 // Every window is a portal from the street: sight runs in through one,
 // not through the wall beside it.
 expect windows |> List.all((w) => Building.outsideOf(w) != Option.None)
-expect Cells.segment(Vec3.make(-5.0, 1.6, 9.3), Vec3.make(4.0, 1.6, 9.3), Building.level)
-expect Cells.segment(Vec3.make(-5.0, up, 9.3), Vec3.make(4.0, up, 9.3), Building.level)
-expect not Cells.segment(Vec3.make(-5.0, 1.6, 16.0), Vec3.make(4.0, 1.6, 16.0), Building.level)
+expect Cells.segment(Vec3.make(-5.0, 1.6, 9.3), Vec3.make(4.0, 1.6, 9.3), Portals.level)
+expect Cells.segment(Vec3.make(-5.0, up, 9.3), Vec3.make(4.0, up, 9.3), Portals.level)
+expect not Cells.segment(Vec3.make(-5.0, 1.6, 16.0), Vec3.make(4.0, 1.6, 16.0), Portals.level)
 
 // ---- The mesh and its cells ----------------------------------------------------
 
