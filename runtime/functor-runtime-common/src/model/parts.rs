@@ -4,44 +4,50 @@
 
 use std::collections::{HashMap, HashSet};
 
-/// Every mesh node's unique part name, keyed by node index, in the importer's
-/// depth-first scene order. A part takes its node's name, else its mesh's,
-/// else `mesh`; a repeat gets `_2`, `_3`, … (skipping names already taken),
-/// so each part stays addressable and a reload names it the same.
+/// Every mesh node's unique part name, keyed by node index. A part takes its
+/// node's name, else its mesh's, else `mesh`. The first node (in the
+/// importer's depth-first scene order) with a name keeps it; later repeats
+/// get `_2`, `_3`, … skipping every authored name, so an authored `Body_2`
+/// is never renamed and a reload names each part the same.
 pub fn part_names(document: &gltf::Document) -> HashMap<usize, String> {
-    fn visit(
-        node: gltf::Node,
-        used: &mut HashSet<String>,
-        names: &mut HashMap<usize, String>,
-    ) {
+    fn visit<'a>(node: gltf::Node<'a>, order: &mut Vec<(usize, &'a str)>) {
         if let Some(mesh) = node.mesh() {
-            if !names.contains_key(&node.index()) {
+            if !order.iter().any(|(index, _)| *index == node.index()) {
                 let base = [node.name(), mesh.name()]
                     .into_iter()
                     .flatten()
                     .find(|name| !name.is_empty())
                     .unwrap_or("mesh");
-                let mut name = base.to_string();
-                let mut n = 2;
-                while !used.insert(name.clone()) {
-                    name = format!("{base}_{n}");
-                    n += 1;
-                }
-                names.insert(node.index(), name);
+                order.push((node.index(), base));
             }
         }
         for child in node.children() {
-            visit(child, used, names);
+            visit(child, order);
         }
     }
-    let mut used = HashSet::new();
-    let mut names = HashMap::new();
+    let mut order = Vec::new();
     for scene in document.scenes() {
         for node in scene.nodes() {
-            visit(node, &mut used, &mut names);
+            visit(node, &mut order);
         }
     }
-    names
+    let mut used: HashSet<String> = order.iter().map(|(_, base)| base.to_string()).collect();
+    let mut claimed: HashSet<&str> = HashSet::new();
+    order
+        .into_iter()
+        .map(|(index, base)| {
+            if claimed.insert(base) {
+                return (index, base.to_string());
+            }
+            let mut n = 2;
+            let mut name = format!("{base}_{n}");
+            while !used.insert(name.clone()) {
+                n += 1;
+                name = format!("{base}_{n}");
+            }
+            (index, name)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -68,7 +74,7 @@ mod tests {
                 TestNode::unnamed(),
                 TestNode::named(""),
             ]),
-            ["Body", "Body_2", "Body_2_2", "Hat", "mesh", "mesh_2"]
+            ["Body", "Body_3", "Body_2", "Hat", "mesh", "mesh_2"]
         );
     }
 }

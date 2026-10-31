@@ -101,16 +101,6 @@ impl AssetPipeline<Model> for ModelPipeline {
             }
         }
 
-        // One skeleton drives every part, so parts on other skins mis-skin.
-        let skins: std::collections::HashSet<usize> =
-            document.nodes().filter_map(|node| node.skin()).map(|skin| skin.index()).collect();
-        if skins.len() > 1 {
-            eprintln!(
-                "[model] {} skins: only the last drives every part — merge the parts onto one skin",
-                skins.len()
-            );
-        }
-
         let animations = process_animations(&document, &buffers_data);
 
         let skeleton = maybe_skeleton.unwrap_or(Skeleton::empty());

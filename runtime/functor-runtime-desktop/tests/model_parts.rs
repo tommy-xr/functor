@@ -22,8 +22,8 @@ use functor_runtime_common::math::Angle;
 use functor_runtime_common::shadow::ShadowMap;
 use functor_runtime_common::{
     render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, InstanceData,
-    InstanceList, Light, MaterialDescription, ModelDescription, ModelHandle, Scene3D,
-    SceneContext, SceneObject, Viewport,
+    InstanceList, Light, MaterialDescription, ModelDescription, ModelHandle, Scene3D, SceneContext,
+    SceneObject, Viewport,
 };
 use glow::HasContext;
 
@@ -58,7 +58,10 @@ fn main() {
 
             let (whole, whole_work) = harness.render(&frame(full, &[]));
             let (reference, reference_work) = harness.render(&frame(body, &[]));
-            assert!(whole != reference, "{kind}/{path}: the hat (or its shadow) never showed");
+            assert!(
+                whole != reference,
+                "{kind}/{path}: the hat (or its shadow) never showed"
+            );
 
             let (selected, selected_work) = harness.render(&frame(full, &[&["Body"]]));
             assert!(
@@ -99,7 +102,11 @@ fn fixture(with_hat: bool, skinned: bool) -> Vec<u8> {
         ([-0.15, 1.05, -0.15], [0.15, 1.35, 0.15]),
     ]);
     let hat = TestNode::named("Hat").boxes(&[([-0.35, 1.45, -0.35], [0.35, 1.6, 0.35])]);
-    let nodes = if with_hat { vec![body, hat] } else { vec![body] };
+    let nodes = if with_hat {
+        vec![body, hat]
+    } else {
+        vec![body]
+    };
     glb(&nodes, skinned)
 }
 
@@ -196,7 +203,13 @@ impl Harness {
         let fbo = unsafe {
             let color = gl.create_texture().expect("texture");
             gl.bind_texture(glow::TEXTURE_2D, Some(color));
-            gl.tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, (2 * EYE) as i32, EYE as i32);
+            gl.tex_storage_2d(
+                glow::TEXTURE_2D,
+                1,
+                glow::RGBA8,
+                (2 * EYE) as i32,
+                EYE as i32,
+            );
             let depth = gl.create_renderbuffer().expect("renderbuffer");
             gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
             gl.renderbuffer_storage(
@@ -253,7 +266,13 @@ impl Harness {
     /// Render until the model has streamed in: the image is stable and not
     /// the empty scene.
     fn warm(&mut self, frame: &Frame) {
-        let empty = scene_frame(Scene3D { obj: SceneObject::Group(vec![]), xform: cgmath::Matrix4::from_scale(1.0) }, false);
+        let empty = scene_frame(
+            Scene3D {
+                obj: SceneObject::Group(vec![]),
+                xform: cgmath::Matrix4::from_scale(1.0),
+            },
+            false,
+        );
         let (blank, _) = self.render(&empty);
         let mut previous = self.render(frame).0;
         for _ in 0..500 {
@@ -323,10 +342,9 @@ impl Harness {
 
     /// Write a read-back (bottom-up) image as a PNG.
     fn save(&self, pixels: &[u8], path: &str) {
-        let (width, height) = (2 * EYE, EYE);
-        let row = (width * 4) as usize;
-        let flipped: Vec<u8> = pixels.chunks(row).rev().flatten().copied().collect();
-        image::save_buffer(path, &flipped, width, height, image::ColorType::Rgba8)
-            .expect("save png");
+        let png =
+            functor_runtime_common::frame_capture::encode_bottom_up_rgba_png(2 * EYE, EYE, pixels)
+                .expect("encode png");
+        std::fs::write(path, png).expect("save png");
     }
 }

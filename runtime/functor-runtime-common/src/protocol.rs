@@ -101,6 +101,10 @@
 /// `weights`/`skeleton` (omitted when empty; a skinned model always has
 /// them, so it keeps its v19 shape) and `"clips":[]`.
 ///
+/// Also: model parts — `ModelDescription.parts`, one name list per
+/// `Scene.modelParts` call (omitted when empty, so other models keep their
+/// shape).
+///
 /// v20: pixel textures — the `TextureDescription::Data` variant, a
 /// `Texture.fromPixels` texture carried inline as its RGBA8 pixels. Emitted
 /// only by that constructor, so other frames keep their v19 shape. Like v19,
@@ -1154,6 +1158,14 @@ mod tests {
         pin_model(
             &chained,
             r#"{"handle":{"File":"boss.glb"},"overrides":[],"animation":null,"while_pending":["low.glb","cube.glb"]}"#,
+        );
+        let selected = ModelDescription {
+            parts: vec![vec!["Body".to_string()]],
+            ..chained
+        };
+        pin_model(
+            &selected,
+            r#"{"handle":{"File":"boss.glb"},"overrides":[],"animation":null,"while_pending":["low.glb","cube.glb"],"parts":[["Body"]]}"#,
         );
 
         assert_wire(

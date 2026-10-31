@@ -330,12 +330,14 @@ fn resolve_model_for_draw(
 }
 
 /// Resolve a model node of either handle for drawing, with the name its
-/// warnings use. Not for static data models, which `draw_static_model` draws.
+/// warnings use and whether `Scene.modelParts` applies to it (false for a
+/// `whilePending` placeholder, whose parts are another model's: it draws
+/// whole). Not for static data models, which `draw_static_model` draws.
 fn resolve_handle_for_draw<'a>(
     render_context: &RenderContext,
     scene_context: &SceneContext,
     description: &'a ModelDescription,
-) -> (Arc<Model>, &'a str) {
+) -> (Arc<Model>, &'a str, bool) {
     match &description.handle {
         ModelHandle::File(file) => {
             let (model, primary) = resolve_model_for_draw(
@@ -344,13 +346,26 @@ fn resolve_handle_for_draw<'a>(
                 file,
                 &description.while_pending,
             );
-            if primary && !description.parts.is_empty() {
+            if primary
+                && !description.parts.is_empty()
+                && render_context.render_pass != RenderPass::DepthOnly
+            {
                 warn_unknown_parts(scene_context, &model, description, file);
             }
-            (model, file)
+            (model, file, primary)
         }
-        ModelHandle::Data(data) => (scene_context.data_model(data), data.label()),
+        ModelHandle::Data(data) => (scene_context.data_model(data), data.label(), true),
     }
+}
+
+/// Whether `mesh` draws under the node's `Scene.modelParts` selection;
+/// `selected` is false for a placeholder (see `resolve_handle_for_draw`).
+fn draws_mesh(
+    description: &ModelDescription,
+    selected: bool,
+    mesh: &crate::model::ModelMesh,
+) -> bool {
+    !selected || description.draws_part(&mesh.part)
 }
 
 /// Warn once per name that a `Scene.modelParts` selection names no part of
@@ -525,7 +540,9 @@ struct CachedPose {
     animation: Option<crate::anim::AnimExpr>,
     tts: f32,
     joints: Arc<[Matrix4<f32>]>,
-    // The posed model's bounds in model space (`None`: unknown, draw).
+    // The posed bounds of the parts `parts` selects, in model space
+    // (`None`: unknown, draw).
+    parts: Vec<Vec<String>>,
     bounds: Option<Aabb>,
 }
 
@@ -537,29 +554,32 @@ impl CachedPose {
         model: &Arc<Model>,
         animation: &Option<crate::anim::AnimExpr>,
         tts: f32,
+        parts: &[Vec<String>],
     ) -> bool {
         Arc::ptr_eq(&self.model, model)
             && self.tts.to_bits() == tts.to_bits()
             && self.animation == *animation
+            && self.parts == parts
     }
 }
 
 /// `model_pose_joints` and the posed bounds, memoized for the frame. Keyed by
 /// the node's `ModelDescription` address, which is stable while the frame is drawn; a
-/// hit must also match the model, expression and clock, so an address reused
-/// within the frame (an `expand_instanced` temporary) re-evaluates instead of
-/// aliasing another node's pose.
+/// hit must also match the model, expression, clock and part selection, so an
+/// address reused within the frame (an `expand_instanced` temporary)
+/// re-evaluates instead of aliasing another node's pose or bounds.
 fn cached_pose_joints(
     render_context: &RenderContext,
     scene_context: &SceneContext,
     hydrated_model: &Arc<Model>,
     description: &ModelDescription,
+    selected: bool,
     file: &str,
 ) -> (Arc<[Matrix4<f32>]>, Option<Aabb>) {
     let key = description as *const ModelDescription as usize;
     let tts = render_context.frame_time.tts;
     if let Some(cached) = scene_context.poses.borrow().get(&key) {
-        if cached.matches(hydrated_model, &description.animation, tts) {
+        if cached.matches(hydrated_model, &description.animation, tts, &description.parts) {
             return (cached.joints.clone(), cached.bounds);
         }
     }
@@ -576,7 +596,7 @@ fn cached_pose_joints(
         hydrated_model
             .meshes
             .iter()
-            .filter(|mesh| description.draws_part(&mesh.part))
+            .filter(|mesh| draws_mesh(description, selected, mesh))
             .try_fold(Aabb::empty(), |acc, mesh| Some(acc.union(&mesh.bounds.posed(&joints)?)))
     });
     let bounds = bounds.flatten();
@@ -587,6 +607,7 @@ fn cached_pose_joints(
             animation: description.animation.clone(),
             tts,
             joints: joints.clone(),
+            parts: description.parts.clone(),
             bounds,
         },
     );
@@ -2819,7 +2840,7 @@ impl Scene3D {
                 // chain renders its first loaded placeholder instead of
                 // the empty fallback (chainless models resolve exactly
                 // like the old `get()`).
-                let (hydrated_model, str) =
+                let (hydrated_model, str, selected) =
                     resolve_handle_for_draw(render_context, scene_context, model_description);
                 // Resolving kept it resident; portal-hidden, skip the pose too.
                 if scene_context.portal_hidden.get() {
@@ -2892,6 +2913,7 @@ impl Scene3D {
                         scene_context,
                         &hydrated_model,
                         model_description,
+                        selected,
                         str,
                     )
                 } else {
@@ -2902,7 +2924,7 @@ impl Scene3D {
                 for mesh in hydrated_model
                     .meshes
                     .iter()
-                    .filter(|mesh| model_description.draws_part(&mesh.part))
+                    .filter(|mesh| draws_mesh(model_description, selected, mesh))
                 {
                     // Go through selectors, and adjust
                     // let override_material_description = Some(MaterialDescription::Texture(
@@ -3247,7 +3269,7 @@ impl Scene3D {
                         );
                     }
                     Some(instancing::RecognizedTemplate::Model(recognized)) => {
-                        let (hydrated_model, file) = resolve_handle_for_draw(
+                        let (hydrated_model, file, selected) = resolve_handle_for_draw(
                             render_context,
                             scene_context,
                             recognized.description,
@@ -3273,13 +3295,14 @@ impl Scene3D {
                                 scene_context,
                                 &hydrated_model,
                                 recognized.description,
+                                selected,
                                 file,
                             )
                         } else {
                             let bounds = hydrated_model
                                 .meshes
                                 .iter()
-                                .filter(|mesh| recognized.description.draws_part(&mesh.part))
+                                .filter(|mesh| draws_mesh(recognized.description, selected, mesh))
                                 .fold(Aabb::empty(), |acc, mesh| {
                                     acc.union(&mesh.bounds.local.transform(&mesh.transform))
                                 });
@@ -3291,7 +3314,7 @@ impl Scene3D {
                             return;
                         }
                         let draws = |mesh: &crate::model::ModelMesh| {
-                            recognized.description.draws_part(&mesh.part)
+                            draws_mesh(recognized.description, selected, mesh)
                         };
                         if is_skinned {
                             renderer.draw_skinned_model(
@@ -4276,13 +4299,15 @@ mod pose_cache_tests {
             animation: clip(0.5),
             tts: 2.0,
             joints: Arc::from([]),
+            parts: vec![vec!["Body".to_string()]],
             bounds: None,
         };
-        assert!(cached.matches(&model, &clip(0.5), 2.0));
+        assert!(cached.matches(&model, &clip(0.5), 2.0, &cached.parts));
         // A reused address with another model, expression or clock misses.
-        assert!(!cached.matches(&self::model(), &clip(0.5), 2.0));
-        assert!(!cached.matches(&model, &clip(0.75), 2.0));
-        assert!(!cached.matches(&model, &None, 2.0));
-        assert!(!cached.matches(&model, &clip(0.5), 2.5));
+        assert!(!cached.matches(&self::model(), &clip(0.5), 2.0, &cached.parts));
+        assert!(!cached.matches(&model, &clip(0.75), 2.0, &cached.parts));
+        assert!(!cached.matches(&model, &None, 2.0, &cached.parts));
+        assert!(!cached.matches(&model, &clip(0.5), 2.5, &cached.parts));
+        assert!(!cached.matches(&model, &clip(0.5), 2.0, &[]), "another selection misses");
     }
 }

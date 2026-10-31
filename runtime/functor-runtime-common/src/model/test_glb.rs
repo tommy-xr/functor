@@ -61,7 +61,12 @@ pub fn glb(nodes: &[TestNode], skinned: bool) -> Vec<u8> {
         ));
         accessors.len() - 1
     };
-    let floats = |values: &[f32]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+    let floats = |values: &[f32]| {
+        values
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<u8>>()
+    };
 
     let mut meshes = Vec::new();
     for node in nodes {
