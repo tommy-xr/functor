@@ -405,9 +405,10 @@ async function onFoot(port, check) {
     m = await hold(base, xr({ ls: 1 }), 6);
     check(m.mode.$ctor === "Riding" && m.vr.mounted && m.vr.left.latched && !m.vr.right.latched && !m.vr.armed, `at the black: on the bike, the left hand latched`);
     m = await hold(base, xr({ ls: 1 }), 1);
-    check(Math.abs(m.clearance - 1.2) < 0.015 && Math.abs(m.ride.vy) < 0.01 && m.vr.vignette === 0,
-      `snapped to ride height while black (clearance ${m.clearance.toFixed(4)} m, vy ${m.ride.vy.toExponential(2)}), no vignette`);
+    check(Math.abs(m.clearance - 1.2) < 0.015 && Math.abs(m.ride.vy) < 0.01,
+      `snapped to ride height while black (clearance ${m.clearance.toFixed(4)} m, vy ${m.ride.vy.toExponential(2)})`);
     m = await hold(base, xr({ ls: 1 }), 11);
+    check(m.fade.t < 0 && m.vr.vignette === 0, `faded in, riding: no vignette from the snap`);
     m = await hold(base, xr({ ls: 1, rs: 1 }));
     check(m.vr.armed && m.fade.t < 0, `grabbing the right arms`);
 
