@@ -1,0 +1,28 @@
+[
+  {
+    "name": "scene-grid-t2",
+    "fixedTime": 2.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  },
+  {
+    "name": "scene-grid-fused",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "toggle.script",
+    "captureAtFrame": 90
+  },
+  {
+    "name": "scene-grid-off",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "toggle.script",
+    "captureAtFrame": 120
+  }
+]

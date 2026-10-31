@@ -1,0 +1,28 @@
+[
+  {
+    "name": "sniper-scope-hip",
+    "fixedTime": 1.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  },
+  {
+    "name": "sniper-scope-12deg",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "shoulder.script",
+    "captureAtFrame": 45
+  },
+  {
+    "name": "sniper-scope-6deg",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "shoulder.script",
+    "captureAtFrame": 90
+  }
+]

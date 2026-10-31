@@ -1,0 +1,10 @@
+[
+  {
+    "name": "held-pose-demo",
+    "fixedTime": 0.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  }
+]

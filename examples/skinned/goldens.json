@@ -1,0 +1,10 @@
+[
+  {
+    "name": "skinned-t0.5",
+    "fixedTime": 0.5,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  }
+]

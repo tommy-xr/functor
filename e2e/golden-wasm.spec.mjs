@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 
+import { loadGoldenScenarios } from "../scripts/goldens.mjs";
+
 // Wasm golden-image regression, the counterpart to the native runner test
-// (runtime/functor-runtime-desktop/tests/golden.rs). Both read the SAME scenario
-// list from golden-scenarios.json, so a scenario is validated on both targets.
+// (runtime/functor-runtime-desktop/tests/golden.rs). Both read the SAME scenarios
+// from each example's goldens.json (docs/goldens.md), so a scenario is
+// validated on both targets.
 //
 // Each scenario renders a sample at a pinned frame time (?fixed-time, which also
 // disables input so the camera can't drift) with an optional ?debug-render mode,
@@ -15,11 +17,8 @@ import { test, expect } from "@playwright/test";
 // running with FUNCTOR_SAMPLE=<sample> (and tagging its scenarios `"wasm"`).
 const SAMPLE = process.env.FUNCTOR_SAMPLE || "lighting";
 
-const manifest = JSON.parse(
-  readFileSync(new URL("../golden-scenarios.json", import.meta.url)),
-);
 // Scripted scenarios (`inputScript`) are native-only.
-const scenarios = manifest.scenarios.filter(
+const scenarios = loadGoldenScenarios().filter(
   (s) => s.sample === SAMPLE && s.targets.includes("wasm") && !s.inputScript,
 );
 

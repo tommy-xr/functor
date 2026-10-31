@@ -1,0 +1,47 @@
+[
+  {
+    "name": "hoverbike-rider",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "ride.script",
+    "captureAtFrame": 1144
+  },
+  {
+    "name": "hoverbike-crest",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "ride.script",
+    "captureAtFrame": 614
+  },
+  {
+    "name": "hoverbike-foot",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "mount.script",
+    "captureAtFrame": 115
+  },
+  {
+    "name": "hoverbike-fade",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "mount.script",
+    "captureAtFrame": 126
+  },
+  {
+    "name": "hoverbike-mounted",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "mount.script",
+    "captureAtFrame": 180
+  }
+]

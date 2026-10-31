@@ -1,0 +1,26 @@
+[
+  {
+    "name": "terrain-t2",
+    "fixedTime": 2.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  },
+  {
+    "name": "terrain-normals-t2",
+    "fixedTime": 2.0,
+    "debugRender": "normals",
+    "targets": [
+      "native"
+    ]
+  },
+  {
+    "name": "terrain-tangents-t2",
+    "fixedTime": 2.0,
+    "debugRender": "tangents",
+    "targets": [
+      "native"
+    ]
+  }
+]

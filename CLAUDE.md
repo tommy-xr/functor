@@ -379,8 +379,8 @@ or captures the cursor, so capture runs don't steal input from the user. For deb
 sessions (`--debug-port`) prefer passing `--hidden` explicitly — or `--headless` when no pixels
 are needed at all (see `docs/debug-runtime.md`).
 
-**Golden-image test:** `npm run test:golden` renders the Functor Lang samples (`hello`,
-`lighting`, `primitives`, `synthwave` — the scenarios in `golden-scenarios.json`) at a
+**Golden-image test:** `npm run test:golden` renders the scenarios in each example's
+`examples/<sample>/goldens.json` (format: `docs/goldens.md`) at a
 fixed time and compares each capture to a committed reference
 (`runtime/functor-runtime-desktop/tests/golden.rs`). It's `#[ignore]`d (needs a GL display), so it
 runs locally/manually, not in CI. Goldens are renderer/display-specific — the regeneration command

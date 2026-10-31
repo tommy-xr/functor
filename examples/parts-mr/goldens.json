@@ -1,0 +1,10 @@
+[
+  {
+    "name": "parts-mr-t2",
+    "fixedTime": 2.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  }
+]
