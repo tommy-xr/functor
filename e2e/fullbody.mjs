@@ -55,15 +55,15 @@ async function waitFrame(after, timeoutMs = 30000) {
   }
 }
 
-// One fixed step; an injected sample is level state, so wait for it to land.
+// `n` fixed steps under the current (level) sample; wait for them to land.
 async function step(n = 1) {
-  let s;
-  for (let i = 0; i < n; i++) {
-    const before = (await get("/state")).frame;
-    await post("/time", { type: "advance", dts: 1 / 60 });
-    s = await waitFrame(before, 15000);
+  const before = (await get("/state")).frame;
+  await post("/time", { type: "advance", dts: 1 / 60, frames: n });
+  for (;;) {
+    const s = await waitFrame(before, 15000);
+    if (!s.pending_steps) return s;
+    await sleep(5);
   }
-  return s;
 }
 
 // --- vectors and quaternions ([x, y, z, w], OpenXR order) ---
@@ -221,6 +221,20 @@ async function script() {
   check(maxStep < 0.07, `recovery: moved at most ${(maxStep * 100).toFixed(1)} cm a step`);
   expectHeld("recovery", r.solved, "left", found);
 
+  console.log("\n▸ a one-step dropout while the hand moves 30 cm");
+  r = keep(await solvedAfter(sample(HEAD, null, fwdR)));
+  const moved = pose(add(found.position, [0, 0.3, 0]), found.orientation);
+  previous = tracked(r.solved.left.position);
+  maxStep = 0;
+  for (let i = 1; i <= 12; i++) {
+    r = keep(await solvedAfter(sample(HEAD, moved, fwdR)));
+    const at = tracked(r.solved.left.position);
+    maxStep = Math.max(maxStep, len(sub(at, previous)));
+    previous = at;
+  }
+  check(maxStep < 0.05, `dropout: the wrist slid, at most ${(maxStep * 100).toFixed(1)} cm a step`);
+  expectHeld("dropout", r.solved, "left", moved);
+
   console.log("\n▸ turning 60° to the right: the hips lag");
   // The player turns on the spot, hands and all.
   const turning = (deg) => sample(pose(HEAD.position, yaw(-deg)), turnPose(yaw(-deg), fwdL), turnPose(yaw(-deg), fwdR));
@@ -232,7 +246,7 @@ async function script() {
   const deg = (rad) => ((rad * 180) / Math.PI).toFixed(1);
   check(twistMax > (40 * Math.PI) / 180, `turn: the hips trailed the head (max twist ${deg(twistMax)}°)`);
   r = keep(await solvedAfter(turning(60), 60));
-  check(Math.abs(Math.abs(r.body.twist) - (25 * Math.PI) / 180) < 1e-6, `turn: settled at the 25° deadzone (${deg(r.body.twist)}°)`);
+  check(Math.abs(r.body.twist) < (25 * Math.PI) / 180 - 0.1, `turn: inside the 25° deadzone and realigning (${deg(r.body.twist)}°)`);
   expectHeld("turned", r.solved, "left", turnPose(yaw(-60), fwdL));
   expectHeld("turned", r.solved, "right", turnPose(yaw(-60), fwdR));
 
@@ -266,9 +280,12 @@ async function run() {
   try {
     await waitFrame(0);
     await post("/time", { type: "set", tts: 0 });
-    // Steps before the pause ran on the wall clock; start both runs from the
-    // first one.
-    await post("/rewind", { frame: 1 });
+    // Steps before the pause ran on the wall clock: drop any queued catch-up
+    // and start both runs from the first one.
+    await post("/time", { type: "cancel" });
+    await post("/rewind", { frame: 0 });
+    const at = await get("/state");
+    console.log(`rewound: frame ${at.frame}, clock ${at.model.body.clock}, pending ${at.pending_steps}`);
     await post("/input", { type: "key", key: "p", down: true });
     await post("/input", { type: "key", key: "p", down: false });
     return await script();

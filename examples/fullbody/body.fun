@@ -21,8 +21,10 @@ type Sample = { head: Option.t<Pose>, left: HandSample, right: HandSample, calib
 
 /// A hand: its last wrist target in model space (kept through tracking loss,
 /// so the arm never reaches for the origin), how much of it the arm follows
-/// (0 = the neutral arm, 1 = tracked), and its finger curls.
-type Hand = { blend: float, wrist: Option.t<Pose>, index: float, grip: float }
+/// (`blend`: 0 = the neutral arm, 1 = tracked), how far that target has slid
+/// back onto the live one since tracking returned (`follow`: 1 = on it), and
+/// its finger curls.
+type Hand = { blend: float, follow: float, wrist: Option.t<Pose>, index: float, grip: float }
 
 type State = {
   scale: float,
@@ -39,7 +41,7 @@ type State = {
   clock: float
 }
 
-let restHand: Hand = { blend: 0.0, wrist: Option.None, index: 0.0, grip: 0.0 }
+let restHand: Hand = { blend: 0.0, follow: 0.0, wrist: Option.None, index: 0.0, grip: 0.0 }
 
 let init: State = {
   scale: 1.0,
@@ -58,8 +60,9 @@ let init: State = {
 
 let degrees = (d: float): float => d * Math.pi / 180.0
 
-// Head turns within this of the hips don't move them.
+// Head turns within this of the hips only drift them back, at `settleRate`.
 let deadzone = degrees(25.0)
+let settleRate = degrees(20.0)
 // The hips never trail the head by more than this.
 let maxTwist = degrees(70.0)
 // How fast the hips catch up, in radians per second.
@@ -107,6 +110,14 @@ let eyeOffset = (scale: float, neck: Input.quaternion, head: Input.quaternion): 
     Quat.rotate(neck, Quat.scale(scale, Rig.headInNeck)),
     Quat.rotate(head, Quat.add(Quat.scale(scale, Rig.eyeInHead), Quat.v3(0.0, 0.0, Rig.faceClearance))))
 
+/// The headset of a standing person `scale` times the rig's size, chest
+/// facing +Z from the origin, head turned by `head`: the pose the solver
+/// hangs the body from, run forwards (for fixtures and tests).
+let headFor = (scale: float, head: Input.quaternion): Pose => {
+  position: Quat.add(Quat.scale(scale, Rig.neck), eyeOffset(scale, neckRotation(0.0, 0.0, head), head)),
+  rotation: head
+}
+
 /// Scale the rig so this head stands its feet on the floor. It accounts for
 /// the head's pitch, so looking down calibrates the same as looking ahead.
 let scaleFor = (head: Pose, neck: Input.quaternion): float =>
@@ -114,13 +125,13 @@ let scaleFor = (head: Pose, neck: Input.quaternion): float =>
   let perScale = Quat.sub(eyeOffset(1.0, neck, head.rotation), fixed) in
   Math.clamp(0.5, 1.5, (head.position.y - fixed.y) / (Rig.neck.y + perScale.y))
 
-/// The hips' heading chases the head's once it turns past the deadzone, at a
-/// bounded rate, and never trails it by more than `maxTwist`.
+/// The hips' heading chases the head's at `turnRate` once it turns past the
+/// deadzone, drifts after it slowly inside it (so a glance barely moves them
+/// but they realign), and never trails it by more than `maxTwist`.
 let slewYaw = (yaw: float, heading: float, dt: float): float =>
   let d = Quat.wrap(heading - yaw) in
-  let chased =
-    if Math.abs(d) <= deadzone then yaw
-    else yaw + Math.clamp(0.0 - turnRate * dt, turnRate * dt, d - Math.sign(d) * deadzone) in
+  let rate = if Math.abs(d) > deadzone then turnRate else settleRate in
+  let chased = yaw + Math.clamp(0.0 - rate * dt, rate * dt, d) in
   let behind = Quat.wrap(heading - chased) in
   if Math.abs(behind) > maxTwist then Quat.wrap(heading - Math.sign(behind) * maxTwist)
   else Quat.wrap(chased)
@@ -138,23 +149,33 @@ let nextYaw = (s: State, head: Pose, fresh: bool, dt: float): float =>
       || Math.abs(turned) > recenterTurn) in
     if jumped then Quat.wrap(s.yaw + turned) else slewYaw(s.yaw, heading, dt)
 
+let mixPose = (a: Pose, b: Pose, t: float): Pose =>
+  { position: Quat.lerp(a.position, b.position, t), rotation: Quat.nlerp(a.rotation, b.rotation, t) }
+
 let stepHand = (side: Rig.Side, toModel: (Pose) => Pose, scale: float, dt: float, x: HandSample, h: Hand): Hand =>
   match x.grip with
   | Option.Some(g) =>
     let rotation = Quat.mul(g.rotation, Rig.gripToWrist(side)) in
-    let wrist = {
+    let live = toModel({
       position: Quat.sub(g.position, Quat.rotate(rotation, Quat.scale(scale, Rig.gripInWrist(side)))),
       rotation: rotation
-    } in
+    }) in
+    // A hand seen for the first time is followed at once. A returning one
+    // fades back in, and its held target slides onto the live one over
+    // `recoverFade`, however briefly it was lost, so the wrist never jumps.
+    let follow = Math.min(1.0, h.follow + dt / recoverFade) in
+    let wrist =
+      match h.wrist with
+      | Option.Some(held) => if follow >= 1.0 then live else mixPose(held, live, (follow - h.follow) / (1.0 - h.follow))
+      | Option.None => live in
     {
-      // A hand seen for the first time is followed at once; a returning one
-      // fades back in.
       blend: if Option.isNone(h.wrist) then 1.0 else Math.min(1.0, h.blend + dt / recoverFade),
-      wrist: Option.Some(toModel(wrist)),
+      follow: if Option.isNone(h.wrist) then 1.0 else follow,
+      wrist: Option.Some(wrist),
       index: x.trigger,
       grip: x.squeeze
     }
-  | Option.None => { h with blend: Math.max(0.0, h.blend - dt / lossFade) }
+  | Option.None => { h with blend: Math.max(0.0, h.blend - dt / lossFade), follow: 0.0 }
 
 /// Advance the body by one fixed step.
 let step = (s: State, x: Sample, dt: float): State =>
@@ -166,7 +187,10 @@ let step = (s: State, x: Sample, dt: float): State =>
     let yaw = nextYaw(s, h, Option.isSome(x.head), dt) in
     let twist = Quat.wrap(heading - yaw) in
     let neck = neckRotation(yaw, twist, h.rotation) in
-    let calibrate = (x.calibrate && not s.calibrateHeld) || not s.calibrated in
+    // The first head at a standing height calibrates (not one still being
+    // put on); a rising edge of `calibrate` always does.
+    let standing = h.position.y > 1.0 && h.position.y < 2.3 in
+    let calibrate = (x.calibrate && not s.calibrateHeld) || (standing && not s.calibrated) in
     let scale = if calibrate then scaleFor(h, neck) else s.scale in
     let body = Quat.yaw(yaw) in
     let unturn = Quat.conj(body) in
@@ -179,7 +203,7 @@ let step = (s: State, x: Sample, dt: float): State =>
     } in
     {
       scale: scale,
-      calibrated: true,
+      calibrated: s.calibrated || calibrate,
       calibrateHeld: x.calibrate,
       head: Option.Some(h),
       yaw: yaw,

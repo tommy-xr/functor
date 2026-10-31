@@ -10,9 +10,7 @@ let noHand: Body.HandSample = { grip: Option.None, trigger: 0.0, squeeze: 0.0 }
 // The headset of a person `scale` times Xbot's size standing at the origin,
 // facing +Z, head turned and pitched (the chest still facing ahead).
 let headAt = (scale: float, turnDeg: float, pitchDeg: float): Body.Pose =>
-  let q = Quat.mul(Quat.yaw(Body.degrees(turnDeg)), Quat.axisAngle(v3(1.0, 0.0, 0.0), Body.degrees(pitchDeg))) in
-  let neck = Quat.nlerp(Quat.identity, q, Rig.neckBend) in
-  { position: Quat.add(Quat.scale(scale, Rig.neck), Body.eyeOffset(scale, neck, q)), rotation: q }
+  Body.headFor(scale, Quat.mul(Quat.yaw(Body.degrees(turnDeg)), Quat.axisAngle(v3(1.0, 0.0, 0.0), Body.degrees(pitchDeg))))
 
 let sample = (head: Body.Pose, left: Body.HandSample, right: Body.HandSample): Body.Sample =>
   { head: Option.Some(head), left: left, right: right, calibrate: false }
@@ -38,15 +36,14 @@ let degreesOf = (r: float): float => r * 180.0 / Math.pi
 
 // --- torso: bounded lag and twist ---
 
-// A glance inside the deadzone leaves the hips alone.
+// A glance inside the deadzone only drifts the hips: 20°/s, 5° in 0.25 s.
 expect (
-  let s = final(trace(Body.init, List.append(repeat(60.0, looking(20.0)), [looking(0.0)]))) in
-  near(s.yaw, 0.0, 0.000001) && near(degreesOf(s.twist), 20.0, 0.0001)
+  let s = final(trace(Body.init, List.flatten([[looking(0.0)], repeat(15.0, looking(20.0))]))) in
+  near(degreesOf(s.yaw), 5.0, 0.0001) && near(degreesOf(s.twist), 15.0, 0.0001)
 )
 
 // A 120° turn (12° a step, then held): the hips never trail by more than the
-// twist limit, otherwise turn no faster than the turn rate, and settle at the
-// deadzone.
+// twist limit, otherwise turn no faster than the turn rate, and realign.
 expect (
   let turning = List.range(10.0) |> List.map((i) => looking(12.0 * (i + 1.0))) in
   let states = trace(Body.init, List.flatten([[looking(0.0)], turning, repeat(90.0, looking(120.0))])) in
@@ -57,14 +54,16 @@ expect (
       || near(Math.abs(b.twist), Body.maxTwist, 0.000001)) in
   let twistOk = states |> List.all((s) => Math.abs(s.twist) <= Body.maxTwist + 0.000001) in
   let lagged = List.nth(6.0, states) |> Option.map((s) => degreesOf(s.twist) > 40.0) |> Option.defaultValue(false) in
-  rateOk && twistOk && lagged && near(degreesOf(final(states).twist), 25.0, 0.0001)
+  rateOk && twistOk && lagged && near(final(states).twist, 0.0, 0.000001)
 )
 
 // A recentre (the head jumps 90° in one step) turns the hips with it,
 // keeping their twist, instead of swinging them.
 expect (
-  let s = final(trace(Body.init, [looking(0.0), looking(20.0), sample(headAt(1.0, 110.0, 0.0), noHand, noHand)])) in
-  near(degreesOf(s.yaw), 90.0, 0.0001) && near(degreesOf(s.twist), 20.0, 0.0001)
+  let states = trace(Body.init, [looking(0.0), looking(20.0), sample(headAt(1.0, 110.0, 0.0), noHand, noHand)]) in
+  let before = List.nth(2.0, states) |> Option.defaultValue(Body.init) in
+  let after = final(states) in
+  near(degreesOf(after.yaw - before.yaw), 90.0, 0.0001) && near(after.twist, before.twist, 0.000001)
 )
 
 // --- calibration ---
@@ -113,6 +112,20 @@ expect at(23.0).left.blend == 0.0
 expect at(23.0).left.wrist == at(5.0).left.wrist
 expect near(at(29.0).left.blend, 0.5, 0.000001)
 expect at(35.0).left.blend == 1.0
+// A one-step dropout while the hand moves 30 cm: the target slides there over
+// 0.2 s instead of jumping.
+expect (
+  let states = trace(Body.init, List.flatten([
+    repeat(3.0, sample(headAt(1.0, 0.0, 0.0), grip(0.2, 1.1, 0.3), noHand)),
+    [sample(headAt(1.0, 0.0, 0.0), noHand, noHand)],
+    repeat(12.0, sample(headAt(1.0, 0.0, 0.0), grip(0.2, 1.4, 0.3), noHand)),
+  ])) in
+  let y = (i: float) =>
+    List.nth(i, states) |> Option.bind((s) => s.left.wrist) |> Option.map((w) => w.position.y) |> Option.defaultValue(0.0) in
+  let steps = List.range(12.0) |> List.map((i) => y(i + 5.0) - y(i + 4.0)) in
+  (steps |> List.all((d) => d > 0.0 && d < 0.04)) && near(y(16.0) - y(4.0), 0.3, 0.000001)
+)
+
 expect (
   match at(23.0).left.wrist with
   | Option.Some(w) => w.position.y > 0.8
