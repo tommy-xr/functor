@@ -172,7 +172,8 @@ impl AudioPlayer {
     }
 
     /// Reconcile the desired soundscape against the live voices: spawn new ones,
-    /// stop gone ones, and update changed gain/position in place (no restart).
+    /// stop gone ones, update changed gain/position in place (no restart), and
+    /// restart a voice whose sound changed.
     pub fn reconcile_scene(&mut self, scene: &AudioScene) {
         let live: HashMap<String, AudioSource> = self
             .voices
