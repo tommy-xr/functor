@@ -33,9 +33,9 @@ outside walls, ceiling panels, signs and lamps. `building.fun` derives the
 interior from it, and `exterior.fun` the street side:
 
 - **Mesh**: one `Model.staticData` of every cell's faces in cell order: a
-  room's inner surfaces, panels, signs, lamps and window reveals, its half of
-  each door's reveal (split at the wall's centre line), and its share of the
-  stairs.
+  room's inner surfaces, panels, signs and lamps, its half of each door and
+  window reveal (split at the wall's centre line; a window's outer half is the
+  west yard's), and its share of the stairs, so each face lies in its cell.
 - **Bake**: that whole mesh, both floors, is the `night` and `day` bake jobs,
   so light and occlusion cross between rooms and floors. The bake keeps
   triangle order and numbers vertices by first use, and no two faces share a
