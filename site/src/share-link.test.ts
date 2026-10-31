@@ -106,6 +106,8 @@ const exampleNames = readdirSync(EXAMPLES, { withFileTypes: true })
 const OVER_CAP = new Set([
   // Not on the site (no Share button) and needs PNGs the site doesn't serve.
   "hoverbike",
+  // Not on the site; its baked lightmaps are project files a link can't carry.
+  "liminal-office",
 ]);
 
 test("round-trips every example project, and each stays pasteable", async (t) => {
