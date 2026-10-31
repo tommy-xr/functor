@@ -26,6 +26,7 @@ use crate::{Host, Span};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// One thing a def's evaluation read from the host, named by the host
 /// (`"bytes:data/level.bin"`), and an identity of what it read (a content
@@ -71,15 +72,22 @@ struct DefRecord {
     position: usize,
     /// What its evaluation read from the host; `None` when it read host state
     /// that can change between loads (the live physics world, …).
-    inputs: Option<Rc<[HostInput]>>,
+    inputs: Option<Arc<[HostInput]>>,
 }
 
 /// Every def's [`DefRecord`] from one load, plus the unit-operator hash.
-#[derive(Default)]
-pub(crate) struct Records {
+/// Plain data, so a load on a worker can hand it to
+/// [`crate::Session::load_adopting`].
+#[derive(Clone, Default)]
+pub struct Records {
     units: u64,
     defs: HashMap<String, DefRecord>,
 }
+
+const _: () = {
+    const fn send<T: Send>() {}
+    send::<Records>()
+};
 
 /// A def's code with ids and spans dropped, as a hash, plus the globals it
 /// names.
@@ -151,14 +159,14 @@ impl<'p> Planner<'p> {
         if previous.units != self.records.units {
             return HashSet::new();
         }
-        let same_record = |def: &Def| -> Option<Rc<[HostInput]>> {
+        let same_record = |def: &Def| -> Option<Arc<[HostInput]>> {
             let record = previous.defs.get(&def.name)?;
             let ty = self.types.get(&def.name)?;
             (record.shape == self.shapes[&def.name].hash && record.ty.as_ref() == Some(ty))
                 .then(|| record.inputs.clone())
                 .flatten()
         };
-        let mut candidates: HashMap<&str, Rc<[HostInput]>> = module
+        let mut candidates: HashMap<&str, Arc<[HostInput]>> = module
             .defs
             .iter()
             .filter_map(|def| Some((def.name.as_str(), same_record(def)?)))
@@ -268,7 +276,7 @@ impl<'p> Planner<'p> {
         let inputs = inputs.map(|mut inputs| {
             inputs.sort();
             inputs.dedup();
-            Rc::from(inputs)
+            Arc::from(inputs)
         });
         self.records.defs.insert(
             def.name.clone(),

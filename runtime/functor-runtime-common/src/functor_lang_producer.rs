@@ -95,6 +95,9 @@ pub struct EntryNames {
     /// module may supply it (and `settings`) — see [`EntryRole::resolve`].
     pub config: &'static str,
     pub settings: &'static str,
+    /// `loading(progress, tts)`: the loading screen, drawn while the
+    /// top-level values load. It reads nothing, so it isn't a hook.
+    pub loading: &'static str,
 }
 
 impl EntryNames {
@@ -116,6 +119,7 @@ impl EntryNames {
         webview: "webview",
         config: "config",
         settings: "settings",
+        loading: "loading",
     };
 
     /// The bindings the runtime calls with the model, each frame or event
@@ -191,6 +195,7 @@ impl EntryNames {
             webview: n(u.webview),
             config: n(u.config),
             settings: n(u.settings),
+            loading: n(u.loading),
         }
     }
 }

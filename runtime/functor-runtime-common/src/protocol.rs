@@ -243,6 +243,24 @@ pub trait GameProducer {
         Err("this producer does not support project loading (not an .fun game)".to_string())
     }
 
+    /// [`Self::load_project`] off the frame thread where the producer can:
+    /// a loading screen draws (and the running program pauses) until the
+    /// new one is ready, then [`Self::take_load_status`] has its status.
+    /// A link error returns at once. Default: load now.
+    fn begin_load_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        self.load_project(files)
+    }
+
+    /// Whether a load [`Self::begin_load_project`] began is still running.
+    fn load_pending(&self) -> bool {
+        false
+    }
+
+    /// How the load [`Self::begin_load_project`] began ended, once.
+    fn take_load_status(&mut self) -> Option<Result<String, String>> {
+        None
+    }
+
     /// Adopt the same-file entry ROLE a project push declared, returning the
     /// role it replaced so a rejected push can put it back (see
     /// [`load_with_role`] / [`reload_with_role`], which both shells route their

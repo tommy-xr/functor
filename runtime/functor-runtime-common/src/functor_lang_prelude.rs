@@ -5660,8 +5660,13 @@ fn read_since(before: [u64; ReadClass::ALL.len()]) -> Option<(ReadClass, Option<
     Some((class, LAST_READER.with(|last| last[class as usize].get())))
 }
 
+/// Reads of every class, files included.
+pub(crate) fn all_reads() -> u64 {
+    ReadClass::ALL.into_iter().map(read_count).sum()
+}
+
 /// Reads of every class but `file` (whose reads are recorded as inputs).
-fn live_reads() -> u64 {
+pub(crate) fn live_reads() -> u64 {
     ReadClass::ALL
         .into_iter()
         .filter(|&class| class != ReadClass::File)
