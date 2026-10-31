@@ -242,8 +242,9 @@ let scene : (Vec3.t, List<body>) => world
 ///
 /// - `key`, `deps` and the builder follow `Scene.memo`'s rules: `deps` is
 ///   plain data (pass a revision number, not `Bytes` or textures), the builder
-///   reads only `deps` and top-level definitions (reading the live world is an
-///   error), and a key unused for a couple of seconds is forgotten.
+///   reads only `deps` and top-level definitions (calling an `impure[…]`
+///   built-in, such as a world read, is an error), and a key unused for a
+///   couple of seconds is forgotten.
 /// - Fixed and kinematic bodies only: a dynamic body, a heightfield or a
 ///   fused room inside is an error. A kinematic body that moves belongs
 ///   flat, since its deps would change every frame.
