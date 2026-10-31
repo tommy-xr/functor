@@ -431,16 +431,28 @@ fn draw_static_model(
     view_matrix: &Matrix4<f32>,
     override_material: Option<&dyn Material>,
 ) {
-    let DataModelGpu::Static(mesh) = scene_context.data_model_gpu(data) else {
+    let DataModelGpu::Static(mesh, bounds) = scene_context.data_model_gpu(data) else {
         unreachable!("a static model uploads a static mesh");
     };
+    let source = data.source();
+    let lightmap = source
+        .lightmap
+        .as_ref()
+        .map(|lightmap| lightmap_texture.unwrap_or(&lightmap.texture));
+    // Culled or portal-hidden: its mesh stays resident (above) and so do the
+    // pixel textures a draw would bind, so turning back uploads nothing.
+    if scene_context.culled(projection_matrix, view_matrix, matrix, &bounds) {
+        for texture in source.groups.iter().filter_map(|g| g.texture.as_ref()).chain(lightmap) {
+            scene_context.keep_texture(texture);
+        }
+        return;
+    }
     let gl = &render_context.gl;
     if let Some(material) = override_material {
         material.draw_opaque(render_context, projection_matrix, view_matrix, matrix, &[]);
         mesh.draw(gl);
         return;
     }
-    let source = data.source();
     let whole = [crate::model::GroupSource {
         first: 0,
         count: source.triangles.len() as u32,
@@ -455,9 +467,9 @@ fn draw_static_model(
     // The lightmap samples in its own colour space (a file one as sRGB),
     // through a sampler that clamps with no mips, so atlas rects never
     // bleed into each other.
-    if let Some(lightmap) = &source.lightmap {
+    if let Some(lightmap) = lightmap {
         material_description::bind_texture_description(
-            lightmap_texture.unwrap_or(&lightmap.texture),
+            lightmap,
             3,
             SpriteSampling::Linear,
             false,
@@ -984,7 +996,7 @@ impl SceneContext {
                 }
                 match &entry.gpu {
                     DataModelGpu::Skinned(model) => model.delete(gl),
-                    DataModelGpu::Static(mesh) => mesh.delete(gl),
+                    DataModelGpu::Static(mesh, _) => mesh.delete(gl),
                 }
             }
             keep
@@ -1081,7 +1093,11 @@ frame: correct, but each bind re-uploads (atlas {})",
             std::collections::hash_map::Entry::Vacant(e) => {
                 counters.cache_miss();
                 let gpu = if data.is_static() {
-                    DataModelGpu::Static(Arc::new(data.to_static_mesh()))
+                    let mut bounds = Aabb::empty();
+                    for p in &data.source().positions {
+                        bounds.extend((*p).into());
+                    }
+                    DataModelGpu::Static(Arc::new(data.to_static_mesh()), bounds)
                 } else {
                     DataModelGpu::Skinned(Arc::new(data.to_model()))
                 };
@@ -1099,7 +1115,20 @@ frame: correct, but each bind re-uploads (atlas {})",
     fn data_model(&self, data: &crate::model::ModelData) -> Arc<Model> {
         match self.data_model_gpu(data) {
             DataModelGpu::Skinned(model) => model,
-            DataModelGpu::Static(_) => unreachable!("static models draw by draw_static_model"),
+            DataModelGpu::Static(..) => unreachable!("static models draw by draw_static_model"),
+        }
+    }
+
+    /// Mark `texture`'s retained pixel texture used this frame without
+    /// binding it, for a culled draw. File textures aren't swept.
+    fn keep_texture(&self, texture: &TextureDescription) {
+        let (TextureDescription::Data(pixels) | TextureDescription::Layered { base: pixels, .. }) =
+            texture
+        else {
+            return;
+        };
+        if let Some(entry) = self.pixel_textures.borrow_mut().get_mut(&pixels.id()) {
+            entry.last_used = self.current_frame.get();
         }
     }
 
@@ -2157,11 +2186,15 @@ struct RetainedModel {
     last_used: u64,
 }
 
-/// A data model's upload: a drawable rig, or a static model's one mesh.
+/// A data model's upload: a drawable rig, or a static model's one mesh and
+/// its model-space bounds.
 #[derive(Clone)]
 enum DataModelGpu {
     Skinned(Arc<Model>),
-    Static(Arc<geometry::IndexedMesh<crate::render::VertexPositionTextureLightmap>>),
+    Static(
+        Arc<geometry::IndexedMesh<crate::render::VertexPositionTextureLightmap>>,
+        Aabb,
+    ),
 }
 
 struct RetainedTexture {

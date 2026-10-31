@@ -2,6 +2,7 @@
 //!
 //! - objects behind the camera draw nothing and count as culled; turning
 //!   back draws them again with no upload (culled nodes stay resident);
+//! - so does a lightmapped `Model.static`, keeping its pixel textures;
 //! - a ring of cubes culls about 3/4, byte-identical to culling off;
 //! - stereo culls per eye: an object only the left eye sees draws there only;
 //! - a caster outside the view still shadows the visible floor.
@@ -19,11 +20,13 @@ use cgmath::{vec4, Matrix4, SquareMatrix};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::gpu_counters::{gpu_counters, CullCounts};
 use functor_runtime_common::math::Angle;
+use functor_runtime_common::model::{GroupSource, LightmapSource, ModelData, ModelSource};
 use functor_runtime_common::shadow::ShadowMap;
+use functor_runtime_common::texture::{ColorSpace, PixelData, PixelEncoding};
 use functor_runtime_common::{
     render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, InstanceData, Light,
     MaterialDescription, MeshData, ModelDescription, ModelHandle, Scene3D, SceneContext,
-    SceneObject, Shape, Viewport,
+    SceneObject, Shape, TextureDescription, Viewport,
 };
 use glow::HasContext;
 
@@ -37,6 +40,7 @@ fn main() {
     }
     let mut harness = Harness::new();
     behind_the_camera_culls_and_turning_back_uploads_nothing(&mut harness);
+    a_static_model_behind_the_camera_culls_and_keeps_its_textures(&mut harness);
     a_ring_culls_most_and_matches_culling_off(&mut harness);
     stereo_culls_per_eye(&mut harness);
     an_offscreen_caster_still_casts_its_shadow(&mut harness);
@@ -109,6 +113,45 @@ fn behind_the_camera_culls_and_turning_back_uploads_nothing(h: &mut Harness) {
     );
     assert!(after == before, "turning back changed the image");
     println!("test behind_the_camera_culls_and_turning_back_uploads_nothing ... ok");
+}
+
+fn a_static_model_behind_the_camera_culls_and_keeps_its_textures(h: &mut Harness) {
+    let scene = static_quad([[-1.0, 0.0, 6.0], [1.0, 0.0, 6.0], [1.0, 2.0, 6.0], [-1.0, 2.0, 6.0]]);
+    let toward = frame(
+        Camera::look_at([0.0, 1.0, -6.0], [0.0, 1.0, 6.0], UP, fov()),
+        scene.clone(),
+        false,
+    );
+    let away = frame(
+        Camera::look_at([0.0, 1.0, -6.0], [0.0, 1.0, -18.0], UP, fov()),
+        scene,
+        false,
+    );
+    // A few frames first, so the previous test's resources are released.
+    for _ in 0..3 {
+        h.render(&toward, &[0], true);
+    }
+    let before = h.render(&toward, &[0], true);
+    let one = |culled| CullCounts { tested: 1, culled };
+    assert_eq!(gpu_counters().frame_cull(), one(0));
+    assert!(!blank(&before[0]), "the static model drew nothing");
+    let live = gpu_counters().live();
+    gpu_counters().take_window();
+    for _ in 0..10 {
+        let pixels = h.render(&away, &[0], true);
+        assert!(blank(&pixels[0]), "the static model drew behind the camera");
+        assert_eq!(gpu_counters().frame_cull(), one(1));
+    }
+    let after = h.render(&toward, &[0], true);
+    let window = gpu_counters().take_window();
+    assert_eq!(window.bytes_uploaded, 0, "turning back re-uploaded: {window:?}");
+    let now = gpu_counters().live();
+    assert_eq!(
+        (now.buffers, now.vaos, now.textures),
+        (live.buffers, live.vaos, live.textures)
+    );
+    assert!(after == before, "turning back changed the image");
+    println!("test a_static_model_behind_the_camera_culls_and_keeps_its_textures ... ok");
 }
 
 fn a_ring_culls_most_and_matches_culling_off(h: &mut Harness) {
@@ -247,6 +290,53 @@ fn lit(scene: Scene3D) -> Scene3D {
 fn xbot() -> Scene3D {
     Scene3D::model(ModelDescription {
         handle: ModelHandle::File(MODEL.to_string()),
+        overrides: vec![],
+        animation: None,
+        while_pending: vec![],
+        parts: Vec::new(),
+    })
+}
+
+/// A `Model.static` quad on `corners`: one group with a pixel texture,
+/// lightmapped by a layered one.
+fn static_quad(corners: [[f32; 3]; 4]) -> Scene3D {
+    let pixels = |space, rgb: [u8; 3]| {
+        let pixels = PixelData::new(1, 1, PixelEncoding::Rgb8, space, &rgb);
+        TextureDescription::Data(Arc::new(pixels.expect("valid pixels")))
+    };
+    let data = ModelData::new(ModelSource {
+        positions: corners.to_vec(),
+        normals: vec![[0.0, 0.0, 1.0]; 4],
+        uvs: vec![[0.5, 0.5]; 4],
+        uvs2: vec![[0.5, 0.5]; 4],
+        joints: vec![],
+        weights: vec![],
+        triangles: vec![[0, 1, 2], [0, 2, 3]],
+        groups: vec![GroupSource {
+            first: 0,
+            count: 2,
+            texture: Some(pixels(ColorSpace::Srgb, [200, 80, 40])),
+            unlit: false,
+        }],
+        // Layered, so its residency (keyed by the base) is covered too.
+        lightmap: Some(LightmapSource {
+            texture: TextureDescription::Layered {
+                base: Arc::new(
+                    PixelData::new(1, 1, PixelEncoding::Rgb8, ColorSpace::Linear, &[255; 3])
+                        .expect("valid pixels"),
+                ),
+                intensities: vec![],
+            },
+            scale: 1.0,
+            floor: [0.0; 3],
+        }),
+        skeleton: vec![],
+        clips: vec![],
+        texture: None,
+    })
+    .expect("valid model");
+    Scene3D::model(ModelDescription {
+        handle: ModelHandle::Data(Arc::new(data)),
         overrides: vec![],
         animation: None,
         while_pending: vec![],
