@@ -427,7 +427,15 @@ let grab = (s) =>
   whose type holds no functions (data, a `Scene.t`) doesn't count.
   `functor -d <dir> reads` lists every def's classes with the path to the
   built-in (`level : impure[file] — file: World.load → File.exists`).
-  Report-only: nothing is annotated, and the runtime's tracking decides.
+  Nothing is annotated; the runtime's tracking decides reuse.
+- **Each read class has a phase, and `functor build` enforces it.** File
+  reads happen only at load (top-level values, `expect`s): a hook (`tick`,
+  `draw`, `ui`, …) or anything it calls reading a file is an error — read it
+  into a top-level value and use that. Physics and UI reads happen only in
+  hooks: a top-level value, `init` or `config` reading them is an error.
+  `init`, `config`, unit operators and `Scene.memo` / `Physics.memo` builders
+  read nothing. A lambda stored in a record (`{ tick: (m) => … }`) isn't a
+  load read; one passed to a call (`List.map(...)`) is.
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
   source text (multi-file is native-only for now).
 

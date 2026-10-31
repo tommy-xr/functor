@@ -18,8 +18,13 @@ fn prelude() -> Vec<BundledModule> {
             "impure[physics]\nlet height : (string) => float\nlet gravity : () => float\n",
         ),
         BundledModule::interface(
+            "Ui",
+            "type view = host\nimpure[ui]\nlet button : (string, float) => view\n",
+        ),
+        BundledModule::interface(
             "Effect",
-            "type t = host\nlet none : () => t\nlet log : (float) => t\n",
+            "type t = host\nlet none : () => t\nlet log : (float) => t\n\
+             let after : (() => bool) => t\n",
         ),
     ]
 }
@@ -110,7 +115,7 @@ fn a_function_passed_or_stored_is_charged_where_it_is_named() {
     // A stored function (a partial, a record field) keeps spreading.
     assert_eq!(classes(&inferred, "reader"), ["file"]);
     assert_eq!(inferred.path("viaValue", ReadClass::File), ["reader", "File.exists"]);
-    assert_eq!(inferred.path("viaRecord", ReadClass::File), ["api", "File.exists"]);
+    assert_eq!(inferred.path("viaRecord", ReadClass::File), ["api.has", "File.exists"]);
 }
 
 #[test]
@@ -123,7 +128,7 @@ fn closure_free_values_stop_the_spread() {
          let level: Level = { size: File.size(\"a\"), tags: [] }\n\
          let tree = Node(Leaf, Leaf, File.size(\"b\"))\n\
          let lazy = Later((x) => Done(File.size(\"c\")))\n\
-         let fx = if File.exists(\"d\") then Effect.none() else Effect.log(1.0)\n\
+         let fx = Effect.after(() => File.exists(\"d\"))\n\
          let pair = (File.size(\"e\"), Physics.height(\"f\"))\n\
          let draw = (m) => level.size + m\n\
          let walk = (t) => match tree with | Node(l, r, s) => s | Leaf => 0.0\n\
@@ -159,15 +164,16 @@ fn generic_data_values_stop_the_spread() {
     assert!(classes(&inferred, "count").is_empty());
 }
 
-/// Every name counts, called or not: a local lambda that is never called
-/// still charges its def (an over-approximation PR 4 may narrow).
+/// A local lambda counts where it's called, not where it's named.
 #[test]
-fn a_named_but_uncalled_local_lambda_still_counts() {
+fn a_local_lambda_counts_only_when_called() {
     let (_, inferred) = load(&[(
         "game.fun",
-        "let tick = (m) => let f = (x) => File.exists(x) in m\n",
+        "let idle = (m) => let f = (x) => File.exists(x) in m\n\
+         let busy = (m) => let f = (x) => File.exists(x) in f(\"a\")\n",
     )]);
-    assert_eq!(classes(&inferred, "tick"), ["file"]);
+    assert!(classes(&inferred, "idle").is_empty());
+    assert_eq!(classes(&inferred, "busy"), ["file"]);
 }
 
 /// The pass is sound only modulo `unknown`: erasing a function's type hides
@@ -213,4 +219,235 @@ fn hover_shows_a_defs_inferred_classes() {
         hover("has(\"x\")").as_deref(),
         Some("impure[file]\nhas : (string) => bool")
     );
+}
+
+/// [`functor_lang::reads::phase_errors`] for the plain entry contract, each
+/// as `line: message`.
+fn phase(src: &str) -> Vec<String> {
+    let (project, _) = load(&[("game.fun", src)]);
+    let (_, types) = project.check_with_types();
+    let entry = functor_lang::reads::Entry {
+        hooks: &["tick", "draw", "ui"],
+        init: "init",
+        config: "config",
+    };
+    functor_lang::reads::phase_errors(&project.module, &types, &entry)
+        .into_iter()
+        .map(|error| {
+            let (_, line, _) = project.sources.resolve(error.span.start);
+            format!("{line}: {}", error.message)
+        })
+        .collect()
+}
+
+#[test]
+fn a_file_read_reached_from_a_hook_is_an_error() {
+    let errors = phase(
+        "let load = (p) => File.size(p)\n\
+         let clip = (p) => load(p) * 2.0\n\
+         let level = clip(\"level.bin\")\n\
+         let tick = (m) => m + clip(\"walk.anim\") + level\n",
+    );
+    assert_eq!(
+        errors,
+        ["4: `tick` reads project files (tick → clip → load → File.size), but files are read \
+only at load, so the answer isn't pinned for replay — read it in a top-level value and use \
+that value in `tick`"]
+    );
+}
+
+#[test]
+fn physics_and_ui_reads_at_load_are_errors() {
+    let errors = phase(
+        "let eye = (t) => Physics.height(t) + 1.0\n\
+         let start = eye(\"player\")\n\
+         let menu = Ui.button(\"go\", 1.0)\n\
+         let tick = (m) => m + eye(\"player\")\n",
+    );
+    assert_eq!(
+        errors,
+        [
+            "2: `start` reads the live physics world at load (start → eye → Physics.height), \
+but no world has been stepped yet — read it in a hook (`tick`, `draw`, …), or compute it \
+from data",
+            "3: `menu` builds UI handlers at load (menu → Ui.button), but their slots belong \
+to one frame — build the view in `ui`",
+        ]
+    );
+}
+
+/// Fable H1: a lambda passed to a call may run now; one stored in a record,
+/// list or variant only runs when called later. File data a value holds is
+/// already read, so a hook using it reads nothing.
+#[test]
+fn only_lambdas_that_may_run_count_at_load() {
+    let errors = phase(
+        "type Viewer = { tick: (float) => float, size: float }\n\
+         let viewer: Viewer = { tick: (m) => m + Physics.height(\"a\"), size: File.size(\"v\") }\n\
+         let held = [(m) => Physics.height(\"b\")]\n\
+         type Box = | Boxed(f: (float) => float)\n\
+         let boxed = Boxed((m) => Physics.height(\"c\"))\n\
+         let mapped = List.map((t) => Physics.height(t), [\"d\"])\n\
+         let local = let f = (t) => Physics.height(t) in f(\"e\")\n\
+         let tick = (m) => viewer.tick(m) + viewer.size\n",
+    );
+    assert_eq!(errors.len(), 2, "{errors:#?}");
+    assert!(errors[0].starts_with("6: `mapped` reads the live physics world"), "{errors:#?}");
+    assert!(errors[1].starts_with("7: `local` reads the live physics world"), "{errors:#?}");
+}
+
+#[test]
+fn init_and_config_read_nothing() {
+    let errors = phase(
+        "let level = File.size(\"level.bin\")\n\
+         let init = { size: level, probe: File.size(\"x\") }\n\
+         let config = if File.exists(\"y\") then 1.0 else 0.0\n",
+    );
+    assert_eq!(
+        errors,
+        [
+            "2: `init` can't read project files (init → File.size): read them in a top-level \
+value (`let level = …`) and use that value in `init`",
+            "3: `config` can't read project files (config → File.exists): it's read first, to \
+learn which paths are external — read them in a top-level value `config` doesn't use",
+        ]
+    );
+}
+
+#[test]
+fn memo_builders_read_nothing() {
+    let errors = phase(
+        "let build = (d) => if Physics.height(\"a\") > d then Scene.cube() else Scene.cube()\n\
+         let pure = (d) => Scene.cube()\n\
+         let draw = (m) => Scene.group([\n\
+           Scene.memo(\"a\", m, build),\n\
+           Scene.memo(\"b\", m, (d) => if File.exists(\"c\") then Scene.cube() else Scene.cube()),\n\
+           Scene.memo(\"c\", m, pure)])\n",
+    );
+    assert_eq!(
+        errors,
+        [
+            "4: a Scene.memo builder can't read the live physics world (builder → build → \
+Physics.height): deps can't capture it, so the cached result would freeze — make that read \
+outside the memo and pass the values the builder needs in deps",
+            // The memo error stands for the hook's file error at the same read.
+            "5: a Scene.memo builder can't read project files (builder → File.exists): deps \
+can't capture it, so the cached result would freeze — read the file in a top-level value and \
+use that value in the builder",
+        ]
+    );
+}
+
+#[test]
+fn unit_constructors_and_operators_read_nothing() {
+    let errors = phase(
+        "type len = | Len(m: float)\n\
+         let meters = (x): len => Len(x * File.size(\"scale\"))\n\
+         let add = (a: len, b: len): len => Len(Physics.height(\"a\"))\n\
+         unit u = meters\n\
+         unit u (+) = add\n",
+    );
+    assert_eq!(
+        errors,
+        [
+            "4: the `u` unit can't read project files (u → meters → File.size): it runs \
+wherever a `1u` literal appears, so it must be pure",
+            "5: the `u` unit's (+) can't read the live physics world ((+) → add → \
+Physics.height): it runs wherever (+) meets a `u` value, so it must be pure",
+        ]
+    );
+}
+
+#[test]
+fn expects_may_read_files_but_not_physics() {
+    let errors = phase(
+        "expect File.size(\"a\") > 0.0\n\
+         expect Physics.height(\"b\") > 0.0\n",
+    );
+    assert_eq!(
+        errors,
+        ["2: this `expect` can't read the live physics world (expect → Physics.height): \
+expects run at load, outside any frame"]
+    );
+}
+
+/// A value built by a function holds only the code the function returns: a
+/// file read made while building it (`mesh`) ran at load.
+#[test]
+fn a_built_value_holds_only_its_results_code() {
+    let errors = phase(
+        "type Viewer = { tick: (float) => float, mesh: float }\n\
+         let make = (p): Viewer => { tick: (m) => m + Physics.height(p), mesh: File.size(p) }\n\
+         let viewer = make(\"v.bin\")\n\
+         let tick = (m) => viewer.tick(m) + viewer.mesh\n\
+         let draw = (m) => make(\"w.bin\").tick(m)\n",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(
+        errors[0].starts_with("5: `draw` reads project files (draw → make → File.size)"),
+        "{errors:#?}"
+    );
+}
+
+/// Code that only runs while a value is built, or that a value holds but no
+/// one calls, isn't charged where the value is used.
+#[test]
+fn reads_that_cannot_run_are_not_errors() {
+    let errors = phase(
+        "type Viewer = { tick: (float) => float, size: float, present: bool }\n\
+         let shown = (x) => x\n\
+         let viewer: Viewer = { tick: (m) => m + Physics.height(\"a\"), size: 1.0, present: true }\n\
+         let size = shown(viewer.size)\n\
+         let make = (p): Viewer =>\n\
+           let probe = () => File.exists(p) in { tick: (m) => m, size: 0.0, present: probe() }\n\
+         let built = make(\"x\")\n\
+         let tick = (m) => let unused = () => File.exists(\"y\") in built.tick(m)\n",
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
+/// Calling one field of a record value runs that field only; a lambda handed
+/// to a call that keeps it (an `Effect.t`, a record of handlers) only runs
+/// later.
+#[test]
+fn stored_code_is_charged_where_it_runs() {
+    let errors = phase(
+        "type Viewer = { tick: (float) => float, reload: () => bool, start: () => float }\n\
+         type Probe = { label: string, read: () => float }\n\
+         let viewer: Viewer = {\n\
+           tick: (m) => m + 1.0,\n\
+           reload: () => File.exists(\"v.bin\"),\n\
+           start: () => Physics.height(\"p\") }\n\
+         let fresh = viewer.reload()\n\
+         let probe = (label: string, read: () => float): Probe => { label: label, read: read }\n\
+         let probes = [probe(\"x\", () => Physics.height(\"p\"))]\n\
+         let later = Effect.after(() => Physics.height(\"p\") > 0.0)\n\
+         let tick = (m) => viewer.tick(m) + List.length(probes)\n\
+         let draw = (m) => Scene.memo(\"k\", m, viewer.tick)\n\
+         let init = viewer.start()\n",
+    );
+    // Only `init` runs a physics read at load.
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(
+        errors[0].starts_with(
+            "13: `init` reads the live physics world at load (init → viewer.start → Physics.height)"
+        ),
+        "{errors:#?}"
+    );
+}
+
+/// An alias of a record value, a local factory and a discarded match
+/// scrutinee hold no more code than they return.
+#[test]
+fn returned_code_follows_aliases_and_locals() {
+    let errors = phase(
+        "type Api = { step: (float) => float, read: () => bool }\n\
+         type Box = | Boxed(read: () => bool)\n\
+         let api: Api = { step: (m) => m, read: () => File.exists(\"x\") }\n\
+         let alias = api\n\
+         let saved = let make = () => let present = File.exists(\"y\") in (m: float) => m in make()\n\
+         let boxed = match Boxed(() => File.exists(\"z\")) with | Boxed(r) => (m: float) => m\n\
+         let tick = (m) => alias.step(m) + saved(m) + boxed(m)\n",
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
 }

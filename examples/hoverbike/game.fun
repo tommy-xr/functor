@@ -394,12 +394,12 @@ let room = (course: Course, c: Physics.position, yaw: float) => (spot: Input.poi
     let gap = Physics.castExcluding(bikeTag, Vec3.make(c.x, ground.y + 1.2, c.z), out, Vec3.length(out)) in
     if swept.hit || gap.hit then Option.None else Option.Some({ x: x, y: y, z: z })
 
-// Riding: holding to get off, slow enough, starts the fade if there is room.
-// Releasing the grips never does (they brake, `bars.fun`).
-let onBike = (m: Model, c: Physics.position): Model =>
+// Riding: holding to get off, slow enough, starts the fade if `roomAt` finds
+// room (`room` in a frame). Releasing the grips never does (they brake, `bars.fun`).
+let onBike = (m: Model, c: Physics.position, roomAt: (Input.point3) => Option.t<Input.point3>): Model =>
   if not Mount.wantsOff(m.off, m.speed) then { m with noRoom: m.noRoom && m.off >= 0.0 }
   else
-    match Mount.landing(room(m.course, c, m.ride.yaw)) with
+    match Mount.landing(roomAt) with
     | Option.Some(p) => { m with noRoom: false, fade: Mount.start(Mount.GetOff(p.x, p.y, p.z, Mount.toward(p.x, p.z, c.x, c.z))) }
     | Option.None => { m with noRoom: true }
 
@@ -424,15 +424,19 @@ let arrive = (m: Model, c: Physics.position): (Model, Effect.t) =>
      Physics.teleport(walkerTag, Vec3.make(x, y, z)))
 
 // Riding, releasing the grips never gets off; holding at speed waits; with no
-// ground beside the bike (`functor test` has no world), it stays on.
+// room beside the bike it stays on; with room, it fades off there, facing the bike.
 expect (
   let riding = { init with mode: Riding } in
   let c = positionOf(dunesSpawn) in
-  let released = onBike({ riding with controls: { throttle: 0.0, brake: Bars.gripLossBrake, steer: 0.0 } }, c) in
-  let fast = onBike({ riding with off: 0.6, speed: 3.0 }, c) in
-  let nowhere = onBike({ riding with off: 0.6, speed: 1.0 }, c) in
+  let none = (spot: Input.point3) => Option.None in
+  let spot = { x: 1.0, y: 2.0, z: 3.0 } in
+  let released = onBike({ riding with controls: { throttle: 0.0, brake: Bars.gripLossBrake, steer: 0.0 } }, c, none) in
+  let fast = onBike({ riding with off: 0.6, speed: 3.0 }, c, none) in
+  let nowhere = onBike({ riding with off: 0.6, speed: 1.0 }, c, none) in
+  let off = onBike({ riding with off: 0.6, speed: 1.0, noRoom: true }, c, (s: Input.point3) => Option.Some(spot)) in
   not Mount.fading(released.fade) && not Mount.fading(fast.fade) && not fast.noRoom
     && not Mount.fading(nowhere.fade) && nowhere.noRoom && nowhere.mode == Riding
+    && not off.noRoom && off.fade == Mount.start(Mount.GetOff(1.0, 2.0, 3.0, Mount.toward(1.0, 3.0, c.x, c.z)))
 )
 // At the black: getting on rides, the grabbing hand latched, the bike snapped
 // up by what its clearance lacks and still; getting off stands the walker at
@@ -471,7 +475,7 @@ let tick = (m: Model, dt: float, tts) =>
       else
         match m.mode with
         | OnFoot => onFoot(stepped, c, dt)
-        | Riding => (onBike(stepped, c), Effect.none()) in
+        | Riding => (onBike(stepped, c, room(stepped.course, c, stepped.ride.yaw)), Effect.none()) in
     // Waiting for ground, the ride is at rest, so this moves nothing.
     ({ next with board: Option.None },
      Effect.batch([Physics.move(bikeTag, Vec3.make(next.ride.vx * dt, next.ride.vy * dt, next.ride.vz * dt)), moved]))
