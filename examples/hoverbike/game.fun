@@ -31,7 +31,7 @@
 let bikeTag = Physics.tag("bike")
 
 // The collider: an upright capsule from 5 cm above the emitter plane to the
-// rider's shoulders. Hovering, its bottom rides 1.25 m up, far outside the
+// rider's shoulders. Hovering, its bottom rides 1.25 m up (0.35 m parked), outside the
 // character's ground reach (2 × offset + 5 cm), so `grounded`, `snap` and the
 // step-up never engage, and `maxSlope` only matters on contact. `snap` and
 // `stepHeight` are 0 so even a bottomed-out bike isn't pulled down or lifted.
@@ -42,12 +42,12 @@ let colliderHalfHeight = 0.1
 let colliderLift = 0.95 // capsule centre above the emitter plane
 // Literals, not derived from the tunables or the layout: the declaration is
 // the body's spawn, and changing it on a hot reload would teleport the bike.
-let dunesSpawn = Vec3.make(100.0, 2.15, -380.0)
-let standSpawn = Vec3.make(605.0, 2.15, 0.0)
-// Both put the emitter plane at hover height over flat ground at 0: the
+let dunesSpawn = Vec3.make(100.0, 1.25, -380.0)
+let standSpawn = Vec3.make(605.0, 1.25, 0.0)
+// Both park the emitter plane at the idle height over flat ground at 0: the
 // dunes' start pad and the stand's floor.
 expect Vec3.x(dunesSpawn) == DunesLayout.pad.x && Vec3.z(dunesSpawn) == DunesLayout.pad.z
-  && Math.abs(Vec3.y(dunesSpawn) - (Ride.hoverHeight + colliderLift)) < 0.000001
+  && Math.abs(Vec3.y(dunesSpawn) - (Ride.idleHeight + colliderLift)) < 0.000001
 expect Vec3.x(standSpawn) == Stand.originX + 5.0 && Vec3.y(standSpawn) == Vec3.y(dunesSpawn)
 
 let bike =
@@ -150,12 +150,12 @@ let init: Model = {
   controls: Ride.idle,
   prev: poseOf(positionOf(dunesSpawn), Ride.rest),
   last: positionOf(dunesSpawn),
-  probes: Ride.emitters |> List.map((e) => Ride.hoverHeight),
-  clearance: Ride.hoverHeight,
+  probes: Ride.emitters |> List.map((e) => Ride.idleHeight),
+  clearance: Ride.idleHeight,
   speed: 0.0,
   steps: 0.0,
   kmh: 0.0,
-  hover: Ride.hoverHeight,
+  hover: Ride.idleHeight,
   riderCam: false,
   swapHeld: false,
   southHeld: false,
@@ -294,18 +294,20 @@ let startOn = (course: Course, m: Model) =>
 // outward thrust and pulls the bike back in. Slow, stepped turning steers by
 // snaps instead: a snap turns the bike and the last pose together, so the
 // drawn rig doesn't sweep between them.
-// Unridden, the bike is parked: full brake, so it stays where it stopped.
+// Unridden, the bike is parked: full brake, so it stays where it stopped, and
+// low (`Mount.height`).
 let parked: Ride.Controls = { throttle: 0.0, brake: 1.0, steer: 0.0 }
 let advance = (m: Model, c: Physics.position, probes: List<Ride.Probe>, dt: float): Model =>
   let ready = m.ready || Ride.sensed(probes) in
   let snapping = riding(m) && Bars.snapping(m.vr, m.speed) in
   let controls = if not riding(m) then parked else if snapping then { m.controls with steer: 0.0 } else m.controls in
+  let height = Mount.height(m.mode == Riding, m.fade) in
   let stepped =
     if not ready then m.ride
     else
       match m.course with
-      | OnDunes => Ride.step(Dunes.limit(c.x, c.z, m.ride.yaw, controls), probes, dt, collided(m, c, dt)) |> Dunes.recover(c.x, c.z, dt)
-      | OnStand => Ride.step(controls, probes, dt, collided(m, c, dt)) in
+      | OnDunes => Ride.step(Dunes.limit(c.x, c.z, m.ride.yaw, controls), height, probes, dt, collided(m, c, dt)) |> Dunes.recover(c.x, c.z, dt)
+      | OnStand => Ride.step(controls, height, probes, dt, collided(m, c, dt)) in
   // On foot, the walker turns by the snaps instead.
   let (snap, turned) = if m.mode == Riding then Bars.turn(snapping && ready, m.vr.steer, dt, m.vr.snap) else (m.vr.snap, 0.0) in
   let ride = if turned == 0.0 then stepped else Bars.rotate(turned, stepped) in
@@ -446,7 +448,7 @@ let tick = (m: Model, dt: float, tts) =>
 
 // Readiness, driven without a world.
 let missed = Ride.emitters |> List.map((e) => { hit: false, distance: 0.0 })
-let onGround = Ride.flatProbes(Ride.hoverHeight)
+let onGround = Ride.flatProbes(Ride.idleHeight)
 let waitFor = (steps: float, probes: List<Ride.Probe>, m: Model) =>
   List.range(steps) |> List.fold((acc, i) => advance(acc, acc.last, probes, Ride.dt60), m)
 // Two seconds without ground: still waiting, and the bike hasn't moved or
