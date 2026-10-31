@@ -17,6 +17,21 @@
 //   7. the night and day goldens render byte-identically across runs
 //      (`npm run test:golden` compares them to golden/, with a tolerance).
 //
+// The block (B): four turned copies of the office around a crossroads.
+//   8. a tour down the streets into every copy's lobby and corridor, a push
+//      into each copy's facade, and each copy's window from the street and
+//      from inside, night and noon. At every tick the eye is in a cell of
+//      every copy whose interior draws (the model's `uncovered` stays 0), so
+//      no portal walk falls back to drawing everything;
+//   9. static draw calls at street, between-buildings and inside views:
+//      pushed variants of game.fun draw each cell model 0×, 1× or once per
+//      material group, and `/state.cull`'s tested − culled differences count
+//      the static models and their group draws that actually submitted;
+//  10. shared uploads (`--json` frame stats): after copy 0's pass, the same
+//      pass through copies 1–3 misses no GPU cache, uploads nothing and adds
+//      no live GL object; the noon switch misses as often with four copies
+//      active as with the office alone.
+//
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/liminal-office.mjs
 import { spawn, spawnSync } from "node:child_process";
@@ -39,6 +54,7 @@ const STAIR_HEAD = 12;
 const CORRIDOR_2 = 13;
 const TURN_2 = 14;
 const OFFICE_206 = 20;
+const WEST_YARD = 22; // the west strip of the collar
 // layout.fun's storey and flight, and game.fun's capsule centre above the feet.
 const STOREY = 3.3;
 const FLIGHT = { x0: 13.0, tread: 0.3, risers: 18 };
@@ -48,8 +64,8 @@ const rampY = (x) =>
   Math.min(STOREY, Math.max(0, ((x - (FLIGHT.x0 - FLIGHT.tread)) * (STOREY / FLIGHT.risers)) / FLIGHT.tread));
 const WALK = 2.2 / 60; // metres per step
 
-function launch(port, env = {}) {
-  const proc = spawn(BIN, ["-d", DIR, "run", "native", "--hidden", "--debug-port", String(port)], {
+function launch(port, env = {}, flags = []) {
+  const proc = spawn(BIN, [...flags, "-d", DIR, "run", "native", "--hidden", "--debug-port", String(port)], {
     cwd: ROOT,
     env: { ...process.env, ...env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -69,6 +85,7 @@ function launch(port, env = {}) {
     return res.json();
   };
   const game = {
+    base,
     proc,
     post,
     log: () => log,
@@ -116,7 +133,8 @@ function launch(port, env = {}) {
     },
     // Face `yaw` (0 is +z, π/2 is +x).
     async face(yaw) {
-      await game.turn(yaw - (await game.model()).yaw);
+      const d = yaw - (await game.model()).yaw;
+      await game.turn(Math.atan2(Math.sin(d), Math.cos(d))); // the short way round
     },
     // Hold W until the player passes `target` along `axis`, `chunk` steps at
     // a time; `onStep` sees the model after each chunk.
@@ -284,6 +302,9 @@ function meanLuma(png, [x0, y0, x1, y1]) {
   return sum / n;
 }
 
+// Office 103's floor below its window, at view 4: clear of the sky.
+const FLOOR = [0, 0.5, 1, 0.75];
+
 // The largest per-channel difference between two same-sized captures.
 function maxDiff(a, b) {
   const [pa, pb] = [decodePng(a).pixels, decodePng(b).pixels];
@@ -365,8 +386,7 @@ async function daylight(game) {
   };
   // View 4 looks at the window; the floor band below it excludes the sky.
   const room = await at(4);
-  const floor = [0, 0.5, 1, 0.75];
-  const [roomNight, roomDay] = [meanLuma(room.night, floor), meanLuma(room.day, floor)];
+  const [roomNight, roomDay] = [meanLuma(room.night, FLOOR), meanLuma(room.day, FLOOR)];
   check(roomDay > 1.2 * roomNight, `office 103's floor brightens by day (luma ${roomNight.toFixed(1)} → ${roomDay.toFixed(1)})`);
   // View 2 looks down the corridor, away from the lobby.
   const corridor = await at(2);
@@ -389,6 +409,279 @@ async function viewCaptures(game, culling) {
     shots.push(await game.capture());
   }
   return shots;
+}
+
+// ---- The block -----------------------------------------------------------------
+
+// block.fun's placement: copy k turns 90k° about the crossroads (-12, -12).
+const CROSS = -12;
+const turnXZ = (deg, x, z) => {
+  const a = (deg * Math.PI) / 180;
+  return [x * Math.cos(a) + z * Math.sin(a), z * Math.cos(a) - x * Math.sin(a)];
+};
+const copyAt = (k) => {
+  const [x, z] = turnXZ(90 * k, CROSS, CROSS);
+  return { k, yaw: 90 * k, x: CROSS - x, z: CROSS - z };
+};
+const COPIES = [0, 1, 2, 3].map(copyAt);
+// The office's static draw calls with nothing culled (#882's measurement).
+const UNCULLED_DRAWS = 113;
+const toWorld = (c, x, z) => {
+  const [a, b] = turnXZ(c.yaw, x, z);
+  return [a + c.x, b + c.z];
+};
+const toLocal = (c, x, z) => turnXZ(-c.yaw, x - c.x, z - c.z);
+// A heading in copy c's space (0 is its +z, into the entrance), in the world.
+const headingOf = (c, yaw) => yaw + (c.yaw * Math.PI) / 180;
+
+// Every sample of the block tour: whether the eye was in a cell of the
+// nearest copy.
+const samples = { n: 0, outside: [] };
+const sample = (m) => {
+  samples.n++;
+  if (m.cell < 0) samples.outside.push(`(${m.at.x.toFixed(1)}, ${m.at.z.toFixed(1)}) copy ${m.copy}`);
+};
+
+// Walk straight to world (x, z), sampling every `chunk` steps; stops early
+// when blocked.
+async function walkToPoint(game, [x, z], chunk = 20) {
+  let m = await game.model();
+  for (let leg = 0; leg < 400; leg++) {
+    const [dx, dz] = [x - m.at.x, z - m.at.z];
+    const left = Math.hypot(dx, dz);
+    if (left < 0.05) break;
+    await game.face(Math.atan2(dx, dz));
+    await game.key("w", true);
+    await game.step(Math.max(1, Math.min(chunk, Math.floor(left / WALK))));
+    await game.key("w", false);
+    await game.step(1);
+    const before = m.at;
+    m = await game.model();
+    sample(m);
+    if (Math.hypot(m.at.x - before.x, m.at.z - before.z) < 0.001) break; // blocked
+  }
+  return m;
+}
+
+// The streets between the copies: from copy k's approach (6 m in front of its
+// entrance) to copy k+1's, round the crossroads.
+const approach = (c) => toWorld(c, 10, -6);
+const legs = [
+  [[-6, -6]],
+  [[-6, -18]],
+  [[-18, -18]],
+];
+
+// Enter copy c through its entrance into the lobby and the corridor, and back
+// out; push into its facade beside the entrance.
+async function enterCopy(game, c) {
+  await walkToPoint(game, approach(c));
+  let m = await walkToPoint(game, toWorld(c, 10, 3));
+  check(m.copy === c.k && m.cell === LOBBY, `copy ${c.k}: walked into its lobby (copy ${m.copy}, cell ${m.cell})`);
+  m = await walkToPoint(game, toWorld(c, 10, 9));
+  check(m.copy === c.k && m.cell === CORRIDOR, `copy ${c.k}: up its corridor (copy ${m.copy}, cell ${m.cell}, active ${JSON.stringify(m.active)})`);
+  await walkToPoint(game, approach(c));
+  // The lobby's facade, left of the entrance: blocked at its outer face
+  // (local z = -0.15) less the capsule's radius.
+  await walkToPoint(game, toWorld(c, 6.5, -3));
+  await game.face(headingOf(c, 0));
+  await game.hold("w", 150);
+  m = await game.model();
+  const [lx, lz] = toLocal(c, m.at.x, m.at.z);
+  check(lz < -0.4 && lz > -0.6 && m.copy === c.k && m.cell === APRON, `copy ${c.k}: outside → in push blocked at the wall (local x ${lx.toFixed(2)} z ${lz.toFixed(3)}, cell ${m.cell})`);
+  await walkToPoint(game, approach(c));
+}
+
+// Mean luma of the middle of a capture: the window seen from the street.
+const WINDOW_RECT = [0.4, 0.4, 0.6, 0.55];
+
+// Copy c's office 103 window: from the street (the lit room shows through
+// it; the sill stops a walk in), then from inside at night and noon
+// (`hours`) or just at night.
+async function inspectWindow(game, c, hours = true) {
+  await walkToPoint(game, toWorld(c, -4, -6));
+  await walkToPoint(game, toWorld(c, -4, 9.3));
+  await game.face(headingOf(c, Math.PI / 2));
+  await game.step(2);
+  const outside = await game.capture();
+  await game.hold("w", 120);
+  const m = await game.model();
+  const [lx] = toLocal(c, m.at.x, m.at.z);
+  check(lx < -0.3 && m.cell === WEST_YARD, `copy ${c.k}: the window's sill stops a walk in (local x ${lx.toFixed(2)}, cell ${m.cell})`);
+  await game.view(4);
+  const night = await game.capture();
+  let noon = night;
+  if (hours) {
+    await game.hold("n", 1);
+    noon = await game.capture();
+    await game.hold("n", 1);
+  }
+  await game.view(1); // back out onto this copy's apron
+  return { outside: meanLuma(outside, WINDOW_RECT), night: meanLuma(night, FLOOR), noon: meanLuma(noon, FLOOR) };
+}
+
+async function blockTour(game) {
+  await game.view(1);
+  await game.hold("b", 1);
+  let m = await game.model();
+  check(m.block === true && m.uncovered === 0, `B turns the office into the block (block ${m.block})`);
+  const windows = [];
+  for (const c of COPIES) {
+    await enterCopy(game, c);
+    windows.push(await inspectWindow(game, c));
+    for (const p of legs[c.k] ?? []) await walkToPoint(game, p);
+  }
+  // Across the crossroads: every copy's interior draws.
+  m = await walkToPoint(game, [CROSS, CROSS]);
+  check(m.active.every((a) => a), `at the crossroads every copy is active (${JSON.stringify(m.active)})`);
+  check(samples.n > 300 && samples.outside.length === 0, `the eye was in a cell of the nearest copy at all ${samples.n} samples${samples.outside.length ? `; not at ${samples.outside.slice(0, 3).join(", ")}` : ""}`);
+  m = await game.model();
+  check(m.uncovered === 0, `no active copy's cells ever lost the eye (uncovered ${m.uncovered} over the tour)`);
+
+  // One overcast bake at every yaw: office 103 brightens by day in each
+  // copy, about equally, and its lit room shows through from the street.
+  for (const w of windows) {
+    check(w.noon > 1.2 * w.night, `copy ${windows.indexOf(w)}: office 103's floor brightens by day (luma ${w.night.toFixed(1)} → ${w.noon.toFixed(1)})`);
+    check(Math.abs(w.noon / windows[0].noon - 1) < 0.03 && Math.abs(w.night / windows[0].night - 1) < 0.03,
+      `copy ${windows.indexOf(w)}: lit like copy 0 (night ${w.night.toFixed(1)} vs ${windows[0].night.toFixed(1)}, noon ${w.noon.toFixed(1)} vs ${windows[0].noon.toFixed(1)})`);
+    check(w.outside > 40, `copy ${windows.indexOf(w)}: the lit office shows through its window from the street (luma ${w.outside.toFixed(1)})`);
+  }
+  return windows;
+}
+
+// Static draws from `/state.cull` (tested − culled): a static model that
+// isn't portal-hidden is tested once; one inside the frustum submits a draw
+// per material group. Variants of game.fun's `roomOf` draw each cell model
+// 0×, 1× or once per group, so the differences count the models and the
+// group draws that submitted (the street side's tests cancel).
+const ROOM_OF = "Scene.modelOf(p.model) |> Scene.inCells([p.cell])";
+const GROUPS = "List.length(Building.spansOf(0.0, List.nth(p.cell, Building.cellParts) |> Option.defaultValue([])))";
+const times = (n) => `Scene.group(List.range(${n}) |> List.map((k) => Scene.modelOf(p.model))) |> Scene.inCells([p.cell])`;
+
+async function staticDraws(game, label) {
+  const project = await (await fetch(`${game.base}/project`)).json();
+  const entry = project[0][1];
+  if (!entry.includes(ROOM_OF)) throw new Error("game.fun's roomOf changed: update the e2e's draw-count variants");
+  const tested = async (variant) => {
+    const body = project.map(([path, src], i) => [path, i === 0 ? src.replace(ROOM_OF, variant) : src]);
+    await game.post("/reload-project", body);
+    await game.step(2);
+    const s = await game.state();
+    return { live: s.cull.tested - s.cull.culled, hidden: s.cells.hidden, walks: s.cells.walks };
+  };
+  const none = await tested(times("0.0"));
+  const groups = await tested(times(GROUPS));
+  const once = await tested(ROOM_OF);
+  const m = await game.model();
+  return { label, models: once.live - none.live, draws: groups.live - none.live, hidden: once.hidden, walks: once.walks, active: m.active.filter((a) => a).length, on: m.active.flatMap((a, k) => (a ? [k] : [])) };
+}
+
+async function drawCounts(game) {
+  const rows = [];
+  // The office alone, for #882's table: the entrance and corridor.
+  await game.hold("b", 1);
+  await game.view(1);
+  rows.push(await staticDraws(game, "office alone: entrance (view 1)"));
+  await game.view(2);
+  rows.push(await staticDraws(game, "office alone: corridor (view 2)"));
+  await game.hold("b", 1);
+  await game.view(2);
+  rows.push(await staticDraws(game, "block: copy 0 corridor (view 2)"));
+  await game.view(9);
+  rows.push(await staticDraws(game, "street (view 9)"));
+  await walkToPoint(game, [CROSS, CROSS]);
+  await game.face(Math.atan2(22, 12));
+  rows.push(await staticDraws(game, "crossroads, facing copy 0's entrance"));
+  // Walked, not view 1: at the crossroads every copy is equally near.
+  await walkToPoint(game, toWorld(COPIES[0], 10, -11));
+  await game.face(Math.PI);
+  rows.push(await staticDraws(game, "between copies 0 and 1 (copy 0's apron, facing copy 1's window)"));
+  await game.view(0);
+  rows.push(await staticDraws(game, "inside copy 2: office 103 window (view 0)"));
+  await game.view(2);
+  rows.push(await staticDraws(game, "inside copy 2: corridor (view 2)"));
+  for (const r of rows) {
+    // Unculled, every active copy would submit all of the office's draws.
+    check(r.models > 0 && r.draws >= r.models && r.draws < r.active * UNCULLED_DRAWS,
+      `${r.label}: ${r.models} static models, ${r.draws} static draws (copies ${r.on} active, ${r.hidden} hidden, ${r.walks} walks)`);
+  }
+  // A copy's view draws what the office alone's does: the corridor, in copy 0
+  // and in the copy turned 180°.
+  const same = (a, b) => a.models === b.models && a.draws === b.draws;
+  check(same(rows[2], rows[1]) && same(rows[7], rows[1]), "each copy's corridor draws what the office alone's does");
+  check((await game.model()).uncovered === 0, "no fallback walks while measuring");
+  return rows;
+}
+
+// Every `--json` frame-stats window so far.
+const frameStats = (game) => game.log().split("\n").filter((l) => l.includes('"frame_stats"')).map((l) => JSON.parse(l));
+
+// The latest frame-stats window after `n` more steps.
+async function statsAfter(game, n) {
+  const seen = frameStats(game).length;
+  await game.step(n);
+  const deadline = Date.now() + 30000;
+  while (frameStats(game).length <= seen && Date.now() < deadline) await sleep(50);
+  return frameStats(game).at(-1);
+}
+
+// The copies share one office's uploads. A cell mesh uploads the first time
+// any copy draws it, so after copy 0's pass (its lobby, corridor, facade and
+// window), the same pass through copies 1–3 misses the GPU caches never,
+// uploads nothing, and grows no live GL object. Switching to noon misses as
+// often with four copies active as with the office alone.
+async function residency(game) {
+  const windows = () => frameStats(game);
+  const live = (s) => `${s.gpu_live_buffers} buffers, ${s.gpu_live_textures} textures, ${s.gpu_live_vaos} VAOs`;
+  // Misses and bytes over every stats window spanning a switch to noon. The
+  // day lightmap is evicted two frames after the switch back, so each switch
+  // uploads it afresh.
+  const noonSwitch = async () => {
+    const from = windows().length;
+    await game.hold("n", 1);
+    await statsAfter(game, 300);
+    await statsAfter(game, 300);
+    const spanned = windows().slice(from);
+    return {
+      misses: spanned.reduce((n, w) => n + w.gpu_cache_misses, 0),
+      bytes: spanned.reduce((n, w) => n + w.gpu_bytes_per_frame * w.over_n_frames, 0),
+    };
+  };
+  await game.view(1);
+  await statsAfter(game, 300);
+  const office = await statsAfter(game, 300);
+  const officeNoon = await noonSwitch();
+  await game.hold("n", 1);
+
+  await game.hold("b", 1);
+  const pass = async (c) => {
+    await enterCopy(game, c);
+    await inspectWindow(game, c, false);
+    for (const p of legs[c.k] ?? []) await walkToPoint(game, p);
+  };
+  await pass(COPIES[0]);
+  await statsAfter(game, 300); // the window holding the end of copy 0's pass
+  const primed = await statsAfter(game, 300);
+  const from = windows().length;
+  for (const c of COPIES.slice(1)) await pass(c);
+  await statsAfter(game, 300);
+  const later = windows().slice(from);
+  const misses = later.reduce((n, w) => n + w.gpu_cache_misses, 0);
+  const bytes = later.reduce((n, w) => n + w.gpu_bytes_per_frame * w.over_n_frames, 0);
+  const after = later[later.length - 1];
+  check(office.gpu_cache_misses === 0 && primed.gpu_cache_misses === 0 && primed.gpu_bytes_per_frame === 0,
+    `standing still uploads nothing (office ${office.gpu_cache_misses} misses; block ${primed.gpu_cache_misses} misses, ${primed.gpu_bytes_per_frame} B/frame)`);
+  check(later.length >= 3 && misses === 0 && bytes === 0, `copies 1–3's passes (${later.length} stats windows) miss ${misses} times and upload ${bytes} bytes after copy 0's`);
+  check(after.gpu_live_buffers === primed.gpu_live_buffers && after.gpu_live_textures === primed.gpu_live_textures && after.gpu_live_vaos === primed.gpu_live_vaos,
+    `live GL objects after all four copies equal those after copy 0's (${live(after)} vs ${live(primed)}; the office from its entrance: ${live(office)})`);
+
+  await walkToPoint(game, [CROSS, CROSS]);
+  check((await game.model()).active.every((a) => a), "residency: all four copies active at the crossroads");
+  await statsAfter(game, 300);
+  const blockNoon = await noonSwitch();
+  check(blockNoon.misses === officeNoon.misses && blockNoon.misses > 0,
+    `the noon switch misses as often with four copies active as with one (${blockNoon.misses} vs ${officeNoon.misses}; ${blockNoon.bytes} vs ${officeNoon.bytes} bytes)`);
+  return { office: live(office), primed: live(primed), after: live(after), misses, bytes, officeNoon, blockNoon };
 }
 
 // Render a golden the way runtime/functor-runtime-desktop/tests/golden.rs does.
@@ -416,6 +709,9 @@ try {
   await xrHours(game);
   await daylight(game);
   const culled = await viewCaptures(game, true);
+  await blockTour(game);
+  const draws = await drawCounts(game);
+  console.log(`static draws: ${JSON.stringify(draws, null, 1)}`);
 
   const unculled = launch(8192, { FUNCTOR_CULL: "0" });
   games.push(unculled);
@@ -424,6 +720,13 @@ try {
   // A regression check for now: the renderer draws `Model.static` data models
   // unculled, so the interior matches by construction until that engine fix.
   culled.forEach((shot, i) => check(shot.equals(all[i]), `${i < 8 ? "night" : "noon"} view ${(i % 8) + 1}: culling on and off capture the same frame`));
+
+  const stats = launch(8193, {}, ["--json"]);
+  games.push(stats);
+  await stats.ready();
+  await stats.turn(0);
+  const residencyStats = await residency(stats);
+  console.log(`residency: ${JSON.stringify(residencyStats)}`);
 
   const scripted = (script) => ["--input-script", join(DIR, script), "--capture-at-frame", "30"];
   const goldens = {
@@ -437,6 +740,9 @@ try {
     "liminal-office-stairwell-day": scripted("noon-stairwell.script"),
     "liminal-office-upstairs": scripted("upstairs.script"),
     "liminal-office-upstairs-day": scripted("noon-upstairs.script"),
+    "liminal-office-block-street": scripted("block-street.script"),
+    "liminal-office-block-street-day": scripted("noon-block-street.script"),
+    "liminal-office-block-window": scripted("block-window.script"),
   };
   for (const [name, args] of Object.entries(goldens)) {
     check(golden(name, args).equals(golden(name, args)), `${name}: byte-identical across runs`);

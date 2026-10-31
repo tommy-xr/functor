@@ -110,7 +110,7 @@ expect flights |> List.all((f) =>
 // the upper floor, doors and windows at their wall's centre line.
 let inBox = (i: float, p: Vec3.t): bool =>
   let r = Building.roomAt(i) in
-  let (y0, y1) = if Building.isInside(r) then (Building.baseOf(r), Building.baseOf(r) + Building.wallTop(i)) else (0.0, Building.outsideTop) in
+  let (y0, y1) = if Building.isInside(r) then (Building.baseOf(r), Building.baseOf(r) + Building.wallTop(i)) else (0.0, Portals.outsideTop) in
   let e = 0.0001 in
   Vec3.x(p) >= r.rect.x0 - e && Vec3.x(p) <= r.rect.x1 + e && Vec3.z(p) >= r.rect.z0 - e && Vec3.z(p) <= r.rect.z1 + e
     && Vec3.y(p) >= y0 - e && Vec3.y(p) <= y1 + e
@@ -124,26 +124,26 @@ expect windows |> List.all((w) => Building.stacked(w.side, Building.windowHole(w
 let middle = (i: float): Vec3.t =>
   let r = Building.roomAt(i).rect in
   Vec3.make((r.x0 + r.x1) / 2.0, Building.baseOf(Building.roomAt(i)) + 1.6, (r.z0 + r.z1) / 2.0)
-expect ids |> List.all((i) => Cells.locate(middle(i), Building.level) == Option.Some(i))
-expect Cells.locate(Vec3.make(spawn.x, 1.6, spawn.z), Building.level) == Option.Some(0.0)
+expect ids |> List.all((i) => Cells.locate(middle(i), Portals.level) == Option.Some(i))
+expect Cells.locate(Vec3.make(spawn.x, 1.6, spawn.z), Portals.level) == Option.Some(0.0)
 // Sight runs through doorways and stops at walls.
-expect Cells.segment(Vec3.make(10.0, 1.6, -6.0), Vec3.make(10.0, 1.6, 20.0), Building.level)
-expect Cells.segment(Vec3.make(10.0, 1.6, 16.5), Vec3.make(15.6, 1.6, 16.5), Building.level)
-expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(15.6, 1.6, 16.5), Building.level)
+expect Cells.segment(Vec3.make(10.0, 1.6, -6.0), Vec3.make(10.0, 1.6, 20.0), Portals.level)
+expect Cells.segment(Vec3.make(10.0, 1.6, 16.5), Vec3.make(15.6, 1.6, 16.5), Portals.level)
+expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(15.6, 1.6, 16.5), Portals.level)
 // The stair opening is a portal between floors: sight runs up through it,
 // but not through the landing, nor through any other floor.
 let up = storey + 1.6
-expect Cells.segment(Vec3.make(12.0, 1.6, 23.0), Vec3.make(15.0, up, 25.0), Building.level)
-expect not Cells.segment(Vec3.make(19.0, 1.6, 24.0), Vec3.make(19.0, up, 24.0), Building.level)
-expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(10.0, up, 10.0), Building.level)
+expect Cells.segment(Vec3.make(12.0, 1.6, 23.0), Vec3.make(15.0, up, 25.0), Portals.level)
+expect not Cells.segment(Vec3.make(19.0, 1.6, 24.0), Vec3.make(19.0, up, 24.0), Portals.level)
+expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(10.0, up, 10.0), Portals.level)
 // Upstairs, through doorways as below.
-expect Cells.segment(Vec3.make(10.0, up, 3.0), Vec3.make(15.6, up, 3.0), Building.level)
+expect Cells.segment(Vec3.make(10.0, up, 3.0), Vec3.make(15.6, up, 3.0), Portals.level)
 // Every window is a portal from the street: sight runs in through one,
 // not through the wall beside it.
 expect windows |> List.all((w) => Building.outsideOf(w) != Option.None)
-expect Cells.segment(Vec3.make(-5.0, 1.6, 9.3), Vec3.make(4.0, 1.6, 9.3), Building.level)
-expect Cells.segment(Vec3.make(-5.0, up, 9.3), Vec3.make(4.0, up, 9.3), Building.level)
-expect not Cells.segment(Vec3.make(-5.0, 1.6, 16.0), Vec3.make(4.0, 1.6, 16.0), Building.level)
+expect Cells.segment(Vec3.make(-5.0, 1.6, 9.3), Vec3.make(4.0, 1.6, 9.3), Portals.level)
+expect Cells.segment(Vec3.make(-5.0, up, 9.3), Vec3.make(4.0, up, 9.3), Portals.level)
+expect not Cells.segment(Vec3.make(-5.0, 1.6, 16.0), Vec3.make(4.0, 1.6, 16.0), Portals.level)
 
 // ---- The mesh and its cells ----------------------------------------------------
 
@@ -241,3 +241,120 @@ expect noon.neon == 0.7 && noon.lamps == 0.0
 expect Vec3.length(noon.sunDirection |> Vec3.sub(Hours.sunDirection)) < 0.000001
 // Halfway, the sky is dusk.
 expect Hours.outdoorAt(0.5).sky == Hours.duskSky
+
+// ---- The collar ----------------------------------------------------------------
+
+// The collar's cells: one strip per side, the apron and the west yard
+// among them under their room ids.
+let collarIds = Portals.sides |> List.map(Portals.stripId)
+expect collarIds == [0.0, n, n - 1.0, n + 1.0]
+// Every cell is reachable through portals from the south strip.
+let linked = (i: float): List<float> =>
+  Portals.portals |> List.filter((p) => p.from == i) |> List.map((p) => p.to)
+let cellCount = n + List.length(Portals.extraSides)
+let reachedCells = List.range(cellCount) |> List.fold((seen, k) =>
+  seen |> List.concatMap(linked) |> List.fold((acc, j) => if List.any((s) => s == j, acc) then acc else acc |> List.append([j]), seen), [0.0])
+expect List.length(reachedCells) == cellCount
+// The street sees round the corners and in through the doors and windows:
+// south strip → east strip; north strip → west strip → office 103's window.
+expect Cells.segment(Vec3.make(30.0, 1.6, -5.0), Vec3.make(30.0, 1.6, 10.0), Portals.level)
+expect Cells.segment(Vec3.make(-34.0, 1.6, 34.0), Vec3.make(2.0, 1.6, 8.0), Portals.level)
+expect Cells.segment(Vec3.make(-34.0, up, 34.0), Vec3.make(2.0, up, 8.0), Portals.level)
+expect Cells.segment(Vec3.make(10.0, 1.6, -30.0), Vec3.make(10.0, 1.6, 3.0), Portals.level)
+expect not Cells.segment(Vec3.make(30.0, 1.6, 10.0), Vec3.make(15.0, 1.6, 10.0), Portals.level)
+
+// The collar holds every eye that sees an interior: anywhere up to
+// `activeOff` + `eyeReach` from the footprint (corners rounded, so the strips'
+// square corners cover them), at street eye heights; the footprint itself
+// is rooms on both floors.
+let reach = Block.activeOff + Block.eyeReach
+expect reach <= Portals.collar
+let f = footprint
+// The footprint grown by `d`, its outline every metre or so.
+let outline = (d: float): List<(float, float)> =>
+  let along = (a: float, b: float): List<float> => List.range(Math.ceil(b - a) + 1.0) |> List.map((k) => Math.min(b, a + k)) in
+  let arc = (cx: float, cz: float, from: float): List<(float, float)> =>
+    List.range(19.0) |> List.map((k) => let a = (from + 5.0 * k) * Math.pi / 180.0 in (cx + d * Math.sin(a), cz + d * Math.cos(a))) in
+  List.flatten([
+    along(f.x0, f.x1) |> List.concatMap((x) => [(x, f.z0 - d), (x, f.z1 + d)]),
+    along(f.z0, f.z1) |> List.concatMap((z) => [(f.x0 - d, z), (f.x1 + d, z)]),
+    arc(f.x1, f.z1, 0.0), arc(f.x1, f.z0, 90.0), arc(f.x0, f.z0, 180.0), arc(f.x0, f.z1, 270.0),
+  ])
+let held = (x: float, y: float, z: float): bool => Cells.locate(Vec3.make(x, y, z), Portals.level) != Option.None
+let outside = List.range(Math.floor(reach) + 1.0) |> List.map((k) => Math.min(reach, k + 0.001)) |> List.concatMap(outline)
+expect outside |> List.all((p) => let (x, z) = p in [0.3, 1.6, 2.6] |> List.all((y) => held(x, y, z)))
+let inside = List.range(f.x1 - f.x0 + 1.0) |> List.concatMap((x) => List.range(f.z1 - f.z0 + 1.0) |> List.map((z) => (f.x0 + x, f.z0 + z)))
+expect inside |> List.all((p) => let (x, z) = p in [1.2, 1.6, 2.2, storey + 1.2, storey + 1.6, storey + 2.2] |> List.all((y) => held(x, y, z)))
+// A test that can fail: past the collar, nothing holds the eye.
+expect not held(f.x0 - Portals.collar - 0.5, 1.6, 10.0)
+
+// ---- The block -----------------------------------------------------------------
+
+// Four copies at 0/90/180/270°; the first is the office where it stands.
+expect (Block.copies |> List.map((c) => c.yaw)) == [0.0, 90.0, 180.0, 270.0]
+expect Block.home == { name: "office-0", x: 0.0, z: 0.0, yaw: 0.0 }
+let close = (a: Vec3.t, b: Vec3.t): bool => Vec3.length(a |> Vec3.sub(b)) < 0.00001
+// To the world and back; a heading turns with its copy: forward in the
+// copy's space lands where its heading points in the world.
+let probe = Vec3.make(3.0, 1.6, 7.0)
+expect Block.copies |> List.all((c) => close(Block.toLocal(c, Block.toWorld(c, probe)), probe))
+expect Block.copies |> List.all((c) =>
+  let yaw = 0.4 in
+  let ahead = Block.toWorld(c, probe |> Vec3.add(Vec3.make(Math.sin(yaw), 0.0, Math.cos(yaw)))) |> Vec3.sub(Block.toWorld(c, probe)) in
+  let h = Block.headingToWorld(c, yaw) in
+  close(ahead, Vec3.make(Math.sin(h), 0.0, Math.cos(h))))
+// Quarter turns: the copy at 90° sends local +z to world +x.
+expect close(Block.toWorld(Block.copyAt(1.0), Vec3.make(0.0, 0.0, 1.0)) |> Vec3.sub(Block.toWorld(Block.copyAt(1.0), Vec3.make(0.0, 0.0, 0.0))), Vec3.make(1.0, 0.0, 0.0))
+// Each copy's footprint, and its outside rooms (apron, yard), in the world.
+let worldRect = (c: Block.Copy, r: Rect): Rect =>
+  let a = Block.toWorld(c, Vec3.make(r.x0, 0.0, r.z0)) in
+  let b = Block.toWorld(c, Vec3.make(r.x1, 0.0, r.z1)) in
+  rect(Math.min(Vec3.x(a), Vec3.x(b)), Math.min(Vec3.z(a), Vec3.z(b)), Math.max(Vec3.x(a), Vec3.x(b)), Math.max(Vec3.z(a), Vec3.z(b)))
+let gap = (a: Rect, b: Rect): float =>
+  Math.max(Math.max(a.x0 - b.x1, b.x0 - a.x1), Math.max(a.z0 - b.z1, b.z0 - a.z1))
+let copyPairs = List.range(4.0) |> List.concatMap((i) => List.range(4.0) |> List.filter((j) => j > i) |> List.map((j) => (Block.copyAt(i), Block.copyAt(j))))
+// A street at least `streetWidth` wide between any two buildings, and no apron or
+// yard on another building.
+expect copyPairs |> List.all((p) => let (a, b) = p in gap(worldRect(a, f), worldRect(b, f)) >= Block.streetWidth - 0.001)
+let yards = rooms |> List.filter((r) => not Building.isInside(r))
+expect copyPairs |> List.all((p) =>
+  let (a, b) = p in
+  yards |> List.all((r) => gap(worldRect(a, r.rect), worldRect(b, f)) >= -0.001 && gap(worldRect(b, r.rect), worldRect(a, f)) >= -0.001))
+// Every copy's entrance and windows face the crossroads' streets: their
+// outside rooms lie in the cross between the buildings.
+let inCross = (r: Rect): bool =>
+  (r.x0 >= 0.0 - Block.streetWidth - 0.001 && r.x1 <= 0.001) || (r.z0 >= 0.0 - Block.streetWidth - 0.001 && r.z1 <= 0.001)
+expect Block.copies |> List.all((c) => yards |> List.all((r) => inCross(worldRect(c, r.rect))))
+
+// Collider tags are unique across the copies, the grounds and the player.
+let allTags = List.flatten([
+  ["ground", "block-ground", "player"],
+  Block.copies |> List.concatMap((c) => List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) => Block.tagOf(c, k.tag))),
+])
+expect allTags |> List.indexedMap((i, t) => List.drop(i + 1.0, allTags) |> List.any((u) => u == t)) |> List.all((dup) => not dup)
+
+// Activation: on inside `activeOn`, held to `activeOff`, off past it; only
+// the home copy stands outside the block.
+let at = (d: float): Vec3.t => Vec3.make(f.x0 - d, 1.6, 10.0)
+let homeOn = (block: bool, was: bool, d: float): bool =>
+  List.head(Block.activeAt(block, [was, false, false, false], at(d))) == Option.Some(true)
+expect homeOn(false, false, Block.activeOn - 0.1) && not homeOn(false, false, Block.activeOn + 0.1)
+expect homeOn(false, true, Block.activeOff - 0.1) && not homeOn(false, true, Block.activeOff + 0.1)
+expect Block.activeAt(false, [true, true, true, true], Block.toWorld(Block.copyAt(2.0), probe)) == [false, false, false, false]
+expect List.nth(2.0, Block.activeAt(true, Block.nothingActive, Block.toWorld(Block.copyAt(2.0), probe))) == Option.Some(true)
+// At the far edge of every copy's activation, its cells hold the eye.
+expect Block.copies |> List.all((c) =>
+  outline(Block.activeOff) |> List.all((p) =>
+    let (x, z) = p in
+    let eye = Block.toWorld(c, Vec3.make(x, 1.6, z)) in
+    Block.uncovered(Block.activeAt(true, [true, true, true, true], eye), eye) == 0.0))
+// From the crossroads every interior draws; from deep inside a copy only
+// its own does.
+expect Block.activeAt(true, Block.nothingActive, Vec3.make(Block.centre, 1.6, Block.centre)) == [true, true, true, true]
+expect Block.activeAt(true, Block.nothingActive, Block.toWorld(Block.copyAt(1.0), Vec3.make(14.0, 1.6, 20.0))) == [false, true, false, false]
+
+// Every copy draws the home copy's scene (one archetype: the same cell
+// models and lightmaps) under its own transform.
+let look = (k: float): Game.CopyLook => { k: k, neon: 1.0, lamps: 1.0, day: false, active: true }
+let local = Scene.group([Exterior.exteriorAt(1.0, 1.0), Scene.cells(Portals.level, Scene.group(Game.nightRooms))])
+expect Block.copies |> List.indexedMap((k, c) => Scene.equals(Game.copyScene(look(k)), Block.sceneOf(c, local))) |> List.all((same) => same)
