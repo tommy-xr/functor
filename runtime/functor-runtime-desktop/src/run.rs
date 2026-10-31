@@ -2036,7 +2036,11 @@ Escape releases while captured"
             game_mouse_pos,
             held_buttons,
             &input_edges,
-            crate::desktop_xr_emulator::head_y(args.emulate_xr, caps.xr_floor_locked, args.xr_eye_height),
+            crate::desktop_xr_emulator::head_y(
+                args.emulate_xr,
+                caps.xr_floor_locked,
+                args.xr_eye_height,
+            ),
             false,
             window.get_size(),
             xr_override.as_ref(),

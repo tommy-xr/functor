@@ -302,7 +302,9 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(config).unwrap(),
-            serde_json::json!({ "xr": { "passthrough": true, "scene": true, "floor_locked": true } })
+            serde_json::json!({
+                "xr": { "passthrough": true, "scene": true, "floor_locked": true }
+            })
         );
         let depth = XrState {
             depth: EnvironmentDepthState {

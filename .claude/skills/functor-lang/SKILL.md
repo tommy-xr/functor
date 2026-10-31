@@ -1663,8 +1663,21 @@ from a SIBLING file module when the entry (or role) does not define it, so an
 (defines `init` — another role's entry file) is skipped; two siblings defining
 the same one is a load error; in a same-file multi-role project an adapter
 applies to every role. `config.fun`, `settings.fun`, and `xr.fun` are reserved file names (their
-modules would collide with the prelude). Desktop and web ignore the `xr` knobs;
-desktop and Quest report both values in `GET /state` (`config` / `settings`).
+modules would collide with the prelude). Desktop and web ignore the `xr` knobs
+(except `--emulate-xr` honouring `Xr.floorLocked`); desktop and Quest report
+both values in `GET /state` (`config` / `settings`).
+
+**Floor-locked rig**: by default XR poses are relative to the head's FULL pose
+when tracking starts (`xr.head` starts at the origin; any tilt then bakes into
+"up"; a recentre re-zeroes it). `config`'s `Xr.floorLocked(true)` instead
+centres the rig on the floor under the head, level and yaw-only:
+`Frame.camera`'s eye stands for that floor point (author it LEVEL at the
+player's feet), rig-local `y = 0` is the floor, `xr.head.y` is the eye height,
+and the headset draws the eye at `Frame.camera` + `xr.head`. A recentre moves
+only heading/XZ. Quest takes the floor from STAGE; without STAGE the floor is
+assumed 1.6 m below the starting head. `--emulate-xr` stands the head at
+`--xr-eye-height` (default 1.6) and draws from it. It wins over passthrough's
+room lock.
 
 **Mixed reality**: `config`'s `Xr.passthrough(true)` starts the headset's
 camera feed; `settings`' `Xr.passthroughEnabled(on)` pauses/resumes it; and
