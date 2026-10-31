@@ -1,14 +1,14 @@
 # A scripted ride for the goldens: walk up to the bike and get on (as
 # mount.script), wait on the pad, then full throttle north up the lane. The
-# chase camera climbs toward the crest near frame 614; the rider camera then
-# sees the block ahead. The throttle opens at 204, a multiple of the gauge's
-# 6-step refresh past where it opened before getting on came first.
+# chase camera climbs toward the crest near frame 692; the rider camera then
+# sees the block ahead. The throttle opens at 282, once getting on's fade
+# (black while the bike rises) has cleared, on the gauge's 6-step refresh.
 #   functor -d examples/hoverbike run native -- --input-script ride.script \
-#     --capture-frame /tmp/f.png --capture-at-frame 614 --capture-size 1600x1200
+#     --capture-frame /tmp/f.png --capture-at-frame 692 --capture-size 1600x1200
 10 W down
 100 W up
 120 E down
 121 E up
-204 W down
-844 C down
-845 C up
+282 W down
+922 C down
+923 C up

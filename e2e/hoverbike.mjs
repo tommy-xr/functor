@@ -4,7 +4,7 @@
 // The dunes (the default course):
 //
 //   a. A cold load never drops the bike: until every probe sees the
-//      heightfield it holds at the spawn, then it settles at hover height.
+//      heightfield it holds at the spawn, then it settles at the idle height.
 //   b. A route: straight, over the crest, past the block, a turn, a stop.
 //      Clearance over the crest stays inside [0.5, 2.0] m (no strike, no
 //      launch), vertical acceleration stays bounded, the block is passed
@@ -18,7 +18,7 @@
 //
 // The stand (T switches to it):
 //
-//   1. Settled hover clearance is 1.2 m ± 5 cm, and stays there while riding.
+//   1. Parked clearance is 0.3 m; ridden it is 1.2 m ± 5 cm, and stays there.
 //   2. Full throttle (W) follows the analytic thrust/drag speed curve.
 //   3. Full brake (gamepad left trigger) stops within the analytic distance.
 //   4. A steady turn (gamepad trigger + stick) holds the speed-dependent
@@ -35,9 +35,12 @@
 // up to the bike and pressing E (`board`); R puts the rider back on foot.
 //
 //   i.   Spawn on foot on the pad, away from the bike; walk up; E gets on.
+//        The parked bike rises to ride height while the fade is black: at
+//        the first fade-in step it is there, and stays.
 //   ii.  Ride a short way and stop. Holding E for 0.5 s fades and sets the
 //        walker down on the bike's left, on the ground, clear of the bike and
-//        the props, facing it.
+//        the props, facing it. The bike holds ride height through the fade,
+//        then sinks to the idle height.
 //   iii. Walk away, and back on the gamepad (left stick, south button).
 //   iv.  Holding E at speed is refused (slow down); braking while still
 //        holding gets off once below 2 m/s.
@@ -58,6 +61,10 @@ const DT = 1 / 60;
 
 // Mirrors examples/hoverbike/ride.fun, game.fun, dunes.fun and dunesLayout.fun.
 const HOVER = 1.2;
+const IDLE = 0.3; // parked
+const FADE_OUT = 0.1; // bars.fun's fadeOut
+// mount.fun's fade: 15 steps, plus `rise` (1.3 s) held black getting on.
+const MOUNT_STEPS = 16 + 78;
 const THRUST = 12;
 const TOP = 24;
 const DRAG_LIN = 0.3;
@@ -74,7 +81,7 @@ const WALKER_RADIUS = 0.3; // walk.fun
 const FOOT_Y = 0.92; // the walker's capsule centre standing on ground at 0
 const HOLD = 0.5; // mount.fun's holdTime
 const MAX_OFF_SPEED = 2; // mount.fun's maxSpeed
-const SPAWN = { x: 100, y: 2.15, z: -380 }; // on the dunes' start pad
+const SPAWN = { x: 100, y: 1.25, z: -380 }; // on the dunes' start pad
 const PROBE_RANGE = 3;
 const CREST_Z = -180;
 const BLOCK = { x: 100, z: 40, w: 8, d: 3 };
@@ -134,9 +141,10 @@ const tap = async (base, k) => {
 
 /**
  * Walk up to the bike and get on: W until near the seat (the spawn faces
- * it), then E and the fade. Returns the model, riding.
+ * it), then E and the fade. Returns the model, riding. With `trace`, steps
+ * the fade one at a time and pushes each model.
  */
-async function board(base) {
+async function board(base, trace) {
   await key(base, "w", true);
   let m;
   for (let i = 0; i < 200; i++) {
@@ -145,7 +153,9 @@ async function board(base) {
   }
   await key(base, "w", false);
   await tap(base, "e");
-  m = await step(base, 16);
+  if (trace) {
+    for (let i = 0; i < MOUNT_STEPS; i++) trace.push((m = await step(base, 1)));
+  } else m = await step(base, MOUNT_STEPS);
   if (m.mode.$ctor !== "Riding") throw new Error(`never got on (near ${m.near}, at ${JSON.stringify(m.footPrev)})`);
   return m;
 }
@@ -213,7 +223,7 @@ async function ride(port, check) {
     let m = await step(base, 2);
     check(m.course.$ctor === "OnStand" && Math.abs(m.last.x - (STAND_X + 5)) < 1e-3, `T switches to the stand`);
     m = await step(base, 120);
-    check(Math.abs(m.clearance - HOVER) < 0.05, `settled clearance ${m.clearance.toFixed(4)} m`);
+    check(Math.abs(m.clearance - IDLE) < 0.01, `parked clearance ${m.clearance.toFixed(4)} m`);
     const start = m.last;
     m = await board(base);
 
@@ -374,7 +384,7 @@ async function dunes(port, check, mode) {
         ? `cold load: no motion before the probes see ground`
         : `cold load: the heightmap beat the first poll; the gate is covered by game.fun's expects`,
     );
-    check(Math.abs(seen.at(-1).clearance - HOVER) < 0.01, `cold load: rests at hover height (${seen.at(-1).clearance.toFixed(4)} m)`);
+    check(Math.abs(seen.at(-1).clearance - IDLE) < 0.01, `cold load: rests at the idle height (${seen.at(-1).clearance.toFixed(4)} m)`);
 
     // Pause, and respawn so both runs start from the same state whenever the
     // heightmap happened to land.
@@ -559,8 +569,17 @@ async function onFoot(port, check) {
     await tap(base, "e");
     m = await step(base, 10);
     check(m.mode.$ctor === "OnFoot" && m.fade.t < 0, `E away from the bike does nothing`);
-    m = await board(base);
+    const trace = [];
+    m = await board(base, trace);
     check(m.mode.$ctor === "Riding" && m.speed === 0, `walks up and gets on with E`);
+    // Each step's clearance is read at its start, so it trails the step.
+    const black = trace.findIndex((t) => t.mode.$ctor === "Riding");
+    const shown = trace.slice(black + 1).findIndex((t) => t.fade.t < 0 || t.fade.t > FADE_OUT + 0.001) + black + 1;
+    const after = trace.slice(shown);
+    check(trace.slice(0, black + 1).every((t) => Math.abs(t.clearance - IDLE) < 0.005),
+      `parked at ${IDLE} m until the black step (step ${black})`);
+    check(shown > black + 70 && after.every((t) => Math.abs(t.clearance - HOVER) < 0.015),
+      `risen while black: from the first fade-in step (${shown}) clearance ${Math.min(...after.map((t) => t.clearance)).toFixed(4)}..${Math.max(...after.map((t) => t.clearance)).toFixed(4)} m`);
 
     // ii. Ride a short way, stop, hold E.
     await key(base, "w", true);
@@ -576,7 +595,13 @@ async function onFoot(port, check) {
     for (let i = 0; i < 3 && m.fade.t < 0; i++) m = await step(base, 1);
     check(m.fade.t >= 0 && m.fade.action.$ctor === "Mount.GetOff" && Math.abs(m.off - HOLD) < 1e-6, `held ${m.off.toFixed(3)} s: the fade starts`);
     await key(base, "e", false);
-    m = await step(base, 30);
+    const fading = [];
+    while (m.fade.t >= 0 && fading.length < 30) fading.push((m = await step(base, 1)));
+    // The step after the fade clears still reads the last ridden clearance.
+    fading.push((m = await step(base, 1)));
+    check(fading.every((t) => Math.abs(t.clearance - HOVER) < 0.01), `ride height held through the fade (${fading.length - 1} steps)`);
+    m = await step(base, 150);
+    check(Math.abs(m.clearance - IDLE) < 0.01, `then sinks to the idle height (${m.clearance.toFixed(4)} m)`);
     const w = m.footPrev;
     const bike = m.last;
     const apart = Math.hypot(w.x - bike.x, w.z - bike.z);
@@ -603,7 +628,7 @@ async function onFoot(port, check) {
     await post(base, "/input", { type: "gamepad", south: true });
     m = await step(base, 1);
     await post(base, "/input", { type: "gamepad_clear" });
-    m = await step(base, 16);
+    m = await step(base, MOUNT_STEPS);
     check(m.mode.$ctor === "Riding", `walks back on the gamepad's left stick and gets on with its south button`);
 
     // iv. Refused at speed; braking while holding gets off.
