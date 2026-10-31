@@ -324,6 +324,24 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "fullbody-down-t2.8",
+      "sample": "fullbody",
+      "fixedTime": 2.8,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
+      "name": "fullbody-twin-t5.4",
+      "sample": "fullbody",
+      "fixedTime": 5.4,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }

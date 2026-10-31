@@ -681,6 +681,13 @@ let held = (camera, grip: Input.pose) =>
 
 `examples/held-pose` draws an asymmetric marker this way.
 
+`examples/fullbody` drives a whole upper body (Xbot) from the head and both
+grips: `Anim.reach` + `Anim.orient` arms, a lagging torso, finger curls, and
+tracking-loss blends, with a front-view twin on a render-target panel. It is
+floor-locked and calibrates its scale from your eye height. `npm run
+test:fullbody` injects crossed-arm, overhead, wrist-roll, loss and recentre
+samples and checks the solved joints numerically.
+
 ## After bring-up (in rough order)
 
 - The typed XR snapshot is exposed to Functor Lang through the per-tick
