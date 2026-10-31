@@ -17,7 +17,7 @@ use functor_lang::Value;
 
 use super::{Frame, OpId};
 use crate::asset::AssetProgress;
-use crate::jobs::{JobPort, JobSpec, Shareable, Ticket};
+use crate::jobs::{JobKind, JobPort, JobSpec, ReadSlot, RunSpec, Shareable, Ticket};
 use crate::functor_lang_prelude::NetEventKind;
 use crate::net::HttpResult;
 
@@ -142,6 +142,11 @@ struct JobOp {
     attempt: u32,
     stop: Stop,
     cancelled: Cancelled,
+    /// What the live `Job.run` attempt read, once it finished.
+    reads: Option<ReadSlot>,
+    /// A reload kept the attempt: its result is delivered only if what it
+    /// read still reads the same.
+    recheck: bool,
 }
 
 impl JobOp {
@@ -194,6 +199,15 @@ impl Drop for Stop {
     fn drop(&mut self) {
         self.signal();
     }
+}
+
+/// Dispatch `job` (op `id`) again as its next attempt.
+fn redispatch(jobs: &JobPort, id: u64, job: &mut JobOp) {
+    job.attempt += 1;
+    let (stop, reads) = jobs.start(&job.spec, Ticket { id, attempt: job.attempt });
+    job.stop = Stop(Some(stop));
+    job.reads = reads;
+    job.recheck = false;
 }
 
 /// The arrival that answered an op, kept so a branch or dropped Δ that
@@ -277,14 +291,14 @@ impl Requests {
     /// Whether a job with `key` is in flight on the working table: the
     /// committed ops and Δ's, in drain order (design J2: a same-key request
     /// is dropped while one is pending).
-    pub fn job_in_flight(&self, key: &str) -> bool {
-        self.find_in_flight(key).is_some()
+    pub fn job_in_flight(&self, kind: JobKind, key: &str) -> bool {
+        self.find_in_flight(kind, key).is_some()
     }
 
     /// The job op with `key` in flight for Δ (at most one): Δ's own, else
     /// a committed one.
-    fn find_in_flight(&self, key: &str) -> Option<InFlight> {
-        let keyed = |p: &Pending| p.job.as_ref().is_some_and(|j| j.spec.key() == key);
+    fn find_in_flight(&self, kind: JobKind, key: &str) -> Option<InFlight> {
+        let keyed = |p: &Pending| p.job.as_ref().is_some_and(|j| j.spec.key() == (kind, key));
         let live = |p: &Pending| keyed(p) && p.job.as_ref().is_some_and(JobOp::live);
         if let Some(at) = self.provisional.iter().position(|(_, p)| live(p)) {
             return Some(InFlight::Provisional(at));
@@ -326,13 +340,14 @@ impl Requests {
         continuation: Value,
         dispatch: bool,
     ) {
-        let (token, stop) = if dispatch {
+        let (token, stop, reads) = if dispatch {
             let ticket = Ticket { id: crate::jobs::next_id(), attempt: 1 };
-            (Some(ticket.id), Stop(Some(self.jobs.start(&spec, ticket))))
+            let (stop, reads) = self.jobs.start(&spec, ticket);
+            (Some(ticket.id), Stop(Some(stop)), reads)
         } else {
-            (None, Stop::default())
+            (None, Stop::default(), None)
         };
-        let job = JobOp { spec, attempt: 1, stop, cancelled: Cancelled::No };
+        let job = JobOp { spec, attempt: 1, stop, cancelled: Cancelled::No, reads, recheck: false };
         let pending = Pending {
             channel: Channel::Job,
             token,
@@ -347,8 +362,8 @@ impl Requests {
     /// Cancel the in-flight job with `key`: no message is delivered for it.
     /// A committed op is kept, so a seek or branch from before the cancel
     /// restores (and re-dispatches) it.
-    pub fn cancel_job(&mut self, key: &str) {
-        match self.find_in_flight(key) {
+    pub fn cancel_job(&mut self, kind: JobKind, key: &str) {
+        match self.find_in_flight(kind, key) {
             Some(InFlight::Provisional(at)) => {
                 self.provisional.remove(at);
             }
@@ -394,9 +409,47 @@ impl Requests {
             let (Some(id), Some(job)) = (pending.token, pending.job.as_mut()) else { continue };
             // Never dispatched (a replay's op): its answer is the log's.
             if job.live() && job.stop.0.is_none() {
-                job.attempt += 1;
-                let ticket = Ticket { id, attempt: job.attempt };
-                job.stop = Stop(Some(self.jobs.start(&job.spec, ticket)));
+                redispatch(&self.jobs, id, job);
+            }
+        }
+    }
+
+    /// After a reload, for each `Job.run` still running: if the code its
+    /// function reaches changed, stop it and run it again on the new program
+    /// (a new attempt, so the old result drops); else keep it, re-checking
+    /// its reads at delivery. A result that already arrived is delivered
+    /// (re-checked too), like one already recorded.
+    fn reload_jobs(&mut self, old: &functor_lang::ir::Module, new: &functor_lang::ir::Module) {
+        use functor_lang::reuse::CodeIndex;
+        let Some(program) = self.jobs.program().map(|p| p.source.clone()) else { return };
+        let mut arrived = self.jobs.mailbox().tickets();
+        arrived.extend(self.parked_jobs());
+        let mut index: Option<(CodeIndex, CodeIndex)> = None;
+        let pendings = self.ops.values_mut().chain(self.provisional.iter_mut().map(|(_, p)| p));
+        for pending in pendings {
+            let Some(job) = pending.job.as_mut() else { continue };
+            let JobSpec::Run(run) = &job.spec else { continue };
+            let Ok(call) = &run.call else { continue };
+            let f = call.f.clone();
+            let moved = RunSpec {
+                key: run.key.clone(),
+                call: Ok(crate::jobs::RunCall { program: program.clone(), ..call.clone() }),
+            };
+            job.spec = JobSpec::Run(std::sync::Arc::new(moved));
+            let ticket = pending.token.map(|id| Ticket { id, attempt: job.attempt });
+            let Some(ticket) = ticket.filter(|_| job.live() && pending.answer.is_none()) else {
+                continue;
+            };
+            if !job.stop.running() {
+                continue;
+            }
+            let (old, new) = index.get_or_insert_with(|| (CodeIndex::new(old), CodeIndex::new(new)));
+            let same = old.code_key(&f).is_some() && old.code_key(&f) == new.code_key(&f);
+            if same || arrived.contains(&ticket) {
+                job.recheck = true;
+            } else {
+                job.stop.signal();
+                redispatch(&self.jobs, ticket.id, job);
             }
         }
     }
@@ -557,6 +610,7 @@ impl Requests {
         old: &functor_lang::ir::Module,
         new: &functor_lang::ir::Module,
     ) -> Vec<String> {
+        self.reload_jobs(old, new);
         // One pass over every continuation: indexing the modules dominates.
         let all: Vec<Value> = self
             .ops
@@ -607,6 +661,9 @@ impl Requests {
             return Delivered::Unsolicited;
         }
         let answers = |p: &Pending| arrival.answers(p);
+        if self.stale_after_reload(arrival) {
+            return Delivered::Dropped;
+        }
         let found = match self.ops.iter_mut().find(|(_, p)| answers(p)) {
             Some((op, pending)) => Some((*op, pending)),
             None => self
@@ -620,6 +677,30 @@ impl Requests {
         };
         pending.answer = Some(Answer { frame, seq, arrival: arrival.clone() });
         Delivered::Op(op, pending.continuation.clone())
+    }
+
+    /// Whether `arrival` answers a job a reload kept running whose reads no
+    /// longer read the same: it runs again instead (unknown reads count as
+    /// changed).
+    fn stale_after_reload(&mut self, arrival: &Arrival) -> bool {
+        let reader = self.jobs.reader();
+        let pendings = self.ops.values_mut().chain(self.provisional.iter_mut().map(|(_, p)| p));
+        let Some(pending) = pendings.into_iter().find(|p| arrival.answers(p)) else {
+            return false;
+        };
+        let (Some(id), Some(job)) = (pending.token, pending.job.as_mut()) else { return false };
+        if !std::mem::take(&mut job.recheck) {
+            return false;
+        }
+        let current = match job.reads.as_ref().and_then(|slot| slot.get()) {
+            Some(Some(inputs)) => crate::functor_lang_prelude::job::reads_current(reader, inputs),
+            Some(None) => false,
+            None => true,
+        };
+        if !current {
+            redispatch(&self.jobs, id, job);
+        }
+        !current
     }
 
     /// A replay's re-delivery of recorded op `op`: its continuation, if it
@@ -1027,11 +1108,11 @@ mod tests {
         let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
         // `run, run` in one drain: the second sees the first (provisional).
         issue_load(&mut requests, "a.txt");
-        assert!(requests.job_in_flight("a.txt"));
+        assert!(requests.job_in_flight(JobKind::File, "a.txt"));
         // `cancel, run`: the cancel takes the provisional op, so the run is
         // admitted.
-        requests.cancel_job("a.txt");
-        assert!(!requests.job_in_flight("a.txt"));
+        requests.cancel_job(JobKind::File, "a.txt");
+        assert!(!requests.job_in_flight(JobKind::File, "a.txt"));
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         assert_eq!(fake.dispatched().len(), 2);
@@ -1048,7 +1129,7 @@ mod tests {
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         let first = fake.held()[0];
-        requests.cancel_job("a.txt");
+        requests.cancel_job(JobKind::File, "a.txt");
         requests.commit(0, 1);
         // A branch from frame 0 restores the op: attempt 2 runs.
         branch(&mut requests, 1);
@@ -1066,7 +1147,7 @@ mod tests {
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         let first = fake.held()[0];
-        requests.cancel_job("a.txt");
+        requests.cancel_job(JobKind::File, "a.txt");
         requests.commit(0, 1);
         branch(&mut requests, 1);
         requests.park(Arrival::Job { ticket: first, value: Shareable::Bool(true) });
@@ -1084,7 +1165,7 @@ mod tests {
         requests.commit(0, 0);
         // Finished, not yet delivered, when the game cancels.
         fake.complete(fake.held()[0]);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(JobKind::File, "a.txt");
         requests.commit(0, 1);
         branch(&mut requests, 1);
         assert_eq!(fake.dispatched().len(), 1, "not run again");
@@ -1097,7 +1178,7 @@ mod tests {
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         let first = fake.held()[0];
-        requests.cancel_job("a.txt");
+        requests.cancel_job(JobKind::File, "a.txt");
         requests.commit(0, 1);
         branch(&mut requests, 1);
         let second = fake.held()[1];
@@ -1114,7 +1195,7 @@ mod tests {
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         requests.commit(0, 1);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(JobKind::File, "a.txt");
         requests.commit(0, 2);
         // Branch keeping frames before 3: the cancel survives.
         branch(&mut requests, 3);
@@ -1131,18 +1212,18 @@ mod tests {
         let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(JobKind::File, "a.txt");
         requests.commit(0, 5);
         // Scrubbed at frame 3 the op is in flight: Δ there is the branch's.
         requests.set_view(Some(3));
-        assert!(requests.job_in_flight("a.txt"));
-        requests.cancel_job("a.txt");
-        assert!(!requests.job_in_flight("a.txt"));
+        assert!(requests.job_in_flight(JobKind::File, "a.txt"));
+        requests.cancel_job(JobKind::File, "a.txt");
+        assert!(!requests.job_in_flight(JobKind::File, "a.txt"));
         // A seek drops Δ: the shown future's own cancel stands.
         requests.drop_delta(6);
         requests.dispatch_restored();
         requests.set_view(None);
-        assert!(!requests.job_in_flight("a.txt"));
+        assert!(!requests.job_in_flight(JobKind::File, "a.txt"));
         assert_eq!(fake.dispatched().len(), 1);
     }
 
@@ -1151,7 +1232,7 @@ mod tests {
         let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(JobKind::File, "a.txt");
         requests.drop_delta(1);
         requests.dispatch_restored();
         assert_eq!(fake.dispatched().len(), 1, "its worker never stopped");
@@ -1190,7 +1271,7 @@ mod tests {
         let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(JobKind::File, "a.txt");
         requests.commit(0, 2);
         let op = OpId { epoch: 0, frame: 0, ordinal: 0 };
         let value = Shareable::Bool(true);

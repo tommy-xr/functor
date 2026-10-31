@@ -198,6 +198,7 @@ use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteL
 
 pub mod bytes;
 pub mod cells;
+pub(crate) mod job;
 pub mod lightmap;
 pub mod mesh;
 pub mod model;
@@ -445,6 +446,19 @@ pub enum EffectTree {
     /// Stop the in-flight `File.load` of `path` (`File.cancel(path)`).
     FileCancel {
         path: String,
+    },
+    /// Call top-level function `f` with `input` on a job worker
+    /// (`Job.run(key, f, input, tagger)`); the result lands like a
+    /// `File.load`'s.
+    JobRun {
+        key: String,
+        f: Value,
+        input: Value,
+        tagger: Value,
+    },
+    /// Stop the in-flight `Job.run` with `key` (`Job.cancel(key)`).
+    JobCancel {
+        key: String,
     },
     /// Persist a plain-data value in a local save slot (`Persistence.save(slot,
     /// value)`). The payload is converted to its [`EffectValue`] at
@@ -1781,6 +1795,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_terrain(&mut reg);
         solid::register(&mut reg);
         bytes::register(&mut reg);
+        job::register(&mut reg);
         path::register(&mut reg);
         mesh::register(&mut reg);
         cells::register(&mut reg);
@@ -6396,6 +6411,8 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         // A file load's result arrives frames later, like a response.
         | EffectTree::FileLoad { .. }
         | EffectTree::FileCancel { .. }
+        | EffectTree::JobRun { .. }
+        | EffectTree::JobCancel { .. }
         // Audio one-shots are fire-and-forget too. `playThen`'s completion
         // needs `update`, but arrives frames later via the audio-finished
         // hook — the same shape as Http. Preloads likewise: `preloadThen`'s
@@ -6594,7 +6611,7 @@ dropping the rest"
                 // is in flight another is dropped (cancel first to replace
                 // it); the kind records which, so a replay that decides
                 // otherwise diverges loudly.
-                let admitted = !requests.job_in_flight(&path);
+                let admitted = !requests.job_in_flight(crate::jobs::JobKind::File, &path);
                 let kind = if admitted { "file.load" } else { "file.load.dropped" };
                 let (recorded, ordinal) = issue(runner, log, kind, args_digest(&path));
                 if admitted {
@@ -6605,7 +6622,25 @@ dropping the rest"
             }
             EffectTree::FileCancel { path } => {
                 issue(runner, log, "file.cancel", args_digest(&path));
-                requests.cancel_job(&path);
+                requests.cancel_job(crate::jobs::JobKind::File, &path);
+                continue;
+            }
+            EffectTree::JobRun { key, f, input, tagger } => {
+                // Like `File.load`: one in flight per key, the result a
+                // logged delivery. A function or input that can't run is
+                // answered with its error next frame, never silently.
+                let admitted = !requests.job_in_flight(crate::jobs::JobKind::Run, &key);
+                let kind = if admitted { "job.run" } else { "job.run.dropped" };
+                let (recorded, ordinal) = issue(runner, log, kind, args_digest(&key));
+                if admitted {
+                    let spec = job::spec(requests.jobs().program(), key, &f, &input);
+                    requests.issue_job(recorded, ordinal, spec, tagger, !suppress_outbound);
+                }
+                continue;
+            }
+            EffectTree::JobCancel { key } => {
+                issue(runner, log, "job.cancel", args_digest(&key));
+                requests.cancel_job(crate::jobs::JobKind::Run, &key);
                 continue;
             }
             EffectTree::PlayAudio { sound, position } => {
