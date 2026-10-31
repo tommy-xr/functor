@@ -227,7 +227,8 @@ fn length(v: [f32; 3]) -> f32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioSource {
     /// Cross-frame identity. A source with the same key across frames is the same
-    /// live voice (kept playing); changing `position`/`gain` updates it in place.
+    /// live voice (kept playing); changing `position`/`gain` updates it in place,
+    /// changing `sound` restarts it.
     pub key: String,
     /// Asset path the host loads/decodes and loops.
     pub sound: String,
@@ -300,7 +301,8 @@ pub enum SceneUpdate {
 
 /// Pure diff between the live voices (keyed by their last-applied source) and the
 /// `desired` scene. Produces stops (gone), spawns (new), and updates (changed) —
-/// the shell maps each to a backend op. Deterministic order (stops, then spawns
+/// the shell maps each to a backend op. A voice whose `sound` changed restarts
+/// (a stop then a spawn), since the shell can't swap a playing voice's file. Deterministic order (stops, then spawns
 /// /updates by key) so it's golden-testable. A key repeated in `desired` keeps
 /// its first occurrence (later duplicates are ignored).
 pub fn reconcile(live: &HashMap<String, AudioSource>, desired: &AudioScene) -> Vec<SceneUpdate> {
@@ -330,6 +332,10 @@ pub fn reconcile(live: &HashMap<String, AudioSource>, desired: &AudioScene) -> V
     for src in wanted {
         match live.get(&src.key) {
             None => updates.push(SceneUpdate::Spawn(src.clone())),
+            Some(current) if current.sound != src.sound => {
+                updates.push(SceneUpdate::Stop(src.key.clone()));
+                updates.push(SceneUpdate::Spawn(src.clone()));
+            }
             Some(current) if current != src => updates.push(SceneUpdate::Update(src.clone())),
             Some(_) => {} // unchanged: leave the live voice alone
         }
@@ -462,6 +468,24 @@ mod tests {
         };
         let desired = AudioScene::new(vec![moved.clone()]);
         assert_eq!(reconcile(&live, &desired), vec![SceneUpdate::Update(moved)]);
+    }
+
+    #[test]
+    fn reconcile_restarts_a_voice_whose_sound_changed() {
+        let fountain = AudioSource::at("fountain".into(), "water.wav".into(), 5.0, 0.0, 0.0);
+        let live = live_of(&[fountain.clone()]);
+        let swapped = AudioSource {
+            sound: "lava.wav".into(),
+            ..fountain
+        };
+        let desired = AudioScene::new(vec![swapped.clone()]);
+        assert_eq!(
+            reconcile(&live, &desired),
+            vec![
+                SceneUpdate::Stop("fountain".into()),
+                SceneUpdate::Spawn(swapped),
+            ]
+        );
     }
 
     #[test]

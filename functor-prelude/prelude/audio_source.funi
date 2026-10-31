@@ -1,7 +1,8 @@
 //! Continuous, declarative voices used in an `AudioScene`.
 //!
 //! Sources are keyed for cross-frame identity so the runtime can reconcile a
-//! live voice instead of restarting it every frame.
+//! live voice instead of restarting it every frame. Changing a keyed source's
+//! gain or position updates the live voice; changing its sound restarts it.
 
 /// An opaque continuous audio source.
 type t = host
