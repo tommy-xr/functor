@@ -25,7 +25,7 @@ let facadeSlabs =
   let f = footprint in
   levels |> List.concatMap((level) =>
     let y = level * storey in
-    let top = if level == List.length(levels) - 1.0 then facadeHeight - y else storey in
+    let top = facadeTop(level) in
     let run = (s: Side, s0: float, s1: float, make: (Piece) => Scene.t) =>
       pieces(s0, s1, top, facadeHoles(level, s)) |> List.map((p) => make({ p with y0: y + p.y0, y1: y + p.y1 })) in
     List.flatten([

@@ -14,7 +14,7 @@ let overlap = (a: Rect, b: Rect): float =>
 let within = (outer: Rect, r: Rect): bool =>
   r.x0 >= outer.x0 && r.x1 <= outer.x1 && r.z0 >= outer.z0 && r.z1 <= outer.z1
 let pairs = ids |> List.concatMap((i) => ids |> List.filter((j) => j > i) |> List.map((j) => (i, j)))
-let near = (a: float, b: float): bool => Math.abs(a - b) < 0.001
+let near = Building.near
 
 // Rooms on one level don't overlap; every inside room is within the
 // footprint, on level 0 or 1.
@@ -153,8 +153,7 @@ expect Provenance.status != Provenance.Current
 // only its own vertices, and putting the cells back together (indices plus
 // each run's start; vertex arrays end to end) gives the mesh byte for byte,
 // UV2 included.
-let u32s = (b: Bytes.t): List<float> =>
-  List.range(Bytes.length(b) / 4.0) |> List.map((k) => Bytes.u32le(4.0 * k, b) |> Binary.require)
+let u32s = (b: Bytes.t): List<float> => Decode.run(Decode.list(Bytes.length(b) / 4.0, Decode.u32le), b) |> Binary.require
 let splitsExactly = (data: Model.staticData): bool =>
   let runs = Building.runsOf(data) in
   let cells = runs |> List.map((run) => (run, Building.cellData(data, run))) in
