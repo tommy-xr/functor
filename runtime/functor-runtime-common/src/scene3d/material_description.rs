@@ -174,6 +174,7 @@ impl MaterialDescription {
                     t,
                     0,
                     SpriteSampling::Linear,
+                    true,
                     &scene_context.texture_pipeline,
                     context,
                     scene_context,
@@ -232,6 +233,7 @@ impl MaterialDescription {
                     texture,
                     0,
                     *sampling,
+                    false,
                     &scene_context.texture_pipeline,
                     context,
                     scene_context,
@@ -262,6 +264,7 @@ fn bind_optional_texture(
                 t,
                 unit,
                 SpriteSampling::Linear,
+                true,
                 pipeline,
                 context,
                 scene_context,
@@ -276,10 +279,14 @@ fn bind_optional_texture(
 /// (the color/sRGB pipeline for albedo, the linear one for data maps such as
 /// normal maps), or a render target's read texture (last completed write). A
 /// target id no frame declares binds a 1x1 magenta fallback and warns once.
+/// `mips`: a file texture minifies through its mip chain. Sprites pass false
+/// (a sheet's frames don't align with mip blocks, so coarse mips blend
+/// neighbouring frames), and so do lightmaps (their sampler has no mips).
 pub(super) fn bind_texture_description(
     texture: &TextureDescription,
     unit: u32,
     sampling: SpriteSampling,
+    mips: bool,
     pipeline: &std::sync::Arc<crate::asset::BuiltAssetPipeline<crate::texture::Texture2D>>,
     context: &RenderContext,
     scene_context: &SceneContext,
@@ -292,7 +299,7 @@ pub(super) fn bind_texture_description(
                 .get();
             texture.bind(unit, context);
             set_bound_texture_wrap(unit, true, context);
-            set_bound_texture_filter(unit, sampling, texture.mipmapped(), context);
+            set_bound_texture_filter(unit, sampling, mips && texture.mipmapped(), context);
         }
         TextureDescription::FileClamped(file) => {
             let texture = context
@@ -301,7 +308,7 @@ pub(super) fn bind_texture_description(
                 .get();
             texture.bind(unit, context);
             set_bound_texture_wrap(unit, false, context);
-            set_bound_texture_filter(unit, sampling, texture.mipmapped(), context);
+            set_bound_texture_filter(unit, sampling, mips && texture.mipmapped(), context);
         }
         // `Asset.whilePending`: the first loaded chain entry binds while the
         // primary streams in (instead of the checkerboard fallback); a FAILED
@@ -321,7 +328,7 @@ pub(super) fn bind_texture_description(
             );
             texture.bind(unit, context);
             set_bound_texture_wrap(unit, true, context);
-            set_bound_texture_filter(unit, sampling, texture.mipmapped(), context);
+            set_bound_texture_filter(unit, sampling, mips && texture.mipmapped(), context);
         }
         TextureDescription::FileClampedWhilePending {
             file,
@@ -338,7 +345,7 @@ pub(super) fn bind_texture_description(
             );
             texture.bind(unit, context);
             set_bound_texture_wrap(unit, false, context);
-            set_bound_texture_filter(unit, sampling, texture.mipmapped(), context);
+            set_bound_texture_filter(unit, sampling, mips && texture.mipmapped(), context);
         }
         TextureDescription::Builtin(which) => {
             // Select the unit BEFORE the lazy upload, for the same reason the
