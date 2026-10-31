@@ -646,6 +646,13 @@ impl<'a> Shell<'a> {
             pool.fake.complete(ticket);
             count(if live { "jobs finished" } else { "stopped jobs finished" });
         }
+        // Held jobs report now and then, as running ones do.
+        for ticket in pool.fake.held() {
+            if pool.rng.below(4) == 0 {
+                pool.fake.report(ticket, pool.rng.below(5) as f64 / 4.0);
+                count("job progress reported");
+            }
+        }
         let dispatched = pool.fake.dispatched();
         let fresh = dispatched[pool.seen..].to_vec();
         pool.seen = dispatched.len();

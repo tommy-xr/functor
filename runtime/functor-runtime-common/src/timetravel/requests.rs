@@ -17,7 +17,7 @@ use functor_lang::Value;
 
 use super::{Frame, OpId};
 use crate::asset::AssetProgress;
-use crate::jobs::{JobKind, JobPort, JobSpec, ReadSlot, RunSpec, Shareable, Ticket};
+use crate::jobs::{JobKind, JobPort, JobSpec, Progress, ReadSlot, RunSpec, Shareable, Ticket};
 use crate::functor_lang_prelude::NetEventKind;
 use crate::net::HttpResult;
 
@@ -49,6 +49,9 @@ pub enum Arrival {
     Assets(AssetProgress),
     /// A job's result: what its continuation receives.
     Job { ticket: Ticket, value: Shareable },
+    /// A `Job.run`'s reported progress, as its `Job.progress` taggers
+    /// received it. Logged, never mailed: the frame reads the job's latest.
+    JobProgress { op: OpId, fraction: f64 },
 }
 
 impl Arrival {
@@ -87,7 +90,7 @@ impl Arrival {
             Arrival::AudioFinished(token) => Some((Channel::Audio, *token)),
             Arrival::PreloadSettled(token) => Some((Channel::Preload, *token)),
             Arrival::Job { ticket, .. } => Some((Channel::Job, ticket.id)),
-            Arrival::Net { .. } | Arrival::Assets(_) => None,
+            Arrival::Net { .. } | Arrival::Assets(_) | Arrival::JobProgress { .. } => None,
         }
     }
 
@@ -147,6 +150,12 @@ struct JobOp {
     /// A reload kept the attempt: its result is delivered only if what it
     /// read still reads the same.
     recheck: bool,
+    /// What the live attempt reported; `None` when not dispatched here (a
+    /// fork's op: its progress is the log's).
+    progress: Option<Progress>,
+    /// The progress its `Job.progress` taggers last received, and on which
+    /// frame: a frame delivers only a change.
+    shown: Option<(f64, Frame)>,
 }
 
 impl JobOp {
@@ -204,9 +213,10 @@ impl Drop for Stop {
 /// Dispatch `job` (op `id`) again as its next attempt.
 fn redispatch(jobs: &JobPort, id: u64, job: &mut JobOp) {
     job.attempt += 1;
-    let (stop, reads) = jobs.start(&job.spec, Ticket { id, attempt: job.attempt });
-    job.stop = Stop(Some(stop));
-    job.reads = reads;
+    let started = jobs.start(&job.spec, Ticket { id, attempt: job.attempt });
+    job.stop = Stop(Some(started.stop));
+    job.reads = started.reads;
+    job.progress = Some(started.progress);
     job.recheck = false;
 }
 
@@ -255,6 +265,8 @@ pub struct Requests {
     jobs: JobPort,
     /// See [`Self::set_view`].
     view: Option<Frame>,
+    /// A replay step's logged job progress, for its subscriptions.
+    replayed_progress: Vec<(OpId, f64)>,
 }
 
 impl Requests {
@@ -340,14 +352,23 @@ impl Requests {
         continuation: Value,
         dispatch: bool,
     ) {
-        let (token, stop, reads) = if dispatch {
+        let (token, stop, reads, progress) = if dispatch {
             let ticket = Ticket { id: crate::jobs::next_id(), attempt: 1 };
-            let (stop, reads) = self.jobs.start(&spec, ticket);
-            (Some(ticket.id), Stop(Some(stop)), reads)
+            let started = self.jobs.start(&spec, ticket);
+            (Some(ticket.id), Stop(Some(started.stop)), started.reads, Some(started.progress))
         } else {
-            (None, Stop::default(), None)
+            (None, Stop::default(), None, None)
         };
-        let job = JobOp { spec, attempt: 1, stop, cancelled: Cancelled::No, reads, recheck: false };
+        let job = JobOp {
+            spec,
+            attempt: 1,
+            stop,
+            cancelled: Cancelled::No,
+            reads,
+            recheck: false,
+            progress,
+            shown: None,
+        };
         let pending = Pending {
             channel: Channel::Job,
             token,
@@ -558,6 +579,13 @@ impl Requests {
         cut_disconnects: Option<Vec<Arrival>>,
     ) {
         self.ops.retain(|_, p| p.issued < frame);
+        // Progress shown in the cut future isn't the kept model's: its
+        // taggers get the latest again.
+        for job in self.ops.values_mut().filter_map(|p| p.job.as_mut()) {
+            if job.shown.is_some_and(|(_, at)| at >= frame) {
+                job.shown = None;
+            }
+        }
         // A job cancelled in the cut future is in flight again; its worker
         // stopped, so it runs again from its spec.
         self.restore(|c| match c {
@@ -736,7 +764,7 @@ impl Requests {
             })
             .map(|(op, p)| {
                 // Cancelled after `frame`: in flight there.
-                let job = p.job.clone().map(|j| JobOp { cancelled: Cancelled::No, ..j });
+                let job = p.job.clone().map(|j| JobOp { cancelled: Cancelled::No, progress: None, ..j });
                 (*op, Pending { token: None, answer: None, job, ..p.clone() })
             })
             .collect();
@@ -848,6 +876,58 @@ impl Requests {
             || !self.mailbox.is_empty()
             || !self.jobs.mailbox().tickets().is_empty()
             || self.ops.values().any(|p| p.answer.as_ref().is_some_and(|a| a.frame > frame))
+            || self.ops.values().any(|p| self.unshown(p).is_some())
+    }
+
+    /// A replay step's logged progress: [`Self::progress_due`] hands it to
+    /// the step's subscriptions.
+    pub(crate) fn set_replayed_progress(&mut self, progress: Vec<(OpId, f64)>) {
+        self.replayed_progress = progress;
+    }
+
+    /// The progress this frame's `Job.progress(key)` taggers should get, as
+    /// `(op, key, fraction)`: for each of `keys`, its `Job.run` in flight,
+    /// if the live attempt reported something they weren't shown. Only
+    /// committed ops report (an op's id is stamped when its frame records).
+    /// Replaying, the step's logged progress instead.
+    pub(crate) fn progress_due(&mut self, keys: &[&str]) -> Vec<(OpId, String, f64)> {
+        let replayed = std::mem::take(&mut self.replayed_progress);
+        let mut due: Vec<(OpId, String, f64)> = replayed
+            .into_iter()
+            .filter_map(|(op, fraction)| {
+                let (_, key) = self.ops.get(&op)?.job.as_ref()?.spec.key();
+                Some((op, key.to_string(), fraction))
+            })
+            .collect();
+        if self.view.is_some() {
+            return due;
+        }
+        for key in keys {
+            let live = self.ops.iter().find_map(|(op, p)| {
+                let job = p.job.as_ref()?;
+                (job.spec.key() == (JobKind::Run, *key)).then_some(())?;
+                Some((*op, self.unshown(p)?))
+            });
+            if let Some((op, fraction)) = live {
+                due.push((op, key.to_string(), fraction));
+            }
+        }
+        due
+    }
+
+    /// `p`'s latest progress, if it is a job in flight whose taggers
+    /// weren't shown it.
+    fn unshown(&self, p: &Pending) -> Option<f64> {
+        let job = p.job.as_ref().filter(|j| j.live() && p.answer.is_none())?;
+        let latest = job.progress.as_ref()?.latest()?;
+        (job.shown.map(|(shown, _)| shown) != Some(latest)).then_some(latest)
+    }
+
+    /// `op`'s taggers received `fraction` on `frame`.
+    pub(crate) fn progress_shown(&mut self, op: OpId, fraction: f64, frame: Frame) {
+        if let Some(job) = self.ops.get_mut(&op).and_then(|p| p.job.as_mut()) {
+            job.shown = Some((fraction, frame));
+        }
     }
 }
 
@@ -1304,6 +1384,29 @@ mod tests {
         // A's result doesn't answer B's op.
         let stray = Arrival::Job { ticket: mail_a[0].0, value: mail_a[0].1.clone() };
         assert!(matches!(b.deliver(&stray, 0, 0), Delivered::Dropped));
+    }
+
+    fn issue_run(requests: &mut Requests, key: &str) {
+        let spec = RunSpec { key: key.into(), call: Err(Shareable::Bool(false)) };
+        requests.issue_job(None, 0, JobSpec::Run(Arc::new(spec)), tagger(0.0), true);
+    }
+
+    #[test]
+    fn progress_is_due_from_committed_ops_only_and_a_fork_has_only_the_logs() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_run(&mut requests, "k");
+        fake.report(fake.held()[0], 0.5);
+        assert!(requests.progress_due(&["k"]).is_empty(), "provisional: no id yet");
+        requests.commit(0, 0);
+        let op = OpId { epoch: 0, frame: 0, ordinal: 0 };
+        assert_eq!(requests.progress_due(&["k"]), vec![(op, "k".to_string(), 0.5)]);
+        assert!(requests.progress_due(&["other"]).is_empty());
+        // A fork never reads the live attempt: only what a step logged.
+        let mut fork = requests.fork(0);
+        assert!(fork.progress_due(&["k"]).is_empty());
+        fork.set_replayed_progress(vec![(op, 0.25)]);
+        assert_eq!(fork.progress_due(&["k"]), vec![(op, "k".to_string(), 0.25)]);
+        assert!(fork.progress_due(&["k"]).is_empty(), "consumed by its step");
     }
 
     #[test]
