@@ -24,5 +24,32 @@
     ],
     "inputScript": "crowd.script",
     "captureAtFrame": 90
+  },
+  {
+    "name": "outfits-loadout-mixed",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "loadout-mixed.script",
+    "captureAtFrame": 75
+  },
+  {
+    "name": "outfits-loadout-mixed-female",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "loadout-mixed-female.script",
+    "captureAtFrame": 75
+  },
+  {
+    "name": "outfits-loadout-bare",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "loadout-bare.script",
+    "captureAtFrame": 75
   }
 ]
