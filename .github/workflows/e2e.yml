@@ -58,6 +58,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+          # PRs restore main's cache without saving their own (shared 10 GB budget).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The single `functor` binary embeds the web-runtime bundle via
       # `include_bytes!`, so that bundle must exist before the CLI is built —

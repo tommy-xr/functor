@@ -70,6 +70,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+          # PRs restore main's cache without saving their own (shared 10 GB budget).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Post-E3 the single `functor` binary always includes the native
       # GLFW/OpenGL runtime, so building the CLI links X11/GL/ALSA — install the
