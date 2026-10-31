@@ -225,6 +225,8 @@ pub(crate) fn depth_only_context<'a>(
         lod_fog: None,
         pass_serial: crate::next_pass_serial(),
         fog_cull_distance: None,
+        shadow_casters: false,
+        shadow_off: std::cell::Cell::new(false),
     }
 }
 
@@ -243,14 +245,17 @@ pub fn render_shadow_pass(
     shadow_map: &ShadowMap,
     light_space_matrix: Matrix4<f32>,
 ) {
-    let depth_ctx = depth_only_context(
-        gl,
-        shader_version,
-        asset_cache,
-        frame_time,
-        lights,
-        shadow_map.size as f32,
-    );
+    let depth_ctx = RenderContext {
+        shadow_casters: true,
+        ..depth_only_context(
+            gl,
+            shader_version,
+            asset_cache,
+            frame_time,
+            lights,
+            shadow_map.size as f32,
+        )
+    };
 
     let mut depth_material = DepthMaterial::create();
     depth_material.initialize(&depth_ctx);

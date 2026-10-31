@@ -221,6 +221,13 @@ fn tint_scene(scene: Scene3D, tint: [f32; 3]) -> Scene3D {
                 .map(|item| tint_scene(item, tint))
                 .collect(),
         ),
+        SceneObject::CastShadows(casts, items) => SceneObject::CastShadows(
+            casts,
+            items
+                .into_iter()
+                .map(|item| tint_scene(item, tint))
+                .collect(),
+        ),
         SceneObject::Instanced {
             template,
             instances,
@@ -312,6 +319,8 @@ pub(crate) struct RecognizedPrimitive<'a> {
     /// The template-internal transform accumulated between the instanced node
     /// and the leaf (Group wrappers plus the leaf's own xform).
     pub local: Matrix4<f32>,
+    /// The innermost `Scene.castShadows` in the template, if any.
+    pub casts_shadows: Option<bool>,
 }
 
 pub(crate) struct RecognizedModel<'a> {
@@ -319,12 +328,23 @@ pub(crate) struct RecognizedModel<'a> {
     /// Group wrappers plus the leaf's own xform; each mesh primitive further
     /// composes its glTF node transform on the right.
     pub local: Matrix4<f32>,
+    /// The innermost `Scene.castShadows` in the template, if any.
+    pub casts_shadows: Option<bool>,
+}
+
+impl RecognizedTemplate<'_> {
+    pub(crate) fn casts_shadows(&self) -> Option<bool> {
+        match self {
+            RecognizedTemplate::Primitive(primitive) => primitive.casts_shadows,
+            RecognizedTemplate::Model(model) => model.casts_shadows,
+        }
+    }
 }
 
 /// Decide whether `template` is drawable by the instanced hardware path.
 ///
-/// Recognized: `Group` chains with exactly one child (their transforms
-/// compose into `local`) ending in either a
+/// Recognized: `Group` (or one-child `Scene.castShadows`) chains with exactly
+/// one child (their transforms compose into `local`) ending in either a
 /// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Billboard`/`Plane` leaf under at most ONE material
 /// node — a solid `Color`, `Emissive` (no texture), or `Lit` (no texture, no
 /// normal map) — or a `Scene.model` leaf with no overrides, with or without
@@ -339,6 +359,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
         node: &'a Scene3D,
         local: Matrix4<f32>,
         material: Option<&'a MaterialDescription>,
+        casts_shadows: Option<bool>,
     ) -> Option<RecognizedTemplate<'a>> {
         match node.obj.resolved() {
             SceneObject::Geometry(shape) => {
@@ -357,6 +378,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                     primitive,
                     material: material?,
                     local: local * node.xform,
+                    casts_shadows,
                 }))
             }
             SceneObject::Model(description) => {
@@ -377,10 +399,15 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                 Some(RecognizedTemplate::Model(RecognizedModel {
                     description,
                     local: local * node.xform,
+                    casts_shadows,
                 }))
             }
             SceneObject::Group(items) => match items.as_slice() {
-                [only] => walk(only, local * node.xform, material),
+                [only] => walk(only, local * node.xform, material, casts_shadows),
+                _ => None,
+            },
+            SceneObject::CastShadows(casts, items) => match items.as_slice() {
+                [only] => walk(only, local * node.xform, material, Some(*casts)),
                 _ => None,
             },
             // A `Material` node's own xform is ignored by the renderer, so it
@@ -405,7 +432,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                     return None;
                 }
                 match items.as_slice() {
-                    [only] => walk(only, local, Some(description)),
+                    [only] => walk(only, local, Some(description), casts_shadows),
                     _ => None,
                 }
             }
@@ -416,7 +443,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
             SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
-    walk(template, Matrix4::from_scale(1.0), None)
+    walk(template, Matrix4::from_scale(1.0), None, None)
 }
 
 /// A short structural signature of a template — the once-per-topology key and
@@ -451,6 +478,16 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
             SceneObject::Terrain(_) => out.push_str("terrain"),
             SceneObject::Instanced { .. } => out.push_str("instanced"),
             SceneObject::Cells(..) => out.push_str("cells"),
+            SceneObject::CastShadows(_, items) => {
+                out.push_str("castShadows[");
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(' ');
+                    }
+                    describe(item, depth + 1, out);
+                }
+                out.push(']');
+            }
             SceneObject::Opacity(_, items) => {
                 out.push_str("opacity[");
                 for (index, item) in items.iter().enumerate() {
@@ -665,6 +702,46 @@ mod tests {
             xform: Matrix4::from_scale(1.0),
         };
         assert!(recognize(&wrapped).is_none());
+    }
+
+    /// A one-child `Scene.castShadows` is a transparent wrapper; the
+    /// innermost flag is reported. Without one, the template has no say.
+    #[test]
+    fn recognizer_sees_through_cast_shadows() {
+        let lit = |inner: Scene3D| Scene3D {
+            obj: SceneObject::Material(MaterialDescription::color(1.0, 0.0, 0.0, 1.0), vec![inner]),
+            xform: Matrix4::from_scale(1.0),
+        };
+        let cast = |casts: bool, inner: Scene3D| Scene3D {
+            obj: SceneObject::CastShadows(casts, vec![inner]),
+            xform: Matrix4::from_scale(2.0),
+        };
+        let flag = |template: &Scene3D| {
+            let RecognizedTemplate::Primitive(recognized) =
+                recognize(template).expect("recognized")
+            else {
+                panic!("expected a primitive template");
+            };
+            (recognized.casts_shadows, recognized.local)
+        };
+        assert_eq!(flag(&lit(Scene3D::cube())).0, None);
+        assert_eq!(
+            flag(&cast(false, lit(Scene3D::cube()))),
+            (Some(false), Matrix4::from_scale(2.0))
+        );
+        assert_eq!(
+            flag(&lit(cast(true, cast(false, Scene3D::cube())))).0,
+            Some(false)
+        );
+        assert_eq!(
+            flag(&cast(false, lit(cast(true, Scene3D::cube())))).0,
+            Some(true)
+        );
+        let pair = Scene3D {
+            obj: SceneObject::CastShadows(false, vec![Scene3D::cube(), Scene3D::cube()]),
+            xform: Matrix4::from_scale(1.0),
+        };
+        assert!(recognize(&lit(pair)).is_none());
     }
 
     #[test]

@@ -1100,6 +1100,12 @@ back-to-front by the average world position of their leaves, with depth writing
 off and no shadow — see the `Scene.opacity` reference for what that granularity
 does and does not fix. The 2D analogue is `Sprite.fade`.
 
+**Shadow casting is per light AND per subtree** — `Light.castShadows` picks the
+lights; `s |> Scene.castShadows(false)` keeps a subtree out of the shadow map
+(it still renders and receives shadows). The nearest enclosing call wins, so
+`Scene.castShadows(true, …)` re-enables casting inside a `false` subtree. Use it
+for mid/far crowd members: each shadow caster is a second draw.
+
 **Instancing stamps the template** — `scene |> Scene.instanced(instances)` is
 semantically a group of per-instance transformed copies of the template scene,
 so materials come FROM the template (`Scene.cube() |> Scene.lit(c)` instanced
