@@ -46,7 +46,7 @@ let clipName = (gait: Gait): string =>
 // the other outfit) stay hidden; a worn piece hides the body region under it.
 let parts = Assets.male_lod0Parts
 let head = [parts.body_head, parts.eyes, parts.eyebrows]
-let bare = [parts.body_torso, parts.body_arms, parts.body_legs, parts.body_feet, parts.hair_simple_parted]
+let bare = [parts.body_torso, parts.body_arms, parts.body_legs, parts.body_shins, parts.body_feet, parts.hair_simple_parted]
 let ranger = [parts.ranger_hood, parts.ranger_pauldrons, parts.ranger_body, parts.ranger_arms, parts.ranger_legs, parts.ranger_feet]
 let peasant = [parts.hair_buzzed, parts.peasant_body, parts.peasant_arms, parts.peasant_legs, parts.peasant_feet]
 

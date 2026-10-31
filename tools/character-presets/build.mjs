@@ -57,15 +57,19 @@ const LODS = [
 // Body regions by skin weight. A triangle is `head` if any corner has at least
 // HEAD_WEIGHT on the head joints (the cut sits just under every outfit's
 // collar); otherwise it takes the region with the most weight over its corners.
+// The pelvis (underwear) goes with the legs: trousers cover it, short tops don't.
+// Shins are their own region: trousers stop mid-calf and boots start below the
+// knee, so only the pair covers them.
 const HEAD_JOINTS = new Set(["Head", "neck_01"]);
 const HEAD_WEIGHT = 0.5;
-const REGIONS = ["head", "torso", "arms", "legs", "feet"];
+const REGIONS = ["head", "torso", "arms", "legs", "shins", "feet"];
 const regionOf = (joint) =>
   HEAD_JOINTS.has(joint) ? "head"
-  : /^(thigh|calf)_/.test(joint) ? "legs"
+  : /^(pelvis|thigh_)/.test(joint) ? "legs"
+  : /^calf_/.test(joint) ? "shins"
   : /^(foot|ball)_/.test(joint) ? "feet"
   : /^(upperarm|lowerarm|hand|thumb|index|middle|ring|pinky)_/.test(joint) ? "arms"
-  : "torso"; // root, pelvis, spine_*, clavicle_*
+  : "torso"; // spine_*, clavicle_*
 
 // Pinned inputs (archive SHA-256s are in examples/outfits/ASSETS.md).
 const SOURCE_SHA256 = {
