@@ -280,6 +280,46 @@
       "captureAtFrame": 30
     },
     {
+      "name": "liminal-office-stairwell",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "stairwell.script",
+      "captureAtFrame": 30
+    },
+    {
+      "name": "liminal-office-stairwell-day",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "noon-stairwell.script",
+      "captureAtFrame": 30
+    },
+    {
+      "name": "liminal-office-upstairs",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "upstairs.script",
+      "captureAtFrame": 30
+    },
+    {
+      "name": "liminal-office-upstairs-day",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "noon-upstairs.script",
+      "captureAtFrame": 30
+    },
+    {
       "name": "scene-grid-t2",
       "sample": "scene-grid",
       "fixedTime": 2.0,
