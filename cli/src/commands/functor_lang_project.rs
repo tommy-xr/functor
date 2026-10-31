@@ -647,6 +647,7 @@ paths are external — read it in a top-level value `config` doesn't use"
             hooks: &hooks,
             init: names.init,
             config: names.config,
+            loading: names.loading,
         };
         Ok(functor_lang::reads::phase_errors(&project.module, &types, &entry))
     }

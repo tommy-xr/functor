@@ -1687,14 +1687,29 @@ pub fn run(args: Args) {
         &args.entry_prefix,
     );
     let entry_source = args.entry_source.clone();
+    // A deterministic run (scripted input, a capture, a fixed clock) loads
+    // before its first frame, so frame numbers don't depend on load time;
+    // others draw the loading screen while the load job runs.
+    let load_first = args.input_script.is_some()
+        || args.capture_at_frame.is_some()
+        || args.capture_frame.is_some()
+        || args.fixed_time.is_some();
     // The producer is created where it runs: under --pipelined that is the
     // sim thread, which it never leaves.
     let make_game = move || -> Box<dyn Game> {
         if replay {
             Box::new(replay_game::ReplayGame::create(game_path.as_str()))
-        } else {
+        } else if load_first {
             Box::new(
                 functor_lang_game::FunctorLangGame::create_with_entry_source(
+                    game_path.as_str(),
+                    role,
+                    entry_source,
+                ),
+            )
+        } else {
+            Box::new(
+                functor_lang_game::FunctorLangGame::create_loading_with_entry_source(
                     game_path.as_str(),
                     role,
                     entry_source,
