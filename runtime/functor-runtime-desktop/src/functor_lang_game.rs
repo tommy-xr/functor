@@ -676,13 +676,17 @@ impl FunctorLangGame {
         self.data_watch
             .watch(std::mem::take(&mut loaded.file_reads));
         let retry_tts_before_reload = self.prev_tts;
-        let live_model_was_safe = self.recorder.prepare_reload(
+        let (live_model_was_safe, delta_dropped) = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
             &mut self.physics_frame,
             self.has_physics,
             &mut self.prev_tts,
         );
+        if delta_dropped {
+            self.next.clear();
+            self.deferred_queries.clear();
+        }
         rebase_connect_retry_deadlines(
             &mut self.connect_retries,
             retry_tts_before_reload,
@@ -1209,9 +1213,14 @@ impl Game for FunctorLangGame {
         // `tick_ns` / `physics_ns` perf counters the C6 gate watches.
         let started = Instant::now();
         let sampled_input = self.pending_sampled_input.take();
-        self.ctx()
+        let runs = self
+            .ctx()
             .before_physics(frame_time, sampled_input.as_ref());
         self.tick_ns += started.elapsed().as_nanos() as u64;
+        if !runs {
+            // Resuming was refused (an open connection): still scrubbed.
+            return;
+        }
         let physics_started = Instant::now();
         self.ctx().physics_phase(frame_time);
         self.physics_ns += physics_started.elapsed().as_nanos() as u64;
@@ -1631,19 +1640,19 @@ AudioScene.empty), got {}",
     }
     fn net_push_connected(&mut self, key: String, conn: i32) {
         self.ctx()
-            .deliver_net_event(key, NetEventKind::Connected, conn, String::new());
+            .push_arrival(Arrival::net(key, NetEventKind::Connected, conn, String::new()));
     }
     fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
         self.ctx()
-            .deliver_net_event(key, NetEventKind::Message, conn, text);
+            .push_arrival(Arrival::net(key, NetEventKind::Message, conn, text));
     }
     fn net_push_disconnected(&mut self, key: String, conn: i32) {
         self.ctx()
-            .deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
+            .push_arrival(Arrival::net(key, NetEventKind::Disconnected, conn, String::new()));
     }
     fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
         self.ctx()
-            .deliver_net_event(key, NetEventKind::Error, conn, message);
+            .push_arrival(Arrival::net(key, NetEventKind::Error, conn, message));
     }
     fn audio_push_finished(&mut self, token: i32) {
         self.ctx()

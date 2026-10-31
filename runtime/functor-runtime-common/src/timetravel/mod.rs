@@ -183,7 +183,9 @@ pub struct SceneRecorder {
     log: FrameLog,
     /// The rendered-frame index the next snapshot records at; monotonic.
     rendered_frame: u64,
-    /// In-flight ops (design-systems §2.4).
+    /// The branch: bumps on every branch commit, and names ops (`OpId`).
+    epoch: u64,
+    /// In-flight ops and parked arrivals (design-systems §2.4).
     requests: Requests,
     /// Bumps whenever existing recorded frames may have been replaced or a
     /// reload starts a new snapshot generation. Timeline marker consumers use
@@ -225,6 +227,7 @@ impl SceneRecorder {
             replay_prefix: None,
             log: FrameLog::new(),
             rendered_frame: 0,
+            epoch: 0,
             requests: Requests::default(),
             generation: 0,
             program_revision: 0,
@@ -299,7 +302,7 @@ impl SceneRecorder {
             participant.restore(frame, how, live);
         }
         if how != Restore::Resume {
-            self.requests.drop_delta();
+            self.requests.drop_delta(self.rendered_frame);
         }
         Ok(frame)
     }
@@ -364,6 +367,7 @@ impl SceneRecorder {
             participant.record(frame, &anchor);
         }
         self.tts_history.record(frame, &tts);
+        self.requests.prune(frame + 1);
         ReloadHistory::RestartedAt(frame)
     }
 
@@ -385,8 +389,10 @@ impl SceneRecorder {
     /// the safety decision independently of the snapshot ring.
     ///
     /// Branching keeps the authoritative live model (a [`Restore::Resume`]), so
-    /// a paused update is not silently lost. The returned live-model flag must
-    /// be passed to [`Self::finish_reload`] after rebinding.
+    /// a paused update is not silently lost. Returns the live-model flag, to
+    /// pass to [`Self::finish_reload`] after rebinding, and whether Δ was
+    /// dropped (a connected scene returned to the newest frame instead): the
+    /// producer then drops its input and queries since the frame too.
     pub fn prepare_reload(
         &mut self,
         model: &mut Value,
@@ -394,12 +400,14 @@ impl SceneRecorder {
         physics_frame: &mut u64,
         has_physics: bool,
         prev_tts: &mut Option<f64>,
-    ) -> bool {
+    ) -> (bool, bool) {
         let live_model_is_safe = model.is_reload_safe_snapshot();
-        if self.reload_may_restart(model) {
-            self.commit_scrub_before_reload(model, physics, physics_frame, has_physics, prev_tts);
+        if !self.reload_may_restart(model) {
+            return (live_model_is_safe, false);
         }
-        live_model_is_safe
+        let dropped =
+            self.commit_scrub_before_reload(model, physics, physics_frame, has_physics, prev_tts);
+        (model.is_reload_safe_snapshot(), dropped)
     }
 
     /// Monotonic revision for destructive branch/reload boundaries.
@@ -512,6 +520,9 @@ impl SceneRecorder {
     /// For an unsafe reload this keeps the live model the user is inspecting
     /// ([`Restore::Resume`]) and branches the physics timeline in lockstep
     /// before `scrub_pos` disappears.
+    ///
+    /// With a connection open that branch is refused (D4): the scene returns
+    /// to the newest frame instead, dropping Δ (returns `true`).
     pub fn commit_scrub_before_reload(
         &mut self,
         model: &mut Value,
@@ -519,11 +530,20 @@ impl SceneRecorder {
         physics_frame: &mut u64,
         has_physics: bool,
         prev_tts: &mut Option<f64>,
-    ) {
-        if let Some(frame) = self.scrub_pos {
-            let mut live = Live { model, physics, physics_frame, has_physics };
-            let _ = self.branch_to(frame, &mut live, prev_tts, Restore::Resume);
+    ) -> bool {
+        let Some(frame) = self.scrub_pos else { return false };
+        let mut live = Live { model, physics, physics_frame, has_physics };
+        if let Err(refused) = self.refuse_connected_branch(frame, "reload") {
+            ::log::warn!("[functor-lang] {refused}; reloading at the newest frame");
+            let newest = self.range().map_or(frame, |(_, hi)| hi);
+            if let Ok(newest) = self.restore_all(newest, Restore::Seek, &mut live, "reload") {
+                self.scrub_pos = Some(newest);
+                return true;
+            }
+            return false;
         }
+        let _ = self.branch_to(frame, &mut live, prev_tts, Restore::Resume);
+        false
     }
 
     /// Rendered frame at which the next settled model will be recorded.
@@ -573,6 +593,7 @@ impl SceneRecorder {
             participant.prune(floor);
         }
         self.tts_history.prune_before(floor);
+        self.requests.prune(floor);
         self.rendered_frame += 1;
     }
 
@@ -587,7 +608,7 @@ impl SceneRecorder {
     /// deliberately discarded.
     pub fn record_replay_prefix(&mut self, frame_time: FrameTime, entries: Vec<Entry>) {
         self.requests
-            .commit_unrecorded(self.generation, self.rendered_frame);
+            .commit_unrecorded(self.epoch, self.rendered_frame);
         if self.rendered_frame == 0 && self.replay_prefix.is_none() {
             self.replay_prefix = Some((frame_time, entries));
         }
@@ -621,30 +642,8 @@ impl SceneRecorder {
     /// (which does). An empty `Vec` is recorded for quiet frames, keeping the
     /// log consecutive with the model ring.
     pub fn record_entries(&mut self, entries: Vec<Entry>) {
-        self.requests.commit(self.generation, self.rendered_frame);
-        self.log
-            .record(self.rendered_frame, self.generation, entries);
-    }
-
-    /// The pending table.
-    pub(crate) fn requests_mut(&mut self) -> &mut Requests {
-        &mut self.requests
-    }
-
-    /// Deliver `arrival` in Δ (see [`Requests`]).
-    pub fn deliver(&mut self, arrival: &Arrival) -> Delivered {
-        self.requests
-            .deliver(arrival, self.generation, self.rendered_frame)
-    }
-
-    /// Rebind every in-flight continuation to a reloaded program; the
-    /// cancellations, as messages.
-    pub fn rebind_requests(
-        &mut self,
-        old: &functor_lang::ir::Module,
-        new: &functor_lang::ir::Module,
-    ) -> Vec<String> {
-        self.requests.rebind(old, new)
+        self.requests.commit(self.epoch, self.rendered_frame);
+        self.log.record(self.rendered_frame, self.epoch, entries);
     }
 
     #[cfg(test)]
@@ -768,8 +767,11 @@ impl SceneRecorder {
     /// Input injected while parked (debug `POST /input`) already updated the
     /// live `model`; the input log records it on the branch's first frame, so
     /// the branch keeps it ([`Restore::Resume`]) rather than restoring the
-    /// scrubbed snapshot over it. (Network and preload results delivered while
-    /// parked are kept too, unlogged, as at the live tail.)
+    /// scrubbed snapshot over it. Arrivals stay parked until the branch's
+    /// first frame delivers them.
+    ///
+    /// `Err` refuses the branch (an open connection, D4): the scene stays
+    /// scrubbed and the frame must not run.
     pub fn commit_scrub_if_resuming(
         &mut self,
         model: &mut Value,
@@ -777,15 +779,99 @@ impl SceneRecorder {
         physics_frame: &mut u64,
         has_physics: bool,
         prev_tts: &mut Option<f64>,
-    ) -> bool {
-        if let Some(k) = self.scrub_pos.take() {
-            let mut live = Live { model, physics, physics_frame, has_physics };
-            let _ = self.branch_to(k, &mut live, prev_tts, Restore::Resume);
-            self.counterfactual_replay = false;
-            true
-        } else {
-            false
+    ) -> Result<bool, String> {
+        let Some(k) = self.scrub_pos else {
+            return Ok(false);
+        };
+        self.refuse_connected_branch(k, "resume")?;
+        self.scrub_pos = None;
+        let mut live = Live { model, physics, physics_frame, has_physics };
+        let _ = self.branch_to(k, &mut live, prev_tts, Restore::Resume);
+        self.counterfactual_replay = false;
+        Ok(true)
+    }
+
+    /// Design-systems D4: a branch that cuts recorded frames is refused while
+    /// a connection is open — the restored model may hold obsolete
+    /// connection ids, and the peer's timeline does not rewind with ours.
+    fn refuse_connected_branch(&self, target: u64, verb: &str) -> Result<(), String> {
+        let open = self.requests.open_connections();
+        let cuts = self
+            .range()
+            .is_some_and(|(lo, hi)| target.clamp(lo, hi) < hi);
+        if open > 0 && cuts {
+            return Err(format!(
+                "{verb} from frame {target} refused: {open} connection(s) open. A connected \
+game can scrub but not branch; seek to the newest frame to resume, or disconnect first"
+            ));
         }
+        Ok(())
+    }
+
+    /// Whether the scene sits on a scrubbed frame (arrivals park).
+    pub fn is_scrubbed(&self) -> bool {
+        self.scrub_pos.is_some()
+    }
+
+    /// The pending table and mailbox.
+    pub(crate) fn requests(&self) -> &Requests {
+        &self.requests
+    }
+
+    pub(crate) fn requests_mut(&mut self) -> &mut Requests {
+        &mut self.requests
+    }
+
+    /// Deliver `arrival` in Δ (see [`Requests`]).
+    pub fn deliver(&mut self, arrival: &Arrival) -> Delivered {
+        self.requests
+            .deliver(arrival, self.epoch, self.rendered_frame)
+    }
+
+    /// Track open connections from an arrival as it is pushed, parked or
+    /// not (transport upkeep).
+    pub fn note_arrival(&mut self, arrival: &Arrival) {
+        if let Arrival::Net { key, kind, conn, .. } = arrival {
+            self.requests.note_connection(key, *kind, *conn);
+        }
+    }
+
+    /// Park an arrival until the scrub ends.
+    pub fn park(&mut self, arrival: Arrival) {
+        self.requests.park(arrival);
+    }
+
+    /// Take every parked arrival, oldest first.
+    pub fn take_parked(&mut self) -> Vec<Arrival> {
+        self.requests.take_mailbox()
+    }
+
+    /// A connection key the game closed.
+    pub fn close_connection_key(&mut self, key: &str) {
+        self.requests.close_key(key);
+    }
+
+    /// Rebind every in-flight continuation to a reloaded program; the
+    /// cancellations, as messages.
+    pub fn rebind_requests(
+        &mut self,
+        old: &functor_lang::ir::Module,
+        new: &functor_lang::ir::Module,
+    ) -> Vec<String> {
+        self.requests.rebind(old, new)
+    }
+
+    /// A fork replaying from `frame` of `source`: the ops pending there.
+    pub(crate) fn fork_requests_from(&mut self, source: &SceneRecorder, frame: Frame) {
+        self.requests = source.requests.fork(frame);
+    }
+
+    /// Whether any frame after `frame` delivered an arrival.
+    pub fn delivered_after(&self, frame: Frame) -> bool {
+        self.log
+            .events
+            .range(frame + 1..)
+            .any(|(_, entries)| entries.iter().any(|e| matches!(e, Entry::Delivery { .. })))
     }
 
     /// Non-destructive scrub for the draggable bar: restore `model` + world to
@@ -818,6 +904,7 @@ impl SceneRecorder {
         has_physics: bool,
         prev_tts: &mut Option<f64>,
     ) -> Result<String, String> {
+        self.refuse_connected_branch(target, "rewind")?;
         let mut live = Live { model, physics, physics_frame, has_physics };
         self.branch_to(target, &mut live, prev_tts, Restore::Rewind)
     }
@@ -850,13 +937,30 @@ impl SceneRecorder {
             participant.truncate_from(frame + 1);
         }
         self.tts_history.truncate_from(frame + 1);
-        self.requests.truncate_from(frame + 1);
+        // Re-park the cut future's answers to ops still pending here, and its
+        // disconnects.
+        let cut = self.log.recorded_range().is_some_and(|(_, hi)| hi > frame);
+        let disconnects = cut.then(|| {
+            self.log
+                .events
+                .range(frame + 1..)
+                .flat_map(|(_, entries)| entries)
+                .filter_map(|entry| match entry {
+                    Entry::Delivery { arrival, .. } if arrival.is_disconnect() => {
+                        Some(arrival.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        });
+        self.requests.truncate_from(frame + 1, disconnects);
         // Truncate the input log too: a destructive branch discards the old
         // future consistently across every ring (docs/time-travel.md T6b).
         self.log.truncate_from(frame + 1);
         self.clock_history.truncate_from(frame + 1);
         self.rendered_frame = frame + 1;
         self.generation = self.generation.wrapping_add(1);
+        self.epoch += 1;
         self.scrub_pos = None;
         let clamped = if frame == target {
             String::new()
@@ -1016,7 +1120,10 @@ mod tests {
             .expect("valid replay history")
             .expect("materialized history");
 
-        assert!(rec.commit_scrub_if_resuming(&mut model, &mut physics, &mut physics_frame, false, &mut None));
+        assert_eq!(
+            rec.commit_scrub_if_resuming(&mut model, &mut physics, &mut physics_frame, false, &mut None),
+            Ok(true)
+        );
         assert_eq!(model.to_string(), "12", "Resume adopts the rebuilt anchor");
         assert_eq!(rec.counterfactual_replay_span(), Ok(None));
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));
@@ -1073,13 +1180,16 @@ mod tests {
             .expect("seek");
 
         let mut prev_tts = Some(9.0);
-        assert!(rec.commit_scrub_if_resuming(
-            &mut model,
-            &mut physics,
-            &mut physics_frame,
-            false,
-            &mut prev_tts
-        ));
+        assert_eq!(
+            rec.commit_scrub_if_resuming(
+                &mut model,
+                &mut physics,
+                &mut physics_frame,
+                false,
+                &mut prev_tts
+            ),
+            Ok(true)
+        );
         assert_eq!(prev_tts, Some(4.0), "resume commits the branch and its window");
     }
 
@@ -1313,7 +1423,7 @@ mod tests {
         // but must not overwrite this live value with frame 2's snapshot.
         model = closure_model();
         let live_before = model.to_string();
-        let live_model_was_safe =
+        let (live_model_was_safe, _) =
             rec.prepare_reload(&mut model, &mut physics, &mut physics_frame, false, &mut None);
         assert!(!live_model_was_safe);
         assert_eq!(model.to_string(), live_before);

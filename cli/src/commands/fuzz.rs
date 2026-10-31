@@ -41,10 +41,11 @@ pub fn execute(
     };
     emit(Event::Info {
         message: format!(
-            "fuzzing {name}: keys {:?}, mouse {}, xr {}, reload knob {}",
+            "fuzzing {name}: keys {:?}, mouse {}, xr {}, http {}, reload knob {}",
             spec.keys,
             spec.mouse,
             spec.xr,
+            spec.http,
             spec.knob.as_ref().map_or("none", |(text, _)| text.as_str())
         ),
     });
