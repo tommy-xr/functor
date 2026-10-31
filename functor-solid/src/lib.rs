@@ -502,7 +502,13 @@ mod tests {
             problems(Solid::boolean(BoolOp::Intersect, vec![cube(), apart])),
             ["`part` is empty"]
         );
-        assert!(problems(Solid::Box { size: [1e39; 3] })[0].contains("too large to export"));
+        let big = || arc(Solid::Box { size: [1e39; 3] });
+        let huge = problems(Solid::Group(vec![
+            big(),
+            arc(big().translate([1.0, 0.0, 0.0])),
+        ]));
+        assert_eq!(huge.len(), 1, "{huge:?}");
+        assert!(huge[0].contains("too large to export"), "{huge:?}");
 
         let mut open = Solid::Box { size: [2.0; 3] }.mesh().unwrap();
         open.triangles.pop();

@@ -120,13 +120,14 @@ impl Mesh {
         if self.triangles.is_empty() {
             return vec![format!("{subject} is empty")];
         }
-        let mut problems = Vec::new();
+        // Overflowed coordinates would also read as shared (equal infinities).
         let overflows = |x: &f64| !(*x as f32).is_finite();
         if self.vertices.iter().flatten().any(overflows) {
-            problems.push(format!(
+            return vec![format!(
                 "{subject} is too large to export: coordinates must fit in 32-bit floats"
-            ));
+            )];
         }
+        let mut problems = Vec::new();
         let shared = self.shared_positions();
         if shared > 0 {
             problems.push(format!(

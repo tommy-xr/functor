@@ -95,7 +95,8 @@ let bounds : (t) => bounds
 /// Whether `functor export` would write a solid: `ok`, or the reasons it
 /// refuses it (pieces touching exactly at an edge or corner, an empty or open
 /// mesh, a failed boolean). `expect Solid.check(part).problems == []` shows
-/// them when a test fails.
+/// them when a test fails. Parts exported together as one `.stl` must also
+/// pass together: `Solid.check(Solid.group([a, b]))`.
 type check = { ok: bool, problems: List<string> }
 /// Run export's checks on a solid, without exporting it.
 let check : (t) => check

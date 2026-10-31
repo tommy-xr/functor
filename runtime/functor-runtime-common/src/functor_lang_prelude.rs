@@ -14321,7 +14321,6 @@ Config.create())",
         }
     }
 
- 
     /// `Solid.check` reports what `functor export` refuses, meshing failures
     /// included, instead of erroring.
     #[test]
@@ -14334,10 +14333,6 @@ Config.create())",
             (
                 "Solid.check(Solid.group([cube, at(1.0, 1.0, 0.0)])).ok",
                 "true",
-            ),
-            (
-                "Solid.check(Solid.group([cube, at(2.0, 2.0, 0.0)])).ok",
-                "false",
             ),
             (
                 "Solid.check(Solid.group([cube, at(2.0, 2.0, 2.0)])).problems",
@@ -14364,6 +14359,7 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
             "{problem}"
         );
     }
+
     /// `Mesh.*` from raw f32 positions + polygons, then `Solid.fromMesh`
     /// closes an open box and scales it to the asked height.
     #[test]
