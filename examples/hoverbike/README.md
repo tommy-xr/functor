@@ -8,6 +8,7 @@ level while the fairing banks. T switches to the flat, walled test stand.
 functor -d examples/hoverbike run native
 functor -d examples/hoverbike test       # the controller against analytic ground
 npm run test:hoverbike                   # scripted rides over the debug server
+npm run test:hoverbike-xr                # the handlebars, with injected XR samples
 node examples/hoverbike/generate-dunes.mjs   # rewrite dunes.png + dunesLayout.fun
 ```
 
@@ -21,6 +22,19 @@ node examples/hoverbike/generate-dunes.mjs   # rewrite dunes.png + dunesLayout.f
 | Chase / rider camera | C | north button (Y / △) |
 | Respawn | R | |
 | Dunes / test stand | T | |
+
+With a headset:
+
+| | Quest Touch |
+| --- | --- |
+| Hold the bars | squeeze both grips (at the grips) |
+| Steer | turn the bars |
+| Throttle / brake | right / left trigger |
+| Vignette strength (off, low, medium, high) | left X |
+| Smooth / stepped turning | left Y |
+| Seated / standing | right A |
+| Recalibrate (hold still) | left menu |
+| Respawn / dunes or test stand | right B / right stick click |
 
 ## The dune course
 
@@ -75,8 +89,34 @@ pass or stop for. Posts mark the lane, amber over the crest.
   the live one, so motion stays smooth on displays faster than the 60 Hz sim.
 - **Speedometer.** `Frame.withUiTarget` paints the gauge into a render target
   shown on the cockpit (`Scene.screen`); its readings refresh at 10 Hz.
-- **Quest.** `config` asks for 120 Hz and `settings` turns foveation off. The
-  ride has no VR controls yet.
+- **Quest.** `config` asks for 120 Hz and `settings` turns foveation off.
+
+## Riding with a headset
+
+`bars.fun` holds the rules, as pure functions with expects; `e2e/hoverbike-xr.mjs`
+drives them with injected XR samples.
+
+- **Calibration.** The camera sits at the calibrated eye: once the head and
+  the bike have held still for half a second, the head's position and heading
+  are taken as the eye, seated (default) or standing. Saddle and grips stay
+  rigid in the yaw-only frame, so the horizon is level and latched hands
+  don't drift from the controllers.
+- **Grips.** A fresh squeeze within 15 cm of a grip latches that hand. Power
+  needs both, and a throttle released since grabbing. Releasing a grip or
+  losing its tracking cuts the throttle and brakes at 40%; only a fresh grab
+  brings power back.
+- **Steering.** The grip-to-grip vector's turn from where the bars armed,
+  with a 3° dead zone, full lock at 20° and a moving average. Grip twist is
+  ignored.
+- **Vignette.** A feathered annulus (`vignette.png`, from
+  `generate-vignette.mjs`) drawn with `Frame.with2D`. It closes quickly and
+  opens slowly with acceleration, yaw rate, lateral acceleration and vertical
+  speed over crests, and is absent when clear. On Quest it is drawn the same
+  in both eyes, centred on each eye buffer rather than each eye's (asymmetric)
+  view axis; whether that fuses comfortably is a check in the headset.
+- **Turning.** Smooth, at the controller's bounded yaw rate, by default.
+  Stepped turning snaps 30° below 2 m/s (bike and rig together, behind a
+  short fade), and is smooth above it.
 
 `dunes.fun` is the course, `stand.fun` the test stand, `bike.fun` the mesh.
 The goldens (`hoverbike-crest`, `hoverbike-rider` in `golden-scenarios.json`)
