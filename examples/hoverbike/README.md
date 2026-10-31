@@ -91,10 +91,11 @@ expects; `e2e/hoverbike.mjs` and `e2e/hoverbike-xr.mjs` drive both ways.
   walker 4 m off the bike's left, the bike parked.
 - **Getting on.** Within 2 m of the seat and facing it (within 60°), a card
   over the seat says "E to ride" (or "grab the bars"). E, or a fresh squeeze
-  within 0.6 m of a grip, fades to black over 0.1 s; on the black step the
+  within 0.3 m of a grip, fades to black over 0.1 s; on the black step the
   view moves to the seat (the calibrated eye lands on the seat eye, facing
-  the bike's heading) and the grabbing hand stays latched; it fades back in
-  over 0.15 s. The view never moves smoothly into the seat.
+  the bike's heading), the grabbing hand stays latched, and the parked bike
+  snaps up to ride height, still. It fades back in over 0.15 s. The view
+  never moves smoothly into the seat, or up with the bike.
 - **Getting off.** Hold E or right B for 0.5 s, below 2 m/s (faster, the
   gauge says "slow down" and getting off waits). The walker lands on the
   bike's left, else its right, else behind it: each spot needs the course's
@@ -102,13 +103,16 @@ expects; `e2e/hoverbike.mjs` and `e2e/hoverbike-xr.mjs` drive both ways.
   nothing between it and the bike. With no room it stays on ("no room to
   get off"). It lands facing the bike, through the same fade. Releasing the
   grips never gets off: they brake.
-- **Parked.** Unridden, the bike holds full brake and hovers where it stopped.
+- **Parked.** Unridden, the bike holds full brake where it stopped and sinks
+  to a 0.3 m idle hover (after getting off's fade), putting the grips 1.3 m
+  up: chest height, between a standing player's hip and shoulder.
 
 ## How it works
 
 - **`ride.fun`** is the controller, as pure functions. Each emitter is a
   spring/damper on its own probe ray, with gravity fed forward so the bike
-  rests exactly at hover height; a miss lifts nothing. It owns the velocity,
+  rests exactly at its target height (1.2 m ridden, 0.3 m parked); a miss
+  lifts nothing. It owns the velocity,
   yaw, thrust and drag, braking, and lateral grip. Every constant is a
   top-level `let`. Its expects drive it over analytic flat and inclined
   ground: settling from several drop heights, slope following,
