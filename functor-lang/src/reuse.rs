@@ -282,6 +282,107 @@ impl<'p> Planner<'p> {
     }
 }
 
+/// What a job (`Job.run`) needs from a module's code: which defs a function
+/// reaches, and a hash of that code to tell whether a reload changed it.
+pub struct CodeIndex {
+    units: u64,
+    unit_refs: Vec<String>,
+    shapes: HashMap<String, Shape>,
+    /// Def names in def order (the order a load evaluates them).
+    order: Vec<String>,
+}
+
+impl CodeIndex {
+    pub fn new(module: &Module) -> CodeIndex {
+        let (units, unit_refs) = unit_shape(module);
+        CodeIndex {
+            units,
+            unit_refs,
+            shapes: module.defs.iter().map(|def| (def.name.clone(), shape_of(def))).collect(),
+            order: module.defs.iter().map(|def| def.name.clone()).collect(),
+        }
+    }
+
+    /// `name` and every def it reaches, transitively, with what the unit
+    /// operators name (any def may dispatch one): what evaluating it needs.
+    /// `None` if `name` isn't a def.
+    pub fn deps_of(&self, name: &str) -> Option<HashSet<String>> {
+        self.shapes.get(name)?;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut work: Vec<&str> = vec![name];
+        work.extend(self.unit_refs.iter().map(String::as_str));
+        while let Some(at) = work.pop() {
+            let Some(shape) = self.shapes.get(at) else { continue };
+            if seen.insert(at.to_string()) {
+                work.extend(shape.refs.iter().map(String::as_str));
+            }
+        }
+        Some(seen)
+    }
+
+    /// A hash of the code calling `name` runs: each dependency's code and
+    /// type annotation in def order, plus the unit operators. Equal across
+    /// two loads, the call computes the same from the same input and files.
+    pub fn code_key(&self, name: &str) -> Option<u64> {
+        let deps = self.deps_of(name)?;
+        let mut hasher = DefaultHasher::new();
+        self.units.hash(&mut hasher);
+        for def in self.order.iter().filter(|def| deps.contains(*def)) {
+            def.hash(&mut hasher);
+            self.shapes[def].hash.hash(&mut hasher);
+        }
+        Some(hasher.finish())
+    }
+}
+
+/// Each top-level def whose value is a lambda, by that lambda's node, so a
+/// closure can be told to be one (`Job.run`'s function, called by name on a
+/// worker).
+pub struct Roots {
+    /// Lambda node id → (def name, body address: guards a stale id).
+    by_expr: HashMap<u32, (String, usize)>,
+}
+
+impl Roots {
+    pub fn of(module: &Module) -> Roots {
+        let by_expr = module
+            .defs
+            .iter()
+            .filter_map(|def| match &def.value.kind {
+                ExprKind::Lambda { body, .. } => {
+                    Some((def.value.id.raw(), (def.name.clone(), Rc::as_ptr(body) as usize)))
+                }
+                _ => None,
+            })
+            .collect();
+        Roots { by_expr }
+    }
+
+    /// The top-level def `value` is the function of (an alias names the def
+    /// it aliases), or why it isn't one.
+    pub fn name_of(&self, value: &Value) -> Result<&str, String> {
+        match value {
+            Value::Closure(closure) => self
+                .by_expr
+                .get(&closure.expr_id.raw())
+                .filter(|(_, body)| Rc::as_ptr(&closure.body) as usize == *body)
+                .map(|(name, _)| name.as_str())
+                .ok_or_else(|| {
+                    "a function made inside another one, which may capture its locals — \
+make it a top-level `let`"
+                        .to_string()
+                }),
+            Value::Partial(_) => Err("a partial application — pass the top-level function and \
+put the arguments in the input"
+                .to_string()),
+            Value::Builtin(_) | Value::HostFn(_) | Value::Ctor { .. } => {
+                Err("a built-in function — wrap it in a top-level `let`".to_string())
+            }
+            other => Err(format!("{}, not a function", other.kind_name())),
+        }
+    }
+}
+
 /// The hash of the module's units and unit operators (an operator dispatches
 /// on the brand its unit's constructor builds), and the globals they name.
 fn unit_shape(module: &Module) -> (u64, Vec<String>) {
