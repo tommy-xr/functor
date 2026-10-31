@@ -489,6 +489,9 @@ impl JobPort {
 }
 
 #[cfg(test)]
+mod run_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -524,18 +527,20 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_posts_a_crash_and_the_worker_lives_on() {
+    fn a_panic_posts_a_crash_and_a_fresh_worker_takes_over() {
         let pool = Pool::start(1);
         let mailbox = Mailbox::default();
-        pool.dispatch(job(ticket(1), &mailbox, Box::new(|_| panic!("boom"))).0);
-        pool.dispatch(job(ticket(2), &mailbox, Box::new(|_| Shareable::Bool(true))).0);
+        let thread = || Shareable::Text(Arc::from(format!("{:?}", std::thread::current().id()).as_str()));
+        pool.dispatch(job(ticket(1), &mailbox, Box::new(move |_| thread())).0);
+        pool.dispatch(job(ticket(2), &mailbox, Box::new(|_| panic!("boom"))).0);
+        pool.dispatch(job(ticket(3), &mailbox, Box::new(move |_| thread())).0);
         let mut got = Vec::new();
-        while got.len() < 2 {
+        while got.len() < 3 {
             got.extend(mailbox.take());
             std::thread::yield_now();
         }
-        assert_eq!(got[0].1, Shareable::Text(Arc::from("Crashed(\"boom\")")));
-        assert_eq!(got[1].1, Shareable::Bool(true));
+        assert_eq!(got[1].1, Shareable::Text(Arc::from("Crashed(\"boom\")")));
+        assert_ne!(got[0].1, got[2].1, "the panicked thread retired");
     }
 
     #[test]

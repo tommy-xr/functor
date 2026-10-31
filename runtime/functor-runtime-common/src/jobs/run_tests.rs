@@ -1,0 +1,287 @@
+//! `Job.run` end to end, through the embedded producer: results, phase
+//! rules, refusals, cancel, reload and replay. Lifecycle tests hold jobs on
+//! [`FakeJobs`] and complete them on the test thread.
+
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use super::*;
+use crate::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
+use crate::protocol::GameProducer;
+use crate::FrameTime;
+
+/// Asks for `work(input)` under key "k" on frame 2 (so a replay from frame 0
+/// holds the delivery), and keeps the result or the error's message.
+fn game_source(work: &str, input: &str) -> String {
+    format!(
+        r#"
+type Msg = | Done(r: Result.t<float, Job.error>)
+let scale = 2.0
+let unrelated = 1.0
+{work}
+let init = {{ n: 0.0, got: -1.0, err: "" }}
+let update = (m, msg) =>
+  match msg with
+  | Done(r) =>
+    (match r with
+     | Result.Ok(v) => {{ m with got: v }}
+     | Result.Error(e) => {{ m with err: Job.describe(e) }})
+let tick = (m, dt, tts) =>
+  let next = {{ m with n: m.n + 1.0 }} in
+  if m.n == 2.0 then (next, Job.run("k", work, {input}, Done)) else next
+let draw = (m, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(m.got, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+"#
+    )
+}
+
+const DOUBLE: &str = "let work = (x) => x * scale";
+
+struct Rig {
+    game: FunctorLangEmbeddedGame,
+    fake: Rc<FakeJobs>,
+    frames: u32,
+    dir: tempfile::TempDir,
+}
+
+impl Rig {
+    fn new(source: &str) -> Rig {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("data/t.bin"), [1u8; 3]).unwrap();
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), source.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("loads");
+        let fake = Rc::new(FakeJobs::default());
+        game.job_port().set_dispatch(fake.clone());
+        let reader = crate::storage::ProjectDirReader(dir.path().to_path_buf());
+        game.job_port().set_reader(Some(Arc::new(reader)));
+        Rig { game, fake, frames: 0, dir }
+    }
+
+    fn tick(&mut self, n: u32) {
+        for _ in 0..n {
+            let t = self.frames as f32 / 60.0;
+            self.game.tick(FrameTime { tts: t, dts: 1.0 / 60.0 });
+            self.frames += 1;
+        }
+    }
+
+    /// Complete every held job, then play a frame to deliver.
+    fn finish(&mut self) {
+        for ticket in self.fake.held() {
+            self.fake.complete(ticket);
+        }
+        self.tick(1);
+    }
+
+    fn model(&self) -> String {
+        self.game.state_debug()
+    }
+
+    fn reload(&mut self, source: &str) {
+        self.game.reload_project(&[("game.fun".to_string(), source.to_string())]).expect("reloads");
+    }
+}
+
+#[test]
+fn a_pure_jobs_result_is_delivered() {
+    let mut rig = Rig::new(&game_source(DOUBLE, "21.0"));
+    rig.tick(4);
+    assert_eq!(rig.fake.dispatched().len(), 1);
+    rig.finish();
+    assert!(rig.model().contains("got: 42"), "{}", rig.model());
+}
+
+#[test]
+fn a_job_reads_files_through_its_producers_reader_dependencies_included() {
+    // `size` is a dependency: on main (the process's reader, no such file)
+    // it is -1; on the worker it reads the producer's project.
+    let work = r#"let size = if File.exists(Path.of("data/t.bin")) then Bytes.length(File.bytes(Path.of("data/t.bin"))) else -1.0
+let work = (x) => x + size * 10.0 + Bytes.length(File.bytes(Path.of("data/t.bin")))"#;
+    let mut rig = Rig::new(&game_source(work, "0.5"));
+    rig.tick(4);
+    rig.finish();
+    assert!(rig.model().contains("got: 33.5"), "{}", rig.model());
+}
+
+#[test]
+fn physics_and_ui_reads_inside_a_job_are_refused() {
+    for (work, class) in [
+        (r#"let work = (x) => if Physics.grounded("a") then 1.0 else 0.0"#, "physics"),
+        (r#"let probe = (x) => Ui.button("go", x)
+let work = (x) => let v = probe(x) in 1.0"#, "ui"),
+    ] {
+        let mut rig = Rig::new(&game_source(work, "1.0"));
+        rig.tick(4);
+        rig.finish();
+        let model = rig.model();
+        assert!(model.contains(&format!("reads {class} state")), "{model}");
+        assert!(model.contains("got: -1"), "{model}");
+    }
+}
+
+#[test]
+fn an_input_or_result_holding_a_function_is_not_shareable() {
+    let mut rig = Rig::new(&game_source(DOUBLE, "{ f: (y) => y }"));
+    rig.tick(4);
+    assert_eq!(rig.fake.dispatched().len(), 1, "answered through the pool, next frame");
+    rig.finish();
+    assert!(rig.model().contains("Job.run input: `.f` is a function"), "{}", rig.model());
+
+    let returns_fn = "let work = (x) => { v: x, f: (y) => y }";
+    let mut rig = Rig::new(&game_source(returns_fn, "1.0"));
+    rig.tick(4);
+    rig.finish();
+    assert!(rig.model().contains("Job.run result: `.f` is a function"), "{}", rig.model());
+}
+
+#[test]
+fn a_function_built_at_run_time_is_refused_at_issue() {
+    let made = "let make = (k) => (x) => x * k\nlet work = make(3.0)";
+    let mut rig = Rig::new(&game_source(made, "1.0"));
+    rig.tick(4);
+    rig.finish();
+    assert!(rig.model().contains("needs a top-level function"), "{}", rig.model());
+}
+
+#[test]
+fn a_panic_in_a_job_is_crashed() {
+    let mut rig = Rig::new(&game_source(DOUBLE, "1.0"));
+    rig.tick(4);
+    crate::functor_lang_prelude::job::PANIC_NEXT.with(|p| p.set(true));
+    rig.finish();
+    assert!(rig.model().contains("the job crashed: a test's panic"), "{}", rig.model());
+}
+
+#[test]
+fn cancel_stops_a_job_mid_evaluation() {
+    // Far more calls than a test can wait for, through `List.fold`'s
+    // closure calls: only the `Interp::call` probe ends it.
+    let work = "let spin = (n) => List.fold((acc, x) => acc + x, 0.0, List.range(n))
+let work = (x) => List.fold((acc, i) => acc + spin(1000000.0), 0.0, List.range(1000000.0))";
+    let source = game_source(work, "1.0");
+    let project = functor_lang::project::load_sources_with_bundled_modules(
+        vec![("game.fun".into(), source)],
+        &functor_prelude::bundled_modules(),
+    )
+    .ok()
+    .unwrap();
+    let program = JobProgram::new(&project.module, &project.sources);
+    let spec = RunSpec {
+        key: "k".into(),
+        call: Ok(RunCall { program: program.source, f: "work".into(), input: Shareable::Number(1.0) }),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let stopper = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        flag.store(true, Ordering::Relaxed);
+    });
+    let started = std::time::Instant::now();
+    let value = crate::functor_lang_prelude::job::run(&spec, None, &JobCtx { stop }, &ReadSlot::default());
+    stopper.join().unwrap();
+    assert!(started.elapsed().as_secs() < 5, "stopped promptly");
+    assert!(format!("{value:?}").contains(functor_lang::eval::CANCELLED), "{value:?}");
+}
+
+#[test]
+fn a_cancelled_job_delivers_nothing_and_the_key_is_free_again() {
+    let source = game_source(DOUBLE, "21.0").replace(
+        "if m.n == 2.0 then (next, Job.run(\"k\", work, 21.0, Done)) else next",
+        "if m.n == 2.0 then (next, Job.run(\"k\", work, 21.0, Done)) \
+else if m.n == 3.0 then (next, Job.cancel(\"k\")) \
+else if m.n == 4.0 then (next, Job.run(\"k\", work, 1.0, Done)) else next",
+    );
+    let mut rig = Rig::new(&source);
+    rig.tick(6);
+    let dispatched = rig.fake.dispatched();
+    assert_eq!(dispatched.len(), 2);
+    assert_eq!(rig.fake.stopped(dispatched[0]), Some(true));
+    rig.finish();
+    assert!(rig.model().contains("got: 2"), "{}", rig.model());
+}
+
+#[test]
+fn a_reload_that_leaves_the_function_alone_keeps_its_job() {
+    let source = game_source(DOUBLE, "21.0");
+    let mut rig = Rig::new(&source);
+    rig.tick(4);
+    rig.reload(&source.replace("let unrelated = 1.0", "let unrelated = 7.0"));
+    rig.tick(1);
+    assert_eq!(rig.fake.dispatched().len(), 1, "not run again");
+    rig.finish();
+    assert!(rig.model().contains("got: 42"), "{}", rig.model());
+}
+
+#[test]
+fn a_reload_that_changes_the_function_runs_it_again_as_a_new_attempt() {
+    let source = game_source(DOUBLE, "21.0");
+    let mut rig = Rig::new(&source);
+    rig.tick(4);
+    let first = rig.fake.held()[0];
+    // `scale` is a dependency: the code `work` reaches changed.
+    rig.reload(&source.replace("let scale = 2.0", "let scale = 3.0"));
+    let dispatched = rig.fake.dispatched();
+    assert_eq!(dispatched.len(), 2);
+    assert_eq!(dispatched[1], Ticket { id: first.id, attempt: 2 });
+    assert_eq!(rig.fake.stopped(first), Some(true));
+    rig.finish();
+    assert!(rig.model().contains("got: 63"), "the new code's result: {}", rig.model());
+}
+
+#[test]
+fn a_result_that_read_a_changed_file_runs_again_after_a_reload() {
+    let work = r#"let work = (x) => x + Bytes.length(File.bytes(Path.of("data/t.bin")))"#;
+    let source = game_source(work, "0.0");
+    let mut rig = Rig::new(&source);
+    rig.tick(4);
+    // Finished, not yet delivered, when the file changes and a reload runs.
+    rig.fake.complete(rig.fake.held()[0]);
+    std::fs::write(rig.dir.path().join("data/t.bin"), [1u8; 5]).unwrap();
+    rig.reload(&source.replace("let unrelated = 1.0", "let unrelated = 2.0"));
+    rig.tick(1);
+    assert!(rig.model().contains("got: -1"), "the stale result dropped: {}", rig.model());
+    assert_eq!(rig.fake.dispatched().len(), 2);
+    rig.finish();
+    assert!(rig.model().contains("got: 5"), "{}", rig.model());
+}
+
+/// Counts dispatches on their way to the shared pool.
+struct Counted(std::cell::Cell<usize>);
+
+impl Dispatch for Counted {
+    fn dispatch(&self, job: Job) {
+        self.0.set(self.0.get() + 1);
+        Pool::shared().dispatch(job);
+    }
+}
+
+#[test]
+fn a_job_on_the_pool_replays_exactly_without_running_again() {
+    let mut rig = Rig::new(&game_source(DOUBLE, "21.0"));
+    let counted = Rc::new(Counted(std::cell::Cell::new(0)));
+    rig.game.job_port().set_dispatch(counted.clone());
+    rig.tick(1);
+    let mut models = Vec::new();
+    let started = std::time::Instant::now();
+    while !rig.model().contains("got: 42") {
+        assert!(started.elapsed().as_secs() < 30, "the job never landed");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        rig.tick(1);
+        models.push(rig.model());
+    }
+    for _ in 0..3 {
+        rig.tick(1);
+        models.push(rig.model());
+    }
+    assert_eq!(counted.0.get(), 1);
+    rig.game.seek_scene_to(0).expect("seek");
+    let replayed = rig.game.replay_scene(models.len()).expect("replays");
+    let replayed: Vec<String> = replayed.into_iter().map(|(model, _)| model).collect();
+    assert_eq!(replayed, models);
+    assert_eq!(counted.0.get(), 1, "a replay never runs the job");
+}

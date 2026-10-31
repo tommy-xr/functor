@@ -88,6 +88,12 @@ struct Prepared {
     reads: Option<Vec<HostInput>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Panic in the next job this thread runs (a test's crash).
+    pub(crate) static PANIC_NEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 thread_local! {
     /// The latest revision this thread compiled: a reload's first job
     /// replaces it.
@@ -106,6 +112,10 @@ pub(crate) fn run(
         Ok(call) => call,
         Err(refused) => return refused.clone(),
     };
+    #[cfg(test)]
+    if PANIC_NEXT.with(|panic| panic.replace(false)) {
+        panic!("a test's panic inside the job");
+    }
     let _reader = crate::storage::scope_reader(reader);
     COMPILED.with(|cache| {
         let mut cache = cache.borrow_mut();
