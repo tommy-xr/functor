@@ -4,6 +4,7 @@
 //! - looking down the doorways draws the far room; from beside them a wall
 //!   hides it, and it is skipped, byte-identical to culling off;
 //! - turning away hides the other rooms and turning back uploads nothing;
+//! - a hidden `Model.static` draws nothing;
 //! - each eye walks from its own position;
 //! - a hidden node still casts its shadow.
 //!
@@ -21,11 +22,13 @@ use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::cells::{Cell, Cells, CellsData, Plane, Portal};
 use functor_runtime_common::gpu_counters::{gpu_counters, CellsCounts};
 use functor_runtime_common::math::Angle;
+use functor_runtime_common::model::{GroupSource, LightmapSource, ModelData, ModelSource};
 use functor_runtime_common::shadow::ShadowMap;
+use functor_runtime_common::texture::{ColorSpace, PixelData, PixelEncoding};
 use functor_runtime_common::{
     render_frame_with_projection, Camera, CellsNode, DebugRenderMode, Frame, FrameTime,
-    InstanceData, Light, MaterialDescription, MeshData, Scene3D, SceneContext, SceneObject, Shape,
-    Viewport,
+    InstanceData, Light, MaterialDescription, MeshData, ModelDescription, ModelHandle, Scene3D,
+    SceneContext, SceneObject, Shape, TextureDescription, Viewport,
 };
 use glow::HasContext;
 
@@ -39,6 +42,7 @@ fn main() {
     let mut harness = Harness::new();
     a_doorway_shows_the_far_room_and_a_wall_hides_it(&mut harness);
     turning_back_uploads_nothing(&mut harness);
+    a_hidden_static_model_draws_nothing(&mut harness);
     each_eye_walks_from_its_own_position(&mut harness);
     a_hidden_node_still_casts_its_shadow(&mut harness);
 }
@@ -97,8 +101,9 @@ fn a_doorway_shows_the_far_room_and_a_wall_hides_it(h: &mut Harness) {
 }
 
 fn turning_back_uploads_nothing(h: &mut Harness) {
-    // Each room's contents also hold a mesh (its own `Arc`) and an
-    // instanced row: both are released after a frame they aren't used.
+    // Each room's contents also hold a mesh (its own `Arc`), an instanced
+    // row and a lightmapped static model: each is released after a frame
+    // it isn't used.
     let extras = (0..3)
         .map(|i| {
             let x = 4.0 * i as f32 + 2.0;
@@ -114,6 +119,7 @@ fn turning_back_uploads_nothing(h: &mut Harness) {
                         lit(Scene3D::sphere(), [0.9, 0.9, 0.2]).transform(Matrix4::from_scale(0.2)),
                         row,
                     ),
+                    static_quad(x, 1.9),
                 ]),
             )
         })
@@ -150,6 +156,24 @@ fn turning_back_uploads_nothing(h: &mut Harness) {
     );
     assert!(after == before, "turning back changed the image");
     println!("test turning_back_uploads_nothing ... ok");
+}
+
+/// Room 2 is hidden from beside the doorways: a static model marked in it
+/// draws nothing, even where it would show (here, in room 0).
+fn a_hidden_static_model_draws_nothing(h: &mut Harness) {
+    let camera = Camera::look_at([1.0, 1.5, 1.5], [12.0, 1.0, 1.5], UP, fov());
+    let misplaced = vec![(2, static_quad(3.0, 1.5))];
+    let without = h.render(&frame(camera.clone(), rooms(true, vec![]), false), &[0], true);
+    let with = h.render(&frame(camera.clone(), rooms(true, misplaced.clone()), false), &[0], true);
+    assert_eq!(gpu_counters().frame_cells().hidden, 2);
+    assert!(with == without, "the hidden static model drew");
+    // Shown (in room 0), it draws.
+    let shown = vec![(0, misplaced[0].1.clone())];
+    assert!(
+        h.render(&frame(camera, rooms(true, shown), false), &[0], true) != without,
+        "the static model never draws here"
+    );
+    println!("test a_hidden_static_model_draws_nothing ... ok");
 }
 
 fn each_eye_walks_from_its_own_position(h: &mut Harness) {
@@ -339,6 +363,47 @@ fn lit(scene: Scene3D, [r, g, b]: [f32; 3]) -> Scene3D {
         ),
         xform: Matrix4::identity(),
     }])
+}
+
+/// A 1 m `Model.static` square facing -x at `x`, centred on `z`: one group
+/// with a pixel texture, lightmapped by another.
+fn static_quad(x: f32, z: f32) -> Scene3D {
+    let pixels = |space, rgb: [u8; 3]| {
+        let pixels = PixelData::new(1, 1, PixelEncoding::Rgb8, space, &rgb);
+        TextureDescription::Data(Arc::new(pixels.expect("valid pixels")))
+    };
+    let (z0, z1) = (z - 0.5, z + 0.5);
+    let data = ModelData::new(ModelSource {
+        positions: vec![[x, 0.5, z0], [x, 0.5, z1], [x, 1.5, z1], [x, 1.5, z0]],
+        normals: vec![[-1.0, 0.0, 0.0]; 4],
+        uvs: vec![[0.5, 0.5]; 4],
+        uvs2: vec![[0.5, 0.5]; 4],
+        joints: vec![],
+        weights: vec![],
+        triangles: vec![[0, 1, 2], [0, 2, 3]],
+        groups: vec![GroupSource {
+            first: 0,
+            count: 2,
+            texture: Some(pixels(ColorSpace::Srgb, [40, 200, 200])),
+            unlit: false,
+        }],
+        lightmap: Some(LightmapSource {
+            texture: pixels(ColorSpace::Linear, [255, 255, 255]),
+            scale: 1.0,
+            floor: [0.0; 3],
+        }),
+        skeleton: vec![],
+        clips: vec![],
+        texture: None,
+    })
+    .expect("valid model");
+    Scene3D::model(ModelDescription {
+        handle: ModelHandle::Data(Arc::new(data)),
+        overrides: vec![],
+        animation: None,
+        while_pending: vec![],
+        parts: Vec::new(),
+    })
 }
 
 /// A unit tetrahedron with its own `Arc`, so each is a separate GPU mesh.
