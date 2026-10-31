@@ -2,12 +2,18 @@
 // hidden window and the clock paused between `/time` steps.
 //
 //   1. a scripted route: apron → lobby → corridor → office 106 → back out;
-//   2. an outside → in push against a solid facade wall is blocked;
-//   3. inside, portal culling hides rooms (`/state.cells.hidden > 0`);
-//   4. the hour: rewinding restores it and its lighting; by day, daylight
+//   2. the stairs: entrance → corridor → stairwell → up the flight (grounded
+//      on its ramp the whole way) → upstairs office 206 → back down;
+//   3. an outside → in push against a solid facade wall is blocked;
+//   4. inside, the portal walk hides cells' subtrees (`/state.cells.hidden`),
+//      more upstairs than in the lobby. (The baked rooms are `Model.static`
+//      data models, which the renderer draws whether or not the walk hides
+//      them; these numbers are the walk's, not the GPU's.)
+//   5. the hour: rewinding restores it and its lighting; by day, daylight
 //      brightens office 103 (window) while the corridor stays fixture-lit;
-//   5. culling on and off (FUNCTOR_CULL=0) capture identical frames at views 1–4;
-//   6. the night and day goldens render byte-identically across runs
+//   6. culling on and off (FUNCTOR_CULL=0) capture identical frames at views
+//      1–8, the stairwell looking up and down among them;
+//   7. the night and day goldens render byte-identically across runs
 //      (`npm run test:golden` compares them to golden/, with a tolerance).
 //
 //   cargo build -p functor-cli --no-default-features
@@ -27,6 +33,19 @@ const APRON = 0;
 const LOBBY = 1;
 const CORRIDOR = 2;
 const OFFICE_106 = 9;
+const STAIR_FOOT = 11;
+const STAIR_HEAD = 12;
+const CORRIDOR_2 = 13;
+const TURN_2 = 14;
+const OFFICE_206 = 20;
+// layout.fun's storey and flight, and game.fun's capsule centre above the feet.
+const STOREY = 3.3;
+const FLIGHT = { x0: 13.0, tread: 0.3, risers: 18 };
+const CENTRE = 0.92;
+// The ramp's height at x: building.fun's `rampY`.
+const rampY = (x) =>
+  Math.min(STOREY, Math.max(0, ((x - (FLIGHT.x0 - FLIGHT.tread)) * (STOREY / FLIGHT.risers)) / FLIGHT.tread));
+const WALK = 2.2 / 60; // metres per step
 
 function launch(port, env = {}) {
   const proc = spawn(BIN, ["-d", DIR, "run", "native", "--hidden", "--debug-port", String(port)], {
@@ -94,6 +113,27 @@ function launch(port, env = {}) {
       await game.hold(String(n), 1);
       await game.step(3);
     },
+    // Face `yaw` (0 is +z, π/2 is +x).
+    async face(yaw) {
+      await game.turn(yaw - (await game.model()).yaw);
+    },
+    // Hold W until the player passes `target` along `axis`, `chunk` steps at
+    // a time; `onStep` sees the model after each chunk.
+    async walkTo(axis, target, { chunk = 30, onStep } = {}) {
+      let m = await game.model();
+      const sign = Math.sign(target - m.at[axis]);
+      await game.key("w", true);
+      while ((target - m.at[axis]) * sign > 0.02) {
+        const before = m.at[axis];
+        await game.step(Math.max(1, Math.min(chunk, Math.floor(((target - m.at[axis]) * sign) / WALK))));
+        m = await game.model();
+        onStep?.(m);
+        if (Math.abs(m.at[axis] - before) < 0.001) break; // blocked
+      }
+      await game.key("w", false);
+      await game.step(1);
+      return game.model();
+    },
     async capture() {
       const res = await post("/capture", {});
       return Buffer.from(await res.arrayBuffer());
@@ -104,6 +144,7 @@ function launch(port, env = {}) {
 }
 
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
+let lobbyHidden;
 
 async function route(game) {
   // Anchor the pointer: the first sample only records a position.
@@ -116,13 +157,14 @@ async function route(game) {
   await game.hold("w", 360);
   m = await game.model();
   check(m.cell === LOBBY, `walked into the lobby (cell ${m.cell}, z ${m.at.z.toFixed(2)})`);
+  lobbyHidden = (await game.state()).cells.hidden;
   await game.hold("w", 390);
   m = await game.model();
   check(m.cell === CORRIDOR && near(m.at.x, 10, 0.05), `walked up the corridor (cell ${m.cell}, x ${m.at.x.toFixed(2)}, z ${m.at.z.toFixed(2)})`);
   // The street is 3 cm lower, so standing at floor height means the floor trimesh holds.
   check(m.at.y > 0.9, `the floor trimesh carries the player (y ${m.at.y.toFixed(3)})`);
   const s = await game.state();
-  check(s.cells.hidden > 0, `the corridor hides rooms (cells ${JSON.stringify(s.cells)})`);
+  check(s.cells.hidden > 0, `the corridor's portal walk hides subtrees (cells ${JSON.stringify(s.cells)})`);
 
   // Into office 106 through its door at z = 16.5.
   await game.turn(Math.PI / 2); // face +x
@@ -130,7 +172,7 @@ async function route(game) {
   m = await game.model();
   check(m.cell === OFFICE_106 && m.at.x > 13, `walked into office 106 (cell ${m.cell}, x ${m.at.x.toFixed(2)})`);
   const inOffice = await game.state();
-  check(inOffice.cells.hidden > 0, `the office hides rooms (cells ${JSON.stringify(inOffice.cells)})`);
+  check(inOffice.cells.hidden > 0, `the office's portal walk hides subtrees (cells ${JSON.stringify(inOffice.cells)})`);
 
   // Back to the corridor, then south and out onto the apron.
   await game.turn(Math.PI); // face -x
@@ -141,6 +183,75 @@ async function route(game) {
   await game.hold("w", 750);
   m = await game.model();
   check(m.cell === APRON && m.at.z < -5, `back out on the apron (cell ${m.cell}, z ${m.at.z.toFixed(2)})`);
+}
+
+// On the flight, the capsule rides its ramp: grounded, its centre a capsule's
+// settle above the ramp (more on a slope than on the flat), never below it.
+function rampChecker(label) {
+  const misses = [];
+  let samples = 0;
+  const onStep = (m) => {
+    if (m.at.x < FLIGHT.x0 || m.at.x > FLIGHT.x0 + (FLIGHT.risers - 1) * FLIGHT.tread) return;
+    samples++;
+    const above = m.at.y - (rampY(m.at.x) + CENTRE);
+    if (!m.grounded || above < -0.02 || above > 0.12) misses.push(`x ${m.at.x.toFixed(2)} y ${m.at.y.toFixed(3)} (+${above.toFixed(3)}) grounded ${m.grounded}`);
+  };
+  const report = () =>
+    check(samples >= 20 && misses.length === 0, `${label}: grounded on the ramp at ${samples} samples${misses.length ? `; off at ${misses.slice(0, 3).join(", ")}` : ""}`);
+  return { onStep, report };
+}
+
+// Entrance → corridor → the stairwell → up the flight → office 206 upstairs
+// → back down to the corridor.
+async function stairs(game) {
+  await game.view(1);
+  await game.face(0);
+  let m = await game.walkTo("z", 23.3);
+  check(m.cell === CORRIDOR, `walked up the corridor to the stairwell door (cell ${m.cell}, z ${m.at.z.toFixed(2)})`);
+  await game.face(Math.PI / 2);
+  m = await game.walkTo("x", 12.0);
+  check(m.cell === STAIR_FOOT, `into the stairwell (cell ${m.cell}, x ${m.at.x.toFixed(2)})`);
+  await game.face(Math.PI);
+  await game.walkTo("z", 20.8);
+  await game.face(Math.PI / 2);
+  const up = rampChecker("up the flight");
+  m = await game.walkTo("x", 19.2, { chunk: 4, onStep: up.onStep });
+  up.report();
+  check(m.cell === STAIR_HEAD && near(m.at.y, STOREY + CENTRE, 0.05), `on the landing (cell ${m.cell}, y ${m.at.y.toFixed(3)})`);
+  await game.face(0);
+  m = await game.walkTo("z", 27.8);
+  check(m.cell === TURN_2, `through the upstairs stair door (cell ${m.cell}, z ${m.at.z.toFixed(2)})`);
+  await game.face(-Math.PI / 2);
+  await game.walkTo("x", 10.0);
+  await game.face(Math.PI);
+  m = await game.walkTo("z", 16.5);
+  check(m.cell === CORRIDOR_2, `down the upstairs corridor (cell ${m.cell}, z ${m.at.z.toFixed(2)})`);
+  await game.face(Math.PI / 2);
+  m = await game.walkTo("x", 15.0);
+  const office = await game.state();
+  check(m.cell === OFFICE_206 && near(m.at.y, STOREY + CENTRE, 0.05), `in office 206 upstairs (cell ${m.cell}, y ${m.at.y.toFixed(3)})`);
+  check(office.cells.hidden > lobbyHidden, `upstairs hides more than the lobby (${office.cells.hidden} vs ${lobbyHidden} subtrees)`);
+
+  // Back the way we came.
+  await game.face(-Math.PI / 2);
+  await game.walkTo("x", 10.0);
+  await game.face(0);
+  await game.walkTo("z", 27.8);
+  await game.face(Math.PI / 2);
+  await game.walkTo("x", 19.2);
+  await game.face(Math.PI);
+  m = await game.walkTo("z", 20.8);
+  check(m.cell === STAIR_HEAD, `back on the landing (cell ${m.cell}, z ${m.at.z.toFixed(2)})`);
+  await game.face(-Math.PI / 2);
+  const down = rampChecker("down the flight");
+  m = await game.walkTo("x", 12.0, { chunk: 4, onStep: down.onStep });
+  down.report();
+  check(m.cell === STAIR_FOOT && near(m.at.y, CENTRE, 0.05), `at the stair foot (cell ${m.cell}, y ${m.at.y.toFixed(3)})`);
+  await game.face(0);
+  await game.walkTo("z", 23.3);
+  await game.face(-Math.PI / 2);
+  m = await game.walkTo("x", 10.0);
+  check(m.cell === CORRIDOR && near(m.at.y, CENTRE, 0.05), `back in the ground-floor corridor (cell ${m.cell}, y ${m.at.y.toFixed(3)})`);
 }
 
 // From the apron, step left of the entrance and walk into the solid facade.
@@ -183,6 +294,9 @@ function maxDiff(a, b) {
 // The hour is model state: N toggles midnight ⇄ noon, T steps an hour, and a
 // rewind restores both the hour and the bake it draws with.
 async function hours(game) {
+  // Stand still at view 1 first, so the rewound pose matches to the pixel.
+  await game.view(1);
+  await game.step(30);
   // Hold each hour for 10 frames and rewind to the middle of that run:
   // `/state.frame` and the recorder's frame numbers are a couple apart.
   const press = async (key) => {
@@ -238,17 +352,17 @@ async function daylight(game) {
   check(Math.abs(corridorDay / corridorNight - 1) < 0.02, `the corridor stays fixture-lit (luma ${corridorNight.toFixed(1)} → ${corridorDay.toFixed(1)})`);
 }
 
-// Views 1–4 at midnight, then at noon.
+// Views 1–8 at midnight, then at noon.
 async function viewCaptures(game, culling) {
   const shots = [];
-  for (const n of [1, 2, 3, 4, "n", 1, 2, 3, 4, "n"]) {
+  for (const n of [1, 2, 3, 4, 5, 6, 7, 8, "n", 1, 2, 3, 4, 5, 6, 7, 8, "n"]) {
     if (n === "n") {
       await game.hold("n", 1);
       continue;
     }
     await game.view(n);
     const s = await game.state();
-    if (culling && n > 1) check(s.cells.hidden > 0, `view ${n} hides rooms (cells ${JSON.stringify(s.cells)})`);
+    if (culling && n > 1) check(s.cells.hidden > 0, `view ${n}'s portal walk hides subtrees (cells ${JSON.stringify(s.cells)})`);
     shots.push(await game.capture());
   }
   return shots;
@@ -274,6 +388,7 @@ try {
   await game.ready();
   await route(game);
   await wallPush(game);
+  await stairs(game);
   await hours(game);
   await daylight(game);
   const culled = await viewCaptures(game, true);
@@ -282,7 +397,7 @@ try {
   games.push(unculled);
   await unculled.ready();
   const all = await viewCaptures(unculled, false);
-  culled.forEach((shot, i) => check(shot.equals(all[i]), `${i < 4 ? "night" : "noon"} view ${(i % 4) + 1}: culling on and off capture the same frame`));
+  culled.forEach((shot, i) => check(shot.equals(all[i]), `${i < 8 ? "night" : "noon"} view ${(i % 8) + 1}: culling on and off capture the same frame`));
 
   const scripted = (script) => ["--input-script", join(DIR, script), "--capture-at-frame", "30"];
   const goldens = {
@@ -292,6 +407,10 @@ try {
     "liminal-office-entrance-day": scripted("noon-entrance.script"),
     "liminal-office-corridor-day": scripted("noon-corridor.script"),
     "liminal-office-window-day": scripted("noon-window.script"),
+    "liminal-office-stairwell": scripted("stairwell.script"),
+    "liminal-office-stairwell-day": scripted("noon-stairwell.script"),
+    "liminal-office-upstairs": scripted("upstairs.script"),
+    "liminal-office-upstairs-day": scripted("noon-upstairs.script"),
   };
   for (const [name, args] of Object.entries(goldens)) {
     check(golden(name, args).equals(golden(name, args)), `${name}: byte-identical across runs`);
