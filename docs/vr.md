@@ -498,6 +498,16 @@ desktop-only for now; tracked-rifle VR controls come later. Under XR every
 render-target pass currently runs once per eye, so a scope pass costs twice.
 See its `README.md`.
 
+### Liminal office (baked interior)
+
+`examples/liminal-office` is one floor of an office block walked on
+`Physics.character`: a `functor bake` lightmap with bounced light over a
+layout-derived mesh, drawn per room under `Scene.cells`. `config` asks for
+120 Hz and `settings` pins foveation off. Fixture lights live only in the bake
+job, so the frame keeps its 8 forward-light slots for the street. Not yet
+checked on a headset. See its README for the layout → mesh / bake / cells /
+collision pipeline and the bake provenance check.
+
 ### Pipelined sim thread and XR thread hints
 
 The APK can run the game logic on its own sim thread, like desktop

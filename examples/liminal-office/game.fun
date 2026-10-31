@@ -3,11 +3,11 @@
 // a neon entrance on an empty apron.
 //
 //   functor -d examples/liminal-office run native
-//   functor -d examples/liminal-office run native -- --emulate-xr
+//   functor -d examples/liminal-office run native --emulate-xr
 //
 // Desktop: click to capture the mouse, then mouse-look; WASD or the arrows
 // walk. 1, 2, 3 jump to the entrance, corridor and office views. VR: the left
-// thumbstick walks, the right turns.
+// thumbstick walks and strafes; the right turns and walks.
 //
 // layout.fun is the one layout authority; building.fun derives the mesh,
 // cells, colliders and exterior from it. The interior's light is baked
@@ -112,7 +112,9 @@ let sampledInput = (model, snap: Input.snapshot) =>
     | Option.Some(xr) => { stick: xr.left.thumbstick, look: xr.right.thumbstick }
     | Option.None => { stick: still, look: still }) in
   { model with
-    walk: unit(axis(Key.S, Key.W, snap) + axis(Key.Down, Key.Up, snap) + deadzone(pad.stick.y)),
+    // In a headset the head pitches; a tilted camera would tilt the horizon.
+    pitch: if snap.xr == Option.None then model.pitch else 0.0,
+    walk: unit(axis(Key.S, Key.W, snap) + axis(Key.Down, Key.Up, snap) + deadzone(pad.stick.y) + deadzone(pad.look.y)),
     strafe: unit(axis(Key.A, Key.D, snap) + deadzone(pad.stick.x)),
     turn: unit(axis(Key.Right, Key.Left, snap) - deadzone(pad.look.x)) }
 
