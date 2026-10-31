@@ -463,8 +463,16 @@ impl<'m> Walker<'_, 'm> {
         // `viewer.tick` on a record literal: just that field's code.
         if let ExprKind::FieldAccess { object, field } = &expr.kind {
             if let ExprKind::Global(name) = &object.kind {
+                // Through aliases (`let alias = api`) to the literal.
+                let mut name = name.as_str();
+                for _ in 0..8 {
+                    match self.cx.values.get(name).map(|value| &value.kind) {
+                        Some(ExprKind::Global(next)) => name = next,
+                        _ => break,
+                    }
+                }
                 if let Some(ExprKind::Record(fields)) =
-                    self.cx.values.get(name.as_str()).map(|value| &value.kind)
+                    self.cx.values.get(name).map(|value| &value.kind)
                 {
                     if fields.iter().any(|f| &f.name == field) {
                         self.def(&format!("{name}.{field}"), Set::Later, span);
@@ -544,6 +552,13 @@ impl<'m> Walker<'_, 'm> {
                 match &callee.kind {
                     ExprKind::Global(name) => self.def(name, self.result(name, true), callee.span),
                     ExprKind::External(_) => {}
+                    // A local factory: only the code its result holds.
+                    ExprKind::Local { binding, .. } => {
+                        match self.lets.get(&binding.0).map(|value| &value.kind) {
+                            Some(ExprKind::Lambda { body, .. }) => self.held(body),
+                            _ => self.held(callee),
+                        }
+                    }
                     _ => self.held(callee),
                 }
                 for arg in args {
@@ -569,10 +584,53 @@ impl<'m> Walker<'_, 'm> {
                 }
             }
             ExprKind::Assign { rest, .. } => self.held(rest),
+            // The arms' results; the scrutinee only if an arm can keep a part.
+            ExprKind::Match { scrutinee, arms } => {
+                if arms.iter().any(keeps_part) {
+                    self.held(scrutinee);
+                }
+                for arm in arms {
+                    self.held(&arm.body);
+                }
+            }
             ExprKind::FieldAccess { .. } => self.held_root(expr, expr.span),
             _ => crate::rebind::each_child(expr, &mut |child| self.held(child)),
         }
     }
+}
+
+/// Whether a match arm's body uses a name its pattern binds, so its result
+/// can keep part of the scrutinee (`| Boxed(read) => read`).
+fn keeps_part(arm: &crate::ir::MatchArm) -> bool {
+    use crate::ir::PatternKind;
+    fn bound(pattern: &crate::ir::Pattern, out: &mut HashSet<u32>) {
+        match &pattern.kind {
+            PatternKind::Var { binding, .. } => {
+                out.insert(binding.0);
+            }
+            PatternKind::Ctor { args: items, .. } | PatternKind::Tuple(items) => {
+                items.iter().for_each(|item| bound(item, out))
+            }
+            PatternKind::List { items, tail } => {
+                items.iter().for_each(|item| bound(item, out));
+                if let Some(tail) = tail {
+                    bound(tail, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn uses(expr: &Expr, names: &HashSet<u32>) -> bool {
+        if let ExprKind::Local { binding, .. } = &expr.kind {
+            return names.contains(&binding.0);
+        }
+        let mut found = false;
+        crate::rebind::each_child(expr, &mut |child| found = found || uses(child, names));
+        found
+    }
+    let mut names = HashSet::new();
+    bound(&arm.pattern, &mut names);
+    !names.is_empty() && uses(&arm.body, &names)
 }
 
 /// A role's entry bindings, which [`phase_errors`] keys on.

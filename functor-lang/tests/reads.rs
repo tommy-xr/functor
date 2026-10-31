@@ -435,3 +435,19 @@ fn stored_code_is_charged_where_it_runs() {
         "{errors:#?}"
     );
 }
+
+/// An alias of a record value, a local factory and a discarded match
+/// scrutinee hold no more code than they return.
+#[test]
+fn returned_code_follows_aliases_and_locals() {
+    let errors = phase(
+        "type Api = { step: (float) => float, read: () => bool }\n\
+         type Box = | Boxed(read: () => bool)\n\
+         let api: Api = { step: (m) => m, read: () => File.exists(\"x\") }\n\
+         let alias = api\n\
+         let saved = let make = () => let present = File.exists(\"y\") in (m: float) => m in make()\n\
+         let boxed = match Boxed(() => File.exists(\"z\")) with | Boxed(r) => (m: float) => m\n\
+         let tick = (m) => alias.step(m) + saved(m) + boxed(m)\n",
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
+}
