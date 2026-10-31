@@ -50,6 +50,13 @@ expect Vec3.x(dunesSpawn) == DunesLayout.pad.x && Vec3.z(dunesSpawn) == DunesLay
   && Math.abs(Vec3.y(dunesSpawn) - (Ride.idleHeight + colliderLift)) < 0.000001
 expect Vec3.x(standSpawn) == Stand.originX + 5.0 && Vec3.y(standSpawn) == Vec3.y(dunesSpawn)
 
+// A walker against the parked bike's capsule, on the line through a grip,
+// has the grip within a relaxed arm's reach (0.6 m) of the eye.
+expect (
+  let out = colliderRadius + Walk.radius - Math.sqrt(Bars.gripSpan * Bars.gripSpan + Bars.gripForward * Bars.gripForward) in
+  Math.sqrt(out * out + Mount.gripDrop * Mount.gripDrop) < 0.6
+)
+
 let bike =
   Physics.character(bikeTag, Physics.capsule(colliderHalfHeight, colliderRadius),
                     { stepHeight: 0.0, maxSlope: 50deg, snap: 0.0, offset: 0.02 })
