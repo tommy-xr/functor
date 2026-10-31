@@ -106,23 +106,7 @@ impl Sketch {
 
     /// Filled area in mm² (holes subtract).
     pub fn area(&self) -> f64 {
-        self.shapes
-            .iter()
-            .flatten()
-            .map(|contour| {
-                // Shoelace about the contour's first point, so far-from-origin
-                // contours don't lose their area to cancellation.
-                let n = contour.len();
-                let [ox, oy] = contour[0];
-                (0..n)
-                    .map(|i| {
-                        let ([x0, y0], [x1, y1]) = (contour[i], contour[(i + 1) % n]);
-                        (x0 - ox) * (y1 - oy) - (x1 - ox) * (y0 - oy)
-                    })
-                    .sum::<f64>()
-                    / 2.0
-            })
-            .sum()
+        self.shapes.iter().flatten().map(|c| contour_area(c)).sum()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -181,6 +165,20 @@ impl Sketch {
         }
         mesh
     }
+}
+
+/// Signed area of one contour: positive counter-clockwise. Shoelace about its
+/// first point, so far-from-origin contours don't lose area to cancellation.
+pub(crate) fn contour_area(contour: &[[f64; 2]]) -> f64 {
+    let n = contour.len();
+    let [ox, oy] = contour[0];
+    (0..n)
+        .map(|i| {
+            let ([x0, y0], [x1, y1]) = (contour[i], contour[(i + 1) % n]);
+            (x0 - ox) * (y1 - oy) - (x1 - ox) * (y0 - oy)
+        })
+        .sum::<f64>()
+        / 2.0
 }
 
 /// Points closer than this (mm) are one point: far below any printable

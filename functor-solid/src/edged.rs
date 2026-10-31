@@ -20,7 +20,7 @@ use manifold_rust::linalg::Vec2;
 use manifold_rust::polygon::triangulate_idx;
 use manifold_rust::types::PolyVert;
 
-use crate::sketch::WELD_TOLERANCE;
+use crate::sketch::{contour_area, WELD_TOLERANCE};
 use crate::{segments_for, Mesh, Sketch, CHORD_TOLERANCE};
 
 /// How an extrusion's top or bottom edge is finished.
@@ -124,10 +124,10 @@ struct Front {
     lines: Vec<Line>,
 }
 
-/// Where and how deep the inset failed.
+/// How deep the inset failed, and where if known.
 struct Stuck {
     depth: f64,
-    at: P,
+    at: Option<P>,
 }
 
 impl Front {
@@ -205,7 +205,7 @@ impl Front {
             let mean = |k: usize| self.nodes.iter().map(|n| n.p[k]).sum::<f64>() / n as f64;
             return Err(Stuck {
                 depth,
-                at: [mean(0), mean(1)],
+                at: Some([mean(0), mean(1)]),
             });
         }
         // Clusters of nodes joined by vanishing lines; start where one begins.
@@ -235,7 +235,12 @@ impl Front {
                         [a.n[0] * a.speed, a.n[1] * a.speed],
                     ),
                     // Opposite sides met: the contour pinched off.
-                    _ => return Err(Stuck { depth, at: pa }),
+                    _ => {
+                        return Err(Stuck {
+                            depth,
+                            at: Some(pa),
+                        })
+                    }
                 }
             };
             let mut i = first;
@@ -274,19 +279,6 @@ impl Front {
     }
 }
 
-fn signed_area(points: &[P]) -> f64 {
-    let n = points.len();
-    (0..n)
-        .map(|i| {
-            cross(
-                sub(points[i], points[0]),
-                sub(points[(i + 1) % n], points[0]),
-            )
-        })
-        .sum::<f64>()
-        / 2.0
-}
-
 /// The wall-like face between edge `lo` and the edge `hi` above it (each
 /// `[from, to]`, material on the left), dropping triangles a merged corner
 /// or a fan's shared start makes degenerate.
@@ -298,7 +290,8 @@ fn quad(mesh: &mut Mesh, [a, b]: [u32; 2], [c, d]: [u32; 2]) {
     }
 }
 
-/// A point where two non-adjacent segments of the fronts cross or touch.
+/// A point where two non-adjacent segments of the fronts cross or touch, to
+/// say where an inset failed.
 fn crossing(fronts: &[Front]) -> Option<P> {
     let segments: Vec<(usize, usize, usize, P, P)> = fronts
         .iter()
@@ -327,10 +320,11 @@ fn crossing(fronts: &[Front]) -> Option<P> {
     None
 }
 
-/// Sweep `shape`'s band in from the wall's `contours` (vertices `ids`) to its
-/// cap, adding faces to `mesh`; `z(rise)` places a level. Returns the cap's
-/// fronts.
+/// Sweep `shape`'s band in from the wall's `contours` (vertices `ids`) of
+/// `reference` to its cap, adding faces to `mesh`; `z(rise)` places a level.
+/// Returns the cap's fronts.
 fn band(
+    reference: &Sketch,
     contours: &[Vec<P>],
     ids: &[Vec<u32>],
     shape: EdgeShape,
@@ -371,18 +365,20 @@ fn band(
     if shape == EdgeShape::Sharp {
         return Ok(fronts);
     }
-    // A split, or a contour turned inside out, shows as crossing outlines.
-    if let Some(at) = crossing(&fronts) {
-        return Err(Stuck { depth: t, at });
-    }
-    for (f, c) in fronts.iter().zip(contours) {
-        let after = signed_area(&f.nodes.iter().map(|n| n.p).collect::<Vec<_>>());
-        if after * signed_area(c).signum() <= EPS * EPS {
-            return Err(Stuck {
-                depth: t,
-                at: f.nodes[0].p,
-            });
-        }
+    // The wavefront can't change topology, so a split, a vanished piece, or a
+    // hole that swallowed its outline leaves it disagreeing with the true
+    // inset in contour count or area. Compare against `Sketch::offset`.
+    let truth = reference.offset(-t);
+    let area: f64 = fronts
+        .iter()
+        .map(|f| contour_area(&f.nodes.iter().map(|n| n.p).collect::<Vec<_>>()))
+        .sum();
+    let contours = truth.shapes.iter().flatten().count();
+    if contours != fronts.len() || (area - truth.area()).abs() > 0.01 * truth.area().abs() + 1e-3 {
+        return Err(Stuck {
+            depth: t,
+            at: crossing(&fronts),
+        });
     }
     Ok(fronts)
 }
@@ -486,10 +482,10 @@ impl Sketch {
                 }
             }
             let fronts =
-                band(&contours, &high, top, &|r| z1 + r, &mut mesh).map_err(|s| (top, s))?;
+                band(self, &contours, &high, top, &|r| z1 + r, &mut mesh).map_err(|s| (top, s))?;
             cap(&fronts, true, &mut mesh);
-            let fronts =
-                band(&contours, &low, bottom, &|r| z0 - r, &mut mesh).map_err(|s| (bottom, s))?;
+            let fronts = band(self, &contours, &low, bottom, &|r| z0 - r, &mut mesh)
+                .map_err(|s| (bottom, s))?;
             cap(&fronts, false, &mut mesh);
             Ok(mesh)
         };
@@ -506,12 +502,14 @@ impl Sketch {
                 }
             }
             let side = if edge == top { "top" } else { "bottom" };
+            let near = match stuck.at {
+                Some([x, y]) => format!("near ({x:.2}, {y:.2}) "),
+                None => String::new(),
+            };
             format!(
-                "the {side} {edge} shrinks the sketch {} mm all round, but near ({:.2}, {:.2}) \
-its outline would split or vanish: at most {:.2} mm fits",
+                "the {side} {edge} shrinks the sketch {} mm all round, but {near}its outline \
+would split or vanish: at most {:.2} mm fits",
                 edge.size(),
-                stuck.at[0],
-                stuck.at[1],
                 (lo * 100.0).floor() / 100.0,
             )
         })
