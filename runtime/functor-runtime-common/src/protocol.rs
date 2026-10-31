@@ -245,20 +245,21 @@ pub trait GameProducer {
 
     /// [`Self::load_project`] off the frame thread where the producer can:
     /// a loading screen draws (and the running program pauses) until the
-    /// new one is ready, then [`Self::take_load_status`] has its status.
-    /// A link error returns at once. Default: load now.
+    /// new one is ready ([`Self::when_loaded`]). A link error returns at
+    /// once. Default: load now.
     fn begin_load_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
         self.load_project(files)
     }
 
-    /// Whether a load [`Self::begin_load_project`] began is still running.
+    /// Whether a load is running off the frame thread.
     fn load_pending(&self) -> bool {
         false
     }
 
-    /// How the load [`Self::begin_load_project`] began ended, once.
-    fn take_load_status(&mut self) -> Option<Result<String, String>> {
-        None
+    /// Call `done` with the status of the load running off the frame
+    /// thread once it lands; at once, with `Ok`, when none is.
+    fn when_loaded(&mut self, done: LoadWaiter) {
+        done(Ok("loaded".to_string()));
     }
 
     /// Adopt the same-file entry ROLE a project push declared, returning the
@@ -638,6 +639,9 @@ pub trait GameProducer {
 /// the previous role, so the live program and the role that produced it stay
 /// in agreement — the next role-less push still runs the role in force rather
 /// than a role the runtime never managed to load.
+/// Told how a load off the frame thread ended ([`GameProducer::when_loaded`]).
+pub type LoadWaiter = Box<dyn FnOnce(Result<String, String>) + Send>;
+
 pub fn load_with_role(
     game: &mut dyn GameProducer,
     role: Option<crate::functor_lang_producer::EntryRole>,

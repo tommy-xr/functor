@@ -653,8 +653,9 @@ struct DebugLoopState {
     config: Option<functor_runtime_common::runtime_settings::GameConfig>,
     /// The last completed stage window, for `/state.stages`.
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
-    /// The `/load-project` waiting on a load job: answered when it lands.
-    pending_load: Option<mpsc::Sender<Result<String, String>>>,
+    /// The `/load-project` waiting on a load job, and where its status
+    /// arrives: answered when it lands.
+    pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
 }
 
 /// Ask the runtime for `hz`, which must be one of the display's offered rates.
@@ -1013,15 +1014,24 @@ desktop runtime's --headless/--debug-port path"
             device_files.begin(host);
             // The load job evaluates off the frame: the loading screen draws
             // until it lands, and the request is answered then.
+            let (done, landed) = mpsc::channel();
             let begun = sim.call(move |g| {
                 functor_runtime_common::protocol::load_with_role(g, role, |g| {
                     g.begin_load_project(&files)
                 })
-                .map(|status| (status, g.load_pending()))
+                .map(|status| {
+                    let pending = g.load_pending();
+                    if pending {
+                        g.when_loaded(Box::new(move |status| {
+                            let _ = done.send(status);
+                        }));
+                    }
+                    (status, pending)
+                })
             });
             match begun {
                 Ok((_, true)) => {
-                    if let Some(superseded) = debug.pending_load.replace(response) {
+                    if let Some((superseded, _)) = debug.pending_load.replace((response, landed)) {
                         let _ = superseded.send(Err("superseded by a newer /load-project".to_string()));
                     }
                 }
@@ -1572,12 +1582,11 @@ pub fn android_main(app: AndroidApp) {
             }
         }
         // A load job that landed answers its `/load-project`.
-        if debug.pending_load.is_some() {
-            if let Some(result) = sim.call(|g| g.take_load_status()) {
-                let result = launch(result, &session, &mut sim, &mut clock, &mut debug, &scene_context, &passthrough, &environment_depth);
-                if let Some(response) = debug.pending_load.take() {
-                    let _ = response.send(result);
-                }
+        let landed = debug.pending_load.as_ref().and_then(|(_, landed)| landed.try_recv().ok());
+        if let Some(result) = landed {
+            let result = launch(result, &session, &mut sim, &mut clock, &mut debug, &scene_context, &passthrough, &environment_depth);
+            if let Some((response, _)) = debug.pending_load.take() {
+                let _ = response.send(result);
             }
         }
 
