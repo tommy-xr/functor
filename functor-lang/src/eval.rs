@@ -67,6 +67,24 @@ const CANCEL_POLL: u32 = 4096;
 /// The error a stopped job's evaluation ends with.
 pub const CANCELLED: &str = "the job was cancelled";
 
+/// The error a load ends with when its [`LoadWatch`] stops it.
+pub const LOAD_STOPPED: &str = "the load was stopped before a def";
+
+/// Hears of each top-level def a [`Session::load_watched`] evaluates (a
+/// reused one is skipped): progress, timings, or a reason to stop.
+pub trait LoadWatch {
+    /// Def `index` of `total` is about to evaluate; `false` stops the load
+    /// with [`LOAD_STOPPED`].
+    fn evaluating(&mut self, _index: usize, _total: usize, _name: &str) -> bool {
+        true
+    }
+
+    /// The def `evaluating` last named has evaluated.
+    fn evaluated(&mut self, _name: &str) {}
+}
+
+impl LoadWatch for () {}
+
 /// Trace-event cap; see the module doc.
 pub const MAX_TRACE_EVENTS: usize = 10_000;
 
@@ -755,6 +773,20 @@ impl Session {
         previous: Option<&Session>,
         types: HashMap<String, String>,
     ) -> Result<(Session, ReuseStats), RunFailure> {
+        Session::load_watched(module, host, previous, types, None, &mut ())
+    }
+
+    /// [`Session::load_reusing`] for the engine's load job: `watch` hears
+    /// of each def as it evaluates and may stop the load ([`LOAD_STOPPED`]),
+    /// and evaluation stops with [`CANCELLED`] soon after `stop` is set.
+    pub fn load_watched(
+        module: &Module,
+        host: &mut dyn Host,
+        previous: Option<&Session>,
+        types: HashMap<String, String>,
+        stop: Option<&AtomicBool>,
+        watch: &mut dyn LoadWatch,
+    ) -> Result<(Session, ReuseStats), RunFailure> {
         let calls = std::cell::Cell::new(0);
         let mut counted = Counted {
             host,
@@ -770,7 +802,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
-            cancel: None,
+            cancel: stop.map(|flag| (flag, 0)),
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
             host: &mut counted,
@@ -792,7 +824,7 @@ impl Session {
             && (calls.get() == 0 || probe_inputs.is_some_and(|inputs| inputs.is_empty()));
         let mut planner = Planner::new(module, previous, types, units_pure, &mut *interp.host);
         let loaded = interp
-            .eval_defs_reusing(module, &mut planner, &calls)
+            .eval_defs_reusing(module, &mut planner, &calls, watch)
             .and_then(|_| interp.settle_unit_operators(module));
         match loaded {
             Ok(()) => Ok((
@@ -808,6 +840,62 @@ impl Session {
                 trace: interp.trace,
             }),
         }
+    }
+
+    /// Load `module` from a load of the same module elsewhere (the engine's
+    /// load job, on a worker): each def `values` holds is taken as is, and
+    /// the rest (functions, values that couldn't cross) evaluate here.
+    /// `records` are that load's, so the next reload reuses as it would have.
+    pub fn load_adopting(
+        module: &Module,
+        host: &mut dyn Host,
+        mut values: HashMap<String, Value>,
+        records: Records,
+    ) -> Result<Session, RunFailure> {
+        let mut interp = Interp {
+            globals: HashMap::new(),
+            mut_slots: HashMap::new(),
+            trace: Vec::new(),
+            tracing: Tracing::Off,
+            recorder: None,
+            depth: 0,
+            call_depth: 0,
+            fuel: None,
+            cancel: None,
+            brand_ops: BrandOps::default(),
+            brand_ops_complete: true,
+            host,
+        };
+        let mut adopt = || -> Result<(), RunError> {
+            interp.load_unit_operators(module)?;
+            for def in &module.defs {
+                let value = match values.remove(&def.name) {
+                    Some(value) => value,
+                    None => interp.eval(&def.value, &Env::empty())?,
+                };
+                interp.globals.insert(def.name.clone(), value);
+                interp.retry_unit_operators(module)?;
+            }
+            interp.settle_unit_operators(module)
+        };
+        match adopt() {
+            Ok(()) => Ok(Session {
+                brand_ops: interp.brand_ops.clone(),
+                globals: interp.globals,
+                records: Some(records),
+            }),
+            Err(error) => Err(RunFailure {
+                error,
+                trace: interp.trace,
+            }),
+        }
+    }
+
+    /// What this session's load learned about each def, for a
+    /// [`Session::load_adopting`] elsewhere; `None` unless it came from
+    /// [`Session::load_reusing`] or an adoption.
+    pub fn records(&self) -> Option<&Records> {
+        self.records.as_ref()
     }
 
     /// The value of a top-level def, if any.
@@ -1103,16 +1191,25 @@ impl Interp<'_> {
         module: &Module,
         planner: &mut Planner,
         calls: &std::cell::Cell<u64>,
+        watch: &mut dyn LoadWatch,
     ) -> Result<(), RunError> {
-        for def in &module.defs {
+        let total = module.defs.len();
+        for (index, def) in module.defs.iter().enumerate() {
             let value = match planner.reuse(def) {
                 Some(value) => value,
                 None => {
+                    if !watch.evaluating(index, total, &def.name) {
+                        return Err(RunError {
+                            message: LOAD_STOPPED.to_string(),
+                            span: def.span,
+                        });
+                    }
                     let before = calls.get();
                     self.host.begin_inputs();
                     let value = self.eval(&def.value, &Env::empty());
                     let inputs = self.host.end_inputs();
                     let value = value?;
+                    watch.evaluated(&def.name);
                     let inputs = if calls.get() == before {
                         Some(Vec::new())
                     } else {

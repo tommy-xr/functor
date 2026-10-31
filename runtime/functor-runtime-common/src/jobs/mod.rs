@@ -10,6 +10,7 @@
 //! carries its [`Ticket`]; one whose attempt is no longer the op's is stale
 //! and dropped.
 
+pub mod load;
 mod shareable;
 
 use std::cell::RefCell;
@@ -105,6 +106,14 @@ thread_local! {
     static REPORTING: RefCell<Option<Progress>> = const { RefCell::new(None) };
 }
 
+/// Run `f` with `Job.report` writing to `progress`.
+fn reporting_to<R>(progress: &Progress, f: impl FnOnce() -> R) -> R {
+    let outer = REPORTING.with(|slot| slot.replace(Some(progress.clone())));
+    let out = f();
+    REPORTING.with(|slot| *slot.borrow_mut() = outer);
+    out
+}
+
 /// `Job.report`: the running job's progress is now `fraction`. Outside a
 /// job, nothing.
 pub fn report(fraction: f64) {
@@ -156,9 +165,9 @@ impl Job {
         }
         let ctx = JobCtx { stop: self.stop.clone() };
         let (task, fail) = (self.task, self.fail);
-        let outer = REPORTING.with(|slot| slot.replace(Some(self.progress.clone())));
-        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(&ctx)));
-        REPORTING.with(|slot| *slot.borrow_mut() = outer);
+        let ran = reporting_to(&self.progress, || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(&ctx)))
+        });
         let (value, crashed) = match ran {
             Ok(value) => (value, false),
             Err(panic) => (fail(JobError::Crashed(panic_text(&panic))), true),
@@ -482,6 +491,23 @@ pub struct ProgramSource {
     pub files: Vec<(String, String)>,
 }
 
+impl ProgramSource {
+    pub fn new(files: Vec<(String, String)>) -> ProgramSource {
+        ProgramSource { id: next_id(), files }
+    }
+
+    /// The project files `sources` linked (the bundled modules left out).
+    pub fn of(sources: &functor_lang::project::SourceMap) -> ProgramSource {
+        let files = sources
+            .files()
+            .iter()
+            .filter(|file| !file.path.to_string_lossy().starts_with('<'))
+            .map(|file| (file.path.to_string_lossy().into_owned(), file.src.clone()))
+            .collect();
+        ProgramSource::new(files)
+    }
+}
+
 /// The project as a producer runs it: what a worker compiles, and which
 /// closures are its top-level functions.
 pub struct JobProgram {
@@ -492,14 +518,8 @@ pub struct JobProgram {
 impl JobProgram {
     /// The loaded `module`, linked from `sources`.
     pub fn new(module: &functor_lang::ir::Module, sources: &functor_lang::project::SourceMap) -> JobProgram {
-        let files = sources
-            .files()
-            .iter()
-            .filter(|file| !file.path.to_string_lossy().starts_with('<'))
-            .map(|file| (file.path.to_string_lossy().into_owned(), file.src.clone()))
-            .collect();
         JobProgram {
-            source: Arc::new(ProgramSource { id: next_id(), files }),
+            source: Arc::new(ProgramSource::of(sources)),
             roots: functor_lang::reuse::Roots::of(module),
         }
     }
@@ -592,6 +612,8 @@ pub(crate) struct Started {
     pub progress: Progress,
 }
 
+#[cfg(test)]
+mod load_tests;
 #[cfg(test)]
 mod run_tests;
 
