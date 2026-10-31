@@ -222,6 +222,7 @@ impl<'m> Context<'m> {
             cx: self,
             lets: HashMap::new(),
             ran: HashSet::new(),
+            kept: HashSet::new(),
             uses: Vec::new(),
         }
     }
@@ -239,7 +240,7 @@ impl<'m> Context<'m> {
                 returns.held(body);
                 edges.push(((name.clone(), Set::Returns), returns.uses));
                 let mut later = self.walker();
-                later.all(&def.value);
+                later.code(&def.value);
                 edges.push(((name, Set::Later), later.uses));
             } else {
                 let mut now = self.walker();
@@ -323,6 +324,8 @@ struct Walker<'c, 'm> {
     lets: HashMap<u32, &'m Expr>,
     /// `let` bindings already run, so a local called twice is walked once.
     ran: HashSet<u32>,
+    /// `let` bindings whose held code is already collected.
+    kept: HashSet<u32>,
     uses: Vec<Use<'m>>,
 }
 
@@ -357,8 +360,9 @@ impl<'m> Walker<'_, 'm> {
     /// `expr` evaluates now. `runs` when its value may also be called now:
     /// a callee, or a call argument (`List.map((p) => File.bytes(p), ps)`).
     /// A lambda anywhere else (a record field, a variant payload, a `let`
-    /// value) is only built.
+    /// value) is only built, and so is a value of data type (`viewer.size`).
     fn now(&mut self, expr: &'m Expr, runs: bool) {
+        let runs = runs && self.callable(expr);
         match &expr.kind {
             ExprKind::External(path) => {
                 if runs {
@@ -459,12 +463,21 @@ impl<'m> Walker<'_, 'm> {
         }
     }
 
-    /// Every name in `expr`, as code that may run: a function's body.
-    fn all(&mut self, expr: &'m Expr) {
-        match &expr.kind {
-            ExprKind::External(path) => self.builtin(path, expr.span),
-            ExprKind::Global(name) => self.def(name, Set::Later, expr.span),
-            _ => crate::rebind::each_child(expr, &mut |child| self.all(child)),
+    /// Whether `expr`'s value may be a function (or `unknown`, or generic).
+    fn callable(&self, expr: &Expr) -> bool {
+        !matches!(
+            self.cx.types.expr(expr.id),
+            Some(Type::Float | Type::String | Type::Bool | Type::List(_) | Type::Map(..))
+                | Some(Type::Tuple(_) | Type::Record(..) | Type::Variant(..))
+        )
+    }
+
+    /// The code a lambda holds: what its body reads when called, and the
+    /// code its result holds.
+    fn code(&mut self, lambda: &'m Expr) {
+        if let ExprKind::Lambda { body, .. } = &lambda.kind {
+            self.now(body, false);
+            self.held(body);
         }
     }
 
@@ -481,7 +494,7 @@ impl<'m> Walker<'_, 'm> {
             return;
         }
         match &expr.kind {
-            ExprKind::Lambda { .. } => self.all(expr),
+            ExprKind::Lambda { .. } => self.code(expr),
             ExprKind::External(path) => self.builtin(path, expr.span),
             ExprKind::Global(name) => self.def(name, Set::Later, expr.span),
             ExprKind::Call { callee, args } => {
@@ -493,6 +506,25 @@ impl<'m> Walker<'_, 'm> {
                     self.held(arg);
                 }
             }
+            // Only what the result keeps: a local used just to build it
+            // (`let load = … in { size: load() }`) holds nothing.
+            ExprKind::Let {
+                binding,
+                value,
+                body,
+                ..
+            } => {
+                self.lets.insert(binding.0, value);
+                self.held(body);
+            }
+            ExprKind::Local { binding, .. } => {
+                if let Some(value) = self.lets.get(&binding.0).copied() {
+                    if self.kept.insert(binding.0) {
+                        self.held(value);
+                    }
+                }
+            }
+            ExprKind::Assign { rest, .. } => self.held(rest),
             _ => crate::rebind::each_child(expr, &mut |child| self.held(child)),
         }
     }
