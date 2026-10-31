@@ -28,11 +28,18 @@ let overhead: Hands = {
   right: pose(v3(0.0 - 0.24, 2.02, 0.12), pitch(0.0 - 90.0))
 }
 
-let mix = (a: Body.Pose, b: Body.Pose, t: float): Body.Pose =>
-  pose(Quat.lerp(a.position, b.position, t), Quat.nlerp(a.rotation, b.rotation, t))
-
 let mixHands = (a: Hands, b: Hands, t: float): Hands =>
-  { left: mix(a.left, b.left, t), right: mix(a.right, b.right, t) }
+  { left: Body.mixPose(a.left, b.left, t), right: Body.mixPose(a.right, b.right, t) }
+
+// The same, with the hands swung out to the sides on the way, so a reach
+// overhead doesn't pass in front of the face.
+let swingHands = (a: Hands, b: Hands, t: float): Hands =>
+  let out = 0.35 * Math.sin(Math.pi * t) in
+  let m = mixHands(a, b, t) in
+  {
+    left: { m.left with position: Quat.add(m.left.position, v3(out, 0.0, 0.0)) },
+    right: { m.right with position: Quat.add(m.right.position, v3(0.0 - out, 0.0, 0.0)) }
+  }
 
 // Ease from `a` to `b` across [t0, t1].
 let ease = (t: float, t0: float, t1: float): float => Math.smoothstep(t0, t1, t)
@@ -45,19 +52,17 @@ let hands = (t: float): Hands =>
     { forward with right: { forward.right with rotation: Quat.mul(forward.right.rotation, roll(r)) } }
   else if t < 3.6 then mixHands(forward, crossed, ease(t, 1.9, 2.5))
   else if t < 4.6 then mixHands(crossed, forward, ease(t, 3.6, 4.2))
-  else if t < 6.2 then mixHands(forward, overhead, ease(t, 4.6, 5.2))
-  else mixHands(overhead, forward, ease(t, 6.2, 6.8))
+  else if t < 6.2 then swingHands(forward, overhead, ease(t, 4.6, 5.2))
+  else swingHands(overhead, forward, ease(t, 6.2, 6.8))
 
 let leftTracked = (t: float): bool => t < 6.9 || t > 7.6
 
-// The head looks down at the hands, then up at the inspection panel, with a
-// slow sway the hips lag behind.
+// The head looks down at the hands, glancing 45° left (the hips lag), then
+// up at the inspection panel.
 let head = (t: float): Body.Pose =>
   let down = 58.0 * (1.0 - ease(t, 3.8, 4.4)) + 58.0 * ease(t, 7.6, 8.0) + 6.0 in
-  let sway = if t < 4.0 then 35.0 * Math.sin(Math.pi * t / 2.0) else 8.0 * Math.sin(Math.pi * (t - 4.0) / 2.0) in
-  let q = Quat.mul(turn(sway), pitch(down)) in
-  let neck = Quat.nlerp(Quat.identity, q, Rig.neckBend) in
-  pose(Quat.add(Rig.neck, Body.eyeOffset(1.0, neck, q)), q)
+  let sway = if t < 1.9 then 45.0 * Math.sin(Math.pi * t / 1.9) else 8.0 * Math.sin(Math.pi * (t - 1.9) / 3.05) in
+  Body.headFor(1.0, Quat.mul(turn(sway), pitch(down)))
 
 // Back to tracking space (the same half turn undoes itself).
 let tracked = (p: Body.Pose): Input.pose => {

@@ -57,9 +57,7 @@ let heading = (q: Input.quaternion): float =>
   Math.atan2(f.x * u.y - u.x * f.y, f.z * u.y - u.z * f.y)
 
 // An angle wrapped to (-pi, pi].
-let wrap = (a: float): float =>
-  let t = Math.mod(a + Math.pi, 2.0 * Math.pi) in
-  (if t < 0.0 then t + 2.0 * Math.pi else t) - Math.pi
+let wrap = (a: float): float => Math.mod(a + Math.pi, 2.0 * Math.pi) - Math.pi
 
 let near = (a: float, b: float): bool => Math.abs(a - b) < 0.0001
 

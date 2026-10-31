@@ -93,22 +93,23 @@ let lights = [
 ]
 
 // The inspection twin: the same avatar, filmed from in front of its hips,
-// with small markers on the wrist targets.
+// with markers on the wrist targets, sized by how much the arm follows them.
 let twin = RenderTarget.named("twin") |> RenderTarget.sized(512.0, 512.0)
 
 let marker = (b: Body.State, h: Body.Hand, color) =>
   match h.wrist with
-  | Option.None => Scene.group([])
   | Option.Some(w) =>
-    Scene.sphere()
-      |> Scene.scale(0.035 * b.scale)
+    if h.blend <= 0.0 then Scene.group([])
+    else Scene.sphere()
+      |> Scene.scale(0.035 * b.scale * h.blend)
       |> Scene.emissive(color)
       |> Scene.translate(Quat.toVec3(Body.toWorldPoint(b, w.position)))
+  | Option.None => Scene.group([])
 
 let twinFrame = (b: Body.State) =>
   let at = (x: float, y: float, z: float) => Quat.toVec3(Body.toWorldPoint(b, Quat.v3(x, y, z))) in
   Frame.createLit(
-    Camera3D.lookAt(at(0.0, 1.0, 2.6), at(0.0, 0.95, 0.0)),
+    Camera3D.lookAt(at(0.0, 1.15, 3.1), at(0.0, 1.1, 0.0)),
     Scene.group([
       room,
       avatar(b),
