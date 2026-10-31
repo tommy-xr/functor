@@ -115,7 +115,7 @@ fn a_function_passed_or_stored_is_charged_where_it_is_named() {
     // A stored function (a partial, a record field) keeps spreading.
     assert_eq!(classes(&inferred, "reader"), ["file"]);
     assert_eq!(inferred.path("viaValue", ReadClass::File), ["reader", "File.exists"]);
-    assert_eq!(inferred.path("viaRecord", ReadClass::File), ["api", "File.exists"]);
+    assert_eq!(inferred.path("viaRecord", ReadClass::File), ["api.has", "File.exists"]);
 }
 
 #[test]
@@ -404,4 +404,34 @@ fn reads_that_cannot_run_are_not_errors() {
          let tick = (m) => let unused = () => File.exists(\"y\") in built.tick(m)\n",
     );
     assert!(errors.is_empty(), "{errors:#?}");
+}
+
+/// Calling one field of a record value runs that field only; a lambda handed
+/// to a call that keeps it (an `Effect.t`, a record of handlers) only runs
+/// later.
+#[test]
+fn stored_code_is_charged_where_it_runs() {
+    let errors = phase(
+        "type Viewer = { tick: (float) => float, reload: () => bool, start: () => float }\n\
+         type Probe = { label: string, read: () => float }\n\
+         let viewer: Viewer = {\n\
+           tick: (m) => m + 1.0,\n\
+           reload: () => File.exists(\"v.bin\"),\n\
+           start: () => Physics.height(\"p\") }\n\
+         let fresh = viewer.reload()\n\
+         let probe = (label: string, read: () => float): Probe => { label: label, read: read }\n\
+         let probes = [probe(\"x\", () => Physics.height(\"p\"))]\n\
+         let later = Effect.after(() => Physics.height(\"p\") > 0.0)\n\
+         let tick = (m) => viewer.tick(m) + List.length(probes)\n\
+         let draw = (m) => Scene.memo(\"k\", m, viewer.tick)\n\
+         let init = viewer.start()\n",
+    );
+    // Only `init` runs a physics read at load.
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(
+        errors[0].starts_with(
+            "13: `init` reads the live physics world at load (init → viewer.start → Physics.height)"
+        ),
+        "{errors:#?}"
+    );
 }

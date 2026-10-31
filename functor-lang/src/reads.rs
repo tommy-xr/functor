@@ -193,6 +193,8 @@ struct Context<'m> {
     types: &'m ExprTypes,
     builtins: HashMap<String, &'m [ReadClass]>,
     functions: HashSet<&'m str>,
+    /// Each def's value, so `viewer.tick` resolves to that field's code.
+    values: HashMap<&'m str, &'m Expr>,
     plain: PlainTypes,
 }
 
@@ -212,6 +214,11 @@ impl<'m> Context<'m> {
                 .iter()
                 .filter(|def| matches!(def.value.kind, ExprKind::Lambda { .. }))
                 .map(|def| def.name.as_str())
+                .collect(),
+            values: module
+                .defs
+                .iter()
+                .map(|def| (def.name.as_str(), &def.value))
                 .collect(),
             plain: PlainTypes::of(module),
         }
@@ -248,7 +255,16 @@ impl<'m> Context<'m> {
                 edges.push(((name.clone(), Set::Now), now.uses));
                 let mut later = self.walker();
                 later.held(&def.value);
-                edges.push(((name, Set::Later), later.uses));
+                edges.push(((name.clone(), Set::Later), later.uses));
+                // Each field of a record literal, so calling one field
+                // doesn't charge its siblings' code.
+                if let ExprKind::Record(fields) = &def.value.kind {
+                    for field in fields {
+                        let mut held = self.walker();
+                        held.held(&field.value);
+                        edges.push(((format!("{name}.{}", field.name), Set::Later), held.uses));
+                    }
+                }
             }
         }
         let mut inferred = Inferred::default();
@@ -295,7 +311,8 @@ impl<'m> Context<'m> {
 #[derive(Clone, Debug)]
 enum Target<'m> {
     Builtin(String, &'m [ReadClass]),
-    Def(&'m str, Set),
+    /// A def's set; `viewer.tick` for one field of a record-literal value.
+    Def(String, Set),
 }
 
 #[derive(Clone, Debug)]
@@ -340,9 +357,9 @@ impl<'m> Walker<'_, 'm> {
         }
     }
 
-    fn def(&mut self, name: &'m str, set: Set, span: Span) {
+    fn def(&mut self, name: &str, set: Set, span: Span) {
         self.uses.push(Use {
-            to: Target::Def(name, set),
+            to: Target::Def(name.to_string(), set),
             span,
         });
     }
@@ -387,11 +404,14 @@ impl<'m> Walker<'_, 'm> {
                 }
             }
             ExprKind::Call { callee, args } => {
-                // A variant's payload is stored, not called.
+                // A variant's payload is stored, not called; so is an
+                // argument to a call whose result holds code (`Physics.events(
+                // tagger)`, `probe("x", () => …)`), as far as we can tell.
                 let ctor = matches!(callee.kind, ExprKind::Ctor { .. });
+                let stores = ctor || self.holds_code(expr);
                 self.now(callee, true);
                 for arg in args {
-                    self.now(arg, !ctor);
+                    self.now(arg, !stores);
                 }
                 // `make(a)(b)` runs code `make` returned.
                 if runs && !ctor {
@@ -440,6 +460,19 @@ impl<'m> Walker<'_, 'm> {
     /// The code the def at the root of `expr` holds (`api` in `api.has`,
     /// `make`'s result in `make(a)`), which calling `expr`'s value may run.
     fn held_root(&mut self, mut expr: &'m Expr, span: Span) {
+        // `viewer.tick` on a record literal: just that field's code.
+        if let ExprKind::FieldAccess { object, field } = &expr.kind {
+            if let ExprKind::Global(name) = &object.kind {
+                if let Some(ExprKind::Record(fields)) =
+                    self.cx.values.get(name.as_str()).map(|value| &value.kind)
+                {
+                    if fields.iter().any(|f| &f.name == field) {
+                        self.def(&format!("{name}.{field}"), Set::Later, span);
+                    }
+                    return;
+                }
+            }
+        }
         let mut called = false;
         loop {
             match &expr.kind {
@@ -472,6 +505,15 @@ impl<'m> Walker<'_, 'm> {
         )
     }
 
+    /// Whether `expr`'s value may hold code: a function, `unknown`, or a
+    /// type that holds one.
+    fn holds_code(&self, expr: &Expr) -> bool {
+        self.cx
+            .types
+            .expr(expr.id)
+            .is_some_and(|ty| !self.cx.plain.holds(ty))
+    }
+
     /// The code a lambda holds: what its body reads when called, and the
     /// code its result holds.
     fn code(&mut self, lambda: &'m Expr) {
@@ -498,8 +540,10 @@ impl<'m> Walker<'_, 'm> {
             ExprKind::External(path) => self.builtin(path, expr.span),
             ExprKind::Global(name) => self.def(name, Set::Later, expr.span),
             ExprKind::Call { callee, args } => {
+                // A built-in's read ran while the value was built.
                 match &callee.kind {
                     ExprKind::Global(name) => self.def(name, self.result(name, true), callee.span),
+                    ExprKind::External(_) => {}
                     _ => self.held(callee),
                 }
                 for arg in args {
@@ -525,6 +569,7 @@ impl<'m> Walker<'_, 'm> {
                 }
             }
             ExprKind::Assign { rest, .. } => self.held(rest),
+            ExprKind::FieldAccess { .. } => self.held_root(expr, expr.span),
             _ => crate::rebind::each_child(expr, &mut |child| self.held(child)),
         }
     }
@@ -557,10 +602,11 @@ pub fn phase_errors(module: &Module, types: &ExprTypes, entry: &Entry) -> Vec<Ch
     let cx = Context::of(module, types);
     let inferred = cx.solve();
     let mut errors: Vec<CheckError> = Vec::new();
-    let mut report = |span: Span, message: String| {
+    let mut seen: HashSet<(usize, ReadClass)> = HashSet::new();
+    let mut report = |span: Span, class: ReadClass, message: String| {
         // One read can break two rules (a file read in a hook's memo
         // builder); the first, more specific, error is enough.
-        if !errors.iter().any(|error| error.span == span) {
+        if seen.insert((span.start, class)) {
             errors.push(CheckError { message, span });
         }
     };
@@ -586,6 +632,7 @@ pub fn phase_errors(module: &Module, types: &ExprTypes, entry: &Entry) -> Vec<Ch
             };
             report(
                 step.span,
+                class,
                 format!(
                     "a {callee} builder can't read {} ({}): deps can't capture it, so the \
 cached result would freeze — {fix}",
@@ -602,6 +649,7 @@ cached result would freeze — {fix}",
         for (class, step) in inferred.resolve(&walk.uses) {
             report(
                 step.span,
+                class,
                 format!(
                     "the `{}` unit can't read {} ({}): it runs wherever a `1{}` literal \
 appears, so it must be pure",
@@ -620,6 +668,7 @@ appears, so it must be pure",
         for (class, step) in inferred.resolve(&walk.uses) {
             report(
                 step.span,
+                class,
                 format!(
                     "the `{}` unit's {op_name} can't read {} ({}): it runs wherever {op_name} \
 meets a `{}` value, so it must be pure",
@@ -669,12 +718,13 @@ frame — build the view in `ui`",
                     path(name, step, class)
                 ),
             };
-            report(step.span, message);
+            report(step.span, class, message);
         }
         if entry.hooks.contains(&name) {
             if let Some(step) = at(Set::Later).and_then(|reads| reads.get(&ReadClass::File)) {
                 report(
                     step.span,
+                    ReadClass::File,
                     format!(
                         "`{name}` reads project files ({}), but files are read only at load, \
 so the answer isn't pinned for replay — read it in a top-level value and use that value \
@@ -695,6 +745,7 @@ in `{name}`",
             }
             report(
                 step.span,
+                class,
                 format!(
                     "this `expect` can't read {} ({}): expects run at load, outside any frame",
                     what(class),
