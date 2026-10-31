@@ -474,12 +474,12 @@ let patchLights = (s: Side, h: Hole, p: Patch): List<Light.t> =>
     let at = outsideFacade(s, lo + (Math.mod(k, nu) + 0.5) * du, y0 + (Math.floor(k / nu) + 0.5) * dv, p.out) in
     Light.spot(at, Vec3.normalize(target |> Vec3.sub(at)), p.color, p.perSquareMetre * du * dv, 12.0, 80deg)
       |> Light.castShadows)
-let skyLights = (s: Side, h: Hole): List<Light.t> =>
+let openingLights = (s: Side, h: Hole): List<Light.t> =>
   List.flatten([patchLights(s, h, skyPatch), patchLights(s, h, groundPatch)])
 
 let daylightLights = List.flatten([
   [Light.directional(sunDirection, Color.rgb(1.0, 0.93, 0.8), 3.0) |> Light.castShadows],
-  [North, South, East, West] |> List.concatMap((s) => openingsIn(s) |> List.concatMap((h) => skyLights(s, h))),
+  [North, South, East, West] |> List.concatMap((s) => openingsIn(s) |> List.concatMap((h) => openingLights(s, h))),
 ])
 
 // Day: the same mesh, so the same charts; the panels stay on.

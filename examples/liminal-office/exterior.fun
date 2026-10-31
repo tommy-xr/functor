@@ -31,11 +31,11 @@ let facadeSlabs =
     run(East, f.z0, f.z1, (p) => slab(f.x1, p.y0, p.u0, f.x1 + half, p.y1, p.u1)),
   ]) |> Scene.group |> Scene.lit(concrete)
 
-// Dark window bands on the outside of the walls, except where layout.fun
-// opens a real window (open, no glass: glass would bypass culling).
 // Whether the 2.2 m band centred `at` along side `s` overlaps a real window.
 let isOpen = (s: Side, at: float): bool =>
   Layout.windows |> List.any((w) => w.side == s && Math.abs(w.at - at) < (w.width + 2.2) / 2.0)
+// Dark window bands on the outside of the walls, except where layout.fun
+// opens a real window (open, no glass: glass would bypass culling).
 let windowBands =
   let f = footprint in
   let o = half + 0.02 in
@@ -93,9 +93,11 @@ let ground = Scene.group([
 let exteriorAt = (neon: float, lamps: float): Scene.t => Scene.group([
   ground, facadeSlabs, windowBands, canopy, lampPosts,
   neonStrips |> Scene.color(rgb(110.0 * neon, 240.0 * neon, 230.0 * neon)),
-  // Unlit by day: the posts' grey.
-  lampShades |> Scene.color(rgb(60.0 |> Math.lerp(255.0, lamps), 60.0 |> Math.lerp(190.0, lamps), 66.0 |> Math.lerp(110.0, lamps))),
+  lampShades |> Scene.color(Hours.color(Hours.mix(shadeByDay, sodiumGlow, lamps))),
 ])
+// Off by day: about the grey the lit posts show at noon.
+let shadeByDay: Hours.Rgb = { r: 110.0 / 255.0, g: 110.0 / 255.0, b: 116.0 / 255.0 }
+let sodiumGlow: Hours.Rgb = { r: 255.0 / 255.0, g: 190.0 / 255.0, b: 110.0 / 255.0 }
 
 let streetBodies = (rev: float): List<Physics.body> =>
   List.flatten([

@@ -16,7 +16,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inflateSync } from "node:zlib";
+import { decodePng } from "../scripts/png.mjs";
 import { BIN, ROOT, check, failures, sleep } from "./mcp-rpc.mjs";
 
 const DIR = join(ROOT, "examples/liminal-office");
@@ -156,47 +156,28 @@ async function wallPush(game) {
   check(m.at.z < -0.4 && m.at.z > -0.6 && m.cell === APRON, `outside → in push blocked at the wall (z ${m.at.z.toFixed(3)}, cell ${m.cell})`);
 }
 
-// Mean luma (0–255) of an 8-bit RGB/RGBA PNG over the rect given as
-// fractions of the image, [x0, y0, x1, y1].
+// Mean luma (0–255) of a captured PNG over the rect given as fractions of
+// the image, [x0, y0, x1, y1].
 function meanLuma(png, [x0, y0, x1, y1]) {
-  const width = png.readUInt32BE(16);
-  const height = png.readUInt32BE(20);
-  const channels = { 2: 3, 6: 4 }[png[25]];
-  if (png[24] !== 8 || !channels || png[28] !== 0) throw new Error("expected a non-interlaced 8-bit RGB(A) PNG");
-  const idat = [];
-  for (let at = 8; at < png.length; ) {
-    const len = png.readUInt32BE(at);
-    if (png.toString("latin1", at + 4, at + 8) === "IDAT") idat.push(png.subarray(at + 8, at + 8 + len));
-    at += 12 + len;
-  }
-  const raw = inflateSync(Buffer.concat(idat));
-  const stride = width * channels;
-  const rows = [];
-  let prev = Buffer.alloc(stride);
-  for (let y = 0; y < height; y++) {
-    const filter = raw[y * (stride + 1)];
-    const line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
-    for (let i = 0; i < stride; i++) {
-      const a = i >= channels ? line[i - channels] : 0;
-      const b = prev[i];
-      const c = i >= channels ? prev[i - channels] : 0;
-      const p = a + b - c;
-      const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
-      line[i] = (line[i] + [0, a, b, (a + b) >> 1, paeth][filter]) & 255;
-    }
-    rows.push(line);
-    prev = line;
-  }
+  const { width, height, channels, pixels } = decodePng(png);
   let sum = 0;
   let n = 0;
   for (let y = Math.floor(y0 * height); y < Math.floor(y1 * height); y++) {
     for (let x = Math.floor(x0 * width); x < Math.floor(x1 * width); x++) {
-      const p = rows[y].subarray(x * channels);
+      const p = pixels.subarray((y * width + x) * channels);
       sum += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
       n++;
     }
   }
   return sum / n;
+}
+
+// The largest per-channel difference between two same-sized captures.
+function maxDiff(a, b) {
+  const [pa, pb] = [decodePng(a).pixels, decodePng(b).pixels];
+  let max = 0;
+  for (let i = 0; i < pa.length; i++) max = Math.max(max, Math.abs(pa[i] - pb[i]));
+  return max;
 }
 
 // The hour is model state: N toggles midnight ⇄ noon, T steps an hour, and a
@@ -222,7 +203,10 @@ async function hours(game) {
   await game.post("/rewind", { frame: noon.frame });
   let hour = (await game.model()).hour;
   check(hour === 12, `rewinding to frame ${noon.frame} restores noon (hour ${hour})`);
-  check((await game.capture()).equals(day), "the rewound frame draws as it did (day bake)");
+  // The rewound frame is a few frames before `day`, whose pose differs by the
+  // character controller's sub-millimetre settle: allow 1–2 levels.
+  const diff = maxDiff(await game.capture(), day);
+  check(diff <= 2, `the rewound frame draws as noon did (max diff ${diff}; night differs by ${maxDiff(night, day)})`);
   await game.post("/rewind", { frame: one.frame });
   hour = (await game.model()).hour;
   check(hour === 1, `rewinding to frame ${one.frame} restores 1:00 (hour ${hour})`);
