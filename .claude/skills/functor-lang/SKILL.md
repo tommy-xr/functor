@@ -1204,7 +1204,7 @@ Hidden parts draw in no pass (no colour, no shadow, both eyes, instanced
 copies too) and the pose is still evaluated once per model node. Nested calls
 INTERSECT: an outer `modelParts` can only hide more. A name the model lacks
 matches nothing and warns once. Data models (`Model.skinned`/`Model.static`)
-have no parts and stay whole.
+have no parts and stay whole, as does a `whilePending` placeholder.
 
 **Skinned models can come from data instead of glTF.** `Model.skinned(data)`
 takes packed little-endian `Bytes` (positions, normals, uvs, 4 joint indices +
