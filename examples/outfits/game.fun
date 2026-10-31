@@ -1,13 +1,15 @@
-// Outfits kata v0: Quaternius character presets (`npm run build:characters`;
+// Outfits kata: Quaternius character presets (`npm run build:characters`;
 // ASSETS.md) in two modes.
 //
-// - Loadout: one character on an inspection platform. Pick a body and an
-//   outfit (a preset), and idle/walk/run.
+// - Loadout: one character on an inspection platform. Pick a body, a whole
+//   outfit or each slot's piece, hair, beard and brows, and idle/walk/run.
+//   The loadout's parts (loadout.fun) toggle with `Scene.modelParts`.
 // - Crowd: `count` characters in distance tiers (crowd.fun). Each one's
 //   static subtree is built once by `Scene.memo`, keyed on its loadout data;
 //   per frame it only gets a pose and a transform.
 //
-// Keys: M mode · B body · O outfit · 1/2/3 idle/walk/run · C count · S shadows.
+// Keys: M mode · B body · O outfit · 4-8 head/torso/arms/legs/feet · H hair ·
+// G beard · E brows · 1/2/3 idle/walk/run · C count · S shadows.
 // `GET /state` reports `skinned` draws/pose evals and `stages` timings.
 // Assets: `npm run fetch:assets`.
 
@@ -24,6 +26,10 @@ type Msg =
   | SetMode(mode: Mode)
   | SetBody(body: Loadout.Body)
   | SetOutfit(outfit: Loadout.Outfit)
+  | SetSlot(slot: Loadout.Slot, item: Loadout.Outfit)
+  | SetHair(hair: Loadout.Hair)
+  | SetBeard(beard: bool)
+  | SetBrows(brows: bool)
   | SetGait(gait: Gait)
   | SetCount(count: float)
   | ToggleShadows
@@ -60,11 +66,19 @@ let outfitOf = (model) => Loadout.outfitOrBare(model.kit)
 let update = (model, msg: Msg) =>
   match msg with
   | SetMode(mode) => { model with mode: mode }
-  | SetBody(body) => { model with kit: Loadout.dress(body, outfitOf(model)) }
-  | SetOutfit(outfit) => { model with kit: Loadout.dress(model.kit.body, outfit) }
+  | SetBody(body) => { model with kit: Loadout.redress(model.kit, body, outfitOf(model)) }
+  | SetOutfit(outfit) => { model with kit: Loadout.redress(model.kit, model.kit.body, outfit) }
+  | SetSlot(slot, item) => { model with kit: Loadout.wear(model.kit, slot, item) }
+  | SetHair(hair) => { model with kit: { model.kit with hair: hair } }
+  | SetBeard(beard) => { model with kit: { model.kit with beard: beard } }
+  | SetBrows(brows) => { model with kit: { model.kit with brows: brows } }
   | SetGait(gait) => { model with gait: gait }
   | SetCount(count) => { model with count: count }
   | ToggleShadows => { model with shadows: not model.shadows }
+
+// `slot`'s next item.
+let nextItem = (model, slot: Loadout.Slot) =>
+  update(model, SetSlot(slot, cycle(Loadout.itemsFor(slot), Loadout.itemOf(model.kit, slot))))
 
 let input = (model, key, isDown) =>
   if not isDown then model
@@ -73,6 +87,14 @@ let input = (model, key, isDown) =>
     | Key.M => update(model, SetMode(if model.mode == LoadoutView then CrowdView else LoadoutView))
     | Key.B => update(model, SetBody(cycle(Loadout.bodies, model.kit.body)))
     | Key.O => update(model, SetOutfit(cycle(Loadout.outfits, outfitOf(model))))
+    | Key.Num4 => nextItem(model, Loadout.Head)
+    | Key.Num5 => nextItem(model, Loadout.Torso)
+    | Key.Num6 => nextItem(model, Loadout.Arms)
+    | Key.Num7 => nextItem(model, Loadout.Legs)
+    | Key.Num8 => nextItem(model, Loadout.Feet)
+    | Key.H => update(model, SetHair(cycle(Loadout.hairsFor(model.kit.body), model.kit.hair)))
+    | Key.G => if model.kit.body == Loadout.Male then update(model, SetBeard(not model.kit.beard)) else model
+    | Key.E => update(model, SetBrows(not model.kit.brows))
     | Key.Num1 => update(model, SetGait(Idle))
     | Key.Num2 => update(model, SetGait(Walk))
     | Key.Num3 => update(model, SetGait(Run))
@@ -165,20 +187,35 @@ let draw = (model, tts: float) =>
 let choice = (label: string, selected: bool, msg: Msg) =>
   Ui.button(if selected then $"[{label}]" else label, msg)
 
+// One row per slot: its name, then each item it offers.
+let slotRow = (kit: Loadout.Kit, slot: Loadout.Slot) =>
+  Ui.row(
+    [Ui.text(Loadout.slotName(slot))]
+      |> List.append(Loadout.itemsFor(slot) |> List.map((i) =>
+           choice(Loadout.outfitName(i), i == Loadout.itemOf(kit, slot), SetSlot(slot, i)))))
+
 let loadoutPanel = (model) =>
-  let outfit = outfitOf(model) in
+  let kit = model.kit in
+  let whole = Loadout.outfitOf(kit) in
   Ui.column(
     [
-      Ui.text($"preset: {Loadout.presetName(model.kit, 0.0)}"),
-      Ui.row(Loadout.bodies |> List.map((b) => choice(Loadout.bodyName(b), b == model.kit.body, SetBody(b)))),
-      Ui.row(Loadout.outfits |> List.map((o) => choice(Loadout.outfitName(o), o == outfit, SetOutfit(o)))),
-      Ui.row([
-        choice("idle", model.gait == Idle, SetGait(Idle)),
-        choice("walk", model.gait == Walk, SetGait(Walk)),
-        choice("run", model.gait == Run, SetGait(Run)),
-      ]),
+      Ui.text($"loadout: {Loadout.presetName(kit, 0.0)}"),
+      Ui.row(Loadout.bodies |> List.map((b) => choice(Loadout.bodyName(b), b == kit.body, SetBody(b)))),
+      Ui.row(Loadout.outfits |> List.map((o) => choice(Loadout.outfitName(o), whole == Option.Some(o), SetOutfit(o)))),
     ]
-      |> List.append(model.kit.wear |> List.map((w) => Ui.text($"{Loadout.slotName(w.slot)}: {Loadout.outfitName(w.item)}"))))
+      |> List.append(Loadout.slots |> List.map((s) => slotRow(kit, s)))
+      |> List.append([
+        Ui.row(Loadout.hairsFor(kit.body) |> List.map((h) => choice(Loadout.hairName(h), h == kit.hair, SetHair(h)))),
+        Ui.row(
+          (if kit.body == Loadout.Male then [choice("beard", kit.beard, SetBeard(not kit.beard))] else [])
+            |> List.append([choice("brows", kit.brows, SetBrows(not kit.brows))])),
+        Ui.row([
+          choice("idle", model.gait == Idle, SetGait(Idle)),
+          choice("walk", model.gait == Walk, SetGait(Walk)),
+          choice("run", model.gait == Run, SetGait(Run)),
+        ]),
+        Ui.text($"parts: {Text.join(", ", Loadout.parts(kit))}"),
+      ]))
 
 let crowdPanel = (model) =>
   let crowd = crowdOf(model) in
@@ -194,7 +231,7 @@ let ui = (model) =>
   Ui.column([
     Ui.row([choice("loadout", model.mode == LoadoutView, SetMode(LoadoutView)), choice("crowd", model.mode == CrowdView, SetMode(CrowdView))]),
     if model.mode == LoadoutView then loadoutPanel(model) else crowdPanel(model),
-    Ui.text("keys: M mode, B body, O outfit, 1-3 gait, C count, S shadows"),
+    Ui.text("keys: M mode, B body, O outfit, 4-8 slots, H hair, G beard, E brows, 1-3 gait, C count, S shadows"),
   ]) |> Ui.panel(Ui.topLeft())
 
 expect cycle(counts, 25.0) == 50.0
@@ -205,3 +242,14 @@ expect outfitOf(update(update(init, SetOutfit(Loadout.Peasant)), SetBody(Loadout
 expect (input(init, Key.C, true)).count == 1.0
 expect crowdOf(input(init, Key.C, true)) == Crowd.layout(1.0)
 expect (input(init, Key.O, true)) == update(init, SetOutfit(Loadout.Peasant))
+// Slot keys cycle the items the slot offers; mixing outfits is allowed.
+expect Loadout.itemOf((input(init, Key.Num5, true)).kit, Loadout.Torso) == Loadout.Peasant
+expect Loadout.itemOf((input(init, Key.Num4, true)).kit, Loadout.Head) == Loadout.Bare
+expect Loadout.itemOf((input(input(init, Key.Num4, true), Key.Num4, true)).kit, Loadout.Head) == Loadout.Ranger
+// The look survives a body or outfit change where the body offers it.
+expect not (update(update(init, SetBrows(false)), SetOutfit(Loadout.Peasant))).kit.brows
+expect (update(update(init, SetHair(Loadout.Buzzed)), SetBody(Loadout.Female))).kit.hair == Loadout.Buzzed
+expect (input(init, Key.H, true)).kit.hair == Loadout.Bald
+// Only the male has a beard.
+expect (input(init, Key.G, true)).kit.beard
+expect not (input(update(init, SetBody(Loadout.Female)), Key.G, true)).kit.beard
