@@ -1,11 +1,12 @@
 //! Headset options, built once and handed to `Config.xr` or `Settings.xr`.
 //!
 //! Each knob belongs to one bucket, by when the shell can honour it:
-//! `refreshRate`, `passthrough`, `scene` and `floorLocked` are read once at load, so they go in
-//! `config`; `foveation` and `passthroughEnabled` apply live, so they go in
-//! `settings`. A knob in the wrong bucket is a teaching error naming the
-//! right one. Shells without a headset ignore
-//! these options; desktop still reports them in `GET /state`.
+//! `refreshRate`, `passthrough`, `scene` and `floorLocked` are read once at
+//! load, so they go in `config`; `foveation` and `passthroughEnabled` apply
+//! live, so they go in `settings`. A knob in the wrong bucket is a teaching
+//! error naming the right one. Shells without a headset ignore these options
+//! (except where a knob says otherwise); desktop still reports them in
+//! `GET /state`.
 //!
 //! ```functor
 //! let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))

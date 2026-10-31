@@ -3175,6 +3175,12 @@ Xr.scene(true))\n"
         );
         let err = contract_of(&[("game.fun", &settings_scene)]).err().unwrap();
         assert!(err.contains("`Xr.scene`") && err.contains("config"), "{err}");
+        let settings_floor = format!(
+            "{GAME}let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> \
+Xr.floorLocked(true))\n"
+        );
+        let err = contract_of(&[("game.fun", &settings_floor)]).err().unwrap();
+        assert!(err.contains("`Xr.floorLocked`") && err.contains("config"), "{err}");
     }
 
     #[test]
@@ -3186,6 +3192,17 @@ Xr.scene(true))\n"
         assert!(crate::runtime_settings::scene_requested(contract.config));
         let (_, bare) = contract_of(&[("game.fun", GAME)]).expect("loads");
         assert!(!crate::runtime_settings::scene_requested(bare.config));
+    }
+
+    #[test]
+    fn floor_locked_is_requested_in_config() {
+        let game = format!(
+            "{GAME}let config = Config.create() |> Config.xr(Xr.create() |> Xr.floorLocked(true))\n"
+        );
+        let (_, contract) = contract_of(&[("game.fun", &game)]).expect("loads");
+        assert!(crate::runtime_settings::floor_locked_requested(contract.config));
+        let (_, bare) = contract_of(&[("game.fun", GAME)]).expect("loads");
+        assert!(!crate::runtime_settings::floor_locked_requested(bare.config));
     }
 
     #[test]

@@ -56,6 +56,9 @@ pub struct FrameRequest {
 pub struct SimCaps {
     pub samples_input: bool,
     pub uses_captured_mouse_input: bool,
+    /// `config`'s `Xr.floorLocked`: the desktop XR emulator stands its head
+    /// above the floor.
+    pub xr_floor_locked: bool,
 }
 
 /// Everything the render half needs from one sim frame: the drawn frame, the
@@ -546,6 +549,7 @@ fn caps(game: &dyn Game) -> SimCaps {
     SimCaps {
         samples_input: game.samples_input(),
         uses_captured_mouse_input: game.uses_captured_mouse_input(),
+        xr_floor_locked: crate::runtime_settings::floor_locked_requested(game.config()),
     }
 }
 

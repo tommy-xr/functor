@@ -543,7 +543,12 @@ passthrough?: boolean,
  * starts its environment depth (`XR_META_environment_depth`) for this
  * run; elsewhere the frame's stand-in room stands in for it.
  */
-scene?: boolean, };
+scene?: boolean, 
+/**
+ * `Xr.floorLocked(true)`: anchor tracked poses to the floor under the
+ * head, level and yaw-only, instead of the full first head pose.
+ */
+floor_locked?: boolean, };
 
 /**
  * Target-neutral state for one tracked XR controller.
