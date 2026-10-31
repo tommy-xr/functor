@@ -1078,19 +1078,23 @@ impl FrameCtx<'_> {
         frame_time: FrameTime,
         sampled_input: Option<&crate::InputSnapshot>,
     ) {
-        self.before_physics(frame_time, sampled_input);
-        self.physics_phase(frame_time);
-        self.record_frame(frame_time);
+        if self.before_physics(frame_time, sampled_input) {
+            self.physics_phase(frame_time);
+            self.record_frame(frame_time);
+        }
     }
 
-    /// The pre-physics phase: commit a resuming scrub, apply the shell's queued
-    /// sample, pump subscriptions, then run `tick` and absorb its result.
-    /// (Desktop times this as `tick_ns`.)
+    /// The pre-physics phase: commit a resuming scrub, deliver what it
+    /// parked, apply the shell's queued sample, pump subscriptions, then run
+    /// `tick` and absorb its result. (Desktop times this as `tick_ns`.)
+    /// `false`: the frame must not run — resuming was refused (an open
+    /// connection, design-systems D4), so the scene stays scrubbed.
+    #[must_use]
     pub fn before_physics(
         &mut self,
         frame_time: FrameTime,
         sampled_input: Option<&crate::InputSnapshot>,
-    ) {
+    ) -> bool {
         // Committing a scrub (docs/time-travel.md T3): if play resumes (dts > 0)
         // while the draggable bar is parked on an earlier frame, branch the
         // timeline from there BEFORE this frame advances — and drop any in-flight
@@ -1098,32 +1102,185 @@ impl FrameCtx<'_> {
         // Queries issued by input while parked are the branch's own: kept (a
         // seek already dropped the ones from before it).
         let retry_tts_before_scrub = *self.prev_tts;
-        if frame_time.dts > 0.0
-            && self.recorder.commit_scrub_if_resuming(
+        if frame_time.dts > 0.0 {
+            match self.recorder.commit_scrub_if_resuming(
                 self.model,
                 self.physics_rt,
                 self.physics_frame,
                 self.has_physics,
                 self.prev_tts,
-            )
-        {
-            rebase_connect_retry_deadlines(
-                self.connect_retries,
-                retry_tts_before_scrub,
-                *self.prev_tts,
-            );
-            self.pending_events.clear();
-            // The scrubbed model predates the current loading snapshot, so
-            // "what the game last saw" no longer holds — invalidate the
-            // marker so the branch's first frame redelivers current progress
-            // (a rewound loading screen must learn its assets already
-            // settled).
-            *self.delivered_asset_progress = None;
+            ) {
+                Ok(false) => {}
+                Ok(true) => {
+                    rebase_connect_retry_deadlines(
+                        self.connect_retries,
+                        retry_tts_before_scrub,
+                        *self.prev_tts,
+                    );
+                    self.pending_events.clear();
+                    // The scrubbed model predates the current loading
+                    // snapshot, so "what the game last saw" no longer holds —
+                    // invalidate the marker so the branch's first frame
+                    // redelivers current progress (a rewound loading screen
+                    // must learn its assets already settled).
+                    *self.delivered_asset_progress = None;
+                }
+                Err(refused) => {
+                    self.reporter.report_once(format!("[functor-lang] {refused}"));
+                    return false;
+                }
+            }
         }
+        self.deliver_parked();
         if let Some(snapshot) = sampled_input {
             self.deliver_sampled_input(snapshot, true);
         }
         self.subscriptions_and_tick(frame_time);
+        true
+    }
+
+    /// An outside arrival a shell pushed (an HTTP response, a completion, a
+    /// connection event): delivered now through `update`, logged in Δ — even
+    /// while paused, since pausing pins the clock, not the network
+    /// (docs/mcp.md). While scrubbed it parks instead: a past model must not
+    /// absorb the present. Resuming delivers it if its op is still pending
+    /// on the branch.
+    pub fn push_arrival(&mut self, arrival: Arrival) {
+        self.recorder.note_arrival(&arrival);
+        if let Arrival::Net { key, kind, conn, .. } = &arrival {
+            self.note_connection_event(key, *kind, *conn);
+        }
+        if self.recorder.is_scrubbed() {
+            self.recorder.park(arrival);
+            return;
+        }
+        self.deliver_parked();
+        self.deliver(arrival);
+    }
+
+    /// Coupled debug rewind, for every producer: restore every participant
+    /// to `target` and branch the future away (in-flight requests follow the
+    /// recorder's rule), then drop the frame work that must not cross it.
+    pub fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let retry_tts_before_rewind = *self.prev_tts;
+        let result = self.recorder.rewind_scene_to(
+            target,
+            self.model,
+            self.physics_rt,
+            self.physics_frame,
+            self.has_physics,
+            self.prev_tts,
+        );
+        if result.is_ok() {
+            rebase_connect_retry_deadlines(
+                self.connect_retries,
+                retry_tts_before_rewind,
+                *self.prev_tts,
+            );
+            self.deferred_queries.clear();
+            self.pending_events.clear();
+            // The restored model predates the current loading snapshot —
+            // redeliver it on the next frame (see `before_physics`).
+            *self.delivered_asset_progress = None;
+            // Input since the last frame is orphaned and must not record into
+            // the branch.
+            self.next.clear();
+        }
+        result
+    }
+
+    /// Non-destructive scrub, for every producer: restore every participant
+    /// to `target`; Δ (input since the frame, and the queries it issued) goes.
+    pub fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let result = self.recorder.seek_scene_to(
+            target,
+            self.model,
+            self.physics_rt,
+            self.physics_frame,
+            self.has_physics,
+        );
+        if result.is_ok() {
+            self.next.clear();
+            self.deferred_queries.clear();
+        }
+        result
+    }
+
+    /// Deliver the parked arrivals, oldest first, unless still scrubbed.
+    fn deliver_parked(&mut self) {
+        if self.recorder.is_scrubbed() {
+            return;
+        }
+        for arrival in self.recorder.take_parked() {
+            self.deliver(arrival);
+        }
+    }
+
+    /// Deliver one arrival in Δ, logged so a replay delivers it again. An
+    /// arrival whose op is no longer pending (a branch or seek discarded it,
+    /// a reload cancelled it) is dropped.
+    fn deliver(&mut self, arrival: Arrival) {
+        match self.recorder.deliver(&arrival) {
+            Delivered::Dropped => log::debug!("[functor-lang] dropped a late arrival: {arrival:?}"),
+            Delivered::Unsolicited => {
+                self.next.push(Entry::Delivery { op: None, arrival: arrival.clone() });
+                self.deliver_unsolicited(&arrival);
+            }
+            Delivered::Op(op, continuation) => {
+                self.next.push(Entry::Delivery { op: Some(op), arrival: arrival.clone() });
+                self.apply_continuation(&arrival, continuation);
+            }
+        }
+    }
+
+    /// A replay's logged delivery, delivered again — its op's continuation
+    /// from the fork's pending table.
+    fn redeliver(&mut self, op: Option<crate::timetravel::OpId>, arrival: &Arrival) {
+        let Some(op) = op else {
+            return self.deliver_unsolicited(arrival);
+        };
+        match self.recorder.requests_mut().deliver_recorded(op, arrival) {
+            Some(continuation) => self.apply_continuation(arrival, continuation),
+            None => self.reporter.report_once(format!(
+                "replay diverged at {op:?}: a logged delivery for an op the replay never issued"
+            )),
+        }
+    }
+
+    fn deliver_unsolicited(&mut self, arrival: &Arrival) {
+        // An asset snapshot is read by the frame's subscriptions instead.
+        if let Arrival::Net { key, kind, conn, text } = arrival {
+            self.deliver_net_event(key, *kind, *conn, text);
+        }
+    }
+
+    /// Fold an arrival through its op's continuation: an HTTP tagger applied
+    /// to the response, or a completion message delivered verbatim.
+    fn apply_continuation(&mut self, arrival: &Arrival, continuation: Value) {
+        let (msg, provenance) = match arrival {
+            Arrival::Http(result) => match self.session.apply(
+                continuation,
+                vec![http_response_value(result)],
+                "http response",
+                &mut FunctorHost,
+            ) {
+                Ok(msg) => (msg, Provenance::HttpResponse),
+                Err(err) => return self.reporter.frame_error("http response", &err),
+            },
+            Arrival::AudioFinished(_) => (continuation, Provenance::AudioFinished),
+            Arrival::PreloadSettled(_) => (continuation, Provenance::PreloadSettled),
+            Arrival::Net { .. } | Arrival::Assets(_) => return,
+        };
+        self.fold_update(msg, provenance);
+    }
+
+    fn fold_update(&mut self, msg: Value, provenance: Provenance) {
+        let args = vec![self.model.clone(), msg];
+        journal_push(self.names.update, &args, provenance);
+        match self.session.call(self.names.update, args, &mut FunctorHost) {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.reporter.frame_error(self.names.update, &err),
+        }
     }
 
     /// Pump subscriptions then run `tick` and absorb its result — the pure body
@@ -1324,20 +1481,34 @@ impl FrameCtx<'_> {
                 // after the one step that consumes them.
                 let mut delivered_sample = false;
                 let mut projected_edges = crate::InputEdges::default();
-                let (events, recorded): (Option<Vec<&RecordedInput>>, _) = match log_at(step) {
-                    StepLog::Script(inputs) => (Some(inputs.iter().collect()), None),
+                let (events, recorded): (Option<Vec<Replayed>>, _) = match log_at(step) {
+                    StepLog::Script(inputs) => (Some(inputs.iter().map(Replayed::Input).collect()), None),
                     StepLog::Inputs(entries) => (
-                        Some(entries.iter().filter_map(Entry::input).collect()),
+                        Some(entries.iter().filter_map(Entry::input).map(Replayed::Input).collect()),
                         None,
                     ),
+                    // Logged deliveries interleave with the input, in log order.
                     StepLog::Recorded(entries) => (
-                        Some(entries.iter().filter_map(Entry::input).collect()),
+                        Some(entries.iter().filter_map(Replayed::of).collect()),
                         Some(entries),
                     ),
                     StepLog::Coast => (None, None),
                 };
                 // The step's recorded answers, consumed at its effect calls.
                 self.effect_runner.begin_frame(recorded);
+                // A logged asset snapshot reaches this step's subscriptions,
+                // even one equal to the last (a branch re-delivers it live).
+                self.asset_progress = recorded.and_then(|entries| {
+                    entries.iter().find_map(|entry| match entry {
+                        Entry::Delivery { arrival: Arrival::Assets(progress), .. } => {
+                            Some(progress.clone())
+                        }
+                        _ => None,
+                    })
+                });
+                if self.asset_progress.is_some() {
+                    *self.delivered_asset_progress = None;
+                }
                 if let Some(events) = events {
                     // A recorded UiEvent resolved against the LAST RENDER's
                     // handler table live — the tree the user saw, built from
@@ -1347,17 +1518,24 @@ impl FrameCtx<'_> {
                     // tree an earlier input already re-shaped (xreview).
                     let ui_handlers = events
                         .iter()
-                        .any(|e| matches!(e, RecordedInput::UiEvent(_)))
+                        .any(|e| matches!(e, Replayed::Input(RecordedInput::UiEvent(_))))
                         .then(|| self.eval_handler_table(self.names.ui))
                         .unwrap_or_default();
                     // Webview events carry their OWN table: same step-top
                     // rebuild, from `webview(model)` instead of `ui(model)`.
                     let webview_handlers = events
                         .iter()
-                        .any(|e| matches!(e, RecordedInput::WebviewEvent(_)))
+                        .any(|e| matches!(e, Replayed::Input(RecordedInput::WebviewEvent(_))))
                         .then(|| self.eval_handler_table(self.names.webview))
                         .unwrap_or_default();
-                    for event in events {
+                    for item in events {
+                        let event = match item {
+                            Replayed::Input(event) => event,
+                            Replayed::Delivery(op, arrival) => {
+                                self.redeliver(op, arrival);
+                                continue;
+                            }
+                        };
                         match event {
                             RecordedInput::Snapshot(snapshot) => {
                                 sampled_input = Some(snapshot.as_ref().clone());
@@ -1605,16 +1783,6 @@ to receive their messages; dropping them",
         }
     }
 
-    /// [`Self::absorb`] an outside arrival's `update` (HTTP, WS, completions,
-    /// asset progress). Replay never re-delivers arrivals, so the ops their
-    /// handlers issue stay out of the frame log — else a replay would find
-    /// recorded ops nobody asks for.
-    fn absorb_delivery(&mut self, returned: Value) {
-        let logged = std::mem::take(self.next);
-        self.absorb(returned);
-        *self.next = logged;
-    }
-
     /// Fire subscription timers over `(prev_tts, tts]` and fold their messages
     /// through `update`, before this frame's `tick` — the message drain seam
     /// (docs/functor-lang.md C4b-2). Subscriptions are recomputed from the current model
@@ -1658,12 +1826,7 @@ to receive their messages; dropping them",
             }
         };
         for msg in msgs {
-            let args = vec![self.model.clone(), msg];
-            journal_push(self.names.update, &args, Provenance::Subscription);
-            match self.session.call(self.names.update, args, &mut FunctorHost) {
-                Ok(returned) => self.absorb(returned),
-                Err(err) => self.reporter.frame_error(self.names.update, &err),
-            }
+            self.fold_update(msg, Provenance::Subscription);
         }
     }
 
@@ -1706,17 +1869,18 @@ to receive their messages; dropping them",
                 }
             };
             any_delivered = true;
-            let args = vec![self.model.clone(), msg];
-            journal_push(self.names.update, &args, Provenance::Subscription);
-            match self.session.call(self.names.update, args, &mut FunctorHost) {
-                Ok(returned) => self.absorb_delivery(returned),
-                Err(err) => self.reporter.frame_error(self.names.update, &err),
-            }
+            self.fold_update(msg, Provenance::Subscription);
         }
         // Only mark delivered when a tagger actually received it — an
         // erroring tagger (usually a transient hot-reload state) must not
         // permanently swallow the snapshot.
         if any_delivered {
+            // Logged once it lands (a replay reads it before the step's
+            // subscriptions, so its place in the log doesn't matter).
+            self.next.push(Entry::Delivery {
+                op: None,
+                arrival: Arrival::Assets(progress.clone()),
+            });
             *self.delivered_asset_progress = Some(progress);
         }
     }
@@ -1845,59 +2009,12 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         let _ = self.with_physics_scene(|ctx, scene| ctx.physics_rt.prime(scene));
     }
 
-    /// Coupled debug rewind, for every producer: restore every participant
-    /// to `target` and branch the future away (in-flight requests follow the
-    /// recorder's rule), then drop the frame work that must not cross it.
-    pub fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
-        let retry_tts_before_rewind = *self.prev_tts;
-        let result = self.recorder.rewind_scene_to(
-            target,
-            self.model,
-            self.physics_rt,
-            self.physics_frame,
-            self.has_physics,
-            self.prev_tts,
-        );
-        if result.is_ok() {
-            rebase_connect_retry_deadlines(
-                self.connect_retries,
-                retry_tts_before_rewind,
-                *self.prev_tts,
-            );
-            self.deferred_queries.clear();
-            self.pending_events.clear();
-            // The restored model predates the current loading snapshot —
-            // redeliver it on the next frame (see `before_physics`).
-            *self.delivered_asset_progress = None;
-            // Input since the last frame is orphaned and must not record into
-            // the branch.
-            self.next.clear();
-        }
-        result
-    }
-
-    /// Non-destructive scrub, for every producer: restore every participant
-    /// to `target`; Δ (input since the frame, and the queries it issued) goes.
-    pub fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
-        let result = self.recorder.seek_scene_to(
-            target,
-            self.model,
-            self.physics_rt,
-            self.physics_frame,
-            self.has_physics,
-        );
-        if result.is_ok() {
-            self.next.clear();
-            self.deferred_queries.clear();
-        }
-        result
-    }
-
     /// Close every connection this producer still has open (a reload that
     /// dropped `subscriptions`, or shutdown). CloseKey is queued for each; the
     /// live set is cleared.
     pub fn close_all_connections(&mut self) {
         for key in std::mem::take(self.live_conn_keys) {
+            self.recorder.close_connection_key(&key);
             push_conn_command(ConnCommand::CloseKey { key });
         }
         self.connect_retries.clear();
@@ -1963,6 +2080,7 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         }
         for key in self.live_conn_keys.iter() {
             if !declared.contains(key) {
+                self.recorder.close_connection_key(key);
                 push_conn_command(ConnCommand::CloseKey { key: key.clone() });
                 self.connect_retries.remove(key);
             }
@@ -1970,12 +2088,11 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         *self.live_conn_keys = declared;
     }
 
-    /// Route one inbound connection event to the matching key's tagger and fold
-    /// the message through `update`. Taggers are read FRESH from the current
-    /// `subscriptions(model)` (never cached — a reload rebinds them).
-    pub fn deliver_net_event(&mut self, key: String, kind: NetEventKind, conn: i32, text: String) {
+    /// Connection upkeep for an event as it arrives (parked or not): the
+    /// `Sub.connect` retry state.
+    fn note_connection_event(&mut self, key: &str, kind: NetEventKind, conn: i32) {
         let now = self.prev_tts.unwrap_or(0.0);
-        if let Some(retry) = self.connect_retries.get_mut(&key) {
+        if let Some(retry) = self.connect_retries.get_mut(key) {
             match kind {
                 NetEventKind::Connected => retry.connected(conn as u64),
                 NetEventKind::Disconnected => retry.disconnected(conn as u64, now),
@@ -1983,6 +2100,12 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
                 NetEventKind::Message => {}
             }
         }
+    }
+
+    /// Route one inbound connection event to the matching key's tagger and fold
+    /// the message through `update`. Taggers are read FRESH from the current
+    /// `subscriptions(model)` (never cached — a reload rebinds them).
+    fn deliver_net_event(&mut self, key: &str, kind: NetEventKind, conn: i32, text: &str) {
         if !self.has_subscriptions {
             return;
         }
@@ -2005,7 +2128,7 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         let Some(sub) = conns.into_iter().find(|c| c.key == key) else {
             return; // an event for a no-longer-declared connection: drop it
         };
-        let value = net_event_value(kind, conn as u64, &text)
+        let value = net_event_value(kind, conn as u64, text)
             .to_functor_lang()
             .expect("decoded network events contain only JSON-finite map keys");
         let msg = match self
@@ -2015,42 +2138,7 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
             Ok(msg) => msg,
             Err(err) => return self.reporter.frame_error("net event", &err),
         };
-        let args = vec![self.model.clone(), msg];
-        journal_push(self.names.update, &args, Provenance::NetEvent);
-        match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb_delivery(returned),
-            Err(err) => self.reporter.frame_error(self.names.update, &err),
-        }
-    }
-
-    /// An answer a shell pushed (an HTTP response, a completion): folded
-    /// through its pending op's continuation — an HTTP tagger applied to the
-    /// response, or a completion message delivered verbatim. An answer whose
-    /// op is no longer pending (a branch or seek discarded it, a reload
-    /// cancelled it) is dropped.
-    pub fn push_arrival(&mut self, arrival: Arrival) {
-        let Delivered::Op(_, continuation) = self.recorder.deliver(&arrival) else {
-            return log::debug!("[functor-lang] dropped a late arrival: {arrival:?}");
-        };
-        let (msg, provenance) = match &arrival {
-            Arrival::Http(result) => match self.session.apply(
-                continuation,
-                vec![http_response_value(result)],
-                "http response",
-                &mut FunctorHost,
-            ) {
-                Ok(msg) => (msg, Provenance::HttpResponse),
-                Err(err) => return self.reporter.frame_error("http response", &err),
-            },
-            Arrival::AudioFinished(_) => (continuation, Provenance::AudioFinished),
-            Arrival::PreloadSettled(_) => (continuation, Provenance::PreloadSettled),
-        };
-        let args = vec![self.model.clone(), msg];
-        journal_push(self.names.update, &args, provenance);
-        match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb_delivery(returned),
-            Err(err) => self.reporter.frame_error(self.names.update, &err),
-        }
+        self.fold_update(msg, Provenance::NetEvent);
     }
 
     /// Route an interaction the shell detected on an interactive UI widget to
@@ -2111,12 +2199,7 @@ carries no payload to tag; dropped",
                 ));
             }
         };
-        let args = vec![self.model.clone(), msg];
-        journal_push(self.names.update, &args, Provenance::UiEvent);
-        match self.session.call(self.names.update, args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error(self.names.update, &err),
-        }
+        self.fold_update(msg, Provenance::UiEvent);
     }
 }
 
@@ -2139,6 +2222,25 @@ enum ForwardInputs<'a> {
         recorder: &'a SceneRecorder,
         from: u64,
     },
+}
+
+/// One replayed log item: an input, or an arrival delivered again.
+enum Replayed<'a> {
+    Input(&'a RecordedInput),
+    Delivery(Option<crate::timetravel::OpId>, &'a Arrival),
+}
+
+impl<'a> Replayed<'a> {
+    /// An entry's replayed item; ops and asset snapshots are consumed
+    /// elsewhere (at their effect calls, by the subscriptions).
+    fn of(entry: &'a Entry) -> Option<Replayed<'a>> {
+        match entry {
+            Entry::Input(input) => Some(Replayed::Input(input)),
+            Entry::Delivery { arrival: Arrival::Assets(_), .. } => None,
+            Entry::Delivery { op, arrival } => Some(Replayed::Delivery(*op, arrival)),
+            Entry::Answer { .. } | Entry::Issued { .. } => None,
+        }
+    }
 }
 
 /// One forward step's log.
@@ -2302,6 +2404,11 @@ fn forward_step_scene_with_error(
     let mut model = model.clone();
     let mut physics_frame = 0u64;
     let mut dry_recorder = SceneRecorder::new();
+    // A log replay re-delivers logged arrivals to the ops pending where it
+    // starts.
+    if let ForwardInputs::Log { recorder, from } = &inputs {
+        dry_recorder.fork_requests_from(recorder, from.saturating_sub(1));
+    }
     let mut effect_runner = ReplayEffects::new();
     let mut deferred_queries: Vec<EffectTree> = Vec::new();
     let mut pending_events: Vec<PhysicsEvent> = Vec::new();
@@ -3713,7 +3820,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             suppress_outbound: false,
             reporter: &mut reporter,
         };
-        ctx.before_physics(FrameTime { dts: 0.2, tts: 1.1 }, None);
+        assert!(ctx.before_physics(FrameTime { dts: 0.2, tts: 1.1 }, None));
     }
 
     const ASSETS_SRC: &str = "\
@@ -3776,13 +3883,13 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             suppress_outbound: false,
             reporter: &mut reporter,
         };
-        ctx.before_physics(
+        assert!(ctx.before_physics(
             FrameTime {
                 dts: 0.1,
                 tts: tts as f32,
             },
             None,
-        );
+        ));
     }
 
     /// `Sub.assets` delivers the snapshot through `update` exactly when it
