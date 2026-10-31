@@ -123,6 +123,8 @@ let heightfield : (tag, Terrain.t) => body
 /// errors. Pipe `Physics.friction` and `Physics.restitution` to tune
 /// contacts; a ray or contact on any chunk reports this tag. Walls are
 /// surfaces with no thickness: give fast, small bodies `Physics.continuous`.
+/// Like `Physics.trimesh`, contacts are one-sided: a body behind a wall
+/// passes through it (rays still hit both sides).
 let fusedRoom : (tag) => body
 
 /// Create a dynamic body affected by forces and collisions.
