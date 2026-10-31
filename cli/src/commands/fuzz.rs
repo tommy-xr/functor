@@ -41,11 +41,12 @@ pub fn execute(
     };
     emit(Event::Info {
         message: format!(
-            "fuzzing {name}: keys {:?}, mouse {}, xr {}, http {}, reload knob {}",
+            "fuzzing {name}: keys {:?}, mouse {}, xr {}, http {}, jobs {}, reload knob {}",
             spec.keys,
             spec.mouse,
             spec.xr,
             spec.http,
+            spec.jobs,
             spec.knob.as_ref().map_or("none", |(text, _)| text.as_str())
         ),
     });
@@ -113,5 +114,8 @@ fn summary(stats: &Stats) -> String {
         n("reloads") + n("reloads while paused"),
         n("reloads while paused"),
         n("participant checks"),
-    )
+    ) + &match n("jobs dispatched") {
+        0 => String::new(),
+        jobs => format!(", {jobs} jobs ({} re-dispatched)", n("jobs re-dispatched")),
+    }
 }

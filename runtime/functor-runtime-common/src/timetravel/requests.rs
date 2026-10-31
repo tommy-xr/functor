@@ -728,7 +728,6 @@ impl Requests {
 
     /// The live attempt of each job op in flight (the fuzzer's hung-op
     /// check).
-    #[cfg(test)]
     pub(crate) fn pending_jobs(&self) -> Vec<Ticket> {
         let ops = self.ops.values();
         let provisional = self.provisional.iter().map(|(_, p)| p);

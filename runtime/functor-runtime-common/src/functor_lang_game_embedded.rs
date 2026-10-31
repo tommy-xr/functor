@@ -402,6 +402,25 @@ impl FunctorLangEmbeddedGame {
         (requests.pending_tokens(), requests.parked_tokens())
     }
 
+    /// This producer's side of the job pool (the fuzzer installs a fake).
+    pub(crate) fn job_port(&mut self) -> &mut crate::jobs::JobPort {
+        self.recorder.requests_mut().jobs_mut()
+    }
+
+    pub(crate) fn job_port_ref(&self) -> &crate::jobs::JobPort {
+        self.recorder.requests().jobs()
+    }
+
+    /// Tickets of parked job results.
+    pub(crate) fn parked_jobs(&self) -> Vec<crate::jobs::Ticket> {
+        self.recorder.requests().parked_jobs()
+    }
+
+    /// The live ticket of each job op in flight.
+    pub(crate) fn pending_jobs(&self) -> Vec<crate::jobs::Ticket> {
+        self.recorder.requests().pending_jobs()
+    }
+
     /// Whether a live replay from `frame` would meet an arrival: one logged
     /// after it, or one a rewind there re-parks or still holds parked.
     pub(crate) fn arrivals_after(&self, frame: u64) -> bool {
@@ -1370,6 +1389,77 @@ let draw = (model, tts, alpha) =>
       Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
+
+    /// Loads `data/level.bin` on demand from `tick` until it lands, from
+    /// the second frame (so the replay from frame 0 holds the delivery).
+    const FILE_LOAD: &str = r#"
+type Msg = | Loaded(r: Result.t<Bytes.t, File.error>)
+let init = { n: 0.0, size: -1.0 }
+let update = (m, msg) =>
+  match msg with
+  | Loaded(r) =>
+    (match r with
+     | Result.Ok(data) => { m with size: Bytes.length(data) }
+     | Result.Error(_) => { m with size: -2.0 })
+let tick = (m, dt, tts) =>
+  let next = { m with n: m.n + 1.0 } in
+  if m.size < 0.0 && m.n >= 2.0 then (next, File.load(Path.of("data/level.bin"), Loaded)) else next
+let draw = (m, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(m.size, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+"#;
+
+    /// Counts dispatches on their way to the shared pool.
+    struct Counted(std::cell::Cell<usize>);
+
+    impl crate::jobs::Dispatch for Counted {
+        fn dispatch(&self, job: crate::jobs::Job) {
+            self.0.set(self.0.get() + 1);
+            crate::jobs::Dispatch::dispatch(crate::jobs::Pool::shared(), job);
+        }
+    }
+
+    #[test]
+    fn a_file_load_on_the_pool_replays_exactly_without_reading_again() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("data/level.bin"), [7u8; 9]).unwrap();
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), FILE_LOAD.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("loads");
+        let counted = std::rc::Rc::new(Counted(std::cell::Cell::new(0)));
+        game.job_port().set_dispatch(counted.clone());
+        let reader = crate::storage::ProjectDirReader(dir.path().to_path_buf());
+        game.job_port().set_reader(Some(std::sync::Arc::new(reader)));
+        game.tick(frame_time(0.0, 0.0));
+        // Live: frames run while the read is on a worker; asked every frame,
+        // it is dispatched once.
+        let mut models = Vec::new();
+        let started = std::time::Instant::now();
+        while !game.state_debug().contains("size: 9") {
+            assert!(started.elapsed().as_secs() < 10, "the load never landed");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            let n = models.len() as f32 + 1.0;
+            game.tick(frame_time(n / 60.0, 1.0 / 60.0));
+            models.push(game.state_debug());
+        }
+        for _ in 0..3 {
+            let n = models.len() as f32 + 1.0;
+            game.tick(frame_time(n / 60.0, 1.0 / 60.0));
+            models.push(game.state_debug());
+        }
+        assert_eq!(counted.0.get(), 1, "same-path asks while in flight drop");
+
+        // Replay on a fork from frame 0: the same models, the read never
+        // dispatched again.
+        game.seek_scene_to(0).expect("seek");
+        let replayed = game.replay_scene(models.len() - 1).expect("replays");
+        let recorded: Vec<String> = models[1..].to_vec();
+        let replayed: Vec<String> = replayed.into_iter().map(|(model, _)| model).collect();
+        assert_eq!(replayed, recorded);
+        assert_eq!(counted.0.get(), 1, "a replay never reads again");
+    }
 
     #[test]
     fn a_three_parameter_draw_receives_the_presentation_alpha() {

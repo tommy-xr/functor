@@ -56,6 +56,8 @@ pub struct Spec {
     pub restarts: Option<bool>,
     /// Answer the game's HTTP requests over a seeded fake transport.
     pub http: bool,
+    /// Run the game's jobs (`File.load`) on a seeded fake pool.
+    pub jobs: bool,
 }
 
 /// The optional hooks a loaded program defines.
@@ -79,6 +81,7 @@ impl Spec {
             saves: None,
             restarts: Some(false),
             http: false,
+            jobs: false,
         }
     }
 
@@ -116,6 +119,7 @@ impl Spec {
             role,
             restarts: None,
             http: mentions(&all, "Effect.httpGet") || mentions(&all, "Effect.httpPost"),
+            jobs: mentions(&all, "File.load"),
             ..Spec::new(name, sources)
         })
     }
@@ -444,6 +448,18 @@ struct Shell<'a> {
     rev: u32,
     op: usize,
     net: Option<FakeNet>,
+    jobs: Option<FakePool>,
+}
+
+/// A seeded fake job pool: holds the jobs the game dispatched and finishes
+/// each a random number of transport ticks later.
+struct FakePool {
+    rng: Rng,
+    fake: Rc<crate::jobs::FakeJobs>,
+    /// Ticks left per held job.
+    due: BTreeMap<crate::jobs::Ticket, u32>,
+    /// How many of `fake.dispatched()` were checked.
+    seen: usize,
 }
 
 /// A seeded fake HTTP transport: takes the requests the game queued and
@@ -508,7 +524,13 @@ impl<'a> Shell<'a> {
                 in_flight: Vec::new(),
                 dispatched: Default::default(),
             }),
+            jobs: None,
         };
+        if spec.jobs {
+            let fake = Rc::new(crate::jobs::FakeJobs::default());
+            shell.game.job_port().set_dispatch(fake.clone());
+            shell.jobs = Some(FakePool { rng: Rng::new(11), fake, due: BTreeMap::new(), seen: 0 });
+        }
         // The shell's bootstrap: a zero-delta first frame.
         shell.render_frame(0.0).expect("bootstrap");
         Ok(shell)
@@ -560,6 +582,7 @@ impl<'a> Shell<'a> {
     /// One transport tick: answer what is due, then dispatch what the game
     /// queued (including requests those answers chained).
     fn pump(&mut self) -> Check {
+        self.pump_jobs()?;
         let Some(net) = self.net.as_mut() else {
             return Ok(());
         };
@@ -602,9 +625,58 @@ impl<'a> Shell<'a> {
         Ok(())
     }
 
+    /// One fake-pool tick: finish the jobs that are due, then check what
+    /// the game dispatched since: each ticket once, for an op in flight (or
+    /// stopped with it), and
+    /// a re-dispatch never for an op whose answer is parked (a branch
+    /// re-parks a recorded result; it never runs the job again).
+    fn pump_jobs(&mut self) -> Check {
+        let Some(pool) = self.jobs.as_mut() else {
+            return Ok(());
+        };
+        let due: Vec<crate::jobs::Ticket> =
+            pool.due.iter().filter(|(_, ticks)| **ticks == 0).map(|(t, _)| *t).collect();
+        pool.due.retain(|_, ticks| {
+            let due = *ticks == 0;
+            *ticks = ticks.saturating_sub(1);
+            !due
+        });
+        for ticket in due {
+            let live = self.game.pending_jobs().contains(&ticket);
+            pool.fake.complete(ticket);
+            count(if live { "jobs finished" } else { "stopped jobs finished" });
+        }
+        let dispatched = pool.fake.dispatched();
+        let fresh = dispatched[pool.seen..].to_vec();
+        pool.seen = dispatched.len();
+        let pending = self.game.pending_jobs();
+        let parked_jobs = self.game.parked_jobs();
+        let fail = |detail: String| Failure { op: self.op, kind: Kind::Request, detail };
+        for ticket in fresh {
+            if dispatched.iter().filter(|t| **t == ticket).count() > 1 {
+                return Err(fail(format!("job {ticket:?} dispatched twice")));
+            }
+            // An op Δ then cancelled or dropped stopped its job.
+            if !pending.contains(&ticket) && pool.fake.stopped(ticket) != Some(true) {
+                return Err(fail(format!("job {ticket:?} runs without a pending op")));
+            }
+            if ticket.attempt > 1 {
+                let previous = crate::jobs::Ticket { attempt: ticket.attempt - 1, ..ticket };
+                if parked_jobs.contains(&previous) {
+                    return Err(fail(format!("job {ticket:?} re-dispatched with its answer parked")));
+                }
+                count("jobs re-dispatched");
+            }
+            count("jobs dispatched");
+            pool.due.insert(ticket, pool.rng.below(40) as u32);
+        }
+        Ok(())
+    }
+
     /// No hung op: every request pending on the tail is still in flight or
     /// parked — something will answer it.
     fn check_requests(&self) -> Check {
+        self.check_jobs()?;
         let Some(net) = &self.net else {
             return Ok(());
         };
@@ -620,6 +692,29 @@ impl<'a> Shell<'a> {
             }
         }
         count("request checks");
+        Ok(())
+    }
+
+    /// No hung job: each in flight is held by the pool, finished and
+    /// waiting for the next frame, or parked.
+    fn check_jobs(&self) -> Check {
+        let Some(pool) = &self.jobs else {
+            return Ok(());
+        };
+        let parked = self.game.request_tokens().1;
+        let finished = self.game.job_port_ref().mailbox().tickets();
+        for ticket in self.game.pending_jobs() {
+            let answered_later = pool.due.contains_key(&ticket)
+                || finished.contains(&ticket)
+                || parked.contains(&(Channel::Job, ticket.id));
+            if !answered_later {
+                return Err(self.fail(
+                    Kind::Request,
+                    format!("job {ticket:?} hangs: in flight, with nothing held, finished or parked"),
+                ));
+            }
+        }
+        count("job checks");
         Ok(())
     }
 
@@ -1169,12 +1264,18 @@ impl<'a> Shell<'a> {
     fn fork_replay(&mut self, k: u64, n: u64) -> Check {
         self.seek(k)?;
         self.clock.pause();
+        let jobs_before = self.jobs.as_ref().map(|pool| pool.fake.dispatched().len());
         let replayed = self
             .game
             .replay_scene(n as usize)
             .map_err(|e| self.fail(Kind::ForkDiverged, format!("fork from {k}: {e}")))?;
         if self.net.is_some() && !crate::net::drain_commands().is_empty() {
             return Err(self.fail(Kind::Request, format!("fork from {k} dispatched a request")));
+        }
+        if let (Some(pool), Some(before)) = (&self.jobs, jobs_before) {
+            if pool.fake.dispatched().len() != before {
+                return Err(self.fail(Kind::Request, format!("fork from {k} dispatched a job")));
+            }
         }
         if replayed.len() as u64 != n {
             return Err(self.fail(

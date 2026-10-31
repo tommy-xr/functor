@@ -435,6 +435,17 @@ pub enum EffectTree {
         body: String,
         tagger: Value,
     },
+    /// Read a project file on the job pool (`File.load(path, tagger)`):
+    /// like `Http`, the result lands frames later as a logged delivery, so a
+    /// replay never reads it again.
+    FileLoad {
+        path: String,
+        tagger: Value,
+    },
+    /// Stop the in-flight `File.load` of `path` (`File.cancel(path)`).
+    FileCancel {
+        path: String,
+    },
     /// Persist a plain-data value in a local save slot (`Persistence.save(slot,
     /// value)`). The payload is converted to its [`EffectValue`] at
     /// construction (a closure inside is a teaching error at the call site,
@@ -6382,6 +6393,9 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         // The request is fire-and-forget; its RESPONSE needs `update`, but
         // that arrives frames later through the producer's HTTP pump.
         | EffectTree::Http { .. }
+        // A file load's result arrives frames later, like a response.
+        | EffectTree::FileLoad { .. }
+        | EffectTree::FileCancel { .. }
         // Audio one-shots are fire-and-forget too. `playThen`'s completion
         // needs `update`, but arrives frames later via the audio-finished
         // hook — the same shape as Http. Preloads likewise: `preloadThen`'s
@@ -6572,6 +6586,26 @@ dropping the rest"
                     token
                 });
                 requests.issue(recorded, ordinal, Channel::Http, token, tagger);
+                continue;
+            }
+            EffectTree::FileLoad { path, tagger } => {
+                // A job (docs/time-travel.md, "Jobs"): read on the pool, its
+                // result delivered like a response. While a load of `path`
+                // is in flight another is dropped (cancel first to replace
+                // it); the kind records which, so a replay that decides
+                // otherwise diverges loudly.
+                let admitted = !requests.job_in_flight(&path);
+                let kind = if admitted { "file.load" } else { "file.load.dropped" };
+                let (recorded, ordinal) = issue(runner, log, kind, args_digest(&path));
+                if admitted {
+                    let spec = crate::jobs::JobSpec::FileLoad { path };
+                    requests.issue_job(recorded, ordinal, spec, tagger, !suppress_outbound);
+                }
+                continue;
+            }
+            EffectTree::FileCancel { path } => {
+                issue(runner, log, "file.cancel", args_digest(&path));
+                requests.cancel_job(&path);
                 continue;
             }
             EffectTree::PlayAudio { sound, position } => {

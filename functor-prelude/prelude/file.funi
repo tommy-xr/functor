@@ -26,3 +26,22 @@ let bytes : (Path.t) => Bytes.t
 /// uncommitted input (a game asset) isn't there.
 impure[file]
 let exists : (Path.t) => bool
+
+/// Why `File.load` has no bytes. Each holds a message naming the path.
+type error =
+  | Missing(message: string)
+  | Failed(message: string)
+  | Unsupported(message: string)
+
+/// Read a file off the frame thread and deliver `tagger(result)` through
+/// `update` a frame or more later, so it can be asked from `tick`:
+/// `(m, File.load(Path.of("levels/2.bin"), Loaded))`. While a load of the
+/// path is in flight, another is dropped: asking every frame until the
+/// result lands reads the file once. A replay or a scrub hands back the
+/// recorded bytes; it never reads again. `Missing` on Quest also means an
+/// external file the host hasn't sent yet: ask again after it arrives.
+/// `Unsupported` on the web.
+let load : (Path.t, (Result.t<Bytes.t, error>) => 'msg) => Effect.t
+/// Stop the in-flight `File.load` of this path; no message is delivered for
+/// it, and the next `File.load` of it reads again.
+let cancel : (Path.t) => Effect.t
