@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::{retention_floor, Frame};
 use crate::functor_lang_prelude::EffectValue;
+use super::requests::Arrival;
 use crate::input::RecordedInput;
 
 /// One occurrence on the timeline: the `ordinal`-th effect op of rendered
@@ -36,6 +37,10 @@ pub enum Entry {
         kind: &'static str,
         args: u64,
     },
+    /// An outside arrival delivered this frame: a replay delivers it again at
+    /// the same point. `op` is the pending op it answered (`None` for a
+    /// connection event or an asset snapshot). Not an op itself.
+    Delivery { op: Option<OpId>, arrival: Arrival },
 }
 
 impl Entry {
@@ -63,10 +68,10 @@ impl Entry {
         }
     }
 
-    /// `(op, kind, args)` of an effect op; `None` for input.
+    /// `(op, kind, args)` of an effect op; `None` for input and deliveries.
     pub fn op(&self) -> Option<(OpId, &'static str, u64)> {
         match self {
-            Entry::Input(_) => None,
+            Entry::Input(_) | Entry::Delivery { .. } => None,
             Entry::Answer { op, kind, args, .. } | Entry::Issued { op, kind, args } => {
                 Some((*op, kind, *args))
             }
@@ -75,7 +80,7 @@ impl Entry {
 
     fn op_mut(&mut self) -> Option<&mut OpId> {
         match self {
-            Entry::Input(_) => None,
+            Entry::Input(_) | Entry::Delivery { .. } => None,
             Entry::Answer { op, .. } | Entry::Issued { op, .. } => Some(op),
         }
     }

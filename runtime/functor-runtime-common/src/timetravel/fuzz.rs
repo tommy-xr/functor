@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
-use super::fnv1a;
+use super::{fnv1a, Channel};
 use crate::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform, ProducerPlatform};
 use crate::functor_lang_producer::EntryRole;
 use crate::physics::{self, DEFAULT_WORLD, FIXED_DT};
@@ -54,6 +54,8 @@ pub struct Spec {
     /// Whether a reload may restart history (the model holds closures).
     /// `None`: whatever the recorder predicts.
     pub restarts: Option<bool>,
+    /// Answer the game's HTTP requests over a seeded fake transport.
+    pub http: bool,
 }
 
 /// The optional hooks a loaded program defines.
@@ -76,6 +78,7 @@ impl Spec {
             knob: None,
             saves: None,
             restarts: Some(false),
+            http: false,
         }
     }
 
@@ -112,6 +115,7 @@ impl Spec {
             knob,
             role,
             restarts: None,
+            http: mentions(&all, "Effect.httpGet") || mentions(&all, "Effect.httpPost"),
             ..Spec::new(name, sources)
         })
     }
@@ -365,6 +369,9 @@ pub enum Kind {
     Reload,
     /// A recorder participant's range or restore disagrees with the rest.
     Participant,
+    /// A request was dispatched twice or without its op, hangs (pending with
+    /// nothing in flight or parked to answer it), or a reload lost it.
+    Request,
 }
 
 #[derive(Debug, Clone)]
@@ -436,6 +443,17 @@ struct Shell<'a> {
     noop: u32,
     rev: u32,
     op: usize,
+    net: Option<FakeNet>,
+}
+
+/// A seeded fake HTTP transport: takes the requests the game queued and
+/// answers each a random number of transport ticks later — playing, paused
+/// or scrubbed alike — with a body naming its URL and token.
+struct FakeNet {
+    rng: Rng,
+    /// `(token, ticks left, url)`.
+    in_flight: Vec<(u64, u32, String)>,
+    dispatched: std::collections::BTreeSet<u64>,
 }
 
 type Check = Result<(), Failure>;
@@ -485,6 +503,11 @@ impl<'a> Shell<'a> {
             noop: 0,
             rev: 0,
             op: 0,
+            net: spec.http.then(|| FakeNet {
+                rng: Rng::new(7),
+                in_flight: Vec::new(),
+                dispatched: Default::default(),
+            }),
         };
         // The shell's bootstrap: a zero-delta first frame.
         shell.render_frame(0.0).expect("bootstrap");
@@ -531,6 +554,72 @@ impl<'a> Shell<'a> {
         }
         let tts = self.clock.current_tts();
         self.game.render(FrameTime { dts: 0.0, tts });
+        self.pump()
+    }
+
+    /// One transport tick: answer what is due, then dispatch what the game
+    /// queued (including requests those answers chained).
+    fn pump(&mut self) -> Check {
+        let Some(net) = self.net.as_mut() else {
+            return Ok(());
+        };
+        let due: Vec<(u64, String)> = net
+            .in_flight
+            .iter()
+            .filter(|(_, ticks, _)| *ticks == 0)
+            .map(|(token, _, url)| (*token, url.clone()))
+            .collect();
+        net.in_flight.retain_mut(|(_, ticks, _)| {
+            let due = *ticks == 0;
+            *ticks = ticks.saturating_sub(1);
+            !due
+        });
+        for (token, url) in due {
+            let was_pending = self.game.request_tokens().0.contains(&(Channel::Http, token));
+            self.game
+                .net_push_http_response(token as i32, 200, format!("{url}#{token}"));
+            let parked = self.game.request_tokens().1.contains(&(Channel::Http, token));
+            count(match (was_pending, parked) {
+                (false, _) => "late responses dropped",
+                (true, true) => "responses parked",
+                (true, false) => "responses delivered",
+            });
+        }
+        let pending = self.game.request_tokens().0;
+        let net = self.net.as_mut().expect("checked above");
+        for command in crate::net::drain_commands() {
+            let crate::net::NetCommand::HttpRequest { token, url, .. } = command;
+            let fail = |detail: String| Failure { op: self.op, kind: Kind::Request, detail };
+            if !net.dispatched.insert(token) {
+                return Err(fail(format!("request {token} dispatched twice")));
+            }
+            if !pending.contains(&(Channel::Http, token)) {
+                return Err(fail(format!("request {token} dispatched without a pending op")));
+            }
+            count("requests dispatched");
+            net.in_flight.push((token, net.rng.below(40) as u32, url));
+        }
+        Ok(())
+    }
+
+    /// No hung op: every request pending on the tail is still in flight or
+    /// parked — something will answer it.
+    fn check_requests(&self) -> Check {
+        let Some(net) = &self.net else {
+            return Ok(());
+        };
+        let (pending, parked) = self.game.request_tokens();
+        for (channel, token) in pending {
+            let answered_later = parked.contains(&(channel, token))
+                || net.in_flight.iter().any(|(t, _, _)| *t == token);
+            if channel == Channel::Http && !answered_later {
+                return Err(self.fail(
+                    Kind::Request,
+                    format!("request {token} hangs: pending, with nothing in flight or parked"),
+                ));
+            }
+        }
+        count("request checks");
         Ok(())
     }
 
@@ -892,6 +981,8 @@ impl<'a> Shell<'a> {
             Op::Reload { semantic, n } => self.reload(*semantic, *n)?,
             Op::Replay { back, frames } => self.replay(*back, *frames)?,
         }
+        self.pump()?;
+        self.check_requests()?;
         self.check_lockstep()
     }
 
@@ -921,6 +1012,7 @@ impl<'a> Shell<'a> {
             .restarts
             .unwrap_or_else(|| self.game.reload_may_restart_history());
         count(if self.clock.is_paused() { "reloads while paused" } else { "reloads" });
+        let in_flight = self.game.request_tokens();
         let status = match self.game.reload_source(&self.source()) {
             Ok(status) => status,
             // The edited constant broke the program (a fresh load fails too):
@@ -970,6 +1062,16 @@ impl<'a> Shell<'a> {
         if restarted && !(may_restart && after.2.map(|f| (f, f)) == after.1) {
             return Err(self.fail(Kind::Reload, format!("reload restarted history: {after:?}")));
         }
+        // A reload that keeps the timeline keeps every request in flight.
+        if !restarted && self.game.request_tokens() != in_flight {
+            return Err(self.fail(
+                Kind::Request,
+                format!(
+                    "a reload changed the in-flight requests: {in_flight:?} -> {:?}",
+                    self.game.request_tokens()
+                ),
+            ));
+        }
         if restarted {
             // The new generation is seeded from the live model, which may hold
             // input since the frame (a known gap): adopt it.
@@ -1016,8 +1118,9 @@ impl<'a> Shell<'a> {
             return Ok(());
         }
         self.fork_replay(k, n)?;
-        if (k + 1..=k + n).any(|f| self.game.logged_answers(f)) {
-            // A live branch asks the world afresh: nothing to reproduce.
+        if (k + 1..=k + n).any(|f| self.game.logged_answers(f)) || self.game.arrivals_after(k) {
+            // A live branch asks the world afresh, and gets its answers when
+            // the transport says: nothing to reproduce.
             return Ok(());
         }
         count("replays");
@@ -1070,6 +1173,9 @@ impl<'a> Shell<'a> {
             .game
             .replay_scene(n as usize)
             .map_err(|e| self.fail(Kind::ForkDiverged, format!("fork from {k}: {e}")))?;
+        if self.net.is_some() && !crate::net::drain_commands().is_empty() {
+            return Err(self.fail(Kind::Request, format!("fork from {k} dispatched a request")));
+        }
         if replayed.len() as u64 != n {
             return Err(self.fail(
                 Kind::ForkDiverged,

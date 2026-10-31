@@ -152,6 +152,37 @@ let draw = (model, tts) =>
     Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.loaded, 7.0), 0.0, 0.0)))
 "#;
 
+/// HTTP over the fuzzer's fake transport: requests from input (one, an
+/// identical pair, a POST), from `tick` (a poll) and from a response's own
+/// `update` (a chain). Each tagger captures which request it answers, so a
+/// response reaching the wrong tagger shows in `sum`.
+const HTTP_GAME: &str = r#"
+type Msg = | Got(i: float, resp: Net.HttpResponse)
+let scale = 1.0
+let init = { sent: 0.0, got: 0.0, sum: 0.0, last: "", n: 0.0 }
+let input = (model, key, isDown) =>
+  match key with
+  | Key.Space => if isDown then ({ model with sent: model.sent + 1.0 }, Effect.httpGet("http://fake/a", (r) => Got(model.sent, r))) else model
+  | Key.G => if isDown then ({ model with sent: model.sent + 2.0 }, Effect.batch([Effect.httpGet("http://fake/same", (r) => Got(model.sent, r)), Effect.httpGet("http://fake/same", (r) => Got(model.sent + 0.5, r))])) else model
+  | Key.P => if isDown then ({ model with sent: model.sent + 1.0 }, Effect.httpPost("http://fake/post", "body", (r) => Got(model.sent * 3.0, r))) else model
+  | _ => model
+let update = (model, msg) =>
+  match msg with
+  | Got(i, resp) =>
+    (match resp with
+     | Net.Response(status, body) =>
+       let next = { model with got: model.got + 1.0, sum: model.sum + i * scale, last: body } in
+       if Math.mod(model.got, 3.0) == 0.0 then (next, Effect.httpGet("http://fake/chain", (r) => Got(0.25, r))) else next
+     | Net.Failure(e) => model)
+let tick = (model, dt, tts) =>
+  if Math.mod(model.n, 25.0) == 24.0
+  then ({ model with n: model.n + 1.0 }, Effect.httpGet("http://fake/poll", (r) => Got(0.125, r)))
+  else { model with n: model.n + 1.0 }
+let draw = (model, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum, 7.0), model.got * 0.01, 0.0)))
+"#;
+
 /// `text`, rewritten to `template` with 0.3, 0.6 or 0.9 for `{}`.
 fn knob(text: &str, template: &str) -> Option<(String, Vec<String>)> {
     let values = ["0.3", "0.6", "0.9"].map(|v| template.replace("{}", v));
@@ -221,6 +252,12 @@ fn specs() -> Vec<Spec> {
         Spec {
             knob: knob("let step = 1.0", "let step = {}"),
             ..Spec::new("save-load", fixture(SAVE_GAME))
+        },
+        Spec {
+            keys: vec![Space, G, P],
+            knob: knob("let scale = 1.0", "let scale = {}"),
+            http: true,
+            ..Spec::new("http", fixture(HTTP_GAME))
         },
     ]
 }
@@ -312,4 +349,9 @@ fn fuzz_now() {
 #[test]
 fn fuzz_save_load() {
     fuzz("save-load", 2, 60);
+}
+
+#[test]
+fn fuzz_http() {
+    fuzz("http", 3, 80);
 }

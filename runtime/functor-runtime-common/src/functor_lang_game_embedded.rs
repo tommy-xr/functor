@@ -38,7 +38,7 @@ use crate::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use crate::physics;
 use crate::protocol::GameProducer;
 use crate::runtime_settings::{GameConfig, GameSettings};
-use crate::timetravel::{Arrival, Entry, SceneRecorder};
+use crate::timetravel::{Arrival, Channel, Entry, SceneRecorder};
 use crate::ui::View;
 use crate::webview::HtmlNode;
 use crate::{Frame, FrameTime};
@@ -395,6 +395,19 @@ impl FunctorLangEmbeddedGame {
             .is_some_and(|entries| entries.iter().any(|e| matches!(e, Entry::Answer { .. })))
     }
 
+    /// Transport tokens of the ops pending on the tail, and of the parked
+    /// arrivals (the fuzzer's hung-op check).
+    pub(crate) fn request_tokens(&self) -> (Vec<(Channel, u64)>, Vec<(Channel, u64)>) {
+        let requests = self.recorder.requests();
+        (requests.pending_tokens(), requests.parked_tokens())
+    }
+
+    /// Whether a live replay from `frame` would meet an arrival: one logged
+    /// after it, or one a rewind there re-parks or still holds parked.
+    pub(crate) fn arrivals_after(&self, frame: u64) -> bool {
+        self.recorder.delivered_after(frame) || self.recorder.requests().arrivals_after(frame)
+    }
+
     /// Build the producer from in-memory project sources (entry FIRST, then
     /// siblings). Errors come back fully rendered for the shell to fail loud
     /// with (a boot either gets a valid game or an error).
@@ -498,13 +511,17 @@ impl FunctorLangEmbeddedGame {
     /// stored closures rebound, for the status line.
     fn swap_in(&mut self, loaded: Loaded) -> (usize, Option<(usize, f64)>) {
         let retry_tts_before_reload = self.prev_tts;
-        let live_model_was_safe = self.recorder.prepare_reload(
+        let (live_model_was_safe, delta_dropped) = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
             &mut self.physics_frame,
             self.has_physics,
             &mut self.prev_tts,
         );
+        if delta_dropped {
+            self.next.clear();
+            self.deferred_queries.clear();
+        }
         rebase_connect_retry_deadlines(
             &mut self.connect_retries,
             retry_tts_before_reload,
@@ -1267,19 +1284,19 @@ AudioScene.empty), got {}",
     }
     fn net_push_connected(&mut self, key: String, conn: i32) {
         self.ctx()
-            .deliver_net_event(key, NetEventKind::Connected, conn, String::new());
+            .push_arrival(Arrival::net(key, NetEventKind::Connected, conn, String::new()));
     }
     fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
         self.ctx()
-            .deliver_net_event(key, NetEventKind::Message, conn, text);
+            .push_arrival(Arrival::net(key, NetEventKind::Message, conn, text));
     }
     fn net_push_disconnected(&mut self, key: String, conn: i32) {
         self.ctx()
-            .deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
+            .push_arrival(Arrival::net(key, NetEventKind::Disconnected, conn, String::new()));
     }
     fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
         self.ctx()
-            .deliver_net_event(key, NetEventKind::Error, conn, message);
+            .push_arrival(Arrival::net(key, NetEventKind::Error, conn, message));
     }
     fn audio_push_finished(&mut self, token: i32) {
         self.ctx()
@@ -2470,6 +2487,25 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
         }
     }
 
+    /// A response arriving while scrubbed parks; resuming delivers it if its
+    /// request survives the branch, and drops a request the branch cut.
+    #[test]
+    fn arrivals_while_scrubbed_park_until_the_branch_and_follow_it() {
+        let _ = crate::net::drain_commands();
+        let mut game = http_game();
+        let kept = request(&mut game, 0);
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+        let cut = request(&mut game, 2);
+        game.seek_scene_to(1).expect("seek");
+        game.net_push_http_response(kept, 200, String::new());
+        game.net_push_http_response(cut, 200, String::new());
+        assert!(game.state_debug().contains("got: 0"), "parked: {}", game.state_debug());
+
+        game.tick(frame_time(3.0 / 60.0, 1.0 / 60.0));
+        let model = game.state_debug();
+        assert!(model.contains("got: 1") && model.contains("last: 0"), "{model}");
+    }
+
     /// A reload keeps a request in flight: its tagger is rebound and the
     /// response lands.
     #[test]
@@ -2511,5 +2547,39 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
         assert!(b.state_debug().contains("got: 0"), "{}", b.state_debug());
         a.net_push_http_response(token, 200, String::new());
         assert!(a.state_debug().contains("got: 1"), "{}", a.state_debug());
+    }
+
+    /// Design-systems D4: with a connection open, a branch commit is refused
+    /// — the scene stays scrubbed and records nothing — while scrubbing and
+    /// resuming at the newest frame still work.
+    #[test]
+    fn an_open_connection_refuses_a_branch_commit() {
+        let src = HTTP_GAME.replace(
+            "let tick =",
+            "let subscriptions = (model) => Sub.connect(\"ws://fake\", (e) => Got(-1.0, Net.Failure(\"ws\")))\nlet tick =",
+        );
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), src)],
+            Box::new(NativePlatform),
+        )
+        .expect("connected game loads");
+        for frame in 0..3 {
+            game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
+        }
+        game.net_push_connected("ws://fake".to_string(), 1);
+        let error = game.rewind_scene_to(0).expect_err("a connected rewind is refused");
+        assert!(error.contains("1 connection(s) open"), "{error}");
+
+        game.seek_scene_to(0).expect("scrubbing still works");
+        game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
+        assert_eq!(game.current_scene_frame(), Some(0), "still scrubbed");
+        assert_eq!(game.scene_frame_range(), Some((0, 2)), "nothing recorded or cut");
+
+        game.seek_scene_to(2).expect("seek newest");
+        game.tick(frame_time(4.0 / 60.0, 1.0 / 60.0));
+        assert_eq!(game.scene_frame_range(), Some((0, 3)), "resumed at the newest frame");
+
+        game.net_push_disconnected("ws://fake".to_string(), 1);
+        game.rewind_scene_to(0).expect("disconnected: the rewind branches");
     }
 }

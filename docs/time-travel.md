@@ -306,6 +306,10 @@ After every op it checks:
   commands, and drawn frame (or, if its `draw` failed, a failing draw);
 - a branch replay reproduces the recorded frames;
 - a no-op reload changes nothing;
+- with HTTP answered by a seeded fake transport (any game that calls
+  `Effect.httpGet`/`httpPost`): no request is dispatched twice or without its
+  op, none hangs (pending with nothing in flight or parked), a reload keeps
+  every request in flight, and a fork replay dispatches nothing;
 - **every recorder participant**, after each record, seek and rewind: its range
   equals the seekable window (so a rewind truncates it to the target), and its
   live digest equals the digest it recorded for the frame. A new participant
@@ -343,6 +347,19 @@ and get suppressed. Because the log is plain data it **survives a hot reload**,
 even though code-bearing model snapshots do not — which is exactly
 what lets "tweak a constant, replay my recorded inputs, see if the jump now
 clears the chasm" work.
+
+**Responses** — HTTP, `playThen`/`preloadThen` completions, connection events —
+are logged as deliveries, and a branch replay delivers them again (an origin
+rebuild after a reload replays input only). A request's continuation waits in
+the recorder's pending table, keyed by its occurrence (`OpId`), and an arrival
+is delivered only if its op is still pending on the current branch. While
+scrubbed, arrivals park and land on the branch's first frame; paused at the
+newest frame they fold in at once (pausing pins the clock, not the network). A
+pinned clock's zero-delta frames (`--fixed-time`) are not logged, so a replay
+leaves their deliveries out, but a branch still re-parks them. A branch re-parks
+the cut future's responses for the requests it keeps, and a reload rebinds the
+waiting continuations. A branch is refused while a connection is open: the peer
+does not rewind with us.
 
 Two fidelity tiers follow, and they are why coeffect replay (T8) is a separate
 phase from the input log (T6):
