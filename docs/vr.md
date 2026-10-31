@@ -400,6 +400,9 @@ let physics = (model) =>
 - Walls are surfaces with no thickness. A body that moves farther than its
   radius in one 1/60 s step can end a step behind one, so give small, fast
   bodies `|> Physics.continuous` (continuous collision detection).
+- Chunks are built as `Physics.trimesh` meshes are, so contacts are
+  one-sided: a body that meets a wall from behind passes through it.
+  Rays hit both sides.
 
 ### Room-bounce
 
