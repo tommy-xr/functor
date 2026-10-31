@@ -143,7 +143,6 @@ let maxOf = (f: (Sample) => float, samples: List<Sample>): float =>
 let between = (t0: float, t1: float, samples: List<Sample>) =>
   samples |> List.filter((x) => x.t >= t0 && x.t < t1)
 
-let hoverError = (x: Sample) => Math.abs(x.h - hoverHeight)
 let always = (c: Controls) => (t: float) => c
 
 // Hover settles within ±5 cm of its target in 3 s from below, from above,

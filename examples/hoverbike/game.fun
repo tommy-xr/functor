@@ -316,7 +316,9 @@ let advance = (m: Model, c: Physics.position, probes: List<Ride.Probe>, dt: floa
   let speed = Ride.speedOf(ride) in
   let steps = m.steps + 1.0 in
   let refresh = Math.mod(steps, 6.0) == 0.0 in
-  let target = Bars.discomfort((speed - m.speed) / dt, ride.yawRate, speed, ride.vy) in
+  // Only a rider feels the bike move: not the parked bike rising behind getting
+  // on's black, or sinking beside the walker.
+  let target = if riding(m) then Bars.discomfort((speed - m.speed) / dt, ride.yawRate, speed, ride.vy) else 0.0 in
   { m with ready: ready, ride: ride, prev: poseOf(c, { m.ride with yaw: m.ride.yaw + turned }), last: c,
            probes: distances, clearance: clearance, speed: speed, steps: steps,
            vr: { m.vr with snap: snap, vignette: Bars.envelope(target, dt, m.vr.vignette) },
@@ -463,6 +465,15 @@ expect (
   let m = waitFor(1.0, onGround, waitFor(30.0, missed, init)) in
   let dropped = waitFor(1.0, missed, m) in
   m.ready && dropped.ready && dropped.ride.vy < 0.0
+)
+// The parked bike rising behind getting on's black, or sinking beside the
+// walker, never closes the vignette.
+expect (
+  let moving = (vy: float) => { init with ready: true, ride: { Ride.rest with vy: vy } } in
+  let rising = waitFor(1.0, Ride.flatProbes(Ride.idleHeight), { moving(1.5) with mode: Riding, fade: Mount.start(Mount.GetOn(0.0)) }) in
+  let sinking = waitFor(1.0, Ride.flatProbes(Ride.hoverHeight), moving(-1.5)) in
+  let ridden = waitFor(1.0, Ride.flatProbes(Ride.idleHeight), { moving(1.5) with mode: Riding }) in
+  rising.vr.vignette == 0.0 && sinking.vr.vignette == 0.0 && ridden.vr.vignette > 0.0
 )
 // A respawn or course switch waits again, at the new spawn.
 expect (
