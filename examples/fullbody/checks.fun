@@ -60,10 +60,11 @@ expect (
   rateOk && twistOk && lagged && near(degreesOf(final(states).twist), 25.0, 0.0001)
 )
 
-// A recentre (a 90° jump in one step) snaps the hips instead of swinging them.
+// A recentre (the head jumps 90° in one step) turns the hips with it,
+// keeping their twist, instead of swinging them.
 expect (
-  let s = final(trace(Body.init, [looking(0.0), looking(0.0), sample(headAt(1.0, 90.0, 0.0), noHand, noHand)])) in
-  near(degreesOf(s.yaw), 90.0, 0.0001) && near(s.twist, 0.0, 0.000001)
+  let s = final(trace(Body.init, [looking(0.0), looking(20.0), sample(headAt(1.0, 110.0, 0.0), noHand, noHand)])) in
+  near(degreesOf(s.yaw), 90.0, 0.0001) && near(degreesOf(s.twist), 20.0, 0.0001)
 )
 
 // --- calibration ---
@@ -99,19 +100,19 @@ let lossTrace =
   trace(Body.init, List.flatten([
     repeat(5.0, sample(headAt(1.0, 0.0, 0.0), grip(0.2, 1.1, 0.3), noHand)),
     repeat(18.0, sample(headAt(1.0, 0.0, 0.0), noHand, noHand)),
-    repeat(9.0, sample(headAt(1.0, 0.0, 0.0), grip(0.2, 1.1, 0.3), noHand)),
+    repeat(12.0, sample(headAt(1.0, 0.0, 0.0), grip(0.2, 1.1, 0.3), noHand)),
   ]))
 
 let at = (i: float): Body.State => List.nth(i, lossTrace) |> Option.defaultValue(Body.init)
 
 // A first sighting is followed at once; loss fades out over 0.3 s, holding the
-// last target (never the origin); recovery fades back in over 0.15 s.
+// last target (never the origin); recovery fades back in over 0.2 s.
 expect at(1.0).left.blend == 1.0
 expect near(at(14.0).left.blend, 0.5, 0.000001)
 expect at(23.0).left.blend == 0.0
 expect at(23.0).left.wrist == at(5.0).left.wrist
-expect near(at(28.0).left.blend, 5.0 / 9.0, 0.000001)
-expect at(32.0).left.blend == 1.0
+expect near(at(29.0).left.blend, 0.5, 0.000001)
+expect at(35.0).left.blend == 1.0
 expect (
   match at(23.0).left.wrist with
   | Option.Some(w) => w.position.y > 0.8

@@ -19,7 +19,7 @@ let config =
 let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> Xr.foveation(Xr.Off))
 
 /// The solved joints, in the world: what you'd check the body against.
-type Solved = { head: Probe.Frame, left: Probe.Frame, right: Probe.Frame }
+type Solved = { head: Probe.Frame, left: Probe.Frame, right: Probe.Frame, leftElbow: Probe.Frame, rightElbow: Probe.Frame }
 
 type Model = {
   body: Body.State,
@@ -45,7 +45,13 @@ let worldFrame = (b: Body.State, f: Probe.Frame): Probe.Frame =>
 let solve = (b: Body.State): Solved =>
   let posed = Probe.pose(Body.pose(b)) in
   let at = (name: string) => worldFrame(b, Probe.frame(posed, name)) in
-  { head: at(Rig.j.mixamorig_Head), left: at(Rig.j.mixamorig_LeftHand), right: at(Rig.j.mixamorig_RightHand) }
+  {
+    head: at(Rig.j.mixamorig_Head),
+    left: at(Rig.j.mixamorig_LeftHand),
+    right: at(Rig.j.mixamorig_RightHand),
+    leftElbow: at(Rig.j.mixamorig_LeftForeArm),
+    rightElbow: at(Rig.j.mixamorig_RightForeArm)
+  }
 
 let tick = (m: Model, dt: float, tts: float): Model =>
   // Without a headset, play the fixture (by game time, so `--fixed-time` pins it).
