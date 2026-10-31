@@ -313,9 +313,9 @@ let worldRect = (c: Block.Copy, r: Rect): Rect =>
 let gap = (a: Rect, b: Rect): float =>
   Math.max(Math.max(a.x0 - b.x1, b.x0 - a.x1), Math.max(a.z0 - b.z1, b.z0 - a.z1))
 let copyPairs = List.range(4.0) |> List.concatMap((i) => List.range(4.0) |> List.filter((j) => j > i) |> List.map((j) => (Block.copyAt(i), Block.copyAt(j))))
-// A street at least `street` wide between any two buildings, and no apron or
+// A street at least `streetWidth` wide between any two buildings, and no apron or
 // yard on another building.
-expect copyPairs |> List.all((p) => let (a, b) = p in gap(worldRect(a, f), worldRect(b, f)) >= Block.street - 0.001)
+expect copyPairs |> List.all((p) => let (a, b) = p in gap(worldRect(a, f), worldRect(b, f)) >= Block.streetWidth - 0.001)
 let yards = rooms |> List.filter((r) => not Building.isInside(r))
 expect copyPairs |> List.all((p) =>
   let (a, b) = p in
@@ -323,12 +323,12 @@ expect copyPairs |> List.all((p) =>
 // Every copy's entrance and windows face the crossroads' streets: their
 // outside rooms lie in the cross between the buildings.
 let inCross = (r: Rect): bool =>
-  (r.x0 >= 0.0 - Block.street - 0.001 && r.x1 <= 0.001) || (r.z0 >= 0.0 - Block.street - 0.001 && r.z1 <= 0.001)
+  (r.x0 >= 0.0 - Block.streetWidth - 0.001 && r.x1 <= 0.001) || (r.z0 >= 0.0 - Block.streetWidth - 0.001 && r.z1 <= 0.001)
 expect Block.copies |> List.all((c) => yards |> List.all((r) => inCross(worldRect(c, r.rect))))
 
-// Collider tags are unique across the copies, the ground and the player.
+// Collider tags are unique across the copies, the grounds and the player.
 let allTags = List.flatten([
-  ["ground", "player"],
+  ["ground", "block-ground", "player"],
   Block.copies |> List.concatMap((c) => List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) => Block.tagOf(c, k.tag))),
 ])
 expect allTags |> List.indexedMap((i, t) => List.drop(i + 1.0, allTags) |> List.any((u) => u == t)) |> List.all((dup) => not dup)

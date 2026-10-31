@@ -107,8 +107,12 @@ own translation and yaw, so the GPU holds one office. Per copy:
   the copy's own tags, each copy one `Physics.memo`.
 - **Scene**: one `Scene.memo` per copy, rebuilt when the hour or its
   activation changes.
-- **Lights**: the lobby spill and street lamps are the nearest copy's; every
-  copy's would overflow the 8 forward-light slots.
+- **Lights**: every copy has a lobby spill and two street lamps; the frame
+  takes the six nearest the eye, which is what fits the 8 forward-light slots
+  beside the sun and ambient.
+
+Interiors pop in and out at the radius, through doors and windows still in
+view: the fog only starts at 35 m (night) or 70 m (day).
 
 The one overcast day bake holds at every yaw (it has no sun).
 

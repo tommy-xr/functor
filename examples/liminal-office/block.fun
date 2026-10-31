@@ -32,8 +32,8 @@ let headingToWorld = (c: Copy, yaw: float): float => yaw + c.yaw * Math.pi / 180
 // The street between neighbours. The copies turn about a crossroads this far
 // south-west of the office's south-west corner, so each one's entrance and
 // windows face a street (the office's entrance faces south, its windows west).
-let street = 24.0
-let centre = 0.0 - street / 2.0
+let streetWidth = 24.0
+let centre = 0.0 - streetWidth / 2.0
 let copyAt = (k: float): Copy =>
   let yaw = 90.0 * k in
   let (x, z) = turn(yaw, centre, centre) in
@@ -42,6 +42,11 @@ let copies = List.range(4.0) |> List.map(copyAt)
 let home = copyAt(0.0)
 // The copies standing: the office alone, or the block.
 let placed = (block: bool): List<Copy> => if block then copies else [home]
+
+// The block's ground and its collider, past every collar.
+let groundSize = 400.0
+let ground = Exterior.groundAt(centre, centre, groundSize)
+let groundBody = Exterior.groundBodyAt("block-ground", centre, centre, groundSize)
 
 let sceneOf = (c: Copy, s: Scene.t): Scene.t =>
   s |> Scene.rotateY(Angle.degrees(c.yaw)) |> Scene.translate(v(c.x, 0.0, c.z))
@@ -86,10 +91,23 @@ let uncovered = (active: List<bool>, eye: Vec3.t): float =>
   copies |> List.zip(active) |> List.filter((pair) =>
     let (c, on) = pair in on && Cells.locate(toLocal(c, eye), Portals.level) == Option.None) |> List.length
 
-// The placed copy nearest `eye`, and its index.
+// The index of the placed copy nearest `eye` (the first, on a tie).
 let nearest = (block: bool, eye: Vec3.t): float =>
-  let (best, _) = List.range(if block then 4.0 else 1.0) |> List.fold((acc, k) =>
-    let (b, d) = acc in
-    let dk = fromFootprint(toLocal(copyAt(k), eye)) in
-    if dk < d then (k, dk) else acc, (0.0, 1000000.0)) in
+  let (best, _) = placed(block) |> List.indexedMap((k, c) => (k, fromFootprint(toLocal(c, eye))))
+    |> List.fold((acc, kd) =>
+      let (_, d) = acc in
+      let (_, dk) = kd in
+      if dk < d then kd else acc, (0.0, 1000000.0)) in
   best
+
+// ---- Lights --------------------------------------------------------------------
+
+// The 8 forward-light slots left after the sun and ambient: the frame takes
+// the point lights nearest the eye, from every placed copy.
+let pointSlots = 6.0
+// Of `lights` (each with its world position), the `pointSlots` nearest `eye`,
+// in their original order (so the office alone lights exactly as before).
+let nearestLights = (eye: Vec3.t, lights: List<(Vec3.t, Light.t)>): List<Light.t> =>
+  lights |> List.indexedMap((i, l) => let (at, light) = l in (i, Vec3.length(at |> Vec3.sub(eye)), light))
+    |> List.sortBy((e) => let (i, d, light) = e in d) |> List.take(pointSlots)
+    |> List.sortBy((e) => let (i, d, light) = e in i) |> List.map((e) => let (i, d, light) = e in light)

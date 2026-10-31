@@ -33,15 +33,20 @@ let bakes = Building.bakes
 // The frame's lights reach only unlightmapped geometry (the street, the
 // facade, the lamps): all are `Light.baked`, so the lit interior ignores
 // them, by day as by night. None casts shadows: a shadow pass would draw
-// every hidden room. The lobby's spill and the street lamps are copy `c`'s,
-// the nearest: every copy's would overflow the 8 forward-light slots.
-let frameLights = (o: Hours.Outdoor, c: Block.Copy): List<Light.t> => List.flatten([
+// every hidden room. Each copy has a lobby spill and two street lamps; the
+// frame takes those nearest the eye that fit the 8 forward-light slots.
+let pointLights = (o: Hours.Outdoor, c: Block.Copy): List<(Vec3.t, Light.t)> =>
+  let point = (at: Vec3.t, color: Color.t, intensity: float, range: float) =>
+    let p = Block.toWorld(c, at) in (p, Light.point(p, color, intensity, range) |> Light.baked) in
+  List.flatten([
+    // The lobby's light spilling onto the apron.
+    [point(v(10.0, 2.0, 0.9), Color.rgb(0.85, 0.95, 0.8), 1.2, 9.0)],
+    Exterior.lampHeads |> List.map((p) => point(p |> Vec3.add(v(0.0, -0.2, 0.0)), Color.rgb(1.0, 0.68, 0.36), 0.9 * o.lamps, 14.0)),
+  ])
+let frameLights = (o: Hours.Outdoor, copies: List<Block.Copy>, eye: Vec3.t): List<Light.t> => List.flatten([
   [Light.ambient(Hours.color(o.ambient)) |> Light.baked,
-   Light.directional(o.sunDirection, Hours.color(o.sun), o.sunIntensity) |> Light.baked,
-   // The lobby's light spilling onto the apron.
-   Light.point(Block.toWorld(c, v(10.0, 2.0, 0.9)), Color.rgb(0.85, 0.95, 0.8), 1.2, 9.0) |> Light.baked],
-  Exterior.lampHeads |> List.map((p) =>
-    Light.point(Block.toWorld(c, p |> Vec3.add(v(0.0, -0.2, 0.0))), Color.rgb(1.0, 0.68, 0.36), 0.9 * o.lamps, 14.0) |> Light.baked),
+   Light.directional(o.sunDirection, Hours.color(o.sun), o.sunIntensity) |> Light.baked],
+  Block.nearestLights(eye, copies |> List.concatMap((c) => pointLights(o, c))),
 ])
 // Without a bake, light the interior flatly so it stays walkable.
 let unbakedLight = Light.ambient(Color.rgb(0.55, 0.57, 0.5))
@@ -195,7 +200,8 @@ let gravity = 9.81
 let tick = (model, dt: float, tts: float) =>
   let p = Physics.position(playerTag) in
   let eye = eyeOf(p) in
-  // The copies the last frame drew: draw works them out from the same eye.
+  // The copies the last frame drew: that draw ran after the physics step
+  // that left the player at `p`, from the model this tick started with.
   let active = Block.activeAt(model.block, model.active, eye) in
   let copy = Block.nearest(model.block, eye) in
   let observed = { model with
@@ -223,7 +229,7 @@ let tick = (model, dt: float, tts: float) =>
 // Each copy's colliders are built once, under its own key and tags.
 let physics = (model) =>
   Physics.scene(v(0.0, -9.81, 0.0), List.flatten([
-    [Exterior.groundBody],
+    [if model.block then Block.groundBody else Exterior.groundBody],
     Block.placed(model.block) |> List.map((c) => Physics.memo(c.name, c, Block.bodiesOf)),
     [Physics.character(playerTag, Physics.capsule(0.6, 0.3),
                        { stepHeight: 0.2, maxSlope: 40deg, snap: 0.2, offset: 0.02 })
@@ -252,8 +258,8 @@ let draw = (model, tts: float) =>
   // Each copy rebuilds only when the hour or its activation changes.
   let copies = Block.placed(model.block) |> List.indexedMap((k, c) =>
     Scene.memo(c.name, { k: k, neon: o.neon, lamps: o.lamps, day: day, active: List.nth(k, active) |> Option.defaultValue(false) }, copyScene)) in
-  let scene = Scene.group([Exterior.ground, Scene.group(copies)]) in
-  let lights = frameLights(o, Block.copyAt(Block.nearest(model.block, eye))) in
+  let scene = Scene.group([if model.block then Block.ground else Exterior.ground, Scene.group(copies)]) in
+  let lights = frameLights(o, Block.placed(model.block), eye) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
     |> Frame.withFog(Fog.linear(o.fogNear, Hours.fogFar, Hours.color(o.sky)))
     |> Frame.withClearColor(Hours.color(o.sky))

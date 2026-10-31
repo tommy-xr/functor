@@ -93,9 +93,11 @@ let apron = roomAt(0.0).rect
 // The street sits 3 cm below the interior floors, so indoors the floor
 // trimesh, not the ground box, carries the player.
 let street = 0.0 - 0.03
-// The ground, shared by every building on it: below the interior floors
-// (y = 0), which would otherwise z-fight it.
-let ground = Scene.plane() |> Scene.scaleXYZ(240.0, 1.0, 240.0) |> Scene.translate(v(10.0, street - 0.02, 10.0)) |> Scene.lit(rgb(40.0, 36.0, 46.0))
+// The ground, shared by every building on it, `size` metres square about
+// (x, z): below the interior floors (y = 0), which would otherwise z-fight it.
+let groundAt = (x: float, z: float, size: float): Scene.t =>
+  Scene.plane() |> Scene.scaleXYZ(size, 1.0, size) |> Scene.translate(v(x, street - 0.02, z)) |> Scene.lit(rgb(40.0, 36.0, 46.0))
+let ground = groundAt(10.0, 10.0, 240.0)
 let apronSlab = slab(apron.x0, street - 0.02, apron.z0, apron.x1, street, apron.z1 - half) |> Scene.lit(rgb(96.0, 94.0, 102.0))
 
 // The building's street side, in its own space, with the neon and the lamp
@@ -110,7 +112,9 @@ let exteriorAt = (neon: float, lamps: float): Scene.t => Scene.group([
 let shadeByDay: Hours.Rgb = { r: 110.0 / 255.0, g: 110.0 / 255.0, b: 116.0 / 255.0 }
 let sodiumGlow: Hours.Rgb = { r: 255.0 / 255.0, g: 190.0 / 255.0, b: 110.0 / 255.0 }
 
-let groundBody = Physics.fixed(Physics.tag("ground"), Physics.box(240.0, 1.0, 240.0)) |> Physics.at(v(10.0, street - 0.5, 10.0))
+let groundBodyAt = (tag: string, x: float, z: float, size: float): Physics.body =>
+  Physics.fixed(Physics.tag(tag), Physics.box(size, 1.0, size)) |> Physics.at(v(x, street - 0.5, z))
+let groundBody = groundBodyAt("ground", 10.0, 10.0, 240.0)
 // The lamp posts' colliders, in the building's space.
 let lampColliders: List<Collider> = lampHeads |> List.indexedMap((i, p) =>
   { tag: $"lamp-{i}", shape: Physics.box(0.12, 4.9, 0.12), at: v(Vec3.x(p), 2.45, Vec3.z(p)) })

@@ -133,7 +133,8 @@ function launch(port, env = {}, flags = []) {
     },
     // Face `yaw` (0 is +z, π/2 is +x).
     async face(yaw) {
-      await game.turn(yaw - (await game.model()).yaw);
+      const d = yaw - (await game.model()).yaw;
+      await game.turn(Math.atan2(Math.sin(d), Math.cos(d))); // the short way round
     },
     // Hold W until the player passes `target` along `axis`, `chunk` steps at
     // a time; `onStep` sees the model after each chunk.
@@ -301,6 +302,9 @@ function meanLuma(png, [x0, y0, x1, y1]) {
   return sum / n;
 }
 
+// Office 103's floor below its window, at view 4: clear of the sky.
+const FLOOR = [0, 0.5, 1, 0.75];
+
 // The largest per-channel difference between two same-sized captures.
 function maxDiff(a, b) {
   const [pa, pb] = [decodePng(a).pixels, decodePng(b).pixels];
@@ -382,8 +386,7 @@ async function daylight(game) {
   };
   // View 4 looks at the window; the floor band below it excludes the sky.
   const room = await at(4);
-  const floor = [0, 0.5, 1, 0.75];
-  const [roomNight, roomDay] = [meanLuma(room.night, floor), meanLuma(room.day, floor)];
+  const [roomNight, roomDay] = [meanLuma(room.night, FLOOR), meanLuma(room.day, FLOOR)];
   check(roomDay > 1.2 * roomNight, `office 103's floor brightens by day (luma ${roomNight.toFixed(1)} → ${roomDay.toFixed(1)})`);
   // View 2 looks down the corridor, away from the lobby.
   const corridor = await at(2);
@@ -421,6 +424,8 @@ const copyAt = (k) => {
   return { k, yaw: 90 * k, x: CROSS - x, z: CROSS - z };
 };
 const COPIES = [0, 1, 2, 3].map(copyAt);
+// The office's static draw calls with nothing culled (#882's measurement).
+const UNCULLED_DRAWS = 113;
 const toWorld = (c, x, z) => {
   const [a, b] = turnXZ(c.yaw, x, z);
   return [a + c.x, b + c.z];
@@ -428,7 +433,6 @@ const toWorld = (c, x, z) => {
 const toLocal = (c, x, z) => turnXZ(-c.yaw, x - c.x, z - c.z);
 // A heading in copy c's space (0 is its +z, into the entrance), in the world.
 const headingOf = (c, yaw) => yaw + (c.yaw * Math.PI) / 180;
-const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 // Every sample of the block tour: whether the eye was in a cell of the
 // nearest copy.
@@ -438,10 +442,6 @@ const sample = (m) => {
   if (m.cell < 0) samples.outside.push(`(${m.at.x.toFixed(1)}, ${m.at.z.toFixed(1)}) copy ${m.copy}`);
 };
 
-async function faceYaw(game, yaw) {
-  await game.turn(wrap(yaw - (await game.model()).yaw));
-}
-
 // Walk straight to world (x, z), sampling every `chunk` steps; stops early
 // when blocked.
 async function walkToPoint(game, [x, z], chunk = 20) {
@@ -450,7 +450,7 @@ async function walkToPoint(game, [x, z], chunk = 20) {
     const [dx, dz] = [x - m.at.x, z - m.at.z];
     const left = Math.hypot(dx, dz);
     if (left < 0.05) break;
-    await faceYaw(game, Math.atan2(dx, dz));
+    await game.face(Math.atan2(dx, dz));
     await game.key("w", true);
     await game.step(Math.max(1, Math.min(chunk, Math.floor(left / WALK))));
     await game.key("w", false);
@@ -484,7 +484,7 @@ async function enterCopy(game, c) {
   // The lobby's facade, left of the entrance: blocked at its outer face
   // (local z = -0.15) less the capsule's radius.
   await walkToPoint(game, toWorld(c, 6.5, -3));
-  await faceYaw(game, headingOf(c, 0));
+  await game.face(headingOf(c, 0));
   await game.hold("w", 150);
   m = await game.model();
   const [lx, lz] = toLocal(c, m.at.x, m.at.z);
@@ -494,7 +494,6 @@ async function enterCopy(game, c) {
 
 // Mean luma of the middle of a capture: the window seen from the street.
 const WINDOW_RECT = [0.4, 0.4, 0.6, 0.55];
-const FLOOR = [0, 0.5, 1, 0.75];
 
 // Copy c's office 103 window: from the street (the lit room shows through
 // it; the sill stops a walk in), then from inside at night and noon
@@ -502,7 +501,7 @@ const FLOOR = [0, 0.5, 1, 0.75];
 async function inspectWindow(game, c, hours = true) {
   await walkToPoint(game, toWorld(c, -4, -6));
   await walkToPoint(game, toWorld(c, -4, 9.3));
-  await faceYaw(game, headingOf(c, Math.PI / 2));
+  await game.face(headingOf(c, Math.PI / 2));
   await game.step(2);
   const outside = await game.capture();
   await game.hold("w", 120);
@@ -591,31 +590,38 @@ async function drawCounts(game) {
   await game.view(9);
   rows.push(await staticDraws(game, "street (view 9)"));
   await walkToPoint(game, [CROSS, CROSS]);
-  await faceYaw(game, Math.atan2(22, 12));
+  await game.face(Math.atan2(22, 12));
   rows.push(await staticDraws(game, "crossroads, facing copy 0's entrance"));
   await game.view(1);
-  await faceYaw(game, Math.PI);
+  await game.face(Math.PI);
   rows.push(await staticDraws(game, "between copies 0 and 1 (copy 0's apron, facing copy 1's window)"));
   await game.view(0);
   rows.push(await staticDraws(game, "inside copy 2: office 103 window (view 0)"));
   await game.view(2);
   rows.push(await staticDraws(game, "inside copy 2: corridor (view 2)"));
   for (const r of rows) {
-    check(r.draws >= r.models && r.models >= 0, `${r.label}: ${r.models} static models, ${r.draws} static draws (${r.active} active, ${r.hidden} hidden, ${r.walks} walks)`);
+    // Unculled, every active copy would submit all of the office's draws.
+    check(r.models > 0 && r.draws >= r.models && r.draws < r.active * UNCULLED_DRAWS,
+      `${r.label}: ${r.models} static models, ${r.draws} static draws (${r.active} active, ${r.hidden} hidden, ${r.walks} walks)`);
   }
+  // A copy's view draws what the office alone's does: the corridor, in copy 0
+  // and in the copy turned 180°.
+  const same = (a, b) => a.models === b.models && a.draws === b.draws;
+  check(same(rows[2], rows[1]) && same(rows[7], rows[1]), "each copy's corridor draws what the office alone's does");
   check((await game.model()).uncovered === 0, "no fallback walks while measuring");
   return rows;
 }
 
-// The latest `--json` frame-stats window after `n` more steps.
+// Every `--json` frame-stats window so far.
+const frameStats = (game) => game.log().split("\n").filter((l) => l.includes('"frame_stats"')).map((l) => JSON.parse(l));
+
+// The latest frame-stats window after `n` more steps.
 async function statsAfter(game, n) {
-  const count = () => game.log().split("\n").filter((l) => l.includes('"frame_stats"')).length;
-  const seen = count();
+  const seen = frameStats(game).length;
   await game.step(n);
   const deadline = Date.now() + 30000;
-  while (count() <= seen && Date.now() < deadline) await sleep(50);
-  const lines = game.log().split("\n").filter((l) => l.includes('"frame_stats"'));
-  return JSON.parse(lines[lines.length - 1]);
+  while (frameStats(game).length <= seen && Date.now() < deadline) await sleep(50);
+  return frameStats(game).at(-1);
 }
 
 // The copies share one office's uploads. A cell mesh uploads the first time
@@ -624,13 +630,26 @@ async function statsAfter(game, n) {
 // uploads nothing, and grows no live GL object. Switching to noon misses as
 // often with four copies active as with the office alone.
 async function residency(game) {
-  const windows = () => game.log().split("\n").filter((l) => l.includes('"frame_stats"')).map((l) => JSON.parse(l));
+  const windows = () => frameStats(game);
   const live = (s) => `${s.gpu_live_buffers} buffers, ${s.gpu_live_textures} textures, ${s.gpu_live_vaos} VAOs`;
+  // Misses and bytes over every stats window spanning a switch to noon. The
+  // day lightmap is evicted two frames after the switch back, so each switch
+  // uploads it afresh.
+  const noonSwitch = async () => {
+    const from = windows().length;
+    await game.hold("n", 1);
+    await statsAfter(game, 300);
+    await statsAfter(game, 300);
+    const spanned = windows().slice(from);
+    return {
+      misses: spanned.reduce((n, w) => n + w.gpu_cache_misses, 0),
+      bytes: spanned.reduce((n, w) => n + w.gpu_bytes_per_frame * w.over_n_frames, 0),
+    };
+  };
   await game.view(1);
   await statsAfter(game, 300);
   const office = await statsAfter(game, 300);
-  await game.hold("n", 1);
-  const officeNoon = await statsAfter(game, 300);
+  const officeNoon = await noonSwitch();
   await game.hold("n", 1);
 
   await game.hold("b", 1);
@@ -658,10 +677,9 @@ async function residency(game) {
   await walkToPoint(game, [CROSS, CROSS]);
   check((await game.model()).active.every((a) => a), "residency: all four copies active at the crossroads");
   await statsAfter(game, 300);
-  await game.hold("n", 1);
-  const blockNoon = await statsAfter(game, 300);
-  check(blockNoon.gpu_cache_misses === officeNoon.gpu_cache_misses,
-    `the noon switch misses as often with four copies active as with one (${blockNoon.gpu_cache_misses} vs ${officeNoon.gpu_cache_misses}; ${blockNoon.gpu_bytes_per_frame} vs ${officeNoon.gpu_bytes_per_frame} B/frame)`);
+  const blockNoon = await noonSwitch();
+  check(blockNoon.misses === officeNoon.misses && blockNoon.misses > 0,
+    `the noon switch misses as often with four copies active as with one (${blockNoon.misses} vs ${officeNoon.misses}; ${blockNoon.bytes} vs ${officeNoon.bytes} bytes)`);
   return { office: live(office), primed: live(primed), after: live(after), misses, bytes, officeNoon, blockNoon };
 }
 
