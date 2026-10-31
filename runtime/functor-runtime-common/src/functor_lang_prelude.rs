@@ -368,6 +368,12 @@ pub enum SubTree {
     Assets {
         tagger: Value,
     },
+    /// A `Job.run`'s progress (`Job.progress`), by job key: the tagger
+    /// receives the latest fraction whenever it changes, like `Assets`.
+    JobProgress {
+        key: String,
+        tagger: Value,
+    },
     /// A persistent client connection (`Sub.connect`) or server listener
     /// (`Sub.listen`), keyed by its endpoint url/addr. NOT fired on the time
     /// grid — the producer reconciles declared keys against the live set
@@ -5947,8 +5953,9 @@ fn collect_fired(sub: &SubTree, prev_tts: f64, tts: f64, msgs: &mut Vec<Value>) 
         // Connections are reconciled + routed by the producer, not fired.
         SubTree::Connect { .. } => {}
         // Progress subs fire on snapshot changes, not the time grid — the
-        // producer collects their taggers via `assets_taggers`.
-        SubTree::Assets { .. } => {}
+        // producer collects their taggers via `assets_taggers` and
+        // `job_progress_taggers`.
+        SubTree::Assets { .. } | SubTree::JobProgress { .. } => {}
     }
 }
 
@@ -6009,7 +6016,8 @@ fn collect_conn_subs(sub: &SubTree, out: &mut Vec<NetConnSub>) {
         SubTree::None
         | SubTree::Every { .. }
         | SubTree::PhysicsEvents { .. }
-        | SubTree::Assets { .. } => {}
+        | SubTree::Assets { .. }
+        | SubTree::JobProgress { .. } => {}
     }
 }
 
@@ -6146,7 +6154,8 @@ fn collect_event_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
         SubTree::None
         | SubTree::Every { .. }
         | SubTree::Connect { .. }
-        | SubTree::Assets { .. } => {}
+        | SubTree::Assets { .. }
+        | SubTree::JobProgress { .. } => {}
         SubTree::Batch(items) => {
             for item in items.iter() {
                 collect_event_taggers(item, taggers);
@@ -6177,7 +6186,8 @@ fn collect_assets_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
         SubTree::None
         | SubTree::Every { .. }
         | SubTree::PhysicsEvents { .. }
-        | SubTree::Connect { .. } => {}
+        | SubTree::Connect { .. }
+        | SubTree::JobProgress { .. } => {}
         SubTree::Batch(items) => {
             for item in items.iter() {
                 collect_assets_taggers(item, taggers);
@@ -6185,6 +6195,28 @@ fn collect_assets_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
         }
         SubTree::Assets { tagger } => taggers.push(tagger.clone()),
     }
+}
+
+/// The `Job.progress` subscriptions in a subscription tree, as `(key,
+/// tagger)` in declaration order. A non-Sub value yields the same error
+/// `sub_messages_for_frame` reports.
+pub fn job_progress_taggers(subs: &Value) -> Result<Vec<(String, Value)>, String> {
+    let Some(sub) = sub_of(subs) else {
+        return Err(format!(
+            "subscriptions must return a Sub (Sub.every / Sub.none / Sub.batch), got {}",
+            subs.kind_name()
+        ));
+    };
+    fn collect(sub: &SubTree, out: &mut Vec<(String, Value)>) {
+        match sub {
+            SubTree::Batch(items) => items.iter().for_each(|item| collect(item, out)),
+            SubTree::JobProgress { key, tagger } => out.push((key.clone(), tagger.clone())),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    collect(&sub.0, &mut out);
+    Ok(out)
 }
 
 /// The tagger-facing record for a `Sub.assets` progress snapshot:

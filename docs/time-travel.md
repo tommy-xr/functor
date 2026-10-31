@@ -313,7 +313,8 @@ After every op it checks:
 - with jobs on a seeded fake pool (any game that calls `File.load` or
   `Job.run`): no job
   is dispatched twice or runs without its op, none hangs, a re-dispatch never
-  runs an op whose answer is parked, and a fork replay dispatches nothing;
+  runs an op whose answer is parked, and a fork replay dispatches nothing (the
+  pool also reports progress from held jobs, so replays must reproduce it);
 - **every recorder participant**, after each record, seek and rewind: its range
   equals the seekable window (so a rewind truncates it to the target), and its
   live digest equals the digest it recorded for the frame. A new participant
@@ -394,6 +395,17 @@ arrived) it is kept, and its result is delivered only if every file it read
 still reads the same (else it runs again). A worker caches each function's
 evaluated dependencies per revision; a data-file edit reloads, which starts a
 new one. A panic is `Crashed`, and the worker thread is replaced.
+
+**Progress.** Inside a job, `Job.report(fraction, value)` stores the attempt's
+latest fraction in a slot (no messages, so a tight loop can't flood anything);
+`Job.progress(key, tagger)` reads it once a frame with the other subscriptions
+and delivers `tagger(fraction)` when it changed since the taggers last saw it.
+Only a committed op in flight reports: a result lands earlier in the frame, so
+progress never follows it, and a cancel stops it. Each delivery is logged, so a
+replay or fork hands back the same messages and never reads a slot. A new
+attempt (a reload, a restored cancel) gets a fresh slot, so the old attempt's
+reports drop; a branch that cuts the progress last shown delivers the latest
+again on its first frame.
 
 Two fidelity tiers follow, and they are why coeffect replay (T8) is a separate
 phase from the input log (T6):

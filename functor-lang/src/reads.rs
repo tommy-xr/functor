@@ -816,7 +816,8 @@ frame — build the view in `ui`",
                     format!(
                         "`{name}` reads project files ({}), but files are read only at load, \
 so the answer isn't pinned for replay — read it in a top-level value and use that value \
-in `{name}`",
+in `{name}`, or ask for it with `File.load` (or compute with it in `Job.run`): the result \
+arrives through `update`",
                         path(name, step, ReadClass::File)
                     ),
                 );

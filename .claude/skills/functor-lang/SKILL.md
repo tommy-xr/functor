@@ -1044,7 +1044,7 @@ The generated modules:
 | `Effect` | one-shot commands returned beside a model (time, random, HTTP, net sends, sounds, preloads) |
 | `Sub` | what `subscriptions` returns: timers, connections, asset progress, physics events |
 | `Persistence` | durable local save slots: `save` / `load`, as ordinary effects |
-| `Job` | `Job.run(key, f, input, tagger)` — call a top-level function on a worker, `Result.t<'o, Job.error>` delivered through `update`; job code may read files, not physics or UI; `Job.cancel(key)` |
+| `Job` | `Job.run(key, f, input, tagger)` — call a top-level function on a worker, `Result.t<'o, Job.error>` delivered through `update`; job code may read files, not physics or UI; `Job.cancel(key)`; `Job.report(fraction, value)` inside a job, watched with `Job.progress(key, tagger)` |
 | `AudioScene` / `AudioSource` | what `soundScape` returns, and its keyed continuous voices |
 | `Ui` | the lightweight HUD `ui` hook: text, rows/columns, anchored panels, button/slider/textInput |
 | `Html` / `Attr` / `Style` | the `webview` hook: an Elm-style HTML tree, attributes/handlers, typed inline CSS |

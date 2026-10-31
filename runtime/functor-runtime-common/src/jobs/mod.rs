@@ -68,6 +68,50 @@ impl JobCtx {
 
 pub type Task = Box<dyn FnOnce(&JobCtx) -> Shareable + Send>;
 
+/// An attempt's latest reported progress in 0..1, unset until its first
+/// report. The worker overwrites it and the producer reads it once a frame,
+/// so a job reporting in a tight loop can't flood anything.
+#[derive(Clone, Debug)]
+pub struct Progress(Arc<AtomicU64>);
+
+/// No report yet: a NaN's bits, which [`Progress::set`] never stores.
+const UNSET: u64 = u64::MAX;
+
+impl Default for Progress {
+    fn default() -> Progress {
+        Progress(Arc::new(AtomicU64::new(UNSET)))
+    }
+}
+
+impl Progress {
+    /// Clamped to 0..1; a NaN is ignored.
+    fn set(&self, fraction: f64) {
+        if !fraction.is_nan() {
+            self.0.store(fraction.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn latest(&self) -> Option<f64> {
+        let bits = self.0.load(Ordering::Relaxed);
+        (bits != UNSET).then(|| f64::from_bits(bits))
+    }
+}
+
+thread_local! {
+    /// Where `Job.report` writes while this thread runs a job.
+    static REPORTING: RefCell<Option<Progress>> = const { RefCell::new(None) };
+}
+
+/// `Job.report`: the running job's progress is now `fraction`. Outside a
+/// job, nothing.
+pub fn report(fraction: f64) {
+    REPORTING.with(|slot| {
+        if let Some(progress) = &*slot.borrow() {
+            progress.set(fraction);
+        }
+    });
+}
+
 /// Results waiting for their producer.
 #[derive(Clone, Default)]
 pub struct Mailbox(Arc<Mutex<Vec<(Ticket, Shareable)>>>);
@@ -96,6 +140,7 @@ pub struct Job {
     task: Task,
     fail: fn(JobError) -> Shareable,
     stop: Arc<AtomicBool>,
+    progress: Progress,
     mailbox: Mailbox,
 }
 
@@ -108,11 +153,13 @@ impl Job {
         }
         let ctx = JobCtx { stop: self.stop.clone() };
         let task = self.task;
-        let (value, crashed) =
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(&ctx))) {
-                Ok(value) => (value, false),
-                Err(panic) => ((self.fail)(JobError::Crashed(panic_text(&panic))), true),
-            };
+        let outer = REPORTING.with(|slot| slot.replace(Some(self.progress.clone())));
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(&ctx)));
+        REPORTING.with(|slot| *slot.borrow_mut() = outer);
+        let (value, crashed) = match ran {
+            Ok(value) => (value, false),
+            Err(panic) => ((self.fail)(JobError::Crashed(panic_text(&panic))), true),
+        };
         if !self.stop.load(Ordering::Relaxed) {
             self.mailbox.post(self.ticket, value);
         }
@@ -287,6 +334,17 @@ impl FakeJobs {
         let held = self.held.borrow();
         let job = held.iter().find(|job| job.ticket == ticket)?;
         Some(job.stop.load(Ordering::Relaxed))
+    }
+
+    /// Report `fraction` from the held job `ticket`, as if it were running.
+    /// `false` if it isn't held.
+    pub fn report(&self, ticket: Ticket, fraction: f64) -> bool {
+        let held = self.held.borrow();
+        let Some(job) = held.iter().find(|job| job.ticket == ticket) else {
+            return false;
+        };
+        job.progress.set(fraction);
+        true
     }
 
     /// Run the held job `ticket` now, posting its result unless it was
@@ -482,20 +540,28 @@ impl JobPort {
         self.reader.clone().or_else(crate::storage::project_reader)
     }
 
-    /// Dispatch `spec` as `ticket`; the returned flag stops it, and a
-    /// `Job.run`'s slot receives what it read.
-    pub(crate) fn start(&self, spec: &JobSpec, ticket: Ticket) -> (Arc<AtomicBool>, Option<ReadSlot>) {
+    /// Dispatch `spec` as `ticket`.
+    pub(crate) fn start(&self, spec: &JobSpec, ticket: Ticket) -> Started {
         let (task, fail, reads) = spec.task(self.reader());
-        let stop = Arc::new(AtomicBool::new(false));
+        let (stop, progress) = (Arc::new(AtomicBool::new(false)), Progress::default());
         self.dispatch.dispatch(Job {
             ticket,
             task,
             fail,
             stop: stop.clone(),
+            progress: progress.clone(),
             mailbox: self.mailbox.clone(),
         });
-        (stop, reads)
+        Started { stop, reads, progress }
     }
+}
+
+/// A dispatched attempt's handles: `stop` stops it, a `Job.run`'s `reads`
+/// receives what it read, and `progress` is what it reported.
+pub(crate) struct Started {
+    pub stop: Arc<AtomicBool>,
+    pub reads: Option<ReadSlot>,
+    pub progress: Progress,
 }
 
 #[cfg(test)]
@@ -520,7 +586,8 @@ mod tests {
     fn job(ticket: Ticket, mailbox: &Mailbox, task: Task) -> (Job, Arc<AtomicBool>) {
         let stop = Arc::new(AtomicBool::new(false));
         let fail = |e: JobError| Shareable::Text(Arc::from(format!("{e:?}").as_str()));
-        (Job { ticket, task, fail, stop: stop.clone(), mailbox: mailbox.clone() }, stop)
+        let progress = Progress::default();
+        (Job { ticket, task, fail, stop: stop.clone(), progress, mailbox: mailbox.clone() }, stop)
     }
 
     fn ticket(id: u64) -> Ticket {
@@ -563,6 +630,26 @@ mod tests {
         }
         assert_eq!(got[1].1, Shareable::Text(Arc::from("Crashed(\"boom\")")));
         assert_ne!(got[0].1, got[2].1, "the panicked thread retired");
+    }
+
+    #[test]
+    fn report_writes_the_running_jobs_progress_and_is_a_no_op_outside_one() {
+        let fake = FakeJobs::default();
+        let mailbox = Mailbox::default();
+        let (mut running, _) = job(ticket(1), &mailbox, Box::new(|_| {
+            report(2.0);
+            report(f64::NAN);
+            Shareable::Bool(true)
+        }));
+        let progress = Progress::default();
+        running.progress = progress.clone();
+        fake.dispatch(running);
+        report(0.5);
+        assert_eq!(progress.latest(), None, "outside a job");
+        fake.complete(ticket(1));
+        assert_eq!(progress.latest(), Some(1.0), "clamped; a NaN ignored");
+        report(0.5);
+        assert_eq!(progress.latest(), Some(1.0), "the job has returned");
     }
 
     #[test]
