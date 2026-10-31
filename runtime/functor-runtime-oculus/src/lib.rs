@@ -722,7 +722,6 @@ fn request_launch_refresh_rate(
     refused
 }
 
-#[allow(clippy::too_many_arguments)]
 /// A finished `/load-project`: on success the game launches, so restart
 /// the clock and honour its `config`. Warnings join the status.
 #[allow(clippy::too_many_arguments)]
@@ -762,6 +761,7 @@ fn launch(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn service_debug_request(
     request: DebugRequest,
     session: &xr::Session<xr::OpenGlEs>,
@@ -1581,7 +1581,12 @@ pub fn android_main(app: AndroidApp) {
                 );
             }
         }
-        // A load job that landed answers its `/load-project`.
+        // A load job that landed answers its `/load-project`: installed
+        // here, between frames (and while the session is stopped), so the
+        // clock restarts before the new game's first frame.
+        if debug.pending_load.is_some() {
+            sim.call(|g| g.poll_load());
+        }
         let landed = debug.pending_load.as_ref().and_then(|(_, landed)| landed.try_recv().ok());
         if let Some(result) = landed {
             let result = launch(result, &session, &mut sim, &mut clock, &mut debug, &scene_context, &passthrough, &environment_depth);

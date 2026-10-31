@@ -258,6 +258,16 @@ loading screen before the top-level values have loaded — draw from its `progre
 plain values"]
     );
     assert!(phase("let loading = (p, tts) => p * 2.0\n").is_empty());
+    let errors = phase(
+        "let logo = File.size(\"logo.bin\")\n\
+         let loading = (p, tts) => p + logo\n",
+    );
+    assert_eq!(
+        errors,
+        ["1: `loading` uses `logo`, which reads project files at load (logo → File.size): the \
+loading screen draws before the top-level values have loaded — draw from its `progress`, `tts` \
+and plain values"]
+    );
 }
 
 #[test]
