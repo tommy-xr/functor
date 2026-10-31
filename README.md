@@ -197,6 +197,9 @@ functor -d examples/scene-grid run vr
 # Bouncy balls off your real room, fused from the headset's depth as you look around (Quest 3)
 functor -d examples/room-bounce run vr
 
+# Aim at your real room and pin markers flush on its walls, tables and floor (Quest 3)
+functor -d examples/room-place run vr
+
 # Web — serves the .fun + wasm bundle at http://127.0.0.1:8080
 functor -d examples/primitives run wasm
 ```

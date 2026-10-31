@@ -3325,6 +3325,43 @@ mod fused_room_tests {
         assert!((hit.position[2] - 2.375).abs() < 0.02, "{:?}", hit.position);
     }
 
+    /// Placement's query: a ray onto the room hits the chunk or floor plane
+    /// under it with the room's tag, the point, and the normal facing the
+    /// ray; nothing there is a miss.
+    #[test]
+    fn rays_land_on_the_room_with_a_normal_facing_the_ray() {
+        let room = stand_in_room();
+        let mut w = world_with(vec![room_body(&Arc::new(room.clone()))]);
+        run(&mut w, 1, |_| {});
+        let near = |a: [f32; 3], b: [f32; 3], tol: f32| (0..3).all(|i| (a[i] - b[i]).abs() < tol);
+        let land = |w: &World, from: [f32; 3], dir: [f32; 3], at: [f32; 3], normal: [f32; 3]| {
+            let hit = w.raycast(from, dir, 10.0).expect("a hit");
+            assert_eq!(hit.tag, "room");
+            assert!(near(hit.position, at, 0.03), "{from:?} hit {:?}, not {at:?}", hit.position);
+            assert!(near(hit.normal, normal, 0.1), "{from:?} normal {:?}", hit.normal);
+            hit.position
+        };
+        let (down, ahead) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
+        // The wall, the desk's top and front, and the floor plane.
+        land(&w, [-1.5, 1.0, 0.0], ahead, [-1.5, 1.0, 2.375], [0.0, 0.0, -1.0]);
+        let desk = land(&w, [0.3, 1.6, 1.0], down, [0.3, 0.75, 1.0], [0.0, 1.0, 0.0]);
+        land(&w, [0.3, 0.4, 0.0], ahead, [0.3, 0.4, 0.7], [0.0, 0.0, -1.0]);
+        land(&w, [-1.0, 1.0, 0.5], down, [-1.0, 0.0, 0.5], [0.0, 1.0, 0.0]);
+        // Up from the eye there is no ceiling.
+        assert!(w.raycast([0.0, 1.6, 0.0], [0.0, 1.0, 0.0], 10.0).is_none());
+        // The desk top's chunk re-fused 2 cm higher: the ray finds the new top.
+        let top = |p: &[f32; 3]| (p[1] - 0.75).abs() < 0.01 && (p[0] - 0.3).abs() < 0.1 && (p[2] - 1.0).abs() < 0.1;
+        let (&key, mesh) = room.chunks.iter().find(|(_, m)| m.positions.iter().any(top)).unwrap();
+        let mut raised = (**mesh).clone();
+        raised.positions.iter_mut().for_each(|p| p[1] += 0.02);
+        let mut next = room.clone();
+        next.chunks.insert(key, Arc::new(raised));
+        w.reconcile(&PhysicsScene::create(DEFAULT_GRAVITY, vec![room_body(&Arc::new(next))]));
+        run(&mut w, 1, |_| {});
+        let raised = land(&w, [0.3, 1.6, 1.0], down, [0.3, 0.77, 1.0], [0.0, 1.0, 0.0]);
+        assert!((raised[1] - desk[1] - 0.02).abs() < 1e-3, "{desk:?} -> {raised:?}");
+    }
+
     #[test]
     fn a_ball_dropped_over_the_desk_rests_on_it() {
         let room = Arc::new(stand_in_room());

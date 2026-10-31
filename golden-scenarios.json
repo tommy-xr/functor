@@ -315,6 +315,26 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "room-place-aim",
+      "sample": "room-place",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "place.script",
+      "captureAtFrame": 222
+    },
+    {
+      "name": "room-place-miss",
+      "sample": "room-place",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "place.script",
+      "captureAtFrame": 260
     }
   ]
 }
