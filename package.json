@@ -62,6 +62,7 @@
     "test:xr-injection": "cargo build -p functor-cli --no-default-features && node e2e/xr-pose-injection.mjs",
     "test:sniper-scope": "cargo build -p functor-cli --no-default-features && node e2e/sniper-scope.mjs",
     "test:sniper-scope-vr": "cargo build -p functor-cli --no-default-features && node e2e/sniper-scope-vr.mjs",
+    "test:liminal-office": "cargo build -p functor-cli --no-default-features && node e2e/liminal-office.mjs",
     "test:mcp": "cargo build -p functor-cli --no-default-features && node e2e/mcp-server.mjs",
     "test:mcp-step-all": "cargo build -p functor-cli --no-default-features && node e2e/mcp-step-all.mjs",
     "test:code-garden": "cargo build -p functor-cli --no-default-features && node e2e/code-garden.mjs",
