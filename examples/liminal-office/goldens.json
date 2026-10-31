@@ -15,5 +15,41 @@
     ],
     "inputScript": "views.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-window",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "window.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-entrance-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "noon-entrance.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-corridor-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "noon-corridor.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-window-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "noon-window.script",
+    "captureAtFrame": 30
   }
 ]

@@ -89,6 +89,14 @@ let doors = [
   door(2.0, 11.0, 23.3),
 ]
 
+// An opening in room `room`'s outside wall on `side`, centred at `at` along
+// it, from `sill` up to `head`. Open (no glass): daylight enters the day bake
+// only through these and the entrance.
+type Window = { room: float, side: Side, at: float, width: float, sill: float, head: float }
+
+// A ribbon window in office 103, between the west facade's window bands.
+let windows = [{ room: 6.0, side: West, at: 9.3, width: 3.6, sill: 0.9, head: 2.3 }]
+
 // Signs on a room's inner wall, centred at `at` along it.
 type Sign =
   | ExitSign

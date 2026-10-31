@@ -1,8 +1,9 @@
-// Bake provenance: bake.mjs writes baked/provenance.txt beside the lightmap
-// (the layout hash below, the baker's version and settings); the game checks
-// it at load, so a bake older than the layout reads as stale, not as current.
+// Bake provenance: bake.mjs writes baked/provenance.txt beside the lightmaps
+// (the layout hash below, the bakes, the baker's version and settings); the
+// game checks it at load, so a bake older than the layout reads as stale, not
+// as current.
 
-// The files the bake's geometry and lights derive from. bake.mjs hashes the
+// The files the bakes' geometry and lights derive from. bake.mjs hashes the
 // same list, the same way.
 let sources = ["layout.fun", "building.fun"]
 
@@ -23,6 +24,9 @@ let hashBytes = (h0: float, b: Bytes.t): float =>
 let layoutHash = sources |> List.fold((h, name) =>
   if File.exists(Path.of(name)) then hashBytes(h, File.bytes(Path.of(name))) else h, 0.0)
 
+// Night and day, made by one `functor bake` run.
+let bakeNames = Building.bakes |> List.map((b) => b.name)
+
 type Status =
   | Current
   | Missing
@@ -34,31 +38,41 @@ let field = (key: string, text: string): Option.t<string> =>
     |> List.find((line) => List.head(Text.split("=", line)) == Option.Some(key))
     |> Option.map((line) => Text.replace($"{key}=", "", line))
 
-// Whether a provenance record matches this layout.
+// Whether a provenance record matches this layout and these bakes.
 let check = (text: string, hash: float): Status =>
   let recorded = (key: string) => field(key, text) |> Option.defaultValue("") in
   let expected = Text.join(" ", sources) in
+  let bakes = Text.join(" ", bakeNames) in
   if recorded("layout") == "" then Stale("no layout hash recorded")
   else if recorded("sources") != expected then Stale($"baked from {recorded("sources")}, expected {expected}")
+  else if recorded("bakes") != bakes then Stale($"bakes {recorded("bakes")}, expected {bakes}")
   else if Text.parseFloat(recorded("layout")) != hash then Stale($"layout hash {recorded("layout")}, now {hash}")
   else Current
 
 let bakeDir = Path.of("baked")
-let lightPath = bakeDir |> Path.join("night.png")
+let lightPathOf = (name: string) => bakeDir |> Path.join($"{name}.png")
+let lightPath = lightPathOf("night")
+let dayLightPath = lightPathOf("day")
+// Both bakes unwrap the same mesh the same way, so bake.mjs keeps one copy.
 let meshPath = bakeDir |> Path.join("night.mesh.bin")
 let recordPath = bakeDir |> Path.join("provenance.txt")
 
 let status =
-  if not (File.exists(lightPath) && File.exists(meshPath)) then Missing
+  if not (File.exists(meshPath) && List.all((name) => File.exists(lightPathOf(name)), bakeNames)) then Missing
   else if not File.exists(recordPath) then Stale("no provenance.txt")
   else
     let bytes = File.bytes(recordPath) in
     check(Bytes.utf8(0.0, Bytes.length(bytes), bytes) |> Binary.require, layoutHash)
 
-expect check($"layout={layoutHash}\nsources=layout.fun building.fun\n", layoutHash) == Current
-expect check($"layout={layoutHash + 1.0}\nsources=layout.fun building.fun\n", layoutHash) != Current
-expect check($"layout={layoutHash}\nsources=layout.fun\n", layoutHash) != Current
+let record = (hash: float, bakes: string): string =>
+  $"layout={hash}\nsources=layout.fun building.fun\nbakes={bakes}\n"
+expect bakeNames == ["night", "day"]
+expect check(record(layoutHash, "night day"), layoutHash) == Current
+expect check(record(layoutHash + 1.0, "night day"), layoutHash) != Current
+// A record from before the day bake is stale.
+expect check(record(layoutHash, "night"), layoutHash) != Current
+expect check($"layout={layoutHash}\nsources=layout.fun\nbakes=night day\n", layoutHash) != Current
 expect check("bakeVersion=2\n", layoutHash) != Current
 expect step(prime - 1.0, 255.0) < prime
-// The committed bake matches this layout: rebake after editing (README).
+// The committed bakes match this layout: rebake after editing (README).
 expect status == Current

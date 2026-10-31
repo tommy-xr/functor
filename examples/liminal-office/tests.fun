@@ -25,8 +25,8 @@ let shared = (d: Door): Building.Hole =>
   let b = Building.roomAt(d.b).rect in
   let side = Building.sideBetween(a, b) in
   if side == Option.Some(North) || side == Option.Some(South)
-  then { lo: Math.max(a.x0, b.x0), hi: Math.min(a.x1, b.x1), top: 0.0 }
-  else { lo: Math.max(a.z0, b.z0), hi: Math.min(a.z1, b.z1), top: 0.0 }
+  then { lo: Math.max(a.x0, b.x0), hi: Math.min(a.x1, b.x1), bottom: 0.0, top: 0.0 }
+  else { lo: Math.max(a.z0, b.z0), hi: Math.min(a.z1, b.z1), bottom: 0.0, top: 0.0 }
 
 // Doors sit on a shared wall, inside its span with a jamb's worth of wall
 // on each side, and are big enough to walk through.
@@ -87,3 +87,43 @@ expect doors |> List.all((d) =>
 // Collider tags are unique.
 let tags = Building.blocks |> List.map((b) => b.tag)
 expect tags |> List.indexedMap((i, t) => List.drop(i + 1.0, tags) |> List.any((u) => u == t)) |> List.all((dup) => not dup)
+
+// Windows sit in an outside wall of an inside room, clear of its corners,
+// with a sill and a head under the ceiling.
+expect windows |> List.all((w) =>
+  let r = Building.roomAt(w.room) in
+  let c = Building.inner(r.rect) in
+  let (lo, hi) = if w.side == North || w.side == South then (c.x0, c.x1) else (c.z0, c.z1) in
+  Building.isInside(r) && Building.onFootprint(w.side, r.rect)
+    && w.at - w.width / 2.0 > lo + 0.3 && w.at + w.width / 2.0 < hi - 0.3
+    && w.sill >= 0.8 && w.head < ceiling - 0.2)
+// Each window has a sill collider: floor to sill, across the window, in its wall.
+let near = (a: float, b: float): bool => Math.abs(a - b) < 0.001
+expect windows |> List.all((w) =>
+  let l = Building.lineOf(w.side, Building.roomAt(w.room).rect) in
+  Building.blocks |> List.any((b) =>
+    near(b.y - b.h / 2.0, 0.0) && near(b.y + b.h / 2.0, w.sill)
+      && (if w.side == North || w.side == South then near(b.z, l) && near(b.x, w.at) && near(b.w, w.width)
+          else near(b.x, l) && near(b.z, w.at) && near(b.d, w.width))))
+
+// Hours → daylight: night at midnight, day at noon, crossing at dawn and dusk.
+expect Hours.daylight(0.0) == 0.0 && Hours.daylight(4.0) == 0.0 && Hours.daylight(21.0) == 0.0
+expect Hours.daylight(12.0) == 1.0
+expect Hours.daylight(6.0) < Hours.daylight(7.0) && Hours.daylight(18.0) > Hours.daylight(19.0)
+// The bake switches where daylight reaches the threshold: 6:30 and 18:30.
+expect Hours.daylight(6.5) == Hours.dayThreshold && Hours.daylight(18.5) == Hours.dayThreshold
+expect not Hours.isDay(6.0) && Hours.isDay(6.5) && Hours.isDay(7.0)
+expect Hours.isDay(18.0) && not Hours.isDay(19.0)
+
+// The outdoor lerp's endpoints: night exactly as before the hour existed
+// (so night frames don't change), day with the bake's sun.
+let night = Hours.outdoorAt(0.0)
+let noon = Hours.outdoorAt(1.0)
+expect night.sky == Hours.nightSky && night.fogNear == 35.0 && night.sunIntensity == 0.6
+expect night.neon == 1.0 && night.lamps == 1.0
+expect Vec3.length(night.sunDirection |> Vec3.sub(Hours.moonDirection)) == 0.0
+expect noon.sky == Hours.daySky && noon.fogNear == 70.0 && noon.sunIntensity == 2.6
+expect noon.neon == 0.7 && noon.lamps == 0.0
+expect Vec3.length(noon.sunDirection |> Vec3.sub(Building.sunDirection)) < 0.000001
+// Halfway, the sky is dusk.
+expect Hours.outdoorAt(0.5).sky == Hours.duskSky
