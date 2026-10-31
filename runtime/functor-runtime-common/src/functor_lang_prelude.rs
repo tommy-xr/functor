@@ -8626,6 +8626,14 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             "{ position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 } }"
         )
         .contains("missing `up`"));
+        assert_eq!(
+            fail("{ position: { x: 0.0, y: 0.0, z: 0.0 }, forward: 1.0, up: { x: 0.0, y: 1.0, z: 0.0 } }"),
+            "Scene.atPose: Camera3D.mappedPose `forward` must be an Input.point3 record, got a number"
+        );
+        assert_eq!(
+            fail("{ position: { x: 0.0, y: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 }, up: { x: 0.0, y: 1.0, z: 0.0 } }"),
+            "Scene.atPose: Camera3D.mappedPose is missing `position.z`"
+        );
         assert!(fail(
             // 1e39 overflows f32.
             "{ position: { x: 1000000000000000000000000000000000000000.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 }, \

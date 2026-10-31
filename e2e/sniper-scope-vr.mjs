@@ -71,12 +71,14 @@ async function step(sample, n = 1) {
   return (await get("/state")).model;
 }
 
-// Quaternion [x, y, z, w] for `deg` about rig +Z — the controller's forward
-// axis is rig -Z, so +90 turns its top toward the player's left.
-const roll = (deg) => {
+// Quaternion [x, y, z, w] for `deg` about `axis`.
+const axisAngle = (axis, deg) => {
   const h = (deg * Math.PI) / 360;
-  return [0, 0, Math.sin(h), Math.cos(h)];
+  return [...axis.map((v) => v * Math.sin(h)), Math.cos(h)];
 };
+// About rig +Z — the controller's forward axis is rig -Z, so +90 turns its
+// top toward the player's left.
+const roll = (deg) => axisAngle([0, 0, 1], deg);
 
 const GRIP = [0.15, -0.2, -0.3];
 const sample = ({ orientation = [0, 0, 0, 1], trigger = 0, a = false, head, tracked = true } = {}) => ({
@@ -109,11 +111,6 @@ function onScreen(cam, p) {
   return { x: dot(d, r) / dot(d, f), y: dot(d, u) / dot(d, f) };
 }
 
-// Quaternion [x, y, z, w] for `deg` about `axis`.
-const axisAngle = (axis, deg) => {
-  const h = (deg * Math.PI) / 360;
-  return [...axis.map((v) => v * Math.sin(h)), Math.cos(h)];
-};
 // v' = v + 2w(q × v) + 2 q × (q × v)
 const rotate = ([x, y, z, w], v) => {
   const t = cross([x, y, z], v).map((c) => 2 * c);

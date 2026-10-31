@@ -167,8 +167,10 @@ impl MappedTrackingPose {
     /// The rigid transform placing an authored local frame at this pose:
     /// origin at `position`, local `+Z` along `forward`, `+Y` along `up`
     /// (re-orthogonalized against `forward`). Right-handed, so local `+X`
-    /// lands on `up × forward`, the pose's left. `None` when `pose_basis`
-    /// rejects the pose.
+    /// lands on `up × forward`, the pose's left.
+    ///
+    /// `None` for a non-finite `position`, a zero `forward`/`up`, or an `up`
+    /// within ~0.06° of parallel to `forward` (no defined roll).
     pub fn to_matrix(&self) -> Option<Matrix4<f32>> {
         let b = pose_basis(self.position, self.forward, self.up)?;
         Some(Matrix4::from_cols(
@@ -291,8 +293,9 @@ impl Camera {
     /// up on screen (e.g. a `MappedTrackingPose`). The authored basis matches
     /// [`Camera::first_person`]: forward `+Z` with up `+Y` is yaw = pitch = 0.
     ///
-    /// `up` is re-orthogonalized against `forward`; `None` when
-    /// `pose_basis` rejects the pose.
+    /// `forward` need not be unit length; `up` is re-orthogonalized against
+    /// it. Returns `None` for non-finite input, a zero `forward`/`up`, or an
+    /// `up` within ~0.06° of parallel to `forward` (no defined roll).
     pub fn from_pose(position: [f32; 3], forward: [f32; 3], up: [f32; 3], fov: Angle) -> Option<Camera> {
         let b = pose_basis(position, forward, up)?;
         Some(Camera::look_at(b.position.into(), (b.position + b.forward).into(), b.up.into(), fov))
@@ -1144,34 +1147,29 @@ mod tests {
         assert!(pose([0.0; 3], [0.0, f32::INFINITY, 1.0], [0.0, 1.0, 0.0]).is_none());
         // Nearly, but not, parallel still defines a roll.
         assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.01, 1.0]).is_some());
+        // Either side of MIN_POSE_SIN (1e-3).
+        let (s, c) = 2e-3f32.sin_cos();
+        assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, s, c]).is_some());
+        let (s, c) = 5e-4f32.sin_cos();
+        assert!(pose([0.0; 3], [0.0, 0.0, 1.0], [0.0, s, c]).is_none());
     }
 
-    // `Camera3D.fromPose` and `Scene.atPose` share one basis: the same poses
-    // pass (either side of the parallel threshold too), and the camera's
+    // `Camera3D.fromPose` and `Scene.atPose` share one basis: the camera's
     // forward and up are exactly the matrix's +Z and +Y columns.
     #[test]
     fn from_pose_and_to_matrix_share_one_basis() {
-        let (above_s, above_c) = 2e-3f32.sin_cos();
-        let (below_s, below_c) = 5e-4f32.sin_cos();
         let position = [1.0, 2.0, 3.0];
-        for (forward, up, valid) in [
-            ([0.3, -0.4, 2.0], [0.1, 1.0, 0.2], true),
-            ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0], true),
-            ([0.0, 0.0, 1.0], [0.0, above_s, above_c], true),
-            ([0.0, 0.0, 1.0], [0.0, below_s, below_c], false),
-            ([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], false),
+        for (forward, up) in [
+            ([0.3, -0.4, 2.0], [0.1, 1.0, 0.2]),
+            ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0]),
         ] {
-            let camera = Camera::from_pose(position, forward, up, Angle::from_degrees(60.0));
-            let matrix = MappedTrackingPose { position, forward, up }.to_matrix();
-            assert_eq!(camera.is_some(), valid, "{forward:?} {up:?}");
-            assert_eq!(matrix.is_some(), valid, "{forward:?} {up:?}");
-            if let (Some(camera), Some(m)) = (camera, matrix) {
-                let target: [f32; 3] = (m.w.truncate() + m.z.truncate()).into();
-                assert_eq!(camera.eye, position);
-                assert_eq!(camera.target, target);
-                let up: [f32; 3] = m.y.truncate().into();
-                assert_eq!(camera.up, up);
-            }
+            let camera = Camera::from_pose(position, forward, up, Angle::from_degrees(60.0)).unwrap();
+            let m = MappedTrackingPose { position, forward, up }.to_matrix().unwrap();
+            let target: [f32; 3] = (m.w.truncate() + m.z.truncate()).into();
+            let up: [f32; 3] = m.y.truncate().into();
+            assert_eq!(camera.eye, position);
+            assert_eq!(camera.target, target);
+            assert_eq!(camera.up, up);
         }
     }
 }
