@@ -1,7 +1,8 @@
-// Everything derived from layout.fun: the interior surfaces (one mesh, baked
-// together, then drawn per cell), the culling cells and portals, the wall and
-// floor colliders, and the exterior shell. Editing this file also makes the
-// committed bake stale (its hash covers both files).
+// Everything derived from layout.fun except the exterior (exterior.fun): the
+// interior surfaces (one mesh, baked together, then drawn per cell), the bake
+// job and its lights, the culling cells and portals, and the wall and floor
+// colliders. Editing this file makes the committed bake stale (provenance.fun
+// hashes it with layout.fun).
 
 open Layout
 
@@ -15,7 +16,9 @@ let paint = (r: float, g: float, b: float): Paint => { r: r, g: g, b: b }
 
 // `tile`: metres per texture repeat, world-anchored; 0 stretches the texture
 // once across each face.
-type Material = { paint: Paint, tile: float, unlit: bool, pixels: Texture.pixels }
+type Material = { tile: float, unlit: bool, texture: Asset.Texture, albedo: Color.t }
+
+let rgb = (r: float, g: float, b: float): Color.t => Color.rgb(r / 255.0, g / 255.0, b / 255.0)
 
 // Deterministic per-texel noise in [0, 1).
 let noise = (i: float): float =>
@@ -37,7 +40,7 @@ let tiled = (n: float, line: float, edge: Paint, p: Paint): Texture.pixels =>
     if x < line || y < line then edge else shade(1.0 + 0.04 * (noise(x + n * y) - 0.5), p))
 
 let material = (p: Paint, tile: float, unlit: bool, pixels: Texture.pixels): Material =>
-  { paint: p, tile: tile, unlit: unlit, pixels: pixels }
+  { tile: tile, unlit: unlit, texture: Texture.fromPixels(pixels), albedo: rgb(p.r, p.g, p.b) }
 
 let carpetPaint = paint(92.0, 98.0, 74.0)
 let terrazzoPaint = paint(158.0, 160.0, 148.0)
@@ -74,19 +77,9 @@ let materials = [
   material(paint(214.0, 158.0, 78.0), 0.0, true, solid(paint(214.0, 158.0, 78.0))),
 ]
 
-let textures = materials |> List.map((m) => Texture.fromPixels(m.pixels))
-let albedo = materials |> List.map((m) => Color.rgb(m.paint.r / 255.0, m.paint.g / 255.0, m.paint.b / 255.0))
 let materialAt = (i: float): Material =>
   match List.nth(i, materials) with
   | Option.Some(m) => m
-  | Option.None => Binary.invalid($"no material {i}")
-let textureAt = (i: float) =>
-  match List.nth(i, textures) with
-  | Option.Some(t) => t
-  | Option.None => Binary.invalid($"no material {i}")
-let albedoAt = (i: float): Color.t =>
-  match List.nth(i, albedo) with
-  | Option.Some(c) => c
   | Option.None => Binary.invalid($"no material {i}")
 
 // ---- Faces -----------------------------------------------------------------
@@ -116,7 +109,9 @@ let eps = 0.001
 let near = (a: float, b: float): bool => Math.abs(a - b) < eps
 
 let roomAt = (i: float): Room =>
-  List.nth(i, rooms) |> Option.defaultValue(room("missing", Outside, rect(0.0, 0.0, 0.0, 0.0), []))
+  match List.nth(i, rooms) with
+  | Option.Some(r) => r
+  | Option.None => Binary.invalid($"no room {i}")
 let isInside = (r: Room): bool => r.kind != Outside
 
 // The side of `r` that `o` sits against, if they share a wall line.
@@ -135,13 +130,12 @@ let lineOf = (side: Side, r: Rect): float =>
   | East => r.x1
   | West => r.x0
 
+// Whether that line is an outside wall, seen from either side: the apron's
+// north edge is the lobby's south facade.
 let onFootprint = (side: Side, r: Rect): bool =>
   let l = lineOf(side, r) in
-  match side with
-  | North => near(l, footprint.z1)
-  | South => near(l, footprint.z0)
-  | East => near(l, footprint.x1)
-  | West => near(l, footprint.x0)
+  if side == North || side == South then near(l, footprint.z0) || near(l, footprint.z1)
+  else near(l, footprint.x0) || near(l, footprint.x1)
 
 // Half the thickness of the wall along a side: facade or partition.
 let halfWall = (side: Side, r: Rect): float =>
@@ -193,8 +187,8 @@ let wallFaces = (i: float): List<Face> =>
     side(East, r.z0, r.z1, (p) => wallX(wall, p.u0, p.u1, p.y0, p.y1, r.x1, false)),
   ])
 
-// A door's reveal, baked with room `b`: the two jambs, the head (or, for a
-// floor-to-ceiling opening, a ceiling strip) and the threshold.
+// A door's reveal: the two jambs, the head (or, for a floor-to-ceiling
+// opening, a ceiling strip) and the threshold.
 let jambFaces = (d: Door): List<Face> =>
   let ra = roomAt(d.a).rect in
   match sideBetween(ra, roomAt(d.b).rect) with
@@ -252,13 +246,19 @@ let roomFaces = (i: float): List<Face> =>
     List.flatten([
       [floorFace(floorMat, r.x0, r.z0, r.x1, r.z1, 0.0), ceilingFace(ceilingTile, r.x0, r.z0, r.x1, r.z1, ceiling)],
       wallFaces(i),
-      doors |> List.filter((d) => d.b == i) |> List.concatMap(jambFaces),
       room.panels |> List.map((p) => panelFace(room.rect, p)),
       fixtures |> List.filter((f) => f.room == i) |> List.map(signFace),
     ]) |> List.sortBy((f) => f.mat)
 
-let cellFaces = List.range(List.length(rooms)) |> List.map(roomFaces)
-let allFaces = List.flatten(cellFaces)
+// The mesh in parts, each drawn as one model in the cells it shows from:
+// every room, then every door's reveal, which straddles the doorway and so
+// shows from both rooms. Each part is a contiguous triangle range.
+type Part = { cells: List<float>, faces: List<Face> }
+let parts: List<Part> = List.flatten([
+  List.range(List.length(rooms)) |> List.map((i) => { cells: [i], faces: roomFaces(i) }),
+  doors |> List.map((d) => { cells: [d.a, d.b], faces: jambFaces(d) |> List.sortBy((f) => f.mat) }),
+])
+let allFaces = parts |> List.concatMap((p) => p.faces)
 
 // ---- The interior mesh -----------------------------------------------------
 
@@ -266,7 +266,11 @@ let corners = (q: Quad): List<Vec3.t> =>
   [q.o, q.o |> Vec3.add(q.a), q.o |> Vec3.add(q.a) |> Vec3.add(q.b), q.o |> Vec3.add(q.b)]
 let xyz = (p: Vec3.t): List<float> => [Vec3.x(p), Vec3.y(p), Vec3.z(p)]
 let normalOf = (q: Quad): Vec3.t => q.a |> Vec3.cross(q.b) |> Vec3.normalize
-let dot = (a: Vec3.t, b: Vec3.t): float => Vec3.x(a) * Vec3.x(b) + Vec3.y(a) * Vec3.y(b) + Vec3.z(a) * Vec3.z(b)
+let positionsOf = (faces: List<Face>): Bytes.t =>
+  Bytes.fromF32le(faces |> List.concatMap((f) => corners(f.q) |> List.concatMap(xyz)))
+// Two triangles per quad, over `n` quads' corners.
+let quadTriangles = (n: float): Bytes.t =>
+  Bytes.fromU32le(List.range(n) |> List.concatMap((k) => [0.0, 1.0, 2.0, 0.0, 2.0, 3.0] |> List.map((i) => 4.0 * k + i)))
 // Texture UVs: world-anchored repeats along the face's axes, so tiles line
 // up across neighbouring faces; tile 0 stretches the texture over the face.
 let uvsOf = (f: Face): List<float> =>
@@ -275,14 +279,14 @@ let uvsOf = (f: Face): List<float> =>
   else
     let au = Vec3.normalize(f.q.a) in
     let bu = Vec3.normalize(f.q.b) in
-    corners(f.q) |> List.concatMap((p) => [dot(p, au) / t, 0.0 - dot(p, bu) / t])
+    corners(f.q) |> List.concatMap((p) => [Vec3.dot(au, p) / t, 0.0 - Vec3.dot(bu, p) / t])
 
-// Each cell's triangles are one contiguous range of the mesh, in cell order.
+// Each part's triangle range, in part order.
 type Range = { first: float, count: float }
-let cellRanges: List<Range> =
-  let (ranges, total) = cellFaces |> List.fold((acc, faces) =>
+let partRanges: List<Range> =
+  let (ranges, total) = parts |> List.fold((acc, p) =>
     let (out, first) = acc in
-    let count = 2.0 * List.length(faces) in
+    let count = 2.0 * List.length(p.faces) in
     (out |> List.append([{ first: first, count: count }]), first + count), ([], 0.0)) in
   ranges
 
@@ -296,35 +300,35 @@ let spansOf = (base: float, faces: List<Face>): List<Span> =>
     else (out |> List.append([{ mat: m, first: first, count: n }]), first + n), ([], base)) in
   spans
 let groupOf = (s: Span): Model.group =>
-  { first: s.first, count: s.count, texture: Option.Some(textureAt(s.mat)), unlit: materialAt(s.mat).unlit }
+  { first: s.first, count: s.count, texture: Option.Some(materialAt(s.mat).texture), unlit: materialAt(s.mat).unlit }
 
-// Per cell (its triangles counted from 0), and for the whole mesh.
-let cellSpans = cellFaces |> List.map((faces) => spansOf(0.0, faces))
-let meshSpans = List.zip(cellRanges, cellFaces) |> List.concatMap((pair) =>
-  let (faces, range) = pair in spansOf(range.first, faces))
-let meshAlbedo = meshSpans |> List.map((s) => albedoAt(s.mat))
+// For the whole mesh, and per part (its triangles counted from 0).
+let meshSpans = parts |> List.zip(partRanges) |> List.concatMap((pair) =>
+  let (p, range) = pair in spansOf(range.first, p.faces))
+let meshAlbedo = meshSpans |> List.map((s) => materialAt(s.mat).albedo)
 
 let interiorData: Model.staticData = {
-  positions: Bytes.fromF32le(allFaces |> List.concatMap((f) => corners(f.q) |> List.concatMap(xyz))),
+  positions: positionsOf(allFaces),
   normals: Bytes.fromF32le(allFaces |> List.concatMap((f) =>
     let n = xyz(normalOf(f.q)) in List.flatten([n, n, n, n]))),
   uvs: Bytes.fromF32le(allFaces |> List.concatMap(uvsOf)),
   uvs2: Bytes.fromF32le([]),
-  triangles: Bytes.fromU32le(List.range(List.length(allFaces)) |> List.concatMap((k) =>
-    [0.0, 1.0, 2.0, 0.0, 2.0, 3.0] |> List.map((i) => 4.0 * k + i))),
+  triangles: quadTriangles(List.length(allFaces)),
   groups: meshSpans |> List.map(groupOf),
   lightmap: Option.None
 }
 
-// One static model per cell over the baked (or unbaked) mesh: all of its
-// vertices, the cell's triangle range, and that cell's groups.
-let cellModels = (data: Model.staticData): List<Option.t<Model.t>> =>
-  List.zip(cellRanges, cellSpans) |> List.map((pair) =>
-    let (spans, range) = pair in
-    if range.count == 0.0 then Option.None
-    else Option.Some(Model.static({ data with
-      triangles: data.triangles |> Bytes.slice(range.first * 12.0, range.count * 12.0) |> Binary.require,
-      groups: spans |> List.map(groupOf) })))
+// One static model per non-empty part over the baked (or unbaked) mesh: all
+// of its vertices, the part's triangle range and groups, and the cells it
+// shows from.
+type PartModel = { cells: List<float>, model: Model.t }
+let partModels = (data: Model.staticData): List<PartModel> =>
+  parts |> List.zip(partRanges) |> List.filter((pair) => let (p, range) = pair in range.count > 0.0)
+    |> List.map((pair) =>
+      let (p, range) = pair in
+      { cells: p.cells, model: Model.static({ data with
+        triangles: data.triangles |> Bytes.slice(range.first * 12.0, range.count * 12.0) |> Binary.require,
+        groups: spansOf(0.0, p.faces) |> List.map(groupOf) }) })
 
 // ---- Cells and portals -------------------------------------------------------
 
@@ -381,108 +385,30 @@ let blocks = List.range(List.length(rooms)) |> List.concatMap(wallBlocks)
 
 // Interior floors and door thresholds, from the same faces the mesh draws.
 let floorFaces = allFaces |> List.filter((f) => (f.mat == carpet || f.mat == terrazzo) && Vec3.y(f.q.o) == 0.0)
-let floorShape = Physics.trimesh({
-  positions: Bytes.fromF32le(floorFaces |> List.concatMap((f) => corners(f.q) |> List.concatMap(xyz))),
-  triangles: Bytes.fromU32le(List.range(List.length(floorFaces)) |> List.concatMap((k) =>
-    [0.0, 1.0, 2.0, 0.0, 2.0, 3.0] |> List.map((i) => 4.0 * k + i))),
-})
+let floorShape = Physics.trimesh({ positions: positionsOf(floorFaces), triangles: quadTriangles(List.length(floorFaces)) })
 
 let buildingBodies = (rev: float): List<Physics.body> =>
   List.flatten([
     blocks |> List.map((b) => Physics.fixed(Physics.tag(b.tag), Physics.box(b.w, b.h, b.d)) |> Physics.at(v(b.x, b.y, b.z))),
-    [Physics.fixed(Physics.tag("floors"), floorShape),
-     // The street, under everything.
-     Physics.fixed(Physics.tag("ground"), Physics.box(200.0, 1.0, 200.0)) |> Physics.at(v(10.0, -0.5, 10.0))],
+    [Physics.fixed(Physics.tag("floors"), floorShape)],
   ])
 
-// ---- Exterior ------------------------------------------------------------------
+// ---- The bake job --------------------------------------------------------------
 
-let rgb = (r: float, g: float, b: float): Color.t => Color.rgb(r / 255.0, g / 255.0, b / 255.0)
-let concrete = rgb(72.0, 72.0, 82.0)
-let glass = rgb(26.0, 32.0, 44.0)
-let cyan = rgb(110.0, 240.0, 230.0)
+// Fluorescent panels: in the bake job ONLY. Submitting them to the frame
+// would spend the 8 forward-light slots on light the lightmap already holds.
+let panelLight = (p: Panel): Light.t =>
+  Light.point(v(p.x, ceiling - 0.12, p.z), Color.rgb(0.93, 0.97, 0.86), 0.9, 5.5) |> Light.castShadows
 
-let slab = (x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) =>
-  Scene.cube() |> Scene.scaleXYZ(x1 - x0, y1 - y0, z1 - z0) |> Scene.translate(v((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0))
-
-// Doors through the facade along one footprint side.
-let facadeHoles = (s: Side): List<Hole> =>
-  doors
-    |> List.filter((d) => not isInside(roomAt(d.a)) || not isInside(roomAt(d.b)))
-    |> List.filter((d) =>
-      let inside = if isInside(roomAt(d.a)) then roomAt(d.a) else roomAt(d.b) in
-      let outside = if isInside(roomAt(d.a)) then roomAt(d.b) else roomAt(d.a) in
-      sideBetween(inside.rect, outside.rect) == Option.Some(s) && onFootprint(s, inside.rect))
-    |> List.map(holeOf)
-    // 1 cm back from the reveal, so the baked jambs and head cover the joint.
-    |> List.map((h) => { lo: h.lo - 0.01, hi: h.hi + 0.01, top: h.top + 0.01 })
-    |> List.sortBy((h) => h.lo)
-
-// The outer half of the facade (the inner half is the baked interior wall).
-let half = facade / 2.0
-let facadeSlabs =
-  let f = footprint in
-  let run = (s: Side, s0: float, s1: float, make: (Piece) => Scene.t) =>
-    pieces(s0, s1, facadeHeight, facadeHoles(s)) |> List.map(make) in
-  List.flatten([
-    run(South, f.x0 - half, f.x1 + half, (p) => slab(p.u0, p.y0, f.z0 - half, p.u1, p.y1, f.z0)),
-    run(North, f.x0 - half, f.x1 + half, (p) => slab(p.u0, p.y0, f.z1, p.u1, p.y1, f.z1 + half)),
-    run(West, f.z0, f.z1, (p) => slab(f.x0 - half, p.y0, p.u0, f.x0, p.y1, p.u1)),
-    run(East, f.z0, f.z1, (p) => slab(f.x1, p.y0, p.u0, f.x1 + half, p.y1, p.u1)),
-  ]) |> Scene.group |> Scene.lit(concrete)
-
-// Dark window bands on the outside of the walls (no apertures: open windows
-// would need portals, and glass would bypass culling).
-let windows =
-  let f = footprint in
-  let o = half + 0.02 in
-  List.flatten([
-    [2.0, 4.6, 15.4, 18.0] |> List.map((x) => slab(x - 1.1, 1.0, f.z0 - o, x + 1.1, 2.3, f.z0 - half)),
-    List.range(8.0) |> List.concatMap((k) =>
-      let z = 2.5 + 3.4 * k in
-      [slab(f.x0 - o, 1.0, z - 1.1, f.x0 - half, 2.3, z + 1.1),
-       slab(f.x1 + half, 1.0, z - 1.1, f.x1 + o, 2.3, z + 1.1)]),
-  ]) |> Scene.group |> Scene.lit(glass)
-
-let entrance = doors |> List.find((d) => not isInside(roomAt(d.a))) |> Option.map(holeOf)
-  |> Option.defaultValue({ lo: 0.0, hi: 0.0, top: 0.0 })
-let canopy =
-  let x0 = entrance.lo - 1.0 in
-  let x1 = entrance.hi + 1.0 in
-  let z0 = footprint.z0 - half - 1.6 in
-  Scene.group([
-    slab(x0, entrance.top + 0.3, z0, x1, entrance.top + 0.45, footprint.z0 - half) |> Scene.lit(concrete),
-    slab(x0, entrance.top + 0.33, z0 - 0.05, x1, entrance.top + 0.39, z0) |> Scene.color(cyan),
-  ])
-
-// Cyan along the roofline.
-let roofline =
-  let f = footprint in
-  let y0 = facadeHeight - 0.12 in
-  let y1 = facadeHeight - 0.06 in
-  let o = half + 0.05 in
-  Scene.group([
-    slab(f.x0 - o, y0, f.z0 - o, f.x1 + o, y1, f.z0 - half),
-    slab(f.x0 - o, y0, f.z1 + half, f.x1 + o, y1, f.z1 + o),
-    slab(f.x0 - o, y0, f.z0 - o, f.x0 - half, y1, f.z1 + o),
-    slab(f.x1 + half, y0, f.z0 - o, f.x1 + o, y1, f.z1 + o),
-  ]) |> Scene.color(cyan)
-
-// Sodium street lamps by the apron.
-let lampHeads = [v(4.4, 4.8, -4.0), v(15.6, 4.8, -4.0)]
-let lampPosts = lampHeads |> List.map((p) =>
-  let x = Vec3.x(p) in
-  let z = Vec3.z(p) in
-  Scene.group([
-    slab(x - 0.06, 0.0, z - 0.06, x + 0.06, 4.9, z + 0.06) |> Scene.lit(rgb(60.0, 60.0, 66.0)),
-    slab(x - 0.25, 4.75, z - 0.12, x + 0.25, 4.85, z + 0.12) |> Scene.color(rgb(255.0, 190.0, 110.0)),
-  ])) |> Scene.group
-
-let apron = roomAt(0.0).rect
-let ground = Scene.group([
-  // Below the interior floors (y = 0), which would otherwise z-fight it.
-  Scene.plane() |> Scene.scaleXYZ(240.0, 1.0, 240.0) |> Scene.translate(v(10.0, -0.03, 10.0)) |> Scene.lit(rgb(40.0, 36.0, 46.0)),
-  slab(apron.x0, -0.03, apron.z0, apron.x1, 0.0, apron.z1 - half) |> Scene.lit(rgb(96.0, 94.0, 102.0)),
-])
-
-let exterior = Scene.group([ground, facadeSlabs, windows, canopy, roofline, lampPosts])
+// The lightmap stores light ÷ `bakeScale`; the game loads it with the same.
+let bakeScale = 2.0
+let night: Lightmap.bakeJob = {
+  name: "night",
+  mesh: interiorData,
+  lights: List.flatten([
+    [Light.ambient(Color.rgb(0.035, 0.04, 0.035))],
+    rooms |> List.concatMap((r) => r.panels |> List.filter((p) => p.on) |> List.map(panelLight)),
+  ]),
+  albedo: meshAlbedo,
+  scale: bakeScale,
+}

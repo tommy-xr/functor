@@ -11,37 +11,27 @@
 //
 // layout.fun is the one layout authority; building.fun derives the mesh,
 // cells, colliders and exterior from it. The interior's light is baked
-// (`bakes` below) and committed under baked/; bake.mjs rebakes it and records
+// (`Building.night`) and committed under baked/; bake.mjs rebakes it and records
 // its provenance, which provenance.fun checks at load.
 
 let v = Vec3.make
 
 // ---- Lights ------------------------------------------------------------------
 
-// Fluorescent panels: in the bake job ONLY. Submitting them to the frame
-// would spend the 8 forward-light slots on light the lightmap already holds.
-let panelLight = (p: Layout.Panel): Light.t =>
-  Light.point(v(p.x, Layout.ceiling - 0.12, p.z), Color.rgb(0.93, 0.97, 0.86), 0.9, 5.5) |> Light.castShadows
-
-let bakeScale = 2.0
-let bakeLights = List.flatten([
-  [Light.ambient(Color.rgb(0.035, 0.04, 0.035))],
-  Layout.rooms |> List.concatMap((r) => r.panels |> List.filter((p) => p.on) |> List.map(panelLight)),
-])
-
-let bakes = [{ name: "night", mesh: Building.interiorData, lights: bakeLights,
-               albedo: Building.meshAlbedo, scale: bakeScale }]
+// The bake job (`Building.night`) holds the panels' light; `functor bake`
+// reads this list.
+let bakes = [Building.night]
 
 // The frame's lights reach only unlightmapped geometry (the street, the
 // facade, the lamps): all are `Light.baked`, so the lit interior ignores
 // them. None casts shadows: a shadow pass would draw every hidden room.
-let night = Color.rgb(22.0 / 255.0, 17.0 / 255.0, 34.0 / 255.0)
+let nightSky = Color.rgb(22.0 / 255.0, 17.0 / 255.0, 34.0 / 255.0)
 let frameLights = List.flatten([
   [Light.ambient(Color.rgb(0.09, 0.08, 0.14)) |> Light.baked,
    Light.directional(v(0.3, -0.8, 0.5), Color.rgb(0.35, 0.38, 0.55), 0.6) |> Light.baked,
    // The lobby's light spilling onto the apron.
    Light.point(v(10.0, 2.0, 0.9), Color.rgb(0.85, 0.95, 0.8), 1.2, 9.0) |> Light.baked],
-  Building.lampHeads |> List.map((p) =>
+  Exterior.lampHeads |> List.map((p) =>
     Light.point(p |> Vec3.add(v(0.0, -0.2, 0.0)), Color.rgb(1.0, 0.68, 0.36), 0.9, 14.0) |> Light.baked),
 ])
 // Without a bake, light the interior flatly so it stays walkable.
@@ -49,14 +39,14 @@ let unbakedLight = Light.ambient(Color.rgb(0.55, 0.57, 0.5))
 
 // ---- The interior --------------------------------------------------------------
 
-let interior: List<Option.t<Model.t>> =
+let interior: List<Building.PartModel> =
   match Provenance.status with
   | Provenance.Current =>
     let mesh = Provenance.meshPath |> File.bytes |> Lightmap.readMesh in
-    Building.cellModels({ mesh with lightmap: Option.Some({
+    Building.partModels({ mesh with lightmap: Option.Some({
       texture: Texture.fromPng(File.bytes(Provenance.lightPath), Texture.Srgb),
-      scale: bakeScale, floor: Color.rgb(0.0, 0.0, 0.0) }) })
-  | _ => Building.cellModels(Building.interiorData)
+      scale: Building.bakeScale, floor: Color.rgb(0.0, 0.0, 0.0) }) })
+  | _ => Building.partModels(Building.interiorData)
 
 let baked = Provenance.status == Provenance.Current
 
@@ -70,8 +60,8 @@ let turnRate = 1.6
 let mouseRate = 0.0025
 let pitchLimit = 1.3
 // Interiors further than this draw nothing: `Scene.cells` draws every cell
-// when the eye is outside them all.
-let interiorRange = 60.0
+// when the eye is outside them all. The fog's far end, so nothing pops.
+let interiorRange = 140.0
 
 type Look =
   | NoMouse
@@ -93,7 +83,7 @@ let init = {
   // A requested view (1–3), applied by the next tick; 0 for none.
   goto: 0.0,
   // From the last tick: where the player stood, its cell (-1: outside every
-  // cell) and whether the interior draws.
+  // cell), whether the interior draws, and whether its bake is current.
   at: { x: Layout.spawn.x, y: centreAboveFeet, z: Layout.spawn.z },
   cell: 0.0,
   near: true,
@@ -152,7 +142,8 @@ let tick = (model, dt: float, tts: float) =>
   let observed = { model with
     at: p,
     cell: Cells.locate(eyeOf(p), Building.level) |> Option.defaultValue(-1.0),
-    near: fromBuilding(p.x, p.z) < interiorRange } in
+    near: fromBuilding(p.x, p.z) < interiorRange,
+    baked: baked } in
   match List.nth(model.goto - 1.0, views) with
   | Option.Some(view) =>
     ({ observed with goto: 0.0, vy: 0.0, yaw: view.yaw, pitch: view.pitch },
@@ -168,6 +159,7 @@ let tick = (model, dt: float, tts: float) =>
 let physics = (model) =>
   Physics.scene(v(0.0, -9.81, 0.0), [
     Physics.memo("building", 0.0, Building.buildingBodies),
+    Physics.memo("street", 0.0, Exterior.streetBodies),
     Physics.character(playerTag, Physics.capsule(0.6, 0.3),
                       { stepHeight: 0.2, maxSlope: 40deg, snap: 0.2, offset: 0.02 })
       |> Physics.at(spawnAt),
@@ -175,22 +167,19 @@ let physics = (model) =>
 
 // ---- Drawing ---------------------------------------------------------------------
 
-let rooms = interior |> List.indexedMap((i, m) =>
-  match m with
-  | Option.Some(model) => Scene.modelOf(model) |> Scene.inCells([i])
-  | Option.None => Scene.group([]))
+let rooms = interior |> List.map((p) => Scene.modelOf(p.model) |> Scene.inCells(p.cells))
 
 let draw = (model, tts: float) =>
   let p = Physics.position(playerTag) in
   let camera = Camera3D.firstPerson(eyeOf(p), Angle.radians(model.yaw), Angle.radians(model.pitch), 70deg)
     |> Camera3D.clip(0.05, 160.0) in
   let scene = Scene.cells(Building.level, Scene.group([
-    Building.exterior,
+    Exterior.exterior,
     if model.near then Scene.group(rooms) else Scene.group([]),
   ])) in
   Frame.createLit(camera, scene, if baked then frameLights else frameLights |> List.append([unbakedLight]))
-    |> Frame.withFog(Fog.linear(35.0, 140.0, night))
-    |> Frame.withClearColor(night)
+    |> Frame.withFog(Fog.linear(35.0, 140.0, nightSky))
+    |> Frame.withClearColor(nightSky)
 
 // Only shown when the committed bake doesn't match the layout.
 let ui = (model) =>

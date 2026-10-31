@@ -66,15 +66,23 @@ expect Cells.segment(Vec3.make(10.0, 1.6, -6.0), Vec3.make(10.0, 1.6, 20.0), Bui
 expect Cells.segment(Vec3.make(10.0, 1.6, 16.5), Vec3.make(15.6, 1.6, 16.5), Building.level)
 expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(15.6, 1.6, 16.5), Building.level)
 
-// The mesh is split into contiguous per-cell ranges covering every triangle.
+// Every face's material has a group, and the committed bake's mesh has
+// exactly the derived triangles, so per-part ranges index it correctly.
 let total = 2.0 * List.length(Building.allFaces)
-expect (Building.cellRanges |> List.map((r) => r.count) |> List.sum) == total
 expect (Building.meshSpans |> List.map((s) => s.count) |> List.sum) == total
+expect (Building.partRanges |> List.map((r) => r.count) |> List.sum) == total
+expect Provenance.status != Provenance.Current
+  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPath)).triangles) == 12.0 * total
 
-// Deterministic: deriving the layout again gives the same bytes.
-let positions = (faces: List<Building.Face>) =>
-  Bytes.fromF32le(faces |> List.concatMap((f) => Building.corners(f.q) |> List.concatMap(Building.xyz)))
-expect Bytes.equals(positions(ids |> List.concatMap(Building.roomFaces)), Building.interiorData.positions)
+// A door's reveal spans its wall's full thickness: its threshold's depth.
+let depth = (d: Door): float =>
+  match List.last(Building.jambFaces(d)) with
+  | Option.Some(f) => Vec3.length(Vec3.cross(f.q.b, f.q.a)) / d.width
+  | Option.None => 0.0
+// Doors from outside go through the facade; the rest through partitions.
+expect doors |> List.all((d) =>
+  let wall = if Building.isInside(Building.roomAt(d.a)) then partition else facade in
+  Math.abs(depth(d) - wall) < 0.0001)
 
 // Collider tags are unique.
 let tags = Building.blocks |> List.map((b) => b.tag)
