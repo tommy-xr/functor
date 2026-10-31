@@ -473,7 +473,7 @@ impl FunctorLangProject {
                     span.start,
                     &format!(
                         "`config` can't read files ({api}): it's read first, to learn which \
-paths are external — move the read into `init` or a top-level binding `config` doesn't use"
+paths are external — read it in a top-level value `config` doesn't use"
                     ),
                 )));
             }

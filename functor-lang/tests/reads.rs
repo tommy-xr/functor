@@ -164,15 +164,16 @@ fn generic_data_values_stop_the_spread() {
     assert!(classes(&inferred, "count").is_empty());
 }
 
-/// Every name counts, called or not: a local lambda that is never called
-/// still charges its def (an over-approximation PR 4 may narrow).
+/// A local lambda counts where it's called, not where it's named.
 #[test]
-fn a_named_but_uncalled_local_lambda_still_counts() {
+fn a_local_lambda_counts_only_when_called() {
     let (_, inferred) = load(&[(
         "game.fun",
-        "let tick = (m) => let f = (x) => File.exists(x) in m\n",
+        "let idle = (m) => let f = (x) => File.exists(x) in m\n\
+         let busy = (m) => let f = (x) => File.exists(x) in f(\"a\")\n",
     )]);
-    assert_eq!(classes(&inferred, "tick"), ["file"]);
+    assert!(classes(&inferred, "idle").is_empty());
+    assert_eq!(classes(&inferred, "busy"), ["file"]);
 }
 
 /// The pass is sound only modulo `unknown`: erasing a function's type hides
@@ -386,4 +387,21 @@ fn a_built_value_holds_only_its_results_code() {
         errors[0].starts_with("5: `draw` reads project files (draw → make → File.size)"),
         "{errors:#?}"
     );
+}
+
+/// Code that only runs while a value is built, or that a value holds but no
+/// one calls, isn't charged where the value is used.
+#[test]
+fn reads_that_cannot_run_are_not_errors() {
+    let errors = phase(
+        "type Viewer = { tick: (float) => float, size: float, present: bool }\n\
+         let shown = (x) => x\n\
+         let viewer: Viewer = { tick: (m) => m + Physics.height(\"a\"), size: 1.0, present: true }\n\
+         let size = shown(viewer.size)\n\
+         let make = (p): Viewer =>\n\
+           let probe = () => File.exists(p) in { tick: (m) => m, size: 0.0, present: probe() }\n\
+         let built = make(\"x\")\n\
+         let tick = (m) => let unused = () => File.exists(\"y\") in built.tick(m)\n",
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
 }
