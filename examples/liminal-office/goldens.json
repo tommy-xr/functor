@@ -1,0 +1,19 @@
+[
+  {
+    "name": "liminal-office-entrance",
+    "fixedTime": 1.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  },
+  {
+    "name": "liminal-office-corridor",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "views.script",
+    "captureAtFrame": 30
+  }
+]
