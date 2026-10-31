@@ -128,6 +128,10 @@ let isInside = (r: Room): bool => r.kind != Outside
 // A room's floor height, and the levels' floors.
 let baseOf = (r: Room): float => r.level * storey
 let levels = [0.0, 1.0]
+// How high the facade rises from `level`'s floor: a storey, or to the
+// roofline from the top one.
+let facadeTop = (level: float): float =>
+  if level == List.length(levels) - 1.0 then facadeHeight - level * storey else storey
 
 // A stairwell is a room on each level: the foot (the lower one) has no
 // ceiling and walls a full storey high; the head's floor is the landing.
@@ -495,18 +499,19 @@ let cellOf = (i: float): Cells.cell =>
   let r = roomAt(i) in
   if isInside(r) then box3(r.rect, baseOf(r), baseOf(r) + wallTop(i)) else box3(r.rect, 0.0, outsideTop)
 
-// A door's opening as a polygon on its wall line.
+// Hole `h` in the wall on line `l` along `side`, from a floor at `y`, as a
+// polygon on that line.
+let opening = (side: Side, l: float, y: float, h: Hole): List<Vec3.t> =>
+  let y0 = y + h.bottom in
+  let y1 = y + h.top in
+  if side == North || side == South then [v(h.lo, y0, l), v(h.hi, y0, l), v(h.hi, y1, l), v(h.lo, y1, l)]
+  else [v(l, y0, h.lo), v(l, y0, h.hi), v(l, y1, h.hi), v(l, y1, h.lo)]
+
 let doorway = (d: Door): List<Vec3.t> =>
   let ra = roomAt(d.a).rect in
-  let h = holeOf(d) in
-  let y = baseOf(roomAt(d.a)) in
   match sideBetween(ra, roomAt(d.b).rect) with
   | Option.None => []
-  | Option.Some(side) =>
-    let l = lineOf(side, ra) in
-    if side == North || side == South then
-      [v(h.lo, y, l), v(h.hi, y, l), v(h.hi, y + h.top, l), v(h.lo, y + h.top, l)]
-    else [v(l, y, h.lo), v(l, y, h.hi), v(l, y + h.top, h.hi), v(l, y + h.top, h.lo)]
+  | Option.Some(side) => opening(side, lineOf(side, ra), baseOf(roomAt(d.a)), holeOf(d))
 
 // A flight's stair opening: the floor of its upper room less the landing.
 let stairOpening = (f: Flight): List<Vec3.t> =>
@@ -519,15 +524,9 @@ let stairOpening = (f: Flight): List<Vec3.t> =>
 let outsideOf = (w: Window): Option.t<float> =>
   List.range(List.length(rooms)) |> List.find((o) =>
     not isInside(roomAt(o)) && sideBetween(roomAt(w.room).rect, roomAt(o).rect) == Option.Some(w.side))
-// A window's opening as a polygon on its wall line.
 let windowOpening = (w: Window): List<Vec3.t> =>
   let r = roomAt(w.room) in
-  let l = lineOf(w.side, r.rect) in
-  let h = windowHole(w) in
-  let y0 = baseOf(r) + h.bottom in
-  let y1 = baseOf(r) + h.top in
-  if w.side == North || w.side == South then [v(h.lo, y0, l), v(h.hi, y0, l), v(h.hi, y1, l), v(h.lo, y1, l)]
-  else [v(l, y0, h.lo), v(l, y0, h.hi), v(l, y1, h.hi), v(l, y1, h.lo)]
+  opening(w.side, lineOf(w.side, r.rect), baseOf(r), windowHole(w))
 
 // Portals: each door, each window onto an outside room (the street sees in),
 // and a horizontal one at each stair opening.
@@ -562,25 +561,24 @@ let level = Cells.make({
 // facade rises to the roofline.
 type Block = { tag: string, x: float, y: float, z: float, w: float, h: float, d: float }
 
+// A box over [x0, x1] × [y0, y1] × [z0, z1].
+let block = (tag: string, x0: float, y0: float, z0: float, x1: float, y1: float, z1: float): Block =>
+  { tag: tag, x: (x0 + x1) / 2.0, y: (y0 + y1) / 2.0, z: (z0 + z1) / 2.0, w: x1 - x0, h: y1 - y0, d: z1 - z0 }
+
 let wallBlocks = (i: float): List<Block> =>
   let room = roomAt(i) in
   let r = room.rect in
   let y = baseOf(room) in
   let side = (s: Side, s0: float, s1: float) =>
     let l = lineOf(s, r) in
-    let t = 2.0 * halfWall(s, r) in
-    let top = if onFootprint(s, r) && room.level > 0.0 then facadeHeight - y else storey in
+    let t = halfWall(s, r) in
+    let top = if onFootprint(s, r) then facadeTop(room.level) else storey in
     pieces(s0, s1, top, holesIn(i, s)) |> List.indexedMap((k, p) =>
       let tag = $"wall-{i}-{s}-{k}" in
-      if s == North || s == South then
-        { tag: tag, x: (p.u0 + p.u1) / 2.0, y: y + (p.y0 + p.y1) / 2.0, z: l, w: p.u1 - p.u0, h: p.y1 - p.y0, d: t }
-      else { tag: tag, x: l, y: y + (p.y0 + p.y1) / 2.0, z: (p.u0 + p.u1) / 2.0, w: t, h: p.y1 - p.y0, d: p.u1 - p.u0 }) in
+      if s == North || s == South then block(tag, p.u0, y + p.y0, l - t, p.u1, y + p.y1, l + t)
+      else block(tag, l - t, y + p.y0, p.u0, l + t, y + p.y1, p.u1)) in
   if not isInside(room) then []
   else List.flatten([side(South, r.x0, r.x1), side(North, r.x0, r.x1), side(West, r.z0, r.z1), side(East, r.z0, r.z1)])
-
-// A box over [x0, x1] × [y0, y1] × [z0, z1].
-let block = (tag: string, x0: float, y0: float, z0: float, x1: float, y1: float, z1: float): Block =>
-  { tag: tag, x: (x0 + x1) / 2.0, y: (y0 + y1) / 2.0, z: (z0 + z1) / 2.0, w: x1 - x0, h: y1 - y0, d: z1 - z0 }
 // A flight's parapet, from the floor to its top, so nothing walks under or
 // off the steps; the solid under its landing; the landing's parapet.
 let flightBlocks = (k: float, f: Flight): List<Block> =>
