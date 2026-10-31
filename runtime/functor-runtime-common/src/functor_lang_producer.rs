@@ -994,6 +994,38 @@ pub struct FrameCtx<'a> {
     pub reporter: &'a mut Reporter,
 }
 
+/// Replay's copy of live's last good `ui`/`webview` handler table. Replay
+/// evaluates the table only at steps with its events, so it keeps the
+/// step-top models since the last evaluation to find the newest good one.
+struct LastGoodTable {
+    /// The entry, when the program defines it.
+    entry: Option<&'static str>,
+    handlers: Vec<UiHandler>,
+    unevaluated: Vec<Value>,
+}
+
+impl LastGoodTable {
+    fn new(session: &Session, entry: &'static str) -> Self {
+        LastGoodTable {
+            entry: session.global(entry).is_some().then_some(entry),
+            handlers: Vec::new(),
+            unevaluated: Vec::new(),
+        }
+    }
+}
+
+/// Evaluate `entry(model)` (`"ui"` or `"webview"`) for its HANDLER TABLE only
+/// (the view is discarded). A failed evaluation leaks no partial table.
+fn eval_handler_table(
+    session: &Session,
+    entry: &'static str,
+    model: Value,
+) -> Result<Vec<UiHandler>, RunError> {
+    let result = session.call(entry, vec![model], &mut FunctorHost);
+    let handlers = take_ui_handlers();
+    result.map(|_| handlers)
+}
+
 /// Retry state for one still-declared `Sub.connect` endpoint. Deadlines use
 /// game time (`tts`), so real, fake, and replay effects stay deterministic.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1480,6 +1512,8 @@ impl FrameCtx<'_> {
     ) -> Vec<(Value, Option<physics::PhysicsSnapshot>)> {
         let mut out = Vec::with_capacity(divisions.saturating_sub(capture_from_division));
         let mut step = 0usize;
+        let mut ui_table = LastGoodTable::new(self.session, self.names.ui);
+        let mut webview_table = LastGoodTable::new(self.session, self.names.webview);
         for div in 0..divisions {
             for _ in 0..steps_per_division {
                 // A carried sample contributes levels only. Its transition
@@ -1522,25 +1556,27 @@ impl FrameCtx<'_> {
                 if self.asset_progress.is_some() {
                     *self.delivered_asset_progress = None;
                 }
+                let has = |kind: fn(&RecordedInput) -> bool| {
+                    events
+                        .as_ref()
+                        .is_some_and(|e| e.iter().any(|e| matches!(e, Replayed::Input(i) if kind(i))))
+                };
+                // A recorded UiEvent resolved against the LAST RENDER's
+                // handler table live — the tree the user saw, built from
+                // the settled model BEFORE this step's inputs. Rebuild
+                // that table once here, at the step top, so a step with
+                // several inputs can't resolve later UiEvents against a
+                // tree an earlier input already re-shaped (xreview).
+                // Webview events carry their OWN table, from `webview(model)`.
+                self.step_top_table(
+                    &mut ui_table,
+                    has(|e| matches!(e, RecordedInput::UiEvent(_))),
+                );
+                self.step_top_table(
+                    &mut webview_table,
+                    has(|e| matches!(e, RecordedInput::WebviewEvent(_))),
+                );
                 if let Some(events) = events {
-                    // A recorded UiEvent resolved against the LAST RENDER's
-                    // handler table live — the tree the user saw, built from
-                    // the settled model BEFORE this step's inputs. Rebuild
-                    // that table once here, at the step top, so a step with
-                    // several inputs can't resolve later UiEvents against a
-                    // tree an earlier input already re-shaped (xreview).
-                    let ui_handlers = events
-                        .iter()
-                        .any(|e| matches!(e, Replayed::Input(RecordedInput::UiEvent(_))))
-                        .then(|| self.eval_handler_table(self.names.ui))
-                        .unwrap_or_default();
-                    // Webview events carry their OWN table: same step-top
-                    // rebuild, from `webview(model)` instead of `ui(model)`.
-                    let webview_handlers = events
-                        .iter()
-                        .any(|e| matches!(e, Replayed::Input(RecordedInput::WebviewEvent(_))))
-                        .then(|| self.eval_handler_table(self.names.webview))
-                        .unwrap_or_default();
                     for item in events {
                         let event = match item {
                             Replayed::Input(event) => event,
@@ -1593,7 +1629,11 @@ impl FrameCtx<'_> {
                             // would be a latent double-apply.
                             _ => {}
                         }
-                        self.replay_input(event.clone(), &ui_handlers, &webview_handlers);
+                        self.replay_input(
+                            event.clone(),
+                            &ui_table.handlers,
+                            &webview_table.handlers,
+                        );
                     }
                 }
                 if !delivered_sample {
@@ -1622,24 +1662,33 @@ impl FrameCtx<'_> {
         out
     }
 
-    /// Evaluate `entry(model)` (`"ui"` or `"webview"`) for its HANDLER TABLE
-    /// only (the view/tree is discarded) — how the replay path reconstructs
-    /// the table a recorded frame's events resolved against. A failed
-    /// evaluation reports (silenced under the dry-run reporter) and yields an
-    /// empty table, so the events drop as unknown slots.
-    fn eval_handler_table(&mut self, entry: &'static str) -> Vec<UiHandler> {
-        match self
-            .session
-            .call(entry, vec![self.model.clone()], &mut FunctorHost)
-        {
-            Ok(_) => take_ui_handlers(),
+    /// Rebuild `table` from the step-top model when the step has events for
+    /// it. Like live, a failed evaluation keeps the last
+    /// table that evaluated: the newest earlier step-top model whose
+    /// evaluation succeeds (live evaluates every frame), else the last table
+    /// this replay built. Reports the failure (silenced under the dry-run
+    /// reporter).
+    fn step_top_table(&mut self, table: &mut LastGoodTable, wanted: bool) {
+        let Some(entry) = table.entry else {
+            return;
+        };
+        if !wanted {
+            table.unevaluated.push(self.model.clone());
+            return;
+        }
+        match eval_handler_table(self.session, entry, self.model.clone()) {
+            Ok(handlers) => table.handlers = handlers,
             Err(err) => {
-                // A failed evaluation must not leak a partial table.
-                let _ = take_ui_handlers();
                 self.reporter.frame_error(entry, &err);
-                Vec::new()
+                while let Some(model) = table.unevaluated.pop() {
+                    if let Ok(handlers) = eval_handler_table(self.session, entry, model) {
+                        table.handlers = handlers;
+                        break;
+                    }
+                }
             }
         }
+        table.unevaluated.clear();
     }
 
     /// Replay one recorded input event during the forward-step, mirroring the
@@ -3438,6 +3487,49 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             .seek_scene_to(1, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek the rebuilt selected frame");
         assert_eq!(model.to_string(), "3", "the selected snapshot holds no paused input");
+    }
+
+    /// Live keeps the last good `ui` table when `ui(model)` fails, so a click
+    /// on the retained view lands. Replay resolves it against the same table:
+    /// the newest earlier frame whose `ui` evaluated (`t = 2`, so `Add(2)`).
+    #[test]
+    fn forward_step_resolves_a_click_after_a_failed_ui_against_the_last_good_table() {
+        let src = r#"
+type Msg = | Add(k: float)
+let init = { t: 0.0, n: 0.0 }
+let tick = (model, dt, tts) => { model with t: model.t + 1.0 }
+let update = (model, msg) =>
+  match msg with
+  | Add(k) => { model with n: model.n + k }
+let ui = (model) =>
+  if model.t >= 3.0 then Ui.text(Text.join("", Text.split("", "x")))
+  else Ui.button("add", Add(model.t))
+"#;
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let init = session.global("init").unwrap();
+        let click = vec![RecordedInput::UiEvent(UiEvent {
+            slot: 0,
+            kind: UiEventKind::Clicked,
+        })];
+        let stepped = forward_step_scene(
+            &session,
+            &EntryNames::UNPREFIXED,
+            &init,
+            false,
+            false,
+            None,
+            0.0,
+            1.0 / 60.0,
+            5,
+            1,
+            &[Vec::new(), Vec::new(), Vec::new(), click.clone(), click],
+        );
+        let n = |i: usize| stepped[i].0.to_string();
+        assert_eq!(n(3), "{ t: 4, n: 2 }", "ui(t = 3) failed: frame t = 2's table");
+        assert_eq!(n(4), "{ t: 5, n: 4 }", "still failing: the same table");
     }
 
     #[test]
