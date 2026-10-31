@@ -61,6 +61,7 @@
     "test:runtime-target": "node e2e/runtime-target.mjs",
     "test:held-pose": "cargo build -p functor-cli --no-default-features && node e2e/held-pose.mjs",
     "test:xr-injection": "cargo build -p functor-cli --no-default-features && node e2e/xr-pose-injection.mjs",
+    "test:floor-locked": "cargo build -p functor-cli --no-default-features && node e2e/floor-locked.mjs",
     "test:sniper-scope": "cargo build -p functor-cli --no-default-features && node e2e/sniper-scope.mjs",
     "test:sniper-scope-vr": "cargo build -p functor-cli --no-default-features && node e2e/sniper-scope-vr.mjs",
     "test:liminal-office": "cargo build -p functor-cli --no-default-features && node e2e/liminal-office.mjs",

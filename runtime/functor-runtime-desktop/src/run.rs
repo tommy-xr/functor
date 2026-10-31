@@ -30,6 +30,14 @@ use crate::{
     asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
 };
 
+/// Parse `--xr-eye-height`: a positive, finite number of metres.
+fn parse_eye_height(raw: &str) -> Result<f32, String> {
+    match raw.trim().parse::<f32>() {
+        Ok(m) if m.is_finite() && m > 0.0 => Ok(m),
+        _ => Err(format!("expected a positive height in metres, got `{raw}`")),
+    }
+}
+
 /// Parse `WIDTHxHEIGHT` for `--capture-size`.
 fn parse_capture_size(raw: &str) -> Result<(u32, u32), String> {
     let (w, h) = raw
@@ -162,7 +170,9 @@ fn desktop_input_snapshot(
     mouse_pos: (i32, i32),
     held_buttons: MouseButtons,
     edges: &InputEdges,
-    emulate_xr: bool,
+    // The `--emulate-xr` head's rig-local height (`desktop_xr_emulator::head_y`);
+    // `None` without emulation.
+    emulated_head_y: Option<f32>,
     xr_primary_down: bool,
     xr_surface: (i32, i32),
     xr_override: Option<&XrInputSnapshot>,
@@ -177,8 +187,14 @@ fn desktop_input_snapshot(
 ) -> InputSnapshot {
     let xr = match xr_override {
         Some(injected) => Some(injected.clone()),
-        None => emulate_xr.then(|| {
-            crate::desktop_xr_emulator::sample(held_keys, mouse_pos, xr_primary_down, xr_surface)
+        None => emulated_head_y.map(|head_y| {
+            crate::desktop_xr_emulator::sample(
+                held_keys,
+                mouse_pos,
+                xr_primary_down,
+                xr_surface,
+                head_y,
+            )
         }),
     };
     let mut snapshot =
@@ -701,6 +717,15 @@ pub struct Args {
     /// developing and capturing XR games without wearing a headset.
     #[arg(long)]
     emulate_xr: bool,
+
+    /// Under `--emulate-xr`, a floor-locked game's (`Xr.floorLocked`) emulated
+    /// standing eye height, in metres above the floor: `xr.head`'s `y`.
+    #[arg(
+        long,
+        default_value_t = functor_runtime_common::STANDING_EYE_HEIGHT,
+        value_parser = parse_eye_height
+    )]
+    xr_eye_height: f32,
 
     /// Create the GL window hidden: it is never shown, never takes focus, and
     /// never captures the cursor, so a run doesn't steal input from the user.
@@ -1437,6 +1462,7 @@ fn run_headless(
     debug_requests: Option<std::sync::mpsc::Receiver<debug_server::DebugRequest>>,
     fixed_time: Option<f32>,
     emulate_xr: bool,
+    xr_eye_height: f32,
     input_script: Option<HashMap<u64, Vec<RecordedInput>>>,
     script_dt: f32,
     display_hz: Option<f32>,
@@ -1504,6 +1530,8 @@ fn run_headless(
         sim.post(move |g| g.check_hot_reload(time));
         // Inline the capability bits are free to read after the reload check.
         caps = sim.caps();
+        let xr_head_y =
+            crate::desktop_xr_emulator::head_y(emulate_xr, caps.xr_floor_locked, xr_eye_height);
         let progress = asset_cache.progress();
         sim.post(move |g| g.push_asset_progress(progress));
         for token in scene_context.drive_preloads(&asset_cache, sim.drain_preloads()) {
@@ -1531,7 +1559,7 @@ fn run_headless(
                     mouse_pos,
                     held_buttons,
                     &input_edges,
-                    emulate_xr,
+                    xr_head_y,
                     false,
                     crate::desktop_xr_emulator::reference_surface(),
                     xr_override.as_ref(),
@@ -1576,7 +1604,7 @@ fn run_headless(
                     mouse_pos,
                     held_buttons,
                     &input_edges,
-                    emulate_xr,
+                    xr_head_y,
                     false,
                     crate::desktop_xr_emulator::reference_surface(),
                     xr_override.as_ref(),
@@ -1768,6 +1796,7 @@ sockets)."
             debug_requests,
             args.fixed_time,
             args.emulate_xr,
+            args.xr_eye_height,
             input_script,
             args.script_dt,
             args.display_hz,
@@ -2019,7 +2048,11 @@ Escape releases while captured"
             game_mouse_pos,
             held_buttons,
             &input_edges,
-            args.emulate_xr,
+            crate::desktop_xr_emulator::head_y(
+                args.emulate_xr,
+                caps.xr_floor_locked,
+                args.xr_eye_height,
+            ),
             false,
             window.get_size(),
             xr_override.as_ref(),
@@ -2182,6 +2215,11 @@ Escape releases while captured"
             if !sim.is_threaded() {
                 caps = sim.caps();
             }
+            let xr_head_y = crate::desktop_xr_emulator::head_y(
+                args.emulate_xr,
+                caps.xr_floor_locked,
+                args.xr_eye_height,
+            );
 
             // The loading snapshot for `Sub.assets`: pushed every frame, the
             // producer only acts when it changed since the game last saw it.
@@ -2928,7 +2966,7 @@ Escape again to quit"
                             game_mouse_pos,
                             held_buttons,
                             &input_edges,
-                            args.emulate_xr,
+                            xr_head_y,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
@@ -3225,7 +3263,14 @@ Escape again to quit"
                 Some(tracker) => {
                     xreal::apply_head_rotation(&frame.camera, tracker.orientation())
                 }
-                None => frame.camera.clone(),
+                None => crate::desktop_xr_emulator::view_camera(
+                    &frame.camera,
+                    caps.xr_floor_locked,
+                    match &xr_override {
+                        Some(injected) => injected.head,
+                        None => xr_head_y.map(crate::desktop_xr_emulator::head_pose),
+                    },
+                ),
             };
             let view_camera = if detached_camera.is_detached() {
                 match &xreal_tracker {
@@ -3776,7 +3821,7 @@ Escape again to quit"
                             game_mouse_pos,
                             held_buttons,
                             &input_edges,
-                            args.emulate_xr,
+                            xr_head_y,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
@@ -3833,7 +3878,7 @@ Escape again to quit"
                             game_mouse_pos,
                             held_buttons,
                             &input_edges,
-                            args.emulate_xr,
+                            xr_head_y,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
@@ -4165,7 +4210,7 @@ mod tests {
             (100, 200),
             MouseButtons::default(),
             &InputEdges::default(),
-            true,
+            Some(0.0),
             false,
             (800, 600),
             None,
@@ -4227,7 +4272,7 @@ mod tests {
             (0, 0),
             MouseButtons::default(),
             &edges,
-            false,
+            None,
             false,
             (800, 600),
             None,
@@ -4250,7 +4295,7 @@ mod tests {
             (320, 240),
             MouseButtons::default(),
             &InputEdges::default(),
-            false,
+            None,
             false,
             (800, 600),
             None,
@@ -4269,7 +4314,7 @@ mod tests {
             (777, 123),
             MouseButtons::default(),
             &InputEdges::default(),
-            false,
+            None,
             false,
             (1440, 900),
             None,
@@ -4323,7 +4368,7 @@ mod tests {
             (700, 100),
             MouseButtons::default(),
             &InputEdges::default(),
-            true,
+            Some(0.0),
             true,
             (800, 600),
             Some(&injected),
@@ -4354,7 +4399,7 @@ mod tests {
             (0, 0),
             MouseButtons::default(),
             &InputEdges::default(),
-            false,
+            None,
             false,
             (800, 600),
             None,
@@ -4369,7 +4414,7 @@ mod tests {
             (0, 0),
             MouseButtons::default(),
             &InputEdges::default(),
-            false,
+            None,
             false,
             (800, 600),
             Some(&injected),
@@ -4392,7 +4437,7 @@ mod tests {
             (0, 0),
             MouseButtons::default(),
             &InputEdges::default(),
-            false,
+            None,
             false,
             (800, 600),
             None,
@@ -4410,7 +4455,7 @@ mod tests {
             (0, 0),
             MouseButtons::default(),
             &InputEdges::default(),
-            false,
+            None,
             false,
             (800, 600),
             None,
@@ -4457,7 +4502,7 @@ mod tests {
             (0, 0),
             MouseButtons::default(),
             &InputEdges::default(),
-            false,
+            None,
             false,
             (800, 600),
             None,
@@ -4471,7 +4516,7 @@ mod tests {
             (0, 0),
             MouseButtons::default(),
             &InputEdges::default(),
-            false,
+            None,
             false,
             (800, 600),
             None,
@@ -4505,7 +4550,7 @@ mod tests {
             (0, 0),
             MouseButtons::default(),
             &edges,
-            false,
+            None,
             false,
             (800, 600),
             None,
@@ -4554,7 +4599,7 @@ mod tests {
             (100, 200),
             MouseButtons::default(),
             &InputEdges::default(),
-            true,
+            Some(0.0),
             false,
             (800, 600),
             Some(&injected),

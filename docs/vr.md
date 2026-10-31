@@ -61,6 +61,26 @@ magnetometer; the Xreal Eye's 6DoF is not host-accessible).
   that camera's local basis; authored camera changes move the rig, while
   OpenXR owns IPD/optical FOV and the camera keeps its near/far range. Verified
   on Quest 3 with raw stereo capture and a live authored-camera translation.
+- **Floor-locked rig (opt-in):** that first pose includes pitch and roll, so
+  by default `xr.head.y` starts at 0 whatever your height, "up" tilts if you
+  looked down when it centred, and a recentre re-zeroes to the current head.
+  `config`'s `Xr.floorLocked(true)` centres the rig on the floor under the
+  head instead, level and yaw-only (the same lock passthrough uses, at floor
+  height):
+  - `Frame.camera`'s eye stands for that floor point. Keep it level and
+    author it at the player's feet; the eye renders at `Frame.camera` +
+    `xr.head`.
+  - Rig-local `y = 0` is the floor and up is gravity, so `xr.head.y` is the
+    eye's height above the floor.
+  - A recentre (`ReferenceSpaceChangePending`) re-centres on the current head
+    but keeps the floor, so only heading and floor position move; heights
+    survive. The snapshot carries no recentre signal.
+  - The floor comes from STAGE. Without STAGE (LOCAL fallback, origin at the
+    head) the floor is assumed 1.6 m below the starting head, and a recentre
+    re-assumes it.
+  - It overrides passthrough's room lock.
+  - The mapping is `functor_runtime_common::rig_reference`, unit-tested on
+    desktop; device verification is pending.
 
 ## Device-day checklist (Quest 3)
 
@@ -660,7 +680,18 @@ Space drives trigger, Enter drives squeeze, arrows drive the thumbstick, and
 the identity head pose appear in `/state.input.xr`, including under
 `--headless`. An `--input-script` can therefore drive the same emulated
 controller levels for deterministic captures without adding a desktop-only
-game API. This is one shell adapter over the canonical snapshot; future
+game API.
+
+For a floor-locked game (`Xr.floorLocked(true)`) the emulated head stands
+`--xr-eye-height` metres above the floor (default 1.6), with the hands lifted
+by the same amount, and the desktop view composes that head (or an injected
+one) onto `Frame.camera`, as a headset would. Other games keep the identity
+head and the authored view. Without `--emulate-xr` or an injected head (plain
+desktop, web), there is no head to compose and the view is `Frame.camera` at the
+feet, so a floor-locked game adds an eye height itself when
+`Input.snapshot.xr` is `None`. `npm run test:floor-locked` checks the emulated
+head height, floor-locked and not, headlessly; the view composition is
+unit-tested (`view_camera`). `--xreal-tracking` does not compose the head. This is one shell adapter over the canonical snapshot; future
 gamepad/mobile adapters should produce that same target-neutral record.
 
 The emulator's fidelity is deliberately low: both hands sit on a fixed
