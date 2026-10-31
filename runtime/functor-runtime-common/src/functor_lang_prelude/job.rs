@@ -27,8 +27,13 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Job.cancel", "Job.cancel(key)", |key: String| {
         FunctorLangEffect(EffectTree::JobCancel { key })
     });
-    // Progress lands in a later PR; until then `report` only returns `value`.
-    reg.fn2("Job.report", "Job.report(fraction, value)", |_: f64, value: Value| value);
+    reg.fn2("Job.report", "Job.report(fraction, value)", |fraction: f64, value: Value| {
+        crate::jobs::report(fraction);
+        value
+    });
+    reg.fn2("Job.progress", "Job.progress(key, tagger)", |key: String, tagger: Tagger| {
+        FunctorLangSub(SubTree::JobProgress { key, tagger: tagger.0 })
+    });
     reg.fn1("Job.describe", "Job.describe(error)", |error: Value| match &error {
         Value::Variant { ctor, args } => match (&**ctor, args.first()) {
             ("Job.Crashed", Some(Value::String(m))) => Ok(Value::String(format!("the job crashed: {m}").into())),

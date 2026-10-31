@@ -189,10 +189,11 @@ let draw = (model, tts) =>
 /// in one batch). `Nav.path` the same way: from `tick` until a route for the
 /// latest `seq` lands, a door toggled from input (a new `seq`), and cancels.
 /// `Job.run` of `work` (which reads a file and the reload knob, so a semantic
-/// reload re-runs it) from `tick`, a cancel-then-run batch and a cancel. Each
+/// reload re-runs it) from `tick`, a cancel-then-run batch and a cancel;
+/// `work` reports progress, which `Job.progress` folds into the model. Each
 /// tagger captures which ask it answers.
 const JOBS_GAME: &str = r#"
-type Msg = | Loaded(i: float, r: Result.t<Bytes.t, File.error>) | Routed(r: Nav.result) | Ran(i: float, r: Result.t<float, Job.error>)
+type Msg = | Loaded(i: float, r: Result.t<Bytes.t, File.error>) | Routed(r: Nav.result) | Ran(i: float, r: Result.t<float, Job.error>) | Prog(p: float)
 let link = (a, b, door) => { from: a, to: b, cost: 1.0, bits: 1.0, door: door }
 let nav = Nav.graph({
   nodes: [Vec3.make(0.0, 0.0, 0.0), Vec3.make(1.0, 0.0, 0.0), Vec3.make(2.0, 0.0, 0.0), Vec3.make(1.0, 0.0, 1.0)],
@@ -204,8 +205,9 @@ let scale = 1.0
 let a = Path.of("data/a.bin")
 let b = Path.of("data/b.bin")
 let gone = Path.of("data/gone.bin")
-let work = (n: float): float => n * scale + Bytes.length(File.bytes(a))
-let init = { want: 0.0, got: 0.0, sum: 0.0, bytes: 0.0, missing: 0.0, n: 0.0, seq: 0.0, closed: false, routed: -1.0, hops: 0.0, stale: 0.0, ran: 0.0, out: 0.0 }
+let work = (n: float): float => Job.report(0.5, n * scale) + Job.report(0.9, Bytes.length(File.bytes(a)))
+let init = { want: 0.0, got: 0.0, sum: 0.0, bytes: 0.0, missing: 0.0, n: 0.0, seq: 0.0, closed: false, routed: -1.0, hops: 0.0, stale: 0.0, ran: 0.0, out: 0.0, prog: 0.0 }
+let subscriptions = (model) => Job.progress("w", Prog)
 let input = (model, key, isDown) =>
   match key with
   | Key.Space => if isDown then ({ model with want: model.want + 1.0 }, File.load(b, (r) => Loaded(model.want, r))) else model
@@ -235,6 +237,7 @@ let update = (model, msg) =>
     (match r with
      | Result.Ok(v) => { model with ran: model.ran + 1.0, out: model.out + v }
      | Result.Error(e) => model)
+  | Prog(p) => { model with prog: model.prog * 0.5 + p }
 let tick = (model, dt, tts) =>
   let next = { model with n: model.n + 1.0 } in
   let load = if model.got < 1.0 || Math.mod(model.n, 30.0) == 0.0 then [File.load(a, (r) => Loaded(model.n, r))] else [] in
@@ -243,7 +246,7 @@ let tick = (model, dt, tts) =>
   (next, Effect.batch(List.append(load, List.append(nav, run))))
 let draw = (model, tts) =>
   Frame.create(Camera3D.lookAt(Vec3.make(model.hops * 0.01, 3.0, model.stale - 6.0), Vec3.make(0.0, 0.0, 0.0)),
-    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum + model.out, 7.0), model.got * 0.01, model.bytes * 0.001 + model.missing + model.ran * 0.01)))
+    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum + model.out, 7.0), model.got * 0.01, model.bytes * 0.001 + model.missing + model.ran * 0.01 + model.prog)))
 "#;
 
 /// `text`, rewritten to `template` with 0.3, 0.6 or 0.9 for `{}`.
