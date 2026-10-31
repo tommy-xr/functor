@@ -1,12 +1,14 @@
-// Rebake the office's night lightmap and record its provenance.
+// Rebake the office's night and day lightmaps and record their provenance.
 //
 //   node examples/liminal-office/bake.mjs           # bake into baked/, write baked/provenance.txt
 //   node examples/liminal-office/bake.mjs --check   # bake into a temp dir; fail unless byte-identical to baked/
 //
 // The CLI is $FUNCTOR_BIN, else target/release/functor, else target/debug/functor.
 // provenance.txt records the layout hash (provenance.fun computes the same one
-// at load and reports a mismatch as a stale bake), the baker's version and
-// the settings, both read back from the PNG the baker wrote.
+// at load and reports a mismatch as a stale bake), the bakes, the baker's
+// version and the settings, both read back from the PNGs the baker wrote.
+// Both bakes unwrap the same mesh, so their .mesh.bin files must match; only
+// night.mesh.bin is kept.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,9 +26,10 @@ const SETTINGS = {
   seed: 0,
   "max-size": 2048,
 };
-// Must match `sources` in provenance.fun.
+// Must match `sources` in provenance.fun, and `Building.bakes`.
 const SOURCES = ["layout.fun", "building.fun"];
-const ARTIFACTS = ["night.png", "night.mesh.bin"];
+const BAKES = ["night", "day"];
+const ARTIFACTS = [...BAKES.map((b) => `${b}.png`), "night.mesh.bin"];
 
 const bin =
   process.env.FUNCTOR_BIN ??
@@ -69,7 +72,16 @@ function bake(output) {
   const start = Date.now();
   const run = spawnSync(bin, ["-d", DIR, "bake", "--output", output, ...flags], { stdio: "inherit" });
   if (run.status !== 0) process.exit(run.status ?? 1);
-  return (Date.now() - start) / 1000;
+  const seconds = (Date.now() - start) / 1000;
+  const mesh = readFileSync(join(output, "night.mesh.bin"));
+  for (const b of BAKES.filter((b) => b !== "night")) {
+    if (!readFileSync(join(output, `${b}.mesh.bin`)).equals(mesh)) {
+      console.error(`${b}.mesh.bin differs from night.mesh.bin: the bakes must share one mesh`);
+      process.exit(1);
+    }
+    rmSync(join(output, `${b}.mesh.bin`));
+  }
+  return seconds;
 }
 
 const baked = join(DIR, "baked");
@@ -96,16 +108,19 @@ if (process.argv.includes("--check")) {
     console.error(`${SOURCES.join(" or ")} changed during the bake: rerun it`);
     process.exit(1);
   }
-  const text = pngText(join(baked, "night.png"));
-  const version = text["functor-bake-version"];
-  const settings = text["functor-bake-settings"];
-  if (!version || !settings) {
-    console.error("night.png has no functor-bake-version / functor-bake-settings text chunks");
+  const made = BAKES.map((b) => {
+    const text = pngText(join(baked, `${b}.png`));
+    return [text["functor-bake-version"], text["functor-bake-settings"]];
+  });
+  const [version, settings] = made[0];
+  if (!version || !settings || made.some(([v, s]) => v !== version || s !== settings)) {
+    console.error("the PNGs lack or disagree on their functor-bake-version / functor-bake-settings text chunks");
     process.exit(1);
   }
   const record = [
     `layout=${hash}`,
     `sources=${SOURCES.join(" ")}`,
+    `bakes=${BAKES.join(" ")}`,
     `bakeVersion=${version}`,
     `settings=${settings}`,
     "",

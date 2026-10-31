@@ -25,8 +25,8 @@ let shared = (d: Door): Building.Hole =>
   let b = Building.roomAt(d.b).rect in
   let side = Building.sideBetween(a, b) in
   if side == Option.Some(North) || side == Option.Some(South)
-  then { lo: Math.max(a.x0, b.x0), hi: Math.min(a.x1, b.x1), top: 0.0 }
-  else { lo: Math.max(a.z0, b.z0), hi: Math.min(a.z1, b.z1), top: 0.0 }
+  then { lo: Math.max(a.x0, b.x0), hi: Math.min(a.x1, b.x1), bottom: 0.0, top: 0.0 }
+  else { lo: Math.max(a.z0, b.z0), hi: Math.min(a.z1, b.z1), bottom: 0.0, top: 0.0 }
 
 // Doors sit on a shared wall, inside its span with a jamb's worth of wall
 // on each side, and are big enough to walk through.
