@@ -11,44 +11,55 @@ let glass = rgb(26.0, 32.0, 44.0)
 let slab = (x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) =>
   Scene.cube() |> Scene.scaleXYZ(x1 - x0, y1 - y0, z1 - z0) |> Scene.translate(v((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0))
 
-// The facade's openings on one side, 1 cm smaller, so the facade's outer
-// half overlaps the baked reveal's edges: no seam to see through, and no
-// coplanar faces.
-let facadeHoles = (s: Side): List<Hole> =>
-  openingsIn(s)
+// A level's facade openings on one side, 1 cm smaller, so the facade's
+// outer half overlaps the baked reveal's edges: no seam to see through, and
+// no coplanar faces.
+let facadeHoles = (level: float, s: Side): List<Hole> =>
+  openingsIn(level, s)
     |> List.map((h) => { lo: h.lo + 0.01, hi: h.hi - 0.01, bottom: if h.bottom > 0.0 then h.bottom + 0.01 else 0.0, top: h.top - 0.01 })
 
-// The outer half of the facade (the inner half is the baked interior wall).
+// The outer half of the facade (the inner half is the baked interior wall),
+// a band per storey; the top one rises to the roofline.
 let half = facade / 2.0
 let facadeSlabs =
   let f = footprint in
-  let run = (s: Side, s0: float, s1: float, make: (Piece) => Scene.t) =>
-    pieces(s0, s1, facadeHeight, facadeHoles(s)) |> List.map(make) in
-  List.flatten([
-    run(South, f.x0 - half, f.x1 + half, (p) => slab(p.u0, p.y0, f.z0 - half, p.u1, p.y1, f.z0)),
-    run(North, f.x0 - half, f.x1 + half, (p) => slab(p.u0, p.y0, f.z1, p.u1, p.y1, f.z1 + half)),
-    run(West, f.z0, f.z1, (p) => slab(f.x0 - half, p.y0, p.u0, f.x0, p.y1, p.u1)),
-    run(East, f.z0, f.z1, (p) => slab(f.x1, p.y0, p.u0, f.x1 + half, p.y1, p.u1)),
-  ]) |> Scene.group |> Scene.lit(concrete)
+  levels |> List.concatMap((level) =>
+    let y = level * storey in
+    let top = if level == List.length(levels) - 1.0 then facadeHeight - y else storey in
+    let run = (s: Side, s0: float, s1: float, make: (Piece) => Scene.t) =>
+      pieces(s0, s1, top, facadeHoles(level, s)) |> List.map((p) => make({ p with y0: y + p.y0, y1: y + p.y1 })) in
+    List.flatten([
+      run(South, f.x0 - half, f.x1 + half, (p) => slab(p.u0, p.y0, f.z0 - half, p.u1, p.y1, f.z0)),
+      run(North, f.x0 - half, f.x1 + half, (p) => slab(p.u0, p.y0, f.z1, p.u1, p.y1, f.z1 + half)),
+      run(West, f.z0, f.z1, (p) => slab(f.x0 - half, p.y0, p.u0, f.x0, p.y1, p.u1)),
+      run(East, f.z0, f.z1, (p) => slab(f.x1, p.y0, p.u0, f.x1 + half, p.y1, p.u1)),
+    ])) |> Scene.group |> Scene.lit(concrete)
 
-// Whether the 2.2 m band centred `at` along side `s` overlaps a real window.
-let isOpen = (s: Side, at: float): bool =>
-  Layout.windows |> List.any((w) => w.side == s && Math.abs(w.at - at) < (w.width + 2.2) / 2.0)
-// Dark window bands on the outside of the walls, except where layout.fun
-// opens a real window (open, no glass: glass would bypass culling).
+// Whether the 2.2 m band centred `at` along side `s` overlaps a real window
+// on `level`.
+let isOpen = (level: float, s: Side, at: float): bool =>
+  Layout.windows |> List.any((w) =>
+    roomAt(w.room).level == level && w.side == s && Math.abs(w.at - at) < (w.width + 2.2) / 2.0)
+// Dark window bands on the outside of the walls, a row per storey, except
+// where layout.fun opens a real window (open, no glass: glass would bypass
+// culling). The ground floor's south row leaves the entrance clear.
 let windowBands =
   let f = footprint in
   let o = half + 0.02 in
-  List.flatten([
-    [2.0, 4.6, 15.4, 18.0] |> List.filter((x) => not isOpen(South, x))
-      |> List.map((x) => slab(x - 1.1, 1.0, f.z0 - o, x + 1.1, 2.3, f.z0 - half)),
-    List.range(8.0) |> List.concatMap((k) =>
-      let z = 2.5 + 3.4 * k in
-      List.flatten([
-        if isOpen(West, z) then [] else [slab(f.x0 - o, 1.0, z - 1.1, f.x0 - half, 2.3, z + 1.1)],
-        if isOpen(East, z) then [] else [slab(f.x1 + half, 1.0, z - 1.1, f.x1 + o, 2.3, z + 1.1)],
-      ])),
-  ]) |> Scene.group |> Scene.lit(glass)
+  levels |> List.concatMap((level) =>
+    let y0 = level * storey + 1.0 in
+    let y1 = level * storey + 2.3 in
+    let south = if level == 0.0 then [2.0, 4.6, 15.4, 18.0] else [2.0, 4.6, 7.2, 12.8, 15.4, 18.0] in
+    List.flatten([
+      south |> List.filter((x) => not isOpen(level, South, x))
+        |> List.map((x) => slab(x - 1.1, y0, f.z0 - o, x + 1.1, y1, f.z0 - half)),
+      List.range(8.0) |> List.concatMap((k) =>
+        let z = 2.5 + 3.4 * k in
+        List.flatten([
+          if isOpen(level, West, z) then [] else [slab(f.x0 - o, y0, z - 1.1, f.x0 - half, y1, z + 1.1)],
+          if isOpen(level, East, z) then [] else [slab(f.x1 + half, y0, z - 1.1, f.x1 + o, y1, z + 1.1)],
+        ])),
+    ])) |> Scene.group |> Scene.lit(glass)
 
 let entrance = doors |> List.find((d) => not isInside(roomAt(d.a))) |> Option.map(holeOf)
   |> Option.defaultValue({ lo: 0.0, hi: 0.0, bottom: 0.0, top: 0.0 })
