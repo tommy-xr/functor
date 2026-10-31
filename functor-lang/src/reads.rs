@@ -561,8 +561,13 @@ impl<'m> Walker<'_, 'm> {
                     }
                     _ => self.held(callee),
                 }
-                for arg in args {
-                    self.held(arg);
+                // `Job.run`'s function runs on a worker, not where its
+                // effect lands ([`phase_errors`] checks it on its own).
+                let job = matches!(&callee.kind, ExprKind::External(path) if path == &["Job", "run"]);
+                for (i, arg) in args.iter().enumerate() {
+                    if !(job && i == 1) {
+                        self.held(arg);
+                    }
                 }
             }
             // Only what the result keeps: a local used just to build it
@@ -652,6 +657,8 @@ pub struct Entry<'a> {
 ///   handler slots belong to one frame.
 /// - `init`, `config`, unit constructors and operators, and `Scene.memo` /
 ///   `Physics.memo` builders read nothing.
+/// - A `Job.run` function reads like a top-level value: files, not
+///   `physics` or `ui`.
 ///
 /// Each error names the path to the built-in (`tick → loadClip →
 /// File.bytes`). Inference can't see through `unknown`; the run-time checks
@@ -696,6 +703,29 @@ pub fn phase_errors(module: &Module, types: &ExprTypes, entry: &Entry) -> Vec<Ch
 cached result would freeze — {fix}",
                     what(class),
                     path("builder", &step, class)
+                ),
+            );
+        }
+    }
+
+    // A job's function runs off the frame, like a top-level value: files
+    // yes, live state no.
+    for (_, args) in calls_to(module, &["Job.run"]) {
+        let Some(f) = args.get(1) else { continue };
+        let mut walk = cx.walker();
+        walk.now(f, true);
+        for (class, step) in inferred.resolve(&walk.uses) {
+            if class == ReadClass::File {
+                continue;
+            }
+            report(
+                step.span,
+                class,
+                format!(
+                    "a `Job.run` function can't read {} ({}): it runs on a worker, off the \
+frame — read it in a hook and put it in the input",
+                    what(class),
+                    path("job", &step, class)
                 ),
             );
         }
@@ -827,6 +857,11 @@ fn what(class: ReadClass) -> &'static str {
 
 /// Every `Scene.memo` / `Physics.memo` call in the module, with its args.
 fn memo_calls(module: &Module) -> Vec<(String, &[Expr])> {
+    calls_to(module, &["Scene.memo", "Physics.memo"])
+}
+
+/// Every call of a built-in in `paths`, with its arguments.
+fn calls_to<'m>(module: &'m Module, paths: &[&str]) -> Vec<(String, &'m [Expr])> {
     let mut calls = Vec::new();
     let mut work: Vec<&Expr> = module
         .defs
@@ -838,7 +873,7 @@ fn memo_calls(module: &Module) -> Vec<(String, &[Expr])> {
         if let ExprKind::Call { callee, args } = &expr.kind {
             if let ExprKind::External(path) = &callee.kind {
                 let path = path.join(".");
-                if path == "Scene.memo" || path == "Physics.memo" {
+                if paths.contains(&path.as_str()) {
                     calls.push((path, args.as_slice()));
                 }
             }
