@@ -505,24 +505,12 @@ let rifleNode = (m) =>
     |> Scene.rotateY(Angle.radians(aimYaw(m)))
     |> Scene.translate(v3(eye))
 
-// Turn a rifle-space scene to a world pose: roll about +Z, then the pitch and
-// yaw `rifleNode` uses.
-let posed = (p, origin, scene) =>
-  let f = unit(p.forward) in
-  let yaw = Math.atan2(f.x, f.z) in
-  let pitch = Math.asin(Math.clamp(0.0 - 1.0, 1.0, f.y)) in
-  let roll = Math.atan2(0.0 - dot(p.up, camRot(yaw, pitch, vec(1.0, 0.0, 0.0))),
-                        dot(p.up, camRot(yaw, pitch, vec(0.0, 1.0, 0.0)))) in
-  scene
-    |> Scene.rotateZ(Angle.radians(roll))
-    |> Scene.rotateX(Angle.radians(0.0 - pitch))
-    |> Scene.rotateY(Angle.radians(yaw))
-    |> Scene.translate(v3(origin))
-
-// VR: the rifle in the right hand; hidden while that hand is untracked.
+// VR: the rifle in the right hand, placed at the rifle pose; hidden while that
+// hand is untracked.
 let heldRifle = (m) =>
   if m.tracked then
-    posed(m.grip, rifleOrigin(m), Scene.group(if shouldered(m) then [rifleParts, liveLens] else [rifleParts]))
+    Scene.group(if shouldered(m) then [rifleParts, liveLens] else [rifleParts])
+      |> Scene.atPose(riflePose(m))
   else Scene.group([])
 
 // ------------------------------------------------------------------ world

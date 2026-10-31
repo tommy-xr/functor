@@ -277,42 +277,17 @@ impl crate::host_registry::FromArg for FunctorLangMouse {
 }
 
 /// A `Camera3D.mappedPose` record (`position`, `forward`, `up`, each an
-/// `Input.point3`), as `Scene.atPose` takes it.
+/// `Input.point3`), as `Scene.atPose` and `Camera3D.fromPose` take it.
 struct FunctorLangMappedPose(crate::MappedTrackingPose);
 
 impl crate::host_registry::FromArg for FunctorLangMappedPose {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
-        let fail = |message: String| RunError { message, span };
-        let Value::Record(fields) = value else {
-            return Err(fail(format!(
-                "{path}: expected a Camera3D.mappedPose record, got {}",
-                value.kind_name()
-            )));
-        };
-        let point = |name: &str| -> Result<[f32; 3], RunError> {
-            match fields.iter().find(|(field, _)| field == name) {
-                Some((_, Value::Record(p))) => {
-                    let what = format!("mappedPose.{name}");
-                    Ok([
-                        finite_record_number(p, "x", &what, path, span)?,
-                        finite_record_number(p, "y", &what, path, span)?,
-                        finite_record_number(p, "z", &what, path, span)?,
-                    ])
-                }
-                Some((_, other)) => Err(fail(format!(
-                    "{path}: mappedPose `{name}` must be an Input.point3 record, got {}",
-                    other.kind_name()
-                ))),
-                None => Err(fail(format!(
-                    "{path}: expected a Camera3D.mappedPose record, missing `{name}`"
-                ))),
-            }
-        };
-        Ok(FunctorLangMappedPose(crate::MappedTrackingPose {
-            position: point("position")?,
-            forward: point("forward")?,
-            up: point("up")?,
-        }))
+        crate::mapped_pose_from_value(value)
+            .map(FunctorLangMappedPose)
+            .map_err(|e| RunError {
+                message: format!("{path}: {e}"),
+                span,
+            })
     }
 }
 
@@ -2756,9 +2731,8 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
         "Camera3D.fromPose",
         "Camera3D.fromPose(pose, fov) — a Camera3D.mappedPose record (position, forward, up) \
 and an Angle fov; up must not be parallel to forward",
-        |pose: Value, fov: FunctorLangAngle| {
-            let pose = crate::mapped_pose_from_value(&pose)
-                .map_err(|e| format!("Camera3D.fromPose: {e}"))?;
+        |pose: FunctorLangMappedPose, fov: FunctorLangAngle| {
+            let pose = pose.0;
             Camera::from_pose(pose.position, pose.forward, pose.up, fov.0)
                 .map(FunctorLangCamera)
                 .ok_or_else(|| {
@@ -8659,6 +8633,14 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             "{ position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 } }"
         )
         .contains("missing `up`"));
+        assert_eq!(
+            fail("{ position: { x: 0.0, y: 0.0, z: 0.0 }, forward: 1.0, up: { x: 0.0, y: 1.0, z: 0.0 } }"),
+            "Scene.atPose: Camera3D.mappedPose `forward` must be an Input.point3 record, got a number"
+        );
+        assert_eq!(
+            fail("{ position: { x: 0.0, y: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 }, up: { x: 0.0, y: 1.0, z: 0.0 } }"),
+            "Scene.atPose: Camera3D.mappedPose is missing `position.z`"
+        );
         assert!(fail(
             // 1e39 overflows f32.
             "{ position: { x: 1000000000000000000000000000000000000000.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 }, \

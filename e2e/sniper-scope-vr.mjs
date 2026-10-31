@@ -13,8 +13,10 @@
 //      scope camera, the right way round: the 200 m plate's tall left post
 //      (an asymmetric landmark) shows ABOVE the plate, not below.
 //   3. A head-only move changes nothing about the aim.
-//   4. The trigger fires once per pull and must be released to fire again.
-//   5. Losing the hand hides the rifle, unshoulders, and a trigger held on
+//   4. Straight-up and straight-down aim (where yaw is undefined) turn the
+//      held rifle rigidly about the grip, and the scope with it.
+//   5. The trigger fires once per pull and must be released to fire again.
+//   6. Losing the hand hides the rifle, unshoulders, and a trigger held on
 //      return waits for a release.
 //
 // Run (needs the CLI; the wasm bundle is not required):
@@ -69,12 +71,14 @@ async function step(sample, n = 1) {
   return (await get("/state")).model;
 }
 
-// Quaternion [x, y, z, w] for `deg` about rig +Z — the controller's forward
-// axis is rig -Z, so +90 turns its top toward the player's left.
-const roll = (deg) => {
+// Quaternion [x, y, z, w] for `deg` about `axis`.
+const axisAngle = (axis, deg) => {
   const h = (deg * Math.PI) / 360;
-  return [0, 0, Math.sin(h), Math.cos(h)];
+  return [...axis.map((v) => v * Math.sin(h)), Math.cos(h)];
 };
+// About rig +Z — the controller's forward axis is rig -Z, so +90 turns its
+// top toward the player's left.
+const roll = (deg) => axisAngle([0, 0, 1], deg);
 
 const GRIP = [0.15, -0.2, -0.3];
 const sample = ({ orientation = [0, 0, 0, 1], trigger = 0, a = false, head, tracked = true } = {}) => ({
@@ -105,6 +109,33 @@ function onScreen(cam, p) {
   const u = cross(r, f);
   const d = sub(p, cam.eye);
   return { x: dot(d, r) / dot(d, f), y: dot(d, u) / dot(d, f) };
+}
+
+// v' = v + 2w(q × v) + 2 q × (q × v)
+const rotate = ([x, y, z, w], v) => {
+  const t = cross([x, y, z], v).map((c) => 2 * c);
+  const u = cross([x, y, z], t);
+  return v.map((c, i) => c + w * t[i] + u[i]);
+};
+// The rig looks down world +Z from the eye: tracked (x, y, z) is world (-x, y, -z).
+const EYE = [0, 1.5, 0];
+const toWorldDir = ([x, y, z]) => [-x, y, -z];
+
+// World matrices (column-major, as `/scene` serializes them) of every
+// cylinder; only the rifle (turrets, barrel) uses them.
+const mmul = (a, b) =>
+  b.map((col) => [0, 1, 2, 3].map((r) => a.reduce((s, ac, k) => s + ac[r] * col[k], 0)));
+function cylinders(scene) {
+  const out = [];
+  const walk = (node, parent) => {
+    const world = mmul(parent, node.xform);
+    const { Group, Material, Geometry } = node.obj;
+    if (Group) Group.forEach((c) => walk(c, world));
+    else if (Material) Material[1].forEach((c) => walk(c, world));
+    else if (Geometry === "Cylinder") out.push(world);
+  };
+  walk(scene, [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
+  return out;
 }
 
 const scopeCamera = async () => {
@@ -165,6 +196,36 @@ try {
   const head = (await get("/state")).input.xr?.head?.position;
   check(head?.[0] === 0.2, `the head move reached the runtime (head ${head})`);
   check(JSON.stringify(after) === JSON.stringify(before), "the scope camera is identical after the head moved");
+  await step(sample(), 1);
+
+  console.log("\n▸ vertical aim");
+  // Pitching the controller ±90° about its X axis must turn every rifle part
+  // rigidly about the grip, by the same world rotation. Ground truth comes
+  // from the injected quaternion alone.
+  const levelParts = cylinders((await get("/scene")).scene);
+  check(levelParts.length > 0, `the held rifle has cylinders (${levelParts.length})`);
+  const pivot = toWorldDir(GRIP).map((v, i) => v + EYE[i]);
+  for (const [label, deg, aim] of [["straight up", 90, 1], ["straight down", -90, -1]]) {
+    await step(sample({ orientation: axisAngle([1, 0, 0], deg) }));
+    const world = axisAngle(toWorldDir([1, 0, 0]), deg);
+    const parts = cylinders((await get("/scene")).scene);
+    const err = Math.max(
+      ...levelParts.flatMap((m, i) => {
+        const p = parts[i];
+        if (!p) return [Infinity];
+        const origin = rotate(world, sub(m[3].slice(0, 3), pivot)).map((v, k) => v + pivot[k]);
+        const expected = [...[0, 1, 2].map((c) => rotate(world, m[c].slice(0, 3))), origin];
+        return p.flatMap((col, c) => col.slice(0, 3).map((v, k) => Math.abs(v - expected[c][k])));
+      }),
+    );
+    check(
+      parts.length === levelParts.length && err < 1e-4,
+      `${label}: the rifle turns rigidly about the grip (max err ${err.toExponential(1)})`,
+    );
+    const cam = await scopeCamera();
+    const fwd = unit(sub(cam.target, cam.eye));
+    check(fwd[1] * aim > 0.999, `${label}: the scope looks ${aim > 0 ? "up" : "down"} (fwd ${fwd})`);
+  }
   await step(sample(), 1);
 
   console.log("\n▸ trigger re-arm");

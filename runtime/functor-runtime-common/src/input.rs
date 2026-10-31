@@ -1022,8 +1022,16 @@ fn finite_number(value: &functor_lang::Value, what: &str, name: &str) -> Result<
 /// The `{x, y, z}` record in field `name`; errors name `name.axis`.
 fn point3_field(value: &functor_lang::Value, what: &str, name: &str) -> Result<[f32; 3], String> {
     let point = record_field(value, what, name)?;
+    let functor_lang::Value::Record(_) = point else {
+        return Err(format!(
+            "{what} `{name}` must be an Input.point3 record, got {}",
+            point.kind_name()
+        ));
+    };
     let axis = |axis: &str| {
-        finite_number(record_field(point, what, axis)?, what, &format!("{name}.{axis}"))
+        let field = format!("{name}.{axis}");
+        let value = record_field(point, what, axis).map_err(|_| format!("{what} is missing `{field}`"))?;
+        finite_number(value, what, &field)
     };
     Ok([axis("x")?, axis("y")?, axis("z")?])
 }
@@ -1047,7 +1055,7 @@ pub fn tracking_pose_from_value(value: &functor_lang::Value) -> Result<TrackingP
 }
 
 /// Decode the plain-data `Camera3D.mappedPose` record (`position`, `forward`,
-/// `up`, each an `Input.point3`) that `Camera3D.fromPose` accepts.
+/// `up`, each an `Input.point3`) that `Camera3D.fromPose` and `Scene.atPose` accept.
 pub fn mapped_pose_from_value(
     value: &functor_lang::Value,
 ) -> Result<crate::MappedTrackingPose, String> {
