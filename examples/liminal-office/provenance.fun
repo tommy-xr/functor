@@ -18,7 +18,10 @@ let hashBytes = (h0: float, b: Bytes.t): float =>
   let h1 = List.range(words) |> List.fold((h, i) => step(h, Bytes.u32le(4.0 * i, b) |> Binary.require), h0) in
   List.range(n - 4.0 * words) |> List.fold((h, i) => step(h, Bytes.u8(4.0 * words + i, b) |> Binary.require), h1)
 
-let layoutHash = sources |> List.fold((h, name) => hashBytes(h, File.bytes(Path.of(name))), 0.0)
+// Unreadable sources (the web shell can't read project files yet) hash as
+// nothing; the baked files are unreadable there too, so status is Missing.
+let layoutHash = sources |> List.fold((h, name) =>
+  if File.exists(Path.of(name)) then hashBytes(h, File.bytes(Path.of(name))) else h, 0.0)
 
 type Status =
   | Current
