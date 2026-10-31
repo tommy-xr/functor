@@ -2,7 +2,8 @@
 
 A hoverbike on a seeded 1 km dune course: four lift emitters hold it 1.2 m
 over the terrain, rapier slides it off the obstacles, and the camera stays
-level while the fairing banks. T switches to the flat, walled test stand.
+level while the fairing banks. You start on foot beside it. T switches to
+the flat, walled test stand.
 
 ```sh
 functor -d examples/hoverbike run native
@@ -14,8 +15,20 @@ node examples/hoverbike/generate-dunes.mjs   # rewrite dunes.png + dunesLayout.f
 
 ## Controls
 
+On foot:
+
+| | Keyboard and mouse | Gamepad | Quest Touch |
+| --- | --- | --- | --- |
+| Walk | WASD | left stick | left stick (along your look) |
+| Look / turn | mouse | | your head; right stick snaps 30° |
+| Get on (near the seat, facing it) | E | south (A / ✕) | grab a handlebar |
+| Respawn | R | | tap right B (below 2 m/s when riding) |
+
+Riding:
+
 | | Keyboard | Gamepad |
 | --- | --- | --- |
+| Get off (below 2 m/s) | hold E | hold south (A / ✕) |
 | Throttle | W | right trigger |
 | Brake | S | left trigger |
 | Steer | A / D | left stick |
@@ -28,13 +41,14 @@ With a headset:
 | | Quest Touch |
 | --- | --- |
 | Hold the bars | squeeze both grips (at the grips) |
+| Get off (below 2 m/s) | hold right B |
 | Steer | turn the bars |
 | Throttle / brake | right / left trigger |
 | Vignette strength (off, low, medium, high) | left X |
 | Smooth / stepped turning | left Y |
 | Seated / standing | right A |
 | Recalibrate (hold still) | left menu |
-| Respawn / dunes or test stand | right B / right stick click |
+| Respawn / dunes or test stand | tap right B (below 2 m/s) / right stick click |
 
 ## The dune course
 
@@ -65,6 +79,30 @@ pass or stop for. Posts mark the lane, amber over the crest.
   `Terrain.maxPixelError(4)`, a few dozen instanced posts, no shadows. A low
   side sun and height bands keyed to the dunes (pale sand from 4 m) make the
   gentle relief read.
+
+## On foot
+
+`walk.fun` walks, `mount.fun` gets on and off, as pure functions with
+expects; `e2e/hoverbike.mjs` and `e2e/hoverbike-xr.mjs` drive both ways.
+
+- **Walking.** The walker is a `Physics.character` capsule (1.8 m, eye at
+  1.65 m), declared only while on foot. It waits for ground after a spawn,
+  then walks at 1.4 m/s with gravity; no head bob. R respawns both: the
+  walker 4 m off the bike's left, the bike parked.
+- **Getting on.** Within 2 m of the seat and facing it (within 60°), a card
+  over the seat says "E to ride" (or "grab the bars"). E, or a fresh squeeze
+  within 0.6 m of a grip, fades to black over 0.1 s; on the black step the
+  view moves to the seat (the calibrated eye lands on the seat eye, facing
+  the bike's heading) and the grabbing hand stays latched; it fades back in
+  over 0.15 s. The view never moves smoothly into the seat.
+- **Getting off.** Hold E or right B for 0.5 s, below 2 m/s (faster, the
+  gauge says "slow down" and getting off waits). The walker lands on the
+  bike's left, else its right, else behind it: each spot needs the course's
+  ground straight below, a capsule swept down onto it touching nothing, and
+  nothing between it and the bike. With no room it stays on ("no room to
+  get off"). It lands facing the bike, through the same fade. Releasing the
+  grips never gets off: they brake.
+- **Parked.** Unridden, the bike holds full brake and hovers where it stopped.
 
 ## How it works
 
@@ -120,4 +158,5 @@ drives them with injected XR samples.
 
 `dunes.fun` is the course, `stand.fun` the test stand, `bike.fun` the mesh.
 The goldens (`hoverbike-crest`, `hoverbike-rider` in `golden-scenarios.json`)
-replay `ride.script`.
+replay `ride.script`; `hoverbike-foot`, `hoverbike-fade` and
+`hoverbike-mounted` replay `mount.script` (the card, the black step, seated).

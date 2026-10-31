@@ -43,6 +43,11 @@ let blocks = [
   standing(Wall, -28.0, 150.0, 14.0, 2.0, 0.8),
 ]
 
+// The floor (the first block)'s tag: a dismount lands only on it, and only
+// inside the walls.
+let floorTag = Physics.tag("stand0")
+let inside = (x: float, z: float) => x > originX - 45.0 && x < originX + eastWall && z > -40.0 && z < 210.0
+
 // Declared every frame from this one value, so the world never changes.
 let bodies = blocks |> List.indexedMap((i, b) =>
   Physics.fixed(Physics.tag($"stand{i}"), Physics.box(b.w, b.h, b.d))
