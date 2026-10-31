@@ -84,10 +84,10 @@ type Look =
   | NoMouse
   | MouseAt(x: float, y: float)
 
-// Views 1–8 (the office) and 9, 0 (the block): in which copy, where in it,
-// on which level, and which way. 4 faces office 103's window; 5 looks up
-// the stairs from their foot, 6 down them from the landing; 7 is the
-// upstairs corridor; 8 faces office 203's window. 9 looks up the street
+// Views 1–8 (in the office, or the block's nearest copy) and 9, 0 (in the
+// block): in which copy (9 and 0 only), where in it, on which level, and which way. 4 faces office 103's window;
+// 5 looks up the stairs from their foot, 6 down them from the landing; 7 is
+// the upstairs corridor; 8 faces office 203's window. 9 looks up the street
 // through the crossroads; 0 faces office 103's window in the copy turned
 // 180°.
 type View = { copy: float, x: float, level: float, z: float, yaw: float, pitch: float }
@@ -208,7 +208,7 @@ let tick = (model, dt: float, tts: float) =>
     baked: baked } in
   match List.nth(model.goto - 1.0, views) with
   | Option.Some(view) =>
-    let c = Block.copyAt(view.copy) in
+    let c = Block.copyAt(if inBlock(model.goto) then view.copy else copy) in
     ({ observed with goto: 0.0, vy: 0.0, yaw: Block.headingToWorld(c, view.yaw), pitch: view.pitch,
                      block: model.block || inBlock(model.goto) },
      Physics.teleport(playerTag, Block.toWorld(c, v(view.x, view.level * Layout.storey + centreAboveFeet, view.z))))
