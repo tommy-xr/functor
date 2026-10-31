@@ -44,6 +44,10 @@ fn run(game: &mut FunctorLangEmbeddedGame) -> Run {
     let started = Instant::now();
     let mut last = Instant::now();
     let (mut loading_frames, mut longest_gap, mut progress) = (0, Duration::ZERO, Vec::new());
+    let (done, landed) = std::sync::mpsc::channel();
+    game.when_loaded(Box::new(move |status| {
+        let _ = done.send(status);
+    }));
     let mut status = None;
     let mut after = 0;
     for frame in 1.. {
@@ -55,7 +59,7 @@ fn run(game: &mut FunctorLangEmbeddedGame) -> Run {
             loading_frames += 1;
             progress.push(screen.shown());
         }
-        status = status.or_else(|| game.take_load_status());
+        status = status.or_else(|| landed.try_recv().ok());
         let now = Instant::now();
         longest_gap = longest_gap.max(now - last);
         last = now;

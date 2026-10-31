@@ -218,8 +218,8 @@ pub struct FunctorLangEmbeddedGame {
     /// A new project loading off the frame thread: until it lands, its
     /// loading screen draws and the running program pauses.
     loading: Option<Loading>,
-    /// How the last load job ended, until the shell takes it.
-    load_status: Option<Result<String, String>>,
+    /// Who to tell how the load in flight ends.
+    load_waiters: Vec<crate::protocol::LoadWaiter>,
     /// The role the running program was loaded for: a failed load job
     /// puts it back.
     loaded_role: EntryRole,
@@ -573,7 +573,7 @@ impl FunctorLangEmbeddedGame {
             platform,
             loader: Default::default(),
             loading: None,
-            load_status: None,
+            load_waiters: Vec::new(),
             loaded_role: EntryRole::Prefix(String::new()),
         };
         game.loaded_role = game.role.clone();
@@ -791,6 +791,11 @@ impl FunctorLangEmbeddedGame {
         let view = crate::loading::LoadingView::of_game(&compiled.module, compiled.names.loading, render);
         let status = format!("loading {} ({} file(s)) off the frame thread", compiled.path, files.len());
         log::info!("[functor-lang] {status}");
+        if self.loading.is_some() {
+            for done in std::mem::take(&mut self.load_waiters) {
+                done(Err("superseded by a newer load".to_string()));
+            }
+        }
         self.loading = Some(Loading {
             job,
             compiled,
@@ -831,7 +836,9 @@ impl FunctorLangEmbeddedGame {
                 log::error!("[functor-lang] load failed, keeping the running program: {message}");
             }
         }
-        self.load_status = Some(result);
+        for done in std::mem::take(&mut self.load_waiters) {
+            done(result.clone());
+        }
     }
 
     /// The screen of the load in flight (tests).
@@ -885,8 +892,11 @@ impl GameProducer for FunctorLangEmbeddedGame {
         self.loading.is_some()
     }
 
-    fn take_load_status(&mut self) -> Option<Result<String, String>> {
-        self.load_status.take()
+    fn when_loaded(&mut self, done: crate::protocol::LoadWaiter) {
+        match self.loading {
+            Some(_) => self.load_waiters.push(done),
+            None => done(Ok("loaded".to_string())),
+        }
     }
 
     fn uses_captured_mouse_input(&self) -> bool {
