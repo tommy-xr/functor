@@ -66,7 +66,7 @@ let maxTwist = degrees(70.0)
 let turnRate = degrees(150.0)
 // Seconds for a lost hand to settle into the neutral arm, and to come back.
 let lossFade = 0.3
-let recoverFade = 0.15
+let recoverFade = 0.2
 // A head that moves this far in one step was recentred, not turned.
 let recenterJump = 0.25
 let recenterTurn = degrees(45.0)
@@ -125,13 +125,18 @@ let slewYaw = (yaw: float, heading: float, dt: float): float =>
   if Math.abs(behind) > maxTwist then Quat.wrap(heading - Math.sign(behind) * maxTwist)
   else Quat.wrap(chased)
 
-/// A head that jumped (a recentre, or the first sample) snaps the body.
-let jumped = (previous: Option.t<Pose>, head: Pose): bool =>
-  match previous with
-  | Option.None => true
+/// The hips' heading for a new head sample. The first one sets it; a head
+/// that jumps (a recentre moves the whole tracking space) turns the hips by
+/// the same amount, keeping the twist; otherwise they lag (`slewYaw`).
+let nextYaw = (s: State, head: Pose, fresh: bool, dt: float): float =>
+  let heading = Quat.heading(head.rotation) in
+  match s.head with
+  | Option.None => heading
   | Option.Some(p) =>
-    Quat.length(Quat.sub(head.position, p.position)) > recenterJump
-      || Math.abs(Quat.wrap(Quat.heading(head.rotation) - Quat.heading(p.rotation))) > recenterTurn
+    let turned = Quat.wrap(heading - Quat.heading(p.rotation)) in
+    let jumped = fresh && (Quat.length(Quat.sub(head.position, p.position)) > recenterJump
+      || Math.abs(turned) > recenterTurn) in
+    if jumped then Quat.wrap(s.yaw + turned) else slewYaw(s.yaw, heading, dt)
 
 let stepHand = (side: Rig.Side, toModel: (Pose) => Pose, scale: float, dt: float, x: HandSample, h: Hand): Hand =>
   match x.grip with
@@ -157,9 +162,8 @@ let step = (s: State, x: Sample, dt: float): State =>
   match head with
   | Option.None => { s with calibrateHeld: x.calibrate, clock: s.clock + dt }
   | Option.Some(h) =>
-    let snap = match x.head with | Option.Some(fresh) => jumped(s.head, fresh) | Option.None => false in
     let heading = Quat.heading(h.rotation) in
-    let yaw = if snap then heading else slewYaw(s.yaw, heading, dt) in
+    let yaw = nextYaw(s, h, Option.isSome(x.head), dt) in
     let twist = Quat.wrap(heading - yaw) in
     let neck = neckRotation(yaw, twist, h.rotation) in
     let calibrate = (x.calibrate && not s.calibrateHeld) || not s.calibrated in
