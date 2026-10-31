@@ -67,11 +67,17 @@ const CANCEL_POLL: u32 = 4096;
 /// The error a stopped job's evaluation ends with.
 pub const CANCELLED: &str = "the job was cancelled";
 
+/// The error a load ends with when its [`LoadWatch`] stops it.
+pub const LOAD_STOPPED: &str = "the load stopped before a def";
+
 /// Hears of each top-level def a [`Session::load_watched`] evaluates (a
-/// reused one is skipped): progress and timings.
+/// reused one is skipped): progress, timings, or a reason to stop.
 pub trait LoadWatch {
-    /// Def `index` of `total` is about to evaluate.
-    fn evaluating(&mut self, _index: usize, _total: usize, _name: &str) {}
+    /// Def `index` of `total` is about to evaluate; `false` stops the load
+    /// with [`LOAD_STOPPED`].
+    fn evaluating(&mut self, _index: usize, _total: usize, _name: &str) -> bool {
+        true
+    }
 
     /// The def `evaluating` last named has evaluated.
     fn evaluated(&mut self, _name: &str) {}
@@ -771,8 +777,8 @@ impl Session {
     }
 
     /// [`Session::load_reusing`] for the engine's load job: `watch` hears
-    /// of each def as it evaluates, and evaluation stops with [`CANCELLED`]
-    /// soon after `stop` is set.
+    /// of each def as it evaluates and may stop the load ([`LOAD_STOPPED`]),
+    /// and evaluation stops with [`CANCELLED`] soon after `stop` is set.
     pub fn load_watched(
         module: &Module,
         host: &mut dyn Host,
@@ -1192,7 +1198,12 @@ impl Interp<'_> {
             let value = match planner.reuse(def) {
                 Some(value) => value,
                 None => {
-                    watch.evaluating(index, total, &def.name);
+                    if !watch.evaluating(index, total, &def.name) {
+                        return Err(RunError {
+                            message: LOAD_STOPPED.to_string(),
+                            span: def.span,
+                        });
+                    }
                     let before = calls.get();
                     self.host.begin_inputs();
                     let value = self.eval(&def.value, &Env::empty());
