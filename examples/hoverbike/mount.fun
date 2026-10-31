@@ -61,8 +61,11 @@ let rise = 1.3 // s
 // stops at the black while `hold` counts down.
 type Fade = { t: float, hold: float, action: Action }
 let clear: Fade = { t: -1.0, hold: 0.0, action: GetOn(0.0) }
-let start = (a: Action): Fade =>
-  { t: 0.0, hold: (match a with | GetOn(_) => rise | GetOff(_, _, _, _) => 0.0), action: a }
+let gettingOn = (a: Action) =>
+  match a with
+  | GetOn(_) => true
+  | GetOff(_, _, _, _) => false
+let start = (a: Action): Fade => { t: 0.0, hold: if gettingOn(a) then rise else 0.0, action: a }
 let fading = (f: Fade) => f.t >= 0.0
 
 // One step: the next fade, and whether its action happens on this step.
@@ -78,8 +81,7 @@ let step = (dt: float, f: Fade): (Fade, bool) =>
 // fade; else the idle height. So the bike rises from getting on's black step
 // (unseen) and sinks once getting off has faded back in.
 let height = (riding: bool, f: Fade) =>
-  let leaving = fading(f) && (match f.action with | GetOff(_, _, _, _) => true | GetOn(_) => false) in
-  if riding || leaving then Ride.hoverHeight else Ride.idleHeight
+  if riding || (fading(f) && not gettingOn(f.action)) then Ride.hoverHeight else Ride.idleHeight
 
 // ---- Getting off ---------------------------------------------------------
 
@@ -171,8 +173,7 @@ let lifting = (n: float, riding: bool, h0: float, f0: Fade): List<Lift> =>
     let l = acc |> List.head |> Option.defaultValue({ h: h0, s: Ride.rest, f: f0, riding: riding, level: 0.0 }) in
     let s = Ride.step(Ride.idle, height(l.riding, l.f), Ride.flatProbes(l.h), Ride.dt60, l.s) in
     let (f, black) = step(Ride.dt60, l.f) in
-    let on = (match f.action with | GetOn(_) => true | GetOff(_, _, _, _) => false) in
-    [{ h: l.h + s.vy * Ride.dt60, s: s, f: f, riding: if black then on else l.riding, level: Bars.fadeAt(f.t) }, ..acc],
+    [{ h: l.h + s.vy * Ride.dt60, s: s, f: f, riding: if black then gettingOn(f.action) else l.riding, level: Bars.fadeAt(f.t) }, ..acc],
     []) |> List.reverse
 let within = (to: float, tolerance: float, l: Lift) => Math.abs(l.h - to) < tolerance
 
