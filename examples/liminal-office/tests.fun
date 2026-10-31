@@ -89,7 +89,7 @@ let tags = Building.blocks |> List.map((b) => b.tag)
 expect tags |> List.indexedMap((i, t) => List.drop(i + 1.0, tags) |> List.any((u) => u == t)) |> List.all((dup) => not dup)
 
 // Windows sit in an outside wall of an inside room, clear of its corners,
-// with a sill and a head under the ceiling; the wall keeps its colliders.
+// with a sill and a head under the ceiling.
 expect windows |> List.all((w) =>
   let r = Building.roomAt(w.room) in
   let c = Building.inner(r.rect) in
@@ -97,8 +97,14 @@ expect windows |> List.all((w) =>
   Building.isInside(r) && Building.onFootprint(w.side, r.rect)
     && w.at - w.width / 2.0 > lo + 0.3 && w.at + w.width / 2.0 < hi - 0.3
     && w.sill >= 0.8 && w.head < ceiling - 0.2)
+// Each window has a sill collider: floor to sill, across the window, in its wall.
+let near = (a: float, b: float): bool => Math.abs(a - b) < 0.001
 expect windows |> List.all((w) =>
-  Building.blocks |> List.any((b) => Math.abs(b.y + b.h / 2.0 - w.sill) < 0.001 && b.y - b.h / 2.0 == 0.0))
+  let l = Building.lineOf(w.side, Building.roomAt(w.room).rect) in
+  Building.blocks |> List.any((b) =>
+    near(b.y - b.h / 2.0, 0.0) && near(b.y + b.h / 2.0, w.sill)
+      && (if w.side == North || w.side == South then near(b.z, l) && near(b.x, w.at) && near(b.w, w.width)
+          else near(b.x, l) && near(b.z, w.at) && near(b.d, w.width))))
 
 // Hours → daylight: night at midnight, day at noon, crossing at dawn and dusk.
 expect Hours.daylight(0.0) == 0.0 && Hours.daylight(4.0) == 0.0 && Hours.daylight(21.0) == 0.0

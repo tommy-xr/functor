@@ -94,7 +94,7 @@ let init = {
   // The hour, 0 ≤ hour < 24: midnight.
   hour: 0.0,
   walk: 0.0, strafe: 0.0, turn: 0.0,
-  // A requested view (1–3), applied by the next tick; 0 for none.
+  // A requested view (1–4), applied by the next tick; 0 for none.
   goto: 0.0,
   // From the last tick: where the player stood, its cell (-1: outside every
   // cell), whether the interior draws, and whether its bake is current.

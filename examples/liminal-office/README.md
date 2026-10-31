@@ -19,7 +19,7 @@ npm run test:liminal-office                 # route, wall push, hours, culling, 
 | `W` `A` `S` `D` / arrows | walk, strafe / turn |
 | `1` `2` `3` `4` | jump to the entrance, corridor, office, window view |
 | `T` | next hour |
-| `N` | midnight ⇄ noon |
+| `N` | midnight ⇄ noon (keyboard only: no VR binding yet) |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
 
