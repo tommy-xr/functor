@@ -149,31 +149,25 @@ pub(crate) fn load_file(
 ) -> crate::jobs::Shareable {
     use crate::jobs::{HostValue, Shareable};
     let Some(reader) = reader else {
-        return file_error("File.Unsupported", unsupported("File.load", path));
+        return crate::jobs::Shareable::error("File.Unsupported", unsupported("File.load", path));
     };
     if !path.is_empty() && !reader.exists(path) {
-        return file_error("File.Missing", format!("File.load: no file {path} in the project"));
+        return crate::jobs::Shareable::error("File.Missing", format!("File.load: no file {path} in the project"));
     }
     match read_with(Some(reader), "File.load", path) {
         Ok(data) => Shareable::Variant(
             "Result.Ok".into(),
             vec![Shareable::Host(HostValue::Bytes(ByteView::from_shared(data)))].into(),
         ),
-        Err(message) => file_error("File.Failed", message),
+        Err(message) => crate::jobs::Shareable::error("File.Failed", message),
     }
 }
 
 /// A `File.load` that didn't run (a full queue, a crash), as its result.
 pub(crate) fn load_failed(message: String) -> crate::jobs::Shareable {
-    file_error("File.Failed", message)
+    crate::jobs::Shareable::error("File.Failed", message)
 }
 
-/// `Result.Error(ctor(message))`, `ctor` a `File.error` constructor.
-fn file_error(ctor: &str, message: String) -> crate::jobs::Shareable {
-    use crate::jobs::Shareable;
-    let error = Shareable::Variant(ctor.into(), vec![Shareable::Text(message.into())].into());
-    Shareable::Variant("Result.Error".into(), vec![error].into())
-}
 
 /// Whether the [`super::path::resolve`]d `path` names a file in the project
 /// (false for the root, and on hosts that can't read project files).

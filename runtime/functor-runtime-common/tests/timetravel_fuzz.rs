@@ -183,14 +183,16 @@ let draw = (model, tts) =>
     Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum, 7.0), model.got * 0.01, 0.0)))
 "#;
 
-/// `File.load` on the fuzzer's fake job pool: on demand from `tick` (asked
+/// Jobs on the fuzzer's fake pool. `File.load` on demand from `tick` (asked
 /// every frame until it lands, then now and then), from input (one, a
 /// same-path pair, a missing file), and cancels (alone, and cancel-then-load
-/// in one batch). Each tagger captures which ask it answers. `Nav.path` the
-/// same way: from `tick` until a route for the latest `seq` lands, a door
-/// toggled from input (a new `seq`), and cancels.
+/// in one batch). `Nav.path` the same way: from `tick` until a route for the
+/// latest `seq` lands, a door toggled from input (a new `seq`), and cancels.
+/// `Job.run` of `work` (which reads a file and the reload knob, so a semantic
+/// reload re-runs it) from `tick`, a cancel-then-run batch and a cancel. Each
+/// tagger captures which ask it answers.
 const JOBS_GAME: &str = r#"
-type Msg = | Loaded(i: float, r: Result.t<Bytes.t, File.error>) | Routed(r: Nav.result)
+type Msg = | Loaded(i: float, r: Result.t<Bytes.t, File.error>) | Routed(r: Nav.result) | Ran(i: float, r: Result.t<float, Job.error>)
 let link = (a, b, door) => { from: a, to: b, cost: 1.0, bits: 1.0, door: door }
 let nav = Nav.graph({
   nodes: [Vec3.make(0.0, 0.0, 0.0), Vec3.make(1.0, 0.0, 0.0), Vec3.make(2.0, 0.0, 0.0), Vec3.make(1.0, 0.0, 1.0)],
@@ -202,7 +204,8 @@ let scale = 1.0
 let a = Path.of("data/a.bin")
 let b = Path.of("data/b.bin")
 let gone = Path.of("data/gone.bin")
-let init = { want: 0.0, got: 0.0, sum: 0.0, bytes: 0.0, missing: 0.0, n: 0.0, seq: 0.0, closed: false, routed: -1.0, hops: 0.0, stale: 0.0 }
+let work = (n: float): float => n * scale + Bytes.length(File.bytes(a))
+let init = { want: 0.0, got: 0.0, sum: 0.0, bytes: 0.0, missing: 0.0, n: 0.0, seq: 0.0, closed: false, routed: -1.0, hops: 0.0, stale: 0.0, ran: 0.0, out: 0.0 }
 let input = (model, key, isDown) =>
   match key with
   | Key.Space => if isDown then ({ model with want: model.want + 1.0 }, File.load(b, (r) => Loaded(model.want, r))) else model
@@ -213,6 +216,8 @@ let input = (model, key, isDown) =>
   | Key.N => if isDown then { model with closed: not model.closed, seq: model.seq + 1.0 } else model
   | Key.X => if isDown then (model, Effect.batch([Nav.cancel("ai"), route(model)])) else model
   | Key.Z => if isDown then (model, Nav.cancel("ai")) else model
+  | Key.J => if isDown then (model, Effect.batch([Job.cancel("w"), Job.run("w", work, model.n, (r) => Ran(model.n, r))])) else model
+  | Key.K => if isDown then (model, Job.cancel("w")) else model
   | _ => model
 let update = (model, msg) =>
   match msg with
@@ -226,14 +231,19 @@ let update = (model, msg) =>
   | Routed(r) =>
     if r.query.seq == model.seq then { model with routed: model.seq, hops: model.hops + List.length(r.nodes) * scale }
     else { model with stale: model.stale + 1.0 }
+  | Ran(i, r) =>
+    (match r with
+     | Result.Ok(v) => { model with ran: model.ran + 1.0, out: model.out + v }
+     | Result.Error(e) => model)
 let tick = (model, dt, tts) =>
   let next = { model with n: model.n + 1.0 } in
   let load = if model.got < 1.0 || Math.mod(model.n, 30.0) == 0.0 then [File.load(a, (r) => Loaded(model.n, r))] else [] in
   let nav = if model.routed < model.seq || Math.mod(model.n, 45.0) == 0.0 then [route(model)] else [] in
-  (next, Effect.batch(List.append(load, nav)))
+  let run = if Math.mod(model.n, 7.0) == 0.0 then [Job.run("w", work, model.n, (r) => Ran(model.n, r))] else [] in
+  (next, Effect.batch(List.append(load, List.append(nav, run))))
 let draw = (model, tts) =>
   Frame.create(Camera3D.lookAt(Vec3.make(model.hops * 0.01, 3.0, model.stale - 6.0), Vec3.make(0.0, 0.0, 0.0)),
-    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum, 7.0), model.got * 0.01, model.bytes * 0.001 + model.missing)))
+    Scene.cube() |> Scene.translate(Vec3.make(Math.mod(model.sum + model.out, 7.0), model.got * 0.01, model.bytes * 0.001 + model.missing + model.ran * 0.01)))
 "#;
 
 /// `text`, rewritten to `template` with 0.3, 0.6 or 0.9 for `{}`.
@@ -313,7 +323,7 @@ fn specs() -> Vec<Spec> {
             ..Spec::new("http", fixture(HTTP_GAME))
         },
         Spec {
-            keys: vec![Space, G, C, R, M, N, X, Z],
+            keys: vec![Space, G, C, R, M, N, X, Z, J, K],
             knob: knob("let scale = 1.0", "let scale = {}"),
             jobs: true,
             ..Spec::new("jobs", fixture(JOBS_GAME))
