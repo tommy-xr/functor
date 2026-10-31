@@ -1621,6 +1621,11 @@ let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))
 let settings = (model) =>                   // OPTIONAL; evaluated every frame,
   Settings.create()                         // applied by the shell on change
     |> Settings.xr(Xr.create() |> Xr.foveation(Xr.High))
+let loading = (progress, tts) => Frame.create(camera, bar(progress))
+                                            // OPTIONAL; the loading screen while the
+                                            // top-level values load off the frame
+                                            // thread (engine spinner otherwise);
+                                            // reads nothing — no files, physics, ui
 ```
 
 **Interpolating between steps.** `tick` runs at a fixed 60 Hz; `draw` runs

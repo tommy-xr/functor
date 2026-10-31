@@ -249,6 +249,11 @@ pub struct FunctorLangGame {
     // stage, and the render side's wait on it (pipelined runs).
     sim_ns: u64,
     sim_wait_ns: u64,
+    /// Where load jobs run (a thread, started on the first).
+    loader: functor_runtime_common::jobs::load::Loader,
+    /// Until the game's first load lands: the stand-in program (the
+    /// engine's loading view) runs, and this draws instead of it.
+    boot: Option<Boot>,
 }
 
 const STATS_EVERY: u64 = 300;
@@ -407,10 +412,23 @@ fn finish_load(
                 sources.render(f.error.span.start, &f.error.message)
             )
         })?;
-    // The producer contract (init a value, tick/draw functions of the right
-    // arity, optional hooks well-shaped) is shared with the embedded producer
-    // and the CLI's build gate — errors name the ROLE'S resolved bindings
-    // (`serverTick`, not `tick`) via `names`.
+    let file_reads = functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
+    contract(path, names, module, sources, session, reuse, file_reads)
+}
+
+/// The producer contract (init a value, tick/draw functions of the right
+/// arity, optional hooks well-shaped) is shared with the embedded producer
+/// and the CLI's build gate — errors name the ROLE'S resolved bindings
+/// (`serverTick`, not `tick`) via `names`.
+fn contract(
+    path: &str,
+    names: EntryNames,
+    module: functor_lang::ir::Module,
+    sources: SourceMap,
+    session: Session,
+    reuse: functor_lang::reuse::ReuseStats,
+    file_reads: std::collections::BTreeMap<String, Option<String>>,
+) -> Result<Loaded, String> {
     let contract = validate_contract(path, &session, &names)?;
     Ok(Loaded {
         names,
@@ -431,9 +449,25 @@ fn finish_load(
         config: contract.config,
         settings: contract.settings,
         reuse,
-        file_reads: functor_runtime_common::functor_lang_prelude::bytes::take_file_reads(),
+        file_reads,
     })
 }
+
+/// The game's first load, running on the loader thread while its screen
+/// draws; once it fails, just the screen (with the error) until an edit.
+struct Boot {
+    /// `None` once the load failed.
+    job: Option<functor_runtime_common::jobs::load::LoadHandle>,
+    names: EntryNames,
+    /// What the frame thread linked, to adopt the job's values into.
+    project: Option<functor_lang::project::Project>,
+    screen: functor_runtime_common::loading::LoadScreen,
+    started: Instant,
+}
+
+/// How long [`FunctorLangGame::create_loading_for_role`] waits for the load
+/// before the loading screen shows: a small game is ready by then.
+const BOOT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// A project file's version through the installed reader (mounts included).
 fn data_version(
@@ -480,6 +514,46 @@ impl FunctorLangGame {
     /// unprefixed contract) or an inline `module Server { … }` block, whose
     /// members ARE the role's contract (`Server.init`/`Server.tick`/…).
     pub fn create_for_role(path: &str, role: EntryRole) -> FunctorLangGame {
+        let stamp = Self::prepare(path);
+        let loaded = match load_game(path, &role, None) {
+            Ok(loaded) => loaded,
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
+        };
+        Self::from_loaded(path, role, stamp, loaded)
+    }
+
+    /// [`Self::create_for_role`] that evaluates the top-level values on the
+    /// loader thread: the loading screen draws (once the load outlasts
+    /// [`BOOT_GRACE`]) until they land. A link error still exits.
+    pub fn create_loading_for_role(path: &str, role: EntryRole) -> FunctorLangGame {
+        let stamp = Self::prepare(path);
+        let stand_in = vec![(
+            functor_runtime_common::loading::ENGINE_VIEW_PATH.to_string(),
+            functor_runtime_common::loading::ENGINE_VIEW.to_string(),
+        )];
+        let stand_in = load_sources(&stand_in, &EntryRole::Prefix(String::new()), None)
+            .expect("the engine's loading view loads");
+        let mut game = Self::from_loaded(path, role, stamp, stand_in);
+        if let Err(message) = game.begin_boot() {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        let waited = Instant::now();
+        while game.boot.as_ref().is_some_and(|boot| boot.job.is_some()) && waited.elapsed() < BOOT_GRACE {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            game.poll_boot();
+        }
+        game
+    }
+
+    /// Process-wide setup before a first load; the project's stamp, taken
+    /// BEFORE reading: an edit that lands mid-load then compares unequal on
+    /// the next frame and triggers a reload, instead of being silently
+    /// absorbed into a stale session.
+    fn prepare(path: &str) -> Vec<(PathBuf, SystemTime)> {
         // Route Functor Lang `Debug.log` traces into the region-aware event stream (once
         // per process; survives hot-reload's Session rebuild — the sink is
         // installed on the process, not the Session). See functor_lang_prelude.
@@ -488,17 +562,15 @@ impl FunctorLangGame {
         // process's working directory: point the store at the game dir before
         // the first frame can issue a load.
         functor_runtime_common::storage::set_project_root(std::path::PathBuf::from(path));
-        // Stat BEFORE reading: an edit that lands mid-load then compares
-        // unequal on the next frame and triggers a reload, instead of being
-        // silently absorbed into a stale session.
-        let stamp = project_stamp(path);
-        let loaded = match load_game(path, &role, None) {
-            Ok(loaded) => loaded,
-            Err(message) => {
-                eprintln!("error: {message}");
-                std::process::exit(1);
-            }
-        };
+        project_stamp(path)
+    }
+
+    fn from_loaded(
+        path: &str,
+        role: EntryRole,
+        stamp: Vec<(PathBuf, SystemTime)>,
+        loaded: Loaded,
+    ) -> FunctorLangGame {
         // Arm the paused-inspector journal on this (the render) thread: from now
         // on every live model-updating call is journaled (a cheap Rc-clone push).
         // The web producer never arms it — its shared frame body pays only a
@@ -568,6 +640,8 @@ impl FunctorLangGame {
             swap_ns: 0,
             sim_ns: 0,
             sim_wait_ns: 0,
+            loader: Default::default(),
+            boot: None,
         };
         // Cold start (docs/physics.md): declare the initial world before the
         // first frame, so frame 1's physics reads answer instead of raising.
@@ -578,6 +652,112 @@ impl FunctorLangGame {
         game.recorder.set_job_program(job_program);
         game.ctx().prime_physics();
         game
+    }
+
+    /// Start the game's first load on the loader thread: linked here (a
+    /// link error returns), evaluated there.
+    fn begin_boot(&mut self) -> Result<(), String> {
+        let project = functor_lang::project::load_with_bundled_modules(
+            std::path::Path::new(&self.path),
+            &std::collections::HashMap::new(),
+            &functor_prelude::bundled_modules(),
+        )
+        .map_err(|e| format!("cannot load {}", e.render()))?;
+        let names = self.role.resolve(&self.path, &project)?;
+        let source = std::sync::Arc::new(functor_runtime_common::jobs::ProgramSource::of(&project.sources));
+        let reader = self.recorder.job_reader();
+        let render = |span: functor_lang::Span, message: &str| project.sources.render(span.start, message);
+        let view = functor_runtime_common::loading::LoadingView::of_game(&project.module, names.loading, render);
+        let mut screen = functor_runtime_common::loading::LoadScreen::new(view);
+        let job = self.loader.start(source, reader);
+        if job.is_none() {
+            screen.fail("the loader thread couldn't start".to_string());
+        }
+        self.boot = Some(Boot { job, names, project: Some(project), screen, started: Instant::now() });
+        Ok(())
+    }
+
+    /// Install the first load once its job has finished; a failure keeps
+    /// the screen, now showing the error, until an edit retries.
+    fn poll_boot(&mut self) {
+        let Some(boot) = &mut self.boot else { return };
+        let Some(job) = &boot.job else { return };
+        boot.screen.advance(job.progress());
+        let Some(outcome) = job.take() else { return };
+        boot.job = None;
+        let adopting = Instant::now();
+        let project = boot.project.take().expect("linked at begin");
+        let names = boot.names;
+        let result = match outcome {
+            functor_runtime_common::jobs::load::Outcome::Evaluated(mut evaluated) => {
+                functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
+                let mut file_reads = std::mem::take(&mut evaluated.file_reads);
+                match evaluated.adopt(&project.module, &mut FunctorHost) {
+                    Ok((session, reuse)) => {
+                        file_reads.extend(functor_runtime_common::functor_lang_prelude::bytes::take_file_reads());
+                        contract(&self.path, names, project.module, project.sources, session, reuse, file_reads)
+                    }
+                    Err(f) => Err(format!(
+                        "cannot load {}",
+                        project.sources.render(f.error.span.start, &f.error.message)
+                    )),
+                }
+            }
+            functor_runtime_common::jobs::load::Outcome::Failed { message, file_reads } => {
+                self.data_watch.extend(file_reads);
+                Err(message)
+            }
+            functor_runtime_common::jobs::load::Outcome::Inline(why) => {
+                eprintln!("[functor-lang] {why}, so it loads on the frame thread");
+                finish_load(&self.path, project, &self.role, None)
+            }
+        };
+        let boot = self.boot.as_mut().expect("checked above");
+        match result {
+            Ok(loaded) => {
+                let total = boot.started.elapsed();
+                self.boot = None;
+                self.reset_in(loaded);
+                eprintln!(
+                    "[functor-lang] loaded {} in {:.0} ms ({:.1} ms on the frame thread)",
+                    self.path,
+                    total.as_secs_f64() * 1000.0,
+                    adopting.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+            Err(message) => {
+                eprintln!("error: {message}");
+                boot.screen.fail(message);
+            }
+        }
+    }
+
+    /// While booting: retry a failed first load once the project or a file
+    /// it read changes.
+    fn check_boot(&mut self) {
+        self.poll_boot();
+        if self.boot.as_ref().is_none_or(|boot| boot.job.is_some()) {
+            return;
+        }
+        let stamp = project_stamp(&self.path);
+        let reader = functor_runtime_common::storage::project_reader();
+        let data_changed = !self.data_watch.poll(Instant::now(), |path| data_version(&reader, path)).is_empty();
+        if stamp == self.stamp && !data_changed {
+            return;
+        }
+        self.stamp = stamp;
+        if let Err(message) = self.begin_boot() {
+            eprintln!("error: {message}");
+            if let Some(boot) = &mut self.boot {
+                boot.screen.fail(message);
+            }
+        }
+    }
+
+    /// The loading screen while booting (tests).
+    #[cfg(test)]
+    fn boot_screen(&self) -> Option<&functor_runtime_common::loading::LoadScreen> {
+        self.boot.as_ref().map(|boot| &boot.screen)
     }
 
     /// Bundle this producer's per-frame state into the shared [`FrameCtx`]
@@ -676,6 +856,12 @@ impl FunctorLangGame {
     /// tick right through a reload. Returns the number of stored closures
     /// rebound, for the status line.
     fn swap_in(&mut self, mut loaded: Loaded) -> (usize, Option<(usize, f64)>) {
+        // Before the game's first load lands, the running program is the
+        // loading view's stand-in: nothing to keep.
+        if self.boot.take().is_some() {
+            self.reset_in(loaded);
+            return (0, None);
+        }
         self.data_watch
             .watch(std::mem::take(&mut loaded.file_reads));
         let retry_tts_before_reload = self.prev_tts;
@@ -842,7 +1028,7 @@ impl FunctorLangGame {
         self.pending_events.clear();
         self.physics_rt = physics::SteppedPhysics::new();
         self.physics_frame = 0;
-        self.recorder = SceneRecorder::new();
+        self.recorder = self.recorder.renewed();
         self.recorder.set_job_program(job_program);
         self.next.clear();
         self.last_frame = empty_frame();
@@ -917,6 +1103,9 @@ impl Game for FunctorLangGame {
     }
 
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {
+        if self.boot.is_some() {
+            return self.check_boot();
+        }
         // Poll every project file's mtime (a few stats per frame is ~free)
         // and swap in a new session on change — editing a SIBLING module
         // hot-reloads exactly like editing the entry (B8). THE MODEL IS
@@ -1214,6 +1403,10 @@ impl Game for FunctorLangGame {
     }
 
     fn tick(&mut self, frame_time: FrameTime) {
+        self.poll_boot();
+        if self.boot.is_some() {
+            return;
+        }
         // The frame body lives in the shared `FrameCtx` (docs/time-travel.md
         // T6a); native splits it at the physics boundary to keep the separate
         // `tick_ns` / `physics_ns` perf counters the C6 gate watches.
@@ -1380,6 +1573,10 @@ impl Game for FunctorLangGame {
     }
 
     fn render_at(&mut self, frame_time: FrameTime, alpha: f32) -> Frame {
+        self.poll_boot();
+        if let Some(boot) = &mut self.boot {
+            return boot.screen.frame(frame_time.tts as f64);
+        }
         let started = Instant::now();
         // While scrubbing, draw at the scrubbed frame's recorded `tts` so
         // `tts`-driven visuals (orbiting lights, `sin(tts)` motion) rewind with
@@ -1526,7 +1723,10 @@ AudioScene.empty), got {}",
     }
 
     fn ui(&self) -> View {
-        self.last_view.clone()
+        match &self.boot {
+            Some(boot) => boot.screen.ui(),
+            None => self.last_view.clone(),
+        }
     }
 
     fn webview(&self) -> Option<HtmlNode> {
@@ -2136,6 +2336,53 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert!(status.contains("(reused 3 of 4 bindings; model preserved"), "{status}");
         assert!(std::rc::Rc::ptr_eq(&before, &table(&game)));
         assert_eq!(game.session.global("speed").unwrap().to_string(), "2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The first load runs on the loader while the loading screen draws;
+    /// a failure stays on screen until an edit fixes it, which loads.
+    #[test]
+    fn the_first_load_draws_its_screen_and_an_edit_retries_a_failure() {
+        let dir = std::env::temp_dir().join(format!("functor-lang-game-test-{}-boot", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let entry = dir.join("game.fun");
+        let slow = |tail: &str| {
+            format!(
+                "let total = 100000.0\n\
+                 let slow = List.fold((acc, i) => Job.report(i / total, acc + i), 0.0, List.range(total)){tail}\n\
+                 let init = {{ sum: slow }}\n\
+                 let tick = (m, dt, tts) => m\n\
+                 let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n"
+            )
+        };
+        std::fs::write(&entry, slow(" + Text.length(1.0)")).expect("write entry");
+        let mut game = FunctorLangGame::create_loading_for_role(entry.to_str().expect("utf-8"), EntryRole::Prefix(String::new()));
+        let frame = |game: &mut FunctorLangGame, n: u32| {
+            let time = FrameTime { tts: n as f32 / 60.0, dts: 1.0 / 60.0 };
+            game.check_hot_reload(time.clone());
+            game.tick(time.clone());
+            game.render_at(time, 0.0)
+        };
+        let failed = (0..).find_map(|n| {
+            assert!(n < 100_000, "the load never failed");
+            frame(&mut game, n);
+            game.boot_screen().and_then(|screen| screen.failed()).map(str::to_string)
+        });
+        let failed = failed.expect("found above");
+        assert!(failed.contains("game.fun:"), "located: {failed}");
+        assert!(matches!(game.ui(), View::Panel { child, .. } if matches!(&*child, View::Text { text, .. } if text.contains("Load failed"))));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // distinct mtime
+        std::fs::write(&entry, slow("")).expect("fix entry");
+        for n in 0.. {
+            assert!(n < 100_000, "the fixed load never landed");
+            frame(&mut game, n);
+            if game.boot_screen().is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(game.state_debug().contains("4999950000"), "{}", game.state_debug());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -886,6 +886,19 @@ game can scrub but not branch; seek to the newest frame to resume, or disconnect
         &mut self.requests
     }
 
+    /// A fresh recorder for a new game, whose jobs still run where, and read
+    /// what, this one's do.
+    pub fn renewed(&self) -> SceneRecorder {
+        let mut recorder = SceneRecorder::new();
+        *recorder.requests.jobs_mut() = self.requests.jobs().renewed();
+        recorder
+    }
+
+    /// The reader this producer's jobs (and load jobs) read through.
+    pub fn job_reader(&self) -> Option<std::sync::Arc<dyn crate::storage::ProjectReader>> {
+        self.requests.jobs().reader()
+    }
+
     /// Deliver `arrival` in Δ (see [`Requests`]).
     pub fn deliver(&mut self, arrival: &Arrival) -> Delivered {
         self.requests

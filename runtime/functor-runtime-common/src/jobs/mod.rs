@@ -555,6 +555,16 @@ impl JobPort {
         JobPort { program: self.program.clone(), ..JobPort::default() }
     }
 
+    /// A new game's port: the same dispatch and reader, nothing in flight.
+    pub(crate) fn renewed(&self) -> JobPort {
+        JobPort {
+            dispatch: self.dispatch.clone(),
+            mailbox: Mailbox::default(),
+            reader: self.reader.clone(),
+            program: None,
+        }
+    }
+
     /// The reader a job dispatched now reads through.
     pub(crate) fn reader(&self) -> Option<Arc<dyn ProjectReader>> {
         self.reader.clone().or_else(crate::storage::project_reader)

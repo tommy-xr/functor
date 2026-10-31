@@ -762,7 +762,7 @@ impl FunctorLangEmbeddedGame {
         self.pending_events.clear();
         self.physics_rt = physics::SteppedPhysics::new();
         self.physics_frame = 0;
-        self.recorder = SceneRecorder::new();
+        self.recorder = self.recorder.renewed();
         self.recorder.set_job_program(job_program);
         self.next.clear();
         self.last_frame = empty_frame();
@@ -782,7 +782,7 @@ impl FunctorLangEmbeddedGame {
         }
         let compiled = compile(files, &self.role)?;
         let source = std::sync::Arc::new(crate::jobs::ProgramSource::new(files.to_vec()));
-        let reader = self.recorder.requests().jobs().reader();
+        let reader = self.recorder.job_reader();
         let Some(job) = self.loader.start(source, reader) else {
             return self.load_project(files);
         };
