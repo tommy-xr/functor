@@ -146,23 +146,33 @@ let inner = (r: Rect): Rect =>
   rect(r.x0 + halfWall(West, r), r.z0 + halfWall(South, r),
        r.x1 - halfWall(East, r), r.z1 - halfWall(North, r))
 
-// An opening's span along its wall, and its top.
-type Hole = { lo: float, hi: float, top: float }
-let holeOf = (d: Door): Hole => { lo: d.at - d.width / 2.0, hi: d.at + d.width / 2.0, top: d.height }
+// An opening's span along its wall, and its bottom and top.
+type Hole = { lo: float, hi: float, bottom: float, top: float }
+let holeOf = (d: Door): Hole => { lo: d.at - d.width / 2.0, hi: d.at + d.width / 2.0, bottom: 0.0, top: d.height }
+let windowHole = (w: Window): Hole => { lo: w.at - w.width / 2.0, hi: w.at + w.width / 2.0, bottom: w.sill, top: w.head }
 
-// The doors in a room's side, as holes in increasing order.
+// The doors and windows in a room's side, as holes in increasing order.
 let holesIn = (i: float, side: Side): List<Hole> =>
-  doors
+  let doorHoles = doors
     |> List.filter((d) =>
       let other = if d.a == i then Option.Some(d.b) else if d.b == i then Option.Some(d.a) else Option.None in
       match other with
       | Option.Some(o) => sideBetween(roomAt(i).rect, roomAt(o).rect) == Option.Some(side)
       | Option.None => false)
-    |> List.map(holeOf)
+    |> List.map(holeOf) in
+  let windowHoles = windows |> List.filter((w) => w.room == i && w.side == side) |> List.map(windowHole) in
+  List.flatten([doorHoles, windowHoles]) |> List.sortBy((h) => h.lo)
+
+// The openings through the facade on footprint side `s`: the entrance and
+// the windows, in order along it.
+let openingsIn = (s: Side): List<Hole> =>
+  List.range(List.length(rooms))
+    |> List.filter((i) => isInside(roomAt(i)) && onFootprint(s, roomAt(i).rect))
+    |> List.concatMap((i) => holesIn(i, s))
     |> List.sortBy((h) => h.lo)
 
 // The solid parts of a wall run [s0, s1] × [0, top] around its holes: full
-// height between holes, a header above each.
+// height between holes, a header above and a sill below each.
 type Piece = { u0: float, u1: float, y0: float, y1: float }
 let pieces = (s0: float, s1: float, top: float, holes: List<Hole>): List<Piece> =>
   let strip = (a: float, b: float): List<Piece> =>
@@ -170,7 +180,8 @@ let pieces = (s0: float, s1: float, top: float, holes: List<Hole>): List<Piece> 
   let walked = holes |> List.fold((acc, h) =>
     let (cursor, out) = acc in
     let header = if top - h.top > eps then [{ u0: h.lo, u1: h.hi, y0: h.top, y1: top }] else [] in
-    (h.hi, List.flatten([out, strip(Math.max(cursor, s0), Math.min(h.lo, s1)), header])),
+    let sill = if h.bottom > eps then [{ u0: h.lo, u1: h.hi, y0: 0.0, y1: h.bottom }] else [] in
+    (h.hi, List.flatten([out, strip(Math.max(cursor, s0), Math.min(h.lo, s1)), header, sill])),
     (s0, [])) in
   let (cursor, out) = walked in
   out |> List.append(strip(cursor, s1))
@@ -187,31 +198,37 @@ let wallFaces = (i: float): List<Face> =>
     side(East, r.z0, r.z1, (p) => wallX(wall, p.u0, p.u1, p.y0, p.y1, r.x1, false)),
   ])
 
-// A door's reveal: the two jambs, the head (or, for a floor-to-ceiling
-// opening, a ceiling strip) and the threshold.
+// An opening's reveal through the wall on line `l`, `t` either side of it:
+// the two jambs, the head and the sill (a door's threshold).
+let revealFaces = (side: Side, l: float, t: float, h: Hole, jamb: float, top: float, sill: float): List<Face> =>
+  if side == North || side == South then [
+      wallX(jamb, l - t, l + t, h.bottom, h.top, h.lo, true),
+      wallX(jamb, l - t, l + t, h.bottom, h.top, h.hi, false),
+      ceilingFace(top, h.lo, l - t, h.hi, l + t, h.top),
+      floorFace(sill, h.lo, l - t, h.hi, l + t, h.bottom),
+    ]
+  else [
+      wallZ(jamb, l - t, l + t, h.bottom, h.top, h.lo, true),
+      wallZ(jamb, l - t, l + t, h.bottom, h.top, h.hi, false),
+      ceilingFace(top, l - t, h.lo, l + t, h.hi, h.top),
+      floorFace(sill, l - t, h.lo, l + t, h.hi, h.bottom),
+    ]
+
+// A door's reveal; a floor-to-ceiling opening's head is a ceiling strip.
 let jambFaces = (d: Door): List<Face> =>
   let ra = roomAt(d.a).rect in
   match sideBetween(ra, roomAt(d.b).rect) with
   | Option.None => []
   | Option.Some(side) =>
-    let l = lineOf(side, ra) in
-    let t = halfWall(side, ra) in
     let h = holeOf(d) in
     let top = if h.top < ceiling - eps then frame else ceilingTile in
     let sill = if roomAt(d.b).kind == Lobby then terrazzo else carpet in
-    match side == North || side == South with
-    | true => [
-        wallX(frame, l - t, l + t, 0.0, h.top, h.lo, true),
-        wallX(frame, l - t, l + t, 0.0, h.top, h.hi, false),
-        ceilingFace(top, h.lo, l - t, h.hi, l + t, h.top),
-        floorFace(sill, h.lo, l - t, h.hi, l + t, 0.0),
-      ]
-    | false => [
-        wallZ(frame, l - t, l + t, 0.0, h.top, h.lo, true),
-        wallZ(frame, l - t, l + t, 0.0, h.top, h.hi, false),
-        ceilingFace(top, l - t, h.lo, l + t, h.hi, h.top),
-        floorFace(sill, l - t, h.lo, l + t, h.hi, 0.0),
-      ]
+    revealFaces(side, lineOf(side, ra), halfWall(side, ra), h, frame, top, sill)
+
+// A window's reveal, painted like the walls.
+let windowFaces = (w: Window): List<Face> =>
+  let r = roomAt(w.room).rect in
+  revealFaces(w.side, lineOf(w.side, r), halfWall(w.side, r), windowHole(w), wall, wall, wall)
 
 let panelW = 0.6
 let panelL = 1.2
@@ -248,6 +265,7 @@ let roomFaces = (i: float): List<Face> =>
       wallFaces(i),
       room.panels |> List.map((p) => panelFace(room.rect, p)),
       fixtures |> List.filter((f) => f.room == i) |> List.map(signFace),
+      windows |> List.filter((w) => w.room == i) |> List.concatMap(windowFaces),
     ]) |> List.sortBy((f) => f.mat)
 
 // The mesh in parts, each drawn as one model in the cells it shows from:
@@ -400,7 +418,7 @@ let buildingBodies = (rev: float): List<Physics.body> =>
 let panelLight = (p: Panel): Light.t =>
   Light.point(v(p.x, ceiling - 0.12, p.z), Color.rgb(0.93, 0.97, 0.86), 0.9, 5.5) |> Light.castShadows
 
-// The lightmap stores light ÷ `bakeScale`; the game loads it with the same.
+// The lightmap stores light ÷ `bakeScale`; the game loads both bakes with it.
 let bakeScale = 2.0
 let night: Lightmap.bakeJob = {
   name: "night",
@@ -412,3 +430,60 @@ let night: Lightmap.bakeJob = {
   albedo: meshAlbedo,
   scale: bakeScale,
 }
+
+// ---- Daylight: the day bake only -----------------------------------------------
+
+// The sun's fixed direction (travelling east, down and north; 33° up): the
+// day bake's shadows and the frame's sun agree.
+let sunDirection = v(0.7, -0.55, 0.45)
+
+// A point `u` along footprint side `s`, `y` up, `out` metres outside the
+// wall's centre line.
+let outsideFacade = (s: Side, u: float, y: float, out: float): Vec3.t =>
+  match s with
+  | North => v(u, y, footprint.z1 + out)
+  | South => v(u, y, footprint.z0 - out)
+  | East => v(footprint.x1 + out, y, u)
+  | West => v(footprint.x0 - out, y, u)
+
+// What each facade opening sees: a patch of sky above its head and of
+// sunlit ground below, each a grid of shadowed spots about 0.5 m apart, 1 m
+// wider than the opening each side, aimed into the room. The facade's own
+// walls shadow them, so the sky lights a soft, window-shaped patch on the
+// floor and lower walls inside, and the ground the ceiling by the opening.
+// Ambient can't stand in: its occlusion reaches only 1 m, so it would light
+// windowless rooms too.
+// A patch `out` m outside the wall's centre line, `height` m tall from the
+// opening's head (sky) or the street (ground), aimed at the floor or the
+// ceiling 2 m inside.
+type Patch = { out: float, aboveHead: bool, height: float, aimY: float, color: Color.t, perSquareMetre: float }
+let skyPatch = { out: 1.0, aboveHead: true, height: 2.0, aimY: 0.0, color: Color.rgb(0.72, 0.84, 1.0), perSquareMetre: 0.6 }
+let groundPatch = { out: 2.0, aboveHead: false, height: 0.5, aimY: ceiling, color: Color.rgb(0.75, 0.72, 0.64), perSquareMetre: 0.3 }
+
+// `p`'s spots for opening `h` in side `s`.
+let patchLights = (s: Side, h: Hole, p: Patch): List<Light.t> =>
+  let y0 = if p.aboveHead then h.top else 0.0 in
+  let lo = h.lo - 1.0 in
+  let width = h.hi - h.lo + 2.0 in
+  let nu = Math.ceil(width / 0.5) in
+  let nv = Math.ceil(p.height / 0.5) in
+  let du = width / nu in
+  let dv = p.height / nv in
+  let target = outsideFacade(s, (h.lo + h.hi) / 2.0, p.aimY, -2.0) in
+  List.range(nu * nv) |> List.map((k) =>
+    let at = outsideFacade(s, lo + (Math.mod(k, nu) + 0.5) * du, y0 + (Math.floor(k / nu) + 0.5) * dv, p.out) in
+    Light.spot(at, Vec3.normalize(target |> Vec3.sub(at)), p.color, p.perSquareMetre * du * dv, 12.0, 80deg)
+      |> Light.castShadows)
+let openingLights = (s: Side, h: Hole): List<Light.t> =>
+  List.flatten([patchLights(s, h, skyPatch), patchLights(s, h, groundPatch)])
+
+let daylightLights = List.flatten([
+  [Light.directional(sunDirection, Color.rgb(1.0, 0.93, 0.8), 3.0) |> Light.castShadows],
+  [North, South, East, West] |> List.concatMap((s) => openingsIn(s) |> List.concatMap((h) => openingLights(s, h))),
+])
+
+// Day: the same mesh, so the same charts; the panels stay on.
+let day: Lightmap.bakeJob = { night with name: "day", lights: List.flatten([night.lights, daylightLights]) }
+
+// `functor bake` reads these through game.fun.
+let bakes = [night, day]

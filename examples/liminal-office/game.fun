@@ -1,38 +1,40 @@
-// liminal-office — one floor of an empty office block at night: a carpeted
-// corridor under a drop ceiling and fluorescent panels, open empty offices,
-// a neon entrance on an empty apron.
+// liminal-office — one floor of an empty office block, by night or day: a
+// carpeted corridor under a drop ceiling and fluorescent panels, open empty
+// offices (103 has a window), a neon entrance on an empty apron.
 //
 //   functor -d examples/liminal-office run native
 //   functor -d examples/liminal-office run native --emulate-xr
 //
 // Desktop: click to capture the mouse, then mouse-look; WASD or the arrows
-// walk. 1, 2, 3 jump to the entrance, corridor and office views. VR: the left
-// thumbstick walks and strafes; the right turns and walks.
+// walk. 1–4 jump to the entrance, corridor, office and window views. T steps
+// the hour; N jumps between midnight and noon. VR: the left thumbstick walks
+// and strafes; the right turns and walks.
 //
 // layout.fun is the one layout authority; building.fun derives the mesh,
 // cells, colliders and exterior from it. The interior's light is baked
-// (`Building.night`) and committed under baked/; bake.mjs rebakes it and records
-// its provenance, which provenance.fun checks at load.
+// (`Building.night`, `Building.day`) and committed under baked/; bake.mjs
+// rebakes it and records its provenance, which provenance.fun checks at load.
+// hours.fun maps the hour to the bake and the outdoor light.
 
 let v = Vec3.make
 
 // ---- Lights ------------------------------------------------------------------
 
-// The bake job (`Building.night`) holds the panels' light; `functor bake`
-// reads this list.
-let bakes = [Building.night]
+// The bake jobs (`Building.night`, `Building.day`) hold the panels' light and
+// the daylight through openings; `functor bake` reads this list.
+let bakes = Building.bakes
 
 // The frame's lights reach only unlightmapped geometry (the street, the
 // facade, the lamps): all are `Light.baked`, so the lit interior ignores
-// them. None casts shadows: a shadow pass would draw every hidden room.
-let nightSky = Color.rgb(22.0 / 255.0, 17.0 / 255.0, 34.0 / 255.0)
-let frameLights = List.flatten([
-  [Light.ambient(Color.rgb(0.09, 0.08, 0.14)) |> Light.baked,
-   Light.directional(v(0.3, -0.8, 0.5), Color.rgb(0.35, 0.38, 0.55), 0.6) |> Light.baked,
+// them, by day as by night. None casts shadows: a shadow pass would draw
+// every hidden room.
+let frameLights = (o: Hours.Outdoor): List<Light.t> => List.flatten([
+  [Light.ambient(Hours.color(o.ambient)) |> Light.baked,
+   Light.directional(o.sunDirection, Hours.color(o.sun), o.sunIntensity) |> Light.baked,
    // The lobby's light spilling onto the apron.
    Light.point(v(10.0, 2.0, 0.9), Color.rgb(0.85, 0.95, 0.8), 1.2, 9.0) |> Light.baked],
   Exterior.lampHeads |> List.map((p) =>
-    Light.point(p |> Vec3.add(v(0.0, -0.2, 0.0)), Color.rgb(1.0, 0.68, 0.36), 0.9, 14.0) |> Light.baked),
+    Light.point(p |> Vec3.add(v(0.0, -0.2, 0.0)), Color.rgb(1.0, 0.68, 0.36), 0.9 * o.lamps, 14.0) |> Light.baked),
 ])
 // Without a bake, light the interior flatly so it stays walkable.
 let unbakedLight = Light.ambient(Color.rgb(0.55, 0.57, 0.5))
@@ -50,6 +52,15 @@ let interior: List<Building.PartModel> =
 
 let baked = Provenance.status == Provenance.Current
 
+// Each part in its cells, under the night bake, and the same models under the
+// day bake: one mesh, two resident lightmaps, picked per frame.
+let nightRooms = interior |> List.map((p) => Scene.modelOf(p.model) |> Scene.inCells(p.cells))
+let dayRooms =
+  if not baked then nightRooms
+  else
+    let dayLightmap = Texture.fromPng(File.bytes(Provenance.dayLightPath), Texture.Srgb) in
+    nightRooms |> List.map((room) => room |> Scene.withLightmap(dayLightmap))
+
 // ---- The player ------------------------------------------------------------------
 
 let playerTag = Physics.tag("player")
@@ -61,26 +72,29 @@ let mouseRate = 0.0025
 let pitchLimit = 1.3
 // Interiors further than this draw nothing: `Scene.cells` draws every cell
 // when the eye is outside them all. The fog's far end, so nothing pops.
-let interiorRange = 140.0
+let interiorRange = Hours.fogFar
 
 type Look =
   | NoMouse
   | MouseAt(x: float, y: float)
 
-// Views 1–3: where, and which way.
+// Views 1–4: where, and which way. 4 faces office 103's window.
 type View = { x: float, z: float, yaw: float, pitch: float }
 let views = [
   { x: Layout.spawn.x, z: Layout.spawn.z, yaw: 0.0, pitch: 0.06 },
   { x: 10.0, z: 6.8, yaw: 0.0, pitch: 0.0 },
   { x: 18.5, z: 14.5, yaw: -1.3, pitch: 0.0 },
+  { x: 7.6, z: 7.0, yaw: -1.1, pitch: -0.2 },
 ]
 
 let spawnAt = v(Layout.spawn.x, centreAboveFeet, Layout.spawn.z)
 
 let init = {
   yaw: 0.0, pitch: 0.06, look: NoMouse, vy: 0.0,
+  // The hour, 0 ≤ hour < 24: midnight.
+  hour: 0.0,
   walk: 0.0, strafe: 0.0, turn: 0.0,
-  // A requested view (1–3), applied by the next tick; 0 for none.
+  // A requested view (1–4), applied by the next tick; 0 for none.
   goto: 0.0,
   // From the last tick: where the player stood, its cell (-1: outside every
   // cell), whether the interior draws, and whether its bake is current.
@@ -124,6 +138,10 @@ let input = (model, key, isDown: bool) =>
     | Key.Num1 => { model with goto: 1.0 }
     | Key.Num2 => { model with goto: 2.0 }
     | Key.Num3 => { model with goto: 3.0 }
+    | Key.Num4 => { model with goto: 4.0 }
+    // T: the next hour. N: midnight ⇄ noon.
+    | Key.T => { model with hour: Math.mod(model.hour + 1.0, 24.0) }
+    | Key.N => { model with hour: if Hours.isDay(model.hour) then 0.0 else 12.0 }
     | _ => model
 
 let eyeOf = (p: Physics.position): Vec3.t => v(p.x, p.y + eyeAboveCentre, p.z)
@@ -167,19 +185,20 @@ let physics = (model) =>
 
 // ---- Drawing ---------------------------------------------------------------------
 
-let rooms = interior |> List.map((p) => Scene.modelOf(p.model) |> Scene.inCells(p.cells))
-
 let draw = (model, tts: float) =>
   let p = Physics.position(playerTag) in
+  let o = Hours.outdoorAt(Hours.daylight(model.hour)) in
   let camera = Camera3D.firstPerson(eyeOf(p), Angle.radians(model.yaw), Angle.radians(model.pitch), 70deg)
     |> Camera3D.clip(0.05, 160.0) in
+  let rooms = if Hours.isDay(model.hour) then dayRooms else nightRooms in
   let scene = Scene.cells(Building.level, Scene.group([
-    Exterior.exterior,
+    Exterior.exteriorAt(o.neon, o.lamps),
     if model.near then Scene.group(rooms) else Scene.group([]),
   ])) in
-  Frame.createLit(camera, scene, if baked then frameLights else frameLights |> List.append([unbakedLight]))
-    |> Frame.withFog(Fog.linear(35.0, 140.0, nightSky))
-    |> Frame.withClearColor(nightSky)
+  let lights = frameLights(o) in
+  Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
+    |> Frame.withFog(Fog.linear(o.fogNear, Hours.fogFar, Hours.color(o.sky)))
+    |> Frame.withClearColor(Hours.color(o.sky))
 
 // Only shown when the committed bake doesn't match the layout.
 let ui = (model) =>
