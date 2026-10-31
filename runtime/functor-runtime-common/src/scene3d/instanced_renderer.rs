@@ -692,7 +692,7 @@ impl InstancedRenderer {
     }
 
     /// Draw one recognized rigid-MODEL instanced node: one instanced call per
-    /// mesh primitive, each with its glTF base-color texture on unit 0 and
+    /// mesh primitive that `draws` keeps (`Scene.modelParts`), each with its glTF base-color texture on unit 0 and
     /// its node transform composed into `local` — matching the textured
     /// shading (lit when the frame has lights) and shadow casting of the
     /// model's stamped equivalent.
@@ -801,7 +801,7 @@ impl InstancedRenderer {
 
     /// Draw one recognized SKINNED instanced node at the SHARED pose: the
     /// pose's joint palette uploads once, then one instanced call per mesh
-    /// primitive — lit and textured like `SkinnedMaterial`'s stamped copies
+    /// primitive that `draws` keeps — lit and textured like `SkinnedMaterial`'s stamped copies
     /// in the forward pass, skinning in the depth pass too (so animated
     /// copies cast a correctly deforming shadow).
     ///
