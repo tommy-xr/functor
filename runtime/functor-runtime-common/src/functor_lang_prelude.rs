@@ -14454,6 +14454,20 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
             problem.contains("misses or only touches the solid"),
             "{problem}"
         );
+        // Faces 2⁻¹⁶ mm apart near x = 1000 mm merge in f32: the boolean is
+        // named and placed. (The gap is in a size: `Vec3` is f32.)
+        let src = format!(
+            "{prelude}let big = (w: float, x: float) => Solid.box(w, 10.0, 10.0) |> Solid.translate(Vec3.make(x, 0.0, 0.0))\n\
+             let main = Solid.check(Solid.union([big(10.0 - 2.0 / 65536.0, 995.0), big(10.0, 1005.0)])).problems\n"
+        );
+        let problem = eval_with_prelude(&src).unwrap().to_string();
+        assert!(
+            problem.contains(
+                "a Solid.union of 2 solids left features closer than 32-bit coordinates \
+can separate where items 0 and 1 (counting from 0) nearly meet, at 4 points within x 1000.00,"
+            ),
+            "{problem}"
+        );
     }
 
     /// `Mesh.*` from raw f32 positions + polygons, then `Solid.fromMesh`

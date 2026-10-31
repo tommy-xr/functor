@@ -113,6 +113,24 @@ impl Mesh {
             .count()
     }
 
+    /// The f32 positions (as bits) more than one vertex rounds to, each with
+    /// all its vertices: the points behind [`Self::shared_positions`].
+    pub(crate) fn shared_points(&self) -> HashMap<[u32; 3], Vec<[f64; 3]>> {
+        let key = |v: &[f64; 3]| v.map(|x| (x as f32).to_bits());
+        let mut seen = HashSet::new();
+        let shared: HashSet<_> = self
+            .vertices
+            .iter()
+            .map(key)
+            .filter(|k| !seen.insert(*k))
+            .collect();
+        let mut points: HashMap<_, Vec<_>> = HashMap::new();
+        for v in self.vertices.iter().filter(|v| shared.contains(&key(v))) {
+            points.entry(key(v)).or_default().push(*v);
+        }
+        points
+    }
+
     /// Why slicers would not read this mesh as one closed solid, each
     /// sentence naming `subject` (e.g. "`shell`"); empty when it prints.
     /// The one check behind `functor export` and `Solid.check`.
