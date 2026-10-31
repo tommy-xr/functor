@@ -168,7 +168,7 @@ A build with a type error:
 ```json
 {"type":"command_started","command":"build","project":"scratch/broken"}
 {"type":"diagnostic","severity":"error","file":"scratch/broken/game.fun","line":4,"col":11,"message":"`+` needs Float operands, got String","source_line":"  model + \"not a number\""}
-{"type":"error","message":"1 type error(s) in the scratch/broken/game.fun project"}
+{"type":"error","message":"1 check error(s) in the scratch/broken/game.fun project"}
 {"type":"command_finished","ok":false,"duration_ms":4}
 ```
 
