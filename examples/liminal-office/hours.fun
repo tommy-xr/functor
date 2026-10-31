@@ -44,5 +44,5 @@ let outdoorAt = (d: float): Outdoor => {
   lamps: 1.0 |> Math.lerp(0.0, d),
 }
 
-// The fog's far end at every hour: past it the interior isn't drawn.
+// The fog's far end at every hour.
 let fogFar = 140.0

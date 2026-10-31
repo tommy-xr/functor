@@ -3,7 +3,8 @@
 Two floors of an empty office block, by night or day: carpeted corridors under
 drop ceilings and fluorescent panels, open empty offices (103 and 203 have
 windows), a sodium-lit stairwell between the floors, a neon entrance on an
-empty apron. Desktop; Quest is configured (120 Hz, foveation off) but not yet
+empty apron. `B` turns it into a block of four turned copies around a
+crossroads. Desktop; Quest is configured (120 Hz, foveation off) but not yet
 checked on a headset. Not the web: baked files load with `File.bytes`.
 
 ```sh
@@ -20,11 +21,14 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `W` `A` `S` `D` / arrows | walk, strafe / turn |
 | `1` `2` `3` `4` | jump to the entrance, corridor, office, window view |
 | `5` `6` `7` `8` | stair foot (looking up), landing (looking down), upstairs corridor, upstairs window |
+| `9` `0` | the block: up the street; office 103's window in the copy turned 180° |
 | `T` | next hour |
 | `N` | midnight ⇄ noon |
+| `B` | the office alone ⇄ the block (views 1–8 then jump within the nearest copy) |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
 | VR `X` / `Y` | next hour / midnight ⇄ noon |
+| VR `B` | the office alone ⇄ the block |
 
 ## One layout, four consumers
 
@@ -44,12 +48,14 @@ interior from it, and `exterior.fun` the street side:
   mesh is cut into one `Model.static` per cell: a slice of every vertex array
   (UV2 byte for byte) and the cell's triangles rebased onto it. `functor
   test` checks the cut loses and repeats nothing.
-- **Cells**: one per room, portals on doors, on the windows (onto a west-yard
-  cell, so the street sees in), and at the stair opening: a horizontal portal
-  where the stairwell's foot meets its head, the upper floor less the
-  landing. Each cell's model is `Scene.inCells` it. The apron is a cell, so
-  the walk runs from the entrance. Past the fog's far end (140 m) the
-  interior isn't drawn at all.
+- **Cells** (`portals.fun`, not hashed into the bake): one per room, and a
+  collar of four street strips around the footprint, 35 m deep (a ring isn't
+  convex: the south and north strips run the full width, corners included;
+  the apron and the west yard are the south and west strips). Portals on
+  doors, on the windows (onto the west strip, so the street sees in), at the
+  collar's corners, and at the stair opening: a horizontal portal where the
+  stairwell's foot meets its head, the upper floor less the landing. Each
+  cell's model is `Scene.inCells` it.
 - **Collision**: `Physics.fixed` boxes along every wall (a storey high, so the
   plenum leaves no gap), a trimesh of the floors and landing. Walls are boxes
   because trimesh faces only block from the front: an inward-facing facade
@@ -82,6 +88,29 @@ street and facade; all are `Light.baked`, so the lightmapped interior ignores
 them. Nothing casts shadows (a shadow pass draws every hidden room), and there
 is no glass (translucent subtrees bypass culling). Panels, signs and lamp
 lenses are `unlit` groups.
+
+## The block
+
+`block.fun` places the office as an archetype: built once in its own space,
+then drawn as four copies at 0/90/180/270° about a crossroads, 24 m streets
+between them, every entrance and window facing a street. Each copy is the
+same scene value (the same per-cell `Model.static`s and lightmaps) under its
+own translation and yaw, so the GPU holds one office. Per copy:
+
+- **Interior**: drawn only within 30 m of the footprint, kept to 34 m so the
+  edge doesn't flicker. `Scene.cells` draws everything when the eye is in no
+  cell, so the collar reaches 35 m: the radius plus a metre for the eyes.
+  `functor test` checks the collar holds every point of that region, corners
+  included; the model's `uncovered` counts ticks where an active copy's cells
+  missed the eye (the e2e checks it stays 0).
+- **Colliders**: `building.fun`'s and the lamp posts' as fixed bodies under
+  the copy's own tags, each copy one `Physics.memo`.
+- **Scene**: one `Scene.memo` per copy, rebuilt when the hour or its
+  activation changes.
+- **Lights**: the lobby spill and street lamps are the nearest copy's; every
+  copy's would overflow the 8 forward-light slots.
+
+The one overcast day bake holds at every yaw (it has no sun).
 
 ## Day and night
 
