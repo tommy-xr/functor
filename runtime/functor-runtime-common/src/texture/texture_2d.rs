@@ -10,6 +10,7 @@ use super::{PixelFormat, RuntimeTexture, TextureData};
 pub struct Texture2D {
     ora: RuntimeRenderableAsset<TextureData>,
     average: [f32; 3],
+    mipmap: bool,
 }
 
 pub struct TextureOptions {
@@ -90,9 +91,15 @@ impl Texture2D {
             .then(|| average_color(&data, opts.srgb))
             .unwrap_or([1.0; 3]);
         Texture2D {
+            mipmap: opts.mipmap,
             ora: RuntimeRenderableAsset::new(data, opts),
             average,
         }
+    }
+
+    /// Whether it has a mip chain, so a bind may minify through it.
+    pub fn mipmapped(&self) -> bool {
+        self.mipmap
     }
 
     /// The image's mean RGB, computed once at load, or white when
@@ -153,10 +160,11 @@ fn average_color(data: &TextureData, srgb: bool) -> [f32; 3] {
     }
 }
 
-/// The minification filter for `options` — a pure function so the mip/filter
-/// pairing is checkable without a GL context.
-fn min_filter_for(options: &TextureOptions) -> u32 {
-    match (options.linear, options.mipmap) {
+/// The minification filter for `linear` or nearest sampling, through the mip
+/// chain when the texture has one — a pure function so the mip/filter pairing
+/// is checkable without a GL context.
+pub(crate) fn min_filter(linear: bool, mipmap: bool) -> u32 {
+    match (linear, mipmap) {
         (true, true) => glow::LINEAR_MIPMAP_LINEAR,
         (true, false) => glow::LINEAR,
         // A NEAREST texture that still minifies wants nearest levels, not a
@@ -206,7 +214,7 @@ impl RenderableAsset for TextureData {
             };
             // Magnification never consults a mip chain, so only the
             // minification filter changes when mipmaps are on.
-            let min_filter = min_filter_for(options);
+            let min_filter = min_filter(options.linear, options.mipmap);
 
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, wrap_val as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, wrap_val as i32);
@@ -273,15 +281,6 @@ impl RenderableAsset for TextureData {
 mod tests {
     use super::*;
 
-    fn options(linear: bool, mipmap: bool) -> TextureOptions {
-        TextureOptions {
-            wrap: true,
-            linear,
-            mipmap,
-            ..TextureOptions::default()
-        }
-    }
-
     fn rgba(texels: &[[u8; 4]]) -> TextureData {
         TextureData {
             bytes: texels.iter().flatten().copied().collect(),
@@ -343,17 +342,17 @@ mod tests {
     fn textures_are_not_mipmapped_unless_asked() {
         let default = TextureOptions::default();
         assert!(!default.mipmap);
-        assert_eq!(min_filter_for(&default), glow::NEAREST);
+        assert_eq!(min_filter(default.linear, default.mipmap), glow::NEAREST);
     }
 
     #[test]
     fn mipmapped_textures_minify_through_the_chain() {
         assert_eq!(
-            min_filter_for(&options(true, true)),
+            min_filter(true, true),
             glow::LINEAR_MIPMAP_LINEAR
         );
         assert_eq!(
-            min_filter_for(&options(false, true)),
+            min_filter(false, true),
             glow::NEAREST_MIPMAP_NEAREST
         );
     }
@@ -363,7 +362,7 @@ mod tests {
     #[test]
     fn textures_without_a_chain_never_select_a_mip_filter() {
         for linear in [true, false] {
-            let filter = min_filter_for(&options(linear, false));
+            let filter = min_filter(linear, false);
             assert!(
                 filter == glow::LINEAR || filter == glow::NEAREST,
                 "{filter:#x} samples mip levels that were never generated"

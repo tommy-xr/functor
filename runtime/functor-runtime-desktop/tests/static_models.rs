@@ -10,7 +10,9 @@
 //!   colour space, sampled clamped without mips; `floor` is a minimum; `Light.baked` lights skip
 //!   lightmapped surfaces but still light others; unbaked lights add;
 //! - `Scene.withLightmap` swaps the lightmap texture, e.g. for a layered
-//!   composition of the model's own atlas.
+//!   composition of the model's own atlas;
+//! - a minified file texture samples its mips, on a group and on
+//!   `Scene.litTexture`.
 //!
 //! Self-skipping like `skinned_data` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -56,6 +58,59 @@ fn main() {
     println!("test baked_and_unbaked_lights ... ok");
     with_lightmap(&mut harness);
     println!("test with_lightmap ... ok");
+    file_texture_mips(&mut harness);
+    println!("test file_texture_mips ... ok");
+}
+
+/// A 256² file of 1-texel black/white stripes drawn ~47 px wide: through its
+/// mips every pixel is the same grey; level 0 alone aliases into bands.
+fn file_texture_mips(harness: &mut Harness) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let png = dir.path().join("stripes.png");
+    image::RgbaImage::from_fn(256, 256, |x, _| match x % 2 {
+        0 => image::Rgba([0, 0, 0, 255]),
+        _ => image::Rgba([255, 255, 255, 255]),
+    })
+    .save(&png)
+    .expect("write png");
+    let file = TextureDescription::File(png.to_str().unwrap().to_string());
+    let h = 0.85;
+    let corners = vec![[-h, -h, 0.0], [h, -h, 0.0], [h, h, 0.0], [-h, h, 0.0]];
+    let group = model(ModelSource {
+        positions: corners,
+        normals: vec![[0.0, 0.0, 1.0]; 4],
+        uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+        triangles: vec![[0, 1, 2], [0, 2, 3]],
+        groups: vec![GroupSource {
+            first: 0,
+            count: 2,
+            texture: Some(file.clone()),
+            unlit: true,
+        }],
+        ..self::room(&file, &file)
+    });
+    let mut lit = frame(&group, 0, false, vec![Light::ambient(1.0, 1.0, 1.0)]);
+    lit.scene = Scene3D {
+        obj: SceneObject::Material(
+            MaterialDescription::lit_texture(file),
+            vec![Scene3D::quad().scale_x(2.0 * h).scale_y(2.0 * h)],
+        ),
+        xform: cgmath::Matrix4::from_scale(1.0),
+    };
+    for (what, frame) in [("group", frame(&group, 1, false, vec![])), ("litTexture", lit)] {
+        // The file loads asynchronously; the checkerboard stands in until then.
+        for _ in 0..200 {
+            harness.render(&frame);
+            if harness.asset_cache.progress().loaded > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let pixels = harness.render(&frame);
+        let row: Vec<u8> = (50..78).map(|x| rgb(&pixels, x, 64)[0]).collect();
+        let (lo, hi) = (*row.iter().min().unwrap(), *row.iter().max().unwrap());
+        assert!(hi - lo <= 24 && lo > 60 && hi < 230, "{what}: minified row {row:?}");
+    }
 }
 
 /// A 1×1 sRGB texture.

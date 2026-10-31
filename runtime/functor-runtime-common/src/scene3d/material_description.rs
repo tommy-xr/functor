@@ -174,6 +174,7 @@ impl MaterialDescription {
                     t,
                     0,
                     SpriteSampling::Linear,
+                    true,
                     &scene_context.texture_pipeline,
                     context,
                     scene_context,
@@ -232,6 +233,7 @@ impl MaterialDescription {
                     texture,
                     0,
                     *sampling,
+                    false,
                     &scene_context.texture_pipeline,
                     context,
                     scene_context,
@@ -262,6 +264,7 @@ fn bind_optional_texture(
                 t,
                 unit,
                 SpriteSampling::Linear,
+                true,
                 pipeline,
                 context,
                 scene_context,
@@ -276,30 +279,36 @@ fn bind_optional_texture(
 /// (the color/sRGB pipeline for albedo, the linear one for data maps such as
 /// normal maps), or a render target's read texture (last completed write). A
 /// target id no frame declares binds a 1x1 magenta fallback and warns once.
+/// `mips`: a file texture minifies through its mip chain. Sprites pass false
+/// (a sheet's frames don't align with mip blocks, so coarse mips blend
+/// neighbouring frames), and so do lightmaps (their sampler has no mips).
 pub(super) fn bind_texture_description(
     texture: &TextureDescription,
     unit: u32,
     sampling: SpriteSampling,
+    mips: bool,
     pipeline: &std::sync::Arc<crate::asset::BuiltAssetPipeline<crate::texture::Texture2D>>,
     context: &RenderContext,
     scene_context: &SceneContext,
 ) {
     match texture {
         TextureDescription::File(file) => {
-            let asset = context
+            let texture = context
                 .asset_cache
-                .load_asset_with_pipeline(pipeline.clone(), file);
-            asset.get().bind(unit, context);
+                .load_asset_with_pipeline(pipeline.clone(), file)
+                .get();
+            texture.bind(unit, context);
             set_bound_texture_wrap(unit, true, context);
-            set_bound_texture_filter(unit, sampling, context);
+            set_bound_texture_filter(unit, sampling, mips && texture.mipmapped(), context);
         }
         TextureDescription::FileClamped(file) => {
-            let asset = context
+            let texture = context
                 .asset_cache
-                .load_asset_with_pipeline(pipeline.clone(), file);
-            asset.get().bind(unit, context);
+                .load_asset_with_pipeline(pipeline.clone(), file)
+                .get();
+            texture.bind(unit, context);
             set_bound_texture_wrap(unit, false, context);
-            set_bound_texture_filter(unit, sampling, context);
+            set_bound_texture_filter(unit, sampling, mips && texture.mipmapped(), context);
         }
         // `Asset.whilePending`: the first loaded chain entry binds while the
         // primary streams in (instead of the checkerboard fallback); a FAILED
@@ -311,15 +320,15 @@ pub(super) fn bind_texture_description(
             let asset = context
                 .asset_cache
                 .load_asset_with_pipeline(pipeline.clone(), file);
-            crate::asset::resolve_while_pending(
+            let texture = crate::asset::resolve_while_pending(
                 &context.asset_cache,
                 pipeline,
                 &asset,
                 while_pending,
-            )
-            .bind(unit, context);
+            );
+            texture.bind(unit, context);
             set_bound_texture_wrap(unit, true, context);
-            set_bound_texture_filter(unit, sampling, context);
+            set_bound_texture_filter(unit, sampling, mips && texture.mipmapped(), context);
         }
         TextureDescription::FileClampedWhilePending {
             file,
@@ -328,15 +337,15 @@ pub(super) fn bind_texture_description(
             let asset = context
                 .asset_cache
                 .load_asset_with_pipeline(pipeline.clone(), file);
-            crate::asset::resolve_while_pending(
+            let texture = crate::asset::resolve_while_pending(
                 &context.asset_cache,
                 pipeline,
                 &asset,
                 while_pending,
-            )
-            .bind(unit, context);
+            );
+            texture.bind(unit, context);
             set_bound_texture_wrap(unit, false, context);
-            set_bound_texture_filter(unit, sampling, context);
+            set_bound_texture_filter(unit, sampling, mips && texture.mipmapped(), context);
         }
         TextureDescription::Builtin(which) => {
             // Select the unit BEFORE the lazy upload, for the same reason the
@@ -350,7 +359,7 @@ pub(super) fn bind_texture_description(
                 context.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             }
             set_bound_texture_wrap(unit, false, context);
-            set_bound_texture_filter(unit, sampling, context);
+            set_bound_texture_filter(unit, sampling, false, context);
         }
         // Its own GL object, with wrap and filter set at upload.
         TextureDescription::Data(pixels) => unsafe {
@@ -412,17 +421,22 @@ fn set_bound_texture_wrap(unit: u32, repeat: bool, context: &RenderContext) {
 }
 
 /// File textures share cached GL objects, so every material bind establishes
-/// its own filter rather than inheriting the previous sprite/model draw.
-fn set_bound_texture_filter(unit: u32, sampling: SpriteSampling, context: &RenderContext) {
-    let filter = match sampling {
-        SpriteSampling::Linear => glow::LINEAR,
-        SpriteSampling::Nearest => glow::NEAREST,
-    };
+/// its own filter rather than inheriting the previous sprite/model draw. A
+/// `mipmapped` texture minifies through its mips.
+fn set_bound_texture_filter(
+    unit: u32,
+    sampling: SpriteSampling,
+    mipmapped: bool,
+    context: &RenderContext,
+) {
+    let linear = matches!(sampling, SpriteSampling::Linear);
+    let filter = if linear { glow::LINEAR } else { glow::NEAREST };
+    let min_filter = crate::texture::min_filter(linear, mipmapped);
     unsafe {
         context.gl.active_texture(glow::TEXTURE0 + unit);
         context
             .gl
-            .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter as i32);
+            .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, min_filter as i32);
         context
             .gl
             .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter as i32);
