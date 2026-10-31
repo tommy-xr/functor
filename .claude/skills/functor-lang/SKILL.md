@@ -1652,8 +1652,9 @@ player's feet), rig-local `y = 0` is the floor, `xr.head.y` is the eye height,
 and the headset draws the eye at `Frame.camera` + `xr.head`. A recentre moves
 only heading/XZ. Quest takes the floor from STAGE; without STAGE the floor is
 assumed 1.6 m below the starting head. `--emulate-xr` stands the head at
-`--xr-eye-height` (default 1.6) and draws from it. It wins over passthrough's
-room lock.
+`--xr-eye-height` (default 1.6) and draws from it; with no XR head (plain
+desktop, web) the view IS `Frame.camera`, so add an eye height when
+`snapshot.xr` is `None`. It wins over passthrough's room lock.
 
 **Mixed reality**: `config`'s `Xr.passthrough(true)` starts the headset's
 camera feed; `settings`' `Xr.passthroughEnabled(on)` pauses/resumes it; and

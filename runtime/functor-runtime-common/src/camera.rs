@@ -137,7 +137,8 @@ impl TrackingPose {
 pub const STANDING_EYE_HEIGHT: f32 = 1.6;
 
 /// The reference tracked poses are taken relative to, from the center-eye
-/// pose the rig centred on. Shells apply it every frame, so it is idempotent.
+/// pose the rig centred on. Shells derive it every frame, so a `config`
+/// change applies without a recentre; it is also idempotent.
 ///
 /// - `Xr.floorLocked`: the floor under the head, level and yaw-only.
 ///   `Frame.camera` stands for that floor point, so rig-local `head.y` is the

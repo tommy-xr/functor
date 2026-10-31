@@ -633,7 +633,12 @@ For a floor-locked game (`Xr.floorLocked(true)`) the emulated head stands
 `--xr-eye-height` metres above the floor (default 1.6), with the hands lifted
 by the same amount, and the desktop view composes that head (or an injected
 one) onto `Frame.camera`, as a headset would. Other games keep the identity
-head and the authored view. `npm run test:floor-locked` checks both. This is one shell adapter over the canonical snapshot; future
+head and the authored view. Without `--emulate-xr` or an injected head (plain
+desktop, web), there is no head to compose and the view is `Frame.camera` at the
+feet, so a floor-locked game adds an eye height itself when
+`Input.snapshot.xr` is `None`. `npm run test:floor-locked` checks the emulated
+head height, floor-locked and not, headlessly; the view composition is
+unit-tested (`view_camera`). `--xreal-tracking` does not compose the head. This is one shell adapter over the canonical snapshot; future
 gamepad/mobile adapters should produce that same target-neutral record.
 
 The emulator's fidelity is deliberately low: both hands sit on a fixed
