@@ -1,20 +1,8 @@
 {
-  "male_base_lod0.glb": "2b69d0d80c40538745681a527361734794079fa48269abdf997f1f63badba0b1",
-  "male_base_lod1.glb": "31e31d58e9a92a45547a1658148064ee32c6123de94a2ebdb66de04836d991c0",
-  "male_base_lod2.glb": "fe1adb4a7ab6c3e247be833948bc90f7998433e571e1dc10abaff0f4cf759208",
-  "male_ranger_lod0.glb": "9aff7405b02e4752f4b0ac181f04dfccfdffcb8f04b5fd54017004b6278b9cec",
-  "male_ranger_lod1.glb": "5c06d803c86e12b44b242728cfe91670b47099ac70fde9fb96e5cb6d75cece67",
-  "male_ranger_lod2.glb": "6962ce8aeffbe05c4f2a8838b30a1bd2f0304b033c5cd4c9afc5d5c3ed181008",
-  "male_peasant_lod0.glb": "e589a042810ec1e34190bfed2ba499104d8e12845d8a24750140bf3f22352709",
-  "male_peasant_lod1.glb": "1ca9e5693b6a91ac0a6075ad66bec03dc5e8f30d285ff031ac8b8b56d66a8ad4",
-  "male_peasant_lod2.glb": "a4f2d49e1b1c726f03cce0ea72b36622adb3682548f690e1d1157fa1d995bf9c",
-  "female_base_lod0.glb": "2e9bda2734b5674f0fd66aa61162ed944c2f775b21f241b3ffa3deab0ebaa8d6",
-  "female_base_lod1.glb": "4f3dbf6d1c6eb9a6bc60bff5b525359bf4c33a9b6ef08d95c1489295673a7c9f",
-  "female_base_lod2.glb": "6384a001c66dd1fcffa49591616dddae434d1d4a311f9e6c1418373655b7b44d",
-  "female_ranger_lod0.glb": "b03493fef33e6998b28dbaf9bcb547fdace5d87cdc3fcc8af1dfe0f48989bc13",
-  "female_ranger_lod1.glb": "40382259560906c4f8e288678e12ef9578b4ec5297ba7c050093fc9fc6300301",
-  "female_ranger_lod2.glb": "134f1dea3c6fa2930920b5b48dfd5493dc9339f0aa8fec177be201c23afd03d3",
-  "female_peasant_lod0.glb": "d46efca8c78254819ea180ef2393aeed0cf0c06668596d75d3f3140592601b63",
-  "female_peasant_lod1.glb": "f9c54d657bb90086c272a429df6322ba02caa225c86d8253fb91a3c2d99a794d",
-  "female_peasant_lod2.glb": "690950054c0e780397ebe1c13d851696873e1e60eeec391fbce6fd8593380ae8"
+  "male_lod0.glb": "250c16a9a1f64fd46be1b4f6b563624c54c147482ef57a63956a29f09f09f8aa",
+  "male_lod1.glb": "cd71c9a70cc4e0acf5acfd371c0d1e17ae9802dc1d4274d4b1deb30646f120cf",
+  "male_lod2.glb": "081b4ca61f214202fb480ae2ff987470fba5cd4219cbbdafe12e166de93755d0",
+  "female_lod0.glb": "3dd2f7ce4ae59d61e1f0909142cf413e01a25a081d9c99a32845917ae8883bb1",
+  "female_lod1.glb": "dceee9f7a1ef86ea01f1aeb6aa12ac44caf8fbd3b294ac4fcfbef8de8edd116e",
+  "female_lod2.glb": "1126cce03145bb3bed00baff8b8a13e7edca66a22f8ca1ac9a1848e5f607769c"
 }

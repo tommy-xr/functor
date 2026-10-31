@@ -1,6 +1,8 @@
-// Build the Quaternius character presets: one .glb per body × outfit × LOD,
-// every part on ONE skin, covered body regions removed, base-colour textures
-// downscaled and deduped, and the idle/walk/run clips retargeted in.
+// Build the Quaternius character presets: one .glb per body × LOD holding
+// every piece as a named part (body regions, eyes, brows, hairstyles, each
+// outfit's slots) on ONE skin, base-colour textures downscaled and deduped,
+// and the idle/walk/run clips retargeted in. `Scene.modelParts` picks the
+// loadout; ASSETS.md lists the parts.
 //
 // Usage: npm run build:characters -- --src <dir> [--out examples/outfits]
 //   <dir> holds the free packs unzipped side by side (examples/outfits/ASSETS.md
@@ -16,20 +18,34 @@ import { decodePng, encodePng } from "../../scripts/png.mjs";
 import { io, readSource } from "./read.mjs";
 
 const UBC = "Universal Base Characters[Standard]/Base Characters/Godot - UE";
+const HAIR_DIR = "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)";
 const OUTFITS_DIR = "Modular Character Outfits - Fantasy[Standard]/Exports/glTF (Godot-Unreal)/Outfits";
 const UAL1 = "Universal Animation Library[Standard]/Unreal-Godot/UAL1_Standard.glb";
 
+// Per body: the base body, its hairstyles (part name → source file; each is
+// fitted to one head), and its outfits. The FIRST outfit's skin is canonical.
 const BODIES = {
-  male: `${UBC}/Superhero_Male_FullBody.gltf`,
-  female: `${UBC}/Superhero_Female_FullBody.gltf`,
+  male: {
+    body: `${UBC}/Superhero_Male_FullBody.gltf`,
+    hair: { hair_buzzed: "Hair_Buzzed", hair_simple_parted: "Hair_SimpleParted", hair_beard: "Hair_Beard" },
+    outfits: { ranger: `${OUTFITS_DIR}/Male_Ranger.gltf`, peasant: `${OUTFITS_DIR}/Male_Peasant.gltf` },
+  },
+  female: {
+    body: `${UBC}/Superhero_Female_FullBody.gltf`,
+    hair: { hair_buzzed: "Hair_BuzzedFemale", hair_buns: "Hair_Buns", hair_long: "Hair_Long" },
+    outfits: { ranger: `${OUTFITS_DIR}/Female_Ranger.gltf`, peasant: `${OUTFITS_DIR}/Female_Peasant.gltf` },
+  },
 };
-// `base` is the body alone; an outfit keeps only the body's head (the pack's
-// readme: "only the head of the model is required").
-const OUTFITS = {
-  base: null,
-  ranger: { male: `${OUTFITS_DIR}/Male_Ranger.gltf`, female: `${OUTFITS_DIR}/Female_Ranger.gltf` },
-  peasant: { male: `${OUTFITS_DIR}/Male_Peasant.gltf`, female: `${OUTFITS_DIR}/Female_Peasant.gltf` },
+// Body file node → part (`regions` splits the body mesh, below).
+const BODY_NODES = { SuperHero_Male: "regions", Superhero_Female: "regions", Eyes: "eyes", Eyebrows: "eyebrows" };
+// Outfit node `<Sex>_<Outfit>_<piece>` → slot; the part is `<outfit>_<slot>`.
+// Bracers ride with the arms and belts with the body, so a slot is one toggle.
+const SLOTS = {
+  Head_Hood: "hood", Acc_Pauldron: "pauldrons", Acc_Pauldrons: "pauldrons",
+  Body: "body", Body_Belt_1: "body", Body_Belt_2: "body",
+  Arms: "arms", Arms_Bracer: "arms", Legs: "legs", Feet: "feet", Feet_Boots: "feet",
 };
+const SLOT_ORDER = ["hood", "pauldrons", "body", "arms", "legs", "feet"];
 // Output clip name → UAL1 clip (the no-root-motion file).
 const CLIPS = { Idle: "Idle_Loop", Walk: "Walk_Loop", Run: "Jog_Fwd_Loop" };
 // Triangle ratio and max texture edge per LOD.
@@ -38,10 +54,18 @@ const LODS = [
   { ratio: 0.12, texture: 512 },
   { ratio: 0.03, texture: 256 },
 ];
-// A body triangle survives under an outfit if any corner has at least this
-// much weight on the head joints: the cut sits just under the outfit's collar.
+// Body regions by skin weight. A triangle is `head` if any corner has at least
+// HEAD_WEIGHT on the head joints (the cut sits just under every outfit's
+// collar); otherwise it takes the region with the most weight over its corners.
 const HEAD_JOINTS = new Set(["Head", "neck_01"]);
 const HEAD_WEIGHT = 0.5;
+const REGIONS = ["head", "torso", "arms", "legs", "feet"];
+const regionOf = (joint) =>
+  HEAD_JOINTS.has(joint) ? "head"
+  : /^(thigh|calf)_/.test(joint) ? "legs"
+  : /^(foot|ball)_/.test(joint) ? "feet"
+  : /^(upperarm|lowerarm|hand|thumb|index|middle|ring|pinky)_/.test(joint) ? "arms"
+  : "torso"; // root, pelvis, spine_*, clavicle_*
 
 // Pinned inputs (archive SHA-256s are in examples/outfits/ASSETS.md).
 const SOURCE_SHA256 = {
@@ -55,6 +79,20 @@ const SOURCE_SHA256 = {
   "Universal Base Characters[Standard]/Base Characters/Godot - UE/Superhero_Female_FullBody.bin": "3a8220a485b33d05d879115a50697728b45a151781106033afb8b8c243fca208",
   "Universal Base Characters[Standard]/Base Characters/Godot - UE/T_Hair_2_BaseColor.png": "f9f4f2fb3eeeefb0b6f0fdef38b0770fd6607640c1c680b8139dd76697e9f9b3",
   "Universal Base Characters[Standard]/Base Characters/Godot - UE/T_Superhero_Female_Dark_BaseColor.png": "d366843ee7d9e9f37ec87a0e1c98c7f2e45573c08eeb80a51a6d9344e68cf288",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Buzzed.gltf": "6e709c691d4feccda9788df917bf9604e751f02da21cee2bc81bcc3d26b3b580",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Buzzed.bin": "5d4b5452ff879ed1d516694be57d1106c070c7133e747a8c9432b01ebf20e908",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_SimpleParted.gltf": "fe0f354d7f95d83d38e15c60794dcc063fa4d60550706f3d7ba51491cdc07c56",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_SimpleParted.bin": "ecd7c81959f3985d6254458a440daaaa18a8bfbb1dbe111c68a04a72374d54db",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Beard.gltf": "80013b9791ce12c65fbe693cf669b02ef5c38091c653bf13b9415d2d8380e0ce",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Beard.bin": "bf2f46ef5808665ef31082f787bc68c51ff063e81b76ca1a51ac86a9ae723be7",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_BuzzedFemale.gltf": "096a7a4ea5bcadc588f4c1e95f04b3461f8a20f3643a0308cfd23e81e180ab32",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_BuzzedFemale.bin": "48fcdac8751e85c1d08ac9ff25b5c4d649e5b5d450d37ad8743b9f111a3a7e04",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Buns.gltf": "cbdd6f509ec8f1021361b53da6fa1a077b95762ebc8bc2d8acae59bb0cb263c1",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Buns.bin": "811606cc84f0bfdefa2e6f1396f3d94c35138308a96d78a4f447b2e7dfc6ed6c",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Long.gltf": "27e2c63e8f98c79fb600268ffcc92b36c621b8653b5a7dcbadb08328f3f887a9",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Long.bin": "268fd531d2c2ac321783d36fcf106d15c5c76e8923eec2c8704d5fe9de953589",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/T_Hair_1_BaseColor.png": "bc7aa863bd22ab0a995cd838cceb4d3a5186ee54ee2fb0108fad85d20c057e6e",
+  "Universal Base Characters[Standard]/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/T_Hair_2_BaseColor.png": "f9f4f2fb3eeeefb0b6f0fdef38b0770fd6607640c1c680b8139dd76697e9f9b3",
   "Modular Character Outfits - Fantasy[Standard]/Exports/glTF (Godot-Unreal)/Outfits/Male_Ranger.gltf": "e1033a212332d84d98c19bc4927c621635478d0aa15d13c79da68d3ba9e0196f",
   "Modular Character Outfits - Fantasy[Standard]/Exports/glTF (Godot-Unreal)/Outfits/Male_Ranger.bin": "5bbb0d42cb324c6c27ce00417e68a876d92978f07d161f83590f0d7c0570eff6",
   "Modular Character Outfits - Fantasy[Standard]/Exports/glTF (Godot-Unreal)/Outfits/T_Ranger_BaseColor.png": "846ef2170b04ee584ad83bb8a1e86dab57a9a43b1193204505912c274d949925",
@@ -199,11 +237,8 @@ function floats(accessor) {
   return Float32Array.from(accessor.getArray());
 }
 
-/**
- * Skinned primitives of `doc` as plain arrays in the canonical joint order,
- * keeping triangles that pass `keepTri(cornerHeadWeights)`.
- */
-function extract(doc, canonical, keepTri = () => true) {
+/** Skinned primitives of `doc` as plain arrays in the canonical joint order. */
+function extract(doc, canonical) {
   const parts = [];
   for (const node of doc.getRoot().listNodes()) {
     const mesh = node.getMesh();
@@ -225,46 +260,112 @@ function extract(doc, canonical, keepTri = () => true) {
       const j0 = prim.getAttribute("JOINTS_0").getArray();
       const w0 = floats(prim.getAttribute("WEIGHTS_0"));
       const joints = Uint8Array.from(j0, (j) => remap[j]);
-      const head = new Float32Array(pos.length / 3);
-      for (let v = 0; v < head.length; v++) {
-        for (let k = 0; k < 4; k++) if (HEAD_JOINTS.has(names[j0[v * 4 + k]])) head[v] += w0[v * 4 + k];
-      }
-      const src = prim.getIndices().getArray();
-      const kept = [];
-      for (let t = 0; t < src.length; t += 3) {
-        if (keepTri([head[src[t]], head[src[t + 1]], head[src[t + 2]]])) kept.push(src[t], src[t + 1], src[t + 2]);
-      }
       const material = prim.getMaterial();
       const image = material.getBaseColorTexture()?.getImage() ?? null;
       parts.push({
+        node: node.getName(),
         material: material.getName(),
         image,
         factor: material.getBaseColorFactor(),
         doubleSided: material.getDoubleSided(),
         pos, nrm, uv, joints, weights: w0,
-        indices: Uint32Array.from(kept),
+        indices: Uint32Array.from(prim.getIndices().getArray()),
       });
     }
   }
   return parts;
 }
 
-/** Throw unless every joint the kept vertices use rests at the same place on both skins. */
-function checkBindPositions(parts, from, to) {
-  const at = (skin) => new Map(skin.listJoints().map((j) => [j.getName(), j.getWorldMatrix().slice(12, 15)]));
-  const a = at(from), b = at(to);
-  const canonical = to.listJoints().map((j) => j.getName());
-  for (const p of parts) {
-    for (const v of p.indices) {
-      for (let k = 0; k < 4; k++) {
-        if (!p.weights[v * 4 + k]) continue;
-        const name = canonical[p.joints[v * 4 + k]];
-        if (a.get(name).some((x, i) => Math.abs(x - b.get(name)[i]) > 1e-3)) {
-          throw new Error(`kept body vertex uses ${name}, which rests elsewhere on the outfit rig`);
-        }
-      }
+// ---- rebinding ----
+/** Column-major 4x4 product a × b. */
+const mul = (a, b) => {
+  const out = new Array(16);
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 4; r++) {
+      out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
     }
   }
+  return out;
+};
+const ibms = (skin) => {
+  const a = skin.getInverseBindMatrices().getArray();
+  return skin.listJoints().map((_, i) => Array.from(a.slice(i * 16, i * 16 + 16)));
+};
+
+/**
+ * Re-skin primitives bound to `from` onto `to` (same joint order): each vertex
+ * is posed by linear blend skinning into `to`'s bind pose, so `to`'s inverse
+ * binds reproduce it at rest. Vertices whose joints bind identically on both
+ * skins are left untouched (the head, hair, every female piece). Returns the
+ * largest displacement in metres.
+ */
+function rebind(prims, from, to) {
+  const src = ibms(from);
+  const dst = ibms(to);
+  // Bind world matrices of `to`: the joints' rest pose must equal the bind.
+  const world = to.listJoints().map((j, i) => {
+    const w = j.getWorldMatrix();
+    if (mul(w, dst[i]).some((v, k) => Math.abs(v - (k % 5 === 0 ? 1 : 0)) > 1e-4)) {
+      throw new Error(`${j.getName()}: rest pose differs from the bind pose`);
+    }
+    return w;
+  });
+  const same = src.map((m, i) => m.every((v, k) => v === dst[i][k]));
+  const xform = src.map((m, i) => (same[i] ? null : mul(world[i], m)));
+  let moved = 0;
+  for (const p of prims) {
+    for (let v = 0; v < p.pos.length / 3; v++) {
+      const ws = [0, 1, 2, 3].filter((k) => p.weights[v * 4 + k] > 0);
+      if (ws.every((k) => same[p.joints[v * 4 + k]])) continue;
+      const P = [0, 0, 0], N = [0, 0, 0];
+      const [x, y, z] = p.pos.subarray(v * 3, v * 3 + 3);
+      const [nx, ny, nz] = p.nrm.subarray(v * 3, v * 3 + 3);
+      const total = ws.reduce((s, k) => s + p.weights[v * 4 + k], 0);
+      for (const k of ws) {
+        const w = p.weights[v * 4 + k] / total;
+        const m = xform[p.joints[v * 4 + k]] ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        for (let r = 0; r < 3; r++) {
+          P[r] += w * (m[r] * x + m[4 + r] * y + m[8 + r] * z + m[12 + r]);
+          N[r] += w * (m[r] * nx + m[4 + r] * ny + m[8 + r] * nz);
+        }
+      }
+      moved = Math.max(moved, Math.hypot(P[0] - x, P[1] - y, P[2] - z));
+      const len = Math.hypot(...N) || 1;
+      p.pos.set(P, v * 3);
+      p.nrm.set(N.map((n) => n / len), v * 3);
+    }
+  }
+  return moved;
+}
+
+/** Split the body by skin weight into one group per region (REGIONS order). */
+function splitRegions(g, canonical) {
+  const lists = new Map(REGIONS.map((r) => [r, []]));
+  const corner = (v) => {
+    const w = new Map(REGIONS.map((r) => [r, 0]));
+    for (let k = 0; k < 4; k++) {
+      const r = regionOf(canonical[g.joints[v * 4 + k]]);
+      w.set(r, w.get(r) + g.weights[v * 4 + k]);
+    }
+    return w;
+  };
+  for (let t = 0; t < g.indices.length; t += 3) {
+    const tri = [g.indices[t], g.indices[t + 1], g.indices[t + 2]];
+    const ws = tri.map(corner);
+    let region = "head";
+    if (!ws.some((w) => w.get("head") >= HEAD_WEIGHT)) {
+      let best = -1;
+      for (const r of REGIONS) {
+        const sum = ws.reduce((s, w) => s + w.get(r), 0);
+        if (sum > best) (best = sum), (region = r);
+      }
+    }
+    lists.get(region).push(...tri);
+  }
+  return REGIONS.map((r) => {
+    if (!lists.get(r).length) throw new Error(`body region ${r} is empty`);
+    return { name: `body_${r}`, groups: [compact({ ...g, indices: Uint32Array.from(lists.get(r)) })] };
+  });
 }
 
 /** Concatenate parts that share a texture + factor: one draw per material. */
@@ -382,7 +483,8 @@ function downscale(bytes, edge) {
 }
 
 // ---- output ----
-function writePreset(skeletonDoc, groups, clips, lod) {
+/** `parts`: [{ name, groups }] → one node + mesh per part, one primitive per group. */
+function writePreset(skeletonDoc, parts, clips, lod) {
   const doc = new Document();
   const buffer = doc.createBuffer();
   const skinSrc = skeletonDoc.getRoot().listSkins()[0];
@@ -404,33 +506,45 @@ function writePreset(skeletonDoc, groups, clips, lod) {
 
   const accessor = (type, array) => doc.createAccessor().setType(type).setArray(array).setBuffer(buffer);
   const textures = new Map();
-  const stats = { tris: 0, verts: 0, draws: 0, textureBytes: 0 };
-  for (const g of groups) {
-    const material = doc.createMaterial(g.material)
+  const materials = new Map();
+  const material = (g) => {
+    const key = `${g.material}|${g.image ? sha256(g.image) : "none"}|${g.factor.join(",")}|${g.doubleSided}`;
+    if (materials.has(key)) return materials.get(key);
+    const m = doc.createMaterial(g.material)
       .setBaseColorFactor(g.factor).setDoubleSided(g.doubleSided).setMetallicFactor(0).setRoughnessFactor(1);
     if (g.image) {
       const t = downscale(g.image, lod.texture);
       if (!textures.has(t.png)) {
         textures.set(t.png, doc.createTexture(g.material).setImage(t.png).setMimeType("image/png"));
       }
-      material.setBaseColorTexture(textures.get(t.png));
-      // The loader uploads a texture per mesh: RGBA8 + mips ≈ 4/3 × w × h × 4.
-      stats.textureBytes += Math.round((t.w * t.h * 4 * 4) / 3);
+      m.setBaseColorTexture(textures.get(t.png));
     }
-    const n = g.pos.length / 3;
-    const prim = doc.createPrimitive()
-      .setAttribute("POSITION", accessor("VEC3", g.pos))
-      .setAttribute("NORMAL", accessor("VEC3", g.nrm))
-      .setAttribute("TEXCOORD_0", accessor("VEC2", g.uv))
-      .setAttribute("JOINTS_0", accessor("VEC4", g.joints))
-      .setAttribute("WEIGHTS_0", accessor("VEC4", g.weights))
-      .setIndices(accessor("SCALAR", n < 65536 ? Uint16Array.from(g.indices) : g.indices))
-      .setMaterial(material);
-    const mesh = doc.createMesh(g.material).addPrimitive(prim);
-    scene.addChild(doc.createNode(g.material).setMesh(mesh).setSkin(skin));
-    stats.tris += g.indices.length / 3;
-    stats.verts += n;
-    stats.draws += 1;
+    materials.set(key, m);
+    return m;
+  };
+  const stats = { tris: 0, verts: 0, draws: 0, parts: [] };
+  for (const part of parts) {
+    const mesh = doc.createMesh(part.name);
+    const ps = { name: part.name, tris: 0, draws: 0, materials: [] };
+    for (const g of part.groups) {
+      const n = g.pos.length / 3;
+      mesh.addPrimitive(doc.createPrimitive()
+        .setAttribute("POSITION", accessor("VEC3", g.pos))
+        .setAttribute("NORMAL", accessor("VEC3", g.nrm))
+        .setAttribute("TEXCOORD_0", accessor("VEC2", g.uv))
+        .setAttribute("JOINTS_0", accessor("VEC4", g.joints))
+        .setAttribute("WEIGHTS_0", accessor("VEC4", g.weights))
+        .setIndices(accessor("SCALAR", n < 65536 ? Uint16Array.from(g.indices) : g.indices))
+        .setMaterial(material(g)));
+      ps.tris += g.indices.length / 3;
+      ps.draws += 1;
+      ps.materials.push(g.material);
+      stats.verts += n;
+    }
+    scene.addChild(doc.createNode(part.name).setMesh(mesh).setSkin(skin));
+    stats.tris += ps.tris;
+    stats.draws += ps.draws;
+    stats.parts.push(ps);
   }
   for (const [name, clip] of Object.entries(clips)) {
     const anim = doc.createAnimation(name);
@@ -446,52 +560,90 @@ function writePreset(skeletonDoc, groups, clips, lod) {
 }
 
 await MeshoptSimplifier.ready;
+const hairFile = (name) => `${HAIR_DIR}/${name}.gltf`;
 const sources = await loadAll([
   UAL1,
-  ...Object.values(BODIES),
-  ...Object.values(OUTFITS).flatMap((o) => (o ? Object.values(o) : [])),
+  ...Object.values(BODIES).flatMap((b) => [b.body, ...Object.values(b.hair).map(hairFile), ...Object.values(b.outfits)]),
 ]);
 const ual = sources.get(UAL1);
 const ualSkeleton = skeleton(ual.getRoot().listSkins()[0]);
 await mkdir(args.out, { recursive: true });
 const report = [];
-for (const [bodyName, bodyFile] of Object.entries(BODIES)) {
-  const body = sources.get(bodyFile);
-  for (const [outfitName, outfitFiles] of Object.entries(OUTFITS)) {
-    const outfit = outfitFiles ? sources.get(outfitFiles[bodyName]) : null;
-    // The canonical skin is the outfit's. The head's joints sit at the same
-    // bind positions on both rigs (checked below); a differing rest ROTATION
-    // (male clavicles, 2.5°) is absorbed by the bind-relative retarget.
-    const rig = outfit ?? body;
-    const rigSkin = rig.getRoot().listSkins()[0];
-    if (rig.getRoot().listSkins().length !== 1) throw new Error("expected one skin per source");
-    const canonical = rigSkin.listJoints().map((j) => j.getName());
-    const head = outfit ? extract(body, canonical, (w) => w.some((x) => x >= HEAD_WEIGHT)) : [];
-    if (outfit) checkBindPositions(head, body.getRoot().listSkins()[0], rigSkin);
-    const parts = outfit ? [...head, ...extract(outfit, canonical)] : extract(body, canonical);
-    const groups = groupByMaterial(parts);
-    const target = skeleton(rigSkin);
-    const clips = {};
-    for (const [out, src] of Object.entries(CLIPS)) {
-      const anim = ual.getRoot().listAnimations().find((a) => a.getName() === src);
-      if (!anim) throw new Error(`clip ${src} not in UAL1`);
-      clips[out] = retarget(anim, ualSkeleton, target);
-    }
-    for (const [i, lod] of LODS.entries()) {
-      const { doc, stats } = writePreset(rig, groups.map((g) => simplify(g, lod.ratio)), clips, lod);
-      const file = `${bodyName}_${outfitName}_lod${i}.glb`;
-      const bytes = await io.writeBinary(doc);
-      await writeFile(path.join(args.out, file), bytes);
-      report.push({ file, ...stats, bytes: bytes.length, sha256: sha256(bytes) });
-    }
+const skinOf = (doc) => {
+  if (doc.getRoot().listSkins().length !== 1) throw new Error("expected one skin per source");
+  return doc.getRoot().listSkins()[0];
+};
+const capital = (s) => s[0].toUpperCase() + s.slice(1);
+for (const [bodyName, spec] of Object.entries(BODIES)) {
+  // The canonical skin is the outfits' (male outfits and hair share one rig;
+  // the male body binds its limbs 17–24 mm apart and is rebound onto it).
+  const rig = sources.get(Object.values(spec.outfits)[0]);
+  const rigSkin = skinOf(rig);
+  const canonical = rigSkin.listJoints().map((j) => j.getName());
+  const load = (file) => {
+    const doc = sources.get(file);
+    const prims = extract(doc, canonical);
+    const moved = rebind(prims, skinOf(doc), rigSkin);
+    if (moved) console.error(`${bodyName}: ${path.basename(file)} rebound, max ${(moved * 1000).toFixed(1)} mm`);
+    return prims;
+  };
+  const named = new Map(); // part name → prims, in output order
+  const add = (name, prim) => named.set(name, [...(named.get(name) ?? []), prim]);
+  let bodyMesh = null;
+  for (const p of load(spec.body)) {
+    const part = BODY_NODES[p.node];
+    if (!part) throw new Error(`unexpected body node ${p.node}`);
+    if (part === "regions") bodyMesh = p;
+    else add(part, p);
+  }
+  for (const [part, file] of Object.entries(spec.hair)) for (const p of load(hairFile(file))) add(part, p);
+  for (const [outfit, file] of Object.entries(spec.outfits)) {
+    const prefix = `${capital(bodyName)}_${capital(outfit)}_`;
+    const pieces = load(file).map((p) => {
+      const slot = p.node.startsWith(prefix) && SLOTS[p.node.slice(prefix.length)];
+      if (!slot) throw new Error(`unexpected outfit node ${p.node}`);
+      return { slot, p };
+    });
+    for (const slot of SLOT_ORDER) for (const x of pieces) if (x.slot === slot) add(`${outfit}_${slot}`, x.p);
+  }
+  const body = groupByMaterial([bodyMesh]);
+  const others = [...named].map(([name, prims]) => ({ name, groups: groupByMaterial(prims) }));
+  const target = skeleton(rigSkin);
+  const clips = {};
+  for (const [out, src] of Object.entries(CLIPS)) {
+    const anim = ual.getRoot().listAnimations().find((a) => a.getName() === src);
+    if (!anim) throw new Error(`clip ${src} not in UAL1`);
+    clips[out] = retarget(anim, ualSkeleton, target);
+  }
+  for (const [i, lod] of LODS.entries()) {
+    // The body simplifies whole, then splits, so its regions share every seam.
+    const parts = [
+      ...splitRegions(simplify(body[0], lod.ratio), canonical),
+      ...others.map((p) => ({ name: p.name, groups: p.groups.map((g) => simplify(g, lod.ratio)) })),
+    ];
+    const { doc, stats } = writePreset(rig, parts, clips, lod);
+    const file = `${bodyName}_lod${i}.glb`;
+    const bytes = await io.writeBinary(doc);
+    await writeFile(path.join(args.out, file), bytes);
+    report.push({ file, body: bodyName, ...stats, bytes: bytes.length, sha256: sha256(bytes) });
   }
 }
 await writeFile(
   path.join(args.out, "presets.lock.json"),
   `${JSON.stringify(Object.fromEntries(report.map((r) => [r.file, r.sha256])), null, 2)}\n`,
 );
-console.log("| File | Triangles | Vertices | Draws | Texture MB (GPU) | File MB | SHA-256 |");
+console.log("| File | Parts | Triangles | Vertices | Primitives | File MB | SHA-256 |");
 console.log("| --- | ---: | ---: | ---: | ---: | ---: | --- |");
 for (const r of report) {
-  console.log(`| \`${r.file}\` | ${r.tris} | ${r.verts} | ${r.draws} | ${(r.textureBytes / 2 ** 20).toFixed(1)} | ${(r.bytes / 2 ** 20).toFixed(2)} | \`${r.sha256}\` |`);
+  console.log(`| \`${r.file}\` | ${r.parts.length} | ${r.tris} | ${r.verts} | ${r.draws} | ${(r.bytes / 2 ** 20).toFixed(2)} | \`${r.sha256}\` |`);
+}
+// Per-part triangles at LOD 0/1/2, one column per body.
+const bodies = Object.keys(BODIES);
+console.log(`\n| Part | Materials | ${bodies.map((b) => `${b} tris LOD0/1/2`).join(" | ")} |`);
+console.log(`| --- | --- | ${bodies.map(() => "---:").join(" | ")} |`);
+for (const name of new Set(report.flatMap((r) => r.parts.map((p) => p.name)))) {
+  const of = (b) => report.filter((r) => r.body === b).map((r) => r.parts.find((p) => p.name === name));
+  const cells = bodies.map((b) => (of(b)[0] ? of(b).map((p) => p.tris).join(" / ") : "–"));
+  const mats = new Set(bodies.flatMap(of).filter(Boolean).map((p) => p.materials.join(" + ")));
+  console.log(`| \`${name}\` | ${[...mats].join("; ")} | ${cells.join(" | ")} |`);
 }
