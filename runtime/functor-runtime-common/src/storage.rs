@@ -295,24 +295,25 @@ pub fn project_reader() -> Option<std::sync::Arc<dyn ProjectReader>> {
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-    let installed = installed.or_else(|| Some(std::sync::Arc::new(ProjectDirReader)));
+    let installed = installed.or_else(|| Some(std::sync::Arc::new(ProjectDirReader(project_dir()))));
     installed
 }
 
-/// Reads [`project_dir`] (see [`read_confined`]).
+/// Reads [`project_dir`] as of when it was made (see [`read_confined`]), so
+/// a job holding it keeps reading its producer's project.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-struct ProjectDirReader;
+pub(crate) struct ProjectDirReader(pub(crate) std::path::PathBuf);
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 impl ProjectReader for ProjectDirReader {
     fn read(&self, path: &str) -> Result<std::sync::Arc<[u8]>, ProjectReadError> {
-        read_confined(&project_dir(), path)
+        read_confined(&self.0, path)
     }
     fn exists(&self, path: &str) -> bool {
-        is_file_confined(&project_dir(), path)
+        is_file_confined(&self.0, path)
     }
     fn version(&self, path: &str) -> Result<Option<String>, String> {
-        Ok(version_confined(&project_dir(), path))
+        Ok(version_confined(&self.0, path))
     }
 }
 
@@ -431,7 +432,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("data/a.bin"), dir.path().join("in.bin"))
             .unwrap();
         set_project_root(dir.path().to_path_buf());
-        let reader = ProjectDirReader;
+        let reader = ProjectDirReader(project_dir());
         assert_eq!(
             reader.read("data/a.bin").ok().as_deref(),
             Some(&[1u8, 2, 3][..])

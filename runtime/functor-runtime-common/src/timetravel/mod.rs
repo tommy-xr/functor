@@ -35,6 +35,8 @@ mod model;
 mod physics;
 mod requests;
 
+use std::collections::BTreeMap;
+
 use functor_lang::Value;
 
 use crate::input::RecordedInput;
@@ -67,6 +69,9 @@ pub enum ReloadHistory {
 /// [`SceneRecorder`] prunes every participant to, matching the physics
 /// recorder (docs/time-travel.md T1).
 pub const DEFAULT_HISTORY_FRAMES: usize = 900;
+
+/// Default [`SceneRecorder::job_bytes_cap`].
+const JOB_BYTES_CAP: usize = 256 << 20;
 
 /// The oldest frame the retention window keeps once `frame` is recorded.
 fn retention_floor(frame: Frame) -> Frame {
@@ -187,6 +192,12 @@ pub struct SceneRecorder {
     epoch: u64,
     /// In-flight ops and parked arrivals (design-systems §2.4).
     requests: Requests,
+    /// Job results the log holds, by delivery frame: each buffer's
+    /// `(address, bytes)`, so one shared by the model and the log counts once.
+    job_payloads: BTreeMap<Frame, Vec<(usize, usize)>>,
+    /// The job-result bytes history keeps: past it, the window starts at the
+    /// delivery that crossed it.
+    job_bytes_cap: usize,
     /// Bumps whenever existing recorded frames may have been replaced or a
     /// reload starts a new snapshot generation. Timeline marker consumers use
     /// this to rebuild from authoritative input history instead of guessing a
@@ -229,6 +240,8 @@ impl SceneRecorder {
             rendered_frame: 0,
             epoch: 0,
             requests: Requests::default(),
+            job_payloads: BTreeMap::new(),
+            job_bytes_cap: JOB_BYTES_CAP,
             generation: 0,
             program_revision: 0,
             counterfactual_replay: false,
@@ -304,6 +317,10 @@ impl SceneRecorder {
         if how != Restore::Resume {
             self.requests.drop_delta(self.rendered_frame);
         }
+        // A branch dispatches once it has cut the future.
+        if how == Restore::Seek {
+            self.requests.dispatch_restored();
+        }
         Ok(frame)
     }
 
@@ -344,7 +361,7 @@ impl SceneRecorder {
         }
 
         self.counterfactual_replay = false;
-        self.scrub_pos = None;
+        self.set_scrub(None);
         let Some((frame, tts, in_flight)) = current_frame.map(|frame| {
             let tts = *self.tts_history.seek(frame);
             let in_flight = self.physics.world_frame_history.seek(frame).in_flight.clone();
@@ -537,7 +554,7 @@ impl SceneRecorder {
             ::log::warn!("[functor-lang] {refused}; reloading at the newest frame");
             let newest = self.range().map_or(frame, |(_, hi)| hi);
             if let Ok(newest) = self.restore_all(newest, Restore::Seek, &mut live, "reload") {
-                self.scrub_pos = Some(newest);
+                self.set_scrub(Some(newest));
                 return true;
             }
             return false;
@@ -588,7 +605,9 @@ impl SceneRecorder {
         self.tts_history.record(frame, &(frame_time.tts as f64));
         self.clock_history.record(frame, &frame_time);
         // One retention window for every participant and the display clock.
-        let floor = retention_floor(frame);
+        let floor = retention_floor(frame).max(self.job_bytes_floor(frame));
+        self.log.drop_ops_before(floor);
+        self.job_payloads = self.job_payloads.split_off(&floor);
         for participant in self.participants_mut() {
             participant.prune(floor);
         }
@@ -642,8 +661,48 @@ impl SceneRecorder {
     /// (which does). An empty `Vec` is recorded for quiet frames, keeping the
     /// log consecutive with the model ring.
     pub fn record_entries(&mut self, entries: Vec<Entry>) {
+        let buffers: Vec<(usize, usize)> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Delivery { arrival: Arrival::Job { value, .. }, .. } => Some(value.buffers()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        if !buffers.is_empty() {
+            self.job_payloads.insert(self.rendered_frame, buffers);
+        }
         self.requests.commit(self.epoch, self.rendered_frame);
         self.log.record(self.rendered_frame, self.epoch, entries);
+    }
+
+    /// The window's floor the job-result budget sets: the oldest delivery
+    /// frame from which every newer result fits (the newest alone, if it
+    /// doesn't), so history before it is dropped; 0 when they all fit.
+    fn job_bytes_floor(&self, frame: Frame) -> Frame {
+        let mut seen = std::collections::HashSet::new();
+        let mut total = 0usize;
+        let mut fits: Option<Frame> = None;
+        for (&at, buffers) in self.job_payloads.iter().rev() {
+            for &(address, bytes) in buffers {
+                if seen.insert(address) {
+                    total += bytes;
+                }
+            }
+            if total > self.job_bytes_cap {
+                let floor = fits.unwrap_or(at);
+                if floor > retention_floor(frame) && self.range().is_some_and(|(lo, _)| lo < floor) {
+                    ::log::warn!(
+                        "[functor-lang] job results hold over {} MB: history before frame \
+{floor} dropped",
+                        self.job_bytes_cap >> 20
+                    );
+                }
+                return floor;
+            }
+            fits = Some(at);
+        }
+        0
     }
 
     #[cfg(test)]
@@ -784,7 +843,7 @@ impl SceneRecorder {
             return Ok(false);
         };
         self.refuse_connected_branch(k, "resume")?;
-        self.scrub_pos = None;
+        self.set_scrub(None);
         let mut live = Live { model, physics, physics_frame, has_physics };
         let _ = self.branch_to(k, &mut live, prev_tts, Restore::Resume);
         self.counterfactual_replay = false;
@@ -806,6 +865,11 @@ game can scrub but not branch; seek to the newest frame to resume, or disconnect
             ));
         }
         Ok(())
+    }
+
+    fn set_scrub(&mut self, pos: Option<u64>) {
+        self.scrub_pos = pos;
+        self.requests.set_view(pos);
     }
 
     /// Whether the scene sits on a scrubbed frame (arrivals park).
@@ -887,7 +951,7 @@ game can scrub but not branch; seek to the newest frame to resume, or disconnect
     ) -> Result<String, String> {
         let mut live = Live { model, physics, physics_frame, has_physics };
         let frame = self.restore_all(target, Restore::Seek, &mut live, "seek")?;
-        self.scrub_pos = Some(frame);
+        self.set_scrub(Some(frame));
         Ok(format!("scrubbed to rendered frame {frame}"))
     }
 
@@ -954,6 +1018,8 @@ game can scrub but not branch; seek to the newest frame to resume, or disconnect
                 .collect()
         });
         self.requests.truncate_from(frame + 1, disconnects);
+        self.job_payloads.split_off(&(frame + 1));
+        self.requests.dispatch_restored();
         // Truncate the input log too: a destructive branch discards the old
         // future consistently across every ring (docs/time-travel.md T6b).
         self.log.truncate_from(frame + 1);
@@ -961,7 +1027,7 @@ game can scrub but not branch; seek to the newest frame to resume, or disconnect
         self.rendered_frame = frame + 1;
         self.generation = self.generation.wrapping_add(1);
         self.epoch += 1;
-        self.scrub_pos = None;
+        self.set_scrub(None);
         let clamped = if frame == target {
             String::new()
         } else {
@@ -976,6 +1042,7 @@ mod tests {
     use super::*;
     use functor_lang::{RunOutcome, Tracing};
     use std::rc::Rc;
+    use std::sync::Arc;
 
     fn closure_model() -> Value {
         let module = functor_lang::lower(
@@ -1056,6 +1123,38 @@ mod tests {
         // via the canonical Display form — Value has no PartialEq).
         assert_eq!(h.seek(3).to_string(), model(&shared, 3.0).to_string());
         assert_eq!(h.seek(0).to_string(), model(&shared, 0.0).to_string());
+    }
+
+    #[test]
+    fn job_results_over_the_budget_move_the_window_to_their_delivery() {
+        use crate::functor_lang_prelude::bytes::ByteView;
+        use crate::jobs::{HostValue, Shareable, Ticket};
+        let mut rec = SceneRecorder::new();
+        rec.job_bytes_cap = 1000;
+        let shared: Arc<[u8]> = Arc::from(vec![0u8; 600]);
+        let delivery = |data: Arc<[u8]>| Entry::Delivery {
+            op: None,
+            arrival: Arrival::Job {
+                ticket: Ticket { id: 1, attempt: 1 },
+                value: Shareable::Host(HostValue::Bytes(ByteView::from_shared(data))),
+            },
+        };
+        for f in 0..10u64 {
+            let entries = match f {
+                // One buffer delivered twice counts once: 600 fits.
+                2 | 4 => vec![delivery(shared.clone())],
+                // 600 more crosses the cap: history before frame 7 goes.
+                7 => vec![delivery(Arc::from(vec![0u8; 600]))],
+                _ => Vec::new(),
+            };
+            rec.record_entries(entries);
+            rec.record(&Value::Number(f as f64), 0, f as f64);
+            if f == 6 {
+                assert_eq!(rec.scene_frame_range(), Some((0, 6)));
+            }
+        }
+        assert_eq!(rec.scene_frame_range(), Some((7, 9)));
+        assert!(rec.logged(4).is_none_or(|entries| entries.is_empty()));
     }
 
     // --- the coupled recorder: tts rewinds with the model ---
