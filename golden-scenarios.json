@@ -221,6 +221,25 @@
       ]
     },
     {
+      "name": "liminal-office-entrance",
+      "sample": "liminal-office",
+      "fixedTime": 1.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
+      "name": "liminal-office-corridor",
+      "sample": "liminal-office",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "views.script",
+      "captureAtFrame": 30
+    },
+    {
       "name": "scene-grid-t2",
       "sample": "scene-grid",
       "fixedTime": 2.0,
