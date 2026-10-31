@@ -317,7 +317,7 @@
       ]
     },
     {
-      "name": "outfits-idle-t1",
+      "name": "outfits-loadout-t1",
       "sample": "outfits",
       "fixedTime": 1.0,
       "debugRender": null,
@@ -326,22 +326,24 @@
       ]
     },
     {
-      "name": "outfits-walk-t5",
+      "name": "outfits-loadout-walk",
       "sample": "outfits",
-      "fixedTime": 5.3,
       "debugRender": null,
       "targets": [
         "native"
-      ]
+      ],
+      "inputScript": "loadout.script",
+      "captureAtFrame": 75
     },
     {
-      "name": "outfits-run-t9",
+      "name": "outfits-crowd-100",
       "sample": "outfits",
-      "fixedTime": 9.3,
       "debugRender": null,
       "targets": [
         "native"
-      ]
+      ],
+      "inputScript": "crowd.script",
+      "captureAtFrame": 90
     }
   ]
 }
