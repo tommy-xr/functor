@@ -43,13 +43,13 @@ const ASSETS_FILE: &str = "assets.fun";
 const SIDECAR_SUFFIX: &str = ".asset.json";
 
 /// The manifest metadata carried by one successful headless inspection.
-fn model_names(report: ModelReport) -> (Vec<(String, f32)>, Vec<String>) {
+fn model_names(report: ModelReport) -> (Vec<(String, f32)>, Vec<String>, Vec<String>) {
     let clips = report
         .animations
         .into_iter()
         .map(|animation| (animation.name, animation.duration))
         .collect();
-    (clips, report.joints)
+    (clips, report.joints, report.parts)
 }
 
 /// The scanned asset files of a project directory, per kind, each sorted by
@@ -307,7 +307,7 @@ fn execute_inner(dir: &Path, strict_remote: bool) -> io::Result<bool> {
             continue;
         };
         let bytes = fs::read(path)?;
-        let (clips, joints) = match inspect_model(bytes, None, None) {
+        let (clips, joints, parts) = match inspect_model(bytes, None, None) {
             Ok(report) => model_names(report),
             // A model the inspector can't read (corrupt, or a .gltf with
             // external buffers) still gets its asset constant — the reference
@@ -320,7 +320,7 @@ fn execute_inner(dir: &Path, strict_remote: bool) -> io::Result<bool> {
 without clip/joint constants"
                     ),
                 });
-                (Vec::new(), Vec::new())
+                (Vec::new(), Vec::new(), Vec::new())
             }
         };
         let clips = vetted_clips(&file, clips);
@@ -330,6 +330,7 @@ without clip/joint constants"
             locator: file,
             clips,
             joints,
+            parts,
         });
     }
     input.textures = local_entries(&scanned.textures);
@@ -419,7 +420,7 @@ declares nothing"
 importing without clip/joint constants"
                                 ),
                             });
-                            (Vec::new(), Vec::new())
+                            (Vec::new(), Vec::new(), Vec::new())
                         }
                     },
                     Err(e) if strict_remote => {
@@ -438,10 +439,10 @@ assets.fun (rerun `functor import` to regenerate)"
 clip/joint constants"
                             ),
                         });
-                        (Vec::new(), Vec::new())
+                        (Vec::new(), Vec::new(), Vec::new())
                     }
                 };
-                let (clips, joints) = names;
+                let (clips, joints, parts) = names;
                 let clips = vetted_clips(&file, clips);
                 let joints = vetted_joints(&file, joints);
                 input.models.push(ModelEntry {
@@ -449,6 +450,7 @@ clip/joint constants"
                     locator: url,
                     clips,
                     joints,
+                    parts,
                 });
             }
             Kind::Texture => input.textures.push(AssetEntry { name, locator: url }),
@@ -467,7 +469,7 @@ clip/joint constants"
             emit(Event::Info {
                 message: format!(
                     "wrote {} ({} asset(s)) — reference them as Assets.<name> \
-(clips: Assets.<name>Clips.<clip>; joints: Assets.<name>Joints.<joint>)",
+(clips: Assets.<name>Clips.<clip>; joints: Assets.<name>Joints.<joint>; parts: Assets.<name>Parts.<part>)",
                     out.display(),
                     input.models.len() + input.textures.len() + input.sounds.len(),
                 ),

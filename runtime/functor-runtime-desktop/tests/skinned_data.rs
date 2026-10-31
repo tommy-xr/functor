@@ -169,6 +169,7 @@ fn textured_frame(model: &Arc<ModelData>, instanced: bool) -> Frame {
         overrides: vec![],
         animation: Some(AnimExpr::Rest),
         while_pending: vec![],
+        parts: Vec::new(),
     });
     let node = match instanced {
         true => Scene3D::instanced(node, vec![InstanceData::at([0.0, 0.0, 0.0])]),
@@ -252,6 +253,7 @@ fn frame(
             overrides: vec![],
             animation: animation.clone(),
             while_pending: vec![],
+            parts: Vec::new(),
         })
     };
     let mut items: Vec<Scene3D> = (0..count)

@@ -707,6 +707,7 @@ impl InstancedRenderer {
         ctx: &RenderContext,
         key: &ModelKey,
         model: &Arc<Model>,
+        draws: &dyn Fn(&crate::model::ModelMesh) -> bool,
         local: &Matrix4<f32>,
         instances: &InstanceList,
         world: &Matrix4<f32>,
@@ -745,6 +746,9 @@ impl InstancedRenderer {
             ctx.gl.vertex_attrib_3_f32(7, 1.0, 1.0, 1.0);
         }
         for ((mesh, live), vao) in model.meshes.iter().zip(handles.iter()).zip(vaos.iter()) {
+            if !draws(mesh) {
+                continue;
+            }
             // glTF: a static mesh composes its NODE transform under the
             // template-internal transform (skinned models never reach here).
             let mesh_local = local * mesh.transform;
@@ -810,6 +814,7 @@ impl InstancedRenderer {
         ctx: &RenderContext,
         key: &ModelKey,
         model: &Arc<Model>,
+        draws: &dyn Fn(&crate::model::ModelMesh) -> bool,
         bind_base_color: &dyn Fn(&crate::model::ModelMesh),
         joints: &[Matrix4<f32>],
         local: &Matrix4<f32>,
@@ -860,6 +865,9 @@ impl InstancedRenderer {
         let joint_matrices = crate::model::flatten_joint_matrices(joints);
         program.set_uniform_matrix4fv(ctx.gl, joints_loc, &joint_matrices);
         for ((mesh, live), vao) in model.meshes.iter().zip(handles.iter()).zip(vaos.iter()) {
+            if !draws(mesh) {
+                continue;
+            }
             if depth_pass {
                 set_depth_uniforms(
                     &programs.depth,

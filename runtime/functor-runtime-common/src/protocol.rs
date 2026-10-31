@@ -948,6 +948,7 @@ mod tests {
                     overrides: vec![],
                     animation: None,
                     while_pending: vec![],
+                    parts: Vec::new(),
                 }),
                 Scene3D::instanced(
                     Scene3D {
@@ -1140,6 +1141,7 @@ mod tests {
             overrides: vec![],
             animation: None,
             while_pending: vec![],
+            parts: Vec::new(),
         };
         pin_model(
             &chainless,

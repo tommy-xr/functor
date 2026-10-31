@@ -304,22 +304,29 @@ struct CompositeUniforms {
 /// Resolve a model asset for drawing: the per-frame cache poll (which is ALSO
 /// the liveness poll for `Asset.whilePending` chains, so it must run every
 /// frame) followed by placeholder resolution. Shared by the ordinary Model
-/// draw arm and the instanced-model arm so the two cannot drift.
+/// draw arm and the instanced-model arm so the two cannot drift. Also says
+/// whether it is the loaded primary (not a placeholder or the fallback).
 fn resolve_model_for_draw(
     render_context: &RenderContext,
     scene_context: &SceneContext,
     file: &str,
     while_pending: &[String],
-) -> Arc<Model> {
+) -> (Arc<Model>, bool) {
     let model: Arc<AssetHandle<Model>> = render_context
         .asset_cache
         .load_asset_with_pipeline(scene_context.model_pipeline.clone(), file);
-    crate::asset::resolve_while_pending(
+    match crate::asset::resolve_while_pending_state(
         &render_context.asset_cache,
         &scene_context.model_pipeline,
         &model,
         while_pending,
-    )
+    ) {
+        crate::asset::WhilePendingState::Loaded(asset) => (asset, true),
+        crate::asset::WhilePendingState::Loading(Some(asset)) => (asset, false),
+        crate::asset::WhilePendingState::Loading(None) | crate::asset::WhilePendingState::Failed => {
+            (model.fallback(), false)
+        }
+    }
 }
 
 /// Resolve a model node of either handle for drawing, with the name its
@@ -330,16 +337,42 @@ fn resolve_handle_for_draw<'a>(
     description: &'a ModelDescription,
 ) -> (Arc<Model>, &'a str) {
     match &description.handle {
-        ModelHandle::File(file) => (
-            resolve_model_for_draw(
+        ModelHandle::File(file) => {
+            let (model, primary) = resolve_model_for_draw(
                 render_context,
                 scene_context,
                 file,
                 &description.while_pending,
-            ),
-            file,
-        ),
+            );
+            if primary && !description.parts.is_empty() {
+                warn_unknown_parts(scene_context, &model, description, file);
+            }
+            (model, file)
+        }
         ModelHandle::Data(data) => (scene_context.data_model(data), data.label()),
+    }
+}
+
+/// Warn once per name that a `Scene.modelParts` selection names no part of
+/// the loaded model; such a name matches nothing.
+fn warn_unknown_parts(
+    scene_context: &SceneContext,
+    model: &Model,
+    description: &ModelDescription,
+    file: &str,
+) {
+    for name in description.parts.iter().flatten() {
+        if !model.meshes.iter().any(|mesh| mesh.part == *name) {
+            scene_context.warn_once_with(&format!("model-part:{file}:{name}"), || {
+                let mut parts: Vec<&str> = model.meshes.iter().map(|m| m.part.as_str()).collect();
+                parts.dedup();
+                format!(
+                    "[scene] model \"{file}\" has no part named \"{name}\" — \
+Scene.modelParts draws nothing for it (its parts: {}; Assets.<name>Parts has them typed)",
+                    parts.join(", ")
+                )
+            });
+        }
     }
 }
 
@@ -538,11 +571,12 @@ fn cached_pose_joints(
         file,
     )
     .into();
-    // Only culling reads them.
+    // Only culling reads them; unselected parts don't count.
     let bounds = scene_context.cull.get().then(|| {
         hydrated_model
             .meshes
             .iter()
+            .filter(|mesh| description.draws_part(&mesh.part))
             .try_fold(Aabb::empty(), |acc, mesh| Some(acc.union(&mesh.bounds.posed(&joints)?)))
     });
     let bounds = bounds.flatten();
@@ -2488,6 +2522,19 @@ impl Scene3D {
         self
     }
 
+    /// Draw only the named parts of every glTF model in this subtree —
+    /// `Scene.modelParts`. Nested selections intersect: a part draws only if
+    /// every enclosing call names it. Models built from data have no parts
+    /// and stay whole.
+    pub fn with_parts(mut self, names: Vec<String>) -> Self {
+        self.for_each_model(&mut |model| {
+            if matches!(model.handle, ModelHandle::File(_)) {
+                model.parts.push(names.clone());
+            }
+        });
+        self
+    }
+
     /// Replace every lightmapped static model's lightmap texture in this
     /// subtree — `Scene.withLightmap`. Other models are left as they are.
     pub fn with_lightmap(mut self, texture: TextureDescription) -> Self {
@@ -2851,7 +2898,12 @@ impl Scene3D {
                     (Arc::from([]), None)
                 };
 
-                for mesh in hydrated_model.meshes.iter() {
+                // `Scene.modelParts`: unselected parts draw in no pass.
+                for mesh in hydrated_model
+                    .meshes
+                    .iter()
+                    .filter(|mesh| model_description.draws_part(&mesh.part))
+                {
                     // Go through selectors, and adjust
                     // let override_material_description = Some(MaterialDescription::Texture(
                     //     TextureDescription::File("vr_glove_color.jpg".to_string()),
@@ -3224,8 +3276,11 @@ impl Scene3D {
                                 file,
                             )
                         } else {
-                            let bounds =
-                                hydrated_model.meshes.iter().fold(Aabb::empty(), |acc, mesh| {
+                            let bounds = hydrated_model
+                                .meshes
+                                .iter()
+                                .filter(|mesh| recognized.description.draws_part(&mesh.part))
+                                .fold(Aabb::empty(), |acc, mesh| {
                                     acc.union(&mesh.bounds.local.transform(&mesh.transform))
                                 });
                             (Arc::from([]), Some(bounds))
@@ -3235,11 +3290,15 @@ impl Scene3D {
                         if culled(&mut renderer, bounds) {
                             return;
                         }
+                        let draws = |mesh: &crate::model::ModelMesh| {
+                            recognized.description.draws_part(&mesh.part)
+                        };
                         if is_skinned {
                             renderer.draw_skinned_model(
                                 render_context,
                                 &key,
                                 &hydrated_model,
+                                &draws,
                                 &|mesh| {
                                     bind_model_base_color(
                                         &recognized.description.handle,
@@ -3260,6 +3319,7 @@ impl Scene3D {
                                 render_context,
                                 &key,
                                 &hydrated_model,
+                                &draws,
                                 &recognized.local,
                                 instances,
                                 &xform,
@@ -4148,6 +4208,7 @@ mod opacity_tests {
             overrides: vec![],
             animation: None,
             while_pending: vec![],
+            parts: Vec::new(),
         });
         let scene = opacity(0.5, model).with_animation(crate::anim::AnimExpr::Clip {
             name: "walk".to_string(),

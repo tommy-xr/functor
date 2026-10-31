@@ -86,6 +86,14 @@ fn print_report(path: &str, report: &ModelReport) {
     }
     println!();
 
+    // What `Scene.modelParts` selects: each part with its primitive count.
+    println!("Parts: {}", report.parts.len());
+    for part in &report.parts {
+        let primitives = report.primitives.iter().filter(|p| p.part == *part).count();
+        println!("  - {} ({} primitive(s))", part, primitives);
+    }
+    println!();
+
     // Per-node: local translation (with an `(offset)` marker for a non-origin
     // one — a baked placement that renders displaced) and, for a mesh node, its
     // local bbox. This is how a Kenney-style baked offset shows up in text.

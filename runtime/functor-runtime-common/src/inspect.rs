@@ -15,7 +15,9 @@ use gltf::buffer::Source as BufferSource;
 use serde::Serialize;
 
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
-use crate::model::{build_skeleton_from_skin, document_hierarchy, HierarchyNode, Skeleton};
+use crate::model::{
+    build_skeleton_from_skin, document_hierarchy, part_names, HierarchyNode, Skeleton,
+};
 
 /// An axis-aligned bounding box in model space.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,6 +86,8 @@ struct SkinnedVertex {
 pub struct PrimitiveReport {
     /// The owning mesh's name (glTF names live on the mesh, not the primitive).
     pub mesh_name: String,
+    /// The part it draws with (see [`ModelReport::parts`]).
+    pub part: String,
     pub vertex_count: usize,
     pub index_count: usize,
     pub joint_count: usize,
@@ -159,6 +163,9 @@ pub struct ModelReport {
     /// matching subtree, and `functor import` warns and emits one constant
     /// because the duplicates are not individually name-addressable.
     pub joints: Vec<String>,
+    /// Unique part names in traversal order — what `Scene.modelParts`
+    /// selects. A part is a mesh node with all of its primitives.
+    pub parts: Vec<String>,
     pub has_skeleton: bool,
     pub animations: Vec<AnimationReport>,
     /// Model-space AABB of the static (bind-pose) mesh positions.
@@ -234,6 +241,7 @@ pub fn inspect_model(
     // The full node hierarchy, so the skeleton can include ancestor nodes
     // above the skin root (see `build_skeleton_from_skin`).
     let hierarchy = document_hierarchy(&document);
+    let part_names = part_names(&document);
 
     for scene in document.scenes() {
         for node in scene.nodes() {
@@ -241,6 +249,7 @@ pub fn inspect_model(
                 &node,
                 &buffers_data,
                 &hierarchy,
+                &part_names,
                 &mut primitives,
                 &mut nodes,
                 &mut skinned_vertices,
@@ -264,6 +273,12 @@ pub fn inspect_model(
     let joint_count = joints.len() as i32;
 
     let any_skinned = primitives.iter().any(|p| p.has_skinning);
+    let mut parts: Vec<String> = Vec::new();
+    for primitive in &primitives {
+        if !parts.contains(&primitive.part) {
+            parts.push(primitive.part.clone());
+        }
+    }
 
     // Pick the animation to sample. If a selector is given, prefer an exact name
     // match, then fall back to a numeric index — so unnamed or duplicate-named
@@ -342,6 +357,7 @@ pub fn inspect_model(
         mesh_count,
         joint_count,
         joints,
+        parts,
         has_skeleton,
         animations: animation_reports,
         static_aabb,
@@ -374,6 +390,7 @@ fn inspect_node(
     node: &gltf::Node,
     buffers: &[gltf::buffer::Data],
     hierarchy: &HashMap<usize, HierarchyNode>,
+    part_names: &HashMap<usize, String>,
     primitives: &mut Vec<PrimitiveReport>,
     nodes: &mut Vec<NodeReport>,
     skinned_vertices: &mut Vec<SkinnedVertex>,
@@ -440,6 +457,7 @@ fn inspect_node(
 
             primitives.push(PrimitiveReport {
                 mesh_name: mesh_name.clone(),
+                part: part_names[&node.index()].clone(),
                 vertex_count: positions.len(),
                 index_count: indices.len(),
                 joint_count: joints.len(),
@@ -480,6 +498,7 @@ fn inspect_node(
             &child,
             buffers,
             hierarchy,
+            part_names,
             primitives,
             nodes,
             skinned_vertices,
@@ -698,6 +717,21 @@ mod tests {
         assert!(!is_nonzero_translation([1e-9, 0.0, -1e-9])); // below epsilon → noise
         assert!(is_nonzero_translation([0.0, 0.5, 0.0]));
         assert!(is_nonzero_translation([-3.0, 0.0, 0.0]));
+    }
+
+    // Parts list once each in traversal order; primitives name their part.
+    #[test]
+    fn inspect_reports_parts_and_membership() {
+        use crate::model::test_glb::{glb, TestNode};
+        let nodes = [
+            TestNode::named("Hat").boxes(&[([0.0; 3], [1.0; 3]), ([2.0; 3], [3.0; 3])]),
+            TestNode::named("Hat"),
+            TestNode::unnamed().mesh_name("Cape"),
+        ];
+        let report = inspect_model(glb(&nodes, true), None, None).expect("inspect fixture");
+        assert_eq!(report.parts, ["Hat", "Hat_2", "Cape"]);
+        let membership: Vec<&str> = report.primitives.iter().map(|p| p.part.as_str()).collect();
+        assert_eq!(membership, ["Hat", "Hat", "Hat_2", "Cape"]);
     }
 
     #[test]

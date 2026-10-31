@@ -628,6 +628,7 @@ mod tests {
                 overrides: vec![],
                 animation,
                 while_pending: vec![],
+                parts: Vec::new(),
             })
         };
         let template = Scene3D {

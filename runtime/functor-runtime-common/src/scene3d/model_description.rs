@@ -54,4 +54,18 @@ pub struct ModelDescription {
     /// on the wire when empty, so plain models keep their JSON shape.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub while_pending: Vec<String>,
+    /// `Scene.modelParts` selections, innermost first: a part draws only if
+    /// EVERY selection names it. Empty draws the whole model; skipped on the
+    /// wire when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Vec<String>>,
+}
+
+impl ModelDescription {
+    /// Whether `part` survives every `Scene.modelParts` selection.
+    pub fn draws_part(&self, part: &str) -> bool {
+        self.parts
+            .iter()
+            .all(|names| names.iter().any(|name| name == part))
+    }
 }

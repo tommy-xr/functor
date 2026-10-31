@@ -201,6 +201,7 @@ impl ModelData {
                 bounds: crate::scene3d::MeshBounds::of(&vertices),
                 mesh: IndexedMesh::create(vertices, indices),
                 transform: Matrix4::identity(),
+                part: String::new(),
             }],
             skeleton: self.skeleton.clone(),
             animations: self.animations.clone(),

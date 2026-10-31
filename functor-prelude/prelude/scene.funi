@@ -190,6 +190,25 @@ let inCells : (List<float>, t) => t
 /// clock — attaching one is what puts the playhead under the game's control.
 let animate : (Anim.t, t) => t
 
+/// Draw only the named parts of the glTF models in a scene; the scene is last
+/// for piping.
+///
+/// A part is one mesh node with all of its primitives, named after the node
+/// (else its mesh; repeats get `_2`, `_3`, …). `functor import` lists them as
+/// `Assets.<model>Parts` and `functor inspect` prints them. Hidden parts draw
+/// in no pass — no colour, no shadow, either eye, instanced copies included —
+/// and the pose is still evaluated once per model node. Nested calls
+/// intersect: a part draws only if every enclosing `modelParts` names it, so
+/// an outer call can only hide more. A name the loaded model lacks matches
+/// nothing and warns once. Models built from data (`Model.skinned`,
+/// `Model.static`) have no parts and stay whole.
+///
+/// ```
+/// let hero = Scene.model(Assets.ranger)
+///   |> Scene.modelParts([Assets.rangerParts.mI_Superhero_Male, Assets.rangerParts.mI_Eyes])
+/// ```
+let modelParts : (List<string>, t) => t
+
 /// Draw this subtree's lightmapped static models (`Model.static` with a
 /// `lightmap`) with `texture` in place of their lightmap's texture, keeping
 /// its `scale` and `floor` — typically `Texture.withLayers(model.lights,

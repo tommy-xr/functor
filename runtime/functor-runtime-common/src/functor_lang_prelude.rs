@@ -2393,6 +2393,7 @@ manifest's Assets.<name>, or Asset.model(\"file.glb\")";
             overrides: Vec::new(),
             animation: None,
             while_pending: path.while_pending,
+            parts: Vec::new(),
         }))
     });
     reg.fn1(
@@ -2622,6 +2623,15 @@ instanced node instead: scene |> Scene.instanced(instances) |> Scene.opacity(alp
         "Scene.animate(anim, scene) — e.g. scene |> Scene.animate(Anim.clip(\"walk\", tts))",
         |anim: FunctorLangAnim, scene: FunctorLangScene| {
             FunctorLangScene(scene.0.with_animation(anim.0))
+        },
+    );
+    // Draw only the named parts of the glTF model(s) in a scene (scene-last);
+    // nested selections intersect.
+    reg.fn2(
+        "Scene.modelParts",
+        "Scene.modelParts(names, scene) — e.g. scene |> Scene.modelParts([Assets.heroParts.body])",
+        |names: Vec<String>, scene: FunctorLangScene| {
+            FunctorLangScene(scene.0.with_parts(names))
         },
     );
     // Transforms (scene-last). Each wraps the scene in a Group carrying the
