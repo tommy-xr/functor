@@ -839,6 +839,45 @@ pub fn check_with_scopes_and_types(
     check_impl(module, Some(scopes))
 }
 
+/// `Job.run`'s function must name a top-level function: a worker compiles
+/// the project and calls it by name, so it can't capture locals or be
+/// built at run time (docs/time-travel.md, "Jobs").
+fn check_job_functions(module: &Module, diags: &mut Vec<CheckError>) {
+    let defs: HashMap<&str, &Expr> = module.defs.iter().map(|d| (d.name.as_str(), &d.value)).collect();
+    // Follow `let g = f` aliases to the def they name; a cycle isn't a function.
+    let top_level_function = |name: &str| {
+        let mut at = name;
+        for _ in 0..defs.len() {
+            match defs.get(at).map(|value| &value.kind) {
+                Some(ExprKind::Lambda { .. }) => return true,
+                Some(ExprKind::Global(next)) => at = next,
+                _ => return false,
+            }
+        }
+        false
+    };
+    let mut work: Vec<&Expr> = module.defs.iter().map(|d| &d.value).collect();
+    while let Some(expr) = work.pop() {
+        crate::rebind::each_child(expr, &mut |child| work.push(child));
+        let ExprKind::Call { callee, args } = &expr.kind else { continue };
+        let is_run = matches!(&callee.kind, ExprKind::External(path) if path == &["Job", "run"]);
+        let Some(f) = args.get(1).filter(|_| is_run) else { continue };
+        let why = match &f.kind {
+            ExprKind::Global(name) if top_level_function(name) => continue,
+            ExprKind::Global(name) => format!("`{name}` is computed, not a top-level function"),
+            ExprKind::Lambda { .. } => "a lambda here may capture locals".to_string(),
+            _ => "this isn't a top-level function's name".to_string(),
+        };
+        diags.push(CheckError {
+            message: format!(
+                "`Job.run` needs a top-level function, called by name on a worker: {why} — \
+write `let f = (input) => …` at top level and pass `f`"
+            ),
+            span: f.span,
+        });
+    }
+}
+
 fn check_impl(
     module: &Module,
     scopes: Option<&RecordLiteralScopes>,
@@ -1242,6 +1281,7 @@ suffix of `{name}` shares one implementation"
         checker.flush_pending_ops();
     }
 
+    check_job_functions(module, &mut checker.diags);
     checker.diags.sort_by_key(|d| d.span.start);
     // ONE display order for the whole table: the same variable must hover
     // as the same 'a everywhere (per-entry renumbering showed `q : 'a`
