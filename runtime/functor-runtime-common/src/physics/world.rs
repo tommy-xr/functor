@@ -1460,16 +1460,16 @@ fn with_material(collider: ColliderBuilder, body: &Body) -> ColliderBuilder {
         .active_events(ActiveEvents::COLLISION_EVENTS)
 }
 
-/// A chunk's triangle mesh collider; `None` if rapier rejects the mesh.
+/// A chunk's triangle mesh collider, built as `Physics.trimesh`'s is (one-sided
+/// contacts, no density); `None` if rapier rejects the mesh.
 fn chunk_trimesh(geometry: room::ChunkGeometry) -> Option<ColliderBuilder> {
-    // Shared vertices let rapier smooth contacts across the chunk's internal
-    // edges, so a ball rolls over them without hopping.
-    ColliderBuilder::trimesh_with_flags(
-        geometry.positions.into_iter().map(vec3).collect(),
-        geometry.triangles,
-        TriMeshFlags::FIX_INTERNAL_EDGES,
-    )
-    .ok()
+    super::trimesh::shape(geometry.positions, geometry.triangles).map(trimesh_collider)
+}
+
+/// No density: an open mesh's volume-derived centre of mass is meaningless,
+/// and a kinematic body's contact velocities use it.
+fn trimesh_collider(shape: SharedShape) -> ColliderBuilder {
+    ColliderBuilder::new(shape).density(0.0)
 }
 
 /// A fused room body's live colliders.
@@ -1494,9 +1494,7 @@ fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
             half_height,
             radius,
         } => Some(ColliderBuilder::capsule_y(*half_height, *radius)),
-        // No density: an open mesh's volume-derived centre of mass is
-        // meaningless, and a kinematic body's contact velocities use it.
-        Shape::TriMesh { mesh } => Some(ColliderBuilder::new(mesh.shape()).density(0.0)),
+        Shape::TriMesh { mesh } => Some(trimesh_collider(mesh.shape())),
         Shape::Heightfield { geometry, data } => data
             .as_deref()
             .map(|data| heightfield_collider(geometry, data)),
@@ -3323,6 +3321,20 @@ mod fused_room_tests {
         let hit = w.raycast([-1.5, 1.0, 0.0], [0.0, 0.0, 1.0], 5.0).unwrap();
         assert_eq!(hit.tag, "room");
         assert!((hit.position[2] - 2.375).abs() < 0.02, "{:?}", hit.position);
+    }
+
+    /// Chunks build through `Physics.trimesh`'s shape builder: one build per
+    /// chunk collider, each with no density.
+    #[test]
+    fn room_chunks_use_the_trimesh_builder() {
+        let room = Arc::new(stand_in_room());
+        let before = crate::physics::trimesh_builds();
+        let w = world_with(vec![room_body(&room)]);
+        let live = w.rooms.values().next().unwrap();
+        assert_eq!(crate::physics::trimesh_builds() - before, live.chunks.len());
+        for &handle in live.chunks.values() {
+            assert_eq!(w.colliders[handle].density(), 0.0);
+        }
     }
 
     #[test]
