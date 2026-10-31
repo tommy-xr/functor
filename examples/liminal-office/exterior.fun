@@ -18,8 +18,9 @@ let facadeHoles = (s: Side): List<Hole> =>
   List.range(List.length(rooms))
     |> List.filter((i) => isInside(roomAt(i)) && onFootprint(s, roomAt(i).rect))
     |> List.concatMap((i) => holesIn(i, s))
-    // 1 cm back from the reveal, so the baked jambs and head cover the joint.
-    |> List.map((h) => { lo: h.lo - 0.01, hi: h.hi + 0.01, top: h.top + 0.01 })
+    // 1 cm into the opening, so the facade's outer half overlaps the baked
+    // reveal's edges: no seam to see through, and no coplanar faces.
+    |> List.map((h) => { lo: h.lo + 0.01, hi: h.hi - 0.01, top: h.top - 0.01 })
     |> List.sortBy((h) => h.lo)
 
 // The outer half of the facade (the inner half is the baked interior wall).
