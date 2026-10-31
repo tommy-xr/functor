@@ -50,9 +50,19 @@ pub struct JobCtx {
 }
 
 impl JobCtx {
+    #[cfg(test)]
+    pub(crate) fn new(stop: Arc<AtomicBool>) -> JobCtx {
+        JobCtx { stop }
+    }
+
     /// Whether the op was cancelled or discarded: a long task should return.
     pub fn cancelled(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
+    }
+
+    /// The flag behind [`Self::cancelled`], for an evaluation to poll.
+    pub fn stop_flag(&self) -> &AtomicBool {
+        &self.stop
     }
 }
 
@@ -91,18 +101,22 @@ pub struct Job {
 
 impl Job {
     /// Run on this thread and post the result, unless stopped first. A
-    /// panic posts a `Crashed` failure instead.
-    pub fn run(self) {
+    /// panic posts a `Crashed` failure instead; `true` if it panicked.
+    pub fn run(self) -> bool {
         if self.stop.load(Ordering::Relaxed) {
-            return;
+            return false;
         }
         let ctx = JobCtx { stop: self.stop.clone() };
         let task = self.task;
-        let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(&ctx)))
-            .unwrap_or_else(|panic| (self.fail)(JobError::Crashed(panic_text(&panic))));
+        let (value, crashed) =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(&ctx))) {
+                Ok(value) => (value, false),
+                Err(panic) => ((self.fail)(JobError::Crashed(panic_text(&panic))), true),
+            };
         if !self.stop.load(Ordering::Relaxed) {
             self.mailbox.post(self.ticket, value);
         }
+        crashed
     }
 
     /// Post a failure without running.
@@ -149,21 +163,55 @@ impl Pool {
         let in_flight = Arc::new(AtomicUsize::new(0));
         let mut started = 0;
         for n in 0..workers {
-            let (jobs, in_flight) = (jobs.clone(), in_flight.clone());
-            let spawned = std::thread::Builder::new()
-                .name(format!("functor-job-{n}"))
-                .spawn(move || loop {
-                    let next = jobs.lock().unwrap_or_else(|e| e.into_inner()).recv();
-                    let Ok(job) = next else { return };
-                    job.run();
-                    in_flight.fetch_sub(1, Ordering::Relaxed);
-                });
-            match spawned {
-                Ok(_) => started += 1,
+            match spawn_worker(n, jobs.clone(), in_flight.clone()) {
+                Ok(()) => started += 1,
                 Err(e) => log::warn!("[functor-lang] couldn't start job worker {n}: {e}"),
             }
         }
         Pool { queue, workers: started, in_flight }
+    }
+}
+
+/// A worker's stack: dropping a deeply nested value recurses, ~100 bytes a
+/// level (functor-lang's stack contract). Reserved, committed as used.
+const WORKER_STACK: usize = 256 << 20;
+
+/// Start worker `n`. After a panic it hands over to a fresh thread: the
+/// panic may have left this one's host state (caches, read records) half
+/// updated.
+fn spawn_worker(
+    n: usize,
+    jobs: Arc<Mutex<mpsc::Receiver<Job>>>,
+    in_flight: Arc<AtomicUsize>,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name(format!("functor-job-{n}"))
+        .stack_size(WORKER_STACK)
+        .spawn(move || {
+            lower_priority();
+            loop {
+                let next = jobs.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                let Ok(job) = next else { return };
+                let crashed = job.run();
+                in_flight.fetch_sub(1, Ordering::Relaxed);
+                if crashed {
+                    if let Err(e) = spawn_worker(n, jobs, in_flight) {
+                        log::warn!("[functor-lang] couldn't replace job worker {n}: {e}");
+                    }
+                    return;
+                }
+            }
+        })
+        .map(|_| ())
+}
+
+/// Background work: utility QoS on macOS, so jobs don't contend with the
+/// frame's threads for performance cores.
+fn lower_priority() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: plain libc call on the calling thread; no pointers involved.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
     }
 }
 
@@ -263,22 +311,34 @@ impl Dispatch for FakeJobs {
 }
 
 /// What a job op asks for: enough to dispatch it again (a branch restoring
-/// a cancelled op, a seek undoing a cancel).
+/// a cancelled op, a seek undoing a cancel, a reload).
 #[derive(Clone, Debug, PartialEq)]
 pub enum JobSpec {
     /// `File.load`: a project file's bytes.
     FileLoad { path: String },
+    /// `Job.run`: a top-level function called on a worker.
+    Run(Arc<RunSpec>),
+}
+
+/// Which API a job key belongs to: `Job.cancel(k)` cancels `Job.run`s,
+/// `File.cancel(p)` `File.load`s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobKind {
+    File,
+    Run,
 }
 
 impl JobSpec {
-    /// The same-key rule's key: one in-flight op per key (design J2).
-    pub fn key(&self) -> &str {
+    /// The same-key rule's key: one in-flight op per kind and key (design
+    /// J2).
+    pub fn key(&self) -> (JobKind, &str) {
         match self {
-            JobSpec::FileLoad { path } => path,
+            JobSpec::FileLoad { path } => (JobKind::File, path),
+            JobSpec::Run(run) => (JobKind::Run, &run.key),
         }
     }
 
-    fn task(&self, reader: Option<Arc<dyn ProjectReader>>) -> (Task, fn(JobError) -> Shareable) {
+    fn task(&self, reader: Option<Arc<dyn ProjectReader>>) -> (Task, fn(JobError) -> Shareable, Option<ReadSlot>) {
         match self {
             JobSpec::FileLoad { path } => {
                 let path = path.clone();
@@ -289,19 +349,91 @@ impl JobSpec {
                     let (JobError::Failed(m) | JobError::Crashed(m)) = error;
                     crate::functor_lang_prelude::bytes::load_failed(m)
                 };
-                (task, fail)
+                (task, fail, None)
+            }
+            JobSpec::Run(run) => {
+                let (run, reads) = (run.clone(), ReadSlot::default());
+                let slot = reads.clone();
+                let task: Task = Box::new(move |ctx| {
+                    crate::functor_lang_prelude::job::run(&run, reader, ctx, &slot)
+                });
+                (task, crate::functor_lang_prelude::job::failed, Some(reads))
             }
         }
     }
 }
 
-/// A producer's side of the pool: where its jobs run, its mailbox, and the
-/// reader its file jobs use.
+/// A `Job.run` op's request.
+#[derive(Debug)]
+pub struct RunSpec {
+    pub key: String,
+    /// What to call; `Err` holds the error result when it can't run at all
+    /// (a function that isn't top-level, an input that can't cross).
+    pub call: Result<RunCall, Shareable>,
+}
+
+impl PartialEq for RunSpec {
+    fn eq(&self, other: &RunSpec) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+/// A call a worker can make: the project to compile, the top-level
+/// function, and its input.
+#[derive(Clone, Debug)]
+pub struct RunCall {
+    pub program: Arc<ProgramSource>,
+    pub f: String,
+    pub input: Shareable,
+}
+
+/// One revision of a project, as a worker compiles it: the project's own
+/// files, entry first (the bundled modules are the worker's own).
+#[derive(Debug)]
+pub struct ProgramSource {
+    /// Unique per revision: a worker's compile cache key.
+    pub id: u64,
+    pub files: Vec<(String, String)>,
+}
+
+/// The project as a producer runs it: what a worker compiles, and which
+/// closures are its top-level functions.
+pub struct JobProgram {
+    pub source: Arc<ProgramSource>,
+    pub roots: functor_lang::reuse::Roots,
+}
+
+impl JobProgram {
+    /// The loaded `module`, linked from `sources`.
+    pub fn new(module: &functor_lang::ir::Module, sources: &functor_lang::project::SourceMap) -> JobProgram {
+        let files = sources
+            .files()
+            .iter()
+            .filter(|file| !file.path.to_string_lossy().starts_with('<'))
+            .map(|file| (file.path.to_string_lossy().into_owned(), file.src.clone()))
+            .collect();
+        JobProgram {
+            source: Arc::new(ProgramSource { id: next_id(), files }),
+            roots: functor_lang::reuse::Roots::of(module),
+        }
+    }
+}
+
+/// What a `Job.run` attempt read, set when it finishes: its file inputs,
+/// or `None` when it read something no input describes. A reload that kept
+/// the attempt running re-checks them before delivering its result.
+pub type ReadSlot = Arc<OnceLock<Option<Vec<functor_lang::reuse::HostInput>>>>;
+
+/// A producer's side of the pool: where its jobs run, its mailbox, the
+/// reader its jobs use, and the program `Job.run` compiles.
 pub struct JobPort {
     dispatch: std::rc::Rc<dyn Dispatch>,
     mailbox: Mailbox,
     /// `None`: the process's reader as of each dispatch.
     reader: Option<Arc<dyn ProjectReader>>,
+    /// `None` until the producer installs its program: `Job.run` is
+    /// unsupported.
+    program: Option<std::rc::Rc<JobProgram>>,
 }
 
 impl Default for JobPort {
@@ -311,7 +443,7 @@ impl Default for JobPort {
         } else {
             std::rc::Rc::new(Shared)
         };
-        JobPort { dispatch, mailbox: Mailbox::default(), reader: None }
+        JobPort { dispatch, mailbox: Mailbox::default(), reader: None, program: None }
     }
 }
 
@@ -330,10 +462,30 @@ impl JobPort {
         &self.mailbox
     }
 
-    /// Dispatch `spec` as `ticket`; the returned flag stops it.
-    pub(crate) fn start(&self, spec: &JobSpec, ticket: Ticket) -> Arc<AtomicBool> {
-        let reader = self.reader.clone().or_else(crate::storage::project_reader);
-        let (task, fail) = spec.task(reader);
+    /// Run `Job.run`s against this program from now on.
+    pub fn set_program(&mut self, program: JobProgram) {
+        self.program = Some(std::rc::Rc::new(program));
+    }
+
+    pub fn program(&self) -> Option<&JobProgram> {
+        self.program.as_deref()
+    }
+
+    /// A fork's port: the same program (a replay's `Job.run` digest names
+    /// its function), nothing in flight.
+    pub(crate) fn fork(&self) -> JobPort {
+        JobPort { program: self.program.clone(), ..JobPort::default() }
+    }
+
+    /// The reader a job dispatched now reads through.
+    pub(crate) fn reader(&self) -> Option<Arc<dyn ProjectReader>> {
+        self.reader.clone().or_else(crate::storage::project_reader)
+    }
+
+    /// Dispatch `spec` as `ticket`; the returned flag stops it, and a
+    /// `Job.run`'s slot receives what it read.
+    pub(crate) fn start(&self, spec: &JobSpec, ticket: Ticket) -> (Arc<AtomicBool>, Option<ReadSlot>) {
+        let (task, fail, reads) = spec.task(self.reader());
         let stop = Arc::new(AtomicBool::new(false));
         self.dispatch.dispatch(Job {
             ticket,
@@ -342,7 +494,22 @@ impl JobPort {
             stop: stop.clone(),
             mailbox: self.mailbox.clone(),
         });
-        stop
+        (stop, reads)
+    }
+}
+
+#[cfg(test)]
+mod run_tests;
+
+/// Counts dispatches on their way to the shared pool (tests).
+#[cfg(test)]
+pub(crate) struct Counted(pub std::cell::Cell<usize>);
+
+#[cfg(test)]
+impl Dispatch for Counted {
+    fn dispatch(&self, job: Job) {
+        self.0.set(self.0.get() + 1);
+        Pool::shared().dispatch(job);
     }
 }
 
@@ -382,18 +549,20 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_posts_a_crash_and_the_worker_lives_on() {
+    fn a_panic_posts_a_crash_and_a_fresh_worker_takes_over() {
         let pool = Pool::start(1);
         let mailbox = Mailbox::default();
-        pool.dispatch(job(ticket(1), &mailbox, Box::new(|_| panic!("boom"))).0);
-        pool.dispatch(job(ticket(2), &mailbox, Box::new(|_| Shareable::Bool(true))).0);
+        let thread = || Shareable::Text(Arc::from(format!("{:?}", std::thread::current().id()).as_str()));
+        pool.dispatch(job(ticket(1), &mailbox, Box::new(move |_| thread())).0);
+        pool.dispatch(job(ticket(2), &mailbox, Box::new(|_| panic!("boom"))).0);
+        pool.dispatch(job(ticket(3), &mailbox, Box::new(move |_| thread())).0);
         let mut got = Vec::new();
-        while got.len() < 2 {
+        while got.len() < 3 {
             got.extend(mailbox.take());
             std::thread::yield_now();
         }
-        assert_eq!(got[0].1, Shareable::Text(Arc::from("Crashed(\"boom\")")));
-        assert_eq!(got[1].1, Shareable::Bool(true));
+        assert_eq!(got[1].1, Shareable::Text(Arc::from("Crashed(\"boom\")")));
+        assert_ne!(got[0].1, got[2].1, "the panicked thread retired");
     }
 
     #[test]

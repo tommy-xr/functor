@@ -247,6 +247,13 @@ impl Shareable {
         Ok(out.pop().expect("the root converts to one value"))
     }
 
+    /// `Result.Error(ctor(message))`: a job's error result (`File.Missing`,
+    /// `Job.Failed`, …).
+    pub fn error(ctor: &str, message: String) -> Shareable {
+        let error = Shareable::Variant(ctor.into(), vec![Shareable::Text(message.into())].into());
+        Shareable::Variant("Result.Error".into(), vec![error].into())
+    }
+
     /// The `Value` a job's receiver sees; shared nodes stay shared, and host
     /// values wrap the same inner `Arc` (pointer fast paths still hit).
     pub fn to_value(&self) -> Value {

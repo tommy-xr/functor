@@ -1,0 +1,35 @@
+//! Run a function on a job worker, off the frame: its result arrives through
+//! `update` a frame or more later, like a `File.load`.
+//!
+//! A job runs like a top-level value: it may read files (`File.bytes`), never
+//! physics or UI state — ask for those in `update` and put them in the input.
+//! A replay or a scrub hands back the recorded result; it never runs the job
+//! again. A hot reload that changes the code `f` reaches runs a job still in
+//! flight again; one whose result already arrived delivers it, unless a file
+//! it read changed.
+
+/// Why a job has no result. Each holds a message.
+type error =
+  | Failed(message: string)
+  | Crashed(message: string)
+  | NotShareable(message: string)
+  | Unsupported(message: string)
+
+/// Call `f(input)` on a worker and deliver `tagger(result)` through `update`:
+/// `(m, Job.run("level", Level.decode, path, Decoded))`. `f` must name a
+/// top-level function at the call (not a parameter or a lambda), and `input` and the result plain data, `Bytes`,
+/// `Path`s, models, textures or shapes — no functions. While a job with this
+/// key is in flight, another `run` with it is dropped (cancel first to
+/// replace it).
+let run : (string, ('i) => 'o, 'i, (Result.t<'o, error>) => 'msg) => Effect.t
+
+/// Stop the in-flight `Job.run` with this key; no message is delivered for
+/// it.
+let cancel : (string) => Effect.t
+
+/// Inside a job, report progress in 0..1 and return `value`. Not yet
+/// observable: it only returns `value`.
+let report : (float, 'a) => 'a
+
+/// A message for an error, for a status line or a panel.
+let describe : (error) => string

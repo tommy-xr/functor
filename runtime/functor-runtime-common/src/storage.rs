@@ -287,9 +287,33 @@ pub fn set_project_reader(reader: Option<std::sync::Arc<dyn ProjectReader>>) {
     *PROJECT_READER.write().unwrap_or_else(|e| e.into_inner()) = reader;
 }
 
+thread_local! {
+    /// The reader of the job running on this thread ([`scope_reader`]).
+    static SCOPED_READER: std::cell::RefCell<Option<Option<std::sync::Arc<dyn ProjectReader>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// While alive, [`project_reader`] on this thread answers `reader`: a job
+/// reads its producer's project, not the process's.
+pub(crate) struct ScopedReader(Option<Option<std::sync::Arc<dyn ProjectReader>>>);
+
+pub(crate) fn scope_reader(reader: Option<std::sync::Arc<dyn ProjectReader>>) -> ScopedReader {
+    ScopedReader(SCOPED_READER.with(|scoped| scoped.replace(Some(reader))))
+}
+
+impl Drop for ScopedReader {
+    fn drop(&mut self) {
+        SCOPED_READER.with(|scoped| *scoped.borrow_mut() = self.0.take());
+    }
+}
+
 /// The installed reader, else the platform default: the project directory on
-/// desktop, none on the web or Quest until a shell installs one.
+/// desktop, none on the web or Quest until a shell installs one. A job sees
+/// its own ([`scope_reader`]).
 pub fn project_reader() -> Option<std::sync::Arc<dyn ProjectReader>> {
+    if let Some(scoped) = SCOPED_READER.with(|scoped| scoped.borrow().clone()) {
+        return scoped;
+    }
     let installed = PROJECT_READER
         .read()
         .unwrap_or_else(|e| e.into_inner())
