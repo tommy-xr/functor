@@ -10,6 +10,7 @@ use super::{PixelFormat, RuntimeTexture, TextureData};
 pub struct Texture2D {
     ora: RuntimeRenderableAsset<TextureData>,
     average: [f32; 3],
+    mipmap: bool,
 }
 
 pub struct TextureOptions {
@@ -90,9 +91,15 @@ impl Texture2D {
             .then(|| average_color(&data, opts.srgb))
             .unwrap_or([1.0; 3]);
         Texture2D {
+            mipmap: opts.mipmap,
             ora: RuntimeRenderableAsset::new(data, opts),
             average,
         }
+    }
+
+    /// Whether it has a mip chain, so a bind may minify through it.
+    pub fn mipmapped(&self) -> bool {
+        self.mipmap
     }
 
     /// The image's mean RGB, computed once at load, or white when
@@ -156,7 +163,13 @@ fn average_color(data: &TextureData, srgb: bool) -> [f32; 3] {
 /// The minification filter for `options` — a pure function so the mip/filter
 /// pairing is checkable without a GL context.
 fn min_filter_for(options: &TextureOptions) -> u32 {
-    match (options.linear, options.mipmap) {
+    min_filter(options.linear, options.mipmap)
+}
+
+/// The minification filter for `linear` or nearest sampling, through the mip
+/// chain when the texture has one.
+pub fn min_filter(linear: bool, mipmap: bool) -> u32 {
+    match (linear, mipmap) {
         (true, true) => glow::LINEAR_MIPMAP_LINEAR,
         (true, false) => glow::LINEAR,
         // A NEAREST texture that still minifies wants nearest levels, not a
