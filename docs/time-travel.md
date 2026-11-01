@@ -422,6 +422,20 @@ program; on desktop, with none yet, the screen shows the error until an edit
 fixes it. Runs that need fixed frame numbers (scripted input, captures, a fixed
 clock) load before their first frame, and the web loads inline.
 
+**A heavy hot reload keeps playing.** In an interactive shell (a windowed
+desktop run, the Quest), a reload that would evaluate a heavy top-level value
+(one that took over 50 ms last time, or one that reads files: a decode), or
+that has spent 50 ms, stops before it and runs on the loader instead, which
+reuses from its own last load. It reads no file on the frame thread: a value
+that read files counts as changed there (the loader re-checks it), and a file
+read defers the reload too.
+The old program keeps ticking and committing frames meanwhile, so Δ at the swap
+is one frame; when the load lands, it swaps in between frames like any reload,
+model kept. Its push is answered then (pushes wait up to 180 s). A newer edit
+or push supersedes it; a failure keeps the old program and reports. A push
+during a new game's load restarts that load with the pushed files. Everything else reloads inline, as
+before.
+
 Two fidelity tiers follow, and they are why coeffect replay (T8) is a separate
 phase from the input log (T6):
 

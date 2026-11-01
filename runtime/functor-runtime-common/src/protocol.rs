@@ -655,6 +655,22 @@ pub fn load_with_role(
     with_role(game, role, load)
 }
 
+/// Answer a reload request with `result`: now, or, when the reload runs off
+/// the frame thread, once it lands.
+pub fn answer_reload(
+    game: &mut dyn GameProducer,
+    result: Result<String, String>,
+    response: std::sync::mpsc::Sender<Result<String, String>>,
+) {
+    if result.is_ok() && game.load_pending() {
+        game.when_loaded(Box::new(move |status| {
+            let _ = response.send(status);
+        }));
+    } else {
+        let _ = response.send(result);
+    }
+}
+
 /// `POST /reload-project` under the declared role — the model-PRESERVING
 /// push, so it may only re-declare the role already running.
 ///
