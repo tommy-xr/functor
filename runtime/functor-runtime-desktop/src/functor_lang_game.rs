@@ -926,7 +926,7 @@ impl FunctorLangGame {
             return self.finish_now(&path, project, true).map(|l| Reloaded::Now(Box::new(l)));
         };
         let status = format!(
-            "reloading {path} off the frame thread (it evaluates `{def}` again); the running \
+            "reloading {path} off the frame thread (it reaches `{def}`, which may be heavy); the running \
 program plays until it lands"
         );
         self.reloading = Some(Reloading { job, changed: Vec::new(), path, project, names, started: Instant::now() });

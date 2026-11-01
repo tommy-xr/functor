@@ -886,7 +886,7 @@ impl FunctorLangEmbeddedGame {
             return Ok(self.install_reload(files, loaded, started, ""));
         };
         let status = format!(
-            "reloading {} off the frame thread (it evaluates `{def}` again); the running program \
+            "reloading {} off the frame thread (it reaches `{def}`, which may be heavy); the running program \
 plays until it lands",
             compiled.path
         );
