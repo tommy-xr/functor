@@ -5690,8 +5690,12 @@ add `impure[{class}]` above it"
     );
 }
 
+/// Whether the built-in at `path` reads project files (`impure[file]`).
+pub(crate) fn reads_files(path: &str) -> bool {
+    declared_reads().get(path).is_some_and(|classes| classes.contains(&ReadClass::File))
+}
+
 /// Each prelude signature's `impure[…]` classes, by path (`File.bytes`).
-#[cfg(any(debug_assertions, test))]
 fn declared_reads() -> &'static std::collections::HashMap<String, Vec<ReadClass>> {
     static DECLARED: std::sync::OnceLock<std::collections::HashMap<String, Vec<ReadClass>>> =
         std::sync::OnceLock::new();

@@ -1319,7 +1319,6 @@ impl Game for FunctorLangGame {
         if self.boot.is_some() {
             return self.check_boot();
         }
-        self.poll_reload();
         // Poll every project file's mtime (a few stats per frame is ~free)
         // and swap in a new session on change — editing a SIBLING module
         // hot-reloads exactly like editing the entry (B8). THE MODEL IS
@@ -1332,6 +1331,9 @@ impl Game for FunctorLangGame {
         // keeps the old program running.
         let stamp = project_stamp(&self.path);
         if stamp == self.stamp {
+            // A reload on the loader lands here, unless an edit supersedes it
+            // (below).
+            self.poll_reload();
             self.check_data_reload(Instant::now());
             return;
         }

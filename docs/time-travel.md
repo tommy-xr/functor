@@ -427,7 +427,8 @@ desktop run, the Quest), a reload that would evaluate a heavy top-level value
 (one that took over 50 ms last time, or one that reads files: a decode), or
 that has spent 50 ms, stops before it and runs on the loader instead, which
 reuses from its own last load. It reads no file on the frame thread: a value
-that read files counts as changed there, and the loader re-checks it.
+that read files counts as changed there (the loader re-checks it), and a file
+read defers the reload too.
 The old program keeps ticking and committing frames meanwhile, so Δ at the swap
 is one frame; when the load lands, it swaps in between frames like any reload,
 model kept. Its push is answered then (pushes wait up to 180 s). A newer edit

@@ -286,3 +286,16 @@ fn a_newer_push_that_doesnt_compile_still_supersedes_a_heavy_reload() {
     assert!(game.reload_project(&[("game.fun".to_string(), "let init = (".to_string())]).is_err());
     assert!(!game.load_pending(), "the older reload stopped");
 }
+
+#[test]
+fn a_reload_that_newly_reads_a_file_runs_off_the_frame() {
+    let source = PLAYING.replace("TOTAL", "10.0");
+    let mut game = FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), source.clone())], Box::new(NativePlatform))
+        .expect("loads")
+        .load_in_background();
+    let reading = format!("{source}\nlet there = File.exists(Path.of(\"level.bin\"))\n");
+    let status = game.reload_project(&[("game.fun".to_string(), reading)]).expect("links");
+    assert!(status.contains("off the frame thread"), "{status}");
+    let run = run(&mut game);
+    assert!(run.status.expect("reloads").contains("model preserved"));
+}
