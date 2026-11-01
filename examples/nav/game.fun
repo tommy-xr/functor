@@ -81,15 +81,18 @@ let tick = (m, dt, tts) =>
 let input = (m, key, isDown) =>
   match key with
   | Key.D =>
-    if isDown then { doorOpen: not m.doorOpen, agents: m.agents |> List.map((a) => { a with seq: a.seq + 1.0 }) }
+    // Drop each route too: one through a closed door is no route.
+    if isDown then { doorOpen: not m.doorOpen, agents: m.agents |> List.map((a) => { a with seq: a.seq + 1.0, route: [] }) }
     else m
   | _ => m
 
 let update = (m, msg) =>
   match msg with
   | Routed(i, r) =>
+    // A search that never ran leaves `routed` behind, so `tick` asks again.
+    let ran = match r.outcome with | Nav.NotRun(_) => false | _ => true in
     { m with agents: m.agents |> List.indexedMap((j, a) =>
-        if j == i && r.query.seq == a.seq then { a with route: r.waypoints, routed: a.seq } else a) }
+        if j == i && r.query.seq == a.seq && ran then { a with route: r.waypoints, routed: a.seq } else a) }
 
 let colors = [Color.rgb(0.9, 0.3, 0.2), Color.rgb(0.2, 0.7, 0.9), Color.rgb(0.95, 0.8, 0.2)]
 let color = (i) => List.nth(i, colors) |> Option.defaultValue(Color.rgb(1.0, 1.0, 1.0))

@@ -50,15 +50,14 @@ pub(super) fn number(value: &Value, what: &str) -> Result<f64, String> {
     }
 }
 
+/// `n` as an id: a whole number ≥ 0 that fits a `u32`.
+pub(super) fn whole(n: f64) -> Option<u32> {
+    (n >= 0.0 && n.fract() == 0.0 && n <= f64::from(u32::MAX)).then_some(n as u32)
+}
+
 /// A cell id: a whole number ≥ 0.
 fn cell_id(n: f64, what: &str) -> Result<u32, String> {
-    if n >= 0.0 && n.fract() == 0.0 && n <= f64::from(u32::MAX) {
-        Ok(n as u32)
-    } else {
-        Err(format!(
-            "{what} must be a cell id (a whole number ≥ 0), got {n}"
-        ))
-    }
+    whole(n).ok_or_else(|| format!("{what} must be a cell id (a whole number ≥ 0), got {n}"))
 }
 
 fn id(value: &Value, what: &str) -> Result<u32, String> {

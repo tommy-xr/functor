@@ -78,9 +78,15 @@ pub struct Route {
     pub outcome: Outcome,
     /// Start node to end node; empty when `Failed`.
     pub nodes: Vec<u32>,
-    /// When the goal fell short only because of cuts: the latest `until`
-    /// among the cuts on the route that lifting them opens.
+    /// When the goal fell short only because of cuts: the earliest time a
+    /// route to it opens (the least, over routes, of their latest cut).
     pub retry_at: Option<f64>,
+}
+
+impl Route {
+    pub fn failed() -> Route {
+        Route { outcome: Outcome::Failed, nodes: Vec::new(), retry_at: None }
+    }
 }
 
 /// Expansions between cancel checks.
@@ -111,10 +117,13 @@ impl Graph {
         if !scale.is_finite() {
             scale = 0.0;
         }
-        // Content identity, so a result can be matched to its graph.
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&format!("{at:?}{links:?}"), &mut hasher);
-        let revision = (std::hash::Hasher::finish(&hasher) & ((1 << 53) - 1)) as f64;
+        // Content identity, so a result can be matched to its graph: FNV-1a,
+        // stable across toolchains, cut to 53 bits so it is an exact float.
+        let text = format!("{at:?}{links:?}");
+        let fnv = text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        let revision = (fnv & ((1 << 53) - 1)) as f64;
         links.sort_by_key(|link| link.from);
         let mut first = vec![0; n + 1];
         for link in &links {
@@ -153,9 +162,8 @@ impl Graph {
     /// Route `query` from the node nearest `from` to the node nearest `to`,
     /// polling `cancelled` every 1,024 expansions: `None` once it says so.
     pub fn find(&self, query: &Query, cancelled: &dyn Fn() -> bool) -> Option<Route> {
-        let failed = Route { outcome: Outcome::Failed, nodes: Vec::new(), retry_at: None };
         let (Some(start), Some(goal)) = (self.nearest(query.from), self.nearest(query.to)) else {
-            return Some(failed);
+            return Some(Route::failed());
         };
         let costs = Costs::of(query);
         let search = self.search(start, goal, query.bits, &costs, cancelled)?;
@@ -171,37 +179,64 @@ impl Graph {
                 best = (near(n), n);
             }
         }
-        let retry_at = self.retry_at(start, goal, query.bits, costs, cancelled)?;
+        let retry_at = self.retry_at(start, goal, query.bits, &costs, cancelled)?;
         if best.1 == start {
-            return Some(Route { retry_at, ..failed });
+            return Some(Route { retry_at, ..Route::failed() });
         }
         Some(Route { outcome: Outcome::Partial, nodes: search.path(best.1), retry_at })
     }
 
-    /// For a goal the cuts kept out of reach: re-route with only the doors,
-    /// and wait for the latest cut on that route. `Some(None)` when there
-    /// are no cuts or the goal is out of reach regardless.
+    /// For a goal the cuts kept out of reach: when the first route to it
+    /// opens, the least over routes of the latest cut along each (a search
+    /// minimising that). `Some(None)` when no route opens; `None` when
+    /// cancelled.
     fn retry_at(
         &self,
         start: u32,
         goal: u32,
         bits: u32,
-        costs: Costs,
+        costs: &Costs,
         cancelled: &dyn Fn() -> bool,
     ) -> Option<Option<f64>> {
-        let cut = |extra: &Extra| extra.cut_until;
-        if !costs.links.values().chain(costs.nodes.values()).any(|e| cut(e).is_some()) {
+        let cut = |e: &Extra| e.cut_until.is_some();
+        if !costs.links.values().chain(costs.nodes.values()).any(cut) {
             return Some(None);
         }
-        let open = Costs { doors: costs.doors.clone(), ..Costs::default() };
-        let search = self.search(start, goal, bits, &open, cancelled)?;
-        if !search.reached(goal) {
-            return Some(None);
+        let n = self.at.len();
+        let mut opens = vec![f64::INFINITY; n];
+        let mut closed = vec![false; n];
+        let mut settled = 0;
+        let mut open = BinaryHeap::new();
+        opens[start as usize] = f64::NEG_INFINITY;
+        open.push(Open { f: f64::NEG_INFINITY, node: start });
+        while let Some(Open { f, node }) = open.pop() {
+            if std::mem::replace(&mut closed[node as usize], true) {
+                continue;
+            }
+            settled += 1;
+            if settled % CANCEL_EVERY == 0 && cancelled() {
+                return None;
+            }
+            if node == goal {
+                return Some(Some(f));
+            }
+            for link in self.usable(node, bits, costs) {
+                let until = costs.extras(node, link.to).filter_map(|e| e.cut_until).fold(f, f64::max);
+                if until < opens[link.to as usize] {
+                    opens[link.to as usize] = until;
+                    open.push(Open { f: until, node: link.to });
+                }
+            }
         }
-        let path = search.path(goal);
-        let links = path.windows(2).filter_map(|w| costs.links.get(&(w[0], w[1])).and_then(cut));
-        let nodes = path[1..].iter().filter_map(|n| costs.nodes.get(n).and_then(cut));
-        Some(links.chain(nodes).reduce(f64::max))
+        Some(None)
+    }
+
+    /// Node `node`'s links that `bits` may use and no closed door blocks.
+    fn usable<'a>(&'a self, node: u32, bits: u32, costs: &'a Costs) -> impl Iterator<Item = &'a Link> {
+        let links = &self.links[self.first[node as usize]..self.first[node as usize + 1]];
+        links.iter().filter(move |link| {
+            link.bits & bits != 0 && !link.door.is_some_and(|d| costs.doors.contains(&d))
+        })
     }
 
     /// A* from `start` toward `goal`, stopping when it settles; on a miss,
@@ -236,12 +271,8 @@ impl Graph {
                 break;
             }
             let base = g[node as usize];
-            for link in &self.links[self.first[node as usize]..self.first[node as usize + 1]] {
-                if link.bits & bits == 0 || link.door.is_some_and(|d| costs.doors.contains(&d)) {
-                    continue;
-                }
-                let extras = [costs.links.get(&(node, link.to)), costs.nodes.get(&link.to)];
-                let extras = extras.into_iter().flatten();
+            for link in self.usable(node, bits, costs) {
+                let extras = costs.extras(node, link.to);
                 if extras.clone().any(|e| e.cut_until.is_some()) {
                     continue;
                 }
@@ -308,6 +339,11 @@ impl Extra {
 }
 
 impl Costs {
+    /// What crossing `from → to` adds: the link pair's and `to`'s.
+    fn extras(&self, from: u32, to: u32) -> impl Iterator<Item = &Extra> + Clone {
+        [self.links.get(&(from, to)), self.nodes.get(&to)].into_iter().flatten()
+    }
+
     fn of(query: &Query) -> Costs {
         let mut costs = Costs { doors: query.closed_doors.iter().copied().collect(), ..Costs::default() };
         let live = |p: &Penalty| query.now < p.until;
@@ -471,8 +507,11 @@ mod tests {
         let route = graph.find(&q, &never).unwrap();
         assert_eq!(route.outcome, Outcome::Partial);
         assert_eq!(route.nodes, vec![0, 1]);
-        // Uncut, the cheapest route is 0 → 1 → 2: wait for 1 → 2's cut.
+        // 0 → 1 → 2 opens at 4, before 0 → 2 does.
         assert_eq!(route.retry_at, Some(4.0));
+        // Whichever route opens first, not the cheapest.
+        q.links = vec![((1, 2), cut(9.0)), ((0, 2), cut(4.0))];
+        assert_eq!(graph.find(&q, &never).unwrap().retry_at, Some(4.0));
         // A cut node is out of reach the same way.
         q.links.clear();
         q.nodes = vec![(2, cut(3.0))];
@@ -535,6 +574,18 @@ mod tests {
         for _ in 0..runs {
             assert_eq!(walled.find(&q, &never).unwrap().outcome, Outcome::Full);
         }
-        println!("2,025 nodes: open {open:?}, walled {:?} per query", started.elapsed() / runs);
+        let walled_time = started.elapsed() / runs;
+        // Worst case: the gap is cut, so the search fills one side (Partial),
+        // then the retry search fills the grid.
+        let mut cut = q.clone();
+        cut.nodes = vec![(44 * 45 + 22, Penalty { weight: f64::INFINITY, until: 10.0 })];
+        let started = std::time::Instant::now();
+        for _ in 0..runs {
+            assert_eq!(walled.find(&cut, &never).unwrap().retry_at, Some(10.0));
+        }
+        println!(
+            "2,025 nodes: open {open:?}, walled {walled_time:?}, cut off {:?} per query",
+            started.elapsed() / runs
+        );
     }
 }

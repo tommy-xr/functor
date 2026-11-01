@@ -305,12 +305,16 @@ impl JobSpec {
             }
             JobSpec::NavPath { graph, query, echo, .. } => {
                 use crate::functor_lang_prelude::nav;
-                let (graph, query, echo) = (graph.clone(), query.clone(), echo.clone());
-                let (graph2, echo2) = (graph.clone(), echo.clone());
-                let task: Task = Box::new(move |ctx| nav::route(&graph, &query, &echo, &|| ctx.cancelled()));
-                let fail: Fail = Box::new(move |error: JobError| {
-                    let (JobError::Failed(m) | JobError::Crashed(m)) = error;
-                    nav::not_run(&graph2, &echo2, m)
+                let task: Task = Box::new({
+                    let (graph, query, echo) = (graph.clone(), query.clone(), echo.clone());
+                    move |ctx| nav::route(&graph, &query, &echo, &|| ctx.cancelled())
+                });
+                let fail: Fail = Box::new({
+                    let (graph, echo) = (graph.clone(), echo.clone());
+                    move |error: JobError| {
+                        let (JobError::Failed(m) | JobError::Crashed(m)) = error;
+                        nav::not_run(&graph, &echo, m)
+                    }
                 });
                 (task, fail)
             }

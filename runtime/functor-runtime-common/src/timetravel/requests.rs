@@ -285,7 +285,11 @@ impl Requests {
     /// a committed one.
     fn find_in_flight(&self, key: (&str, &str)) -> Option<InFlight> {
         let keyed = |p: &Pending| p.job.as_ref().is_some_and(|j| j.spec.key() == key);
-        let live = |p: &Pending| keyed(p) && p.job.as_ref().is_some_and(JobOp::live);
+        // Answered in Δ (issued while paused, finished before the frame
+        // ran) is no longer in flight, as a replay's committed op isn't.
+        let live = |p: &Pending| {
+            keyed(p) && p.answer.is_none() && p.job.as_ref().is_some_and(JobOp::live)
+        };
         if let Some(at) = self.provisional.iter().position(|(_, p)| live(p)) {
             return Some(InFlight::Provisional(at));
         }
@@ -1020,6 +1024,16 @@ mod tests {
         assert!(matches!(requests.deliver(&arrival, 0, 1), Delivered::Op(..)));
         assert!(matches!(requests.deliver(&arrival, 0, 1), Delivered::Dropped));
         assert!(requests.pending_tokens().is_empty());
+    }
+
+    /// Live Δ and its replay agree: a replay's op is committed, answered
+    /// on the same frame, and not in flight.
+    #[test]
+    fn a_job_answered_in_delta_is_no_longer_in_flight() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        assert!(matches!(finish(&mut requests, &fake, 1)[..], [Delivered::Op(..)]));
+        assert!(!requests.job_in_flight(("file", "a.txt")));
     }
 
     #[test]
