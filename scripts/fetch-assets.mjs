@@ -1,12 +1,13 @@
 // Fetch the sample assets referenced by the examples (glTF models, skybox
 // faces). None are checked into the repo (*.glb / example *.jpg are
 // gitignored). Sources: BabylonJS/Assets, Kenney, and Poly Haven (credited in
-// the README / per-example ASSETS.md). Existing files are left alone, so this
-// is safe to re-run.
+// the README / per-example ASSETS.md). Existing files are left alone (hash-pinned
+// ones are re-checked), so this is safe to re-run.
 //
 // Usage: npm run fetch:assets
 
-import { writeFile, stat, mkdtemp, rm } from "node:fs/promises";
+import { writeFile, readFile, stat, mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -76,6 +77,16 @@ const TARGETS = [
       "TropicalSunnyDay_nz.jpg",
     ],
   },
+  {
+    // Character presets built by `npm run build:characters` (Quaternius, CC0),
+    // published as release assets. `sha256` pins each file, so a stale or
+    // truncated copy is refetched.
+    dir: "examples/outfits",
+    baseUrl: "https://github.com/tommy-xr/functor/releases/download/characters-v1",
+    assets: Object.entries(
+      JSON.parse(await readFile("examples/outfits/presets.lock.json", "utf8")),
+    ).map(([file, sha256]) => ({ from: file, to: file, sha256 })),
+  },
 ];
 
 // Zip-packed assets (Kenney packs): the zip is downloaded once to a temp
@@ -113,6 +124,8 @@ const POLYHAVEN_MODELS = [
   },
 ];
 
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
 async function exists(filePath) {
   try {
     await stat(filePath);
@@ -130,7 +143,7 @@ for (const { dir, baseUrl, assets } of TARGETS) {
     const from = typeof asset === "string" ? asset : asset.from;
     const to = typeof asset === "string" ? asset : asset.to;
     const dest = path.join(dir, to);
-    if (await exists(dest)) {
+    if ((await exists(dest)) && (!asset.sha256 || sha256(await readFile(dest)) === asset.sha256)) {
       console.log(`ok       ${dest}`);
       continue;
     }
@@ -143,6 +156,9 @@ for (const { dir, baseUrl, assets } of TARGETS) {
         throw new Error(`HTTP ${response.status} from ${url}`);
       }
       const bytes = Buffer.from(await response.arrayBuffer());
+      if (asset.sha256 && sha256(bytes) !== asset.sha256) {
+        throw new Error(`SHA-256 ${sha256(bytes)}, expected ${asset.sha256}`);
+      }
       await writeFile(dest, bytes);
       console.log(`${(bytes.length / 1024 / 1024).toFixed(1)}MB`);
     } catch (error) {

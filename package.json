@@ -24,6 +24,7 @@
     "bench": "cargo run -q --release -p functor-lang -- bench --all",
     "verify": "node scripts/verify.mjs",
     "fetch:assets": "node scripts/fetch-assets.mjs",
+    "build:characters": "npm --prefix tools/character-presets ci --silent && node tools/character-presets/build.mjs",
     "generate:icons": "node scripts/generate-icons.mjs",
     "generate:audio": "node scripts/generate-audio.mjs",
     "generate:docs": "node scripts/generate-docs.mjs",
