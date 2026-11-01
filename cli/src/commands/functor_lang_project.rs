@@ -789,17 +789,12 @@ paths are external — read it in a top-level value `config` doesn't use"
         bindings: &[String],
         output: &Path,
     ) -> Result<(), Error> {
-        use functor_runtime_common::functor_lang_prelude::solid::solid_global;
-
         let three_mf = export_format(output)?;
         let session = load_session(project)?;
         reject_repeated_parts(bindings)?;
         let mut parts = Vec::new();
         for binding in bindings {
-            let mesh = solid_global(&session, binding)
-                .map_err(Error::other)?
-                .mesh()
-                .map_err(|e| Error::other(format!("`{binding}`: {e}")))?;
+            let mesh = part_mesh(&session, binding)?;
             check_printable(binding, &mesh)?;
             parts.push((binding.as_str(), mesh));
         }
@@ -887,8 +882,6 @@ paths are external — read it in a top-level value `config` doesn't use"
         bindings: &[String],
         output: &Path,
     ) -> Result<(), Error> {
-        use functor_runtime_common::functor_lang_prelude::solid::solid_global;
-
         if !output
             .extension()
             .and_then(|e| e.to_str())
@@ -901,14 +894,10 @@ paths are external — read it in a top-level value `config` doesn't use"
         }
         let session = load_session(project)?;
         let names = self.entry_parts(project, &session, bindings)?;
-        let mut meshes = Vec::new();
-        for name in &names {
-            let mesh = solid_global(&session, name)
-                .map_err(Error::other)?
-                .mesh()
-                .map_err(|e| Error::other(format!("`{name}`: {e}")))?;
-            meshes.push(mesh);
-        }
+        let meshes = names
+            .iter()
+            .map(|name| part_mesh(&session, name))
+            .collect::<Result<Vec<_>, _>>()?;
         let parts: Vec<_> = names.iter().map(String::as_str).zip(&meshes).collect();
         let title = std::fs::canonicalize(working_directory)
             .ok()
@@ -951,20 +940,12 @@ paths are external — read it in a top-level value `config` doesn't use"
         let parts = self.entry_parts(project, &load_session(project)?, bindings)?;
 
         // The generated entry sees the real one as a sibling module.
-        const COLORS: [(&str, &str); 6] = [
-            ("orange", "0.8, 0.5, 0.2"),
-            ("blue", "0.3, 0.55, 0.8"),
-            ("green", "0.45, 0.7, 0.35"),
-            ("red", "0.8, 0.35, 0.45"),
-            ("purple", "0.6, 0.45, 0.8"),
-            ("grey", "0.7, 0.7, 0.7"),
-        ];
-        let colored: Vec<_> = parts.iter().zip(COLORS.iter().cycle()).collect();
+        let colored: Vec<_> = parts.iter().zip(PART_COLORS.iter().cycle()).collect();
         let pieces = colored
             .iter()
-            .map(|(part, (_, rgb))| {
+            .map(|(part, (_, [r, g, b]))| {
                 format!(
-                    "{{ solid: {}.{part}, color: Color.rgb({rgb}) }}",
+                    "{{ solid: {}.{part}, color: Color.rgb({r:?}, {g:?}, {b:?}) }}",
                     project.entry
                 )
             })
@@ -2670,6 +2651,16 @@ fn entry_escapes_project(entry: &str) -> bool {
 /// (3.2) tiles tall, so each view is `tilePixels` (720), its target's size.
 const PART_VIEWS_SIZE: u32 = 2304;
 
+/// Part colours for `export --views` and `--html`, cycled in part order.
+pub(crate) const PART_COLORS: [(&str, [f32; 3]); 6] = [
+    ("orange", [0.8, 0.5, 0.2]),
+    ("blue", [0.3, 0.55, 0.8]),
+    ("green", [0.45, 0.7, 0.35]),
+    ("red", [0.8, 0.35, 0.45]),
+    ("purple", [0.6, 0.45, 0.8]),
+    ("grey", [0.7, 0.7, 0.7]),
+];
+
 /// Evaluate the project headlessly, for its Solid bindings.
 fn load_session(project: &functor_lang::project::Project) -> Result<functor_lang::Session, Error> {
     use functor_runtime_common::functor_lang_prelude::FunctorHost;
@@ -2680,6 +2671,15 @@ fn load_session(project: &functor_lang::project::Project) -> Result<functor_lang
                 .render(failure.error.span.start, &failure.error.message),
         )
     })
+}
+
+/// Mesh the top-level Solid `name`.
+fn part_mesh(session: &functor_lang::Session, name: &str) -> Result<functor_solid::Mesh, Error> {
+    use functor_runtime_common::functor_lang_prelude::solid::solid_global;
+    solid_global(session, name)
+        .map_err(Error::other)?
+        .mesh()
+        .map_err(|e| Error::other(format!("`{name}`: {e}")))
 }
 
 /// Refuse `--part a --part a`.
