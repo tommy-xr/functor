@@ -1,0 +1,104 @@
+// PartViews — a review sheet for printable parts: front, back, left, right,
+// top, bottom and two isometric views, each an orthographic camera framed to
+// the part and rendered into a labelled tile, four by two.
+//
+// Pieces are `{ solid, color }` records in part space (mm, Z up, the front
+// facing -Y), drawn together:
+//
+//   let draw = (m, tts) => PartViews.sheet([{ solid: part, color: Color.rgb(0.8, 0.5, 0.2) }])
+
+// Top-level values here stay pure (no host calls): tools load this module
+// without the engine.
+
+// Where each camera sits (direction from the part) and its screen-up, in part
+// space. Left/right are seen standing at that side; bottom has the front at
+// the top of the tile, like a drawing's views folded out around the front.
+let views = [
+  { name: "FRONT", dir: { x: 0.0, y: -1.0, z: 0.0 }, up: { x: 0.0, y: 0.0, z: 1.0 } },
+  { name: "BACK", dir: { x: 0.0, y: 1.0, z: 0.0 }, up: { x: 0.0, y: 0.0, z: 1.0 } },
+  { name: "LEFT", dir: { x: -1.0, y: 0.0, z: 0.0 }, up: { x: 0.0, y: 0.0, z: 1.0 } },
+  { name: "RIGHT", dir: { x: 1.0, y: 0.0, z: 0.0 }, up: { x: 0.0, y: 0.0, z: 1.0 } },
+  { name: "TOP", dir: { x: 0.0, y: 0.0, z: 1.0 }, up: { x: 0.0, y: 1.0, z: 0.0 } },
+  { name: "BOTTOM", dir: { x: 0.0, y: 0.0, z: -1.0 }, up: { x: 0.0, y: -1.0, z: 0.0 } },
+  { name: "ISO FRONT", dir: { x: 1.0, y: -1.4, z: 0.9 }, up: { x: 0.0, y: 0.0, z: 1.0 } },
+  { name: "ISO BACK", dir: { x: -1.0, y: 1.4, z: 0.9 }, up: { x: 0.0, y: 0.0, z: 1.0 } },
+]
+
+// Tiles: 1 × 1 world units, `gap` apart, in a grid the sheet camera shows
+// whole on a 4:3 or wider window.
+let columns = 4.0
+let gap = 0.04
+let sheetHalfHeight = 1.6
+let tilePixels = 720.0
+
+let v3 = (p) => Vec3.make(p.x, p.y, p.z)
+let point = (v: Vec3.t) => { x: Vec3.x(v), y: Vec3.y(v), z: Vec3.z(v) }
+
+// The pieces' combined bounds, from each piece's own (cached) measurement.
+let bounds = (pieces) =>
+  let each = List.map((p) => Solid.bounds(p.solid), pieces) in
+  let lo = (f) => List.fold((acc, b) => Math.min(acc, f(b.min)), 1000000000.0, each) in
+  let hi = (f) => List.fold((acc, b) => Math.max(acc, f(b.max)), -1000000000.0, each) in
+  { min: Vec3.make(lo(Vec3.x), lo(Vec3.y), lo(Vec3.z)), max: Vec3.make(hi(Vec3.x), hi(Vec3.y), hi(Vec3.z)) }
+
+// One view of `scene`: an orthographic camera just wide enough for the
+// part's box seen from `view`, and a key light from over its shoulder. The
+// framing is worked in part space (mm) — the scene conversion is a rotation
+// and a scale, so extents carry over — and only the pose is converted.
+let tileFrame = (scene, b, view) =>
+  let center = Vec3.scale(0.5, Vec3.add(b.min, b.max)) in
+  let size = b.max |> Vec3.sub(b.min) in
+  let back = Vec3.normalize(v3(view.dir)) in
+  let forward = Vec3.scale(-1.0, back) in
+  // Screen right is forward × up; screen up, right × forward.
+  let right = Vec3.normalize(forward |> Vec3.cross(v3(view.up))) in
+  let up = right |> Vec3.cross(forward) in
+  // The box's half extent along an axis: half its size, projected.
+  let reach = (axis) =>
+    0.5 * (Math.abs(Vec3.x(axis)) * Vec3.x(size) + Math.abs(Vec3.y(axis)) * Vec3.y(size) + Math.abs(Vec3.z(axis)) * Vec3.z(size)) in
+  let half = Math.max(0.5, Math.max(reach(right), reach(up))) * 1.12 / 1000.0 in
+  let radius = Math.max(0.5, Vec3.length(size) / 2.0) / 1000.0 in
+  let toScene = PartViewer.toScene in
+  let eye = Vec3.add(toScene(center), Vec3.scale(2.0 * radius, Vec3.normalize(toScene(back)))) in
+  let sceneForward = toScene(forward) in
+  let sceneUp = toScene(up) in
+  let sceneRight = toScene(right) in
+  let key = sceneForward |> Vec3.add(Vec3.scale(-0.6, sceneUp)) |> Vec3.add(Vec3.scale(-0.4, sceneRight)) in
+  Frame.createLit(
+    Camera3D.fromPose({ position: point(eye), forward: point(sceneForward), up: point(sceneUp) }, Angle.degrees(45.0))
+      |> Camera3D.clip(radius * 0.9, radius * 3.1)
+      |> Camera3D.orthographic(half),
+    scene,
+    [
+      Light.ambient(Color.rgb(0.22, 0.22, 0.25)),
+      Light.directional(key, Color.rgb(1.0, 0.97, 0.92), 0.85),
+      Light.directional(Vec3.scale(-1.0, key) |> Vec3.add(Vec3.scale(-1.5, sceneUp)), Color.rgb(0.7, 0.75, 0.9), 0.3),
+    ])
+    |> Frame.withClearColor(Color.rgb(0.16, 0.17, 0.19))
+    // The view's name in the tile's bottom-left corner.
+    |> Frame.with2D(
+      Camera2D.create(1.0, 1.0),
+      Sprite.text(Color.rgb(0.85, 0.87, 0.9), 0.04, view.name)
+        |> Sprite.nearest
+        |> Sprite.move(Sprite.measure(0.04, view.name).width / 2.0 - 0.46, -0.46))
+
+// The sheet: every view of `pieces` (a non-empty list of `{ solid, color }`
+// in part space), framed to their combined bounds.
+let sheet = (pieces) =>
+  let scene = Scene.group(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces)) in
+  let b = bounds(pieces) in
+  let pitch = 1.0 + gap in
+  let rows = Math.floor((List.length(views) + columns - 1.0) / columns) in
+  let tiles = List.indexedMap((i, view) =>
+    let col = i - columns * Math.floor(i / columns) in
+    let row = Math.floor(i / columns) in
+    { view: view,
+      at: Vec3.make((col - (columns - 1.0) / 2.0) * pitch, ((rows - 1.0) / 2.0 - row) * pitch, 0.0),
+      target: RenderTarget.named(Text.concat("part-views-", Text.fixed(i, 0.0))) |> RenderTarget.sized(tilePixels, tilePixels) },
+    views) in
+  List.fold((frame, t) => frame |> Frame.withRenderTarget(t.target, tileFrame(scene, b, t.view)),
+    Frame.create(
+      Camera3D.lookAt(Vec3.make(0.0, 0.0, 5.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera3D.orthographic(sheetHalfHeight),
+      Scene.group(List.map((t) => Scene.quad() |> Scene.screen(t.target) |> Scene.translate(t.at), tiles)))
+      |> Frame.withClearColor(Color.rgb(0.07, 0.07, 0.08)),
+    tiles)

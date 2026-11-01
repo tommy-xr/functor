@@ -7668,6 +7668,27 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
     }
 
     #[test]
+    fn camera_orthographic_sets_the_half_height_and_keeps_the_pose() {
+        let camera = camera_of(
+            "let main = () => Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0))\n\
+             |> Camera3D.clip(1.0, 9.0) |> Camera3D.orthographic(2.5)",
+        );
+        assert_eq!(camera.ortho_half_height, Some(2.5));
+        assert_eq!((camera.eye, camera.near, camera.far), ([0.0, 0.0, -5.0], 1.0, 9.0));
+        for bad in ["0.0", "-1.0"] {
+            assert_eq!(
+                fail_message(&format!(
+                    "let main = () => Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), \
+                     Vec3.make(0.0, 0.0, 0.0)) |> Camera3D.orthographic({bad})"
+                )),
+                "usage: Camera3D.orthographic(halfHeight, camera) — a finite halfHeight > 0, in \
+world units",
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn camera_from_pose_keeps_fov_and_clip() {
         let camera = camera_of(
             "let main = () =>\n\
@@ -10679,6 +10700,49 @@ Anim.clip(\"walk\", tts)"
         session
             .call("draw", vec![init, Value::Number(1.0)], &mut FunctorHost)
             .unwrap_or_else(|e| panic!("draw: {}", e.message));
+    }
+
+    /// `PartViews.sheet` renders eight orthographic tiles, each framed to
+    /// the part's box as that view sees it (here 10 × 20 × 30 mm, on z = 0).
+    #[test]
+    fn part_views_sheet_frames_eight_orthographic_tiles() {
+        let sources = vec![(
+            std::path::PathBuf::from("game.fun"),
+            "let part = Solid.box(10.0, 20.0, 30.0) |> Solid.translate(Vec3.make(0.0, 0.0, 15.0))\n\
+             let main = () => PartViews.sheet([{ solid: part, color: Color.rgb(0.8, 0.5, 0.2) }])\n"
+                .to_string(),
+        )];
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            sources,
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|error| panic!("bundle loads: {}", error.render()));
+        let diagnostics = project.check();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|failure| panic!("session loads: {}", failure.error.message));
+        let value = session
+            .call("main", vec![], &mut FunctorHost)
+            .unwrap_or_else(|e| panic!("sheet: {}", e.message));
+        let frame = frame_value(&value).expect("a Frame");
+        assert!(frame.camera.ortho_half_height.is_some());
+        let halves: Vec<f32> = frame
+            .render_targets
+            .iter()
+            .map(|pass| pass.frame.camera.ortho_half_height.expect("orthographic tile"))
+            .collect();
+        // Front/back/left/right see the 30 mm height; top/bottom the 20 mm
+        // depth; each half of it, with a 12% margin, in metres.
+        let expected = [15.0, 15.0, 15.0, 15.0, 10.0, 10.0];
+        for (half, mm) in halves.iter().zip(expected) {
+            assert!((half - mm * 1.12 / 1000.0).abs() < 1e-6, "{halves:?}");
+        }
+        assert_eq!(halves.len(), 8);
+        // The front tile looks along scene -Z (part +Y) at the box's center.
+        let front = &frame.render_targets[0].frame.camera;
+        let gaze: Vec<f32> = (0..3).map(|i| front.target[i] - front.eye[i]).collect();
+        assert!(gaze[0].abs() < 1e-6 && gaze[1].abs() < 1e-6 && gaze[2] < 0.0, "{gaze:?}");
+        assert!(front.eye[1] > 0.0149 && front.eye[1] < 0.0151, "{:?}", front.eye);
     }
 
     #[test]
