@@ -568,7 +568,7 @@ pub fn camera_frustum_lines(authored: &Camera, aspect: f32) -> Vec<DebugLine> {
     let half_tan = (authored.fov_radians * 0.5).tan();
     let corners = |distance: f32| {
         let center = basis.eye + basis.forward * distance;
-        let half_height = half_tan * distance;
+        let half_height = authored.ortho_half_height.unwrap_or(half_tan * distance);
         let half_width = half_height * aspect;
         [
             center - basis.right * half_width - basis.up * half_height,

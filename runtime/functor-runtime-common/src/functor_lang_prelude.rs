@@ -2850,6 +2850,20 @@ and an Angle fov; up must not be parallel to forward",
             Ok(camera)
         },
     );
+    reg.fn2(
+        "Camera3D.orthographic",
+        "Camera3D.orthographic(halfHeight, camera) — a finite halfHeight > 0, in world units",
+        |half_height: f64, mut camera: FunctorLangCamera| {
+            let half_height = half_height as f32;
+            if !half_height.is_finite() || half_height <= 0.0 {
+                return Err("usage: Camera3D.orthographic(halfHeight, camera) — a finite \
+halfHeight > 0, in world units"
+                    .to_string());
+            }
+            camera.0.ortho_half_height = Some(half_height);
+            Ok(camera)
+        },
+    );
 }
 
 fn register_light(reg: &mut crate::host_registry::Registry) {

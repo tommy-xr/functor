@@ -1,4 +1,4 @@
-use cgmath::{perspective, vec3, InnerSpace, Matrix4, Point3, Quaternion, Rad, Rotation, Vector3};
+use cgmath::{ortho, perspective, vec3, InnerSpace, Matrix4, Point3, Quaternion, Rad, Rotation, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::math::Angle;
@@ -297,6 +297,12 @@ pub struct Camera {
     pub fov_radians: f32,
     pub near: f32,
     pub far: f32,
+    /// Orthographic: half the view's height in world units
+    /// (`Camera3D.orthographic`), and `fov_radians` is unused. `None` is a
+    /// perspective camera.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub ortho_half_height: Option<f32>,
 }
 
 impl Camera {
@@ -310,6 +316,7 @@ impl Camera {
             fov_radians: fov.0,
             near: 0.1,
             far: 100.0,
+            ortho_half_height: None,
         }
     }
 
@@ -479,13 +486,17 @@ impl Camera {
     }
 
     pub fn projection_matrix(&self, aspect: f32) -> Matrix4<f32> {
-        perspective(Rad(self.fov_radians), aspect, self.near, self.far)
+        match self.ortho_half_height {
+            Some(h) => ortho(-h * aspect, h * aspect, -h, h, self.near, self.far),
+            None => perspective(Rad(self.fov_radians), aspect, self.near, self.far),
+        }
     }
 
     /// Map a top-left-origin logical surface point through this camera's
-    /// perspective projection.
+    /// projection.
     ///
-    /// The ray begins at the camera eye and its direction is normalized.
+    /// The ray begins at the camera eye (orthographic: at the point's spot on
+    /// the eye's plane, along the gaze) and its direction is normalized.
     /// Position and surface extent must share one coordinate space (window
     /// points or CSS pixels), so scaling both by a device-pixel ratio leaves
     /// the result unchanged. Returns `None` for an outside/degenerate surface
@@ -529,6 +540,15 @@ impl Camera {
 
         let ndc_x = 2.0 * x / surface_width - 1.0;
         let ndc_y = 1.0 - 2.0 * y / surface_height;
+        // Orthographic rays are parallel: they start on the eye's plane.
+        if let Some(h) = self.ortho_half_height {
+            let origin = eye + right * (ndc_x * h * aspect) + up * (ndc_y * h);
+            return (origin.x.is_finite() && origin.y.is_finite() && origin.z.is_finite())
+                .then_some(WorldRay {
+                    origin: origin.into(),
+                    direction: forward.into(),
+                });
+        }
         let direction = (forward
             + right * (ndc_x * half_fov_tan * aspect)
             + up * (ndc_y * half_fov_tan))
@@ -632,6 +652,57 @@ mod tests {
         // Horizontal scale shrinks by exactly the aspect ratio (so geometry
         // keeps its proportions; you just see more to the sides).
         assert!(approx(wide.x.x, square.x.x / 2.0));
+    }
+
+    // Orthographic: a view-space offset lands at the same NDC at every depth
+    // (equal parts at different distances draw the same size), the view spans
+    // ±halfHeight vertically and ±halfHeight·aspect across, and near/far still
+    // map to the depth range's ends.
+    #[test]
+    fn orthographic_projection_ignores_depth() {
+        use cgmath::Vector4;
+
+        let cam = Camera {
+            near: 1.0,
+            far: 9.0,
+            ortho_half_height: Some(2.0),
+            ..Camera::default()
+        };
+        let projection = cam.projection_matrix(1.5);
+        let ndc = |x: f32, y: f32, distance: f32| {
+            let clip = projection * Vector4::new(x, y, -distance, 1.0);
+            [clip.x / clip.w, clip.y / clip.w, clip.z / clip.w]
+        };
+        for distance in [1.0, 3.0, 9.0] {
+            let [x, y, _] = ndc(3.0, 2.0, distance);
+            assert!(approx(x, 1.0) && approx(y, 1.0), "corner at {distance}");
+            let [x, y, _] = ndc(0.75, -0.5, distance);
+            assert!(approx(x, 0.25) && approx(y, -0.25), "offset at {distance}");
+        }
+        assert!(approx(ndc(0.0, 0.0, 1.0)[2], -1.0));
+        assert!(approx(ndc(0.0, 0.0, 9.0)[2], 1.0));
+    }
+
+    #[test]
+    fn orthographic_rays_are_parallel_and_start_on_the_eye_plane() {
+        let camera = Camera {
+            ortho_half_height: Some(2.0),
+            ..Camera::first_person(
+                [1.0, 1.0, 0.0],
+                Angle::from_degrees(0.0),
+                Angle::from_degrees(0.0),
+                Angle::from_degrees(45.0),
+            )
+        };
+        // 2:1 surface, top-left corner: up 2, and 4 to screen-left (+X).
+        let corner = camera.to_world_ray(0.0, 0.0, 200.0, 100.0).unwrap();
+        let center = camera.to_world_ray(100.0, 50.0, 200.0, 100.0).unwrap();
+        for ray in [&corner, &center] {
+            assert!(approx(ray.direction[2], 1.0), "{:?}", ray.direction);
+        }
+        assert!(approx(corner.origin[0], 5.0) && approx(corner.origin[1], 3.0));
+        assert!(approx(corner.origin[2], 0.0));
+        assert_eq!(center.origin, camera.eye);
     }
 
     #[test]
