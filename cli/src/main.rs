@@ -176,10 +176,12 @@ enum Command {
     /// `functor -d examples/bookmark export -o bookmark.3mf --part base --part relief`.
     /// `--views sheet.png` instead renders the parts' 8-view review sheet
     /// (`PartViews.sheet`) in a hidden window: every top-level Solid, or the
-    /// `--part`s given. Needs a GPU.
+    /// `--part`s given. Needs a GPU. `--html viewer.html` writes the same
+    /// parts as one self-contained web page (orbit + the 8 views, sizes and
+    /// volumes); its only scripts are pinned three.js CDN builds.
     Export {
         /// The file to write (`.stl` or `.3mf`).
-        #[arg(short, long, required_unless_present = "views")]
+        #[arg(short, long, required_unless_present_any = ["views", "html"])]
         output: Option<PathBuf>,
 
         /// A top-level Solid binding to export; repeat for several parts
@@ -190,6 +192,10 @@ enum Command {
         /// Write the 8-view sheet as this `.png` (2304x2304: 720 px views).
         #[arg(long, value_name = "FILE", conflicts_with_all = ["output", "model"])]
         views: Option<PathBuf>,
+
+        /// Write a self-contained HTML viewer of the parts to this `.html`.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["output", "model", "views"])]
+        html: Option<PathBuf>,
 
         /// Export a glTF model (`.glb`) as a printable solid instead — no
         /// project needed. E.g. `functor export --model fox.glb --height 60 -o fox.stl`.
@@ -602,9 +608,17 @@ async fn run(args: &Args) -> io::Result<()> {
                 let loaded = project.build(&working_directory_str, false)?;
                 project.export_views(&working_directory_str, &loaded, parts, png)
             }
+            Command::Export {
+                html: Some(html),
+                parts,
+                ..
+            } => {
+                let loaded = project.build(&working_directory_str, false)?;
+                project.export_html(&working_directory_str, &loaded, parts, html)
+            }
             Command::Export { output, parts, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
-                let output = output.as_ref().expect("clap requires -o without --views");
+                let output = output.as_ref().expect("clap requires -o without --views or --html");
                 let default = ["part".to_string()];
                 let parts = if parts.is_empty() {
                     &default[..]

@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* A workbench: view controls on top, the model stage as the hero, the parts list beneath. */
+:root {
+  --bg: #eceae6; --panel: #f7f6f3; --ink: #1d1f22; --muted: #62666c; --line: #d3d0ca;
+  --accent: #c2541b; --stage: #2a2c30; --tile: #2e3036; --stage-ink: #d9dbde;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #17181a; --panel: #1f2023; --ink: #e8e6e2; --muted: #9a9ea5; --line: #34363a;
+  --accent: #e47a3d; --stage: #0f1012; --tile: #1b1c1f; --stage-ink: #c9cbce; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #17181a; --panel: #1f2023; --ink: #e8e6e2; --muted: #9a9ea5; --line: #34363a;
+  --accent: #e47a3d; --stage: #0f1012; --tile: #1b1c1f; --stage-ink: #c9cbce; color-scheme: dark }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); line-height: 1.5; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-block: 20px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 18px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+h1 { margin: 0; font-family: var(--display); font-stretch: 118%; font-weight: 800; font-size: clamp(1.6rem, 3.4vw, 2.3rem); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.sub { color: var(--muted); margin: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.controls > span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-right: 4px; }
+button { font: 600 0.86rem var(--body); color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 11px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.stage { position: relative; background: var(--stage); border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; min-height: 320px; }
+@media (max-width: 560px) { .stage { aspect-ratio: 3 / 4; } }
+.stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.labels { position: absolute; inset: 0; pointer-events: none; display: grid; }
+.labels div { font: 600 0.72rem var(--mono); letter-spacing: 0.1em; color: var(--stage-ink); opacity: 0.85; padding: 8px 10px; }
+.status { position: absolute; left: 12px; bottom: 10px; right: 12px; font: 0.75rem var(--mono); color: var(--stage-ink); opacity: 0.75; pointer-events: none; }
+.hint { color: var(--muted); font-size: 0.8rem; margin: -8px 0 0; }
+.table { overflow-x: auto; border-top: 2px solid var(--ink); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th { text-align: left; font: 700 0.72rem var(--body); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding: 10px 12px 6px 0; }
+td { padding: 6px 12px 6px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.84rem; }
+label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; }
+input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+/* Phones: drop the triangle count and let sizes wrap, so sizes and volumes fit. */
+@media (max-width: 560px) { th:nth-child(4), td:nth-child(4) { display: none; } td:nth-child(2) { white-space: normal; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>{{TITLE}}</h1>
+    <p class="sub" id="sub"></p>
+  </header>
+
+  <div class="controls" role="toolbar" aria-label="View">
+    <span>View</span>
+  </div>
+
+  <div class="stage" id="stage">
+    <canvas id="c"></canvas>
+    <div class="labels" id="labels"></div>
+    <div class="status" id="status">Loading three.js…</div>
+  </div>
+  <p class="hint" id="hint"></p>
+
+  <div class="table">
+    <table>
+      <thead><tr><th>Part</th><th>Size (x × y × z)</th><th>Volume</th><th>Triangles</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script id="parts" type="application/json">{{PARTS}}</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// Parts are in millimetres, Z up, front facing -Y. Each mesh is quantized:
+// vertex axis a = min[a] + u16 * step[a]; indices are u16 (u32 if index32).
+const PARTS = JSON.parse(document.getElementById("parts").textContent).parts;
+// Same colours, in the same order, as `functor export --views`.
+const PALETTE = ["#cc8033", "#4d8ccc", "#73b359", "#cc5973", "#9973cc", "#b3b3b3"];
+const MODES = ["All views", "Orbit"];
+// Camera direction from the part and screen-up, as in a drawing's folded-out views.
+const VIEWS = [
+  ["FRONT", [0, -1, 0], [0, 0, 1]], ["BACK", [0, 1, 0], [0, 0, 1]],
+  ["LEFT", [-1, 0, 0], [0, 0, 1]], ["RIGHT", [1, 0, 0], [0, 0, 1]],
+  ["TOP", [0, 0, 1], [0, 1, 0]], ["BOTTOM", [0, 0, -1], [0, -1, 0]],
+  ["ISO FRONT", [1, -1.4, 0.9], [0, 0, 1]], ["ISO BACK", [-1, 1.4, 0.9], [0, 0, 1]],
+];
+
+const state = { mode: 0 };
+const stage = document.getElementById("stage");
+const labels = document.getElementById("labels");
+const statusEl = document.getElementById("status");
+const fmt = (n, digits = 1) => n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const sizeText = (s) => `${fmt(s[0])} × ${fmt(s[1])} × ${fmt(s[2])} mm`;
+const cols = () => (stage.clientWidth < 560 ? 2 : 4);
+const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+document.getElementById("sub").textContent =
+  `${PARTS.length} part${PARTS.length === 1 ? "" : "s"} · millimetres, Z up, front facing −Y`;
+
+// The parts list works without WebGL; `refresh` is replaced once three.js is up.
+let refresh = () => {};
+PARTS.forEach((p, i) => {
+  p.color = PALETTE[i % PALETTE.length];
+  p.visible = true;
+  const tr = document.createElement("tr");
+  const name = document.createElement("td");
+  const label = document.createElement("label");
+  const box = document.createElement("input");
+  box.type = "checkbox"; box.checked = true;
+  box.addEventListener("change", () => { p.visible = box.checked; refresh(); });
+  const swatch = document.createElement("span");
+  swatch.className = "swatch"; swatch.style.background = p.color;
+  label.append(box, swatch, p.name);
+  name.appendChild(label);
+  const cells = [sizeText(p.size), `${fmt(p.volume / 1000, p.volume < 10000 ? 2 : 1)} cm³`, p.triangles.toLocaleString("en-US")];
+  tr.appendChild(name);
+  cells.forEach((text) => { const td = document.createElement("td"); td.className = "num"; td.textContent = text; tr.appendChild(td); });
+  document.getElementById("rows").appendChild(tr);
+});
+
+function start() {
+  const canvas = document.getElementById("c");
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  renderer.setScissorTest(true);
+
+  const scene = new THREE.Scene();
+  // Sky above, ground below: the parts are Z up.
+  const sky = new THREE.HemisphereLight(0xf2f0ea, 0x3a3c40, 0.55);
+  sky.position.set(0, 0, 1);
+  scene.add(sky);
+  const key = new THREE.DirectionalLight(0xfff6ea, 0.75);
+  scene.add(key, key.target);
+  const fill = new THREE.DirectionalLight(0xc8d4ff, 0.25);
+  scene.add(fill, fill.target);
+
+  const bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  PARTS.forEach((p) => {
+    const q = new Uint16Array(bytes(p.positions).buffer);
+    const pos = new Float32Array(q.length);
+    for (let i = 0; i < q.length; i++) pos[i] = p.min[i % 3] + q[i] * p.step[i % 3];
+    const raw = bytes(p.indices).buffer;
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geom.setIndex(new THREE.BufferAttribute(p.index32 ? new Uint32Array(raw) : new Uint16Array(raw), 1));
+    const mat = new THREE.MeshStandardMaterial({ color: p.color, roughness: 0.6, metalness: 0, flatShading: true });
+    p.mesh = new THREE.Mesh(geom, mat);
+    scene.add(p.mesh);
+  });
+
+  const persp = new THREE.PerspectiveCamera(30, 16 / 9, 1, 100000);
+  persp.up.set(0, 0, 1);
+  const orbit = new THREE.OrbitControls(persp, canvas);
+  orbit.enableDamping = true;
+  orbit.addEventListener("change", draw);
+  const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 1000);
+
+  let bounds = new THREE.Box3(), centre = new THREE.Vector3(), radius = 0;
+
+  function fit() {
+    bounds = new THREE.Box3();
+    PARTS.forEach((p) => { p.mesh.visible = p.visible; if (p.visible) bounds.expandByObject(p.mesh); });
+    if (bounds.isEmpty()) { radius = 0; statusEl.textContent = "No parts shown"; return; }
+    bounds.getCenter(centre);
+    const size = bounds.getSize(new THREE.Vector3());
+    radius = Math.max(size.length() / 2, 1e-3);
+    statusEl.textContent = `Shown: ${sizeText(size.toArray())}`;
+  }
+
+  function aimLights(dir, up) {
+    // `dir` points from the part to the viewer. Key light from over the
+    // viewer's shoulder, fill from below-behind.
+    const right = new THREE.Vector3().crossVectors(dir.clone().negate(), up);
+    const k = dir.clone().add(up.clone().multiplyScalar(0.6)).add(right.multiplyScalar(-0.4)).normalize();
+    key.position.copy(centre).addScaledVector(k, radius * 4); key.target.position.copy(centre);
+    fill.position.copy(centre).addScaledVector(k.clone().negate().add(up.clone().multiplyScalar(-1.5)), radius * 4);
+    fill.target.position.copy(centre);
+  }
+
+  function resetOrbit() {
+    const d = new THREE.Vector3(1, -1.4, 0.9).normalize();
+    persp.position.copy(centre).addScaledVector(d, radius / Math.sin((persp.fov / 2) * Math.PI / 180) * 1.05);
+    persp.near = radius / 20; persp.far = radius * 40; persp.updateProjectionMatrix();
+    orbit.target.copy(centre);
+    orbit.update();
+  }
+
+  function layoutLabels() {
+    labels.innerHTML = "";
+    if (state.mode !== 0) return;
+    labels.style.gridTemplateColumns = `repeat(${cols()}, 1fr)`;
+    labels.style.gridTemplateRows = `repeat(${VIEWS.length / cols()}, 1fr)`;
+    VIEWS.forEach(([name]) => { const d = document.createElement("div"); d.textContent = name; labels.appendChild(d); });
+  }
+
+  // Each view's screen axes, and the shown box's half extents along them.
+  function viewAxes(dir, up) {
+    const back = new THREE.Vector3(...dir).normalize();
+    const right = new THREE.Vector3(...up).cross(back).normalize();
+    const screenUp = back.clone().cross(right);
+    const half = bounds.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+    const extent = (v) => Math.abs(v.x) * half.x + Math.abs(v.y) * half.y + Math.abs(v.z) * half.z;
+    return { back, up: screenUp, w: extent(right), h: extent(screenUp) };
+  }
+
+  function draw() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    renderer.setViewport(0, 0, w, h); renderer.setScissor(0, 0, w, h);
+    renderer.setClearColor(token("--stage")); renderer.clear();
+    if (radius === 0) return;
+    if (state.mode === 1) {
+      const dir = persp.position.clone().sub(orbit.target).normalize();
+      aimLights(dir, new THREE.Vector3(0, 0, 1));
+      renderer.render(scene, persp);
+      return;
+    }
+    // All views: one orthographic camera per scissored cell, all at one
+    // scale (the one that fits the largest view) so sizes compare.
+    const c = cols(), rows = VIEWS.length / c;
+    const cw = w / c - 4, ch = h / rows - 4, aspect = cw / ch;
+    const views = VIEWS.map(([, dir, up]) => viewAxes(dir, up));
+    const half = Math.max(...views.map((v) => Math.max(v.h, v.w / aspect))) * 1.15;
+    views.forEach((v, i) => {
+      const x = (i % c) * (cw + 4) + 2, y = h - (Math.floor(i / c) + 1) * (ch + 4) + 2;
+      renderer.setViewport(x, y, cw, ch); renderer.setScissor(x, y, cw, ch);
+      renderer.setClearColor(token("--tile")); renderer.clear();
+      ortho.left = -half * aspect; ortho.right = half * aspect; ortho.top = half; ortho.bottom = -half;
+      ortho.position.copy(centre).addScaledVector(v.back, radius * 4);
+      ortho.up.copy(v.up); ortho.lookAt(centre);
+      ortho.near = radius * 2; ortho.far = radius * 6; ortho.updateProjectionMatrix();
+      aimLights(v.back, v.up);
+      renderer.render(scene, ortho);
+    });
+  }
+
+  function resize() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    renderer.setSize(w, h, false);
+    persp.aspect = w / h; persp.updateProjectionMatrix();
+    layoutLabels();
+    draw();
+  }
+
+  const toolbar = document.querySelector(".controls");
+  const buttons = MODES.map((label, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = label;
+    b.addEventListener("click", () => { state.mode = i; sync(); if (i === 1) resetOrbit(); layoutLabels(); draw(); });
+    toolbar.appendChild(b);
+    return b;
+  });
+  function sync() {
+    buttons.forEach((b, i) => b.setAttribute("aria-pressed", i === state.mode));
+    document.getElementById("hint").textContent = state.mode === 0
+      ? "Eight orthographic views at one scale. Left and right are seen standing at that side; bottom has the front at the top."
+      : "Drag to orbit, right-drag to pan, scroll or pinch to zoom.";
+    orbit.enabled = state.mode === 1;
+  }
+
+  refresh = () => { fit(); draw(); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  fit(); sync(); resetOrbit();
+  new ResizeObserver(resize).observe(stage);
+  (function loop() { if (state.mode === 1) orbit.update(); requestAnimationFrame(loop); })();
+}
+
+if (!window.THREE || !THREE.OrbitControls) {
+  statusEl.textContent = "Couldn't load three.js from its CDN: the views need a network connection.";
+} else {
+  try { start(); } catch (err) { statusEl.textContent = "Couldn't show the parts: " + err.message; }
+}
+</script>
+</body>
+</html>
