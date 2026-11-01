@@ -2627,7 +2627,10 @@ row 0 has {cols} heights, row {r} has {}",
         "Scene.keepResident",
         "Scene.keepResident(scene)",
         |scene: FunctorLangScene| {
-            Ok(FunctorLangScene(shared_scene(&crate::Scene3D::keep_resident(vec![scene.0]))))
+            Ok(FunctorLangScene(Scene3D {
+                obj: SceneObject::Shared(std::sync::Arc::new(SceneObject::Resident(vec![scene.0]))),
+                xform: Matrix4::from_scale(1.0),
+            }))
         },
     );
     // Stamp a template subtree once per instance — semantically the group of

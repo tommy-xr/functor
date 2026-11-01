@@ -845,6 +845,21 @@ mod tests {
         assert_eq!(back, scene);
     }
 
+    /// `Scene.keepResident` is its children.
+    #[test]
+    fn resident_wire_is_pinned() {
+        use crate::{Scene3D, SceneObject};
+
+        let scene = SceneObject::Resident(vec![Scene3D::cube()]);
+        let json = serde_json::to_string(&scene).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"Resident":[{"obj":{"Geometry":"Cube"},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}]}"#
+        );
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, scene);
+    }
+
     /// Portal-culling nodes carry their cells and ids inline; decoding
     /// validates the cells again.
     #[test]

@@ -367,6 +367,15 @@ fn keep_resident(harness: &mut Harness) {
         frame.scene = Scene3D::keep_resident(vec![night, day]);
         frame
     };
+    // A first hidden upload inside a textured material leaves the material's
+    // texture bound for the cube drawn after it.
+    let mut textured = frame(&fresh(), 0, false, lights());
+    let kept = frame(&fresh(), 1, false, lights()).scene;
+    textured.scene.obj = SceneObject::Material(
+        MaterialDescription::Texture(solid([255, 0, 0])),
+        vec![Scene3D::keep_resident(vec![kept]), Scene3D::cube()],
+    );
+    assert_near(rgb(&harness.render(&textured), 64, 64), [255, 0, 0], "textured cube");
     let empty = harness.render(&frame(&fresh(), 0, false, lights()));
     for kept in [true, false] {
         let (room, day) = (fresh(), day());
@@ -392,7 +401,8 @@ fn keep_resident(harness: &mut Harness) {
         if kept {
             assert_eq!((window.cache_misses, window.bytes_uploaded), (0, 0), "kept: uploads");
         } else {
-            assert!(window.cache_misses > 0, "evicted: no upload");
+            // Mesh, base and the day lightmap; 1 (the day lightmap) if kept.
+            assert_eq!(window.cache_misses, 3, "evicted: re-uploads");
         }
     }
 }

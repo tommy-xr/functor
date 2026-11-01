@@ -1138,7 +1138,23 @@ frame: correct, but each bind re-uploads (atlas {})",
             entry.last_used = self.current_frame.get();
             return;
         }
-        self.layered_texture(gl, pixels, intensities);
+        // The upload rebinds the active unit; an enclosing textured material
+        // bound it once for its whole subtree, so put that binding back.
+        unsafe {
+            let bound = gl.get_parameter_texture(glow::TEXTURE_BINDING_2D);
+            self.layered_texture(gl, pixels, intensities);
+            gl.bind_texture(glow::TEXTURE_2D, bound);
+        }
+    }
+
+    /// Keep a `Model.skinned` model's pixel texture resident, for a hidden
+    /// node that returns before binding it.
+    fn keep_model_texture(&self, gl: &glow::Context, handle: &ModelHandle) {
+        if let ModelHandle::Data(data) = handle {
+            if let Some(texture) = &data.source().texture {
+                self.keep_texture(gl, texture);
+            }
+        }
     }
 
     /// Turn frustum culling on or off (on by default).
@@ -2259,8 +2275,9 @@ pub enum SceneObject {
     /// enclosing node wins, so `true` re-enables casting inside a `false`.
     CastShadows(bool, Vec<Scene3D>),
     /// `Scene.keepResident` — the subtree draws in no pass, but its GPU
-    /// resources (data models, pixel textures, meshes, instance buffers)
-    /// upload on first sight and stay resident while the node is in the frame.
+    /// resources (data models and their pixel textures, meshes, instance
+    /// buffers) stay resident while the node is in the frame. A `Model.static`
+    /// uploads on first sight; the rest once drawn.
     Resident(Vec<Scene3D>),
     /// A `Scene.memo` result, held by reference so a node wrapping it (a
     /// group, a transform) copies a pointer, not the subtree. Transparent:
@@ -2929,6 +2946,7 @@ impl Scene3D {
                     resolve_handle_for_draw(render_context, scene_context, model_description);
                 // Resolving kept it resident; portal-hidden, skip the pose too.
                 if scene_context.portal_hidden.get() {
+                    scene_context.keep_model_texture(render_context.gl, &model_description.handle);
                     return;
                 }
 
@@ -3413,6 +3431,10 @@ impl Scene3D {
                         );
                         // Resolving kept it resident; portal-hidden, skip the pose.
                         if scene_context.portal_hidden.get() {
+                            scene_context.keep_model_texture(
+                                render_context.gl,
+                                &recognized.description.handle,
+                            );
                             let mut renderer = scene_context.instanced_renderer(render_context);
                             renderer.instance_extent(render_context.gl, instances);
                             return;
