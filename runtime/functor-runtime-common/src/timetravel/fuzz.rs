@@ -56,7 +56,7 @@ pub struct Spec {
     pub restarts: Option<bool>,
     /// Answer the game's HTTP requests over a seeded fake transport.
     pub http: bool,
-    /// Run the game's jobs (`File.load`) on a seeded fake pool.
+    /// Run the game's jobs (`File.load`, `Nav.path`) on a seeded fake pool.
     pub jobs: bool,
 }
 
@@ -119,7 +119,7 @@ impl Spec {
             role,
             restarts: None,
             http: mentions(&all, "Effect.httpGet") || mentions(&all, "Effect.httpPost"),
-            jobs: mentions(&all, "File.load"),
+            jobs: mentions(&all, "File.load") || mentions(&all, "Nav.path"),
             ..Spec::new(name, sources)
         })
     }

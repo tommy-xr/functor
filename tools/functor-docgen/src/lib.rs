@@ -76,7 +76,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
     (
         ApiGroup::Engine,
         "Simulation",
-        &["Physics", "Cells", "Anim", "Model", "Terrain", "Time"],
+        &["Physics", "Cells", "Nav", "Anim", "Model", "Terrain", "Time"],
     ),
     (ApiGroup::Engine, "Input", &["Input"]),
     (
