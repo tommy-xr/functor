@@ -125,7 +125,7 @@ pub struct SceneContext {
     render_target_warned: RefCell<HashSet<String>>,
     fallback_texture: RefCell<Option<glow::Texture>>,
     // Clamped, unmipmapped sampling for lightmaps, whatever their texture's
-    // own wrap and mips (an `Srgb` atlas is mipmapped and repeats).
+    // own wrap (an `Srgb` atlas repeats).
     lightmap_sampler: Cell<Option<glow::Sampler>>,
     // Compiled-in textures, hydrated on first bind and kept for the process
     // lifetime like the fallback texture: they have no locator to evict by and
@@ -468,15 +468,29 @@ fn draw_static_model(
     // through a sampler that clamps with no mips, so atlas rects never
     // bleed into each other.
     if let Some(lightmap) = lightmap {
-        material_description::bind_texture_description(
-            lightmap,
-            3,
-            SpriteSampling::Linear,
-            false,
-            &scene_context.texture_pipeline,
-            render_context,
-            scene_context,
-        );
+        // Pixel lightmaps skip the mip chain the sampler would ignore.
+        let pixels = match lightmap {
+            TextureDescription::Data(pixels) => Some((pixels, &[][..])),
+            TextureDescription::Layered { base, intensities } => Some((base, &intensities[..])),
+            _ => None,
+        };
+        match pixels {
+            Some((pixels, intensities)) => unsafe {
+                // Select the unit BEFORE the lazy upload (it binds TEXTURE_2D).
+                gl.active_texture(glow::TEXTURE3);
+                let texture = scene_context.retained_texture(gl, pixels, intensities, false);
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            },
+            None => material_description::bind_texture_description(
+                lightmap,
+                3,
+                SpriteSampling::Linear,
+                false,
+                &scene_context.texture_pipeline,
+                render_context,
+                scene_context,
+            ),
+        }
         unsafe {
             gl.bind_sampler(3, Some(scene_context.lightmap_sampler(gl)));
             gl.active_texture(glow::TEXTURE0);
@@ -541,8 +555,8 @@ fn recompose(
         }
         crate::gpu_counters::gpu_counters().uploaded(block.rgba8.len());
     }
-    // An `Srgb` atlas is mipmapped; its mips follow level 0.
-    if pixels.color_space() == crate::texture::ColorSpace::Srgb {
+    // A mipmapped atlas's mips follow level 0.
+    if entry.mipmapped {
         unsafe { gl.generate_mipmap(glow::TEXTURE_2D) };
     }
     entry.levels = levels.to_vec();
@@ -1013,7 +1027,7 @@ impl SceneContext {
 
     /// The GL texture for `pixels`, uploaded on first use this residency.
     /// Wrap and filtering are set here, from its colour space: `Srgb` is
-    /// mipmapped and repeats, `Linear` (lightmaps) is clamped with no mips.
+    /// mipmapped and repeats, `Linear` is clamped with no mips.
     /// A layered atlas binds as its base (every layer at 0).
     pub fn pixel_texture(
         &self,
@@ -1032,9 +1046,24 @@ impl SceneContext {
         pixels: &crate::texture::PixelData,
         intensities: &[(f64, f32)],
     ) -> glow::Texture {
+        self.retained_texture(gl, pixels, intensities, true)
+    }
+
+    /// `layered_texture`, building an `Srgb` texture's mips only when `mips`.
+    /// Lightmaps pass false: their sampler never reads mips, so a texture
+    /// drawn only as a lightmap allocates no mip chain.
+    fn retained_texture(
+        &self,
+        gl: &glow::Context,
+        pixels: &crate::texture::PixelData,
+        intensities: &[(f64, f32)],
+        mips: bool,
+    ) -> glow::Texture {
         use crate::asset::RenderableAsset;
         let frame = self.current_frame.get();
         let counters = crate::gpu_counters::gpu_counters();
+        let srgb = pixels.color_space() == crate::texture::ColorSpace::Srgb;
+        let mipmap = srgb && mips;
         let mut textures = self.pixel_textures.borrow_mut();
         let entry = match textures.entry(pixels.id()) {
             std::collections::hash_map::Entry::Occupied(e) => {
@@ -1043,11 +1072,10 @@ impl SceneContext {
             }
             std::collections::hash_map::Entry::Vacant(e) => {
                 counters.cache_miss();
-                let srgb = pixels.color_space() == crate::texture::ColorSpace::Srgb;
                 let options = crate::texture::TextureOptions {
                     wrap: srgb,
                     linear: true,
-                    mipmap: srgb,
+                    mipmap,
                     srgb,
                     ..Default::default()
                 };
@@ -1057,10 +1085,22 @@ impl SceneContext {
                     levels: vec![0.0; pixels.layers().iter().map(|i| i.layers.len()).sum()],
                     // Not this frame: the first composition isn't a second.
                     composed_frame: frame.wrapping_sub(1),
+                    mipmapped: mipmap,
                 })
             }
         };
         entry.last_used = frame;
+        // First uploaded as a lightmap, now drawn as an albedo: build the
+        // mips it would have had, so the result doesn't depend on draw order.
+        if mipmap && !entry.mipmapped {
+            unsafe {
+                gl.bind_texture(glow::TEXTURE_2D, Some(entry.texture));
+                gl.generate_mipmap(glow::TEXTURE_2D);
+                let min_filter = crate::texture::min_filter(true, true);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, min_filter as i32);
+            }
+            entry.mipmapped = true;
+        }
         if !pixels.layers().is_empty() {
             let levels = crate::texture::layer_levels(pixels.layers(), intensities);
             if levels != entry.levels {
@@ -2204,6 +2244,8 @@ struct RetainedTexture {
     // is the base), and the frame it last changed.
     levels: Vec<f32>,
     composed_frame: u64,
+    // Whether it holds a mip chain (an `Srgb` texture drawn with mips).
+    mipmapped: bool,
 }
 
 /// Triangle-mesh geometry: positions plus counter-clockwise (outward-facing)
