@@ -290,15 +290,19 @@ expect not held(f.x0 - Portals.collar - 0.5, 1.6, 10.0)
 
 // ---- The block -----------------------------------------------------------------
 
+let block = Block.townAt(1.0)
+let copies = block.copies
+let allIds = (t: Block.Town): List<float> => List.range(List.length(t.copies))
+
 // Four copies at 0/90/180/270°; the first is the office where it stands.
-expect (Block.copies |> List.map((c) => c.yaw)) == [0.0, 90.0, 180.0, 270.0]
+expect (copies |> List.map((c) => c.yaw)) == [0.0, 90.0, 180.0, 270.0]
 expect Block.home == { name: "office-0", x: 0.0, z: 0.0, yaw: 0.0 }
 let close = (a: Vec3.t, b: Vec3.t): bool => Vec3.length(a |> Vec3.sub(b)) < 0.00001
 // To the world and back; a heading turns with its copy: forward in the
 // copy's space lands where its heading points in the world.
 let probe = Vec3.make(3.0, 1.6, 7.0)
-expect Block.copies |> List.all((c) => close(Block.toLocal(c, Block.toWorld(c, probe)), probe))
-expect Block.copies |> List.all((c) =>
+expect copies |> List.all((c) => close(Block.toLocal(c, Block.toWorld(c, probe)), probe))
+expect copies |> List.all((c) =>
   let yaw = 0.4 in
   let ahead = Block.toWorld(c, probe |> Vec3.add(Vec3.make(Math.sin(yaw), 0.0, Math.cos(yaw)))) |> Vec3.sub(Block.toWorld(c, probe)) in
   let h = Block.headingToWorld(c, yaw) in
@@ -312,49 +316,201 @@ let worldRect = (c: Block.Copy, r: Rect): Rect =>
   rect(Math.min(Vec3.x(a), Vec3.x(b)), Math.min(Vec3.z(a), Vec3.z(b)), Math.max(Vec3.x(a), Vec3.x(b)), Math.max(Vec3.z(a), Vec3.z(b)))
 let gap = (a: Rect, b: Rect): float =>
   Math.max(Math.max(a.x0 - b.x1, b.x0 - a.x1), Math.max(a.z0 - b.z1, b.z0 - a.z1))
-let copyPairs = List.range(4.0) |> List.concatMap((i) => List.range(4.0) |> List.filter((j) => j > i) |> List.map((j) => (Block.copyAt(i), Block.copyAt(j))))
-// A street at least `streetWidth` wide between any two buildings, and no apron or
-// yard on another building.
-expect copyPairs |> List.all((p) => let (a, b) = p in gap(worldRect(a, f), worldRect(b, f)) >= Block.streetWidth - 0.001)
+let pairsOf = (cs: List<Block.Copy>): List<(Block.Copy, Block.Copy)> =>
+  cs |> List.indexedMap((i, a) => List.drop(i + 1.0, cs) |> List.map((b) => (a, b))) |> List.flatten
 let yards = rooms |> List.filter((r) => not Building.isInside(r))
-expect copyPairs |> List.all((p) =>
-  let (a, b) = p in
-  yards |> List.all((r) => gap(worldRect(a, r.rect), worldRect(b, f)) >= -0.001 && gap(worldRect(b, r.rect), worldRect(a, f)) >= -0.001))
+// A street at least `streetWidth` wide between any two buildings, and no
+// apron or yard on another building: in the block, and in the 64-copy grid.
+let streetsBetween = (cs: List<Block.Copy>): bool =>
+  pairsOf(cs) |> List.all((p) =>
+    let (a, b) = p in
+    gap(worldRect(a, f), worldRect(b, f)) >= Block.streetWidth - 0.001
+      && (yards |> List.all((r) => gap(worldRect(a, r.rect), worldRect(b, f)) >= -0.001 && gap(worldRect(b, r.rect), worldRect(a, f)) >= -0.001)))
+expect streetsBetween(copies)
 // Every copy's entrance and windows face the crossroads' streets: their
 // outside rooms lie in the cross between the buildings.
 let inCross = (r: Rect): bool =>
   (r.x0 >= 0.0 - Block.streetWidth - 0.001 && r.x1 <= 0.001) || (r.z0 >= 0.0 - Block.streetWidth - 0.001 && r.z1 <= 0.001)
-expect Block.copies |> List.all((c) => yards |> List.all((r) => inCross(worldRect(c, r.rect))))
+expect copies |> List.all((c) => yards |> List.all((r) => inCross(worldRect(c, r.rect))))
 
 // Collider tags are unique across the copies, the grounds and the player.
-let allTags = List.flatten([
-  ["ground", "block-ground", "player"],
-  Block.copies |> List.concatMap((c) => List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) => Block.tagOf(c, k.tag))),
-])
-expect allTags |> List.indexedMap((i, t) => List.drop(i + 1.0, allTags) |> List.any((u) => u == t)) |> List.all((dup) => not dup)
+let tagsOf = (cs: List<Block.Copy>): List<string> =>
+  cs |> List.concatMap((c) => List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) => Block.tagOf(c, k.tag)))
+let unique = (xs: List<string>): bool => Map.size(Map.fromList(xs |> List.map((x) => (x, true)))) == List.length(xs)
+expect unique(List.flatten([["ground", "block-ground", "player"], tagsOf(copies)]))
 
 // Activation: on inside `activeOn`, held to `activeOff`, off past it; only
 // the home copy stands outside the block.
+let office = Block.townAt(0.0)
 let at = (d: float): Vec3.t => Vec3.make(f.x0 - d, 1.6, 10.0)
-let homeOn = (block: bool, was: bool, d: float): bool =>
-  List.head(Block.activeAt(block, [was, false, false, false], at(d))) == Option.Some(true)
-expect homeOn(false, false, Block.activeOn - 0.1) && not homeOn(false, false, Block.activeOn + 0.1)
-expect homeOn(false, true, Block.activeOff - 0.1) && not homeOn(false, true, Block.activeOff + 0.1)
-expect Block.activeAt(false, [true, true, true, true], Block.toWorld(Block.copyAt(2.0), probe)) == [false, false, false, false]
-expect List.nth(2.0, Block.activeAt(true, Block.nothingActive, Block.toWorld(Block.copyAt(2.0), probe))) == Option.Some(true)
+let homeOn = (was: bool, d: float): bool =>
+  Block.isIn(0.0, Block.activeAt(office, Block.maxActive, if was then [0.0] else [], at(d)))
+expect homeOn(false, Block.activeOn - 0.1) && not homeOn(false, Block.activeOn + 0.1)
+expect homeOn(true, Block.activeOff - 0.1) && not homeOn(true, Block.activeOff + 0.1)
+expect Block.activeAt(office, Block.maxActive, [0.0, 1.0, 2.0, 3.0], Block.toWorld(Block.copyAt(2.0), probe)) == []
+expect Block.isIn(2.0, Block.activeAt(block, Block.maxActive, [], Block.toWorld(Block.copyAt(2.0), probe)))
 // At the far edge of every copy's activation, its cells hold the eye.
-expect Block.copies |> List.all((c) =>
+expect copies |> List.all((c) =>
   outline(Block.activeOff) |> List.all((p) =>
     let (x, z) = p in
     let eye = Block.toWorld(c, Vec3.make(x, 1.6, z)) in
-    Block.uncovered(Block.activeAt(true, [true, true, true, true], eye), eye) == 0.0))
+    Block.uncovered(block, Block.activeAt(block, Block.maxActive, [0.0, 1.0, 2.0, 3.0], eye), eye) == 0.0))
 // From the crossroads every interior draws; from deep inside a copy only
 // its own does.
-expect Block.activeAt(true, Block.nothingActive, Vec3.make(Block.centre, 1.6, Block.centre)) == [true, true, true, true]
-expect Block.activeAt(true, Block.nothingActive, Block.toWorld(Block.copyAt(1.0), Vec3.make(14.0, 1.6, 20.0))) == [false, true, false, false]
+let crossroads = Vec3.make(Block.centre, 1.6, Block.centre)
+expect Block.activeAt(block, Block.maxActive, [], crossroads) == [0.0, 1.0, 2.0, 3.0]
+expect Block.activeAt(block, Block.maxActive, [], Block.toWorld(Block.copyAt(1.0), Vec3.make(14.0, 1.6, 20.0))) == [1.0]
 
 // Every copy draws the home copy's scene (one archetype: the same cell
 // models and lightmaps) under its own transform.
-let look = (k: float): Game.CopyLook => { k: k, neon: 1.0, lamps: 1.0, day: false, active: true }
+let look = (c: Block.Copy): Game.CopyLook => { copy: c, neon: 1.0, lamps: 1.0, day: false, active: true }
 let local = Scene.group([Exterior.exteriorAt(1.0, 1.0), Scene.cells(Portals.level, Scene.group(Game.nightRooms))])
-expect Block.copies |> List.indexedMap((k, c) => Scene.equals(Game.copyScene(look(k)), Block.sceneOf(c, local))) |> List.all((same) => same)
+expect copies |> List.all((c) => Scene.equals(Game.copyScene(look(c)), Block.sceneOf(c, local)))
+
+// ---- The grids -------------------------------------------------------------------
+
+let grid64 = Block.townAt(4.0)
+expect (Block.towns |> List.map((t) => List.length(t.copies))) == [1.0, 4.0, 4.0, 16.0, 64.0]
+expect (Block.towns |> List.map((t) => t.shells)) == [false, false, true, true, true]
+// An id is the same building in every town: each extends the smaller ones,
+// and the grid of 4 stands where the block does.
+expect Block.towns |> List.all((t) => t.copies == List.take(List.length(t.copies), grid64.copies))
+expect Block.townAt(2.0).copies == copies
+// The blocks fill 2 × 2, then 4 × 4.
+let cells = (n: float): List<(float, float)> => List.range(n) |> List.map(Block.ringCell)
+expect cells(4.0) |> List.all((c) => let (x, z) = c in x <= 1.0 && z <= 1.0)
+expect Map.size(Map.fromList(cells(16.0) |> List.map((c) => let (x, z) = c in (x * 4.0 + z, true)))) == 16.0
+expect cells(16.0) |> List.all((c) => let (x, z) = c in x <= 3.0 && z <= 3.0)
+// Streets between all 64; unique names (memo keys) and collider tags.
+expect streetsBetween(grid64.copies)
+expect unique(grid64.copies |> List.map((c) => c.name))
+expect unique(List.flatten([["player", "ground", "block-ground", "grid-4-ground", "grid-16-ground", "grid-64-ground"], tagsOf(grid64.copies)]))
+
+// The index finds exactly the copies a scan of all 64 would, out to every
+// radius it's asked for, from street level all over the grid and past it.
+let scan = (t: Block.Town, r: float, eye: Vec3.t): List<(float, float)> =>
+  t.copies |> List.indexedMap((id, c) => (id, Block.fromFootprint(Block.toLocal(c, eye)))) |> List.filter((e) => let (id, d) = e in d <= r)
+let probes = List.range(24.0) |> List.concatMap((i) => List.range(24.0) |> List.map((j) => Vec3.make(-90.0 + 23.0 * i, 1.6, -90.0 + 23.0 * j)))
+expect probes |> List.all((p) =>
+  [Block.activeOff, Block.lightReach, Block.solidOn + Block.solidMargin] |> List.all((r) => Block.near(grid64, r, p) == scan(grid64, r, p)))
+
+// A tighter layout than any street allows: 64 copies 6 m apart.
+let tight = (n: float, gapX: float, gapZ: float): Block.Town =>
+  let side = Math.sqrt(n) in
+  let cs = List.range(n) |> List.map((id) =>
+    { name: $"tight-{id}", x: Math.mod(id, side) * (f.x1 + gapX), z: Math.floor(id / side) * (f.z1 + gapZ), yaw: 0.0 }) in
+  { name: "tight", copies: cs, index: Block.indexOf(cs), shells: true, solidOn: Block.solidOn, ground: Exterior.ground, groundBody: Exterior.groundBody }
+let tight64 = tight(64.0, 6.0, 6.0)
+let tight16 = tight(16.0, 6.0, 6.0)
+expect Block.near(tight64, Block.activeOff, Vec3.make(83.0, 1.6, 101.5)) == scan(tight64, Block.activeOff, Vec3.make(83.0, 1.6, 101.5))
+
+// The selector folded along `eyes`: each eye's active set, from the last.
+let walk = (t: Block.Town, k: float, eyes: List<Vec3.t>): List<List<float>> =>
+  let (_, sets) = eyes |> List.fold((acc, eye) =>
+    let (was, out) = acc in
+    let now = Block.activeAt(t, k, was, eye) in
+    (now, List.append([now], out)), ([], [])) in
+  sets
+let changes = (sets: List<List<float>>): float =>
+  sets |> List.indexedMap((i, s) => if i > 0.0 && List.nth(i - 1.0, sets) != Option.Some(s) then 1.0 else 0.0) |> List.sum
+let ks = [1.0, 2.0, 4.0]
+
+// Dense: from an alley crossing more than k qualify, and k is the bound;
+// with nothing on, the k nearest win.
+let alley = Vec3.make(3.0 * (f.x1 + 6.0) - 3.0, 1.6, 3.0 * (f.z1 + 6.0) - 3.0)
+expect List.length(Block.near(tight64, Block.activeOn, alley)) == 8.0
+expect ks |> List.all((k) =>
+  Block.activeAt(tight64, k, [], alley)
+    == (Block.near(tight64, Block.activeOn, alley) |> List.sortBy((e) => let (id, d) = e in d) |> List.take(k)
+          |> List.map((e) => let (id, d) = e in id) |> List.sortBy((id) => id)))
+// Whatever was on, never more than k: everywhere over the grids.
+expect [grid64, tight64] |> List.all((t) => ks |> List.all((k) => probes |> List.all((p) =>
+  List.length(Block.activeAt(t, k, [], p)) <= k && List.length(Block.activeAt(t, k, allIds(t), p)) <= k)))
+
+// Retention: an active copy stays on while the eye is in its band, though
+// nearer ones qualify; with nothing on, the nearest wins.
+let quad = Block.near(grid64, Block.activeOn, crossroads) |> List.sortBy((e) => let (id, d) = e in d) |> List.map((e) => let (id, d) = e in id)
+expect List.length(quad) == 4.0
+let farthest = List.last(quad) |> Option.defaultValue(-1.0)
+expect Block.activeAt(grid64, 1.0, [farthest], crossroads) == [farthest]
+expect Block.activeAt(grid64, 1.0, [], crossroads) == List.take(1.0, quad)
+
+// The eye's own building always wins, whatever holds the k slots.
+let lobbyOf = (c: Block.Copy): Vec3.t => Block.toWorld(c, Vec3.make(10.0, 1.6, 3.0))
+let thresholdOf = (c: Block.Copy): Vec3.t => Block.toWorld(c, Vec3.make(10.0, 1.6, 0.0 - 0.9))
+expect [grid64, tight16] |> List.all((t) => ks |> List.all((k) => t.copies |> List.indexedMap((id, c) =>
+  [lobbyOf(c), thresholdOf(c)] |> List.all((eye) =>
+    let others = Block.near(t, Block.activeOff, eye) |> List.filter((e) => let (j, d) = e in j != id)
+      |> List.map((e) => let (j, d) = e in j) |> List.take(k) in
+    Block.isIn(id, Block.activeAt(t, k, others, eye)))) |> List.all((ok) => ok)))
+
+// Boundary oscillation, the office alone: jittering across `activeOn` turns
+// it on once; across `activeOff`, off once; neither flickers.
+let jitter = (a: float, b: float): List<Vec3.t> => List.range(20.0) |> List.map((i) => at(if Math.mod(i, 2.0) == 0.0 then a else b))
+expect changes(walk(office, 1.0, jitter(Block.activeOn + 0.1, Block.activeOn - 0.1))) == 1.0
+expect changes(walk(office, 1.0, List.append(jitter(Block.activeOff - 0.1, Block.activeOff + 0.1), [at(10.0)]))) == 1.0
+// Departure and return: on, off past `activeOff`, on again inside `activeOn`.
+let out = List.range(80.0) |> List.map((i) => 0.5 * i)
+let away = List.append(List.reverse(out), out) |> List.map(at)
+let awaySets = walk(office, 1.0, away)
+expect changes(awaySets) == 2.0 && List.head(awaySets) == Option.Some([0.0]) && List.last(awaySets) == Option.Some([0.0])
+expect List.range(160.0) |> List.all((i) =>
+  let d = List.nth(i, List.append(List.reverse(out), out)) |> Option.defaultValue(0.0) in
+  let on = List.nth(i, awaySets) == Option.Some([0.0]) in
+  if i < 80.0 then on == (d <= Block.activeOff) else on == (d < Block.activeOn))
+
+// Down the grid's streets and into a lobby, every metre: at most k on, the
+// eye always in an active copy's cells, and no flicker — stepping 20 cm on
+// and back changes nothing the step itself didn't.
+let line = (x0: float, z0: float, x1: float, z1: float, n: float): List<Vec3.t> =>
+  List.range(n + 1.0) |> List.map((i) => Vec3.make(x0 + (x1 - x0) * i / n, 1.6, z0 + (z1 - z0) * i / n))
+let far = Block.centre + 3.0 * Block.blockPitch + 70.0
+let route = List.flatten([
+  line(Block.centre, -70.0, Block.centre, far, 480.0),
+  line(-70.0, Block.centre + Block.blockPitch, far, Block.centre + Block.blockPitch, 480.0),
+  line(10.0, -8.0, 10.0, 9.0, 17.0),
+])
+let nudge = Vec3.make(0.2, 0.0, 0.2)
+expect ks |> List.all((k) =>
+  let sets = walk(grid64, k, route) in
+  sets |> List.indexedMap((i, s) =>
+    let eye = List.nth(i, route) |> Option.defaultValue(crossroads) in
+    let stepped = Block.activeAt(grid64, k, s, eye |> Vec3.add(nudge)) in
+    List.length(s) <= k && Block.uncovered(grid64, s, eye) == 0.0
+      && Block.activeAt(grid64, k, stepped, eye) == stepped) |> List.all((ok) => ok))
+// Down a street at k = 1, each copy turns on at most once: no A, B, A.
+let onsets = (sets: List<List<float>>): List<float> =>
+  sets |> List.indexedMap((i, s) => s |> List.filter((id) => i == 0.0 || not Block.isIn(id, List.nth(i - 1.0, sets) |> Option.defaultValue([]))))
+    |> List.flatten
+expect ks |> List.all((k) =>
+  let street = walk(grid64, k, line(Block.centre, -70.0, Block.centre, far, 480.0)) |> onsets in
+  unique(street |> List.map((id) => $"{id}")))
+
+// Colliders: the block's are always on; in a grid, only near the player.
+expect Block.solidAt(block, [], Vec3.make(500.0, 0.0, 500.0)) == [0.0, 1.0, 2.0, 3.0]
+expect Block.solidAt(grid64, [], lobbyOf(Block.copyAt(37.0))) == [37.0]
+expect Block.solidAt(grid64, [], crossroads) == []
+let south = (d: float): Vec3.t => Block.toWorld(Block.copyAt(5.0), Vec3.make(10.0, 0.0, 0.0 - d))
+expect not Block.isIn(5.0, Block.solidAt(grid64, [], south(Block.solidOn + 1.0)))
+expect Block.isIn(5.0, Block.solidAt(grid64, [5.0], south(Block.solidOn + 1.0)))
+expect not Block.isIn(5.0, Block.solidAt(grid64, [5.0], south(Block.solidOn + Block.solidMargin + 1.0)))
+
+// ---- Shells --------------------------------------------------------------------
+
+// An inactive copy is a shell, an active one isn't.
+let shellLook = (active: List<float>): Shells.Look => { town: 4.0, active: active, neon: 1.0, lamps: 1.0, day: false }
+expect List.length(Shells.idleOf(shellLook([0.0, 37.0]))) == 62.0
+expect Shells.idleOf(shellLook([0.0, 37.0])) |> List.all((c) => c.name != "office-0" && c.name != "office-37")
+// Every window glows where layout.fun cuts it, in the wall's outer face, lit
+// when a panel lights its room.
+let half = facade / 2.0
+expect List.length(Shells.windowOpenings) == List.length(windows)
+expect windows |> List.indexedMap((i, w) =>
+  match List.nth(i, Shells.windowOpenings) with
+  | Option.Some(e) =>
+    let (b, lit) = e in
+    let y = Building.baseOf(Building.roomAt(w.room)) in
+    lit == Shells.isLit(w.room) && w.side == West && near(b.x1, f.x0 - half)
+      && near(b.z0, w.at - w.width / 2.0) && near(b.z1, w.at + w.width / 2.0) && near(b.y0, y + w.sill) && near(b.y1, y + w.head)
+  | Option.None => false) |> List.all((ok) => ok)
+expect Shells.windowOpenings |> List.all((e) => let (b, lit) = e in lit)

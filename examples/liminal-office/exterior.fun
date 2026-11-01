@@ -11,6 +11,12 @@ let glass = rgb(26.0, 32.0, 44.0)
 let slab = (x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) =>
   Scene.cube() |> Scene.scaleXYZ(x1 - x0, y1 - y0, z1 - z0) |> Scene.translate(v((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0))
 
+// A slab as data, for shells.fun to instance: [x0, x1] × [y0, y1] × [z0, z1].
+type Box = { x0: float, y0: float, z0: float, x1: float, y1: float, z1: float }
+let box = (x0: float, y0: float, z0: float, x1: float, y1: float, z1: float): Box =>
+  { x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1 }
+let slabOf = (b: Box): Scene.t => slab(b.x0, b.y0, b.z0, b.x1, b.y1, b.z1)
+
 // A level's facade openings on one side, 1 cm smaller, so the facade's
 // outer half overlaps the baked reveal's edges: no seam to see through, and
 // no coplanar faces.
@@ -43,7 +49,7 @@ let isOpen = (level: float, s: Side, at: float): bool =>
 // Dark window bands on the outside of the walls, a row per storey, except
 // where layout.fun opens a real window (open, no glass: glass would bypass
 // culling). The ground floor's south row leaves the entrance clear.
-let windowBands =
+let bandBoxes =
   let f = footprint in
   let o = half + 0.02 in
   levels |> List.concatMap((level) =>
@@ -52,42 +58,46 @@ let windowBands =
     let south = if level == 0.0 then [2.0, 4.6, 15.4, 18.0] else [2.0, 4.6, 7.2, 12.8, 15.4, 18.0] in
     List.flatten([
       south |> List.filter((x) => not isOpen(level, South, x))
-        |> List.map((x) => slab(x - 1.1, y0, f.z0 - o, x + 1.1, y1, f.z0 - half)),
+        |> List.map((x) => box(x - 1.1, y0, f.z0 - o, x + 1.1, y1, f.z0 - half)),
       List.range(8.0) |> List.concatMap((k) =>
         let z = 2.5 + 3.4 * k in
         List.flatten([
-          if isOpen(level, West, z) then [] else [slab(f.x0 - o, y0, z - 1.1, f.x0 - half, y1, z + 1.1)],
-          if isOpen(level, East, z) then [] else [slab(f.x1 + half, y0, z - 1.1, f.x1 + o, y1, z + 1.1)],
+          if isOpen(level, West, z) then [] else [box(f.x0 - o, y0, z - 1.1, f.x0 - half, y1, z + 1.1)],
+          if isOpen(level, East, z) then [] else [box(f.x1 + half, y0, z - 1.1, f.x1 + o, y1, z + 1.1)],
         ])),
-    ])) |> Scene.group |> Scene.lit(glass)
+    ]))
+let windowBands = bandBoxes |> List.map(slabOf) |> Scene.group |> Scene.lit(glass)
 
 let entrance = doors |> List.find((d) => not isInside(roomAt(d.a))) |> Option.map(holeOf)
   |> Option.defaultValue({ lo: 0.0, hi: 0.0, bottom: 0.0, top: 0.0 })
 let canopyX0 = entrance.lo - 1.0
 let canopyX1 = entrance.hi + 1.0
 let canopyZ0 = footprint.z0 - half - 1.6
-let canopy = slab(canopyX0, entrance.top + 0.3, canopyZ0, canopyX1, entrance.top + 0.45, footprint.z0 - half) |> Scene.lit(concrete)
+let canopyBox = box(canopyX0, entrance.top + 0.3, canopyZ0, canopyX1, entrance.top + 0.45, footprint.z0 - half)
+let canopy = slabOf(canopyBox) |> Scene.lit(concrete)
 
 // Cyan along the roofline and the canopy's edge.
-let neonStrips =
+let neonBoxes =
   let f = footprint in
   let y0 = facadeHeight - 0.12 in
   let y1 = facadeHeight - 0.06 in
   let o = half + 0.05 in
-  Scene.group([
-    slab(canopyX0, entrance.top + 0.33, canopyZ0 - 0.05, canopyX1, entrance.top + 0.39, canopyZ0),
-    slab(f.x0 - o, y0, f.z0 - o, f.x1 + o, y1, f.z0 - half),
-    slab(f.x0 - o, y0, f.z1 + half, f.x1 + o, y1, f.z1 + o),
-    slab(f.x0 - o, y0, f.z0 - o, f.x0 - half, y1, f.z1 + o),
-    slab(f.x1 + half, y0, f.z0 - o, f.x1 + o, y1, f.z1 + o),
-  ])
+  [
+    box(canopyX0, entrance.top + 0.33, canopyZ0 - 0.05, canopyX1, entrance.top + 0.39, canopyZ0),
+    box(f.x0 - o, y0, f.z0 - o, f.x1 + o, y1, f.z0 - half),
+    box(f.x0 - o, y0, f.z1 + half, f.x1 + o, y1, f.z1 + o),
+    box(f.x0 - o, y0, f.z0 - o, f.x0 - half, y1, f.z1 + o),
+    box(f.x1 + half, y0, f.z0 - o, f.x1 + o, y1, f.z1 + o),
+  ]
+let neonStrips = Scene.group(neonBoxes |> List.map(slabOf))
 
 // Sodium street lamps by the apron.
 let lampHeads = [v(4.4, 4.8, -4.0), v(15.6, 4.8, -4.0)]
 let lampPosts = lampHeads |> List.map((p) =>
   slab(Vec3.x(p) - 0.06, 0.0, Vec3.z(p) - 0.06, Vec3.x(p) + 0.06, 4.9, Vec3.z(p) + 0.06)) |> Scene.group |> Scene.lit(rgb(60.0, 60.0, 66.0))
-let lampShades = lampHeads |> List.map((p) =>
-  slab(Vec3.x(p) - 0.25, 4.75, Vec3.z(p) - 0.12, Vec3.x(p) + 0.25, 4.85, Vec3.z(p) + 0.12)) |> Scene.group
+let shadeBoxes = lampHeads |> List.map((p) =>
+  box(Vec3.x(p) - 0.25, 4.75, Vec3.z(p) - 0.12, Vec3.x(p) + 0.25, 4.85, Vec3.z(p) + 0.12))
+let lampShades = shadeBoxes |> List.map(slabOf) |> Scene.group
 
 let apron = roomAt(0.0).rect
 // The street sits 3 cm below the interior floors, so indoors the floor
@@ -98,7 +108,9 @@ let street = 0.0 - 0.03
 let groundAt = (x: float, z: float, size: float): Scene.t =>
   Scene.plane() |> Scene.scaleXYZ(size, 1.0, size) |> Scene.translate(v(x, street - 0.02, z)) |> Scene.lit(rgb(40.0, 36.0, 46.0))
 let ground = groundAt(10.0, 10.0, 240.0)
-let apronSlab = slab(apron.x0, street - 0.02, apron.z0, apron.x1, street, apron.z1 - half) |> Scene.lit(rgb(96.0, 94.0, 102.0))
+let apronGrey = rgb(96.0, 94.0, 102.0)
+let apronBox = box(apron.x0, street - 0.02, apron.z0, apron.x1, street, apron.z1 - half)
+let apronSlab = slabOf(apronBox) |> Scene.lit(apronGrey)
 
 // The building's street side, in its own space, with the neon and the lamp
 // heads glowing at `neon` and `lamps` (1 at night): only those two colours
