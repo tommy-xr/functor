@@ -43,7 +43,7 @@ let selectedNote = (r: t) => List.find((n) => n.id == r.selected, r.notes)
 
 // Pin a note where `mouse` meets `pieces` on their sheet, and select it to
 // type into. A selected note still empty moves there instead, so a misclick
-// leaves no blank pin. Off the parts, nothing changes.
+// doesn't leave a blank pin behind. Off the parts, nothing changes.
 let click = (r: t, pieces, mouse: Input.mouse): t =>
   match PartViews.pick(pieces, mouse) with
   | Option.None => r
@@ -70,35 +70,45 @@ let update = (r: t, m: msg): t =>
   | Delete(id) =>
     { r with notes: List.filter((n) => n.id != id, r.notes), selected: if r.selected == id then 0.0 else r.selected }
 
+// How many notes the panel lists, so it stays clear of the tiles.
+let shown = 8.0
+
+// A note's text cut to fit a list row.
+let short = (text: string) =>
+  if Text.length(text) <= 24.0 then text else Text.concat(Text.join("", List.take(23.0, Text.chars(text))), "…")
+
 let at3 = (p: Input.point3) =>
   Text.join(", ", [Text.fixed(p.x, 1.0), Text.fixed(p.y, 1.0), Text.fixed(p.z, 1.0)])
 
 // The notes panel, bottom left (the sheet leaves that tile empty): the
-// selected note's text field first, then every note — select it, or `x` to
-// delete. `wrap` lifts a `msg` into the app's own message (a constructor, or
+// selected note's text field first, then the latest `shown` notes — select
+// one, or `x` to delete it. `wrap` lifts a `msg` into the app's own message (a constructor, or
 // `(m) => m` when they are the same).
 let ui = (wrap, r: t) =>
   let editing = selectedNote(r) |> Option.map((n) => [
       Ui.text(Text.concat(Text.concat("Note ", Text.fixed(n.id, 0.0)), Text.concat(" on ", n.part))),
-      Ui.textInput(n.text, (text) => wrap(Edit(text))),
+      Ui.row([Ui.text("Note:"), Ui.textInput(n.text, (text) => wrap(Edit(text)))]),
     ]) |> Option.defaultValue([Ui.text("Click a part to pin a note")]) in
   let row = (n) => Ui.row([
-      Ui.button(Text.join(" ", [Text.fixed(n.id, 0.0), n.part, Text.concat(Text.concat("(", at3(n.point)), ")"), n.text]), wrap(Select(n.id))),
+      Ui.button(Text.join(" ", [Text.fixed(n.id, 0.0), n.part, Text.concat(Text.concat("(", at3(n.point)), ")"), short(n.text)]), wrap(Select(n.id))),
       Ui.button("x", wrap(Delete(n.id))),
     ]) in
-  Ui.column(editing |> List.append(List.map(row, r.notes))) |> Ui.panel(Ui.bottomLeft())
+  let earlier = List.length(r.notes) - shown in
+  let more = if earlier > 0 then [Ui.text(Text.concat(Text.fixed(earlier, 0.0), " earlier notes"))] else [] in
+  Ui.column(editing |> List.append(more) |> List.append(List.map(row, List.drop(earlier, r.notes))))
+    |> Ui.panel(Ui.bottomLeft())
 
-// A marker at each note, in scene space, sized to the pieces: the selected
-// one yellow, the rest red.
+// A marker at each note on one of `pieces` (by name), in scene space, sized
+// to the pieces: the selected one yellow, the rest red.
 let pins = (r: t, pieces) =>
   let b = PartViews.bounds(pieces) in
-  let size = Vec3.length(b.max |> Vec3.sub(b.min)) in
+  let size = Vec3.distance(b.min, b.max) in
   Scene.group(List.map((n) =>
       Scene.sphere()
         |> Scene.scale(size * 0.02 / 1000.0)
         |> Scene.translate(PartViews.toScene(Vec3.make(n.point.x, n.point.y, n.point.z)))
         |> Scene.emissive(if n.id == r.selected then Color.rgb(1.0, 0.85, 0.1) else Color.rgb(0.95, 0.15, 0.2)),
-    r.notes))
+    List.filter((n) => List.any((p) => p.name == n.part, pieces), r.notes)))
 
 // `PartViews.sheet` of `pieces` with the pins.
 let sheet = (r: t, pieces) => PartViews.sheetWith(pins(r, pieces), pieces)

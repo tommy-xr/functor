@@ -197,14 +197,15 @@ fn solid(solid: Solid) -> FunctorLangSolid {
     FunctorLangSolid(Arc::new(solid))
 }
 
+fn vec3_value([x, y, z]: [f64; 3]) -> Value {
+    Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
+}
+
 /// A `{ min, max }` bounds record of `Vec3`s.
 pub(super) fn bounds_value(b: functor_solid::Bounds) -> Value {
-    let vec3 = |[x, y, z]: [f64; 3]| {
-        Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
-    };
     Value::Record(Rc::new(vec![
-        ("min".to_string(), vec3(b.min)),
-        ("max".to_string(), vec3(b.max)),
+        ("min".to_string(), vec3_value(b.min)),
+        ("max".to_string(), vec3_value(b.max)),
     ]))
 }
 
@@ -479,14 +480,11 @@ which won't print as one solid — overlap them or move them apart"
         "Solid.raycast({ origin, direction }, solid)",
         |ray: Ray, s: FunctorLangSolid| {
             let m = meshed(&s.0).map_err(|e| format!("Solid.raycast: {e}"))?;
-            let vec3 = |[x, y, z]: [f64; 3]| {
-                Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
-            };
             Ok::<_, String>(crate::input::option_value(
                 m.mesh.raycast(ray.origin, ray.direction).map(|hit| {
                     Value::Record(Rc::new(vec![
-                        ("point".to_string(), vec3(hit.point)),
-                        ("normal".to_string(), vec3(hit.normal)),
+                        ("point".to_string(), vec3_value(hit.point)),
+                        ("normal".to_string(), vec3_value(hit.normal)),
                         ("distance".to_string(), Value::Number(hit.distance)),
                     ]))
                 }),

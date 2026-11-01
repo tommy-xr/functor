@@ -37,6 +37,9 @@ let tilePixels = 720.0
 // Part space (mm, Z up) to scene space (metres, Y up), like Solid.toScene.
 let toScene = (v: Vec3.t) => Vec3.make(Vec3.x(v) / 1000.0, Vec3.z(v) / 1000.0, 0.0 - Vec3.y(v) / 1000.0)
 
+// A part-space direction in scene space.
+let dir = (v: Vec3.t) => Vec3.normalize(toScene(v))
+
 let point = (v: Vec3.t): Input.point3 => { x: Vec3.x(v), y: Vec3.y(v), z: Vec3.z(v) }
 
 // The pieces' combined bounds, from each piece's own (cached) measurement.
@@ -67,7 +70,6 @@ let framing = (b, view) =>
   // Far back, so the eye-relative specular lighting falls almost parallel.
   let distance = 20.0 * radius in
   let eye = center |> Vec3.add(Vec3.scale(distance, back)) |> Vec3.add(Vec3.scale(-0.08 * half, up)) in
-  let dir = (v) => Vec3.normalize(toScene(v)) in
   { forward: forward, up: up, right: right,
     camera:
       Camera3D.fromPose({ position: point(toScene(eye)), forward: point(dir(forward)), up: point(dir(up)) }, Angle.degrees(45.0))
@@ -79,7 +81,6 @@ let tileFrame = (scene, b, view) =>
   let f = framing(b, view) in
   let key = f.forward |> Vec3.add(Vec3.scale(-0.6, f.up)) |> Vec3.add(Vec3.scale(-0.4, f.right)) in
   let fill = Vec3.scale(-1.0, key) |> Vec3.add(Vec3.scale(-1.5, f.up)) in
-  let dir = (v) => Vec3.normalize(toScene(v)) in
   Frame.createLit(
     f.camera,
     scene,

@@ -1,8 +1,10 @@
 // PartViewer — the default scene for a printable part: lit, on a bed, with an
 // OrbitCamera; `V` toggles a PartViews sheet of eight orthographic views,
-// where a click pins a PartReview note. A file that defines `part` and none
-// of the entry points in `<stdlib>/PartViewerDefault.fun` runs with those ten
-// lines; paste them into the file to change any of them.
+// where a click pins a PartReview note (with `"cursor": "visible"` in
+// `functor.json`; a captured pointer has no position to pick). A file that
+// defines `part` and none of the names in `<stdlib>/PartViewerDefault.fun`
+// (`update` and `ui` among them) runs with those ten lines; paste them into
+// the file to change any of them.
 
 // `vHeld` latches V so a held key (auto-repeat) toggles once.
 let init = { orbit: OrbitCamera.init, sheet: false, vHeld: false, review: PartReview.init }
