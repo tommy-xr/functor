@@ -9,8 +9,8 @@
 // vertex lands on a sample. `Physics.heightfield` keeps every other one
 // (1025 per axis, 2 m cells).
 //
-// The island: a seabed, a beach at sea level and gentle hills inland, with a
-// noisy coastline. The block stands on a flat pad (one u16 level) in the
+// The island: a seabed, a beach at sea level and gentle hills inland (calm
+// around the town), with a noisy coastline. The block stands on a flat pad (one u16 level) in the
 // south of the island, a smoothstep ramp around it. Out to `BAND` past the
 // pad's edge the ground stays between the pad and `CAP` above it, so the
 // block's collars (0–8 m over the street) hold every eye there.

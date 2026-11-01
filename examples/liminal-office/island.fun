@@ -12,8 +12,8 @@ let groundY = Exterior.street - 0.02
 // The terrain's translation: its pad level to `groundY`.
 let offset = v(IslandLayout.centre.x, groundY - IslandLayout.pad.y, IslandLayout.centre.z)
 
-// Sand at the shore, dry grass on the pad, greener up the hills. No snow:
-// its band starts above the highest sample.
+// Sand at the shore, dry grass inland (the bands blend by height over the
+// declared range). No snow: its band starts above the highest sample.
 let terrain =
   Terrain.heightmap(Asset.texture("island.png"), IslandLayout.size, IslandLayout.size,
                     IslandLayout.minHeight, IslandLayout.maxHeight)

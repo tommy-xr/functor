@@ -123,7 +123,8 @@ The one overcast day bake holds at every yaw (it has no sun).
 `island.mjs` generates a 2 km island: `island.png`, a 16-bit heightmap of
 2049² samples a metre apart (2ⁿ + 1, so every terrain LOD vertex lands on a
 sample), and `islandLayout.fun`, the constants the game places it with. A
-seabed, a beach, gentle hills; the block's pad is one flat u16 level (the
+seabed, a beach, a gentle rise inland (calmest around the town, so within
+the fog it reads as an open plain); the block's pad is one flat u16 level (the
 four copies, the streets and a 6 m apron), with a 16 m smoothstep ramp
 around it. Out to 30 m past the pad, the ground stays within 3 m above it,
 so the collars (0–8 m over the street) hold the eye through the activation

@@ -647,10 +647,12 @@ async function island(game) {
   // to a box.)
   check(m.grounded && near(m.at.y, flat.at.y - 0.02, 0.03), `stands on the pad (y ${m.at.y.toFixed(3)}; ${flat.at.y.toFixed(3)} on the flat ground)`);
   // On the pad, I swaps the ground under the walker in place, both ways.
+  // Back on the flat ground the capsule starts 2 cm into its box (whose top
+  // is 2 cm above the pad) and stays grounded there.
   await game.hold("i", 1);
   await game.step(30);
   const back = await game.model();
-  check(!back.island && back.grounded && near(back.at.x, m.at.x, 0.01) && near(back.at.z, m.at.z, 0.01) && near(back.at.y, flat.at.y, 0.03),
+  check(!back.island && back.grounded && near(back.at.x, m.at.x, 0.01) && near(back.at.z, m.at.z, 0.01) && near(back.at.y, m.at.y, 0.01),
     `I on the pad: back on the flat ground in place (y ${back.at.y.toFixed(3)}, grounded ${back.grounded})`);
   await game.hold("i", 1);
   s = await untilTerrain();
