@@ -1461,6 +1461,125 @@ let draw = (m, tts) =>
         assert_eq!(counted.0.get(), 1, "a replay never reads again");
     }
 
+    /// Routes 0 → 2 on a line 0 — 1 — 2 with a costly 0 → 2 link, asked from
+    /// `tick` until a route for the latest `seq` lands. Space re-asks with
+    /// 1 → 2 cut; C cancels the route, F cancels a file load with the same
+    /// key.
+    const NAV: &str = r#"
+type Msg = | Routed(r: Nav.result)
+let link = (a, b, cost) => { from: a, to: b, cost: cost, bits: 1.0, door: Option.None }
+let nav = Nav.graph({
+  nodes: [Vec3.make(0.0, 0.0, 0.0), Vec3.make(1.0, 0.0, 0.0), Vec3.make(2.0, 0.0, 0.0)],
+  links: [link(0.0, 1.0, 1.0), link(1.0, 2.0, 1.0), link(0.0, 2.0, 5.0)] })
+let init = { seq: 1.0, n: 0.0, len: -1.0, outcome: 0.0, graphOk: false, stale: 0.0 }
+let ask = (m) =>
+  let cut = if m.seq > 1.0 then [{ from: 1.0, to: 2.0, penalty: Nav.Cut, until: 100.0 }] else [] in
+  Nav.path(nav, "a", { from: Vec3.make(0.0, 0.0, 0.0), to: Vec3.make(2.0, 0.0, 0.0), bits: 1.0,
+                       closedDoors: [], links: cut, nodes: [], now: 0.0, seq: m.seq }, Routed)
+let input = (m, key, isDown) =>
+  match key with
+  | Key.Space => if isDown then { m with seq: m.seq + 1.0, len: -1.0 } else m
+  | Key.C => if isDown then (m, Nav.cancel("a")) else m
+  | Key.F => if isDown then (m, File.cancel(Path.of("a"))) else m
+  | _ => m
+let update = (m, msg) =>
+  match msg with
+  | Routed(r) =>
+    if r.query.seq == m.seq then
+      { m with len: List.length(r.waypoints), graphOk: r.graph == Nav.revision(nav),
+               outcome: (match r.outcome with | Nav.Full => 1.0 | Nav.Partial => 2.0 | Nav.Failed => 3.0 | Nav.NotRun(_) => 4.0) }
+    else { m with stale: m.stale + 1.0 }
+let tick = (m, dt, tts) =>
+  let next = { m with n: m.n + 1.0 } in
+  if m.len < 0.0 && m.n >= 2.0 then (next, ask(m)) else next
+let draw = (m, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(m.len, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+"#;
+
+    fn nav_game() -> FunctorLangEmbeddedGame {
+        FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), NAV.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("loads")
+    }
+
+    fn nav_on_fake() -> (FunctorLangEmbeddedGame, std::rc::Rc<crate::jobs::FakeJobs>) {
+        let mut game = nav_game();
+        let fake = std::rc::Rc::new(crate::jobs::FakeJobs::default());
+        game.job_port().set_dispatch(fake.clone());
+        for n in 0..3 {
+            game.tick(frame_time(n as f32 / 60.0, 1.0 / 60.0));
+        }
+        assert_eq!(fake.dispatched().len(), 1, "asked on the third frame");
+        (game, fake)
+    }
+
+    #[test]
+    fn a_nav_path_on_the_pool_replays_exactly_without_searching_again() {
+        let mut game = nav_game();
+        let counted = std::rc::Rc::new(Counted(std::cell::Cell::new(0)));
+        game.job_port().set_dispatch(counted.clone());
+        game.tick(frame_time(0.0, 0.0));
+        let mut models = Vec::new();
+        let started = std::time::Instant::now();
+        while !game.state_debug().contains("len: 3") {
+            assert!(started.elapsed().as_secs() < 10, "the route never landed");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            let n = models.len() as f32 + 1.0;
+            game.tick(frame_time(n / 60.0, 1.0 / 60.0));
+            models.push(game.state_debug());
+        }
+        let model = game.state_debug();
+        assert!(model.contains("outcome: 1") && model.contains("graphOk: true"), "{model}");
+        assert_eq!(counted.0.get(), 1, "same-key asks while in flight drop");
+
+        game.seek_scene_to(0).expect("seek");
+        let replayed = game.replay_scene(models.len() - 1).expect("replays");
+        let replayed: Vec<String> = replayed.into_iter().map(|(model, _)| model).collect();
+        assert_eq!(replayed, models[1..].to_vec());
+        assert_eq!(counted.0.get(), 1, "a replay never searches again");
+    }
+
+    /// A result for an older `seq` is ignored by the game, and the re-ask
+    /// dropped while it was in flight goes out once it lands.
+    #[test]
+    fn a_stale_route_is_dropped_and_the_latest_ask_follows() {
+        let (mut game, fake) = nav_on_fake();
+        game.key_event(crate::Key::Space as i32, true);
+        game.tick(frame_time(3.0 / 60.0, 1.0 / 60.0));
+        assert_eq!(fake.dispatched().len(), 1, "seq 2 dropped while seq 1 is in flight");
+        assert!(fake.complete(fake.held()[0]));
+        game.tick(frame_time(4.0 / 60.0, 1.0 / 60.0));
+        let model = game.state_debug();
+        assert!(model.contains("stale: 1") && model.contains("len: -1"), "{model}");
+        assert_eq!(fake.dispatched().len(), 2, "re-asked for seq 2");
+        assert!(fake.complete(fake.held()[0]));
+        game.tick(frame_time(5.0 / 60.0, 1.0 / 60.0));
+        // 1 → 2 is cut: straight to 2 over the costly link.
+        let model = game.state_debug();
+        assert!(model.contains("len: 2") && model.contains("outcome: 1"), "{model}");
+    }
+
+    /// `Nav.cancel` stops the search; `File.cancel` of the same key doesn't.
+    #[test]
+    fn nav_cancel_stops_only_its_own_key() {
+        let (mut game, fake) = nav_on_fake();
+        let first = fake.held()[0];
+        game.key_event(crate::Key::F as i32, true);
+        game.tick(frame_time(3.0 / 60.0, 1.0 / 60.0));
+        assert_eq!(fake.stopped(first), Some(false));
+        assert_eq!(fake.dispatched().len(), 1);
+        game.key_event(crate::Key::C as i32, true);
+        game.tick(frame_time(4.0 / 60.0, 1.0 / 60.0));
+        assert_eq!(fake.stopped(first), Some(true));
+        // That frame's `tick` asked again: cancel-then-ask replaces.
+        assert_eq!(fake.dispatched().len(), 2);
+        assert!(fake.complete(first));
+        game.tick(frame_time(5.0 / 60.0, 1.0 / 60.0));
+        assert!(game.state_debug().contains("len: -1"), "the cancelled route never lands");
+    }
+
     #[test]
     fn a_three_parameter_draw_receives_the_presentation_alpha() {
         let mut game = FunctorLangEmbeddedGame::create(

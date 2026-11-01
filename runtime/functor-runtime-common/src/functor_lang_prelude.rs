@@ -198,6 +198,7 @@ use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteL
 
 pub mod bytes;
 pub mod cells;
+pub mod nav;
 pub mod lightmap;
 pub mod mesh;
 pub mod model;
@@ -445,6 +446,19 @@ pub enum EffectTree {
     /// Stop the in-flight `File.load` of `path` (`File.cancel(path)`).
     FileCancel {
         path: String,
+    },
+    /// Route on the job pool (`Nav.path(graph, key, query, tagger)`), its
+    /// result delivered like `FileLoad`'s. `echo` is the query as given.
+    NavPath {
+        key: String,
+        graph: std::sync::Arc<crate::nav::Graph>,
+        query: std::sync::Arc<crate::nav::Query>,
+        echo: crate::jobs::Shareable,
+        tagger: Value,
+    },
+    /// Stop the in-flight `Nav.path` with `key` (`Nav.cancel(key)`).
+    NavCancel {
+        key: String,
     },
     /// Persist a plain-data value in a local save slot (`Persistence.save(slot,
     /// value)`). The payload is converted to its [`EffectValue`] at
@@ -1784,6 +1798,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         path::register(&mut reg);
         mesh::register(&mut reg);
         cells::register(&mut reg);
+        nav::register(&mut reg);
         model::register(&mut reg);
         register_scene(&mut reg);
         register_instance(&mut reg);
@@ -4895,6 +4910,7 @@ macro_rules! handle_arg {
 
 use bytes::FunctorLangBytes;
 use cells::FunctorLangCells;
+use nav::FunctorLangNavGraph;
 use mesh::FunctorLangMesh;
 use model::FunctorLangModel;
 use solid::{FunctorLangFont, FunctorLangSketch, FunctorLangSolid};
@@ -4906,6 +4922,7 @@ handle_arg!(
     FunctorLangBytes => "Bytes",
     FunctorLangMesh => "a Mesh",
     FunctorLangCells => "Cells",
+    FunctorLangNavGraph => "a Nav.graph",
     FunctorLangModel => "a Model",
     FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
@@ -6396,6 +6413,8 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         // A file load's result arrives frames later, like a response.
         | EffectTree::FileLoad { .. }
         | EffectTree::FileCancel { .. }
+        | EffectTree::NavPath { .. }
+        | EffectTree::NavCancel { .. }
         // Audio one-shots are fire-and-forget too. `playThen`'s completion
         // needs `update`, but arrives frames later via the audio-finished
         // hook — the same shape as Http. Preloads likewise: `preloadThen`'s
@@ -6594,7 +6613,7 @@ dropping the rest"
                 // is in flight another is dropped (cancel first to replace
                 // it); the kind records which, so a replay that decides
                 // otherwise diverges loudly.
-                let admitted = !requests.job_in_flight(&path);
+                let admitted = !requests.job_in_flight(("file", &path));
                 let kind = if admitted { "file.load" } else { "file.load.dropped" };
                 let (recorded, ordinal) = issue(runner, log, kind, args_digest(&path));
                 if admitted {
@@ -6605,7 +6624,24 @@ dropping the rest"
             }
             EffectTree::FileCancel { path } => {
                 issue(runner, log, "file.cancel", args_digest(&path));
-                requests.cancel_job(&path);
+                requests.cancel_job(("file", &path));
+                continue;
+            }
+            EffectTree::NavPath { key, graph, query, echo, tagger } => {
+                // A job like `FileLoad`, keyed by the caller's key.
+                let admitted = !requests.job_in_flight(("nav", &key));
+                let kind = if admitted { "nav.path" } else { "nav.path.dropped" };
+                let digest = args_digest(&(&key, graph.revision(), &echo));
+                let (recorded, ordinal) = issue(runner, log, kind, digest);
+                if admitted {
+                    let spec = crate::jobs::JobSpec::NavPath { key, graph, query, echo };
+                    requests.issue_job(recorded, ordinal, spec, tagger, !suppress_outbound);
+                }
+                continue;
+            }
+            EffectTree::NavCancel { key } => {
+                issue(runner, log, "nav.cancel", args_digest(&key));
+                requests.cancel_job(("nav", &key));
                 continue;
             }
             EffectTree::PlayAudio { sound, position } => {
@@ -14635,6 +14671,75 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
         };
         assert_eq!(cells.len(), 2);
         assert!(matches!(&items[0].obj, SceneObject::Cells(crate::CellsNode::In(ids), _) if ids == &[1]));
+    }
+
+    /// `Nav.*` from records (the `nav.funi` example): the graph, the query
+    /// and its echo, and errors at the call site.
+    #[test]
+    fn nav_graphs_and_queries_from_records() {
+        let prelude = "type Msg = | Routed(r: Nav.result)\n\
+             let link = (a, b, door) => { from: a, to: b, cost: 1.0, bits: 1.0, door: door }\n\
+             let nav = Nav.graph({\n\
+               nodes: [Vec3.make(0.0, 0.0, 0.0), Vec3.make(1.0, 0.0, 0.0), Vec3.make(2.0, 0.0, 0.0)],\n\
+               links: [link(0.0, 1.0, Option.None), link(1.0, 0.0, Option.None),\n\
+                       link(1.0, 2.0, Option.Some(0.0)), link(2.0, 1.0, Option.Some(0.0))],\n\
+             })\n\
+             let q = (links) => { from: Vec3.make(0.0, 0.0, 0.0), to: Vec3.make(2.0, 0.0, 0.0), bits: 1.0,\n\
+               closedDoors: [0.0], links: links, nodes: [], now: 0.0, seq: 7.0 }\n\
+             let open = (links) => { q(links) with closedDoors: [] }\n";
+        let eval = |main: &str| eval_with_prelude(&format!("{prelude}let main = {main}\n"));
+        let Ok(Value::Number(revision)) = eval("Nav.revision(nav)") else { panic!() };
+        // The effect carries the parsed query and the query as given.
+        let cut = "[{ from: 1.0, to: 2.0, penalty: Nav.Cut, until: 3.0 }]";
+        let Ok(Value::HostData(data)) = eval(&format!("Nav.path(nav, \"a\", q({cut}), Routed)")) else {
+            panic!("{:?}", eval("Nav.path(nav, \"a\", q([]), Routed)").map(|v| v.to_string()));
+        };
+        let EffectTree::NavPath { key, graph, query, echo, .. } =
+            &data.as_any().downcast_ref::<FunctorLangEffect>().unwrap().0
+        else {
+            panic!()
+        };
+        assert_eq!((key.as_str(), graph.revision()), ("a", revision));
+        assert_eq!(query.closed_doors, vec![0]);
+        assert_eq!(query.links[0].0, (1, 2));
+        assert!(query.links[0].1.weight.is_infinite());
+        // The door is closed: a partial route to 1, and nothing to wait for
+        // once the cut lifts (the door still blocks).
+        let result = nav::route(graph, query, echo, &|| false).to_value().to_string();
+        assert!(result.contains("outcome: Nav.Partial") && result.contains("nodes: [0, 1]"), "{result}");
+        assert!(result.contains("retryAt: Option.None") && result.contains("seq: 7"), "{result}");
+        // With the door open, only the cut stands in the way: retry at 3.
+        let Ok(Value::HostData(data)) = eval(&format!("Nav.path(nav, \"a\", open({cut}), Routed)")) else { panic!() };
+        let EffectTree::NavPath { graph, query, echo, .. } =
+            &data.as_any().downcast_ref::<FunctorLangEffect>().unwrap().0
+        else {
+            panic!()
+        };
+        let result = nav::route(graph, query, echo, &|| false).to_value().to_string();
+        assert!(result.contains("retryAt: Option.Some(3)"), "{result}");
+        // A search that never ran says so.
+        let result = nav::not_run(graph, echo, "the job queue is full".into()).to_value().to_string();
+        assert!(result.contains("outcome: Nav.NotRun(\"the job queue is full\")"), "{result}");
+        // The graph crosses to a worker as itself (a load job, `Job.run`).
+        let inner = |value: &Value| match value {
+            Value::HostData(data) => data.as_any().downcast_ref::<nav::FunctorLangNavGraph>().unwrap().0.clone(),
+            _ => panic!(),
+        };
+        let Ok(value) = eval("nav") else { panic!() };
+        let crossed = crate::jobs::Shareable::from_value(&value).unwrap().to_value();
+        assert!(std::sync::Arc::ptr_eq(&inner(&crossed), &inner(&value)));
+
+        let failure = |main: &str| eval(main).err().expect("should fail");
+        let err = failure("Nav.graph({ nodes: [Vec3.make(0.0, 0.0, 0.0)], links: [link(0.0, 1.0, Option.None)] })");
+        assert!(err.contains("Nav.graph: link 0 names node 1, but there are 1 nodes"), "{err}");
+        let err = failure("Nav.graph({ nodes: [], links: [link(0.5, 1.0, Option.None)] })");
+        assert!(err.contains("link 0 `from` must be a whole number"), "{err}");
+        let err = failure("Nav.path(nav, \"a\", q([{ from: 1.0, to: 9.0, penalty: Nav.Cut, until: 3.0 }]), Routed)");
+        assert!(err.contains("Nav.path: links[0] names node 9, but the graph has 3 nodes"), "{err}");
+        let err = failure("Nav.path(nav, \"a\", q([{ from: 1.0, to: 2.0, penalty: Nav.Costly(-1.0), until: 3.0 }]), Routed)");
+        assert!(err.contains("links[0] weight must be finite and ≥ 0"), "{err}");
+        let err = failure("Nav.path(nav, \"a\", q([{ from: 1.0, to: 2.0, penalty: Nav.Costly(Math.sqrt(-1.0)), until: 3.0 }]), Routed)");
+        assert!(err.contains("links[0] weight must be finite"), "{err}");
     }
 
     /// `Encode` writes what `Decode` reads; a `Codec` round-trips records,

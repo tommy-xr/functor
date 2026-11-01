@@ -58,6 +58,9 @@ impl JobCtx {
 
 pub type Task = Box<dyn FnOnce(&JobCtx) -> Shareable + Send>;
 
+/// An op's result for a job that produced none of its own.
+pub type Fail = Box<dyn FnOnce(JobError) -> Shareable + Send>;
+
 /// Results waiting for their producer.
 #[derive(Clone, Default)]
 pub struct Mailbox(Arc<Mutex<Vec<(Ticket, Shareable)>>>);
@@ -84,7 +87,7 @@ impl Mailbox {
 pub struct Job {
     pub ticket: Ticket,
     task: Task,
-    fail: fn(JobError) -> Shareable,
+    fail: Fail,
     stop: Arc<AtomicBool>,
     mailbox: Mailbox,
 }
@@ -97,9 +100,9 @@ impl Job {
             return;
         }
         let ctx = JobCtx { stop: self.stop.clone() };
-        let task = self.task;
+        let (task, fail) = (self.task, self.fail);
         let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(&ctx)))
-            .unwrap_or_else(|panic| (self.fail)(JobError::Crashed(panic_text(&panic))));
+            .unwrap_or_else(|panic| fail(JobError::Crashed(panic_text(&panic))));
         if !self.stop.load(Ordering::Relaxed) {
             self.mailbox.post(self.ticket, value);
         }
@@ -268,27 +271,51 @@ impl Dispatch for FakeJobs {
 pub enum JobSpec {
     /// `File.load`: a project file's bytes.
     FileLoad { path: String },
+    /// `Nav.path`: a route; `echo` is the query as given.
+    NavPath {
+        key: String,
+        graph: Arc<crate::nav::Graph>,
+        query: Arc<crate::nav::Query>,
+        echo: Shareable,
+    },
 }
 
 impl JobSpec {
-    /// The same-key rule's key: one in-flight op per key (design J2).
-    pub fn key(&self) -> &str {
+    /// The same-key rule's key, per API: one in-flight op per key (design
+    /// J2), so `File.cancel` never stops a `Nav.path`.
+    pub fn key(&self) -> (&'static str, &str) {
         match self {
-            JobSpec::FileLoad { path } => path,
+            JobSpec::FileLoad { path } => ("file", path),
+            JobSpec::NavPath { key, .. } => ("nav", key),
         }
     }
 
-    fn task(&self, reader: Option<Arc<dyn ProjectReader>>) -> (Task, fn(JobError) -> Shareable) {
+    fn task(&self, reader: Option<Arc<dyn ProjectReader>>) -> (Task, Fail) {
         match self {
             JobSpec::FileLoad { path } => {
                 let path = path.clone();
                 let task: Task = Box::new(move |_| {
                     crate::functor_lang_prelude::bytes::load_file(reader.as_deref(), &path)
                 });
-                let fail = |error: JobError| {
+                let fail: Fail = Box::new(|error: JobError| {
                     let (JobError::Failed(m) | JobError::Crashed(m)) = error;
                     crate::functor_lang_prelude::bytes::load_failed(m)
-                };
+                });
+                (task, fail)
+            }
+            JobSpec::NavPath { graph, query, echo, .. } => {
+                use crate::functor_lang_prelude::nav;
+                let task: Task = Box::new({
+                    let (graph, query, echo) = (graph.clone(), query.clone(), echo.clone());
+                    move |ctx| nav::route(&graph, &query, &echo, &|| ctx.cancelled())
+                });
+                let fail: Fail = Box::new({
+                    let (graph, echo) = (graph.clone(), echo.clone());
+                    move |error: JobError| {
+                        let (JobError::Failed(m) | JobError::Crashed(m)) = error;
+                        nav::not_run(&graph, &echo, m)
+                    }
+                });
                 (task, fail)
             }
         }
@@ -352,7 +379,7 @@ mod tests {
 
     fn job(ticket: Ticket, mailbox: &Mailbox, task: Task) -> (Job, Arc<AtomicBool>) {
         let stop = Arc::new(AtomicBool::new(false));
-        let fail = |e: JobError| Shareable::Text(Arc::from(format!("{e:?}").as_str()));
+        let fail: Fail = Box::new(|e: JobError| Shareable::Text(Arc::from(format!("{e:?}").as_str())));
         (Job { ticket, task, fail, stop: stop.clone(), mailbox: mailbox.clone() }, stop)
     }
 

@@ -90,6 +90,7 @@ pub mod functor_lang_producer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod functor_lang_test;
 pub mod model;
+pub mod nav;
 pub mod net;
 pub mod physics;
 pub mod protocol;

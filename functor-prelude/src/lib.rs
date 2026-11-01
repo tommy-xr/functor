@@ -93,6 +93,7 @@ pub fn modules() -> Vec<(String, String)> {
         module("Path", include_str!("../prelude/path.funi")),
         module("Mesh", include_str!("../prelude/mesh.funi")),
         module("Cells", include_str!("../prelude/cells.funi")),
+        module("Nav", include_str!("../prelude/nav.funi")),
         module("Model", include_str!("../prelude/model.funi")),
         module("Anim", include_str!("../prelude/anim.funi")),
         module("Asset", include_str!("../prelude/asset.funi")),

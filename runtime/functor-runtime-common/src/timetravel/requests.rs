@@ -277,15 +277,19 @@ impl Requests {
     /// Whether a job with `key` is in flight on the working table: the
     /// committed ops and Δ's, in drain order (design J2: a same-key request
     /// is dropped while one is pending).
-    pub fn job_in_flight(&self, key: &str) -> bool {
+    pub fn job_in_flight(&self, key: (&str, &str)) -> bool {
         self.find_in_flight(key).is_some()
     }
 
     /// The job op with `key` in flight for Δ (at most one): Δ's own, else
     /// a committed one.
-    fn find_in_flight(&self, key: &str) -> Option<InFlight> {
+    fn find_in_flight(&self, key: (&str, &str)) -> Option<InFlight> {
         let keyed = |p: &Pending| p.job.as_ref().is_some_and(|j| j.spec.key() == key);
-        let live = |p: &Pending| keyed(p) && p.job.as_ref().is_some_and(JobOp::live);
+        // Answered in Δ (issued while paused, finished before the frame
+        // ran) is no longer in flight, as a replay's committed op isn't.
+        let live = |p: &Pending| {
+            keyed(p) && p.answer.is_none() && p.job.as_ref().is_some_and(JobOp::live)
+        };
         if let Some(at) = self.provisional.iter().position(|(_, p)| live(p)) {
             return Some(InFlight::Provisional(at));
         }
@@ -347,7 +351,7 @@ impl Requests {
     /// Cancel the in-flight job with `key`: no message is delivered for it.
     /// A committed op is kept, so a seek or branch from before the cancel
     /// restores (and re-dispatches) it.
-    pub fn cancel_job(&mut self, key: &str) {
+    pub fn cancel_job(&mut self, key: (&str, &str)) {
         match self.find_in_flight(key) {
             Some(InFlight::Provisional(at)) => {
                 self.provisional.remove(at);
@@ -1022,16 +1026,26 @@ mod tests {
         assert!(requests.pending_tokens().is_empty());
     }
 
+    /// Live Δ and its replay agree: a replay's op is committed, answered
+    /// on the same frame, and not in flight.
+    #[test]
+    fn a_job_answered_in_delta_is_no_longer_in_flight() {
+        let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
+        issue_load(&mut requests, "a.txt");
+        assert!(matches!(finish(&mut requests, &fake, 1)[..], [Delivered::Op(..)]));
+        assert!(!requests.job_in_flight(("file", "a.txt")));
+    }
+
     #[test]
     fn admission_reads_the_working_table_in_drain_order() {
         let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
         // `run, run` in one drain: the second sees the first (provisional).
         issue_load(&mut requests, "a.txt");
-        assert!(requests.job_in_flight("a.txt"));
+        assert!(requests.job_in_flight(("file", "a.txt")));
         // `cancel, run`: the cancel takes the provisional op, so the run is
         // admitted.
-        requests.cancel_job("a.txt");
-        assert!(!requests.job_in_flight("a.txt"));
+        requests.cancel_job(("file", "a.txt"));
+        assert!(!requests.job_in_flight(("file", "a.txt")));
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         assert_eq!(fake.dispatched().len(), 2);
@@ -1048,7 +1062,7 @@ mod tests {
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         let first = fake.held()[0];
-        requests.cancel_job("a.txt");
+        requests.cancel_job(("file", "a.txt"));
         requests.commit(0, 1);
         // A branch from frame 0 restores the op: attempt 2 runs.
         branch(&mut requests, 1);
@@ -1066,7 +1080,7 @@ mod tests {
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         let first = fake.held()[0];
-        requests.cancel_job("a.txt");
+        requests.cancel_job(("file", "a.txt"));
         requests.commit(0, 1);
         branch(&mut requests, 1);
         requests.park(Arrival::Job { ticket: first, value: Shareable::Bool(true) });
@@ -1084,7 +1098,7 @@ mod tests {
         requests.commit(0, 0);
         // Finished, not yet delivered, when the game cancels.
         fake.complete(fake.held()[0]);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(("file", "a.txt"));
         requests.commit(0, 1);
         branch(&mut requests, 1);
         assert_eq!(fake.dispatched().len(), 1, "not run again");
@@ -1097,7 +1111,7 @@ mod tests {
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         let first = fake.held()[0];
-        requests.cancel_job("a.txt");
+        requests.cancel_job(("file", "a.txt"));
         requests.commit(0, 1);
         branch(&mut requests, 1);
         let second = fake.held()[1];
@@ -1114,7 +1128,7 @@ mod tests {
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
         requests.commit(0, 1);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(("file", "a.txt"));
         requests.commit(0, 2);
         // Branch keeping frames before 3: the cancel survives.
         branch(&mut requests, 3);
@@ -1131,18 +1145,18 @@ mod tests {
         let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(("file", "a.txt"));
         requests.commit(0, 5);
         // Scrubbed at frame 3 the op is in flight: Δ there is the branch's.
         requests.set_view(Some(3));
-        assert!(requests.job_in_flight("a.txt"));
-        requests.cancel_job("a.txt");
-        assert!(!requests.job_in_flight("a.txt"));
+        assert!(requests.job_in_flight(("file", "a.txt")));
+        requests.cancel_job(("file", "a.txt"));
+        assert!(!requests.job_in_flight(("file", "a.txt")));
         // A seek drops Δ: the shown future's own cancel stands.
         requests.drop_delta(6);
         requests.dispatch_restored();
         requests.set_view(None);
-        assert!(!requests.job_in_flight("a.txt"));
+        assert!(!requests.job_in_flight(("file", "a.txt")));
         assert_eq!(fake.dispatched().len(), 1);
     }
 
@@ -1151,7 +1165,7 @@ mod tests {
         let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(("file", "a.txt"));
         requests.drop_delta(1);
         requests.dispatch_restored();
         assert_eq!(fake.dispatched().len(), 1, "its worker never stopped");
@@ -1190,7 +1204,7 @@ mod tests {
         let (mut requests, fake) = with_fake(Files("a.txt", "hi"));
         issue_load(&mut requests, "a.txt");
         requests.commit(0, 0);
-        requests.cancel_job("a.txt");
+        requests.cancel_job(("file", "a.txt"));
         requests.commit(0, 2);
         let op = OpId { epoch: 0, frame: 0, ordinal: 0 };
         let value = Shareable::Bool(true);

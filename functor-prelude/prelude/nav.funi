@@ -1,0 +1,73 @@
+//! Routes for agents over a graph of nodes and links, searched off the frame
+//! thread. Build the graph once at top level; what changes (doors, places an
+//! agent got stuck) lives in the model and goes in each query, so a result
+//! depends only on the graph and the query.
+//!
+//! ```
+//! // A row of three rooms; the door between 1 and 2 is door 0.
+//! let link = (a, b, door) => { from: a, to: b, cost: 1.0, bits: 1.0, door: door }
+//! let nav = Nav.graph({
+//!   nodes: [Vec3.make(0.0, 0.0, 0.0), Vec3.make(1.0, 0.0, 0.0), Vec3.make(2.0, 0.0, 0.0)],
+//!   links: [link(0.0, 1.0, Option.None), link(1.0, 0.0, Option.None),
+//!           link(1.0, 2.0, Option.Some(0.0)), link(2.0, 1.0, Option.Some(0.0))],
+//! })
+//! let ask = (m) => Nav.path(nav, "guard", {
+//!   from: m.guard, to: m.player, bits: 1.0, closedDoors: m.closed,
+//!   links: [], nodes: [], now: m.time, seq: m.seq,
+//! }, Routed)
+//! // In `update`: keep a route only if it answers the latest ask.
+//! //   | Routed(r) => if r.query.seq == m.seq then { m with route: r.waypoints } else m
+//! ```
+
+/// A validated graph.
+type graph = host
+/// A one-way link between nodes (list positions). `cost` (≥ 0) is what using
+/// it adds to a route; an agent may use it when `bits` and its own `bits`
+/// share a bit; it is closed while `door` is in the query's `closedDoors`.
+type link = { from: float, to: float, cost: float, bits: float, door: Option.t<float> }
+/// Node positions and the links between them.
+type data = { nodes: List<Vec3.t>, links: List<link> }
+
+/// Validate a graph. An error names the first bad link (a node out of range,
+/// a negative cost).
+let graph : (data) => graph
+/// The graph's identity, from its contents: what each result's `graph` holds.
+let revision : (graph) => float
+
+/// An extra cost, or no way through at all.
+type penalty =
+  | Costly(weight: float)
+  | Cut
+/// A penalty on the links from `from` to `to`, while the query's `now` is
+/// before `until`.
+type linkPenalty = { from: float, to: float, penalty: penalty, until: float }
+/// A penalty on entering `node`, the same way.
+type nodePenalty = { node: float, penalty: penalty, until: float }
+/// `from` and `to` snap to their nearest nodes. `seq` is yours: the result
+/// echoes the whole query, so check it against your latest ask.
+type query = { from: Vec3.t, to: Vec3.t, bits: float, closedDoors: List<float>,
+               links: List<linkPenalty>, nodes: List<nodePenalty>, now: float, seq: float }
+
+/// How far a route gets: see `result`.
+type outcome =
+  | Full
+  | Partial
+  | Failed
+  | NotRun(message: string)
+/// `Full`: reaches the node nearest `to`. `Partial`: that node can't be
+/// reached, so the route ends at the reachable node nearest `to`. `Failed`:
+/// none is nearer `to` than the start, and the route is empty. `NotRun`: the
+/// search never ran (the job queue was full); ask again. `nodes` and
+/// `waypoints` run from the start node to the end node. `retryAt`: when cuts
+/// alone kept the goal out of reach, the earliest `until` that opens a way.
+type result = { graph: float, query: query, outcome: outcome, nodes: List<float>,
+                waypoints: List<Vec3.t>, retryAt: Option.t<float> }
+
+/// Route on a worker; `tagger(result)` arrives through `update` a frame or
+/// more later, so ask from `tick`. While a route with this key is in flight
+/// another is dropped: asking every frame searches once. A replay or a scrub
+/// hands back the recorded result; it never searches again.
+let path : (graph, string, query, (result) => 'msg) => Effect.t
+/// Stop the in-flight `Nav.path` with this key; no message is delivered for
+/// it.
+let cancel : (string) => Effect.t
