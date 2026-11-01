@@ -411,9 +411,9 @@ impl DebugCamera {
             Some(DebugView::Fps(camera)) | Some(DebugView::Orbit(camera))
                 if camera.ortho_half_height.is_some() =>
             {
-                camera.ortho_half_height = camera
-                    .ortho_half_height
-                    .map(|h| (h * (-steps * 0.08).exp()).clamp(1e-4, 1e4));
+                camera.ortho_half_height = camera.ortho_half_height.map(|h| {
+                    Self::move_toward_band(h, h * (-steps * 0.08).exp(), 1e-4, 1e4)
+                });
             }
             Some(DebugView::Fps(camera)) => {
                 let proposed = camera.fov_radians * (-steps * 0.08).exp();
@@ -803,6 +803,12 @@ mod tests {
             assert!(effective.ortho_half_height.unwrap() < 2.0, "{mode:?}");
             assert_eq!(effective.eye, frame.camera.eye);
         }
+        // Beyond the band, a wheel step never moves it the wrong way.
+        frame.camera.ortho_half_height = Some(2.0e4);
+        let mut debug = DebugCamera::default();
+        assert!(debug.detach(&frame));
+        debug.zoom(-1.0);
+        assert_eq!(debug.camera(&frame.camera).ortho_half_height, Some(2.0e4));
     }
 
     #[test]
