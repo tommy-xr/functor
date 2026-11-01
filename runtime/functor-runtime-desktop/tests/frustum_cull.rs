@@ -3,6 +3,8 @@
 //! - objects behind the camera draw nothing and count as culled; turning
 //!   back draws them again with no upload (culled nodes stay resident);
 //! - so does a lightmapped `Model.static`, keeping its pixel textures;
+//! - a static part is bounded by its own triangles, not the vertex array it
+//!   shares with other parts;
 //! - a ring of cubes culls about 3/4, byte-identical to culling off;
 //! - stereo culls per eye: an object only the left eye sees draws there only;
 //! - a caster outside the view still shadows the visible floor.
@@ -41,6 +43,7 @@ fn main() {
     let mut harness = Harness::new();
     behind_the_camera_culls_and_turning_back_uploads_nothing(&mut harness);
     a_static_model_behind_the_camera_culls_and_keeps_its_textures(&mut harness);
+    a_static_part_is_bounded_by_its_own_triangles(&mut harness);
     a_ring_culls_most_and_matches_culling_off(&mut harness);
     stereo_culls_per_eye(&mut harness);
     an_offscreen_caster_still_casts_its_shadow(&mut harness);
@@ -116,7 +119,7 @@ fn behind_the_camera_culls_and_turning_back_uploads_nothing(h: &mut Harness) {
 }
 
 fn a_static_model_behind_the_camera_culls_and_keeps_its_textures(h: &mut Harness) {
-    let scene = static_quad([[-1.0, 0.0, 6.0], [1.0, 0.0, 6.0], [1.0, 2.0, 6.0], [-1.0, 2.0, 6.0]]);
+    let scene = static_model(quad(6.0).to_vec(), vec![[0, 1, 2], [0, 2, 3]]);
     let toward = frame(
         Camera::look_at([0.0, 1.0, -6.0], [0.0, 1.0, 6.0], UP, fov()),
         scene.clone(),
@@ -152,6 +155,32 @@ fn a_static_model_behind_the_camera_culls_and_keeps_its_textures(h: &mut Harness
     );
     assert!(after == before, "turning back changed the image");
     println!("test a_static_model_behind_the_camera_culls_and_keeps_its_textures ... ok");
+}
+
+fn a_static_part_is_bounded_by_its_own_triangles(h: &mut Harness) {
+    // Two parts sliced from one baked model: both keep the whole vertex array
+    // (a quad ahead of the eye and one behind it), each indexes its own quad.
+    let positions = [quad(6.0), quad(-18.0)].concat();
+    let ahead = static_model(positions.clone(), vec![[0, 1, 2], [0, 2, 3]]);
+    let behind = static_model(positions, vec![[4, 5, 6], [4, 6, 7]]);
+    let camera = Camera::look_at([0.0, 1.0, -6.0], [0.0, 1.0, 6.0], UP, fov());
+    let both = frame(camera.clone(), group(vec![ahead.clone(), behind]), false);
+    let on = h.render(&both, &[0], true);
+    // The part behind culls, though the array it shares spans the view.
+    assert_eq!(
+        gpu_counters().frame_cull(),
+        CullCounts {
+            tested: 2,
+            culled: 1
+        }
+    );
+    assert!(!blank(&on[0]), "the part ahead drew nothing");
+    assert!(
+        on == h.render(&frame(camera, ahead, false), &[0], true),
+        "the culled part changed the image"
+    );
+    assert!(on == h.render(&both, &[0], false), "culling changed the image");
+    println!("test a_static_part_is_bounded_by_its_own_triangles ... ok");
 }
 
 fn a_ring_culls_most_and_matches_culling_off(h: &mut Harness) {
@@ -297,27 +326,32 @@ fn xbot() -> Scene3D {
     })
 }
 
-/// A `Model.static` quad on `corners`: one group with a pixel texture,
-/// lightmapped by a layered one.
-fn static_quad(corners: [[f32; 3]; 4]) -> Scene3D {
+/// A 2 m square at depth `z`, facing the eye at z = -6.
+fn quad(z: f32) -> [[f32; 3]; 4] {
+    [[-1.0, 0.0, z], [1.0, 0.0, z], [1.0, 2.0, z], [-1.0, 2.0, z]]
+}
+
+/// A `Model.static` of `triangles` over `positions`: one group with a pixel
+/// texture, lightmapped by a layered one.
+fn static_model(positions: Vec<[f32; 3]>, triangles: Vec<[u32; 3]>) -> Scene3D {
     let pixels = |space, rgb: [u8; 3]| {
         let pixels = PixelData::new(1, 1, PixelEncoding::Rgb8, space, &rgb);
         TextureDescription::Data(Arc::new(pixels.expect("valid pixels")))
     };
     let data = ModelData::new(ModelSource {
-        positions: corners.to_vec(),
-        normals: vec![[0.0, 0.0, 1.0]; 4],
-        uvs: vec![[0.5, 0.5]; 4],
-        uvs2: vec![[0.5, 0.5]; 4],
+        normals: vec![[0.0, 0.0, 1.0]; positions.len()],
+        uvs: vec![[0.5, 0.5]; positions.len()],
+        uvs2: vec![[0.5, 0.5]; positions.len()],
+        positions,
         joints: vec![],
         weights: vec![],
-        triangles: vec![[0, 1, 2], [0, 2, 3]],
         groups: vec![GroupSource {
             first: 0,
-            count: 2,
+            count: triangles.len() as u32,
             texture: Some(pixels(ColorSpace::Srgb, [200, 80, 40])),
             unlit: false,
         }],
+        triangles,
         // Layered, so its residency (keyed by the base) is covered too.
         lightmap: Some(LightmapSource {
             texture: TextureDescription::Layered {

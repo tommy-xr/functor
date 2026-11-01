@@ -35,7 +35,7 @@ use crate::{
     DebugRenderMode, RenderContext, RenderPass,
 };
 
-mod cull;
+pub(crate) mod cull;
 mod instanced_renderer;
 mod instancing;
 mod instance_cache;
@@ -1093,11 +1093,7 @@ frame: correct, but each bind re-uploads (atlas {})",
             std::collections::hash_map::Entry::Vacant(e) => {
                 counters.cache_miss();
                 let gpu = if data.is_static() {
-                    let mut bounds = Aabb::empty();
-                    for p in &data.source().positions {
-                        bounds.extend((*p).into());
-                    }
-                    DataModelGpu::Static(Arc::new(data.to_static_mesh()), bounds)
+                    DataModelGpu::Static(Arc::new(data.to_static_mesh()), data.triangle_bounds())
                 } else {
                     DataModelGpu::Skinned(Arc::new(data.to_model()))
                 };
