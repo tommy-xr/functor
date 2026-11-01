@@ -1,9 +1,8 @@
-use image::ImageFormat;
-
 use crate::{
     asset::{AssetCache, AssetPipeline},
     texture::{
-        Texture2D, TextureData, TextureFormat, TextureOptions, TERRAIN_DETAIL_ANISOTROPY, GIF, JPEG, PNG,
+        apply_color_key, decode_image, Texture2D, TextureData, TextureOptions,
+        TERRAIN_DETAIL_ANISOTROPY,
     },
 };
 
@@ -14,14 +13,11 @@ use crate::{
 /// thread polls asset futures (a panic aborts the runtime). The next save
 /// reloads it again.
 fn decode(bytes: &Vec<u8>) -> Option<TextureData> {
-    let decoded = match image::guess_format(bytes) {
-        Ok(ImageFormat::Png) => PNG.load(bytes),
-        Ok(ImageFormat::Jpeg) => JPEG.load(bytes),
-        Ok(ImageFormat::Gif) => GIF.load(bytes),
-        other => Err(format!("unhandled format: {:?}", other)),
-    };
-    match decoded {
-        Ok(data) => Some(data),
+    match decode_image(bytes) {
+        Ok(mut data) => {
+            apply_color_key(&mut data.bytes, data.width, data.height);
+            Some(data)
+        }
         Err(e) => {
             eprintln!("[texture] cannot decode image: {e}");
             None
@@ -159,11 +155,25 @@ mod tests {
     fn decodes_gif() {
         let mut gif = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_pixel(2, 1, image::Rgba([10, 200, 30, 255]))
-            .write_to(&mut gif, ImageFormat::Gif)
+            .write_to(&mut gif, image::ImageFormat::Gif)
             .unwrap();
         let data = decode(gif.get_ref()).expect("decodes");
         assert_eq!((data.width, data.height), (2, 1));
         assert_eq!(&data.bytes[..4], &[10, 200, 30, 255]);
+    }
+
+    #[test]
+    fn decodes_pcx() {
+        // 1×1, index 0 through a palette whose first colour is (10, 200, 30).
+        let mut pcx = vec![0u8; 128];
+        pcx[..4].copy_from_slice(&[10, 5, 1, 8]);
+        pcx[65] = 1;
+        pcx[66] = 2;
+        pcx.extend_from_slice(&[0, 0, 12, 10, 200, 30]);
+        pcx.resize(pcx.len() + 765, 0);
+        let data = decode(&pcx).expect("decodes");
+        assert_eq!((data.width, data.height), (1, 1));
+        assert_eq!(data.bytes, [10, 200, 30, 255]);
     }
 
     #[test]

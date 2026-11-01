@@ -1,12 +1,13 @@
 //! `Texture.fromPixels`, `Texture.atlas` and `Texture.withLayers` — textures
-//! from decoded pixels (see `texture.funi`).
+//! from decoded pixels — and `Texture.decode`, image files to pixels (see
+//! `texture.funi`).
 
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::texture::{ColorSpace, Layer, LayeredImage, PixelData, PixelEncoding};
+use crate::texture::{ColorSpace, ImageError, Layer, LayeredImage, PixelData, PixelEncoding};
 
-use super::bytes::FunctorLangBytes;
+use super::bytes::{ByteView, FunctorLangBytes};
 use super::*;
 
 fn fail<T>(what: &str, message: String, span: Span) -> Result<T, RunError> {
@@ -225,6 +226,40 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             PixelData::new(width, height, PixelEncoding::Rgba8, space.0, image.as_raw())
                 .map(texture_value)
                 .map_err(fail)
+        },
+    );
+    reg.fn2(
+        "Texture.decode",
+        "Texture.decode(File.bytes(Path.of(\"wall.pcx\")), Texture.Srgb)",
+        |file: FunctorLangBytes, space: ColorSpaceArg| {
+            // `Ok` pixels are always ones `fromPixels` takes.
+            let decoded = crate::texture::decode_image(file.0.as_slice()).and_then(|image| {
+                for (name, side) in [("width", image.width), ("height", image.height)] {
+                    crate::texture::check_side(name, side as f64)
+                        .map_err(|message| ImageError { offset: 0, message })?;
+                }
+                Ok(image)
+            });
+            match decoded {
+                Ok(image) => super::bytes::ok(crate::input::record([
+                    ("width", Value::Number(image.width as f64)),
+                    ("height", Value::Number(image.height as f64)),
+                    ("format", Value::Variant { ctor: "Texture.Rgba8".into(), args: Rc::new(Vec::new()) }),
+                    (
+                        "colorSpace",
+                        Value::Variant {
+                            ctor: match space.0 {
+                                ColorSpace::Srgb => "Texture.Srgb",
+                                ColorSpace::Linear => "Texture.Linear",
+                            }
+                            .into(),
+                            args: Rc::new(Vec::new()),
+                        },
+                    ),
+                    ("pixels", Value::HostData(Rc::new(FunctorLangBytes(ByteView::new(image.bytes))))),
+                ])),
+                Err(e) => super::bytes::err(e.offset as f64, e.message),
+            }
         },
     );
     reg.fn1(

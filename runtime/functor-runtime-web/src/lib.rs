@@ -19,7 +19,7 @@ use functor_runtime_common::net::{
 };
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
-    RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
+    RuntimeTexture, Texture2D, TextureData, TextureOptions,
 };
 use functor_runtime_common::viewer::{
     camera_frustum_lines, DebugCamera, DebugCameraMode, DebugMaterialMode, DebugPresentation,

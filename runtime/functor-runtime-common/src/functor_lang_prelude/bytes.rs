@@ -269,14 +269,14 @@ fn error(offset: f64, message: String) -> Value {
     ])
 }
 
-fn ok(value: Value) -> Value {
+pub(super) fn ok(value: Value) -> Value {
     Value::Variant {
         ctor: "Result.Ok".into(),
         args: Rc::new(vec![value]),
     }
 }
 
-fn err(offset: f64, message: String) -> Value {
+pub(super) fn err(offset: f64, message: String) -> Value {
     Value::Variant {
         ctor: "Result.Error".into(),
         args: Rc::new(vec![error(offset, message)]),
