@@ -68,6 +68,10 @@ pub fn bundled_modules() -> Vec<BundledModule> {
         "PartViews",
         include_str!("../stdlib/part_views.fun"),
     ));
+    bundled.push(BundledModule::implementation(
+        "PartReview",
+        include_str!("../stdlib/part_review.fun"),
+    ));
     // A file that is only a `part` runs in the PartViewer.
     bundled.push(BundledModule::entry_default(
         "PartViewerDefault",

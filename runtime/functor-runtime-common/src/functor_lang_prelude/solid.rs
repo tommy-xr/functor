@@ -337,6 +337,35 @@ build it with Solid.frame(origin, xAxis, zAxis)"
     }
 }
 
+/// `Solid.raycast`'s ray: `Camera3D.ray`'s `{ origin, direction }`, in mm.
+struct Ray {
+    origin: [f64; 3],
+    direction: [f64; 3],
+}
+
+impl crate::host_registry::FromArg for Ray {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let (Some(origin), Some(direction)) = (field(value, "origin"), field(value, "direction"))
+        else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected a ray {{ origin: Vec3, direction: Vec3 }}, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        let point = |v, what: &str| {
+            let (x, y, z) = vec3_of(v, &format!("{path} ray {what}"), span)?;
+            Ok::<_, RunError>([x, y, z].map(f64::from))
+        };
+        Ok(Ray {
+            origin: point(origin, "origin")?,
+            direction: point(direction, "direction")?,
+        })
+    }
+}
+
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     register_sketch(reg);
     reg.fn3(
@@ -636,6 +665,22 @@ got {b} and {t}"
                 .bounds()
                 .ok_or("Solid.bounds: the solid is empty (e.g. an intersection of solids that don't overlap)")?;
             Ok::<_, String>(bounds_value(b))
+        },
+    );
+    reg.fn2(
+        "Solid.raycast",
+        "Solid.raycast({ origin, direction }, solid)",
+        |ray: Ray, s: FunctorLangSolid| {
+            let m = meshed(&s.0).map_err(|e| format!("Solid.raycast: {e}"))?;
+            Ok::<_, String>(crate::input::option_value(
+                m.mesh.raycast(ray.origin, ray.direction).map(|hit| {
+                    Value::Record(Rc::new(vec![
+                        ("point".to_string(), vec3_value(hit.point)),
+                        ("normal".to_string(), vec3_value(hit.normal)),
+                        ("distance".to_string(), Value::Number(hit.distance)),
+                    ]))
+                }),
+            ))
         },
     );
     // Export's own check, so `expect` catches what `functor export` refuses.
