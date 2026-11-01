@@ -4,7 +4,9 @@
 //! scene's metres and Y-up. Every primitive is closed and outward-facing. Bind
 //! the result as `let part = …` and run `functor export -o part.stl`. A file
 //! that is only a `part` runs in a default viewer (`functor run`: drag to orbit,
-//! scroll to zoom) — see `<stdlib>/PartViewer.fun` to customize it. Screw
+//! scroll to zoom) — see `<stdlib>/PartViewer.fun` to customize it;
+//! `functor export --views sheet.png` renders its 8-view review sheet
+//! (`<stdlib>/PartViews.fun`) to a PNG. Screw
 //! holes, nut traps, insert and magnet pockets: `<stdlib>/Hardware.fun`;
 //! threads: `<stdlib>/Thread.fun`; dowels and keys for split parts:
 //! `<stdlib>/Connector.fun`; print tolerances: `<stdlib>/Fit.fun`.

@@ -789,24 +789,11 @@ paths are external — read it in a top-level value `config` doesn't use"
         bindings: &[String],
         output: &Path,
     ) -> Result<(), Error> {
-        use functor_runtime_common::functor_lang_prelude::{solid::solid_global, FunctorHost};
+        use functor_runtime_common::functor_lang_prelude::solid::solid_global;
 
         let three_mf = export_format(output)?;
-        let session =
-            functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
-                Error::other(
-                    project
-                        .sources
-                        .render(failure.error.span.start, &failure.error.message),
-                )
-            })?;
-        if let Some(dup) = bindings
-            .iter()
-            .enumerate()
-            .find_map(|(i, b)| bindings[..i].contains(b).then_some(b))
-        {
-            return Err(Error::other(format!("`--part {dup}` is given twice")));
-        }
+        let session = load_session(project)?;
+        reject_repeated_parts(bindings)?;
         let mut parts = Vec::new();
         for binding in bindings {
             let mesh = solid_global(&session, binding)
@@ -843,6 +830,138 @@ paths are external — read it in a top-level value `config` doesn't use"
                 ),
             });
         }
+        Ok(())
+    }
+
+    /// Render the entry's Solid parts (all, or `bindings`) as a
+    /// `PartViews.sheet` PNG: a generated entry, beside the real one and
+    /// naming its parts, runs through the runtime's `--capture-frame`.
+    pub fn export_views(
+        &self,
+        working_directory: &str,
+        project: &functor_lang::project::Project,
+        bindings: &[String],
+        output: &Path,
+    ) -> Result<(), Error> {
+        use functor_runtime_common::functor_lang_prelude::solid::solid_global;
+
+        if !output
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        {
+            return Err(Error::other(format!(
+                "cannot write views to {}: use a .png file",
+                output.display()
+            )));
+        }
+        reject_repeated_parts(bindings)?;
+        let session = load_session(project)?;
+        // The entry file's own top-level Solids, in source order.
+        let entry_len = project.sources.files()[0].src.len();
+        let mut defs: Vec<_> = project
+            .module
+            .defs
+            .iter()
+            .filter(|d| d.span.start < entry_len && !d.name.contains('.'))
+            .collect();
+        defs.sort_by_key(|d| d.span.start);
+        let solids: Vec<&str> = defs
+            .iter()
+            .map(|d| d.name.as_str())
+            .filter(|name| solid_global(&session, name).is_ok())
+            .collect();
+        if solids.is_empty() {
+            return Err(Error::other(format!(
+                "{} has no parts to view: define a top-level Solid, e.g. `let part = Solid.box(…)`",
+                self.entry
+            )));
+        }
+        if let Some(missing) = bindings.iter().find(|b| !solids.contains(&b.as_str())) {
+            let names: Vec<_> = solids.iter().map(|s| format!("`{s}`")).collect();
+            return Err(Error::other(format!(
+                "no part `{missing}`: the parts are {}",
+                names.join(", ")
+            )));
+        }
+        let parts: Vec<&str> = if bindings.is_empty() {
+            solids
+        } else {
+            bindings.iter().map(String::as_str).collect()
+        };
+
+        // The generated entry sees the real one as a sibling module.
+        const COLORS: [(&str, &str); 6] = [
+            ("orange", "0.8, 0.5, 0.2"),
+            ("blue", "0.3, 0.55, 0.8"),
+            ("green", "0.45, 0.7, 0.35"),
+            ("red", "0.8, 0.35, 0.45"),
+            ("purple", "0.6, 0.45, 0.8"),
+            ("grey", "0.7, 0.7, 0.7"),
+        ];
+        let colored: Vec<_> = parts.iter().zip(COLORS.iter().cycle()).collect();
+        let pieces = colored
+            .iter()
+            .map(|(part, (_, rgb))| {
+                format!(
+                    "{{ solid: {}.{part}, color: Color.rgb({rgb}) }}",
+                    project.entry
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The sheet is the model, so a part that fails to mesh fails the
+        // load (exit 1) instead of drawing a blank frame.
+        let source = format!(
+            "let init = PartViews.sheet([{pieces}])\nlet tick = (m, dt, tts) => m\nlet draw = (m, tts) => m\n"
+        );
+        let entry = Path::new(&self.entry).with_file_name("functorExportViews.fun");
+        if Path::new(working_directory).join(&entry).exists() {
+            return Err(Error::other(format!(
+                "{} is reserved for `export --views`; rename it",
+                entry.display()
+            )));
+        }
+        // The runtime runs from the project directory (see `run`), so resolve
+        // the output against the caller's directory first.
+        let output = std::env::current_dir()?.join(output);
+        let size = PART_VIEWS_SIZE;
+        let argv = [
+            "functor",
+            "--functor-lang",
+            "--game-path",
+            &entry.to_string_lossy(),
+            "--capture-frame",
+            output
+                .to_str()
+                .ok_or_else(|| Error::other("non-UTF-8 output path"))?,
+            "--capture-size",
+            &format!("{size}x{size}"),
+        ];
+        let mut runtime_args = functor_runtime_desktop::Args::parse_from(argv);
+        runtime_args.entry_source = Some(source);
+        std::env::set_current_dir(working_directory)?;
+        functor_runtime_common::events::set_sink(Box::new(|ev| {
+            crate::output::emit(ev.into());
+        }));
+        functor_runtime_desktop::run(runtime_args);
+        // A window the OS shrank (larger than the screen) captures smaller.
+        let png = png::Decoder::new(std::fs::File::open(&output)?)
+            .read_info()
+            .map_err(Error::other)?;
+        let (width, height) = (png.info().width, png.info().height);
+        if (width, height) != (size, size) {
+            return Err(Error::other(format!(
+                "the views rendered at {width}x{height}, not {size}x{size}: the window was resized"
+            )));
+        }
+        let key: Vec<_> = colored
+            .iter()
+            .map(|(part, (name, _))| format!("`{part}` {name}"))
+            .collect();
+        emit(Event::Info {
+            message: format!("views: {}", key.join(", ")),
+        });
         Ok(())
     }
 
@@ -2485,6 +2604,34 @@ fn nth_line(src: &str, line: usize) -> Option<String> {
 #[cfg(feature = "web")]
 fn entry_escapes_project(entry: &str) -> bool {
     Path::new(entry).is_absolute() || entry.split(['/', '\\']).any(|seg| seg == "..")
+}
+
+/// `export --views` image side: `PartViews`' sheet is `2 * sheetHalfHeight`
+/// (3.2) tiles tall, so each view is `tilePixels` (720), its target's size.
+const PART_VIEWS_SIZE: u32 = 2304;
+
+/// Evaluate the project headlessly, for its Solid bindings.
+fn load_session(project: &functor_lang::project::Project) -> Result<functor_lang::Session, Error> {
+    use functor_runtime_common::functor_lang_prelude::FunctorHost;
+    functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
+        Error::other(
+            project
+                .sources
+                .render(failure.error.span.start, &failure.error.message),
+        )
+    })
+}
+
+/// Refuse `--part a --part a`.
+fn reject_repeated_parts(bindings: &[String]) -> Result<(), Error> {
+    match bindings
+        .iter()
+        .enumerate()
+        .find_map(|(i, b)| bindings[..i].contains(b).then_some(b))
+    {
+        Some(dup) => Err(Error::other(format!("`--part {dup}` is given twice"))),
+        None => Ok(()),
+    }
 }
 
 /// Whether `output` names a 3MF (else STL); any other extension is an error.

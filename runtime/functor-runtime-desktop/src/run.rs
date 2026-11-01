@@ -672,6 +672,12 @@ pub struct Args {
     #[arg(long)]
     functor_lang: bool,
 
+    /// In-memory source for the --game-path entry, which then need not exist
+    /// on disk; its siblings still load from disk. Set by embedders (e.g.
+    /// `functor export --views` runs a generated entry), never a flag.
+    #[arg(skip)]
+    pub entry_source: Option<String>,
+
     /// Capture relative mouse input and route it to the Functor Lang hooks.
     /// The Functor CLI derives this from functor.json's `mouseCapture`.
     #[arg(long)]
@@ -1680,16 +1686,20 @@ pub fn run(args: Args) {
         &args.entry_module,
         &args.entry_prefix,
     );
+    let entry_source = args.entry_source.clone();
     // The producer is created where it runs: under --pipelined that is the
     // sim thread, which it never leaves.
     let make_game = move || -> Box<dyn Game> {
         if replay {
             Box::new(replay_game::ReplayGame::create(game_path.as_str()))
         } else {
-            Box::new(functor_lang_game::FunctorLangGame::create_for_role(
-                game_path.as_str(),
-                role,
-            ))
+            Box::new(
+                functor_lang_game::FunctorLangGame::create_with_entry_source(
+                    game_path.as_str(),
+                    role,
+                    entry_source,
+                ),
+            )
         }
     };
     let mut sim = if args.pipelined {

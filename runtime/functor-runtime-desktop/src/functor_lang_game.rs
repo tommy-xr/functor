@@ -479,6 +479,16 @@ impl FunctorLangGame {
     /// unprefixed contract) or an inline `module Server { … }` block, whose
     /// members ARE the role's contract (`Server.init`/`Server.tick`/…).
     pub fn create_for_role(path: &str, role: EntryRole) -> FunctorLangGame {
+        Self::create_with_entry_source(path, role, None)
+    }
+
+    /// [`Self::create_for_role`], with `entry_source` standing in for the
+    /// entry file — kept across sibling reloads, like a pushed entry.
+    pub fn create_with_entry_source(
+        path: &str,
+        role: EntryRole,
+        entry_source: Option<String>,
+    ) -> FunctorLangGame {
         // Route Functor Lang `Debug.log` traces into the region-aware event stream (once
         // per process; survives hot-reload's Session rebuild — the sink is
         // installed on the process, not the Session). See functor_lang_prelude.
@@ -491,7 +501,7 @@ impl FunctorLangGame {
         // unequal on the next frame and triggers a reload, instead of being
         // silently absorbed into a stale session.
         let stamp = project_stamp(path);
-        let loaded = match load_game(path, &role, None) {
+        let loaded = match load_project(path, entry_source.clone(), &role, None) {
             Ok(loaded) => loaded,
             Err(message) => {
                 eprintln!("error: {message}");
@@ -513,7 +523,7 @@ impl FunctorLangGame {
             role,
             names: loaded.names,
             stamp,
-            pushed_entry: None,
+            pushed_entry: entry_source,
             pushed_project: None,
             data_watch,
             sources,
