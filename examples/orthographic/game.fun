@@ -1,6 +1,7 @@
 // examples/orthographic — two equal cubes, the right one 8 units farther
-// away (and 1 lower, to stay in view), through an orthographic camera: they
-// draw the same size.
+// away, through an orthographic camera: they draw the same size. (The
+// camera looks down a little, so the far one sits higher on screen; it is
+// set 1 lower to stay near the middle.)
 //
 //   functor -d examples/orthographic run native
 

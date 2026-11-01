@@ -10696,7 +10696,9 @@ Anim.clip(\"walk\", tts)"
             &crate::functor_lang_producer::EntryNames::UNPREFIXED,
         )
         .unwrap_or_else(|e| panic!("part viewer contract: {e}"));
-        for check in ["turns", "anchors", "orbits", "holds", "zooms", "toggles", "repeats"] {
+        for check in [
+            "turns", "anchors", "orbits", "holds", "zooms", "toggles", "repeats",
+        ] {
             assert!(
                 matches!(
                     session.call(check, vec![], &mut FunctorHost),
@@ -10741,15 +10743,16 @@ Anim.clip(\"walk\", tts)"
                     .expect("orthographic tile")
             })
             .collect();
-        // Front/back/left/right see the 30 mm height; top/bottom the 20 mm
+        // In tile order (ISO FRONT, TOP, ISO BACK, LEFT, FRONT, RIGHT,
+        // BOTTOM, BACK): the sides see the 30 mm height, top/bottom the 20 mm
         // depth; each half of it, with a 25% margin, in metres.
-        let expected = [15.0, 15.0, 15.0, 15.0, 10.0, 10.0];
-        for (half, mm) in halves.iter().zip(expected) {
-            assert!((half - mm * 1.25 / 1000.0).abs() < 1e-6, "{halves:?}");
-        }
         assert_eq!(halves.len(), 8);
+        let sides = [(3, 15.0), (4, 15.0), (5, 15.0), (7, 15.0)];
+        for (i, mm) in [(1, 10.0), (6, 10.0)].into_iter().chain(sides) {
+            assert!((halves[i] - mm * 1.25 / 1000.0).abs() < 1e-6, "{halves:?}");
+        }
         // The front tile looks along scene -Z (part +Y).
-        let front = &frame.render_targets[0].frame.camera;
+        let front = &frame.render_targets[4].frame.camera;
         let gaze: Vec<f32> = (0..3).map(|i| front.target[i] - front.eye[i]).collect();
         assert!(
             gaze[0].abs() < 1e-6 && gaze[1].abs() < 1e-6 && gaze[2] < 0.0,

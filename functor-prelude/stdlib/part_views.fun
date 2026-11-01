@@ -1,6 +1,7 @@
 // PartViews — a review sheet for printable parts: front, back, left, right,
-// top, bottom and two isometric views, each an orthographic camera framed to
-// the part and rendered into a labelled tile, four by two.
+// top, bottom and two three-quarter views, each an orthographic camera framed
+// to the part and rendered into a labelled tile, laid out like a drawing: the
+// top above the front, the left and right beside it, the bottom below.
 //
 // Pieces are `{ solid, color }` records in part space (mm, Z up, the front
 // facing -Y), drawn together:
@@ -10,25 +11,25 @@
 // Top-level values here stay pure (no host calls): tools load this module
 // without the engine.
 
-// Where each camera sits (direction from the part) and its screen-up, in part
-// space. Left/right are seen standing at that side; bottom has the front at
-// the top of the tile, like a drawing's views folded out around the front.
+// Where each camera sits (direction from the part), its screen-up, in part
+// space, and its tile's column and row (from the top left) in a 3 × 3 grid.
+// Left/right are seen standing at that side; each view's edge next to the
+// front's is the edge it shares, as when a drawing's views fold out.
 let views = () =>
   let v = (x, y, z) => Vec3.make(x, y, z) in
   [
-    { name: "FRONT", dir: v(0.0, -1.0, 0.0), up: v(0.0, 0.0, 1.0) },
-    { name: "BACK", dir: v(0.0, 1.0, 0.0), up: v(0.0, 0.0, 1.0) },
-    { name: "LEFT", dir: v(-1.0, 0.0, 0.0), up: v(0.0, 0.0, 1.0) },
-    { name: "RIGHT", dir: v(1.0, 0.0, 0.0), up: v(0.0, 0.0, 1.0) },
-    { name: "TOP", dir: v(0.0, 0.0, 1.0), up: v(0.0, 1.0, 0.0) },
-    { name: "BOTTOM", dir: v(0.0, 0.0, -1.0), up: v(0.0, -1.0, 0.0) },
-    { name: "ISO FRONT", dir: v(1.0, -1.4, 0.9), up: v(0.0, 0.0, 1.0) },
-    { name: "ISO BACK", dir: v(-1.0, 1.4, 0.9), up: v(0.0, 0.0, 1.0) },
+    { name: "ISO FRONT", dir: v(1.0, -1.4, 0.9), up: v(0.0, 0.0, 1.0), col: 0.0, row: 0.0 },
+    { name: "TOP", dir: v(0.0, 0.0, 1.0), up: v(0.0, 1.0, 0.0), col: 1.0, row: 0.0 },
+    { name: "ISO BACK", dir: v(-1.0, 1.4, 0.9), up: v(0.0, 0.0, 1.0), col: 2.0, row: 0.0 },
+    { name: "LEFT", dir: v(-1.0, 0.0, 0.0), up: v(0.0, 0.0, 1.0), col: 0.0, row: 1.0 },
+    { name: "FRONT", dir: v(0.0, -1.0, 0.0), up: v(0.0, 0.0, 1.0), col: 1.0, row: 1.0 },
+    { name: "RIGHT", dir: v(1.0, 0.0, 0.0), up: v(0.0, 0.0, 1.0), col: 2.0, row: 1.0 },
+    { name: "BOTTOM", dir: v(0.0, 0.0, -1.0), up: v(0.0, -1.0, 0.0), col: 1.0, row: 2.0 },
+    { name: "BACK", dir: v(0.0, 1.0, 0.0), up: v(0.0, 0.0, 1.0), col: 2.0, row: 2.0 },
   ]
 
-// Tiles: 1 × 1 world units, `gap` apart, in a grid the sheet camera shows
-// whole on a 4:3 or wider window (narrower ones crop the outer columns).
-let columns = 4.0
+// Tiles: 1 × 1 world units, `gap` apart; the sheet camera shows the whole
+// grid on any window at least as wide as it is tall.
 let gap = 0.04
 let sheetHalfHeight = 1.6
 let tilePixels = 720.0
@@ -63,19 +64,21 @@ let tileFrame = (scene, b, view) =>
   let half = Math.max(0.5, Math.max(reach(right), reach(up))) * 1.25 in
   let radius = Math.max(0.5, Vec3.length(size) / 2.0) in
   // Lowered a little (the part rides up 4% of the tile) to clear the label.
-  let eye = center |> Vec3.add(Vec3.scale(2.0 * radius, back)) |> Vec3.add(Vec3.scale(-0.08 * half, up)) in
+  // Far back, so the eye-relative specular lighting falls almost parallel.
+  let distance = 20.0 * radius in
+  let eye = center |> Vec3.add(Vec3.scale(distance, back)) |> Vec3.add(Vec3.scale(-0.08 * half, up)) in
   let key = forward |> Vec3.add(Vec3.scale(-0.6, up)) |> Vec3.add(Vec3.scale(-0.4, right)) in
   let fill = Vec3.scale(-1.0, key) |> Vec3.add(Vec3.scale(-1.5, up)) in
-  let light = (v) => Vec3.normalize(toScene(v)) in
+  let dir = (v) => Vec3.normalize(toScene(v)) in
   Frame.createLit(
-    Camera3D.fromPose({ position: point(toScene(eye)), forward: point(light(forward)), up: point(light(up)) }, Angle.degrees(45.0))
-      |> Camera3D.clip(radius * 0.9 / 1000.0, radius * 3.1 / 1000.0)
+    Camera3D.fromPose({ position: point(toScene(eye)), forward: point(dir(forward)), up: point(dir(up)) }, Angle.degrees(45.0))
+      |> Camera3D.clip((distance - 1.1 * radius) / 1000.0, (distance + 1.1 * radius) / 1000.0)
       |> Camera3D.orthographic(half / 1000.0),
     scene,
     [
       Light.ambient(Color.rgb(0.22, 0.22, 0.25)),
-      Light.directional(light(key), Color.rgb(1.0, 0.97, 0.92), 0.85),
-      Light.directional(light(fill), Color.rgb(0.7, 0.75, 0.9), 0.3),
+      Light.directional(dir(key), Color.rgb(1.0, 0.97, 0.92), 0.85),
+      Light.directional(dir(fill), Color.rgb(0.7, 0.75, 0.9), 0.3),
     ])
     |> Frame.withClearColor(Color.rgb(0.16, 0.17, 0.19))
     // The view's name in the tile's bottom-left corner.
@@ -86,20 +89,17 @@ let tileFrame = (scene, b, view) =>
         |> Sprite.move(Sprite.measure(0.04, view.name).width / 2.0 - 0.46, -0.46))
 
 // The sheet: every view of `pieces` (a non-empty list of `{ solid, color }`
-// in part space), framed to their combined bounds.
+// in part space), framed to their combined bounds. Its render targets are
+// named `part-views-0` … `part-views-7`, so draw one sheet per frame.
 let sheet = (pieces) =>
   let scene = Scene.group(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces)) in
   let b = bounds(pieces) in
   let pitch = 1.0 + gap in
-  let all = views() in
-  let rows = Math.ceil(List.length(all) / columns) in
   let tiles = List.indexedMap((i, view) =>
-    let col = Math.mod(i, columns) in
-    let row = Math.floor(i / columns) in
     { view: view,
-      at: Vec3.make((col - (columns - 1.0) / 2.0) * pitch, ((rows - 1.0) / 2.0 - row) * pitch, 0.0),
+      at: Vec3.make((view.col - 1.0) * pitch, (1.0 - view.row) * pitch, 0.0),
       target: RenderTarget.named(Text.concat("part-views-", Text.fixed(i, 0.0))) |> RenderTarget.sized(tilePixels, tilePixels) },
-    all) in
+    views()) in
   List.fold((frame, t) => frame |> Frame.withRenderTarget(t.target, tileFrame(scene, b, t.view)),
     Frame.create(
       Camera3D.lookAt(Vec3.make(0.0, 0.0, 5.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera3D.orthographic(sheetHalfHeight),

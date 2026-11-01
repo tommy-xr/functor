@@ -247,6 +247,7 @@ impl DebugCamera {
             || !frame.camera.far.is_finite()
             || frame.camera.near <= 0.0
             || frame.camera.near >= frame.camera.far
+            || !valid_ortho(&frame.camera)
         {
             self.reattach();
             return false;
@@ -410,8 +411,9 @@ impl DebugCamera {
             Some(DebugView::Fps(camera)) | Some(DebugView::Orbit(camera))
                 if camera.ortho_half_height.is_some() =>
             {
-                camera.ortho_half_height =
-                    camera.ortho_half_height.map(|h| h * (-steps * 0.08).exp());
+                camera.ortho_half_height = camera
+                    .ortho_half_height
+                    .map(|h| (h * (-steps * 0.08).exp()).clamp(1e-4, 1e4));
             }
             Some(DebugView::Fps(camera)) => {
                 let proposed = camera.fov_radians * (-steps * 0.08).exp();
@@ -551,6 +553,13 @@ impl DebugCamera {
     }
 }
 
+/// Perspective, or orthographic with a finite, positive half height.
+fn valid_ortho(camera: &Camera) -> bool {
+    camera
+        .ortho_half_height
+        .is_none_or(|h| h.is_finite() && h > 0.0)
+}
+
 /// The authored camera's actual near/far view volume as world-space lines.
 ///
 /// The shell draws these through the detached camera, so the game continues
@@ -565,6 +574,7 @@ pub fn camera_frustum_lines(authored: &Camera, aspect: f32) -> Vec<DebugLine> {
         || !authored.far.is_finite()
         || authored.near <= 0.0
         || authored.near >= authored.far
+        || !valid_ortho(authored)
     {
         return Vec::new();
     }
@@ -793,6 +803,20 @@ mod tests {
             assert!(effective.ortho_half_height.unwrap() < 2.0, "{mode:?}");
             assert_eq!(effective.eye, frame.camera.eye);
         }
+    }
+
+    #[test]
+    fn an_orthographic_frustum_is_a_box() {
+        let mut cam = camera();
+        cam.ortho_half_height = Some(2.0);
+        let lines = camera_frustum_lines(&cam, 1.5);
+        // Lines 0 and 1 are the near and far bottom edges: both 2·1.5·2 = 6 long.
+        let len =
+            |l: &crate::physics::DebugLine| (Vector3::from(l.a) - Vector3::from(l.b)).magnitude();
+        assert!((len(&lines[0]) - 6.0).abs() < 1e-4);
+        assert!((len(&lines[1]) - 6.0).abs() < 1e-4);
+        cam.ortho_half_height = Some(f32::NAN);
+        assert!(camera_frustum_lines(&cam, 1.5).is_empty());
     }
 
     #[test]

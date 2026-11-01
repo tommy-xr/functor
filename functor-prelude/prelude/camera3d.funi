@@ -64,7 +64,8 @@ let clip : (float, float, t) => t
 /// far enough to keep the scene in front of the near plane; its field of view
 /// is unused. `toWorldRay` follows: rays start across the eye's plane, all
 /// along the gaze. Specular highlights and terrain detail still follow the
-/// eye's position, as for a perspective camera. A headset keeps its own
+/// eye's position, as for a perspective camera, and a skybox doesn't fit the
+/// view, so leave it out. A headset keeps its own
 /// per-eye projection. `halfHeight` must be finite and positive, else a
 /// teaching error.
 ///
