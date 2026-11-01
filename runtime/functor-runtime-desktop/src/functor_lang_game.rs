@@ -886,6 +886,7 @@ impl FunctorLangGame {
                 gpu_live_buffers: live.buffers,
                 gpu_live_textures: live.textures,
                 gpu_bytes_per_frame: round1(window.bytes_uploaded as f64 / drawn),
+                gpu_bytes_uploaded: window.bytes_uploaded,
                 gpu_cache_hits: window.cache_hits,
                 gpu_cache_misses: window.cache_misses,
                 gpu_instance_uploads_per_frame: round1(window.instance_uploads as f64 / drawn),

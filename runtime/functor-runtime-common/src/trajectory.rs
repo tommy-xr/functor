@@ -153,7 +153,8 @@ fn collect_transforms(
         // The trajectory overlay cannot track or fade those copies
         // independently, so omitting the node is less misleading than strobing
         // the entire batch as one leaf.
-        SceneObject::Instanced { .. } => {}
+        // A resident subtree draws nothing, so the overlay has nothing to track.
+        SceneObject::Instanced { .. } | SceneObject::Resident(_) => {}
         SceneObject::Shared(_) => unreachable!("resolved"),
     }
 }
@@ -205,7 +206,8 @@ fn collect_anchor(
                 },
             );
         }
-        SceneObject::Instanced { .. } => {}
+        // A resident subtree draws nothing, so the overlay has nothing to track.
+        SceneObject::Instanced { .. } | SceneObject::Resident(_) => {}
         SceneObject::Shared(_) => unreachable!("resolved"),
     }
 }
@@ -355,7 +357,8 @@ fn collect_sample_leaves<'a>(
                 },
             );
         }
-        SceneObject::Instanced { .. } => {}
+        // A resident subtree draws nothing, so the overlay has nothing to track.
+        SceneObject::Instanced { .. } | SceneObject::Resident(_) => {}
         SceneObject::Shared(_) => unreachable!("resolved"),
     }
 }
@@ -1126,7 +1129,8 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
         SceneObject::Geometry(_)
         | SceneObject::Model(_)
         | SceneObject::Terrain(_)
-        | SceneObject::Instanced { .. } => {}
+        | SceneObject::Instanced { .. }
+        | SceneObject::Resident(_) => {}
         // Overlays are built from resolved leaves (`collect_anchor`).
         SceneObject::Shared(_) => unreachable!("overlays hold no shared nodes"),
     }
@@ -2149,7 +2153,8 @@ mod tests {
             SceneObject::Geometry(_)
             | SceneObject::Model(_)
             | SceneObject::Terrain(_)
-            | SceneObject::Instanced { .. } => {}
+            | SceneObject::Instanced { .. }
+            | SceneObject::Resident(_) => {}
             SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }

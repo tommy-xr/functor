@@ -2621,6 +2621,18 @@ row 0 has {cols} heights, row {r} has {}",
             }))
         },
     );
+    // Keep a subtree's GPU resources resident without drawing it. Shared, so
+    // a top-level `resident` set joins each frame's scene as a pointer copy.
+    reg.fn1(
+        "Scene.keepResident",
+        "Scene.keepResident(scene)",
+        |scene: FunctorLangScene| {
+            Ok(FunctorLangScene(Scene3D {
+                obj: SceneObject::Shared(std::sync::Arc::new(SceneObject::Resident(vec![scene.0]))),
+                xform: Matrix4::from_scale(1.0),
+            }))
+        },
+    );
     // Stamp a template subtree once per instance — semantically the group of
     // transformed, tinted copies; hardware-instanced when the renderer
     // recognizes the template. `Scene.opacity` INSIDE the template is
@@ -10435,6 +10447,21 @@ let frame = (k) => Scene.group([Scene.memo(\"bench-{n}\", 0.0, world), Scene.cub
             "Scene.equals({off}, Scene.castShadows(true, Scene.cube()))"
         )));
         assert!(!equality(&format!("Scene.equals({off}, Scene.cube())")));
+    }
+
+    /// `Scene.keepResident` wraps its subtree in a `Resident` node, which
+    /// `Scene.equals` tells apart from the drawn subtree.
+    #[test]
+    fn keep_resident_wraps_and_compares() {
+        let value = eval("let main = () => Scene.keepResident(Scene.cube())");
+        let scene = scene_of(&value).expect("a Scene");
+        let SceneObject::Resident(items) = scene.obj.resolved() else {
+            panic!("expected Resident, got {:?}", scene.obj);
+        };
+        assert!(matches!(items[0].obj, SceneObject::Geometry(Shape::Cube)));
+        let kept = "Scene.keepResident(Scene.cube())";
+        assert!(equality(&format!("Scene.equals({kept}, {kept})")));
+        assert!(!equality(&format!("Scene.equals({kept}, Scene.cube())")));
     }
 
     // --- Scene.equals / Frame.equals (structural equality for draw tests) ---
