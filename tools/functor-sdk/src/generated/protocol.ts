@@ -43,7 +43,13 @@ export type Camera = { eye: [number, number, number], target: [number, number, n
 /**
  * Vertical field of view, in radians.
  */
-fov_radians: number, near: number, far: number, };
+fov_radians: number, near: number, far: number, 
+/**
+ * Orthographic: half the view's height in world units
+ * (`Camera3D.orthographic`), and `fov_radians` is unused. `None` is a
+ * perspective camera.
+ */
+ortho_half_height?: number, };
 
 /**
  * One frame's `Scene.cells` portal culling, summed over its eye and

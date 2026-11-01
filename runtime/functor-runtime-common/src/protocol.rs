@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: orthographic cameras — `Camera.ortho_half_height`
+/// (`Camera3D.orthographic`), omitted when absent, so perspective cameras
+/// keep their shape.
+///
 /// Also: per-subtree shadow casting — the `SceneObject::CastShadows` variant
 /// (`Scene.castShadows`), emitted only by it.
 ///

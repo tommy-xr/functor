@@ -247,6 +247,7 @@ impl DebugCamera {
             || !frame.camera.far.is_finite()
             || frame.camera.near <= 0.0
             || frame.camera.near >= frame.camera.far
+            || !valid_ortho(&frame.camera)
         {
             self.reattach();
             return false;
@@ -405,6 +406,15 @@ impl DebugCamera {
             return;
         }
         match &mut self.view {
+            // An orthographic lens zooms by its height; fov and distance
+            // don't change its image.
+            Some(DebugView::Fps(camera)) | Some(DebugView::Orbit(camera))
+                if camera.ortho_half_height.is_some() =>
+            {
+                camera.ortho_half_height = camera
+                    .ortho_half_height
+                    .map(|h| Self::move_toward_band(h, h * (-steps * 0.08).exp(), 1e-4, 1e4));
+            }
             Some(DebugView::Fps(camera)) => {
                 let proposed = camera.fov_radians * (-steps * 0.08).exp();
                 camera.fov_radians = Self::move_toward_band(
@@ -543,6 +553,13 @@ impl DebugCamera {
     }
 }
 
+/// Perspective, or orthographic with a finite, positive half height.
+fn valid_ortho(camera: &Camera) -> bool {
+    camera
+        .ortho_half_height
+        .is_none_or(|h| h.is_finite() && h > 0.0)
+}
+
 /// The authored camera's actual near/far view volume as world-space lines.
 ///
 /// The shell draws these through the detached camera, so the game continues
@@ -557,6 +574,7 @@ pub fn camera_frustum_lines(authored: &Camera, aspect: f32) -> Vec<DebugLine> {
         || !authored.far.is_finite()
         || authored.near <= 0.0
         || authored.near >= authored.far
+        || !valid_ortho(authored)
     {
         return Vec::new();
     }
@@ -568,7 +586,7 @@ pub fn camera_frustum_lines(authored: &Camera, aspect: f32) -> Vec<DebugLine> {
     let half_tan = (authored.fov_radians * 0.5).tan();
     let corners = |distance: f32| {
         let center = basis.eye + basis.forward * distance;
-        let half_height = half_tan * distance;
+        let half_height = authored.ortho_half_height.unwrap_or(half_tan * distance);
         let half_width = half_height * aspect;
         [
             center - basis.right * half_width - basis.up * half_height,
@@ -770,6 +788,41 @@ mod tests {
         assert!(distance(effective) < distance(&before));
         assert_eq!(effective.target, before.target);
         assert_eq!(effective.fov_radians, before.fov_radians);
+    }
+
+    #[test]
+    fn wheel_zooms_an_orthographic_lens_by_its_height() {
+        let mut frame = frame_3d();
+        frame.camera.ortho_half_height = Some(2.0);
+        for mode in [DebugCameraMode::Fps, DebugCameraMode::Orbit] {
+            let mut debug = DebugCamera::default();
+            assert!(debug.detach(&frame));
+            assert!(debug.set_mode(mode));
+            debug.zoom(1.0);
+            let effective = debug.camera(&frame.camera);
+            assert!(effective.ortho_half_height.unwrap() < 2.0, "{mode:?}");
+            assert_eq!(effective.eye, frame.camera.eye);
+        }
+        // Beyond the band, a wheel step never moves it the wrong way.
+        frame.camera.ortho_half_height = Some(2.0e4);
+        let mut debug = DebugCamera::default();
+        assert!(debug.detach(&frame));
+        debug.zoom(-1.0);
+        assert_eq!(debug.camera(&frame.camera).ortho_half_height, Some(2.0e4));
+    }
+
+    #[test]
+    fn an_orthographic_frustum_is_a_box() {
+        let mut cam = camera();
+        cam.ortho_half_height = Some(2.0);
+        let lines = camera_frustum_lines(&cam, 1.5);
+        // Lines 0 and 1 are the near and far bottom edges: both 2·1.5·2 = 6 long.
+        let len =
+            |l: &crate::physics::DebugLine| (Vector3::from(l.a) - Vector3::from(l.b)).magnitude();
+        assert!((len(&lines[0]) - 6.0).abs() < 1e-4);
+        assert!((len(&lines[1]) - 6.0).abs() < 1e-4);
+        cam.ortho_half_height = Some(f32::NAN);
+        assert!(camera_frustum_lines(&cam, 1.5).is_empty());
     }
 
     #[test]

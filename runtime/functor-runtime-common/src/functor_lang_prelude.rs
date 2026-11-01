@@ -2850,6 +2850,22 @@ and an Angle fov; up must not be parallel to forward",
             Ok(camera)
         },
     );
+    reg.fn2(
+        "Camera3D.orthographic",
+        "Camera3D.orthographic(halfHeight, camera) — a finite halfHeight > 0, in world units",
+        |half_height: f64, mut camera: FunctorLangCamera| {
+            let half_height = half_height as f32;
+            if !half_height.is_finite() || half_height <= 0.0 {
+                return Err(
+                    "usage: Camera3D.orthographic(halfHeight, camera) — a finite \
+halfHeight > 0, in world units"
+                        .to_string(),
+                );
+            }
+            camera.0.ortho_half_height = Some(half_height);
+            Ok(camera)
+        },
+    );
 }
 
 fn register_light(reg: &mut crate::host_registry::Registry) {
@@ -7654,6 +7670,30 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
     }
 
     #[test]
+    fn camera_orthographic_sets_the_half_height_and_keeps_the_pose() {
+        let camera = camera_of(
+            "let main = () => Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0))\n\
+             |> Camera3D.clip(1.0, 9.0) |> Camera3D.orthographic(2.5)",
+        );
+        assert_eq!(camera.ortho_half_height, Some(2.5));
+        assert_eq!(
+            (camera.eye, camera.near, camera.far),
+            ([0.0, 0.0, -5.0], 1.0, 9.0)
+        );
+        for bad in ["0.0", "-1.0"] {
+            assert_eq!(
+                fail_message(&format!(
+                    "let main = () => Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), \
+                     Vec3.make(0.0, 0.0, 0.0)) |> Camera3D.orthographic({bad})"
+                )),
+                "usage: Camera3D.orthographic(halfHeight, camera) — a finite halfHeight > 0, in \
+world units",
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn camera_from_pose_keeps_fov_and_clip() {
         let camera = camera_of(
             "let main = () =>\n\
@@ -10621,7 +10661,8 @@ Anim.clip(\"walk\", tts)"
     }
 
     /// A file that is only a `part` gets the PartViewer: a valid game whose
-    /// turntable turns when idle, orbits on drag, and zooms on the wheel.
+    /// turntable turns when idle, orbits on drag, zooms on the wheel, and
+    /// toggles the PartViews sheet on `V` (once per press, through key repeat).
     #[test]
     fn part_only_file_runs_in_the_part_viewer() {
         let sources = vec![(
@@ -10634,7 +10675,10 @@ Anim.clip(\"walk\", tts)"
              let dragged = () => mouseMove(grab(), 140.0, 50.0)\n\
              let orbits = () => dragged().orbit.yaw < grab().orbit.yaw\n\
              let holds = () => tick(dragged(), 5.0, 6.0).orbit.yaw == dragged().orbit.yaw\n\
-             let zooms = () => mouseWheel(init, 1.0).orbit.zoom > init.orbit.zoom\n"
+             let zooms = () => mouseWheel(init, 1.0).orbit.zoom > init.orbit.zoom\n\
+             let sheet = () => input(input(init, Key.V, true), Key.V, false)\n\
+             let toggles = () => sheet().sheet && not input(sheet(), Key.V, true).sheet\n\
+             let repeats = () => input(input(init, Key.V, true), Key.V, true).sheet\n"
                 .to_string(),
         )];
         let project = functor_lang::project::load_sources_with_bundled_modules(
@@ -10652,7 +10696,9 @@ Anim.clip(\"walk\", tts)"
             &crate::functor_lang_producer::EntryNames::UNPREFIXED,
         )
         .unwrap_or_else(|e| panic!("part viewer contract: {e}"));
-        for check in ["turns", "anchors", "orbits", "holds", "zooms"] {
+        for check in [
+            "turns", "anchors", "orbits", "holds", "zooms", "toggles", "repeats",
+        ] {
             assert!(
                 matches!(
                     session.call(check, vec![], &mut FunctorHost),
@@ -10665,6 +10711,57 @@ Anim.clip(\"walk\", tts)"
         session
             .call("draw", vec![init, Value::Number(1.0)], &mut FunctorHost)
             .unwrap_or_else(|e| panic!("draw: {}", e.message));
+        // `V` swaps the orbit view for the eight-view sheet.
+        let sheet = session.call("sheet", vec![], &mut FunctorHost).unwrap();
+        let frame = session
+            .call("draw", vec![sheet, Value::Number(1.0)], &mut FunctorHost)
+            .unwrap_or_else(|e| panic!("sheet draw: {}", e.message));
+        assert_eq!(
+            frame_value(&frame).expect("a Frame").render_targets.len(),
+            8
+        );
+    }
+
+    /// `PartViews.sheet` renders eight orthographic tiles, each framed to
+    /// the part's box as that view sees it (here 10 × 20 × 30 mm, on z = 0).
+    #[test]
+    fn part_views_sheet_frames_eight_orthographic_tiles() {
+        let value = eval_with_prelude(
+            "let part = Solid.box(10.0, 20.0, 30.0) |> Solid.translate(Vec3.make(0.0, 0.0, 15.0))\n\
+             let main = () => PartViews.sheet([{ solid: part, color: Color.rgb(0.8, 0.5, 0.2) }])\n",
+        )
+        .unwrap_or_else(|e| panic!("sheet: {e}"));
+        let frame = frame_value(&value).expect("a Frame");
+        assert!(frame.camera.ortho_half_height.is_some());
+        let halves: Vec<f32> = frame
+            .render_targets
+            .iter()
+            .map(|pass| {
+                pass.frame
+                    .camera
+                    .ortho_half_height
+                    .expect("orthographic tile")
+            })
+            .collect();
+        // In tile order (ISO FRONT, TOP, ISO BACK, LEFT, FRONT, RIGHT,
+        // BOTTOM, BACK): the sides see the 30 mm height, top/bottom the 20 mm
+        // depth; each half of it, with a 25% margin, in metres.
+        assert_eq!(halves.len(), 8);
+        let sides = [(3, 15.0), (4, 15.0), (5, 15.0), (7, 15.0)];
+        for (i, mm) in [(1, 10.0), (6, 10.0)].into_iter().chain(sides) {
+            assert!((halves[i] - mm * 1.25 / 1000.0).abs() < 1e-6, "{halves:?}");
+        }
+        // The front tile looks along scene -Z (part +Y).
+        let front = &frame.render_targets[4].frame.camera;
+        let gaze: Vec<f32> = (0..3).map(|i| front.target[i] - front.eye[i]).collect();
+        assert!(
+            gaze[0].abs() < 1e-6 && gaze[1].abs() < 1e-6 && gaze[2] < 0.0,
+            "{gaze:?}"
+        );
+        // Centered on the box's middle (z = 15 mm), lowered 8% of the half
+        // height to clear the label.
+        let lowered = (15.0 - 0.08 * 15.0 * 1.25) / 1000.0;
+        assert!((front.eye[1] - lowered).abs() < 1e-6, "{:?}", front.eye);
     }
 
     #[test]
