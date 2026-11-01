@@ -32,12 +32,20 @@
 //      no live GL object; the noon switch misses as often with four copies
 //      active as with the office alone.
 //
+// The island (I): the block on island.mjs's terrain.
+//  11. the walker stands on the pad, 2 cm below the flat ground's street;
+//      `/state.terrain` counts the patches drawn from the street camera, night
+//      and noon; walking south off the pad, the heightfield carries the
+//      walker down the slope island.mjs generated; the model's `uncovered`
+//      stays 0; the right controller's A leaves the island.
+//
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/liminal-office.mjs
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ground, padY, toTerrain } from "../examples/liminal-office/island.mjs";
 import { decodePng } from "../scripts/png.mjs";
 import { BIN, ROOT, check, failures, sleep } from "./mcp-rpc.mjs";
 
@@ -613,6 +621,83 @@ async function drawCounts(game) {
   return rows;
 }
 
+// ---- The island ----------------------------------------------------------------
+
+// island.fun's `groundY`: the pad lands at the flat ground's drawn height.
+const GROUND_Y = -0.05;
+
+async function island(game) {
+  await game.view(9); // the street, on Block.groundBody
+  const flat = await game.model();
+  // The heightmap decodes off the frame thread: step until the terrain draws.
+  const untilTerrain = async () => {
+    for (let k = 0; k < 100 && !((await game.state()).terrain?.patches > 0); k++) {
+      await sleep(100);
+      await game.step(1);
+    }
+    await game.step(30);
+    return game.state();
+  };
+  await game.hold("i", 1);
+  let s = await untilTerrain();
+  let m = s.model;
+  check(m.island && m.block && s.terrain.patches > 0, `I puts the block on the island (island ${m.island}, block ${m.block})`);
+  // The pad lies 2 cm below the flat ground's collider, flush with the plane
+  // it drew. (The capsule settles about 2 cm closer to the heightfield than
+  // to a box.)
+  check(m.grounded && near(m.at.y, flat.at.y - 0.02, 0.03), `stands on the pad (y ${m.at.y.toFixed(3)}; ${flat.at.y.toFixed(3)} on the flat ground)`);
+  // On the pad, I swaps the ground under the walker in place, both ways.
+  // Back on the flat ground the capsule starts 2 cm into its box (whose top
+  // is 2 cm above the pad) and stays grounded there.
+  await game.hold("i", 1);
+  await game.step(30);
+  const back = await game.model();
+  check(!back.island && back.grounded && near(back.at.x, m.at.x, 0.01) && near(back.at.z, m.at.z, 0.01) && near(back.at.y, m.at.y, 0.01),
+    `I on the pad: back on the flat ground in place (y ${back.at.y.toFixed(3)}, grounded ${back.grounded})`);
+  await game.hold("i", 1);
+  s = await untilTerrain();
+  check(s.model.island && s.model.grounded && near(s.model.at.y, m.at.y, 0.01), `I on the pad: onto the island in place (y ${s.model.at.y.toFixed(3)})`);
+  const night = s.terrain;
+  await game.hold("n", 1);
+  await game.step(2);
+  const noon = (await game.state()).terrain;
+  console.log(`terrain at the street camera: night ${JSON.stringify(night)}, noon ${JSON.stringify(noon)}`);
+  check(noon.patches <= 80 && night.patches <= noon.patches, `street camera: ${night.patches} terrain patches at night (fog 200 m), ${noon.patches} at noon (fog 500 m)`);
+  await game.hold("n", 1);
+
+  // South off the pad, down the ramp and the slope beyond: the capsule's
+  // centre stays its settle above island.mjs's ground.
+  const settle = m.at.y - GROUND_Y;
+  const off = [];
+  const heights = [];
+  let worst = 0;
+  await game.face(Math.PI);
+  m = await game.walkTo("z", -150, {
+    onStep: (w) => {
+      const [x, z] = toTerrain(w.at.x, w.at.z);
+      const expected = ground(x, z) - padY + GROUND_Y + settle;
+      heights.push(expected);
+      worst = Math.max(worst, Math.abs(w.at.y - expected));
+      if (!w.grounded || Math.abs(w.at.y - expected) > 0.1) off.push(`z ${w.at.z.toFixed(1)} y ${w.at.y.toFixed(3)} (expected ${expected.toFixed(3)}) grounded ${w.grounded}`);
+    },
+  });
+  const drop = Math.max(...heights) - Math.min(...heights);
+  check(m.at.z < -149 && drop > 1 && off.length === 0,
+    `the heightfield carries the walker ${drop.toFixed(1)} m down the slope, within ${worst.toFixed(3)} m of island.mjs's ground (to z ${m.at.z.toFixed(1)}, ${heights.length} samples${off.length ? `; off at ${off.slice(0, 3).join(", ")}` : ""})`);
+  check(m.uncovered === 0, `no active copy's cells lost the eye on the island (uncovered ${m.uncovered})`);
+
+  // The right controller's A leaves the island. Off the pad, the walker
+  // returns to the street (view 9) on the flat ground.
+  await game.post("/input", { type: "xr", head: { position: [0, 0, 0] }, left: { active: true }, right: { active: true, primary_pressed: true } });
+  await game.step(2);
+  await game.post("/input", { type: "xr_clear" });
+  await game.step(30);
+  m = await game.model();
+  check(!m.island && m.block && m.grounded && near(m.at.z, -50, 0.05) && near(m.at.y, flat.at.y, 0.03),
+    `XR A leaves the island for the street (island ${m.island}, block ${m.block}, z ${m.at.z.toFixed(2)}, y ${m.at.y.toFixed(3)}, grounded ${m.grounded})`);
+  return { night, noon };
+}
+
 // Every `--json` frame-stats window so far.
 const frameStats = (game) => game.log().split("\n").filter((l) => l.includes('"frame_stats"')).map((l) => JSON.parse(l));
 
@@ -712,6 +797,7 @@ try {
   await blockTour(game);
   const draws = await drawCounts(game);
   console.log(`static draws: ${JSON.stringify(draws, null, 1)}`);
+  await island(game);
 
   const unculled = launch(8192, { FUNCTOR_CULL: "0" });
   games.push(unculled);
@@ -728,7 +814,7 @@ try {
   const residencyStats = await residency(stats);
   console.log(`residency: ${JSON.stringify(residencyStats)}`);
 
-  const scripted = (script) => ["--input-script", join(DIR, script), "--capture-at-frame", "30"];
+  const scripted = (script, frame = 30) => ["--input-script", join(DIR, script), "--capture-at-frame", String(frame)];
   const goldens = {
     "liminal-office-entrance": ["--fixed-time", "1", "--capture-time", "1.0"],
     "liminal-office-corridor": scripted("views.script"),
@@ -743,6 +829,9 @@ try {
     "liminal-office-block-street": scripted("block-street.script"),
     "liminal-office-block-street-day": scripted("noon-block-street.script"),
     "liminal-office-block-window": scripted("block-window.script"),
+    // Captured late: the heightmap decodes off the frame thread.
+    "liminal-office-island-street": scripted("island-street.script", 300),
+    "liminal-office-island-street-day": scripted("noon-island-street.script", 300),
   };
   for (const [name, args] of Object.entries(goldens)) {
     check(golden(name, args).equals(golden(name, args)), `${name}: byte-identical across runs`);

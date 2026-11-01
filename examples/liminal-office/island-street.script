@@ -1,0 +1,7 @@
+# The island (I), then view 9 (up the street through the crossroads, on the
+# pad); the liminal-office-island-street golden captures frame 300, late
+# enough for the heightmap to decode.
+2 i down
+4 i up
+10 9 down
+12 9 up

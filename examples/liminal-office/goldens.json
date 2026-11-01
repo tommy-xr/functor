@@ -114,5 +114,23 @@
     ],
     "inputScript": "block-window.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-island-street",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "island-street.script",
+    "captureAtFrame": 300
+  },
+  {
+    "name": "liminal-office-island-street-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "noon-island-street.script",
+    "captureAtFrame": 300
   }
 ]
