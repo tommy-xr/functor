@@ -103,10 +103,13 @@ fn convexified(child: &Solid) -> Result<Manifold, String> {
     if m.is_empty() {
         return Ok(m);
     }
-    // Snapping moves a vertex at most SNAP. A quick reject first: separate or
-    // dented pieces miss more volume than that from their hull.
+    // Snapping moves a vertex at most SNAP. Quick rejects first: more than one
+    // shell (or a handle), or dents missing more volume than that.
     let hull = m.convex_hull();
-    if hull.volume() - m.volume() > SNAP * hull.surface_area() || !locally_convex(&m)? {
+    if m.genus() != 0
+        || hull.volume() - m.volume() > SNAP * hull.surface_area()
+        || !locally_convex(&m)?
+    {
         return Ok(m);
     }
     Ok(hull_of(&child.mesh()?))
@@ -246,6 +249,24 @@ mod tests {
         // The hole grows to ~2 mm across: far more than a solid block loses.
         assert!(
             shrunk.volume() < 98.0f64.powi(3) - 98.0 * 3.0,
+            "{}",
+            shrunk.volume()
+        );
+    }
+
+    #[test]
+    fn pieces_a_hair_apart_are_not_hulled_together() {
+        let a = arc(arc(Solid::Box {
+            size: [100.0, 100.0, 50.0],
+        })
+        .translate([0.0, 0.0, -25.0]));
+        let b = arc(arc(Solid::Box {
+            size: [100.0, 100.0, 50.0],
+        })
+        .translate([0.0, 0.0, 25.0 + 4.0 * SNAP]));
+        let shrunk = arc(Solid::Group(vec![a, b])).offset(-1.0).mesh().unwrap();
+        assert!(
+            (shrunk.volume() - 2.0 * 98.0 * 98.0 * 48.0).abs() < 1.0,
             "{}",
             shrunk.volume()
         );
