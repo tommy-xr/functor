@@ -644,7 +644,7 @@ async function residency(game) {
     const spanned = windows().slice(from);
     return {
       misses: spanned.reduce((n, w) => n + w.gpu_cache_misses, 0),
-      bytes: spanned.reduce((n, w) => n + w.gpu_bytes_per_frame * w.over_n_frames, 0),
+      bytes: spanned.reduce((n, w) => n + w.gpu_bytes_uploaded, 0),
     };
   };
   await game.view(1);
@@ -667,7 +667,7 @@ async function residency(game) {
   await statsAfter(game, 300);
   const later = windows().slice(from);
   const misses = later.reduce((n, w) => n + w.gpu_cache_misses, 0);
-  const bytes = later.reduce((n, w) => n + w.gpu_bytes_per_frame * w.over_n_frames, 0);
+  const bytes = later.reduce((n, w) => n + w.gpu_bytes_uploaded, 0);
   const after = later[later.length - 1];
   check(office.gpu_cache_misses === 0 && primed.gpu_cache_misses === 0 && primed.gpu_bytes_per_frame === 0,
     `standing still uploads nothing (office ${office.gpu_cache_misses} misses; block ${primed.gpu_cache_misses} misses, ${primed.gpu_bytes_per_frame} B/frame)`);
