@@ -25,7 +25,7 @@ impl HostData for FunctorLangCells {
 crate::host_returnable!(FunctorLangCells);
 
 /// A record's `name` field.
-fn field<'a>(value: &'a Value, name: &str, what: &str) -> Result<&'a Value, String> {
+pub(super) fn field<'a>(value: &'a Value, name: &str, what: &str) -> Result<&'a Value, String> {
     match value {
         Value::Record(fields) => fields.iter().find(|(f, _)| f == name).map(|(_, v)| v),
         _ => None,
@@ -33,14 +33,14 @@ fn field<'a>(value: &'a Value, name: &str, what: &str) -> Result<&'a Value, Stri
     .ok_or_else(|| format!("{what} has no `{name}`"))
 }
 
-fn list<'a>(value: &'a Value, what: &str) -> Result<&'a [Value], String> {
+pub(super) fn list<'a>(value: &'a Value, what: &str) -> Result<&'a [Value], String> {
     match value {
         Value::List(items) => Ok(items),
         other => Err(format!("{what} must be a list, got {}", other.kind_name())),
     }
 }
 
-fn number(value: &Value, what: &str) -> Result<f64, String> {
+pub(super) fn number(value: &Value, what: &str) -> Result<f64, String> {
     match value {
         Value::Number(n) => Ok(*n),
         other => Err(format!(
@@ -65,7 +65,7 @@ fn id(value: &Value, what: &str) -> Result<u32, String> {
     cell_id(number(value, what)?, what)
 }
 
-fn point(value: &Value, what: &str, span: Span) -> Result<[f32; 3], String> {
+pub(super) fn point(value: &Value, what: &str, span: Span) -> Result<[f32; 3], String> {
     vec3_of(value, what, span)
         .map(|(x, y, z)| [x, y, z])
         .map_err(|e| e.message)
