@@ -1175,6 +1175,15 @@ be plain data: a function or engine value (`Vec3`, `Color`, `Scene`) in it is a
 teaching error. Give every site its own `key`. The cache is shell state (never
 in the model, invisible to replay); producers sweep keys unused for ~120 frames.
 
+**`Scene.keepResident(scene)` keeps GPU data loaded without drawing it.** The
+renderer drops a data model, pixel texture, mesh or instance list after a
+frame that didn't use it, so content that comes and goes (an interior drawn
+only near its building, the other hour's lightmap) re-uploads on return. Put
+it in the frame under `Scene.keepResident` and it draws in no pass but stays
+loaded; a `Model.static`'s mesh and textures (a `Scene.withLightmap` one too)
+upload the first frame it appears. Memory stays held, so keep only what will
+return soon.
+
 **`Scene.billboard` is a camera-facing quad — a SHAPE, not a flag.** The scene
 value stays camera-free plain data (so stamping, `Scene.equals`, and replay
 are unaffected); only at DRAW time do its local XY axes map onto the active
