@@ -128,8 +128,9 @@ let sheetWith = (overlay, pieces) =>
 let fromScene = (v: Vec3.t) => Vec3.make(Vec3.x(v) * 1000.0, 0.0 - Vec3.z(v) * 1000.0, Vec3.y(v) * 1000.0)
 
 // What the pointer is over on a sheet of `pieces`: the piece's index in the
-// list, the view's name, and the hit in part space (mm).
-type hit = { piece: float, view: string, point: Vec3.t, normal: Vec3.t }
+// list, the view's name, and the hit in part space (mm, distance from the
+// view's eye plane).
+type hit = { piece: float, view: string, point: Vec3.t, normal: Vec3.t, distance: float }
 
 // The hit under `mouse` (the `sampledInput` snapshot's) on the sheet that
 // `sheet(pieces)` draws, nearest first, or `Option.None` off the parts. The
@@ -151,8 +152,7 @@ let pick = (pieces, mouse: Input.mouse): Option.t<hit> =>
         Camera3D.toWorldRay(inTile, framing(b, view).camera) |> Option.bind((ray) =>
           let inPart: Camera3D.ray = { origin: fromScene(ray.origin), direction: fromScene(ray.direction) } in
           List.indexedMap((i, p) => Solid.raycast(inPart, p.solid)
-              |> Option.map((h) => { d: h.distance, hit: { piece: i, view: view.name, point: h.point, normal: h.normal } }), pieces)
+              |> Option.map((h) => { piece: i, view: view.name, point: h.point, normal: h.normal, distance: h.distance }), pieces)
             |> List.concatMap(Option.toList)
-            |> List.sortBy((c) => c.d)
-            |> List.head
-            |> Option.map((c) => c.hit))))
+            |> List.sortBy((h) => h.distance)
+            |> List.head)))
