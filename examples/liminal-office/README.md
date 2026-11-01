@@ -4,15 +4,15 @@ Two floors of an empty office block, by night or day: carpeted corridors under
 drop ceilings and fluorescent panels, open empty offices (103 and 203 have
 windows), a sodium-lit stairwell between the floors, a neon entrance on an
 empty apron. `B` turns it into a block of four turned copies around a
-crossroads. Desktop; Quest is configured (120 Hz, foveation off) but not yet
+crossroads; `I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
 checked on a headset. Not the web: baked files load with `File.bytes`.
 
 ```sh
 functor -d examples/liminal-office run native
 functor -d examples/liminal-office run native --emulate-xr   # arrows drive the right thumbstick
 functor -d examples/liminal-office run vr
-functor -d examples/liminal-office test     # layout, stairs, cells, partition, provenance; no GPU
-npm run test:liminal-office                 # routes, stairs, wall push, hours, cells, goldens
+functor -d examples/liminal-office test     # layout, stairs, cells, partition, provenance, island; no GPU
+npm run test:liminal-office                 # routes, stairs, wall push, hours, cells, island, goldens
 ```
 
 | Input | Action |
@@ -25,10 +25,12 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `T` | next hour |
 | `N` | midnight ⇄ noon |
 | `B` | the office alone ⇄ the block (views 1–8 then jump within the nearest copy) |
+| `I` | the flat ground ⇄ the island (with the block) |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
 | VR `X` / `Y` | next hour / midnight ⇄ noon |
 | VR `B` | the office alone ⇄ the block |
+| VR `A` | the flat ground ⇄ the island |
 
 ## One layout, four consumers
 
@@ -115,6 +117,30 @@ Interiors pop in and out at the radius, through doors and windows still in
 view: the fog only starts at 35 m (night) or 70 m (day).
 
 The one overcast day bake holds at every yaw (it has no sun).
+
+## The island
+
+`island.mjs` generates a 2 km island: `island.png`, a 16-bit heightmap of
+2049² samples a metre apart (2ⁿ + 1, so every terrain LOD vertex lands on a
+sample), and `islandLayout.fun`, the constants the game places it with. A
+seabed, a beach, gentle hills; the block's pad is one flat u16 level (the
+four copies, the streets and a 6 m apron), with a 16 m smoothstep ramp
+around it. Out to 30 m past the pad, the ground stays within 3 m above it,
+so the collars (0–8 m over the street) hold the eye through the activation
+radius; `functor test` checks it from the layout's recorded range.
+
+```sh
+node examples/liminal-office/island.mjs   # rewrites island.png and islandLayout.fun, byte-identical on rerun
+```
+
+`I` swaps the flat ground for `Scene.terrain` and `Physics.heightfield`,
+translated so the pad lands where the ground was: the block stands on it
+unchanged. A box under the pad holds the walker while the heightmap decodes.
+The terrain draws after the buildings (early-Z rejects it behind them) and
+the sea plane after the terrain. The fog ends at the far plane, 500 m by day
+and 200 m at night, so the renderer skips terrain past it. No grass, no
+shadows; `Terrain.layered` bands lit by the frame's lights. The island
+targets 90 Hz on Quest with foveation off.
 
 ## Day and night
 

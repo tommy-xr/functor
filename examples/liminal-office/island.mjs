@@ -85,15 +85,21 @@ const inland = (x, z) => {
   const coast = 810 + 140 * (fbm(2.2 * Math.cos(a) + 11.3, 2.2 * Math.sin(a) + 3.7) - 0.5);
   return coast - Math.hypot(x, z);
 };
-// Seabed to 22 m down; a flat beach; 16 m up over the first 350 m inland,
-// a broad rise to the north, and hills inland of the beach, calmer around
-// the pad.
+// Rising from the waterline at its steepest, levelling off at `run`.
+const shelf = (rise, run, d) => {
+  const t = 1 - clamp(d / run, 0, 1);
+  return rise * (1 - t * t * t);
+};
+// Seabed to 22 m down; a beach that meets the sea at a 14% grade (a
+// flatter one blurs where the sea plane crosses it); 16 m up over the first
+// 350 m inland, a broad rise to the north, and hills inland of the beach,
+// calmer around the pad.
 const island = (x, z) => {
   const s = inland(x, z);
-  if (s < 0) return SEA_LEVEL - 22 * smoothstep(0, 200, -s);
+  if (s < 0) return SEA_LEVEL - shelf(22, 300, -s);
   const hills = 24 * (fbm(x / 420 + 5.2, z / 420 - 1.7) - 0.5) + 8 * (fbm(x / 160 - 3.3, z / 160 + 8.8) - 0.5);
   const calm = lerp(0.25, 1, smoothstep(80, 320, Math.hypot(x - PAD_MIDDLE.x, z - PAD_MIDDLE.z)));
-  return SEA_LEVEL + 16 * smoothstep(0, 350, s) + 14 * smoothstep(-300, 500, z) * smoothstep(100, 500, s) + hills * calm * smoothstep(30, 300, s);
+  return SEA_LEVEL + shelf(16, 350, s) + 14 * smoothstep(-300, 500, z) * smoothstep(100, 500, s) + hills * calm * smoothstep(30, 300, s);
 };
 
 // Distance from (x, z) to the pad's rect, in the terrain's space (0 on it).
