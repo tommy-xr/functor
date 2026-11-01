@@ -5,7 +5,8 @@
 //! - once no node draws it, its buffers, VAOs (including the instanced
 //!   renderer's) and texture are deleted;
 //! - it draws, and a pose moves its pixels;
-//! - a texture samples at its uvs, plain and instanced, uploaded once.
+//! - a texture samples at its uvs, plain and instanced, uploaded once;
+//! - `Scene.keepResident` keeps a drawn model and its pixel texture loaded.
 //!
 //! Self-skipping like `stereo_shadow` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -25,6 +26,7 @@ use functor_runtime_common::model::{
 };
 use functor_runtime_common::render::VertexPositionTextureSkinned;
 use functor_runtime_common::shadow::ShadowMap;
+use functor_runtime_common::texture::{ColorSpace, PixelData, PixelEncoding};
 use functor_runtime_common::{
     render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, InstanceData, Light,
     ModelDescription, ModelHandle, Scene3D, SceneContext, SceneObject, TextureDescription,
@@ -80,6 +82,23 @@ fn main() {
         (before.buffers, before.vaos, before.textures)
     );
     println!("test evicted_when_unused ... ok");
+
+    // Under `keep_resident`, a drawn model and its pixel texture stay loaded
+    // through frames that don't draw it.
+    let pixels = PixelData::new(1, 1, PixelEncoding::Rgb8, ColorSpace::Srgb, &[255, 0, 0]);
+    let red = TextureDescription::Data(Arc::new(pixels.expect("valid pixels")));
+    let kept = Arc::new(ModelData::new(ModelSource { uvs: vec![[0.0, 0.0]; 4], texture: Some(red), ..self::arm() }).expect("valid model"));
+    harness.render(&frame(&kept, 1, false, None));
+    let mut hidden = frame(&kept, 0, false, None);
+    hidden.scene = Scene3D::keep_resident(vec![frame(&kept, 1, false, None).scene]);
+    for _ in 0..3 {
+        harness.render(&hidden);
+    }
+    gpu_counters().take_window();
+    harness.render(&frame(&kept, 1, false, None));
+    let back = gpu_counters().take_window();
+    assert_eq!((back.cache_misses, back.bytes_uploaded), (0, 0), "kept: re-uploaded");
+    println!("test keep_resident ... ok");
 
     // It draws, a pose moves it, and a rebuilt residency draws the same.
     let blank = harness.render(&frame(&arm, 0, false, None));
