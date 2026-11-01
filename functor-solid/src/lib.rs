@@ -27,7 +27,7 @@ use std::sync::{Arc, OnceLock};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
-pub use mesh::{face_normal, triangulate_polygon, Bounds, Mesh};
+pub use mesh::{face_normal, triangulate_polygon, Bounds, Mesh, RayHit};
 pub use sketch::Sketch;
 pub use text::{text, text_width, Font};
 

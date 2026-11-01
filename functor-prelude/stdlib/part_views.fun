@@ -37,6 +37,9 @@ let tilePixels = 720.0
 // Part space (mm, Z up) to scene space (metres, Y up), like Solid.toScene.
 let toScene = (v: Vec3.t) => Vec3.make(Vec3.x(v) / 1000.0, Vec3.z(v) / 1000.0, 0.0 - Vec3.y(v) / 1000.0)
 
+// A part-space direction in scene space.
+let dir = (v: Vec3.t) => Vec3.normalize(toScene(v))
+
 let point = (v: Vec3.t): Input.point3 => { x: Vec3.x(v), y: Vec3.y(v), z: Vec3.z(v) }
 
 // The pieces' combined bounds, from each piece's own (cached) measurement.
@@ -46,11 +49,11 @@ let bounds = (pieces): Solid.bounds =>
   let hi = (f) => List.fold((acc, b) => Math.max(acc, f(b.max)), -1000000000.0, each) in
   { min: Vec3.make(lo(Vec3.x), lo(Vec3.y), lo(Vec3.z)), max: Vec3.make(hi(Vec3.x), hi(Vec3.y), hi(Vec3.z)) }
 
-// One view of `scene`: an orthographic camera just wide enough for the
-// part's box seen from `view`, and a key light from over its shoulder. It is
-// all worked in part space (mm) — the scene conversion is a rotation and a
-// scale, so extents carry over — and only the camera and lights converted.
-let tileFrame = (scene, b, view) =>
+// One view's camera: orthographic, just wide enough for the part's box seen
+// from `view`, with its screen axes. It is all worked in part space (mm) —
+// the scene conversion is a rotation and a scale, so extents carry over — and
+// only the camera converted.
+let framing = (b, view) =>
   let center = Vec3.scale(0.5, Vec3.add(b.min, b.max)) in
   let size = b.max |> Vec3.sub(b.min) in
   let back = Vec3.normalize(view.dir) in
@@ -67,13 +70,19 @@ let tileFrame = (scene, b, view) =>
   // Far back, so the eye-relative specular lighting falls almost parallel.
   let distance = 20.0 * radius in
   let eye = center |> Vec3.add(Vec3.scale(distance, back)) |> Vec3.add(Vec3.scale(-0.08 * half, up)) in
-  let key = forward |> Vec3.add(Vec3.scale(-0.6, up)) |> Vec3.add(Vec3.scale(-0.4, right)) in
-  let fill = Vec3.scale(-1.0, key) |> Vec3.add(Vec3.scale(-1.5, up)) in
-  let dir = (v) => Vec3.normalize(toScene(v)) in
+  { forward: forward, up: up, right: right,
+    camera:
+      Camera3D.fromPose({ position: point(toScene(eye)), forward: point(dir(forward)), up: point(dir(up)) }, Angle.degrees(45.0))
+        |> Camera3D.clip((distance - 1.1 * radius) / 1000.0, (distance + 1.1 * radius) / 1000.0)
+        |> Camera3D.orthographic(half / 1000.0) }
+
+// One view of `scene`, lit by a key light from over the camera's shoulder.
+let tileFrame = (scene, b, view) =>
+  let f = framing(b, view) in
+  let key = f.forward |> Vec3.add(Vec3.scale(-0.6, f.up)) |> Vec3.add(Vec3.scale(-0.4, f.right)) in
+  let fill = Vec3.scale(-1.0, key) |> Vec3.add(Vec3.scale(-1.5, f.up)) in
   Frame.createLit(
-    Camera3D.fromPose({ position: point(toScene(eye)), forward: point(dir(forward)), up: point(dir(up)) }, Angle.degrees(45.0))
-      |> Camera3D.clip((distance - 1.1 * radius) / 1000.0, (distance + 1.1 * radius) / 1000.0)
-      |> Camera3D.orthographic(half / 1000.0),
+    f.camera,
     scene,
     [
       Light.ambient(Color.rgb(0.22, 0.22, 0.25)),
@@ -88,21 +97,63 @@ let tileFrame = (scene, b, view) =>
         |> Sprite.nearest
         |> Sprite.move(Sprite.measure(0.04, view.name).width / 2.0 - 0.46, -0.46))
 
+// A tile's centre on the sheet, in sheet units.
+let tileX = (view) => (view.col - 1.0) * (1.0 + gap)
+let tileY = (view) => (1.0 - view.row) * (1.0 + gap)
+
+let sheetCamera = () =>
+  Camera3D.lookAt(Vec3.make(0.0, 0.0, 5.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera3D.orthographic(sheetHalfHeight)
+
 // The sheet: every view of `pieces` (a non-empty list of `{ solid, color }`
 // in part space), framed to their combined bounds. Its render targets are
 // named `part-views-0` … `part-views-7`, so draw one sheet per frame.
-let sheet = (pieces) =>
-  let scene = Scene.group(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces)) in
+let sheet = (pieces) => sheetWith(Scene.group([]), pieces)
+
+// A sheet with `overlay` — scene space, like `Solid.toScene`'s — drawn with
+// the pieces in every view (e.g. `PartReview`'s pins), but not framed.
+let sheetWith = (overlay, pieces) =>
+  let scene = Scene.group(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces) |> List.append([overlay])) in
   let b = bounds(pieces) in
-  let pitch = 1.0 + gap in
   let tiles = List.indexedMap((i, view) =>
     { view: view,
-      at: Vec3.make((view.col - 1.0) * pitch, (1.0 - view.row) * pitch, 0.0),
       target: RenderTarget.named(Text.concat("part-views-", Text.fixed(i, 0.0))) |> RenderTarget.sized(tilePixels, tilePixels) },
     views()) in
   List.fold((frame, t) => frame |> Frame.withRenderTarget(t.target, tileFrame(scene, b, t.view)),
     Frame.create(
-      Camera3D.lookAt(Vec3.make(0.0, 0.0, 5.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera3D.orthographic(sheetHalfHeight),
-      Scene.group(List.map((t) => Scene.quad() |> Scene.screen(t.target) |> Scene.translate(t.at), tiles)))
+      sheetCamera(),
+      Scene.group(List.map((t) => Scene.quad() |> Scene.screen(t.target) |> Scene.translate(Vec3.make(tileX(t.view), tileY(t.view), 0.0)), tiles)))
       |> Frame.withClearColor(Color.rgb(0.07, 0.07, 0.08)),
     tiles)
+
+// Scene space (metres, Y up) back to part space (mm, Z up).
+let fromScene = (v: Vec3.t) => Vec3.make(Vec3.x(v) * 1000.0, 0.0 - Vec3.z(v) * 1000.0, Vec3.y(v) * 1000.0)
+
+// What the pointer is over on a sheet of `pieces`: the piece's index in the
+// list, the view's name, and the hit in part space (mm, distance from the
+// view's eye plane).
+type hit = { piece: float, view: string, point: Vec3.t, normal: Vec3.t, distance: float }
+
+// The hit under `mouse` (the `sampledInput` snapshot's) on the sheet that
+// `sheet(pieces)` draws, nearest first, or `Option.None` off the parts. The
+// pointer maps to a tile, then through that view's camera onto each piece.
+let pick = (pieces, mouse: Input.mouse): Option.t<hit> =>
+  let b = bounds(pieces) in
+  Camera3D.toWorldRay(mouse, sheetCamera()) |> Option.bind((onSheet) =>
+    let sx = Vec3.x(onSheet.origin) in
+    let sy = Vec3.y(onSheet.origin) in
+    views()
+      |> List.find((v) => Math.abs(sx - tileX(v)) < 0.5 && Math.abs(sy - tileY(v)) < 0.5)
+      |> Option.bind((view) =>
+        // The tile's pixel, top-left origin, like a pointer on its own surface.
+        let inTile = { mouse with
+          x: (sx - tileX(view) + 0.5) * tilePixels,
+          y: (tileY(view) + 0.5 - sy) * tilePixels,
+          surfaceWidth: tilePixels,
+          surfaceHeight: tilePixels } in
+        Camera3D.toWorldRay(inTile, framing(b, view).camera) |> Option.bind((ray) =>
+          let inPart: Camera3D.ray = { origin: fromScene(ray.origin), direction: fromScene(ray.direction) } in
+          List.indexedMap((i, p) => Solid.raycast(inPart, p.solid)
+              |> Option.map((h) => { piece: i, view: view.name, point: h.point, normal: h.normal, distance: h.distance }), pieces)
+            |> List.concatMap(Option.toList)
+            |> List.sortBy((h) => h.distance)
+            |> List.head)))

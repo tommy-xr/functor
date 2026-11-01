@@ -30,6 +30,15 @@ pub struct Bounds {
     pub max: [f64; 3],
 }
 
+/// Where a ray first meets a mesh: the point, that triangle's outward unit
+/// normal, and the distance from the ray's origin (mm).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RayHit {
+    pub point: [f64; 3],
+    pub normal: [f64; 3],
+    pub distance: f64,
+}
+
 impl Mesh {
     /// Append `other` transformed by `xform`. A mirroring transform flips
     /// winding, so triangles are reversed to keep them facing outward.
@@ -81,6 +90,49 @@ impl Mesh {
                 max: std::array::from_fn(|i| b.max[i].max(v[i])),
             },
         ))
+    }
+
+    /// The nearest triangle the ray from `origin` along `direction` (any
+    /// non-zero length) crosses, from either side; `None` on a miss. Tests
+    /// every triangle (Möller–Trumbore): fine for a click, not per frame.
+    pub fn raycast(&self, origin: [f64; 3], direction: [f64; 3]) -> Option<RayHit> {
+        let o = Vector3::from(origin);
+        let d = Vector3::from(direction);
+        if !(d.magnitude2() > 0.0) {
+            return None;
+        }
+        let d = d.normalize();
+        let mut best: Option<(f64, [u32; 3])> = None;
+        for &tri in &self.triangles {
+            let [a, b, c] = tri.map(|i| Vector3::from(self.vertices[i as usize]));
+            let (e1, e2) = (b - a, c - a);
+            let p = d.cross(e2);
+            let det = e1.dot(p);
+            if det.abs() < 1e-12 {
+                continue;
+            }
+            let s = o - a;
+            let u = s.dot(p) / det;
+            if !(0.0..=1.0).contains(&u) {
+                continue;
+            }
+            let q = s.cross(e1);
+            let v = d.dot(q) / det;
+            if v < 0.0 || u + v > 1.0 {
+                continue;
+            }
+            let t = e2.dot(q) / det;
+            if t >= 0.0 && best.map_or(true, |(bt, _)| t < bt) {
+                best = Some((t, tri));
+            }
+        }
+        let (t, tri) = best?;
+        let [a, b, c] = tri.map(|i| Vector3::from(self.vertices[i as usize]));
+        Some(RayHit {
+            point: (o + d * t).into(),
+            normal: face_normal(a, b, c).into(),
+            distance: t,
+        })
     }
 
     /// Edges not shared by exactly two oppositely wound triangles. Zero means
@@ -321,6 +373,35 @@ pub(crate) fn sphere(radius: f64, segments: usize) -> Mesh {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raycast_hits_the_nearest_face_with_its_normal() {
+        let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-9);
+        // A 10 mm cube: from -X the ray meets x = -5 facing -X, 15 mm away.
+        let cube = super::boxed([10.0, 10.0, 10.0]);
+        let hit = cube.raycast([-20.0, 1.0, 2.0], [3.0, 0.0, 0.0]).unwrap();
+        assert!(near(hit.point, [-5.0, 1.0, 2.0]), "{hit:?}");
+        assert!(near(hit.normal, [-1.0, 0.0, 0.0]), "{hit:?}");
+        assert!((hit.distance - 15.0).abs() < 1e-9);
+        // From inside it meets the far wall; past the side, nothing.
+        let inside = cube.raycast([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        assert!(near(inside.point, [0.0, 0.0, 5.0]) && near(inside.normal, [0.0, 0.0, 1.0]));
+        assert!(cube.raycast([-20.0, 6.0, 0.0], [1.0, 0.0, 0.0]).is_none());
+        assert!(cube.raycast([-20.0, 0.0, 0.0], [-1.0, 0.0, 0.0]).is_none());
+        assert!(cube.raycast([-20.0, 0.0, 0.0], [0.0, 0.0, 0.0]).is_none());
+        // A sphere of radius 10, hit off-axis: on the facets, so within their sag.
+        let sphere = super::sphere(10.0, 64);
+        let dir = [1.0, -2.0, 0.5];
+        let len = (1.0f64 + 4.0 + 0.25).sqrt();
+        let hit = sphere.raycast(dir.map(|x| -40.0 * x / len), dir).unwrap();
+        let r = hit.point.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((r - 10.0).abs() < 0.02, "{hit:?}");
+        let facing = (0..3)
+            .map(|i| hit.normal[i] * hit.point[i] / r)
+            .sum::<f64>();
+        assert!(facing > 0.99, "{hit:?}");
+        assert!((hit.distance - 30.0).abs() < 0.02);
+    }
+
     fn polygon_area(corners: &[[f64; 3]]) -> f64 {
         super::triangulate_polygon(corners)
             .iter()

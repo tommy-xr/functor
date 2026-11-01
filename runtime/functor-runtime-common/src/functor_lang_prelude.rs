@@ -10764,6 +10764,136 @@ Anim.clip(\"walk\", tts)"
         assert!((front.eye[1] - lowered).abs() < 1e-6, "{:?}", front.eye);
     }
 
+    /// `Solid.raycast` meets the first surface along a part-space ray, with
+    /// that surface's outward normal; a ray past the part misses.
+    #[test]
+    fn solid_raycast_hits_a_cube_and_a_sphere() {
+        let value = eval_with_prelude(
+            "let ray = (o: Vec3.t, d: Vec3.t): Camera3D.ray => { origin: o, direction: d }\n\
+             let cube = Solid.box(10.0, 10.0, 10.0)\n\
+             let hits = (r, s) => Solid.raycast(r, s) |> Option.map((h) => [Vec3.x(h.point), Vec3.y(h.point), Vec3.z(h.point), Vec3.x(h.normal), Vec3.y(h.normal), Vec3.z(h.normal), h.distance])\n\
+             let main = () => [\n\
+               hits(ray(Vec3.make(-20.0, 1.0, 2.0), Vec3.make(1.0, 0.0, 0.0)), cube),\n\
+               hits(ray(Vec3.make(-20.0, 6.0, 0.0), Vec3.make(1.0, 0.0, 0.0)), cube),\n\
+               hits(ray(Vec3.make(0.0, -30.0, 0.0), Vec3.make(0.0, 2.0, 0.0)), Solid.sphere(10.0)),\n\
+             ]\n",
+        )
+        .unwrap_or_else(|e| panic!("raycast: {e}"));
+        let json = value_to_json(&value);
+        let hit = |i: usize| -> Vec<f64> {
+            json[i]["args"][0]
+                .as_array()
+                .unwrap_or_else(|| panic!("hit {i}: {json}"))
+                .iter()
+                .map(|v| v.as_f64().unwrap())
+                .collect()
+        };
+        let near = |a: &[f64], b: &[f64], tol: f64| a.iter().zip(b).all(|(a, b)| (a - b).abs() < tol);
+        assert!(near(&hit(0), &[-5.0, 1.0, 2.0, -1.0, 0.0, 0.0, 15.0], 1e-6), "{json}");
+        assert_eq!(json[1]["$ctor"], "Option.None", "{json}");
+        // The sphere's facets sit a little inside its radius.
+        assert!(near(&hit(2), &[0.0, -10.0, 0.0, 0.0, -1.0, 0.0, 20.0], 0.05), "{json}");
+    }
+
+    /// `PartViews.pick` maps a pointer on the sheet to its tile, through
+    /// that view's camera, onto the part: the hit in part mm.
+    #[test]
+    fn part_views_pick_maps_sheet_points_to_part_hits() {
+        // A 1200 × 800 window: the sheet's ortho camera shows 3.2 units
+        // high, so 250 px per unit around the centre (600, 400). The box is
+        // 10 × 20 × 30 mm on z = 0, so each view centres on (0, 0, 15).
+        let value = eval_with_prelude(
+            "let part = Solid.box(10.0, 20.0, 30.0) |> Solid.translate(Vec3.make(0.0, 0.0, 15.0))\n\
+             let peg = Solid.cylinder(2.0, 4.0) |> Solid.translate(Vec3.make(0.0, -12.0, 15.0))\n\
+             let piece = (s) => { solid: s, color: Color.rgb(0.8, 0.5, 0.2) }\n\
+             let off: Input.mouseButtons = { left: false, right: false, middle: false }\n\
+             let at = (x: float, y: float): Input.mouse =>\n\
+               { x: x, y: y, surfaceWidth: 1200.0, surfaceHeight: 800.0, buttons: off, pressed: off, released: off }\n\
+             let hit = (ps, x, y) => PartViews.pick(List.map(piece, ps), at(x, y))\n\
+               |> Option.map((h) => [h.piece, Vec3.x(h.point), Vec3.y(h.point), Vec3.z(h.point), Vec3.x(h.normal), Vec3.y(h.normal), Vec3.z(h.normal)])\n\
+             let main = () => [\n\
+               hit([part], 600.0, 400.0),\n\
+               hit([part], 637.5, 115.0),\n\
+               hit([part], 600.0, 270.0),\n\
+               hit([part], 5.0, 5.0),\n\
+               hit([part, peg], 600.0, 400.0),\n\
+             ]\n",
+        )
+        .unwrap_or_else(|e| panic!("pick: {e}"));
+        let json = value_to_json(&value);
+        let hit = |i: usize| -> Vec<f64> {
+            json[i]["args"][0]
+                .as_array()
+                .unwrap_or_else(|| panic!("hit {i}: {json}"))
+                .iter()
+                .map(|v| v.as_f64().unwrap())
+                .collect()
+        };
+        let near = |a: &[f64], b: &[f64], tol: f64| a.iter().zip(b).all(|(a, b)| (a - b).abs() < tol);
+        // FRONT (centre tile), its middle: the camera rides 8% of the half
+        // height (15 mm × 1.25) low, so 1.5 mm under the box's centre.
+        assert!(near(&hit(0), &[0.0, 0.0, -10.0, 13.5, 0.0, -1.0, 0.0], 1e-3), "{json}");
+        // TOP (above it, 1.04 up): 0.15 tile right and 0.1 up of its centre,
+        // with 12.5 mm half height → x 3.75, y 2.5 − 1.0 lowered, on z = 30.
+        assert!(near(&hit(1), &[0.0, 3.75, 1.5, 30.0, 0.0, 0.0, 1.0], 1e-3), "{json}");
+        // The gap between tiles, and the empty corner, hit nothing.
+        assert_eq!(json[2]["$ctor"], "Option.None", "{json}");
+        assert_eq!(json[3]["$ctor"], "Option.None", "{json}");
+        // A peg standing in front of the box: the nearer piece wins (on a
+        // facet, so its normal leans up to half a facet's angle).
+        assert!(near(&hit(4), &[1.0, 0.0, -14.0, 13.5, 0.0, -1.0, 0.0], 0.1), "{json}");
+    }
+
+    /// `PartReview`: a click pins a note (part mm, rounded) and selects it;
+    /// clicking again while it is blank moves it; typing edits the selected
+    /// note; another click adds a second; delete drops one. Plain data, so
+    /// the debug server's `/state` shows it as is.
+    #[test]
+    fn part_review_pins_notes_from_clicks() {
+        let value = eval_with_prelude(
+            "let part = Solid.box(10.0, 20.0, 30.0) |> Solid.translate(Vec3.make(0.0, 0.0, 15.0))\n\
+             let pieces = [{ name: \"box\", solid: part, color: Color.rgb(0.8, 0.5, 0.2) }]\n\
+             let off: Input.mouseButtons = { left: false, right: false, middle: false }\n\
+             let click = (x: float, y: float): Input.snapshot =>\n\
+               { heldKeys: [], pressedKeys: [], releasedKeys: [], xr: Option.None, gamepad: Option.None, touch: Option.None,\n\
+                 mouse: { x: x, y: y, surfaceWidth: 1200.0, surfaceHeight: 800.0, buttons: off, pressed: { off with left: true }, released: off } }\n\
+             let one = () => PartReview.input(PartReview.init, pieces, click(600.0, 400.0))\n\
+             let moved = () => PartReview.input(one(), pieces, click(637.5, 115.0))\n\
+             let typed = () => PartReview.update(moved(), PartReview.Edit(\"rounder\"))\n\
+             let two = () => PartReview.input(typed(), pieces, click(600.0, 400.0))\n\
+             let missed = () => PartReview.input(two(), pieces, click(5.0, 5.0))\n\
+             let deleted = () => PartReview.update(missed(), PartReview.Delete(1.0))\n\
+             let main = () => [one(), moved(), typed(), two(), missed(), deleted()]\n",
+        )
+        .unwrap_or_else(|e| panic!("review: {e}"));
+        let json = value_to_json(&value);
+        assert_eq!(
+            json[0],
+            serde_json::json!({
+                "notes": [{ "id": 1.0, "part": "box", "view": "FRONT",
+                    "point": { "x": 0.0, "y": -10.0, "z": 13.5 },
+                    "normal": { "x": 0.0, "y": -1.0, "z": 0.0 }, "text": "" }],
+                "selected": 1.0, "next": 2.0 }),
+            "{json}"
+        );
+        // Moved, not added: still note 1, now on TOP (3.75 rounds to 0.01).
+        assert_eq!(json[1]["notes"].as_array().unwrap().len(), 1, "{json}");
+        assert_eq!(json[1]["notes"][0]["view"], "TOP", "{json}");
+        assert_eq!(
+            json[1]["notes"][0]["point"],
+            serde_json::json!({ "x": 3.75, "y": 1.5, "z": 30.0 }),
+            "{json}"
+        );
+        assert_eq!(json[2]["notes"][0]["text"], "rounder", "{json}");
+        // Note 1 has text, so a click adds note 2 and selects it.
+        assert_eq!(json[3]["notes"].as_array().unwrap().len(), 2, "{json}");
+        assert_eq!(json[3]["notes"][1]["id"], 2.0, "in the order pinned");
+        assert_eq!(json[3]["selected"], 2.0, "{json}");
+        assert_eq!(json[4], json[3], "a click off the parts changes nothing");
+        assert_eq!(json[5]["notes"].as_array().unwrap().len(), 1, "{json}");
+        assert_eq!(json[5]["notes"][0]["id"], 2.0, "{json}");
+    }
+
     #[test]
     fn bundled_animator_executes_against_anim_host() {
         let sources = vec![(

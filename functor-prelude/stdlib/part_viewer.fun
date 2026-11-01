@@ -1,11 +1,13 @@
 // PartViewer — the default scene for a printable part: lit, on a bed, with an
-// OrbitCamera; `V` toggles a PartViews sheet of eight orthographic views. A
-// file that defines `part` and none of the entry points in
-// `<stdlib>/PartViewerDefault.fun` runs with those seven lines; paste them
-// into the file to change any of them.
+// OrbitCamera; `V` toggles a PartViews sheet of eight orthographic views,
+// where a click pins a PartReview note (with `"cursor": "visible"` in
+// `functor.json`; a captured pointer has no position to pick). A file that
+// defines `part` and none of the names in `<stdlib>/PartViewerDefault.fun`
+// (`update` and `ui` among them) runs with those ten lines; paste them into
+// the file to change any of them.
 
 // `vHeld` latches V so a held key (auto-repeat) toggles once.
-let init = { orbit: OrbitCamera.init, sheet: false, vHeld: false }
+let init = { orbit: OrbitCamera.init, sheet: false, vHeld: false, review: PartReview.init }
 
 let tick = (m, dt: float, tts: float) => { m with orbit: OrbitCamera.tick(m.orbit, dt) }
 
@@ -23,8 +25,18 @@ let input = (m, key: Key.t, isDown: bool) =>
 // Top-level values here stay pure (no host calls): tools load this module
 // without the engine.
 
+let pieces = (part: Solid.t) => [{ name: "part", solid: part, color: Color.rgb(0.25, 0.5, 0.85) }]
+
+// Clicks pin notes on the sheet only: on the orbit view a press drags.
+let sampledInput = (part: Solid.t, m, s: Input.snapshot) =>
+  if m.sheet then { m with review: PartReview.input(m.review, pieces(part), s) } else m
+
+let update = (m, msg: PartReview.msg) => { m with review: PartReview.update(m.review, msg) }
+
+let ui = (m) => if m.sheet then PartReview.ui((msg) => msg, m.review) else Ui.column([])
+
 let draw = (part: Solid.t, m, tts: float) =>
-  if m.sheet then PartViews.sheet([{ solid: part, color: Color.rgb(0.25, 0.5, 0.85) }]) else
+  if m.sheet then PartReview.sheet(m.review, pieces(part)) else
   let b = Solid.bounds(part) in
   let lo = PartViews.toScene(b.min) in
   let hi = PartViews.toScene(b.max) in
@@ -38,6 +50,7 @@ let draw = (part: Solid.t, m, tts: float) =>
         |> Scene.translate(Vec3.make(Vec3.x(center), Vec3.y(lo), Vec3.z(center)))
         |> Scene.lit(Color.rgb(0.55, 0.56, 0.6)),
       Solid.toScene(part) |> Scene.lit(Color.rgb(0.25, 0.5, 0.85)),
+      PartReview.pins(m.review, pieces(part)),
     ]),
     [
       Light.ambient(Color.rgb(0.18, 0.18, 0.22)),

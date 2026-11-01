@@ -92,6 +92,14 @@ let toScene : (t) => Scene.t
 let volume : (t) => float
 /// The bounding box of the exported mesh.
 let bounds : (t) => bounds
+/// Where a ray first meets a solid: the point, the surface's outward unit
+/// normal there, and the distance from the ray's origin, all in mm.
+type hit = { point: Vec3.t, normal: Vec3.t, distance: float }
+/// The first point of the solid's surface along a ray in part space (mm),
+/// met from either side, or `Option.None`. A click on a part: map the
+/// pointer through the camera (`Camera3D.toWorldRay`), then from scene to
+/// part space — or use `PartViews.pick`, which does both for a sheet.
+let raycast : (Camera3D.ray, t) => Option.t<hit>
 /// Whether `functor export` would write a solid: `ok`, or the reasons it
 /// refuses it (pieces touching exactly at an edge or corner, an empty or open
 /// mesh, a failed boolean). `expect Solid.check(part).problems == []` shows
