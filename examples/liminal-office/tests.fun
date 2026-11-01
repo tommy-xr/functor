@@ -328,7 +328,7 @@ expect Block.copies |> List.all((c) => yards |> List.all((r) => inCross(worldRec
 
 // Collider tags are unique across the copies, the grounds and the player.
 let allTags = List.flatten([
-  ["ground", "block-ground", "player"],
+  ["ground", "block-ground", "island", "island-pad", "player"],
   Block.copies |> List.concatMap((c) => List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) => Block.tagOf(c, k.tag))),
 ])
 expect allTags |> List.indexedMap((i, t) => List.drop(i + 1.0, allTags) |> List.any((u) => u == t)) |> List.all((dup) => not dup)
@@ -358,3 +358,32 @@ expect Block.activeAt(true, Block.nothingActive, Block.toWorld(Block.copyAt(1.0)
 let look = (k: float): Game.CopyLook => { k: k, neon: 1.0, lamps: 1.0, day: false, active: true }
 let local = Scene.group([Exterior.exteriorAt(1.0, 1.0), Scene.cells(Portals.level, Scene.group(Game.nightRooms))])
 expect Block.copies |> List.indexedMap((k, c) => Scene.equals(Game.copyScene(look(k)), Block.sceneOf(c, local))) |> List.all((same) => same)
+
+// ---- The island ----------------------------------------------------------------
+
+let island = IslandLayout.pad
+let padRect = rect(island.x0, island.z0, island.x1, island.z1)
+let grown = (r: Rect, d: float): Rect => rect(r.x0 - d, r.z0 - d, r.x1 + d, r.z1 + d)
+// 2ⁿ + 1 samples, a metre apart, so every terrain LOD vertex lands on one.
+expect IslandLayout.samples == IslandLayout.size + 1.0
+expect List.range(16.0) |> List.any((k) => Math.pow(2.0, k) == IslandLayout.size)
+// The pad lies on the terrain, its edges on the collider's 2 m samples.
+let onSample = (along: float, centre: float): bool =>
+  let i = along - centre + IslandLayout.size / 2.0 in Math.mod(i, 2.0) == 0.0 && i > 0.0 && i < IslandLayout.size
+expect onSample(island.x0, IslandLayout.centre.x) && onSample(island.x1, IslandLayout.centre.x)
+  && onSample(island.z0, IslandLayout.centre.z) && onSample(island.z1, IslandLayout.centre.z)
+// The pad holds every copy with a 6 m apron, and the aprons and yards.
+expect Block.copies |> List.all((c) => within(padRect, grown(worldRect(c, f), 6.0)))
+expect Block.copies |> List.all((c) => yards |> List.all((r) => within(padRect, worldRect(c, r.rect))))
+// Every eye within the activation radius of a footprint is within
+// `band.reach` of the pad's edge: each footprint, grown by the rest of the
+// radius, lies on the pad.
+expect Block.copies |> List.all((c) => within(padRect, grown(worldRect(c, f), reach - IslandLayout.band.reach)))
+// There the ground is never below the pad, and stays low enough that the
+// collar holds the eye at every street eye height, all the way round.
+let rise = (y: float): float => Island.groundY + y - island.y
+expect IslandLayout.band.yMin >= island.y && IslandLayout.band.yMax <= island.y + 3.0
+expect outside |> List.all((p) =>
+  let (x, z) = p in [0.3 + rise(IslandLayout.band.yMin), 2.6 + rise(IslandLayout.band.yMax)] |> List.all((y) => held(x, y, z)))
+// The sea is below the pad, the seabed below the sea.
+expect IslandLayout.seaLevel < island.y && IslandLayout.minHeight < IslandLayout.seaLevel

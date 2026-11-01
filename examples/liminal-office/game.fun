@@ -11,9 +11,10 @@
 // walk. 1–8 jump to views: entrance, corridor, office, window; stair foot,
 // landing, upstairs corridor, upstairs window. 9 and 0 jump into the block:
 // the street, and a turned copy's window. T steps the hour; N jumps between
-// midnight and noon; B toggles the block. VR: the left thumbstick walks and
-// strafes; the right turns and walks; X steps the hour, Y jumps midnight ⇄
-// noon; B toggles the block.
+// midnight and noon; B toggles the block; I puts it on the island
+// (island.fun). VR: the left thumbstick walks and strafes; the right turns
+// and walks; X steps the hour, Y jumps midnight ⇄ noon; B toggles the block,
+// A the island.
 //
 // layout.fun is the one layout authority; building.fun derives the mesh,
 // colliders and bake jobs from it, portals.fun the culling cells, and
@@ -117,14 +118,15 @@ let init = {
   yaw: 0.0, pitch: 0.06, look: NoMouse, vy: 0.0,
   // The hour, 0 ≤ hour < 24: midnight.
   hour: 0.0,
-  // The left controller's X and Y and the right's B at the last sample: a
-  // press is a change.
-  padX: false, padY: false, padB: false,
+  // The left controller's X and Y and the right's A and B at the last
+  // sample: a press is a change.
+  padX: false, padY: false, padA: false, padB: false,
   walk: 0.0, strafe: 0.0, turn: 0.0,
   // A requested view (1–10), applied by the next tick; 0 for none.
   goto: 0.0,
-  // The office alone, or the block of four.
+  // The office alone, or the block of four; on the flat ground or the island.
   block: false,
+  island: false,
   // From the last tick: where the player stood and whether on the ground,
   // the nearest copy and the eye's cell in it (-1: outside every cell),
   // which copies' interiors draw, and whether the bake is current.
@@ -146,19 +148,22 @@ let deadzone = (x: float): float => if Math.abs(x) < 0.15 then 0.0 else x
 let unit = (x: float): float => Math.clamp(-1.0, 1.0, x)
 let still = { x: 0.0, y: 0.0 }
 
+// I and A: onto the island, with the block; or back to the flat ground.
+let toIsland = (model) => { model with island: not model.island, block: model.block || not model.island }
+
 // T and X: the next hour. N and Y: midnight ⇄ noon.
 let nextHour = (hour: float): float => Math.mod(hour + 1.0, 24.0)
 let dayOrNight = (hour: float): float => if Hours.isDay(hour) then 0.0 else 12.0
 
 let sampledInput = (model, snap: Input.snapshot) =>
   let pad = (match snap.xr with
-    | Option.Some(xr) => { stick: xr.left.thumbstick, look: xr.right.thumbstick, x: xr.left.primaryPressed, y: xr.left.secondaryPressed, b: xr.right.secondaryPressed }
-    | Option.None => { stick: still, look: still, x: false, y: false, b: false }) in
+    | Option.Some(xr) => { stick: xr.left.thumbstick, look: xr.right.thumbstick, x: xr.left.primaryPressed, y: xr.left.secondaryPressed, a: xr.right.primaryPressed, b: xr.right.secondaryPressed }
+    | Option.None => { stick: still, look: still, x: false, y: false, a: false, b: false }) in
   let stepped = if pad.x && not model.padX then nextHour(model.hour) else model.hour in
-  { model with
+  let toggled = { model with block: model.block != (pad.b && not model.padB) } in
+  { (if pad.a && not model.padA then toIsland(toggled) else toggled) with
     hour: if pad.y && not model.padY then dayOrNight(stepped) else stepped,
-    block: model.block != (pad.b && not model.padB),
-    padX: pad.x, padY: pad.y, padB: pad.b,
+    padX: pad.x, padY: pad.y, padA: pad.a, padB: pad.b,
     // In a headset the head pitches; a tilted camera would tilt the horizon.
     pitch: if snap.xr == Option.None then model.pitch else 0.0,
     walk: unit(axis(Key.S, Key.W, snap) + axis(Key.Down, Key.Up, snap) + deadzone(pad.stick.y) + deadzone(pad.look.y)),
@@ -191,6 +196,7 @@ let input = (model, key, isDown: bool) =>
     | Key.T => { model with hour: nextHour(model.hour) }
     | Key.N => { model with hour: dayOrNight(model.hour) }
     | Key.B => { model with block: not model.block }
+    | Key.I => toIsland(model)
     | _ => model
 
 let eyeOf = (p: Physics.position): Vec3.t => v(p.x, p.y + eyeAboveCentre, p.z)
@@ -229,7 +235,7 @@ let tick = (model, dt: float, tts: float) =>
 // Each copy's colliders are built once, under its own key and tags.
 let physics = (model) =>
   Physics.scene(v(0.0, -9.81, 0.0), List.flatten([
-    [if model.block then Block.groundBody else Exterior.groundBody],
+    if model.island then Island.bodies else [if model.block then Block.groundBody else Exterior.groundBody],
     Block.placed(model.block) |> List.map((c) => Physics.memo(c.name, c, Block.bodiesOf)),
     [Physics.character(playerTag, Physics.capsule(0.6, 0.3),
                        { stepHeight: 0.2, maxSlope: 40deg, snap: 0.2, offset: 0.02 })
@@ -251,17 +257,21 @@ let draw = (model, tts: float) =>
   let p = Physics.position(playerTag) in
   let eye = eyeOf(p) in
   let o = Hours.outdoorAt(Hours.daylight(model.hour)) in
+  // On the island the far plane is the fog's end.
+  let fogFar = if model.island then Island.fogFar(Hours.daylight(model.hour)) else Hours.fogFar in
   let camera = Camera3D.firstPerson(eye, Angle.radians(model.yaw), Angle.radians(model.pitch), 70deg)
-    |> Camera3D.clip(0.05, 160.0) in
+    |> Camera3D.clip(0.05, if model.island then fogFar else 160.0) in
   let active = Block.activeAt(model.block, model.active, eye) in
   let day = Hours.isDay(model.hour) in
   // Each copy rebuilds only when the hour or its activation changes.
   let copies = Block.placed(model.block) |> List.indexedMap((k, c) =>
     Scene.memo(c.name, { k: k, neon: o.neon, lamps: o.lamps, day: day, active: List.nth(k, active) |> Option.defaultValue(false) }, copyScene)) in
-  let scene = Scene.group([if model.block then Block.ground else Exterior.ground, Scene.group(copies)]) in
+  // The island's terrain draws last, behind the buildings.
+  let scene = if model.island then Scene.group([Scene.group(copies), Island.ground])
+    else Scene.group([if model.block then Block.ground else Exterior.ground, Scene.group(copies)]) in
   let lights = frameLights(o, Block.placed(model.block), eye) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
-    |> Frame.withFog(Fog.linear(o.fogNear, Hours.fogFar, Hours.color(o.sky)))
+    |> Frame.withFog(Fog.linear(o.fogNear, fogFar, Hours.color(o.sky)))
     |> Frame.withClearColor(Hours.color(o.sky))
 
 // Only shown when the committed bake doesn't match the layout.
