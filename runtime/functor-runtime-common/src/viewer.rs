@@ -405,6 +405,14 @@ impl DebugCamera {
             return;
         }
         match &mut self.view {
+            // An orthographic lens zooms by its height; fov and distance
+            // don't change its image.
+            Some(DebugView::Fps(camera)) | Some(DebugView::Orbit(camera))
+                if camera.ortho_half_height.is_some() =>
+            {
+                camera.ortho_half_height =
+                    camera.ortho_half_height.map(|h| h * (-steps * 0.08).exp());
+            }
             Some(DebugView::Fps(camera)) => {
                 let proposed = camera.fov_radians * (-steps * 0.08).exp();
                 camera.fov_radians = Self::move_toward_band(
@@ -770,6 +778,21 @@ mod tests {
         assert!(distance(effective) < distance(&before));
         assert_eq!(effective.target, before.target);
         assert_eq!(effective.fov_radians, before.fov_radians);
+    }
+
+    #[test]
+    fn wheel_zooms_an_orthographic_lens_by_its_height() {
+        let mut frame = frame_3d();
+        frame.camera.ortho_half_height = Some(2.0);
+        for mode in [DebugCameraMode::Fps, DebugCameraMode::Orbit] {
+            let mut debug = DebugCamera::default();
+            assert!(debug.detach(&frame));
+            assert!(debug.set_mode(mode));
+            debug.zoom(1.0);
+            let effective = debug.camera(&frame.camera);
+            assert!(effective.ortho_half_height.unwrap() < 2.0, "{mode:?}");
+            assert_eq!(effective.eye, frame.camera.eye);
+        }
     }
 
     #[test]

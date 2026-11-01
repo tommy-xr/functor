@@ -27,7 +27,7 @@ let views = () =>
   ]
 
 // Tiles: 1 × 1 world units, `gap` apart, in a grid the sheet camera shows
-// whole on a 4:3 or wider window.
+// whole on a 4:3 or wider window (narrower ones crop the outer columns).
 let columns = 4.0
 let gap = 0.04
 let sheetHalfHeight = 1.6

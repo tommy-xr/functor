@@ -63,8 +63,10 @@ let clip : (float, float, t) => t
 /// the near/far planes from `clip` (default 0.1 / 100), so back the eye off
 /// far enough to keep the scene in front of the near plane; its field of view
 /// is unused. `toWorldRay` follows: rays start across the eye's plane, all
-/// along the gaze. A headset keeps its own per-eye projection. `halfHeight`
-/// must be finite and positive, else a teaching error.
+/// along the gaze. Specular highlights and terrain detail still follow the
+/// eye's position, as for a perspective camera. A headset keeps its own
+/// per-eye projection. `halfHeight` must be finite and positive, else a
+/// teaching error.
 ///
 /// ```functor
 /// let front = Camera3D.lookAt(Vec3.make(0.0, 0.5, -10.0), Vec3.make(0.0, 0.5, 0.0))

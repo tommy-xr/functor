@@ -4,7 +4,8 @@
 // `<stdlib>/PartViewerDefault.fun` runs with those seven lines; paste them
 // into the file to change any of them.
 
-let init = { orbit: OrbitCamera.init, sheet: false }
+// `vHeld` latches V so a held key (auto-repeat) toggles once.
+let init = { orbit: OrbitCamera.init, sheet: false, vHeld: false }
 
 let tick = (m, dt: float, tts: float) => { m with orbit: OrbitCamera.tick(m.orbit, dt) }
 
@@ -16,7 +17,8 @@ let mouseButton = (m, button: Mouse.t, isDown: bool) =>
 let mouseWheel = (m, delta: float) => { m with orbit: OrbitCamera.scroll(m.orbit, delta) }
 
 let input = (m, key: Key.t, isDown: bool) =>
-  if key == Key.V && isDown then { m with sheet: not m.sheet } else m
+  if key == Key.V then { m with sheet: if isDown && not m.vHeld then not m.sheet else m.sheet, vHeld: isDown }
+  else m
 
 // Top-level values here stay pure (no host calls): tools load this module
 // without the engine.

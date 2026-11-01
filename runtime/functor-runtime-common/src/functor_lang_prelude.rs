@@ -10662,7 +10662,7 @@ Anim.clip(\"walk\", tts)"
 
     /// A file that is only a `part` gets the PartViewer: a valid game whose
     /// turntable turns when idle, orbits on drag, zooms on the wheel, and
-    /// toggles the PartViews sheet on `V`.
+    /// toggles the PartViews sheet on `V` (once per press, through key repeat).
     #[test]
     fn part_only_file_runs_in_the_part_viewer() {
         let sources = vec![(
@@ -10677,7 +10677,8 @@ Anim.clip(\"walk\", tts)"
              let holds = () => tick(dragged(), 5.0, 6.0).orbit.yaw == dragged().orbit.yaw\n\
              let zooms = () => mouseWheel(init, 1.0).orbit.zoom > init.orbit.zoom\n\
              let sheet = () => input(input(init, Key.V, true), Key.V, false)\n\
-             let toggles = () => sheet().sheet && not input(sheet(), Key.V, true).sheet\n"
+             let toggles = () => sheet().sheet && not input(sheet(), Key.V, true).sheet\n\
+             let repeats = () => input(input(init, Key.V, true), Key.V, true).sheet\n"
                 .to_string(),
         )];
         let project = functor_lang::project::load_sources_with_bundled_modules(
@@ -10695,7 +10696,7 @@ Anim.clip(\"walk\", tts)"
             &crate::functor_lang_producer::EntryNames::UNPREFIXED,
         )
         .unwrap_or_else(|e| panic!("part viewer contract: {e}"));
-        for check in ["turns", "anchors", "orbits", "holds", "zooms", "toggles"] {
+        for check in ["turns", "anchors", "orbits", "holds", "zooms", "toggles", "repeats"] {
             assert!(
                 matches!(
                     session.call(check, vec![], &mut FunctorHost),
