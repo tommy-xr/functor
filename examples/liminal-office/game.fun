@@ -149,7 +149,11 @@ let unit = (x: float): float => Math.clamp(-1.0, 1.0, x)
 let still = { x: 0.0, y: 0.0 }
 
 // I and A: onto the island, with the block; or back to the flat ground.
-let toIsland = (model) => { model with island: not model.island, block: model.block || not model.island }
+// Only the pad is level on both grounds: from anywhere else, the walker
+// goes to the street (view 9) rather than end up under the other ground.
+let toIsland = (model) =>
+  { model with island: not model.island, block: model.block || not model.island,
+               goto: if Island.onPad(model.at.x, model.at.z) then model.goto else 9.0 }
 
 // T and X: the next hour. N and Y: midnight ⇄ noon.
 let nextHour = (hour: float): float => Math.mod(hour + 1.0, 24.0)

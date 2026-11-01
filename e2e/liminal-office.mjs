@@ -674,13 +674,15 @@ async function island(game) {
     `the heightfield carries the walker ${drop.toFixed(1)} m down the slope, within ${worst.toFixed(3)} m of island.mjs's ground (to z ${m.at.z.toFixed(1)}, ${heights.length} samples${off.length ? `; off at ${off.slice(0, 3).join(", ")}` : ""})`);
   check(m.uncovered === 0, `no active copy's cells lost the eye on the island (uncovered ${m.uncovered})`);
 
-  // The right controller's A leaves the island.
+  // The right controller's A leaves the island. Off the pad, the walker
+  // returns to the street (view 9) on the flat ground.
   await game.post("/input", { type: "xr", head: { position: [0, 0, 0] }, left: { active: true }, right: { active: true, primary_pressed: true } });
   await game.step(2);
   await game.post("/input", { type: "xr_clear" });
-  await game.step(1);
+  await game.step(30);
   m = await game.model();
-  check(!m.island && m.block, `XR A leaves the island, keeping the block (island ${m.island}, block ${m.block})`);
+  check(!m.island && m.block && m.grounded && near(m.at.z, -50, 0.05) && near(m.at.y, flat.at.y, 0.01),
+    `XR A leaves the island for the street (island ${m.island}, block ${m.block}, z ${m.at.z.toFixed(2)}, y ${m.at.y.toFixed(3)}, grounded ${m.grounded})`);
   return { night, noon };
 }
 

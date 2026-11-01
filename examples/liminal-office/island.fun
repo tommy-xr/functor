@@ -30,6 +30,11 @@ let sea = Scene.plane() |> Scene.scale(2.0 * IslandLayout.size)
 // buildings; the sea after the terrain, so the land rejects the sea under it.
 let ground = Scene.group([Scene.terrain(terrain) |> Scene.translate(offset), sea])
 
+// Whether (x, z) is on the pad, where the island's ground is the flat
+// ground's height.
+let onPad = (x: float, z: float): bool =>
+  x >= IslandLayout.pad.x0 && x <= IslandLayout.pad.x1 && z >= IslandLayout.pad.z0 && z <= IslandLayout.pad.z1
+
 // The heightfield, and the pad as a box flush with it: the heightfield's
 // collider appears only once the heightmap decodes, and until then the box
 // holds the walker.

@@ -385,5 +385,7 @@ let rise = (y: float): float => Island.groundY + y - island.y
 expect IslandLayout.band.yMin >= island.y && IslandLayout.band.yMax <= island.y + 3.0
 expect outside |> List.all((p) =>
   let (x, z) = p in [0.3 + rise(IslandLayout.band.yMin), 2.6 + rise(IslandLayout.band.yMax)] |> List.all((y) => held(x, y, z)))
+// Toggling the island off the pad sends the walker to view 9: on the pad.
+expect (List.nth(8.0, Game.views) |> Option.map((w) => Island.onPad(w.x, w.z))) == Option.Some(true)
 // The sea is below the pad, the seabed below the sea.
 expect IslandLayout.seaLevel < island.y && IslandLayout.minHeight < IslandLayout.seaLevel
