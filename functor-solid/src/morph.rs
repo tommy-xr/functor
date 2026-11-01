@@ -1,11 +1,13 @@
 //! Convex hulls and ball offsets (grow, shrink, round) via `manifold-rust`,
 //! on the same inputs as the booleans in `csg`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use cgmath::{InnerSpace, Matrix4, SquareMatrix, Vector3};
 use manifold_rust::linalg::Vec3;
 use manifold_rust::manifold::Manifold;
+use manifold_rust::types::Error;
 
 use crate::csg::{from_manifold, node, SNAP};
 use crate::{face_normal, mesh, segments_for, Mesh, Solid};
@@ -37,14 +39,43 @@ pub(crate) fn morph(child: &Solid, shrink: f64, grow: f64) -> Result<Mesh, Strin
         return from_manifold(&m);
     }
     if shrink > 0.0 {
+        let what = if grow > 0.0 {
+            format!("Solid.round({shrink}) removes the whole part")
+        } else {
+            format!("Solid.offset({}) shrinks the part to nothing", -shrink)
+        };
+        // No ball that wide fits between its bounds: say so before a sweep
+        // that can take minutes.
+        let b = m.bounding_box();
+        let (size, axis) = [
+            (b.max.x - b.min.x, "x"),
+            (b.max.y - b.min.y, "y"),
+            (b.max.z - b.min.z, "z"),
+        ]
+        .into_iter()
+        .fold((f64::INFINITY, "x"), |a, s| if s.0 < a.0 { s } else { a });
+        if 2.0 * shrink >= size {
+            let limit = if grow > 0.0 {
+                "the radius"
+            } else {
+                "the shrink"
+            };
+            return Err(format!(
+                "{what}: it is only {size:.2} mm across in {axis}, so {limit} must be under {:.2} mm",
+                size / 2.0
+            ));
+        }
         let ball = ball(shrink);
         let whole = m;
         m = whole
             .try_convex_erosion(&ball, None, None)
             .or_else(|| whole.try_erode_by_convex(&ball, None, None))
             .unwrap_or_else(|| whole.minkowski_difference(&ball));
-        if m.is_empty() {
-            return Err(vanished(&whole, shrink, grow > 0.0));
+        if m.status() == Error::NoError && m.is_empty() {
+            return Err(format!(
+                "{what}: it is nowhere thicker than {} mm",
+                2.0 * shrink
+            ));
         }
     }
     if grow > 0.0 {
@@ -55,7 +86,7 @@ pub(crate) fn morph(child: &Solid, shrink: f64, grow: f64) -> Result<Mesh, Strin
         }
         let ball = ball(grow);
         // Non-convex: one hull per triangle, unioned as a balanced tree;
-        // convex (declined here): one hull of pairwise vertex sums.
+        // convex (declined here): one hull of every pairwise vertex sum.
         m = m
             .try_dilate_by_convex(&ball, None, None)
             .unwrap_or_else(|| m.minkowski_sum(&ball));
@@ -72,25 +103,35 @@ fn convexified(child: &Solid) -> Result<Manifold, String> {
     if m.is_empty() {
         return Ok(m);
     }
+    // Snapping moves a vertex at most SNAP. A quick reject first: separate or
+    // dented pieces miss more volume than that from their hull.
     let hull = m.convex_hull();
-    // Snapping moves a vertex at most SNAP: a quick reject first, as dents that
-    // shallow miss no more volume than they hold.
-    if hull.volume() - m.volume() > SNAP * hull.surface_area() || !nearly_convex(&m)? {
+    if hull.volume() - m.volume() > SNAP * hull.surface_area() || !locally_convex(&m)? {
         return Ok(m);
     }
     Ok(hull_of(&child.mesh()?))
 }
 
-/// Whether no vertex of `m` is more than 2 × SNAP outside any of its faces'
-/// planes: convex up to snapping. (Holes leave no volume to miss, e.g. a
-/// hairline one through a block, but their walls fail this.)
-fn nearly_convex(m: &Manifold) -> Result<bool, String> {
+/// Whether no edge of `m` folds inward by more than 4 × SNAP: across each
+/// edge, the neighbouring triangle's far corner lies on or under this one's
+/// plane. With the volume check, that is convexity up to snapping (a hole's
+/// walls, however fine, fold inward).
+fn locally_convex(m: &Manifold) -> Result<bool, String> {
     let mesh = from_manifold(m)?;
-    let points: Vec<Vector3<f64>> = mesh.vertices.iter().map(|&p| p.into()).collect();
-    Ok(mesh.triangles.iter().all(|t| {
-        let [a, b, c] = t.map(|i| points[i as usize]);
-        let n = face_normal(a, b, c);
-        points.iter().all(|&p| n.dot(p - a) <= 2.0 * SNAP)
+    let p = |i: u32| Vector3::from(mesh.vertices[i as usize]);
+    // Each directed edge → the corner opposite it.
+    let opposite: HashMap<(u32, u32), u32> = mesh
+        .triangles
+        .iter()
+        .flat_map(|&[a, b, c]| [((a, b), c), ((b, c), a), ((c, a), b)])
+        .collect();
+    Ok(mesh.triangles.iter().all(|&[a, b, c]| {
+        let n = face_normal(p(a), p(b), p(c));
+        [(a, b), (b, c), (c, a)].iter().all(|&(u, v)| {
+            opposite
+                .get(&(v, u))
+                .is_none_or(|&o| n.dot(p(o) - p(u)) <= 4.0 * SNAP)
+        })
     }))
 }
 
@@ -99,46 +140,6 @@ fn nearly_convex(m: &Manifold) -> Result<bool, String> {
 /// Minkowski fast paths see it as convex.
 fn ball(radius: f64) -> Manifold {
     hull_of(&mesh::sphere(radius, segments_for(radius)))
-}
-
-/// Why shrinking `whole` by `depth` left nothing: an inscribed ball of that
-/// radius fits nowhere. Names the deepest that fits for a convex solid.
-fn vanished(whole: &Manifold, depth: f64, round: bool) -> String {
-    let what = if round {
-        format!("Solid.round({depth}) removes the whole part")
-    } else {
-        format!("Solid.offset({}) shrinks the part to nothing", -depth)
-    };
-    let limit = deepest(whole, depth)
-        .map(|d| format!(" — at most {d:.2} mm fits"))
-        .unwrap_or_default();
-    format!(
-        "{what}: it is nowhere thicker than {} mm{limit}",
-        2.0 * depth
-    )
-}
-
-/// For a convex solid, about the deepest shrink (mm, rounded down to 0.01)
-/// that leaves something: a bisection over the closed-form erosion.
-fn deepest(whole: &Manifold, depth: f64) -> Option<f64> {
-    if !whole.as_impl().is_convex() {
-        return None;
-    }
-    let fits = |r: f64| {
-        whole
-            .try_convex_erosion(&ball(r), None, None)
-            .is_some_and(|m| !m.is_empty())
-    };
-    let (mut lo, mut hi) = (0.0, depth);
-    while hi - lo > 0.002 {
-        let mid = (lo + hi) / 2.0;
-        if fits(mid) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    Some((lo * 100.0).floor() / 100.0)
 }
 
 #[cfg(test)]
@@ -270,20 +271,21 @@ mod tests {
         let err = cube(10.0).offset(-6.0).mesh().unwrap_err();
         assert_eq!(
             err,
-            "Solid.offset(-6) shrinks the part to nothing: it is nowhere thicker than 12 mm \
-— at most 4.99 mm fits"
+            "Solid.offset(-6) shrinks the part to nothing: it is only 10.00 mm across in x, \
+so the shrink must be under 5.00 mm"
         );
-        let err = arc(Solid::Box {
+        let plate = arc(Solid::Box {
             size: [20.0, 20.0, 4.0],
-        })
-        .rounded(2.5)
-        .mesh()
-        .unwrap_err();
+        });
+        let err = plate.clone().rounded(2.5).mesh().unwrap_err();
         assert!(
-            err.starts_with("Solid.round(2.5) removes the whole part"),
+            err.ends_with("in z, so the radius must be under 2.00 mm"),
             "{err}"
         );
-        assert!(err.ends_with("at most 1.99 mm fits"), "{err}");
+        // Thin only on the diagonal: the bounds can't tell, the erosion can.
+        let tilted = arc(plate.rotate(0, 0.7)).rotate(1, 0.7);
+        let err = arc(tilted).offset(-2.5).mesh().unwrap_err();
+        assert!(err.ends_with("it is nowhere thicker than 5 mm"), "{err}");
     }
 
     /// Not a gate (timings vary by machine): run with `--ignored --nocapture`
@@ -314,6 +316,22 @@ mod tests {
             ("concave L", l),
             ("disc r20", disc),
             ("holed plate", holed),
+            (
+                "cone 10/0 h20",
+                arc(Solid::Cone {
+                    bottom: 10.0,
+                    top: 0.0,
+                    height: 20.0,
+                }),
+            ),
+            (
+                "tilted cylinder",
+                arc(arc(Solid::Cylinder {
+                    radius: 10.0,
+                    height: 20.0,
+                })
+                .rotate(0, 0.3)),
+            ),
         ];
         for (name, s) in cases {
             let tris = s.mesh().unwrap().triangles.len();

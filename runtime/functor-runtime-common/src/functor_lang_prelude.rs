@@ -14479,8 +14479,8 @@ Config.create())",
         for (src, want) in [
             (
                 "Solid.offset(-6.0, cube)",
-                "Solid.offset(-6) shrinks the part to nothing: it is nowhere thicker than 12 mm \
-— at most 4.99 mm fits",
+                "Solid.offset(-6) shrinks the part to nothing: it is only 10.00 mm across in x, \
+so the shrink must be under 5.00 mm",
             ),
             (
                 "Solid.round(5.0, cube)",
