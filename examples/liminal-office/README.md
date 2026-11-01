@@ -128,23 +128,26 @@ town. What scales with the eye's surroundings, not with the town:
 - **Index**: each copy is filed under the 53 m tile holding its footprint's
   middle; `Block.near` reads only the tiles around the eye. Activation,
   colliders, the nearest copy and the lights all query it.
-- **Activation**: at most `K` interiors (4 by default). A copy qualifies
+- **Activation**: at most `K` interiors (4 by default; `K` applies in the
+  block too, where a capped copy shows its street side). A copy qualifies
   within 30 m, or 34 m if it was on. Over `K`, the eye's own building wins,
   then copies already on (nearest first), then the rest (nearest first). A
   copy that is on is never swapped for a nearer one: within 34 m the eye is
   in its collar and may be looking in through its door or a window, which
   only the renderer's portal walk knows. It goes off past 34 m, or when the
   eye walks into another building and all `K` are taken.
-- **Shells**: inactive copies are two `Scene.instanced` cubes for the whole
-  town: massing, canopy, apron and window bands lit; neon, lamp shades, the
-  entrance and layout.fun's windows glowing (the lit rooms' colour by night,
-  neutral glass by day). An active copy draws its real street side and
-  interior instead. One `Scene.memo`, rebuilt when the active set or the
-  hour's look changes.
+- **Shells**: inactive copies are four `Scene.instanced` cubes for the whole
+  town: massing, canopy, apron, window bands and lamp posts lit; neon, lamp
+  shades, and the entrance and layout.fun's windows glowing (the lit rooms'
+  colour by night, neutral glass by day). An active copy draws its real
+  street side and interior instead. Each copy's instances are built once at
+  load; a change of the active set only gathers them (and re-uploads them),
+  and a change of hour recolours the templates.
 - **Colliders**: copies within 12 m of the player (to 16 m once on). A view
   jump makes its target solid before the teleport lands. The office alone
   and the block keep every copy solid.
-- **Lights**: the six nearest the eye, from copies within 60 m.
+- **Lights**: the six nearest the eye, from copies within 60 m (the office
+  alone and the block still consider every copy).
 
 ## Day and night
 
