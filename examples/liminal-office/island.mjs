@@ -133,10 +133,12 @@ export const ground = (x, z) => {
 export const toTerrain = (x, z) => [x - CENTRE.x, z - CENTRE.z];
 export const padY = PAD_Y;
 
-const levels = new Uint16Array(SAMPLES * SAMPLES);
+// The samples: allocated by `main`, so importing `ground` costs nothing.
+let levels;
 // Row j is z = -1024 + j (south first), column i is x = -1024 + i.
 const at = (i) => -SIZE / 2 + i * CELL;
 const generate = () => {
+  levels = new Uint16Array(SAMPLES * SAMPLES);
   for (let j = 0; j < SAMPLES; j += 1) {
     for (let i = 0; i < SAMPLES; i += 1) {
       const x = at(i);

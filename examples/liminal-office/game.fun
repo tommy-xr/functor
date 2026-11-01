@@ -151,7 +151,7 @@ let still = { x: 0.0, y: 0.0 }
 // I and A: onto the island, with the block; or back to the flat ground.
 // Only the pad is level on both grounds: from anywhere else, the walker
 // goes to the street (view 9) rather than end up under the other ground.
-let toIsland = (model) =>
+let toggleIsland = (model) =>
   { model with island: not model.island, block: model.block || not model.island,
                goto: if Island.onPad(model.at.x, model.at.z) then model.goto else 9.0 }
 
@@ -165,7 +165,7 @@ let sampledInput = (model, snap: Input.snapshot) =>
     | Option.None => { stick: still, look: still, x: false, y: false, a: false, b: false }) in
   let stepped = if pad.x && not model.padX then nextHour(model.hour) else model.hour in
   let toggled = { model with block: model.block != (pad.b && not model.padB) } in
-  { (if pad.a && not model.padA then toIsland(toggled) else toggled) with
+  { (if pad.a && not model.padA then toggleIsland(toggled) else toggled) with
     hour: if pad.y && not model.padY then dayOrNight(stepped) else stepped,
     padX: pad.x, padY: pad.y, padA: pad.a, padB: pad.b,
     // In a headset the head pitches; a tilted camera would tilt the horizon.
@@ -200,7 +200,7 @@ let input = (model, key, isDown: bool) =>
     | Key.T => { model with hour: nextHour(model.hour) }
     | Key.N => { model with hour: dayOrNight(model.hour) }
     | Key.B => { model with block: not model.block }
-    | Key.I => toIsland(model)
+    | Key.I => toggleIsland(model)
     | _ => model
 
 let eyeOf = (p: Physics.position): Vec3.t => v(p.x, p.y + eyeAboveCentre, p.z)

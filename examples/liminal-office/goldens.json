@@ -122,7 +122,7 @@
       "native"
     ],
     "inputScript": "island-street.script",
-    "captureAtFrame": 30
+    "captureAtFrame": 300
   },
   {
     "name": "liminal-office-island-street-day",
@@ -131,6 +131,6 @@
       "native"
     ],
     "inputScript": "noon-island-street.script",
-    "captureAtFrame": 30
+    "captureAtFrame": 300
   }
 ]

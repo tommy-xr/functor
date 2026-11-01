@@ -139,8 +139,9 @@ unchanged. A box under the pad holds the walker while the heightmap decodes.
 The terrain draws after the buildings (early-Z rejects it behind them) and
 the sea plane after the terrain. The fog ends at the far plane, 500 m by day
 and 200 m at night, so the renderer skips terrain past it. No grass, no
-shadows; `Terrain.layered` bands lit by the frame's lights. The island
-targets 90 Hz on Quest with foveation off.
+shadows; `Terrain.layered` bands lit by the frame's lights. The island's
+Quest budget is 90 Hz with foveation off; not yet measured on a headset
+(`config` still requests 120 Hz).
 
 ## Day and night
 

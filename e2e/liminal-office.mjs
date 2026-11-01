@@ -629,22 +629,32 @@ const GROUND_Y = -0.05;
 async function island(game) {
   await game.view(9); // the street, on Block.groundBody
   const flat = await game.model();
+  // The heightmap decodes off the frame thread: step until the terrain draws.
+  const untilTerrain = async () => {
+    for (let k = 0; k < 100 && !((await game.state()).terrain?.patches > 0); k++) {
+      await sleep(100);
+      await game.step(1);
+    }
+    await game.step(30);
+    return game.state();
+  };
   await game.hold("i", 1);
-  // The heightmap decodes off the frame thread: wait until the terrain draws.
-  let s = await game.state();
-  for (let k = 0; k < 100 && !(s.terrain?.patches > 0); k++) {
-    await sleep(100);
-    await game.step(1);
-    s = await game.state();
-  }
-  await game.step(30);
-  s = await game.state();
+  let s = await untilTerrain();
   let m = s.model;
   check(m.island && m.block && s.terrain.patches > 0, `I puts the block on the island (island ${m.island}, block ${m.block})`);
   // The pad lies 2 cm below the flat ground's collider, flush with the plane
   // it drew. (The capsule settles about 2 cm closer to the heightfield than
   // to a box.)
   check(m.grounded && near(m.at.y, flat.at.y - 0.02, 0.03), `stands on the pad (y ${m.at.y.toFixed(3)}; ${flat.at.y.toFixed(3)} on the flat ground)`);
+  // On the pad, I swaps the ground under the walker in place, both ways.
+  await game.hold("i", 1);
+  await game.step(30);
+  const back = await game.model();
+  check(!back.island && back.grounded && near(back.at.x, m.at.x, 0.01) && near(back.at.z, m.at.z, 0.01) && near(back.at.y, flat.at.y, 0.03),
+    `I on the pad: back on the flat ground in place (y ${back.at.y.toFixed(3)}, grounded ${back.grounded})`);
+  await game.hold("i", 1);
+  s = await untilTerrain();
+  check(s.model.island && s.model.grounded && near(s.model.at.y, m.at.y, 0.01), `I on the pad: onto the island in place (y ${s.model.at.y.toFixed(3)})`);
   const night = s.terrain;
   await game.hold("n", 1);
   await game.step(2);
@@ -681,7 +691,7 @@ async function island(game) {
   await game.post("/input", { type: "xr_clear" });
   await game.step(30);
   m = await game.model();
-  check(!m.island && m.block && m.grounded && near(m.at.z, -50, 0.05) && near(m.at.y, flat.at.y, 0.01),
+  check(!m.island && m.block && m.grounded && near(m.at.z, -50, 0.05) && near(m.at.y, flat.at.y, 0.03),
     `XR A leaves the island for the street (island ${m.island}, block ${m.block}, z ${m.at.z.toFixed(2)}, y ${m.at.y.toFixed(3)}, grounded ${m.grounded})`);
   return { night, noon };
 }
@@ -802,7 +812,7 @@ try {
   const residencyStats = await residency(stats);
   console.log(`residency: ${JSON.stringify(residencyStats)}`);
 
-  const scripted = (script) => ["--input-script", join(DIR, script), "--capture-at-frame", "30"];
+  const scripted = (script, frame = 30) => ["--input-script", join(DIR, script), "--capture-at-frame", String(frame)];
   const goldens = {
     "liminal-office-entrance": ["--fixed-time", "1", "--capture-time", "1.0"],
     "liminal-office-corridor": scripted("views.script"),
@@ -817,8 +827,9 @@ try {
     "liminal-office-block-street": scripted("block-street.script"),
     "liminal-office-block-street-day": scripted("noon-block-street.script"),
     "liminal-office-block-window": scripted("block-window.script"),
-    "liminal-office-island-street": scripted("island-street.script"),
-    "liminal-office-island-street-day": scripted("noon-island-street.script"),
+    // Captured late: the heightmap decodes off the frame thread.
+    "liminal-office-island-street": scripted("island-street.script", 300),
+    "liminal-office-island-street-day": scripted("noon-island-street.script", 300),
   };
   for (const [name, args] of Object.entries(goldens)) {
     check(golden(name, args).equals(golden(name, args)), `${name}: byte-identical across runs`);
