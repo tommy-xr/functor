@@ -189,12 +189,14 @@ struct Watch<'w> {
     took: HashMap<String, f64>,
     /// What this load has evaluated so far, in ms.
     spent: f64,
+    /// The def evaluating, or last evaluated.
+    current: String,
     heavy: Option<String>,
 }
 
 impl<'w> Watch<'w> {
     fn new(progress: Option<&'w Progress>, defer: Option<(&'w Costs, Option<&'w Records>)>) -> Watch<'w> {
-        Watch { progress, defer, started: 0.0, took: HashMap::new(), spent: 0.0, heavy: None }
+        Watch { progress, defer, started: 0.0, took: HashMap::new(), spent: 0.0, current: String::new(), heavy: None }
     }
 }
 
@@ -210,6 +212,7 @@ impl LoadWatch for Watch<'_> {
         if let Some(progress) = self.progress {
             progress.set(index as f64 / total.max(1) as f64);
         }
+        self.current = name.to_string();
         self.started = now_ms();
         true
     }
@@ -243,14 +246,18 @@ pub enum Inline {
     Failed(RunFailure),
 }
 
-/// A host whose file inputs never check as current, so a deferrable load
-/// reads no file on the frame thread: a value that read files evaluates
-/// again, which defers it to the loader (which re-checks them).
-struct Unchecked<'h>(&'h mut dyn Host);
+/// A host that reads no project file, so a deferrable load never waits on
+/// one on the frame thread: file inputs never check as current (a value
+/// that read files evaluates again, and defers), and a file read stops the
+/// load (a value that newly reads files defers too).
+struct Unchecked<'h> {
+    host: &'h mut dyn Host,
+    stopped: bool,
+}
 
 impl Host for Unchecked<'_> {
     fn provides(&self, path: &str) -> bool {
-        self.0.provides(path)
+        self.host.provides(path)
     }
 
     fn call(
@@ -259,15 +266,20 @@ impl Host for Unchecked<'_> {
         args: Vec<functor_lang::Value>,
         span: functor_lang::Span,
     ) -> Result<functor_lang::HostReturn, functor_lang::RunError> {
-        self.0.call(path, args, span)
+        if crate::functor_lang_prelude::reads_files(path) {
+            self.stopped = true;
+            let message = functor_lang::eval::LOAD_STOPPED.to_string();
+            return Err(functor_lang::RunError { message, span });
+        }
+        self.host.call(path, args, span)
     }
 
     fn begin_inputs(&mut self) {
-        self.0.begin_inputs()
+        self.host.begin_inputs()
     }
 
     fn end_inputs(&mut self) -> Option<Vec<functor_lang::reuse::HostInput>> {
-        self.0.end_inputs()
+        self.host.end_inputs()
     }
 
     fn inputs_current(&mut self, inputs: &[functor_lang::reuse::HostInput]) -> bool {
@@ -289,10 +301,14 @@ pub fn load_inline(
 ) -> Inline {
     let records = previous.and_then(Session::records);
     let mut watch = Watch::new(None, defer.then_some((&*costs, records)));
-    let mut unchecked = Unchecked(&mut *host);
-    let host: &mut dyn Host = if defer { &mut unchecked } else { unchecked.0 };
-    let loaded = Session::load_watched(module, host, previous, types, None, &mut watch);
-    let Watch { took, heavy, .. } = watch;
+    let mut unchecked = Unchecked { host, stopped: false };
+    let loaded = if defer {
+        Session::load_watched(module, &mut unchecked, previous, types, None, &mut watch)
+    } else {
+        Session::load_watched(module, unchecked.host, previous, types, None, &mut watch)
+    };
+    let Watch { took, heavy, current, .. } = watch;
+    let heavy = heavy.or(unchecked.stopped.then_some(current));
     match (loaded, heavy) {
         (Ok((session, stats)), _) => {
             costs.merge(took);
