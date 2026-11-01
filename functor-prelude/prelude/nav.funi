@@ -48,6 +48,7 @@ type nodePenalty = { node: float, penalty: penalty, until: float }
 type query = { from: Vec3.t, to: Vec3.t, bits: float, closedDoors: List<float>,
                links: List<linkPenalty>, nodes: List<nodePenalty>, now: float, seq: float }
 
+/// How far a route gets: see `result`.
 type outcome =
   | Full
   | Partial

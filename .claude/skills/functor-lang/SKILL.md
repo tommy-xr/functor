@@ -1041,6 +1041,7 @@ The generated modules:
 | `Lightmap` | `Lightmap.unwrap` — lightmap UVs (`uvs2`) for `Model.staticData`: planar charts packed into one atlas at a fixed `texelsPerMeter`, seam vertices duplicated; `bakeJob` — what `functor bake` reads from a top-level `let bakes` (it writes `<name>.png` + `<name>.mesh.bin`); `readMesh` loads the baked mesh back (`Texture.fromPng(…, Texture.Srgb)` the light) |
 | `Terrain` | finite asset-backed heightfield terrain shared by rendering and physics |
 | `Physics` | shapes, bodies, the `physics` hook's world, live reads, commands, raycasts, events |
+| `Nav` | agent routing: `Nav.graph({ nodes, links })` once at top level; `Nav.path(graph, key, query, tagger)` searches on a worker and delivers `Nav.result` through `update` (doors and penalties go in the query; the result echoes it, so check `r.query.seq`; a same-key ask in flight drops; `Nav.cancel(key)`) |
 | `Effect` | one-shot commands returned beside a model (time, random, HTTP, net sends, sounds, preloads) |
 | `Sub` | what `subscriptions` returns: timers, connections, asset progress, physics events |
 | `Persistence` | durable local save slots: `save` / `load`, as ordinary effects |
