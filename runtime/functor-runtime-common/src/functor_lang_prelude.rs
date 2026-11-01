@@ -14447,45 +14447,6 @@ Config.create())",
         }
     }
 
-    /// `Solid.check` reports what `functor export` refuses, meshing failures
-    /// included, instead of erroring.
-    #[test]
-    fn solid_check_reports_export_problems() {
-        let prelude = "let cube = Solid.box(2.0, 2.0, 2.0)\n\
-             let at = (x: float, y: float, z: float) => cube |> Solid.translate(Vec3.make(x, y, z))\n\
-             let missed = match Solid.split({ normal: Vec3.make(0.0, 0.0, 1.0), offset: 5.0 }, cube) with | (a, _) => a\n";
-        for (main, want) in [
-            ("Solid.check(cube)", "{ ok: true, problems: [] }"),
-            (
-                "Solid.check(Solid.group([cube, at(1.0, 1.0, 0.0)])).ok",
-                "true",
-            ),
-            (
-                "Solid.check(Solid.group([cube, at(2.0, 2.0, 2.0)])).problems",
-                "[\"the part would not slice as a solid: 1 vertices of separate pieces land on \
-the same point, joining them at a corner or edge. Overlap the pieces in the `Solid.group` \
-slightly (or move them apart) instead of letting them touch exactly.\"]",
-            ),
-            (
-                "Solid.check(Solid.intersect(at(5.0, 0.0, 0.0), cube)).problems",
-                "[\"the part is empty\"]",
-            ),
-        ] {
-            let src = format!("{prelude}let main = {main}\n");
-            assert_eq!(
-                eval_with_prelude(&src).map(|v| v.to_string()).as_deref(),
-                Ok(want),
-                "{main}"
-            );
-        }
-        let src = format!("{prelude}let main = Solid.check(missed).problems\n");
-        let problem = eval_with_prelude(&src).unwrap().to_string();
-        assert!(
-            problem.contains("misses or only touches the solid"),
-            "{problem}"
-        );
-    }
-
     /// `Solid.hull`, `offset` and `round` match their analytic volumes, pass
     /// `Solid.check`, and name the limit when a part shrinks away.
     #[test]
@@ -14535,6 +14496,45 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
             let err = eval_with_prelude(&src).err().expect("should fail");
             assert!(err.contains(want), "{src}: {err}");
         }
+    }
+
+    /// `Solid.check` reports what `functor export` refuses, meshing failures
+    /// included, instead of erroring.
+    #[test]
+    fn solid_check_reports_export_problems() {
+        let prelude = "let cube = Solid.box(2.0, 2.0, 2.0)\n\
+             let at = (x: float, y: float, z: float) => cube |> Solid.translate(Vec3.make(x, y, z))\n\
+             let missed = match Solid.split({ normal: Vec3.make(0.0, 0.0, 1.0), offset: 5.0 }, cube) with | (a, _) => a\n";
+        for (main, want) in [
+            ("Solid.check(cube)", "{ ok: true, problems: [] }"),
+            (
+                "Solid.check(Solid.group([cube, at(1.0, 1.0, 0.0)])).ok",
+                "true",
+            ),
+            (
+                "Solid.check(Solid.group([cube, at(2.0, 2.0, 2.0)])).problems",
+                "[\"the part would not slice as a solid: 1 vertices of separate pieces land on \
+the same point, joining them at a corner or edge. Overlap the pieces in the `Solid.group` \
+slightly (or move them apart) instead of letting them touch exactly.\"]",
+            ),
+            (
+                "Solid.check(Solid.intersect(at(5.0, 0.0, 0.0), cube)).problems",
+                "[\"the part is empty\"]",
+            ),
+        ] {
+            let src = format!("{prelude}let main = {main}\n");
+            assert_eq!(
+                eval_with_prelude(&src).map(|v| v.to_string()).as_deref(),
+                Ok(want),
+                "{main}"
+            );
+        }
+        let src = format!("{prelude}let main = Solid.check(missed).problems\n");
+        let problem = eval_with_prelude(&src).unwrap().to_string();
+        assert!(
+            problem.contains("misses or only touches the solid"),
+            "{problem}"
+        );
     }
 
     /// `Mesh.*` from raw f32 positions + polygons, then `Solid.fromMesh`
