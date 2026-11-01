@@ -111,7 +111,7 @@ let sheet = (pieces) => sheetWith(Scene.group([]), pieces)
 // A sheet with `overlay` — scene space, like `Solid.toScene`'s — drawn with
 // the pieces in every view (e.g. `PartReview`'s pins), but not framed.
 let sheetWith = (overlay, pieces) =>
-  let scene = Scene.group(List.append(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces), [overlay])) in
+  let scene = Scene.group(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces) |> List.append([overlay])) in
   let b = bounds(pieces) in
   let tiles = List.indexedMap((i, view) =>
     { view: view,

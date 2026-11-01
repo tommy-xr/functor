@@ -10887,6 +10887,7 @@ Anim.clip(\"walk\", tts)"
         assert_eq!(json[2]["notes"][0]["text"], "rounder", "{json}");
         // Note 1 has text, so a click adds note 2 and selects it.
         assert_eq!(json[3]["notes"].as_array().unwrap().len(), 2, "{json}");
+        assert_eq!(json[3]["notes"][1]["id"], 2.0, "in the order pinned");
         assert_eq!(json[3]["selected"], 2.0, "{json}");
         assert_eq!(json[4], json[3], "a click off the parts changes nothing");
         assert_eq!(json[5]["notes"].as_array().unwrap().len(), 1, "{json}");

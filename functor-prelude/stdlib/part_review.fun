@@ -32,10 +32,12 @@ type msg =
 
 let init: t = { notes: [], selected: 0.0, next: 1.0 }
 
-let rounded = (step: float, v: Vec3.t) =>
-  // `+ 0.0` turns -0 into 0.
-  let r = (x) => Math.round(x / step) * step + 0.0 in
-  PartViews.point(Vec3.make(r(Vec3.x(v)), r(Vec3.y(v)), r(Vec3.z(v))))
+let rounded = (perUnit: float, v: Vec3.t) =>
+  // Dividing keeps decimals exact (19.4, not 19.400000000000002); `+ 0.0`
+  // turns -0 into 0.
+  let r = (x) => Math.round(x * perUnit) / perUnit + 0.0 in
+  let p: Input.point3 = { x: r(Vec3.x(v)), y: r(Vec3.y(v)), z: r(Vec3.z(v)) } in
+  p
 
 let selectedNote = (r: t) => List.find((n) => n.id == r.selected, r.notes)
 
@@ -50,12 +52,12 @@ let click = (r: t, pieces, mouse: Input.mouse): t =>
       { id: id,
         part: List.nth(h.piece, pieces) |> Option.map((p) => p.name) |> Option.defaultValue(""),
         view: h.view,
-        point: rounded(0.01, h.point),
-        normal: rounded(0.001, h.normal),
+        point: rounded(100.0, h.point),
+        normal: rounded(1000.0, h.normal),
         text: "" } in
     match selectedNote(r) |> Option.filter((n) => n.text == "") with
     | Option.Some(blank) => { r with notes: List.map((n) => if n.id == blank.id then at(n.id) else n, r.notes) }
-    | Option.None => { notes: List.append(r.notes, [at(r.next)]), selected: r.next, next: r.next + 1.0 }
+    | Option.None => { notes: r.notes |> List.append([at(r.next)]), selected: r.next, next: r.next + 1.0 }
 
 // A left click this step, from `sampledInput`'s snapshot.
 let input = (r: t, pieces, snapshot: Input.snapshot): t =>
@@ -71,9 +73,10 @@ let update = (r: t, m: msg): t =>
 let at3 = (p: Input.point3) =>
   Text.join(", ", [Text.fixed(p.x, 1.0), Text.fixed(p.y, 1.0), Text.fixed(p.z, 1.0)])
 
-// The notes panel (top right): the selected note's text field first, then
-// every note — select it, or `x` to delete. `wrap` lifts a `msg` into the
-// app's own message (a constructor, or `(m) => m` when they are the same).
+// The notes panel, bottom left (the sheet leaves that tile empty): the
+// selected note's text field first, then every note — select it, or `x` to
+// delete. `wrap` lifts a `msg` into the app's own message (a constructor, or
+// `(m) => m` when they are the same).
 let ui = (wrap, r: t) =>
   let editing = selectedNote(r) |> Option.map((n) => [
       Ui.text(Text.concat(Text.concat("Note ", Text.fixed(n.id, 0.0)), Text.concat(" on ", n.part))),
@@ -83,7 +86,7 @@ let ui = (wrap, r: t) =>
       Ui.button(Text.join(" ", [Text.fixed(n.id, 0.0), n.part, Text.concat(Text.concat("(", at3(n.point)), ")"), n.text]), wrap(Select(n.id))),
       Ui.button("x", wrap(Delete(n.id))),
     ]) in
-  Ui.column(List.append(editing, List.map(row, r.notes))) |> Ui.panel(Ui.topRight())
+  Ui.column(editing |> List.append(List.map(row, r.notes))) |> Ui.panel(Ui.bottomLeft())
 
 // A marker at each note, in scene space, sized to the pieces: the selected
 // one yellow, the rest red.
@@ -92,7 +95,7 @@ let pins = (r: t, pieces) =>
   let size = Vec3.length(b.max |> Vec3.sub(b.min)) in
   Scene.group(List.map((n) =>
       Scene.sphere()
-        |> Scene.scale(size * 0.025 / 1000.0)
+        |> Scene.scale(size * 0.02 / 1000.0)
         |> Scene.translate(PartViews.toScene(Vec3.make(n.point.x, n.point.y, n.point.z)))
         |> Scene.emissive(if n.id == r.selected then Color.rgb(1.0, 0.85, 0.1) else Color.rgb(0.95, 0.15, 0.2)),
     r.notes))
