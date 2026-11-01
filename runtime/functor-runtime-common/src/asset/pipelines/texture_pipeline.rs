@@ -1,7 +1,8 @@
 use crate::{
     asset::{AssetCache, AssetPipeline},
     texture::{
-        apply_color_key, decode_image, Texture2D, TextureData, TextureOptions, TERRAIN_DETAIL_ANISOTROPY,
+        apply_color_key, decode_image, Texture2D, TextureData, TextureOptions,
+        TERRAIN_DETAIL_ANISOTROPY,
     },
 };
 
