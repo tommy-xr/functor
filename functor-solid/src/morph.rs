@@ -126,7 +126,7 @@ fn deepest(whole: &Manifold, depth: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Sketch;
+    use crate::BoolOp;
     use std::f64::consts::PI;
     use std::time::Instant;
 
@@ -188,20 +188,15 @@ mod tests {
         assert_eq!((b.min, b.max), ([-5.0; 3], [5.0; 3]));
     }
 
-    /// A 20 × 20 mm L of 6 mm arms, 6 mm tall: concave.
+    /// A 20 × 20 mm L of 6 mm arms, 6 mm tall, corner at the origin: concave.
     fn l_shape() -> Arc<Solid> {
-        let outline = vec![
-            [0.0, 0.0],
-            [20.0, 0.0],
-            [20.0, 6.0],
-            [6.0, 6.0],
-            [6.0, 20.0],
-            [0.0, 20.0],
-        ];
-        arc(Solid::Extrude {
-            sketch: Arc::new(Sketch::polygon(outline)),
-            height: 6.0,
-        })
+        let bar = |x: f64, y: f64| {
+            arc(arc(Solid::Box { size: [x, y, 6.0] }).translate([x / 2.0, y / 2.0, 3.0]))
+        };
+        arc(Solid::boolean(
+            BoolOp::Union,
+            vec![bar(20.0, 6.0), bar(6.0, 20.0)],
+        ))
     }
 
     #[test]
@@ -247,14 +242,22 @@ mod tests {
     #[ignore]
     fn timings() {
         let l = l_shape();
-        let disc = arc(Solid::Extrude {
-            sketch: Arc::new(Sketch::circle(20.0)),
+        let disc = arc(Solid::Cylinder {
+            radius: 20.0,
             height: 6.0,
         });
-        let holed = arc(Solid::Extrude {
-            sketch: Arc::new(Sketch::rect(40.0, 30.0).subtract(&Sketch::circle(8.0))),
-            height: 6.0,
-        });
+        let holed = arc(Solid::boolean(
+            BoolOp::Subtract,
+            vec![
+                arc(Solid::Box {
+                    size: [40.0, 30.0, 6.0],
+                }),
+                arc(Solid::Cylinder {
+                    radius: 8.0,
+                    height: 8.0,
+                }),
+            ],
+        ));
         let cases: Vec<(&str, Arc<Solid>)> = vec![
             ("cube 10", cube(10.0)),
             ("sphere 10", arc(Solid::Sphere { radius: 10.0 })),
