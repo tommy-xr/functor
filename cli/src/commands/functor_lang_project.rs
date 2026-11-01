@@ -2303,8 +2303,12 @@ fn post_project(
         "{route}{}{extra_query}",
         functor_runtime_common::debug_protocol::encode_entry_role_query(role)
     );
-    http_post(addr, &path, "application/json", files_json)
+    // Answered when the load lands, which a heavy one takes a while to do.
+    http_post_bytes(addr, &path, "application/json", files_json.as_bytes(), LOAD_TIMEOUT)
 }
+
+/// How long a push waits for its load: the runtime's own reply limit.
+const LOAD_TIMEOUT: std::time::Duration = functor_runtime_common::debug_http::LOAD_REPLY_TIMEOUT;
 
 /// Ask the headset for a display refresh rate (`POST /display-refresh-rate`).
 fn post_display_refresh_rate(addr: &str, hz: f32) -> Result<(u16, String), Error> {
@@ -2377,7 +2381,7 @@ fn take_refresh_rate_arg(runner_args: &[String]) -> Result<(Option<f32>, Vec<Str
 /// runner's shared debug HTTP server. Returns (status, body). `Connection: close`
 /// keeps the read side trivial (read to EOF, split headers off).
 fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> {
-    http_post(addr, "/reload-source", "text/plain", source)
+    http_post_bytes(addr, "/reload-source", "text/plain", source.as_bytes(), LOAD_TIMEOUT)
 }
 
 /// The debug protocol version a runtime reports at `GET /`, or `None` when the

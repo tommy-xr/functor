@@ -458,6 +458,8 @@ fn try_finish(
 /// A reload running on the loader while the program plays.
 struct Reloading {
     job: functor_runtime_common::jobs::load::LoadHandle,
+    /// The data files whose change started it (a failure retries them).
+    changed: Vec<String>,
     path: String,
     project: functor_lang::project::Project,
     names: EntryNames,
@@ -724,12 +726,7 @@ impl FunctorLangGame {
     /// Start the game's first load on the loader thread: linked here (a
     /// link error returns), evaluated there.
     fn begin_boot(&mut self) -> Result<(), String> {
-        let project = functor_lang::project::load_with_bundled_modules(
-            std::path::Path::new(&self.path),
-            &std::collections::HashMap::new(),
-            &functor_prelude::bundled_modules(),
-        )
-        .map_err(|e| format!("cannot load {}", e.render()))?;
+        let project = link_disk(&self.path, None)?;
         let names = self.role.resolve(&self.path, &project)?;
         let source = std::sync::Arc::new(functor_runtime_common::jobs::ProgramSource::of(&project.sources));
         let reader = self.recorder.job_reader();
@@ -742,6 +739,55 @@ impl FunctorLangGame {
         }
         self.boot = Some(Boot { job, names, project: Some(project), screen, started: Instant::now() });
         Ok(())
+    }
+
+    /// [`finish_load`] here, timing each def; `previous`: reuse from the
+    /// running session.
+    fn finish_now(&mut self, path: &str, project: functor_lang::project::Project, previous: bool) -> Result<Loaded, String> {
+        let previous = previous.then_some(&self.session);
+        match try_finish(path, project, &self.role, previous, &mut self.costs, false)? {
+            Attempt::Loaded(loaded) => Ok(*loaded),
+            Attempt::Heavy { .. } => unreachable!("only a deferrable load stops"),
+        }
+    }
+
+    /// What a load job's `outcome` loads into `project`: its values adopted
+    /// (the rest evaluated here), or the error. `previous`: reuse from the
+    /// running session if the load must run here after all.
+    fn adopt_outcome(
+        &mut self,
+        path: &str,
+        project: functor_lang::project::Project,
+        names: EntryNames,
+        outcome: functor_runtime_common::jobs::load::Outcome,
+        previous: bool,
+    ) -> Result<Loaded, String> {
+        use functor_runtime_common::functor_lang_prelude::bytes::take_file_reads;
+        use functor_runtime_common::jobs::load::Outcome;
+        match outcome {
+            Outcome::Evaluated(mut evaluated) => {
+                take_file_reads();
+                let mut file_reads = std::mem::take(&mut evaluated.file_reads);
+                match evaluated.adopt(&project.module, &mut FunctorHost, &mut self.costs) {
+                    Ok((session, reuse)) => {
+                        file_reads.extend(take_file_reads());
+                        contract(path, names, project.module, project.sources, session, reuse, file_reads)
+                    }
+                    Err(f) => Err(format!(
+                        "cannot load {}",
+                        project.sources.render(f.error.span.start, &f.error.message)
+                    )),
+                }
+            }
+            Outcome::Failed { message, file_reads } => {
+                self.data_watch.extend(file_reads);
+                Err(message)
+            }
+            Outcome::Inline(why) => {
+                eprintln!("[functor-lang] {why}, so it loads on the frame thread");
+                self.finish_now(path, project, previous)
+            }
+        }
     }
 
     /// Install the first load once its job has finished; a failure keeps
@@ -763,30 +809,7 @@ impl FunctorLangGame {
             }
             return;
         }
-        let result = match outcome {
-            functor_runtime_common::jobs::load::Outcome::Evaluated(mut evaluated) => {
-                functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
-                let mut file_reads = std::mem::take(&mut evaluated.file_reads);
-                match evaluated.adopt(&project.module, &mut FunctorHost, &mut self.costs) {
-                    Ok((session, reuse)) => {
-                        file_reads.extend(functor_runtime_common::functor_lang_prelude::bytes::take_file_reads());
-                        contract(&self.path, names, project.module, project.sources, session, reuse, file_reads)
-                    }
-                    Err(f) => Err(format!(
-                        "cannot load {}",
-                        project.sources.render(f.error.span.start, &f.error.message)
-                    )),
-                }
-            }
-            functor_runtime_common::jobs::load::Outcome::Failed { message, file_reads } => {
-                self.data_watch.extend(file_reads);
-                Err(message)
-            }
-            functor_runtime_common::jobs::load::Outcome::Inline(why) => {
-                eprintln!("[functor-lang] {why}, so it loads on the frame thread");
-                finish_load(&self.path, project, &self.role, None)
-            }
-        };
+        let result = self.adopt_outcome(&self.path.clone(), project, names, outcome, false);
         let boot = self.boot.as_mut().expect("checked above");
         match result {
             Ok(loaded) => {
@@ -892,8 +915,6 @@ impl FunctorLangGame {
     /// Reload `project` keeping the model: here, or, when that would
     /// evaluate a heavy def, on the loader while the program plays.
     fn reload_linked(&mut self, path: String, project: functor_lang::project::Project) -> Result<Reloaded, String> {
-        // A reload still on the loader is older than this one.
-        self.supersede_reload();
         let defer = self.background && self.boot.is_none();
         let attempt = try_finish(&path, project, &self.role, Some(&self.session), &mut self.costs, defer)?;
         let (project, names, def) = match attempt {
@@ -902,13 +923,13 @@ impl FunctorLangGame {
         };
         let source = std::sync::Arc::new(functor_runtime_common::jobs::ProgramSource::of(&project.sources));
         let Some(job) = self.loader.start(source, self.recorder.job_reader()) else {
-            return finish_load(&path, project, &self.role, Some(&self.session)).map(|l| Reloaded::Now(Box::new(l)));
+            return self.finish_now(&path, project, true).map(|l| Reloaded::Now(Box::new(l)));
         };
         let status = format!(
             "reloading {path} off the frame thread (it evaluates `{def}` again); the running \
 program plays until it lands"
         );
-        self.reloading = Some(Reloading { job, path, project, names, started: Instant::now() });
+        self.reloading = Some(Reloading { job, changed: Vec::new(), path, project, names, started: Instant::now() });
         Ok(Reloaded::Later(status))
     }
 
@@ -938,52 +959,26 @@ program plays until it lands"
             return;
         }
         let adopting = Instant::now();
-        let Reloading { path, project, names, started, .. } = reloading;
-        let result = match outcome {
-            functor_runtime_common::jobs::load::Outcome::Evaluated(mut evaluated) => {
-                let mut file_reads = std::mem::take(&mut evaluated.file_reads);
-                functor_runtime_common::functor_lang_prelude::bytes::take_file_reads();
-                match evaluated.adopt(&project.module, &mut FunctorHost, &mut self.costs) {
-                    Ok((session, reuse)) => {
-                        file_reads.extend(functor_runtime_common::functor_lang_prelude::bytes::take_file_reads());
-                        contract(&path, names, project.module, project.sources, session, reuse, file_reads)
-                    }
-                    Err(f) => Err(format!(
-                        "cannot load {}",
-                        project.sources.render(f.error.span.start, &f.error.message)
-                    )),
-                }
-            }
-            functor_runtime_common::jobs::load::Outcome::Failed { message, file_reads } => {
-                self.data_watch.extend(file_reads);
-                Err(message)
-            }
-            functor_runtime_common::jobs::load::Outcome::Inline(why) => {
-                eprintln!("[functor-lang] {why}, so it loads on the frame thread");
-                finish_load(&path, project, &self.role, Some(&self.session))
-            }
-        };
+        let Reloading { path, project, names, started, changed, .. } = reloading;
+        let result = self.adopt_outcome(&path, project, names, outcome, true);
+        if result.is_err() {
+            // A data file read mid-write: retry once it settles.
+            self.data_watch.failed(&changed, Instant::now());
+        }
+        self.finish_reload(result, started);
         eprintln!(
-            "[functor-lang] reload landed: {:.1} ms on the frame thread",
+            "[functor-lang] the reload took {:.1} ms on the frame thread (adopt + swap)",
             adopting.elapsed().as_secs_f64() * 1000.0
         );
-        self.finish_reload(result, started);
     }
 
     /// Swap in a reload that ran on the loader, report it, and tell its
     /// waiters.
     fn finish_reload(&mut self, result: Result<Loaded, String>, started: Instant) {
         let result = result.map(|loaded| {
-            let reused = reused_status(&loaded.reuse, &loaded.sources);
-            let (rebound, history_replay) = self.swap_in(loaded);
-            let stored = if rebound > 0 {
-                format!("; {rebound} stored closure(s) rebound")
-            } else {
-                String::new()
-            };
-            let history = replay_status(history_replay);
+            let swapped = self.swap_in_reporting(loaded);
             format!(
-                "reloaded {} off the frame thread in {:.0}ms ({reused}model preserved{stored}{history})",
+                "reloaded {} off the frame thread in {:.0}ms ({swapped})",
                 self.path,
                 started.elapsed().as_secs_f64() * 1000.0
             )
@@ -1011,9 +1006,15 @@ program plays until it lands"
         }
         let started = Instant::now();
         let what = data_watch::describe(&changed);
+        self.supersede_reload();
         let reloaded = self.link_current().and_then(|(path, project)| self.reload_linked(path, project));
         let result = match reloaded {
-            Ok(Reloaded::Later(status)) => Ok(format!("data changed: {what} → {status}")),
+            Ok(Reloaded::Later(status)) => {
+                if let Some(reloading) = &mut self.reloading {
+                    reloading.changed = changed.clone();
+                }
+                Ok(format!("data changed: {what} → {status}"))
+            }
             Ok(Reloaded::Now(loaded)) => {
                 let (reused, values) = reuse_counts(&loaded.reuse, &loaded.sources);
                 self.swap_in(*loaded);
@@ -1037,6 +1038,19 @@ program plays until it lands"
         };
         events::emit(RuntimeEvent::HotReload { ok, message });
         Some(result)
+    }
+
+    /// [`Self::swap_in`], and its status: what was reused and rebound.
+    fn swap_in_reporting(&mut self, loaded: Loaded) -> String {
+        let reused = reused_status(&loaded.reuse, &loaded.sources);
+        let (rebound, history_replay) = self.swap_in(loaded);
+        let stored = if rebound > 0 {
+            format!("; {rebound} stored closure(s) rebound")
+        } else {
+            String::new()
+        };
+        let history = replay_status(history_replay);
+        format!("{reused}model preserved{stored}{history}")
     }
 
     /// Swap in a freshly loaded program, KEEPING THE MODEL — the shared tail
@@ -1333,6 +1347,9 @@ impl Game for FunctorLangGame {
         // live-preview push isn't silently reverted by editing a sibling.
         let entry_changed = entry_mtime(&stamp) != entry_mtime(&self.stamp);
         self.stamp = stamp;
+        // A reload still on the loader is older than this edit, even one
+        // that doesn't link.
+        self.supersede_reload();
         if entry_changed {
             self.pushed_entry = None;
         }
@@ -1343,18 +1360,11 @@ impl Game for FunctorLangGame {
                 events::emit(RuntimeEvent::HotReload { ok: true, message: status });
             }
             Ok(Reloaded::Now(loaded)) => {
-                let reused = reused_status(&loaded.reuse, &loaded.sources);
-                let (rebound, history_replay) = self.swap_in(*loaded);
-                let stored = if rebound > 0 {
-                    format!("; {rebound} stored closure(s) rebound")
-                } else {
-                    String::new()
-                };
-                let history = replay_status(history_replay);
+                let swapped = self.swap_in_reporting(*loaded);
                 events::emit(RuntimeEvent::HotReload {
                     ok: true,
                     message: format!(
-                        "hot-reloaded {} in {:.2}ms ({reused}model preserved{stored}{history}; an edited \
+                        "hot-reloaded {} in {:.2}ms ({swapped}; an edited \
 `init` takes effect on restart)",
                         self.path,
                         started.elapsed().as_secs_f64() * 1000.0
@@ -1402,6 +1412,7 @@ impl Game for FunctorLangGame {
         // already on disk here is either in this load or older than the
         // push — absorbing its mtime is correct either way.
         let stamp = project_stamp(&self.path);
+        self.supersede_reload();
         let pushed_project = self.pushed_project.as_ref().map(|files| {
             let mut files = files.clone();
             files[0].1 = source.to_string();
@@ -1425,17 +1436,10 @@ impl Game for FunctorLangGame {
                 return Ok(status);
             }
         };
-        let reused = reused_status(&loaded.reuse, &loaded.sources);
-        let (rebound, history_replay) = self.swap_in(loaded);
-        let stored = if rebound > 0 {
-            format!("; {rebound} stored closure(s) rebound")
-        } else {
-            String::new()
-        };
-        let history = replay_status(history_replay);
+        let swapped = self.swap_in_reporting(loaded);
         self.stamp = stamp;
         let status = format!(
-            "reloaded {} from pushed source in {:.2}ms ({reused}model preserved{stored}{history})",
+            "reloaded {} from pushed source in {:.2}ms ({swapped})",
             self.path,
             started.elapsed().as_secs_f64() * 1000.0
         );
@@ -1460,6 +1464,7 @@ impl Game for FunctorLangGame {
         }
         let started = Instant::now();
         let stamp = project_stamp(&self.path);
+        self.supersede_reload();
         let (path, project) = link_files(files)?;
         let reloaded = self.reload_linked(path, project)?;
         self.pushed_project = Some(files.to_vec());
@@ -1471,18 +1476,11 @@ impl Game for FunctorLangGame {
                 return Ok(status);
             }
         };
-        let reused = reused_status(&loaded.reuse, &loaded.sources);
-        let (rebound, history_replay) = self.swap_in(loaded);
-        let stored = if rebound > 0 {
-            format!("; {rebound} stored closure(s) rebound")
-        } else {
-            String::new()
-        };
-        let history = replay_status(history_replay);
+        let swapped = self.swap_in_reporting(loaded);
         self.stamp = stamp;
         let status = format!(
             "reloaded {} ({} file(s)) from pushed project in {:.2}ms \
-({reused}model preserved{stored}{history})",
+({swapped})",
             self.path,
             files.len(),
             started.elapsed().as_secs_f64() * 1000.0
@@ -1499,7 +1497,8 @@ impl Game for FunctorLangGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = Instant::now();
-        let loaded = load_sources(files, &self.role, None)?;
+        let (path, project) = link_files(files)?;
+        let loaded = self.finish_now(&path, project, false)?;
         self.pushed_project = Some(files.to_vec());
         self.pushed_entry = None;
         self.reset_in(loaded);

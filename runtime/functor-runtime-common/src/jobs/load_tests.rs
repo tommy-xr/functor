@@ -146,12 +146,19 @@ fn a_push_during_a_load_restarts_it_with_the_new_files() {
     let mut game = boot();
     let first = SLOW.replace("TOTAL", "300000.0");
     game.begin_load_project(&[("game.fun".to_string(), first)]).expect("links");
+    // Whoever waits on the load (the shell's `/load-project`) hears when the
+    // restarted one lands.
+    let (done, landed) = std::sync::mpsc::channel();
+    game.when_loaded(Box::new(move |status| {
+        let _ = done.send(status);
+    }));
     let second = SLOW.replace("TOTAL", "1000.0");
     let status = game.reload_project(&[("game.fun".to_string(), second)]).expect("links");
     assert!(status.contains("off the frame thread"), "{status}");
     let run = run(&mut game);
     run.status.expect("loads");
     assert!(game.state_debug().contains("sum: 499500"), "the pushed files: {}", game.state_debug());
+    assert!(landed.try_recv().expect("told").is_ok());
 }
 
 /// `slow` again each frame, so a reload's new value shows; `frames` counts
@@ -264,4 +271,18 @@ fn a_light_reload_stays_on_the_frame() {
     let status = game.reload_project(&[("game.fun".to_string(), edited)]).expect("reloads");
     assert!(status.starts_with("reloaded"), "{status}");
     assert!(!game.load_pending());
+}
+
+#[test]
+fn a_newer_push_that_doesnt_compile_still_supersedes_a_heavy_reload() {
+    let source = PLAYING.replace("TOTAL", "500000.0");
+    let mut game = FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), source)], Box::new(NativePlatform))
+        .expect("loads")
+        .load_in_background();
+    let heavy = PLAYING.replace("TOTAL", "510000.0");
+    let begun = game.reload_project(&[("game.fun".to_string(), heavy)]).expect("links");
+    assert!(begun.contains("off the frame thread"), "{begun}");
+    assert!(game.load_pending());
+    assert!(game.reload_project(&[("game.fun".to_string(), "let init = (".to_string())]).is_err());
+    assert!(!game.load_pending(), "the older reload stopped");
 }

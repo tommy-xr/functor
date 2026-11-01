@@ -187,19 +187,21 @@ struct Watch<'w> {
     /// When the def being evaluated started.
     started: f64,
     took: HashMap<String, f64>,
+    /// What this load has evaluated so far, in ms.
+    spent: f64,
     heavy: Option<String>,
 }
 
 impl<'w> Watch<'w> {
     fn new(progress: Option<&'w Progress>, defer: Option<(&'w Costs, Option<&'w Records>)>) -> Watch<'w> {
-        Watch { progress, defer, started: 0.0, took: HashMap::new(), heavy: None }
+        Watch { progress, defer, started: 0.0, took: HashMap::new(), spent: 0.0, heavy: None }
     }
 }
 
 impl LoadWatch for Watch<'_> {
     fn evaluating(&mut self, index: usize, total: usize, name: &str) -> bool {
         if let Some((costs, records)) = self.defer {
-            let slow = costs.0.get(name).is_some_and(|ms| *ms > HEAVY_MS);
+            let slow = costs.0.get(name).is_some_and(|ms| *ms > HEAVY_MS) || self.spent > HEAVY_MS;
             if slow || records.is_some_and(|records| records.read_files(name)) {
                 self.heavy = Some(name.to_string());
                 return false;
@@ -213,7 +215,9 @@ impl LoadWatch for Watch<'_> {
     }
 
     fn evaluated(&mut self, name: &str) {
-        self.took.insert(name.to_string(), now_ms() - self.started);
+        let took = now_ms() - self.started;
+        self.spent += took;
+        self.took.insert(name.to_string(), took);
     }
 }
 
@@ -239,9 +243,42 @@ pub enum Inline {
     Failed(RunFailure),
 }
 
+/// A host whose file inputs never check as current, so a deferrable load
+/// reads no file on the frame thread: a value that read files evaluates
+/// again, which defers it to the loader (which re-checks them).
+struct Unchecked<'h>(&'h mut dyn Host);
+
+impl Host for Unchecked<'_> {
+    fn provides(&self, path: &str) -> bool {
+        self.0.provides(path)
+    }
+
+    fn call(
+        &mut self,
+        path: &str,
+        args: Vec<functor_lang::Value>,
+        span: functor_lang::Span,
+    ) -> Result<functor_lang::HostReturn, functor_lang::RunError> {
+        self.0.call(path, args, span)
+    }
+
+    fn begin_inputs(&mut self) {
+        self.0.begin_inputs()
+    }
+
+    fn end_inputs(&mut self) -> Option<Vec<functor_lang::reuse::HostInput>> {
+        self.0.end_inputs()
+    }
+
+    fn inputs_current(&mut self, inputs: &[functor_lang::reuse::HostInput]) -> bool {
+        inputs.is_empty()
+    }
+}
+
 /// [`Session::load_reusing`] on this thread, timing each def into `costs`.
-/// With `defer`, it stops before evaluating a heavy def: slow last time
-/// ([`HEAVY_MS`]), or a reader of project files (a decode, typically).
+/// With `defer`, it reads no file and stops before evaluating a heavy def:
+/// slow last time ([`HEAVY_MS`]), a reader of project files (a decode,
+/// typically), or any def once the load has spent that long.
 pub fn load_inline(
     module: &Module,
     host: &mut dyn Host,
@@ -252,6 +289,8 @@ pub fn load_inline(
 ) -> Inline {
     let records = previous.and_then(Session::records);
     let mut watch = Watch::new(None, defer.then_some((&*costs, records)));
+    let mut unchecked = Unchecked(&mut *host);
+    let host: &mut dyn Host = if defer { &mut unchecked } else { unchecked.0 };
     let loaded = Session::load_watched(module, host, previous, types, None, &mut watch);
     let Watch { took, heavy, .. } = watch;
     match (loaded, heavy) {
