@@ -44,7 +44,8 @@ let bounds = (pieces): Solid.bounds =>
   let each = List.map((p) => Solid.bounds(p.solid), pieces) in
   let lo = (f) => List.fold((acc, b) => Math.min(acc, f(b.min)), 1000000000.0, each) in
   let hi = (f) => List.fold((acc, b) => Math.max(acc, f(b.max)), -1000000000.0, each) in
-  { min: Vec3.make(lo(Vec3.x), lo(Vec3.y), lo(Vec3.z)), max: Vec3.make(hi(Vec3.x), hi(Vec3.y), hi(Vec3.z)) }
+  let box: Solid.bounds = { min: Vec3.make(lo(Vec3.x), lo(Vec3.y), lo(Vec3.z)), max: Vec3.make(hi(Vec3.x), hi(Vec3.y), hi(Vec3.z)) } in
+  box
 
 // One view of `scene`: an orthographic camera just wide enough for the
 // part's box seen from `view`, and a key light from over its shoulder. It is
