@@ -396,6 +396,37 @@ which won't print as one solid — overlap them or move them apart"
         },
     );
     reg.fn1(
+        "Solid.hull",
+        "Solid.hull([solid, …]) — at least one solid",
+        |items: Vec<FunctorLangSolid>| {
+            if items.is_empty() {
+                return Err("Solid.hull needs at least one solid".to_string());
+            }
+            Ok(solid(Solid::hull(items.into_iter().map(|s| s.0).collect())))
+        },
+    );
+    reg.fn2(
+        "Solid.offset",
+        "Solid.offset(distance, solid) — negative shrinks",
+        |d: f64, s: FunctorLangSolid| {
+            if !d.is_finite() {
+                return Err(format!("Solid.offset distance must be finite, got {d}"));
+            }
+            // A computed fit of 0 is a no-op, not a mistake.
+            Ok(if d == 0.0 { s } else { solid(s.0.offset(d)) })
+        },
+    );
+    reg.fn2(
+        "Solid.round",
+        "Solid.round(radius, solid)",
+        |r: f64, s: FunctorLangSolid| {
+            if !(r.is_finite() && r > 0.0) {
+                return Err(format!("Solid.round radius must be positive, got {r}"));
+            }
+            Ok(solid(s.0.rounded(r)))
+        },
+    );
+    reg.fn1(
         "Solid.group",
         "Solid.group([solid, …]) — at least one solid",
         |items: Vec<FunctorLangSolid>| {

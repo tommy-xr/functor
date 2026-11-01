@@ -15,6 +15,7 @@ mod csg;
 pub use csg::simplify;
 mod mesh;
 pub mod model;
+mod morph;
 pub mod print;
 pub mod remesh;
 mod sketch;
@@ -91,6 +92,21 @@ pub enum Solid {
         offset: f64,
         above: bool,
         cut: CutCache,
+    },
+    /// The convex hull of the children, in its own frame. Build with
+    /// [`Solid::hull`].
+    Hull {
+        children: Vec<Arc<Solid>>,
+        result: MeshCache,
+    },
+    /// `child` shrunk by `shrink` mm, then grown by `grow` mm, by a ball (its
+    /// own frame): an offset when one is zero, a rounding when both are equal.
+    /// Build with [`Solid::offset`] or [`Solid::rounded`].
+    Morph {
+        child: Arc<Solid>,
+        shrink: f64,
+        grow: f64,
+        result: MeshCache,
     },
 }
 
@@ -197,6 +213,34 @@ got {normal:?} and {offset}"
             cut: cut.clone(),
         };
         Ok((half(true), half(false)))
+    }
+
+    pub fn hull(children: Vec<Arc<Solid>>) -> Solid {
+        Solid::Hull {
+            children,
+            result: MeshCache::default(),
+        }
+    }
+
+    /// Every surface moved out by `distance` mm (in, if negative), corners
+    /// and edges grown round.
+    pub fn offset(self: Arc<Self>, distance: f64) -> Solid {
+        self.morph(distance.min(0.0).abs(), distance.max(0.0))
+    }
+
+    /// Convex edges and corners rounded to `radius`: shrunk by it, then grown
+    /// back. Features thinner than 2 × `radius` vanish.
+    pub fn rounded(self: Arc<Self>, radius: f64) -> Solid {
+        self.morph(radius, radius)
+    }
+
+    fn morph(self: Arc<Self>, shrink: f64, grow: f64) -> Solid {
+        Solid::Morph {
+            child: self,
+            shrink,
+            grow,
+            result: MeshCache::default(),
+        }
     }
 
     pub fn translate(self: Arc<Self>, offset: [f64; 3]) -> Solid {
@@ -332,6 +376,25 @@ got {normal:?} and {offset}"
                     .get_or_init(|| csg::split(child, *normal, *offset).map(|h| h.map(Arc::new)))
                     .clone()?;
                 out.append(&halves[if *above { 0 } else { 1 }], xform);
+            }
+            Solid::Hull { children, result } => {
+                let mesh = result
+                    .0
+                    .get_or_init(|| morph::hull(children).map(Arc::new))
+                    .clone()?;
+                out.append(&mesh, xform);
+            }
+            Solid::Morph {
+                child,
+                shrink,
+                grow,
+                result,
+            } => {
+                let mesh = result
+                    .0
+                    .get_or_init(|| morph::morph(child, *shrink, *grow).map(Arc::new))
+                    .clone()?;
+                out.append(&mesh, xform);
             }
         }
         Ok(())
