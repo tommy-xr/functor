@@ -93,8 +93,10 @@ let neonStrips = Scene.group(neonBoxes |> List.map(slabOf))
 
 // Sodium street lamps by the apron.
 let lampHeads = [v(4.4, 4.8, -4.0), v(15.6, 4.8, -4.0)]
-let lampPosts = lampHeads |> List.map((p) =>
-  slab(Vec3.x(p) - 0.06, 0.0, Vec3.z(p) - 0.06, Vec3.x(p) + 0.06, 4.9, Vec3.z(p) + 0.06)) |> Scene.group |> Scene.lit(rgb(60.0, 60.0, 66.0))
+let postGrey = rgb(60.0, 60.0, 66.0)
+let postBoxes = lampHeads |> List.map((p) =>
+  box(Vec3.x(p) - 0.06, 0.0, Vec3.z(p) - 0.06, Vec3.x(p) + 0.06, 4.9, Vec3.z(p) + 0.06))
+let lampPosts = postBoxes |> List.map(slabOf) |> Scene.group |> Scene.lit(postGrey)
 let shadeBoxes = lampHeads |> List.map((p) =>
   box(Vec3.x(p) - 0.25, 4.75, Vec3.z(p) - 0.12, Vec3.x(p) + 0.25, 4.85, Vec3.z(p) + 0.12))
 let lampShades = shadeBoxes |> List.map(slabOf) |> Scene.group
@@ -117,9 +119,12 @@ let apronSlab = slabOf(apronBox) |> Scene.lit(apronGrey)
 // change with the hour. The ground isn't part of it.
 let exteriorAt = (neon: float, lamps: float): Scene.t => Scene.group([
   apronSlab, facadeSlabs, windowBands, canopy, lampPosts,
-  neonStrips |> Scene.color(rgb(110.0 * neon, 240.0 * neon, 230.0 * neon)),
-  lampShades |> Scene.color(Hours.color(Hours.mix(shadeByDay, sodiumGlow, lamps))),
+  neonStrips |> Scene.color(neonColor(neon)),
+  lampShades |> Scene.color(shadeColor(lamps)),
 ])
+// The neon and the sodium shades at `neon` and `lamps` (1 at night).
+let neonColor = (neon: float): Color.t => rgb(110.0 * neon, 240.0 * neon, 230.0 * neon)
+let shadeColor = (lamps: float): Color.t => Hours.color(Hours.mix(shadeByDay, sodiumGlow, lamps))
 // Off by day: about the grey the lit posts show at noon.
 let shadeByDay: Hours.Rgb = { r: 110.0 / 255.0, g: 110.0 / 255.0, b: 116.0 / 255.0 }
 let sodiumGlow: Hours.Rgb = { r: 255.0 / 255.0, g: 190.0 / 255.0, b: 110.0 / 255.0 }

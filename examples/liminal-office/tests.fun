@@ -399,7 +399,7 @@ let tight = (n: float, gapX: float, gapZ: float): Block.Town =>
   let side = Math.sqrt(n) in
   let cs = List.range(n) |> List.map((id) =>
     { name: $"tight-{id}", x: Math.mod(id, side) * (f.x1 + gapX), z: Math.floor(id / side) * (f.z1 + gapZ), yaw: 0.0 }) in
-  { name: "tight", copies: cs, index: Block.indexOf(cs), shells: true, solidOn: Block.solidOn, ground: Exterior.ground, groundBody: Exterior.groundBody }
+  { name: "tight", copies: cs, index: Block.indexOf(cs), shells: true, solidOn: Block.solidOn, lightReach: Block.lightReach, ground: Exterior.ground, groundBody: Exterior.groundBody }
 let tight64 = tight(64.0, 6.0, 6.0)
 let tight16 = tight(16.0, 6.0, 6.0)
 expect Block.near(tight64, Block.activeOff, Vec3.make(83.0, 1.6, 101.5)) == scan(tight64, Block.activeOff, Vec3.make(83.0, 1.6, 101.5))
@@ -500,17 +500,22 @@ expect not Block.isIn(5.0, Block.solidAt(grid64, [5.0], south(Block.solidOn + Bl
 // An inactive copy is a shell, an active one isn't.
 let shellLook = (active: List<float>): Shells.Look => { town: 4.0, active: active, neon: 1.0, lamps: 1.0, day: false }
 expect List.length(Shells.idleOf(shellLook([0.0, 37.0]))) == 62.0
-expect Shells.idleOf(shellLook([0.0, 37.0])) |> List.all((c) => c.name != "office-0" && c.name != "office-37")
-// Every window glows where layout.fun cuts it, in the wall's outer face, lit
-// when a panel lights its room.
-let half = facade / 2.0
-expect List.length(Shells.windowOpenings) == List.length(windows)
+expect Shells.idleOf(shellLook([0.0, 37.0])) |> List.all((id) => id != 0.0 && id != 37.0)
+// The shells build, by night and day, with every copy idle or none.
+expect [shellLook([]), { shellLook(Block.townAt(4.0).copies |> List.indexedMap((id, c) => id)) with day: true }] |> List.all((l) =>
+  Scene.equals(Shells.shellsOf(l), Shells.shellsOf(l)))
+// Every window glows where layout.fun cuts it, in the wall's outer face, and
+// a panel lights the room behind it (so glowing is right); the entrance
+// comes first.
+let half = Exterior.half
+expect List.length(Shells.openings) == List.length(windows) + 1.0
 expect windows |> List.indexedMap((i, w) =>
-  match List.nth(i, Shells.windowOpenings) with
-  | Option.Some(e) =>
-    let (b, lit) = e in
+  match List.nth(i + 1.0, Shells.openings) with
+  | Option.Some(b) =>
     let y = Building.baseOf(Building.roomAt(w.room)) in
-    lit == Shells.isLit(w.room) && w.side == West && near(b.x1, f.x0 - half)
+    w.side == West && near(b.x1, f.x0 - half)
       && near(b.z0, w.at - w.width / 2.0) && near(b.z1, w.at + w.width / 2.0) && near(b.y0, y + w.sill) && near(b.y1, y + w.head)
   | Option.None => false) |> List.all((ok) => ok)
-expect Shells.windowOpenings |> List.all((e) => let (b, lit) = e in lit)
+expect windows |> List.all((w) => Building.roomAt(w.room).panels |> List.any((p) => p.on))
+// One copy's parts are prebuilt per id, for the largest town.
+expect List.length(Shells.parts) == 64.0

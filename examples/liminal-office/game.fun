@@ -284,7 +284,7 @@ let draw = (model, tts: float) =>
     if not town.shells then []
     else [Scene.memo($"{town.name}/shells", { town: model.town, active: active, neon: o.neon, lamps: o.lamps, day: day }, Shells.shellsOf)] in
   let scene = Scene.group([town.ground, Scene.group(List.append(shells, copies))]) in
-  let lights = frameLights(o, Block.near(town, Block.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyAt(id)), eye) in
+  let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyAt(id)), eye) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
     |> Frame.withFog(Fog.linear(o.fogNear, Hours.fogFar, Hours.color(o.sky)))
     |> Frame.withClearColor(Hours.color(o.sky))

@@ -37,7 +37,7 @@ let streetWidth = 24.0
 let centre = 0.0 - streetWidth / 2.0
 // A block of four spans this far along x and z; the grids repeat it every
 // `blockPitch`, a street apart.
-let blockSpan = 2.0 * footprint.z1 + streetWidth
+let blockSpan = 2.0 * Math.max(footprint.x1 - footprint.x0, footprint.z1 - footprint.z0) + streetWidth
 let blockPitch = blockSpan + streetWidth
 
 // Block `s`'s cell in a grid, in rings out from (0, 0): 0 is (0, 0); 1–3 are
@@ -83,7 +83,10 @@ let fromFootprint = (p: Vec3.t): float =>
 // tile holding its footprint's middle, so a query reads only the tiles near
 // the eye, however many copies there are. `i0`..`j1` bound the tiles in use.
 let tile = blockPitch / 2.0
-let halfDiagonal = Math.sqrt(footprint.x1 * footprint.x1 + footprint.z1 * footprint.z1) / 2.0
+let halfDiagonal =
+  let w = footprint.x1 - footprint.x0 in
+  let d = footprint.z1 - footprint.z0 in
+  Math.sqrt(w * w + d * d) / 2.0
 let tileOf = (x: float): float => Math.floor(x / tile)
 let tileKey = (i: float, j: float): float => i * 4096.0 + j
 let middleOf = (c: Copy): Vec3.t =>
@@ -99,40 +102,45 @@ let indexOf = (copies: List<Copy>): Index =>
     i0: List.minimum(is) |> Option.defaultValue(0.0), i1: List.maximum(is) |> Option.defaultValue(0.0),
     j0: List.minimum(js) |> Option.defaultValue(0.0), j1: List.maximum(js) |> Option.defaultValue(0.0) }
 
+let everywhere = 1000000.0
+// In a grid, copies within this of the player are solid.
+let solidOn = 12.0
+// In a grid, the frame's 6 nearest lights come from copies this near.
+let lightReach = 60.0
+
 // A placement of the first `n` copies. `shells`: inactive copies draw as
 // shells.fun's stand-ins, not as their street side. Copies within `solidOn`
-// of the player get colliders.
-type Town = { name: string, copies: List<Copy>, index: Index, shells: bool, solidOn: float, ground: Scene.t, groundBody: Physics.body }
-let townOf = (name: string, n: float, shells: bool, solidOn: float, ground: Scene.t, groundBody: Physics.body): Town =>
+// of the player get colliders; copies within `lightReach` of the eye lend
+// their lights (and may be the nearest).
+type Town = { name: string, copies: List<Copy>, index: Index, shells: bool, solidOn: float, lightReach: float, ground: Scene.t, groundBody: Physics.body }
+// Grids have shells and nearby-only colliders and lights; the office alone
+// and the block keep every copy solid and lit (views 9 and 0 teleport
+// between copies).
+let townOf = (name: string, n: float, shells: bool, ground: Scene.t, groundBody: Physics.body): Town =>
   let copies = List.range(n) |> List.map(copyAt) in
-  { name: name, copies: copies, index: indexOf(copies), shells: shells, solidOn: solidOn, ground: ground, groundBody: groundBody }
+  { name: name, copies: copies, index: indexOf(copies), shells: shells, solidOn: if shells then solidOn else everywhere,
+    lightReach: if shells then lightReach else everywhere, ground: ground, groundBody: groundBody }
 
 // The block's ground and its collider, past every collar.
 let groundSize = 400.0
 let ground = Exterior.groundAt(centre, centre, groundSize)
 let groundBody = Exterior.groundBodyAt("block-ground", centre, centre, groundSize)
 
-// The office alone and the block keep every copy solid: views 9 and 0
-// teleport between copies.
-let everywhere = 1000000.0
-// In a grid, copies within this of the player are solid.
-let solidOn = 12.0
 // A grid of `n` copies (4, 16, 64: 1, 2 × 2, 4 × 4 blocks), on a ground that
 // reaches past the far clip from every street.
 let gridOf = (n: float): Town =>
   let side = Math.sqrt(n / 4.0) * blockPitch in
   let mid = centre + (side - blockPitch) / 2.0 in
   let size = side + 2.0 * 160.0 in
-  townOf($"grid-{n}", n, true, solidOn,
+  townOf($"grid-{n}", n, true,
     Exterior.groundAt(mid, mid, size), Exterior.groundBodyAt($"grid-{n}-ground", mid, mid, size))
 
 // The towns, by the model's `town`: the office alone, the block, then the
 // grids of 4, 16 and 64. B toggles the office alone and the block; G cycles
 // the grids.
-let office = townOf("office", 1.0, false, everywhere, Exterior.ground, Exterior.groundBody)
-let towns = [office, townOf("block", 4.0, false, everywhere, ground, groundBody), gridOf(4.0), gridOf(16.0), gridOf(64.0)]
+let office = townOf("office", 1.0, false, Exterior.ground, Exterior.groundBody)
+let towns = [office, townOf("block", 4.0, false, ground, groundBody), gridOf(4.0), gridOf(16.0), gridOf(64.0)]
 let townAt = (t: float): Town => List.nth(t, towns) |> Option.defaultValue(office)
-let copyOf = (town: Town, id: float): Copy => List.nth(id, town.copies) |> Option.defaultValue(home)
 
 // The copies whose footprints lie within `r` of `eye`, as (id, distance), by
 // id. Reads only the index tiles within `r` plus a footprint's reach.
@@ -163,6 +171,11 @@ let maxActive = 4.0
 
 let isIn = (id: float, ids: List<float>): bool => ids |> List.any((i) => i == id)
 
+// The copies within `off` of `eye` that are inside `on`, or were on (`was`):
+// hysteresis, as (id, distance) by id.
+let qualifying = (town: Town, on: float, off: float, was: List<float>, eye: Vec3.t): List<(float, float)> =>
+  near(town, off, eye) |> List.filter((e) => let (id, d) = e in d < on || isIn(id, was))
+
 // Which copies' interiors draw for an eye at `eye`, given those that did last
 // frame (`was`): at most `k`, by id. A copy qualifies inside `activeOn`, or
 // inside `activeOff` if it was on. When more than `k` qualify they rank:
@@ -175,8 +188,7 @@ let isIn = (id: float, ids: List<float>): bool => ids |> List.any((i) => i == id
 // So a copy turns off before `activeOff` only when the eye walks into
 // another building and all `k` are taken.
 let activeAt = (town: Town, k: float, was: List<float>, eye: Vec3.t): List<float> =>
-  near(town, activeOff, eye)
-    |> List.filter((e) => let (id, d) = e in d < activeOn || isIn(id, was))
+  qualifying(town, activeOn, activeOff, was, eye)
     |> List.sortBy((e) =>
       let (id, d) = e in
       (if d <= eyeReach then 0.0 else if isIn(id, was) then 1.0 else 2.0) * 1000.0 + d)
@@ -187,25 +199,20 @@ let activeAt = (town: Town, k: float, was: List<float>, eye: Vec3.t): List<float
 // How many active copies' cells don't hold `eye`: each would draw its whole
 // interior (`Scene.cells`' fallback). Zero by construction; the e2e checks it.
 let uncovered = (town: Town, active: List<float>, eye: Vec3.t): float =>
-  active |> List.filter((id) => Cells.locate(toLocal(copyOf(town, id), eye), Portals.level) == Option.None) |> List.length
+  active |> List.filter((id) => Cells.locate(toLocal(copyAt(id), eye), Portals.level) == Option.None) |> List.length
 
 // Copies with colliders: within the town's `solidOn` of the player, staying
 // solid to `solidMargin` past it. Not capped: the streets bound how many
 // stand that near.
 let solidMargin = 4.0
 let solidAt = (town: Town, was: List<float>, eye: Vec3.t): List<float> =>
-  near(town, town.solidOn + solidMargin, eye)
-    |> List.filter((e) => let (id, d) = e in d < town.solidOn || isIn(id, was))
+  qualifying(town, town.solidOn, town.solidOn + solidMargin, was, eye)
     |> List.map((e) => let (id, d) = e in id)
 
-// Copies whose lights the frame considers: the 6 nearest the eye come from
-// copies this near.
-let lightReach = 60.0
-
 // The id of the copy nearest `eye` (the first, on a tie); copy 0 when none
-// is within `lightReach`.
+// is within the town's `lightReach`.
 let nearest = (town: Town, eye: Vec3.t): float =>
-  let (best, _) = near(town, lightReach, eye)
+  let (best, _) = near(town, town.lightReach, eye)
     |> List.fold((acc, kd) =>
       let (_, d) = acc in
       let (_, dk) = kd in
@@ -219,7 +226,7 @@ let nearest = (town: Town, eye: Vec3.t): float =>
 let pointSlots = 6.0
 // Of `lights` (each with its world position), the `pointSlots` nearest `eye`,
 // in their original order (so the office alone lights exactly as before).
-let nearestLights = (eye: Vec3.t, lights: List<(Vec3.t, 'light)>): List<'light> =>
+let nearestLights = (eye: Vec3.t, lights: List<(Vec3.t, Light.t)>): List<Light.t> =>
   lights |> List.indexedMap((i, l) => let (at, light) = l in (i, Vec3.length(at |> Vec3.sub(eye)), light))
     |> List.sortBy((e) => let (i, d, light) = e in d) |> List.take(pointSlots)
     |> List.sortBy((e) => let (i, d, light) = e in i) |> List.map((e) => let (i, d, light) = e in light)

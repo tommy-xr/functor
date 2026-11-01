@@ -27,7 +27,9 @@
 //      pushed variants of game.fun draw each cell model 0×, 1× or once per
 //      material group, and `/state.cull`'s tested − culled differences count
 //      the static models and their group draws that actually submitted;
-//  10. shared uploads (`--json` frame stats): after copy 0's pass, the same
+//  10. the grid of 64: view 0 lands on copy 2's floor (its colliders are in
+//      place before the teleport), and K = 1 leaves only the eye's copy on;
+//  11. shared uploads (`--json` frame stats): after copy 0's pass, the same
 //      pass through copies 1–3 misses no GPU cache, uploads nothing and adds
 //      no live GL object; the noon switch misses as often with four copies
 //      active as with the office alone.
@@ -549,6 +551,30 @@ async function blockTour(game) {
   return windows;
 }
 
+// The grid of 64 (G three times, from the block): view 0 lands in copy 2's
+// office 103 with its colliders already in place; K caps the interiors. Then
+// back to the block, K at 4 again.
+const OFFICE_103 = 6;
+async function gridJump(game) {
+  for (let i = 0; i < 3; i++) await game.hold("g", 1);
+  await game.view(0);
+  let m = await game.model();
+  check(m.town === 4 && m.copy === 2 && m.cell === OFFICE_103 && m.grounded && m.solid.includes(2),
+    `grid of 64, view 0: in copy 2's office 103, standing on its floor (town ${m.town}, copy ${m.copy}, cell ${m.cell}, solid ${JSON.stringify(m.solid)}, y ${m.at.y.toFixed(3)})`);
+  check(near(m.at.y, CENTRE, 0.01), `grid of 64, view 0: on the floor, not the street below it (y ${m.at.y.toFixed(3)})`);
+  check(m.active.includes(2) && m.active.length <= 4, `grid of 64: the eye's copy is active, at most 4 (${JSON.stringify(m.active)})`);
+  await game.hold("k", 1);
+  await game.step(2);
+  m = await game.model();
+  check(m.k === 1 && JSON.stringify(m.active) === "[2]" && m.uncovered === 0, `K = 1: only the eye's own copy draws (${JSON.stringify(m.active)}, uncovered ${m.uncovered})`);
+  await game.hold("k", 1);
+  await game.hold("k", 1);
+  await game.hold("b", 1);
+  await game.hold("b", 1);
+  m = await game.model();
+  check(m.town === 1 && m.k === 4, `back to the block, K 4 (town ${m.town}, k ${m.k})`);
+}
+
 // Static draws from `/state.cull` (tested − culled): a static model that
 // isn't portal-hidden is tested once; one inside the frustum submits a draw
 // per material group. Variants of game.fun's `roomOf` draw each cell model
@@ -710,6 +736,7 @@ try {
   await daylight(game);
   const culled = await viewCaptures(game, true);
   await blockTour(game);
+  await gridJump(game);
   const draws = await drawCounts(game);
   console.log(`static draws: ${JSON.stringify(draws, null, 1)}`);
 
