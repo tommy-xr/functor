@@ -119,6 +119,22 @@ let opacity : (float, t) => t
 /// ```
 let castShadows : (bool, t) => t
 
+/// Keep `scene` loaded on the GPU without drawing it, in any pass. A
+/// `Model.static`'s mesh and pixel textures (including a `Scene.withLightmap`
+/// lightmap) upload the first frame it appears; everything else in it stays
+/// loaded once drawn. Otherwise the GPU drops data models, pixel textures,
+/// meshes and instance lists a frame didn't use, and drawing them again
+/// re-uploads. Use it for content that comes and goes: building interiors
+/// activated by distance, the other hour's lightmap. Memory stays held, so
+/// declare only what will return soon. Terrain and `Scene.opacity` subtrees
+/// inside are skipped.
+///
+/// ```
+/// let resident = Scene.keepResident(Scene.group([nightRooms, dayRooms]))
+/// let draw = (model, tts) => … Scene.group([visible, resident]) …
+/// ```
+let keepResident : (t) => t
+
 /// Stamp a scene once per instance — one node for thousands of copies.
 ///
 /// `scene |> Scene.instanced(instances)` is semantically a group holding one
