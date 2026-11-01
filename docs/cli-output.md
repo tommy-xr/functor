@@ -211,7 +211,7 @@ used to `println!` directly. PR-2a routes them through the runtime event sink (b
 | `type`            | Fields                                                                           | Emitted when |
 | ----------------- | -------------------------------------------------------------------------------- | ------------ |
 | `runtime_ready`   | —                                                                                | the runtime loaded and is about to render |
-| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `sim_us`?, `sim_wait_us`?, `frame_us`?, `budget_pct`?, `over_n_frames`, `gpu_live_vaos`?, `gpu_live_buffers`?, `gpu_live_textures`?, `gpu_bytes_per_frame`?, `gpu_cache_hits`?, `gpu_cache_misses`?, `gpu_instance_uploads_per_frame`?, `gpu_instance_bytes_per_frame`? | every `over_n_frames` fixed steps (300) |
+| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `sim_us`?, `sim_wait_us`?, `frame_us`?, `budget_pct`?, `over_n_frames`, `gpu_live_vaos`?, `gpu_live_buffers`?, `gpu_live_textures`?, `gpu_bytes_per_frame`?, `gpu_bytes_uploaded`?, `gpu_cache_hits`?, `gpu_cache_misses`?, `gpu_instance_uploads_per_frame`?, `gpu_instance_bytes_per_frame`? | every `over_n_frames` fixed steps (300) |
 | `capture_written` | `path` (string)                                                                  | a `--capture-frame` PNG was written |
 | `hot_reload`      | `ok` (bool), `message` (string)                                                  | a hot-reload settled (`ok:false` = rejected edit; old program kept) |
 | `asset_error`     | `path` (string?), `message` (string)                                             | an asset failed to load (fallback served) |
@@ -238,8 +238,9 @@ a leak tripwire: since GL objects have no `Drop`, a resource created every frame
 otherwise invisible. `gpu_live_vaos` / `gpu_live_buffers` / `gpu_live_textures` are the **instantaneous**
 live counts (bumped at every `create_*` site, decremented at each explicit `delete`) — a leak class
 (e.g. a per-frame mesh) shows up as one of these climbing sample over sample; they stay flat when
-nothing leaks. `gpu_bytes_per_frame` is the average bytes uploaded per frame over the window
-(`buffer_data`/`buffer_sub_data`/`tex_image` payloads); `gpu_cache_hits`/`gpu_cache_misses` are the
+nothing leaks. `gpu_bytes_per_frame` is the average bytes uploaded per drawn frame over the window
+(`buffer_data`/`buffer_sub_data`/`tex_image` payloads) and `gpu_bytes_uploaded` the window's total —
+use the total to sum a window's uploads, since a window draws 0..N frames per step; `gpu_cache_hits`/`gpu_cache_misses` are the
 heightmap-mesh cache's window totals (a healthy animated heightmap is ~all hits after the first frame).
 `gpu_instance_uploads_per_frame` / `gpu_instance_bytes_per_frame` average the `Scene.instanced`
 instance-buffer uploads (also counted in `gpu_bytes_per_frame`): an instance list kept in the model
@@ -249,7 +250,7 @@ Example tail of `functor -d examples/lighting run native --json` (frame stats + 
 
 ```json
 {"type":"runtime_ready"}
-{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"render_us":210.5,"swap_us":15980.2,"sim_us":190.1,"sim_wait_us":0.0,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300,"gpu_live_vaos":6,"gpu_live_buffers":11,"gpu_live_textures":4,"gpu_bytes_per_frame":101376.0,"gpu_cache_hits":300,"gpu_cache_misses":0,"gpu_instance_uploads_per_frame":0.0,"gpu_instance_bytes_per_frame":0.0}
+{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"render_us":210.5,"swap_us":15980.2,"sim_us":190.1,"sim_wait_us":0.0,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300,"gpu_live_vaos":6,"gpu_live_buffers":11,"gpu_live_textures":4,"gpu_bytes_per_frame":101376.0,"gpu_bytes_uploaded":30412800,"gpu_cache_hits":300,"gpu_cache_misses":0,"gpu_instance_uploads_per_frame":0.0,"gpu_instance_bytes_per_frame":0.0}
 {"type":"capture_written","path":"/tmp/frame.png"}
 ```
 

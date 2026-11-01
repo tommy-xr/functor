@@ -40,7 +40,7 @@ pub enum RuntimeEvent {
     /// The `gpu_*` fields are the GPU-resource counters (`gpu_counters`): the
     /// `gpu_live_*` counts are instantaneous (latest snapshot) and stay flat when
     /// nothing leaks; `gpu_bytes_per_frame` is the average bytes uploaded per
-    /// frame over the window; `gpu_cache_hits`/`gpu_cache_misses` are the
+    /// drawn frame and `gpu_bytes_uploaded` the window's total; `gpu_cache_hits`/`gpu_cache_misses` are the
     /// heightmap-mesh cache's window totals. `gpu_instance_uploads_per_frame` /
     /// `gpu_instance_bytes_per_frame` average the `Scene.instanced` instance
     /// buffer uploads — 0 in the steady state when instance lists are retained.
@@ -64,6 +64,7 @@ pub enum RuntimeEvent {
         gpu_live_buffers: u64,
         gpu_live_textures: u64,
         gpu_bytes_per_frame: f64,
+        gpu_bytes_uploaded: u64,
         gpu_cache_hits: u64,
         gpu_cache_misses: u64,
         gpu_instance_uploads_per_frame: f64,
