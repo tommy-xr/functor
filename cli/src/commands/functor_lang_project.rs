@@ -789,17 +789,12 @@ paths are external — read it in a top-level value `config` doesn't use"
         bindings: &[String],
         output: &Path,
     ) -> Result<(), Error> {
-        use functor_runtime_common::functor_lang_prelude::solid::solid_global;
-
         let three_mf = export_format(output)?;
         let session = load_session(project)?;
         reject_repeated_parts(bindings)?;
         let mut parts = Vec::new();
         for binding in bindings {
-            let mesh = solid_global(&session, binding)
-                .map_err(Error::other)?
-                .mesh()
-                .map_err(|e| Error::other(format!("`{binding}`: {e}")))?;
+            let mesh = part_mesh(&session, binding)?;
             check_printable(binding, &mesh)?;
             parts.push((binding.as_str(), mesh));
         }
@@ -833,31 +828,17 @@ paths are external — read it in a top-level value `config` doesn't use"
         Ok(())
     }
 
-    /// Render the entry's Solid parts (all, or `bindings`) as a
-    /// `PartViews.sheet` PNG: a generated entry, beside the real one and
-    /// naming its parts, runs through the runtime's `--capture-frame`.
-    pub fn export_views(
+    /// The parts to show: `bindings`, or (when empty) the entry file's own
+    /// top-level Solids in source order. Errors list the available parts.
+    fn entry_parts(
         &self,
-        working_directory: &str,
         project: &functor_lang::project::Project,
+        session: &functor_lang::Session,
         bindings: &[String],
-        output: &Path,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<String>, Error> {
         use functor_runtime_common::functor_lang_prelude::solid::solid_global;
 
-        if !output
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
-        {
-            return Err(Error::other(format!(
-                "cannot write views to {}: use a .png file",
-                output.display()
-            )));
-        }
         reject_repeated_parts(bindings)?;
-        let session = load_session(project)?;
-        // The entry file's own top-level Solids, in source order.
         let entry_len = project.sources.files()[0].src.len();
         let mut defs: Vec<_> = project
             .module
@@ -869,7 +850,7 @@ paths are external — read it in a top-level value `config` doesn't use"
         let solids: Vec<&str> = defs
             .iter()
             .map(|d| d.name.as_str())
-            .filter(|name| solid_global(&session, name).is_ok())
+            .filter(|name| solid_global(session, name).is_ok())
             .collect();
         if solids.is_empty() {
             return Err(Error::other(format!(
@@ -884,27 +865,87 @@ paths are external — read it in a top-level value `config` doesn't use"
                 names.join(", ")
             )));
         }
-        let parts: Vec<&str> = if bindings.is_empty() {
-            solids
+        Ok(if bindings.is_empty() {
+            solids.into_iter().map(String::from).collect()
         } else {
-            bindings.iter().map(String::as_str).collect()
-        };
+            bindings.to_vec()
+        })
+    }
+
+    /// Write the entry's Solid parts (all, or `bindings`) as one
+    /// self-contained HTML viewer (see `part_page`), titled after the
+    /// project directory.
+    pub fn export_html(
+        &self,
+        working_directory: &str,
+        project: &functor_lang::project::Project,
+        bindings: &[String],
+        output: &Path,
+    ) -> Result<(), Error> {
+        if !output
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("html"))
+        {
+            return Err(Error::other(format!(
+                "cannot write a viewer to {}: use a .html file",
+                output.display()
+            )));
+        }
+        let session = load_session(project)?;
+        let names = self.entry_parts(project, &session, bindings)?;
+        let meshes = names
+            .iter()
+            .map(|name| part_mesh(&session, name))
+            .collect::<Result<Vec<_>, _>>()?;
+        let parts: Vec<_> = names.iter().map(String::as_str).zip(&meshes).collect();
+        let title = std::fs::canonicalize(working_directory)
+            .ok()
+            .and_then(|d| d.file_name()?.to_str().map(String::from))
+            .unwrap_or_else(|| self.entry.clone());
+        let page = super::part_page::render(&title, &parts).map_err(Error::other)?;
+        std::fs::write(output, &page)?;
+        let triangles: usize = meshes.iter().map(|m| m.triangles.len()).sum();
+        emit(Event::Info {
+            message: format!(
+                "wrote {}: {} part(s), {triangles} triangles, {} kB",
+                output.display(),
+                names.len(),
+                page.len().div_ceil(1000)
+            ),
+        });
+        Ok(())
+    }
+
+    /// Render the entry's Solid parts (all, or `bindings`) as a
+    /// `PartViews.sheet` PNG: a generated entry, beside the real one and
+    /// naming its parts, runs through the runtime's `--capture-frame`.
+    pub fn export_views(
+        &self,
+        working_directory: &str,
+        project: &functor_lang::project::Project,
+        bindings: &[String],
+        output: &Path,
+    ) -> Result<(), Error> {
+        if !output
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        {
+            return Err(Error::other(format!(
+                "cannot write views to {}: use a .png file",
+                output.display()
+            )));
+        }
+        let parts = self.entry_parts(project, &load_session(project)?, bindings)?;
 
         // The generated entry sees the real one as a sibling module.
-        const COLORS: [(&str, &str); 6] = [
-            ("orange", "0.8, 0.5, 0.2"),
-            ("blue", "0.3, 0.55, 0.8"),
-            ("green", "0.45, 0.7, 0.35"),
-            ("red", "0.8, 0.35, 0.45"),
-            ("purple", "0.6, 0.45, 0.8"),
-            ("grey", "0.7, 0.7, 0.7"),
-        ];
-        let colored: Vec<_> = parts.iter().zip(COLORS.iter().cycle()).collect();
+        let colored: Vec<_> = parts.iter().zip(PART_COLORS.iter().cycle()).collect();
         let pieces = colored
             .iter()
-            .map(|(part, (_, rgb))| {
+            .map(|(part, (_, [r, g, b]))| {
                 format!(
-                    "{{ solid: {}.{part}, color: Color.rgb({rgb}) }}",
+                    "{{ solid: {}.{part}, color: Color.rgb({r:?}, {g:?}, {b:?}) }}",
                     project.entry
                 )
             })
@@ -2610,6 +2651,16 @@ fn entry_escapes_project(entry: &str) -> bool {
 /// (3.2) tiles tall, so each view is `tilePixels` (720), its target's size.
 const PART_VIEWS_SIZE: u32 = 2304;
 
+/// Part colours for `export --views` and `--html`, cycled in part order.
+pub(crate) const PART_COLORS: [(&str, [f32; 3]); 6] = [
+    ("orange", [0.8, 0.5, 0.2]),
+    ("blue", [0.3, 0.55, 0.8]),
+    ("green", [0.45, 0.7, 0.35]),
+    ("red", [0.8, 0.35, 0.45]),
+    ("purple", [0.6, 0.45, 0.8]),
+    ("grey", [0.7, 0.7, 0.7]),
+];
+
 /// Evaluate the project headlessly, for its Solid bindings.
 fn load_session(project: &functor_lang::project::Project) -> Result<functor_lang::Session, Error> {
     use functor_runtime_common::functor_lang_prelude::FunctorHost;
@@ -2620,6 +2671,15 @@ fn load_session(project: &functor_lang::project::Project) -> Result<functor_lang
                 .render(failure.error.span.start, &failure.error.message),
         )
     })
+}
+
+/// Mesh the top-level Solid `name`.
+fn part_mesh(session: &functor_lang::Session, name: &str) -> Result<functor_solid::Mesh, Error> {
+    use functor_runtime_common::functor_lang_prelude::solid::solid_global;
+    solid_global(session, name)
+        .map_err(Error::other)?
+        .mesh()
+        .map_err(|e| Error::other(format!("`{name}`: {e}")))
 }
 
 /// Refuse `--part a --part a`.
