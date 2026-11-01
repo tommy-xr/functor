@@ -604,13 +604,33 @@ impl RuntimeState {
     }
 }
 
+/// Deserialize any finite JSON number in `i32` range, rounded to the nearest whole.
+fn round_to_i32<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+    let v = f64::deserialize(d)?;
+    if v.is_finite() && v >= f64::from(i32::MIN) && v <= f64::from(i32::MAX) {
+        Ok(v.round() as i32)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "coordinate out of range: {v}"
+        )))
+    }
+}
+
 /// An event injected by `POST /input`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputCommand {
     Key { key: String, down: bool },
-    MouseMove { x: i32, y: i32 },
+    /// Logical cursor position. The wire accepts any JSON number — `/state`
+    /// reports logical (CSS-pixel-like) coordinates, so a position derived from
+    /// them is often fractional — and rounds it to the runtime's whole pixels.
+    MouseMove {
+        #[serde(deserialize_with = "round_to_i32")]
+        x: i32,
+        #[serde(deserialize_with = "round_to_i32")]
+        y: i32,
+    },
     MouseWheel { delta: i32 },
     /// A mouse-button edge, `button` spelled `"left"` / `"right"` /
     /// `"middle"` (the [`crate::MouseButton::from_name`] wire spelling).
@@ -1490,6 +1510,24 @@ mod tests {
             );
         }
         assert!(validate_project_asset_path("models/ship.glb").is_ok());
+    }
+
+    #[test]
+    fn mouse_move_accepts_fractional_coordinates() {
+        for (body, x, y) in [
+            (r#"{"type":"mouse_move","x":10,"y":20}"#, 10, 20),
+            (r#"{"type":"mouse_move","x":244.5,"y":177.4}"#, 245, 177),
+            (r#"{"type":"mouse_move","x":-0.6,"y":0}"#, -1, 0),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<InputCommand>(body).unwrap(),
+                InputCommand::MouseMove { x, y }
+            );
+        }
+        assert!(serde_json::from_str::<InputCommand>(
+            r#"{"type":"mouse_move","x":1e12,"y":0}"#
+        )
+        .is_err());
     }
 
     #[test]
