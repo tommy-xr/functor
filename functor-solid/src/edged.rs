@@ -337,28 +337,23 @@ fn band(
         .zip(ids)
         .map(|(c, ids)| Front::new(c, ids, shape.size()))
         .collect();
-    let mut t = 0.0;
-    for w in shape.profile().windows(2) {
-        let ([d0, r0], [d1, r1]) = (w[0], w[1]);
-        while t < d1 {
-            // Step to the next corner merge, or to the profile's next point.
-            let next = fronts
-                .iter()
-                .flat_map(|f| (0..f.nodes.len()).map(|i| f.collapse(i)))
-                .fold(f64::INFINITY, f64::min)
-                + t;
-            let to = if next < d1 - EPS {
-                next.max(t + EPS)
-            } else {
-                d1
-            };
-            for f in &mut fronts {
+    // Each contour sweeps on its own: levels only where it has an event.
+    let profile = shape.profile();
+    for f in &mut fronts {
+        let mut t = 0.0;
+        for w in profile.windows(2) {
+            let ([d0, r0], [d1, r1]) = (w[0], w[1]);
+            while t < d1 {
+                // Step to the next corner merge, or to the profile's next
+                // point; never less than EPS, so levels stay apart.
+                let next = (0..f.nodes.len())
+                    .map(|i| f.collapse(i))
+                    .fold(f64::INFINITY, f64::min);
+                let to = (t + next).max(t + EPS);
+                let to = if to > d1 - EPS { d1 } else { to };
                 f.advance(to - t);
-            }
-            t = to;
-            let height = z(r0 + (r1 - r0) * (t - d0) / (d1 - d0));
-            for f in &mut fronts {
-                f.level(t, height, up, mesh)?;
+                t = to;
+                f.level(t, z(r0 + (r1 - r0) * (t - d0) / (d1 - d0)), up, mesh)?;
             }
         }
     }
@@ -366,15 +361,35 @@ fn band(
         return Ok(fronts);
     }
     // The wavefront can't change topology, so a split, a vanished piece, or a
-    // hole that swallowed its outline leaves it disagreeing with the true
-    // inset in contour count or area. Compare against `Sketch::offset`.
-    let truth = reference.offset(-t);
-    let area: f64 = fronts
-        .iter()
-        .map(|f| contour_area(&f.nodes.iter().map(|n| n.p).collect::<Vec<_>>()))
-        .sum();
-    let contours = truth.shapes.iter().flatten().count();
-    if contours != fronts.len() || (area - truth.area()).abs() > 0.01 * truth.area().abs() + 1e-3 {
+    // hole that swallowed its outline leaves its contours disagreeing with
+    // the true inset's (`Sketch::offset`): compare their signed areas, sorted
+    // (outlines positive, holes negative).
+    let t = shape.size();
+    let sorted = |mut a: Vec<f64>| {
+        a.sort_by(f64::total_cmp);
+        a
+    };
+    let truth = sorted(
+        reference
+            .offset(-t)
+            .shapes
+            .iter()
+            .flatten()
+            .map(|c| contour_area(c))
+            .collect(),
+    );
+    let ours = sorted(
+        fronts
+            .iter()
+            .map(|f| contour_area(&f.nodes.iter().map(|n| n.p).collect::<Vec<_>>()))
+            .collect(),
+    );
+    let agree = truth.len() == ours.len()
+        && truth
+            .iter()
+            .zip(&ours)
+            .all(|(a, b)| (a - b).abs() <= 0.01 * a.abs() + 1e-3);
+    if !agree {
         return Err(Stuck {
             depth: t,
             at: crossing(&fronts),
@@ -414,9 +429,10 @@ impl Sketch {
         bottom: EdgeShape,
     ) -> Result<Mesh, String> {
         for (name, e) in [("top", top), ("bottom", bottom)] {
-            if e != EdgeShape::Sharp && !(e.size() > 0.0 && e.size().is_finite()) {
+            if e != EdgeShape::Sharp && !(e.size() >= 0.01 && e.size().is_finite()) {
                 return Err(format!(
-                    "the {name}'s {e} needs a positive size (Solid.Sharp is a plain edge)"
+                    "the {name}'s {e} needs a size of at least 0.01 mm (Solid.Sharp is a \
+plain edge)"
                 ));
             }
         }
@@ -425,7 +441,7 @@ impl Sketch {
             return Err(format!(
                 "the top {top} and bottom {bottom} reach {} mm down the wall, more than the \
 {height} mm height — together they can reach at most the height",
-                bt + bb
+                ((bt + bb) * 1e6).round() / 1e6
             ));
         }
         if top == EdgeShape::Sharp && bottom == EdgeShape::Sharp {
@@ -450,7 +466,7 @@ impl Sketch {
             })
             .filter(|c| c.len() >= 3)
             .collect();
-        let build = |top: EdgeShape, bottom: EdgeShape| -> Result<Mesh, (EdgeShape, Stuck)> {
+        let build = |top: EdgeShape, bottom: EdgeShape| -> Result<Mesh, (&str, EdgeShape, Stuck)> {
             let mut mesh = Mesh::default();
             let ring = |mesh: &mut Mesh, z: f64| -> Vec<Vec<u32>> {
                 contours
@@ -481,15 +497,15 @@ impl Sketch {
                     }
                 }
             }
-            let fronts =
-                band(self, &contours, &high, top, &|r| z1 + r, &mut mesh).map_err(|s| (top, s))?;
+            let fronts = band(self, &contours, &high, top, &|r| z1 + r, &mut mesh)
+                .map_err(|s| ("top", top, s))?;
             cap(&fronts, true, &mut mesh);
             let fronts = band(self, &contours, &low, bottom, &|r| z0 - r, &mut mesh)
-                .map_err(|s| (bottom, s))?;
+                .map_err(|s| ("bottom", bottom, s))?;
             cap(&fronts, false, &mut mesh);
             Ok(mesh)
         };
-        build(top, bottom).map_err(|(edge, stuck)| {
+        build(top, bottom).map_err(|(side, edge, stuck)| {
             // The deepest inset that works, to 0.01 mm, to name the limit.
             let fits = |d: f64| build(EdgeShape::Bevel(d), EdgeShape::Sharp).is_ok();
             let (mut lo, mut hi) = (0.0, stuck.depth.max(EPS));
@@ -501,16 +517,19 @@ impl Sketch {
                     hi = mid;
                 }
             }
-            let side = if edge == top { "top" } else { "bottom" };
             let near = match stuck.at {
                 Some([x, y]) => format!("near ({x:.2}, {y:.2}) "),
                 None => String::new(),
             };
+            let fits = match (lo * 100.0).floor() / 100.0 {
+                0.0 => "no edge fits".to_string(),
+                most => format!("at most {most:.2} mm fits"),
+            };
             format!(
                 "the {side} {edge} shrinks the sketch {} mm all round, but {near}its outline \
-would split or vanish: at most {:.2} mm fits",
+would split, or a part under {} mm across would vanish: {fits}",
                 edge.size(),
-                (lo * 100.0).floor() / 100.0,
+                2.0 * edge.size(),
             )
         })
     }
@@ -635,9 +654,19 @@ mod tests {
         let e = dumbbell.extrude_edged(5.0, Sharp, Round(1.5)).unwrap_err();
         assert!(e.starts_with("the bottom Solid.Round(1.5)"), "{e}");
         assert!(e.ends_with("at most 0.99 mm fits"), "{e}");
+        // The growing hole meets the shrinking outline 4.5 mm in, then
+        // encloses it: nothing crosses at 6 mm, but it doesn't fit.
+        let ring = Sketch::rect(20.0, 20.0).subtract(&Sketch::rect(2.0, 2.0));
+        let e = ring.extrude_edged(10.0, Bevel(6.0), Sharp).unwrap_err();
+        assert!(e.ends_with("at most 4.49 mm fits"), "{e}");
+        // A hole near a sharp tip is swallowed before any line collapses.
+        let tag = Sketch::polygon(vec![[0.0, 0.0], [60.0, -10.6], [60.0, 10.6]])
+            .subtract(&Sketch::circle(0.3).map_points(|[x, y]| [x + 5.0, y]));
+        let e = tag.extrude_edged(10.0, Bevel(3.0), Sharp).unwrap_err();
+        assert!(e.ends_with("at most 0.28 mm fits"), "{e}");
         let e = Sketch::circle(3.0)
             .extrude_edged(5.0, Bevel(0.0), Sharp)
             .unwrap_err();
-        assert!(e.contains("needs a positive size"), "{e}");
+        assert!(e.contains("at least 0.01 mm"), "{e}");
     }
 }

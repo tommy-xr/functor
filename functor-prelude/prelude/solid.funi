@@ -51,8 +51,8 @@ type edges = { top: edge, bottom: edge }
 /// stepped. In from a wall by `d`, the edge's cross-section is
 /// `Sketch.offset(-d)` of the sketch: convex corners stay sharp, concave ones
 /// round. Top and bottom may reach at most the height together, and only as
-/// far in as the sketch can shrink without splitting or vanishing; the error
-/// names the most that fits.
+/// far in as the sketch shrinks in one piece: every part must be over twice
+/// the edge's size across. The error names the most that fits.
 ///
 /// ```
 /// let bezel = Sketch.roundedRect(200.0, 130.0, 18.0)
