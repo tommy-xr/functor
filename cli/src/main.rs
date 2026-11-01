@@ -174,14 +174,22 @@ enum Command {
     /// writes each `--part` as a named part on its own filament, in order, so
     /// a multi-colour print opens ready to slice. E.g.
     /// `functor -d examples/bookmark export -o bookmark.3mf --part base --part relief`.
+    /// `--views sheet.png` instead renders the parts' 8-view review sheet
+    /// (`PartViews.sheet`) in a hidden window: every top-level Solid, or the
+    /// `--part`s given. Needs a GPU.
     Export {
         /// The file to write (`.stl` or `.3mf`).
-        #[arg(short, long)]
-        output: PathBuf,
+        #[arg(short, long, required_unless_present = "views")]
+        output: Option<PathBuf>,
 
-        /// A top-level Solid binding to export; repeat for several parts.
-        #[arg(long = "part", default_value = "part")]
+        /// A top-level Solid binding to export; repeat for several parts
+        /// (default `part`).
+        #[arg(long = "part")]
         parts: Vec<String>,
+
+        /// Write the 8-view sheet as this `.png` (2304x2304: 720 px views).
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["output", "model"])]
+        views: Option<PathBuf>,
 
         /// Export a glTF model (`.glb`) as a printable solid instead — no
         /// project needed. E.g. `functor export --model fox.glb --height 60 -o fox.stl`.
@@ -476,7 +484,7 @@ async fn run(args: &Args) -> io::Result<()> {
     // functor.json.
     if let Command::Export {
         model: Some(model),
-        output,
+        output: Some(output),
         height,
         nozzle,
         voxel,
@@ -586,8 +594,23 @@ async fn run(args: &Args) -> io::Result<()> {
                 print!("{}", functor_lang::reads::report(&loaded, &inferred));
                 Ok(())
             }
+            Command::Export {
+                views: Some(png),
+                parts,
+                ..
+            } => {
+                let loaded = project.build(&working_directory_str, false)?;
+                project.export_views(&working_directory_str, &loaded, parts, png)
+            }
             Command::Export { output, parts, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
+                let output = output.as_ref().expect("clap requires -o without --views");
+                let default = ["part".to_string()];
+                let parts = if parts.is_empty() {
+                    &default[..]
+                } else {
+                    parts
+                };
                 project.export(&loaded, parts, output)
             }
             Command::Bake {
