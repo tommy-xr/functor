@@ -31,6 +31,9 @@ let gap = 0.04
 let sheetHalfHeight = 1.6
 let tilePixels = 720.0
 
+// Part space (mm, Z up) to scene space (metres, Y up), like Solid.toScene.
+let toScene = (v: Vec3.t) => Vec3.make(Vec3.x(v) / 1000.0, Vec3.z(v) / 1000.0, 0.0 - Vec3.y(v) / 1000.0)
+
 let v3 = (p) => Vec3.make(p.x, p.y, p.z)
 let point = (v: Vec3.t) => { x: Vec3.x(v), y: Vec3.y(v), z: Vec3.z(v) }
 
@@ -42,9 +45,9 @@ let bounds = (pieces) =>
   { min: Vec3.make(lo(Vec3.x), lo(Vec3.y), lo(Vec3.z)), max: Vec3.make(hi(Vec3.x), hi(Vec3.y), hi(Vec3.z)) }
 
 // One view of `scene`: an orthographic camera just wide enough for the
-// part's box seen from `view`, and a key light from over its shoulder. The
-// framing is worked in part space (mm) — the scene conversion is a rotation
-// and a scale, so extents carry over — and only the pose is converted.
+// part's box seen from `view`, and a key light from over its shoulder. It is
+// all worked in part space (mm) — the scene conversion is a rotation and a
+// scale, so extents carry over — and only the camera and lights converted.
 let tileFrame = (scene, b, view) =>
   let center = Vec3.scale(0.5, Vec3.add(b.min, b.max)) in
   let size = b.max |> Vec3.sub(b.min) in
@@ -56,23 +59,21 @@ let tileFrame = (scene, b, view) =>
   // The box's half extent along an axis: half its size, projected.
   let reach = (axis) =>
     0.5 * (Math.abs(Vec3.x(axis)) * Vec3.x(size) + Math.abs(Vec3.y(axis)) * Vec3.y(size) + Math.abs(Vec3.z(axis)) * Vec3.z(size)) in
-  let half = Math.max(0.5, Math.max(reach(right), reach(up))) * 1.12 / 1000.0 in
-  let radius = Math.max(0.5, Vec3.length(size) / 2.0) / 1000.0 in
-  let toScene = PartViewer.toScene in
-  let eye = Vec3.add(toScene(center), Vec3.scale(2.0 * radius, Vec3.normalize(toScene(back)))) in
-  let sceneForward = toScene(forward) in
-  let sceneUp = toScene(up) in
-  let sceneRight = toScene(right) in
-  let key = sceneForward |> Vec3.add(Vec3.scale(-0.6, sceneUp)) |> Vec3.add(Vec3.scale(-0.4, sceneRight)) in
+  let half = Math.max(0.5, Math.max(reach(right), reach(up))) * 1.12 in
+  let radius = Math.max(0.5, Vec3.length(size) / 2.0) in
+  let eye = center |> Vec3.add(Vec3.scale(2.0 * radius, back)) in
+  let key = forward |> Vec3.add(Vec3.scale(-0.6, up)) |> Vec3.add(Vec3.scale(-0.4, right)) in
+  let fill = Vec3.scale(-1.0, key) |> Vec3.add(Vec3.scale(-1.5, up)) in
+  let light = (v) => Vec3.normalize(toScene(v)) in
   Frame.createLit(
-    Camera3D.fromPose({ position: point(eye), forward: point(sceneForward), up: point(sceneUp) }, Angle.degrees(45.0))
-      |> Camera3D.clip(radius * 0.9, radius * 3.1)
-      |> Camera3D.orthographic(half),
+    Camera3D.fromPose({ position: point(toScene(eye)), forward: point(light(forward)), up: point(light(up)) }, Angle.degrees(45.0))
+      |> Camera3D.clip(radius * 0.9 / 1000.0, radius * 3.1 / 1000.0)
+      |> Camera3D.orthographic(half / 1000.0),
     scene,
     [
       Light.ambient(Color.rgb(0.22, 0.22, 0.25)),
-      Light.directional(key, Color.rgb(1.0, 0.97, 0.92), 0.85),
-      Light.directional(Vec3.scale(-1.0, key) |> Vec3.add(Vec3.scale(-1.5, sceneUp)), Color.rgb(0.7, 0.75, 0.9), 0.3),
+      Light.directional(light(key), Color.rgb(1.0, 0.97, 0.92), 0.85),
+      Light.directional(light(fill), Color.rgb(0.7, 0.75, 0.9), 0.3),
     ])
     |> Frame.withClearColor(Color.rgb(0.16, 0.17, 0.19))
     // The view's name in the tile's bottom-left corner.

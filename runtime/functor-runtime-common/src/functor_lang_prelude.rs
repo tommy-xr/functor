@@ -2856,9 +2856,11 @@ and an Angle fov; up must not be parallel to forward",
         |half_height: f64, mut camera: FunctorLangCamera| {
             let half_height = half_height as f32;
             if !half_height.is_finite() || half_height <= 0.0 {
-                return Err("usage: Camera3D.orthographic(halfHeight, camera) — a finite \
+                return Err(
+                    "usage: Camera3D.orthographic(halfHeight, camera) — a finite \
 halfHeight > 0, in world units"
-                    .to_string());
+                        .to_string(),
+                );
             }
             camera.0.ortho_half_height = Some(half_height);
             Ok(camera)
@@ -7674,7 +7676,10 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
              |> Camera3D.clip(1.0, 9.0) |> Camera3D.orthographic(2.5)",
         );
         assert_eq!(camera.ortho_half_height, Some(2.5));
-        assert_eq!((camera.eye, camera.near, camera.far), ([0.0, 0.0, -5.0], 1.0, 9.0));
+        assert_eq!(
+            (camera.eye, camera.near, camera.far),
+            ([0.0, 0.0, -5.0], 1.0, 9.0)
+        );
         for bad in ["0.0", "-1.0"] {
             assert_eq!(
                 fail_message(&format!(
@@ -10656,7 +10661,8 @@ Anim.clip(\"walk\", tts)"
     }
 
     /// A file that is only a `part` gets the PartViewer: a valid game whose
-    /// turntable turns when idle, orbits on drag, and zooms on the wheel.
+    /// turntable turns when idle, orbits on drag, zooms on the wheel, and
+    /// toggles the PartViews sheet on `V`.
     #[test]
     fn part_only_file_runs_in_the_part_viewer() {
         let sources = vec![(
@@ -10669,7 +10675,9 @@ Anim.clip(\"walk\", tts)"
              let dragged = () => mouseMove(grab(), 140.0, 50.0)\n\
              let orbits = () => dragged().orbit.yaw < grab().orbit.yaw\n\
              let holds = () => tick(dragged(), 5.0, 6.0).orbit.yaw == dragged().orbit.yaw\n\
-             let zooms = () => mouseWheel(init, 1.0).orbit.zoom > init.orbit.zoom\n"
+             let zooms = () => mouseWheel(init, 1.0).orbit.zoom > init.orbit.zoom\n\
+             let sheet = () => input(input(init, Key.V, true), Key.V, false)\n\
+             let toggles = () => sheet().sheet && not input(sheet(), Key.V, true).sheet\n"
                 .to_string(),
         )];
         let project = functor_lang::project::load_sources_with_bundled_modules(
@@ -10687,7 +10695,7 @@ Anim.clip(\"walk\", tts)"
             &crate::functor_lang_producer::EntryNames::UNPREFIXED,
         )
         .unwrap_or_else(|e| panic!("part viewer contract: {e}"));
-        for check in ["turns", "anchors", "orbits", "holds", "zooms"] {
+        for check in ["turns", "anchors", "orbits", "holds", "zooms", "toggles"] {
             assert!(
                 matches!(
                     session.call(check, vec![], &mut FunctorHost),
@@ -10700,6 +10708,15 @@ Anim.clip(\"walk\", tts)"
         session
             .call("draw", vec![init, Value::Number(1.0)], &mut FunctorHost)
             .unwrap_or_else(|e| panic!("draw: {}", e.message));
+        // `V` swaps the orbit view for the eight-view sheet.
+        let sheet = session.call("sheet", vec![], &mut FunctorHost).unwrap();
+        let frame = session
+            .call("draw", vec![sheet, Value::Number(1.0)], &mut FunctorHost)
+            .unwrap_or_else(|e| panic!("sheet draw: {}", e.message));
+        assert_eq!(
+            frame_value(&frame).expect("a Frame").render_targets.len(),
+            8
+        );
     }
 
     /// `PartViews.sheet` renders eight orthographic tiles, each framed to
@@ -10729,7 +10746,12 @@ Anim.clip(\"walk\", tts)"
         let halves: Vec<f32> = frame
             .render_targets
             .iter()
-            .map(|pass| pass.frame.camera.ortho_half_height.expect("orthographic tile"))
+            .map(|pass| {
+                pass.frame
+                    .camera
+                    .ortho_half_height
+                    .expect("orthographic tile")
+            })
             .collect();
         // Front/back/left/right see the 30 mm height; top/bottom the 20 mm
         // depth; each half of it, with a 12% margin, in metres.
@@ -10741,8 +10763,15 @@ Anim.clip(\"walk\", tts)"
         // The front tile looks along scene -Z (part +Y) at the box's center.
         let front = &frame.render_targets[0].frame.camera;
         let gaze: Vec<f32> = (0..3).map(|i| front.target[i] - front.eye[i]).collect();
-        assert!(gaze[0].abs() < 1e-6 && gaze[1].abs() < 1e-6 && gaze[2] < 0.0, "{gaze:?}");
-        assert!(front.eye[1] > 0.0149 && front.eye[1] < 0.0151, "{:?}", front.eye);
+        assert!(
+            gaze[0].abs() < 1e-6 && gaze[1].abs() < 1e-6 && gaze[2] < 0.0,
+            "{gaze:?}"
+        );
+        assert!(
+            front.eye[1] > 0.0149 && front.eye[1] < 0.0151,
+            "{:?}",
+            front.eye
+        );
     }
 
     #[test]

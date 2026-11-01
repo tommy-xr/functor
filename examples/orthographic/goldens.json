@@ -1,0 +1,10 @@
+[
+  {
+    "name": "orthographic-depth",
+    "fixedTime": 1.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  }
+]

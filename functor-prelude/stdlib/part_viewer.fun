@@ -1,9 +1,10 @@
 // PartViewer — the default scene for a printable part: lit, on a bed, with an
-// OrbitCamera. A file that defines `part` and none of the entry points in
-// `<stdlib>/PartViewerDefault.fun` runs with those six lines; paste them into
-// the file to change any of them.
+// OrbitCamera; `V` toggles a PartViews sheet of eight orthographic views. A
+// file that defines `part` and none of the entry points in
+// `<stdlib>/PartViewerDefault.fun` runs with those seven lines; paste them
+// into the file to change any of them.
 
-let init = { orbit: OrbitCamera.init }
+let init = { orbit: OrbitCamera.init, sheet: false }
 
 let tick = (m, dt: float, tts: float) => { m with orbit: OrbitCamera.tick(m.orbit, dt) }
 
@@ -14,16 +15,17 @@ let mouseButton = (m, button: Mouse.t, isDown: bool) =>
 
 let mouseWheel = (m, delta: float) => { m with orbit: OrbitCamera.scroll(m.orbit, delta) }
 
+let input = (m, key: Key.t, isDown: bool) =>
+  if key == Key.V && isDown then { m with sheet: not m.sheet } else m
+
 // Top-level values here stay pure (no host calls): tools load this module
 // without the engine.
 
-// Part space (mm, Z up) to scene space (metres, Y up), like Solid.toScene.
-let toScene = (v: Vec3.t) => Vec3.make(Vec3.x(v) / 1000.0, Vec3.z(v) / 1000.0, 0.0 - Vec3.y(v) / 1000.0)
-
 let draw = (part: Solid.t, m, tts: float) =>
+  if m.sheet then PartViews.sheet([{ solid: part, color: Color.rgb(0.25, 0.5, 0.85) }]) else
   let b = Solid.bounds(part) in
-  let lo = toScene(b.min) in
-  let hi = toScene(b.max) in
+  let lo = PartViews.toScene(b.min) in
+  let hi = PartViews.toScene(b.max) in
   let center = Vec3.scale(0.5, Vec3.add(lo, hi)) in
   let size = Vec3.distance(lo, hi) in
   Frame.createLit(

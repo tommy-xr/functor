@@ -1,0 +1,10 @@
+[
+  {
+    "name": "part-views-sheet",
+    "fixedTime": 1.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  }
+]

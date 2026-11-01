@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: orthographic cameras — `Camera.ortho_half_height`
+/// (`Camera3D.orthographic`), omitted when absent, so perspective cameras
+/// keep their shape.
+///
 /// Also: per-subtree shadow casting — the `SceneObject::CastShadows` variant
 /// (`Scene.castShadows`), emitted only by it.
 ///
@@ -87,10 +91,6 @@
 /// images with layers; omitted when none), the `TextureDescription::Layered`
 /// variant (`Texture.withLayers`) and the `MeshOverride::Lightmap` model
 /// override (`Scene.withLightmap`). Other frames keep their shape.
-///
-/// v24: orthographic cameras — `Camera.ortho_half_height`
-/// (`Camera3D.orthographic`), defaulted and omitted when absent, so every
-/// other frame keeps its v23 shape.
 ///
 /// v23: fused rooms — `Frame.fused_room` (`Frame.withFusedRoom`), defaulted
 /// and omitted when absent, so every other frame keeps its v22 shape.
@@ -193,7 +193,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in

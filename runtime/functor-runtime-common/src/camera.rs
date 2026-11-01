@@ -1,4 +1,6 @@
-use cgmath::{ortho, perspective, vec3, InnerSpace, Matrix4, Point3, Quaternion, Rad, Rotation, Vector3};
+use cgmath::{
+    ortho, perspective, vec3, InnerSpace, Matrix4, Point3, Quaternion, Rad, Rotation, Vector3,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::math::Angle;

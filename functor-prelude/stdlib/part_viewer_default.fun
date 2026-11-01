@@ -6,3 +6,4 @@ let draw = (m, tts) => PartViewer.draw(part, m, tts)
 let mouseMove = PartViewer.mouseMove
 let mouseButton = PartViewer.mouseButton
 let mouseWheel = PartViewer.mouseWheel
+let input = PartViewer.input
