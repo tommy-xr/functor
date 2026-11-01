@@ -15288,11 +15288,20 @@ maxSize 16; lower texelsPerMeter or padding"
         pcx[3] = 4;
         assert_eq!(
             decode(&pcx, "px").err().unwrap(),
-            "at byte 3: 4 bits × 1 planes: only 8 bits with 1 plane (palette) or 3 (RGB) decode"
+            "at byte 3: 4 bits per channel: only 8 decode"
         );
         assert_eq!(
             decode(b"<html>", "px").err().unwrap(),
             "at byte 0: not a PNG, JPEG, GIF or PCX image"
+        );
+        // Too wide for `fromPixels`, so not `Ok`.
+        let mut wide = Vec::new();
+        image::RgbaImage::new(4097, 1)
+            .write_to(&mut std::io::Cursor::new(&mut wide), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(
+            decode(&wide, "px").err().unwrap(),
+            "at byte 0: width must be 1 to 4096 (the largest texture every target supports), got 4097"
         );
     }
 

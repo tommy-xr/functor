@@ -18,7 +18,7 @@ pub use renderable_asset::*;
 /// File extensions copied/synchronized with a project because the runtimes
 /// may resolve them dynamically. `bin` covers external glTF buffers.
 pub const PROJECT_ASSET_EXTENSIONS: &[&str] = &[
-    "glb", "gltf", "bin", "wav", "ogg", "mp3", "png", "jpg", "jpeg", "hdr",
+    "glb", "gltf", "bin", "wav", "ogg", "mp3", "png", "jpg", "jpeg", "pcx", "hdr",
 ];
 
 /// Whether a filesystem path is a project asset the runtime may load.

@@ -71,8 +71,9 @@ let fromPng : (Bytes.t, colorSpace) => Asset.Texture
 /// An image file's pixels as `Rgba8` in `colorSpace`, for `fromPixels` or
 /// `atlas`: PNG, JPEG, GIF (its first frame) or PCX (8-bit, with a
 /// 256-colour palette or as RGB planes), recognised by content; top row
-/// first. Bytes it can't decode are an error saying why (and, for a PCX,
-/// at which byte).
+/// first, as stored (`Texture.file` also turns near-magenta and near-cyan
+/// transparent; this doesn't). Bytes it can't decode, or a side over 4096,
+/// are an error saying why (and, for a PCX, at which byte).
 ///
 /// ```
 /// let wall = Texture.decode(File.bytes(Path.of("fam/wall.pcx")), Texture.Srgb) |> Binary.require

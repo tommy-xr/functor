@@ -1,10 +1,7 @@
-use image::ImageFormat;
-
 use crate::{
     asset::{AssetCache, AssetPipeline},
     texture::{
-        is_pcx, Texture2D, TextureData, TextureFormat, TextureOptions, TERRAIN_DETAIL_ANISOTROPY, GIF, JPEG, PCX,
-        PNG,
+        apply_color_key, decode_image, Texture2D, TextureData, TextureOptions, TERRAIN_DETAIL_ANISOTROPY,
     },
 };
 
@@ -15,15 +12,11 @@ use crate::{
 /// thread polls asset futures (a panic aborts the runtime). The next save
 /// reloads it again.
 fn decode(bytes: &Vec<u8>) -> Option<TextureData> {
-    let decoded = match image::guess_format(bytes) {
-        Ok(ImageFormat::Png) => PNG.load(bytes),
-        Ok(ImageFormat::Jpeg) => JPEG.load(bytes),
-        Ok(ImageFormat::Gif) => GIF.load(bytes),
-        _ if is_pcx(bytes) => PCX.load(bytes),
-        other => Err(format!("unhandled format: {:?}", other)),
-    };
-    match decoded {
-        Ok(data) => Some(data),
+    match decode_image(bytes) {
+        Ok(mut data) => {
+            apply_color_key(&mut data.bytes, data.width, data.height);
+            Some(data)
+        }
         Err(e) => {
             eprintln!("[texture] cannot decode image: {e}");
             None
@@ -161,7 +154,7 @@ mod tests {
     fn decodes_gif() {
         let mut gif = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_pixel(2, 1, image::Rgba([10, 200, 30, 255]))
-            .write_to(&mut gif, ImageFormat::Gif)
+            .write_to(&mut gif, image::ImageFormat::Gif)
             .unwrap();
         let data = decode(gif.get_ref()).expect("decodes");
         assert_eq!((data.width, data.height), (2, 1));
