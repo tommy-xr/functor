@@ -10754,24 +10754,23 @@ Anim.clip(\"walk\", tts)"
             })
             .collect();
         // Front/back/left/right see the 30 mm height; top/bottom the 20 mm
-        // depth; each half of it, with a 12% margin, in metres.
+        // depth; each half of it, with a 25% margin, in metres.
         let expected = [15.0, 15.0, 15.0, 15.0, 10.0, 10.0];
         for (half, mm) in halves.iter().zip(expected) {
-            assert!((half - mm * 1.12 / 1000.0).abs() < 1e-6, "{halves:?}");
+            assert!((half - mm * 1.25 / 1000.0).abs() < 1e-6, "{halves:?}");
         }
         assert_eq!(halves.len(), 8);
-        // The front tile looks along scene -Z (part +Y) at the box's center.
+        // The front tile looks along scene -Z (part +Y).
         let front = &frame.render_targets[0].frame.camera;
         let gaze: Vec<f32> = (0..3).map(|i| front.target[i] - front.eye[i]).collect();
         assert!(
             gaze[0].abs() < 1e-6 && gaze[1].abs() < 1e-6 && gaze[2] < 0.0,
             "{gaze:?}"
         );
-        assert!(
-            front.eye[1] > 0.0149 && front.eye[1] < 0.0151,
-            "{:?}",
-            front.eye
-        );
+        // Centered on the box's middle (z = 15 mm), lowered 8% of the half
+        // height to clear the label.
+        let lowered = (15.0 - 0.08 * 15.0 * 1.25) / 1000.0;
+        assert!((front.eye[1] - lowered).abs() < 1e-6, "{:?}", front.eye);
     }
 
     #[test]
