@@ -14518,11 +14518,17 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
         for (src, want) in [
             (
                 "Solid.offset(-6.0, cube)",
-                "Solid.offset(-6) shrinks the part to nothing: it is nowhere 12 mm thick \
+                "Solid.offset(-6) shrinks the part to nothing: it is nowhere thicker than 12 mm \
 — at most 4.99 mm fits",
             ),
-            ("Solid.round(5.0, cube)", "Solid.round(5) removes the whole part"),
-            ("Solid.round(0.0, cube)", "Solid.round radius must be positive, got 0"),
+            (
+                "Solid.round(5.0, cube)",
+                "Solid.round(5) removes the whole part",
+            ),
+            (
+                "Solid.round(0.0, cube)",
+                "Solid.round radius must be positive, got 0",
+            ),
             ("Solid.hull([])", "Solid.hull needs at least one solid"),
         ] {
             let src = format!("{prelude}let main = Solid.volume({src})\n");

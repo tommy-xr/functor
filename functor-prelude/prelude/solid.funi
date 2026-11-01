@@ -70,10 +70,11 @@ let hull : (List<t>) => t
 /// Grow a solid by `distance` mm all over, or shrink it if negative: faces
 /// move along their normals, and the edges and corners that move apart are
 /// filled round (outside ones when growing, inside ones when shrinking).
-/// Shrinking a part away (it is nowhere 2 × |distance| thick) is an error.
-/// Like a boolean, evaluated once at its own scale. Convex solids are quick;
-/// concave ones cost a few ms per triangle (seconds for a holed plate), so
-/// bind the result once at the top level.
+/// Shrinking a part away (nowhere thicker than 2 × |distance|) is an error.
+/// Like a boolean, evaluated once at its own scale. Convex solids take
+/// milliseconds; concave ones 2–30 ms per triangle, more for bigger
+/// distances (seconds for a holed plate), so bind the result once at the top
+/// level and offset simple parts before combining them.
 let offset : (float, t) => t
 /// Round a solid's outside edges and corners to `radius` mm, keeping its
 /// size: shrink by `radius`, then grow back (a morphological opening). Inside

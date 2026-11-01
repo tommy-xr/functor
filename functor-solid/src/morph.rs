@@ -12,11 +12,21 @@ use crate::{mesh, segments_for, Mesh, Solid};
 
 /// The convex hull of `children`, in their shared frame.
 pub(crate) fn hull(children: &[Arc<Solid>]) -> Result<Mesh, String> {
-    let parts = children
+    let mut all = Mesh::default();
+    for child in children {
+        child.append_to(&mut all, Matrix4::identity())?;
+    }
+    from_manifold(&hull_of(&all))
+}
+
+/// The convex hull of a mesh's vertices.
+fn hull_of(mesh: &Mesh) -> Manifold {
+    let points: Vec<_> = mesh
+        .vertices
         .iter()
-        .map(|c| evaluated(c))
-        .collect::<Result<Vec<_>, _>>()?;
-    from_manifold(&Manifold::hull_manifolds(&parts))
+        .map(|&[x, y, z]| Vec3::new(x, y, z))
+        .collect();
+    Manifold::hull(&points)
 }
 
 /// `child` shrunk by `shrink` mm, then grown by `grow` mm (either may be 0).
@@ -49,26 +59,18 @@ pub(crate) fn morph(child: &Solid, shrink: f64, grow: f64) -> Result<Mesh, Strin
     from_manifold(&m.simplify(SNAP))
 }
 
-/// A solid as one Manifold, in its own frame (a group is its pieces' union).
-fn evaluated(solid: &Solid) -> Result<Manifold, String> {
-    Ok(Manifold::from_impl(
-        node(solid, Matrix4::identity())?.evaluate(),
-    ))
-}
-
-/// `child` as one Manifold, as its exact hull when convex but for snapping:
-/// snapped split quads (on a sphere, a rounded edge) sit a hair off flat,
-/// which sends the kernel down its per-triangle paths, ~100–1000× slower.
+/// `child` as one Manifold (a group is its pieces' union), or its exact hull
+/// when convex but for snapping: snapped split quads (on a sphere, a rounded
+/// edge) sit a hair off flat, which sends the kernel down its per-triangle
+/// paths, ~100–1000× slower.
 fn convexified(child: &Solid) -> Result<Manifold, String> {
-    let m = evaluated(child)?;
+    let m = Manifold::from_impl(node(child, Matrix4::identity())?.evaluate());
     let hull = m.convex_hull();
     // Snapping moves a vertex at most SNAP: dents no deeper than that.
     if hull.volume() - m.volume() > SNAP * hull.surface_area() {
         return Ok(m);
     }
-    let points = child.mesh()?.vertices;
-    let points: Vec<_> = points.iter().map(|&[x, y, z]| Vec3::new(x, y, z)).collect();
-    Ok(Manifold::hull(&points))
+    Ok(hull_of(&child.mesh()?))
 }
 
 /// A sphere of `radius` faceted like `Solid.sphere`: vertices on the axes, so
@@ -90,7 +92,10 @@ fn vanished(whole: &Manifold, depth: f64, round: bool) -> String {
     let limit = deepest(whole, depth)
         .map(|d| format!(" — at most {d:.2} mm fits"))
         .unwrap_or_default();
-    format!("{what}: it is nowhere {} mm thick{limit}", 2.0 * depth)
+    format!(
+        "{what}: it is nowhere thicker than {} mm{limit}",
+        2.0 * depth
+    )
 }
 
 /// For a convex solid, about the deepest shrink (mm, rounded down to 0.01)
@@ -136,7 +141,11 @@ mod tests {
     /// Closed, shared-position-free, and within `tol` (relative) of `want`.
     fn near(solid: &Solid, want: f64, tol: f64) -> Mesh {
         let mesh = solid.mesh().unwrap();
-        assert!(mesh.print_problems("it").is_empty(), "{:?}", mesh.print_problems("it"));
+        assert!(
+            mesh.print_problems("it").is_empty(),
+            "{:?}",
+            mesh.print_problems("it")
+        );
         let got = mesh.volume();
         assert!((got / want - 1.0).abs() < tol, "volume {got}, want {want}");
         mesh
@@ -164,7 +173,11 @@ mod tests {
         assert_eq!((b.min, b.max), ([-6.0; 3], [6.0; 3]));
         // Shrinking a convex solid is exact: the faces move in, corners stay sharp.
         let shrunk = cube(10.0).offset(-1.0).mesh().unwrap();
-        assert!((shrunk.volume() - 512.0).abs() < 1e-9, "{}", shrunk.volume());
+        assert!(
+            (shrunk.volume() - 512.0).abs() < 1e-9,
+            "{}",
+            shrunk.volume()
+        );
     }
 
     #[test]
@@ -201,7 +214,10 @@ mod tests {
         assert!(rounded.volume() < before && rounded.volume() > 0.9 * before);
         let b = rounded.bounds().unwrap();
         let close = |a: [f64; 3], b: [f64; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-9);
-        assert!(close(b.min, [0.0; 3]) && close(b.max, [20.0, 20.0, 6.0]), "{b:?}");
+        assert!(
+            close(b.min, [0.0; 3]) && close(b.max, [20.0, 20.0, 6.0]),
+            "{b:?}"
+        );
     }
 
     #[test]
@@ -209,14 +225,19 @@ mod tests {
         let err = cube(10.0).offset(-6.0).mesh().unwrap_err();
         assert_eq!(
             err,
-            "Solid.offset(-6) shrinks the part to nothing: it is nowhere 12 mm thick \
+            "Solid.offset(-6) shrinks the part to nothing: it is nowhere thicker than 12 mm \
 — at most 4.99 mm fits"
         );
-        let err = arc(Solid::Box { size: [20.0, 20.0, 4.0] })
-            .rounded(2.5)
-            .mesh()
-            .unwrap_err();
-        assert!(err.starts_with("Solid.round(2.5) removes the whole part"), "{err}");
+        let err = arc(Solid::Box {
+            size: [20.0, 20.0, 4.0],
+        })
+        .rounded(2.5)
+        .mesh()
+        .unwrap_err();
+        assert!(
+            err.starts_with("Solid.round(2.5) removes the whole part"),
+            "{err}"
+        );
         assert!(err.ends_with("at most 1.99 mm fits"), "{err}");
     }
 
