@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::jobs::{HostValue, Shareable};
 use crate::nav::{Graph, Link, Outcome, Penalty, Query, Route};
 
-use super::cells::{field, list, number, point};
+use super::cells::{field, list, number, point, whole};
 use super::*;
 
 /// A validated [`Graph`] as an opaque value.
@@ -26,18 +26,14 @@ impl HostData for FunctorLangNavGraph {
 
 crate::host_returnable!(FunctorLangNavGraph);
 
-/// A whole number ≥ 0 that fits an id or bit set.
-fn whole(value: &Value, what: &str) -> Result<u32, String> {
+/// An id or bit set: a whole number ≥ 0.
+fn whole_number(value: &Value, what: &str) -> Result<u32, String> {
     let n = number(value, what)?;
-    if n >= 0.0 && n.fract() == 0.0 && n <= f64::from(u32::MAX) {
-        Ok(n as u32)
-    } else {
-        Err(format!("{what} must be a whole number ≥ 0, got {n}"))
-    }
+    whole(n).ok_or_else(|| format!("{what} must be a whole number ≥ 0, got {n}"))
 }
 
 fn whole_field(value: &Value, name: &str, what: &str) -> Result<u32, String> {
-    whole(field(value, name, what)?, &format!("{what} `{name}`"))
+    whole_number(field(value, name, what)?, &format!("{what} `{name}`"))
 }
 
 fn number_field(value: &Value, name: &str, what: &str) -> Result<f64, String> {
@@ -57,7 +53,7 @@ fn graph_data(value: &Value, span: Span) -> Result<GraphData, String> {
         let what = format!("link {i}");
         let door = match field(link, "door", &what)? {
             Value::Variant { ctor, args } if &**ctor == "Option.Some" && args.len() == 1 => {
-                Some(whole(&args[0], &format!("{what} `door`"))?)
+                Some(whole_number(&args[0], &format!("{what} `door`"))?)
             }
             Value::Variant { ctor, .. } if &**ctor == "Option.None" => None,
             other => return Err(format!("{what} `door` must be an Option, got {}", other.kind_name())),
@@ -90,8 +86,8 @@ fn penalty(value: &Value, what: &str) -> Result<Penalty, String> {
         Value::Variant { ctor, args } if &**ctor == "Nav.Cut" && args.is_empty() => f64::INFINITY,
         Value::Variant { ctor, args } if &**ctor == "Nav.Costly" && args.len() == 1 => {
             let weight = number(&args[0], &format!("{what} weight"))?;
-            if weight < 0.0 {
-                return Err(format!("{what} weight must be ≥ 0, got {weight}"));
+            if !(weight.is_finite() && weight >= 0.0) {
+                return Err(format!("{what} weight must be finite and ≥ 0, got {weight}"));
             }
             weight
         }
@@ -128,7 +124,7 @@ fn path_query(value: &Value, span: Span) -> Result<PathQuery, String> {
         bits: whole_field(value, "bits", what)?,
         closed_doors: entries("closedDoors")?
             .iter()
-            .map(|d| whole(d, "a closed door"))
+            .map(|d| whole_number(d, "a closed door"))
             .collect::<Result<_, _>>()?,
         links,
         nodes,
@@ -168,22 +164,22 @@ fn check_nodes(query: &Query, graph: &Graph) -> Result<(), String> {
 /// Run `query` on `graph`: the `Nav.result` its tagger receives. A
 /// cancelled search's result is never delivered.
 pub(crate) fn route(graph: &Graph, query: &Query, echo: &Shareable, cancelled: &dyn Fn() -> bool) -> Shareable {
-    let failed = || Route { outcome: Outcome::Failed, nodes: Vec::new(), retry_at: None };
-    result(graph, echo, &graph.find(query, cancelled).unwrap_or_else(failed))
-}
-
-/// A `Nav.path` that didn't run (a full queue, a crash): `Failed`.
-pub(crate) fn not_run(graph: &Graph, echo: &Shareable, why: String) -> Shareable {
-    log::warn!("[functor-lang] Nav.path didn't run: {why}");
-    result(graph, echo, &Route { outcome: Outcome::Failed, nodes: Vec::new(), retry_at: None })
-}
-
-fn result(graph: &Graph, echo: &Shareable, route: &Route) -> Shareable {
+    let route = graph.find(query, cancelled).unwrap_or_else(Route::failed);
     let outcome = match route.outcome {
         Outcome::Full => "Nav.Full",
         Outcome::Partial => "Nav.Partial",
         Outcome::Failed => "Nav.Failed",
     };
+    result(graph, echo, Shareable::Variant(outcome.into(), Vec::new().into()), &route)
+}
+
+/// A `Nav.path` that didn't run (a full queue, a crash): `NotRun(why)`.
+pub(crate) fn not_run(graph: &Graph, echo: &Shareable, why: String) -> Shareable {
+    let outcome = Shareable::Variant("Nav.NotRun".into(), vec![Shareable::Text(why.into())].into());
+    result(graph, echo, outcome, &Route::failed())
+}
+
+fn result(graph: &Graph, echo: &Shareable, outcome: Shareable, route: &Route) -> Shareable {
     let retry_at = match route.retry_at {
         Some(at) => Shareable::Variant("Option.Some".into(), vec![Shareable::Number(at)].into()),
         None => Shareable::Variant("Option.None".into(), Vec::new().into()),
@@ -193,7 +189,7 @@ fn result(graph: &Graph, echo: &Shareable, route: &Route) -> Shareable {
     let fields: Vec<(Arc<str>, Shareable)> = vec![
         ("graph".into(), Shareable::Number(graph.revision())),
         ("query".into(), echo.clone()),
-        ("outcome".into(), Shareable::Variant(outcome.into(), Vec::new().into())),
+        ("outcome".into(), outcome),
         ("nodes".into(), Shareable::List(nodes.collect())),
         ("waypoints".into(), Shareable::List(waypoints.collect())),
         ("retryAt".into(), retry_at),

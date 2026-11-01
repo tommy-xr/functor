@@ -53,11 +53,13 @@ type outcome =
   | Full
   | Partial
   | Failed
+  | NotRun(message: string)
 /// `Full`: reaches the node nearest `to`. `Partial`: that node can't be
 /// reached, so the route ends at the reachable node nearest `to`. `Failed`:
-/// none is nearer `to` than the start, and the route is empty. `nodes` and
+/// none is nearer `to` than the start, and the route is empty. `NotRun`: the
+/// search never ran (the job queue was full); ask again. `nodes` and
 /// `waypoints` run from the start node to the end node. `retryAt`: when cuts
-/// alone kept the goal out of reach, the `until` of the last one on the way.
+/// alone kept the goal out of reach, the earliest `until` that opens a way.
 type result = { graph: float, query: query, outcome: outcome, nodes: List<float>,
                 waypoints: List<Vec3.t>, retryAt: Option.t<float> }
 

@@ -14685,7 +14685,8 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
                        link(1.0, 2.0, Option.Some(0.0)), link(2.0, 1.0, Option.Some(0.0))],\n\
              })\n\
              let q = (links) => { from: Vec3.make(0.0, 0.0, 0.0), to: Vec3.make(2.0, 0.0, 0.0), bits: 1.0,\n\
-               closedDoors: [0.0], links: links, nodes: [], now: 0.0, seq: 7.0 }\n";
+               closedDoors: [0.0], links: links, nodes: [], now: 0.0, seq: 7.0 }\n\
+             let open = (links) => { q(links) with closedDoors: [] }\n";
         let eval = |main: &str| eval_with_prelude(&format!("{prelude}let main = {main}\n"));
         let Ok(Value::Number(revision)) = eval("Nav.revision(nav)") else { panic!() };
         // The effect carries the parsed query and the query as given.
@@ -14707,6 +14708,26 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
         let result = nav::route(graph, query, echo, &|| false).to_value().to_string();
         assert!(result.contains("outcome: Nav.Partial") && result.contains("nodes: [0, 1]"), "{result}");
         assert!(result.contains("retryAt: Option.None") && result.contains("seq: 7"), "{result}");
+        // With the door open, only the cut stands in the way: retry at 3.
+        let Ok(Value::HostData(data)) = eval(&format!("Nav.path(nav, \"a\", open({cut}), Routed)")) else { panic!() };
+        let EffectTree::NavPath { graph, query, echo, .. } =
+            &data.as_any().downcast_ref::<FunctorLangEffect>().unwrap().0
+        else {
+            panic!()
+        };
+        let result = nav::route(graph, query, echo, &|| false).to_value().to_string();
+        assert!(result.contains("retryAt: Option.Some(3)"), "{result}");
+        // A search that never ran says so.
+        let result = nav::not_run(graph, echo, "the job queue is full".into()).to_value().to_string();
+        assert!(result.contains("outcome: Nav.NotRun(\"the job queue is full\")"), "{result}");
+        // The graph crosses to a worker as itself (a load job, `Job.run`).
+        let inner = |value: &Value| match value {
+            Value::HostData(data) => data.as_any().downcast_ref::<nav::FunctorLangNavGraph>().unwrap().0.clone(),
+            _ => panic!(),
+        };
+        let Ok(value) = eval("nav") else { panic!() };
+        let crossed = crate::jobs::Shareable::from_value(&value).unwrap().to_value();
+        assert!(std::sync::Arc::ptr_eq(&inner(&crossed), &inner(&value)));
 
         let failure = |main: &str| eval(main).err().expect("should fail");
         let err = failure("Nav.graph({ nodes: [Vec3.make(0.0, 0.0, 0.0)], links: [link(0.0, 1.0, Option.None)] })");
@@ -14716,7 +14737,9 @@ slightly (or move them apart) instead of letting them touch exactly.\"]",
         let err = failure("Nav.path(nav, \"a\", q([{ from: 1.0, to: 9.0, penalty: Nav.Cut, until: 3.0 }]), Routed)");
         assert!(err.contains("Nav.path: links[0] names node 9, but the graph has 3 nodes"), "{err}");
         let err = failure("Nav.path(nav, \"a\", q([{ from: 1.0, to: 2.0, penalty: Nav.Costly(-1.0), until: 3.0 }]), Routed)");
-        assert!(err.contains("links[0] weight must be ≥ 0"), "{err}");
+        assert!(err.contains("links[0] weight must be finite and ≥ 0"), "{err}");
+        let err = failure("Nav.path(nav, \"a\", q([{ from: 1.0, to: 2.0, penalty: Nav.Costly(Math.sqrt(-1.0)), until: 3.0 }]), Routed)");
+        assert!(err.contains("links[0] weight must be finite"), "{err}");
     }
 
     /// `Encode` writes what `Decode` reads; a `Codec` round-trips records,

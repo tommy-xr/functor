@@ -1487,7 +1487,7 @@ let update = (m, msg) =>
   | Routed(r) =>
     if r.query.seq == m.seq then
       { m with len: List.length(r.waypoints), graphOk: r.graph == Nav.revision(nav),
-               outcome: (match r.outcome with | Nav.Full => 1.0 | Nav.Partial => 2.0 | Nav.Failed => 3.0) }
+               outcome: (match r.outcome with | Nav.Full => 1.0 | Nav.Partial => 2.0 | Nav.Failed => 3.0 | Nav.NotRun(_) => 4.0) }
     else { m with stale: m.stale + 1.0 }
 let tick = (m, dt, tts) =>
   let next = { m with n: m.n + 1.0 } in
