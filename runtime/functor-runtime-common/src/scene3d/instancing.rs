@@ -228,6 +228,12 @@ fn tint_scene(scene: Scene3D, tint: [f32; 3]) -> Scene3D {
                 .map(|item| tint_scene(item, tint))
                 .collect(),
         ),
+        SceneObject::Resident(items) => SceneObject::Resident(
+            items
+                .into_iter()
+                .map(|item| tint_scene(item, tint))
+                .collect(),
+        ),
         SceneObject::Instanced {
             template,
             instances,
@@ -439,7 +445,8 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
             SceneObject::Terrain(_)
             | SceneObject::Opacity(..)
             | SceneObject::Instanced { .. }
-            | SceneObject::Cells(..) => None,
+            | SceneObject::Cells(..)
+            | SceneObject::Resident(_) => None,
             SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
@@ -478,6 +485,7 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
             SceneObject::Terrain(_) => out.push_str("terrain"),
             SceneObject::Instanced { .. } => out.push_str("instanced"),
             SceneObject::Cells(..) => out.push_str("cells"),
+            SceneObject::Resident(_) => out.push_str("resident"),
             SceneObject::CastShadows(_, items) => {
                 out.push_str("castShadows[");
                 for (index, item) in items.iter().enumerate() {

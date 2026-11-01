@@ -102,6 +102,9 @@ pub struct SceneContext {
     // primitives (shared, never swept) return at once. Terrain still draws.
     portal_visible: RefCell<Option<Vec<bool>>>,
     portal_hidden: Cell<bool>,
+    // Inside `Scene.keepResident`: `portal_hidden` is set too, and terrain,
+    // which a hidden cell still draws, is skipped.
+    resident_only: Cell<bool>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
     // both eyes evaluate each model node once. Cleared when a new frame id
     // begins; see `cached_pose_joints` for the key.
@@ -439,15 +442,17 @@ fn draw_static_model(
         .lightmap
         .as_ref()
         .map(|lightmap| lightmap_texture.unwrap_or(&lightmap.texture));
-    // Culled or portal-hidden: its mesh stays resident (above) and so do the
-    // pixel textures a draw would bind, so turning back uploads nothing.
+    let gl = &render_context.gl;
+    // Culled or hidden: its mesh (hydrated here, as a draw would) and the
+    // pixel textures a draw would bind stay resident, uploaded now if new,
+    // so turning back (or leaving `Scene.keepResident`) uploads nothing.
     if scene_context.culled(projection_matrix, view_matrix, matrix, &bounds) {
+        mesh.buffers(gl);
         for texture in source.groups.iter().filter_map(|g| g.texture.as_ref()).chain(lightmap) {
-            scene_context.keep_texture(texture);
+            scene_context.keep_texture(gl, texture);
         }
         return;
     }
-    let gl = &render_context.gl;
     if let Some(material) = override_material {
         material.draw_opaque(render_context, projection_matrix, view_matrix, matrix, &[]);
         mesh.draw(gl);
@@ -733,6 +738,7 @@ impl SceneContext {
             )),
             portal_visible: RefCell::new(None),
             portal_hidden: Cell::new(false),
+            resident_only: Cell::new(false),
             poses: RefCell::new(HashMap::new()),
             main_shadow: Cell::new(None),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -1119,17 +1125,20 @@ frame: correct, but each bind re-uploads (atlas {})",
         }
     }
 
-    /// Mark `texture`'s retained pixel texture used this frame without
-    /// binding it, for a culled draw. File textures aren't swept.
-    fn keep_texture(&self, texture: &TextureDescription) {
-        let (TextureDescription::Data(pixels) | TextureDescription::Layered { base: pixels, .. }) =
-            texture
-        else {
-            return;
+    /// Keep `texture`'s pixel texture resident without binding it, for a
+    /// culled or hidden draw: marked used, or uploaded (at its layer
+    /// intensities) if it isn't on the GPU yet. File textures aren't swept.
+    fn keep_texture(&self, gl: &glow::Context, texture: &TextureDescription) {
+        let (pixels, intensities) = match texture {
+            TextureDescription::Data(pixels) => (pixels, &[][..]),
+            TextureDescription::Layered { base, intensities } => (base, &intensities[..]),
+            _ => return,
         };
         if let Some(entry) = self.pixel_textures.borrow_mut().get_mut(&pixels.id()) {
             entry.last_used = self.current_frame.get();
+            return;
         }
+        self.layered_texture(gl, pixels, intensities);
     }
 
     /// Turn frustum culling on or off (on by default).
@@ -2249,6 +2258,10 @@ pub enum SceneObject {
     /// Otherwise a group: it still renders and receives shadows. The nearest
     /// enclosing node wins, so `true` re-enables casting inside a `false`.
     CastShadows(bool, Vec<Scene3D>),
+    /// `Scene.keepResident` — the subtree draws in no pass, but its GPU
+    /// resources (data models, pixel textures, meshes, instance buffers)
+    /// upload on first sight and stay resident while the node is in the frame.
+    Resident(Vec<Scene3D>),
     /// A `Scene.memo` result, held by reference so a node wrapping it (a
     /// group, a transform) copies a pointer, not the subtree. Transparent:
     /// it compares, serializes and draws as the object it holds.
@@ -2302,6 +2315,7 @@ impl PartialEq for SceneObject {
             (Opacity(x, a), Opacity(y, b)) => x == y && a == b,
             (Cells(n, a), Cells(m, b)) => n == m && a == b,
             (CastShadows(x, a), CastShadows(y, b)) => x == y && a == b,
+            (Resident(a), Resident(b)) => a == b,
             (
                 Instanced {
                     template: t,
@@ -2320,7 +2334,8 @@ impl PartialEq for SceneObject {
             | (Opacity(..), _)
             | (Instanced { .. }, _)
             | (Cells(..), _)
-            | (CastShadows(..), _) => false,
+            | (CastShadows(..), _)
+            | (Resident(_), _) => false,
         }
     }
 }
@@ -2577,6 +2592,15 @@ impl Scene3D {
         }
     }
 
+    /// `Scene.keepResident`: keep `items`' GPU resources resident, drawing
+    /// nothing — see [`SceneObject::Resident`].
+    pub fn keep_resident(items: Vec<Scene3D>) -> Self {
+        Scene3D {
+            obj: SceneObject::Resident(items),
+            xform: Matrix4::identity(),
+        }
+    }
+
     /// Set the animation expression on every `Model` node in this subtree —
     /// `Scene.animate`'s semantics. Piping right after `Scene.model` targets
     /// that one model; applying over a group animates each model in it.
@@ -2628,7 +2652,8 @@ impl Scene3D {
             | SceneObject::Material(_, items)
             | SceneObject::Opacity(_, items)
             | SceneObject::Cells(_, items)
-            | SceneObject::CastShadows(_, items) => {
+            | SceneObject::CastShadows(_, items)
+            | SceneObject::Resident(items) => {
                 items.iter_mut().for_each(|item| item.for_each_model(f))
             }
             SceneObject::Instanced { template, .. } => template.for_each_model(f),
@@ -2651,10 +2676,12 @@ impl Scene3D {
             // The prelude rejects `Scene.opacity` inside a template, so an
             // instanced node is opaque; an OUTER `Scene.opacity` wrapping it
             // is seen at that outer node like any other subtree.
+            // Nothing under a resident node draws, translucent or not.
             SceneObject::Geometry(_)
             | SceneObject::Model(_)
             | SceneObject::Terrain(_)
-            | SceneObject::Instanced { .. } => false,
+            | SceneObject::Instanced { .. }
+            | SceneObject::Resident(_) => false,
             SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
@@ -2692,6 +2719,8 @@ impl Scene3D {
                 *sum += (world * self.xform).w.truncate();
                 *count += 1;
             }
+            // Draws nothing, so it has no drawn leaves.
+            SceneObject::Resident(_) => {}
             // Each copy contributes its template's leaf origins under its own
             // instance transform — the same walk the stamp expansion would
             // produce, so a translucent wrapper around an instanced node sorts
@@ -2770,7 +2799,8 @@ impl Scene3D {
             SceneObject::Geometry(_)
             | SceneObject::Model(_)
             | SceneObject::Terrain(_)
-            | SceneObject::Instanced { .. } => {}
+            | SceneObject::Instanced { .. }
+            | SceneObject::Resident(_) => {}
             SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
@@ -3076,7 +3106,7 @@ impl Scene3D {
             // `Shape::Heightmap`) lets rendering choose LOD without changing
             // the pure scene description. Terrain receives the forward
             // pass's shadows but does not yet render into the shadow map.
-            SceneObject::Terrain(terrain) if !depth_pass => {
+            SceneObject::Terrain(terrain) if !depth_pass && !scene_context.resident_only.get() => {
                 let xform = world_matrix * self.xform;
                 scene_context.draw_terrain(
                     render_context,
@@ -3275,6 +3305,25 @@ impl Scene3D {
                         }
                     }
                 }
+            }
+            // `Scene.keepResident`: walked as a hidden cell is, so every leaf
+            // keeps its GPU resources and draws nothing, in every pass.
+            SceneObject::Resident(items) => {
+                let world = world_matrix * self.xform;
+                let hidden = scene_context.portal_hidden.replace(true);
+                let resident = scene_context.resident_only.replace(true);
+                for item in items {
+                    item.render(
+                        render_context,
+                        scene_context,
+                        &world,
+                        projection_matrix,
+                        view_matrix,
+                        current_material,
+                    )
+                }
+                scene_context.portal_hidden.set(hidden);
+                scene_context.resident_only.set(resident);
             }
             // `Scene.castShadows`: a group that sets, for its subtree, whether
             // the depth pass draws it.

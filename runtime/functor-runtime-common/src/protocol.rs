@@ -75,6 +75,9 @@
 /// Also: per-subtree shadow casting — the `SceneObject::CastShadows` variant
 /// (`Scene.castShadows`), emitted only by it.
 ///
+/// Also: resident subtrees — the `SceneObject::Resident` variant
+/// (`Scene.keepResident`), emitted only by it.
+///
 /// Also: joint orientation — the `AnimExpr::Orient` variant (`Anim.orient`)
 /// nested in `ModelDescription.animation`. Emitted only by that call, so
 /// frames without it keep their shape.

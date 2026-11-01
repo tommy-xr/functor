@@ -12,7 +12,9 @@
 //! - `Scene.withLightmap` swaps the lightmap texture, e.g. for a layered
 //!   composition of the model's own atlas;
 //! - a minified file texture samples its mips, on a group and on
-//!   `Scene.litTexture`.
+//!   `Scene.litTexture`;
+//! - `Scene.keepResident` draws nothing but keeps the model, its textures
+//!   and a `with_lightmap` lightmap it never drew on the GPU.
 //!
 //! Self-skipping like `skinned_data` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -60,6 +62,8 @@ fn main() {
     println!("test with_lightmap ... ok");
     file_texture_mips(&mut harness);
     println!("test file_texture_mips ... ok");
+    keep_resident(&mut harness);
+    println!("test keep_resident ... ok");
 }
 
 /// A 256² file of 1-texel black/white stripes drawn ~47 px wide: through its
@@ -339,6 +343,58 @@ fn groups(harness: &mut Harness) {
     });
     let white = harness.render(&frame(&plain, 1, false, vec![Light::ambient(1.0, 1.0, 1.0)]));
     assert_near(rgb(&white, 96, 64), [255, 255, 255], "no groups: white");
+}
+
+/// `keep_resident` draws nothing, but keeps a static model's mesh, group
+/// textures and lightmaps (its own and a `with_lightmap` one never drawn)
+/// on the GPU: drawing it afterwards misses no cache and uploads nothing.
+/// Left out of the scene instead, the same frames evict it.
+fn keep_resident(harness: &mut Harness) {
+    let lights = || vec![Light::ambient(1.0, 1.0, 1.0)];
+    let fresh = || {
+        lightmapped(
+            solid([255, 255, 255]),
+            solid_in([64, 64, 64], ColorSpace::Linear),
+            1.0,
+            [0.0; 3],
+        )
+    };
+    let day = || solid_in([128, 128, 128], ColorSpace::Linear);
+    let resident = |room: &Arc<ModelData>, day: &TextureDescription| {
+        let night = frame(room, 1, false, lights()).scene;
+        let day = night.clone().with_lightmap(day.clone());
+        let mut frame = frame(room, 0, false, lights());
+        frame.scene = Scene3D::keep_resident(vec![night, day]);
+        frame
+    };
+    let empty = harness.render(&frame(&fresh(), 0, false, lights()));
+    for kept in [true, false] {
+        let (room, day) = (fresh(), day());
+        if kept {
+            gpu_counters().take_window();
+            let first = harness.render(&resident(&room, &day));
+            assert!(first == empty, "a resident subtree drew");
+            assert_eq!(gpu_counters().take_window().cache_misses, 4, "mesh, base, both lightmaps");
+            for _ in 0..3 {
+                harness.render(&resident(&room, &day));
+            }
+        } else {
+            harness.render(&frame(&room, 1, false, lights()));
+            for _ in 0..3 {
+                harness.render(&frame(&room, 0, false, lights()));
+            }
+        }
+        gpu_counters().take_window();
+        let mut lit = frame(&room, 1, false, lights());
+        lit.scene = lit.scene.with_lightmap(day.clone());
+        harness.render(&lit);
+        let window = gpu_counters().take_window();
+        if kept {
+            assert_eq!((window.cache_misses, window.bytes_uploaded), (0, 0), "kept: uploads");
+        } else {
+            assert!(window.cache_misses > 0, "evicted: no upload");
+        }
+    }
 }
 
 /// Five nodes share one upload of the mesh; steady frames upload nothing;
