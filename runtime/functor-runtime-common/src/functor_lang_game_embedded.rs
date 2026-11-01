@@ -304,7 +304,12 @@ fn load_source(
     previous: Option<&Session>,
     costs: &mut Costs,
 ) -> Result<Loaded, String> {
-    match evaluate(compile(sources, role)?, previous, costs, false)? {
+    evaluate_now(compile(sources, role)?, previous, costs)
+}
+
+/// [`evaluate`] that runs every def here.
+fn evaluate_now(compiled: Compiled, previous: Option<&Session>, costs: &mut Costs) -> Result<Loaded, String> {
+    match evaluate(compiled, previous, costs, false)? {
         Evaluation::Loaded(loaded) => Ok(loaded),
         Evaluation::Heavy(..) => unreachable!("only a deferrable load stops"),
     }
@@ -410,10 +415,7 @@ fn adopt(
         Outcome::Failed { message, .. } => Err(message),
         Outcome::Inline(why) => {
             log::warn!("[functor-lang] {why}, so it loads on the frame thread");
-            match evaluate(compiled, previous, costs, false)? {
-                Evaluation::Loaded(loaded) => Ok(loaded),
-                Evaluation::Heavy(..) => unreachable!("only a deferrable load stops"),
-            }
+            evaluate_now(compiled, previous, costs)
         }
     }
 }
@@ -857,12 +859,18 @@ impl FunctorLangEmbeddedGame {
     /// during a new game's load loads it again instead.
     fn reload(&mut self, files: Vec<(String, String)>, from: &str) -> Result<String, String> {
         if self.loading_new() {
-            return self.begin_load(&files);
+            // The new game's load starts over with these files; whoever
+            // waits on it still hears when it lands.
+            let waiters = std::mem::take(&mut self.load_waiters);
+            let begun = self.begin_load(&files);
+            self.load_waiters.extend(waiters);
+            return begun;
         }
+        // A reload still on the loader is older than this push, even one
+        // that doesn't compile.
+        self.supersede_load();
         let started = now_ms();
         let compiled = compile(&files, &self.role)?;
-        // A reload still on the loader is older than this push.
-        self.supersede_load();
         match evaluate(compiled, Some(&self.session), &mut self.costs, self.background)? {
             Evaluation::Loaded(loaded) => Ok(self.install_reload(files, loaded, started, from)),
             Evaluation::Heavy(compiled, def) => self.begin_reload(compiled, files, &def),
@@ -874,10 +882,8 @@ impl FunctorLangEmbeddedGame {
         let source = std::sync::Arc::new(crate::jobs::ProgramSource::new(files.clone()));
         let Some(job) = self.loader.start(source, self.recorder.job_reader()) else {
             let started = now_ms();
-            return match evaluate(compiled, Some(&self.session), &mut self.costs, false)? {
-                Evaluation::Loaded(loaded) => Ok(self.install_reload(files, loaded, started, "")),
-                Evaluation::Heavy(..) => unreachable!("only a deferrable load stops"),
-            };
+            let loaded = evaluate_now(compiled, Some(&self.session), &mut self.costs)?;
+            return Ok(self.install_reload(files, loaded, started, ""));
         };
         let status = format!(
             "reloading {} off the frame thread (it evaluates `{def}` again); the running program \
@@ -934,8 +940,8 @@ plays until it lands",
                 ))
             }
             (Ok(loaded), None) => {
-                let on_frame = format!(" off the frame thread ({:.1} ms on it)", now_ms() - adopting);
-                Ok(self.install_reload(files, loaded, loading.started, &on_frame))
+                let status = self.install_reload(files, loaded, loading.started, " off the frame thread");
+                Ok(format!("{status}; {:.1} ms of it on the frame thread", now_ms() - adopting))
             }
             (Err(message), screen) => {
                 if screen.is_some() {
