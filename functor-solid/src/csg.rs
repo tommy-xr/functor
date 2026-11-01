@@ -17,7 +17,7 @@ use crate::{BoolOp, Mesh, Solid};
 /// placed a hair apart (e.g. with f32 angles) usually become exactly coincident,
 /// which Manifold resolves cleanly, and output matches across platforms whose
 /// trig differs in the last bit. Not a guarantee — results are still checked.
-const SNAP: f64 = 1.0 / 65536.0;
+pub(crate) const SNAP: f64 = 1.0 / 65536.0;
 
 /// Evaluate a boolean solid, in its own frame, as one Manifold tree: nested
 /// booleans and groups become tree nodes, so only real inputs are snapped and
@@ -232,7 +232,7 @@ pub fn simplify(mesh: &Mesh, tolerance: f64) -> Result<Mesh, String> {
     from_manifold(&to_manifold(mesh)?.simplify(tolerance))
 }
 
-fn node(solid: &Solid, xform: Matrix4<f64>) -> Result<CsgNode, String> {
+pub(crate) fn node(solid: &Solid, xform: Matrix4<f64>) -> Result<CsgNode, String> {
     let children = |children: &[std::sync::Arc<Solid>]| {
         children
             .iter()
@@ -273,7 +273,7 @@ fn to_manifold(mesh: &Mesh) -> Result<Manifold, String> {
     }
 }
 
-fn from_manifold(manifold: &Manifold) -> Result<Mesh, String> {
+pub(crate) fn from_manifold(manifold: &Manifold) -> Result<Mesh, String> {
     if manifold.status() != Error::NoError {
         return Err(format!("the boolean failed ({:?})", manifold.status()));
     }

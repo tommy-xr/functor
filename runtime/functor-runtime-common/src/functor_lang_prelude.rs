@@ -14447,6 +14447,57 @@ Config.create())",
         }
     }
 
+    /// `Solid.hull`, `offset` and `round` match their analytic volumes, pass
+    /// `Solid.check`, and name the limit when a part shrinks away.
+    #[test]
+    fn hull_offset_and_round() {
+        let prelude = "let pi = 3.14159265358979\n\
+             let near = (a: float, b: float) => Math.abs(a / b - 1.0) < 0.005\n\
+             let cube = Solid.box(10.0, 10.0, 10.0)\n\
+             let ball = Solid.sphere(5.0)\n\
+             let capsule = Solid.hull([ball, ball |> Solid.translate(Vec3.make(20.0, 0.0, 0.0))])\n\
+             let grown = (a: float, r: float) => a * a * a + 6.0 * a * a * r + 3.0 * pi * r * r * a + 4.0 * pi * r * r * r / 3.0\n";
+        let checks = [
+            "near(Solid.volume(capsule), pi * 25.0 * 20.0 + 4.0 * pi * 125.0 / 3.0)",
+            "Solid.check(capsule).ok",
+            "near(Solid.volume(cube |> Solid.offset(1.0)), grown(10.0, 1.0))",
+            "Solid.check(Solid.offset(1.0, cube)).ok",
+            "Math.abs(Solid.volume(Solid.offset(-1.0, cube)) - 512.0) < 0.000001",
+            "near(Solid.volume(cube |> Solid.round(1.0)), grown(8.0, 1.0))",
+            "Solid.check(Solid.round(1.0, cube)).ok",
+            "Vec3.x(Solid.bounds(Solid.round(1.0, cube)).max) == 5.0",
+            "Solid.volume(Solid.offset(0.0, cube)) == 1000.0",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+        for (src, want) in [
+            (
+                "Solid.offset(-6.0, cube)",
+                "Solid.offset(-6) shrinks the part to nothing: it is only 10.00 mm across in x, \
+so the shrink must be under 5.00 mm",
+            ),
+            (
+                "Solid.round(5.0, cube)",
+                "Solid.round(5) removes the whole part",
+            ),
+            (
+                "Solid.round(0.0, cube)",
+                "Solid.round radius must be positive, got 0",
+            ),
+            ("Solid.hull([])", "Solid.hull needs at least one solid"),
+        ] {
+            let src = format!("{prelude}let main = Solid.volume({src})\n");
+            let err = eval_with_prelude(&src).err().expect("should fail");
+            assert!(err.contains(want), "{src}: {err}");
+        }
+    }
+
     /// `Solid.check` reports what `functor export` refuses, meshing failures
     /// included, instead of erroring.
     #[test]

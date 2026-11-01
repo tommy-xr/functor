@@ -81,6 +81,32 @@ let subtract : (t, t) => t
 /// Keep only where a solid overlaps `other`; the solid is last for piping.
 let intersect : (t, t) => t
 
+/// The convex hull of solids (at least one): the smallest convex solid
+/// around them all, like shrink-wrap. Two spheres make a capsule; a box and a
+/// smaller box above it make a tapered block.
+let hull : (List<t>) => t
+/// Grow a solid by `distance` mm all over, or shrink it if negative: faces
+/// move along their normals, and the edges and corners that move apart are
+/// filled round (outside ones when growing, inside ones when shrinking).
+/// Shrinking a part away (nowhere thicker than 2 × |distance|) is an error.
+/// Like a boolean, evaluated once at its own scale. Boxes, cylinders and
+/// spheres take milliseconds (a 20 mm sphere grown 5 mm: half a second);
+/// concave or pointed solids 2–30 ms per triangle, more for bigger distances
+/// (seconds for a holed plate), so bind the result once at the top level and
+/// offset simple parts before combining them.
+let offset : (float, t) => t
+/// Round a solid's outside edges and corners to `radius` mm, keeping its
+/// size: shrink by `radius`, then grow back (a morphological opening). Inside
+/// edges stay sharp, and features under 2 × `radius` thick (fins, thin walls)
+/// vanish. Unlike `extrudeWith`'s `Solid.Round(radius)`, which finishes an
+/// extrusion's top and bottom edges exactly, this rounds every outside edge of
+/// any solid, faceted; it costs what `offset` does, twice.
+///
+/// ```
+/// let knob = Solid.cylinder(10.0, 8.0) |> Solid.round(1.5)
+/// ```
+let round : (float, t) => t
+
 /// A plane: the points `p` where `Vec3.dot(normal, p) == offset`, in mm.
 /// Normal and offset scale together: `{ normal: Vec3.make(0.0, 0.0, 2.0),
 /// offset: 10.0 }` is z = 5.
