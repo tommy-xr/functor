@@ -11,7 +11,7 @@ use manifold_rust::linalg::Vec3;
 use manifold_rust::manifold::Manifold;
 use manifold_rust::types::{Error, MeshGL64, OpType};
 
-use crate::{BoolOp, Mesh, Solid};
+use crate::{plane, BoolOp, Mesh, Solid};
 
 /// Inputs are snapped to this grid (2⁻¹⁶ mm ≈ 15 nm, exact in binary): features
 /// placed a hair apart (e.g. with f32 angles) usually become exactly coincident,
@@ -246,6 +246,20 @@ pub(crate) fn node(solid: &Solid, xform: Matrix4<f64>) -> Result<CsgNode, String
         // Inside a boolean, a group is the union of its pieces.
         Solid::Group(c) => CsgNode::op_n(OpType::Add, children(c)?),
         Solid::Transform { matrix, child } => node(child, xform * matrix)?,
+        Solid::Trim { child, plane, .. } => {
+            plane::trim(node(child, xform)?, plane::moved(*plane, xform))?
+        }
+        Solid::Edge {
+            child,
+            faces: [a, b],
+            cut,
+            ..
+        } => {
+            let phase = plane::facet_phase(*a, *b, *cut);
+            let scale = xform.determinant().cbrt().abs();
+            let (a, b) = (plane::moved(*a, xform), plane::moved(*b, xform));
+            plane::edge(node(child, xform)?, a, b, *cut, scale, phase)?
+        }
         primitive => {
             let mut mesh = Mesh::default();
             primitive.append_to(&mut mesh, xform)?;
@@ -254,7 +268,7 @@ pub(crate) fn node(solid: &Solid, xform: Matrix4<f64>) -> Result<CsgNode, String
     })
 }
 
-fn to_manifold(mesh: &Mesh) -> Result<Manifold, String> {
+pub(crate) fn to_manifold(mesh: &Mesh) -> Result<Manifold, String> {
     let gl = MeshGL64 {
         num_prop: 3,
         vert_properties: mesh

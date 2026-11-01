@@ -89,6 +89,53 @@ impl Sketch {
         }
     }
 
+    /// The axis-aligned box around the sketch, `[min, max]`; `None` if empty.
+    pub fn bounds(&self) -> Option<[[f64; 2]; 2]> {
+        let mut points = self.shapes.iter().flatten().flatten();
+        let first = *points.next()?;
+        Some(points.fold([first, first], |[lo, hi], p| {
+            [
+                [lo[0].min(p[0]), lo[1].min(p[1])],
+                [hi[0].max(p[0]), hi[1].max(p[1])],
+            ]
+        }))
+    }
+
+    /// The convex hull of the sketches (Andrew's monotone chain): empty if
+    /// they have no area between them.
+    pub fn hull(sketches: &[Sketch]) -> Sketch {
+        let mut points: Vec<[f64; 2]> = sketches
+            .iter()
+            .flat_map(|s| s.shapes.iter().flatten().flatten().copied())
+            .collect();
+        points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+        points.dedup();
+        let turn = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+            (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        };
+        // Lower then upper chain, each point dropped once it stops turning left.
+        let mut hull: Vec<[f64; 2]> = Vec::new();
+        for pass in [
+            &points[..],
+            &points.iter().rev().copied().collect::<Vec<_>>(),
+        ] {
+            let start = hull.len();
+            for &p in pass {
+                while hull.len() >= start + 2
+                    && turn(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+                {
+                    hull.pop();
+                }
+                hull.push(p);
+            }
+            hull.pop();
+        }
+        if hull.len() < 3 {
+            return Sketch::default();
+        }
+        Sketch::polygon(hull)
+    }
+
     pub fn map_points(&self, f: impl Fn([f64; 2]) -> [f64; 2]) -> Sketch {
         Sketch {
             shapes: self
@@ -231,6 +278,41 @@ mod tests {
         assert!(close(Sketch::circle(5.0).area(), PI * 25.0, 0.005));
         let tri = Sketch::polygon(vec![[0.0, 0.0], [0.0, 2.0], [2.0, 0.0]]);
         assert!(close(tri.area(), 2.0, 1e-9), "clockwise input normalizes");
+    }
+
+    #[test]
+    fn bounds_and_hull_are_exact_on_straight_shapes() {
+        let at = |s: Sketch, dx: f64, dy: f64| s.map_points(|[x, y]| [x + dx, y + dy]);
+        let a = at(Sketch::rect(2.0, 2.0), -4.0, 1.0);
+        let b = at(Sketch::rect(2.0, 4.0), 6.0, 0.0);
+        assert_eq!(a.bounds(), Some([[-5.0, 0.0], [-3.0, 2.0]]));
+        let both = Sketch::union(&[a.clone(), b.clone()]);
+        assert_eq!(both.bounds(), Some([[-5.0, -2.0], [7.0, 2.0]]));
+        assert_eq!(Sketch::default().bounds(), None);
+        // A 2 × 2 at x -5..-3 (y 0..2) and a 2 × 4 at x 5..7 (y -2..2): a trapezoid
+        // plus the triangles to each side.
+        let hull = Sketch::hull(&[a, b]);
+        assert!(
+            close(
+                hull.area(),
+                2.0 * 10.0 + 4.0 * 2.0 + 0.5 * 10.0 * 2.0,
+                1e-12
+            ),
+            "{}",
+            hull.area()
+        );
+        assert_eq!(hull.bounds(), both.bounds());
+        // A hull of a hull, or of a holed ring, is the outline.
+        let ring = Sketch::rect(10.0, 10.0).subtract(&Sketch::rect(4.0, 4.0));
+        assert!(close(Sketch::hull(&[ring]).area(), 100.0, 1e-12));
+        // Two circles: a stadium, under the faceting tolerance.
+        let pill = Sketch::hull(&[Sketch::circle(5.0), at(Sketch::circle(5.0), 20.0, 0.0)]);
+        assert!(
+            close(pill.area(), PI * 25.0 + 200.0, 0.005),
+            "{}",
+            pill.area()
+        );
+        assert!(Sketch::hull(&[]).is_empty());
     }
 
     #[test]
