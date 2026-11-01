@@ -101,7 +101,7 @@ pub(crate) fn node(solid: &Solid, xform: Matrix4<f64>) -> Result<CsgNode, String
     })
 }
 
-pub(crate) fn to_manifold(mesh: &Mesh) -> Result<Manifold, String> {
+fn to_manifold(mesh: &Mesh) -> Result<Manifold, String> {
     let gl = MeshGL64 {
         num_prop: 3,
         vert_properties: mesh

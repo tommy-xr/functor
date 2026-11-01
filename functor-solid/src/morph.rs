@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::{InnerSpace, Matrix4, SquareMatrix, Vector3};
 use manifold_rust::linalg::Vec3;
 use manifold_rust::manifold::Manifold;
 
-use crate::csg::{from_manifold, node, to_manifold, SNAP};
-use crate::{mesh, segments_for, Mesh, Solid};
+use crate::csg::{from_manifold, node, SNAP};
+use crate::{face_normal, mesh, segments_for, Mesh, Solid};
 
 /// The convex hull of `children`, in their shared frame.
 pub(crate) fn hull(children: &[Arc<Solid>]) -> Result<Mesh, String> {
@@ -32,14 +32,18 @@ fn hull_of(mesh: &Mesh) -> Manifold {
 /// `child` shrunk by `shrink` mm, then grown by `grow` mm (either may be 0).
 pub(crate) fn morph(child: &Solid, shrink: f64, grow: f64) -> Result<Mesh, String> {
     let mut m = convexified(child)?;
+    // Nothing to offset (e.g. an intersection of solids that don't meet).
+    if m.is_empty() {
+        return from_manifold(&m);
+    }
     if shrink > 0.0 {
-        let ball = ball(shrink)?;
+        let ball = ball(shrink);
         let whole = m;
         m = whole
             .try_convex_erosion(&ball, None, None)
             .or_else(|| whole.try_erode_by_convex(&ball, None, None))
             .unwrap_or_else(|| whole.minkowski_difference(&ball));
-        if m.is_empty() && !whole.is_empty() {
+        if m.is_empty() {
             return Err(vanished(&whole, shrink, grow > 0.0));
         }
     }
@@ -49,7 +53,7 @@ pub(crate) fn morph(child: &Solid, shrink: f64, grow: f64) -> Result<Mesh, Strin
         if shrink > 0.0 {
             m = m.simplify(SNAP);
         }
-        let ball = ball(grow)?;
+        let ball = ball(grow);
         // Non-convex: one hull per triangle, unioned as a balanced tree;
         // convex (declined here): one hull of pairwise vertex sums.
         m = m
@@ -65,20 +69,36 @@ pub(crate) fn morph(child: &Solid, shrink: f64, grow: f64) -> Result<Mesh, Strin
 /// paths, ~100–1000× slower.
 fn convexified(child: &Solid) -> Result<Manifold, String> {
     let m = Manifold::from_impl(node(child, Matrix4::identity())?.evaluate());
+    if m.is_empty() {
+        return Ok(m);
+    }
     let hull = m.convex_hull();
-    // Snapping moves a vertex at most SNAP: dents no deeper than that.
-    if hull.volume() - m.volume() > SNAP * hull.surface_area() {
+    // Snapping moves a vertex at most SNAP: a quick reject first, as dents that
+    // shallow miss no more volume than they hold.
+    if hull.volume() - m.volume() > SNAP * hull.surface_area() || !nearly_convex(&m)? {
         return Ok(m);
     }
     Ok(hull_of(&child.mesh()?))
 }
 
+/// Whether no vertex of `m` is more than 2 × SNAP outside any of its faces'
+/// planes: convex up to snapping. (Holes leave no volume to miss, e.g. a
+/// hairline one through a block, but their walls fail this.)
+fn nearly_convex(m: &Manifold) -> Result<bool, String> {
+    let mesh = from_manifold(m)?;
+    let points: Vec<Vector3<f64>> = mesh.vertices.iter().map(|&p| p.into()).collect();
+    Ok(mesh.triangles.iter().all(|t| {
+        let [a, b, c] = t.map(|i| points[i as usize]);
+        let n = face_normal(a, b, c);
+        points.iter().all(|&p| n.dot(p - a) <= 2.0 * SNAP)
+    }))
+}
+
 /// A sphere of `radius` faceted like `Solid.sphere`: vertices on the axes, so
 /// flat axis-aligned faces move by exactly `radius`. Hulled, so the
-/// Minkowski fast paths see it as convex (its split quads may not be exactly
-/// flat).
-fn ball(radius: f64) -> Result<Manifold, String> {
-    Ok(to_manifold(&mesh::sphere(radius, segments_for(radius)))?.convex_hull())
+/// Minkowski fast paths see it as convex.
+fn ball(radius: f64) -> Manifold {
+    hull_of(&mesh::sphere(radius, segments_for(radius)))
 }
 
 /// Why shrinking `whole` by `depth` left nothing: an inscribed ball of that
@@ -105,11 +125,9 @@ fn deepest(whole: &Manifold, depth: f64) -> Option<f64> {
         return None;
     }
     let fits = |r: f64| {
-        ball(r).is_ok_and(|b| {
-            whole
-                .try_convex_erosion(&b, None, None)
-                .is_some_and(|m| !m.is_empty())
-        })
+        whole
+            .try_convex_erosion(&ball(r), None, None)
+            .is_some_and(|m| !m.is_empty())
     };
     let (mut lo, mut hi) = (0.0, depth);
     while hi - lo > 0.002 {
@@ -213,6 +231,38 @@ mod tests {
             close(b.min, [0.0; 3]) && close(b.max, [20.0, 20.0, 6.0]),
             "{b:?}"
         );
+    }
+
+    #[test]
+    fn a_hairline_hole_is_not_hulled_away() {
+        // Missing too little volume to fail the snapping test, but a hole.
+        let block = cube(100.0);
+        let pin = arc(Solid::Box {
+            size: [0.0625, 0.0625, 120.0],
+        });
+        let holed = arc(Solid::boolean(BoolOp::Subtract, vec![block, pin]));
+        let shrunk = holed.offset(-1.0).mesh().unwrap();
+        // The hole grows to ~2 mm across: far more than a solid block loses.
+        assert!(
+            shrunk.volume() < 98.0f64.powi(3) - 98.0 * 3.0,
+            "{}",
+            shrunk.volume()
+        );
+    }
+
+    #[test]
+    fn offsetting_nothing_is_nothing() {
+        let apart = arc(Solid::boolean(
+            BoolOp::Intersect,
+            vec![cube(1.0), arc(cube(1.0).translate([5.0, 0.0, 0.0]))],
+        ));
+        for s in [
+            apart.clone().offset(1.0),
+            apart.clone().offset(-1.0),
+            apart.rounded(1.0),
+        ] {
+            assert!(s.mesh().unwrap().triangles.is_empty());
+        }
     }
 
     #[test]
