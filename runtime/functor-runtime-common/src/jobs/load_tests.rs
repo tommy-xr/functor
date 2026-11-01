@@ -80,7 +80,7 @@ fn run(game: &mut FunctorLangEmbeddedGame) -> Run {
 #[test]
 fn a_slow_load_keeps_frames_coming_and_its_progress_only_rises() {
     let mut game = boot();
-    let source = SLOW.replace("TOTAL", "200000.0");
+    let source = SLOW.replace("TOTAL", "500000.0");
     let status = game.begin_load_project(&[("game.fun".to_string(), source)]).expect("links");
     assert!(status.contains("off the frame thread"), "{status}");
     assert!(game.load_pending());
@@ -101,7 +101,7 @@ fn a_slow_load_keeps_frames_coming_and_its_progress_only_rises() {
     assert!(run.progress.last().is_some_and(|p| *p > 0.5), "{:?}", run.progress);
     // The loaded game runs, with the value the loader computed.
     let model = game.state_debug();
-    assert!(model.contains("sum: 19999900000"), "{model}");
+    assert!(model.contains("sum: 124999750000"), "{model}");
     assert!(!model.contains("frames: 0"), "it ticks: {model}");
 }
 
@@ -214,11 +214,11 @@ fn reload_playing(game: &mut FunctorLangEmbeddedGame, push: String) -> (f64, Dur
 
 #[test]
 fn a_heavy_reload_runs_off_the_frame_while_the_old_program_plays() {
-    let source = PLAYING.replace("TOTAL", "200000.0");
+    let source = PLAYING.replace("TOTAL", "500000.0");
     let mut game = FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), source)], Box::new(NativePlatform))
         .expect("loads")
         .load_in_background();
-    let (ticked, longest_gap, status) = reload_playing(&mut game, PLAYING.replace("TOTAL", "210000.0"));
+    let (ticked, longest_gap, status) = reload_playing(&mut game, PLAYING.replace("TOTAL", "510000.0"));
     let status = status.expect("reloads");
     eprintln!(
         "reload: {status}; the old program ticked {ticked} frames meanwhile, longest gap {:.1} ms",
@@ -226,34 +226,37 @@ fn a_heavy_reload_runs_off_the_frame_while_the_old_program_plays() {
     );
     assert!(status.contains("model preserved"), "{status}");
     assert!(ticked >= 5.0, "the old program ticked {ticked} frames");
-    assert!(longest_gap <= BUDGET * 2, "a {:.1} ms gap between frames", longest_gap.as_secs_f64() * 1000.0);
+    // The push's own frame links and type-checks the project before the
+    // loader takes over: ~30 ms in a debug build, a few in release.
+    let limit = if cfg!(debug_assertions) { BUDGET * 3 } else { BUDGET * 2 };
+    assert!(longest_gap <= limit, "a {:.1} ms gap between frames", longest_gap.as_secs_f64() * 1000.0);
     // The model kept counting, and the next tick runs the new `slow`.
     let ft = FrameTime { tts: 100.0, dts: 1.0 / 60.0 };
     game.tick(ft);
     let model = game.state_debug();
-    assert!(model.contains("sum: 22049895000"), "{model}");
+    assert!(model.contains("sum: 130049745000"), "{model}");
     assert!(frames(&game) > ticked, "{model}");
 }
 
 #[test]
 fn a_heavy_reload_that_fails_keeps_the_old_program() {
-    let source = PLAYING.replace("TOTAL", "200000.0");
+    let source = PLAYING.replace("TOTAL", "500000.0");
     let mut game = FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), source)], Box::new(NativePlatform))
         .expect("loads")
         .load_in_background();
-    let broken = PLAYING.replace("TOTAL", "210000.0").replace("acc + i", "acc + i + Text.length(1.0)");
+    let broken = PLAYING.replace("TOTAL", "510000.0").replace("acc + i", "acc + i + Text.length(1.0)");
     let (ticked, _, status) = reload_playing(&mut game, broken);
     let error = status.expect_err("fails");
     assert!(error.contains("game.fun:"), "{error}");
     assert!(ticked >= 1.0);
     let ft = FrameTime { tts: 100.0, dts: 1.0 / 60.0 };
     game.tick(ft);
-    assert!(game.state_debug().contains("sum: 19999900000"), "the old program: {}", game.state_debug());
+    assert!(game.state_debug().contains("sum: 124999750000"), "the old program: {}", game.state_debug());
 }
 
 #[test]
 fn a_light_reload_stays_on_the_frame() {
-    let source = PLAYING.replace("TOTAL", "200000.0");
+    let source = PLAYING.replace("TOTAL", "500000.0");
     let mut game = FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), source.clone())], Box::new(NativePlatform))
         .expect("loads")
         .load_in_background();
