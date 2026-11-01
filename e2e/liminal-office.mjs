@@ -524,7 +524,7 @@ async function blockTour(game) {
   await game.view(1);
   await game.hold("b", 1);
   let m = await game.model();
-  check(m.block === true && m.uncovered === 0, `B turns the office into the block (block ${m.block})`);
+  check(m.town === 1 && m.uncovered === 0, `B turns the office into the block (town ${m.town})`);
   const windows = [];
   for (const c of COPIES) {
     await enterCopy(game, c);
@@ -533,7 +533,7 @@ async function blockTour(game) {
   }
   // Across the crossroads: every copy's interior draws.
   m = await walkToPoint(game, [CROSS, CROSS]);
-  check(m.active.every((a) => a), `at the crossroads every copy is active (${JSON.stringify(m.active)})`);
+  check(m.active.length === 4, `at the crossroads every copy is active (${JSON.stringify(m.active)})`);
   check(samples.n > 300 && samples.outside.length === 0, `the eye was in a cell of the nearest copy at all ${samples.n} samples${samples.outside.length ? `; not at ${samples.outside.slice(0, 3).join(", ")}` : ""}`);
   m = await game.model();
   check(m.uncovered === 0, `no active copy's cells ever lost the eye (uncovered ${m.uncovered} over the tour)`);
@@ -573,7 +573,7 @@ async function staticDraws(game, label) {
   const groups = await tested(times(GROUPS));
   const once = await tested(ROOM_OF);
   const m = await game.model();
-  return { label, models: once.live - none.live, draws: groups.live - none.live, hidden: once.hidden, walks: once.walks, active: m.active.filter((a) => a).length, on: m.active.flatMap((a, k) => (a ? [k] : [])) };
+  return { label, models: once.live - none.live, draws: groups.live - none.live, hidden: once.hidden, walks: once.walks, active: m.active.length, on: m.active };
 }
 
 async function drawCounts(game) {
@@ -676,7 +676,7 @@ async function residency(game) {
     `live GL objects after all four copies equal those after copy 0's (${live(after)} vs ${live(primed)}; the office from its entrance: ${live(office)})`);
 
   await walkToPoint(game, [CROSS, CROSS]);
-  check((await game.model()).active.every((a) => a), "residency: all four copies active at the crossroads");
+  check((await game.model()).active.length === 4, "residency: all four copies active at the crossroads");
   await statsAfter(game, 300);
   const blockNoon = await noonSwitch();
   check(blockNoon.misses === officeNoon.misses && blockNoon.misses > 0,
@@ -743,6 +743,8 @@ try {
     "liminal-office-block-street": scripted("block-street.script"),
     "liminal-office-block-street-day": scripted("noon-block-street.script"),
     "liminal-office-block-window": scripted("block-window.script"),
+    "liminal-office-grid16-street": scripted("grid16-street.script"),
+    "liminal-office-grid16-street-day": scripted("noon-grid16-street.script"),
   };
   for (const [name, args] of Object.entries(goldens)) {
     check(golden(name, args).equals(golden(name, args)), `${name}: byte-identical across runs`);

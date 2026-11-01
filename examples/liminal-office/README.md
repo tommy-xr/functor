@@ -4,7 +4,7 @@ Two floors of an empty office block, by night or day: carpeted corridors under
 drop ceilings and fluorescent panels, open empty offices (103 and 203 have
 windows), a sodium-lit stairwell between the floors, a neon entrance on an
 empty apron. `B` turns it into a block of four turned copies around a
-crossroads. Desktop; Quest is configured (120 Hz, foveation off) but not yet
+crossroads; `G` into grids of 4, 16 and 64. Desktop; Quest is configured (120 Hz, foveation off) but not yet
 checked on a headset. Not the web: baked files load with `File.bytes`.
 
 ```sh
@@ -25,6 +25,8 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `T` | next hour |
 | `N` | midnight ⇄ noon |
 | `B` | the office alone ⇄ the block (views 1–8 then jump within the nearest copy) |
+| `G` | the next grid: 4, 16, 64 copies (views 9 and 0 stay in it) |
+| `K` | at most 4 → 1 → 2 interiors at once |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
 | VR `X` / `Y` | next hour / midnight ⇄ noon |
@@ -111,10 +113,38 @@ own translation and yaw, so the GPU holds one office. Per copy:
   takes the six nearest the eye, which is what fits the 8 forward-light slots
   beside the sun and ambient.
 
-Interiors pop in and out at the radius, through doors and windows still in
-view: the fog only starts at 35 m (night) or 70 m (day).
+In the block, interiors pop in and out at the radius, through doors and
+windows still in view: the fog only starts at 35 m (night) or 70 m (day).
 
 The one overcast day bake holds at every yaw (it has no sun).
+
+## The grids
+
+`G` repeats the block, a 24 m street apart, to 4, 16 and 64 copies. Copy
+ids nest (the first 4 of every grid are the block, the first 16 of 64 the
+grid of 16), so an id names the same building, memo key and tags in every
+town. What scales with the eye's surroundings, not with the town:
+
+- **Index**: each copy is filed under the 53 m tile holding its footprint's
+  middle; `Block.near` reads only the tiles around the eye. Activation,
+  colliders, the nearest copy and the lights all query it.
+- **Activation**: at most `K` interiors (4 by default). A copy qualifies
+  within 30 m, or 34 m if it was on. Over `K`, the eye's own building wins,
+  then copies already on (nearest first), then the rest (nearest first). A
+  copy that is on is never swapped for a nearer one: within 34 m the eye is
+  in its collar and may be looking in through its door or a window, which
+  only the renderer's portal walk knows. It goes off past 34 m, or when the
+  eye walks into another building and all `K` are taken.
+- **Shells**: inactive copies are two `Scene.instanced` cubes for the whole
+  town: massing, canopy, apron and window bands lit; neon, lamp shades, the
+  entrance and layout.fun's windows glowing (the lit rooms' colour by night,
+  neutral glass by day). An active copy draws its real street side and
+  interior instead. One `Scene.memo`, rebuilt when the active set or the
+  hour's look changes.
+- **Colliders**: copies within 12 m of the player (to 16 m once on). A view
+  jump makes its target solid before the teleport lands. The office alone
+  and the block keep every copy solid.
+- **Lights**: the six nearest the eye, from copies within 60 m.
 
 ## Day and night
 

@@ -1,0 +1,10 @@
+# Noon (N), G twice (the grid of 16), then view 9 (up the street through the
+# crossroads); the liminal-office-grid16-street-day golden captures frame 30.
+2 n down
+3 n up
+4 g down
+5 g up
+6 g down
+7 g up
+10 9 down
+12 9 up
