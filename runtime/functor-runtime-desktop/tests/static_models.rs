@@ -11,6 +11,7 @@
 //!   lightmapped surfaces but still light others; unbaked lights add;
 //! - `Scene.withLightmap` swaps the lightmap texture, e.g. for a layered
 //!   composition of the model's own atlas;
+//! - an `Srgb` pixel lightmap allocates no mips until an albedo draws it;
 //! - a minified file texture samples its mips, on a group and on
 //!   `Scene.litTexture`.
 //!
@@ -58,6 +59,8 @@ fn main() {
     println!("test baked_and_unbaked_lights ... ok");
     with_lightmap(&mut harness);
     println!("test with_lightmap ... ok");
+    lightmap_mips(&mut harness);
+    println!("test lightmap_mips ... ok");
     file_texture_mips(&mut harness);
     println!("test file_texture_mips ... ok");
 }
@@ -245,6 +248,34 @@ fn with_lightmap(harness: &mut Harness) {
     let grey = solid_in([64, 64, 64], ColorSpace::Linear);
     assert_near(draw(harness, Some(grey)), [137, 137, 137], "another texture");
     assert_near(draw(harness, None), [0, 0, 0], "own lightmap again");
+}
+
+/// An `Srgb` pixel texture drawn only as a lightmap has level 0 alone (its
+/// sampler reads no mips); drawn as an albedo, the same GL texture gains them.
+fn lightmap_mips(harness: &mut Harness) {
+    let pixels = PixelData::new(4, 4, PixelEncoding::Rgb8, ColorSpace::Srgb, &[128; 48]);
+    let pixels = Arc::new(pixels.expect("valid pixels"));
+    let room = lightmapped(solid([255, 255, 255]), TextureDescription::Data(pixels.clone()), 1.0, [0.0; 3]);
+    harness.render(&frame(&room, 1, false, vec![]));
+    let gl = &harness.gl;
+    // (level-1 width, min filter) of the texture bound to TEXTURE_2D.
+    let mips = || unsafe {
+        (
+            gl.get_tex_level_parameter_i32(glow::TEXTURE_2D, 1, glow::TEXTURE_WIDTH),
+            gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32,
+        )
+    };
+    unsafe {
+        gl.active_texture(glow::TEXTURE3);
+        let lightmap = gl.get_parameter_texture(glow::TEXTURE_BINDING_2D);
+        assert_eq!(mips(), (0, glow::LINEAR), "a lightmap-only texture has no mips");
+        gl.active_texture(glow::TEXTURE0);
+        let texture = harness.scene_context.pixel_texture(gl, &pixels);
+        assert_eq!(lightmap, Some(texture), "the lightmap's retained texture");
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        assert_eq!(mips(), (2, glow::LINEAR_MIPMAP_LINEAR), "an albedo bind adds them");
+        gl.bind_texture(glow::TEXTURE_2D, None);
+    }
 }
 
 /// A `Light.baked` ambient leaves the lightmapped quad as the lightmap has
