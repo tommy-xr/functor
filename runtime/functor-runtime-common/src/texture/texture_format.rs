@@ -32,9 +32,17 @@ pub fn decode_image(bytes: &[u8]) -> Result<TextureData, ImageError> {
     match image::guess_format(bytes) {
         Ok(
             format @ (image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif),
-        ) => image::load_from_memory_with_format(bytes, format)
-            .map(TextureData::from_image)
-            .map_err(|e| error(e.to_string())),
+        ) => {
+            let image = image::load_from_memory_with_format(bytes, format)
+                .map_err(|e| error(e.to_string()))?
+                .to_rgba8();
+            Ok(TextureData {
+                width: image.width(),
+                height: image.height(),
+                bytes: image.into_raw(),
+                format: PixelFormat::RGBA,
+            })
+        }
         _ => Err(error("not a PNG, JPEG, GIF or PCX image".to_string())),
     }
 }

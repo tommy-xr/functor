@@ -56,25 +56,36 @@ pub fn decode_pcx(bytes: &[u8]) -> Result<TextureData, ImageError> {
     } else {
         bytes.len()
     };
-    // Each row is `planes` runs of `stride` bytes; the first `width` count.
-    let row = stride * planes;
-    let data = unpack_rle(&bytes[HEADER..end], row * height).or_else(|(at, got)| {
-        fail(
-            HEADER + at,
-            format!(
-                "pixel data ends after {got} of {} bytes ({height} rows of {row})",
-                row * height
-            ),
-        )
-    })?;
+    // Each row is `planes` runs of `stride` bytes; the first `width` of each
+    // are kept, a row at a time, so padding is never held.
+    let mut rle = Rle {
+        src: &bytes[HEADER..end],
+        at: 0,
+        run: 0,
+        value: 0,
+    };
+    let mut line = vec![0u8; width * planes];
     let mut rgba = Vec::with_capacity(width * height * 4);
-    for line in data.chunks_exact(row) {
+    for y in 0..height {
+        for plane in line.chunks_exact_mut(width) {
+            for x in 0..stride {
+                let Some(b) = rle.next() else {
+                    return fail(
+                        HEADER + rle.at,
+                        format!("pixel data ends in row {y} of {height}"),
+                    );
+                };
+                if x < width {
+                    plane[x] = b;
+                }
+            }
+        }
         for x in 0..width {
             let [r, g, b] = if planes == 1 {
                 let i = end + 1 + 3 * line[x] as usize;
                 [bytes[i], bytes[i + 1], bytes[i + 2]]
             } else {
-                [line[x], line[stride + x], line[2 * stride + x]]
+                [line[x], line[width + x], line[2 * width + x]]
             };
             rgba.extend_from_slice(&[r, g, b, 255]);
         }
@@ -87,29 +98,31 @@ pub fn decode_pcx(bytes: &[u8]) -> Result<TextureData, ImageError> {
     })
 }
 
-/// The first `need` bytes of a PCX run-length stream: a byte ≥ 0xC0 repeats
-/// the next one (its low 6 bits) times, any other byte is itself. Runs may
-/// cross rows. Too few is `Err` with where the stream ran out and how many
-/// there were.
-fn unpack_rle(src: &[u8], need: usize) -> Result<Vec<u8>, (usize, usize)> {
-    // Never reserve more than the stream can expand to (63 per 2 bytes).
-    let mut out = Vec::with_capacity(need.min(src.len().saturating_mul(32)));
-    let mut at = 0;
-    while out.len() < need {
-        match (src.get(at), src.get(at + 1)) {
-            (Some(&b), Some(&value)) if b >= 0xC0 => {
-                out.resize(out.len() + (b & 0x3F) as usize, value);
-                at += 2;
+/// A PCX run-length stream, byte by byte: a byte ≥ 0xC0 repeats the next one
+/// (its low 6 bits) times, any other byte is itself. Runs may cross rows.
+struct Rle<'a> {
+    src: &'a [u8],
+    at: usize,
+    run: u8,
+    value: u8,
+}
+
+impl Rle<'_> {
+    /// The next byte, or `None` (with `at` where it ran out) at the end.
+    fn next(&mut self) -> Option<u8> {
+        while self.run == 0 {
+            let b = *self.src.get(self.at)?;
+            if b < 0xC0 {
+                self.at += 1;
+                return Some(b);
             }
-            (Some(&b), _) if b < 0xC0 => {
-                out.push(b);
-                at += 1;
-            }
-            _ => return Err((at, out.len())),
+            self.value = *self.src.get(self.at + 1)?;
+            self.run = b & 0x3F;
+            self.at += 2;
         }
+        self.run -= 1;
+        Some(self.value)
     }
-    out.truncate(need);
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -223,10 +236,7 @@ mod tests {
         // Cut short: a row and a half of pixels, and a run missing its value.
         for rle in [&[0xC3, 1, 0, 0, 2][..], &[0xC3, 1, 0, 0, 2, 0xC1]] {
             let file = pcx(3, 2, 1, 4, rle, &palette());
-            assert_eq!(
-                err(&file),
-                "at byte 133: pixel data ends after 6 of 8 bytes (2 rows of 4)"
-            );
+            assert_eq!(err(&file), "at byte 133: pixel data ends in row 1 of 2");
         }
         // Sides past 4096 (65536 here, where 3 planes of 32768-byte rows
         // would overflow a 32-bit size).
