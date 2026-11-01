@@ -1,6 +1,6 @@
 [
   {
-    "name": "outfits-idle-t1",
+    "name": "outfits-loadout-t1",
     "fixedTime": 1.0,
     "debugRender": null,
     "targets": [
@@ -8,19 +8,21 @@
     ]
   },
   {
-    "name": "outfits-walk-t5",
-    "fixedTime": 5.3,
+    "name": "outfits-loadout-walk",
     "debugRender": null,
     "targets": [
       "native"
-    ]
+    ],
+    "inputScript": "loadout.script",
+    "captureAtFrame": 75
   },
   {
-    "name": "outfits-run-t9",
-    "fixedTime": 9.3,
+    "name": "outfits-crowd-100",
     "debugRender": null,
     "targets": [
       "native"
-    ]
+    ],
+    "inputScript": "crowd.script",
+    "captureAtFrame": 90
   }
 ]
