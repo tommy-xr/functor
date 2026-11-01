@@ -468,6 +468,94 @@ mod tests {
         assert_eq!(apart.shared_positions(), 0);
     }
 
+    /// Features one snap step (2⁻¹⁶ mm) apart near x = 1000 mm, where f32
+    /// steps are 2⁻¹⁴ mm, merge on export: the error names the deepest
+    /// boolean that made them, the operands that meet there, and where.
+    #[test]
+    fn near_coincident_booleans_name_the_op_and_place() {
+        const EPS: f64 = 1.0 / 65536.0;
+        let block =
+            |size: [f64; 3], center: [f64; 3]| arc(arc(Solid::Box { size }).translate(center));
+        let err = |s: Solid| s.mesh().unwrap_err();
+
+        // Two cubes a hair apart: x 990..1000 and 1000+ε..1010+ε.
+        let apart = arc(Solid::boolean(
+            BoolOp::Union,
+            vec![
+                block([10.0; 3], [995.0, 0.0, 0.0]),
+                block([10.0; 3], [1005.0 + EPS, 0.0, 0.0]),
+            ],
+        ));
+        assert_eq!(
+            err((*apart).clone()),
+            "a Solid.union of 2 solids left features closer than 32-bit coordinates can \
+separate where items 0 and 1 (counting from 0) nearly meet, at 4 points within x 1000.00, \
+y -5.00 to 5.00, z -5.00 to 5.00 mm (as built, before moving the result) — move them at \
+least 0.01 mm apart, or overlap them by at least 0.01 mm"
+        );
+        // Split through the middle, the union is still blamed, not the plane.
+        let (top, _) = Solid::split(apart, [0.0, 0.0, 1.0], 0.0).unwrap();
+        assert!(
+            err(top).starts_with("a Solid.union of 2 solids"),
+            "split inherits"
+        );
+        // Far out (f32 steps 2⁻⁷ mm), a 2⁻⁹ mm gap still finds both operands.
+        let far_apart = Solid::boolean(
+            BoolOp::Union,
+            vec![
+                block([10.0; 3], [99995.0, 0.0, 0.0]),
+                block([10.0; 3], [100005.0 + 1.0 / 512.0, 0.0, 0.0]),
+            ],
+        );
+        assert!(
+            err(far_apart).contains("where items 0 and 1 (counting from 0) nearly meet"),
+            "far"
+        );
+        // Overlapping by ε leaves an ε-thin intersection.
+        let sliver = Solid::boolean(
+            BoolOp::Intersect,
+            vec![
+                block([10.0; 3], [1005.0, 1005.0, 1005.0]),
+                block([10.0; 3], [1015.0 - EPS, 1005.0, 1005.0]),
+            ],
+        );
+        assert!(
+            err(sliver).starts_with(
+                "a Solid.intersect left features closer than 32-bit coordinates can separate \
+where the solid and `other` nearly meet, at 4 points within x 1010.00,"
+            ),
+            "intersect"
+        );
+        // A plane ε inside a face: the split itself is blamed.
+        let cube = block([10.0; 3], [1005.0, 1005.0, 1005.0]);
+        let (_, thin) = Solid::split(cube, [1.0, 0.0, 0.0], 1010.0 - EPS).unwrap();
+        let message = err(thin);
+        assert!(
+            message.starts_with("the split left features")
+                && message.ends_with("— move the plane at least 0.01 mm"),
+            "{message}"
+        );
+
+        // A cut shaving an ε × ε column off a cube's edge, inside a clean
+        // union: the subtract is blamed, by role.
+        let cube = block([10.0; 3], [1005.0, 1005.0, 1005.0]);
+        let cut = block([10.0, 10.0, 12.0], [1015.0 - EPS, 1015.0 - EPS, 1005.0]);
+        let shaved = arc(Solid::boolean(BoolOp::Subtract, vec![cube, cut]));
+        let far = block([1.0; 3], [0.0; 3]);
+        let message = err(Solid::boolean(BoolOp::Union, vec![far, shaved]));
+        assert!(
+            message.starts_with(
+                "a Solid.subtract left features closer than 32-bit coordinates can separate \
+where the solid and `cut` nearly meet, at "
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("x 1010.00, y 1010.00, z 1000.00 to 1010.00 mm"),
+            "{message}"
+        );
+    }
+
     /// Export's checks: a clean solid passes; pieces meeting exactly at an
     /// edge or corner, empty and too-large parts, and open meshes don't.
     #[test]
