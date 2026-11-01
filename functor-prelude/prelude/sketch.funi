@@ -55,3 +55,11 @@ let scale : (float, t) => t
 
 /// The filled area in square millimetres (holes subtract).
 let area : (t) => float
+/// The axis-aligned box around a sketch, in millimetres.
+type bounds = { min: Input.point2, max: Input.point2 }
+/// The box around a sketch — e.g. to centre a line of text on its own
+/// outline. An empty sketch is an error.
+let bounds : (t) => bounds
+/// The convex hull of sketches (at least one): the outline a rubber band
+/// would make around them all. Two circles make a pill.
+let hull : (List<t>) => t

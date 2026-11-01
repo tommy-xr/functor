@@ -17,6 +17,7 @@ mod edged;
 mod mesh;
 pub mod model;
 mod morph;
+mod plane;
 pub mod print;
 pub mod remesh;
 mod sketch;
@@ -27,10 +28,11 @@ pub mod threemf;
 
 use std::sync::{Arc, OnceLock};
 
-use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
+use cgmath::{InnerSpace, Matrix4, Rad, SquareMatrix, Vector3};
 
 pub use edged::EdgeShape;
 pub use mesh::{face_normal, triangulate_polygon, Bounds, Mesh};
+pub use plane::{basis, EdgeCut, Plane};
 pub use sketch::Sketch;
 pub use text::{text, text_width, Font};
 
@@ -115,6 +117,22 @@ pub enum Solid {
         child: Arc<Solid>,
         shrink: f64,
         grow: f64,
+        result: MeshCache,
+    },
+    /// `child` with everything on the side `plane`'s normal points away
+    /// from removed. Evaluated like a boolean. Build with [`Solid::trim`].
+    Trim {
+        child: Arc<Solid>,
+        plane: Plane,
+        result: MeshCache,
+    },
+    /// `child` with the straight edge where faces on two planes meet rounded
+    /// or bevelled along the whole line; each normal points into the solid.
+    /// Evaluated like a boolean. Build with [`Solid::edge`].
+    Edge {
+        child: Arc<Solid>,
+        faces: [Plane; 2],
+        cut: EdgeCut,
         result: MeshCache,
     },
 }
@@ -223,18 +241,12 @@ got {diameter}, {pitch}, {length}, {offset}"
         normal: [f64; 3],
         offset: f64,
     ) -> Result<(Solid, Solid), String> {
-        let length = normal.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if !(length > 0.0 && length.is_finite() && offset.is_finite()) {
-            return Err(format!(
-                "a split plane needs a non-zero, finite normal and a finite offset, \
-got {normal:?} and {offset}"
-            ));
-        }
+        let (normal, offset) = unit_plane("a split", normal, offset)?;
         let cut = CutCache::default();
         let half = |above| Solid::Half {
             child: child.clone(),
-            normal: normal.map(|x| x / length),
-            offset: offset / length,
+            normal,
+            offset,
             above,
             cut: cut.clone(),
         };
@@ -267,6 +279,66 @@ got {normal:?} and {offset}"
             grow,
             result: MeshCache::default(),
         }
+    }
+
+    /// Keep the side of `child` that `normal` points to from the plane
+    /// `normal·p = offset` (scaled together, as for [`Solid::split`]). A plane
+    /// that misses the solid keeps all of it or nothing.
+    pub fn trim(child: Arc<Solid>, normal: [f64; 3], offset: f64) -> Result<Solid, String> {
+        Ok(Solid::Trim {
+            child,
+            plane: unit_plane("a trim", normal, offset)?,
+            result: MeshCache::default(),
+        })
+    }
+
+    /// Round or bevel `child`'s outside edge where faces on planes `a` and
+    /// `b` meet (each normal pointing into the solid), along the whole line.
+    pub fn edge(child: Arc<Solid>, a: Plane, b: Plane, cut: EdgeCut) -> Result<Solid, String> {
+        let a = unit_plane("an edge face's", a.0, a.1)?;
+        let b = unit_plane("an edge face's", b.0, b.1)?;
+        let sin = Vector3::from(a.0).cross(Vector3::from(b.0)).magnitude();
+        // Under ~0.06° apart the faces barely meet: no reliable edge line.
+        if sin < 1e-3 {
+            return Err(format!(
+                "an edge's two faces must not be parallel, got normals {:?} and {:?}",
+                a.0, b.0
+            ));
+        }
+        let (EdgeCut::Round(size) | EdgeCut::Bevel(size)) = cut;
+        if !(size.is_finite() && size > 0.0) {
+            return Err(format!("an edge's size must be positive, got {size}"));
+        }
+        if let EdgeCut::Round(r) = cut {
+            plane::check_round(r, Vector3::from(a.0).dot(Vector3::from(b.0)))?;
+        }
+        Ok(Solid::Edge {
+            child,
+            faces: [a, b],
+            cut,
+            result: MeshCache::default(),
+        })
+    }
+
+    /// The mirror image of a solid through the plane `normal·p = offset`
+    /// (scaled together). Faces stay outward.
+    pub fn mirror(self: Arc<Self>, normal: [f64; 3], offset: f64) -> Result<Solid, String> {
+        Ok(self.transform(plane::mirror_matrix(unit_plane(
+            "a mirror", normal, offset,
+        )?)))
+    }
+
+    /// Move a solid into a frame: its X, Y and Z axes onto the columns of
+    /// `axes` (orthonormal, right-handed; see [`basis`]) and its origin onto
+    /// `origin`.
+    pub fn place(self: Arc<Self>, origin: [f64; 3], axes: [[f64; 3]; 3]) -> Solid {
+        let col = |v: [f64; 3]| Vector3::from(v).extend(0.0);
+        self.transform(Matrix4::from_cols(
+            col(axes[0]),
+            col(axes[1]),
+            col(axes[2]),
+            Vector3::from(origin).extend(1.0),
+        ))
     }
 
     pub fn translate(self: Arc<Self>, offset: [f64; 3]) -> Solid {
@@ -365,7 +437,9 @@ got {normal:?} and {offset}"
                     child.append_to(out, xform)?;
                 }
             }
-            Solid::Boolean { result, .. } => {
+            Solid::Boolean { result, .. }
+            | Solid::Trim { result, .. }
+            | Solid::Edge { result, .. } => {
                 let mesh = result
                     .0
                     .get_or_init(|| csg::evaluate(self).map(Arc::new))
@@ -430,6 +504,18 @@ got {normal:?} and {offset}"
         }
         Ok(())
     }
+}
+
+/// `normal·p = offset` scaled to a unit normal, or an error naming `what`.
+fn unit_plane(what: &str, normal: [f64; 3], offset: f64) -> Result<Plane, String> {
+    let length = Vector3::from(normal).magnitude();
+    if !(length > 0.0 && length.is_finite() && offset.is_finite()) {
+        return Err(format!(
+            "{what} plane needs a non-zero, finite normal and a finite offset, \
+got {normal:?} and {offset}"
+        ));
+    }
+    Ok((normal.map(|x| x / length), offset / length))
 }
 
 /// Facets around a circle of `radius` so no chord sags more than

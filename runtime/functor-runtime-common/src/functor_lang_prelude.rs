@@ -14462,6 +14462,90 @@ Config.create())",
         assert!(err.contains("leaves no thread"), "{err}");
     }
 
+    /// Plane tools: `trim` keeps the normal's side, `mirror` reflects,
+    /// `frame` + `place` match the same rotations and move, `Sketch.bounds`
+    /// / `hull` are exact, and `roundEdge` / `bevelEdge` finish a cube's four
+    /// bottom edges to the analytic volume, corners included.
+    #[test]
+    fn planes_frames_and_edges() {
+        let prelude = "let pi = 3.14159265358979\n\
+             let near = (a: float, b: float) => Math.abs(a / b - 1.0) < 0.005\n\
+             let exact = (a: float, b: float) => Math.abs(a - b) < 0.001\n\
+             let v = (x: float, y: float, z: float) => Vec3.make(x, y, z)\n\
+             let plane = (n: Vec3.t, d: float): Solid.plane => { normal: n, offset: d }\n\
+             let cube = Solid.box(20.0, 20.0, 20.0) |> Solid.translate(v(10.0, 10.0, 10.0))\n\
+             let bottom = plane(v(0.0, 0.0, 1.0), 0.0)\n\
+             let finish = (round: float, bevel: float) => cube\n\
+               |> Solid.roundEdge(round, bottom, plane(v(1.0, 0.0, 0.0), 0.0))\n\
+               |> Solid.roundEdge(round, bottom, plane(v(-1.0, 0.0, 0.0), -20.0))\n\
+               |> Solid.roundEdge(round, bottom, plane(v(0.0, 1.0, 0.0), 0.0))\n\
+               |> Solid.bevelEdge(bevel, bottom, plane(v(0.0, -1.0, 0.0), -20.0))\n\
+             let rounded = cube\n\
+               |> Solid.roundEdge(2.0, plane(v(1.0, 0.0, 0.0), 0.0), bottom)\n\
+               |> Solid.roundEdge(2.0, bottom, plane(v(-1.0, 0.0, 0.0), -20.0))\n\
+               |> Solid.roundEdge(2.0, bottom, plane(v(0.0, 1.0, 0.0), 0.0))\n\
+               |> Solid.roundEdge(2.0, bottom, plane(v(0.0, -1.0, 0.0), -20.0))\n\
+             // 4 edges of (1 - π/4)r² × 20 mm, less the corner overlaps (5/3 - π/2)r³.\n\
+             let roundedExact = 8000.0 - 80.0 * (1.0 - pi / 4.0) * 4.0 + 4.0 * (5.0 / 3.0 - pi / 2.0) * 8.0\n\
+             let block = Solid.box(1.0, 2.0, 3.0) |> Solid.translate(v(1.0, 2.0, 3.0))\n\
+             let placed = Solid.place(Solid.frame(v(5.0, 6.0, 7.0), v(0.0, 2.0, 0.0), v(1.0, 0.0, 0.0)), block)\n\
+             let turned = block |> Solid.rotateX(Angle.degrees(90.0)) |> Solid.rotateZ(Angle.degrees(90.0)) |> Solid.translate(v(5.0, 6.0, 7.0))\n\
+             let same = (a: Vec3.t, b: Vec3.t) => Vec3.distance(a, b) < 0.0001\n\
+             let squares = [Sketch.rect(2.0, 2.0) |> Sketch.translate(-4.0, 1.0), Sketch.rect(2.0, 4.0) |> Sketch.translate(6.0, 0.0)]\n\
+             let wantBounds: Sketch.bounds = { min: { x: -5.0, y: -2.0 }, max: { x: 7.0, y: 2.0 } }\n";
+        let checks = [
+            // x + y + z ≥ 12 drops a corner tetrahedron of 12³/6.
+            "exact(Solid.volume(Solid.trim(plane(v(1.0, 1.0, 1.0), 12.0), cube)), 8000.0 - 288.0)",
+            "Solid.check(Solid.trim(plane(v(1.0, 1.0, 1.0), 12.0), cube)).ok",
+            "Vec3.z(Solid.bounds(Solid.trim(plane(v(0.0, 0.0, -2.0), -10.0), cube)).max) == 5.0",
+            "Solid.volume(Solid.trim(plane(v(0.0, 0.0, 1.0), -5.0), cube)) == 8000.0",
+            "Solid.check(Solid.trim(plane(v(0.0, 0.0, 1.0), 25.0), cube)).problems == [\"the part is empty\"]",
+            // Mirrored through x = 0: x 0..20 becomes -20..0.
+            "exact(Solid.volume(Solid.mirror(plane(v(1.0, 0.0, 0.0), 0.0), rounded)), Solid.volume(rounded))",
+            "Vec3.x(Solid.bounds(Solid.mirror(plane(v(3.0, 0.0, 0.0), 0.0), cube)).min) == -20.0 \
+             && Vec3.x(Solid.bounds(Solid.mirror(plane(v(3.0, 0.0, 0.0), 0.0), cube)).max) == 0.0",
+            "Solid.check(Solid.mirror(plane(v(1.0, 1.0, 0.0), 3.0), rounded)).ok",
+            // place = the rotations and move it replaces.
+            "same(Solid.bounds(placed).min, Solid.bounds(turned).min) && same(Solid.bounds(placed).max, Solid.bounds(turned).max)",
+            "Vec3.x(Solid.frame(v(0.0, 0.0, 0.0), v(1.0, 0.0, 1.0), v(0.0, 0.0, 2.0)).x) == 1.0 \
+             && Vec3.y(Solid.frame(v(0.0, 0.0, 0.0), v(1.0, 0.0, 1.0), v(0.0, 0.0, 2.0)).y) == 1.0",
+            "Sketch.bounds(Sketch.union(squares)) == wantBounds",
+            "Sketch.area(Sketch.hull(squares)) == 38.0",
+            "near(Sketch.area(Sketch.hull([Sketch.circle(5.0), Sketch.circle(5.0) |> Sketch.translate(20.0, 0.0)])), pi * 25.0 + 200.0)",
+            "near(Solid.volume(rounded), roundedExact) && Solid.check(rounded).ok",
+            "Vec3.z(Solid.bounds(rounded).min) == 0.0",
+            "Solid.check(finish(3.0, 3.0)).ok && Solid.check(finish(2.0, 3.5)).ok",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+        for (src, want) in [
+            ("Solid.place(Solid.frame(v(0.0, 0.0, 0.0), v(0.0, 0.0, 1.0), v(0.0, 0.0, 3.0)), cube)", "must not be zero or parallel"),
+            ("Solid.place(Solid.frame(v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 0.0, 0.0)), cube)", "non-zero, finite z axis"),
+            ("Solid.place({ origin: v(0.0, 0.0, 0.0), x: v(2.0, 0.0, 0.0), y: v(0.0, 2.0, 0.0), z: v(0.0, 0.0, 2.0) }, cube)", "unit length, perpendicular and right-handed"),
+            ("Solid.place({ origin: v(0.0, 0.0, 0.0), x: v(1.0, 0.0, 0.0), y: v(0.0, -1.0, 0.0), z: v(0.0, 0.0, 1.0) }, cube)", "right-handed"),
+            ("Solid.trim(plane(v(0.0, 0.0, 0.0), 1.0), cube)", "Solid.trim: a trim plane needs a non-zero"),
+            ("Solid.roundEdge(1.0, bottom, plane(v(0.0, 0.0, -1.0), -20.0), cube)", "Solid.roundEdge: an edge's two faces must not be parallel"),
+            ("Solid.bevelEdge(-1.0, bottom, plane(v(1.0, 0.0, 0.0), 0.0), cube)", "Solid.bevelEdge: an edge's size must be positive, got -1"),
+            ("Solid.extrude(1.0, Sketch.hull([]))", "Sketch.hull needs at least one sketch"),
+        ] {
+            let src = format!("{prelude}let main = Solid.volume({src})\n");
+            let err = eval_with_prelude(&src).err().expect("should fail");
+            assert!(err.contains(want), "{src}: {err}");
+        }
+        let err = eval_with_prelude(&format!(
+            "{prelude}let main = Sketch.bounds(Sketch.subtract(Sketch.circle(9.0), Sketch.circle(1.0)))\n"
+        ))
+        .err()
+        .expect("should fail");
+        assert!(err.contains("Sketch.bounds: the sketch is empty"), "{err}");
+    }
+
     /// `Solid.split` keeps each side of a normalized plane; `Connector` pins,
     /// holes and keys mate with exactly the `Fit` gap; `layFlat` puts a cut
     /// face on the bed.

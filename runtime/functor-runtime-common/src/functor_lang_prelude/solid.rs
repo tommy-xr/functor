@@ -119,7 +119,8 @@ impl<K, V: Clone> WeakMemo<K, V> {
         }
         // Dead keys can never be looked up again — drop them first, then the
         // least recently used if still full.
-        self.entries.retain(|_, (weak, _, _)| weak.strong_count() > 0);
+        self.entries
+            .retain(|_, (weak, _, _)| weak.strong_count() > 0);
         if self.entries.len() >= RENDER_MESH_CAP {
             if let Some(oldest) = self
                 .entries
@@ -197,15 +198,24 @@ fn solid(solid: Solid) -> FunctorLangSolid {
     FunctorLangSolid(Arc::new(solid))
 }
 
+fn vec3_value([x, y, z]: [f64; 3]) -> Value {
+    Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
+}
+
 /// A `{ min, max }` bounds record of `Vec3`s.
 pub(super) fn bounds_value(b: functor_solid::Bounds) -> Value {
-    let vec3 = |[x, y, z]: [f64; 3]| {
-        Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
-    };
     Value::Record(Rc::new(vec![
-        ("min".to_string(), vec3(b.min)),
-        ("max".to_string(), vec3(b.max)),
+        ("min".to_string(), vec3_value(b.min)),
+        ("max".to_string(), vec3_value(b.max)),
     ]))
+}
+
+/// A record's field by name.
+fn field<'v>(value: &'v Value, name: &str) -> Option<&'v Value> {
+    match value {
+        Value::Record(fields) => fields.iter().find(|(f, _)| f == name).map(|(_, v)| v),
+        _ => None,
+    }
 }
 
 /// `Solid.split`'s `{ normal, offset }` plane.
@@ -216,11 +226,7 @@ struct Plane {
 
 impl crate::host_registry::FromArg for Plane {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
-        let field = |name: &str| match value {
-            Value::Record(fields) => fields.iter().find(|(f, _)| f == name).map(|(_, v)| v),
-            _ => None,
-        };
-        let (Some(normal), Some(offset)) = (field("normal"), field("offset")) else {
+        let (Some(normal), Some(offset)) = (field(value, "normal"), field(value, "offset")) else {
             return Err(RunError {
                 message: format!(
                     "{path}: expected a plane {{ normal: Vec3, offset: float }}, got {}",
@@ -285,6 +291,49 @@ Solid.Round(mm), got {value}"
                 span,
             }),
         }
+    }
+}
+
+/// `Solid.frame`'s `{ origin, x, y, z }`: an origin and right-handed unit axes.
+struct Frame {
+    origin: [f64; 3],
+    axes: [[f64; 3]; 3],
+}
+
+impl crate::host_registry::FromArg for Frame {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let error = |message: String| RunError { message, span };
+        let mut vecs = [[0.0; 3]; 4];
+        for (v, name) in vecs.iter_mut().zip(["origin", "x", "y", "z"]) {
+            let Some(field) = field(value, name) else {
+                return Err(error(format!(
+                    "{path}: expected a frame {{ origin, x, y, z }} from Solid.frame, got {}",
+                    value.kind_name()
+                )));
+            };
+            let (x, y, z) = vec3_of(field, &format!("{path} frame {name}"), span)?;
+            *v = [x, y, z].map(f64::from);
+        }
+        let [origin, x, y, z] = vecs;
+        if !origin.iter().all(|c| c.is_finite()) {
+            return Err(error(format!(
+                "{path}: a frame's origin must be finite, got {origin:?}"
+            )));
+        }
+        // Rebuilt in f64 from x and z (Vec3s are f32); y and the rest must
+        // already agree, so a hand-written record can't skew or scale.
+        let axes = functor_solid::basis(x, z).map_err(|e| error(format!("{path}: {e}")))?;
+        let agrees = [x, y, z]
+            .iter()
+            .zip(&axes)
+            .all(|(given, unit)| given.iter().zip(unit).all(|(g, u)| (g - u).abs() < 1e-4));
+        if !agrees {
+            return Err(error(format!(
+                "{path}: a frame's axes must be unit length, perpendicular and right-handed — \
+build it with Solid.frame(origin, xAxis, zAxis)"
+            )));
+        }
+        Ok(Frame { origin, axes })
     }
 }
 
@@ -451,6 +500,66 @@ got {b} and {t}"
             Ok::<_, String>(Value::Tuple(Rc::new(vec![half(above), half(below)])))
         },
     );
+    reg.fn2(
+        "Solid.trim",
+        "Solid.trim({ normal, offset }, solid)",
+        |p: Plane, s: FunctorLangSolid| {
+            Solid::trim(s.0, p.normal, p.offset)
+                .map(solid)
+                .map_err(|e| format!("Solid.trim: {e}"))
+        },
+    );
+    reg.fn2(
+        "Solid.mirror",
+        "Solid.mirror({ normal, offset }, solid)",
+        |p: Plane, s: FunctorLangSolid| {
+            s.0.mirror(p.normal, p.offset)
+                .map(solid)
+                .map_err(|e| format!("Solid.mirror: {e}"))
+        },
+    );
+    reg.fn3(
+        "Solid.frame",
+        "Solid.frame(origin, xAxis, zAxis)",
+        |o: FunctorLangVec3, x: FunctorLangVec3, z: FunctorLangVec3| {
+            let f64s = |v: FunctorLangVec3| [v.0 .0, v.0 .1, v.0 .2].map(f64::from);
+            let [x, y, z] =
+                functor_solid::basis(f64s(x), f64s(z)).map_err(|e| format!("Solid.frame: {e}"))?;
+            Ok::<_, String>(crate::input::record([
+                ("origin", Value::HostData(Rc::new(o))),
+                ("x", vec3_value(x)),
+                ("y", vec3_value(y)),
+                ("z", vec3_value(z)),
+            ]))
+        },
+    );
+    reg.fn2(
+        "Solid.place",
+        "Solid.place(frame, solid)",
+        |f: Frame, s: FunctorLangSolid| solid(s.0.place(f.origin, f.axes)),
+    );
+    for (path, sig, cut) in [
+        (
+            "Solid.roundEdge",
+            "Solid.roundEdge(radius, faceA, faceB, solid)",
+            functor_solid::EdgeCut::Round as fn(f64) -> functor_solid::EdgeCut,
+        ),
+        (
+            "Solid.bevelEdge",
+            "Solid.bevelEdge(distance, faceA, faceB, solid)",
+            functor_solid::EdgeCut::Bevel,
+        ),
+    ] {
+        reg.fn4(
+            path,
+            sig,
+            move |size: f64, a: Plane, b: Plane, s: FunctorLangSolid| {
+                Solid::edge(s.0, (a.normal, a.offset), (b.normal, b.offset), cut(size))
+                    .map(solid)
+                    .map_err(|e| format!("{path}: {e}"))
+            },
+        );
+    }
     reg.fn1(
         "Solid.hull",
         "Solid.hull([solid, …]) — at least one solid",
@@ -670,6 +779,31 @@ fn register_sketch(reg: &mut crate::host_registry::Registry) {
         },
     );
     reg.fn1(
+        "Sketch.bounds",
+        "Sketch.bounds(sketch)",
+        |s: FunctorLangSketch| {
+            let [lo, hi] = s.0.bounds().ok_or("Sketch.bounds: the sketch is empty")?;
+            let point = |[x, y]: [f64; 2]| {
+                crate::input::record([("x", Value::Number(x)), ("y", Value::Number(y))])
+            };
+            Ok::<_, String>(crate::input::record([
+                ("min", point(lo)),
+                ("max", point(hi)),
+            ]))
+        },
+    );
+    reg.fn1(
+        "Sketch.hull",
+        "Sketch.hull([sketch, …]) — at least one sketch",
+        |items: Vec<FunctorLangSketch>| {
+            if items.is_empty() {
+                return Err("Sketch.hull needs at least one sketch".to_string());
+            }
+            let items: Vec<Sketch> = items.iter().map(|s| (*s.0).clone()).collect();
+            Ok(sketch(Sketch::hull(&items)))
+        },
+    );
+    reg.fn1(
         "Sketch.area",
         "Sketch.area(sketch)",
         |s: FunctorLangSketch| Value::Number(s.0.area()),
@@ -720,9 +854,11 @@ fn typeface_file(path: &str) -> Result<Font, String> {
     let bytes = super::path::resolve("", path)
         .map_err(|reason| format!("Typeface.file({path:?}): {reason}"))
         .and_then(|resolved| super::bytes::read_project_file("Typeface.file", &resolved))
-        .map_err(|e| match cfg!(any(target_arch = "wasm32", target_os = "android")) {
-            true => format!("{e} — use Typeface.sans() or Typeface.script()"),
-            false => e,
-        })?;
+        .map_err(
+            |e| match cfg!(any(target_arch = "wasm32", target_os = "android")) {
+                true => format!("{e} — use Typeface.sans() or Typeface.script()"),
+                false => e,
+            },
+        )?;
     Font::from_bytes(path, bytes.to_vec()).map_err(|e| format!("Typeface.file: {e}"))
 }

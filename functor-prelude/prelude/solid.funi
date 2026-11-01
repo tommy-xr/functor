@@ -117,6 +117,50 @@ type plane = { normal: Vec3.t, offset: float }
 /// are measured or exported. `<stdlib>/Connector.fun` adds dowels and keys
 /// and lays halves flat for printing.
 let split : (plane, t) => (t, t)
+/// Keep the side of a solid that a plane's normal points to, closed by the
+/// cut face — a half-space, no huge box needed: `{ normal: Vec3.make(0.0,
+/// 0.0, 1.0), offset: 2.0 }` keeps z ≥ 2. A plane past the solid keeps all
+/// of it, or nothing (an empty solid, which `check` reports). Like a boolean,
+/// evaluated once at its own scale.
+let trim : (plane, t) => t
+/// The mirror image of a solid through a plane: `{ normal: Vec3.make(1.0,
+/// 0.0, 0.0), offset: 0.0 }` turns x into -x. Faces stay outward.
+let mirror : (plane, t) => t
+
+/// Where to put a part: an origin and right-handed unit axes, in mm.
+type frame = { origin: Vec3.t, x: Vec3.t, y: Vec3.t, z: Vec3.t }
+/// A frame at `origin` with z along `zAxis` and x along the part of `xAxis`
+/// square to it; y completes it. A zero z axis, or an x axis that is zero or
+/// parallel to z, is an error.
+let frame : (Vec3.t, Vec3.t, Vec3.t) => frame
+/// Move a solid into a frame: its X, Y and Z axes turn onto the frame's and
+/// its origin moves to the frame's origin — one step instead of a chain of
+/// rotations and a move. Build the frame with `frame`.
+let place : (frame, t) => t
+
+/// Round the outside edge where a solid's flat faces on planes `faceA` and
+/// `faceB` meet, to `radius` mm. Give each plane with its normal pointing
+/// into the solid — planes that would `trim` it unchanged; one pointing out
+/// cuts nothing, or a sliver. The whole line where the planes meet is cut,
+/// wherever it runs through the solid. Chain calls for more edges: rounds and
+/// bevels that meet at a corner overlap cleanly at any sizes, equal ones too.
+/// The round stands 0.05 mm proud of a true one, so it meets each face at a
+/// slight crease instead of grazing it (a graze leaves slivers that won't
+/// export); a round too small to reach past that is an error. Like a boolean,
+/// evaluated once at its own scale: round parts at final size.
+///
+/// ```
+/// // A 40 × 30 × 20 block (bottom z = -10, left side x = -20), its
+/// // bottom-left edge rounded.
+/// let bottom = { normal: Vec3.make(0.0, 0.0, 1.0), offset: -10.0 }
+/// let left = { normal: Vec3.make(1.0, 0.0, 0.0), offset: -20.0 }
+/// let part = Solid.box(40.0, 30.0, 20.0) |> Solid.roundEdge(3.0, bottom, left)
+/// ```
+let roundEdge : (float, plane, plane, t) => t
+/// Bevel the outside edge where a solid's flat faces on planes `faceA` and
+/// `faceB` meet, cut back `distance` mm along each face; planes as for
+/// `roundEdge`.
+let bevelEdge : (float, plane, plane, t) => t
 
 /// Place solids together as one part (at least one). Pieces are NOT merged —
 /// each stays its own closed shell, which slicers print as a union — so they
