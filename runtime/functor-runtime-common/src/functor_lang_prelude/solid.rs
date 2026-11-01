@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use cgmath::Deg;
-use functor_solid::{Font, Sketch, Solid};
+use functor_solid::{EdgeShape, Font, Sketch, Solid};
 
 use super::*;
 use crate::scene3d::MeshData;
@@ -237,6 +237,57 @@ impl crate::host_registry::FromArg for Plane {
     }
 }
 
+/// A sketch that extrudes to a closed solid, or why not.
+fn extrudable(s: &Sketch, op: &str) -> Result<(), String> {
+    if s.is_empty() {
+        return Err(format!("{op}: the sketch has no area"));
+    }
+    if let Some([x, y]) = s.touching_point() {
+        return Err(format!(
+            "{op}: the sketch's regions meet at a single point ({x:.3}, {y:.3}), \
+which won't print as one solid — overlap them or move them apart"
+        ));
+    }
+    Ok(())
+}
+
+/// `Solid.extrudeWith`'s `{ top, bottom }` edge finishes.
+struct Edges {
+    top: EdgeShape,
+    bottom: EdgeShape,
+}
+
+impl crate::host_registry::FromArg for Edges {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let field = |name: &str| match value {
+            Value::Record(fields) => fields.iter().find(|(f, _)| f == name).map(|(_, v)| v),
+            _ => None,
+        };
+        let shape = |v: &Value| match v {
+            Value::Variant { ctor, args } => match (ctor.as_ref(), args.as_slice()) {
+                ("Solid.Sharp", []) => Some(EdgeShape::Sharp),
+                ("Solid.Bevel", [Value::Number(s)]) => Some(EdgeShape::Bevel(*s)),
+                ("Solid.Round", [Value::Number(s)]) => Some(EdgeShape::Round(*s)),
+                _ => None,
+            },
+            _ => None,
+        };
+        match (
+            field("top").and_then(shape),
+            field("bottom").and_then(shape),
+        ) {
+            (Some(top), Some(bottom)) => Ok(Edges { top, bottom }),
+            _ => Err(RunError {
+                message: format!(
+                    "{path}: expected {{ top, bottom }}, each Solid.Sharp, Solid.Bevel(mm) or \
+Solid.Round(mm), got {value}"
+                ),
+                span,
+            }),
+        }
+    }
+}
+
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     register_sketch(reg);
     reg.fn3(
@@ -304,19 +355,24 @@ got {b} and {t}"
         "Solid.extrude(height, sketch) — a non-empty sketch",
         |h: f64, s: FunctorLangSketch| {
             let height = positive(h, "Solid.extrude height")?;
-            if s.0.is_empty() {
-                return Err("Solid.extrude: the sketch has no area".to_string());
-            }
-            if let Some([x, y]) = s.0.touching_point() {
-                return Err(format!(
-                    "Solid.extrude: the sketch's regions meet at a single point ({x:.3}, {y:.3}), \
-which won't print as one solid — overlap them or move them apart"
-                ));
-            }
+            extrudable(&s.0, "Solid.extrude")?;
             Ok(solid(Solid::Extrude {
                 sketch: s.0,
                 height,
+                top: EdgeShape::Sharp,
+                bottom: EdgeShape::Sharp,
             }))
+        },
+    );
+    reg.fn3(
+        "Solid.extrudeWith",
+        "Solid.extrudeWith({ top, bottom }, height, sketch)",
+        |e: Edges, h: f64, s: FunctorLangSketch| {
+            let height = positive(h, "Solid.extrudeWith height")?;
+            extrudable(&s.0, "Solid.extrudeWith")?;
+            Solid::extrude_with(s.0, height, e.top, e.bottom)
+                .map(solid)
+                .map_err(|e| format!("Solid.extrudeWith: {e}"))
         },
     );
 
