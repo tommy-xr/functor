@@ -395,7 +395,9 @@ mod tests {
         let hit = sphere.raycast(dir.map(|x| -40.0 * x / len), dir).unwrap();
         let r = hit.point.iter().map(|x| x * x).sum::<f64>().sqrt();
         assert!((r - 10.0).abs() < 0.02, "{hit:?}");
-        let facing = (0..3).map(|i| hit.normal[i] * hit.point[i] / r).sum::<f64>();
+        let facing = (0..3)
+            .map(|i| hit.normal[i] * hit.point[i] / r)
+            .sum::<f64>();
         assert!(facing > 0.99, "{hit:?}");
         assert!((hit.distance - 30.0).abs() < 0.02);
     }
