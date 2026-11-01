@@ -18,7 +18,14 @@ const GAME = `let part = Solid.box(10.0, 20.0, 30.0) |> Solid.translate(Vec3.mak
 `;
 
 type Point = { x: number; y: number; z: number };
-type Note = { id: number; part: string; view: string; point: Point; normal: Point; text: string };
+type Note = {
+  id: number;
+  part: string;
+  view: string;
+  point: Point;
+  normal: Point;
+  text: string;
+};
 
 test(
   "a click on the sheet pins a note at the part-space hit, readable from /state",
@@ -29,15 +36,30 @@ test(
 
     const dir = mkdtempSync(join(tmpdir(), "functor-part-review-"));
     const functorLangPath = join(dir, "part.fun");
-    writeFileSync(join(dir, "functor.json"), JSON.stringify({ language: "functor-lang", entry: "part.fun", cursor: "visible" }));
+    writeFileSync(
+      join(dir, "functor.json"),
+      JSON.stringify({
+        language: "functor-lang",
+        entry: "part.fun",
+        cursor: "visible",
+      }),
+    );
     writeFileSync(functorLangPath, GAME);
 
-    await using runner = await FunctorRunner.launch({ gameDir: dir, repoRoot, functorLangPath, headless });
+    await using runner = await FunctorRunner.launch({
+      gameDir: dir,
+      repoRoot,
+      functorLangPath,
+      headless,
+    });
     await runner.pause();
     await runner.pressKey("v");
 
     const notes = async (): Promise<Note[]> => {
-      const model = (await runner.state()).model as { sheet: boolean; review: { notes: Note[] } };
+      const model = (await runner.state()).model as {
+        sheet: boolean;
+        review: { notes: Note[] };
+      };
       assert.equal(model.sheet, true, "V shows the sheet");
       return model.review.notes;
     };
@@ -46,10 +68,14 @@ test(
     // The sheet's ortho camera shows 3.2 units top to bottom around the
     // centre; the FRONT tile is the middle one, 1 × 1 unit. Aim about 0.1
     // right and 0.1 down of its centre (whole points: `/input` takes ints).
-    const { surface_width: w, surface_height: h } = (await runner.state()).input.mouse;
+    const { surface_width: w, surface_height: h } = (await runner.state()).input
+      .mouse;
     assert.ok(w > 0 && h > 0, `a surface to click on: ${w} × ${h}`);
     const perUnit = h / 3.2;
-    const [px, py] = [Math.round(w / 2 + 0.1 * perUnit), Math.round(h / 2 + 0.1 * perUnit)];
+    const [px, py] = [
+      Math.round(w / 2 + 0.1 * perUnit),
+      Math.round(h / 2 + 0.1 * perUnit),
+    ];
     const [sx, sy] = [(px - w / 2) / perUnit, (h / 2 - py) / perUnit];
     await runner.mouseMove(px, py);
     await runner.mouseDown("left");
@@ -64,13 +90,24 @@ test(
     assert.ok(note, "the click pinned a note");
     assert.equal(note.part, "part");
     assert.equal(note.view, "FRONT");
-    for (const [axis, want] of [["x", 2 * sx * 18.75], ["y", -10], ["z", 13.5 + 2 * sy * 18.75]] as const) {
-      assert.ok(Math.abs(note.point[axis] - want) <= 0.5, `${axis}: ${note.point[axis]} vs ${want}`);
+    for (const [axis, want] of [
+      ["x", 2 * sx * 18.75],
+      ["y", -10],
+      ["z", 13.5 + 2 * sy * 18.75],
+    ] as const) {
+      assert.ok(
+        Math.abs(note.point[axis] - want) <= 0.5,
+        `${axis}: ${note.point[axis]} vs ${want}`,
+      );
     }
     assert.deepEqual(note.normal, { x: 0, y: -1, z: 0 });
 
     // The selected note's text field is the panel's first widget (slot 0).
-    await runner.input({ type: "ui_event", slot: 0, kind: { TextChanged: "make this edge rounder" } });
+    await runner.input({
+      type: "ui_event",
+      slot: 0,
+      kind: { TextChanged: "make this edge rounder" },
+    });
     await runner.step();
     assert.equal((await notes())[0].text, "make this edge rounder");
   },
