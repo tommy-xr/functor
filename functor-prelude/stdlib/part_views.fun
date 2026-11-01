@@ -92,9 +92,9 @@ let sheet = (pieces) =>
   let b = bounds(pieces) in
   let pitch = 1.0 + gap in
   let all = views() in
-  let rows = Math.floor((List.length(all) + columns - 1.0) / columns) in
+  let rows = Math.ceil(List.length(all) / columns) in
   let tiles = List.indexedMap((i, view) =>
-    let col = i - columns * Math.floor(i / columns) in
+    let col = Math.mod(i, columns) in
     let row = Math.floor(i / columns) in
     { view: view,
       at: Vec3.make((col - (columns - 1.0) / 2.0) * pitch, ((rows - 1.0) / 2.0 - row) * pitch, 0.0),

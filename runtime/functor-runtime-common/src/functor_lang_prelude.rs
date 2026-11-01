@@ -10724,24 +10724,11 @@ Anim.clip(\"walk\", tts)"
     /// the part's box as that view sees it (here 10 × 20 × 30 mm, on z = 0).
     #[test]
     fn part_views_sheet_frames_eight_orthographic_tiles() {
-        let sources = vec![(
-            std::path::PathBuf::from("game.fun"),
+        let value = eval_with_prelude(
             "let part = Solid.box(10.0, 20.0, 30.0) |> Solid.translate(Vec3.make(0.0, 0.0, 15.0))\n\
-             let main = () => PartViews.sheet([{ solid: part, color: Color.rgb(0.8, 0.5, 0.2) }])\n"
-                .to_string(),
-        )];
-        let project = functor_lang::project::load_sources_with_bundled_modules(
-            sources,
-            &functor_prelude::bundled_modules(),
+             let main = () => PartViews.sheet([{ solid: part, color: Color.rgb(0.8, 0.5, 0.2) }])\n",
         )
-        .unwrap_or_else(|error| panic!("bundle loads: {}", error.render()));
-        let diagnostics = project.check();
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
-        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
-            .unwrap_or_else(|failure| panic!("session loads: {}", failure.error.message));
-        let value = session
-            .call("main", vec![], &mut FunctorHost)
-            .unwrap_or_else(|e| panic!("sheet: {}", e.message));
+        .unwrap_or_else(|e| panic!("sheet: {e}"));
         let frame = frame_value(&value).expect("a Frame");
         assert!(frame.camera.ortho_half_height.is_some());
         let halves: Vec<f32> = frame
