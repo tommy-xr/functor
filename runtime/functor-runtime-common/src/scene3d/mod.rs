@@ -125,7 +125,7 @@ pub struct SceneContext {
     render_target_warned: RefCell<HashSet<String>>,
     fallback_texture: RefCell<Option<glow::Texture>>,
     // Clamped, unmipmapped sampling for lightmaps, whatever their texture's
-    // own wrap (an `Srgb` atlas repeats).
+    // own wrap and mips (an `Srgb` atlas is mipmapped and repeats).
     lightmap_sampler: Cell<Option<glow::Sampler>>,
     // Compiled-in textures, hydrated on first bind and kept for the process
     // lifetime like the fallback texture: they have no locator to evict by and
@@ -1063,7 +1063,13 @@ impl SceneContext {
         let frame = self.current_frame.get();
         let counters = crate::gpu_counters::gpu_counters();
         let srgb = pixels.color_space() == crate::texture::ColorSpace::Srgb;
-        let mipmap = srgb && mips;
+        let options = crate::texture::TextureOptions {
+            wrap: srgb,
+            linear: true,
+            mipmap: srgb && mips,
+            srgb,
+            ..Default::default()
+        };
         let mut textures = self.pixel_textures.borrow_mut();
         let entry = match textures.entry(pixels.id()) {
             std::collections::hash_map::Entry::Occupied(e) => {
@@ -1072,35 +1078,17 @@ impl SceneContext {
             }
             std::collections::hash_map::Entry::Vacant(e) => {
                 counters.cache_miss();
-                let options = crate::texture::TextureOptions {
-                    wrap: srgb,
-                    linear: true,
-                    mipmap,
-                    srgb,
-                    ..Default::default()
-                };
                 e.insert(RetainedTexture {
                     texture: pixels.texture_data().hydrate(gl, &options),
                     last_used: frame,
                     levels: vec![0.0; pixels.layers().iter().map(|i| i.layers.len()).sum()],
                     // Not this frame: the first composition isn't a second.
                     composed_frame: frame.wrapping_sub(1),
-                    mipmapped: mipmap,
+                    mipmapped: options.mipmap,
                 })
             }
         };
         entry.last_used = frame;
-        // First uploaded as a lightmap, now drawn as an albedo: build the
-        // mips it would have had, so the result doesn't depend on draw order.
-        if mipmap && !entry.mipmapped {
-            unsafe {
-                gl.bind_texture(glow::TEXTURE_2D, Some(entry.texture));
-                gl.generate_mipmap(glow::TEXTURE_2D);
-                let min_filter = crate::texture::min_filter(true, true);
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, min_filter as i32);
-            }
-            entry.mipmapped = true;
-        }
         if !pixels.layers().is_empty() {
             let levels = crate::texture::layer_levels(pixels.layers(), intensities);
             if levels != entry.levels {
@@ -1116,6 +1104,18 @@ frame: correct, but each bind re-uploads (atlas {})",
                 recompose(gl, entry, pixels, &levels);
                 entry.composed_frame = frame;
             }
+        }
+        // First uploaded as a lightmap, now drawn as an albedo: build the
+        // mips (and anisotropy) it would have had, so the result doesn't
+        // depend on draw order. After `recompose`, so they derive once.
+        if options.mipmap && !entry.mipmapped {
+            unsafe {
+                gl.bind_texture(glow::TEXTURE_2D, Some(entry.texture));
+                crate::texture::build_mips(gl, options.anisotropy);
+                let min_filter = crate::texture::min_filter(true, true);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, min_filter as i32);
+            }
+            entry.mipmapped = true;
         }
         entry.texture
     }

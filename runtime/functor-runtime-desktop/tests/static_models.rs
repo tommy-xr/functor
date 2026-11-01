@@ -251,29 +251,37 @@ fn with_lightmap(harness: &mut Harness) {
 }
 
 /// An `Srgb` pixel texture drawn only as a lightmap has level 0 alone (its
-/// sampler reads no mips); drawn as an albedo, the same GL texture gains them.
+/// sampler reads no mips); drawn as an albedo, the same GL texture gains the
+/// mip state an albedo-first upload has.
 fn lightmap_mips(harness: &mut Harness) {
-    let pixels = PixelData::new(4, 4, PixelEncoding::Rgb8, ColorSpace::Srgb, &[128; 48]);
-    let pixels = Arc::new(pixels.expect("valid pixels"));
+    let srgb = || {
+        let pixels = PixelData::new(4, 4, PixelEncoding::Rgb8, ColorSpace::Srgb, &[128; 48]);
+        Arc::new(pixels.expect("valid pixels"))
+    };
+    let pixels = srgb();
     let room = lightmapped(solid([255, 255, 255]), TextureDescription::Data(pixels.clone()), 1.0, [0.0; 3]);
     harness.render(&frame(&room, 1, false, vec![]));
     let gl = &harness.gl;
-    // (level-1 width, min filter) of the texture bound to TEXTURE_2D.
+    // (level-1 width, min filter, anisotropy) of the texture bound to TEXTURE_2D.
     let mips = || unsafe {
         (
             gl.get_tex_level_parameter_i32(glow::TEXTURE_2D, 1, glow::TEXTURE_WIDTH),
             gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32,
+            gl.get_tex_parameter_f32(glow::TEXTURE_2D, glow::TEXTURE_MAX_ANISOTROPY),
         )
     };
     unsafe {
         gl.active_texture(glow::TEXTURE3);
         let lightmap = gl.get_parameter_texture(glow::TEXTURE_BINDING_2D);
-        assert_eq!(mips(), (0, glow::LINEAR), "a lightmap-only texture has no mips");
+        assert_eq!(mips(), (0, glow::LINEAR, 1.0), "a lightmap-only texture has no mips");
         gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(harness.scene_context.pixel_texture(gl, &srgb())));
+        let albedo_first = mips();
+        assert_eq!((albedo_first.0, albedo_first.1), (2, glow::LINEAR_MIPMAP_LINEAR));
         let texture = harness.scene_context.pixel_texture(gl, &pixels);
         assert_eq!(lightmap, Some(texture), "the lightmap's retained texture");
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        assert_eq!(mips(), (2, glow::LINEAR_MIPMAP_LINEAR), "an albedo bind adds them");
+        assert_eq!(mips(), albedo_first, "an albedo bind adds what an albedo-first upload has");
         gl.bind_texture(glow::TEXTURE_2D, None);
     }
 }
