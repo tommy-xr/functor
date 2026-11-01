@@ -95,12 +95,16 @@ fn html_embeds_every_part_and_loads_only_pinned_scripts() {
     let allowed = [
         "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js",
         "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js",
-        "https://fonts.googleapis.com",
+        "https://fonts.gstatic.com",
         "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap",
     ];
-    let urls: Vec<_> = page
+    // Outside the mesh data, whose base64 can spell "http" by chance.
+    let tag = r#"<script id="parts" type="application/json">"#;
+    let (head, data) = page.split_at(page.find(tag).unwrap());
+    let markup = head.to_string() + &data[data.find("</script>").unwrap()..];
+    let urls: Vec<_> = markup
         .match_indices("http")
-        .map(|(i, _)| &page[i..i + page[i..].find(['"', '\'', ' ', ')']).unwrap()])
+        .map(|(i, _)| &markup[i..i + markup[i..].find(['"', '\'', ' ', ')']).unwrap()])
         .collect();
     assert_eq!(urls.len(), allowed.len(), "{urls:?}");
     for url in urls {

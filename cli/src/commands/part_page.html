@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{TITLE}}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
 /* A workbench: view controls on top, the model stage as the hero, the parts list beneath. */
@@ -41,8 +41,8 @@ button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-c
 .stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .labels { position: absolute; inset: 0; pointer-events: none; display: grid; }
 .labels div { font: 600 0.72rem var(--mono); letter-spacing: 0.1em; color: var(--stage-ink); opacity: 0.85; padding: 8px 10px; }
-.status { position: absolute; left: 12px; bottom: 10px; right: 12px; font: 0.75rem var(--mono); color: var(--stage-ink); opacity: 0.75; pointer-events: none; }
-.hint { color: var(--muted); font-size: 0.8rem; margin: -8px 0 0; }
+.status { font: 600 0.8rem var(--mono); margin: -8px 0 0; }
+.hint { color: var(--muted); font-size: 0.8rem; margin: -14px 0 0; }
 .table { overflow-x: auto; border-top: 2px solid var(--ink); }
 table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
 th { text-align: left; font: 700 0.72rem var(--body); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding: 10px 12px 6px 0; }
@@ -69,8 +69,8 @@ input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var
   <div class="stage" id="stage">
     <canvas id="c"></canvas>
     <div class="labels" id="labels"></div>
-    <div class="status" id="status">Loading three.js…</div>
   </div>
+  <p class="status" id="status">Loading three.js…</p>
   <p class="hint" id="hint"></p>
 
   <div class="table">
@@ -88,8 +88,6 @@ input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var
 // Parts are in millimetres, Z up, front facing -Y. Each mesh is quantized:
 // vertex axis a = min[a] + u16 * step[a]; indices are u16 (u32 if index32).
 const PARTS = JSON.parse(document.getElementById("parts").textContent).parts;
-// Same colours, in the same order, as `functor export --views`.
-const PALETTE = ["#cc8033", "#4d8ccc", "#73b359", "#cc5973", "#9973cc", "#b3b3b3"];
 const MODES = ["All views", "Orbit"];
 // Camera direction from the part and screen-up, as in a drawing's folded-out views.
 const VIEWS = [
@@ -100,10 +98,12 @@ const VIEWS = [
 ];
 
 const state = { mode: 0 };
+const LABEL_PX = 30;
 const stage = document.getElementById("stage");
 const labels = document.getElementById("labels");
 const statusEl = document.getElementById("status");
 const fmt = (n, digits = 1) => n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const volumeText = (mm3) => (mm3 < 1000 ? `${fmt(mm3, 1)} mm³` : `${fmt(mm3 / 1000, mm3 < 10000 ? 2 : 1)} cm³`);
 const sizeText = (s) => `${fmt(s[0])} × ${fmt(s[1])} × ${fmt(s[2])} mm`;
 const cols = () => (stage.clientWidth < 560 ? 2 : 4);
 const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -113,8 +113,7 @@ document.getElementById("sub").textContent =
 
 // The parts list works without WebGL; `refresh` is replaced once three.js is up.
 let refresh = () => {};
-PARTS.forEach((p, i) => {
-  p.color = PALETTE[i % PALETTE.length];
+PARTS.forEach((p) => {
   p.visible = true;
   const tr = document.createElement("tr");
   const name = document.createElement("td");
@@ -126,7 +125,7 @@ PARTS.forEach((p, i) => {
   swatch.className = "swatch"; swatch.style.background = p.color;
   label.append(box, swatch, p.name);
   name.appendChild(label);
-  const cells = [sizeText(p.size), `${fmt(p.volume / 1000, p.volume < 10000 ? 2 : 1)} cm³`, p.triangles.toLocaleString("en-US")];
+  const cells = [sizeText(p.size), volumeText(p.volume), p.triangles.toLocaleString("en-US")];
   tr.appendChild(name);
   cells.forEach((text) => { const td = document.createElement("td"); td.className = "num"; td.textContent = text; tr.appendChild(td); });
   document.getElementById("rows").appendChild(tr);
@@ -178,6 +177,8 @@ function start() {
     bounds.getCenter(centre);
     const size = bounds.getSize(new THREE.Vector3());
     radius = Math.max(size.length() / 2, 1e-3);
+    persp.near = radius / 50; persp.far = radius * 60; persp.updateProjectionMatrix();
+    orbit.minDistance = radius / 10; orbit.maxDistance = radius * 20;
     statusEl.textContent = `Shown: ${sizeText(size.toArray())}`;
   }
 
@@ -192,9 +193,13 @@ function start() {
   }
 
   function resetOrbit() {
+    if (radius === 0) return;
+    // Fit the bounding sphere in the narrower of the two fields of view.
+    persp.aspect = stage.clientWidth / stage.clientHeight; persp.updateProjectionMatrix();
+    const halfV = (persp.fov / 2) * Math.PI / 180;
+    const half = Math.min(halfV, Math.atan(Math.tan(halfV) * persp.aspect));
     const d = new THREE.Vector3(1, -1.4, 0.9).normalize();
-    persp.position.copy(centre).addScaledVector(d, radius / Math.sin((persp.fov / 2) * Math.PI / 180) * 1.05);
-    persp.near = radius / 20; persp.far = radius * 40; persp.updateProjectionMatrix();
+    persp.position.copy(centre).addScaledVector(d, radius / Math.sin(half) * 1.05);
     orbit.target.copy(centre);
     orbit.update();
   }
@@ -229,11 +234,13 @@ function start() {
       return;
     }
     // All views: one orthographic camera per scissored cell, all at one
-    // scale (the one that fits the largest view) so sizes compare.
+    // scale (the one that fits the largest view) so sizes compare. Parts fit
+    // between bands as tall as the tile label, top and bottom.
     const c = cols(), rows = VIEWS.length / c;
     const cw = w / c - 4, ch = h / rows - 4, aspect = cw / ch;
+    const fitH = Math.max(ch - 2 * LABEL_PX, ch / 2);
     const views = VIEWS.map(([, dir, up]) => viewAxes(dir, up));
-    const half = Math.max(...views.map((v) => Math.max(v.h, v.w / aspect))) * 1.15;
+    const half = Math.max(...views.map((v) => Math.max(v.h, (v.w * fitH) / cw))) * 1.08 * (ch / fitH);
     views.forEach((v, i) => {
       const x = (i % c) * (cw + 4) + 2, y = h - (Math.floor(i / c) + 1) * (ch + 4) + 2;
       renderer.setViewport(x, y, cw, ch); renderer.setScissor(x, y, cw, ch);
@@ -271,7 +278,8 @@ function start() {
     orbit.enabled = state.mode === 1;
   }
 
-  refresh = () => { fit(); draw(); };
+  // Showing parts again after none were shown frames the orbit afresh.
+  refresh = () => { const empty = radius === 0; fit(); if (empty && state.mode === 1) resetOrbit(); draw(); };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
   new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   fit(); sync(); resetOrbit();

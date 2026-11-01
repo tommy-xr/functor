@@ -22,6 +22,7 @@ struct Page<'a> {
 #[derive(Serialize)]
 struct Part<'a> {
     name: &'a str,
+    color: String,
     size: [f64; 3],
     volume: f64,
     triangles: usize,
@@ -35,9 +36,11 @@ struct Part<'a> {
 /// The page for `parts` (name, mesh in mm, Z up), titled `title`.
 pub fn render(title: &str, parts: &[(&str, &functor_solid::Mesh)]) -> Result<String, String> {
     let b64 = base64::engine::general_purpose::STANDARD;
+    let colors = super::functor_lang_project::PART_COLORS.iter().cycle();
     let parts = parts
         .iter()
-        .map(|&(name, mesh)| {
+        .zip(colors)
+        .map(|(&(name, mesh), (_, rgb))| {
             let b = mesh
                 .bounds()
                 .filter(|_| !mesh.triangles.is_empty())
@@ -67,6 +70,9 @@ pub fn render(title: &str, parts: &[(&str, &functor_solid::Mesh)]) -> Result<Str
             }
             Ok(Part {
                 name,
+                color: rgb.iter().fold("#".to_string(), |hex, c| {
+                    hex + &format!("{:02x}", (c * 255.0).round() as u8)
+                }),
                 size,
                 volume: mesh.volume(),
                 triangles: mesh.triangles.len(),
@@ -153,6 +159,10 @@ mod tests {
             panic!("one part")
         };
         assert_eq!(name, "block");
+        assert!(
+            page.contains(r##""color":"#cc8033""##),
+            "first part is orange"
+        );
         assert_eq!(tris, &cube.triangles);
         for (got, want) in verts.iter().zip(&cube.vertices) {
             for a in 0..3 {
