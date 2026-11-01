@@ -1,12 +1,13 @@
 //! `Texture.fromPixels`, `Texture.atlas` and `Texture.withLayers` — textures
-//! from decoded pixels (see `texture.funi`).
+//! from decoded pixels — and `Texture.decode`, image files to pixels (see
+//! `texture.funi`).
 
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::texture::{ColorSpace, Layer, LayeredImage, PixelData, PixelEncoding};
+use crate::texture::{ColorSpace, Layer, LayeredImage, PixelData, PixelEncoding, PcxError, PixelFormat, TextureData};
 
-use super::bytes::FunctorLangBytes;
+use super::bytes::{ByteView, FunctorLangBytes};
 use super::*;
 
 fn fail<T>(what: &str, message: String, span: Span) -> Result<T, RunError> {
@@ -201,6 +202,24 @@ impl crate::host_registry::FromArg for AtlasArg {
     }
 }
 
+/// An image file's RGBA8 pixels, recognised by content: PCX, or PNG, JPEG
+/// or GIF (its first frame) through the `image` crate.
+fn decode_image(bytes: &[u8]) -> Result<TextureData, PcxError> {
+    if crate::texture::is_pcx(bytes) {
+        return crate::texture::decode_pcx(bytes);
+    }
+    let error = |message: String| PcxError { offset: 0, message };
+    let format = match image::guess_format(bytes) {
+        Ok(f @ (image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif)) => f,
+        _ => return Err(error("not a PNG, JPEG, GIF or PCX image".to_string())),
+    };
+    let image = image::load_from_memory_with_format(bytes, format)
+        .map_err(|e| error(e.to_string()))?
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(TextureData { bytes: image.into_raw(), width, height, format: PixelFormat::RGBA })
+}
+
 fn texture_value(data: PixelData) -> Value {
     Value::HostData(Rc::new(FunctorLangTexture(TextureDescription::Data(
         Arc::new(data),
@@ -225,6 +244,30 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             PixelData::new(width, height, PixelEncoding::Rgba8, space.0, image.as_raw())
                 .map(texture_value)
                 .map_err(fail)
+        },
+    );
+    reg.fn2(
+        "Texture.decode",
+        "Texture.decode(File.bytes(Path.of(\"wall.pcx\")), Texture.Srgb)",
+        |file: FunctorLangBytes, space: ColorSpaceArg| match decode_image(file.0.as_slice()) {
+            Ok(image) => super::bytes::ok(crate::input::record([
+                ("width", Value::Number(image.width as f64)),
+                ("height", Value::Number(image.height as f64)),
+                ("format", Value::Variant { ctor: "Texture.Rgba8".into(), args: Rc::new(Vec::new()) }),
+                (
+                    "colorSpace",
+                    Value::Variant {
+                        ctor: match space.0 {
+                            ColorSpace::Srgb => "Texture.Srgb",
+                            ColorSpace::Linear => "Texture.Linear",
+                        }
+                        .into(),
+                        args: Rc::new(Vec::new()),
+                    },
+                ),
+                ("pixels", Value::HostData(Rc::new(FunctorLangBytes(ByteView::new(image.bytes))))),
+            ])),
+            Err(e) => super::bytes::err(e.offset as f64, e.message),
         },
     );
     reg.fn1(

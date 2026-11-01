@@ -3,7 +3,8 @@ use image::ImageFormat;
 use crate::{
     asset::{AssetCache, AssetPipeline},
     texture::{
-        Texture2D, TextureData, TextureFormat, TextureOptions, TERRAIN_DETAIL_ANISOTROPY, GIF, JPEG, PNG,
+        is_pcx, Texture2D, TextureData, TextureFormat, TextureOptions, TERRAIN_DETAIL_ANISOTROPY, GIF, JPEG, PCX,
+        PNG,
     },
 };
 
@@ -18,6 +19,7 @@ fn decode(bytes: &Vec<u8>) -> Option<TextureData> {
         Ok(ImageFormat::Png) => PNG.load(bytes),
         Ok(ImageFormat::Jpeg) => JPEG.load(bytes),
         Ok(ImageFormat::Gif) => GIF.load(bytes),
+        _ if is_pcx(bytes) => PCX.load(bytes),
         other => Err(format!("unhandled format: {:?}", other)),
     };
     match decoded {
@@ -164,6 +166,20 @@ mod tests {
         let data = decode(gif.get_ref()).expect("decodes");
         assert_eq!((data.width, data.height), (2, 1));
         assert_eq!(&data.bytes[..4], &[10, 200, 30, 255]);
+    }
+
+    #[test]
+    fn decodes_pcx() {
+        // 1×1, index 0 through a palette whose first colour is (10, 200, 30).
+        let mut pcx = vec![0u8; 128];
+        pcx[..4].copy_from_slice(&[10, 5, 1, 8]);
+        pcx[65] = 1;
+        pcx[66] = 2;
+        pcx.extend_from_slice(&[0, 0, 12, 10, 200, 30]);
+        pcx.resize(pcx.len() + 765, 0);
+        let data = decode(&pcx).expect("decodes");
+        assert_eq!((data.width, data.height), (1, 1));
+        assert_eq!(data.bytes, [10, 200, 30, 255]);
     }
 
     #[test]

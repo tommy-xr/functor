@@ -15243,6 +15243,59 @@ maxSize 16; lower texelsPerMeter or padding"
         assert!(err.starts_with("Texture.fromPng: "), "{err}");
     }
 
+    /// `Texture.decode` turns PCX and PNG bytes into an `Rgba8` pixels
+    /// record that `fromPixels` takes; bad bytes are a located `Binary.error`.
+    #[test]
+    fn decode_reads_pcx_and_png_into_pixels() {
+        // A 1×1 PCX (2-byte rows) of index 1; palette colour 1 is (10, 20, 30).
+        let mut pcx = vec![0u8; 128];
+        pcx[..4].copy_from_slice(&[10, 5, 1, 8]);
+        pcx[65] = 1;
+        pcx[66] = 2;
+        pcx.extend_from_slice(&[1, 0, 12, 0, 0, 0, 10, 20, 30]);
+        pcx.resize(pcx.len() + 762, 0);
+        let mut png = Vec::new();
+        image::RgbaImage::from_raw(2, 1, vec![10, 20, 30, 255, 40, 50, 60, 0])
+            .unwrap()
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let decode = |bytes: &[u8], expr: &str| {
+            let src = format!(
+                "let px = Texture.decode({}, Texture.Linear) |> Binary.require\nlet main = {expr}\n",
+                bytes_literal(bytes)
+            );
+            eval_with_prelude(&src)
+        };
+        let fields = "px.width == {w} && px.height == {h} && px.format == Texture.Rgba8 \
+&& px.colorSpace == Texture.Linear && Bytes.equals(px.pixels, Bytes.fromU8({rgba}))";
+        for (bytes, w, h, rgba) in [
+            (&pcx, 1, 1, "[10.0, 20.0, 30.0, 255.0]"),
+            (&png, 2, 1, "[10.0, 20.0, 30.0, 255.0, 40.0, 50.0, 60.0, 0.0]"),
+        ] {
+            let expr = fields
+                .replace("{w}", &format!("{w}.0"))
+                .replace("{h}", &format!("{h}.0"))
+                .replace("{rgba}", rgba);
+            assert!(matches!(decode(bytes, &expr), Ok(Value::Bool(true))), "{expr}");
+        }
+        let Value::HostData(data) = decode(&pcx, "Texture.fromPixels(px)").unwrap() else {
+            panic!("expected a texture");
+        };
+        let TextureDescription::Data(pixels) = &data.as_any().downcast_ref::<FunctorLangTexture>().unwrap().0 else {
+            panic!("expected a pixel texture");
+        };
+        assert_eq!(pixels.rgba8(), [10, 20, 30, 255]);
+        pcx[3] = 4;
+        assert_eq!(
+            decode(&pcx, "px").err().unwrap(),
+            "at byte 3: 4 bits × 1 planes: only 8 bits with 1 plane (palette) or 3 (RGB) decode"
+        );
+        assert_eq!(
+            decode(b"<html>", "px").err().unwrap(),
+            "at byte 0: not a PNG, JPEG, GIF or PCX image"
+        );
+    }
+
     const BAKES: &str = "let bakes = [{ name: \"room\", mesh: roomData, lights: \
 [Light.ambient(Color.rgb(0.2, 0.2, 0.2)), Light.point(Vec3.make(0.0, 1.0, 1.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 4.0) \
 |> Light.castShadows], albedo: [Color.rgb(0.8, 0.8, 0.8), Color.rgb(0.8, 0.2, 0.1)], scale: 2.0 }]\n";

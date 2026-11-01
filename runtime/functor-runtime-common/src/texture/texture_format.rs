@@ -53,6 +53,17 @@ fn apply_color_key(pixels: &mut Vec<u8>, width: u32, height: u32) {
     }
 }
 
+/// PCX ([`super::decode_pcx`]), colour-keyed like the formats above.
+pub struct Pcx;
+
+impl TextureFormat for Pcx {
+    fn load(&self, buffer: &std::vec::Vec<u8>) -> Result<TextureData, String> {
+        let mut data = super::decode_pcx(buffer).map_err(|e| e.to_string())?;
+        apply_color_key(&mut data.bytes, data.width, data.height);
+        Ok(data)
+    }
+}
+
 pub const PNG: FormatUsingImageCrate = FormatUsingImageCrate {
     image_format: image::ImageFormat::Png,
 };
@@ -62,6 +73,7 @@ pub const JPEG: FormatUsingImageCrate = FormatUsingImageCrate {
 pub const GIF: FormatUsingImageCrate = FormatUsingImageCrate {
     image_format: image::ImageFormat::Gif,
 };
+pub const PCX: Pcx = Pcx;
 
 pub fn extension_to_format(str: String) -> Option<Box<dyn TextureFormat>> {
     let lowercase_str = str.to_ascii_lowercase();
