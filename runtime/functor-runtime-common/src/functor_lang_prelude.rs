@@ -2621,12 +2621,13 @@ row 0 has {cols} heights, row {r} has {}",
             }))
         },
     );
-    // Keep a subtree's GPU resources resident without drawing it.
+    // Keep a subtree's GPU resources resident without drawing it. Shared, so
+    // a top-level `resident` set joins each frame's scene as a pointer copy.
     reg.fn1(
         "Scene.keepResident",
         "Scene.keepResident(scene)",
         |scene: FunctorLangScene| {
-            Ok(FunctorLangScene(crate::Scene3D::keep_resident(vec![scene.0])))
+            Ok(FunctorLangScene(shared_scene(&crate::Scene3D::keep_resident(vec![scene.0]))))
         },
     );
     // Stamp a template subtree once per instance — semantically the group of
@@ -10411,7 +10412,7 @@ let frame = (k) => Scene.group([Scene.memo(\"bench-{n}\", 0.0, world), Scene.cub
     fn keep_resident_wraps_and_compares() {
         let value = eval("let main = () => Scene.keepResident(Scene.cube())");
         let scene = scene_of(&value).expect("a Scene");
-        let SceneObject::Resident(items) = &scene.obj else {
+        let SceneObject::Resident(items) = scene.obj.resolved() else {
             panic!("expected Resident, got {:?}", scene.obj);
         };
         assert!(matches!(items[0].obj, SceneObject::Geometry(Shape::Cube)));
