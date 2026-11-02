@@ -1141,7 +1141,9 @@ fn service_debug_request(
             let cells = counters.frame_cells();
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
-                    frame,
+                    // Recorded steps (what `/rewind` takes) where the game
+                    // records history; else the shell's tick count.
+                    frame: g.state_frame().unwrap_or(frame),
                     tts,
                     pending_steps,
                     model_revision: g.model_revision(),
@@ -1258,7 +1260,7 @@ fn service_debug_request(
             // resume seam — docs/time-travel.md). After the rewind branched the
             // future, `current_scene_tts` reports the newest (target) frame.
             let (result, tts) = sim.call(move |g| {
-                let result = g.rewind_scene_to(frame);
+                let result = functor_runtime_common::protocol::rewind_to_state_frame(g, frame);
                 let tts = result.is_ok().then(|| g.current_scene_tts()).flatten();
                 (result, tts)
             });

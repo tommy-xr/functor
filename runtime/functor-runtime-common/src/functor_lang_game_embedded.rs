@@ -1051,6 +1051,10 @@ impl GameProducer for FunctorLangEmbeddedGame {
         self.recorder.current_scene_frame()
     }
 
+    fn state_frame(&self) -> Option<u64> {
+        Some(self.recorder.current_scene_frame().map_or(0, |f| f + 1))
+    }
+
     fn scene_frame_range(&self) -> Option<(u64, u64)> {
         self.recorder.scene_frame_range()
     }

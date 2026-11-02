@@ -946,7 +946,9 @@ fn service_debug_request(
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
                 let _ = response.send(RuntimeState {
-                    frame,
+                    // Recorded steps (what `/rewind` takes) where the game
+                    // records history; else the shell's tick count.
+                    frame: g.state_frame().unwrap_or(frame),
                     tts,
                     pending_steps,
                     model_revision: g.model_revision(),
@@ -1203,7 +1205,7 @@ desktop runtime's --headless/--debug-port path"
         }
         DebugRequest::Rewind(frame, response) => {
             let (result, tts) = sim.call(move |g| {
-                let result = g.rewind_scene_to(frame);
+                let result = functor_runtime_common::protocol::rewind_to_state_frame(g, frame);
                 let tts = result.is_ok().then(|| g.current_scene_tts()).flatten();
                 (result, tts)
             });

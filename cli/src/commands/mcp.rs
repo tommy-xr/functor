@@ -1044,7 +1044,7 @@ pub struct WireLogArgs {
 #[derive(Deserialize, JsonSchema)]
 pub struct RewindArgs {
     pub session: String,
-    /// The recorded rendered frame to restore.
+    /// The recorded frame to restore, as `/state` reports `frame`.
     pub frame: u64,
 }
 

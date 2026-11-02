@@ -134,7 +134,7 @@ export class FunctorClient {
     );
   }
 
-  /** Restore the recorded model and physics state at a rendered frame. */
+  /** Restore the recorded model and physics state at a frame, as `state().frame` numbers it. */
   rewind(frame: number): Promise<string> {
     return this.http.postText("/rewind", { frame });
   }

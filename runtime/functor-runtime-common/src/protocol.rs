@@ -198,6 +198,22 @@
 /// reader cannot decode a frame carrying one).
 pub const PROTOCOL_VERSION: u32 = 23;
 
+/// `POST /rewind {frame}`, numbered as [`GameProducer::state_frame`]: frame
+/// `N` is recorded frame `N - 1`. Frame 0 (before any step) isn't recorded,
+/// so like a frame outside the window it lands on the oldest one.
+pub fn rewind_to_state_frame<G: GameProducer + ?Sized>(
+    game: &mut G,
+    frame: u64,
+) -> Result<String, String> {
+    game.rewind_scene_to(frame.saturating_sub(1))?;
+    let landed = game.state_frame().unwrap_or(frame);
+    Ok(if landed == frame {
+        format!("rewound to frame {frame}")
+    } else {
+        format!("rewound to frame {landed} (requested {frame}, clamped to the recorded window)")
+    })
+}
+
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
 /// this module's boundary doc (drains return JSON arrays, pushes take the
@@ -327,6 +343,14 @@ pub trait GameProducer {
     /// and rewinds relative to (docs/time-travel.md T1). `None` for producers
     /// that don't record a model history.
     fn current_scene_frame(&self) -> Option<u64> {
+        None
+    }
+
+    /// `GET /state`'s `frame`: the recorded sim steps behind the state the
+    /// scene shows — 0 before the first, `N` after the `N`th (while scrubbing,
+    /// the scrubbed one's) — the number `POST /rewind` takes. `None` for
+    /// producers that record no history; the shell counts its ticks instead.
+    fn state_frame(&self) -> Option<u64> {
         None
     }
 

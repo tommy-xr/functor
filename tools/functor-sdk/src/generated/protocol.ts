@@ -334,7 +334,15 @@ warning?: string, };
  * the target-neutral representation of mono or stereo output; `viewport` is
  * retained as the primary/legacy output extent for SDK compatibility.
  */
-export type RuntimeState = { frame: number, tts: number, 
+export type RuntimeState = { 
+/**
+ * The recorded sim steps behind the state the scene shows (v28): 0 before
+ * the first, one more per step, the target after `POST /rewind` (which
+ * takes this number), the scrubbed frame's while scrubbing. Zero-dt ticks
+ * record nothing, so it stays 0 under `--fixed-time`. The shell's tick
+ * count for a game that records no history.
+ */
+frame: number, tts: number, 
 /**
  * Clock steps queued by `POST /time` `advance` and not yet run. Zero means
  * every requested step has been simulated, which is how a harness knows a
