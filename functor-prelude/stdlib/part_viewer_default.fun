@@ -9,4 +9,4 @@ let mouseWheel = PartViewer.mouseWheel
 let input = PartViewer.input
 let sampledInput = (m, s) => PartViewer.sampledInput(part, m, s)
 let update = PartViewer.update
-let ui = PartViewer.ui
+let webview = PartViewer.webview
