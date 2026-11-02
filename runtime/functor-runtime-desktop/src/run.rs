@@ -277,6 +277,44 @@ fn route_visible_pointer_position(
     }
 }
 
+/// The window's game-UI pointer, threaded into `POST /input` so injected pointer
+/// input follows the same routing as the window's: a `mouse_move` also moves the
+/// overlay pointer, and a left press the UI pass wanted is the widget's (it
+/// drives the button under the pointer), never the game's. `None` in the
+/// headless loop, which draws no UI.
+struct OverlayPointer<'a> {
+    pos: &'a mut (i32, i32),
+    /// Set by an injected move: a hidden window then feeds egui the injected
+    /// pointer (it has no real cursor of its own).
+    injected: &'a mut bool,
+    ui_wants_pointer: bool,
+    primary_down: &'a mut bool,
+    primary_clicked: &'a mut bool,
+}
+
+/// Route an injected primary (left) edge the way the window's released-pointer
+/// arm does: a press the UI wanted goes to the overlay (and not the game); every
+/// release clears the overlay press and still goes to the game, whose held-state
+/// discipline drops a release it never saw pressed. Returns whether the game
+/// should receive the edge.
+fn route_injected_primary(
+    down: bool,
+    ui_wants_pointer: bool,
+    primary_down: &mut bool,
+    primary_clicked: &mut bool,
+) -> bool {
+    if down && ui_wants_pointer {
+        *primary_down = true;
+        *primary_clicked = true;
+        false
+    } else {
+        if !down {
+            *primary_down = false;
+        }
+        true
+    }
+}
+
 /// Apply one mouse-button edge with the held-state discipline every *injected*
 /// path shares (`POST /input` and `--input-script`): a press enters the held
 /// set and is delivered; a release is delivered only if the game saw the press,
@@ -1119,6 +1157,7 @@ fn service_debug_request(
     // `/state.stages`; `None` in the headless loop, which renders nothing.
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
+    mut overlay: Option<OverlayPointer>,
 ) -> bool {
     let mut sampled_input_changed = false;
     match req {
@@ -1373,6 +1412,10 @@ fn service_debug_request(
                 }
                 debug_server::InputCommand::MouseMove { x, y } => {
                     *mouse_pos = (x, y);
+                    if let Some(o) = overlay.as_mut() {
+                        *o.pos = (x, y);
+                        *o.injected = true;
+                    }
                     if !emulate_xr {
                         sim.mouse_move(x, y);
                     }
@@ -1389,7 +1432,20 @@ fn service_debug_request(
                     // scripted clicks are the whole point.
                     match functor_runtime_common::MouseButton::from_name(&button) {
                         Some(b) => {
-                            apply_mouse_button_edge(sim, held_buttons, edges, b, down);
+                            let to_game = match overlay.as_mut() {
+                                Some(o) if b == functor_runtime_common::MouseButton::Left => {
+                                    route_injected_primary(
+                                        down,
+                                        o.ui_wants_pointer,
+                                        o.primary_down,
+                                        o.primary_clicked,
+                                    )
+                                }
+                                _ => true,
+                            };
+                            if to_game {
+                                apply_mouse_button_edge(sim, held_buttons, edges, b, down);
+                            }
                             Ok(())
                         }
                         None => Err(format!("unknown mouse button: {}", button)),
@@ -1648,6 +1704,7 @@ fn run_headless(
                             "capture is unavailable in --headless mode".to_string(),
                         ))
                     },
+                    None, // no UI overlay in headless
                 );
             }
         }
@@ -1924,6 +1981,9 @@ Escape releases while captured"
         // the pointer last frame (so a click on a control doesn't recapture the
         // cursor for free-look).
         let mut mouse_primary_down = false;
+        // An injected `mouse_move` happened: feed its position to the game-UI
+        // pass even in a hidden window (see `OverlayPointer`).
+        let mut pointer_injected = false;
         // Press-latch for the frame's pointer SAMPLE: a click whose press and
         // release both land in one poll batch (a fast tap, a slow frame)
         // leaves `mouse_primary_down` false by sample time — the latch keeps
@@ -3512,7 +3572,7 @@ Escape again to quit"
                 1.0
             };
             let pointer = functor_runtime_common::ui::PointerState {
-                pos: (!cursor_captured && !hidden).then_some((
+                pos: (!cursor_captured && (!hidden || pointer_injected)).then_some((
                     mouse_pos.0 as f32 * dpi_scale,
                     mouse_pos.1 as f32 * dpi_scale,
                 )),
@@ -3881,6 +3941,13 @@ Escape again to quit"
                             )
                                 .map_err(debug_server::CaptureError::Failed)
                         },
+                        Some(OverlayPointer {
+                            pos: &mut mouse_pos,
+                            injected: &mut pointer_injected,
+                            ui_wants_pointer,
+                            primary_down: &mut mouse_primary_down,
+                            primary_clicked: &mut mouse_primary_clicked,
+                        }),
                     );
                     if fixed_sample && sampled_input_changed {
                         fixed_input_snapshot = desktop_input_snapshot(
@@ -3969,6 +4036,24 @@ mod tests {
             EscapeAction::Quit,
             "the second free-pointer Escape closes the game"
         );
+    }
+
+    #[test]
+    fn injected_primary_presses_over_ui_belong_to_the_widget() {
+        let (mut down, mut clicked) = (false, false);
+        assert!(
+            !route_injected_primary(true, true, &mut down, &mut clicked),
+            "a press the UI wanted must not reach the game"
+        );
+        assert!(down && clicked);
+        assert!(
+            route_injected_primary(false, true, &mut down, &mut clicked),
+            "releases reach the game (its held-state discipline drops unseen ones)"
+        );
+        assert!(!down);
+        let (mut down, mut clicked) = (false, false);
+        assert!(route_injected_primary(true, false, &mut down, &mut clicked));
+        assert!(!down && !clicked, "a press off the UI is the game's alone");
     }
 
     #[test]
