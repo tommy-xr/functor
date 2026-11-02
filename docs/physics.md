@@ -202,7 +202,11 @@ runtime-owned cache, rebuilt once after a hot reload). The group is one
 - **reconcile:** a pointer compare against `World.groups[key]`, no per-body
   diff (`World::reconcile_stats`);
 - **command log:** one `Arc` per recorded `DeclareScene`, not a copy of every
-  body. Keyframes still clone the world (rapier sets and the declared cache).
+  body;
+- **keyframes:** the declared cache and tag maps are copy-on-write, so
+  keyframes share them while declarations hold still. Rapier's sets (bodies,
+  colliders, broad and narrow phase) are owned values and still copy: about
+  1.5 KB per fixed body per keyframe.
 
 `World.groups` is world state, so checkpoints, rewinds and seeks restore it with
 the bodies; a seek can't leave a stale fast path. A changed group diffs its

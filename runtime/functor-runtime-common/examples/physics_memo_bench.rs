@@ -13,7 +13,11 @@
 //! - **history**: heap the recorder (command log + keyframes) frees when
 //!   dropped after `FRAMES` frames, via a counting `#[global_allocator]`
 //!   local to this binary. Shared group `Arc`s still held by the world and
-//!   the memo cache count as refcounts only.
+//!   the memo cache count as refcounts only;
+//! - **keyframe**: one checkpoint of the final world (what the recorder takes
+//!   every 30 frames): time to take and drop it, and the heap it adds beyond
+//!   what it shares with the live world. A shared map the next write copies
+//!   is not counted here; `history` counts it.
 //!
 //! It asserts the memo claim: an unchanged group costs reconcile 0 per-body
 //! compares, and the hook costs the same at 1,500 bodies as at 15. Timings are
@@ -78,6 +82,8 @@ struct Run {
     drive_ms: f64,
     compared: usize,
     history_mb: f64,
+    keyframe_ms: f64,
+    keyframe_mb: f64,
 }
 
 /// `FRAMES` frames of `hook(n)` through a fresh recorded world.
@@ -108,6 +114,18 @@ fn run(hook: &str, n: usize) -> Run {
         drive_s += (advanced - declared).as_secs_f64();
         compared += with_world(DEFAULT_WORLD, |w| w.reconcile_stats().compared).unwrap();
     }
+    let (keyframe_ms, keyframe_mb) = with_world(DEFAULT_WORLD, |w| {
+        let before = LIVE.load(Relaxed);
+        let keyframe = w.checkpoint();
+        let bytes = LIVE.load(Relaxed) - before;
+        drop(keyframe);
+        let start = Instant::now();
+        for _ in 0..100 {
+            drop(std::hint::black_box(w.checkpoint()));
+        }
+        (start.elapsed().as_secs_f64() * 1e3 / 100.0, bytes as f64 / 1e6)
+    })
+    .unwrap();
     let live_before = LIVE.load(Relaxed);
     drop(physics);
     let history = live_before - LIVE.load(Relaxed);
@@ -118,6 +136,8 @@ fn run(hook: &str, n: usize) -> Run {
         drive_ms: drive_s * 1e3 / frames,
         compared: compared / (FRAMES - 1) as usize,
         history_mb: history as f64 / 1e6,
+        keyframe_ms,
+        keyframe_mb,
     }
 }
 
@@ -127,15 +147,15 @@ fn main() {
     }
     println!("{FRAMES} frames, 1 dynamic ball + N fixed boxes; desktop ms/frame (Quest est. ×4)");
     println!(
-        "{:<12} {:>6} {:>16} {:>16} {:>9} {:>12}",
-        "variant", "N", "hook", "drive", "compared", "history MB"
+        "{:<12} {:>6} {:>16} {:>16} {:>9} {:>12} {:>12} {:>12}",
+        "variant", "N", "hook", "drive", "compared", "history MB", "keyframe ms", "keyframe MB"
     );
     let mut results = Vec::new();
     for hook in ["flat", "memo"] {
         for n in [15, 1500] {
             let r = run(hook, n);
             println!(
-                "{:<12} {:>6} {:>7.3} ({:>6.3}) {:>7.3} ({:>6.3}) {:>9} {:>12.1}",
+                "{:<12} {:>6} {:>7.3} ({:>6.3}) {:>7.3} ({:>6.3}) {:>9} {:>12.1} {:>12.3} {:>12.2}",
                 hook,
                 n,
                 r.hook_ms,
@@ -143,7 +163,9 @@ fn main() {
                 r.drive_ms,
                 r.drive_ms * 4.0,
                 r.compared,
-                r.history_mb
+                r.history_mb,
+                r.keyframe_ms,
+                r.keyframe_mb
             );
             results.push(r);
         }

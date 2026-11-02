@@ -190,10 +190,15 @@ pub struct World {
     /// tag → live body. `BTreeMap` so iteration (despawn order, dumps,
     /// serialization) is deterministic — a requirement, not a nicety. A body
     /// owns one collider, except a fused room, which owns one per chunk.
-    tags: BTreeMap<String, RigidBodyHandle>,
+    ///
+    /// `tags`, `rooms`, `declared` and `flat` are copy-on-write (`Arc` +
+    /// `make_mut`): a checkpoint shares them, and the next write after one
+    /// copies the map once. Keyframes of a scene whose declarations hold still
+    /// share one copy.
+    tags: Arc<BTreeMap<String, RigidBodyHandle>>,
     /// tag → a fused room body's colliders (`Shape::FusedRoom`).
     #[serde(default)]
-    rooms: BTreeMap<String, LiveRoom>,
+    rooms: Arc<BTreeMap<String, LiveRoom>>,
     /// Colliders a re-fused room removed since the last step, with its tag:
     /// their contacts end at the next step, and still name the room.
     #[serde(default)]
@@ -202,10 +207,10 @@ pub struct World {
     /// reconcile writes a field to the live body only when the new declaration
     /// *differs from this cache*; an unchanged declaration leaves the body to
     /// the simulation.
-    declared: BTreeMap<String, Body>,
+    declared: Arc<BTreeMap<String, Body>>,
     /// Tags the last reconcile saw declared flat (outside any group). With
     /// changed groups' members, the only tags a despawn scan visits.
-    flat: BTreeSet<String>,
+    flat: Arc<BTreeSet<String>>,
     /// The last-reconciled `Physics.memo` group per key. A scene holding the
     /// same `Arc` again skips the group without visiting its bodies. World
     /// state, so restoring a checkpoint can't leave a stale fast path.
@@ -273,9 +278,11 @@ impl Clone for World {
     }
 }
 
-/// Cheap in-process physics checkpoint. Rapier's `SharedShape` and terrain
-/// samples remain Arc-shared across timeline keyframes and ghost previews,
-/// avoiding repeated multi-megabyte JSON snapshots on the frame thread.
+/// Cheap in-process physics checkpoint. Rapier's `SharedShape`, terrain
+/// samples and the world's per-body maps (tags, declarations) remain
+/// Arc-shared across timeline keyframes and ghost previews, avoiding repeated
+/// multi-megabyte JSON snapshots on the frame thread. Rapier's own sets are
+/// owned values, so they are copied.
 #[derive(Clone)]
 pub struct PhysicsSnapshot {
     world: Box<World>,
@@ -313,11 +320,11 @@ impl World {
             impulse_joints: ImpulseJointSet::new(),
             multibody_joints: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
-            tags: BTreeMap::new(),
-            rooms: BTreeMap::new(),
+            tags: Arc::default(),
+            rooms: Arc::default(),
             retired: Vec::new(),
-            declared: BTreeMap::new(),
-            flat: BTreeSet::new(),
+            declared: Arc::default(),
+            flat: Arc::default(),
             groups: BTreeMap::new(),
             accumulator: 0.0,
             frame: 0,
@@ -442,8 +449,9 @@ impl World {
 
         let flat_unchanged = self.flat.len() == wanted.len()
             && self.flat.iter().zip(wanted.keys()).all(|(a, b)| a == *b);
-        let next_flat = (!flat_unchanged).then(|| wanted.keys().map(|t| (*t).clone()).collect());
-        let old_flat = std::mem::take(&mut self.flat);
+        let next_flat =
+            (!flat_unchanged).then(|| Arc::new(wanted.keys().map(|t| (*t).clone()).collect()));
+        let old_flat = Arc::clone(&self.flat);
 
         // Declarations that may differ from the cache, in tag order: flat
         // bodies and changed groups' bodies. Tags are disjoint across them
@@ -482,7 +490,7 @@ impl World {
                 Some(_) => continue, // unchanged: the simulation owns this body
             };
             if accepted {
-                self.declared.insert(tag.clone(), body.clone());
+                Arc::make_mut(&mut self.declared).insert(tag.clone(), body.clone());
                 stats.written += 1;
             }
         }
@@ -976,8 +984,8 @@ impl World {
         if let Shape::FusedRoom { room } = &body.shape {
             // A fixed body with a collider per chunk.
             let rb_handle = self.bodies.insert(RigidBodyBuilder::fixed().build());
-            self.tags.insert(body.tag.clone(), rb_handle);
-            self.rooms.insert(body.tag.clone(), LiveRoom::default());
+            Arc::make_mut(&mut self.tags).insert(body.tag.clone(), rb_handle);
+            Arc::make_mut(&mut self.rooms).insert(body.tag.clone(), LiveRoom::default());
             self.sync_room(body, &RoomMeshes::default(), room);
             return true;
         }
@@ -1017,7 +1025,7 @@ impl World {
         let rb_handle = self.bodies.insert(rb);
         self.colliders
             .insert_with_parent(collider.build(), rb_handle, &mut self.bodies);
-        self.tags.insert(body.tag.clone(), rb_handle);
+        Arc::make_mut(&mut self.tags).insert(body.tag.clone(), rb_handle);
         true
     }
 
@@ -1025,8 +1033,11 @@ impl World {
     /// only the chunks [`room::dirty_chunks`] names, in key order, and the
     /// floor plane if the floor moved.
     fn sync_room(&mut self, body: &Body, prev: &RoomMeshes, next: &RoomMeshes) {
+        if !self.rooms.contains_key(&body.tag) {
+            return;
+        }
         let (Some(&rb_handle), Some(live)) =
-            (self.tags.get(&body.tag), self.rooms.get_mut(&body.tag))
+            (self.tags.get(&body.tag), Arc::make_mut(&mut self.rooms).get_mut(&body.tag))
         else {
             return;
         };
@@ -1139,10 +1150,10 @@ impl World {
     }
 
     fn despawn(&mut self, tag: &str) {
-        self.rooms.remove(tag);
+        cow_remove(&mut self.rooms, tag);
         // A despawned body's contacts end unreported, retired ones included.
         self.retired.retain(|(_, retired)| retired != tag);
-        if let Some(rb_handle) = self.tags.remove(tag) {
+        if let Some(rb_handle) = cow_remove(&mut self.tags, tag) {
             // Removes attached colliders and joints too.
             self.bodies.remove(
                 rb_handle,
@@ -1153,7 +1164,7 @@ impl World {
                 true,
             );
         }
-        self.declared.remove(tag);
+        cow_remove(&mut self.declared, tag);
         self.grounded.remove(tag);
     }
 
@@ -1447,6 +1458,15 @@ const MAX_HEIGHTFIELD_CELLS_PER_AXIS: usize = 1024;
 
 fn shape_is_ready(shape: &Shape) -> bool {
     !matches!(shape, Shape::Heightfield { data: None, .. })
+}
+
+/// Remove `tag` from a copy-on-write map, copying the map only if `tag` is in
+/// it (a despawn scan visits tags a map may not hold).
+fn cow_remove<V: Clone>(map: &mut Arc<BTreeMap<String, V>>, tag: &str) -> Option<V> {
+    if !map.contains_key(tag) {
+        return None;
+    }
+    Arc::make_mut(map).remove(tag)
 }
 
 /// The body's contact material, and contact begin/end reporting.
@@ -3041,7 +3061,7 @@ mod tests {
     /// were declared (flat vs grouped): rapier state, tags and the cache.
     fn sim_state(w: &World) -> Vec<u8> {
         let mut w = w.clone();
-        w.flat.clear();
+        w.flat = Arc::default();
         w.groups.clear();
         w.snapshot()
     }
@@ -3235,6 +3255,58 @@ mod tests {
             memo.snapshot() == end,
             "replay across the group edit diverged"
         );
+    }
+
+    // ── checkpoint sharing ──────────────────────────────────────────────
+
+    fn shares(a: &World, b: &World) -> bool {
+        Arc::ptr_eq(&a.declared, &b.declared)
+            && Arc::ptr_eq(&a.tags, &b.tags)
+            && Arc::ptr_eq(&a.flat, &b.flat)
+            && Arc::ptr_eq(&a.rooms, &b.rooms)
+    }
+
+    #[test]
+    fn keyframes_of_a_still_scene_share_the_per_body_maps() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        let frame = with_groups(
+            vec![crate_at("a", [0.0, 3.0, 0.0])],
+            vec![group("statics", floor_tiles(300))],
+        );
+        w.reconcile(&frame);
+        let first = w.checkpoint();
+        for _ in 0..30 {
+            w.step_frame(FIXED_DT);
+            w.reconcile(&frame);
+        }
+        let second = w.checkpoint();
+        assert!(shares(&first.world, &second.world));
+        assert!(shares(&first.world, &w));
+    }
+
+    #[test]
+    fn a_write_after_a_checkpoint_does_not_reach_it() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        let tiles = floor_tiles(20);
+        w.reconcile(&scene(tiles.clone()));
+        w.step_frame(FIXED_DT);
+        let checkpoint = w.checkpoint();
+        let before = w.snapshot();
+
+        // Move one tile, drop another, add a crate: every map is written.
+        let mut edited = tiles;
+        edited[3] = edited[3].clone().at([40.0, 0.0, 0.0]);
+        edited.remove(5);
+        edited.push(crate_at("crate", [0.0, 3.0, 0.0]));
+        w.reconcile(&scene(edited));
+        w.step_frame(FIXED_DT);
+        assert!(!Arc::ptr_eq(&checkpoint.world.declared, &w.declared));
+        assert!(!Arc::ptr_eq(&checkpoint.world.tags, &w.tags));
+        assert!(!Arc::ptr_eq(&checkpoint.world.flat, &w.flat));
+
+        assert!(checkpoint.world.snapshot() == before, "the checkpoint changed");
+        w.restore_checkpoint(&checkpoint);
+        assert!(w.snapshot() == before, "restore diverged");
     }
 }
 
@@ -3576,6 +3648,30 @@ mod fused_room_tests {
         // plane); the rest kept their colliders.
         let after = &w.rooms["room"].chunks;
         assert!(before.iter().any(|(k, h)| after.get(k) == Some(h)));
+    }
+
+    /// A re-fused room after a checkpoint copies `rooms`; the checkpoint keeps
+    /// the old colliders and restores byte-exact.
+    #[test]
+    fn a_re_fuse_after_a_checkpoint_does_not_reach_it() {
+        let room = stand_in_room();
+        let mut w = world_with(vec![room_body(&Arc::new(room.clone()))]);
+        let checkpoint = w.checkpoint();
+        let before = w.snapshot();
+        let mut next = room;
+        let key = *next.chunks.keys().find(|k| k[1] > 0).unwrap();
+        let mut moved = (*next.chunks[&key]).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] += 0.01);
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&Arc::new(next))],
+        ));
+        assert!(!Arc::ptr_eq(&checkpoint.world.rooms, &w.rooms));
+        assert_ne!(checkpoint.world.rooms["room"].chunks, w.rooms["room"].chunks);
+        assert!(checkpoint.world.snapshot() == before, "the checkpoint changed");
+        w.restore_checkpoint(&checkpoint);
+        assert!(w.snapshot() == before, "restore diverged");
     }
 
     /// Re-declaring the same room is free; a re-fused chunk rebuilds only
