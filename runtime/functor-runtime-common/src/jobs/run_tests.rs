@@ -353,7 +353,7 @@ compile {compile:.1} ms, deps {deps_ms:.1} ms; JobProgram::new {admit_ms:.2} ms"
             let (task, fail, _) = JobSpec::Run(spec).task(None);
             let stop = Arc::new(AtomicBool::new(false));
             let started = std::time::Instant::now();
-            pool.dispatch(Job { ticket: Ticket { id, attempt: 1 }, task, fail, stop, mailbox: mailbox.clone() });
+            pool.dispatch(Job { ticket: Ticket { id, attempt: 1 }, task, fail, stop, progress: Default::default(), mailbox: mailbox.clone() });
             let got = loop {
                 if let Some((_, value)) = mailbox.take().pop() {
                     break value;
@@ -371,4 +371,175 @@ compile {compile:.1} ms, deps {deps_ms:.1} ms; JobProgram::new {admit_ms:.2} ms"
         }
         println!("per-job round trip, warm worker, {label}: median {:.0} µs", median(times));
     }
+}
+
+// ── Progress ────────────────────────────────────────────────────────────
+
+/// Watches `Job.progress` for keys "k" (into `seen`) and "o" (into
+/// `other`); `ask` is `tick`'s body after `next`. `work` reports 1.0.
+fn progress_source(ask: &str) -> String {
+    format!(
+        r#"
+type Msg = | Done(r: Result.t<float, Job.error>) | Prog(p: float) | Other(p: float)
+let scale = 2.0
+let work = (x) => Job.report(1.0, x * scale)
+let init = {{ n: 0.0, got: -1.0, seen: [], other: [] }}
+let update = (m, msg) =>
+  match msg with
+  | Done(r) =>
+    (match r with
+     | Result.Ok(v) => {{ m with got: v }}
+     | Result.Error(e) => m)
+  | Prog(p) => {{ m with seen: List.append([p], m.seen) }}
+  | Other(p) => {{ m with other: List.append([p], m.other) }}
+let subscriptions = (m) => Sub.batch([Job.progress("k", Prog), Job.progress("o", Other)])
+let tick = (m, dt, tts) =>
+  let next = {{ m with n: m.n + 1.0 }} in
+  {ask}
+let draw = (m, tts) =>
+  Frame.create(Camera3D.lookAt(Vec3.make(m.got, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+"#
+    )
+}
+
+const ASK_K: &str = r#"if m.n == 2.0 then (next, Job.run("k", work, 21.0, Done)) else next"#;
+
+impl Rig {
+    fn assert_seen(&self, seen: &str) {
+        let model = self.model();
+        assert!(model.contains(&format!("seen: {seen}")), "want seen {seen}: {model}");
+    }
+}
+
+#[test]
+fn progress_is_delivered_once_per_change_and_never_after_the_result() {
+    let mut rig = Rig::new(&progress_source(ASK_K));
+    rig.tick(4);
+    let job = rig.fake.held()[0];
+    rig.fake.report(job, 0.25);
+    rig.tick(3);
+    rig.assert_seen("[0.25]");
+    // Two reports between frames: the frame delivers the latest.
+    rig.fake.report(job, 0.5);
+    rig.fake.report(job, 0.75);
+    rig.tick(1);
+    rig.assert_seen("[0.25, 0.75]");
+    // A report and the result in one frame: only the result.
+    rig.fake.report(job, 0.9);
+    rig.finish();
+    rig.tick(2);
+    assert!(rig.model().contains("got: 42"), "{}", rig.model());
+    rig.assert_seen("[0.25, 0.75]");
+}
+
+#[test]
+fn a_cancelled_job_stops_reporting() {
+    let ask = r#"if m.n == 2.0 then (next, Job.run("k", work, 21.0, Done)) else if m.n == 5.0 then (next, Job.cancel("k")) else next"#;
+    let mut rig = Rig::new(&progress_source(ask));
+    rig.tick(4);
+    let job = rig.fake.held()[0];
+    rig.fake.report(job, 0.3);
+    rig.tick(2);
+    assert_eq!(rig.fake.stopped(job), Some(true));
+    rig.fake.report(job, 0.6);
+    rig.tick(2);
+    rig.assert_seen("[0.3]");
+}
+
+#[test]
+fn a_reload_rerun_restarts_progress_and_drops_the_old_attempts() {
+    let source = progress_source(ASK_K);
+    let mut rig = Rig::new(&source);
+    rig.tick(4);
+    let first = rig.fake.held()[0];
+    rig.fake.report(first, 0.5);
+    rig.tick(1);
+    rig.reload(&source.replace("let scale = 2.0", "let scale = 3.0"));
+    let second = rig.fake.held()[1];
+    assert_eq!(second, Ticket { id: first.id, attempt: 2 });
+    rig.fake.report(first, 0.9);
+    rig.tick(1);
+    rig.assert_seen("[0.5]");
+    rig.fake.report(second, 0.1);
+    rig.tick(1);
+    rig.assert_seen("[0.5, 0.1]");
+}
+
+#[test]
+fn each_jobs_progress_reaches_its_own_keys_taggers() {
+    let ask = r#"if m.n == 2.0 then (next, Effect.batch([Job.run("k", work, 21.0, Done), Job.run("o", work, 1.0, Done), Job.run("z", work, 1.0, Done)])) else next"#;
+    let mut rig = Rig::new(&progress_source(ask));
+    rig.tick(4);
+    let held = rig.fake.held();
+    rig.fake.report(held[0], 0.2);
+    rig.fake.report(held[1], 0.7);
+    rig.fake.report(held[2], 0.4);
+    rig.tick(1);
+    rig.assert_seen("[0.2]");
+    assert!(rig.model().contains("other: [0.7]"), "{}", rig.model());
+}
+
+#[test]
+fn a_replay_reproduces_progress_without_running_the_job() {
+    let mut rig = Rig::new(&progress_source(ASK_K));
+    rig.tick(1);
+    let mut models = Vec::new();
+    let mut play = |rig: &mut Rig, n: u32| {
+        for _ in 0..n {
+            rig.tick(1);
+            models.push(rig.model());
+        }
+    };
+    play(&mut rig, 3);
+    let job = rig.fake.held()[0];
+    rig.fake.report(job, 0.25);
+    play(&mut rig, 2);
+    rig.fake.report(job, 0.5);
+    play(&mut rig, 2);
+    rig.fake.complete(job);
+    play(&mut rig, 2);
+    rig.assert_seen("[0.25, 0.5]");
+    rig.game.seek_scene_to(0).expect("seek");
+    let replayed = rig.game.replay_scene(models.len()).expect("replays");
+    let replayed: Vec<String> = replayed.into_iter().map(|(model, _)| model).collect();
+    assert_eq!(replayed, models);
+    assert_eq!(rig.fake.dispatched().len(), 1, "a replay never runs the job");
+}
+
+#[test]
+fn a_branch_that_cuts_the_shown_progress_shows_the_latest_again() {
+    let mut rig = Rig::new(&progress_source(ASK_K));
+    rig.tick(4);
+    let job = rig.fake.held()[0];
+    rig.fake.report(job, 0.25);
+    rig.tick(2); // frames 4–5: 0.25 shown on 4
+    rig.fake.report(job, 0.5);
+    rig.tick(3); // frames 6–8: 0.5 shown on 6
+    // A branch after 6 keeps what was shown: nothing again.
+    rig.game.seek_scene_to(7).expect("seek");
+    rig.tick(1);
+    rig.assert_seen("[0.25, 0.5]");
+    // A branch from 5 cuts it: the kept model saw 0.25, so 0.5 comes again.
+    rig.game.seek_scene_to(5).expect("seek");
+    rig.assert_seen("[0.25]");
+    rig.tick(1);
+    rig.assert_seen("[0.25, 0.5]");
+    assert_eq!(rig.fake.dispatched().len(), 1, "the job kept running");
+}
+
+#[test]
+fn progress_that_cancels_another_job_stops_that_jobs_progress_the_same_frame() {
+    let ask = r#"if m.n == 2.0 then (next, Effect.batch([Job.run("k", work, 21.0, Done), Job.run("o", work, 1.0, Done)])) else next"#;
+    let source = progress_source(ask).replace(
+        "| Prog(p) => { m with seen: List.append([p], m.seen) }",
+        "| Prog(p) => ({ m with seen: List.append([p], m.seen) }, Job.cancel(\"o\"))",
+    );
+    let mut rig = Rig::new(&source);
+    rig.tick(4);
+    let held = rig.fake.held();
+    rig.fake.report(held[0], 0.2);
+    rig.fake.report(held[1], 0.7);
+    rig.tick(1);
+    rig.assert_seen("[0.2]");
+    assert!(rig.model().contains("other: []"), "{}", rig.model());
 }

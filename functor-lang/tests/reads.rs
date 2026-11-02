@@ -256,7 +256,8 @@ fn a_file_read_reached_from_a_hook_is_an_error() {
         errors,
         ["4: `tick` reads project files (tick → clip → load → File.size), but files are read \
 only at load, so the answer isn't pinned for replay — read it in a top-level value and use \
-that value in `tick`"]
+that value in `tick`, or ask for it with `File.load` (or compute with it in `Job.run`): the \
+result arrives through `update`"]
     );
 }
 

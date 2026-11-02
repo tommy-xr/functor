@@ -32,7 +32,8 @@ use functor_lang::{line_col, project::SourceMap, RunError, Session, Span, Value}
 use crate::asset::AssetProgress;
 use crate::functor_lang_prelude::{
     asset_progress_value, assets_taggers, config_of, contains_effect, deliver_physics_events,
-    drain_effects, frame_value, http_response_value, needs_update, net_conn_subs, net_event_value,
+    drain_effects, frame_value, http_response_value, job_progress_taggers, needs_update,
+    net_conn_subs, net_event_value,
     perform_deferred_queries, physics_event_taggers, physics_scene_value, settings_of,
     split_model_effect, sub_messages_for_frame, take_ui_handlers, EffectRunner, EffectTree,
     FunctorHost, NetEventKind, PrimingScope, ReplayEffects, UiHandler,
@@ -1358,7 +1359,7 @@ impl FrameCtx<'_> {
             },
             Arrival::AudioFinished(_) => (continuation, Provenance::AudioFinished),
             Arrival::PreloadSettled(_) => (continuation, Provenance::PreloadSettled),
-            Arrival::Net { .. } | Arrival::Assets(_) => return,
+            Arrival::Net { .. } | Arrival::Assets(_) | Arrival::JobProgress { .. } => return,
         };
         self.fold_update(msg, provenance);
     }
@@ -1600,6 +1601,14 @@ impl FrameCtx<'_> {
                 if self.asset_progress.is_some() {
                     *self.delivered_asset_progress = None;
                 }
+                // Likewise its logged job progress.
+                let job_progress = recorded.into_iter().flatten().filter_map(|entry| match entry {
+                    Entry::Delivery { arrival: Arrival::JobProgress { op, fraction }, .. } => {
+                        Some((*op, *fraction))
+                    }
+                    _ => None,
+                });
+                self.recorder.requests_mut().set_replayed_progress(job_progress.collect());
                 let has = |kind: fn(&RecordedInput) -> bool| {
                     events
                         .as_ref()
@@ -1920,6 +1929,7 @@ to receive their messages; dropping them",
         // Asset progress also delivers on frame one: a loading screen wants
         // the initial snapshot, not the first change after it.
         self.deliver_asset_progress(&subs);
+        self.deliver_job_progress(&subs);
         let Some(prev) = prev else {
             return;
         };
@@ -1988,6 +1998,51 @@ to receive their messages; dropping them",
                 arrival: Arrival::Assets(progress.clone()),
             });
             *self.delivered_asset_progress = Some(progress);
+        }
+    }
+
+    /// Fold `tagger(fraction)` through `update` for each `Job.progress(key,
+    /// tagger)` whose job reported a change (or, replaying, as logged), and
+    /// log it. A job's result arrives earlier in the frame, so a result and
+    /// a report in one frame deliver only the result.
+    fn deliver_job_progress(&mut self, subs: &Value) {
+        let taggers = match job_progress_taggers(subs) {
+            Ok(taggers) => taggers,
+            Err(message) => return self.reporter.report_once(format!("[functor-lang] {message}")),
+        };
+        let mut keys: Vec<&str> = Vec::new();
+        for (key, _) in &taggers {
+            if !keys.contains(&key.as_str()) {
+                keys.push(key);
+            }
+        }
+        let due = self.recorder.requests_mut().progress_due(&keys);
+        for (op, key, fraction) in due {
+            let mut delivered = false;
+            for (_, tagger) in taggers.iter().filter(|(k, _)| *k == key) {
+                // An earlier tagger's `update` may have cancelled it.
+                if !self.recorder.requests().progress_live(op) {
+                    break;
+                }
+                match self.session.apply(
+                    tagger.clone(),
+                    vec![Value::Number(fraction)],
+                    "Job.progress tagger",
+                    &mut FunctorHost,
+                ) {
+                    Ok(msg) => {
+                        delivered = true;
+                        self.fold_update(msg, Provenance::Subscription);
+                    }
+                    Err(err) => self.reporter.frame_error("Job.progress tagger", &err),
+                }
+            }
+            // Like `Sub.assets`: an erroring tagger doesn't swallow it.
+            if delivered {
+                self.next.push(Entry::Delivery { op: None, arrival: Arrival::JobProgress { op, fraction } });
+                let frame = self.recorder.next_frame();
+                self.recorder.requests_mut().progress_shown(op, fraction, frame);
+            }
         }
     }
 
@@ -2342,7 +2397,7 @@ impl<'a> Replayed<'a> {
     fn of(entry: &'a Entry) -> Option<Replayed<'a>> {
         match entry {
             Entry::Input(input) => Some(Replayed::Input(input)),
-            Entry::Delivery { arrival: Arrival::Assets(_), .. } => None,
+            Entry::Delivery { arrival: Arrival::Assets(_) | Arrival::JobProgress { .. }, .. } => None,
             Entry::Delivery { op, arrival } => Some(Replayed::Delivery(*op, arrival)),
             Entry::Answer { .. } | Entry::Issued { .. } => None,
         }

@@ -27,9 +27,15 @@ let run : (string, ('i) => 'o, 'i, (Result.t<'o, error>) => 'msg) => Effect.t
 /// it.
 let cancel : (string) => Effect.t
 
-/// Inside a job, report progress in 0..1 and return `value`. Not yet
-/// observable: it only returns `value`.
+/// Inside a job, report progress in 0..1 and return `value`:
+/// `Job.report(0.5, half)`. `Job.progress` delivers it; outside a job it
+/// only returns `value`.
 let report : (float, 'a) => 'a
+
+/// The latest `Job.report` of the in-flight `Job.run` with this key, through
+/// `update`: only when it changes, at most once a frame, never after its
+/// result. Recorded, so a replay or scrub shows the same progress.
+let progress : (string, (float) => 'msg) => Sub.t
 
 /// A message for an error, for a status line or a panel.
 let describe : (error) => string
