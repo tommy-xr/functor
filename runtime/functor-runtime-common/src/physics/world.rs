@@ -3921,6 +3921,84 @@ mod tests {
         assert!(w.tags.contains_key("s0000"));
     }
 
+    /// A body sliding at 5 m/s along +x from `x0` over a row of 30
+    /// frictionless 1 m tiles (`wall`: beside them, pushed against them,
+    /// without gravity), flat or fused. Once settled, the worst seam snag:
+    /// offset along the contact normal from its settled distance, normal
+    /// speed, and the speed lost along x by x = 25 (or after 400 frames).
+    fn slide(memo: bool, shape: &Shape, half: [f32; 3], wall: bool, x0: f32) -> [f32; 3] {
+        let tiles: Vec<Body> = (0..30)
+            .map(|i| {
+                Body::fixed(format!("t{i:02}"), Shape::Cuboid { extents: [1.0; 3] })
+                    .at([i as f32, 0.0, 0.0])
+                    .with_friction(0.0)
+            })
+            .collect();
+        let normal = if wall { 2 } else { 1 };
+        let mut start = [x0, 0.0, 0.0];
+        start[normal] = 0.5 + half[normal] + 0.001;
+        let mut velocity = [5.0, 0.0, 0.0];
+        velocity[normal] = if wall { -0.5 } else { 0.0 };
+        let slider = Body {
+            velocity,
+            rotation_locked: matches!(shape, Shape::Capsule { .. }),
+            ..Body::dynamic("slider".to_string(), shape.clone()).at(start).with_friction(0.0)
+        };
+        let mut frame = match memo {
+            true => with_groups(vec![slider], vec![group("g", tiles)]),
+            false => scene(tiles.into_iter().chain([slider]).collect()),
+        };
+        frame.gravity = if wall { [0.0; 3] } else { [0.0, -9.81, 0.0] };
+        let mut w = World::new(frame.gravity);
+        let (mut settled, mut worst) = (None, [0.0f32; 3]);
+        for _ in 0..400 {
+            w.reconcile(&frame);
+            w.step_frame(FIXED_DT);
+            let (p, _) = w.body_transform("slider").unwrap();
+            let v = w.body_velocity("slider").unwrap();
+            worst[2] = 5.0 - v[0];
+            if p[0] > 25.0 {
+                break;
+            }
+            let Some(rest) = settled else {
+                settled = (p[0] > x0 + 1.0).then_some(p[normal]);
+                continue;
+            };
+            worst[0] = worst[0].max((p[normal] - rest).abs());
+            worst[1] = worst[1].max(v[normal].abs());
+        }
+        worst
+    }
+
+    /// Fused tiles are the same parts with the same contact generation, so a
+    /// slider meets each seam as it does flat ones. Over 8 start offsets: the
+    /// mean of each snag metric.
+    #[test]
+    fn fused_seams_snag_no_worse_than_flat_ones() {
+        let cube = (Shape::Cuboid { extents: [0.8; 3] }, [0.4; 3]);
+        let capsule = (Shape::Capsule { half_height: 0.4, radius: 0.3 }, [0.3, 0.7, 0.3]);
+        for (name, (shape, half)) in [("box", cube), ("capsule", capsule)] {
+            for wall in [false, true] {
+                let mean = |memo: bool| {
+                    let mut sum = [0.0f32; 3];
+                    for k in 0..8 {
+                        let m = slide(memo, &shape, half, wall, 0.2 + 0.07 * k as f32);
+                        (0..3).for_each(|i| sum[i] += m[i] / 8.0);
+                    }
+                    sum
+                };
+                let (flat, fused) = (mean(false), mean(true));
+                eprintln!("seams {name} wall={wall}: flat {flat:?} fused {fused:?}");
+                for i in 0..3 {
+                    assert!(
+                        fused[i] <= flat[i] * 1.1 + 1e-3,
+                        "{name} wall={wall} metric {i}: flat {flat:?} fused {fused:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The equivalence golden: the same bodies declared flat or as a group,
     /// through impulses, a teleport of a group body and a mid-run group edit.
     /// Fused statics read as the flat bodies do and report the same contacts
