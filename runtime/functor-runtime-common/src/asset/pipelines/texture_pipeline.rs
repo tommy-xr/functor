@@ -212,6 +212,43 @@ impl AssetPipeline<Texture2D> for TerrainNormalMapPipeline {
     }
 }
 
+/// Terrain splat maps: per-texel layer weights stretched once over a terrain.
+///
+/// Linear (weights, not color), clamped, and unmipped: it is read only within
+/// the materials' fade band, where a terrain-wide map is magnified. No color
+/// key either, so full R and B weights don't key out as magenta.
+pub struct TerrainSplatPipeline;
+
+impl AssetPipeline<Texture2D> for TerrainSplatPipeline {
+    fn process(
+        &self,
+        bytes: Vec<u8>,
+        _asset_cache: &AssetCache,
+        context: crate::asset::AssetPipelineContext,
+    ) -> Texture2D {
+        match decode_image(&bytes) {
+            Ok(data) => Texture2D::init_from_data(
+                data,
+                TextureOptions {
+                    wrap: false,
+                    linear: true,
+                    ..TextureOptions::default()
+                },
+            ),
+            Err(e) => {
+                eprintln!("[texture] cannot decode splat map: {e}");
+                self.unloaded_asset(context)
+            }
+        }
+    }
+
+    fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
+        // No weights: the bare colormap. Drawn only if the bytes fail to decode.
+        let texture_data = TextureData::solid_color([0, 0, 0, 0]);
+        Texture2D::init_from_data(texture_data, TextureOptions::default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

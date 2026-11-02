@@ -37,6 +37,9 @@ const MACRO_TEXTURE_UNIT: i32 = 5;
 /// The colormap program's units: day, night, detail, normal map. It is a
 /// separate program, so these may reuse the lit detail units.
 pub(crate) const COLORMAP_UNITS: [u32; 4] = [1, 2, 3, 4];
+/// `Terrain.materials`' units, above the colormap's: the splat map, then the
+/// albedo and detail-normal arrays.
+pub(crate) const MATERIAL_UNITS: [u32; 3] = [5, 6, 7];
 /// Furthest the detail band may reach, in metres from the camera.
 ///
 /// A cap, not a flat value. Detail stops being resolvable at a distance that
@@ -331,6 +334,9 @@ const COLORMAP_DEFINE: &str = "#define TERRAIN_COLORMAP\n";
 /// Prepended to the colormap fragment shader for its flashlight variant; the
 /// variant without it is the plain colormap shader.
 const FLASHLIGHT_DEFINE: &str = "#define TERRAIN_FLASHLIGHT\n";
+/// Prepended for the `Terrain.materials` variants, which replace
+/// `colormapDetail` with the splat's layers.
+const MATERIALS_DEFINE: &str = "#define TERRAIN_MATERIALS\n";
 
 /// Baked, unlit terrain: colormap × near detail × fog. No lights, normals or
 /// bands: those are painted into the maps.
@@ -361,6 +367,42 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform sampler2D normalTex;
         uniform mat3 normalMatrix;
         #endif
+        #ifdef TERRAIN_MATERIALS
+        // Layer weights (R = layer 0 … A = layer 3), laid once over the terrain.
+        uniform sampler2D splatTex;
+        // Every layer's albedo; the layer index is a texture coordinate, so
+        // picking the heaviest two needs no branch between samplers.
+        uniform mediump sampler2DArray layerTex;
+        uniform vec4 layerScale; // 1 / tile size
+        uniform vec4 layerLuma;  // each albedo's mean luminance
+        uniform vec4 layerMask;  // 1 per declared layer
+        #ifdef TERRAIN_FLASHLIGHT
+        uniform mediump sampler2DArray layerNormalTex;
+        uniform vec4 layerNormalSlot; // index into layerNormalTex, or -1
+        #endif
+
+        // Luminance only, so the colormap owns hue: a per-channel ratio turns
+        // a grass map's brown litter purple once the colormap under it is grey.
+        const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+        // Layer `i`'s structure: its luminance over its mean, ~1.0 on average,
+        // at two scales to hide the repeat (as the lit shader's `detail`).
+        float layerStructure(int i, highp vec2 xz) {
+            highp vec2 uv = xz * layerScale[i];
+            float layer = float(i);
+            vec3 near = mix(texture(layerTex, vec3(uv, layer)).rgb,
+                            texture(layerTex, vec3(uv * 0.137, layer)).rgb, 0.5);
+            return clamp(dot(near, LUMA) / layerLuma[i], 0.0, 2.5);
+        }
+
+        // One compare-exchange of a descending sort that carries layer indices.
+        void order(inout float a, inout int ia, inout float b, inout int ib) {
+            if (b > a) {
+                float w = a; a = b; b = w;
+                int i = ia; ia = ib; ib = i;
+            }
+        }
+        #endif
 
         out vec4 fragColor;
 
@@ -380,6 +422,53 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
                 color = mix(
                     texture(dayTex, terrainUv).rgb, texture(nightTex, terrainUv).rgb, colormapBlend);
             }
+            #ifdef TERRAIN_MATERIALS
+            // Before the beam, which reads the dominant layer's normal; the
+            // structure multiplies after it, as `colormapDetail` does.
+            float structure = 1.0;
+            #ifdef TERRAIN_FLASHLIGHT
+            int dominant = 0;
+            float bend = 0.0; // how far the dominant layer's normal bends N
+            highp vec2 xzDx = vec2(0.0);
+            highp vec2 xzDy = vec2(0.0);
+            #endif
+            float fade = 1.0 - smoothstep(
+                detailFadeStart, detailFadeEnd, distance(worldPos, detailCameraPos));
+            // Same derivative argument as the lit shader's fade branch: every
+            // edge below (fade, total weight, a layer's weight) is one where
+            // that contribution is ~0.
+            if (fade > 0.0) {
+                vec4 w = texture(splatTex, terrainUv) * layerMask;
+                float total = dot(w, vec4(1.0));
+                if (total > 0.0) {
+                    float w0 = w.x, w1 = w.y, w2 = w.z, w3 = w.w;
+                    int k0 = 0, k1 = 1, k2 = 2, k3 = 3;
+                    order(w0, k0, w1, k1);
+                    order(w2, k2, w3, k3);
+                    order(w0, k0, w2, k2);
+                    order(w1, k1, w3, k3);
+                    order(w1, k1, w2, k2);
+                    // The top two, less the third: a layer leaving the top two
+                    // fades out instead of popping. The epsilon keeps one
+                    // layer where three tie.
+                    float b0 = w0 - w2 + 1e-3;
+                    float b1 = w1 - w2;
+                    float s = layerStructure(k0, worldPos.xz) * b0;
+                    if (b1 > 0.0) {
+                        s += layerStructure(k1, worldPos.xz) * b1;
+                    }
+                    // Weights summing below 1 fade toward the bare colormap.
+                    float strength = fade * min(total, 1.0);
+                    structure = mix(1.0, s / (b0 + b1), strength);
+                    #ifdef TERRAIN_FLASHLIGHT
+                    dominant = k0;
+                    bend = strength * (b0 - b1) / (b0 + b1);
+                    xzDx = dFdx(worldPos.xz);
+                    xzDy = dFdy(worldPos.xz);
+                    #endif
+                }
+            }
+            #endif
             #ifdef TERRAIN_FLASHLIGHT
             // Range and cone first: outside the beam this test is the whole
             // cost. The beam is one blob on screen, so the branch is coherent.
@@ -390,8 +479,25 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
                 // Level 0: implicit derivatives are undefined in this branch,
                 // and within a flashlight's reach a terrain-wide map's texels
                 // (metres across) are magnified anyway.
+                #ifdef TERRAIN_MATERIALS
+                vec3 local = textureLod(normalTex, terrainUv, 0.0).rgb * 2.0 - 1.0;
+                float slot = layerNormalSlot[dominant];
+                if (slot >= 0.0 && bend > 0.0) {
+                    // Tiled maps minify here, so explicit gradients (taken
+                    // outside this branch) rather than level 0.
+                    float scale = layerScale[dominant];
+                    vec3 d = textureGrad(layerNormalTex,
+                                         vec3(worldPos.xz * scale, slot),
+                                         xzDx * scale, xzDy * scale).rgb * 2.0 - 1.0;
+                    // A UDN blend in the ground plane; image-up (+Y) is -Z,
+                    // since rows load top-down and v runs along +Z.
+                    local += vec3(d.x, 0.0, -d.y) * bend;
+                }
+                vec3 n = normalize(normalMatrix * local);
+                #else
                 vec3 n = normalize(
                     normalMatrix * (textureLod(normalTex, terrainUv, 0.0).rgb * 2.0 - 1.0));
+                #endif
                 float ndotl = max(dot(n, -fromLight / max(dist, 1e-4)), 0.0);
                 // The day map is the albedo: the night map is the same ground
                 // under moonlight, too dark to show a beam.
@@ -400,6 +506,9 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
                     * spotAttenuation(dist, cosAngle, flashRange, flashConeCos);
             }
             #endif
+            #ifdef TERRAIN_MATERIALS
+            color *= structure;
+            #else
             if (useDetail == 1) {
                 float fade = 1.0 - smoothstep(
                     detailFadeStart, detailFadeEnd, distance(worldPos, detailCameraPos));
@@ -412,6 +521,7 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
                         vec3(1.0), clamp(near / max(detailAverage, vec3(1e-3)), 0.0, 2.5), fade);
                 }
             }
+            #endif
             fragColor = functorOutput(vec4(applyFog(color, worldPos), 1.0));
         }
 "#;
@@ -606,17 +716,35 @@ struct ColormapUniforms {
     day: UniformLocation,
     night: UniformLocation,
     blend: UniformLocation,
-    use_detail: UniformLocation,
-    detail: UniformLocation,
-    detail_tile: UniformLocation,
+    /// The near band, shared by `colormapDetail` and the materials.
     detail_fade_start: UniformLocation,
     detail_fade_end: UniformLocation,
     detail_camera_pos: UniformLocation,
-    detail_average: UniformLocation,
-    /// Only in the flashlight variant.
+    /// `colormapDetail`'s; not in the materials variants.
+    detail: Option<DetailUniforms>,
+    /// Only in the materials variants.
+    materials: Option<MaterialUniforms>,
+    /// Only in the flashlight variants.
     flashlight: Option<FlashlightUniforms>,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
+}
+
+struct DetailUniforms {
+    use_detail: UniformLocation,
+    texture: UniformLocation,
+    tile: UniformLocation,
+    average: UniformLocation,
+}
+
+struct MaterialUniforms {
+    splat: UniformLocation,
+    layers: UniformLocation,
+    scale: UniformLocation,
+    luma: UniformLocation,
+    mask: UniformLocation,
+    /// The detail-normal array and slots; only with the flashlight.
+    normals: Option<(UniformLocation, UniformLocation)>,
 }
 
 struct FlashlightUniforms {
@@ -673,12 +801,31 @@ struct ColormapProgram {
     uniforms: ColormapUniforms,
 }
 
+/// The index of a colormap program variant in `TerrainRenderer`.
+fn colormap_variant(flashlight: bool, materials: bool) -> usize {
+    flashlight as usize | (materials as usize) << 1
+}
+
 /// What the shell bound for colormap shading: both maps, and the detail map
 /// with its mean color once it has loaded (see `COLORMAP_UNITS`).
 pub(crate) struct ColormapBound {
     pub(crate) detail_average: Option<[f32; 3]>,
     /// The normal map is bound, so a flashlight can light the terrain.
     pub(crate) normal_map: bool,
+    /// The splat map and layer arrays are bound (see `MATERIAL_UNITS`).
+    pub(crate) materials: Option<MaterialsBound>,
+}
+
+/// `Terrain.materials`' resident layer arrays and their per-layer constants.
+#[derive(Clone, Copy)]
+pub(crate) struct MaterialsBound {
+    pub(crate) albedo: glow::Texture,
+    /// `None` when no layer has a detail normal.
+    pub(crate) normals: Option<glow::Texture>,
+    /// Each layer's mean albedo luminance, linear (the structure's divisor).
+    pub(crate) luma: [f32; 4],
+    /// Each layer's index in `normals`, or -1.
+    pub(crate) normal_slot: [f32; 4],
 }
 
 struct GrassUniforms {
@@ -827,8 +974,8 @@ impl HeightTexture {
 #[derive(Default)]
 pub(crate) struct TerrainRenderer {
     program: Option<TerrainProgram>,
-    /// The plain colormap program, and its flashlight variant.
-    colormap_programs: [Option<ColormapProgram>; 2],
+    /// The colormap programs, indexed by `colormap_variant`.
+    colormap_programs: [Option<ColormapProgram>; 4],
     geometries: Vec<TerrainGeometry>,
     grass_program: Option<GrassProgram>,
     grass_geometries: Vec<GrassGeometry>,
@@ -886,11 +1033,12 @@ impl TerrainRenderer {
             .filter(|bound| bound.normal_map)
             .and_then(|_| Flashlight::find(ctx.lights));
         if let Some(bound) = &colormap_bound {
-            // Both variants once a normal map is bound, so the first frame
-            // with a flashlight doesn't stall on a compile.
-            self.ensure_colormap_program(ctx, false);
+            // The flashlight variant too once a normal map is bound, so the
+            // first frame with a flashlight doesn't stall on a compile.
+            let materials = bound.materials.is_some();
+            self.ensure_colormap_program(ctx, false, materials);
             if bound.normal_map {
-                self.ensure_colormap_program(ctx, true);
+                self.ensure_colormap_program(ctx, true, materials);
             }
         } else {
             self.ensure_program(ctx);
@@ -959,7 +1107,8 @@ impl TerrainRenderer {
 
         unsafe {
             if let Some(bound) = colormap_bound {
-                let program = self.colormap_programs[flashlight.is_some() as usize]
+                let variant = colormap_variant(flashlight.is_some(), bound.materials.is_some());
+                let program = self.colormap_programs[variant]
                     .as_ref()
                     .expect("colormap program initialized");
                 let p = &program.program;
@@ -970,29 +1119,49 @@ impl TerrainRenderer {
                 let colormap = description.colormap.as_ref().expect("bound by the shell");
                 p.set_uniform_1i(gl, &u.day, COLORMAP_UNITS[0] as i32);
                 p.set_uniform_1i(gl, &u.night, COLORMAP_UNITS[1] as i32);
-                // Always its own unit: a sampler2D left on unit 0 would alias
-                // the integer height texture, which GL rejects at draw time.
-                p.set_uniform_1i(gl, &u.detail, COLORMAP_UNITS[2] as i32);
                 p.set_uniform_1f(gl, &u.blend, colormap.blend);
-                let detail = description
-                    .colormap_detail
-                    .as_ref()
-                    .zip(bound.detail_average);
-                p.set_uniform_1i(gl, &u.use_detail, detail.is_some() as i32);
-                if let Some((detail, average)) = detail {
-                    p.set_uniform_1f(gl, &u.detail_tile, detail.tile_size);
-                    p.set_uniform_1f(
-                        gl,
-                        &u.detail_fade_start,
-                        detail.fade_end * DETAIL_FADE_START_FRACTION,
-                    );
-                    p.set_uniform_1f(gl, &u.detail_fade_end, detail.fade_end);
+                let near_band = |fade_end: f32| {
+                    p.set_uniform_1f(gl, &u.detail_fade_start, fade_end * DETAIL_FADE_START_FRACTION);
+                    p.set_uniform_1f(gl, &u.detail_fade_end, fade_end);
                     p.set_uniform_vec3(gl, &u.detail_camera_pos, &ctx.camera_pos);
-                    p.set_uniform_vec3(
-                        gl,
-                        &u.detail_average,
-                        &Vector3::new(average[0], average[1], average[2]),
-                    );
+                };
+                if let Some(d) = &u.detail {
+                    // Always its own unit: a sampler2D left on unit 0 would
+                    // alias the integer height texture, which GL rejects at
+                    // draw time.
+                    p.set_uniform_1i(gl, &d.texture, COLORMAP_UNITS[2] as i32);
+                    let detail = description
+                        .colormap_detail
+                        .as_ref()
+                        .zip(bound.detail_average);
+                    p.set_uniform_1i(gl, &d.use_detail, detail.is_some() as i32);
+                    if let Some((detail, average)) = detail {
+                        p.set_uniform_1f(gl, &d.tile, detail.tile_size);
+                        near_band(detail.fade_end);
+                        p.set_uniform_vec3(
+                            gl,
+                            &d.average,
+                            &Vector3::new(average[0], average[1], average[2]),
+                        );
+                    }
+                }
+                if let (Some(m), Some(arrays), Some(materials)) =
+                    (&u.materials, bound.materials, description.materials.as_ref())
+                {
+                    p.set_uniform_1i(gl, &m.splat, MATERIAL_UNITS[0] as i32);
+                    p.set_uniform_1i(gl, &m.layers, MATERIAL_UNITS[1] as i32);
+                    let layer = |i: usize| materials.layers.get(i);
+                    let per_layer = |f: &dyn Fn(usize) -> f32| Vector4::new(f(0), f(1), f(2), f(3));
+                    let scale = per_layer(&|i| layer(i).map_or(0.0, |l| 1.0 / l.tile_size));
+                    let mask = per_layer(&|i| layer(i).map_or(0.0, |_| 1.0));
+                    p.set_uniform_vec4(gl, &m.scale, &scale);
+                    p.set_uniform_vec4(gl, &m.mask, &mask);
+                    p.set_uniform_vec4(gl, &m.luma, &Vector4::from(arrays.luma));
+                    near_band(materials.fade_end);
+                    if let Some((normals, slot)) = &m.normals {
+                        p.set_uniform_1i(gl, normals, MATERIAL_UNITS[2] as i32);
+                        p.set_uniform_vec4(gl, slot, &Vector4::from(arrays.normal_slot));
+                    }
                 }
                 if let (Some(light), Some(f)) = (&flashlight, &u.flashlight) {
                     p.set_uniform_vec3(gl, &f.position, &Vector3::from(light.position));
@@ -1217,8 +1386,8 @@ impl TerrainRenderer {
         self.program = Some(TerrainProgram { program, uniforms });
     }
 
-    fn ensure_colormap_program(&mut self, ctx: &RenderContext, flashlight: bool) {
-        let slot = &mut self.colormap_programs[flashlight as usize];
+    fn ensure_colormap_program(&mut self, ctx: &RenderContext, flashlight: bool, materials: bool) {
+        let slot = &mut self.colormap_programs[colormap_variant(flashlight, materials)];
         if slot.is_some() {
             return;
         }
@@ -1228,15 +1397,20 @@ impl TerrainRenderer {
             &format!("{COLORMAP_DEFINE}{VERTEX_SHADER_SOURCE}"),
             ctx.shader_version,
         );
+        let source = if flashlight {
+            format!(
+                "{FLASHLIGHT_DEFINE}{FOG_GLSL}\n{SPOT_ATTENUATION_GLSL}\n{COLORMAP_FRAGMENT_SHADER_SOURCE}"
+            )
+        } else {
+            format!("{FOG_GLSL}\n{COLORMAP_FRAGMENT_SHADER_SOURCE}")
+        };
         let fragment = Shader::build(
             ctx.gl,
             ShaderType::Fragment,
-            &if flashlight {
-                format!(
-                    "{FLASHLIGHT_DEFINE}{FOG_GLSL}\n{SPOT_ATTENUATION_GLSL}\n{COLORMAP_FRAGMENT_SHADER_SOURCE}"
-                )
+            &if materials {
+                format!("{MATERIALS_DEFINE}{source}")
             } else {
-                format!("{FOG_GLSL}\n{COLORMAP_FRAGMENT_SHADER_SOURCE}")
+                source
             },
             ctx.shader_version,
         );
@@ -1247,13 +1421,23 @@ impl TerrainRenderer {
             day: get("dayTex"),
             night: get("nightTex"),
             blend: get("colormapBlend"),
-            use_detail: get("useDetail"),
-            detail: get("detailTex"),
-            detail_tile: get("detailTile"),
             detail_fade_start: get("detailFadeStart"),
             detail_fade_end: get("detailFadeEnd"),
             detail_camera_pos: get("detailCameraPos"),
-            detail_average: get("detailAverage"),
+            detail: (!materials).then(|| DetailUniforms {
+                use_detail: get("useDetail"),
+                texture: get("detailTex"),
+                tile: get("detailTile"),
+                average: get("detailAverage"),
+            }),
+            materials: materials.then(|| MaterialUniforms {
+                splat: get("splatTex"),
+                layers: get("layerTex"),
+                scale: get("layerScale"),
+                luma: get("layerLuma"),
+                mask: get("layerMask"),
+                normals: flashlight.then(|| (get("layerNormalTex"), get("layerNormalSlot"))),
+            }),
             flashlight: flashlight.then(|| FlashlightUniforms {
                 position: get("flashPosition"),
                 direction: get("flashDirection"),
