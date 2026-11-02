@@ -223,7 +223,11 @@ compound, so a fixed body that moves every frame belongs kinematic. Kinematic,
 sensor and mesh bodies stay bodies. Fusing depends only on the declarations,
 so a memoized world stays byte-identical to the same bodies declared flat.
 A compound orders its contacts differently from separate bodies, so a scene's
-trajectories differ slightly from an unfused run.
+trajectories differ slightly from an unfused run. A JSON `snapshot`/`restore` round trip of
+a body touching several parts is equal in value, not bytes: parry keeps a
+compound's per-part contact cache in a hash map, whose order the round trip
+may change (lookups only, so the simulation is unaffected). Checkpoints clone
+the map, so in-process restores stay byte-exact.
 
 **Tag ownership:** a tag belongs to one flat body or one group. `Physics.scene`
 rejects a flat body reusing a group's tag, two groups sharing a tag, and a key
