@@ -896,7 +896,7 @@ impl<'a> Shell<'a> {
                     format!("frame {frame}: tts {tts}, recorded {}", rec.tts),
                 ));
             }
-            let live = world().map(|w| w.1);
+            let live = physics::with_world(DEFAULT_WORLD, |w| w.frame());
             if rec.fixed.is_some() && live != rec.fixed {
                 return Err(self.fail(
                     Kind::Lockstep,
