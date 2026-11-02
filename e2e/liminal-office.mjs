@@ -685,10 +685,11 @@ async function residency(game) {
   // South off the apron, out of the interior's activation radius, then back in.
   await game.face(Math.PI);
   const out = await game.walkTo("z", -40);
-  check(out.active.every((a) => !a), `walked out of every interior (z ${out.at.z.toFixed(1)})`);
+  check(out.active.length === 0, `walked out of every interior (z ${out.at.z.toFixed(1)}, active ${JSON.stringify(out.active)})`);
   await statsAfter(game, 300);
   const coldEntry = await uploadsAcross(() => game.view(1));
-  check(none(coldEntry), `entering after the walk out uploads nothing (${JSON.stringify(coldEntry)})`);
+  const entered = (await game.model()).active;
+  check(entered.length > 0 && none(coldEntry), `entering after the walk out uploads nothing (${JSON.stringify(coldEntry)}, active ${JSON.stringify(entered)})`);
 
   await game.hold("b", 1);
   const pass = async (c) => {
@@ -730,7 +731,8 @@ async function residency(game) {
   const far = await game.model();
   check(far.town === 2 && far.active.length === 0, `grid of 4: no copy active at z ${far.at.z.toFixed(1)} (${JSON.stringify(far.active)})`);
   const gridEntry = await uploadsAcross(() => game.view(1));
-  check(gridEntry.misses === 0, `grid of 4: entering a copy then misses no GPU cache (${JSON.stringify(gridEntry)})`);
+  const gridEntered = (await game.model()).active;
+  check(gridEntered.length > 0 && gridEntry.misses === 0, `grid of 4: entering a copy then misses no GPU cache (${JSON.stringify(gridEntry)}, active ${JSON.stringify(gridEntered)})`);
   return { office: live(office), primed: live(primed), after: live(after), misses, bytes, officeNoon, coldEntry, blockNoon, gridEntry };
 }
 

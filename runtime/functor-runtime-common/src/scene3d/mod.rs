@@ -1168,16 +1168,20 @@ frame: correct, but each bind re-uploads (atlas {})",
     /// Keep `texture`'s pixel texture resident without binding it, for a
     /// culled or hidden draw: marked used, or uploaded (at its layer
     /// intensities, with mips only if `mips`) if it isn't on the GPU yet.
-    /// File textures aren't swept.
+    /// An `Srgb` one uploaded as a lightmap gains its mips here when kept as
+    /// an albedo, as a bind would. File textures aren't swept.
     fn keep_texture(&self, gl: &glow::Context, texture: &TextureDescription, mips: bool) {
         let (pixels, intensities) = match texture {
             TextureDescription::Data(pixels) => (pixels, &[][..]),
             TextureDescription::Layered { base, intensities } => (base, &intensities[..]),
             _ => return,
         };
+        let srgb = pixels.color_space() == crate::texture::ColorSpace::Srgb;
         if let Some(entry) = self.pixel_textures.borrow_mut().get_mut(&pixels.id()) {
             entry.last_used = self.current_frame.get();
-            return;
+            if !(mips && srgb && !entry.mipmapped) {
+                return;
+            }
         }
         // The upload rebinds the active unit; an enclosing textured material
         // bound it once for its whole subtree, so put that binding back.

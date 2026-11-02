@@ -256,8 +256,8 @@ fn with_lightmap(harness: &mut Harness) {
 
 /// An `Srgb` pixel texture drawn only as a lightmap has level 0 alone (its
 /// sampler reads no mips), even when first uploaded hidden by
-/// `keep_resident`; drawn as an albedo, the same GL texture gains the mip
-/// state an albedo-first upload has.
+/// `keep_resident`; kept or drawn as an albedo, the same GL texture gains
+/// the mip state an albedo-first upload has.
 fn lightmap_mips(harness: &mut Harness) {
     let srgb = || {
         let pixels = PixelData::new(4, 4, PixelEncoding::Rgb8, ColorSpace::Srgb, &[128; 48]);
@@ -271,16 +271,33 @@ fn lightmap_mips(harness: &mut Harness) {
             gl.get_tex_parameter_f32(glow::TEXTURE_2D, glow::TEXTURE_MAX_ANISOTROPY),
         )
     };
-    let hidden = lightmapped(solid([255, 255, 255]), TextureDescription::Data(srgb()), 1.0, [0.0; 3]);
-    let mut resident = frame(&hidden, 0, false, vec![]);
-    resident.scene = Scene3D::keep_resident(vec![frame(&hidden, 1, false, vec![]).scene]);
-    harness.render(&resident);
-    harness.render(&frame(&hidden, 1, false, vec![]));
-    unsafe {
-        harness.gl.active_texture(glow::TEXTURE3);
-        assert_eq!(mips(&harness.gl), (0, glow::LINEAR, 1.0), "a hidden-first lightmap has no mips");
-        harness.gl.active_texture(glow::TEXTURE0);
-    }
+    let resident = |models: &[&Arc<ModelData>]| {
+        let mut resident = frame(models[0], 0, false, vec![]);
+        resident.scene = Scene3D::keep_resident(models.iter().map(|m| frame(m, 1, false, vec![]).scene).collect());
+        resident
+    };
+    // Draw `model` after a hidden frame: no cache misses (that frame uploaded
+    // everything), and the mips of its lightmap's GL texture.
+    let drawn_lightmap_mips = |harness: &mut Harness, model: &Arc<ModelData>| {
+        gpu_counters().take_window();
+        harness.render(&frame(model, 1, false, vec![]));
+        assert_eq!(gpu_counters().take_window().cache_misses, 0, "kept hidden: no upload on draw");
+        unsafe {
+            harness.gl.active_texture(glow::TEXTURE3);
+            let seen = mips(&harness.gl);
+            harness.gl.active_texture(glow::TEXTURE0);
+            seen
+        }
+    };
+    let shared = srgb();
+    let hidden = lightmapped(solid([255, 255, 255]), TextureDescription::Data(shared.clone()), 1.0, [0.0; 3]);
+    harness.render(&resident(&[&hidden]));
+    assert_eq!(drawn_lightmap_mips(harness, &hidden), (0, glow::LINEAR, 1.0), "a hidden-first lightmap has no mips");
+    // The same pixels kept hidden as another model's albedo, after the
+    // lightmap, gain the mips.
+    let albedo = lightmapped(TextureDescription::Data(shared), solid([255, 255, 255]), 1.0, [0.0; 3]);
+    harness.render(&resident(&[&hidden, &albedo]));
+    let kept_albedo = drawn_lightmap_mips(harness, &hidden);
     let pixels = srgb();
     let room = lightmapped(solid([255, 255, 255]), TextureDescription::Data(pixels.clone()), 1.0, [0.0; 3]);
     harness.render(&frame(&room, 1, false, vec![]));
@@ -297,6 +314,7 @@ fn lightmap_mips(harness: &mut Harness) {
         assert_eq!(lightmap, Some(texture), "the lightmap's retained texture");
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         assert_eq!(mips(gl), albedo_first, "an albedo bind adds what an albedo-first upload has");
+        assert_eq!(kept_albedo, albedo_first, "so does keeping it hidden as an albedo");
         gl.bind_texture(glow::TEXTURE_2D, None);
     }
 }
