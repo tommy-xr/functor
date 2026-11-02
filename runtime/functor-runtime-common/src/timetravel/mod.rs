@@ -915,14 +915,21 @@ game can scrub but not branch; seek to the newest frame to resume, or disconnect
         self.requests.close_key(key);
     }
 
-    /// Rebind every in-flight continuation to a reloaded program; the
-    /// cancellations, as messages.
+    /// Rebind every in-flight continuation to a reloaded program, whose
+    /// `Job.run`s now run `program`; the cancellations, as messages.
     pub fn rebind_requests(
         &mut self,
         old: &functor_lang::ir::Module,
         new: &functor_lang::ir::Module,
+        program: crate::jobs::JobProgram,
     ) -> Vec<String> {
+        self.requests.jobs_mut().set_program(program);
         self.requests.rebind(old, new)
+    }
+
+    /// The program this producer's `Job.run`s compile (at load).
+    pub fn set_job_program(&mut self, program: crate::jobs::JobProgram) {
+        self.requests.jobs_mut().set_program(program);
     }
 
     /// A fork replaying from `frame` of `source`: the ops pending there.

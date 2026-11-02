@@ -61,6 +61,10 @@ tempfile = "3"
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
 tokio = { version = "1", features = ["full"] }
 
+# Job workers run at utility QoS (`jobs::Pool`).
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 # Conditionally include dependencies for the WebAssembly target
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3.69"
