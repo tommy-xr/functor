@@ -1,20 +1,15 @@
-// Mixed-reality parts viewer: printable parts (parts.fun) at true scale on
-// your real desk, before you print them. 1 mm in a part is 1 mm in the room.
-// The stdlib's PartMR does the work; this file picks the parts and the desk.
+// Mixed-reality parts viewer: printable parts (parts.fun) at true scale in
+// your real room, before you print them. 1 mm in a part is 1 mm in the room.
+// The stdlib's PartMR does the work; this file picks the parts.
 //
 // Quest:   functor -d examples/parts-mr run vr
-//          right trigger grabs, right thumbstick turns (left/right) and
-//          tilts (forward/back), A cycles parts, X toggles passthrough
+//          squeeze the right grip near a part to hold it; let go and it drops
+//          onto the real surface below. B takes it apart (each piece held on
+//          its own) and back together; the right thumbstick turns and tilts,
+//          A cycles parts, X toggles passthrough
 // Desktop: functor -d examples/parts-mr run native --emulate-xr
-//          a stand-in room; mouse + left-click (or Space) grabs, arrows are
-//          the thumbstick, 1 (or N) cycles parts, P toggles passthrough
-//
-// Start it seated, facing your desk: the desk is placed ahead of where you
-// faced at launch.
-
-// Your desk's height above the floor, in metres. Edit and save: the part
-// settles onto the new height without restarting.
-let desk = { PartMR.desk with height: 0.75 }
+//          a stand-in room with a desk; Enter squeezes, arrows are the
+//          thumbstick, 1 (or N) cycles, B takes apart, P toggles passthrough
 
 // The parts A cycles through. Built once here, so each is meshed once.
 let views = PartMR.views([
@@ -25,17 +20,36 @@ let views = PartMR.views([
 
 let config = PartMR.config()
 let settings = PartMR.settings
-let init = PartMR.init(views, desk)
+let physics = PartMR.physics
+let init = PartMR.init(views)
 let sampledInput = (m, s) => PartMR.sampledInput(views, m, s)
-let tick = (m, dt, tts) => PartMR.tick(views, desk, m, dt)
-let draw = (m, tts) => PartMR.draw(views, desk, m)
+let tick = (m, dt, tts) => PartMR.tick(views, m, dt)
+let draw = (m, tts) => PartMR.draw(views, m)
 
 expect PartMR.mm(60.0) == "60"
 expect PartMR.mm(1.8000001) == "1.8"
-let tag = List.head(views)
-expect tag |> Option.map((v) => Math.abs(PartMR.restY(desk, v, 0.0) - (desk.height + 0.002)) < 0.000001) |> Option.defaultValue(false)
-// Stood on its long edge, the tag rests on half its 30 mm depth.
-expect tag |> Option.map((v) => Math.abs(PartMR.restY(desk, v, Math.pi / 2.0) - (desk.height + 0.015)) < 0.000001) |> Option.defaultValue(false)
 expect PartMR.cycled(views, { init with index: List.length(views) - 1.0 }).index == 0.0
-// Released off the desk, a part settles back inside its edges.
-expect tick({ init with position: PartMR.point(2.0, 1.0, 0.0) }, 10.0, 0.0).position.x == desk.width / 2.0
+
+// A desk-top at 75 cm wherever a part is.
+let desk = (p) => Option.Some(0.75)
+let settled = PartMR.tickWith(views, init, 10.0, desk)
+// Released, the 4 mm tag drops onto the surface: its foot on the desk.
+expect Math.abs(settled.whole.position.y - 0.752) < 0.000001
+// Over nothing seen yet, it stays where it is.
+expect PartMR.tickWith(views, init, 10.0, (p) => Option.None).whole.position.y == init.whole.position.y
+
+// Assembled, the grip takes the whole tag; apart, the piece nearest it.
+let atTag = { settled with gripTracked: true, grip: { settled.grip with position: settled.whole.position } }
+expect PartMR.inReach(views, atTag) == 0.0
+let apart = PartMR.apartToggled(views, atTag)
+expect apart.apart && List.length(apart.parts) == 2.0
+// Taken apart, nothing jumps: the plate and its relief stay where they were.
+expect apart.parts |> List.all((p) => Math.abs(p.position.x - settled.whole.position.x) < 0.02)
+// Held, a piece follows the hand and keeps where it was held.
+let held = PartMR.grabbed(views, apart)
+let moved = { held with grip: { held.grip with position: PartMR.add(held.grip.position, PartMR.point(0.3, 0.0, 0.0)) } }
+let carried = PartMR.tickWith(views, moved, 0.1, desk)
+expect held.held >= 0.0
+expect List.nth(held.held, carried.parts) |> Option.map((p) => Math.abs(p.position.x - 0.3 - (List.nth(held.held, apart.parts) |> Option.map((q) => q.position.x) |> Option.defaultValue(0.0))) < 0.000001) |> Option.defaultValue(false)
+// Back together, it is one item again.
+expect List.length(PartMR.items(views, PartMR.apartToggled(views, apart))) == 1.0

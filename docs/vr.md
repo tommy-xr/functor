@@ -506,7 +506,7 @@ if hit.hit then Option.Some(placed(hit, marker)) else Option.None
 
 ### Mixed-reality parts viewer
 
-`examples/parts-mr` shows a printable part on your real desk at true scale
+`examples/parts-mr` shows a printable part in your real room at true scale
 before you print it:
 
 ```sh
@@ -521,24 +521,33 @@ functor -d examples/parts-mr run native --emulate-xr   # desktop stand-in room
   views: `PartMR.views([{ name, pieces }, …])` takes named lists of PartViews
   pieces (e.g. an assembly and its exploded view), and the label names the
   view. `examples/parts-mr/game.fun` is the whole wiring.
-- The part rests on a see-through virtual desk whose top is `desk.height`
-  (0.75 m) above the floor. Edit it to match your desk and save: the part
-  settles onto the new height on hot reload. The desk is placed ahead of where
-  you faced at launch, so start the app seated, facing your desk.
-- Right trigger grabs, the right thumbstick turns (left/right) and tilts
-  (forward/back), A cycles the parts (the next keeps the turn and tilt) and X
-  toggles passthrough. A released part settles back onto the desk, inside its
-  edges.
-- On desktop, `--emulate-xr` maps grab, turn/tilt and A to the mouse (or
-  Space), the arrows and 1. P toggles passthrough, and N also cycles parts
-  without `--emulate-xr`.
-- A label in front of the part gives its name and bounding size in mm (raised
-  lettering included, so the 20 mm cube reads 20.6). It is
+- Parts rest on the real room. `PartMR.physics` makes the room the headset
+  fuses from its depth solid (`Physics.fusedRoom`), and a released part drops
+  onto the surface a ray straight down finds under it (a desk, the floor).
+  Over nothing seen yet it stays where you let go; look at the surface and it
+  settles. It starts half a metre ahead of where you faced at launch.
+- Squeeze the right grip near a part to hold it: it follows your hand, kept
+  where you took it and turned with it. Assembled, the grip takes the whole
+  view; B takes it apart, each piece where the assembly had it and held on
+  its own, and B again puts it back together. A separated piece rests on the
+  room, not on other pieces.
+- The right thumbstick turns (left/right) and tilts (forward/back) the part
+  last held, A cycles the views (the next keeps the turn and tilt, and shows
+  assembled) and X toggles passthrough. A dot at the hand turns cyan with a
+  part in reach and green while holding one.
+- Real things in front hide the parts (`Frame.withRoomOcclusion`), except
+  while one is held.
+- On desktop the stand-in room is a floor and a 75 cm desk; it fuses like the
+  real one, from a wide authored view above the desk. `--emulate-xr` maps the
+  grip to Enter, turn/tilt to the arrows, A to 1; B takes apart, P toggles
+  passthrough, and N also cycles without `--emulate-xr`. An injected
+  `{"type":"xr"}` sample drives grabs headlessly.
+- A label in front of the assembled part gives its name and bounding size in
+  mm (raised lettering included, so the 20 mm cube reads 20.6). It is
   `Sketch.text` extruded and shown with `Solid.toScene`, like the part.
 - `parts.fun` holds the parts (the keychain tag from `examples/parts`, the
   bookmark from `examples/bookmark` and a 20 mm calibration cube). Any
-  `Solid.*` works. The authored camera's eye height and field of view only
-  frame the desktop view.
+  `Solid.*` works.
 
 ### Sniper scope (desktop first)
 

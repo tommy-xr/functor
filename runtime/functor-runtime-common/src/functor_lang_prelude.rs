@@ -11114,25 +11114,31 @@ Anim.clip(\"walk\", tts)"
     fn part_mr_rests_cycles_and_settles() {
         let value = eval_with_prelude(
             "let box = (h: float) => [{ solid: Solid.box(40.0, 20.0, h), color: Color.rgb(1.0, 1.0, 1.0) }]\n\
-             let views = PartMR.views([{ name: \"a\", pieces: box(10.0) }, { name: \"b\", pieces: box(30.0) }])\n\
-             let desk = PartMR.desk\n\
-             let init = PartMR.init(views, desk)\n\
-             let rest = () => init.position.y - desk.height\n\
+             let two = [{ solid: Solid.box(10.0, 10.0, 10.0), color: Color.rgb(1.0, 1.0, 1.0) }, { solid: Solid.box(10.0, 10.0, 10.0) |> Solid.translate(Vec3.make(30.0, 0.0, 0.0)), color: Color.rgb(1.0, 1.0, 1.0) }]\n\
+             let views = PartMR.views([{ name: \"a\", pieces: box(10.0) }, { name: \"b\", pieces: two }])\n\
+             let init = PartMR.init(views)\n\
+             let floor = (p) => Option.Some(0.5)\n\
+             let rest = () => PartMR.tickWith(views, init, 10.0, floor).whole.position.y - 0.5\n\
+             let hover = () => PartMR.tickWith(views, init, 10.0, (p) => Option.None).whole.position.y\n\
              let wraps = () => PartMR.cycled(views, PartMR.cycled(views, init)).index\n\
              let empty = () => PartMR.cycled([], init).index\n\
-             let turned = () => PartMR.cycled(views, { init with yaw: 1.0, pitch: 0.5 })\n\
-             let settled = () => PartMR.tick(views, desk, { init with position: PartMR.point(2.0, 1.0, 0.0) }, 10.0).position\n\
-             let main = () => [rest(), wraps(), empty(), settled().x, settled().z, turned().yaw, turned().pitch]\n",
+             let turned = () => PartMR.cycled(views, { init with whole: { init.whole with yaw: 1.0, pitch: 0.5 } }).whole\n\
+             let apart = () => PartMR.apartToggled(views, PartMR.cycled(views, init))\n\
+             let gap = () => List.nth(1.0, apart().parts) |> Option.map((p) => p.position.x - init.whole.position.x) |> Option.defaultValue(0.0)\n\
+             let main = () => [rest(), hover(), wraps(), empty(), turned().yaw, turned().pitch, List.length(apart().parts), gap()]\n",
         )
         .unwrap_or_else(|e| panic!("part mr: {e}"));
         let json = value_to_json(&value);
         let at = |i: usize| json[i].as_f64().unwrap();
         assert!((at(0) - 0.005).abs() < 1e-9, "rests on half its 10 mm: {json}");
-        assert_eq!(at(1), 0.0, "{json}");
+        assert_eq!(at(1), 0.9, "over nothing seen it stays put: {json}");
         assert_eq!(at(2), 0.0, "{json}");
-        assert_eq!(at(3), 0.5, "inside the 1 m desk: {json}");
-        assert!((at(4) - 0.2).abs() < 1e-9, "the desk's near edge: {json}");
-        assert_eq!((at(5), at(6)), (1.0, 0.5), "cycling keeps the turn: {json}");
+        assert_eq!(at(3), 0.0, "{json}");
+        assert_eq!((at(4), at(5)), (1.0, 0.5), "cycling keeps the turn: {json}");
+        assert_eq!(at(6), 2.0, "apart, one item per piece: {json}");
+        // The pieces sit 30 mm apart, so each is 15 mm from the middle,
+        // mirrored by the front-facing turn.
+        assert!((at(7) - -0.015).abs() < 1e-9, "the second piece stays where it was: {json}");
     }
 
     #[test]
