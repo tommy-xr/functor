@@ -587,6 +587,13 @@ impl World {
             if accepted {
                 Arc::make_mut(&mut self.declared).insert(tag.clone(), body.clone());
                 stats.written += 1;
+            } else if let Some(&live) = self.unfused.get(tag.as_str()) {
+                // The replacement's shape isn't ready: keep the old body, as
+                // a body waiting on its own replacement does.
+                let prev = self.declared[tag].clone();
+                self.spawn(&prev);
+                let rb = self.tags[tag];
+                self.bodies[rb].set_position(live, true);
             }
         }
 
@@ -1413,6 +1420,7 @@ impl World {
     /// body's contacts do.
     fn diff_fused_contacts(&mut self, sensors: &[(ColliderHandle, Pose)]) {
         let mut now = BTreeSet::new();
+        let mut events = Vec::new();
         let mut touch = |a: &str, b: String, sensor: bool| {
             let (a, b) = (a.to_string(), b);
             now.insert(if a <= b { (a, b, sensor) } else { (b, a, sensor) });
@@ -1452,10 +1460,58 @@ impl World {
                 }
             }
         }
-        let alive = |tag: &str| self.declared.contains_key(tag);
+        // A dynamic sensor with CCD that crossed a part within the step,
+        // touching it neither before nor after: a start and a stop, as rapier
+        // reports a tunnelling sensor pair.
+        for &(handle, before) in sensors {
+            let sensor = &self.colliders[handle];
+            let ccd = sensor
+                .parent()
+                .is_some_and(|rb| self.bodies[rb].is_dynamic() && self.bodies[rb].is_ccd_enabled());
+            let (after, shape) = (*sensor.position(), sensor.shape());
+            let motion = after.translation - before.translation;
+            let Some(tag) = ccd.then(|| self.tag_of_collider(handle)).flatten() else {
+                continue;
+            };
+            let swept = shape.compute_aabb(&before).merged(&shape.compute_aabb(&after));
+            let dispatcher = self.narrow_phase.query_dispatcher();
+            for fused in self.fused.values().flatten() {
+                let compound = self.compound(fused.collider);
+                for i in compound.bvh().intersect_aabb(&swept) {
+                    let (pose, part) = &compound.shapes()[i as usize];
+                    let at = |p: &Pose| dispatcher.intersection_test(&pose.inv_mul(p), &**part, shape);
+                    let crossed = rapier3d::parry::query::cast_shapes(
+                        pose, Vector::ZERO, &**part, &before, motion, shape, cast_options(1.0, 0.0),
+                    );
+                    if matches!(crossed, Ok(Some(_)))
+                        && !at(&before).unwrap_or(true)
+                        && !at(&after).unwrap_or(true)
+                    {
+                        let other = &fused.tags[i as usize];
+                        let (a, b) = if *other <= tag { (other, &tag) } else { (&tag, other) };
+                        for started in [true, false] {
+                            events.push(PhysicsEvent {
+                                started,
+                                a: a.clone(),
+                                b: b.clone(),
+                                sensor: true,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        // A pair ends when the part stops touching, not when it left its
+        // compound (its new body reports its own contacts) or either body went
+        // away (unreported, as a despawned body's contacts are).
+        let fused_still = |a: &str, b: &str| {
+            self.declared.contains_key(a)
+                && self.declared.contains_key(b)
+                && (self.fused_part(a).is_some() || self.fused_part(b).is_some())
+        };
         for (a, b, sensor) in self.fused_touching.difference(&now) {
-            if alive(a) && alive(b) {
-                self.events.push(PhysicsEvent {
+            if fused_still(a, b) {
+                events.push(PhysicsEvent {
                     started: false,
                     a: a.clone(),
                     b: b.clone(),
@@ -1464,13 +1520,14 @@ impl World {
             }
         }
         for (a, b, sensor) in now.difference(&self.fused_touching) {
-            self.events.push(PhysicsEvent {
+            events.push(PhysicsEvent {
                 started: true,
                 a: a.clone(),
                 b: b.clone(),
                 sensor: *sensor,
             });
         }
+        self.events.extend(events);
         self.fused_touching = now;
     }
 
@@ -3696,6 +3753,69 @@ mod tests {
             assert_eq!(w.take_events(), restored.take_events());
         }
         assert!(restored.snapshot() == w.snapshot());
+    }
+
+    #[test]
+    fn a_continuous_sensor_tunnelling_a_fused_wall_reports_it() {
+        let run = |memo: bool| {
+            let wall = Body::fixed("wall".to_string(), Shape::Cuboid { extents: [0.1, 4.0, 4.0] });
+            let bullet = Body {
+                sensor: true,
+                continuous: true,
+                velocity: [300.0, 0.0, 0.0],
+                ..Body::dynamic("bullet".to_string(), Shape::Sphere { radius: 0.1 }).at([-2.0, 0.0, 0.0])
+            };
+            let frame = match memo {
+                true => with_groups(vec![bullet], vec![group("g", vec![wall])]),
+                false => scene(vec![bullet, wall]),
+            };
+            let mut w = World::new([0.0, 0.0, 0.0]);
+            let mut events = Vec::new();
+            for _ in 0..3 {
+                w.reconcile(&frame);
+                w.step_frame(FIXED_DT);
+                events.extend(w.take_events().into_iter().map(|e| (e.started, e.sensor)));
+            }
+            events
+        };
+        assert_eq!(run(false), [(true, true), (false, true)]);
+        assert_eq!(run(true), run(false));
+    }
+
+    #[test]
+    fn a_resting_contact_survives_its_part_leaving_the_compound() {
+        let tile = || floor_tiles(1).remove(0);
+        let crate_ = crate_at("crate", [-15.0, 1.5, -25.0]);
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        let mut stops = 0;
+        for frame in 0..120 {
+            w.reconcile(&match frame < 60 {
+                true => with_groups(vec![crate_.clone()], vec![group("g", vec![tile()])]),
+                false => scene(vec![crate_.clone(), tile()]),
+            });
+            w.step_frame(FIXED_DT);
+            stops += w.take_events().iter().filter(|e| !e.started).count();
+        }
+        assert_eq!((w.tags.len(), fused_bodies(&w)), (2, 0));
+        assert_eq!(stops, 0);
+    }
+
+    #[test]
+    fn an_unready_replacement_keeps_the_fused_body_where_it_was() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        w.reconcile(&with_groups(vec![], vec![group("g", floor_tiles(2))]));
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "s0000".to_string(),
+            position: [0.0, 3.0, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        let Shape::Heightfield { geometry, .. } = flat_heightfield(4, 4, 0) else {
+            unreachable!()
+        };
+        let pending = Body::fixed("s0000".to_string(), Shape::Heightfield { geometry, data: None });
+        w.reconcile(&with_groups(vec![pending], vec![group("g", floor_tiles(2).split_off(1))]));
+        assert_eq!(w.body_transform("s0000").unwrap().0, [0.0, 3.0, 0.0]);
+        assert!(w.tags.contains_key("s0000"));
     }
 
     /// The equivalence golden: the same bodies declared flat or as a group,
