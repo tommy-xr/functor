@@ -34,6 +34,9 @@ const FOG_CULL_MARGIN: f32 = 0.1;
 const DETAIL_TEXTURE_UNIT0: i32 = 1;
 /// The baked macro map sits above the four detail units.
 const MACRO_TEXTURE_UNIT: i32 = 5;
+/// The colormap program's units: day, night, detail. It is a separate
+/// program, so these may reuse the lit detail units.
+pub(crate) const COLORMAP_UNITS: [u32; 3] = [1, 2, 3];
 /// Furthest the detail band may reach, in metres from the camera.
 ///
 /// A cap, not a flat value. Detail stops being resolvable at a distance that
@@ -585,8 +588,8 @@ struct ColormapProgram {
     uniforms: ColormapUniforms,
 }
 
-/// What the shell bound for colormap shading: both maps on units 1 and 2, and
-/// the detail map on unit 3 with its mean color once it has loaded.
+/// What the shell bound for colormap shading: both maps, and the detail map
+/// with its mean color once it has loaded (see `COLORMAP_UNITS`).
 pub(crate) struct ColormapBound {
     pub(crate) detail_average: Option<[f32; 3]>,
 }
@@ -869,11 +872,11 @@ impl TerrainRenderer {
                 u.patch
                     .set(p, gl, description, world, view, projection, exact_grid);
                 let colormap = description.colormap.as_ref().expect("bound by the shell");
-                p.set_uniform_1i(gl, &u.day, 1);
-                p.set_uniform_1i(gl, &u.night, 2);
+                p.set_uniform_1i(gl, &u.day, COLORMAP_UNITS[0] as i32);
+                p.set_uniform_1i(gl, &u.night, COLORMAP_UNITS[1] as i32);
                 // Always its own unit: a sampler2D left on unit 0 would alias
                 // the integer height texture, which GL rejects at draw time.
-                p.set_uniform_1i(gl, &u.detail, 3);
+                p.set_uniform_1i(gl, &u.detail, COLORMAP_UNITS[2] as i32);
                 p.set_uniform_1f(gl, &u.blend, colormap.blend);
                 let detail = description
                     .colormap_detail
@@ -1025,10 +1028,12 @@ impl TerrainRenderer {
             .as_ref()
             .filter(|_| use_layers == 1 && detail_bound.is_some());
         p.set_uniform_1i(gl, &u.use_textures, detail.is_some() as i32);
+        // Even when unused: left at unit 0 they would alias the integer height
+        // texture, which GL (strictly, WebGL) rejects at draw time.
+        for (unit, location) in u.detail_textures.iter().enumerate() {
+            p.set_uniform_1i(gl, location, unit as i32 + DETAIL_TEXTURE_UNIT0);
+        }
         if let Some(textures) = detail {
-            for (unit, location) in u.detail_textures.iter().enumerate() {
-                p.set_uniform_1i(gl, location, unit as i32 + DETAIL_TEXTURE_UNIT0);
-            }
             p.set_uniform_1f(gl, &u.detail_tile, textures.tile_size);
             let span = description.width.max(description.depth);
             let fade_end = DETAIL_FADE_MAX_END.min(span * DETAIL_FADE_END_FRACTION);

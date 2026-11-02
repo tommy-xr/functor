@@ -164,7 +164,8 @@ impl AssetPipeline<Texture2D> for TerrainColormapPipeline {
     }
 
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
-        // Never drawn: the terrain waits for both maps before using them.
+        // Drawn only if the bytes fail to decode (e.g. a hot-reload caught a
+        // half-written map): flat grey reads as missing, not as terrain.
         let texture_data = TextureData::solid_color([128, 128, 128, 255]);
         Texture2D::init_from_data(
             texture_data,

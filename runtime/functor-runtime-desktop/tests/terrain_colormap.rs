@@ -1,6 +1,7 @@
 //! Pins `Terrain.colormap` on the GPU:
 //!
-//! - the terrain shows the day map's texels, unlit (the frame has no lights);
+//! - the terrain shows the day map's texels, unlit, from the very first frame
+//!   both maps are ready (a first-use upload must not unbind the other map);
 //! - `blend` 1 shows the night map and 0.5 their linear-space mix;
 //! - changing `blend` uploads nothing and creates no texture: both maps stay
 //!   resident from the first draw.
@@ -16,12 +17,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::color_space::{linear_to_srgb, srgb_u8_to_linear};
 use functor_runtime_common::gpu_counters::gpu_counters;
 use functor_runtime_common::math::Angle;
 use functor_runtime_common::shadow::ShadowMap;
 use functor_runtime_common::terrain::{TerrainColormap, TerrainDetailTexture};
 use functor_runtime_common::{
-    render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, Scene3D,
+    render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, Light, Scene3D, SceneObject,
     SceneContext, TerrainDescription, Viewport,
 };
 use glow::HasContext;
@@ -53,16 +55,18 @@ fn main() {
 
 fn blend_selects_and_mixes_the_maps_without_uploads(harness: &mut Harness, dir: &Path) {
     let frame = |blend| terrain_frame(dir, blend);
-    // Assets decode asynchronously; draw until the day map shows.
-    let mut centre = [0u8; 3];
-    for _ in 0..500 {
-        centre = harness.centre(&frame(0.0));
-        if near(centre, DAY, 2) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(near(centre, DAY, 2), "day map, unlit: drew {centre:?}");
+    // Load the heightmap first (lit, no colormap), so the first colormap frame
+    // is the one that uploads both maps. Assets decode asynchronously.
+    let mut lit = frame(0.0);
+    let Scene3D { obj: SceneObject::Terrain(terrain), .. } = &mut lit.scene else {
+        unreachable!("terrain_frame draws one terrain")
+    };
+    terrain.colormap = None;
+    let fallback = draw_until_changed(harness, &lit, [0, 0, 0]);
+    // Until both maps decode it keeps drawing the lit fallback; the first
+    // frame that changes must already be the day map.
+    let centre = draw_until_changed(harness, &frame(0.0), fallback);
+    assert!(near(centre, DAY, 2), "day map, unlit, on its first frame: drew {centre:?}");
 
     // Settle the first-use uploads (patch list, programs), then switch hours.
     harness.centre(&frame(0.0));
@@ -73,7 +77,8 @@ fn blend_selects_and_mixes_the_maps_without_uploads(harness: &mut Harness, dir: 
     let day = harness.centre(&frame(0.0));
     assert!(near(night, NIGHT, 2), "night map: drew {night:?}");
     let expected: [u8; 3] = std::array::from_fn(|c| {
-        encode((decode(DAY[c]) + decode(NIGHT[c])) / 2.0)
+        let mid = (srgb_u8_to_linear(DAY[c]) + srgb_u8_to_linear(NIGHT[c])) / 2.0;
+        (linear_to_srgb(mid) * 255.0).round() as u8
     });
     assert!(near(mid, expected, 3), "mid blend: drew {mid:?}, expected {expected:?}");
     assert!(near(day, DAY, 2), "back to day: drew {day:?}");
@@ -82,6 +87,7 @@ fn blend_selects_and_mixes_the_maps_without_uploads(harness: &mut Harness, dir: 
 }
 
 /// A flat 100 m terrain seen from straight above, shaded only by colormaps.
+/// The ambient light only lights the fallback, so it differs from both maps.
 fn terrain_frame(dir: &Path, blend: f32) -> Frame {
     let map = |name: &str| TerrainDetailTexture {
         locator: dir.join(name).to_string_lossy().into_owned(),
@@ -106,29 +112,28 @@ fn terrain_frame(dir: &Path, blend: f32) -> Frame {
         [0.0, 1.0, 0.0],
         Angle::from_degrees(60.0),
     );
-    Frame::new(camera, Scene3D::terrain(terrain))
+    let mut frame = Frame::new(camera, Scene3D::terrain(terrain));
+    frame.lights = vec![Light::Ambient {
+        color: [0.5, 0.5, 0.5],
+        baked: false,
+    }];
+    frame
+}
+
+/// Draw `frame` until its centre pixel differs from `from`.
+fn draw_until_changed(harness: &mut Harness, frame: &Frame, from: [u8; 3]) -> [u8; 3] {
+    for _ in 0..500 {
+        let centre = harness.centre(frame);
+        if centre != from {
+            return centre;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the frame never changed from {from:?}");
 }
 
 fn near(a: [u8; 3], b: [u8; 3], tolerance: u8) -> bool {
     a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= tolerance)
-}
-
-fn decode(c: u8) -> f32 {
-    let c = c as f32 / 255.0;
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn encode(c: f32) -> u8 {
-    let c = if c <= 0.0031308 {
-        c * 12.92
-    } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
-    };
-    (c * 255.0).round() as u8
 }
 
 struct Harness {

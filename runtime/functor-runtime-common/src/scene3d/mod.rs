@@ -202,9 +202,6 @@ enum PreloadHandle {
 /// First texture unit for terrain detail maps; must match the terrain
 /// renderer's `DETAIL_TEXTURE_UNIT0` (unit 0 is the height texture).
 const TERRAIN_DETAIL_UNIT0: u32 = 1;
-/// Colormap mode's units: day, night, detail. It draws with its own program,
-/// so these may reuse the lit detail units.
-const TERRAIN_COLORMAP_UNITS: [u32; 3] = [1, 2, 3];
 
 /// Decoded terrain sources receive one unused shell frame of grace before
 /// eviction. This retains ordinary frame-to-frame reuse without keeping every
@@ -1552,10 +1549,10 @@ frame: correct, but each bind re-uploads (atlas {})",
             let [Some(day), Some(night)] = maps else {
                 return None;
             };
-            day.bind(TERRAIN_COLORMAP_UNITS[0], render_context);
-            night.bind(TERRAIN_COLORMAP_UNITS[1], render_context);
+            day.bind(crate::terrain_renderer::COLORMAP_UNITS[0], render_context);
+            night.bind(crate::terrain_renderer::COLORMAP_UNITS[1], render_context);
             let detail_average = detail.map(|detail| {
-                detail.bind(TERRAIN_COLORMAP_UNITS[2], render_context);
+                detail.bind(crate::terrain_renderer::COLORMAP_UNITS[2], render_context);
                 detail.average_color()
             });
             Some(crate::terrain_renderer::ColormapBound { detail_average })

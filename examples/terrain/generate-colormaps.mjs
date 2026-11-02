@@ -3,13 +3,13 @@
 //
 //   node examples/terrain/generate-colormaps.mjs
 //
-// The colormap terrain is unlit: everything the lit path computes per pixel
-// (height/slope bands, sun, ambient, occlusion) is computed here once and
-// stored. Day = albedo × (ambient + sun·N·L) × horizon AO; night is the same
+// The colormap terrain is unlit: the lit path's height/slope bands, sun,
+// ambient and occlusion are computed here once and stored (no specular). Day = albedo × (ambient + sun·N·L) × horizon AO; night is the same
 // albedo under dim moonlight. Output is deterministic.
-import { deflateSync, inflateSync } from "node:zlib";
+import { inflateSync } from "node:zlib";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { encodePng } from "../../scripts/png.mjs";
 
 // Must match game.fun's `Terrain.heightmap(…, worldSize, worldSize, -80.0, 520.0)`.
 const WORLD = 4000;
@@ -34,7 +34,7 @@ const normalize = ([x, y, z]) => {
   return [x / l, y / l, z / l];
 };
 
-// ── Decode the 16-bit grayscale heightmap ──────────────────────────────────────
+// ── Decode the 16-bit grayscale heightmap (scripts/png.mjs decodes 8-bit only) ──────────────────────────────────────
 const readPng16 = (path) => {
   const png = readFileSync(path);
   let pos = 8;
@@ -213,56 +213,12 @@ for (let j = 0; j < OUT; j += 1) {
   }
 }
 
-// ── Encode RGB8 PNGs (Paeth-filtered rows) ─────────────────────────────────────
-const crcTable = new Uint32Array(256).map((_, n) => {
-  let c = n;
-  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  return c >>> 0;
-});
-const crc32 = (bytes) => {
-  let crc = 0xffffffff;
-  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  return (crc ^ 0xffffffff) >>> 0;
-};
-const chunk = (name, data) => {
-  const body = Buffer.concat([Buffer.from(name, "ascii"), data]);
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  body.copy(out, 4);
-  out.writeUInt32BE(crc32(body), 8 + data.length);
-  return out;
-};
-const writeRgbPng = (name, pixels) => {
-  const stride = OUT * 3;
-  const raw = Buffer.alloc((stride + 1) * OUT);
-  for (let y = 0; y < OUT; y += 1) {
-    raw[y * (stride + 1)] = 4; // Paeth
-    for (let i = 0; i < stride; i += 1) {
-      const x = pixels[y * stride + i];
-      const a = i >= 3 ? pixels[y * stride + i - 3] : 0;
-      const b = y > 0 ? pixels[(y - 1) * stride + i] : 0;
-      const c = y > 0 && i >= 3 ? pixels[(y - 1) * stride + i - 3] : 0;
-      const p = a + b - c;
-      const pa = Math.abs(p - a);
-      const pb = Math.abs(p - b);
-      const pc = Math.abs(p - c);
-      const pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-      raw[y * (stride + 1) + 1 + i] = (x - pred) & 0xff;
-    }
-  }
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(OUT, 0);
-  ihdr.writeUInt32BE(OUT, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // truecolor RGB
-  const png = Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw, { level: 9 })),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
+// ── Encode RGB8 PNGs ─────────────────────────────────────────────────────────
+for (const [name, pixels] of [
+  ["colormap-day.png", day],
+  ["colormap-night.png", night],
+]) {
+  const png = encodePng(OUT, OUT, 8, 2, pixels);
   writeFileSync(here(name), png);
   console.log(`wrote ${name}: ${OUT}x${OUT} RGB (${png.length} bytes)`);
-};
-writeRgbPng("colormap-day.png", day);
-writeRgbPng("colormap-night.png", night);
+}

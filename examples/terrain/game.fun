@@ -52,7 +52,8 @@ let ground =
   // 4 px fits the Quest vertex budget; 8 swims in stereo.
   |> Terrain.maxPixelError(4.0)
 
-let world =
+// The bands alone: what `baked` shows until its maps have streamed in.
+let banded =
   ground
   |> Terrain.layered(
        Color.rgb(0.12, 0.30, 0.12),
@@ -60,6 +61,9 @@ let world =
        Color.rgb(0.28, 0.25, 0.23),
        Color.rgb(0.86, 0.90, 0.91),
        340.0)
+
+let world =
+  banded
   |> Terrain.textured(
        Asset.texture("detail-low.jpg"),
        Asset.texture("detail-high.jpg"),
@@ -71,7 +75,7 @@ let world =
 // The same ground, unlit: generate-colormaps.mjs bakes the bands, sun and
 // occlusion into the maps. `blend` is 0 for day, 1 for night.
 let baked = (blend) =>
-  ground
+  banded
   |> Terrain.colormap(Asset.texture("colormap-day.png"), Asset.texture("colormap-night.png"), blend)
   |> Terrain.colormapDetail(Asset.texture("detail-high.jpg"), 8.0, 80.0)
 
@@ -102,6 +106,8 @@ let init = {
   shading: Lit,
   night: false,
   blend: 0.0,
+  // Held toggle keys: a held key auto-repeats, and must flip only once.
+  toggleDown: { c: false, n: false },
 }
 
 let setHeld = (held, key, isDown) =>
@@ -120,7 +126,6 @@ let setHeld = (held, key, isDown) =>
 let clamp = (value: float, lo, hi) =>
   if value < lo then lo else if hi < value then hi else value
 
-let lerp = (a: float, b, t) => a + (b - a) * t
 
 let mouseMove = (model, x, y) =>
   match model.lastMouse with
@@ -162,10 +167,15 @@ let input = (model, key, isDown) =>
   | Key.Space => { model with jump: isDown }
   | Key.F => if isDown then launch(model) else model
   | Key.C =>
-    if isDown then
-      { model with shading: match model.shading with | Lit => Baked | Baked => Lit }
-    else model
-  | Key.N => if isDown then { model with night: not model.night } else model
+    let flip = isDown && not model.toggleDown.c in
+    { model with
+        shading: if flip then (match model.shading with | Lit => Baked | Baked => Lit) else model.shading,
+        toggleDown: { model.toggleDown with c: isDown } }
+  | Key.N =>
+    let flip = isDown && not model.toggleDown.n in
+    { model with
+        night: if flip then not model.night else model.night,
+        toggleDown: { model.toggleDown with n: isDown } }
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
 let mouseButton = (model, button, isDown) =>
@@ -276,15 +286,15 @@ let draw = (model, tts) =>
     Scene.group([Scene.terrain(terrain), water]
                 |> List.append(model.balls |> List.map(ballNode))),
     [
-      Light.ambient(Color.rgb(lerp(0.20, 0.06, b), lerp(0.23, 0.07, b), lerp(0.28, 0.12, b))),
+      Light.ambient(Color.rgb(0.20 |> Math.lerp(0.06, b), 0.23 |> Math.lerp(0.07, b), 0.28 |> Math.lerp(0.12, b))),
       Light.directional(
-        Vec3.make(lerp(0.42, 0.0 - 0.35, b), lerp(0.0 - 1.0, 0.0 - 0.8, b), lerp(0.28, 0.0 - 0.45, b)),
-        Color.rgb(lerp(1.0, 0.5, b), lerp(0.84, 0.6, b), lerp(0.64, 0.85, b)),
-        lerp(1.15, 0.5, b)),
+        Vec3.make(0.42, -1.0, 0.28) |> Vec3.lerp(Vec3.make(-0.35, -0.8, -0.45), b),
+        Color.rgb(1.0 |> Math.lerp(0.5, b), 0.84 |> Math.lerp(0.6, b), 0.64 |> Math.lerp(0.85, b)),
+        1.15 |> Math.lerp(0.5, b)),
     ])
   |> Frame.withFog(
        Fog.linear(700.0, 4800.0,
-                  Color.rgb(lerp(0.50, 0.03, b), lerp(0.64, 0.04, b), lerp(0.72, 0.07, b))))
+                  Color.rgb(0.50 |> Math.lerp(0.03, b), 0.64 |> Math.lerp(0.04, b), 0.72 |> Math.lerp(0.07, b))))
 
 let shadingLabel = (model) =>
   match model.shading with
