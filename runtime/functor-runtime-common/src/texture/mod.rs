@@ -1,5 +1,6 @@
 mod atlas;
 mod layers;
+mod pcx;
 mod pixels;
 mod runtime_texture;
 mod texture_2d;
@@ -8,6 +9,7 @@ mod texture_format;
 
 pub use atlas::*;
 pub use layers::*;
+pub use pcx::*;
 pub use pixels::*;
 pub use runtime_texture::*;
 pub use texture_2d::*;

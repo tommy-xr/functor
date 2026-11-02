@@ -56,8 +56,8 @@ type clip = { name: string, fps: float, frames: float, tracks: List<track> }
 /// `triangles` is u32 vertex index triples, counter-clockwise. At most 200
 /// joints. `texture` is the base color sampled at `uvs` (it needs them), lit
 /// by the frame's lights; `Option.None` draws white. It loads like any
-/// texture asset (PNG, JPEG or GIF), once however many nodes draw the model,
-/// and shows the checkerboard stand-in until it lands:
+/// texture asset (PNG, JPEG, GIF or PCX), once however many nodes draw the
+/// model, and shows the checkerboard stand-in until it lands:
 ///
 /// ```
 /// texture: Option.Some(Asset.texture("skins/hero.gif"))
