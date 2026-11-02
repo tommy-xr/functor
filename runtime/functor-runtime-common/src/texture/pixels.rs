@@ -2,7 +2,9 @@
 //! converted to RGBA8 once, then uploaded on first draw by the render side's
 //! cache (keyed by [`PixelData::id`]).
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +58,8 @@ pub struct PixelData {
     data: TextureData,
     // An atlas's switchable layers (`Texture.withLayers`); usually empty.
     layers: Vec<LayeredImage>,
+    // `fnv1a(rgba8)`, filled by the first [`digesting`] serialize.
+    digest: OnceLock<u64>,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -116,6 +120,7 @@ impl PixelData {
                 format: PixelFormat::RGBA,
             },
             layers: Vec::new(),
+            digest: OnceLock::new(),
         }
     }
 
@@ -208,16 +213,45 @@ fn no_layers<L: AsRef<[LayeredImage]>>(layers: &L) -> bool {
     layers.as_ref().is_empty()
 }
 
+thread_local! {
+    static DIGESTING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f` with every [`PixelData`] serializing a digest of its texels in
+/// place of the bytes: a cheap content fingerprint of a frame (the
+/// time-travel fuzzer's draw check). Inline, one 1024² lightmap is ~11 MB
+/// of JSON per model that uses it.
+pub fn digesting<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DIGESTING.with(|d| d.set(self.0));
+        }
+    }
+    let _restore = Restore(DIGESTING.with(|d| d.replace(true)));
+    f()
+}
+
 impl Serialize for PixelData {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if DIGESTING.with(Cell::get) {
+            let digest = *self.digest.get_or_init(|| crate::timetravel::fnv1a(self.rgba8()));
+            self.wire(digest).serialize(serializer)
+        } else {
+            self.wire(self.rgba8()).serialize(serializer)
+        }
+    }
+}
+
+impl PixelData {
+    fn wire<B>(&self, rgba8: B) -> PixelWire<B, &[LayeredImage]> {
         PixelWire {
             width: self.width(),
             height: self.height(),
             color_space: self.color_space,
-            rgba8: self.rgba8(),
+            rgba8,
             layers: self.layers(),
         }
-        .serialize(serializer)
     }
 }
 
@@ -284,6 +318,26 @@ mod tests {
             err(1, 4097, PixelEncoding::Rgb555le, 8194),
             "height must be 1 to 4096 (the largest texture every target supports), got 4097"
         );
+    }
+
+    #[test]
+    fn digesting_replaces_texels_with_a_content_digest() {
+        let px = |b: u8| {
+            PixelData::new(1, 1, PixelEncoding::Rgb8, ColorSpace::Linear, &[b, 8, 7]).unwrap()
+        };
+        let (a, same, other) = (px(9), px(9), px(1));
+        let digest = |p: &PixelData| digesting(|| serde_json::to_string(p).unwrap());
+        let json = digest(&a);
+        assert!(
+            json.starts_with(r#"{"width":1,"height":1,"colorSpace":"Linear","rgba8":"#)
+                && !json.contains('['),
+            "{json}"
+        );
+        // Equal texels, distinct identities: same digest; different texels differ.
+        assert_eq!(json, digest(&same));
+        assert_ne!(json, digest(&other));
+        // Outside `digesting` (and after it) the bytes are inline again.
+        assert!(serde_json::to_string(&a).unwrap().contains("[9,8,7,255]"));
     }
 
     #[test]
