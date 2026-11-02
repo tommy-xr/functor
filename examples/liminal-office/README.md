@@ -29,11 +29,14 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `K` | at most 4 → 1 → 2 interiors at once |
 | `O` | overlook: the eye 20 m up, looking down over the roofs (no interiors draw; a view jump ends it) |
 | `I` | the flat ground ⇄ the island (with the block; `G` leaves it) |
+| `V` | the island's next biome: grass, snow, desert |
+| `L` | flashlight on / off |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
 | VR `X` / `Y` | next hour / midnight ⇄ noon |
 | VR `B` | the office alone ⇄ the block |
 | VR `A` | the flat ground ⇄ the island |
+| VR right trigger | flashlight on / off, held in the right hand |
 
 ## One layout, four consumers
 
@@ -179,12 +182,13 @@ so the collars (0–8 m over the street) hold the eye through the activation
 radius; `functor test` checks it from the layout's recorded range.
 
 ```sh
-node examples/liminal-office/island.mjs   # rewrites island.png and islandLayout.fun, byte-identical on rerun
+node examples/liminal-office/island.mjs   # rewrites island.png, islandLayout.fun and every map, byte-identical on rerun
 node examples/liminal-office/island.mjs --preset alpine   # A/B: rolling (low hills, ~85 m), mixed (default), alpine (~280 m)
+node examples/liminal-office/island.mjs --biome snow      # only that biome's maps, to tune its palette
 ```
 
 Only the default (`mixed`) is checked in, and the e2e's spots stand on it:
-rerun without `--preset` before committing.
+rerun without `--preset` before committing. A run takes about 30 s.
 
 `I` swaps the flat ground for `Scene.terrain` and `Physics.heightfield`,
 translated so the pad lands where the ground was: the block stands on it
@@ -192,9 +196,64 @@ unchanged. A box under the pad holds the walker while the heightmap decodes.
 The terrain draws after the buildings (early-Z rejects it behind them) and
 the sea plane after the terrain. The fog ends at the far plane, 500 m by day
 and 200 m at night, so the renderer skips terrain past it. No grass, no
-shadows; `Terrain.layered` bands lit by the frame's lights. The island's
-Quest budget is 90 Hz with foveation off; not yet measured on a headset
-(`config` still requests 120 Hz).
+shadows. The island's Quest budget is 90 Hz with foveation off; not yet
+measured on a headset (`config` still requests 120 Hz).
+
+### Colormaps and biomes
+
+The terrain is unlit: `Terrain.colormap` cross-fades a baked day map and
+night map by the hour (`1 − daylight`), with one tiled detail texture near
+the eye (`Terrain.colormapDetail`: a 2–3 m tile, gone by 80 m). The
+`Terrain.layered` bands show only until the maps stream in. `island.mjs`
+paints the maps from what it already computes per sample, 1024² over the
+2 km (2 m a texel, one texel per odd sample):
+
+- **Albedo**, from the biome's palette: meadow (broad lusher and drier
+  patches, finer mottling), drier on the hills, gravel on moderate slopes,
+  scree above the treeline, rock on steep faces, snow from the snow line,
+  wet and dry sand at the beach. Dirt rings the pad and follows tracks out
+  to the town groves and the south beach; the pad itself is road.
+- **Day**: albedo × (ambient + sun · N·L) × horizon occlusion (8
+  directions to ~350 m) × a soft blob under every tree and rock. The sun is
+  60° up, so slopes facing away still read under the flashlight.
+- **Night**: the same under the moon, plus the street lights: exterior.fun's
+  lobby spill and sodium lamps on every copy, with the engine's falloff
+  `(1 − d²/r²)²`. `islandLayout.fun` lists them; `functor test` checks them
+  against game.fun's lights.
+
+`islandLayout.fun` also records the sun, moon and ambient the maps were
+baked with; on the island `Hours.islandOutdoorAt` lights the props and
+buildings with those, so they match the ground.
+
+| biome | palette | detail |
+| --- | --- | --- |
+| grass (default) | dry meadow, dirt, sand, grey rock and scree, snow on the crest | meadow grass |
+| snow | snow, with rock on slopes and dark shingle at the beach | stomped snow |
+| desert | cracked hardpan on the flats, rippled sand on the hills, warm gravel and red rock | rippled sand |
+
+Each pair is 1024² RGB: 0.6–0.7 MB for day, 0.4 MB for night as PNG.
+`island-normal.png` (0.6 MB) is shared. On the GPU a map is 5.3 MiB with
+mips, so a biome is 10.7 MiB for its pair plus 4 MiB for the normal map
+(no mips). 2048² would quarter a texel to 1 m² for 4× the memory (42.7 MiB
+for a pair); at 2 m the detail texture already carries the near ground, so
+it isn't worth it yet.
+
+The engine takes one detail texture per terrain, so each biome uses its
+dominant ground's. Detail textures, CC0, downscaled to 512²:
+`detail-grass.jpg` is Poly Haven's
+[forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) by Rob Tuytel;
+`detail-snow.jpg` is ambientCG's
+[Snow006](https://ambientcg.com/view?id=Snow006); `detail-sand.jpg` is
+ambientCG's [Ground098](https://ambientcg.com/view?id=Ground098).
+
+### The flashlight
+
+`L` (or the right trigger in VR) toggles a `Light.spot` held below the eye
+(in VR, in the right hand). It is the frame's third light, ahead of the
+point lights, so it is the colormap terrain's flashlight
+(`Terrain.normalMap` with `island-normal.png`); the nearest-lights selector
+gives it one of the six point-light slots. The lamps stay point lights for
+the buildings and props.
 
 ### Rocks and trees
 

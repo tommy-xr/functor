@@ -40,7 +40,9 @@
 //      `/state.terrain` counts the patches drawn from the street camera, night
 //      and noon; walking south off the pad, the heightfield carries the
 //      walker down the slope island.mjs generated; the model's `uncovered`
-//      stays 0; the right controller's A leaves the island.
+//      stays 0; the right controller's A leaves the island. At midnight L's
+//      flashlight lights the colormap ground up the street, and V cycles
+//      the biome.
 //  12. the props: each stands on island.mjs's ground; at the street camera
 //      (noon, midnight), a hill and a grove's edge, each tier is under its
 //      cap and within its distance, and `/state.cull` counts the prop draws
@@ -52,7 +54,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ground, padY, toTerrain } from "../examples/liminal-office/island.mjs";
+import { GROUND_Y, ground, padY, toTerrain } from "../examples/liminal-office/island.mjs";
 import { decodePng } from "../scripts/png.mjs";
 import { BIN, ROOT, check, failures, sleep } from "./mcp-rpc.mjs";
 
@@ -656,9 +658,6 @@ async function drawCounts(game) {
 
 // ---- The island ----------------------------------------------------------------
 
-// island.fun's `groundY`: the pad lands at the flat ground's drawn height.
-const GROUND_Y = -0.05;
-
 async function island(game) {
   await game.view(9); // the street, on Block.groundBody
   const flat = await game.model();
@@ -690,6 +689,7 @@ async function island(game) {
   await game.hold("i", 1);
   s = await untilTerrain();
   check(s.model.island && s.model.grounded && near(s.model.at.y, m.at.y, 0.01), `I on the pad: onto the island in place (y ${s.model.at.y.toFixed(3)})`);
+  await colormaps(game);
   const night = s.terrain;
   await game.hold("n", 1);
   await game.step(2);
@@ -730,6 +730,47 @@ async function island(game) {
   check(!m.island && m.town === 1 && m.grounded && near(m.at.z, -50, 0.05) && near(m.at.y, flat.at.y, 0.03),
     `XR A leaves the island for the street (island ${m.island}, town ${m.town}, z ${m.at.z.toFixed(2)}, y ${m.at.y.toFixed(3)}, grounded ${m.grounded})`);
   return { night, noon };
+}
+
+// At midnight up the street (view 9): the flashlight (L) lights the
+// colormap terrain ahead, and L again puts it out; V cycles the biome. Only
+// the colormaps differ between biomes, so the biome check also shows the
+// colormaps (not the `layered` fallback) are what's drawn.
+async function colormaps(game) {
+  // The maps stream in after the heightmap: wait until the ground ahead
+  // reads the same in three captures half a second apart. (A few hundred
+  // channels at a facade's edge differ frame to frame, so whole frames never
+  // match.)
+  const GROUND = [0.25, 0.6, 0.75, 1];
+  const settled = async () => {
+    let shots = [];
+    for (let k = 0; k < 40; k++) {
+      await sleep(500);
+      await game.step(3);
+      const png = await game.capture();
+      shots = [...shots.slice(-2), { png, luma: meanLuma(png, GROUND) }];
+      if (shots.length === 3 && shots.every((s) => Math.abs(s.luma - shots[0].luma) < 0.05)) return png;
+    }
+    throw new Error("the island's ground never settled");
+  };
+  const dark = await settled();
+  await game.hold("l", 1);
+  const lit = await settled();
+  const on = (await game.model()).flashlight;
+  await game.hold("l", 1);
+  const off = await settled();
+  const [d, l, o] = [dark, lit, off].map((png) => meanLuma(png, GROUND));
+  check(on && !(await game.model()).flashlight && l > d + 3 && Math.abs(o - d) < 0.5,
+    `L: the flashlight lights the street's ground (luma ${d.toFixed(1)} → ${l.toFixed(1)} → ${o.toFixed(1)})`);
+  await game.hold("v", 1);
+  const snow = await settled();
+  const biome = (await game.model()).biome;
+  await game.hold("v", 1);
+  await game.hold("v", 1);
+  const back = await settled();
+  const [s, b] = [snow, back].map((png) => meanLuma(png, GROUND));
+  check(biome === 1 && (await game.model()).biome === 0 && s > d + 5 && Math.abs(b - d) < 0.5,
+    `V cycles the biome: the ground's luma, grass ${d.toFixed(1)} → snow ${s.toFixed(1)} → grass ${b.toFixed(1)}`);
 }
 
 // islandLayout.fun's props and caps, parsed.
@@ -983,6 +1024,7 @@ try {
     // Captured late: the heightmap decodes off the frame thread.
     "liminal-office-island-street": scripted("island-street.script", 300),
     "liminal-office-island-street-day": scripted("noon-island-street.script", 300),
+    "liminal-office-island-street-night-flashlight": scripted("flashlight-island-street.script", 300),
   };
   for (const [name, args] of Object.entries(goldens)) {
     check(golden(name, args).equals(golden(name, args)), `${name}: byte-identical across runs`);

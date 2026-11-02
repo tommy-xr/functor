@@ -113,6 +113,11 @@ let lampHeads = [v(4.4, 4.8, -4.0), v(15.6, 4.8, -4.0)]
 let postGrey = rgb(60.0, 60.0, 66.0)
 let postBoxes = lampHeads |> List.map((p) =>
   box(Vec3.x(p) - 0.06, 0.0, Vec3.z(p) - 0.06, Vec3.x(p) + 0.06, 4.9, Vec3.z(p) + 0.06))
+// The street's point lights (game.fun): the lobby's light spilling onto the
+// apron, and a sodium lamp `drop` under each head, off by day. island.mjs
+// parses these lines to paint them into the island's night map.
+let lobbyLight = { x: 10.0, y: 2.0, z: 0.9, r: 0.85, g: 0.95, b: 0.8, intensity: 1.2, range: 9.0 }
+let sodiumLight = { drop: 0.2, r: 1.0, g: 0.68, b: 0.36, intensity: 0.9, range: 14.0 }
 let shadeBoxes = lampHeads |> List.map((p) =>
   box(Vec3.x(p) - 0.25, 4.75, Vec3.z(p) - 0.12, Vec3.x(p) + 0.25, 4.85, Vec3.z(p) + 0.12))
 let lampShades = shadeBoxes |> List.map(slabOf) |> Scene.group

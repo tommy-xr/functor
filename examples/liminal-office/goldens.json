@@ -159,5 +159,14 @@
     ],
     "inputScript": "noon-island-street.script",
     "captureAtFrame": 300
+  },
+  {
+    "name": "liminal-office-island-street-night-flashlight",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "flashlight-island-street.script",
+    "captureAtFrame": 300
   }
 ]

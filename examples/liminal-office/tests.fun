@@ -655,3 +655,35 @@ expect List.zip(splits, eyes) |> List.all((pair) =>
   && (s.solid.trees |> List.all((t) => Island.within(e.x, e.z, Island.solidReach + Island.regroupStep + Island.propRadius, t))))
 expect (List.nth(0.0, splits) |> Option.map((s) => List.length(s.far) > 0)) == Option.Some(true)
 expect Island.regroup(List.nth(0.0, splits) |> Option.defaultValue(Island.noProps), false, 0.0, 0.0, 500.0) == Island.noProps
+
+// ---- The island's colormaps ----------------------------------------------------
+
+// island.mjs bakes the night map's lamp pools at the pad's height in the
+// world, the street lights game.fun lights every copy with.
+expect IslandLayout.groundY == Island.groundY
+let streetLights = copies |> List.concatMap(Game.streetLights)
+let toMm = (a: float, b: float): bool => Math.abs(a - b) < 0.001
+expect List.length(IslandLayout.lamps) == List.length(streetLights)
+expect IslandLayout.lamps |> List.zip(streetLights) |> List.all((pair) =>
+  let (l, s) = pair in
+  toMm(l.x, Vec3.x(s.at)) && toMm(l.y, Vec3.y(s.at)) && toMm(l.z, Vec3.z(s.at)) && l.r == s.r && l.g == s.g && l.b == s.b
+  && l.intensity == s.intensity && l.range == s.range)
+// The day map's sun is high (over 55°), so slopes facing away from it still
+// show under the flashlight; the island's frame lights at noon and midnight
+// are the ones each map was baked with.
+let sunUp = (d) => (0.0 - d.y) / Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
+expect sunUp(IslandLayout.light.day.direction) > Math.sin(55.0 * Math.pi / 180.0)
+let islandNoon = Hours.islandOutdoorAt(1.0)
+let islandMidnight = Hours.islandOutdoorAt(0.0)
+expect islandNoon.ambient == IslandLayout.light.day.ambient && islandNoon.sun == IslandLayout.light.day.sun && islandNoon.sunIntensity == IslandLayout.light.day.intensity
+expect islandMidnight.ambient == IslandLayout.light.night.ambient && islandMidnight.sun == IslandLayout.light.night.sun
+  && islandMidnight.sunIntensity == IslandLayout.light.night.intensity
+// Every biome's detail tiles at 2–3 m and fades out by 80 m.
+expect (Island.biomes |> List.all((b) => b.tile >= 2.0 && b.tile <= 3.0)) && Island.detailFade <= 80.0
+// The flashlight takes a point light's slot: with or without it the frame
+// holds 8 lights (the lit shader's cap) among the block's 12 point lights.
+let beam = Light.spot(Vec3.make(0.0, 1.5, 0.0), Vec3.make(0.0, 0.0, 1.0), Game.flashlightColor, 1.0, 60.0, Game.flashlightCone)
+let streetEye = Vec3.make(-12.0, 1.6, -50.0)
+let lit = Game.frameLights(Hours.islandOutdoorAt(0.0), copies, streetEye, [beam])
+expect List.length(lit) == 8.0
+expect List.length(Game.frameLights(Hours.islandOutdoorAt(0.0), copies, streetEye, [])) == 8.0

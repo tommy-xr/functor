@@ -44,6 +44,18 @@ let outdoorAt = (d: float): Outdoor => {
   lamps: 1.0 |> Math.lerp(0.0, d),
 }
 
+// On the island: the sun or moon and ambient island.mjs baked the ground's
+// colormaps with (a high sun), so live-lit props and buildings match it.
+let islandOutdoorAt = (d: float): Outdoor =>
+  let day = IslandLayout.light.day in
+  let night = IslandLayout.light.night in
+  let toVec = (p) => Vec3.make(p.x, p.y, p.z) in
+  { outdoorAt(d) with
+    ambient: mix(night.ambient, day.ambient, d),
+    sun: mix(night.sun, day.sun, d),
+    sunIntensity: night.intensity |> Math.lerp(day.intensity, d),
+    sunDirection: toVec(night.direction) |> Vec3.lerp(toVec(day.direction), d) }
+
 // How far a town is seen, by night and by day: the fog's far end, which is
 // also the camera's far plane (past the fog there is only the sky).
 type Reach = { night: float, day: float }

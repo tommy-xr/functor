@@ -222,11 +222,12 @@ let nearest = (town: Town, eye: Vec3.t): float =>
 // ---- Lights --------------------------------------------------------------------
 
 // The 8 forward-light slots left after the sun and ambient: the frame takes
-// the point lights nearest the eye, from the copies within `lightReach`.
+// the point lights nearest the eye, from the copies within `lightReach` (one
+// fewer while the flashlight holds a slot).
 let pointSlots = 6.0
-// Of `lights` (each with its world position), the `pointSlots` nearest `eye`,
+// Of `lights` (each with its world position), the `slots` nearest `eye`,
 // in their original order (so the office alone lights exactly as before).
-let nearestLights = (eye: Vec3.t, lights: List<(Vec3.t, Light.t)>): List<Light.t> =>
+let nearestLights = (slots: float, eye: Vec3.t, lights: List<(Vec3.t, Light.t)>): List<Light.t> =>
   lights |> List.indexedMap((i, l) => let (at, light) = l in (i, Vec3.length(at |> Vec3.sub(eye)), light))
-    |> List.sortBy((e) => let (i, d, light) = e in d) |> List.take(pointSlots)
+    |> List.sortBy((e) => let (i, d, light) = e in d) |> List.take(slots)
     |> List.sortBy((e) => let (i, d, light) = e in i) |> List.map((e) => let (i, d, light) = e in light)
