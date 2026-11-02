@@ -16,7 +16,8 @@
 //!   the memo cache count as refcounts only;
 //! - **keyframe**: one checkpoint of the final world (what the recorder takes
 //!   every 30 frames): time to take and drop it, and the heap it adds beyond
-//!   what it shares with the live world.
+//!   what it shares with the live world. A shared map the next write copies
+//!   is not counted here; `history` counts it.
 //!
 //! It asserts the memo claim: an unchanged group costs reconcile 0 per-body
 //! compares, and the hook costs the same at 1,500 bodies as at 15. Timings are

@@ -191,7 +191,7 @@ pub struct World {
     /// serialization) is deterministic — a requirement, not a nicety. A body
     /// owns one collider, except a fused room, which owns one per chunk.
     ///
-    /// This and the other per-body maps below are copy-on-write (`Arc` +
+    /// `tags`, `rooms`, `declared` and `flat` are copy-on-write (`Arc` +
     /// `make_mut`): a checkpoint shares them, and the next write after one
     /// copies the map once. Keyframes of a scene whose declarations hold still
     /// share one copy.
@@ -1033,6 +1033,9 @@ impl World {
     /// only the chunks [`room::dirty_chunks`] names, in key order, and the
     /// floor plane if the floor moved.
     fn sync_room(&mut self, body: &Body, prev: &RoomMeshes, next: &RoomMeshes) {
+        if !self.rooms.contains_key(&body.tag) {
+            return;
+        }
         let (Some(&rb_handle), Some(live)) =
             (self.tags.get(&body.tag), Arc::make_mut(&mut self.rooms).get_mut(&body.tag))
         else {
@@ -3645,6 +3648,30 @@ mod fused_room_tests {
         // plane); the rest kept their colliders.
         let after = &w.rooms["room"].chunks;
         assert!(before.iter().any(|(k, h)| after.get(k) == Some(h)));
+    }
+
+    /// A re-fused room after a checkpoint copies `rooms`; the checkpoint keeps
+    /// the old colliders and restores byte-exact.
+    #[test]
+    fn a_re_fuse_after_a_checkpoint_does_not_reach_it() {
+        let room = stand_in_room();
+        let mut w = world_with(vec![room_body(&Arc::new(room.clone()))]);
+        let checkpoint = w.checkpoint();
+        let before = w.snapshot();
+        let mut next = room;
+        let key = *next.chunks.keys().find(|k| k[1] > 0).unwrap();
+        let mut moved = (*next.chunks[&key]).clone();
+        moved.positions.iter_mut().for_each(|p| p[0] += 0.01);
+        next.chunks.insert(key, Arc::new(moved));
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&Arc::new(next))],
+        ));
+        assert!(!Arc::ptr_eq(&checkpoint.world.rooms, &w.rooms));
+        assert_ne!(checkpoint.world.rooms["room"].chunks, w.rooms["room"].chunks);
+        assert!(checkpoint.world.snapshot() == before, "the checkpoint changed");
+        w.restore_checkpoint(&checkpoint);
+        assert!(w.snapshot() == before, "restore diverged");
     }
 
     /// Re-declaring the same room is free; a re-fused chunk rebuilds only
