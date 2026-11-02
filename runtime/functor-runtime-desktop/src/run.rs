@@ -277,17 +277,24 @@ fn route_visible_pointer_position(
     }
 }
 
-/// The window's game-UI pointer, threaded into `POST /input` so injected pointer
-/// input follows the same routing as the window's: a `mouse_move` also moves the
-/// overlay pointer, and a left press the UI pass wanted is the widget's (it
-/// drives the button under the pointer), never the game's. `None` in the
-/// headless loop, which draws no UI.
+/// The window's overlay pointer, threaded into `POST /input` so injected pointer
+/// input follows the window's routing: a `mouse_move` also moves the pointer the
+/// overlays (game UI, webview, scrubber) see, and a left press an overlay wanted
+/// is the overlay's (it clicks what is under the pointer), never the game's.
+/// `None` in the headless loop, which draws no overlays.
 struct OverlayPointer<'a> {
     pos: &'a mut (i32, i32),
-    /// Set by an injected move: a hidden window then feeds egui the injected
-    /// pointer (it has no real cursor of its own).
+    /// Set by an injected move: a hidden window then feeds the overlays the
+    /// injected pointer (it has no real cursor of its own).
     injected: &'a mut bool,
-    ui_wants_pointer: bool,
+    /// An injected move since the last overlay pass: whether the overlays want
+    /// the pointer is only known once a pass has seen the new position.
+    moved: &'a mut bool,
+    /// Left edges (true = press) waiting for that pass; drained in order right
+    /// after it by `route_injected_primary` (see the frame loop).
+    pending: &'a mut Vec<bool>,
+    /// Any overlay wanted the pointer in the last pass.
+    wants_pointer: bool,
     primary_down: &'a mut bool,
     primary_clicked: &'a mut bool,
 }
@@ -1415,6 +1422,7 @@ fn service_debug_request(
                     if let Some(o) = overlay.as_mut() {
                         *o.pos = (x, y);
                         *o.injected = true;
+                        *o.moved = true;
                     }
                     if !emulate_xr {
                         sim.mouse_move(x, y);
@@ -1433,10 +1441,19 @@ fn service_debug_request(
                     match functor_runtime_common::MouseButton::from_name(&button) {
                         Some(b) => {
                             let to_game = match overlay.as_mut() {
+                                // After a move, wait for an overlay pass at the
+                                // new position (order kept: later edges queue too).
+                                Some(o)
+                                    if b == functor_runtime_common::MouseButton::Left
+                                        && (*o.moved || !o.pending.is_empty()) =>
+                                {
+                                    o.pending.push(down);
+                                    false
+                                }
                                 Some(o) if b == functor_runtime_common::MouseButton::Left => {
                                     route_injected_primary(
                                         down,
-                                        o.ui_wants_pointer,
+                                        o.wants_pointer,
                                         o.primary_down,
                                         o.primary_clicked,
                                     )
@@ -1984,6 +2001,10 @@ Escape releases while captured"
         // An injected `mouse_move` happened: feed its position to the game-UI
         // pass even in a hidden window (see `OverlayPointer`).
         let mut pointer_injected = false;
+        // Injected left edges deferred until an overlay pass has seen the
+        // injected pointer position (`OverlayPointer::pending`).
+        let mut pointer_moved = false;
+        let mut pending_primary: Vec<bool> = Vec::new();
         // Press-latch for the frame's pointer SAMPLE: a click whose press and
         // release both land in one poll batch (a fast tap, a slow frame)
         // leaves `mouse_primary_down` false by sample time — the latch keeps
@@ -3879,6 +3900,44 @@ Escape again to quit"
             // fully rendered into the back buffer (same point --capture-frame
             // reads from). GL stays on this thread; we only reply over channels.
             let mut debug_active = false;
+            // Injected left edges that waited for this frame's overlay passes
+            // (which have now seen the injected pointer): route them the way the
+            // window's click arm would.
+            if !pending_primary.is_empty() {
+                let wants = ui_wants_pointer || webview_wants_pointer || scrubber_wants_pointer;
+                for down in pending_primary.drain(..) {
+                    if route_injected_primary(
+                        down,
+                        wants,
+                        &mut mouse_primary_down,
+                        &mut mouse_primary_clicked,
+                    ) {
+                        apply_mouse_button_edge(
+                            &mut sim,
+                            &mut held_buttons,
+                            &mut input_edges,
+                            functor_runtime_common::MouseButton::Left,
+                            down,
+                        );
+                    }
+                }
+                if clock.is_fixed_time() && input_script.is_none() {
+                    fixed_input_snapshot = desktop_input_snapshot(
+                        &held_keys,
+                        game_mouse_pos,
+                        held_buttons,
+                        &input_edges,
+                        xr_head_y,
+                        xr_primary_down || xr_primary_clicked,
+                        window.get_size(),
+                        xr_override.as_ref(),
+                        gamepad_override.as_ref(),
+                        polled_gamepad.as_ref(),
+                        touch_levels.as_ref(),
+                    );
+                }
+            }
+            pointer_moved = false;
             if let Some(rx) = &debug_requests {
                 while let Ok(req) = rx.try_recv() {
                     debug_active = true;
@@ -3944,7 +4003,11 @@ Escape again to quit"
                         Some(OverlayPointer {
                             pos: &mut mouse_pos,
                             injected: &mut pointer_injected,
-                            ui_wants_pointer,
+                            moved: &mut pointer_moved,
+                            pending: &mut pending_primary,
+                            wants_pointer: ui_wants_pointer
+                                || webview_wants_pointer
+                                || scrubber_wants_pointer,
                             primary_down: &mut mouse_primary_down,
                             primary_clicked: &mut mouse_primary_clicked,
                         }),
