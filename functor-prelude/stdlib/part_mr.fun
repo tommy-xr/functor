@@ -3,8 +3,10 @@
 // Each view is a name and its pieces (`{ solid, color }`, mm, Z up;
 // PartViews pieces work), e.g. an assembly and its exploded view.
 //
-// Quest: squeeze the right grip near a part to pick it up; let go and it
-// drops onto the real surface below it (a desk, the floor). Assembled, you
+// Quest: a beam from the right hand shows where it points and highlights the
+// part a squeeze would take: the one in reach of the hand, else the one the
+// beam is on. Squeeze the right grip to pick it up; let go and it drops onto
+// the real surface below it (a desk, the floor). Assembled, you
 // hold the whole thing; B takes it apart so each piece is held on its own,
 // and B again puts it back together. The right thumbstick turns (left/right)
 // and tilts (forward/back) the part last held, A cycles the views, X toggles
@@ -160,8 +162,11 @@ let heading = (pose: Camera3D.mappedPose) =>
 // the whole view when assembled, else a piece), kept at `offset` from the
 // grip and `yawOffset` from its heading; `active`: the item the thumbstick
 // turns; the `…Pressed` fields latch buttons so a hold acts once.
+// `aim`: its pointing pose; `pointed`: the item the beam is on (-1 none),
+// and `beamEnd` where the beam stops (that item, else the room).
 type t = {
   grip: Camera3D.mappedPose, gripTracked: bool, squeezing: bool, stick: Input.point2,
+  aim: Camera3D.mappedPose, aimTracked: bool, pointed: float, beamEnd: Input.point3,
   index: float, whole: item, apart: bool, parts: List<item>,
   held: float, offset: Input.point3, yawOffset: float, active: float,
   mixedReality: bool, togglePressed: bool, cyclePressed: bool, apartPressed: bool
@@ -172,6 +177,7 @@ type t = {
 let init = (views): t =>
   let e = eye() in
   { grip: fallbackGrip(), gripTracked: false, squeezing: false, stick: { x: 0.0, y: 0.0 },
+    aim: fallbackGrip(), aimTracked: false, pointed: -1.0, beamEnd: point(0.0, 0.0, 0.0),
     index: 0.0, whole: { position: point(Vec3.x(e), Vec3.y(e) - 0.1, Vec3.z(e) + 0.5), yaw: 0.0, pitch: 0.0, settles: true },
     apart: false, parts: [],
     held: -1.0, offset: point(0.0, 0.0, 0.0), yawOffset: 0.0, active: 0.0,
@@ -200,9 +206,16 @@ let inReach = (views, m: t): float =>
     |> Option.map((c) => c.i)
     |> Option.defaultValue(-1.0)
 
-// Take the item in reach, keeping where the hand holds it.
+// What a squeeze takes: the item in reach of the hand, else the one the beam
+// is on (-1 none).
+let selected = (views, m: t): float =>
+  let near = inReach(views, m) in
+  if near >= 0.0 then near else m.pointed
+
+// Take the selected item, keeping where the hand holds it — at a distance
+// too, for one taken with the beam.
 let grabbed = (views, m: t): t =>
-  let i = inReach(views, m) in
+  let i = selected(views, m) in
   match List.nth(i, items(views, m)) with
   | Option.None => m
   | Option.Some(e) =>
@@ -243,7 +256,7 @@ let sampledInput = (views, current: t, s: Input.snapshot): t =>
   let byKey = if pressed(s, Key.B) then apartToggled(views, byKey) else byKey in
   let m = if pressed(s, Key.N) then cycled(views, byKey) else byKey in
   match s.xr with
-  | Option.None => released({ m with gripTracked: false, squeezing: false, stick: { x: 0.0, y: 0.0 } })
+  | Option.None => released({ m with gripTracked: false, squeezing: false, aimTracked: false, stick: { x: 0.0, y: 0.0 } })
   | Option.Some(xr) =>
     let gripTracked = xr.right.active && Option.isSome(xr.right.grip) in
     let squeezing = gripTracked && squeezed(m.squeezing, xr.right.squeeze) in
@@ -253,6 +266,8 @@ let sampledInput = (views, current: t, s: Input.snapshot): t =>
     let next = { m with
       grip: xr.right.grip |> Option.map((pose) => Camera3D.mapTrackedPose(camera(), pose)) |> Option.defaultValue(fallbackGrip()),
       gripTracked: gripTracked,
+      aim: xr.right.aim |> Option.map((pose) => Camera3D.mapTrackedPose(camera(), pose)) |> Option.defaultValue(fallbackGrip()),
+      aimTracked: xr.right.active && Option.isSome(xr.right.aim),
       squeezing: squeezing,
       stick: xr.right.thumbstick,
       togglePressed: toggle,
@@ -318,7 +333,45 @@ let tickWith = (views, m: t, dt: float, below): t =>
       { m with parts: List.zip(view.pieces, m.parts) |> List.indexedMap((i, pair) => let (it, piece) = pair in stepped(still, below, dt, i, it, piece.half)) }
     else { m with whole: stepped(still, below, dt, 0.0, m.whole, view.half) }
 
-let tick = (views, m: t, dt: float): t => tickWith(views, m, dt, surfaceBelow)
+let dot = (a: Input.point3, b: Input.point3) => a.x * b.x + a.y * b.y + a.z * b.z
+
+// How far along the ray from `o` (unit direction `d`) it meets the sphere of
+// radius `r` about `c`, if it does ahead of `o`.
+let alongTo = (o: Input.point3, d: Input.point3, c: Input.point3, r: float) =>
+  let oc = minus(c, o) in
+  let t = dot(oc, d) in
+  if t < 0.0 || dot(oc, oc) - t * t > r * r then Option.None else Option.Some(t)
+
+// How far the beam goes before the room stops it.
+let beamLength = 3.0
+
+// Where the beam from the aim is: the nearest item it meets (each as its
+// bounding sphere), else as far as `room` says the room lets it go (the
+// fused room in play; tests pass their own). Nothing while not aiming.
+let aimedWith = (views, m: t, room): t =>
+  if not m.aimTracked then { m with pointed: -1.0 }
+  else
+    let o = m.aim.position in
+    let d = m.aim.forward in
+    let hit =
+      items(views, m)
+        |> List.indexedMap((i, e) => { i: i, t: alongTo(o, d, e.item.position, radius(e.half)) |> Option.defaultValue(-1.0) })
+        |> List.filter((c) => c.t >= 0.0)
+        |> List.sortBy((c) => c.t)
+        |> List.head in
+    let reach = match hit with
+      | Option.Some(c) => c.t
+      | Option.None => room(o, d) |> Option.defaultValue(beamLength) in
+    { m with
+      pointed: hit |> Option.map((c) => c.i) |> Option.defaultValue(-1.0),
+      beamEnd: plus(o, point(d.x * reach, d.y * reach, d.z * reach)) }
+
+// How far along the ray the fused room stops it, if within `beamLength`.
+let roomAlong = (o: Input.point3, d: Input.point3) =>
+  let hit = Physics.cast(Vec3.make(o.x, o.y, o.z), Vec3.make(d.x, d.y, d.z), beamLength) in
+  if hit.hit then Option.Some(hit.distance) else Option.None
+
+let tick = (views, m: t, dt: float): t => aimedWith(views, tickWith(views, m, dt, surfaceBelow), roomAlong)
 
 let posed = (it: item, scene) =>
   scene |> Scene.rotateX(Angle.radians(it.pitch)) |> Scene.rotateY(Angle.radians(it.yaw)) |> at(it.position)
@@ -334,6 +387,44 @@ let standIn = () =>
     block(1.0, 0.75, 0.6, Vec3.x(e), 0.375, Vec3.z(e) + 0.5, 0.55),
   ])
 
+let cyan = Color.rgb(0.35, 0.9, 1.0)
+
+// A thin beam from `from` to `to`: the unit cylinder (along Y, about its
+// middle) stood on its base and tipped along the direction.
+let beamScene = (from: Input.point3, to: Input.point3, color) =>
+  let d = minus(to, from) in
+  let length = radius(d) in
+  if length < 0.001 then Scene.group([])
+  else
+    Scene.group([
+      Scene.cylinder()
+        |> Scene.scaleXYZ(0.003, length, 0.003)
+        |> Scene.translate(Vec3.make(0.0, length / 2.0, 0.0))
+        |> Scene.rotateX(Angle.radians(Math.acos(Math.clamp(-1.0, 1.0, d.y / length))))
+        |> Scene.rotateY(Angle.radians(Math.atan2(d.x, d.z)))
+        |> Scene.emissive(color)
+        |> at(from),
+      Scene.sphere() |> Scene.scale(0.006) |> Scene.emissive(color) |> at(to),
+    ])
+
+// The beam while aiming and not holding: cyan on a part, white elsewhere.
+let beam = (m: t) =>
+  if m.aimTracked && m.held < 0.0 then
+    beamScene(m.aim.position, m.beamEnd, if m.pointed >= 0.0 then cyan else Color.rgb(0.8, 0.82, 0.86))
+  else Scene.group([])
+
+// A see-through box around the part a squeeze would take.
+let highlight = (views, m: t) =>
+  if m.held >= 0.0 then Scene.group([])
+  else match List.nth(selected(views, m), items(views, m)) with
+  | Option.None => Scene.group([])
+  | Option.Some(e) =>
+    Scene.cube()
+      |> Scene.scaleXYZ(e.half.x * 2.0 + 0.006, e.half.y * 2.0 + 0.006, e.half.z * 2.0 + 0.006)
+      |> Scene.emissive(cyan)
+      |> Scene.opacity(0.22)
+      |> posed(e.item)
+
 // A dot at the hand: green holding, cyan with something in reach.
 let gripDot = (views, m: t) =>
   if m.gripTracked then
@@ -341,7 +432,7 @@ let gripDot = (views, m: t) =>
       |> Scene.scale(0.008)
       |> Scene.emissive(
         if m.held >= 0.0 then Color.rgb(0.3, 1.0, 0.45)
-        else if inReach(views, m) >= 0.0 then Color.rgb(0.35, 0.9, 1.0)
+        else if inReach(views, m) >= 0.0 then cyan
         else Color.rgb(0.95, 0.98, 1.0))
       |> at(m.grip.position)
   else Scene.group([])
@@ -360,7 +451,7 @@ let draw = (views, m: t) =>
   let frame =
     Frame.createLit(
       camera(),
-      Scene.group(shown |> List.append([gripDot(views, m)])),
+      Scene.group(shown |> List.append([gripDot(views, m), beam(m), highlight(views, m)])),
       [
         Light.ambient(Color.rgb(0.25, 0.25, 0.3)),
         Light.directional(Vec3.make(-0.4, -1.0, 0.5), Color.rgb(1.0, 0.95, 0.9), 0.9),

@@ -71,5 +71,20 @@ expect [pose(0.0, 1.0, 1.0, 0.0), pose(-0.98, 0.2, 0.2, 0.98), pose(-1.0, 0.0, 0
   |> List.all((p) => Math.abs(PartMR.heading(p)) < 0.000001)
 // A squeeze near halfway neither drops nor retakes.
 expect PartMR.squeezed(true, 0.5) && not PartMR.squeezed(false, 0.5)
+// The beam: aimed at the tag from 40 cm above, it is on the tag and
+// selects it; aimed away, it stops where the room does.
+let noRoom = (o, d) => Option.None
+let aimAt = (m, from, forward) => { m with aimTracked: true, aim: { m.aim with position: from, forward: forward } }
+let above = PartMR.plus(settled.whole.position, PartMR.point(0.0, 0.4, 0.0))
+let pointing = PartMR.aimedWith(views, aimAt(settled, above, PartMR.point(0.0, -1.0, 0.0)), noRoom)
+expect pointing.pointed == 0.0 && PartMR.selected(views, pointing) == 0.0
+let away = PartMR.aimedWith(views, aimAt(settled, above, PartMR.point(0.0, 1.0, 0.0)), (o, d) => Option.Some(1.5))
+expect away.pointed == -1.0 && Math.abs(away.beamEnd.y - (above.y + 1.5)) < 0.000001
+// In reach of the hand wins over the beam.
+expect PartMR.selected(views, { atTag with pointed: -1.0 }) == 0.0
+// A squeeze takes the pointed part at a distance, keeping that distance.
+let far = PartMR.grabbed(views, { pointing with grip: { pointing.grip with position: above } })
+expect far.held == 0.0 && Math.abs(far.offset.y + 0.4) < 0.000001
+
 // Back together, it is one item again.
 expect List.length(PartMR.items(views, PartMR.apartToggled(views, apart))) == 1.0
