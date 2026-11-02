@@ -337,7 +337,7 @@ expect copies |> List.all((c) => yards |> List.all((r) => inCross(worldRect(c, r
 let tagsOf = (cs: List<Block.Copy>): List<string> =>
   cs |> List.concatMap((c) => List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) => Block.tagOf(c, k.tag)))
 let unique = (xs: List<string>): bool => Map.size(Map.fromList(xs |> List.map((x) => (x, true)))) == List.length(xs)
-expect unique(List.flatten([["ground", "block-ground", "player"], tagsOf(copies)]))
+expect unique(List.flatten([["ground", "block-ground", "island", "island-pad", "player"], tagsOf(copies)]))
 
 // Activation: on inside `activeOn`, held to `activeOff`, off past it; only
 // the home copy stands outside the block.
@@ -384,7 +384,7 @@ expect cells(16.0) |> List.all((c) => let (x, z) = c in x <= 3.0 && z <= 3.0)
 // Streets between all 64; unique names (memo keys) and collider tags.
 expect streetsBetween(grid64.copies)
 expect unique(grid64.copies |> List.map((c) => c.name))
-expect unique(List.flatten([["player", "ground", "block-ground", "grid-4-ground", "grid-16-ground", "grid-64-ground"], tagsOf(grid64.copies)]))
+expect unique(List.flatten([["player", "ground", "block-ground", "grid-4-ground", "grid-16-ground", "grid-64-ground", "island", "island-pad"], tagsOf(grid64.copies)]))
 
 // The index finds exactly the copies a scan of all 64 would, out to every
 // radius it's asked for, from street level all over the grid and past it.
@@ -519,3 +519,34 @@ expect windows |> List.indexedMap((i, w) =>
 expect windows |> List.all((w) => Building.roomAt(w.room).panels |> List.any((p) => p.on))
 // One copy's parts are prebuilt per id, for the largest town.
 expect List.length(Shells.parts) == 64.0
+
+// ---- The island ----------------------------------------------------------------
+
+let island = IslandLayout.pad
+let padRect = rect(island.x0, island.z0, island.x1, island.z1)
+let grown = (r: Rect, d: float): Rect => rect(r.x0 - d, r.z0 - d, r.x1 + d, r.z1 + d)
+// 2ⁿ + 1 samples, a metre apart, so every terrain LOD vertex lands on one.
+expect IslandLayout.samples == IslandLayout.size + 1.0
+expect List.range(16.0) |> List.any((k) => Math.pow(2.0, k) == IslandLayout.size)
+// The pad lies on the terrain, its edges on the collider's 2 m samples.
+let onSample = (along: float, centre: float): bool =>
+  let i = along - centre + IslandLayout.size / 2.0 in Math.mod(i, 2.0) == 0.0 && i > 0.0 && i < IslandLayout.size
+expect onSample(island.x0, IslandLayout.centre.x) && onSample(island.x1, IslandLayout.centre.x)
+  && onSample(island.z0, IslandLayout.centre.z) && onSample(island.z1, IslandLayout.centre.z)
+// The pad holds every copy with a 6 m apron, and the aprons and yards.
+expect copies |> List.all((c) => within(padRect, grown(worldRect(c, f), 6.0)))
+expect copies |> List.all((c) => yards |> List.all((r) => within(padRect, worldRect(c, r.rect))))
+// Every eye within the activation radius of a footprint is within
+// `band.reach` of the pad's edge: each footprint, grown by the rest of the
+// radius, lies on the pad.
+expect copies |> List.all((c) => within(padRect, grown(worldRect(c, f), reach - IslandLayout.band.reach)))
+// There the ground is never below the pad, and stays low enough that the
+// collar holds the eye at every street eye height, all the way round.
+let rise = (y: float): float => Island.groundY + y - island.y
+expect IslandLayout.band.yMin >= island.y && IslandLayout.band.yMax <= island.y + 3.0
+expect outside |> List.all((p) =>
+  let (x, z) = p in [0.3 + rise(IslandLayout.band.yMin), 2.6 + rise(IslandLayout.band.yMax)] |> List.all((y) => held(x, y, z)))
+// Toggling the island off the pad sends the walker to view 9: on the pad.
+expect (List.nth(8.0, Game.views) |> Option.map((w) => Island.onPad(w.x, w.z))) == Option.Some(true)
+// The sea is below the pad, the seabed below the sea.
+expect IslandLayout.seaLevel < island.y && IslandLayout.minHeight < IslandLayout.seaLevel
