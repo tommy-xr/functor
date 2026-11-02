@@ -204,15 +204,25 @@ runtime-owned cache, rebuilt once after a hot reload). The group is one
 - **command log:** one `Arc` per recorded `DeclareScene`, not a copy of every
   body;
 - **keyframes:** the declared cache and tag maps are copy-on-write, so
-  keyframes share them while declarations hold still. Rapier's sets (bodies,
-  colliders, broad and narrow phase) are owned values and still copy: about
-  1.5 KB per fixed body per keyframe.
+  keyframes share them while declarations hold still;
+- **rapier:** the group's fixed bodies are fused (below), so pairs of them
+  cost nothing per step and they add no per-body rapier state to keyframes.
 
 `World.groups` is world state, so checkpoints, rewinds and seeks restore it with
 the bodies; a seek can't leave a stale fast path. A changed group diffs its
 bodies by tag; a rebuilt-but-equal one (after a reload) does no rapier work.
-Reconcile visits flat bodies and changed groups in the same tag order as a flat
-declaration, so memoized and flat worlds stay byte-identical.
+
+**Fusing:** a group's still, solid, convex fixed bodies (box, sphere or
+capsule; no velocity, not a sensor) become parts of one compound collider per
+material instead of a rigid body each. Fixed–fixed pairs then never reach
+rapier's broad phase, which otherwise re-checks every overlapping pair each
+step. Reads, raycasts, shape casts (`exclude` included), contact and sensor
+events and `teleport` still address each body by tag; a teleport rebuilds the
+compound, so a body teleported often belongs flat. Kinematic, sensor and mesh
+bodies stay bodies. A fused world is not byte-identical to the same
+bodies declared flat: contacts and events match, but the solver orders a
+compound's contacts differently, so trajectories differ slightly (and diverge
+for tumbling bodies).
 
 **Tag ownership:** a tag belongs to one flat body or one group. `Physics.scene`
 rejects a flat body reusing a group's tag, two groups sharing a tag, and a key
