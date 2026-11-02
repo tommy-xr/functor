@@ -306,6 +306,27 @@ let draw = (model, tts) =>
   granted, `/state.xr.depth` reads `{"mode":"device","width":320,
   "height":320}` and `frames` advances (about 66 images a second at 80 Hz).
 
+### Room occlusion
+
+`Frame.withRoomOcclusion` makes real surfaces hide the scene behind them: a
+hand, or a tablet held up to a virtual case, shows in front of it. Before the
+scene, a depth-only fullscreen pass walks each pixel's eye ray onto the
+environment depth (the surface grid's walk) and writes that point's depth, so
+the scene's own depth test drops what lies behind; over a composited feed
+those pixels keep the transparent clear. The surface is pushed back by 3% of
+its distance plus 1 cm, so a part resting on a real desk isn't cut by sensor
+noise. Edges follow the 320x320 depth image, so they are coarse.
+
+- Needs `Xr.scene(true)`; without environment depth nothing is hidden.
+- `PartMR` turns it on in mixed reality, except while a part is held (the
+  hand holding it would cut into it).
+- Only over a composited feed: elsewhere a hole would show the clear, not
+  the room.
+- Verified headlessly by `runtime/functor-runtime-desktop/tests/passthrough_alpha.rs`
+  (a synthetic device depth under a composited clear).
+- Horizon gates the depth on the spatial data permission (see above); until
+  it is granted nothing is hidden.
+
 ### Scene-grid kata
 
 `examples/scene-grid` shades a world-aligned grid (25 cm cells, thin cyan

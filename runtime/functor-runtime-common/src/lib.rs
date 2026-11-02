@@ -105,6 +105,7 @@ mod shader;
 pub mod shadow;
 pub mod passthrough_room;
 pub mod skybox;
+pub mod room_occlusion;
 pub mod surface_grid;
 mod shader_program;
 mod sprite2d;

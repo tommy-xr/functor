@@ -72,6 +72,9 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: room occlusion — `Frame.room_occlusion` (`Frame.withRoomOcclusion`),
+/// omitted when false, so other frames keep their shape.
+///
 /// Also: orthographic cameras — `Camera.ortho_half_height`
 /// (`Camera3D.orthographic`), omitted when absent, so perspective cameras
 /// keep their shape.
@@ -1150,6 +1153,7 @@ mod tests {
                 cell: 0.5,
                 color: [1.0, 0.5, 0.0],
             }),
+            room_occlusion: true,
         };
         assert_json_stable(&frame);
         assert!(serde_json::to_string(&frame)
