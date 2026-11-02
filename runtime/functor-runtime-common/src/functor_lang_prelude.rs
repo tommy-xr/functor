@@ -11098,9 +11098,9 @@ Anim.clip(\"walk\", tts)"
         assert_eq!(json[3], false, "the turntable rests");
     }
 
-    /// `PartMR`: a view rests on the desk by its half height; cycling wraps
-    /// (and with no views changes nothing); a part released off the desk
-    /// settles back inside its edges.
+    /// `PartMR`: a view rests on the desk by its half height; cycling wraps,
+    /// keeps the turn and tilt (and with no views changes nothing); a part
+    /// released off the desk settles back inside its edges.
     #[test]
     fn part_mr_rests_cycles_and_settles() {
         let value = eval_with_prelude(
@@ -11111,8 +11111,9 @@ Anim.clip(\"walk\", tts)"
              let rest = () => init.position.y - desk.height\n\
              let wraps = () => PartMR.cycled(views, PartMR.cycled(views, init)).index\n\
              let empty = () => PartMR.cycled([], init).index\n\
+             let turned = () => PartMR.cycled(views, { init with yaw: 1.0, pitch: 0.5 })\n\
              let settled = () => PartMR.tick(views, desk, { init with position: PartMR.point(2.0, 1.0, 0.0) }, 10.0).position\n\
-             let main = () => [rest(), wraps(), empty(), settled().x, settled().z]\n",
+             let main = () => [rest(), wraps(), empty(), settled().x, settled().z, turned().yaw, turned().pitch]\n",
         )
         .unwrap_or_else(|e| panic!("part mr: {e}"));
         let json = value_to_json(&value);
@@ -11122,6 +11123,7 @@ Anim.clip(\"walk\", tts)"
         assert_eq!(at(2), 0.0, "{json}");
         assert_eq!(at(3), 0.5, "inside the 1 m desk: {json}");
         assert!((at(4) - 0.2).abs() < 1e-9, "the desk's near edge: {json}");
+        assert_eq!((at(5), at(6)), (1.0, 0.5), "cycling keeps the turn: {json}");
     }
 
     #[test]

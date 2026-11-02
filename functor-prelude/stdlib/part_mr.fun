@@ -103,11 +103,11 @@ let init = (views, desk: desk): t =>
     mixedReality: true, togglePressed: false, cyclePressed: false }
 
 let toggled = (m: t): t => { m with mixedReality: not m.mixedReality }
-// The next view starts level and facing you, where the last one was. With no
-// views there is nothing to cycle.
+// The next view takes the last one's place, turned and tilted the same, so
+// an assembly and its exploded view compare side by side. With no views
+// there is nothing to cycle.
 let cycled = (views, m: t): t =>
-  if List.length(views) == 0.0 then m
-  else { m with index: Math.mod(m.index + 1.0, List.length(views)), yaw: 0.0, pitch: 0.0 }
+  if List.length(views) == 0.0 then m else { m with index: Math.mod(m.index + 1.0, List.length(views)) }
 
 // Keyboard edges, so a held key's auto-repeat doesn't act again.
 let pressed = (s: Input.snapshot, key) => s.pressedKeys |> List.any((k) => k == key)

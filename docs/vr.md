@@ -505,8 +505,9 @@ functor -d examples/parts-mr run native --emulate-xr   # desktop stand-in room
   settles onto the new height on hot reload. The desk is placed ahead of where
   you faced at launch, so start the app seated, facing your desk.
 - Right trigger grabs, the right thumbstick turns (left/right) and tilts
-  (forward/back), A cycles the parts and X toggles passthrough. A released
-  part settles back onto the desk, inside its edges.
+  (forward/back), A cycles the parts (the next keeps the turn and tilt) and X
+  toggles passthrough. A released part settles back onto the desk, inside its
+  edges.
 - On desktop, `--emulate-xr` maps grab, turn/tilt and A to the mouse (or
   Space), the arrows and 1. P toggles passthrough, and N also cycles parts
   without `--emulate-xr`.
