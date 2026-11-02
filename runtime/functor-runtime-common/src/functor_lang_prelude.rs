@@ -13907,6 +13907,67 @@ a texture Asset and positive world-unit sizes"
     }
 
     #[test]
+    fn terrain_materials_emit_the_splat_and_layers_in_order() {
+        let frame = frame_of(
+            "let world =\n\
+               Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)\n\
+               |> Terrain.materials(Asset.texture(\"splat.png\"), [\n\
+                    Terrain.layer(Asset.texture(\"grass.jpg\"), 3.0),\n\
+                    Terrain.layer(Asset.texture(\"rock.jpg\"), 6.0)\n\
+                    |> Terrain.layerNormal(Asset.texture(\"rock-normal.png\"))\n\
+                  ], 90.0)\n\
+             let main = () =>\n\
+               Frame.create(\n\
+                 Camera3D.lookAt(Vec3.make(0.0, 400.0, -900.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+                 Scene.terrain(world))",
+        );
+        let SceneObject::Terrain(terrain) = &frame.scene.obj else {
+            panic!("expected a Terrain node, got {:?}", frame.scene.obj);
+        };
+        let materials = terrain.materials.as_ref().expect("materials");
+        assert_eq!(materials.splat.locator, "splat.png");
+        assert_eq!(materials.fade_end, 90.0);
+        let layers: Vec<_> = materials
+            .layers
+            .iter()
+            .map(|l| {
+                let normal = l.normal.as_ref().map(|n| n.locator.as_str());
+                (l.albedo.locator.as_str(), normal, l.tile_size)
+            })
+            .collect();
+        assert_eq!(
+            layers,
+            [("grass.jpg", None, 3.0), ("rock.jpg", Some("rock-normal.png"), 6.0)]
+        );
+    }
+
+    #[test]
+    fn terrain_materials_validate_layers_and_sizes() {
+        let base = "Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)";
+        let layer = "Terrain.layer(Asset.texture(\"t.jpg\"), 2.0)";
+        let usage = "usage: Terrain.materials(splat, layers, fadeEnd, terrain) — a texture \
+Asset, 1 to 4 Terrain.layer values, and a positive fade distance";
+        for (layers, fade_end) in [
+            ("[]".to_string(), "90.0"),
+            (format!("[{layer}, {layer}, {layer}, {layer}, {layer}]"), "90.0"),
+            (format!("[{layer}]"), "0.0"),
+        ] {
+            assert_eq!(
+                run_fail(&format!(
+                    "let main = () => {base} |> Terrain.materials(Asset.texture(\"s.png\"), {layers}, {fade_end})"
+                )),
+                usage,
+                "{layers} {fade_end}"
+            );
+        }
+        assert_eq!(
+            run_fail("let main = () => Terrain.layer(Asset.texture(\"t.jpg\"), 0.0)"),
+            "usage: Terrain.layer(albedo, tileSize) — a texture Asset and a positive \
+world-unit tile size"
+        );
+    }
+
+    #[test]
     fn terrain_descriptor_validates_assets_and_dimensions() {
         let usage = "usage: Terrain.heightmap(asset, width, depth, minHeight, maxHeight) — \
 a texture Asset, positive dimensions, and maxHeight greater than minHeight";
