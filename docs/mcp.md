@@ -118,7 +118,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `launch_session_group` | Launch every role of a multi-entry project at once, wired to each other by **this process** — no sockets. See [The coordinator: this process is the network](#the-coordinator-this-process-is-the-network). |
 | `resume` | Follow wall-clock time again. |
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
-| `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
+| `rewind` | Restore model + physics to a recorded frame, as `get_state` numbers `frame` (it pins the clock first, as `/rewind` requires). |
 | `reload_source` / `reload_project` | Hot-reload the entry, or every sibling module, with the live model preserved. |
 | `run_game_code_unsafe` | Run a JavaScript function against an injected game SDK in a local Node child, returning its JSON value, SDK-call trace, logs, captures, and final state. This is deliberately RCE-equivalent; see below. |
 

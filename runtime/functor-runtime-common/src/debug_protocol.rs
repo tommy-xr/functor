@@ -161,7 +161,14 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// Also: the optional `audio` field on `GET /state` (`{played, dropped,
 /// recent}`: one-shot sounds since launch; without a device they count as
 /// dropped). Desktop only for now.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 27;
+///
+/// 28 numbers `GET /state`'s `frame` and `POST /rewind`'s alike where the
+/// game records history: `frame` is the recorded sim steps behind the state
+/// shown (0 before the first), so `/rewind {"frame": N}` restores the state
+/// `/state` reported as frame `N`, and `frame` reads `N` after it. Before,
+/// `frame` counted the shell's ticks (a step or two ahead of the recorder,
+/// counting on through a rewind) and `/rewind` took the recorder's index.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 28;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -280,7 +287,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/rewind",
-        description: "coupled scene rewind — {\"frame\":42} restores model + physics to that rendered frame (pin the clock first); 400 if unrecorded/pruned",
+        description: "coupled scene rewind — {\"frame\":42} restores model + physics to the state GET /state reported as frame 42 (pin the clock first); 400 if unrecorded/pruned",
     },
     DebugRoute {
         method: "POST",
@@ -360,6 +367,11 @@ impl RuntimeView {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RuntimeState {
+    /// The recorded sim steps behind the state the scene shows (v28): 0 before
+    /// the first, one more per step, the target after `POST /rewind` (which
+    /// takes this number), the scrubbed frame's while scrubbing. Zero-dt ticks
+    /// record nothing, so it stays 0 under `--fixed-time`. The shell's tick
+    /// count for a game that records no history.
     pub frame: u64,
     pub tts: f32,
     /// Clock steps queued by `POST /time` `advance` and not yet run. Zero means
@@ -742,6 +754,7 @@ fn one_frame() -> u32 {
 /// A coupled model-and-physics rewind sent through `POST /rewind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub struct RewindCommand {
+    /// A recorded frame, as `GET /state` reports `frame`.
     pub frame: u64,
 }
 
