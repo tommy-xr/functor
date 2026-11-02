@@ -13,7 +13,9 @@
 //!   composition of the model's own atlas;
 //! - an `Srgb` pixel lightmap allocates no mips until an albedo draws it;
 //! - a minified file texture samples its mips, on a group and on
-//!   `Scene.litTexture`.
+//!   `Scene.litTexture`;
+//! - `Scene.keepResident` draws nothing but keeps the model, its textures
+//!   and a `with_lightmap` lightmap it never drew on the GPU.
 //!
 //! Self-skipping like `skinned_data` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -63,6 +65,8 @@ fn main() {
     println!("test lightmap_mips ... ok");
     file_texture_mips(&mut harness);
     println!("test file_texture_mips ... ok");
+    keep_resident(&mut harness);
+    println!("test keep_resident ... ok");
 }
 
 /// A 256² file of 1-texel black/white stripes drawn ~47 px wide: through its
@@ -251,37 +255,66 @@ fn with_lightmap(harness: &mut Harness) {
 }
 
 /// An `Srgb` pixel texture drawn only as a lightmap has level 0 alone (its
-/// sampler reads no mips); drawn as an albedo, the same GL texture gains the
-/// mip state an albedo-first upload has.
+/// sampler reads no mips), even when first uploaded hidden by
+/// `keep_resident`; kept or drawn as an albedo, the same GL texture gains
+/// the mip state an albedo-first upload has.
 fn lightmap_mips(harness: &mut Harness) {
     let srgb = || {
         let pixels = PixelData::new(4, 4, PixelEncoding::Rgb8, ColorSpace::Srgb, &[128; 48]);
         Arc::new(pixels.expect("valid pixels"))
     };
-    let pixels = srgb();
-    let room = lightmapped(solid([255, 255, 255]), TextureDescription::Data(pixels.clone()), 1.0, [0.0; 3]);
-    harness.render(&frame(&room, 1, false, vec![]));
-    let gl = &harness.gl;
     // (level-1 width, min filter, anisotropy) of the texture bound to TEXTURE_2D.
-    let mips = || unsafe {
+    let mips = |gl: &glow::Context| unsafe {
         (
             gl.get_tex_level_parameter_i32(glow::TEXTURE_2D, 1, glow::TEXTURE_WIDTH),
             gl.get_tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER) as u32,
             gl.get_tex_parameter_f32(glow::TEXTURE_2D, glow::TEXTURE_MAX_ANISOTROPY),
         )
     };
+    let resident = |models: &[&Arc<ModelData>]| {
+        let mut resident = frame(models[0], 0, false, vec![]);
+        resident.scene = Scene3D::keep_resident(models.iter().map(|m| frame(m, 1, false, vec![]).scene).collect());
+        resident
+    };
+    // Draw `model` after a hidden frame: no cache misses (that frame uploaded
+    // everything), and the mips of its lightmap's GL texture.
+    let drawn_lightmap_mips = |harness: &mut Harness, model: &Arc<ModelData>| {
+        gpu_counters().take_window();
+        harness.render(&frame(model, 1, false, vec![]));
+        assert_eq!(gpu_counters().take_window().cache_misses, 0, "kept hidden: no upload on draw");
+        unsafe {
+            harness.gl.active_texture(glow::TEXTURE3);
+            let seen = mips(&harness.gl);
+            harness.gl.active_texture(glow::TEXTURE0);
+            seen
+        }
+    };
+    let shared = srgb();
+    let hidden = lightmapped(solid([255, 255, 255]), TextureDescription::Data(shared.clone()), 1.0, [0.0; 3]);
+    harness.render(&resident(&[&hidden]));
+    assert_eq!(drawn_lightmap_mips(harness, &hidden), (0, glow::LINEAR, 1.0), "a hidden-first lightmap has no mips");
+    // The same pixels kept hidden as another model's albedo, after the
+    // lightmap, gain the mips.
+    let albedo = lightmapped(TextureDescription::Data(shared), solid([255, 255, 255]), 1.0, [0.0; 3]);
+    harness.render(&resident(&[&hidden, &albedo]));
+    let kept_albedo = drawn_lightmap_mips(harness, &hidden);
+    let pixels = srgb();
+    let room = lightmapped(solid([255, 255, 255]), TextureDescription::Data(pixels.clone()), 1.0, [0.0; 3]);
+    harness.render(&frame(&room, 1, false, vec![]));
+    let gl = &harness.gl;
     unsafe {
         gl.active_texture(glow::TEXTURE3);
         let lightmap = gl.get_parameter_texture(glow::TEXTURE_BINDING_2D);
-        assert_eq!(mips(), (0, glow::LINEAR, 1.0), "a lightmap-only texture has no mips");
+        assert_eq!(mips(gl), (0, glow::LINEAR, 1.0), "a lightmap-only texture has no mips");
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, Some(harness.scene_context.pixel_texture(gl, &srgb())));
-        let albedo_first = mips();
+        let albedo_first = mips(gl);
         assert_eq!((albedo_first.0, albedo_first.1), (2, glow::LINEAR_MIPMAP_LINEAR));
         let texture = harness.scene_context.pixel_texture(gl, &pixels);
         assert_eq!(lightmap, Some(texture), "the lightmap's retained texture");
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        assert_eq!(mips(), albedo_first, "an albedo bind adds what an albedo-first upload has");
+        assert_eq!(mips(gl), albedo_first, "an albedo bind adds what an albedo-first upload has");
+        assert_eq!(kept_albedo, albedo_first, "so does keeping it hidden as an albedo");
         gl.bind_texture(glow::TEXTURE_2D, None);
     }
 }
@@ -378,6 +411,68 @@ fn groups(harness: &mut Harness) {
     });
     let white = harness.render(&frame(&plain, 1, false, vec![Light::ambient(1.0, 1.0, 1.0)]));
     assert_near(rgb(&white, 96, 64), [255, 255, 255], "no groups: white");
+}
+
+/// `keep_resident` draws nothing, but keeps a static model's mesh, group
+/// textures and lightmaps (its own and a `with_lightmap` one never drawn)
+/// on the GPU: drawing it afterwards misses no cache and uploads nothing.
+/// Left out of the scene instead, the same frames evict it.
+fn keep_resident(harness: &mut Harness) {
+    let lights = || vec![Light::ambient(1.0, 1.0, 1.0)];
+    let fresh = || {
+        lightmapped(
+            solid([255, 255, 255]),
+            solid_in([64, 64, 64], ColorSpace::Linear),
+            1.0,
+            [0.0; 3],
+        )
+    };
+    let day = || solid_in([128, 128, 128], ColorSpace::Linear);
+    let resident = |room: &Arc<ModelData>, day: &TextureDescription| {
+        let night = frame(room, 1, false, lights()).scene;
+        let day = night.clone().with_lightmap(day.clone());
+        let mut frame = frame(room, 0, false, lights());
+        frame.scene = Scene3D::keep_resident(vec![night, day]);
+        frame
+    };
+    // A first hidden upload inside a textured material leaves the material's
+    // texture bound for the cube drawn after it.
+    let mut textured = frame(&fresh(), 0, false, lights());
+    let kept = frame(&fresh(), 1, false, lights()).scene;
+    textured.scene.obj = SceneObject::Material(
+        MaterialDescription::Texture(solid([255, 0, 0])),
+        vec![Scene3D::keep_resident(vec![kept]), Scene3D::cube()],
+    );
+    assert_near(rgb(&harness.render(&textured), 64, 64), [255, 0, 0], "textured cube");
+    let empty = harness.render(&frame(&fresh(), 0, false, lights()));
+    for kept in [true, false] {
+        let (room, day) = (fresh(), day());
+        if kept {
+            gpu_counters().take_window();
+            let first = harness.render(&resident(&room, &day));
+            assert!(first == empty, "a resident subtree drew");
+            assert_eq!(gpu_counters().take_window().cache_misses, 4, "mesh, base, both lightmaps");
+            for _ in 0..3 {
+                harness.render(&resident(&room, &day));
+            }
+        } else {
+            harness.render(&frame(&room, 1, false, lights()));
+            for _ in 0..3 {
+                harness.render(&frame(&room, 0, false, lights()));
+            }
+        }
+        gpu_counters().take_window();
+        let mut lit = frame(&room, 1, false, lights());
+        lit.scene = lit.scene.with_lightmap(day.clone());
+        harness.render(&lit);
+        let window = gpu_counters().take_window();
+        if kept {
+            assert_eq!((window.cache_misses, window.bytes_uploaded), (0, 0), "kept: uploads");
+        } else {
+            // Mesh, base and the day lightmap; 1 (the day lightmap) if kept.
+            assert_eq!(window.cache_misses, 3, "evicted: re-uploads");
+        }
+    }
 }
 
 /// Five nodes share one upload of the mesh; steady frames upload nothing;

@@ -31,8 +31,9 @@
 //      place before the teleport), and K = 1 leaves only the eye's copy on;
 //  11. shared uploads (`--json` frame stats): after copy 0's pass, the same
 //      pass through copies 1–3 misses no GPU cache, uploads nothing and adds
-//      no live GL object; the noon switch misses as often with four copies
-//      active as with the office alone.
+//      no live GL object; with both bakes kept resident, the hour switch
+//      and entering after a walk out of every interior upload nothing, and
+//      such an entry in the grid of 4 misses no GPU cache.
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/liminal-office.mjs
@@ -651,33 +652,44 @@ async function statsAfter(game, n) {
   return frameStats(game).at(-1);
 }
 
-// The copies share one office's uploads. A cell mesh uploads the first time
-// any copy draws it, so after copy 0's pass (its lobby, corridor, facade and
-// window), the same pass through copies 1–3 misses the GPU caches never,
-// uploads nothing, and grows no live GL object. Switching to noon misses as
-// often with four copies active as with the office alone.
+// The copies share one office's uploads, and game.fun keeps both bakes'
+// cell models resident (`Scene.keepResident`). So after copy 0's pass (its
+// lobby, corridor, facade and window), the same pass through copies 1–3
+// misses the GPU caches never, uploads nothing, and grows no live GL object;
+// and switching the hour, or entering after a walk out of every interior's
+// activation radius, uploads nothing either.
 async function residency(game) {
   const windows = () => frameStats(game);
   const live = (s) => `${s.gpu_live_buffers} buffers, ${s.gpu_live_textures} textures, ${s.gpu_live_vaos} VAOs`;
-  // Misses and bytes over every stats window spanning a switch to noon. The
-  // day lightmap is evicted two frames after the switch back, so each switch
-  // uploads it afresh.
-  const noonSwitch = async () => {
+  // Misses and bytes over every stats window spanning `act`.
+  const uploadsAcross = async (act) => {
     const from = windows().length;
-    await game.hold("n", 1);
+    await act();
     await statsAfter(game, 300);
     await statsAfter(game, 300);
     const spanned = windows().slice(from);
     return {
       misses: spanned.reduce((n, w) => n + w.gpu_cache_misses, 0),
-      bytes: spanned.reduce((n, w) => n + w.gpu_bytes_per_frame * w.over_n_frames, 0),
+      bytes: spanned.reduce((n, w) => n + w.gpu_bytes_uploaded, 0),
     };
   };
+  const noonSwitch = () => uploadsAcross(() => game.hold("n", 1));
+  const none = (u) => u.misses === 0 && u.bytes === 0;
   await game.view(1);
   await statsAfter(game, 300);
   const office = await statsAfter(game, 300);
   const officeNoon = await noonSwitch();
-  await game.hold("n", 1);
+  const officeMidnight = await noonSwitch();
+  check(none(officeNoon) && none(officeMidnight),
+    `the hour switch uploads nothing (noon ${JSON.stringify(officeNoon)}, midnight ${JSON.stringify(officeMidnight)})`);
+  // South off the apron, out of the interior's activation radius, then back in.
+  await game.face(Math.PI);
+  const out = await game.walkTo("z", -40);
+  check(out.active.length === 0, `walked out of every interior (z ${out.at.z.toFixed(1)}, active ${JSON.stringify(out.active)})`);
+  await statsAfter(game, 300);
+  const coldEntry = await uploadsAcross(() => game.view(1));
+  const entered = (await game.model()).active;
+  check(entered.length > 0 && none(coldEntry), `entering after the walk out uploads nothing (${JSON.stringify(coldEntry)}, active ${JSON.stringify(entered)})`);
 
   await game.hold("b", 1);
   const pass = async (c) => {
@@ -693,10 +705,10 @@ async function residency(game) {
   await statsAfter(game, 300);
   const later = windows().slice(from);
   const misses = later.reduce((n, w) => n + w.gpu_cache_misses, 0);
-  const bytes = later.reduce((n, w) => n + w.gpu_bytes_per_frame * w.over_n_frames, 0);
+  const bytes = later.reduce((n, w) => n + w.gpu_bytes_uploaded, 0);
   const after = later[later.length - 1];
-  check(office.gpu_cache_misses === 0 && primed.gpu_cache_misses === 0 && primed.gpu_bytes_per_frame === 0,
-    `standing still uploads nothing (office ${office.gpu_cache_misses} misses; block ${primed.gpu_cache_misses} misses, ${primed.gpu_bytes_per_frame} B/frame)`);
+  check(none({ misses: office.gpu_cache_misses, bytes: office.gpu_bytes_uploaded }) && none({ misses: primed.gpu_cache_misses, bytes: primed.gpu_bytes_uploaded }),
+    `standing still uploads nothing (office ${office.gpu_cache_misses} misses, ${office.gpu_bytes_uploaded} B; block ${primed.gpu_cache_misses} misses, ${primed.gpu_bytes_uploaded} B)`);
   check(later.length >= 3 && misses === 0 && bytes === 0, `copies 1–3's passes (${later.length} stats windows) miss ${misses} times and upload ${bytes} bytes after copy 0's`);
   check(after.gpu_live_buffers === primed.gpu_live_buffers && after.gpu_live_textures === primed.gpu_live_textures && after.gpu_live_vaos === primed.gpu_live_vaos,
     `live GL objects after all four copies equal those after copy 0's (${live(after)} vs ${live(primed)}; the office from its entrance: ${live(office)})`);
@@ -705,9 +717,23 @@ async function residency(game) {
   check((await game.model()).active.length === 4, "residency: all four copies active at the crossroads");
   await statsAfter(game, 300);
   const blockNoon = await noonSwitch();
-  check(blockNoon.misses === officeNoon.misses && blockNoon.misses > 0,
-    `the noon switch misses as often with four copies active as with one (${blockNoon.misses} vs ${officeNoon.misses}; ${blockNoon.bytes} vs ${officeNoon.bytes} bytes)`);
-  return { office: live(office), primed: live(primed), after: live(after), misses, bytes, officeNoon, blockNoon };
+  check(none(blockNoon), `the noon switch uploads nothing with four copies active (${JSON.stringify(blockNoon)})`);
+
+  // A grid's copies share the office's cell models, so the same resident set
+  // covers them: entering one from where no copy is active misses no cache.
+  // Only the shells' instances, re-gathered for the new active set, upload.
+  await game.hold("b", 1);
+  await game.view(1);
+  await game.face(Math.PI);
+  await game.walkTo("z", -90);
+  await game.hold("g", 1);
+  await statsAfter(game, 300);
+  const far = await game.model();
+  check(far.town === 2 && far.active.length === 0, `grid of 4: no copy active at z ${far.at.z.toFixed(1)} (${JSON.stringify(far.active)})`);
+  const gridEntry = await uploadsAcross(() => game.view(1));
+  const gridEntered = (await game.model()).active;
+  check(gridEntered.length > 0 && gridEntry.misses === 0, `grid of 4: entering a copy then misses no GPU cache (${JSON.stringify(gridEntry)}, active ${JSON.stringify(gridEntered)})`);
+  return { office: live(office), primed: live(primed), after: live(after), misses, bytes, officeNoon, coldEntry, blockNoon, gridEntry };
 }
 
 // Render a golden the way runtime/functor-runtime-desktop/tests/golden.rs does.

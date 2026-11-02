@@ -144,6 +144,9 @@ pub enum Event {
         gpu_live_textures: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         gpu_bytes_per_frame: Option<f64>,
+        /// The window's total upload bytes (`gpu_bytes_per_frame` is per drawn frame).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_bytes_uploaded: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         gpu_cache_hits: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,6 +205,7 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 gpu_live_buffers,
                 gpu_live_textures,
                 gpu_bytes_per_frame,
+                gpu_bytes_uploaded,
                 gpu_cache_hits,
                 gpu_cache_misses,
                 gpu_instance_uploads_per_frame,
@@ -222,6 +226,7 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 gpu_live_buffers: Some(gpu_live_buffers),
                 gpu_live_textures: Some(gpu_live_textures),
                 gpu_bytes_per_frame: Some(gpu_bytes_per_frame),
+                gpu_bytes_uploaded: Some(gpu_bytes_uploaded),
                 gpu_cache_hits: Some(gpu_cache_hits),
                 gpu_cache_misses: Some(gpu_cache_misses),
                 gpu_instance_uploads_per_frame: Some(gpu_instance_uploads_per_frame),
@@ -405,6 +410,7 @@ impl PlainRenderer {
                 gpu_live_buffers,
                 gpu_live_textures,
                 gpu_bytes_per_frame,
+                gpu_bytes_uploaded: _,
                 gpu_cache_hits,
                 gpu_cache_misses,
                 gpu_instance_uploads_per_frame,

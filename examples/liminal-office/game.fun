@@ -77,6 +77,11 @@ let dayRooms =
     let dayLightmap = Texture.fromPng(File.bytes(Provenance.dayLightPath), Texture.Srgb) in
     nightRooms |> List.map((room) => room |> Scene.withLightmap(dayLightmap))
 
+// Both sets, kept on the GPU but never drawn: with no interior active, or
+// at the other hour, the meshes and both lightmaps stay loaded, so entering
+// a building or switching the hour uploads nothing.
+let resident = Scene.keepResident(Scene.group(List.flatten([nightRooms, dayRooms])))
+
 // ---- The player ------------------------------------------------------------------
 
 let playerTag = Physics.tag("player")
@@ -283,7 +288,7 @@ let draw = (model, tts: float) =>
   let shells =
     if not town.shells then []
     else [Scene.memo($"{town.name}/shells", { town: model.town, active: active, neon: o.neon, lamps: o.lamps, day: day }, Shells.shellsOf)] in
-  let scene = Scene.group([town.ground, Scene.group(List.append(shells, copies))]) in
+  let scene = Scene.group([town.ground, Scene.group(List.append(shells, copies)), resident]) in
   let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyAt(id)), eye) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
     |> Frame.withFog(Fog.linear(o.fogNear, Hours.fogFar, Hours.color(o.sky)))
