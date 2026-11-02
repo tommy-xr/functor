@@ -132,9 +132,9 @@ let sheetWith = (overlay, pieces) =>
 // Scene space (metres, Y up) back to part space (mm, Z up).
 let fromScene = (v: Vec3.t) => Vec3.make(Vec3.x(v) * 1000.0, 0.0 - Vec3.z(v) * 1000.0, Vec3.y(v) * 1000.0)
 
-// What the pointer is over on a sheet of `pieces`: the piece's index in the
-// list, the view's name, and the hit in part space (mm, distance from the
-// view's eye plane).
+// What the pointer is over on a sheet of `pieces`, or through a camera: the
+// piece's index in the list, the view's name, and the hit in part space (mm,
+// distance along the pointer's ray).
 type hit = { piece: float, view: string, point: Vec3.t, normal: Vec3.t, distance: float }
 
 // The hit under `mouse` (the `sampledInput` snapshot's) on the sheet that

@@ -90,7 +90,7 @@ let drawPieces = (pieces, m, tts: float) =>
   if m.sheet then PartReview.sheet(m.review, pieces) else
   let f = framing(pieces) in
   Frame.createLit(
-    camera(pieces, m),
+    OrbitCamera.camera(m.orbit, f.center, f.size),
     Scene.group([
       Scene.plane()
         |> Scene.scale(f.size * 4.0)

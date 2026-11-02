@@ -11074,6 +11074,14 @@ Anim.clip(\"walk\", tts)"
         assert_eq!(notes.len(), 1, "{json}");
         assert_eq!(notes[0]["part"], "box", "{json}");
         assert_eq!(notes[0]["view"], "orbit", "{json}");
+        // On the box's surface: one coordinate on a face, the normal along it.
+        let (p, n) = (&notes[0]["point"], &notes[0]["normal"]);
+        let on_face = [("x", 5.0), ("y", 10.0), ("z", 30.0)].iter().any(|(axis, face)| {
+            let v = p[axis].as_f64().unwrap();
+            let lo = if *axis == "z" { 0.0 } else { -face };
+            ((v - face).abs() < 0.01 || (v - lo).abs() < 0.01) && n[axis].as_f64().unwrap().abs() > 0.99
+        });
+        assert!(on_face, "{json}");
         assert_eq!(json[0]["selected"], 1.0, "{json}");
         assert!(json[1]["notes"].as_array().unwrap().is_empty(), "{json}");
         assert_eq!(json[2], false, "{json}");
