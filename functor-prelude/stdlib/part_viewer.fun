@@ -11,7 +11,7 @@
 // the view, Note pins a note where the pointer meets a part.
 //
 // An app showing several parts keeps a `PartViewer.t` in its model, forwards
-// the mouse, key, tick and `update` hooks, shows `uiWith(wrap, m)`, and passes
+// the mouse, key, tick and `update` hooks, shows `webviewWith(wrap, m)`, and passes
 // its non-empty PartViews pieces (`{ name, solid, color }`) to `drawPieces` and
 // `sampledInputPieces`.
 
@@ -74,17 +74,48 @@ let update = (m, msg: msg) =>
   | UseTool(tool) => { m with tool: tool, orbit: OrbitCamera.press(m.orbit, false) }
   | ShowSheet(on) => { m with sheet: on }
 
-// The toolbar, top right, and the notes panel wherever notes can be pinned;
-// `wrap` lifts a `msg` into the app's message.
-let uiWith = (wrap, m) =>
-  let pick = (label, on, msg) => Ui.button(if on then Text.concat("> ", label) else label, wrap(msg)) in
-  let toolbar =
-    if m.sheet then [pick("3D view", false, ShowSheet(false))]
-    else [pick("Orbit", m.tool == Orbit, UseTool(Orbit)), pick("Note", m.tool == Note, UseTool(Note)), pick("8 views", false, ShowSheet(true))] in
-  let notes = if m.sheet || m.tool == Note then [PartReview.ui((r) => wrap(Review(r)), m.review)] else [] in
-  Ui.column([Ui.row(toolbar) |> Ui.panel(Ui.topRight())] |> List.append(notes))
+// The viewer's stylesheet: dark panels over the 3D view. An app's own
+// controls can use its classes (`pv-card`, `pv-bar`, `pv-title`, buttons with
+// `aria-pressed`) to match.
+let css = "
+  .pv { position: absolute; left: 0; top: 0; width: 100vw; height: 100vh;
+        font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 14px; color: #e8e6e2; }
+  .pv-card { position: absolute; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+             background: rgba(31, 32, 35, 0.92); border: 1px solid #34363a; border-radius: 10px; }
+  .pv-bar { position: absolute; top: 16px; right: 16px; display: flex; gap: 6px; padding: 6px;
+            background: rgba(31, 32, 35, 0.92); border: 1px solid #34363a; border-radius: 10px; }
+  .pv-notes { left: 16px; bottom: 16px; width: 440px; }
+  .pv-title { font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #9a9ea5; }
+  .pv-label { font-weight: bold; }
+  .pv-hint { color: #9a9ea5; }
+  .pv button { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 13px; font-weight: bold;
+               color: #e8e6e2; background: #1f2023; border: 1px solid #34363a; border-radius: 6px; padding: 6px 11px; }
+  .pv button:hover { border-color: #9a9ea5; }
+  .pv button[aria-pressed=true] { background: #e47a3d; color: #17181a; border-color: #e47a3d; }
+  .pv input { font-size: 14px; padding: 7px 9px; color: #e8e6e2; background: #17181a;
+              border: 1px solid #e47a3d; border-radius: 6px; }
+  .pv-row { display: flex; gap: 6px; }
+  .pv .pv-note { flex-grow: 1; display: flex; gap: 8px; text-align: left; font-weight: normal; }
+  .pv .pv-selected { border-color: #e47a3d; }
+  .pv-id { color: #e47a3d; font-weight: bold; }
+  .pv-at { margin-left: auto; white-space: nowrap; color: #9a9ea5; font-family: Menlo, monospace; font-size: 11px; }
+"
 
-let ui = (m) => uiWith((msg) => msg, m)
+// A toggle button: `aria-pressed` marks the one in use.
+let toggle = (label: string, on: bool, msg) =>
+  Html.button([Attr.attr("aria-pressed", if on then "true" else "false"), Attr.onClick(msg)], [Html.text(label)])
+
+// The toolbar, top right, and the notes card wherever notes can be pinned,
+// for a `webview` (`.pv` styled by `css`); `wrap` lifts a `msg` into the
+// app's message.
+let webviewWith = (wrap, m) =>
+  let toolbar =
+    if m.sheet then [toggle("3D view", false, wrap(ShowSheet(false)))]
+    else [toggle("Orbit", m.tool == Orbit, wrap(UseTool(Orbit))), toggle("Note", m.tool == Note, wrap(UseTool(Note))), toggle("8 views", false, wrap(ShowSheet(true)))] in
+  let notes = if m.sheet || m.tool == Note then [PartReview.webview((r) => wrap(Review(r)), m.review)] else [] in
+  Html.div([Attr.class("pv")], [Html.style(css), Html.div([Attr.class("pv-bar")], toolbar)] |> List.append(notes))
+
+let webview = (m) => webviewWith((msg) => msg, m)
 
 let drawPieces = (pieces, m, tts: float) =>
   if m.sheet then PartReview.sheet(m.review, pieces) else

@@ -8,7 +8,7 @@ import { findRepoRoot, FunctorRunner } from "../src/index.js";
 
 // Review notes in the default part viewer: `V` shows the PartViews sheet, a
 // click on a tile pins a note where the pointer meets the part, typing into
-// the notes panel's field sets its text — and the note is plain data in
+// the notes card's field sets its text — and the note is plain data in
 // `/state`'s structured model, at the expected point in part space (mm).
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
@@ -102,10 +102,11 @@ test(
     }
     assert.deepEqual(note.normal, { x: 0, y: -1, z: 0 });
 
-    // The selected note's text field is the panel's first widget (slot 0).
+    // The selected note's text field is the webview's second handler (slot
+    // 1), after the toolbar's "3D view" button.
     await runner.input({
-      type: "ui_event",
-      slot: 0,
+      type: "webview_event",
+      slot: 1,
       kind: { TextChanged: "make this edge rounder" },
     });
     await runner.step();

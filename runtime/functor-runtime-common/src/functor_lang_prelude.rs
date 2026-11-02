@@ -10784,7 +10784,7 @@ Anim.clip(\"walk\", tts)"
              let tick = (m: Model, dt, tts) => { m with viewer: PartViewer.tick(m.viewer, dt, tts) }\n\
              let input = (m: Model, key: Key.t, isDown: bool) => { m with viewer: PartViewer.input(m.viewer, key, isDown) }\n\
              let sampledInput = (m: Model, s: Input.snapshot) => { m with viewer: PartViewer.sampledInputPieces(pieces, m.viewer, s) }\n\
-             let ui = (m: Model) => PartViewer.uiWith(Viewer, m.viewer)\n\
+             let webview = (m: Model) => PartViewer.webviewWith(Viewer, m.viewer)\n\
              let draw = (m: Model, tts) => PartViewer.drawPieces(pieces, m.viewer, tts)\n\
              let sheet = () => input(input(init, Key.V, true), Key.V, false)\n"
                 .to_string(),
@@ -10806,6 +10806,11 @@ Anim.clip(\"walk\", tts)"
         assert!(orbit.render_targets.is_empty());
         assert!(format!("{:?}", orbit.scene).matches("Lit").count() == 3, "bed + two pieces");
         let sheet = session.call("sheet", vec![], &mut FunctorHost).unwrap();
+        for model in [session.global("init").unwrap(), sheet.clone()] {
+            session
+                .call("webview", vec![model], &mut FunctorHost)
+                .unwrap_or_else(|e| panic!("webview: {}", e.message));
+        }
         let frame = session
             .call("draw", vec![sheet, Value::Number(1.0)], &mut FunctorHost)
             .unwrap_or_else(|e| panic!("sheet draw: {}", e.message));

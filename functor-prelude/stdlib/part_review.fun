@@ -10,7 +10,7 @@
 //   let init = { review: PartReview.init }
 //   let sampledInput = (m, s: Input.snapshot) => { m with review: PartReview.input(m.review, pieces, s) }
 //   let update = (m, msg: Msg) => match msg with | Review(r) => { m with review: PartReview.update(m.review, r) }
-//   let ui = (m) => PartReview.ui(Review, m.review)
+//   let webview = (m) => Html.div([], [Html.style(PartViewer.css), PartReview.webview(Review, m.review)])
 //   let draw = (m, tts) => PartReview.sheet(m.review, pieces)
 //
 // Clicks need a free pointer: `"cursor": "visible"` in `functor.json`.
@@ -74,33 +74,38 @@ let update = (r: t, m: msg): t =>
   | Delete(id) =>
     { r with notes: List.filter((n) => n.id != id, r.notes), selected: if r.selected == id then 0.0 else r.selected }
 
-// How many notes the panel lists, so it stays clear of the tiles.
+// How many notes the panel lists, so it stays clear of the view.
 let shown = 8.0
 
 // A note's text cut to fit a list row.
 let short = (text: string) =>
-  if Text.length(text) <= 24.0 then text else Text.concat(Text.join("", List.take(23.0, Text.chars(text))), "…")
+  if Text.length(text) <= 32.0 then text else Text.concat(Text.join("", List.take(31.0, Text.chars(text))), "…")
 
 let at3 = (p: Input.point3) =>
   Text.join(", ", [Text.fixed(p.x, 1.0), Text.fixed(p.y, 1.0), Text.fixed(p.z, 1.0)])
 
-// The notes panel, bottom left (the sheet leaves that tile empty): the
-// selected note's text field first, then the latest `shown` notes — select
-// one, or `x` to delete it. `wrap` lifts a `msg` into the app's own message (a constructor, or
-// `(m) => m` when they are the same).
-let ui = (wrap, r: t) =>
+// The notes card (HTML, for a `webview`), bottom left: the selected note's
+// text field, then the latest `shown` notes — click one to select it, `×` to
+// delete it. `wrap` lifts a `msg` into the app's own message (a constructor,
+// or `(m) => m` when they are the same). Styled by `PartViewer.css`.
+let webview = (wrap, r: t) =>
   let editing = selectedNote(r) |> Option.map((n) => [
-      Ui.text(Text.concat(Text.concat("Note ", Text.fixed(n.id, 0.0)), Text.concat(" on ", n.part))),
-      Ui.row([Ui.text("Note:"), Ui.textInput(n.text, (text) => wrap(Edit(text)))]),
-    ]) |> Option.defaultValue([Ui.text("Click a part to pin a note")]) in
-  let row = (n) => Ui.row([
-      Ui.button(Text.join(" ", [Text.fixed(n.id, 0.0), n.part, Text.concat(Text.concat("(", at3(n.point)), ")"), short(n.text)]), wrap(Select(n.id))),
-      Ui.button("x", wrap(Delete(n.id))),
+      Html.div([Attr.class("pv-label")], [Html.text(Text.concat(Text.concat("Note ", Text.fixed(n.id, 0.0)), Text.concat(" · ", n.part)))]),
+      Html.input([Attr.value(n.text), Attr.placeholder("What should change?"), Attr.onInput((text) => wrap(Edit(text)))]),
+    ]) |> Option.defaultValue([Html.div([Attr.class("pv-hint")], [Html.text("Click a part to pin a note")])]) in
+  let row = (n) => Html.div([Attr.class("pv-row")], [
+      Html.button(
+        [Attr.class(if n.id == r.selected then "pv-note pv-selected" else "pv-note"), Attr.onClick(wrap(Select(n.id)))],
+        [Html.span([Attr.class("pv-id")], [Html.text(Text.fixed(n.id, 0.0))]),
+         Html.span([], [Html.text(if n.text == "" then n.part else short(n.text))]),
+         Html.span([Attr.class("pv-at")], [Html.text(Text.concat(Text.concat(n.part, " "), at3(n.point)))])]),
+      Html.button([Attr.class("pv-x"), Attr.onClick(wrap(Delete(n.id)))], [Html.text("×")]),
     ]) in
   let earlier = List.length(r.notes) - shown in
-  let more = if earlier > 0 then [Ui.text(Text.concat(Text.fixed(earlier, 0.0), " earlier notes"))] else [] in
-  Ui.column(editing |> List.append(more) |> List.append(List.map(row, List.drop(earlier, r.notes))))
-    |> Ui.panel(Ui.bottomLeft())
+  let more = if earlier > 0 then [Html.div([Attr.class("pv-hint")], [Html.text(Text.concat(Text.fixed(earlier, 0.0), " earlier notes"))])] else [] in
+  Html.div([Attr.class("pv-card pv-notes")],
+    [Html.div([Attr.class("pv-title")], [Html.text("NOTES")])]
+      |> List.append(editing) |> List.append(more) |> List.append(List.map(row, List.drop(earlier, r.notes))))
 
 // A marker at each note on one of `pieces` (by name), in scene space, sized
 // to the pieces: the selected one yellow, the rest red.
