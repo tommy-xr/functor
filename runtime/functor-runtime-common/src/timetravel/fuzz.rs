@@ -25,6 +25,7 @@ use crate::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform,
 use crate::functor_lang_producer::EntryRole;
 use crate::physics::{self, DEFAULT_WORLD, FIXED_DT};
 use crate::protocol::GameProducer;
+use crate::texture::digesting;
 use crate::{
     FrameTime, GameClock, InputEdges, InputSnapshot, Key, RecordedInput, XrControllerSnapshot,
     XrInputSnapshot,
@@ -789,8 +790,11 @@ impl<'a> Shell<'a> {
 
     fn draw_hash(&mut self, tts: f32) -> Drawn {
         let frame = self.game.render(FrameTime { dts: 0.0, tts });
-        (!self.draw_failed.get())
-            .then(|| fnv1a(&serde_json::to_vec(&frame).expect("frame serializes")))
+        // Texels by digest: inline, a lightmap shared by many models is
+        // hundreds of MB of JSON per draw.
+        (!self.draw_failed.get()).then(|| {
+            fnv1a(&digesting(|| serde_json::to_vec(&frame)).expect("frame serializes"))
+        })
     }
 
     fn feed(&mut self, input: RecordedInput) {
@@ -892,7 +896,7 @@ impl<'a> Shell<'a> {
                     format!("frame {frame}: tts {tts}, recorded {}", rec.tts),
                 ));
             }
-            let live = world().map(|w| w.1);
+            let live = physics::with_world(DEFAULT_WORLD, |w| w.frame());
             if rec.fixed.is_some() && live != rec.fixed {
                 return Err(self.fail(
                     Kind::Lockstep,
