@@ -1229,9 +1229,10 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         // Wait for the cold app to bind its endpoint, clearing any previous
         // project's upload manifest in the same round trip. Assets land
         // BEFORE the new game starts, so its first Sub.assets snapshot cannot
-        // observe transient "missing on Android" failures.
+        // observe transient "missing on Android" failures. 30 s: a first
+        // launch right after an APK install can take over 10 s to bind.
         let mut ready = false;
-        for _ in 0..20 {
+        for _ in 0..60 {
             match post_asset_manifest(&addr, &[]) {
                 Ok((200, _)) => {
                     ready = true;
