@@ -3631,6 +3631,15 @@ mod tests {
         events
     }
 
+    /// `body` as a still kinematic body: it collides as the fixed one does
+    /// but never fuses, the baseline fused bodies are checked against.
+    fn unfused(body: Body) -> Body {
+        Body {
+            kind: BodyKind::Kinematic,
+            ..body
+        }
+    }
+
     /// Bodies fused into compounds.
     fn fused_bodies(w: &World) -> usize {
         w.fused.iter().map(|f| f.tags.len()).sum()
@@ -3774,24 +3783,24 @@ mod tests {
         assert_eq!(w.colliders.len(), 1);
     }
 
-    /// Floor tiles plus a box under tile `s0167`, flat or as one group.
-    fn queried(memo: bool) -> World {
+    /// Floor tiles plus a box under tile `s0167`, fused or not.
+    fn queried(fused: bool) -> World {
         let mut bodies = floor_tiles(300);
         bodies.push(
             Body::fixed("under".to_string(), Shape::Cuboid { extents: [1.0, 1.0, 1.0] })
                 .at([2.0, -3.0, -20.0]),
         );
+        if !fused {
+            bodies = bodies.into_iter().map(unfused).collect();
+        }
         let mut w = World::new([0.0, -9.81, 0.0]);
-        w.reconcile(&match memo {
-            true => with_groups(vec![], vec![group("g", bodies)]),
-            false => scene(bodies),
-        });
+        w.reconcile(&scene(bodies));
         w.step_frame(FIXED_DT);
         w
     }
 
     #[test]
-    fn queries_on_fused_bodies_answer_as_flat_ones() {
+    fn queries_on_fused_bodies_answer_as_unfused_ones() {
         let (flat, memo) = (queried(false), queried(true));
         assert_eq!((memo.tags.len(), fused_bodies(&memo)), (0, 301));
         let ball = Shape::Sphere { radius: 0.25 };
@@ -3811,16 +3820,16 @@ mod tests {
 
     #[test]
     fn a_sensor_reports_each_fused_body_it_passes() {
-        let run = |memo: bool| {
-            let tiles = floor_tiles(90);
+        let run = |fused: bool| {
+            let mut tiles = floor_tiles(90);
+            if !fused {
+                tiles = tiles.into_iter().map(unfused).collect();
+            }
             let probe = Body {
                 sensor: true,
                 ..crate_at("probe", [0.5, 3.0, -24.0])
             };
-            let frame = match memo {
-                true => with_groups(vec![probe], vec![group("g", tiles)]),
-                false => scene(tiles.into_iter().chain([probe]).collect()),
-            };
+            let frame = scene(tiles.into_iter().chain([probe]).collect());
             let mut w = World::new([0.0, -9.81, 0.0]);
             let mut events = Vec::new();
             for _ in 0..90 {
@@ -3852,8 +3861,10 @@ mod tests {
                 ..Body::fixed("belt".to_string(), Shape::Sphere { radius: 0.5 })
             },
         ]);
+        // Flat or grouped alike.
+        let flat = bodies.drain(..2).collect();
         let mut w = World::new([0.0, -9.81, 0.0]);
-        w.reconcile(&with_groups(vec![], vec![group("g", bodies)]));
+        w.reconcile(&with_groups(flat, vec![group("g", bodies)]));
         let compounds: Vec<_> = w.fused.iter().map(|f| f.tags.clone()).collect();
         assert_eq!(compounds, [vec!["s0000", "s0002", "s0003"], vec!["s0001"]]);
         assert_eq!(w.tags.keys().collect::<Vec<_>>(), ["belt", "door", "zone"]);
@@ -3888,18 +3899,16 @@ mod tests {
 
     #[test]
     fn a_continuous_sensor_tunnelling_a_fused_wall_reports_it() {
-        let run = |memo: bool| {
+        let run = |fused: bool| {
             let wall = Body::fixed("wall".to_string(), Shape::Cuboid { extents: [0.1, 4.0, 4.0] });
+            let wall = if fused { wall } else { unfused(wall) };
             let bullet = Body {
                 sensor: true,
                 continuous: true,
                 velocity: [300.0, 0.0, 0.0],
                 ..Body::dynamic("bullet".to_string(), Shape::Sphere { radius: 0.1 }).at([-2.0, 0.0, 0.0])
             };
-            let frame = match memo {
-                true => with_groups(vec![bullet], vec![group("g", vec![wall])]),
-                false => scene(vec![bullet, wall]),
-            };
+            let frame = scene(vec![bullet, wall]);
             let mut w = World::new([0.0, 0.0, 0.0]);
             let mut events = Vec::new();
             for _ in 0..3 {
@@ -3913,9 +3922,8 @@ mod tests {
         assert_eq!(run(true), run(false));
     }
 
-    /// A crate resting on tile `s0000` while the tile moves between flat and a
-    /// group at frames 60 and 90 (and to `moved.1` at frame `moved.0`): the
-    /// events.
+    /// A crate resting on tile `s0000` while the tile is a kinematic body for
+    /// frames 60..90 (and moves to `moved.1` at frame `moved.0`): the events.
     fn handed_over(moved: Option<(u32, [f32; 3])>) -> Vec<(String, String, bool, bool)> {
         let crate_ = crate_at("crate", [-15.0, 1.5, -25.0]);
         let tile = |frame: u32| {
@@ -3928,10 +3936,11 @@ mod tests {
         let mut w = World::new([0.0, -9.81, 0.0]);
         let mut events = Vec::new();
         for frame in 0..120 {
-            w.reconcile(&match (60..90).contains(&frame) {
-                true => scene(vec![crate_.clone(), tile(frame)]),
-                false => with_groups(vec![crate_.clone()], vec![group("g", vec![tile(frame)])]),
-            });
+            let tile = match (60..90).contains(&frame) {
+                true => unfused(tile(frame)),
+                false => tile(frame),
+            };
+            w.reconcile(&scene(vec![crate_.clone(), tile]));
             w.step_frame(FIXED_DT);
             events.extend(sorted_events(w.take_events()));
         }
@@ -3970,15 +3979,16 @@ mod tests {
 
     /// A body sliding at 5 m/s along +x from `x0` over a row of 30
     /// frictionless 1 m tiles (`wall`: beside them, pushed against them,
-    /// without gravity), flat or fused. Once settled, the worst seam snag:
+    /// without gravity), fused or not. Once settled, the worst seam snag:
     /// offset along the contact normal from its settled distance, normal
     /// speed, and the speed lost along x by x = 25 (or after 400 frames).
-    fn slide(memo: bool, shape: &Shape, half: [f32; 3], wall: bool, x0: f32) -> [f32; 3] {
+    fn slide(fused: bool, shape: &Shape, half: [f32; 3], wall: bool, x0: f32) -> [f32; 3] {
         let tiles: Vec<Body> = (0..30)
             .map(|i| {
-                Body::fixed(format!("t{i:02}"), Shape::Cuboid { extents: [1.0; 3] })
+                let tile = Body::fixed(format!("t{i:02}"), Shape::Cuboid { extents: [1.0; 3] })
                     .at([i as f32, 0.0, 0.0])
-                    .with_friction(0.0)
+                    .with_friction(0.0);
+                if fused { tile } else { unfused(tile) }
             })
             .collect();
         let normal = if wall { 2 } else { 1 };
@@ -3991,10 +4001,7 @@ mod tests {
             rotation_locked: matches!(shape, Shape::Capsule { .. }),
             ..Body::dynamic("slider".to_string(), shape.clone()).at(start).with_friction(0.0)
         };
-        let mut frame = match memo {
-            true => with_groups(vec![slider], vec![group("g", tiles)]),
-            false => scene(tiles.into_iter().chain([slider]).collect()),
-        };
+        let mut frame = scene(tiles.into_iter().chain([slider]).collect());
         frame.gravity = if wall { [0.0; 3] } else { [0.0, -9.81, 0.0] };
         let mut w = World::new(frame.gravity);
         let (mut settled, mut worst) = (None, [0.0f32; 3]);
@@ -4018,42 +4025,40 @@ mod tests {
     }
 
     /// Fused tiles are the same parts with the same contact generation, so a
-    /// slider meets each seam as it does flat ones. Over 8 start offsets: the
+    /// slider meets each seam as it does separate bodies. Over 8 start offsets: the
     /// mean of each snag metric.
     #[test]
-    fn fused_seams_snag_no_worse_than_flat_ones() {
+    fn fused_seams_snag_no_worse_than_separate_bodies() {
         let cube = (Shape::Cuboid { extents: [0.8; 3] }, [0.4; 3]);
         let capsule = (Shape::Capsule { half_height: 0.4, radius: 0.3 }, [0.3, 0.7, 0.3]);
         for (name, (shape, half)) in [("box", cube), ("capsule", capsule)] {
             for wall in [false, true] {
-                let mean = |memo: bool| {
+                let mean = |fused: bool| {
                     let mut sum = [0.0f32; 3];
                     for k in 0..8 {
-                        let m = slide(memo, &shape, half, wall, 0.2 + 0.07 * k as f32);
+                        let m = slide(fused, &shape, half, wall, 0.2 + 0.07 * k as f32);
                         (0..3).for_each(|i| sum[i] += m[i] / 8.0);
                     }
                     sum
                 };
                 let (flat, fused) = (mean(false), mean(true));
-                eprintln!("seams {name} wall={wall}: flat {flat:?} fused {fused:?}");
+                eprintln!("seams {name} wall={wall}: separate {flat:?} fused {fused:?}");
                 for i in 0..3 {
                     assert!(
                         fused[i] <= flat[i] * 1.1 + 1e-3,
-                        "{name} wall={wall} metric {i}: flat {flat:?} fused {fused:?}"
+                        "{name} wall={wall} metric {i}: separate {flat:?} fused {fused:?}"
                     );
                 }
             }
         }
     }
 
-    /// The equivalence golden: the same bodies declared flat or as a group,
-    /// through impulses, a teleport of a group body and a mid-run group edit.
-    /// Fused statics read as the flat bodies do and report the same contacts
-    /// while the crates move alike (the solver orders a compound's contacts
-    /// differently, so a crate on a seam drifts apart by millimetres). A
-    /// recorded memo run seeks and replays bit-exact across the edit.
+    /// The equivalence golden: the same bodies declared flat or as a group
+    /// give the same events and poses every frame and byte-identical worlds,
+    /// through impulses, a teleport of a fused body and a mid-run group edit
+    /// — and a recorded memo run seeks and replays bit-exact across that edit.
     #[test]
-    fn a_memoized_group_simulates_like_flat_bodies() {
+    fn a_memoized_group_simulates_exactly_like_flat_bodies() {
         use super::super::{Command, Simulatable, Timeline, TimelineLog};
 
         let before = group("statics", floor_tiles(1500));
@@ -4099,44 +4104,34 @@ mod tests {
             }
             cmds
         };
-        let crates_agree = |flat: &World, memo: &World| {
-            ["a", "b", "c"]
-                .iter()
-                .all(|t| flat.body_transform(t) == memo.body_transform(t))
-        };
 
         let mut flat = World::new([0.0, -9.81, 0.0]);
         let mut memo = World::new([0.0, -9.81, 0.0]);
         let mut log = TimelineLog::keyframes(30);
         let mut at_290 = Vec::new();
-        let mut contacts_compared = 0;
+        let mut events = 0;
         for frame in 0..600 {
             if frame == 290 {
                 at_290 = memo.snapshot();
             }
             let cmds = cmds_at(frame, true);
             log.record(frame, &memo, &cmds);
-            let agreed = crates_agree(&flat, &memo);
-            let flat_events = sorted_events(flat.step(&cmds_at(frame, false)));
-            let memo_events = sorted_events(memo.step(&cmds));
-            if agreed {
-                assert_eq!(flat_events, memo_events, "frame {frame}");
-                contacts_compared += flat_events.len();
+            let flat_events = flat.step(&cmds_at(frame, false));
+            assert_eq!(flat_events, memo.step(&cmds), "events at {frame}");
+            for tag in ["a", "b", "c", "s0042"] {
+                assert_eq!(flat.body_transform(tag), memo.body_transform(tag), "{tag} at {frame}");
             }
+            if frame % 50 == 0 || frame == 599 {
+                assert!(sim_state(&flat) == sim_state(&memo), "diverged at {frame}");
+            }
+            events += flat_events.len();
             if frame > 0 && frame != 300 {
                 assert_eq!(memo.reconcile_stats().compared, 3, "frame {frame}");
                 assert_eq!(memo.reconcile_stats().written, 0, "frame {frame}");
             }
-            if [199, 200, 300, 599].contains(&frame) {
-                for body in after.bodies.iter().chain(before.bodies.iter()) {
-                    let t = &body.tag;
-                    assert_eq!(flat.body_transform(t), memo.body_transform(t), "{t} at {frame}");
-                    assert_eq!(flat.body_velocity(t), memo.body_velocity(t), "{t} at {frame}");
-                }
-            }
         }
         // b's landing on a seam: six tiles at once.
-        assert!(contacts_compared >= 6, "{contacts_compared} contacts compared");
+        assert!(events >= 6, "{events} events");
         assert_eq!(memo.body_transform("s0042").unwrap().0, [0.0, 0.5, 0.0]);
         assert!(memo.body_transform("s9999").is_some() && memo.body_transform("s0007").is_none());
         assert!(memo.tags.len() == 3 && memo.colliders.len() == 4);
