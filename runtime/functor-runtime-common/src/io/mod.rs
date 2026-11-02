@@ -599,8 +599,8 @@ mod tests {
         assert!(err.starts_with("ext/other.gif: not pushed"), "{err}");
         // Unaskable paths and no reader: the disk error, not the reader's.
         let err = read_local_asset("../ext/skin.gif", reader).unwrap_err();
-        assert!(!err.contains("not pushed"), "{err}");
+        assert!(err.starts_with("../ext/skin.gif: ") && err.contains("os error"), "{err}");
         let err = read_local_asset("ext/skin.gif", None).unwrap_err();
-        assert!(!err.contains("not pushed"), "{err}");
+        assert!(err.starts_with("ext/skin.gif: ") && err.contains("os error"), "{err}");
     }
 }

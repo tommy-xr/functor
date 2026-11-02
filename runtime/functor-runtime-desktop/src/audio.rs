@@ -386,16 +386,16 @@ mod tests {
     }
 
     /// A sound under a mounted prefix (not on disk) loads through the
-    /// project reader, like `File.bytes` of the same path.
+    /// project reader, like `File.bytes` of the same path; uploaded bytes win.
     #[test]
     fn sounds_load_from_mounted_paths() {
         use functor_runtime_common::storage::{ProjectReadError, ProjectReader};
-        /// `ext/…` mounted on an in-memory folder.
-        struct Mount(Vec<u8>);
+        /// `ext/snd/beep.wav` on a mount.
+        struct Mount;
         impl ProjectReader for Mount {
             fn read(&self, path: &str) -> Result<Arc<[u8]>, ProjectReadError> {
                 match path {
-                    "ext/snd/beep.wav" => Ok(self.0.as_slice().into()),
+                    "ext/snd/beep.wav" => Ok(Arc::from(&[1u8, 2, 3][..])),
                     _ => Err(ProjectReadError::Unreadable("not mounted".to_string())),
                 }
             }
@@ -403,25 +403,17 @@ mod tests {
                 path == "ext/snd/beep.wav"
             }
         }
-        // 8 samples of 16-bit mono PCM at 8 kHz.
-        let data = [0u8; 16];
-        let mut wav = Vec::new();
-        wav.extend_from_slice(b"RIFF");
-        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
-        wav.extend_from_slice(b"WAVEfmt ");
-        for field in [16u32, 1 | (1 << 16), 8000, 16000, 2 | (16 << 16)] {
-            wav.extend_from_slice(&field.to_le_bytes());
-        }
-        wav.extend_from_slice(b"data");
-        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        wav.extend_from_slice(&data);
-
-        let mount = Mount(wav);
         let cache = AssetCache::new();
-        let bytes = sound_bytes(&cache, Some(&mount), "ext/snd/beep.wav").expect("mounted sound");
-        let decoded = Decoder::new(BufReader::new(Cursor::new(bytes))).expect("decodes");
-        assert_eq!(decoded.count(), 8);
-        let err = sound_bytes(&cache, Some(&mount), "ext/snd/gone.wav").unwrap_err();
+        assert_eq!(
+            sound_bytes(&cache, Some(&Mount), "ext/snd/beep.wav"),
+            Ok(vec![1, 2, 3])
+        );
+        let err = sound_bytes(&cache, Some(&Mount), "ext/snd/gone.wav").unwrap_err();
         assert_eq!(err, "ext/snd/gone.wav: not mounted");
+        cache.replace_uploaded("ext/snd/beep.wav", vec![9]);
+        assert_eq!(
+            sound_bytes(&cache, Some(&Mount), "ext/snd/beep.wav"),
+            Ok(vec![9])
+        );
     }
 }
