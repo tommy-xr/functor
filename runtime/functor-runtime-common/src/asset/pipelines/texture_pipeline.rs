@@ -177,6 +177,41 @@ impl AssetPipeline<Texture2D> for TerrainColormapPipeline {
     }
 }
 
+/// Terrain normal maps: terrain-local normals stretched once over a terrain,
+/// for the colormap's flashlight.
+///
+/// Linear (the texels are vectors, not color) and clamped. No mips: the
+/// shader reads level 0 only, since a flashlight's reach is tens of metres and
+/// a terrain-wide map's texels are metres across, so it is always magnified.
+pub struct TerrainNormalMapPipeline;
+
+impl AssetPipeline<Texture2D> for TerrainNormalMapPipeline {
+    fn process(
+        &self,
+        bytes: Vec<u8>,
+        _asset_cache: &AssetCache,
+        context: crate::asset::AssetPipelineContext,
+    ) -> Texture2D {
+        let Some(texture_data) = decode(&bytes) else {
+            return self.unloaded_asset(context);
+        };
+        Texture2D::init_from_data(
+            texture_data,
+            TextureOptions {
+                wrap: false,
+                linear: true,
+                ..TextureOptions::default()
+            },
+        )
+    }
+
+    fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
+        // Flat ground (+Y): drawn only if the bytes fail to decode.
+        let texture_data = TextureData::solid_color([128, 255, 128, 255]);
+        Texture2D::init_from_data(texture_data, TextureOptions::default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

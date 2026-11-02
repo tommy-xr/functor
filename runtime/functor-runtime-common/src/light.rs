@@ -415,6 +415,21 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
         }
 "#;
 
+/// A spot light's attenuation as `accumulateLights` computes it (distance ×
+/// cone falloff), for a shader that lights one spot outside that loop: the
+/// colormap terrain's flashlight. `falloffs_match_the_shader` pins both to
+/// the same formulas.
+pub const SPOT_ATTENUATION_GLSL: &str = r#"
+        float spotAttenuation(highp float dist, highp float cosAngle, float lightRange, highp float outer) {
+            float range = max(lightRange, 1e-4);
+            float a = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
+            float atten = a * a;
+            highp float inner = mix(1.0, outer, 0.85);
+            atten *= clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
+            return atten;
+        }
+"#;
+
 /// [`LIGHTING_GLSL_TEMPLATE`] with the `MAX_LIGHTS` cap substituted in.
 pub fn lighting_glsl() -> String {
     LIGHTING_GLSL_TEMPLATE.replace("__MAX_LIGHTS__", &MAX_LIGHTS.to_string())
@@ -594,6 +609,7 @@ mod tests {
             "atten *= clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);",
         ] {
             assert!(glsl.contains(formula), "{formula}");
+            assert!(super::SPOT_ATTENUATION_GLSL.contains(formula), "{formula}");
         }
     }
 

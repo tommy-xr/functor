@@ -2321,6 +2321,13 @@ a texture Asset and positive world-unit sizes";
             )))
         },
     );
+    reg.fn2(
+        "Terrain.normalMap",
+        "Terrain.normalMap(texture, terrain)",
+        |texture: TextureAssetPath, terrain: FunctorLangTerrain| {
+            FunctorLangTerrain(terrain.0.with_normal_map(terrain_texture(texture)))
+        },
+    );
     reg.fn6(
         "Terrain.layered",
         "Terrain.layered(low, high, rock, snow, snowHeight, terrain)",
@@ -13801,6 +13808,24 @@ row 1 has 3"
         let detail = terrain.colormap_detail.as_ref().expect("detail");
         assert_eq!(detail.texture.locator, "detail.jpg");
         assert_eq!((detail.tile_size, detail.fade_end), (8.0, 80.0));
+    }
+
+    #[test]
+    fn terrain_normal_map_emits_its_texture() {
+        let frame = frame_of(
+            "let world =\n\
+               Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)\n\
+               |> Terrain.normalMap(Asset.texture(\"normals.png\"))\n\
+             let main = () =>\n\
+               Frame.create(\n\
+                 Camera3D.lookAt(Vec3.make(0.0, 400.0, -900.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+                 Scene.terrain(world))",
+        );
+        let SceneObject::Terrain(terrain) = &frame.scene.obj else {
+            panic!("expected a Terrain node, got {:?}", frame.scene.obj);
+        };
+        let normal_map = terrain.normal_map.as_ref().expect("normal map");
+        assert_eq!(normal_map.locator, "normals.png");
     }
 
     #[test]

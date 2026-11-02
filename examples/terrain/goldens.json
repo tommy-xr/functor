@@ -49,5 +49,14 @@
     ],
     "inputScript": "colormap.input",
     "captureAtFrame": 400
+  },
+  {
+    "name": "terrain-colormap-flashlight",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "flashlight.input",
+    "captureAtFrame": 400
   }
 ]
