@@ -1,0 +1,14 @@
+# materials.input — the colormap with splat-painted ground materials, day → night.
+#
+#   functor -d examples/terrain run native -- --input-script materials.input \
+#     --capture-frame /tmp/f.png --capture-at-frame 180 --capture-size 1600x1200
+#
+#   f 10    C: switch to the colormap
+#   f 12    M: ground materials             (golden at 180: day)
+#   f 200   N: night; the cross-fade is complete by 320 (golden at 400: night)
+10 C down
+11 C up
+12 M down
+13 M up
+200 N down
+201 N up

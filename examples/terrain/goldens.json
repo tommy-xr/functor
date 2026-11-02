@@ -58,5 +58,32 @@
     ],
     "inputScript": "flashlight.input",
     "captureAtFrame": 400
+  },
+  {
+    "name": "terrain-materials-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "materials.input",
+    "captureAtFrame": 180
+  },
+  {
+    "name": "terrain-materials-night",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "materials.input",
+    "captureAtFrame": 400
+  },
+  {
+    "name": "terrain-materials-flashlight",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "materials-flashlight.input",
+    "captureAtFrame": 400
   }
 ]

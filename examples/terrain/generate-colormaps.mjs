@@ -1,5 +1,6 @@
-// Bake the day and night colormaps for `Terrain.colormap`, and the normal map
-// for `Terrain.normalMap`, from heightmap.png using only Node built-ins.
+// Bake the day and night colormaps for `Terrain.colormap`, the normal map for
+// `Terrain.normalMap` and the splat map for `Terrain.materials`, from
+// heightmap.png using only Node built-ins.
 // Re-run after regenerating the heightmap:
 //
 //   node examples/terrain/generate-colormaps.mjs
@@ -179,6 +180,10 @@ const night = Buffer.alloc(OUT * OUT * 3);
 // engine uploads every image as RGBA8, so dropping a channel saves no GPU
 // memory, and the shader then needs no sqrt to rebuild Y.
 const normals = Buffer.alloc(OUT * OUT * 3);
+// Layer weights, R grass, G dirt, B rock, A snow, as linear bytes summing to
+// 255. They follow the colormap's own bands, which already carry the hue: the
+// layers only add surface structure.
+const splat = Buffer.alloc(OUT * OUT * 4);
 for (let j = 0; j < OUT; j += 1) {
   for (let i = 0; i < OUT; i += 1) {
     // Texel centre → heightmap sample space, as the shader's terrainUv maps it.
@@ -206,6 +211,20 @@ for (let j = 0; j < OUT; j += 1) {
     const o = (j * OUT + i) * 3;
     for (let c = 0; c < 3; c += 1) normals[o + c] = Math.round((n[c] * 0.5 + 0.5) * 255);
 
+    // Dirt on the beach, on the slopes leading up to rock, and in ~20 m
+    // patches through the grass; then rock and snow over it, as the bands mix.
+    const patch = smoothstep(0.6, 0.8, valueNoise(wx * 2.3 + 17, wy * 2.3 + 5));
+    const dirt = Math.max(beach, smoothstep(0.12, 0.3, 1 - n[1]), 0.8 * patch);
+    let weights = [1, 0, 0, 0];
+    weights = mix(weights, [0, 1, 0, 0], dirt);
+    weights = mix(weights, [0, 0, 1, 0], rock);
+    weights = mix(weights, [0, 0, 0, 1], snow);
+    const bytes = weights.map((w) => Math.round(w * 255));
+    // Rounding can miss 255 by a byte or two; the heaviest layer absorbs it.
+    const top = bytes.indexOf(Math.max(...bytes));
+    bytes[top] += 255 - bytes.reduce((a, b) => a + b, 0);
+    splat.set(bytes, (j * OUT + i) * 4);
+
     const ao = horizonAo(px, py, h);
     for (const [light, out] of [
       [DAY, day],
@@ -230,3 +249,6 @@ for (const [name, pixels] of [
   writeFileSync(here(name), png);
   console.log(`wrote ${name}: ${OUT}x${OUT} RGB (${png.length} bytes)`);
 }
+const splatPng = encodePng(OUT, OUT, 8, 6, splat);
+writeFileSync(here("splat.png"), splatPng);
+console.log(`wrote splat.png: ${OUT}x${OUT} RGBA (${splatPng.length} bytes)`);

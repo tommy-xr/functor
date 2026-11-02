@@ -1,2 +1,4 @@
 # Detail maps are fetched, not checked in (npm run fetch:assets).
 *.jpg
+# The material layers are checked in (512², see ASSETS.md).
+!layer-*.jpg

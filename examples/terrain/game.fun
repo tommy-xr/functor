@@ -14,6 +14,8 @@
 // colormap (unlit: lighting painted into a day and a night map offline). `N`
 // toggles night, cross-fading the maps and the frame's lights and fog. `L`
 // toggles a flashlight: the one light the colormap terrain still receives.
+// `M` swaps the colormap's single detail map for four splat-painted ground
+// materials (grass, dirt, rock, snow).
 //
 //   node examples/terrain/generate-heightmap.mjs
 //   node examples/terrain/generate-colormaps.mjs
@@ -82,6 +84,21 @@ let baked = (blend) =>
   // Lets the flashlight light the unlit ground.
   |> Terrain.normalMap(Asset.texture("normalmap.png"))
 
+// Ground materials in splat-channel order (R, G, B, A); the generator paints
+// splat.png from the same slope and height bands as the colormaps.
+let groundLayer = (albedo, normal, tileSize) =>
+  Terrain.layer(albedo, tileSize) |> Terrain.layerNormal(normal)
+
+let groundLayers = [
+  groundLayer(Asset.texture("layer-grass.jpg"), Asset.texture("layer-grass-normal.png"), 2.0),
+  groundLayer(Asset.texture("layer-dirt.jpg"), Asset.texture("layer-dirt-normal.png"), 2.5),
+  groundLayer(Asset.texture("layer-rock.jpg"), Asset.texture("layer-rock-normal.png"), 4.0),
+  groundLayer(Asset.texture("layer-snow.jpg"), Asset.texture("layer-snow-normal.png"), 2.5),
+]
+
+let withMaterials = (terrain) =>
+  terrain |> Terrain.materials(Asset.texture("splat.png"), groundLayers, 80.0)
+
 // Held just below the eye and aimed where you look, as in night-terrain.
 let flashlightCone = Angle.degrees(20.0)
 let flashlightRange = 60.0
@@ -116,8 +133,9 @@ let init = {
   night: false,
   blend: 0.0,
   flashlight: false,
+  materials: false,
   // Held toggle keys: a held key auto-repeats, and must flip only once.
-  toggleDown: { c: false, n: false, l: false },
+  toggleDown: { c: false, n: false, l: false, m: false },
 }
 
 let setHeld = (held, key, isDown) =>
@@ -191,6 +209,11 @@ let input = (model, key, isDown) =>
     { model with
         flashlight: if flip then not model.flashlight else model.flashlight,
         toggleDown: { model.toggleDown with l: isDown } }
+  | Key.M =>
+    let flip = isDown && not model.toggleDown.m in
+    { model with
+        materials: if flip then not model.materials else model.materials,
+        toggleDown: { model.toggleDown with m: isDown } }
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
 let mouseButton = (model, button, isDown) =>
@@ -292,7 +315,7 @@ let draw = (model, tts) =>
   let terrain =
     match model.shading with
     | Lit => world
-    | Baked => baked(model.blend) in
+    | Baked => if model.materials then baked(model.blend) |> withMaterials else baked(model.blend) in
   // Day → night. The night lights match the colormap bake's moonlight, so
   // lit props agree with the ground under them.
   let b = model.blend in
@@ -318,7 +341,7 @@ let draw = (model, tts) =>
 let shadingLabel = (model) =>
   match model.shading with
   | Lit => ""
-  | Baked => " · baked colormap"
+  | Baked => if model.materials then " · baked colormap · materials" else " · baked colormap"
 
 let flashlightLabel = (model) => if model.flashlight then " · flashlight" else ""
 
