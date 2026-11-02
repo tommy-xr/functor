@@ -94,7 +94,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
     ),
     (ApiGroup::Engine, "Parts", &["Solid", "Sketch", "Typeface", "Mesh"]),
     (ApiGroup::Engine, "Binary data", &["File", "Path", "Bytes", "Binary"]),
-    (ApiGroup::Stdlib, "Collections", &["List", "Map"]),
+    (ApiGroup::Stdlib, "Collections", &["List", "Map", "Loop"]),
     (ApiGroup::Stdlib, "Text", &["Text"]),
     (
         ApiGroup::Stdlib,
@@ -731,7 +731,7 @@ mod tests {
         assert_eq!(
             stdlib,
             [
-                "List", "Map", "Text", "Math", "Bits", "Random", "Option", "Result", "Key", "Mouse",
+                "List", "Map", "Loop", "Text", "Math", "Bits", "Random", "Option", "Result", "Key", "Mouse",
                 "Debug"
             ]
         );

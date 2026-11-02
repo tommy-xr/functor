@@ -999,6 +999,38 @@ fn math_smoothstep_is_clamped_and_rejects_degenerate_edges() {
     }
 }
 
+/// `Loop.until`: steps until done (zero steps when already done), pipes
+/// subject-last, and walks far past the recursion cap.
+#[test]
+fn loop_until_steps_until_done() {
+    for (src, want) in [
+        ("1.0 |> Loop.until((n) => n > 100.0, (n) => n * 2.0)", "128"),
+        ("Loop.until((n) => true, (n) => n + 1.0, 5.0)", "5"),
+        // A queue drained one item a step: 10,000 steps, no recursion.
+        (
+            "({ queue: List.range(10000.0), sum: 0.0 } |> Loop.until((s) => List.isEmpty(s.queue), \
+             (s) => match s.queue with | [x, ..rest] => { queue: rest, sum: s.sum + x } | [] => s)).sum",
+            "49995000",
+        ),
+    ] {
+        assert_eq!(main_result(&format!("let main = () => {src}")), want, "{src}");
+    }
+}
+
+/// A non-bool `done`, a non-function, and a loop that never finishes are
+/// errors naming `Loop.until`.
+#[test]
+fn loop_until_errors() {
+    for (src, want) in [
+        ("Loop.until((n) => n, (n) => n, 1.0)", "Loop.until's done must return a bool, got number"),
+        ("Loop.until(1.0, (n) => n, 1.0)", "Loop.until(done, step, init) expects two functions"),
+        ("Loop.until((n) => false, (n) => n, 1.0)", "Loop.until: not done after 1000000 steps"),
+    ] {
+        let (message, _, _) = run_err(&format!("let main = () => {src}"));
+        assert!(message.contains(want), "for {src}: {message}");
+    }
+}
+
 /// `Bits.*` truth tables over the 2-bit inputs 0..3, plus the u32 edges.
 #[test]
 fn bits_truth_tables_and_u32_edges() {

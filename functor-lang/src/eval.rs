@@ -1447,8 +1447,8 @@ implementation",
                 message: format!(
                     "evaluation nested too deeply (exceeded the depth cap of {MAX_EVAL_DEPTH}): \
 deep recursion, or deeply nested expressions. Deep list iteration belongs in the builtin list \
-functions (List.fold/map/filter/any/all/length/…), which loop in the interpreter and consume no \
-evaluation depth."
+functions (List.fold/map/filter/any/all/length/…), and other loops (graph walks, queues) in \
+Loop.until; they loop in the interpreter and consume no evaluation depth."
                 ),
                 span: expr.span,
             });
@@ -2411,6 +2411,48 @@ definition (a top-level initializer may only use globals defined above it)",
                 }
                 _ => err(
                     "List.fold(fn, init, list) expects a function, an initial value, and a list"
+                        .to_string(),
+                ),
+            },
+            // Subject-LAST: `init |> Loop.until(done, step)`. Each check and
+            // step is a call, so the step budget charges every iteration and
+            // none of it uses eval depth.
+            Builtin::LoopUntil => match args.as_slice() {
+                [done, step, init] if is_function(done) && is_function(step) => {
+                    let mut state = init.clone();
+                    for i in 0..=LOOP_UNTIL_MAX_STEPS {
+                        match self.call(
+                            done.clone(),
+                            vec![state.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )? {
+                            Value::Bool(true) => return Ok(state),
+                            Value::Bool(false) => {}
+                            other => {
+                                return err(format!(
+                                    "Loop.until's done must return a bool, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                        if i < LOOP_UNTIL_MAX_STEPS {
+                            state = self.call(
+                                step.clone(),
+                                vec![state],
+                                element_label(b, i),
+                                span,
+                                Some(builtin_name(b)),
+                            )?;
+                        }
+                    }
+                    err(format!(
+                        "Loop.until: not done after {LOOP_UNTIL_MAX_STEPS} steps"
+                    ))
+                }
+                _ => err(
+                    "Loop.until(done, step, init) expects two functions and an initial value"
                         .to_string(),
                 ),
             },
@@ -4134,6 +4176,7 @@ pub fn builtin_arity(b: Builtin) -> usize {
     match b {
         Builtin::ListFold
         | Builtin::ListTryMapAccum
+        | Builtin::LoopUntil
         | Builtin::ListGrid
         | Builtin::RandomRange
         | Builtin::TextReplace
@@ -4232,6 +4275,7 @@ pub enum Builtin {
     ListFilter,
     ListFold,
     ListTryMapAccum,
+    LoopUntil,
     ListRange,
     ListGrid,
     MathSin,
@@ -4415,7 +4459,14 @@ fn unknown_external_error(path: &[String], joined: String, span: Span) -> RunErr
 /// these is a typo (a plain error), never a host-provided external — the
 /// distinction the unknown-external error message (and through it the
 /// expect gutter's `unrunnable` classification) rests on.
-pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random", "Debug", "Bits"];
+pub const BUILTIN_NAMESPACES: &[&str] = &[
+    "List", "Map", "Text", "Math", "Random", "Debug", "Bits", "Loop",
+];
+
+/// How many steps `Loop.until` runs before it gives up (like `List.range`'s
+/// cap): a game tick has no step budget, so a loop that never finishes would
+/// otherwise hang the frame.
+const LOOP_UNTIL_MAX_STEPS: usize = 1_000_000;
 
 /// The complete builtin registry as a list. Hand-listed because [`Builtin`] is
 /// not iterable — keep in sync with the enum (`builtins_list_is_exhaustive`
@@ -4424,11 +4475,12 @@ pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random
 /// [`builtin`] so the members the CHECKER knows about (for its
 /// unknown-member diagnostic and its suggestions) and the ones the
 /// interpreter DISPATCHES come from one place.
-pub const ALL_BUILTINS: [Builtin; 90] = [
+pub const ALL_BUILTINS: [Builtin; 91] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
     Builtin::ListTryMapAccum,
+    Builtin::LoopUntil,
     Builtin::ListRange,
     Builtin::ListGrid,
     Builtin::ListMaximum,
@@ -4536,6 +4588,7 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.filter" => Builtin::ListFilter,
         "List.fold" => Builtin::ListFold,
         "List.tryMapAccum" => Builtin::ListTryMapAccum,
+        "Loop.until" => Builtin::LoopUntil,
         "List.range" => Builtin::ListRange,
         "List.grid" => Builtin::ListGrid,
         "List.maximum" => Builtin::ListMaximum,
@@ -4633,6 +4686,7 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListFilter => "List.filter",
         Builtin::ListFold => "List.fold",
         Builtin::ListTryMapAccum => "List.tryMapAccum",
+        Builtin::LoopUntil => "Loop.until",
         Builtin::ListRange => "List.range",
         Builtin::ListGrid => "List.grid",
         Builtin::ListMaximum => "List.maximum",
@@ -4864,6 +4918,7 @@ mod builtin_registry_tests {
                 | Builtin::ListFilter
                 | Builtin::ListFold
                 | Builtin::ListTryMapAccum
+                | Builtin::LoopUntil
                 | Builtin::ListRange
                 | Builtin::ListGrid
                 | Builtin::ListMaximum
@@ -4954,7 +5009,7 @@ mod builtin_registry_tests {
         }
         assert_eq!(
             ALL_BUILTINS.len(),
-            90,
+            91,
             "ALL_BUILTINS must list every Builtin"
         );
 

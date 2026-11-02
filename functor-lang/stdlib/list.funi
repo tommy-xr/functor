@@ -3,7 +3,7 @@
 //! Functor Lang has no loops: iteration is `List.map`, `List.filter`, and
 //! `List.fold`, which run iteratively in the interpreter and so consume no
 //! evaluation depth (unlike a hand-rolled recursive walk, which trips the
-//! recursion cap).
+//! recursion cap). `Loop.until` covers loops that aren't over a list.
 //!
 //! Every function takes its list LAST, so it threads through the thread-last
 //! pipeline operator: `xs |> List.map(f)` is exactly `List.map(f, xs)`.

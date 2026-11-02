@@ -540,6 +540,11 @@ pub fn builtin_signature(b: Builtin) -> Type {
                 result(Tuple(vec![Var(0), List(Box::new(Var(2)))])),
             )
         }
+        // Subject-LAST. Loop.until : (('s) => Bool, ('s) => 's, 's) => 's
+        Builtin::LoopUntil => func(
+            vec![func(vec![Var(0)], Bool), func(vec![Var(0)], Var(0)), Var(0)],
+            Var(0),
+        ),
         // List.range : (Float) => List<Float>
         Builtin::ListRange => func(vec![Float], List(Box::new(Float))),
         // Subject-LAST. List.grid : ((Float, Float) => 'a, Float, Float) => List<List<'a>>

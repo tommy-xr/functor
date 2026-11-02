@@ -1061,6 +1061,12 @@ mod tests {
         assert_eq!(find(&items, "pi").detail.as_deref(), Some("Math.pi : float"));
     }
 
+    #[test]
+    fn loop_member_completion() {
+        let items = game(STUB, &[], "let s = Loop.");
+        assert_eq!(find(&items, "until").kind, CompletionKind::Function);
+    }
+
     // 3 (+20). Sibling module `Utils.` from `game.fun` — exact Vec, kinds.
     #[test]
     fn sibling_member_completion() {
