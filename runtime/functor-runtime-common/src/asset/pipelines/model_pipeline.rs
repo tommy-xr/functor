@@ -44,9 +44,18 @@ impl AssetPipeline<Model> for ModelPipeline {
         let mut buffers_data = Vec::new();
         for buffer in document.buffers() {
             let data = match buffer.source() {
-                BufferSource::Bin => blob.as_ref().expect("No binary blob in GLB file").clone(),
+                BufferSource::Bin => match blob.as_ref() {
+                    Some(blob) => blob.clone(),
+                    None => {
+                        eprintln!("[model] glTF buffer has no binary blob");
+                        return self.unloaded_asset(context);
+                    }
+                },
+                // External files are embedded by the loader (asset::gltf_externals); what reaches here
+                // unresolved (e.g. a data URI) must not panic the render thread.
                 BufferSource::Uri(uri) => {
-                    panic!("External buffer: {}", uri);
+                    eprintln!("[model] unresolved glTF buffer: {}", uri.chars().take(60).collect::<String>());
+                    return self.unloaded_asset(context);
                 }
             };
             buffers_data.push(gltf::buffer::Data(data));

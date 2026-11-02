@@ -180,6 +180,8 @@ impl AssetCache {
             let inner_pipeline = pipeline.clone();
             // If bytes are already cached, return a handle immediately
             let future = async move {
+                // Pushed projects (`functor run vr`) pre-seed this cache: resolve a .gltf's files here too.
+                let bytes = super::gltf_externals::embed_externals(&asset_path_owned, bytes).await;
                 let decoded = Arc::new(inner_pipeline.process(bytes, self_arc.as_ref(), context));
                 progress.lock().unwrap().loaded.insert(asset_path_owned);
                 Ok(decoded)
@@ -200,6 +202,7 @@ impl AssetCache {
         let outer_pipeline = pipeline.clone();
         // If not cached, load bytes asynchronously
         let bytes_future = async move {
+            // A `.gltf` may reference sibling .bin/image files: load them and pack one GLB.
             let bytes = match load_bytes_async2(asset_path_owned.clone()).await {
                 Ok(bytes) => bytes,
                 Err(e) => {
@@ -224,6 +227,9 @@ impl AssetCache {
                 .lock()
                 .unwrap()
                 .insert(asset_path_owned.clone(), bytes.as_slice().into());
+            // A `.gltf` may reference sibling .bin/image files: load them and pack one GLB. The raw
+            // .gltf bytes stay in `bytes_cache` (and so in the hot-reload watch set) either way.
+            let bytes = super::gltf_externals::embed_externals(&asset_path_owned, bytes).await;
 
             let pipeline = pipeline.clone();
             let context = AssetPipelineContext {};
