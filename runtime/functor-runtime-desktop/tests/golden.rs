@@ -144,9 +144,9 @@ fn functor_bin() -> PathBuf {
 
 /// Render `scenario`'s sample at its fixed time or scripted frame (plus any
 /// debug-render mode),
-/// capture to a temp PNG, and assert it matches the committed
+/// capture to a temp PNG, and check it matches the committed
 /// `examples/<sample>/golden/<name>.png` within tolerance.
-fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
+fn scenario_matches(scenario: &Scenario, extra: &[&str]) -> Result<(), String> {
     let sample_dir = repo_root().join("examples").join(&scenario.sample);
 
     let out = std::env::temp_dir().join(format!(
@@ -168,10 +168,12 @@ fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
         (None, Some(script), Some(frame)) => {
             (String::new(), Some(sample_dir.join(script)), frame.to_string())
         }
-        _ => panic!(
-            "scenario '{}': set fixedTime, or inputScript with captureAtFrame",
-            scenario.name
-        ),
+        _ => {
+            return Err(format!(
+                "scenario '{}': set fixedTime, or inputScript with captureAtFrame",
+                scenario.name
+            ))
+        }
     };
     let mut args = vec![
         "-d",
@@ -202,38 +204,47 @@ fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
     }
     args.extend_from_slice(extra);
 
-    let status = Command::new(functor_bin())
+    let output = Command::new(functor_bin())
         .args(&args)
-        .status()
+        .output()
         .expect("spawn functor");
-    assert!(
-        status.success(),
-        "functor exited with {status} for scenario '{}'",
-        scenario.name
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+    print!("{log}");
+    if !output.status.success() {
+        return Err(format!("functor exited with {}", output.status));
+    }
+    // A missing asset renders without it (a fullbody capture minus its
+    // gitignored Xbot.glb differs by ~24%): name the cause, not the diff.
+    if let Some(line) = log.lines().find(|l| l.contains("asset error")) {
+        return Err(format!("{} — run `npm run fetch:assets`", line.trim()));
+    }
 
     let golden = sample_dir
         .join("golden")
         .join(format!("{}.png", scenario.name));
-    assert_images_match(&out, &golden);
+    images_match(&out, &golden)
 }
 
-fn assert_images_match(actual_path: &Path, golden_path: &Path) {
+fn images_match(actual_path: &Path, golden_path: &Path) -> Result<(), String> {
     let actual = image::open(actual_path)
-        .expect("open captured png")
+        .map_err(|e| format!("open captured png: {e}"))?
         .to_rgba8();
     let golden = image::open(golden_path)
-        .unwrap_or_else(|e| panic!("open golden {}: {e}", golden_path.display()))
+        .map_err(|e| format!("open golden {}: {e}", golden_path.display()))?
         .to_rgba8();
 
-    assert_eq!(
-        actual.dimensions(),
-        golden.dimensions(),
-        "dimensions differ: captured {:?} vs golden {:?} — goldens are display-specific; \
-         regenerate them on this machine",
-        actual.dimensions(),
-        golden.dimensions()
-    );
+    if actual.dimensions() != golden.dimensions() {
+        return Err(format!(
+            "dimensions differ: captured {:?} vs golden {:?} — goldens are display-specific; \
+             regenerate them on this machine",
+            actual.dimensions(),
+            golden.dimensions()
+        ));
+    }
 
     let differing = actual
         .pixels()
@@ -253,13 +264,15 @@ fn assert_images_match(actual_path: &Path, golden_path: &Path) {
         golden_path.file_name().unwrap().to_string_lossy(),
         fraction * 100.0
     );
-    assert!(
-        fraction <= MAX_DIFF_FRACTION,
-        "rendering drifted from {}: {:.3}% of pixels exceed tolerance (max {:.3}%)",
-        golden_path.display(),
-        fraction * 100.0,
-        MAX_DIFF_FRACTION * 100.0
-    );
+    if fraction > MAX_DIFF_FRACTION {
+        return Err(format!(
+            "rendering drifted from {}: {:.3}% of pixels exceed tolerance (max {:.3}%)",
+            golden_path.display(),
+            fraction * 100.0,
+            MAX_DIFF_FRACTION * 100.0
+        ));
+    }
+    Ok(())
 }
 
 #[test]
@@ -274,13 +287,25 @@ fn native_scenarios_match_golden() {
         "no native golden scenarios in manifest"
     );
 
-    // Inline, then with the game logic on its own sim thread.
+    // Inline, then with the game logic on its own sim thread. Every scenario
+    // runs; the failures are reported together at the end.
+    let mut failures = Vec::new();
     for extra in [&[][..], &["--pipelined"]] {
         for scenario in &scenarios {
             println!("--- golden scenario: {} {extra:?} ---", scenario.name);
-            assert_scenario_matches(scenario, extra);
+            if let Err(error) = scenario_matches(scenario, extra) {
+                println!("FAILED: {error}");
+                failures.push(format!("{} {extra:?}: {error}", scenario.name));
+            }
         }
     }
+    assert!(
+        failures.is_empty(),
+        "{} of {} golden scenarios failed:\n{}",
+        failures.len(),
+        scenarios.len() * 2,
+        failures.join("\n")
+    );
 }
 
 /// Scripted runs (`<sample>/<script>` captured at sim frame N) exercising
