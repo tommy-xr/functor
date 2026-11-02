@@ -28,7 +28,10 @@
 type desk = { height: float, width: float, depth: float, z: float }
 let desk: desk = { height: 0.75, width: 1.0, depth: 0.6, z: 0.5 }
 
-let config = () => Config.create() |> Config.xr(Xr.create() |> Xr.passthrough(true))
+// Xr.scene: the room's depth, so real things in front (a hand, the tablet a
+// case is for) hide the parts behind them.
+let config = () =>
+  Config.create() |> Config.xr(Xr.create() |> Xr.passthrough(true) |> Xr.scene(true))
 
 let settings = (m) =>
   Settings.create() |> Settings.xr(Xr.create() |> Xr.passthroughEnabled(m.mixedReality))
@@ -194,5 +197,5 @@ let draw = (views, desk: desk, m: t) =>
         Light.ambient(Color.rgb(0.25, 0.25, 0.3)),
         Light.directional(Vec3.make(-0.4, -1.0, 0.5), Color.rgb(1.0, 0.95, 0.9), 0.9),
       ]) in
-  if m.mixedReality then frame |> Frame.withPassthrough
+  if m.mixedReality then frame |> Frame.withPassthrough |> Frame.withRoomOcclusion
   else frame |> Frame.withClearColor(Color.rgb(0.02, 0.02, 0.06))

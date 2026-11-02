@@ -99,6 +99,8 @@
 //!    from the environment depth; nothing without `Xr.scene(true)`)
 //! Frame.withFusedRoom(cell, color, frame)                   -> Frame
 //!   (the room meshed from that depth over time, drawn with the same grid)
+//! Frame.withRoomOcclusion(frame)                            -> Frame
+//!   (real surfaces in that depth hide the scene behind them)
 //! Ui.text(s) / Ui.textColor(color, s)                       -> View
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
