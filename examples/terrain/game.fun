@@ -86,14 +86,11 @@ let baked = (blend) =>
 
 // Ground materials in splat-channel order (R, G, B, A); the generator paints
 // splat.png from the same slope and height bands as the colormaps.
-let groundLayer = (albedo, normal, tileSize) =>
-  Terrain.layer(albedo, tileSize) |> Terrain.layerNormal(normal)
-
 let groundLayers = [
-  groundLayer(Asset.texture("layer-grass.jpg"), Asset.texture("layer-grass-normal.png"), 2.0),
-  groundLayer(Asset.texture("layer-dirt.jpg"), Asset.texture("layer-dirt-normal.png"), 2.5),
-  groundLayer(Asset.texture("layer-rock.jpg"), Asset.texture("layer-rock-normal.png"), 4.0),
-  groundLayer(Asset.texture("layer-snow.jpg"), Asset.texture("layer-snow-normal.png"), 2.5),
+  Terrain.layer(Asset.texture("layer-grass.jpg"), 2.0),
+  Terrain.layer(Asset.texture("layer-dirt.jpg"), 2.5),
+  Terrain.layer(Asset.texture("layer-rock.jpg"), 4.0),
+  Terrain.layer(Asset.texture("layer-snow.jpg"), 2.5),
 ]
 
 let withMaterials = (terrain) =>

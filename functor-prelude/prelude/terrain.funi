@@ -6,8 +6,7 @@
 /// An immutable terrain descriptor.
 type t = host
 
-/// One ground material for `Terrain.materials`: a tiled albedo, and
-/// optionally a detail normal map.
+/// One ground material for `Terrain.materials`: a tiled albedo.
 type layer = host
 
 /// Create a terrain centered on the origin and spanning `width` by `depth` in XZ.
@@ -99,14 +98,6 @@ let normalMap : (Asset.Texture, t) => t
 /// A ground material for `Terrain.materials`: an albedo map tiled every
 /// `tileSize` world units.
 let layer : (Asset.Texture, float) => layer
-
-/// Give a layer a detail normal map (tangent space, OpenGL +Y convention).
-///
-/// Only the flashlight reads it: inside the beam, the terrain's `normalMap`
-/// normal is bent by the dominant layer's detail normal, so sand ripples and
-/// rock cracks catch the light. All of a terrain's layer normal maps must be
-/// the same size. The layer is last for piping.
-let layerNormal : (Asset.Texture, layer) => layer
 
 /// Dress a `colormap` with up to four ground materials, painted by a splat map.
 ///

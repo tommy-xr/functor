@@ -260,9 +260,7 @@ fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-fn luminance(c: [f32; 3]) -> f32 {
-    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
-}
+use crate::color_space::luminance;
 
 /// Smooths Monte Carlo noise in bounced light: an à-trous filter (5 × 5
 /// B3-spline taps at strides 1, 2 and 4) that only reads texels of the same

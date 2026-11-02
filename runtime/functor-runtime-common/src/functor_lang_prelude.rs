@@ -2356,19 +2356,8 @@ world-unit tile size";
             }
             Ok(FunctorLangTerrainLayer(crate::terrain::TerrainMaterialLayer {
                 albedo: terrain_texture(albedo),
-                normal: None,
                 tile_size,
             }))
-        },
-    );
-    reg.fn2(
-        "Terrain.layerNormal",
-        "Terrain.layerNormal(normal, layer)",
-        |normal: TextureAssetPath, layer: FunctorLangTerrainLayer| {
-            FunctorLangTerrainLayer(crate::terrain::TerrainMaterialLayer {
-                normal: Some(terrain_texture(normal)),
-                ..layer.0
-            })
         },
     );
     const MATERIALS: &str = "Terrain.materials(splat, layers, fadeEnd, terrain) — a texture \
@@ -13914,7 +13903,6 @@ a texture Asset and positive world-unit sizes"
                |> Terrain.materials(Asset.texture(\"splat.png\"), [\n\
                     Terrain.layer(Asset.texture(\"grass.jpg\"), 3.0),\n\
                     Terrain.layer(Asset.texture(\"rock.jpg\"), 6.0)\n\
-                    |> Terrain.layerNormal(Asset.texture(\"rock-normal.png\"))\n\
                   ], 90.0)\n\
              let main = () =>\n\
                Frame.create(\n\
@@ -13930,15 +13918,9 @@ a texture Asset and positive world-unit sizes"
         let layers: Vec<_> = materials
             .layers
             .iter()
-            .map(|l| {
-                let normal = l.normal.as_ref().map(|n| n.locator.as_str());
-                (l.albedo.locator.as_str(), normal, l.tile_size)
-            })
+            .map(|l| (l.albedo.locator.as_str(), l.tile_size))
             .collect();
-        assert_eq!(
-            layers,
-            [("grass.jpg", None, 3.0), ("rock.jpg", Some("rock-normal.png"), 6.0)]
-        );
+        assert_eq!(layers, [("grass.jpg", 3.0), ("rock.jpg", 6.0)]);
     }
 
     #[test]

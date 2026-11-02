@@ -1,5 +1,4 @@
-# materials-flashlight.input — ground materials at night, lit by the flashlight,
-# whose beam the dominant layer's detail normal bends.
+# materials-flashlight.input — ground materials at night, lit by the flashlight.
 #
 #   functor -d examples/terrain run native -- --input-script materials-flashlight.input \
 #     --capture-frame /tmp/f.png --capture-at-frame 400 --capture-size 1600x1200

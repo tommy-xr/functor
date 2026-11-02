@@ -1088,9 +1088,8 @@ cone (no shadows); without a normal map no light reaches it.
 `Terrain.materials(splat, [Terrain.layer(albedo, tileSize) …], fadeEnd)` replaces
 `colormapDetail` with up to 4 tiled ground layers weighted by a splat map's RGBA
 (linear weights, laid once over the terrain): each pixel near the camera blends
-its two heaviest layers, by LUMINANCE only, so the colormap keeps its hue.
-`|> Terrain.layerNormal(tex)` gives a layer a detail normal that bends the
-flashlight's beam. All albedo maps must share one size (likewise the normals).
+its two heaviest layers, by LUMINANCE only, so the colormap keeps its hue. All
+the albedo maps must share one size.
 `examples/terrain` bakes its maps with `generate-colormaps.mjs` (`C` toggles the
 shading, `N` night, `L` the flashlight, `M` the materials).
 

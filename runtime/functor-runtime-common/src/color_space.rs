@@ -100,6 +100,11 @@ pub fn srgb_to_linear_vec4(c: Vector4<f32>) -> Vector4<f32> {
     )
 }
 
+/// Rec. 709 luminance of a LINEAR RGB color.
+pub fn luminance(c: [f32; 3]) -> f32 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
 /// Decode one sRGB byte to linear, through a lazily built 256-entry table —
 /// for O(pixels) load-time scans ([`crate::texture::Texture2D`]'s
 /// `average_color`).

@@ -69,7 +69,7 @@ pub struct SceneContext {
     terrain_normal_map_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     /// Terrain splat maps: linear weights, unmipped (see `TerrainSplatPipeline`).
     terrain_splat_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
-    /// `Terrain.materials` layer arrays, keyed by their maps' locators joined
+    /// `Terrain.materials` layer arrays, keyed by their albedo locators joined
     /// with '\n'. Resident once built (no upload when materials toggle), like
     /// skyboxes; the maps decode through `raw_image_pipeline`.
     terrain_materials: RefCell<HashMap<String, terrain_materials::MaterialsEntry>>,
@@ -1592,12 +1592,11 @@ frame: correct, but each bind re-uploads (atlas {})",
             let materials = materials.map(|(splat, arrays)| {
                 let units = crate::terrain_renderer::MATERIAL_UNITS;
                 splat.bind(units[0], render_context);
-                let gl = render_context.gl;
-                for (unit, array) in [(units[1], Some(arrays.albedo)), (units[2], arrays.normals)] {
-                    unsafe {
-                        gl.active_texture(glow::TEXTURE0 + unit);
-                        gl.bind_texture(glow::TEXTURE_2D_ARRAY, array);
-                    }
+                unsafe {
+                    render_context.gl.active_texture(glow::TEXTURE0 + units[1]);
+                    render_context
+                        .gl
+                        .bind_texture(glow::TEXTURE_2D_ARRAY, Some(arrays.albedo));
                 }
                 arrays
             });

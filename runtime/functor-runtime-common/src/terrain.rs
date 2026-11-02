@@ -225,9 +225,6 @@ pub struct TerrainMaterials {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerrainMaterialLayer {
     pub albedo: TerrainDetailTexture,
-    /// Tangent-space detail normal, read only by the flashlight.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub normal: Option<TerrainDetailTexture>,
     /// World units covered by one tile.
     pub tile_size: f32,
 }
@@ -396,10 +393,6 @@ mod tests {
                     locator: "grass.jpg".to_string(),
                     while_pending: Vec::new(),
                 },
-                normal: Some(TerrainDetailTexture {
-                    locator: "grass-normal.png".to_string(),
-                    while_pending: Vec::new(),
-                }),
                 tile_size: 3.0,
             }],
             fade_end: 90.0,
