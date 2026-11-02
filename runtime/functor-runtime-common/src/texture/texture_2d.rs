@@ -132,7 +132,7 @@ impl Texture2D {
 /// in (`srgb` = decode each byte sRGB→linear first — matching the hardware
 /// decode of an `SRGB8_*` upload). Ignores alpha: these are albedo maps, and
 /// a transparent texel's color still contributes to what the eye averages.
-fn average_color(data: &TextureData, srgb: bool) -> [f32; 3] {
+pub(crate) fn average_color(data: &TextureData, srgb: bool) -> [f32; 3] {
     let stride = match data.format {
         PixelFormat::RGB => 3,
         PixelFormat::RGBA => 4,

@@ -41,6 +41,7 @@ mod instancing;
 mod instance_cache;
 mod material_description;
 mod model_description;
+mod terrain_materials;
 mod texture_description;
 
 pub use cull::{Aabb, MeshBounds};
@@ -66,6 +67,12 @@ pub struct SceneContext {
     terrain_colormap_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     /// Terrain normal maps: linear, unmipped (see `TerrainNormalMapPipeline`).
     terrain_normal_map_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
+    /// Terrain splat maps: linear weights, unmipped (see `TerrainSplatPipeline`).
+    terrain_splat_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
+    /// `Terrain.materials` layer arrays, keyed by their albedo locators joined
+    /// with '\n'. Resident once built (no upload when materials toggle), like
+    /// skyboxes; the maps decode through `raw_image_pipeline`.
+    terrain_materials: RefCell<HashMap<String, terrain_materials::MaterialsEntry>>,
     cube: RefCell<Box<dyn Geometry>>,
     cylinder: RefCell<Box<dyn Geometry>>,
     sphere: RefCell<Box<dyn Geometry>>,
@@ -758,11 +765,15 @@ impl SceneContext {
         self.terrain_detail_pipeline.evict(path);
         self.terrain_colormap_pipeline.evict(path);
         self.terrain_normal_map_pipeline.evict(path);
+        self.terrain_splat_pipeline.evict(path);
         self.raw_image_pipeline.evict(path);
         self.heightmap_pipeline.evict(path);
         self.skyboxes
             .borrow_mut()
             .retain(|faces, _| !faces.split('\n').any(|face| face == path));
+        self.terrain_materials
+            .borrow_mut()
+            .retain(|maps, _| !maps.split('\n').any(|map| map == path));
     }
 
     pub fn new() -> SceneContext {
@@ -806,6 +817,10 @@ impl SceneContext {
             terrain_normal_map_pipeline: asset::build_pipeline(Box::new(
                 crate::asset::pipelines::TerrainNormalMapPipeline,
             )),
+            terrain_splat_pipeline: asset::build_pipeline(Box::new(
+                crate::asset::pipelines::TerrainSplatPipeline,
+            )),
+            terrain_materials: RefCell::new(HashMap::new()),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
             render_targets: RefCell::new(HashMap::new()),
             render_target_warned: RefCell::new(HashSet::new()),
@@ -1557,6 +1572,11 @@ frame: correct, but each bind re-uploads (atlas {})",
             let normal_map = terrain.normal_map.as_ref().and_then(|map| {
                 terrain_texture(render_context, &self.terrain_normal_map_pipeline, map)
             });
+            let materials = terrain.materials.as_ref().and_then(|materials| {
+                let splat =
+                    terrain_texture(render_context, &self.terrain_splat_pipeline, &materials.splat);
+                splat.zip(self.terrain_material_arrays(render_context, materials))
+            });
             let [Some(day), Some(night)] = maps else {
                 return None;
             };
@@ -1569,9 +1589,21 @@ frame: correct, but each bind re-uploads (atlas {})",
             let normal_map = normal_map
                 .map(|map| map.bind(crate::terrain_renderer::COLORMAP_UNITS[3], render_context))
                 .is_some();
+            let materials = materials.map(|(splat, arrays)| {
+                let units = crate::terrain_renderer::MATERIAL_UNITS;
+                splat.bind(units[0], render_context);
+                unsafe {
+                    render_context.gl.active_texture(glow::TEXTURE0 + units[1]);
+                    render_context
+                        .gl
+                        .bind_texture(glow::TEXTURE_2D_ARRAY, Some(arrays.albedo));
+                }
+                arrays
+            });
             Some(crate::terrain_renderer::ColormapBound {
                 detail_average,
                 normal_map,
+                materials,
             })
         });
         // Detail maps stream like any other texture. Bind them before the
@@ -1773,6 +1805,51 @@ frame: correct, but each bind re-uploads (atlas {})",
             .insert(key.to_string())
         {
             warn_line(message);
+        }
+    }
+
+    /// `materials`' layer arrays, once every map has loaded; `None` while
+    /// loading or after a failure (warned once, never retried).
+    fn terrain_material_arrays(
+        &self,
+        render_context: &RenderContext,
+        materials: &crate::terrain::TerrainMaterials,
+    ) -> Option<crate::terrain_renderer::MaterialsBound> {
+        let maps = terrain_materials::locators(materials);
+        let key = maps.join("\n");
+        let mut cache = self.terrain_materials.borrow_mut();
+        let entry = cache.entry(key.clone()).or_insert_with(|| {
+            terrain_materials::MaterialsEntry::Loading(
+                maps.iter()
+                    .map(|map| {
+                        render_context
+                            .asset_cache
+                            .load_asset_with_pipeline(self.raw_image_pipeline.clone(), map)
+                    })
+                    .collect(),
+            )
+        });
+        let handles = match entry {
+            terrain_materials::MaterialsEntry::Ready(bound) => return Some(*bound),
+            terrain_materials::MaterialsEntry::Failed => return None,
+            terrain_materials::MaterialsEntry::Loading(handles) => handles,
+        };
+        match terrain_materials::poll(render_context.gl, materials, handles) {
+            Ok(None) => None,
+            Ok(Some(bound)) => {
+                // The arrays hold the texels now; drop the decoded copies.
+                for map in &maps {
+                    self.raw_image_pipeline.evict(map);
+                }
+                *entry = terrain_materials::MaterialsEntry::Ready(bound);
+                Some(bound)
+            }
+            Err(why) => {
+                *entry = terrain_materials::MaterialsEntry::Failed;
+                drop(cache);
+                self.warn_once(&key, &format!("[terrain] materials disabled: {why}"));
+                None
+            }
         }
     }
 

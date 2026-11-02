@@ -1084,9 +1084,14 @@ fog does. `Terrain.colormapDetail(tex, tileSize, fadeEnd)` adds one tiled
 structure map that fades out by `fadeEnd`. The one exception is a flashlight:
 with `Terrain.normalMap(tex)` (terrain-local normals, `xyz × 0.5 + 0.5`), the
 frame's first non-baked `Light.spot` lights the day map's color inside its
-cone (no shadows); without a normal map no light reaches it. `examples/terrain`
-bakes its maps with `generate-colormaps.mjs` (`C` toggles the shading, `N`
-night, `L` the flashlight).
+cone (no shadows); without a normal map no light reaches it.
+`Terrain.materials(splat, [Terrain.layer(albedo, tileSize) …], fadeEnd)` replaces
+`colormapDetail` with up to 4 tiled ground layers weighted by a splat map's RGBA
+(linear weights, laid once over the terrain): each pixel near the camera blends
+its two heaviest layers, by LUMINANCE only, so the colormap keeps its hue. All
+the albedo maps must share one size.
+`examples/terrain` bakes its maps with `generate-colormaps.mjs` (`C` toggles the
+shading, `N` night, `L` the flashlight, `M` the materials).
 
 ### The cross-cutting rules (what a signature won't tell you)
 

@@ -220,6 +220,9 @@ pub struct FunctorLangInstance(pub InstanceData);
 /// A [`TerrainDescription`] as an opaque, immutable Functor Lang value.
 pub struct FunctorLangTerrain(pub TerrainDescription);
 
+/// One `Terrain.materials` layer as an opaque Functor Lang value.
+pub struct FunctorLangTerrainLayer(pub crate::terrain::TerrainMaterialLayer);
+
 /// A [`Camera`] as an opaque Functor Lang value.
 pub struct FunctorLangCamera(pub Camera);
 
@@ -1723,6 +1726,18 @@ impl HostData for FunctorLangTerrain {
     }
 }
 
+impl HostData for FunctorLangTerrainLayer {
+    fn type_name(&self) -> &'static str {
+        "Terrain.layer"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
+}
+
 impl HostData for FunctorLangCamera {
     fn type_name(&self) -> &'static str {
         "Camera3D"
@@ -1995,6 +2010,7 @@ crate::host_returnable!(
     FunctorLangFog,
     FunctorLangUiAnchor,
     FunctorLangTerrain,
+    FunctorLangTerrainLayer,
     FunctorLangScene,
     FunctorLangInstance,
     FunctorLangCamera,
@@ -2326,6 +2342,44 @@ a texture Asset and positive world-unit sizes";
         "Terrain.normalMap(texture, terrain)",
         |texture: TextureAssetPath, terrain: FunctorLangTerrain| {
             FunctorLangTerrain(terrain.0.with_normal_map(terrain_texture(texture)))
+        },
+    );
+    const LAYER: &str = "Terrain.layer(albedo, tileSize) — a texture Asset and a positive \
+world-unit tile size";
+    reg.fn2(
+        "Terrain.layer",
+        LAYER,
+        |albedo: TextureAssetPath, tile_size: f64| {
+            let tile_size = tile_size as f32;
+            if tile_size <= 0.0 {
+                return Err(format!("usage: {LAYER}"));
+            }
+            Ok(FunctorLangTerrainLayer(crate::terrain::TerrainMaterialLayer {
+                albedo: terrain_texture(albedo),
+                tile_size,
+            }))
+        },
+    );
+    const MATERIALS: &str = "Terrain.materials(splat, layers, fadeEnd, terrain) — a texture \
+Asset, 1 to 4 Terrain.layer values, and a positive fade distance";
+    reg.fn4(
+        "Terrain.materials",
+        MATERIALS,
+        |splat: TextureAssetPath,
+         layers: Vec<FunctorLangTerrainLayer>,
+         fade_end: f64,
+         terrain: FunctorLangTerrain| {
+            let fade_end = fade_end as f32;
+            if layers.is_empty() || layers.len() > 4 || fade_end <= 0.0 {
+                return Err(format!("usage: {MATERIALS}"));
+            }
+            Ok(FunctorLangTerrain(terrain.0.with_materials(
+                crate::terrain::TerrainMaterials {
+                    splat: terrain_texture(splat),
+                    layers: layers.into_iter().map(|layer| layer.0).collect(),
+                    fade_end,
+                },
+            )))
         },
     );
     reg.fn6(
@@ -5017,6 +5071,7 @@ handle_arg!(
     FunctorLangNavGraph => "a Nav.graph",
     FunctorLangModel => "a Model",
     FunctorLangTerrain => "a Terrain",
+    FunctorLangTerrainLayer => "a Terrain.layer",
     FunctorLangScene => "a Scene",
     FunctorLangInstance => "an Instance",
     FunctorLangLight => "a Light",
@@ -13837,6 +13892,60 @@ row 1 has 3"
             )),
             "usage: Terrain.colormapDetail(texture, tileSize, fadeEnd, terrain) — \
 a texture Asset and positive world-unit sizes"
+        );
+    }
+
+    #[test]
+    fn terrain_materials_emit_the_splat_and_layers_in_order() {
+        let frame = frame_of(
+            "let world =\n\
+               Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)\n\
+               |> Terrain.materials(Asset.texture(\"splat.png\"), [\n\
+                    Terrain.layer(Asset.texture(\"grass.jpg\"), 3.0),\n\
+                    Terrain.layer(Asset.texture(\"rock.jpg\"), 6.0)\n\
+                  ], 90.0)\n\
+             let main = () =>\n\
+               Frame.create(\n\
+                 Camera3D.lookAt(Vec3.make(0.0, 400.0, -900.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+                 Scene.terrain(world))",
+        );
+        let SceneObject::Terrain(terrain) = &frame.scene.obj else {
+            panic!("expected a Terrain node, got {:?}", frame.scene.obj);
+        };
+        let materials = terrain.materials.as_ref().expect("materials");
+        assert_eq!(materials.splat.locator, "splat.png");
+        assert_eq!(materials.fade_end, 90.0);
+        let layers: Vec<_> = materials
+            .layers
+            .iter()
+            .map(|l| (l.albedo.locator.as_str(), l.tile_size))
+            .collect();
+        assert_eq!(layers, [("grass.jpg", 3.0), ("rock.jpg", 6.0)]);
+    }
+
+    #[test]
+    fn terrain_materials_validate_layers_and_sizes() {
+        let base = "Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)";
+        let layer = "Terrain.layer(Asset.texture(\"t.jpg\"), 2.0)";
+        let usage = "usage: Terrain.materials(splat, layers, fadeEnd, terrain) — a texture \
+Asset, 1 to 4 Terrain.layer values, and a positive fade distance";
+        for (layers, fade_end) in [
+            ("[]".to_string(), "90.0"),
+            (format!("[{layer}, {layer}, {layer}, {layer}, {layer}]"), "90.0"),
+            (format!("[{layer}]"), "0.0"),
+        ] {
+            assert_eq!(
+                run_fail(&format!(
+                    "let main = () => {base} |> Terrain.materials(Asset.texture(\"s.png\"), {layers}, {fade_end})"
+                )),
+                usage,
+                "{layers} {fade_end}"
+            );
+        }
+        assert_eq!(
+            run_fail("let main = () => Terrain.layer(Asset.texture(\"t.jpg\"), 0.0)"),
+            "usage: Terrain.layer(albedo, tileSize) — a texture Asset and a positive \
+world-unit tile size"
         );
     }
 

@@ -6,6 +6,9 @@
 /// An immutable terrain descriptor.
 type t = host
 
+/// One ground material for `Terrain.materials`: a tiled albedo.
+type layer = host
+
 /// Create a terrain centered on the origin and spanning `width` by `depth` in XZ.
 ///
 /// Prefer a square map of 2ⁿ+1 samples per side (65, 129, …, 1025, 2049),
@@ -91,6 +94,27 @@ let colormapDetail : (Asset.Texture, float, float, t) => t
 /// texel). Without a normal map the flashlight does not reach the
 /// terrain. Ignored without `colormap`. The terrain is last for piping.
 let normalMap : (Asset.Texture, t) => t
+
+/// A ground material for `Terrain.materials`: an albedo map tiled every
+/// `tileSize` world units.
+let layer : (Asset.Texture, float) => layer
+
+/// Dress a `colormap` with up to four ground materials, painted by a splat map.
+///
+/// `splat` is laid once over the terrain, like the colormaps. Its R, G, B and
+/// A channels weight `layers` 0 to 3 (stored linear, not as sRGB color); where
+/// they sum below 1, the detail fades toward the bare colormap. Near the
+/// camera each pixel blends its two heaviest layers, each sampled at two
+/// scales to hide the repeat, and the result fades out by `fadeEnd` world
+/// units. Past that, pixels read the colormap alone, at no extra cost.
+///
+/// A layer adds BRIGHTNESS, not color: each sample's luminance is divided by
+/// the layer's mean luminance, so the colormap keeps its hue. All of a
+/// terrain's albedo maps must be the same size. Until every layer has loaded,
+/// `colormapDetail` (if any) shows instead; `Asset.whilePending` stand-ins
+/// are not used for layers. Requires `colormap`. The terrain is last for
+/// piping.
+let materials : (Asset.Texture, List<layer>, float, t) => t
 
 /// Add camera-local GPU-instanced grass clusters.
 ///

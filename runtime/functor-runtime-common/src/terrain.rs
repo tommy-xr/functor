@@ -158,6 +158,10 @@ pub struct TerrainDescription {
     /// `colormap`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normal_map: Option<TerrainDetailTexture>,
+    /// Splat-weighted detail layers over the colormap. Once loaded they take
+    /// precedence over `colormap_detail`; ignored without `colormap`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materials: Option<TerrainMaterials>,
 }
 
 /// One terrain texture, carrying its own `Asset.whilePending` chain so it
@@ -205,6 +209,26 @@ pub struct TerrainColormapDetail {
     pub fade_end: f32,
 }
 
+/// Up to four tiled detail layers over a [`TerrainColormap`], weighted per
+/// texel by a splat map's channels (R = layer 0 … A = layer 3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainMaterials {
+    /// Laid once over the terrain like the colormaps; linear weights.
+    pub splat: TerrainDetailTexture,
+    /// 1..=4 layers, in splat-channel order.
+    pub layers: Vec<TerrainMaterialLayer>,
+    /// Distance from the camera at which the layers have faded out.
+    pub fade_end: f32,
+}
+
+/// One splat layer: a tiled albedo whose luminance roughens the colormap.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainMaterialLayer {
+    pub albedo: TerrainDetailTexture,
+    /// World units covered by one tile.
+    pub tile_size: f32,
+}
+
 impl TerrainDescription {
     pub const DEFAULT_MAX_PIXEL_ERROR: f32 = 2.0;
     pub const DEFAULT_COLOR: [f32; 3] = [0.34, 0.48, 0.24];
@@ -232,6 +256,7 @@ impl TerrainDescription {
             colormap: None,
             colormap_detail: None,
             normal_map: None,
+            materials: None,
         }
     }
 
@@ -273,6 +298,11 @@ impl TerrainDescription {
 
     pub fn with_normal_map(mut self, normal_map: TerrainDetailTexture) -> Self {
         self.normal_map = Some(normal_map);
+        self
+    }
+
+    pub fn with_materials(mut self, materials: TerrainMaterials) -> Self {
+        self.materials = Some(materials);
         self
     }
 
@@ -352,6 +382,20 @@ mod tests {
         .with_normal_map(TerrainDetailTexture {
             locator: "normals.png".to_string(),
             while_pending: Vec::new(),
+        })
+        .with_materials(TerrainMaterials {
+            splat: TerrainDetailTexture {
+                locator: "splat.png".to_string(),
+                while_pending: Vec::new(),
+            },
+            layers: vec![TerrainMaterialLayer {
+                albedo: TerrainDetailTexture {
+                    locator: "grass.jpg".to_string(),
+                    while_pending: Vec::new(),
+                },
+                tile_size: 3.0,
+            }],
+            fade_end: 90.0,
         });
         let json = serde_json::to_string(&terrain).unwrap();
         assert_eq!(
@@ -373,6 +417,7 @@ mod tests {
         let json = serde_json::to_string(&terrain).unwrap();
         assert!(!json.contains("colormap"), "json: {json}");
         assert!(!json.contains("normal_map"), "json: {json}");
+        assert!(!json.contains("materials"), "json: {json}");
     }
 
     #[test]

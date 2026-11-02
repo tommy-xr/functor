@@ -13,16 +13,16 @@ use crate::{
 /// thread polls asset futures (a panic aborts the runtime). The next save
 /// reloads it again.
 fn decode(bytes: &Vec<u8>) -> Option<TextureData> {
-    match decode_image(bytes) {
-        Ok(mut data) => {
-            apply_color_key(&mut data.bytes, data.width, data.height);
-            Some(data)
-        }
-        Err(e) => {
-            eprintln!("[texture] cannot decode image: {e}");
-            None
-        }
-    }
+    let mut data = decode_unkeyed(bytes)?;
+    apply_color_key(&mut data.bytes, data.width, data.height);
+    Some(data)
+}
+
+/// [`decode`] without the color key, for data images.
+fn decode_unkeyed(bytes: &Vec<u8>) -> Option<TextureData> {
+    decode_image(bytes)
+        .map_err(|e| eprintln!("[texture] cannot decode image: {e}"))
+        .ok()
 }
 
 /// Image files decoded for sampling. `srgb` picks the upload space: COLOR
@@ -208,6 +208,40 @@ impl AssetPipeline<Texture2D> for TerrainNormalMapPipeline {
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
         // Flat ground (+Y): drawn only if the bytes fail to decode.
         let texture_data = TextureData::solid_color([128, 255, 128, 255]);
+        Texture2D::init_from_data(texture_data, TextureOptions::default())
+    }
+}
+
+/// Terrain splat maps: per-texel layer weights stretched once over a terrain.
+///
+/// Linear (weights, not color), clamped, and unmipped: it is read only within
+/// the materials' fade band, where a terrain-wide map is magnified. No color
+/// key either, so full R and B weights don't key out as magenta.
+pub struct TerrainSplatPipeline;
+
+impl AssetPipeline<Texture2D> for TerrainSplatPipeline {
+    fn process(
+        &self,
+        bytes: Vec<u8>,
+        _asset_cache: &AssetCache,
+        context: crate::asset::AssetPipelineContext,
+    ) -> Texture2D {
+        let Some(data) = decode_unkeyed(&bytes) else {
+            return self.unloaded_asset(context);
+        };
+        Texture2D::init_from_data(
+            data,
+            TextureOptions {
+                wrap: false,
+                linear: true,
+                ..TextureOptions::default()
+            },
+        )
+    }
+
+    fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
+        // No weights: the bare colormap. Drawn only if the bytes fail to decode.
+        let texture_data = TextureData::solid_color([0, 0, 0, 0]);
         Texture2D::init_from_data(texture_data, TextureOptions::default())
     }
 }
