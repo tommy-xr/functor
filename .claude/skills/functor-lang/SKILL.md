@@ -1074,6 +1074,14 @@ nothing; neither do the normals/tangents debug views, which draw unfogged). Prop
 fog in `regroup` and sets the camera's far plane to the fog end. `/state.terrain`
 reports the drawn patches/vertices.
 
+`Terrain.colormap(day, night, blend)` is the cheap alternative to
+`color`/`layered`/`textured`: the terrain becomes UNLIT, its color read from two
+offline-baked maps (lighting and occlusion painted in) cross-faded by `blend`
+(0 = day, 1 = night; only those two read one map). Frame lights don't reach it;
+fog does. `Terrain.colormapDetail(tex, tileSize, fadeEnd)` adds one tiled
+structure map that fades out by `fadeEnd`. `examples/terrain` bakes its maps
+with `generate-colormaps.mjs` (`C` toggles the shading, `N` night).
+
 ### The cross-cutting rules (what a signature won't tell you)
 
 **Branded values, never bare numbers or strings** — "the Angle rule". Every one

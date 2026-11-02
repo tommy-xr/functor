@@ -194,12 +194,12 @@ pub(crate) unsafe fn build_mips(gl: &glow::Context, anisotropy: f32) {
 
 impl RuntimeTexture for Texture2D {
     fn bind(&self, index: u32, render_context: &RenderContext) {
-        let texture = self.ora.get(render_context.gl);
         let gl = render_context.gl;
-        unsafe {
-            gl.active_texture(glow::TEXTURE0 + index);
-            gl.bind_texture(glow::TEXTURE_2D, Some(*texture));
-        }
+        // Select the unit first: a first-use upload binds and then unbinds on
+        // the active unit, which would clear a texture bound there just before.
+        unsafe { gl.active_texture(glow::TEXTURE0 + index) };
+        let texture = self.ora.get(gl);
+        unsafe { gl.bind_texture(glow::TEXTURE_2D, Some(*texture)) };
     }
 }
 

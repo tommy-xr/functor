@@ -34,6 +34,9 @@ const FOG_CULL_MARGIN: f32 = 0.1;
 const DETAIL_TEXTURE_UNIT0: i32 = 1;
 /// The baked macro map sits above the four detail units.
 const MACRO_TEXTURE_UNIT: i32 = 5;
+/// The colormap program's units: day, night, detail. It is a separate
+/// program, so these may reuse the lit detail units.
+pub(crate) const COLORMAP_UNITS: [u32; 3] = [1, 2, 3];
 /// Furthest the detail band may reach, in metres from the camera.
 ///
 /// A cap, not a flat value. Detail stops being resolvable at a distance that
@@ -61,7 +64,9 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 1) in vec4 inPatch;
 
         uniform mat4 world;
+        #ifndef TERRAIN_COLORMAP
         uniform mat3 normalMatrix;
+        #endif
         uniform mat4 view;
         uniform mat4 projection;
         uniform highp usampler2D heightmapTex;
@@ -71,10 +76,13 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         // Every vertex and normal tap lands on a texel (see `exact_grid`).
         uniform bool exactGrid;
 
+        // The colormap variant is unlit: position only, no normal taps.
+        #ifndef TERRAIN_COLORMAP
         out vec3 worldNormal;
         out vec3 worldTangent;
-        out vec3 worldPos;
         out float localHeight;
+        #endif
+        out vec3 worldPos;
         out vec2 terrainUv;
 
         float heightAt(vec2 uv) {
@@ -109,10 +117,11 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         void main() {
             vec2 uv = inPatch.xy + inGrid.xy * inPatch.zw;
             terrainUv = uv;
+            float h = heightAt(uv);
+            #ifndef TERRAIN_COLORMAP
             ivec2 texSize = textureSize(heightmapTex, 0);
             vec2 texel = 1.0 / vec2(max(texSize - ivec2(1), ivec2(1)));
 
-            float h = heightAt(uv);
             float hL = heightAt(uv - vec2(texel.x, 0.0));
             float hR = heightAt(uv + vec2(texel.x, 0.0));
             float hD = heightAt(uv - vec2(0.0, texel.y));
@@ -126,6 +135,8 @@ const VERTEX_SHADER_SOURCE: &str = r#"
             vec3 localTangent = normalize(vec3(1.0, dhdx, 0.0));
             worldNormal = normalMatrix * localNormal;
             worldTangent = mat3(world) * localTangent;
+            localHeight = h;
+            #endif
 
             vec3 localPos = vec3(
                 (uv.x - 0.5) * terrainSize.x,
@@ -133,7 +144,6 @@ const VERTEX_SHADER_SOURCE: &str = r#"
                 (uv.y - 0.5) * terrainSize.y);
             vec4 wp = world * vec4(localPos, 1.0);
             worldPos = wp.xyz;
-            localHeight = h;
             gl_Position = projection * view * wp;
         }
 "#;
@@ -316,6 +326,62 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         }
 "#;
 
+/// Prepended to the vertex shader for the colormap program.
+const COLORMAP_DEFINE: &str = "#define TERRAIN_COLORMAP\n";
+
+/// Baked, unlit terrain: colormap × near detail × fog. No lights, normals or
+/// bands: those are painted into the maps.
+const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
+        // highp: as in the lit shader.
+        in highp vec3 worldPos;
+        in highp vec2 terrainUv;
+
+        uniform sampler2D dayTex;
+        uniform sampler2D nightTex;
+        // 0 = day, 1 = night. A uniform, so the branches on it are coherent.
+        uniform float colormapBlend;
+        uniform int useDetail;
+        uniform sampler2D detailTex;
+        uniform float detailTile;
+        uniform float detailFadeStart;
+        uniform float detailFadeEnd;
+        uniform vec3 detailCameraPos;
+        uniform vec3 detailAverage;
+
+        out vec4 fragColor;
+
+        void main() {
+            // Fully fogged: as in the lit shader, skip every fetch.
+            if (fogVisibility(worldPos) <= 0.0) {
+                fragColor = functorOutput(vec4(fogColor, 1.0));
+                return;
+            }
+            // One fetch except mid cross-fade.
+            vec3 color;
+            if (colormapBlend <= 0.0) {
+                color = texture(dayTex, terrainUv).rgb;
+            } else if (colormapBlend >= 1.0) {
+                color = texture(nightTex, terrainUv).rgb;
+            } else {
+                color = mix(
+                    texture(dayTex, terrainUv).rgb, texture(nightTex, terrainUv).rgb, colormapBlend);
+            }
+            if (useDetail == 1) {
+                float fade = 1.0 - smoothstep(
+                    detailFadeStart, detailFadeEnd, distance(worldPos, detailCameraPos));
+                // The lit shader's neutral ratio: the sample over the map's
+                // mean, so at fade 0 the factor is exactly 1.0 (no seam).
+                // Same derivative argument as its fade branch.
+                if (fade > 0.0) {
+                    vec3 near = texture(detailTex, worldPos.xz / detailTile).rgb;
+                    color *= mix(
+                        vec3(1.0), clamp(near / max(detailAverage, vec3(1e-3)), 0.0, 2.5), fade);
+                }
+            }
+            fragColor = functorOutput(vec4(applyFog(color, worldPos), 1.0));
+        }
+"#;
+
 const GRASS_VERTEX_SHADER_SOURCE: &str = r#"
         // A small crossed-blade cluster, authored around the local origin.
         layout (location = 0) in vec3 inBlade;
@@ -414,9 +480,9 @@ const GRASS_FRAGMENT_SHADER_SOURCE: &str = r#"
         }
 "#;
 
-struct TerrainUniforms {
+/// The vertex shader's uniforms, shared by the lit and colormap programs.
+struct PatchUniforms {
     world: UniformLocation,
-    normal_matrix: UniformLocation,
     view: UniformLocation,
     projection: UniformLocation,
     heightmap: UniformLocation,
@@ -424,6 +490,55 @@ struct TerrainUniforms {
     min_height: UniformLocation,
     skirt_depth: UniformLocation,
     exact_grid: UniformLocation,
+}
+
+impl PatchUniforms {
+    fn get(program: &ShaderProgram, gl: &glow::Context) -> Self {
+        Self {
+            world: program.get_uniform_location(gl, "world"),
+            view: program.get_uniform_location(gl, "view"),
+            projection: program.get_uniform_location(gl, "projection"),
+            heightmap: program.get_uniform_location(gl, "heightmapTex"),
+            terrain_size: program.get_uniform_location(gl, "terrainSize"),
+            min_height: program.get_uniform_location(gl, "minHeight"),
+            skirt_depth: program.get_uniform_location(gl, "skirtDepth"),
+            exact_grid: program.get_uniform_location(gl, "exactGrid"),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set(
+        &self,
+        p: &ShaderProgram,
+        gl: &glow::Context,
+        description: &TerrainDescription,
+        world: &Matrix4<f32>,
+        view: &Matrix4<f32>,
+        projection: &Matrix4<f32>,
+        exact_grid: bool,
+    ) {
+        p.set_uniform_matrix4(gl, &self.world, world);
+        p.set_uniform_matrix4(gl, &self.view, view);
+        p.set_uniform_matrix4(gl, &self.projection, projection);
+        p.set_uniform_1i(gl, &self.heightmap, 0);
+        p.set_uniform_vec3(
+            gl,
+            &self.terrain_size,
+            &Vector3::new(
+                description.width,
+                description.depth,
+                description.max_height - description.min_height,
+            ),
+        );
+        p.set_uniform_1f(gl, &self.min_height, description.min_height);
+        p.set_uniform_1f(gl, &self.skirt_depth, skirt_depth(description));
+        p.set_uniform_1i(gl, &self.exact_grid, exact_grid as i32);
+    }
+}
+
+struct TerrainUniforms {
+    patch: PatchUniforms,
+    normal_matrix: UniformLocation,
     color: UniformLocation,
     use_layers: UniformLocation,
     low_color: UniformLocation,
@@ -450,6 +565,33 @@ struct TerrainUniforms {
 struct TerrainProgram {
     program: ShaderProgram,
     uniforms: TerrainUniforms,
+}
+
+struct ColormapUniforms {
+    patch: PatchUniforms,
+    day: UniformLocation,
+    night: UniformLocation,
+    blend: UniformLocation,
+    use_detail: UniformLocation,
+    detail: UniformLocation,
+    detail_tile: UniformLocation,
+    detail_fade_start: UniformLocation,
+    detail_fade_end: UniformLocation,
+    detail_camera_pos: UniformLocation,
+    detail_average: UniformLocation,
+    fog: FogUniforms,
+    output: crate::color_space::OutputEncodeUniform,
+}
+
+struct ColormapProgram {
+    program: ShaderProgram,
+    uniforms: ColormapUniforms,
+}
+
+/// What the shell bound for colormap shading: both maps, and the detail map
+/// with its mean color once it has loaded (see `COLORMAP_UNITS`).
+pub(crate) struct ColormapBound {
+    pub(crate) detail_average: Option<[f32; 3]>,
 }
 
 struct GrassUniforms {
@@ -598,6 +740,7 @@ impl HeightTexture {
 #[derive(Default)]
 pub(crate) struct TerrainRenderer {
     program: Option<TerrainProgram>,
+    colormap_program: Option<ColormapProgram>,
     geometries: Vec<TerrainGeometry>,
     grass_program: Option<GrassProgram>,
     grass_geometries: Vec<GrassGeometry>,
@@ -635,12 +778,26 @@ impl TerrainRenderer {
         // textured terrain whose maps have not streamed in — render the flat
         // band colors.
         detail_bound: Option<[[f32; 3]; 4]>,
+        // Set when both colormaps are bound; the debug views stay lit.
+        colormap_bound: Option<ColormapBound>,
     ) {
         if source.width < 2 || source.height < 2 {
             return;
         }
 
-        self.ensure_program(ctx);
+        let colormap_bound = colormap_bound.filter(|_| {
+            matches!(
+                ctx.debug_render_mode,
+                DebugRenderMode::Default
+                    | DebugRenderMode::Transparent
+                    | DebugRenderMode::Physics
+            )
+        });
+        if colormap_bound.is_some() {
+            self.ensure_colormap_program(ctx);
+        } else {
+            self.ensure_program(ctx);
+        }
         let patch_key = PatchCacheKey {
             sample_width: source.width,
             sample_height: source.height,
@@ -703,106 +860,59 @@ impl TerrainRenderer {
             return;
         }
 
-        let program = self.program.as_ref().expect("terrain program initialized");
-        let normal_matrix = crate::math::normal_matrix(world);
         unsafe {
-            let p = &program.program;
-            let u = &program.uniforms;
-            p.use_program(gl);
-            p.set_uniform_matrix4(gl, &u.world, world);
-            p.set_uniform_matrix3(gl, &u.normal_matrix, &normal_matrix);
-            p.set_uniform_matrix4(gl, &u.view, view);
-            p.set_uniform_matrix4(gl, &u.projection, projection);
-            p.set_uniform_1i(gl, &u.heightmap, 0);
-            p.set_uniform_vec3(
-                gl,
-                &u.terrain_size,
-                &Vector3::new(
-                    description.width,
-                    description.depth,
-                    description.max_height - description.min_height,
-                ),
-            );
-            let (use_layers, low, high, rock, snow, snow_height) = match description.layers.as_ref()
-            {
-                Some(layers) => (
-                    1,
-                    layers.low,
-                    layers.high,
-                    layers.rock,
-                    layers.snow,
-                    layers.snow_height,
-                ),
-                None => (
-                    0,
-                    description.color,
-                    description.color,
-                    description.color,
-                    description.color,
-                    description.max_height,
-                ),
-            };
-            p.set_uniform_1i(gl, &u.use_layers, use_layers);
-            // Authored band colors: decode sRGB→linear at the uniform boundary.
-            for (location, color) in [
-                (&u.low_color, low),
-                (&u.high_color, high),
-                (&u.rock_color, rock),
-                (&u.snow_color, snow),
-            ] {
-                let color = crate::color_space::srgb_to_linear3(color);
-                p.set_uniform_vec3(gl, location, &Vector3::new(color[0], color[1], color[2]));
-            }
-            p.set_uniform_1f(gl, &u.min_terrain_height, description.min_height);
-            p.set_uniform_1f(gl, &u.max_terrain_height, description.max_height);
-            p.set_uniform_1f(gl, &u.snow_height, snow_height);
-            p.set_uniform_1f(gl, &u.min_height, description.min_height);
-            p.set_uniform_1f(gl, &u.skirt_depth, skirt_depth(description));
-            p.set_uniform_1i(gl, &u.exact_grid, exact_grid as i32);
-            let terrain_color = crate::color_space::srgb_to_linear3(description.color);
-            p.set_uniform_vec3(
-                gl,
-                &u.color,
-                &Vector3::new(terrain_color[0], terrain_color[1], terrain_color[2]),
-            );
-            let debug_mode = match ctx.debug_render_mode {
-                DebugRenderMode::Normals => 1,
-                DebugRenderMode::Tangents => 2,
-                DebugRenderMode::Default
-                | DebugRenderMode::Transparent
-                | DebugRenderMode::Physics => 0,
-            };
-            p.set_uniform_1i(gl, &u.debug_mode, debug_mode);
-            gl.active_texture(glow::TEXTURE0 + MACRO_TEXTURE_UNIT as u32);
-            gl.bind_texture(glow::TEXTURE_2D, Some(macro_texture));
-            p.set_uniform_1i(gl, &u.macro_map, MACRO_TEXTURE_UNIT);
-            let detail = description
-                .textures
-                .as_ref()
-                .filter(|_| use_layers == 1 && detail_bound.is_some());
-            p.set_uniform_1i(gl, &u.use_textures, detail.is_some() as i32);
-            if let Some(textures) = detail {
-                for (unit, location) in u.detail_textures.iter().enumerate() {
-                    p.set_uniform_1i(gl, location, unit as i32 + DETAIL_TEXTURE_UNIT0);
-                }
-                p.set_uniform_1f(gl, &u.detail_tile, textures.tile_size);
-                let span = description.width.max(description.depth);
-                let fade_end = DETAIL_FADE_MAX_END.min(span * DETAIL_FADE_END_FRACTION);
-                p.set_uniform_1f(gl, &u.detail_fade_start, fade_end * DETAIL_FADE_START_FRACTION);
-                p.set_uniform_1f(gl, &u.detail_fade_end, fade_end);
-                p.set_uniform_vec3(gl, &u.detail_camera_pos, &ctx.camera_pos);
-                let averages = detail_bound.expect("checked by the filter above");
-                for (location, average) in u.detail_averages.iter().zip(averages) {
+            if let Some(bound) = colormap_bound {
+                let program = self
+                    .colormap_program
+                    .as_ref()
+                    .expect("colormap program initialized");
+                let p = &program.program;
+                let u = &program.uniforms;
+                p.use_program(gl);
+                u.patch
+                    .set(p, gl, description, world, view, projection, exact_grid);
+                let colormap = description.colormap.as_ref().expect("bound by the shell");
+                p.set_uniform_1i(gl, &u.day, COLORMAP_UNITS[0] as i32);
+                p.set_uniform_1i(gl, &u.night, COLORMAP_UNITS[1] as i32);
+                // Always its own unit: a sampler2D left on unit 0 would alias
+                // the integer height texture, which GL rejects at draw time.
+                p.set_uniform_1i(gl, &u.detail, COLORMAP_UNITS[2] as i32);
+                p.set_uniform_1f(gl, &u.blend, colormap.blend);
+                let detail = description
+                    .colormap_detail
+                    .as_ref()
+                    .zip(bound.detail_average);
+                p.set_uniform_1i(gl, &u.use_detail, detail.is_some() as i32);
+                if let Some((detail, average)) = detail {
+                    p.set_uniform_1f(gl, &u.detail_tile, detail.tile_size);
+                    p.set_uniform_1f(
+                        gl,
+                        &u.detail_fade_start,
+                        detail.fade_end * DETAIL_FADE_START_FRACTION,
+                    );
+                    p.set_uniform_1f(gl, &u.detail_fade_end, detail.fade_end);
+                    p.set_uniform_vec3(gl, &u.detail_camera_pos, &ctx.camera_pos);
                     p.set_uniform_vec3(
                         gl,
-                        location,
+                        &u.detail_average,
                         &Vector3::new(average[0], average[1], average[2]),
                     );
                 }
+                u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
+                u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
+            } else {
+                Self::set_lit_uniforms(
+                    self.program.as_ref().expect("terrain program initialized"),
+                    ctx,
+                    description,
+                    world,
+                    view,
+                    projection,
+                    exact_grid,
+                    macro_texture,
+                    detail_bound,
+                );
             }
-            u.lighting.set(p, ctx, view);
-            u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
-            u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(height_texture));
@@ -841,6 +951,109 @@ impl TerrainRenderer {
         }
     }
 
+    /// Use the lit program and set its uniforms; the shell has bound any
+    /// detail maps to units 1..4.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn set_lit_uniforms(
+        program: &TerrainProgram,
+        ctx: &RenderContext,
+        description: &TerrainDescription,
+        world: &Matrix4<f32>,
+        view: &Matrix4<f32>,
+        projection: &Matrix4<f32>,
+        exact_grid: bool,
+        macro_texture: glow::Texture,
+        detail_bound: Option<[[f32; 3]; 4]>,
+    ) {
+        let gl = ctx.gl;
+        let normal_matrix = crate::math::normal_matrix(world);
+        let p = &program.program;
+        let u = &program.uniforms;
+        p.use_program(gl);
+        u.patch
+            .set(p, gl, description, world, view, projection, exact_grid);
+        p.set_uniform_matrix3(gl, &u.normal_matrix, &normal_matrix);
+        let (use_layers, low, high, rock, snow, snow_height) = match description.layers.as_ref()
+        {
+            Some(layers) => (
+                1,
+                layers.low,
+                layers.high,
+                layers.rock,
+                layers.snow,
+                layers.snow_height,
+            ),
+            None => (
+                0,
+                description.color,
+                description.color,
+                description.color,
+                description.color,
+                description.max_height,
+            ),
+        };
+        p.set_uniform_1i(gl, &u.use_layers, use_layers);
+        // Authored band colors: decode sRGB→linear at the uniform boundary.
+        for (location, color) in [
+            (&u.low_color, low),
+            (&u.high_color, high),
+            (&u.rock_color, rock),
+            (&u.snow_color, snow),
+        ] {
+            let color = crate::color_space::srgb_to_linear3(color);
+            p.set_uniform_vec3(gl, location, &Vector3::new(color[0], color[1], color[2]));
+        }
+        p.set_uniform_1f(gl, &u.min_terrain_height, description.min_height);
+        p.set_uniform_1f(gl, &u.max_terrain_height, description.max_height);
+        p.set_uniform_1f(gl, &u.snow_height, snow_height);
+        let terrain_color = crate::color_space::srgb_to_linear3(description.color);
+        p.set_uniform_vec3(
+            gl,
+            &u.color,
+            &Vector3::new(terrain_color[0], terrain_color[1], terrain_color[2]),
+        );
+        let debug_mode = match ctx.debug_render_mode {
+            DebugRenderMode::Normals => 1,
+            DebugRenderMode::Tangents => 2,
+            DebugRenderMode::Default
+            | DebugRenderMode::Transparent
+            | DebugRenderMode::Physics => 0,
+        };
+        p.set_uniform_1i(gl, &u.debug_mode, debug_mode);
+        gl.active_texture(glow::TEXTURE0 + MACRO_TEXTURE_UNIT as u32);
+        gl.bind_texture(glow::TEXTURE_2D, Some(macro_texture));
+        p.set_uniform_1i(gl, &u.macro_map, MACRO_TEXTURE_UNIT);
+        let detail = description
+            .textures
+            .as_ref()
+            .filter(|_| use_layers == 1 && detail_bound.is_some());
+        p.set_uniform_1i(gl, &u.use_textures, detail.is_some() as i32);
+        // Even when unused: left at unit 0 they would alias the integer height
+        // texture, which GL (strictly, WebGL) rejects at draw time.
+        for (unit, location) in u.detail_textures.iter().enumerate() {
+            p.set_uniform_1i(gl, location, unit as i32 + DETAIL_TEXTURE_UNIT0);
+        }
+        if let Some(textures) = detail {
+            p.set_uniform_1f(gl, &u.detail_tile, textures.tile_size);
+            let span = description.width.max(description.depth);
+            let fade_end = DETAIL_FADE_MAX_END.min(span * DETAIL_FADE_END_FRACTION);
+            p.set_uniform_1f(gl, &u.detail_fade_start, fade_end * DETAIL_FADE_START_FRACTION);
+            p.set_uniform_1f(gl, &u.detail_fade_end, fade_end);
+            p.set_uniform_vec3(gl, &u.detail_camera_pos, &ctx.camera_pos);
+            let averages = detail_bound.expect("checked by the filter above");
+            for (location, average) in u.detail_averages.iter().zip(averages) {
+                p.set_uniform_vec3(
+                    gl,
+                    location,
+                    &Vector3::new(average[0], average[1], average[2]),
+                );
+            }
+        }
+        u.lighting.set(p, ctx, view);
+        u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
+        u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
+    }
+
     fn ensure_program(&mut self, ctx: &RenderContext) {
         if self.program.is_some() {
             return;
@@ -865,15 +1078,8 @@ impl TerrainRenderer {
         );
         let program = ShaderProgram::link(ctx.gl, &vertex, &fragment);
         let uniforms = TerrainUniforms {
-            world: program.get_uniform_location(ctx.gl, "world"),
+            patch: PatchUniforms::get(&program, ctx.gl),
             normal_matrix: program.get_uniform_location(ctx.gl, "normalMatrix"),
-            view: program.get_uniform_location(ctx.gl, "view"),
-            projection: program.get_uniform_location(ctx.gl, "projection"),
-            heightmap: program.get_uniform_location(ctx.gl, "heightmapTex"),
-            terrain_size: program.get_uniform_location(ctx.gl, "terrainSize"),
-            min_height: program.get_uniform_location(ctx.gl, "minHeight"),
-            skirt_depth: program.get_uniform_location(ctx.gl, "skirtDepth"),
-            exact_grid: program.get_uniform_location(ctx.gl, "exactGrid"),
             color: program.get_uniform_location(ctx.gl, "terrainColor"),
             use_layers: program.get_uniform_location(ctx.gl, "useLayers"),
             low_color: program.get_uniform_location(ctx.gl, "lowColor"),
@@ -904,6 +1110,42 @@ impl TerrainRenderer {
             output: crate::color_space::OutputEncodeUniform::get(&program, ctx.gl),
         };
         self.program = Some(TerrainProgram { program, uniforms });
+    }
+
+    fn ensure_colormap_program(&mut self, ctx: &RenderContext) {
+        if self.colormap_program.is_some() {
+            return;
+        }
+        let vertex = Shader::build(
+            ctx.gl,
+            ShaderType::Vertex,
+            &format!("{COLORMAP_DEFINE}{VERTEX_SHADER_SOURCE}"),
+            ctx.shader_version,
+        );
+        let fragment = Shader::build(
+            ctx.gl,
+            ShaderType::Fragment,
+            &format!("{FOG_GLSL}\n{COLORMAP_FRAGMENT_SHADER_SOURCE}"),
+            ctx.shader_version,
+        );
+        let program = ShaderProgram::link(ctx.gl, &vertex, &fragment);
+        let get = |name| program.get_uniform_location(ctx.gl, name);
+        let uniforms = ColormapUniforms {
+            patch: PatchUniforms::get(&program, ctx.gl),
+            day: get("dayTex"),
+            night: get("nightTex"),
+            blend: get("colormapBlend"),
+            use_detail: get("useDetail"),
+            detail: get("detailTex"),
+            detail_tile: get("detailTile"),
+            detail_fade_start: get("detailFadeStart"),
+            detail_fade_end: get("detailFadeEnd"),
+            detail_camera_pos: get("detailCameraPos"),
+            detail_average: get("detailAverage"),
+            fog: FogUniforms::get(&program, ctx.gl),
+            output: crate::color_space::OutputEncodeUniform::get(&program, ctx.gl),
+        };
+        self.colormap_program = Some(ColormapProgram { program, uniforms });
     }
 
     #[allow(clippy::too_many_arguments)]

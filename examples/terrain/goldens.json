@@ -22,5 +22,32 @@
     "targets": [
       "native"
     ]
+  },
+  {
+    "name": "terrain-colormap-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "colormap.input",
+    "captureAtFrame": 180
+  },
+  {
+    "name": "terrain-colormap-dusk",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "colormap.input",
+    "captureAtFrame": 260
+  },
+  {
+    "name": "terrain-colormap-night",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "colormap.input",
+    "captureAtFrame": 400
   }
 ]
