@@ -31,7 +31,7 @@ use std::sync::{Arc, OnceLock};
 use cgmath::{InnerSpace, Matrix4, Rad, SquareMatrix, Vector3};
 
 pub use edged::EdgeShape;
-pub use mesh::{face_normal, triangulate_polygon, Bounds, Mesh};
+pub use mesh::{face_normal, triangulate_polygon, Bounds, Mesh, RayHit};
 pub use plane::{basis, EdgeCut, Plane};
 pub use sketch::Sketch;
 pub use text::{text, text_width, Font};
