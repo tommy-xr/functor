@@ -215,11 +215,12 @@ pub struct World {
     /// same `Arc` again skips the group without visiting its bodies. World
     /// state, so restoring a checkpoint can't leave a stale fast path.
     groups: BTreeMap<String, Arc<[Body]>>,
-    /// Group key → its fused fixed bodies (copy-on-write, like `tags`). A
-    /// fused body has a declaration but no rigid body: it is one part of a
-    /// compound collider, so fixed–fixed pairs never reach rapier.
+    /// Fused fixed bodies, one compound per material, in material order
+    /// (copy-on-write, like `tags`). A fused body has a declaration but no
+    /// rigid body: it is one part of a compound collider, so fixed–fixed
+    /// pairs never reach rapier.
     #[serde(default)]
-    fused: Arc<BTreeMap<String, Vec<FusedStatics>>>,
+    fused: Arc<Vec<FusedStatics>>,
     /// Fused parts touching another body as of the last step, `(a, b,
     /// sensor)` with `a < b`: the per-tag contact state rapier keeps per
     /// collider pair, diffed each step into events.
@@ -438,10 +439,11 @@ impl World {
     ///
     /// A group whose `Arc` was reconciled last time is skipped: its bodies
     /// would all compare equal. Only flat bodies and changed groups are
-    /// visited. A changed group's still, solid, convex fixed bodies
-    /// ([`fusable`]) become parts of one compound collider per material
-    /// instead of bodies; the compound is rebuilt only when those parts
-    /// changed.
+    /// visited. Still, solid, convex fixed bodies ([`fusable`]), flat or
+    /// grouped, become parts of one compound collider per material instead
+    /// of bodies; a material's compound is rebuilt only when its parts
+    /// changed. Neither depends on grouping, so the rapier history matches
+    /// declaring every body flat.
     pub fn reconcile(&mut self, scene: &PhysicsScene) {
         self.gravity = scene.gravity;
         let mut stats = ReconcileStats::default();
@@ -459,10 +461,10 @@ impl World {
                 .get(key)
                 .is_some_and(|old| Arc::ptr_eq(old, bodies))
         };
-        let changed: Vec<(&str, &Arc<[Body]>)> = groups
+        let changed: Vec<&Arc<[Body]>> = groups
             .iter()
             .filter(|(key, bodies)| !reconciled(key, bodies))
-            .map(|(key, bodies)| (*key, *bodies))
+            .map(|(_, bodies)| *bodies)
             .collect();
         // Last versions of groups that changed or went away.
         let retired: Vec<Arc<[Body]>> = self
@@ -477,39 +479,6 @@ impl World {
             .collect();
         stats.groups_skipped = groups.len() - changed.len();
 
-        // Changed groups' fusable bodies. A group whose parts all match the
-        // cache keeps its compounds; the others, and fused groups that went
-        // away, are re-fused.
-        let mut fusing: BTreeSet<&String> = BTreeSet::new();
-        let mut kept: BTreeSet<&String> = BTreeSet::new();
-        let mut refuse: BTreeMap<String, Vec<&Body>> = BTreeMap::new();
-        for (key, bodies) in &changed {
-            let parts: Vec<&Body> = bodies.iter().filter(|b| fusable(b)).collect();
-            stats.compared += parts.len();
-            fusing.extend(parts.iter().map(|b| &b.tag));
-            let old: BTreeSet<&String> = self
-                .fused
-                .get(*key)
-                .into_iter()
-                .flatten()
-                .flat_map(|f| &f.tags)
-                .collect();
-            let same = old.len() == parts.len()
-                && parts
-                    .iter()
-                    .all(|b| old.contains(&b.tag) && self.declared.get(&b.tag) == Some(*b));
-            if same {
-                kept.extend(parts.iter().map(|b| &b.tag));
-            } else {
-                refuse.insert(key.to_string(), parts);
-            }
-        }
-        for key in self.fused.keys() {
-            if !groups.contains_key(key.as_str()) {
-                refuse.insert(key.clone(), Vec::new());
-            }
-        }
-
         let flat_unchanged = self.flat.len() == wanted.len()
             && self.flat.iter().zip(wanted.keys()).all(|(a, b)| a == *b);
         let next_flat =
@@ -517,15 +486,16 @@ impl World {
         let old_flat = Arc::clone(&self.flat);
 
         // Declarations that may differ from the cache, in tag order: flat
-        // bodies and changed groups' unfused bodies. Tags are disjoint across
-        // them (`Physics.scene` enforces it), so an unchanged group owns none
-        // of the tags that went away.
+        // bodies and changed groups' bodies. Tags are disjoint across them
+        // (`Physics.scene` enforces it), so an unchanged group owns none of
+        // the tags that went away.
         let mut updates = wanted;
-        for (_, bodies) in &changed {
-            for body in bodies.iter().filter(|b| !fusing.contains(&b.tag)) {
+        for bodies in &changed {
+            for body in bodies.iter() {
                 updates.entry(&body.tag).or_insert(body);
             }
         }
+        stats.compared = updates.len();
         let gone: BTreeSet<&String> = old_flat
             .iter()
             .chain(
@@ -533,21 +503,71 @@ impl World {
                     .iter()
                     .flat_map(|bodies| bodies.iter().map(|b| &b.tag)),
             )
-            .filter(|tag| !updates.contains_key(*tag) && !kept.contains(*tag))
-            // A part fused again needs no despawn; a body becoming one does.
-            .filter(|tag| !fusing.contains(*tag) || self.tags.contains_key(*tag))
+            .filter(|tag| !updates.contains_key(*tag))
             .collect();
 
-        // Unfuse, keeping each part's live pose for whatever it becomes.
-        for key in refuse.keys() {
-            for fused in cow_remove(&mut self.fused, key).unwrap_or_default() {
-                let compound = self.colliders[fused.collider]
-                    .shape()
-                    .as_compound()
-                    .expect("fused statics are compounds");
-                for (tag, (pose, _)) in fused.tags.iter().zip(compound.shapes()) {
-                    self.unfused.insert(tag.clone(), *pose);
+        // Changed declarations, and the materials whose compound they change
+        // (a part added, edited, removed or turned into a body). Which bodies
+        // fuse depends only on the declarations, never on how they were
+        // grouped, so flat and memoized scenes build the same compounds.
+        let part = |tag: &str| {
+            self.declared
+                .get(tag)
+                .filter(|prev| fusable(prev) && !self.tags.contains_key(tag))
+        };
+        let mut dirty: BTreeSet<Material> = BTreeSet::new();
+        let mut bodies_changed: Vec<(&String, &Body)> = Vec::new();
+        let mut joining: Vec<&String> = Vec::new();
+        for (&tag, &body) in &updates {
+            let fuse = fusable(body);
+            if self.declared.get(tag) == Some(body) && !(fuse && self.tags.contains_key(tag)) {
+                continue; // unchanged: the simulation owns this body
+            }
+            if let Some(prev) = part(tag) {
+                dirty.insert(material(prev));
+            }
+            if !fuse {
+                bodies_changed.push((tag, body));
+                continue;
+            }
+            dirty.insert(material(body));
+            if self.tags.contains_key(tag) {
+                joining.push(tag);
+            }
+        }
+        dirty.extend(gone.iter().filter_map(|tag| part(tag)).map(material));
+
+        // Each dirty material's parts: all its fusable declarations, flat or
+        // grouped, in tag order.
+        let mut refuse: BTreeMap<Material, Vec<&Body>> =
+            dirty.iter().map(|m| (*m, Vec::new())).collect();
+        if !dirty.is_empty() {
+            let unchanged = groups
+                .iter()
+                .filter(|(key, bodies)| reconciled(key, bodies))
+                .flat_map(|(_, bodies)| bodies.iter());
+            for body in updates.values().copied().chain(unchanged).filter(|b| fusable(b)) {
+                if let Some(parts) = refuse.get_mut(&material(body)) {
+                    parts.push(body);
                 }
+            }
+            for parts in refuse.values_mut() {
+                parts.sort_by(|a, b| a.tag.cmp(&b.tag));
+            }
+        }
+
+        // Unfuse, keeping each part's live pose for whatever it becomes.
+        if !dirty.is_empty() {
+            let (removed, kept): (Vec<_>, Vec<_>) = self
+                .fused
+                .iter()
+                .cloned()
+                .partition(|f| dirty.contains(&f.material));
+            self.fused = Arc::new(kept);
+            for fused in removed {
+                let poses: Vec<Pose> =
+                    self.compound(fused.collider).shapes().iter().map(|(pose, _)| *pose).collect();
+                self.unfused.extend(fused.tags.into_iter().zip(poses));
                 self.colliders
                     .remove(fused.collider, &mut self.islands, &mut self.bodies, true);
             }
@@ -573,29 +593,24 @@ impl World {
 
         // A body becoming a part hands its contacts over, so the next step
         // reports only real transitions.
-        let handed: Vec<_> = refuse
-            .values()
-            .flatten()
-            .flat_map(|body| self.touching_of(&body.tag))
-            .collect();
+        let handed: Vec<_> = joining.iter().flat_map(|tag| self.touching_of(tag)).collect();
         self.fused_touching.extend(handed);
 
-        // Despawns, in tag order.
-        for tag in gone {
+        // Despawns (bodies that went away or become parts), in tag order.
+        let despawns: BTreeSet<&String> = gone.into_iter().chain(joining).collect();
+        for tag in despawns {
             self.despawn(tag);
         }
 
-        // Spawns / updates, in tag order.
-        for (tag, body) in updates {
-            stats.compared += 1;
+        // Spawns / updates of bodies, in tag order.
+        for (tag, body) in bodies_changed {
             let accepted = match self.declared.get(tag) {
                 None => self.spawn(body),
-                // A part leaving its compound is rebuilt as a body.
-                Some(prev) if prev != body || self.unfused.contains_key(tag.as_str()) => {
+                // Changed, or a part leaving its compound.
+                Some(prev) => {
                     let prev = prev.clone();
                     self.apply_divergence(&prev, body)
                 }
-                Some(_) => continue, // unchanged: the simulation owns this body
             };
             if accepted {
                 Arc::make_mut(&mut self.declared).insert(tag.clone(), body.clone());
@@ -610,47 +625,36 @@ impl World {
             }
         }
 
-        // Fuse, in key order: one compound per material, parts in tag order.
-        for (key, parts) in &refuse {
-            let mut by_material: BTreeMap<(u32, u32), Vec<&Body>> = BTreeMap::new();
-            for body in parts {
-                by_material
-                    .entry((body.friction.to_bits(), body.restitution.to_bits()))
-                    .or_default()
-                    .push(body);
-            }
-            let mut fused = Vec::new();
-            for bodies in by_material.into_values() {
-                let shapes = bodies
-                    .iter()
-                    .map(|b| {
-                        let shape = collider_of(&b.shape).expect("fusable shapes are convex").shape;
-                        (part_poses[&b.tag], shape)
-                    })
-                    .collect();
-                let collider = ColliderBuilder::compound(shapes)
-                    .friction(bodies[0].friction)
-                    .restitution(bodies[0].restitution)
-                    .build();
-                fused.push(FusedStatics {
-                    collider: self.colliders.insert(collider),
-                    tags: bodies.iter().map(|b| b.tag.clone()).collect(),
-                });
-                debug_assert!(
-                    fused.last().unwrap().tags.is_sorted(),
-                    "group bodies are tag-sorted (`fused_part` binary-searches them)"
-                );
-                for body in bodies {
-                    Arc::make_mut(&mut self.declared).insert(body.tag.clone(), body.clone());
+        // Fuse, in material order, parts in tag order.
+        for (material, bodies) in refuse.into_iter().filter(|(_, b)| !b.is_empty()) {
+            let shapes = bodies
+                .iter()
+                .map(|b| {
+                    let shape = collider_of(&b.shape).expect("fusable shapes are convex").shape;
+                    (part_poses[&b.tag], shape)
+                })
+                .collect();
+            let collider = ColliderBuilder::compound(shapes)
+                .friction(bodies[0].friction)
+                .restitution(bodies[0].restitution)
+                .build();
+            let collider = self.colliders.insert(collider);
+            for body in &bodies {
+                if self.declared.get(&body.tag) != Some(*body) {
+                    Arc::make_mut(&mut self.declared).insert(body.tag.clone(), (*body).clone());
                     stats.written += 1;
                 }
             }
-            if !fused.is_empty() {
-                Arc::make_mut(&mut self.fused).insert(key.clone(), fused);
-            }
+            let fused = Arc::make_mut(&mut self.fused);
+            fused.push(FusedStatics {
+                material,
+                collider,
+                tags: bodies.iter().map(|b| b.tag.clone()).collect(),
+            });
+            fused.sort_by_key(|f| f.material);
         }
         self.unfused.clear();
-        if !refuse.is_empty() {
+        if !dirty.is_empty() {
             let (still, left): (BTreeSet<_>, BTreeSet<_>) = std::mem::take(&mut self.fused_touching)
                 .into_iter()
                 .partition(|(a, b, _)| self.fused_part(a).is_some() || self.fused_part(b).is_some());
@@ -1085,7 +1089,7 @@ impl World {
             })
             .collect();
         // Fused bodies, as the fixed bodies they stand for.
-        for fused in self.fused.values().flatten() {
+        for fused in self.fused.iter() {
             for (tag, (pose, _)) in fused.tags.iter().zip(self.compound(fused.collider).shapes()) {
                 let (pos, rot) = (pose.translation, pose.rotation);
                 bodies.push(BodyDump {
@@ -1438,7 +1442,7 @@ impl World {
 
     /// The compound part that is body `tag`, if `tag` is fused.
     fn fused_part(&self, tag: &str) -> Option<(ColliderHandle, usize)> {
-        self.fused.values().flatten().find_map(|f| {
+        self.fused.iter().find_map(|f| {
             let part = f.tags.binary_search_by(|t| t.as_str().cmp(tag)).ok()?;
             Some((f.collider, part))
         })
@@ -1447,8 +1451,7 @@ impl World {
     /// The tags of `collider`'s parts, if it is a fused compound.
     fn fused_tags(&self, collider: ColliderHandle) -> Option<&[String]> {
         self.fused
-            .values()
-            .flatten()
+            .iter()
             .find(|f| f.collider == collider)
             .map(|f| f.tags.as_slice())
     }
@@ -1496,7 +1499,7 @@ impl World {
             let (a, b) = (a.to_string(), b);
             now.insert(if a <= b { (a, b, sensor) } else { (b, a, sensor) });
         };
-        for fused in self.fused.values().flatten() {
+        for fused in self.fused.iter() {
             let c = fused.collider;
             for pair in self.narrow_phase.contact_pairs_with(c) {
                 let mine_first = pair.collider1 == c;
@@ -1546,7 +1549,7 @@ impl World {
             };
             let swept = shape.compute_aabb(&before).merged(&shape.compute_aabb(&after));
             let dispatcher = self.narrow_phase.query_dispatcher();
-            for fused in self.fused.values().flatten() {
+            for fused in self.fused.iter() {
                 let compound = self.compound(fused.collider);
                 for i in compound.bvh().intersect_aabb(&swept) {
                     let (pose, part) = &compound.shapes()[i as usize];
@@ -1929,8 +1932,8 @@ fn cow_remove<V: Clone>(map: &mut Arc<BTreeMap<String, V>>, tag: &str) -> Option
     Arc::make_mut(map).remove(tag)
 }
 
-/// A memo group body that becomes a compound part instead of a body: fixed,
-/// still, solid and convex (parry compounds can't nest a mesh).
+/// A body that becomes a compound part instead of a body: fixed, still,
+/// solid and convex (parry compounds can't nest a mesh).
 fn fusable(body: &Body) -> bool {
     body.kind == BodyKind::Fixed
         && !body.sensor
@@ -1942,12 +1945,20 @@ fn fusable(body: &Body) -> bool {
         )
 }
 
+/// A fused body's contact material: `(friction, restitution)` bits.
+type Material = (u32, u32);
+
+fn material(body: &Body) -> Material {
+    (body.friction.to_bits(), body.restitution.to_bits())
+}
+
 /// One material's fused fixed bodies: a parentless compound collider at the
 /// identity pose whose part `i`, at its world pose, is body `tags[i]`.
 #[derive(Clone, Serialize, Deserialize)]
 struct FusedStatics {
+    material: Material,
     collider: ColliderHandle,
-    /// Sorted, as group bodies are.
+    /// Sorted (`fused_part` binary-searches them).
     tags: Vec<String>,
 }
 
@@ -2743,8 +2754,16 @@ mod tests {
             };
             let mut w = World::new([0.0, 0.0, 0.0]);
             w.reconcile(&scene(vec![original]));
-            let rb_handle = w.tags["mover"];
-            w.bodies[rb_handle].set_position(live_pose, true);
+            match w.tags.get("mover") {
+                Some(&rb) => w.bodies[rb].set_position(live_pose, true),
+                // A fixed body is a compound part: move the part.
+                None => {
+                    let (c, part) = w.fused_part("mover").unwrap();
+                    let mut shapes = w.compound(c).shapes().to_vec();
+                    shapes[part].0 = live_pose;
+                    w.colliders[c].set_shape(SharedShape::compound(shapes));
+                }
+            }
 
             // The kind changes, but neither declared pose field does. The new
             // kinematic body's current and next poses must both inherit the
@@ -3614,7 +3633,7 @@ mod tests {
 
     /// Bodies fused into compounds.
     fn fused_bodies(w: &World) -> usize {
-        w.fused.values().flatten().map(|f| f.tags.len()).sum()
+        w.fused.iter().map(|f| f.tags.len()).sum()
     }
 
     #[test]
@@ -3702,29 +3721,57 @@ mod tests {
         assert_eq!(w.declared.len(), 1500);
     }
 
+    /// The world minus the reconcile bookkeeping that differs by how bodies
+    /// were declared (flat vs grouped): rapier state, tags and the cache.
+    fn sim_state(w: &World) -> Vec<u8> {
+        let mut w = w.clone();
+        w.flat = Arc::default();
+        w.groups.clear();
+        w.snapshot()
+    }
+
+    fn teleport_tile(w: &mut World, y: f32) {
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "s0000".to_string(),
+            position: [0.0, y, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+    }
+
     #[test]
-    fn a_tag_moving_between_flat_and_a_group_keeps_its_pose() {
+    fn a_tag_moving_between_flat_and_a_group_keeps_its_part() {
         let tile = || floor_tiles(1).remove(0);
-        let teleport = |w: &mut World, y: f32| {
-            w.queue_command(PhysicsCommand::Teleport {
-                tag: "s0000".to_string(),
-                position: [0.0, y, 0.0],
-            });
-            w.step_frame(FIXED_DT);
-        };
         let mut w = World::new([0.0, -9.81, 0.0]);
         w.reconcile(&scene(vec![tile()]));
-        teleport(&mut w, 1.0);
-        // Into a group: fused where the flat body was.
+        teleport_tile(&mut w, 1.0);
+        let before = sim_state(&w);
         w.reconcile(&with_groups(vec![], vec![group("g", vec![tile()])]));
-        assert_eq!((w.tags.len(), fused_bodies(&w)), (0, 1));
-        assert_eq!(w.body_transform("s0000").unwrap().0, [0.0, 1.0, 0.0]);
-        teleport(&mut w, 2.0);
-        // Back out: a body where the part was.
+        assert!(sim_state(&w) == before);
         w.reconcile(&scene(vec![tile()]));
+        assert!(sim_state(&w) == before);
+        assert!(w.groups.is_empty());
+        assert_eq!(w.body_transform("s0000").unwrap().0, [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_part_becoming_a_body_and_back_keeps_its_pose() {
+        let tile = || floor_tiles(1).remove(0);
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        w.reconcile(&scene(vec![tile()]));
+        teleport_tile(&mut w, 1.0);
+        // Kinematic: a body where the part was.
+        w.reconcile(&scene(vec![Body {
+            kind: BodyKind::Kinematic,
+            ..tile()
+        }]));
         assert_eq!((w.tags.len(), fused_bodies(&w)), (1, 0));
+        assert_eq!(w.body_transform("s0000").unwrap().0, [0.0, 1.0, 0.0]);
+        teleport_tile(&mut w, 2.0);
+        // Fixed again: a part where the body was.
+        w.reconcile(&scene(vec![tile()]));
+        assert_eq!((w.tags.len(), fused_bodies(&w)), (0, 1));
         assert_eq!(w.body_transform("s0000").unwrap().0, [0.0, 2.0, 0.0]);
-        assert!(w.groups.is_empty() && w.colliders.len() == 1);
+        assert_eq!(w.colliders.len(), 1);
     }
 
     /// Floor tiles plus a box under tile `s0167`, flat or as one group.
@@ -3807,7 +3854,7 @@ mod tests {
         ]);
         let mut w = World::new([0.0, -9.81, 0.0]);
         w.reconcile(&with_groups(vec![], vec![group("g", bodies)]));
-        let compounds: Vec<_> = w.fused["g"].iter().map(|f| f.tags.clone()).collect();
+        let compounds: Vec<_> = w.fused.iter().map(|f| f.tags.clone()).collect();
         assert_eq!(compounds, [vec!["s0000", "s0002", "s0003"], vec!["s0001"]]);
         assert_eq!(w.tags.keys().collect::<Vec<_>>(), ["belt", "door", "zone"]);
         assert_eq!(w.colliders.len(), 5);
