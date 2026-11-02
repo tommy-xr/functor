@@ -448,8 +448,12 @@ fn draw_static_model(
     // so turning back (or leaving `Scene.keepResident`) uploads nothing.
     if scene_context.culled(projection_matrix, view_matrix, matrix, &bounds) {
         mesh.buffers(gl);
-        for texture in source.groups.iter().filter_map(|g| g.texture.as_ref()).chain(lightmap) {
-            scene_context.keep_texture(gl, texture);
+        for texture in source.groups.iter().filter_map(|g| g.texture.as_ref()) {
+            scene_context.keep_texture(gl, texture, true);
+        }
+        // Without mips, as the lightmap draw below uploads it.
+        if let Some(lightmap) = lightmap {
+            scene_context.keep_texture(gl, lightmap, false);
         }
         return;
     }
@@ -1163,8 +1167,9 @@ frame: correct, but each bind re-uploads (atlas {})",
 
     /// Keep `texture`'s pixel texture resident without binding it, for a
     /// culled or hidden draw: marked used, or uploaded (at its layer
-    /// intensities) if it isn't on the GPU yet. File textures aren't swept.
-    fn keep_texture(&self, gl: &glow::Context, texture: &TextureDescription) {
+    /// intensities, with mips only if `mips`) if it isn't on the GPU yet.
+    /// File textures aren't swept.
+    fn keep_texture(&self, gl: &glow::Context, texture: &TextureDescription, mips: bool) {
         let (pixels, intensities) = match texture {
             TextureDescription::Data(pixels) => (pixels, &[][..]),
             TextureDescription::Layered { base, intensities } => (base, &intensities[..]),
@@ -1178,7 +1183,7 @@ frame: correct, but each bind re-uploads (atlas {})",
         // bound it once for its whole subtree, so put that binding back.
         unsafe {
             let bound = gl.get_parameter_texture(glow::TEXTURE_BINDING_2D);
-            self.layered_texture(gl, pixels, intensities);
+            self.retained_texture(gl, pixels, intensities, mips);
             gl.bind_texture(glow::TEXTURE_2D, bound);
         }
     }
@@ -1188,7 +1193,7 @@ frame: correct, but each bind re-uploads (atlas {})",
     fn keep_model_texture(&self, gl: &glow::Context, handle: &ModelHandle) {
         if let ModelHandle::Data(data) = handle {
             if let Some(texture) = &data.source().texture {
-                self.keep_texture(gl, texture);
+                self.keep_texture(gl, texture, true);
             }
         }
     }
