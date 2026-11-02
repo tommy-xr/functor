@@ -1,10 +1,81 @@
 // The Quest tool APK's boot scene: what the headset shows before any game is
 // pushed over the network (POST /reload-source replaces it live, model
-// preserved). VR-adapted from the CLI's 3d template: a floor plane for
-// spatial reference, and a spinning cube + sphere ~2.5m in front of the
-// stage origin at standing eye height. The authored camera is the reference
-// center-eye pose on the headset; live head/eye motion composes onto it, so
-// this scene starts with the same framing on desktop and in VR.
+// preserved). The site's loader in 3D: the Functor mark, milled from nine
+// slices, spins over a faint wordmark and a "LOADING" label, ~2.5m ahead at
+// eye height, above a glowing grid floor that fades into fog. The authored
+// camera is the reference center-eye pose on the headset; live head/eye
+// motion composes onto it, so desktop and VR start with the same framing.
+
+let bg = Color.rgb(0.059, 0.047, 0.114)
+// cyan → plum by t in [0, 1].
+let tint = (t) => Color.rgb(0.255 + 0.102 * t, 0.847 - 0.706 * t, 0.902 - 0.463 * t)
+
+// The mark's three polygons in its SVG space (y down, 690 units tall),
+// centred and flipped so +y is up.
+let svg = (pts) =>
+  pts |> List.map((p) => { x: p.x - 558.5, y: 508.0 - p.y }) |> Sketch.polygon
+let mark = Sketch.union([
+  svg([{ x: 382.0, y: 341.0 }, { x: 545.0, y: 179.0 }, { x: 735.0, y: 179.0 },
+       { x: 615.0, y: 300.0 }, { x: 548.0, y: 300.0 }, { x: 382.0, y: 466.0 }]),
+  svg([{ x: 382.0, y: 493.0 }, { x: 497.0, y: 380.0 }, { x: 497.0, y: 748.0 },
+       { x: 382.0, y: 837.0 }]),
+  svg([{ x: 518.0, y: 426.0 }, { x: 693.0, y: 426.0 }, { x: 597.0, y: 522.0 },
+       { x: 518.0, y: 522.0 }]),
+])
+let markSize = 0.55 / 690.0
+
+// Solid.toScene turns mm Z-up into metres Y-up; undo both so a sketch stands
+// facing -z at 1 unit per metre, extruded toward the viewer.
+let upright = (solid) =>
+  Solid.toScene(solid) |> Scene.rotateX(Angle.degrees(90.0)) |> Scene.scale(1000.0)
+
+// Nine slices along z, cyan at the front fading to plum at the back, as on
+// the site. One mesh, nine tints.
+let slice = Solid.extrude(14.0, mark) |> upright
+let slices = Scene.group(List.range(9.0) |> List.map((i) =>
+  slice
+    |> Scene.lit(tint(i * 0.12))
+    |> Scene.translate(Vec3.make(0.0, 0.0, (4.0 - i) * 21.0 - 7.0))))
+
+// Letter-spaced text centred on x, drawing its first `shown` glyphs (so a
+// growing "LOADING..." keeps its place): each glyph placed by hand, since
+// Sketch.text has no tracking.
+let tracked = (size, spacing, text, shown) =>
+  let font = Typeface.sans() in
+  let glyphs = Text.chars(text) in
+  let advance = (c) => Sketch.textWidth(font, size, c) + spacing in
+  let width = (glyphs |> List.map(advance) |> List.fold((a, w) => a + w, 0.0)) - spacing in
+  let placed = glyphs |> List.take(shown) |> List.fold((acc, c) =>
+    { x: acc.x + advance(c),
+      sketches: List.append([Sketch.text(font, size, c) |> Sketch.translate(acc.x, 0.0)], acc.sketches) },
+    { x: 0.0 - width / 2.0, sketches: [] }) in
+  Sketch.union(placed.sketches)
+
+let flat = (sketch) => Solid.extrude(0.5, sketch) |> upright
+
+let word = flat(tracked(10.0, 3.4, "FUNCTOR", 7.0))
+  |> Scene.scale(0.034)
+  |> Scene.emissive(Color.rgb(0.15, 0.13, 0.21))
+  |> Scene.translate(Vec3.make(0.0, 1.38, -2.9))
+
+// "LOADING" plus 0–3 dots, one per 0.4 s; built once, picked per frame.
+let labels = List.range(4.0) |> List.map((dots) =>
+  flat(tracked(10.0, 4.2, "LOADING...", 7.0 + dots))
+    |> Scene.scale(0.006)
+    |> Scene.emissive(Color.rgb(0.55, 0.52, 0.66))
+    |> Scene.translate(Vec3.make(0.0, 0.98, -2.5)))
+
+// 1 m grid lines, 30 m square, just above the floor.
+let gridLines =
+  (List.range(31.0) |> List.map((i) =>
+     Instance.at(Vec3.make(-15.0 + i, 0.005, -5.0)) |> Instance.scaleXYZ(0.012, 0.01, 30.0)))
+  |> List.append(List.range(31.0) |> List.map((i) =>
+     Instance.at(Vec3.make(0.0, 0.005, -20.0 + i)) |> Instance.scaleXYZ(30.0, 0.01, 0.012)))
+
+let floor = Scene.group([
+  Scene.plane() |> Scene.scale(40.0) |> Scene.lit(Color.rgb(0.07, 0.055, 0.13)),
+  Scene.cube() |> Scene.emissive(Color.rgb(0.2, 0.42, 0.5)) |> Scene.instanced(gridLines),
+])
 
 let init = {}
 
@@ -12,23 +83,22 @@ let tick = (model, dt, tts) => model
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera3D.lookAt(Vec3.make(0.0, 1.6, 0.5), Vec3.make(0.0, 1.2, -2.5)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.6, 0.5), Vec3.make(0.0, 1.35, -2.5)),
     Scene.group([
-      Scene.plane()
-        |> Scene.scale(20.0)
-        |> Scene.lit(Color.rgb(0.35, 0.38, 0.42)),
-      Scene.cube()
-        |> Scene.scale(0.5)
-        |> Scene.rotateY(Angle.radians(tts * 0.5))
-        |> Scene.translate(Vec3.make(0.0, 1.2, -2.5))
-        |> Scene.lit(Color.rgb(0.25, 0.65, 1.0)),
-      Scene.sphere()
-        |> Scene.scale(0.3)
-        |> Scene.translate(Vec3.make(-1.0, 1.0, -2.0))
-        |> Scene.lit(Color.rgb(1.0, 0.35, 0.25)),
+      floor,
+      word,
+      slices
+        |> Scene.scale(markSize)
+        |> Scene.rotateY(Angle.radians(tts * 6.2832 / 3.6))
+        |> Scene.rotateX(Angle.degrees(-11.0))
+        |> Scene.translate(Vec3.make(0.0, 1.4 + 0.02 * Math.sin(tts * 6.2832 / 3.4), -2.5)),
+      match List.nth(Math.mod(Math.floor(tts / 0.4), 4.0), labels) with
+        | Option.Some(label) => label
+        | Option.None => Scene.group([]),
     ]),
     [
-      Light.ambient(Color.rgb(0.12, 0.12, 0.16)),
-      Light.directional(Vec3.make(0.5, -1.0, 0.35), Color.rgb(1.0, 0.96, 0.9), 1.0)
-        |> Light.castShadows,
+      Light.ambient(Color.rgb(0.25, 0.22, 0.32)),
+      Light.directional(Vec3.make(0.3, -0.6, -1.0), Color.rgb(1.0, 0.96, 0.9), 0.9),
     ])
+    |> Frame.withClearColor(bg)
+    |> Frame.withFog(Fog.linear(3.0, 16.0, bg))
