@@ -213,6 +213,16 @@ pub struct FunctorLangEmbeddedGame {
     /// draw-error overlay. `NativePlatform` for the Quest shell / host tests;
     /// the web shell passes its own DOM-overlay platform.
     platform: Box<dyn ProducerPlatform>,
+    /// Where load jobs run (a thread, started on the first).
+    loader: crate::jobs::load::Loader,
+    /// A new project loading off the frame thread: until it lands, its
+    /// loading screen draws and the running program pauses.
+    loading: Option<Loading>,
+    /// Who to tell how the load in flight ends.
+    load_waiters: Vec<crate::protocol::LoadWaiter>,
+    /// The role the running program was loaded for: a failed load job
+    /// puts it back.
+    loaded_role: EntryRole,
 }
 
 /// A successfully loaded, contract-validated game module (the desktop
@@ -241,20 +251,18 @@ struct Loaded {
     reuse: functor_lang::reuse::ReuseStats,
 }
 
-/// Load, check, and contract-validate a game PROJECT — the in-memory
-/// counterpart of the desktop `load_source`, shared by the boot path
-/// (`create`) and the push path (`reload_source`/`reload_project`). `sources`
-/// is every project file as `(path, source)`, the ENTRY first, then siblings
-/// (`file = module`, so `pieces.fun` is module `Pieces`). Errors come back as
-/// fully rendered strings (`path:line:col: message`). `previous`: the running
-/// session, on a hot reload — values it can vouch for are reused
-/// (`Session::load_reusing`); a changed pushed data file invalidates its
-/// readers.
-fn load_source(
-    sources: &[(String, String)],
-    role: &EntryRole,
-    previous: Option<&Session>,
-) -> Result<Loaded, String> {
+/// A project linked on the frame thread, for its role: what a session is
+/// loaded into, inline or by the load job.
+struct Compiled {
+    path: String,
+    names: EntryNames,
+    project: functor_lang::project::Project,
+}
+
+/// Link a game PROJECT for `role`: every project file as `(path, source)`,
+/// the ENTRY first, then siblings (`file = module`, so `pieces.fun` is module
+/// `Pieces`). Errors come back fully rendered (`path:line:col: message`).
+fn compile(sources: &[(String, String)], role: &EntryRole) -> Result<Compiled, String> {
     let path = sources
         .first()
         .map(|(p, _)| p.clone())
@@ -274,34 +282,60 @@ fn load_source(
     // that renamed or deleted the block fails here — naming the block — rather
     // than reporting its every entry binding as missing.
     let names = role.resolve(&path, &project)?;
-    let module = project.module;
-    let source_map = project.sources;
+    Ok(Compiled { path, names, project })
+}
+
+/// Load, check, and contract-validate a game PROJECT ([`compile`]) — the
+/// in-memory counterpart of the desktop `load_source`, shared by the boot
+/// path (`create`) and the push path (`reload_source`/`reload_project`).
+/// `previous`: the running session, on a hot reload — values it can vouch
+/// for are reused (`Session::load_reusing`); a changed pushed data file
+/// invalidates its readers.
+fn load_source(
+    sources: &[(String, String)],
+    role: &EntryRole,
+    previous: Option<&Session>,
+) -> Result<Loaded, String> {
+    evaluate(compile(sources, role)?, previous)
+}
+
+/// [`load_source`] on this thread, from the linked project.
+fn evaluate(compiled: Compiled, previous: Option<&Session>) -> Result<Loaded, String> {
     // Type diagnostics are advisory in the dev loop: warn, keep going
     // (the CLI's `build` is the strict gate).
-    let (diagnostics, types) = functor_lang::check_with_types(&module);
+    let (diagnostics, types) = compiled.project.check_with_types();
     for diag in diagnostics {
         log::warn!(
             "warning: {}",
-            source_map.render(diag.span.start, &diag.message)
+            compiled.project.sources.render(diag.span.start, &diag.message)
         );
     }
-    let types = functor_lang::reuse::def_types(&module, &types);
-    let (session, reuse) = Session::load_reusing(&module, &mut FunctorHost, previous, types)
-        .map_err(|f| {
-            format!(
-                "cannot load {}",
-                source_map.render(f.error.span.start, &f.error.message)
-            )
-        })?;
+    let types = functor_lang::reuse::def_types(&compiled.project.module, &types);
+    let loaded = Session::load_reusing(&compiled.project.module, &mut FunctorHost, previous, types);
+    match loaded {
+        Ok((session, reuse)) => finish(compiled, session, reuse),
+        Err(f) => Err(format!(
+            "cannot load {}",
+            compiled.project.sources.render(f.error.span.start, &f.error.message)
+        )),
+    }
+}
+
+/// Contract-validate a loaded session.
+fn finish(
+    compiled: Compiled,
+    session: Session,
+    reuse: functor_lang::reuse::ReuseStats,
+) -> Result<Loaded, String> {
     // The producer contract (init a value, tick/draw functions of the right
     // arity, optional hooks well-shaped) is shared with the desktop producer
     // and the CLI's build gate — errors name the ROLE'S resolved bindings
     // (`serverTick`, not `tick`) via `names`.
-    let contract = validate_contract(&path, &session, &names)?;
+    let contract = validate_contract(&compiled.path, &session, &compiled.names)?;
     Ok(Loaded {
-        names,
-        sources: source_map,
-        module,
+        names: compiled.names,
+        sources: compiled.project.sources,
+        module: compiled.project.module,
         session,
         init: contract.init,
         has_input: contract.has_input,
@@ -320,6 +354,34 @@ fn load_source(
     })
 }
 
+/// A new project loading on the loader thread, while its screen shows.
+struct Loading {
+    job: crate::jobs::load::LoadHandle,
+    compiled: Compiled,
+    files: Vec<(String, String)>,
+    screen: crate::loading::LoadScreen,
+    started: f64,
+}
+
+/// Finish a load job's `outcome` into `compiled`: adopt what it evaluated,
+/// or load inline when it couldn't.
+fn adopt(compiled: Compiled, outcome: crate::jobs::load::Outcome) -> Result<Loaded, String> {
+    use crate::jobs::load::Outcome;
+    match outcome {
+        Outcome::Evaluated(evaluated) => match evaluated.adopt(&compiled.project.module, &mut FunctorHost) {
+            Ok((session, reuse)) => finish(compiled, session, reuse),
+            Err(f) => Err(format!(
+                "cannot load {}",
+                compiled.project.sources.render(f.error.span.start, &f.error.message)
+            )),
+        },
+        Outcome::Failed { message, .. } => Err(message),
+        Outcome::Inline(why) => {
+            log::warn!("[functor-lang] {why}, so it loads on the frame thread");
+            evaluate(compiled, None)
+        }
+    }
+}
 
 impl FunctorLangEmbeddedGame {
     /// Branch replay on a fork from the selected frame (a test and debug
@@ -508,7 +570,12 @@ impl FunctorLangEmbeddedGame {
             options: ShellOptions::new(loaded.config, loaded.settings),
             last_frame: empty_frame(),
             platform,
+            loader: Default::default(),
+            loading: None,
+            load_waiters: Vec::new(),
+            loaded_role: EntryRole::Prefix(String::new()),
         };
+        game.loaded_role = game.role.clone();
         // Cold start (docs/physics.md): declare the initial world before the
         // first frame, so frame 1's physics reads answer instead of raising.
         // The world is a thread-local, so drop whatever an earlier producer on
@@ -653,6 +720,7 @@ impl FunctorLangEmbeddedGame {
     /// program, so its first real project cannot preserve that unrelated
     /// model or runtime history.
     fn reset_in(&mut self, loaded: Loaded) {
+        self.supersede_load();
         self.ctx().close_all_connections();
         physics::remove_world(physics::DEFAULT_WORLD);
         let job_program = crate::jobs::JobProgram::new(&loaded.module, &loaded.sources);
@@ -694,7 +762,7 @@ impl FunctorLangEmbeddedGame {
         self.pending_events.clear();
         self.physics_rt = physics::SteppedPhysics::new();
         self.physics_frame = 0;
-        self.recorder = SceneRecorder::new();
+        self.recorder = self.recorder.renewed();
         self.recorder.set_job_program(job_program);
         self.next.clear();
         self.last_frame = empty_frame();
@@ -704,6 +772,83 @@ impl FunctorLangEmbeddedGame {
         // the world, like the model, survives).
         self.ctx().prime_physics();
         self.platform.on_reload();
+    }
+
+    /// Start loading `files` as a new game on the loader thread: linked
+    /// here (a link error returns at once), evaluated there.
+    fn begin_load(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        if files.is_empty() {
+            return Err("a pushed project needs at least the entry file".to_string());
+        }
+        let compiled = compile(files, &self.role)?;
+        let source = std::sync::Arc::new(crate::jobs::ProgramSource::new(files.to_vec()));
+        let reader = self.recorder.job_reader();
+        let Some(job) = self.loader.start(source, reader) else {
+            return self.load_project(files);
+        };
+        let sources = &compiled.project.sources;
+        let render = |span: functor_lang::Span, message: &str| sources.render(span.start, message);
+        let view = crate::loading::LoadingView::of_game(&compiled.project.module, compiled.names.loading, render);
+        let status = format!("loading {} ({} file(s)) off the frame thread", compiled.path, files.len());
+        log::info!("[functor-lang] {status}");
+        self.supersede_load();
+        self.loading = Some(Loading {
+            job,
+            compiled,
+            files: files.to_vec(),
+            screen: crate::loading::LoadScreen::new(view),
+            started: now_ms(),
+        });
+        Ok(status)
+    }
+
+    /// Install the load in flight once its job has finished. A failed load
+    /// keeps the running program.
+    fn poll_load_job(&mut self) {
+        let Some(loading) = &mut self.loading else { return };
+        let Some(outcome) = loading.job.take() else { return };
+        let loading = self.loading.take().expect("checked above");
+        let adopting = now_ms();
+        let files = loading.files;
+        let result = adopt(loading.compiled, outcome).map(|loaded| {
+            self.path = files[0].0.clone();
+            self.sources = files;
+            self.reset_in(loaded);
+            format!(
+                "loaded {} in {:.0} ms ({:.1} ms on the frame thread; model initialized)",
+                self.path,
+                now_ms() - loading.started,
+                now_ms() - adopting
+            )
+        });
+        match &result {
+            Ok(status) => {
+                self.loaded_role = self.role.clone();
+                log::info!("[functor-lang] {status}");
+            }
+            Err(message) => {
+                self.role = self.loaded_role.clone();
+                log::error!("[functor-lang] load failed, keeping the running program: {message}");
+            }
+        }
+        for done in std::mem::take(&mut self.load_waiters) {
+            done(result.clone());
+        }
+    }
+
+    /// Drop the load in flight (its job stops), telling its waiters.
+    fn supersede_load(&mut self) {
+        if self.loading.take().is_some() {
+            for done in std::mem::take(&mut self.load_waiters) {
+                done(Err("superseded by a newer load".to_string()));
+            }
+        }
+    }
+
+    /// The screen of the load in flight (tests).
+    #[cfg(test)]
+    pub(crate) fn load_screen(&self) -> Option<&crate::loading::LoadScreen> {
+        self.loading.as_ref().map(|loading| &loading.screen)
     }
 
     /// Bundle this producer's per-frame state into the shared [`FrameCtx`]
@@ -741,6 +886,25 @@ impl GameProducer for FunctorLangEmbeddedGame {
     // embedded producer's reload.
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {}
 
+    fn poll_load(&mut self) {
+        self.poll_load_job();
+    }
+
+    fn begin_load_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        self.begin_load(files)
+    }
+
+    fn load_pending(&self) -> bool {
+        self.loading.is_some()
+    }
+
+    fn when_loaded(&mut self, done: crate::protocol::LoadWaiter) {
+        match self.loading {
+            Some(_) => self.load_waiters.push(done),
+            None => done(Ok("loaded".to_string())),
+        }
+    }
+
     fn uses_captured_mouse_input(&self) -> bool {
         self.has_mouse_move || self.has_mouse_wheel || self.has_mouse_button
     }
@@ -764,12 +928,19 @@ impl GameProducer for FunctorLangEmbeddedGame {
         // who is looking at the source that caused it).
         let started = now_ms();
         // The push replaces the ENTRY buffer; siblings keep their last-pushed
-        // text. A load failure leaves `self.sources` untouched.
-        let mut sources = self.sources.clone();
+        // text. A load failure leaves `self.sources` untouched. During a load
+        // job, the push edits that project, which loads again.
+        let mut sources = match &self.loading {
+            Some(loading) => loading.files.clone(),
+            None => self.sources.clone(),
+        };
         if let Some(entry) = sources.first_mut() {
             entry.1 = source.to_string();
         } else {
             sources.push((self.path.clone(), source.to_string()));
+        }
+        if self.loading.is_some() {
+            return self.begin_load(&sources);
         }
         let loaded = load_source(&sources, &self.role, Some(&self.session))?;
         let reused = reused_status(&loaded.reuse, &loaded.sources);
@@ -806,6 +977,9 @@ impl GameProducer for FunctorLangEmbeddedGame {
         if files.is_empty() {
             return Err("a pushed project needs at least the entry file".to_string());
         }
+        if self.loading.is_some() {
+            return self.begin_load(files);
+        }
         let started = now_ms();
         let loaded = load_source(files, &self.role, Some(&self.session))?;
         let reused = reused_status(&loaded.reuse, &loaded.sources);
@@ -838,6 +1012,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         self.reset_in(loaded);
+        self.loaded_role = self.role.clone();
         let status = format!(
             "loaded {} ({} file(s)) from pushed project in {:.2}ms (model initialized)",
             self.path,
@@ -937,6 +1112,9 @@ impl GameProducer for FunctorLangEmbeddedGame {
     }
 
     fn tick(&mut self, frame_time: FrameTime) {
+        if self.loading.is_some() {
+            return;
+        }
         // The whole MVU frame body lives in the shared `FrameCtx`
         // (docs/time-travel.md T6a), run as one call — like the web producer,
         // there is no per-frame perf timing to split it at the physics
@@ -1081,6 +1259,10 @@ impl GameProducer for FunctorLangEmbeddedGame {
     }
 
     fn render_at(&mut self, frame_time: FrameTime, alpha: f32) -> Frame {
+        if let Some(loading) = &mut self.loading {
+            loading.screen.advance(loading.job.progress());
+            return loading.screen.frame(frame_time.tts as f64);
+        }
         // While scrubbing, draw at the scrubbed frame's recorded `tts` so
         // `tts`-driven visuals rewind with the model; live play uses the real
         // clock (docs/time-travel.md).
@@ -1217,7 +1399,10 @@ AudioScene.empty), got {}",
     }
 
     fn ui(&self) -> View {
-        self.last_view.clone()
+        match &self.loading {
+            Some(loading) => loading.screen.ui(),
+            None => self.last_view.clone(),
+        }
     }
 
     fn webview(&self) -> Option<HtmlNode> {

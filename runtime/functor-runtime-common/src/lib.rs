@@ -80,6 +80,7 @@ pub mod io;
 pub mod jobs;
 mod light;
 pub mod lightmap;
+pub mod loading;
 pub mod manifest;
 pub mod material;
 pub mod math;

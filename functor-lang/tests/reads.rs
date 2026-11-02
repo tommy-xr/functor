@@ -234,6 +234,7 @@ fn phase(src: &str) -> Vec<String> {
         hooks: &["tick", "draw", "ui"],
         init: "init",
         config: "config",
+        loading: "loading",
     };
     functor_lang::reads::phase_errors(&project.module, &types, &entry)
         .into_iter()
@@ -242,6 +243,31 @@ fn phase(src: &str) -> Vec<String> {
             format!("{line}: {}", error.message)
         })
         .collect()
+}
+
+#[test]
+fn the_loading_screen_reads_nothing() {
+    let errors = phase(
+        "let size = (p) => File.size(p)\n\
+         let loading = (p, tts) => p + size(\"level.bin\")\n",
+    );
+    assert_eq!(
+        errors,
+        ["2: `loading` can't read project files (loading → size → File.size): it draws the \
+loading screen before the top-level values have loaded — draw from its `progress`, `tts` and \
+plain values"]
+    );
+    assert!(phase("let loading = (p, tts) => p * 2.0\n").is_empty());
+    let errors = phase(
+        "let logo = File.size(\"logo.bin\")\n\
+         let loading = (p, tts) => p + logo\n",
+    );
+    assert_eq!(
+        errors,
+        ["1: `loading` uses `logo`, which reads project files at load (logo → File.size): the \
+loading screen draws before the top-level values have loaded — draw from its `progress`, `tts` \
+and plain values"]
+    );
 }
 
 #[test]
