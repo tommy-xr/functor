@@ -1,7 +1,7 @@
 // PartMR — printable parts at true scale on your real desk, in a headset's
 // passthrough, before you print them: 1 mm in a part is 1 mm in the room.
-// Each view is a name and PartViews pieces (`{ name, solid, color }`, mm,
-// Z up), e.g. an assembly and its exploded view.
+// Each view is a name and its pieces (`{ solid, color }`, mm, Z up;
+// PartViews pieces work), e.g. an assembly and its exploded view.
 //
 // Quest: the right trigger grabs, the right thumbstick turns (left/right) and
 // tilts (forward/back), A cycles the views, X toggles passthrough. Desktop
@@ -47,8 +47,7 @@ let mm = (v: float) => Text.fromFloat(Math.round(v * 10.0) / 10.0)
 // A view ready to show: its pieces centred on the origin, its half extents,
 // and a label of its name and size in mm.
 let prepare = (view) =>
-  let all = Solid.group(view.pieces |> List.map((p) => p.solid)) in
-  let b = Solid.bounds(all) in
+  let b = PartViews.bounds(view.pieces) in
   let center = Vec3.add(b.min, b.max) |> Vec3.scale(-0.5) in
   let size = Vec3.sub(b.min, b.max) in
   let font = Typeface.sans() in
@@ -104,8 +103,11 @@ let init = (views, desk: desk): t =>
     mixedReality: true, togglePressed: false, cyclePressed: false }
 
 let toggled = (m: t): t => { m with mixedReality: not m.mixedReality }
-// The next view starts level and facing you, where the last one was.
-let cycled = (views, m: t): t => { m with index: Math.mod(m.index + 1.0, List.length(views)), yaw: 0.0, pitch: 0.0 }
+// The next view starts level and facing you, where the last one was. With no
+// views there is nothing to cycle.
+let cycled = (views, m: t): t =>
+  if List.length(views) == 0.0 then m
+  else { m with index: Math.mod(m.index + 1.0, List.length(views)), yaw: 0.0, pitch: 0.0 }
 
 // Keyboard edges, so a held key's auto-repeat doesn't act again.
 let pressed = (s: Input.snapshot, key) => s.pressedKeys |> List.any((k) => k == key)
@@ -120,7 +122,7 @@ let sampledInput = (views, current: t, s: Input.snapshot): t =>
     let toggle = xr.left.primaryPressed in
     let cycle = xr.right.primaryPressed in
     let next = { m with
-      aim: xr.right.aim |> Option.map((pose) => Camera3D.mapTrackedPose(camera(), pose)) |> Option.defaultValue(m.aim),
+      aim: xr.right.aim |> Option.map((pose) => Camera3D.mapTrackedPose(camera(), pose)) |> Option.defaultValue(fallbackAim()),
       aimTracked: aimTracked,
       grabbing: aimTracked && xr.right.trigger > 0.5,
       stick: xr.right.thumbstick,
@@ -187,7 +189,7 @@ let draw = (views, desk: desk, m: t) =>
   let frame =
     Frame.createLit(
       camera(),
-      Scene.group([deskScene(desk), aimDot(m)] |> List.append(shown)),
+      Scene.group([deskScene(desk)] |> List.append(shown) |> List.append([aimDot(m)])),
       [
         Light.ambient(Color.rgb(0.25, 0.25, 0.3)),
         Light.directional(Vec3.make(-0.4, -1.0, 0.5), Color.rgb(1.0, 0.95, 0.9), 0.9),

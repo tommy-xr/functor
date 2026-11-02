@@ -36,6 +36,6 @@ let tag = List.head(views)
 expect tag |> Option.map((v) => Math.abs(PartMR.restY(desk, v, 0.0) - (desk.height + 0.002)) < 0.000001) |> Option.defaultValue(false)
 // Stood on its long edge, the tag rests on half its 30 mm depth.
 expect tag |> Option.map((v) => Math.abs(PartMR.restY(desk, v, Math.pi / 2.0) - (desk.height + 0.015)) < 0.000001) |> Option.defaultValue(false)
-expect PartMR.cycled(views, { init with index: 2.0 }).index == 0.0
+expect PartMR.cycled(views, { init with index: List.length(views) - 1.0 }).index == 0.0
 // Released off the desk, a part settles back inside its edges.
 expect tick({ init with position: PartMR.point(2.0, 1.0, 0.0) }, 10.0, 0.0).position.x == desk.width / 2.0
