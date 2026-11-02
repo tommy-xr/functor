@@ -203,7 +203,7 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 
 ```jsonc
 {"type":"key","key":"w","down":true}      // key press / release
-{"type":"mouse_move","x":10,"y":20}       // absolute cursor position
+{"type":"mouse_move","x":10,"y":20}       // absolute cursor position (logical coords; fractions round)
 {"type":"mouse_wheel","delta":1}          // scroll
 {"type":"mouse_button","button":"left","down":true}            // "left"|"right"|"middle"
 {"type":"ui_event","slot":0,"kind":"Clicked"}                  // click widget slot 0
