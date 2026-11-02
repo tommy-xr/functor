@@ -315,15 +315,11 @@ impl AudioPlayer {
     }
 
     fn decode(&self, path: &str) -> Option<Decoder<BufReader<Cursor<Vec<u8>>>>> {
-        let bytes = match self
-            .asset_cache
-            .cached_bytes(path)
-            .map(|bytes| Ok(bytes.to_vec()))
-            .unwrap_or_else(|| std::fs::read(path))
-        {
+        let reader = functor_runtime_common::storage::project_reader();
+        let bytes = match sound_bytes(&self.asset_cache, reader.as_deref(), path) {
             Ok(bytes) => bytes,
             Err(e) => {
-                self.warn_once(path, format_args!("[audio] open '{path}': {e}"));
+                self.warn_once(path, format_args!("[audio] open {e}"));
                 return None;
             }
         };
@@ -343,6 +339,19 @@ impl AudioPlayer {
         if first_failure(&self.warned_paths, path) {
             eprintln!("{message}");
         }
+    }
+}
+
+/// A sound's bytes: uploaded (remote-dev) bytes, else the file the way models
+/// load it — on disk, else through `reader` (`Config.external` mounts).
+fn sound_bytes(
+    cache: &AssetCache,
+    reader: Option<&dyn functor_runtime_common::storage::ProjectReader>,
+    path: &str,
+) -> Result<Vec<u8>, String> {
+    match cache.cached_bytes(path) {
+        Some(bytes) => Ok(bytes.to_vec()),
+        None => functor_runtime_common::io::read_local_asset(path, reader),
     }
 }
 
@@ -374,5 +383,45 @@ mod tests {
         // A different path warns on its own first failure.
         assert!(first_failure(&warned, "other.ogg"));
         assert!(!first_failure(&warned, "other.ogg"));
+    }
+
+    /// A sound under a mounted prefix (not on disk) loads through the
+    /// project reader, like `File.bytes` of the same path.
+    #[test]
+    fn sounds_load_from_mounted_paths() {
+        use functor_runtime_common::storage::{ProjectReadError, ProjectReader};
+        /// `ext/…` mounted on an in-memory folder.
+        struct Mount(Vec<u8>);
+        impl ProjectReader for Mount {
+            fn read(&self, path: &str) -> Result<Arc<[u8]>, ProjectReadError> {
+                match path {
+                    "ext/snd/beep.wav" => Ok(self.0.as_slice().into()),
+                    _ => Err(ProjectReadError::Unreadable("not mounted".to_string())),
+                }
+            }
+            fn exists(&self, path: &str) -> bool {
+                path == "ext/snd/beep.wav"
+            }
+        }
+        // 8 samples of 16-bit mono PCM at 8 kHz.
+        let data = [0u8; 16];
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        for field in [16u32, 1 | (1 << 16), 8000, 16000, 2 | (16 << 16)] {
+            wav.extend_from_slice(&field.to_le_bytes());
+        }
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
+
+        let mount = Mount(wav);
+        let cache = AssetCache::new();
+        let bytes = sound_bytes(&cache, Some(&mount), "ext/snd/beep.wav").expect("mounted sound");
+        let decoded = Decoder::new(BufReader::new(Cursor::new(bytes))).expect("decodes");
+        assert_eq!(decoded.count(), 8);
+        let err = sound_bytes(&cache, Some(&mount), "ext/snd/gone.wav").unwrap_err();
+        assert_eq!(err, "ext/snd/gone.wav: not mounted");
     }
 }
