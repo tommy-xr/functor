@@ -287,6 +287,7 @@ enum Command {
     /// agent or script can attach (docs/debug-runtime.md, docs/mcp.md) without
     /// being told a port (`--no-debug` to skip; wasm serves pages, not the
     /// control port). E.g. `functor -d examples/lighting develop native`.
+    #[command(visible_alias = "dev")]
     Develop {
         #[arg(value_enum)]
         environment: Option<Environment>,
@@ -945,6 +946,15 @@ mod tests {
         let args = Args::try_parse_from(["functor", "--json", "docs"]).unwrap();
         let error = validate_args(&args).unwrap_err();
         assert!(error.contains("docs --format json"), "{error}");
+    }
+
+    #[test]
+    fn dev_is_an_alias_of_develop() {
+        let args = Args::try_parse_from(["functor", "dev", "native", "--no-debug"]).unwrap();
+        assert!(matches!(
+            args.command,
+            crate::Command::Develop { no_debug: true, .. }
+        ));
     }
 
     #[tokio::test]
