@@ -220,7 +220,7 @@ fn scenario_matches(scenario: &Scenario, extra: &[&str]) -> Result<(), String> {
     // A missing asset renders without it (a fullbody capture minus its
     // gitignored Xbot.glb differs by ~24%): name the cause, not the diff.
     if let Some(line) = log.lines().find(|l| l.contains("asset error")) {
-        return Err(format!("{} — run `npm run fetch:assets`", line.trim()));
+        return Err(format!("{} — missing asset? run `npm run fetch:assets`", line.trim()));
     }
 
     let golden = sample_dir
@@ -289,8 +289,9 @@ fn native_scenarios_match_golden() {
 
     // Inline, then with the game logic on its own sim thread. Every scenario
     // runs; the failures are reported together at the end.
+    let modes = [&[][..], &["--pipelined"]];
     let mut failures = Vec::new();
-    for extra in [&[][..], &["--pipelined"]] {
+    for extra in modes {
         for scenario in &scenarios {
             println!("--- golden scenario: {} {extra:?} ---", scenario.name);
             if let Err(error) = scenario_matches(scenario, extra) {
@@ -303,7 +304,7 @@ fn native_scenarios_match_golden() {
         failures.is_empty(),
         "{} of {} golden scenarios failed:\n{}",
         failures.len(),
-        scenarios.len() * 2,
+        scenarios.len() * modes.len(),
         failures.join("\n")
     );
 }
