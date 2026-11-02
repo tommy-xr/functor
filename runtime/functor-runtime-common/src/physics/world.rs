@@ -1528,14 +1528,14 @@ impl World {
                     let sub = if mine_first { m.subshape1 } else { m.subshape2 };
                     // A merged box stands for several parts: those its contact
                     // patch meets (world space, as the compound's frame). A
-                    // point is midway between the surfaces, `dist / 2` off ours.
-                    let contacts = &m.data.solver_contacts;
-                    let points: Vec<Vector> = contacts.iter().map(|p| p.point).collect();
-                    let depth = contacts.iter().map(|p| p.dist.abs()).fold(0.0, f32::max);
-                    let slack = near + depth / 2.0;
-                    let under = Aabb::from_points(points.iter().copied()).loosened(slack);
+                    // point is midway between the surfaces: move it onto ours.
+                    let toward_us = if mine_first { -0.5 } else { 0.5 };
+                    let points: Vec<Vector> = (m.data.solver_contacts.iter())
+                        .map(|p| p.point + m.data.normal * (p.dist * toward_us))
+                        .collect();
+                    let under = Aabb::from_points(points.iter().copied()).loosened(near);
                     for i in fused.parts.bvh().intersect_aabb(&under) {
-                        let part = fused.parts.aabbs()[i as usize].loosened(slack);
+                        let part = fused.parts.aabbs()[i as usize].loosened(near);
                         if fused.merged[i as usize] == sub && patch_meets(&points, &part) {
                             touch(&fused.tags[i as usize], other.clone(), false);
                         }
@@ -2039,8 +2039,9 @@ fn patch_meets(points: &[Vector], aabb: &Aabb) -> bool {
 /// `parts` as rapier collides them, and each part's subshape there: unrotated
 /// boxes with equal cross-sections that touch or overlap along an axis merge
 /// into one box, so a body sliding across tiles meets no internal edge.
-/// Greedy passes along x, z, then y (a floor's rows, then the rows; a wall's
-/// likewise); other parts and unmerged boxes pass through unchanged.
+/// Greedy passes along x, z, then y: x then z merge a floor's tiles into rows,
+/// then rows into a slab; y stacks a wall's courses. Other parts and unmerged
+/// boxes pass through unchanged.
 fn merge_boxes(parts: &[(Pose, SharedShape)]) -> (SharedShape, Vec<u32>) {
     // (min corner, max corner, member parts)
     let mut boxes: Vec<(Vector, Vector, Vec<usize>)> = Vec::new();
@@ -4227,11 +4228,10 @@ mod tests {
     /// beside the wall keeps the few mm it settles by, as on separate tiles).
     #[test]
     fn merged_tiles_slide_without_seam_kicks() {
-        let (tiles, separate_tiles) = (row(16, true), row(16, false));
+        let tiles = row(16, true);
         for (name, shape, half, wall) in sliders() {
             let merged = slides(&tiles, &shape, half, wall, 11.0);
-            let before = mean(&slides(&separate_tiles, &shape, half, wall, 11.0));
-            eprintln!("seams {name} wall={wall}: separate {before:?} merged {:?}", mean(&merged));
+            eprintln!("seams {name} wall={wall}: merged {:?}", mean(&merged));
             for m in &merged {
                 assert!(m.iter().all(|&x| x < 5e-3), "{name} wall={wall}: {m:?}");
             }
@@ -4285,40 +4285,65 @@ mod tests {
         assert_eq!(touched, ["t00", "t01", "t02"]);
     }
 
+    /// `frames` steps of `body` over 8 x 12 tiles `thick` high (top at
+    /// y = 0.5), fused or separate: each step's events.
+    fn on_tiles(
+        body: &Body,
+        thick: f32,
+        fused: bool,
+        frames: usize,
+    ) -> Vec<Vec<(String, String, bool, bool)>> {
+        let tiles = (0..8 * 12).map(|i| {
+            let shape = Shape::Cuboid { extents: [1.0, thick, 1.0] };
+            let tile = Body::fixed(format!("t{i:02}"), shape)
+                .at([(i % 8) as f32, 0.5 - thick / 2.0, (i / 8) as f32]);
+            if fused { tile } else { separate(tile) }
+        });
+        let frame = scene(tiles.chain([body.clone()]).collect());
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        (0..frames)
+            .map(|_| {
+                w.reconcile(&frame);
+                w.step_frame(FIXED_DT);
+                sorted_events(w.take_events())
+            })
+            .collect()
+    }
+
     /// Per-tile contact events on merged tiles match separate tiles: a plank
     /// lying diagonally (its contact patch's bounds cover tiles it misses)
     /// and a crate sunk deep into thin tiles (contact points below them; it
     /// then sinks through, differently, so only its first step compares).
     #[test]
     fn merged_tiles_report_the_tiles_a_contact_patch_meets() {
-        let quarter = std::f32::consts::FRAC_PI_8.sin();
+        let (sin, cos) = std::f32::consts::FRAC_PI_8.sin_cos();
         let plank = Body::dynamic("plank".into(), Shape::Cuboid { extents: [5.0, 0.2, 0.3] })
             .at([3.5, 0.62, 3.5])
-            .facing([0.0, quarter, 0.0, std::f32::consts::FRAC_PI_8.cos()]);
+            .facing([0.0, sin, 0.0, cos]);
         let sunk = Body::dynamic("sunk".into(), Shape::Cuboid { extents: [1.6, 1.0, 0.6] })
             .at([1.0, 0.35, 10.0]);
-        for (body, thick) in [(plank, 1.0), (sunk, 0.04)] {
-            let run = |fused: bool| {
-                let tiles = (0..8 * 12).map(|i| {
-                    let shape = Shape::Cuboid { extents: [1.0, thick, 1.0] };
-                    let tile = Body::fixed(format!("t{i:02}"), shape)
-                        .at([(i % 8) as f32, 0.5 - thick / 2.0, (i / 8) as f32]);
-                    if fused { tile } else { separate(tile) }
-                });
-                let frame = scene(tiles.chain([body.clone()]).collect());
-                let mut w = World::new([0.0, -9.81, 0.0]);
-                let mut events = Vec::new();
-                let frames = if thick < 1.0 { 1 } else { 30 };
-                for _ in 0..frames {
-                    w.reconcile(&frame);
-                    w.step_frame(FIXED_DT);
-                    events.push(sorted_events(w.take_events()));
-                }
-                events
-            };
-            let merged = run(true);
+        for (body, thick, frames) in [(plank, 1.0, 30), (sunk, 0.04, 1)] {
+            let merged = on_tiles(&body, thick, true, frames);
             assert!(merged.iter().flatten().count() >= 3, "{}: {merged:?}", body.tag);
-            assert_eq!(merged, run(false), "{}", body.tag);
+            assert_eq!(merged, on_tiles(&body, thick, false, frames), "{}", body.tag);
+        }
+    }
+
+    /// A ball landing fast beside a seam touches only the tile it lands on.
+    /// (Separate tiles also report a brief contact with the neighbour from
+    /// rapier's speculative contact, cm short of it; a merged box doesn't.)
+    #[test]
+    fn a_fast_landing_names_only_the_tile_under_it() {
+        for x in [0.3, 0.35, 0.4, 0.45] {
+            let ball = Body::dynamic("ball".into(), Shape::Sphere { radius: 0.25 })
+                .at([x, 40.0, 10.0]);
+            let starts: Vec<_> = on_tiles(&ball, 1.0, true, 200)
+                .into_iter()
+                .flatten()
+                .filter(|e| e.2)
+                .map(|e| e.1)
+                .collect();
+            assert_eq!(starts, ["t80"], "x = {x}");
         }
     }
 

@@ -218,13 +218,13 @@ a rigid body each. Fixed–fixed pairs then never reach rapier's broad phase,
 which otherwise re-checks every overlapping pair each step, and they add no
 per-body rapier state to keyframes. Reads, raycasts, shape casts (`exclude`
 included), contact and sensor events and `teleport` still address each body by
-tag. Within a compound, unrotated boxes that share a whole face (a tiled floor
-or wall) collide as one larger box, so a body sliding across them meets no
-seam; a contact on such a box reaches the tiles under its contact points. Cell
-edges stay seams (as between two separate boxes). Changing, adding or removing
-one (or a `teleport`) rebuilds its cell's compound, so a fixed body that moves
-every frame belongs kinematic. Kinematic,
-sensor and mesh bodies stay bodies. Fusing depends only on the declarations,
+tag. Within a compound, unrotated boxes that share a whole face or overlap
+with the same cross-section (a tiled floor or wall) collide as one larger box,
+so a body sliding across them meets no seam; a contact on such a box reaches
+the tiles its contact patch meets. Cell edges stay seams (as between two
+separate boxes). Changing, adding or removing one (or a `teleport`) rebuilds
+its cell's compound, so a fixed body that moves every frame belongs kinematic.
+Kinematic, sensor and mesh bodies stay bodies. Fusing depends only on the declarations,
 so a memoized world stays byte-identical to the same bodies declared flat.
 A compound orders its contacts differently from separate bodies, so a scene's
 trajectories differ slightly from an unfused run. A JSON `snapshot`/`restore` round trip of
