@@ -451,7 +451,7 @@ impl World {
             && self.flat.iter().zip(wanted.keys()).all(|(a, b)| a == *b);
         let next_flat =
             (!flat_unchanged).then(|| Arc::new(wanted.keys().map(|t| (*t).clone()).collect()));
-        let old_flat = std::mem::take(&mut self.flat);
+        let old_flat = Arc::clone(&self.flat);
 
         // Declarations that may differ from the cache, in tag order: flat
         // bodies and changed groups' bodies. Tags are disjoint across them
