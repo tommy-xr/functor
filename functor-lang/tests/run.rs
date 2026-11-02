@@ -1022,7 +1022,7 @@ fn loop_until_steps_until_done() {
 #[test]
 fn loop_until_errors() {
     for (src, want) in [
-        ("Loop.until((n) => n, (n) => n, 1.0)", "Loop.until's done must return a bool, got number"),
+        ("Loop.until((n) => n, (n) => n, 1.0)", "Loop.until's done must return a bool, got a number"),
         ("Loop.until(1.0, (n) => n, 1.0)", "Loop.until(done, step, init) expects two functions"),
         ("Loop.until((n) => false, (n) => n, 1.0)", "Loop.until: not done after 1000000 steps"),
     ] {

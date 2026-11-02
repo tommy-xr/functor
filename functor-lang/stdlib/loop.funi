@@ -10,4 +10,4 @@
 /// `init` itself when it is already done. A loop still going after a million
 /// steps is an error, not a hang. The state comes LAST, so it pipes:
 /// `1.0 |> Loop.until((n) => n > 100.0, (n) => n * 2.0)` is `128`.
-let until : (('s) => bool, ('s) => 's, 's) => 's
+let until : (('a) => bool, ('a) => 'a, 'a) => 'a

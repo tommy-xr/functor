@@ -540,7 +540,7 @@ pub fn builtin_signature(b: Builtin) -> Type {
                 result(Tuple(vec![Var(0), List(Box::new(Var(2)))])),
             )
         }
-        // Subject-LAST. Loop.until : (('s) => Bool, ('s) => 's, 's) => 's
+        // Subject-LAST. Loop.until : (('a) => Bool, ('a) => 'a, 'a) => 'a
         Builtin::LoopUntil => func(
             vec![func(vec![Var(0)], Bool), func(vec![Var(0)], Var(0)), Var(0)],
             Var(0),
