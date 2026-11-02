@@ -1172,6 +1172,7 @@ fn service_debug_request(
                         stand_in_depth,
                         fused_room.with_colliders(),
                     ),
+                    audio: Some(functor_runtime_common::audio::one_shot_counts()),
                 });
             });
         }
@@ -1581,7 +1582,7 @@ fn run_headless(
         }
 
         // The frame is pure data (no GL); it powers GET /scene. Its audio
-        // commands are dropped so they do not pile up. Preloads and physics
+        // commands are dropped (counted in `/state.audio`) so they do not pile up. Preloads and physics
         // terrain requests are driven next frame through the CPU-only cache.
         let mut snapshot = sim
             .frame(
@@ -1599,6 +1600,9 @@ fn run_headless(
             .expect("an inline frame always yields a snapshot");
         scene_context.queue_terrain_requests(std::mem::take(&mut snapshot.terrain_requests));
         dispatch_net_ws(&mut snapshot, &net_tx, &http_client, &mut ws_manager);
+        for cmd in &snapshot.audio_commands {
+            functor_runtime_common::audio::record_one_shot(cmd, false);
+        }
         let sim_ns = snapshot.sim_ns;
         sim.post(move |g| g.record_stage_timing(sim_ns, 0));
         let frame = snapshot.frame;
@@ -3315,9 +3319,10 @@ Escape again to quit"
             if let Some(player) = &mut audio_player {
                 player.set_listener(view_camera.eye, view_camera.target, view_camera.up);
             }
-            if let Some(player) = &audio_player {
-                for cmd in audio_commands {
-                    player.handle(cmd);
+            for cmd in audio_commands {
+                match &audio_player {
+                    Some(player) => player.handle(cmd),
+                    None => functor_runtime_common::audio::record_one_shot(&cmd, false),
                 }
             }
 
