@@ -506,17 +506,22 @@ functor -d examples/parts-mr run native --emulate-xr   # desktop stand-in room
 - `Solid.toScene` turns millimetres into metres, and passthrough's floor-level
   stage space makes 1 unit = 1 metre with `y = 0` on the floor, so 1 mm in the
   part is 1 mm in the room.
-- The part rests on a see-through virtual desk whose top is `deskHeight`
+- The viewer is the stdlib's `PartMR`, so any project can show its own
+  views: `PartMR.views([{ name, pieces }, …])` takes named lists of PartViews
+  pieces (e.g. an assembly and its exploded view), and the label names the
+  view. `examples/parts-mr/game.fun` is the whole wiring.
+- The part rests on a see-through virtual desk whose top is `desk.height`
   (0.75 m) above the floor. Edit it to match your desk and save: the part
   settles onto the new height on hot reload. The desk is placed ahead of where
   you faced at launch, so start the app seated, facing your desk.
 - Right trigger grabs, the right thumbstick turns (left/right) and tilts
-  (forward/back), A cycles the parts and X toggles passthrough. A released
-  part settles back onto the desk, inside its edges.
+  (forward/back), A cycles the parts (the next keeps the turn and tilt) and X
+  toggles passthrough. A released part settles back onto the desk, inside its
+  edges.
 - On desktop, `--emulate-xr` maps grab, turn/tilt and A to the mouse (or
   Space), the arrows and 1. P toggles passthrough, and N also cycles parts
   without `--emulate-xr`.
-- A label in front of the part gives its bounding size in mm (raised
+- A label in front of the part gives its name and bounding size in mm (raised
   lettering included, so the 20 mm cube reads 20.6). It is
   `Sketch.text` extruded and shown with `Solid.toScene`, like the part.
 - `parts.fun` holds the parts (the keychain tag from `examples/parts`, the

@@ -11232,6 +11232,34 @@ Anim.clip(\"walk\", tts)"
         assert_eq!(json[3], false, "the turntable rests");
     }
 
+    /// `PartMR`: a view rests on the desk by its half height; cycling wraps,
+    /// keeps the turn and tilt (and with no views changes nothing); a part
+    /// released off the desk settles back inside its edges.
+    #[test]
+    fn part_mr_rests_cycles_and_settles() {
+        let value = eval_with_prelude(
+            "let box = (h: float) => [{ solid: Solid.box(40.0, 20.0, h), color: Color.rgb(1.0, 1.0, 1.0) }]\n\
+             let views = PartMR.views([{ name: \"a\", pieces: box(10.0) }, { name: \"b\", pieces: box(30.0) }])\n\
+             let desk = PartMR.desk\n\
+             let init = PartMR.init(views, desk)\n\
+             let rest = () => init.position.y - desk.height\n\
+             let wraps = () => PartMR.cycled(views, PartMR.cycled(views, init)).index\n\
+             let empty = () => PartMR.cycled([], init).index\n\
+             let turned = () => PartMR.cycled(views, { init with yaw: 1.0, pitch: 0.5 })\n\
+             let settled = () => PartMR.tick(views, desk, { init with position: PartMR.point(2.0, 1.0, 0.0) }, 10.0).position\n\
+             let main = () => [rest(), wraps(), empty(), settled().x, settled().z, turned().yaw, turned().pitch]\n",
+        )
+        .unwrap_or_else(|e| panic!("part mr: {e}"));
+        let json = value_to_json(&value);
+        let at = |i: usize| json[i].as_f64().unwrap();
+        assert!((at(0) - 0.005).abs() < 1e-9, "rests on half its 10 mm: {json}");
+        assert_eq!(at(1), 0.0, "{json}");
+        assert_eq!(at(2), 0.0, "{json}");
+        assert_eq!(at(3), 0.5, "inside the 1 m desk: {json}");
+        assert!((at(4) - 0.2).abs() < 1e-9, "the desk's near edge: {json}");
+        assert_eq!((at(5), at(6)), (1.0, 0.5), "cycling keeps the turn: {json}");
+    }
+
     #[test]
     fn bundled_animator_executes_against_anim_host() {
         let sources = vec![(
