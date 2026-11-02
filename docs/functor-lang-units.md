@@ -26,12 +26,13 @@ ceremony: `Scene.rotateY(90deg)`.
 
 ### The literal
 
-A numeric literal (`digits` or `digits.digits`) immediately followed by
-identifier characters lexes as ONE token carrying the value and the suffix
-spelling. Adjacency is the whole rule — `90 deg` is still a number and a name.
-The lexer deliberately does **not** know which units exist; there is no
-scientific notation in Functor Lang, so no `1e5` ambiguity, and `90deg` was
-previously a parse error, so the syntax was unclaimed.
+A numeric literal (`digits` or `digits.digits`, optionally with an exponent:
+`1e-5`, `2.5E7`) immediately followed by identifier characters lexes as ONE
+token carrying the value and the suffix spelling. Adjacency is the whole rule —
+`90 deg` is still a number and a name. The lexer deliberately does **not** know
+which units exist. An exponent is `e`/`E`, an optional sign, and at least one
+digit; any other `e` stays a suffix (`2em`), so the only spellings an exponent
+takes from units are `e<digits>` ones (`1e3ms` is 1000 with unit `ms`).
 
 A prefix minus folds into the literal (`-90deg` is `Angle.degrees(-90.0)`,
 never a negation of the branded value), matching how number patterns already

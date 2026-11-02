@@ -122,6 +122,7 @@ let grade = (n: float): string =>             // `else if` chains — just an `i
   else "C"
 
 let threshold = 10                            // top-level let; ints/floats are all float (f64)
+let tiny = 1.5e-5                             // exponent literals: e/E, optional sign, digits
 type Px = | Px(value: float)                  // a single-ctor brand…
 unit px = Px                                  // …with a literal SUFFIX: `16px` == `Px(16.0)`
 let width = 16px                              //   the suffix must TOUCH the digits (`16 px` is

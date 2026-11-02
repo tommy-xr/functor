@@ -335,12 +335,27 @@ fn lex_with_interpolation_depth(
                         i += 1;
                     }
                 }
+                // An EXPONENT: `e`/`E`, an optional sign, then at least one
+                // digit (`1e-5`, `2.5E7`). Anything else after an `e` keeps
+                // lexing as a unit suffix (`2em`, `1e`), so the only spelling
+                // taken from units is `e<digits>` — not a plausible unit name.
+                let mut j = i;
+                if j < bytes.len() && (bytes[j] == b'e' || bytes[j] == b'E') {
+                    j += 1;
+                    if j < bytes.len() && (bytes[j] == b'+' || bytes[j] == b'-') {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j].is_ascii_digit() {
+                        while j < bytes.len() && bytes[j].is_ascii_digit() {
+                            j += 1;
+                        }
+                        i = j;
+                    }
+                }
                 let n = src[start..i].parse().expect("digit runs parse as f64");
-                // A unit SUFFIX: identifier chars touching the digits
-                // (`90deg`, `0.5s`). There is no scientific notation, so no
-                // `1e5` ambiguity, and `90deg` is currently a parse error —
-                // the syntax is unclaimed. The lexer records the spelling
-                // and nothing more; lowering resolves it against the
+                // A unit SUFFIX: identifier chars touching the digits (or
+                // exponent): `90deg`, `0.5s`, `1e3ms`. The lexer records the
+                // spelling and nothing more; lowering resolves it against the
                 // declared units.
                 if i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
                     let suffix_start = i;
