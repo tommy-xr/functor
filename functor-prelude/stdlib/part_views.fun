@@ -154,10 +154,15 @@ let pick = (pieces, mouse: Input.mouse): Option.t<hit> =>
           y: (tileY(view) + 0.5 - sy) * tilePixels,
           surfaceWidth: tilePixels,
           surfaceHeight: tilePixels } in
-        Camera3D.toWorldRay(inTile, framing(b, view).camera) |> Option.bind((ray) =>
-          let inPart: Camera3D.ray = { origin: fromScene(ray.origin), direction: fromScene(ray.direction) } in
-          List.indexedMap((i, p) => Solid.raycast(inPart, p.solid)
-              |> Option.map((h) => { piece: i, view: view.name, point: h.point, normal: h.normal, distance: h.distance }), pieces)
-            |> List.concatMap(Option.toList)
-            |> List.sortBy((h) => h.distance)
-            |> List.head)))
+        pickThrough(framing(b, view).camera, view.name, pieces, inTile)))
+
+// The hit under `mouse` on `pieces` drawn through `camera` (scene space,
+// like `scene(pieces)`'s), nearest first; `view` names it in the hit.
+let pickThrough = (camera: Camera3D.t, view: string, pieces, mouse: Input.mouse): Option.t<hit> =>
+  Camera3D.toWorldRay(mouse, camera) |> Option.bind((ray) =>
+    let inPart: Camera3D.ray = { origin: fromScene(ray.origin), direction: fromScene(ray.direction) } in
+    List.indexedMap((i, p) => Solid.raycast(inPart, p.solid)
+        |> Option.map((h) => { piece: i, view: view, point: h.point, normal: h.normal, distance: h.distance }), pieces)
+      |> List.concatMap(Option.toList)
+      |> List.sortBy((h) => h.distance)
+      |> List.head)

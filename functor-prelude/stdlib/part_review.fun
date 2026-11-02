@@ -42,10 +42,14 @@ let rounded = (perUnit: float, v: Vec3.t) =>
 let selectedNote = (r: t) => List.find((n) => n.id == r.selected, r.notes)
 
 // Pin a note where `mouse` meets `pieces` on their sheet, and select it to
-// type into. A selected note still empty moves there instead, so a misclick
-// doesn't leave a blank pin behind. Off the parts, nothing changes.
-let click = (r: t, pieces, mouse: Input.mouse): t =>
-  match PartViews.pick(pieces, mouse) with
+// type into.
+let click = (r: t, pieces, mouse: Input.mouse): t => pinAt(r, pieces, PartViews.pick(pieces, mouse))
+
+// Pin a note at `hit` (a `PartViews` pick), and select it to type into. A
+// selected note still empty moves there instead, so a misclick doesn't leave
+// a blank pin behind. Off the parts (`Option.None`), nothing changes.
+let pinAt = (r: t, pieces, hit: Option.t<PartViews.hit>): t =>
+  match hit with
   | Option.None => r
   | Option.Some(h) =>
     let at = (id) =>

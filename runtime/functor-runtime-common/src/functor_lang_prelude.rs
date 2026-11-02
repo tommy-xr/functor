@@ -10774,17 +10774,17 @@ Anim.clip(\"walk\", tts)"
         let sources = vec![(
             std::path::PathBuf::from("game.fun"),
             "type Model = { viewer: PartViewer.t }\n\
-             type Msg = | Review(msg: PartReview.msg)\n\
+             type Msg = | Viewer(msg: PartViewer.msg)\n\
              let pieces = [\n\
                { name: \"a\", solid: Solid.box(10.0, 10.0, 10.0), color: Color.rgb(1.0, 0.0, 0.0) },\n\
                { name: \"b\", solid: Solid.box(5.0, 5.0, 5.0) |> Solid.translate(Vec3.make(20.0, 0.0, 0.0)), color: Color.rgb(0.0, 1.0, 0.0) },\n\
              ]\n\
              let init: Model = { viewer: PartViewer.init }\n\
-             let update = (m: Model, msg: Msg) => match msg with | Review(r) => { m with viewer: PartViewer.update(m.viewer, r) }\n\
+             let update = (m: Model, msg: Msg) => match msg with | Viewer(v) => { m with viewer: PartViewer.update(m.viewer, v) }\n\
              let tick = (m: Model, dt, tts) => { m with viewer: PartViewer.tick(m.viewer, dt, tts) }\n\
              let input = (m: Model, key: Key.t, isDown: bool) => { m with viewer: PartViewer.input(m.viewer, key, isDown) }\n\
              let sampledInput = (m: Model, s: Input.snapshot) => { m with viewer: PartViewer.sampledInputPieces(pieces, m.viewer, s) }\n\
-             let ui = (m: Model) => PartViewer.uiWith(Review, m.viewer)\n\
+             let ui = (m: Model) => PartViewer.uiWith(Viewer, m.viewer)\n\
              let draw = (m: Model, tts) => PartViewer.drawPieces(pieces, m.viewer, tts)\n\
              let sheet = () => input(input(init, Key.V, true), Key.V, false)\n"
                 .to_string(),
@@ -11047,6 +11047,37 @@ Anim.clip(\"walk\", tts)"
         assert_eq!(json[4], json[3], "a click off the parts changes nothing");
         assert_eq!(json[5]["notes"].as_array().unwrap().len(), 1, "{json}");
         assert_eq!(json[5]["notes"][0]["id"], 2.0, "{json}");
+    }
+
+    /// `PartViewer`'s Note tool: a click on the orbit view pins a note where
+    /// the pointer meets a part, and neither a press nor the turntable turns
+    /// the view; with the Orbit tool the same click pins nothing.
+    #[test]
+    fn part_viewer_note_tool_pins_on_the_orbit_view() {
+        let value = eval_with_prelude(
+            "let part = Solid.box(10.0, 20.0, 30.0) |> Solid.translate(Vec3.make(0.0, 0.0, 15.0))\n\
+             let pieces = [{ name: \"box\", solid: part, color: Color.rgb(0.8, 0.5, 0.2) }]\n\
+             let off: Input.mouseButtons = { left: false, right: false, middle: false }\n\
+             let click = (x: float, y: float): Input.snapshot =>\n\
+               { heldKeys: [], pressedKeys: [], releasedKeys: [], xr: Option.None, gamepad: Option.None, touch: Option.None,\n\
+                 mouse: { x: x, y: y, surfaceWidth: 1200.0, surfaceHeight: 800.0, buttons: off, pressed: { off with left: true }, released: off } }\n\
+             let noting = PartViewer.update(PartViewer.init, PartViewer.UseTool(PartViewer.Note))\n\
+             let pinned = () => PartViewer.sampledInputPieces(pieces, noting, click(600.0, 400.0)).review\n\
+             let orbiting = () => PartViewer.sampledInputPieces(pieces, PartViewer.init, click(600.0, 400.0)).review\n\
+             let drags = () => PartViewer.mouseButton(noting, Mouse.Left, true).orbit.dragging\n\
+             let spins = () => PartViewer.tick(noting, 5.0, 5.0).orbit.yaw != noting.orbit.yaw\n\
+             let main = () => [pinned(), orbiting(), drags(), spins()]\n",
+        )
+        .unwrap_or_else(|e| panic!("note tool: {e}"));
+        let json = value_to_json(&value);
+        let notes = json[0]["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 1, "{json}");
+        assert_eq!(notes[0]["part"], "box", "{json}");
+        assert_eq!(notes[0]["view"], "orbit", "{json}");
+        assert_eq!(json[0]["selected"], 1.0, "{json}");
+        assert!(json[1]["notes"].as_array().unwrap().is_empty(), "{json}");
+        assert_eq!(json[2], false, "{json}");
+        assert_eq!(json[3], false, "the turntable rests");
     }
 
     #[test]
