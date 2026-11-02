@@ -43,13 +43,29 @@ let atTag = { settled with gripTracked: true, grip: { settled.grip with position
 expect PartMR.inReach(views, atTag) == 0.0
 let apart = PartMR.apartToggled(views, atTag)
 expect apart.apart && List.length(apart.parts) == 2.0
-// Taken apart, nothing jumps: the plate and its relief stay where they were.
-expect apart.parts |> List.all((p) => Math.abs(p.position.x - settled.whole.position.x) < 0.02)
+// Taken apart, nothing jumps or sinks: each piece stays exactly where the
+// assembly had it, even after a tick, until it is held and let go.
+let near = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.z - b.z) < 0.000001
+let still = PartMR.tickWith(views, apart, 0.5, desk)
+expect List.zip(apart.parts, still.parts) |> List.all((pair) => let (b, a) = pair in near(a.position, b.position))
+// Turned and tilted, the pieces still sit where the assembly draws them:
+// the relief's home is 1.6 mm above the plate's middle, so tilted 90° it
+// lies 1.6 mm toward the viewer's side of z.
+let tilted = PartMR.apartToggled(views, { atTag with whole: { atTag.whole with pitch: Math.pi / 2.0 } })
+expect List.nth(1.0, tilted.parts) |> Option.map((p) => Math.abs(p.position.z - atTag.whole.position.z) > 0.0001) |> Option.defaultValue(false)
 // Held, a piece follows the hand and keeps where it was held.
 let held = PartMR.grabbed(views, apart)
-let moved = { held with grip: { held.grip with position: PartMR.add(held.grip.position, PartMR.point(0.3, 0.0, 0.0)) } }
+let moved = { held with grip: { held.grip with position: PartMR.plus(held.grip.position, PartMR.point(0.3, 0.0, 0.0)) } }
 let carried = PartMR.tickWith(views, moved, 0.1, desk)
 expect held.held >= 0.0
 expect List.nth(held.held, carried.parts) |> Option.map((p) => Math.abs(p.position.x - 0.3 - (List.nth(held.held, apart.parts) |> Option.map((q) => q.position.x) |> Option.defaultValue(0.0))) < 0.000001) |> Option.defaultValue(false)
+// The thumbstick turns the part in the hand.
+let spun = PartMR.tickWith(views, { held with stick: { x: 1.0, y: 0.0 } }, 0.5, desk)
+expect List.nth(held.held, spun.parts) |> Option.map((p) => Math.abs(p.yaw - 1.0) < 0.000001) |> Option.defaultValue(false)
+// Let go, it rests on the desk.
+let dropped = PartMR.tickWith(views, PartMR.released(carried), 10.0, desk)
+expect List.nth(held.held, dropped.parts) |> Option.map((p) => p.position.y < 0.76) |> Option.defaultValue(false)
+// A squeeze near halfway neither drops nor retakes.
+expect PartMR.squeezed(true, 0.5) && not PartMR.squeezed(false, 0.5)
 // Back together, it is one item again.
 expect List.length(PartMR.items(views, PartMR.apartToggled(views, apart))) == 1.0

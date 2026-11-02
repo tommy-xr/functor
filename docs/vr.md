@@ -524,24 +524,32 @@ functor -d examples/parts-mr run native --emulate-xr   # desktop stand-in room
 - Parts rest on the real room. `PartMR.physics` makes the room the headset
   fuses from its depth solid (`Physics.fusedRoom`), and a released part drops
   onto the surface a ray straight down finds under it (a desk, the floor).
-  Over nothing seen yet it stays where you let go; look at the surface and it
-  settles. It starts half a metre ahead of where you faced at launch.
+  The ray starts at the part's top, so one let go half inside a desk still
+  rests on it, and reaches half a metre: over nothing seen that close (the
+  desk under it not fused yet) it stays where you let go rather than falling
+  to the floor; look at the surface and it settles. To put a part on the
+  floor, let go of it near the floor. It starts half a metre ahead of your head at
+  launch, a little below your eyes (`Frame.camera`'s eye is your head then).
 - Squeeze the right grip near a part to hold it: it follows your hand, kept
   where you took it and turned with it. Assembled, the grip takes the whole
-  view; B takes it apart, each piece where the assembly had it and held on
-  its own, and B again puts it back together. A separated piece rests on the
-  room, not on other pieces.
+  view; B takes it apart, each piece staying exactly where the assembly had
+  it until you move it, and B again puts it back together. A piece you have
+  moved rests on the room, not on other pieces. The grip takes above 0.6 and
+  lets go below 0.4, and a hand pointing straight down keeps its heading.
 - The right thumbstick turns (left/right) and tilts (forward/back) the part
-  last held, A cycles the views (the next keeps the turn and tilt, and shows
+  in hand, or the one last held, A cycles the views (the next keeps the turn and tilt, and shows
   assembled) and X toggles passthrough. A dot at the hand turns cyan with a
   part in reach and green while holding one.
 - Real things in front hide the parts (`Frame.withRoomOcclusion`), except
   while one is held.
 - On desktop the stand-in room is a floor and a 75 cm desk; it fuses like the
   real one, from a wide authored view above the desk. `--emulate-xr` maps the
-  grip to Enter, turn/tilt to the arrows, A to 1; B takes apart, P toggles
-  passthrough, and N also cycles without `--emulate-xr`. An injected
-  `{"type":"xr"}` sample drives grabs headlessly.
+  grip to Enter (move the mouse down and left to reach the part), turn/tilt
+  to the arrows, A to 1; B takes apart, P toggles passthrough, and N also
+  cycles without `--emulate-xr`. `tour.script` replays a tour, and an
+  injected `{"type":"xr"}` sample drives grabs headlessly. The stand-in room
+  is declared on the headset too, but draws (and fuses) only if the camera
+  feed is unavailable: X switches to the plain VR view, which has none.
 - A label in front of the assembled part gives its name and bounding size in
   mm (raised lettering included, so the 20 mm cube reads 20.6). It is
   `Sketch.text` extruded and shown with `Solid.toScene`, like the part.

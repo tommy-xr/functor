@@ -11131,7 +11131,7 @@ Anim.clip(\"walk\", tts)"
         let json = value_to_json(&value);
         let at = |i: usize| json[i].as_f64().unwrap();
         assert!((at(0) - 0.005).abs() < 1e-9, "rests on half its 10 mm: {json}");
-        assert_eq!(at(1), 0.9, "over nothing seen it stays put: {json}");
+        assert!((at(1) - 1.0).abs() < 1e-6, "over nothing seen it stays put: {json}");
         assert_eq!(at(2), 0.0, "{json}");
         assert_eq!(at(3), 0.0, "{json}");
         assert_eq!((at(4), at(5)), (1.0, 0.5), "cycling keeps the turn: {json}");

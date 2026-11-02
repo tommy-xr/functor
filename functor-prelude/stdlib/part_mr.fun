@@ -38,11 +38,13 @@ let settings = (m) =>
 let roomTag = () => Physics.tag("room")
 let physics = (m) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [Physics.fusedRoom(roomTag())])
 
-// Level (pitch 0) so the room stays level on the headset. The eye and field
-// of view frame the desktop view (the headset uses its own optics), wide and
-// above the stand-in desk so its depth fuses into a surface to rest on.
+// Level (pitch 0) so the room stays level on the headset. On the headset the
+// eye is where your head was at launch, so places here are relative to it;
+// the field of view only frames the desktop view, wide so the stand-in
+// desk's depth fuses into a surface to rest on.
+let eye = () => Vec3.make(0.0, 1.1, 0.0)
 let camera = () =>
-  Camera3D.firstPerson(Vec3.make(0.0, 1.2, -0.3), Angle.degrees(0.0), Angle.degrees(0.0), Angle.degrees(90.0))
+  Camera3D.firstPerson(eye(), Angle.degrees(0.0), Angle.degrees(0.0), Angle.degrees(90.0))
     |> Camera3D.clip(0.02, 50.0)
 
 let point = (x, y, z): Input.point3 => { x: x, y: y, z: z }
@@ -53,11 +55,15 @@ let mm = (v: float) => Text.fromFloat(Math.round(v * 10.0) / 10.0)
 // A part-space point (mm, Z up) in scene metres (Y up), turned 180° about Y
 // as the pieces are, so the part's front (-Y) faces you.
 let fromPart = (v: Vec3.t): Input.point3 =>
-  point(0.0 - Vec3.x(v) / 1000.0, Vec3.z(v) / 1000.0, Vec3.y(v) / 1000.0)
+  let s = PartViews.toScene(v) in
+  point(0.0 - Vec3.x(s), Vec3.y(s), 0.0 - Vec3.z(s))
 
 // Half extents in scene metres of a part-space size: x across, y up, z deep.
 let halfOf = (size: Vec3.t): Input.point3 =>
-  point(Vec3.x(size) / 2000.0, Vec3.z(size) / 2000.0, Vec3.y(size) / 2000.0)
+  let s = PartViews.toScene(size) in
+  point(Vec3.x(s) / 2.0, Vec3.y(s) / 2.0, Math.abs(Vec3.z(s)) / 2.0)
+
+let at = (p: Input.point3, scene) => scene |> Scene.translate(Vec3.make(p.x, p.y, p.z))
 
 // A piece ready to show: centred on its own middle, where that middle sits
 // in the assembly (`home`, from the view's middle), and its half extents.
@@ -88,7 +94,7 @@ let prepare = (view) =>
   let pieces = view.pieces |> List.map((p) => preparePiece(center, p)) in
   {
     pieces: pieces,
-    whole: Scene.group(pieces |> List.map((p) => p.scene |> Scene.translate(Vec3.make(p.home.x, p.home.y, p.home.z)))),
+    whole: Scene.group(pieces |> List.map((p) => p.scene |> at(p.home))),
     half: halfOf(size),
     // Turned to read from your side, then propped up 45°.
     label:
@@ -108,7 +114,9 @@ let viewAt = (views, i: float) =>
   | Option.None => List.head(views)
 
 // Something you can pick up: the whole view, or one piece when apart.
-type item = { position: Input.point3, yaw: float, pitch: float }
+// `settles`: it rests on the room — not while it sits where the assembly
+// put it, until it has been held and let go.
+type item = { position: Input.point3, yaw: float, pitch: float, settles: bool }
 
 // How far below its middle an item's lowest point is, tilted by `pitch`.
 let drop = (half: Input.point3, pitch: float) =>
@@ -124,20 +132,25 @@ let turn = (yaw: float, v: Input.point3): Input.point3 =>
 let tilt = (pitch: float, v: Input.point3): Input.point3 =>
   point(v.x, v.y * Math.cos(pitch) - v.z * Math.sin(pitch), v.y * Math.sin(pitch) + v.z * Math.cos(pitch))
 
-let add = (a: Input.point3, b: Input.point3) => point(a.x + b.x, a.y + b.y, a.z + b.z)
-let sub = (a: Input.point3, b: Input.point3) => point(a.x - b.x, a.y - b.y, a.z - b.z)
+// Point arithmetic, a + b and a − b (Vec3.sub is pipe-last, b − a).
+let plus = (a: Input.point3, b: Input.point3) => point(a.x + b.x, a.y + b.y, a.z + b.z)
+let minus = (a: Input.point3, b: Input.point3) => point(a.x - b.x, a.y - b.y, a.z - b.z)
 
-// The pieces of `view` where the assembled `whole` puts them.
+// The pieces of `view` where the assembled `whole` puts them, staying there.
 let partsOf = (view, whole: item): List<item> =>
   view.pieces |> List.map((p) =>
-    { position: add(whole.position, turn(whole.yaw, tilt(whole.pitch, p.home))), yaw: whole.yaw, pitch: whole.pitch })
+    { position: plus(whole.position, turn(whole.yaw, tilt(whole.pitch, p.home))), yaw: whole.yaw, pitch: whole.pitch, settles: false })
 
 // The grip pose when nothing tracks it (desktop without --emulate-xr).
 let fallbackGrip = () =>
   Camera3D.mapTrackedPose(camera(), { position: { x: 0.2, y: -0.3, z: -0.3 }, orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } })
 
-// Which way a pose faces about +Y.
-let heading = (pose: Camera3D.mappedPose) => Math.atan2(pose.forward.x, pose.forward.z)
+// Which way a pose faces about +Y. Pointing nearly straight down (setting a
+// part on a desk) its forward has no heading, so its up stands in.
+let heading = (pose: Camera3D.mappedPose) =>
+  let f = pose.forward in
+  if Math.sqrt(f.x * f.x + f.z * f.z) >= 0.2 then Math.atan2(f.x, f.z)
+  else Math.atan2(pose.up.x, pose.up.z)
 
 // `grip`: the right controller's grip pose; `squeezing`: its grip held;
 // `index`: the view shown; `whole`: where the assembled view is; `apart`:
@@ -152,33 +165,33 @@ type t = {
   mixedReality: bool, togglePressed: bool, cyclePressed: bool, apartPressed: bool
 }
 
-// Half a metre ahead at desk height; it drops onto what the room has below.
+// Half a metre ahead of where you faced at launch, a little below your eyes;
+// it drops onto what the room has below.
 let init = (views): t =>
+  let e = eye() in
   { grip: fallbackGrip(), gripTracked: false, squeezing: false, stick: { x: 0.0, y: 0.0 },
-    index: 0.0, whole: { position: point(0.0, 0.9, 0.5), yaw: 0.0, pitch: 0.0 }, apart: false, parts: [],
+    index: 0.0, whole: { position: point(Vec3.x(e), Vec3.y(e) - 0.1, Vec3.z(e) + 0.5), yaw: 0.0, pitch: 0.0, settles: true },
+    apart: false, parts: [],
     held: -1.0, offset: point(0.0, 0.0, 0.0), yawOffset: 0.0, active: 0.0,
     mixedReality: true, togglePressed: false, cyclePressed: false, apartPressed: false }
+
+// Apart, with a part for each of the view's pieces (a hot reload can change
+// how many there are).
+let isApart = (view, m: t) => m.apart && List.length(m.parts) == List.length(view.pieces)
 
 // What can be picked up now, with each one's half extents.
 let items = (views, m: t) =>
   match viewAt(views, m.index) with
   | Option.None => []
   | Option.Some(view) =>
-    if m.apart then List.zip(view.pieces, m.parts) |> List.map((pair) => let (it, piece) = pair in { item: it, half: piece.half })
+    if isApart(view, m) then List.zip(view.pieces, m.parts) |> List.map((pair) => let (it, piece) = pair in { item: it, half: piece.half })
     else [{ item: m.whole, half: view.half }]
-
-let withItem = (m: t, i: float, next: item): t =>
-  if m.apart then { m with parts: m.parts |> List.indexedMap((j, p) => if j == i then next else p) }
-  else { m with whole: next }
-
-let itemAt = (views, m: t, i: float) =>
-  List.nth(i, items(views, m)) |> Option.map((e) => e.item)
 
 // The item the grip can take: the nearest whose bounds come within `slack`.
 let slack = 0.08
 let inReach = (views, m: t): float =>
   items(views, m)
-    |> List.indexedMap((i, e) => { i: i, gap: Vec3.length(Vec3.make(e.item.position.x - m.grip.position.x, e.item.position.y - m.grip.position.y, e.item.position.z - m.grip.position.z)) - radius(e.half) })
+    |> List.indexedMap((i, e) => { i: i, gap: radius(minus(e.item.position, m.grip.position)) - radius(e.half) })
     |> List.filter((c) => c.gap <= slack)
     |> List.sortBy((c) => c.gap)
     |> List.head
@@ -188,14 +201,20 @@ let inReach = (views, m: t): float =>
 // Take the item in reach, keeping where the hand holds it.
 let grabbed = (views, m: t): t =>
   let i = inReach(views, m) in
-  match itemAt(views, m, i) with
+  match List.nth(i, items(views, m)) with
   | Option.None => m
-  | Option.Some(it) =>
+  | Option.Some(e) =>
     let h = heading(m.grip) in
-    { m with held: i, active: i, offset: turn(0.0 - h, sub(it.position, m.grip.position)), yawOffset: it.yaw - h }
+    { m with held: i, active: i, offset: turn(0.0 - h, minus(e.item.position, m.grip.position)), yawOffset: e.item.yaw - h }
 
-// Apart: each piece where the assembly had it, so nothing jumps. Together:
-// back into the assembly, wherever it was.
+// Let go: the held item rests on the room from now on.
+let released = (m: t): t =>
+  if m.held < 0.0 then m
+  else if m.apart then { m with held: -1.0, parts: m.parts |> List.indexedMap((j, p) => if j == m.held then { p with settles: true } else p) }
+  else { m with held: -1.0, whole: { m.whole with settles: true } }
+
+// Apart: each piece where the assembly had it, so nothing jumps, staying
+// there until moved. Together: back into the assembly, wherever it was.
 let apartToggled = (views, m: t): t =>
   if m.apart then { m with apart: false, held: -1.0, active: 0.0 }
   else match viewAt(views, m.index) with
@@ -213,15 +232,19 @@ let cycled = (views, m: t): t =>
 // Keyboard edges, so a held key's auto-repeat doesn't act again.
 let pressed = (s: Input.snapshot, key) => s.pressedKeys |> List.any((k) => k == key)
 
+// The grip takes above 0.6 and lets go below 0.4, so a squeeze held near
+// halfway doesn't drop and retake.
+let squeezed = (was: bool, squeeze: float) => if was then squeeze > 0.4 else squeeze > 0.6
+
 let sampledInput = (views, current: t, s: Input.snapshot): t =>
   let byKey = if pressed(s, Key.P) then toggled(current) else current in
   let byKey = if pressed(s, Key.B) then apartToggled(views, byKey) else byKey in
   let m = if pressed(s, Key.N) then cycled(views, byKey) else byKey in
   match s.xr with
-  | Option.None => { m with gripTracked: false, squeezing: false, held: -1.0, stick: { x: 0.0, y: 0.0 } }
+  | Option.None => released({ m with gripTracked: false, squeezing: false, stick: { x: 0.0, y: 0.0 } })
   | Option.Some(xr) =>
     let gripTracked = xr.right.active && Option.isSome(xr.right.grip) in
-    let squeezing = gripTracked && xr.right.squeeze > 0.5 in
+    let squeezing = gripTracked && squeezed(m.squeezing, xr.right.squeeze) in
     let toggle = xr.left.primaryPressed in
     let cycle = xr.right.primaryPressed in
     let apart = xr.right.secondaryPressed in
@@ -238,7 +261,7 @@ let sampledInput = (views, current: t, s: Input.snapshot): t =>
     let next = if cycle && not m.cyclePressed then cycled(views, next) else next in
     if squeezing && not m.squeezing then grabbed(views, next)
     else if squeezing then next
-    else { next with held: -1.0 }
+    else released(next)
 
 let approach = (from: Input.point3, target: Input.point3, amount: float): Input.point3 =>
   point(from.x + (target.x - from.x) * amount, from.y + (target.y - from.y) * amount, from.z + (target.z - from.z) * amount)
@@ -248,43 +271,52 @@ let deadZone = 0.2
 let turnRate = 2.0
 let axis = (v: float) => if Math.abs(v) < deadZone then 0.0 else v
 
-// The height of the real surface under `p` (the fused room), if the headset
-// has seen one there yet.
+// How far below a part's top a surface may be for it to drop there. Farther,
+// it waits where you let go: the desk under it may just not be fused yet,
+// and the floor (fused, or the floor plane) would swallow it.
+let reachDown = 0.5
+
+// The height of the real surface under `p` (the fused room) within
+// `reachDown`, if the headset has seen one there yet.
 let surfaceBelow = (p: Input.point3) =>
-  let hit = Physics.cast(Vec3.make(p.x, p.y, p.z), Vec3.make(0.0, -1.0, 0.0), 3.0) in
+  let hit = Physics.cast(Vec3.make(p.x, p.y, p.z), Vec3.make(0.0, -1.0, 0.0), reachDown) in
   if hit.hit then Option.Some(hit.y) else Option.None
 
-// One item's step: held, it follows the grip; otherwise it settles onto the
-// surface `below` finds under it, never sinking into it, and stays put over
-// nothing yet seen.
-let stepped = (m: t, below, ease: float, i: float, e, turned: item): item =>
+// One item's step. Held, it follows the grip, the thumbstick turning it in
+// the hand. Otherwise the thumbstick turns the active item, and one that
+// settles drops onto the surface `below` finds under its top (so one let go
+// half inside a desk still rests on it), never sinking into it, and stays
+// put over nothing yet seen.
+let stepped = (m: t, below, dt: float, i: float, it: item, half: Input.point3): item =>
+  let spin = axis(m.stick.x) * turnRate * dt in
+  let tilted = if i == m.active then { it with pitch: Math.clamp(0.0 - Math.pi / 2.0, Math.pi / 2.0, it.pitch + axis(m.stick.y) * turnRate * dt) } else it in
   if i == m.held then
-    { turned with position: add(m.grip.position, turn(heading(m.grip), m.offset)), yaw: heading(m.grip) + m.yawOffset }
+    { tilted with position: plus(m.grip.position, turn(heading(m.grip), m.offset)), yaw: heading(m.grip) + m.yawOffset + spin }
   else
-    match below(e.item.position) with
+    let turned = if i == m.active then { tilted with yaw: tilted.yaw + spin } else tilted in
+    if not turned.settles then turned
+    else match below({ turned.position with y: turned.position.y + drop(half, turned.pitch) }) with
     | Option.None => turned
     | Option.Some(surface) =>
-      let rest = surface + drop(e.half, turned.pitch) in
-      let p = approach(turned.position, { turned.position with y: rest }, ease) in
+      let rest = surface + drop(half, turned.pitch) in
+      let p = approach(turned.position, { turned.position with y: rest }, Math.min(1.0, dt * 10.0)) in
       { turned with position: { p with y: Math.max(p.y, rest) } }
 
-// `below` is `surfaceBelow` in play; tests pass their own floor.
+// `below` is `surfaceBelow` in play; tests pass their own floor. A view
+// whose piece count changed under a hot reload goes back together.
 let tickWith = (views, m: t, dt: float, below): t =>
-  let ease = Math.min(1.0, dt * 10.0) in
-  items(views, m)
-    |> List.indexedMap((i, e) =>
-      let turned =
-        if i == m.active then
-          { e.item with
-            yaw: e.item.yaw + axis(m.stick.x) * turnRate * dt,
-            pitch: Math.clamp(0.0 - Math.pi / 2.0, Math.pi / 2.0, e.item.pitch + axis(m.stick.y) * turnRate * dt) }
-        else e.item in
-      { i: i, next: stepped(m, below, ease, i, e, turned) })
-    |> List.fold((acc, s) => withItem(acc, s.i, s.next), m)
+  match viewAt(views, m.index) with
+  | Option.None => m
+  | Option.Some(view) =>
+    let m = if m.apart && not isApart(view, m) then { m with apart: false, held: -1.0, active: 0.0 } else m in
+    // The thumbstick turns the held item in the hand: fold it into the offset.
+    let m = if m.held >= 0.0 then { m with yawOffset: m.yawOffset + axis(m.stick.x) * turnRate * dt } else m in
+    let still = { m with stick: { m.stick with x: if m.held >= 0.0 then 0.0 else m.stick.x } } in
+    if m.apart then
+      { m with parts: List.zip(view.pieces, m.parts) |> List.indexedMap((i, pair) => let (it, piece) = pair in stepped(still, below, dt, i, it, piece.half)) }
+    else { m with whole: stepped(still, below, dt, 0.0, m.whole, view.half) }
 
 let tick = (views, m: t, dt: float): t => tickWith(views, m, dt, surfaceBelow)
-
-let at = (p: Input.point3, scene) => scene |> Scene.translate(Vec3.make(p.x, p.y, p.z))
 
 let posed = (it: item, scene) =>
   scene |> Scene.rotateX(Angle.radians(it.pitch)) |> Scene.rotateY(Angle.radians(it.yaw)) |> at(it.position)
@@ -292,11 +324,12 @@ let posed = (it: item, scene) =>
 // Where the stand-in room is drawn (desktop, a paused feed): a floor and a
 // 75 cm desk half a metre ahead, which also fuse into surfaces.
 let standIn = () =>
+  let e = eye() in
   let block = (w, h, d, x, y, z, shade) =>
     Scene.cube() |> Scene.scaleXYZ(w, h, d) |> Scene.lit(Color.rgb(shade, shade, shade + 0.04)) |> at(point(x, y, z)) in
   Scene.group([
-    block(6.0, 0.02, 6.0, 0.0, -0.01, 1.0, 0.42),
-    block(1.0, 0.75, 0.6, 0.0, 0.375, 0.5, 0.55),
+    block(6.0, 0.02, 6.0, Vec3.x(e), -0.01, Vec3.z(e) + 1.0, 0.42),
+    block(1.0, 0.75, 0.6, Vec3.x(e), 0.375, Vec3.z(e) + 0.5, 0.55),
   ])
 
 // A dot at the hand: green holding, cyan with something in reach.
@@ -313,7 +346,7 @@ let gripDot = (views, m: t) =>
 
 let draw = (views, m: t) =>
   let shown = viewAt(views, m.index) |> Option.map((view) =>
-    if m.apart then List.zip(view.pieces, m.parts) |> List.map((pair) => let (it, piece) = pair in piece.scene |> posed(it))
+    if isApart(view, m) then List.zip(view.pieces, m.parts) |> List.map((pair) => let (it, piece) = pair in piece.scene |> posed(it))
     else
       // The label props up just in front of the view's foot.
       let w = m.whole in
@@ -330,9 +363,9 @@ let draw = (views, m: t) =>
         Light.ambient(Color.rgb(0.25, 0.25, 0.3)),
         Light.directional(Vec3.make(-0.4, -1.0, 0.5), Color.rgb(1.0, 0.95, 0.9), 0.9),
       ]) in
-  // Real things hide the parts, but not while one is held: the hand holding
-  // it would cut into it.
-  if m.mixedReality && m.held >= 0.0 then frame |> Frame.withPassthrough |> Frame.withStandInRoom(standIn())
-  else if m.mixedReality then
-    frame |> Frame.withPassthrough |> Frame.withStandInRoom(standIn()) |> Frame.withRoomOcclusion
+  if m.mixedReality then
+    let room = frame |> Frame.withPassthrough |> Frame.withStandInRoom(standIn()) in
+    // Real things hide the parts, but not while one is held: the hand holding
+    // it would cut into it.
+    if m.held >= 0.0 then room else room |> Frame.withRoomOcclusion
   else frame |> Frame.withClearColor(Color.rgb(0.02, 0.02, 0.06))
