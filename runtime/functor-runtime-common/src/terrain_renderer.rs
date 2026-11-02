@@ -68,6 +68,8 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         uniform vec3 terrainSize; // width, depth, height range
         uniform float minHeight;
         uniform float skirtDepth;
+        // Every vertex and normal tap lands on a texel (see `exact_grid`).
+        uniform bool exactGrid;
 
         out vec3 worldNormal;
         out vec3 worldTangent;
@@ -79,20 +81,27 @@ const VERTEX_SHADER_SOURCE: &str = r#"
             ivec2 size = textureSize(heightmapTex, 0);
             ivec2 maxCoord = size - ivec2(1);
             vec2 p = clamp(uv, vec2(0.0), vec2(1.0)) * vec2(maxCoord);
-            ivec2 a = ivec2(floor(p));
-            ivec2 b = min(a + ivec2(1), maxCoord);
-            vec2 f = fract(p);
-            float h00 = float(texelFetch(heightmapTex, a, 0).r);
-            float h10 = float(texelFetch(heightmapTex, ivec2(b.x, a.y), 0).r);
-            float h01 = float(texelFetch(heightmapTex, ivec2(a.x, b.y), 0).r);
-            float h11 = float(texelFetch(heightmapTex, b, 0).r);
-            // Match Rapier's default heightfield diagonal exactly. Bilinear
-            // interpolation would produce a different surface inside every
-            // non-coplanar source cell.
-            float sampleHeight = f.x + f.y <= 1.0
-                ? h00 + f.x * (h10 - h00) + f.y * (h01 - h00)
-                : h11 + (1.0 - f.x) * (h01 - h11)
-                      + (1.0 - f.y) * (h10 - h11);
+            float sampleHeight;
+            if (exactGrid) {
+                // p is a whole texel, so fract(p) = 0 and the triangle rule
+                // below reduces to h00, bit for bit: one fetch, not four.
+                sampleHeight = float(texelFetch(heightmapTex, ivec2(floor(p + 0.5)), 0).r);
+            } else {
+                ivec2 a = ivec2(floor(p));
+                ivec2 b = min(a + ivec2(1), maxCoord);
+                vec2 f = fract(p);
+                float h00 = float(texelFetch(heightmapTex, a, 0).r);
+                float h10 = float(texelFetch(heightmapTex, ivec2(b.x, a.y), 0).r);
+                float h01 = float(texelFetch(heightmapTex, ivec2(a.x, b.y), 0).r);
+                float h11 = float(texelFetch(heightmapTex, b, 0).r);
+                // Match Rapier's default heightfield diagonal exactly. Bilinear
+                // interpolation would produce a different surface inside every
+                // non-coplanar source cell.
+                sampleHeight = f.x + f.y <= 1.0
+                    ? h00 + f.x * (h10 - h00) + f.y * (h01 - h00)
+                    : h11 + (1.0 - f.x) * (h01 - h11)
+                          + (1.0 - f.y) * (h10 - h11);
+            }
             float normalized = sampleHeight / 65535.0;
             return minHeight + normalized * terrainSize.z;
         }
@@ -414,6 +423,7 @@ struct TerrainUniforms {
     terrain_size: UniformLocation,
     min_height: UniformLocation,
     skirt_depth: UniformLocation,
+    exact_grid: UniformLocation,
     color: UniformLocation,
     use_layers: UniformLocation,
     low_color: UniformLocation,
@@ -566,6 +576,8 @@ struct HeightTexture {
     /// Baked occlusion, derived from the same samples and invalidated with
     /// them — a heightmap reload must not leave stale shadows behind.
     macro_texture: glow::Texture,
+    /// See `exact_grid`.
+    exact_grid: bool,
     last_used_frame: u64,
 }
 
@@ -647,7 +659,7 @@ impl TerrainRenderer {
             viewport_height: ctx.viewport_height,
         };
         let geometry_index = self.ensure_geometry(ctx.gl, description, world, &patch_key);
-        let (height_texture, macro_texture) = self.ensure_height_texture(
+        let (height_texture, macro_texture, exact_grid) = self.ensure_height_texture(
             ctx.gl,
             &description.heightmap,
             source.clone(),
@@ -746,6 +758,7 @@ impl TerrainRenderer {
             p.set_uniform_1f(gl, &u.snow_height, snow_height);
             p.set_uniform_1f(gl, &u.min_height, description.min_height);
             p.set_uniform_1f(gl, &u.skirt_depth, skirt_depth(description));
+            p.set_uniform_1i(gl, &u.exact_grid, exact_grid as i32);
             let terrain_color = crate::color_space::srgb_to_linear3(description.color);
             p.set_uniform_vec3(
                 gl,
@@ -860,6 +873,7 @@ impl TerrainRenderer {
             terrain_size: program.get_uniform_location(ctx.gl, "terrainSize"),
             min_height: program.get_uniform_location(ctx.gl, "minHeight"),
             skirt_depth: program.get_uniform_location(ctx.gl, "skirtDepth"),
+            exact_grid: program.get_uniform_location(ctx.gl, "exactGrid"),
             color: program.get_uniform_location(ctx.gl, "terrainColor"),
             use_layers: program.get_uniform_location(ctx.gl, "useLayers"),
             low_color: program.get_uniform_location(ctx.gl, "lowColor"),
@@ -1185,7 +1199,7 @@ impl TerrainRenderer {
         terrain_width: f32,
         terrain_depth: f32,
         height_range: f32,
-    ) -> (glow::Texture, glow::Texture) {
+    ) -> (glow::Texture, glow::Texture, bool) {
         // The occlusion bake depends on the world span and vertical range the
         // `.fun` declares, not just on the image — so those are part of the key,
         // not merely checked against it. Keying by locator alone and comparing
@@ -1211,7 +1225,7 @@ impl TerrainRenderer {
         {
             crate::gpu_counters::gpu_counters().cache_hit();
             entry.last_used_frame = self.current_frame;
-            return (entry.texture, entry.macro_texture);
+            return (entry.texture, entry.macro_texture, entry.exact_grid);
         }
 
         let counters = crate::gpu_counters::gpu_counters();
@@ -1332,16 +1346,24 @@ rendering a {}x{} height copy",
             gl.bind_texture(glow::TEXTURE_2D, None);
             macro_texture
         };
+        // Selection refines by the source's size; the shader samples the
+        // (possibly fitted) texture.
+        let exact_grid = exact_grid(
+            width,
+            height,
+            max_quadtree_level(source.width, source.height),
+        );
         self.height_textures.insert(
             key,
             HeightTexture {
                 revision: source.revision,
                 texture,
                 macro_texture,
+                exact_grid,
                 last_used_frame: self.current_frame,
             },
         );
-        (texture, macro_texture)
+        (texture, macro_texture, exact_grid)
     }
 }
 
@@ -2045,6 +2067,22 @@ fn max_quadtree_level(width: u32, height: u32) -> u32 {
     level
 }
 
+/// Whether every patch vertex at every LOD, and each normal tap a texel
+/// away, lands exactly on a texel of a `width`×`height` height texture, so
+/// the shader can fetch one sample instead of four.
+///
+/// The finest patch puts a vertex every 1/(PATCH_QUADS·2^max_level) of the
+/// map, so each side's cell count must be a multiple of that; requiring a
+/// power of two also keeps the shader's texel offset exact. In practice
+/// that means a square 2ⁿ+1 map, n ≥ 6.
+fn exact_grid(width: u32, height: u32, max_level: u32) -> bool {
+    let finest = PATCH_QUADS << max_level;
+    [width, height].into_iter().all(|side| {
+        let cells = side.saturating_sub(1);
+        cells.is_power_of_two() && cells % finest == 0
+    })
+}
+
 fn fit_heightmap(source: &HeightmapData, max_size: u32) -> (Vec<u16>, u32, u32) {
     let ratio = (max_size as f64 / source.width as f64).min(max_size as f64 / source.height as f64);
     let width = ((source.width as f64 * ratio).floor() as u32).max(2);
@@ -2661,6 +2699,88 @@ mod tests {
             select_with_fog_cull(Some(&fog), fog.end(), &world),
             select_with_fog_cull(Some(&fog), None, &world)
         );
+    }
+
+    #[test]
+    fn exact_grid_means_a_square_two_to_the_n_plus_one_map() {
+        let exact = |w: u32, h: u32| exact_grid(w, h, max_quadtree_level(w, h));
+        for side in [65, 129, 257, 1025, 2049, 4097] {
+            assert!(exact(side, side), "{side}²");
+        }
+        for (w, h) in [
+            (33, 33),
+            (64, 64),
+            (193, 193),
+            (1000, 1000),
+            (1024, 1024),
+            (2049, 1025),
+        ] {
+            assert!(!exact(w, h), "{w}×{h}");
+        }
+        // A source over the GPU limit: 129² fits to 65². That texture is
+        // exact for its own one level, but selection still refines to the
+        // source's two, whose vertices fall between its texels.
+        let source = HeightmapData {
+            width: 129,
+            height: 129,
+            samples: vec![0; 129 * 129],
+            revision: 1,
+        };
+        let (_, w, h) = fit_heightmap(&source, 65);
+        assert_eq!((w, h), (65, 65));
+        assert!(exact_grid(w, h, max_quadtree_level(w, h)));
+        assert!(!exact_grid(w, h, max_quadtree_level(129, 129)));
+    }
+
+    /// Mirrors the vertex shader's `heightAt` in f32: on an exact grid, every
+    /// vertex (skirts included) of every patch at every level, and each of
+    /// its four normal taps, lands on a texel, where the four-fetch triangle
+    /// rule returns that texel's sample bit for bit.
+    #[test]
+    fn exact_grid_single_fetch_matches_the_triangle_rule_bit_for_bit() {
+        let (grid, _) = build_patch_mesh();
+        for side in [257u32, 1025] {
+            let max_level = max_quadtree_level(side, side);
+            assert!(exact_grid(side, side, max_level));
+            let max_coord = side - 1;
+            let samples: Vec<u16> = (0..side * side)
+                .map(|i| (i.wrapping_mul(2_654_435_761) >> 16) as u16)
+                .collect();
+            let fetch = |x: u32, y: u32| samples[(y * side + x) as usize] as f32;
+            let texel = 1.0 / max_coord as f32;
+            let taps = [(0.0, 0.0), (-texel, 0.0), (texel, 0.0), (0.0, -texel), (0.0, texel)];
+            for level in 0..=max_level {
+                let scale = 0.5f32.powi(level as i32);
+                for k in 0..1u32 << (2 * level) {
+                    let u = (k % (1 << level)) as f32 * scale;
+                    let v = (k >> level) as f32 * scale;
+                    for vertex in &grid {
+                        let uv = [u + vertex[0] * scale, v + vertex[1] * scale];
+                        for (ox, oy) in taps {
+                            let p = [
+                                (uv[0] + ox).clamp(0.0, 1.0) * max_coord as f32,
+                                (uv[1] + oy).clamp(0.0, 1.0) * max_coord as f32,
+                            ];
+                            let a = [p[0].floor(), p[1].floor()];
+                            let f = [p[0] - a[0], p[1] - a[1]];
+                            assert_eq!(f, [0.0, 0.0], "{side}² level {level} at {p:?}");
+                            let (ax, ay) = (a[0] as u32, a[1] as u32);
+                            let (bx, by) = ((ax + 1).min(max_coord), (ay + 1).min(max_coord));
+                            let (h00, h10, h01, h11) =
+                                (fetch(ax, ay), fetch(bx, ay), fetch(ax, by), fetch(bx, by));
+                            let rule = if f[0] + f[1] <= 1.0 {
+                                h00 + f[0] * (h10 - h00) + f[1] * (h01 - h00)
+                            } else {
+                                h11 + (1.0 - f[0]) * (h01 - h11) + (1.0 - f[1]) * (h10 - h11)
+                            };
+                            let single =
+                                fetch((p[0] + 0.5).floor() as u32, (p[1] + 0.5).floor() as u32);
+                            assert_eq!(rule.to_bits(), single.to_bits());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
