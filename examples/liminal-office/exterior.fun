@@ -1,6 +1,6 @@
 // The street side, not lit by the bake and not hashed into its provenance:
-// the facade's outer half, window bands, neon, the canopy, sodium lamps, the
-// apron and the ground, and their colliders.
+// the facade's outer half, window bands, the roof, neon, the canopy, sodium
+// lamps, the apron and the ground, and their colliders.
 
 open Layout
 open Building
@@ -17,56 +17,74 @@ let box = (x0: float, y0: float, z0: float, x1: float, y1: float, z1: float): Bo
   { x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1 }
 let slabOf = (b: Box): Scene.t => slab(b.x0, b.y0, b.z0, b.x1, b.y1, b.z1)
 
-// A level's facade openings on one side, 1 cm smaller, so the facade's
-// outer half overlaps the baked reveal's edges: no seam to see through, and
-// no coplanar faces.
-let facadeHoles = (level: float, s: Side): List<Hole> =>
-  openingsIn(level, s)
-    |> List.map((h) => { lo: h.lo + 0.01, hi: h.hi - 0.01, bottom: if h.bottom > 0.0 then h.bottom + 0.01 else 0.0, top: h.top - 0.01 })
-
-// The outer half of the facade (the inner half is the baked interior wall),
-// a band per storey; the top one rises to the roofline.
-let half = facade / 2.0
-let facadeSlabs =
-  let f = footprint in
-  levels |> List.concatMap((level) =>
-    let y = level * storey in
-    let top = facadeTop(level) in
-    let run = (s: Side, s0: float, s1: float, make: (Piece) => Scene.t) =>
-      pieces(s0, s1, top, facadeHoles(level, s)) |> List.map((p) => make({ p with y0: y + p.y0, y1: y + p.y1 })) in
-    List.flatten([
-      run(South, f.x0 - half, f.x1 + half, (p) => slab(p.u0, p.y0, f.z0 - half, p.u1, p.y1, f.z0)),
-      run(North, f.x0 - half, f.x1 + half, (p) => slab(p.u0, p.y0, f.z1, p.u1, p.y1, f.z1 + half)),
-      run(West, f.z0, f.z1, (p) => slab(f.x0 - half, p.y0, p.u0, f.x0, p.y1, p.u1)),
-      run(East, f.z0, f.z1, (p) => slab(f.x1, p.y0, p.u0, f.x1 + half, p.y1, p.u1)),
-    ])) |> Scene.group |> Scene.lit(concrete)
-
 // Whether the 2.2 m band centred `at` along side `s` overlaps a real window
 // on `level`.
 let isOpen = (level: float, s: Side, at: float): bool =>
   Layout.windows |> List.any((w) =>
     roomAt(w.room).level == level && w.side == s && Math.abs(w.at - at) < (w.width + 2.2) / 2.0)
-// Dark window bands on the outside of the walls, a row per storey, except
-// where layout.fun opens a real window (open, no glass: glass would bypass
-// culling). The ground floor's south row leaves the entrance clear.
+// Dark window bands, a row per storey, except where layout.fun opens a real
+// window (open, no glass: glass would bypass culling). The ground floor's
+// south row leaves the entrance clear. Each is a hole through the facade's
+// outer half with a panel set back in it, so no face lies just behind
+// another: two faces a few cm apart z-fight at a distance.
+let bandHoles = (level: float, s: Side): List<Hole> =>
+  let ats = match s with
+    | South => if level == 0.0 then [2.0, 4.6, 15.4, 18.0] else [2.0, 4.6, 7.2, 12.8, 15.4, 18.0]
+    | North => []
+    | _ => List.range(8.0) |> List.map((k) => 2.5 + 3.4 * k) in
+  ats |> List.filter((at) => not isOpen(level, s, at)) |> List.map((at) => { lo: at - 1.1, hi: at + 1.1, bottom: 1.0, top: 2.3 })
+
+// A level's facade holes on one side: the bands, and the real openings 1 cm
+// smaller, so the facade's outer half overlaps the baked reveal's edges: no
+// seam to see through, and no coplanar faces.
+let facadeHoles = (level: float, s: Side): List<Hole> =>
+  List.flatten([
+    openingsIn(level, s)
+      |> List.map((h) => { lo: h.lo + 0.01, hi: h.hi - 0.01, bottom: if h.bottom > 0.0 then h.bottom + 0.01 else 0.0, top: h.top - 0.01 }),
+    bandHoles(level, s),
+  ]) |> List.sortBy((h) => h.lo)
+
+// The outer half of the facade (the inner half is the baked interior wall),
+// a band per storey; the top one rises to the roofline.
+let half = facade / 2.0
+let facadeBoxes =
+  let f = footprint in
+  levels |> List.concatMap((level) =>
+    let y = level * storey in
+    let top = facadeTop(level) in
+    let run = (s: Side, s0: float, s1: float, make: (Piece) => Box) =>
+      pieces(s0, s1, top, facadeHoles(level, s)) |> List.map((p) => make({ p with y0: y + p.y0, y1: y + p.y1 })) in
+    List.flatten([
+      run(South, f.x0 - half, f.x1 + half, (p) => box(p.u0, p.y0, f.z0 - half, p.u1, p.y1, f.z0)),
+      run(North, f.x0 - half, f.x1 + half, (p) => box(p.u0, p.y0, f.z1, p.u1, p.y1, f.z1 + half)),
+      run(West, f.z0, f.z1, (p) => box(f.x0 - half, p.y0, p.u0, f.x0, p.y1, p.u1)),
+      run(East, f.z0, f.z1, (p) => box(f.x1, p.y0, p.u0, f.x1 + half, p.y1, p.u1)),
+    ]))
+
+// A band's panel, `recess` behind the facade's outer face, filling its hole
+// back to the wall line and 2 cm past its edges (hidden in the facade).
+let recess = 0.08
 let bandBoxes =
   let f = footprint in
-  let o = half + 0.02 in
+  let e = 0.02 in
   levels |> List.concatMap((level) =>
-    let y0 = level * storey + 1.0 in
-    let y1 = level * storey + 2.3 in
-    let south = if level == 0.0 then [2.0, 4.6, 15.4, 18.0] else [2.0, 4.6, 7.2, 12.8, 15.4, 18.0] in
-    List.flatten([
-      south |> List.filter((x) => not isOpen(level, South, x))
-        |> List.map((x) => box(x - 1.1, y0, f.z0 - o, x + 1.1, y1, f.z0 - half)),
-      List.range(8.0) |> List.concatMap((k) =>
-        let z = 2.5 + 3.4 * k in
-        List.flatten([
-          if isOpen(level, West, z) then [] else [box(f.x0 - o, y0, z - 1.1, f.x0 - half, y1, z + 1.1)],
-          if isOpen(level, East, z) then [] else [box(f.x1 + half, y0, z - 1.1, f.x1 + o, y1, z + 1.1)],
-        ])),
-    ]))
-let windowBands = bandBoxes |> List.map(slabOf) |> Scene.group |> Scene.lit(glass)
+    let y0 = level * storey + 1.0 - e in
+    let y1 = level * storey + 2.3 + e in
+    [South, North, West, East] |> List.concatMap((s) => bandHoles(level, s) |> List.map((h) =>
+      match s with
+      | South => box(h.lo - e, y0, f.z0 - half + recess, h.hi + e, y1, f.z0)
+      | North => box(h.lo - e, y0, f.z1, h.hi + e, y1, f.z1 + half - recess)
+      | West => box(f.x0 - half + recess, y0, h.lo - e, f.x0, y1, h.hi + e)
+      | East => box(f.x1, y0, h.lo - e, f.x1 + half - recess, y1, h.hi + e))))
+
+// The roof: a slab over the footprint, its top level with the top storey's
+// slab, run into the facade's outer half so no seam shows. The facade rising
+// on to the roofline is its parapet.
+let roofTop = List.length(levels) * storey
+let roofGrey = rgb(60.0, 58.0, 62.0)
+let roofBox =
+  let f = footprint in
+  box(f.x0 - half / 2.0, roofTop - 0.3, f.z0 - half / 2.0, f.x1 + half / 2.0, roofTop, f.z1 + half / 2.0)
 
 let entrance = doors |> List.find((d) => not isInside(roomAt(d.a))) |> Option.map(holeOf)
   |> Option.defaultValue({ lo: 0.0, hi: 0.0, bottom: 0.0, top: 0.0 })
@@ -74,7 +92,6 @@ let canopyX0 = entrance.lo - 1.0
 let canopyX1 = entrance.hi + 1.0
 let canopyZ0 = footprint.z0 - half - 1.6
 let canopyBox = box(canopyX0, entrance.top + 0.3, canopyZ0, canopyX1, entrance.top + 0.45, footprint.z0 - half)
-let canopy = slabOf(canopyBox) |> Scene.lit(concrete)
 
 // Cyan along the roofline and the canopy's edge.
 let neonBoxes =
@@ -96,7 +113,6 @@ let lampHeads = [v(4.4, 4.8, -4.0), v(15.6, 4.8, -4.0)]
 let postGrey = rgb(60.0, 60.0, 66.0)
 let postBoxes = lampHeads |> List.map((p) =>
   box(Vec3.x(p) - 0.06, 0.0, Vec3.z(p) - 0.06, Vec3.x(p) + 0.06, 4.9, Vec3.z(p) + 0.06))
-let lampPosts = postBoxes |> List.map(slabOf) |> Scene.group |> Scene.lit(postGrey)
 let shadeBoxes = lampHeads |> List.map((p) =>
   box(Vec3.x(p) - 0.25, 4.75, Vec3.z(p) - 0.12, Vec3.x(p) + 0.25, 4.85, Vec3.z(p) + 0.12))
 let lampShades = shadeBoxes |> List.map(slabOf) |> Scene.group
@@ -112,13 +128,25 @@ let groundAt = (x: float, z: float, size: float): Scene.t =>
 let ground = groundAt(10.0, 10.0, 240.0)
 let apronGrey = rgb(96.0, 94.0, 102.0)
 let apronBox = box(apron.x0, street - 0.02, apron.z0, apron.x1, street, apron.z1 - half)
-let apronSlab = slabOf(apronBox) |> Scene.lit(apronGrey)
+
+// The street side's lit boxes, by colour, as instances of one white cube: a
+// single draw.
+let streetBoxes: List<(Box, Color.t)> = List.flatten([
+  facadeBoxes |> List.map((b) => (b, concrete)),
+  bandBoxes |> List.map((b) => (b, glass)),
+  [(roofBox, roofGrey), (canopyBox, concrete), (apronBox, apronGrey)],
+  postBoxes |> List.map((b) => (b, postGrey)),
+])
+let streetSide = Scene.cube() |> Scene.lit(rgb(255.0, 255.0, 255.0)) |> Scene.instanced(streetBoxes |> List.map((e) =>
+  let (b, color) = e in
+  Instance.trs(v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0), 0deg, b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0)
+    |> Instance.tint(color)))
 
 // The building's street side, in its own space, with the neon and the lamp
 // heads glowing at `neon` and `lamps` (1 at night): only those two colours
 // change with the hour. The ground isn't part of it.
 let exteriorAt = (neon: float, lamps: float): Scene.t => Scene.group([
-  apronSlab, facadeSlabs, windowBands, canopy, lampPosts,
+  streetSide,
   neonStrips |> Scene.color(neonColor(neon)),
   lampShades |> Scene.color(shadeColor(lamps)),
 ])

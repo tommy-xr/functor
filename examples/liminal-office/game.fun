@@ -13,9 +13,10 @@
 // landing, upstairs corridor, upstairs window. 9 and 0 jump into the block:
 // the street, and a turned copy's window. T steps the hour; N jumps between
 // midnight and noon; B toggles the block; G cycles the grids; K cycles how many
-// interiors draw (4, 1, 2); I puts the block on the island (island.fun). VR:
-// the left thumbstick walks and strafes; the right turns and walks; X steps
-// the hour, Y jumps midnight ⇄ noon; B toggles the block, A the island.
+// interiors draw (4, 1, 2); O overlooks the roofs from 20 m up; I puts the
+// block on the island (island.fun). VR: the left thumbstick walks and
+// strafes; the right turns and walks; X steps the hour, Y jumps midnight ⇄
+// noon; B toggles the block, A the island.
 //
 // layout.fun is the one layout authority; building.fun derives the mesh,
 // colliders and bake jobs from it, portals.fun the culling cells, and
@@ -138,6 +139,8 @@ let init = {
   island: false,
   // The island's props drawn and solid near the eye (`Island.regroup`).
   props: Island.noProps,
+  // The eye overlooking the roofs (O).
+  overlook: false,
   // From the last tick: where the player stood and whether on the ground,
   // the nearest copy and the eye's cell in it (-1: outside every cell),
   // which copies' interiors draw and which have colliders (ids), and
@@ -223,19 +226,26 @@ let input = (model, key, isDown: bool) =>
     | Key.G => toGrid(model)
     | Key.K => { model with k: nextK(model.k) }
     | Key.I => toggleIsland(model)
+    | Key.O => { model with overlook: not model.overlook, pitch: if model.overlook then 0.0 else overlookPitch }
     | _ => model
 
-let eyeOf = (p: Physics.position): Vec3.t => v(p.x, p.y + eyeAboveCentre, p.z)
+// O: overlook. The eye rises `overlookLift` above the player and looks down
+// over the roofs; no interior draws from up there.
+let overlookLift = 20.0
+let overlookPitch = -0.5
+let eyeOf = (model, p: Physics.position): Vec3.t =>
+  v(p.x, p.y + eyeAboveCentre + (if model.overlook then overlookLift else 0.0), p.z)
+let interiorsOf = (model): float => if model.overlook then 0.0 else model.k
 
 let gravity = 9.81
 
 let tick = (model, dt: float, tts: float) =>
   let p = Physics.position(playerTag) in
-  let eye = eyeOf(p) in
+  let eye = eyeOf(model, p) in
   // The copies the last frame drew: that draw ran after the physics step
   // that left the player at `p`, from the model this tick started with.
   let town = Block.townAt(model.town) in
-  let active = Block.activeAt(town, model.k, model.active, eye) in
+  let active = Block.activeAt(town, interiorsOf(model), model.active, eye) in
   let copy = Block.nearest(town, eye) in
   let observed = { model with
     at: p,
@@ -246,14 +256,14 @@ let tick = (model, dt: float, tts: float) =>
     solid: Block.solidAt(town, model.solid, eye),
     uncovered: model.uncovered + Block.uncovered(town, active, eye),
     baked: baked,
-    props: Island.regroup(model.props, model.island, p.x, p.z, Island.fogFar(Hours.daylight(model.hour))) } in
+    props: Island.regroup(model.props, model.island, p.x, p.z, Hours.reachAt(Island.reach, Hours.daylight(model.hour))) } in
   match List.nth(model.goto - 1.0, views) with
   | Option.Some(view) =>
     let c = Block.copyAt(if inBlock(model.goto) then view.copy else copy) in
     let to = Block.toWorld(c, v(view.x, view.level * Layout.storey + centreAboveFeet, view.z)) in
     let t = if inBlock(model.goto) && model.town == 0.0 then 1.0 else model.town in
     // Solid where the player lands, before the teleport lands.
-    ({ observed with goto: 0.0, vy: 0.0, yaw: Block.headingToWorld(c, view.yaw), pitch: view.pitch,
+    ({ observed with goto: 0.0, vy: 0.0, overlook: false, yaw: Block.headingToWorld(c, view.yaw), pitch: view.pitch,
                      town: t, solid: Block.solidAt(Block.townAt(t), observed.solid, to) },
      Physics.teleport(playerTag, to))
   | Option.None =>
@@ -286,16 +296,22 @@ let copyScene = (look: CopyLook): Scene.t =>
     else Scene.cells(Portals.level, Scene.group(if look.day then dayRooms else nightRooms)) in
   Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(look.neon, look.lamps), interiorScene]))
 
+// The near plane. Depth precision at a distance goes as 1/near: at 0.05 m,
+// faces 2 cm apart z-fought from about 60 m. At 0.1 m its corners sit about
+// 0.17 m from the eye, inside the capsule's 0.3 m radius.
+let nearClip = 0.1
+
 let draw = (model, tts: float) =>
   let p = Physics.position(playerTag) in
-  let eye = eyeOf(p) in
-  let o = Hours.outdoorAt(Hours.daylight(model.hour)) in
-  // On the island the far plane is the fog's end.
-  let fogFar = if model.island then Island.fogFar(Hours.daylight(model.hour)) else Hours.fogFar in
-  let camera = Camera3D.firstPerson(eye, Angle.radians(model.yaw), Angle.radians(model.pitch), 70deg)
-    |> Camera3D.clip(0.05, if model.island then fogFar else 160.0) in
+  let eye = eyeOf(model, p) in
+  let daylight = Hours.daylight(model.hour) in
+  let o = Hours.outdoorAt(daylight) in
   let town = Block.townAt(model.town) in
-  let active = Block.activeAt(town, model.k, model.active, eye) in
+  // On the island, the island's reach.
+  let far = Hours.reachAt(if model.island then Island.reach else town.reach, daylight) in
+  let camera = Camera3D.firstPerson(eye, Angle.radians(model.yaw), Angle.radians(model.pitch), 70deg)
+    |> Camera3D.clip(nearClip, far) in
+  let active = Block.activeAt(town, interiorsOf(model), model.active, eye) in
   let day = Hours.isDay(model.hour) in
   // Each copy rebuilds only when the hour or its activation changes. In a
   // grid only the active copies draw as themselves; the rest are shells.
@@ -314,7 +330,7 @@ let draw = (model, tts: float) =>
     else Scene.group([town.ground, buildings, resident]) in
   let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyAt(id)), eye) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
-    |> Frame.withFog(Fog.linear(o.fogNear, fogFar, Hours.color(o.sky)))
+    |> Frame.withFog(Fog.linear(o.fogNear, far, Hours.color(o.sky)))
     |> Frame.withClearColor(Hours.color(o.sky))
 
 // Only shown when the committed bake doesn't match the layout.

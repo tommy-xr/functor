@@ -111,15 +111,15 @@ let lightReach = 60.0
 // A placement of the first `n` copies. `shells`: inactive copies draw as
 // shells.fun's stand-ins, not as their street side. Copies within `solidOn`
 // of the player get colliders; copies within `lightReach` of the eye lend
-// their lights (and may be the nearest).
-type Town = { name: string, copies: List<Copy>, index: Index, shells: bool, solidOn: float, lightReach: float, ground: Scene.t, groundBody: Physics.body }
+// their lights (and may be the nearest). `reach`: how far it is seen.
+type Town = { name: string, copies: List<Copy>, index: Index, shells: bool, solidOn: float, lightReach: float, ground: Scene.t, groundBody: Physics.body, reach: Hours.Reach }
 // Grids have shells and nearby-only colliders and lights; the office alone
 // and the block keep every copy solid and lit (views 9 and 0 teleport
 // between copies).
 let townOf = (name: string, n: float, shells: bool, ground: Scene.t, groundBody: Physics.body): Town =>
   let copies = List.range(n) |> List.map(copyAt) in
   { name: name, copies: copies, index: indexOf(copies), shells: shells, solidOn: if shells then solidOn else everywhere,
-    lightReach: if shells then lightReach else everywhere, ground: ground, groundBody: groundBody }
+    lightReach: if shells then lightReach else everywhere, ground: ground, groundBody: groundBody, reach: Hours.streetReach }
 
 // The block's ground and its collider, past every collar.
 let groundSize = 400.0
@@ -131,7 +131,7 @@ let groundBody = Exterior.groundBodyAt("block-ground", centre, centre, groundSiz
 let gridOf = (n: float): Town =>
   let side = Math.sqrt(n / 4.0) * blockPitch in
   let mid = centre + (side - blockPitch) / 2.0 in
-  let size = side + 2.0 * 160.0 in
+  let size = side + 2.0 * (Hours.farthest(Hours.streetReach) + 20.0) in
   townOf($"grid-{n}", n, true,
     Exterior.groundAt(mid, mid, size), Exterior.groundBodyAt($"grid-{n}-ground", mid, mid, size))
 

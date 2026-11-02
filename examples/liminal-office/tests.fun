@@ -404,7 +404,7 @@ let tight = (n: float, gapX: float, gapZ: float): Block.Town =>
   let side = Math.sqrt(n) in
   let cs = List.range(n) |> List.map((id) =>
     { name: $"tight-{id}", x: Math.mod(id, side) * (f.x1 + gapX), z: Math.floor(id / side) * (f.z1 + gapZ), yaw: 0.0 }) in
-  { name: "tight", copies: cs, index: Block.indexOf(cs), shells: true, solidOn: Block.solidOn, lightReach: Block.lightReach, ground: Exterior.ground, groundBody: Exterior.groundBody }
+  { name: "tight", copies: cs, index: Block.indexOf(cs), shells: true, solidOn: Block.solidOn, lightReach: Block.lightReach, ground: Exterior.ground, groundBody: Exterior.groundBody, reach: Hours.streetReach }
 let tight64 = tight(64.0, 6.0, 6.0)
 let tight16 = tight(16.0, 6.0, 6.0)
 expect Block.near(tight64, Block.activeOff, Vec3.make(83.0, 1.6, 101.5)) == scan(tight64, Block.activeOff, Vec3.make(83.0, 1.6, 101.5))
@@ -499,6 +499,63 @@ let south = (d: float): Vec3.t => Block.toWorld(Block.copyAt(5.0), Vec3.make(10.
 expect not Block.isIn(5.0, Block.solidAt(grid64, [], south(Block.solidOn + 1.0)))
 expect Block.isIn(5.0, Block.solidAt(grid64, [5.0], south(Block.solidOn + 1.0)))
 expect not Block.isIn(5.0, Block.solidAt(grid64, [5.0], south(Block.solidOn + Block.solidMargin + 1.0)))
+
+// ---- The street side -------------------------------------------------------------
+
+let outer = Exterior.half
+let eps = Building.eps
+let roof = Exterior.roofBox
+// The roof covers the footprint at the roofline, run into the facade's outer
+// half but not out through it, above every room's ceiling.
+expect roof.x0 < f.x0 && roof.x1 > f.x1 && roof.z0 < f.z0 && roof.z1 > f.z1
+expect roof.x0 > f.x0 - outer && roof.x1 < f.x1 + outer && roof.z0 > f.z0 - outer && roof.z1 < f.z1 + outer
+expect near(roof.y1, List.length(Building.levels) * storey)
+expect interiorIds |> List.all((i) => Building.baseOf(Building.roomAt(i)) + Building.wallTop(i) < roof.y0)
+// It draws with the street side, and on shells: their massing stops under
+// it, inside a parapet like the facade's.
+expect Exterior.streetBoxes |> List.any((e) => let (b, _) = e in b == roof)
+expect Shells.litBoxes |> List.any((e) => let (b, _) = e in b == roof)
+expect near(Shells.massing.y1, roof.y0) && (Shells.parapet |> List.all((b) => near(b.y0, roof.y0) && near(b.y1, facadeHeight)))
+// The facade rises on all round as a parapet, unbroken, at least 0.8 m.
+expect facadeHeight - roof.y1 >= 0.8
+// Whether intervals `spans` cover [a, b] without a gap.
+let covers = (spans: List<(float, float)>, a: float, b: float): bool =>
+  let reach = spans |> List.sortBy((e) => let (lo, _) = e in lo) |> List.fold((at, e) =>
+    let (lo, hi) = e in if lo <= at + eps then Math.max(at, hi) else at, a) in
+  reach >= b - eps
+let parapetCovers = (onSide: (Exterior.Box) => bool, along: (Exterior.Box) => (float, float), a: float, b: float): bool =>
+  covers(Exterior.facadeBoxes |> List.filter((b) => onSide(b) && b.y0 <= roof.y1 && near(b.y1, facadeHeight)) |> List.map(along), a, b)
+let spanX = (b: Exterior.Box): (float, float) => (b.x0, b.x1)
+let spanZ = (b: Exterior.Box): (float, float) => (b.z0, b.z1)
+expect parapetCovers((b) => near(b.z1, f.z0), spanX, f.x0 - outer, f.x1 + outer)
+expect parapetCovers((b) => near(b.z0, f.z1), spanX, f.x0 - outer, f.x1 + outer)
+expect parapetCovers((b) => near(b.x1, f.x0) && b.z0 > f.z0 - eps, spanZ, f.z0, f.z1)
+expect parapetCovers((b) => near(b.x0, f.x1) && b.z0 > f.z0 - eps, spanZ, f.z0, f.z1)
+// Each window band is a hole through the facade's outer half with its panel
+// `recess` back: no facade face lies just in front of a panel.
+let solidIn = (a: Exterior.Box, b: Exterior.Box): bool =>
+  a.x0 < b.x1 - eps && b.x0 < a.x1 - eps && a.y0 < b.y1 - eps && b.y0 < a.y1 - eps && a.z0 < b.z1 - eps && b.z0 < a.z1 - eps
+// The part of band `h`'s hole from `d0` to `d1` in from the facade's outer face.
+let bandSlice = (level: float, s: Side, h: Building.Hole, d0: float, d1: float): Exterior.Box =>
+  let y0 = level * storey + h.bottom in
+  let y1 = level * storey + h.top in
+  match s with
+  | South => Exterior.box(h.lo, y0, f.z0 - outer + d0, h.hi, y1, f.z0 - outer + d1)
+  | North => Exterior.box(h.lo, y0, f.z1 + outer - d1, h.hi, y1, f.z1 + outer - d0)
+  | West => Exterior.box(f.x0 - outer + d0, y0, h.lo, f.x0 - outer + d1, y1, h.hi)
+  | East => Exterior.box(f.x1 + outer - d1, y0, h.lo, f.x1 + outer - d0, y1, h.hi)
+let bandSlices = (d0: float, d1: float): List<Exterior.Box> => Building.levels |> List.concatMap((level) =>
+  [South, North, West, East] |> List.concatMap((s) => Exterior.bandHoles(level, s) |> List.map((h) => bandSlice(level, s, h, d0, d1))))
+let r = Exterior.recess
+expect List.length(bandSlices(0.0, r)) == List.length(Exterior.bandBoxes)
+expect bandSlices(0.0, r) |> List.all((o) => not (List.any((b) => solidIn(o, b), List.append(Exterior.bandBoxes, Exterior.facadeBoxes))))
+// Behind that, a panel fills the hole.
+let contains = (b: Exterior.Box, a: Exterior.Box): bool =>
+  b.x0 <= a.x0 && b.x1 >= a.x1 && b.y0 <= a.y0 && b.y1 >= a.y1 && b.z0 <= a.z0 && b.z1 >= a.z1
+expect bandSlices(r, r + 0.01) |> List.all((a) => Exterior.bandBoxes |> List.any((b) => contains(b, a)))
+// Every town's fog ends past where it starts.
+expect Block.towns |> List.all((t) => Math.min(t.reach.night, t.reach.day) > Hours.outdoorAt(1.0).fogNear)
+expect Hours.reachAt(Hours.streetReach, 0.0) == Hours.streetReach.night && Hours.reachAt(Hours.streetReach, 1.0) == Hours.streetReach.day
 
 // ---- Shells --------------------------------------------------------------------
 

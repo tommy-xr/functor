@@ -46,9 +46,9 @@ let bodies = [
     |> Physics.at(v((IslandLayout.pad.x0 + IslandLayout.pad.x1) / 2.0, groundY - 0.5, (IslandLayout.pad.z0 + IslandLayout.pad.z1) / 2.0)),
 ]
 
-// The fog's far end, which is also the camera's far plane: 500 m by day,
-// 200 m at night. The renderer skips terrain past it.
-let fogFar = (daylight: float): float => 200.0 |> Math.lerp(500.0, daylight)
+// How far the island is seen (`Hours.Reach`): 500 m by day, 200 m at
+// night. The renderer skips terrain past it.
+let reach: Hours.Reach = { night: 200.0, day: 500.0 }
 
 // ---- Props ---------------------------------------------------------------------
 //

@@ -1,0 +1,9 @@
+# Noon (N), view 9 (the block: up the street through the crossroads), then
+# O (overlook the roofs from 20 m up); the liminal-office-block-roofs-day
+# golden captures frame 30.
+4 n down
+6 n up
+10 9 down
+12 9 up
+16 o down
+18 o up

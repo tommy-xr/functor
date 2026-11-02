@@ -976,6 +976,7 @@ try {
     "liminal-office-upstairs-day": scripted("noon-upstairs.script"),
     "liminal-office-block-street": scripted("block-street.script"),
     "liminal-office-block-street-day": scripted("noon-block-street.script"),
+    "liminal-office-block-roofs-day": scripted("noon-block-roofs.script"),
     "liminal-office-block-window": scripted("block-window.script"),
     "liminal-office-grid16-street": scripted("grid16-street.script"),
     "liminal-office-grid16-street-day": scripted("noon-grid16-street.script"),
