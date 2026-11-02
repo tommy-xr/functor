@@ -262,14 +262,163 @@ fn attach_foveation(
     }
 }
 
+/// `GL_EXT_multisampled_render_to_texture`: an FBO that multisamples into a
+/// single-sample texture. On a tiler (Adreno) the samples live only in tile
+/// memory and resolve as each tile is stored, so `Xr.msaa` costs shading and
+/// tile passes, not bandwidth or memory.
+#[derive(Clone, Copy)]
+struct Msrtt {
+    max_samples: u32,
+    /// `glRenderbufferStorageMultisampleEXT`, which glow does not expose. The
+    /// depth attachment must come from it to match the color's samples.
+    renderbuffer_storage: unsafe extern "system" fn(u32, i32, u32, i32, i32),
+}
+
+/// `GL_MAX_SAMPLES_EXT` / `GL_TEXTURE_SAMPLES_EXT`.
+const MAX_SAMPLES_EXT: u32 = 0x8D57;
+const TEXTURE_SAMPLES_EXT: u32 = 0x8D6C;
+
+impl Msrtt {
+    /// `None` when the driver lacks the extension.
+    fn load(gl: &glow::Context, egl: &EglContext) -> Option<Self> {
+        use glow::HasContext;
+        if !gl
+            .supported_extensions()
+            .contains("GL_EXT_multisampled_render_to_texture")
+        {
+            return None;
+        }
+        let proc = egl
+            .instance
+            .get_proc_address("glRenderbufferStorageMultisampleEXT")?;
+        Some(Self {
+            max_samples: unsafe { gl.get_parameter_i32(MAX_SAMPLES_EXT) }.max(1) as u32,
+            // SAFETY: the extension defines this signature for the entry point.
+            renderbuffer_storage: unsafe { std::mem::transmute(proc) },
+        })
+    }
+}
+
 /// One eye's rendering target: an OpenXR swapchain plus an FBO + depth
 /// renderbuffer per swapchain image.
 struct EyeTarget {
     swapchain: xr::Swapchain<xr::OpenGlEs>,
+    images: Vec<u32>,
     framebuffers: Vec<glow::Framebuffer>,
+    depth: Vec<glow::Renderbuffer>,
+    /// `Xr.msaa`'s samples the FBOs were built for, and the samples the
+    /// driver allocated (1 without `Msrtt`).
+    requested_samples: u32,
+    samples: u32,
     width: u32,
     height: u32,
     capture_supported: bool,
+}
+
+impl EyeTarget {
+    /// Rebuild the FBOs at `requested` samples. The swapchain, and the
+    /// foveation attached to it, are untouched.
+    fn set_samples(&mut self, gl: &glow::Context, requested: u32, msrtt: Option<Msrtt>) {
+        use glow::HasContext;
+        unsafe {
+            for fbo in self.framebuffers.drain(..) {
+                gl.delete_framebuffer(fbo);
+            }
+            for depth in self.depth.drain(..) {
+                gl.delete_renderbuffer(depth);
+            }
+        }
+        let samples = match msrtt {
+            Some(msrtt) => requested.min(msrtt.max_samples),
+            None => 1,
+        };
+        let (width, height) = (self.width as i32, self.height as i32);
+        for &texture in &self.images {
+            unsafe {
+                let texture = glow::NativeTexture(std::num::NonZeroU32::new(texture).unwrap());
+                let fbo = gl.create_framebuffer().expect("fbo");
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+                let depth = gl.create_renderbuffer().expect("depth rb");
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
+                match msrtt.filter(|_| samples > 1) {
+                    Some(msrtt) => {
+                        gl.framebuffer_texture_2d_multisample(
+                            glow::FRAMEBUFFER,
+                            glow::COLOR_ATTACHMENT0,
+                            glow::TEXTURE_2D,
+                            Some(texture),
+                            0,
+                            samples as i32,
+                        );
+                        (msrtt.renderbuffer_storage)(
+                            glow::RENDERBUFFER,
+                            samples as i32,
+                            glow::DEPTH_COMPONENT24,
+                            width,
+                            height,
+                        );
+                    }
+                    None => {
+                        gl.framebuffer_texture_2d(
+                            glow::FRAMEBUFFER,
+                            glow::COLOR_ATTACHMENT0,
+                            glow::TEXTURE_2D,
+                            Some(texture),
+                            0,
+                        );
+                        gl.renderbuffer_storage(
+                            glow::RENDERBUFFER,
+                            glow::DEPTH_COMPONENT24,
+                            width,
+                            height,
+                        );
+                    }
+                }
+                gl.framebuffer_renderbuffer(
+                    glow::FRAMEBUFFER,
+                    glow::DEPTH_ATTACHMENT,
+                    glow::RENDERBUFFER,
+                    Some(depth),
+                );
+                self.framebuffers.push(fbo);
+                self.depth.push(depth);
+                // A real check, not debug_assert: in a release APK an incomplete
+                // FBO would otherwise become silent garbage on the display. A
+                // driver may round color and depth samples differently, so MSAA
+                // falls back to 1 rather than crash on a game's config.
+                let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+                if status != glow::FRAMEBUFFER_COMPLETE && samples > 1 {
+                    log::warn!(
+                        "{samples}x MSAA framebuffer incomplete (0x{status:x}); rendering with 1"
+                    );
+                    return self.set_samples(gl, requested, None);
+                }
+                assert_eq!(
+                    status,
+                    glow::FRAMEBUFFER_COMPLETE,
+                    "swapchain framebuffer incomplete: 0x{status:x}"
+                );
+            }
+        }
+        // The driver may round the count up; report what it allocated.
+        self.samples = if samples > 1 {
+            unsafe {
+                gl.get_framebuffer_attachment_parameter_i32(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    TEXTURE_SAMPLES_EXT,
+                )
+            }
+            .max(1) as u32
+        } else {
+            1
+        };
+        self.requested_samples = requested;
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.bind_renderbuffer(glow::RENDERBUFFER, None);
+        }
+    }
 }
 
 fn create_eye_target(
@@ -277,7 +426,6 @@ fn create_eye_target(
     session: &xr::Session<xr::OpenGlEs>,
     view: &xr::ViewConfigurationView,
 ) -> EyeTarget {
-    use glow::HasContext;
     let width = view.recommended_image_rect_width;
     let height = view.recommended_image_rect_height;
     let create = |usage_flags| {
@@ -309,57 +457,21 @@ fn create_eye_target(
             }
             Err(error) => panic!("create swapchain: {error}"),
         };
+    let images = swapchain.enumerate_images().expect("swapchain images");
 
-    // Wrap every swapchain image in an FBO with a fresh depth renderbuffer.
-    let framebuffers = swapchain
-        .enumerate_images()
-        .expect("swapchain images")
-        .into_iter()
-        .map(|texture| unsafe {
-            let fbo = gl.create_framebuffer().expect("fbo");
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
-            gl.framebuffer_texture_2d(
-                glow::FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(glow::NativeTexture(
-                    std::num::NonZeroU32::new(texture).unwrap(),
-                )),
-                0,
-            );
-            let depth = gl.create_renderbuffer().expect("depth rb");
-            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
-            gl.renderbuffer_storage(
-                glow::RENDERBUFFER,
-                glow::DEPTH_COMPONENT24,
-                width as i32,
-                height as i32,
-            );
-            gl.framebuffer_renderbuffer(
-                glow::FRAMEBUFFER,
-                glow::DEPTH_ATTACHMENT,
-                glow::RENDERBUFFER,
-                Some(depth),
-            );
-            // A real check, not debug_assert: in a release APK an incomplete
-            // FBO would otherwise become silent garbage on the display.
-            let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
-            assert_eq!(
-                status,
-                glow::FRAMEBUFFER_COMPLETE,
-                "swapchain framebuffer incomplete: 0x{status:x}"
-            );
-            fbo
-        })
-        .collect();
-
-    EyeTarget {
+    let mut eye = EyeTarget {
         swapchain,
-        framebuffers,
+        images,
+        framebuffers: Vec::new(),
+        depth: Vec::new(),
+        requested_samples: 1,
+        samples: 1,
         width,
         height,
         capture_supported,
-    }
+    };
+    eye.set_samples(gl, 1, None);
+    eye
 }
 
 /// Convert OpenXR's pose layout into the shell-independent tracking pose used
@@ -764,8 +876,9 @@ fn service_debug_request(
             let views = eyes
                 .iter()
                 .enumerate()
-                .map(|(index, eye)| {
-                    RuntimeView::new(
+                .map(|(index, eye)| RuntimeView {
+                    samples: Some(eye.samples),
+                    ..RuntimeView::new(
                         names.get(index).copied().unwrap_or("view"),
                         eye.width,
                         eye.height,
@@ -1143,6 +1256,7 @@ pub fn android_main(app: AndroidApp) {
         })
     };
     let gl = Arc::new(gl);
+    let msrtt = Msrtt::load(&gl, &egl_ctx);
     battery::init(app.vm_as_ptr(), app.activity_as_ptr());
 
     // android-activity stores the *Application* in ndk_context, but Meta's
@@ -1766,6 +1880,19 @@ pub fn android_main(app: AndroidApp) {
         fused_room_anchor = anchor;
         // The time `frame` was drawn at: render-time animation samples it.
         let frame_time = snapshot.time;
+        // `config`'s `Xr.msaa`, rebuilt on each load that changes it.
+        let msaa = debug.config.and_then(|c| c.xr.msaa).unwrap_or(1);
+        if eyes.iter().any(|eye| eye.requested_samples != msaa) {
+            for eye in &mut eyes {
+                eye.set_samples(&gl, msaa, msrtt);
+            }
+            let missing = if msrtt.is_none() && msaa > 1 {
+                " (GL_EXT_multisampled_render_to_texture unavailable)"
+            } else {
+                ""
+            };
+            log::info!("MSAA: {msaa}x requested, {}x in use{missing}", eyes[0].samples);
+        }
         let render_started = Instant::now();
         if !frame.ui_targets.is_empty() {
             // Paint ui-target passes ONCE per frame, before the per-eye

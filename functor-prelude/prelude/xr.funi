@@ -1,8 +1,8 @@
 //! Headset options, built once and handed to `Config.xr` or `Settings.xr`.
 //!
 //! Each knob belongs to one bucket, by when the shell can honour it:
-//! `refreshRate`, `passthrough`, `scene` and `floorLocked` are read once at
-//! load, so they go in `config`; `foveation` and `passthroughEnabled` apply
+//! `refreshRate`, `passthrough`, `scene`, `floorLocked` and `msaa` are read
+//! once at load, so they go in `config`; `foveation` and `passthroughEnabled` apply
 //! live, so they go in `settings`. A knob in the wrong bucket is a teaching
 //! error naming the right one. Shells without a headset ignore these options
 //! (except where a knob says otherwise); desktop still reports them in
@@ -79,6 +79,18 @@ let scene : (bool, t) => t
 /// the view is `Frame.camera` itself, so add an eye height when
 /// `Input.snapshot`'s `xr` is `None`.
 let floorLocked : (bool, t) => t
+/// Multisample the eye images: `samples` (1, 2 or 4) coverage samples per
+/// pixel smooth thin, high-contrast edges that crawl at a distance. The
+/// options are last for piping.
+///
+/// A `config` knob, applied each time the project loads. The default is 1 (no
+/// multisampling). MSAA costs GPU time, so measure before shipping it. On
+/// Quest the samples stay in tile memory and resolve as each eye finishes
+/// (`GL_EXT_multisampled_render_to_texture`); a runtime without that renders
+/// with 1, and `GET /state`'s `views[].samples` reports the count in use. It
+/// smooths the eye pass only, not `Frame.withRenderTarget` passes. Desktop and
+/// web ignore it.
+let msaa : (float, t) => t
 /// Run (`true`) or pause (`false`) the camera feed `Xr.passthrough` prepared;
 /// the options are last for piping.
 ///

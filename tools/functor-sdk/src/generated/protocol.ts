@@ -455,7 +455,12 @@ xr?: XrState, };
  * entry per eye. `name` is descriptive rather than a closed enum so future
  * runtimes can add views without revising the protocol.
  */
-export type RuntimeView = { name: string, viewport: RuntimeViewport, };
+export type RuntimeView = { name: string, viewport: RuntimeViewport, 
+/**
+ * MSAA samples per pixel this view renders with (v27); omitted by
+ * runtimes that don't report it.
+ */
+samples?: number, };
 
 /**
  * A pixel rectangle in the runtime's output surface.
@@ -554,7 +559,12 @@ scene?: boolean,
  * `Xr.floorLocked(true)`: anchor tracked poses to the floor under the
  * head, level and yaw-only, instead of the full first head pose.
  */
-floor_locked?: boolean, };
+floor_locked?: boolean, 
+/**
+ * `Xr.msaa(samples)`: MSAA samples per eye-buffer pixel (1, 2 or 4).
+ * `None` = 1, no multisampling.
+ */
+msaa?: number, };
 
 /**
  * Target-neutral state for one tracked XR controller.
