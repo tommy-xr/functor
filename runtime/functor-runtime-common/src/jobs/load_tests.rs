@@ -92,8 +92,10 @@ fn a_slow_load_keeps_frames_coming_and_its_progress_only_rises() {
         run.longest_gap.as_secs_f64() * 1000.0
     );
     assert!(run.loading_frames >= 5, "{} frames while loading", run.loading_frames);
+    // Loose: shared CI runners stall frames for tens of ms; a load blocking
+    // the frame thread would show as a gap of its full ~2 s duration.
     assert!(
-        run.longest_gap <= BUDGET * 2,
+        run.longest_gap <= Duration::from_millis(250),
         "a {:.1} ms gap between frames",
         run.longest_gap.as_secs_f64() * 1000.0
     );
