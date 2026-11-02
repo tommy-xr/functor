@@ -2,6 +2,7 @@ mod asset_cache;
 mod asset_handle;
 mod asset_loader;
 mod asset_pipeline;
+pub(crate) mod gltf_externals;
 
 mod renderable_asset;
 
