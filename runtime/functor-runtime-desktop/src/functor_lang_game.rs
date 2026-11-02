@@ -307,10 +307,7 @@ struct Loaded {
 /// every sibling `.fun` file — file = module). Errors come back as fully
 /// rendered strings (`path:line:col: message`) so `create` can exit loud with
 /// them and hot-reload can print-and-keep-running with the same text.
-fn load_game(path: &str, role: &EntryRole, previous: Option<&Session>) -> Result<Loaded, String> {
-    load_project(path, None, role, previous)
-}
-
+///
 /// `previous`: the running session, on a hot reload — values it can vouch
 /// for are reused (`Session::load_reusing`).
 fn load_project(
@@ -2398,7 +2395,7 @@ mod tests {
 
     /// Write `src` as `game.fun` in its own temp directory (a directory is
     /// a whole project since B8 — a shared temp dir would drag stray `.fun`
-    /// files in as sibling modules) and return `load_game`'s error.
+    /// files in as sibling modules) and return `load_project`'s error.
     fn load_err(name: &str, src: &str) -> String {
         let dir = std::env::temp_dir().join(format!(
             "functor-lang-game-test-{}-{name}",
@@ -2408,8 +2405,9 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         let path = dir.join("game.fun");
         std::fs::write(&path, src).expect("write temp game");
-        let err = load_game(
+        let err = load_project(
             path.to_str().expect("utf-8 temp path"),
+            None,
             &EntryRole::Prefix(String::new()),
             None,
         )
