@@ -380,16 +380,24 @@ impl EyeTarget {
                     glow::RENDERBUFFER,
                     Some(depth),
                 );
+                self.framebuffers.push(fbo);
+                self.depth.push(depth);
                 // A real check, not debug_assert: in a release APK an incomplete
-                // FBO would otherwise become silent garbage on the display.
+                // FBO would otherwise become silent garbage on the display. A
+                // driver may round color and depth samples differently, so MSAA
+                // falls back to 1 rather than crash on a game's config.
                 let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+                if status != glow::FRAMEBUFFER_COMPLETE && samples > 1 {
+                    log::warn!(
+                        "{samples}x MSAA framebuffer incomplete (0x{status:x}); rendering with 1"
+                    );
+                    return self.set_samples(gl, requested, None);
+                }
                 assert_eq!(
                     status,
                     glow::FRAMEBUFFER_COMPLETE,
-                    "swapchain framebuffer incomplete at {samples}x MSAA: 0x{status:x}"
+                    "swapchain framebuffer incomplete: 0x{status:x}"
                 );
-                self.framebuffers.push(fbo);
-                self.depth.push(depth);
             }
         }
         // The driver may round the count up; report what it allocated.
