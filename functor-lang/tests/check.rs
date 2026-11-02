@@ -2135,6 +2135,20 @@ fn the_jam_reached_for_builtins_exist() {
     );
 }
 
+/// `Loop.until`: the state threads through both callbacks, pipes
+/// subject-last, and the namespace is closed.
+#[test]
+fn loop_until_checks_and_pipes() {
+    assert_clean(
+        "let a : float = Loop.until((n) => n > 10.0, (n) => n + 1.0, 0.0)\n\
+         let b : string = \"a\" |> Loop.until((s) => Text.length(s) > 3.0, (s) => Text.concat(s, s))",
+    );
+    let (message, _, _) = single_diag("let x = Loop.forever(1.0)");
+    assert!(message.contains("`Loop` has no builtin `forever`"), "unexpected: {message}");
+    let (message, _, _) = single_diag("let x = Loop.until((n) => 1.0, (n) => n, 0.0)");
+    assert!(message.contains("bool"), "unexpected: {message}");
+}
+
 /// `Bits`: numbers in, `testBit` answers a bool, value-last pipes, and the
 /// namespace is closed.
 #[test]

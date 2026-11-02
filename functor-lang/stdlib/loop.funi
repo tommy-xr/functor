@@ -1,0 +1,13 @@
+//! Loops that aren't over a list: walk a graph, drain a queue, iterate to a
+//! fixed point.
+//!
+//! Functor Lang has no loop statement, and a recursive walk hits the
+//! interpreter's recursion cap after a few dozen calls. `Loop.until` runs in
+//! the interpreter instead, so it uses no recursion depth; each step counts
+//! against the step budget like any call.
+
+/// Apply `step` to `init` until `done` answers true, and return that state:
+/// `init` itself when it is already done. A loop still going after a million
+/// steps is an error, not a hang. The state comes LAST, so it pipes:
+/// `1.0 |> Loop.until((n) => n > 100.0, (n) => n * 2.0)` is `128`.
+let until : (('a) => bool, ('a) => 'a, 'a) => 'a

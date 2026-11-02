@@ -182,6 +182,24 @@ fn runaway_expect_exceeds_the_budget() {
 }
 
 #[test]
+fn loop_until_charges_every_step() {
+    // Two calls per step: 10,000 steps cannot fit 1,000.
+    let out = budgeted(
+        "expect Loop.until((n) => n >= 10000.0, (n) => n + 1.0, 0.0) == 10000.0\n",
+        1_000,
+    );
+    let ExpectOutcome::Error(err) = &out[0].outcome else {
+        panic!("expected a budget error");
+    };
+    assert!(err.message.contains("step budget"), "{}", err.message);
+    let out = budgeted(
+        "expect Loop.until((n) => n >= 100.0, (n) => n + 1.0, 0.0) == 100.0\n",
+        1_000,
+    );
+    assert!(matches!(out[0].outcome, ExpectOutcome::Pass), "{:?}", out[0].outcome);
+}
+
+#[test]
 fn list_range_allocation_is_charged() {
     // No per-element evals happen in List.range — the bulk charge must
     // trip the budget anyway.

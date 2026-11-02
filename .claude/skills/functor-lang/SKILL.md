@@ -302,7 +302,7 @@ let grab = (s) =>
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude or bundled-core namespace (Net, Key, Mouse, Random, Option, Result,
-  List, Map, Text, Math, Bits, Debug, Scene,
+  List, Map, Loop, Text, Math, Bits, Debug, Scene,
   Sprite, Anim, Asset, Camera3D, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
   Angle, Texture, Time, Input, Sub, Effect, Persistence, Physics, RenderTarget, Ui, Html,
   Attr, Style, AudioSource, AudioScene, Xr, Source, Config, Settings) is a
@@ -584,7 +584,7 @@ open Widget                                              // …or open, bringing
   an ordinary comment and still appears in user-code hover for backwards
   compatibility. `functor docs` renders the embedded API as Markdown or
   JSON — the engine prelude AND the language standard library (`List`, `Map`,
-  `Text`, `Math`, `Bits`, `Random`, `Debug`, `Option`, `Result`, `Key`, `Mouse`,
+  `Loop`, `Text`, `Math`, `Bits`, `Random`, `Debug`, `Option`, `Result`, `Key`, `Mouse`,
   documented in `functor-lang/stdlib/`), as two groups; in the repository,
   `npm run generate:docs` recreates the gitignored local reference artifacts
   and `npm run check:docs` validates both renderers. Both repository scripts
@@ -881,8 +881,9 @@ let ordered = 4px < 16px            // …and >, <=, >=, ==, != (all derived)
   `let`s), record fields (literal and update), lambda params, pattern
   variables within one pattern.
 - Recursion depth is capped (128 eval levels); deep iteration belongs in the
-  iterative `List.*` builtins (`List.fold`/`map`/`filter`/`any`/`all`/`length`/…),
-  which loop in the interpreter and consume no evaluation depth. A hand-rolled
+  iterative `List.*` builtins (`List.fold`/`map`/`filter`/`any`/`all`/`length`/…)
+  and, for loops that aren't over a list (graph walks, queues), `Loop.until`;
+  they loop in the interpreter and consume no evaluation depth. A hand-rolled
   recursive walk trips the cap somewhere between **n≈40 and n≈60** — each
   user-level call burns several eval levels, and the exact limit depends on
   shape. Bisected: a bare tail call (`countdown(n - 1.0)`) reaches 62, while
@@ -901,7 +902,7 @@ of truth for names, argument order, and per-function behavior:
   (`--format json`, `--output <path>`, `--check <path>`); `npm run generate:docs`
   writes the local artifacts.
 - The sources are in-repo and readable directly: interfaces in
-  `functor-lang/stdlib/*.funi` (`list`, `map`, `text`, `math`, `bits`, `random`,
+  `functor-lang/stdlib/*.funi` (`list`, `map`, `loop`, `text`, `math`, `bits`, `random`,
   `debug`) and bundled implementations in `functor-lang/stdlib/*.fun`
   (`option`, `result`, `key`, `mouse`).
 - In VSCode, hover shows the same doc block and go-to-definition opens the
@@ -909,7 +910,8 @@ of truth for names, argument order, and per-function behavior:
 
 | Module | What it is |
 | --- | --- |
-| `List` | immutable list operations — the ONLY iteration (there are no loops) |
+| `List` | immutable list operations — iteration over a list (there are no loop statements) |
+| `Loop` | `Loop.until(done, step, init)` — iterate a state until `done` (graph walks, queues) without recursion depth |
 | `Map` | immutable keyed collections; keys are `bool`, FINITE `float`, or `string` |
 | `Text` | string building, formatting, inspection (there is no char type) |
 | `Math` | numeric functions and `Math.pi`; `Math.mod` / `Math.pow` stand in for `%` / `^` |
@@ -932,7 +934,7 @@ What a signature can't tell you:
   fills the first tuple slot), `Text.contains(needle, s)`,
   `Math.clamp(low, high, n)`, `Math.lerp(target, t, from)`.
 - **The builtin registry is CLOSED.** A builtin namespace (`List`, `Map`,
-  `Text`, `Math`, `Bits`, `Random`, `Debug`) owns exactly the members in the reference,
+  `Loop`, `Text`, `Math`, `Bits`, `Random`, `Debug`) owns exactly the members in the reference,
   in every embedding, so anything else is a **check-time error** —
   `functor-lang check` (and `functor build`) reject `List.tail` /
   `Text.padLeft` with `` `List` has no builtin `tail` `` plus the nearest name
