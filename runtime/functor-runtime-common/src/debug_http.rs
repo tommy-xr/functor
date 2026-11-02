@@ -22,6 +22,9 @@ const MAX_HEADER_LINES: usize = 64;
 const MAX_COMMAND_BYTES: usize = 64 * 1024;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// A capture is answered at the end of the next rendered frame; give up well
+/// before a typical 20 s client timeout so the caller gets a reason, not a hang.
+const CAPTURE_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// A push is answered when its load lands, which off the frame thread can
 /// take a heavy decode's time.
 pub const LOAD_REPLY_TIMEOUT: Duration = Duration::from_secs(180);
@@ -86,6 +89,14 @@ fn read_body(
         .read_exact(&mut body)
         .map_err(|_| BodyError::Invalid)?;
     Ok(body)
+}
+
+/// Read and drop a body the route ignores: closing the socket with request
+/// bytes unread sends a reset, which can destroy the reply before the client
+/// reads it.
+fn discard_body(reader: &mut BufReader<TcpStream>, content_length: Option<usize>) {
+    let len = content_length.unwrap_or(0).min(MAX_COMMAND_BYTES) as u64;
+    let _ = std::io::copy(&mut Read::by_ref(reader).take(len), &mut std::io::sink());
 }
 
 fn parse_json<T: DeserializeOwned>(
@@ -189,11 +200,12 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             debug_protocol::discovery_json().as_bytes(),
         ),
         ("POST", "/capture") => {
+            discard_body(&mut reader, content_length);
             let (resp_tx, resp_rx) = mpsc::channel();
             if tx.send(DebugRequest::Capture(resp_tx)).is_err() {
                 return runtime_gone(&mut stream, cors_origin);
             }
-            match recv(resp_rx) {
+            match resp_rx.recv_timeout(CAPTURE_REPLY_TIMEOUT) {
                 Ok(Ok(png)) => {
                     respond_bytes(&mut stream, cors_origin, 200, "OK", "image/png", &png)
                 }
@@ -216,7 +228,8 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     cors_origin,
                     503,
                     "Service Unavailable",
-                    "runtime did not capture a frame in time",
+                    "runtime rendered no frame to capture within 10 s (is `GET /state`'s \
+                     frame still advancing?)",
                 ),
                 Err(mpsc::RecvTimeoutError::Disconnected) => respond_text(
                     &mut stream,
@@ -1194,6 +1207,40 @@ Content-Length: {}\r\n\r\n{body}",
             response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
             "{response}"
         );
+    }
+
+    /// A body on `POST /capture` (clients often send `{}`) is drained before
+    /// the reply: closing with request bytes unread resets the connection,
+    /// which can drop the PNG before the client reads it.
+    #[test]
+    fn a_capture_with_a_body_returns_the_whole_png() {
+        let png = vec![7u8; 1 << 20];
+        for _ in 0..20 {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let address = listener.local_addr().unwrap();
+            let client = std::thread::spawn(move || {
+                let mut stream = TcpStream::connect(address).unwrap();
+                // Headers and body in separate writes, as HTTP clients send
+                // them, so the body lands after the server's first read.
+                stream
+                    .write_all(b"POST /capture HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n")
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(20));
+                stream.write_all(b"{}").unwrap();
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).map(|_| response)
+            });
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            match rx.recv().unwrap() {
+                DebugRequest::Capture(response) => response.send(Ok(png.clone())).unwrap(),
+                _ => panic!("expected capture request"),
+            }
+            assert_eq!(server.join().unwrap(), Some(()));
+            let response = client.join().unwrap().expect("the response arrives whole");
+            assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+            assert!(response.ends_with(&png));
+        }
     }
 
     /// A clock command the runtime cannot honor must be a LOUD 409, not a `200
