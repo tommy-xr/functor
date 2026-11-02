@@ -89,7 +89,7 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
             // frames). Until assets are driven by a real executor (see
             // docs/todo.md "async inbox"), read synchronously: one frame hitch
             // instead of a minutes-long stall.
-            std::fs::read(&path).or_else(|e| read_through_project(&path, e))?
+            read_local_asset(&path, crate::storage::project_reader().as_deref())?
         };
         // Simulated slow network (dev): FUNCTOR_THROTTLE_ASSETS=<KB/s> holds
         // the loaded bytes until size/rate has elapsed, so loading UX
@@ -109,14 +109,29 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
     }
 }
 
+/// A local (non-URL) asset's bytes — models, textures, sounds: the file on
+/// disk, else through `reader` (the installed project reader: `external`
+/// mounts, the headset's files).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_local_asset(
+    path: &str,
+    reader: Option<&dyn crate::storage::ProjectReader>,
+) -> Result<Vec<u8>, String> {
+    std::fs::read(path).or_else(|e| read_through_project(reader, path, e))
+}
+
 /// A project-relative asset missing on disk, read through the project reader
 /// instead: an `external` prefix on desktop, or the headset's files. The
 /// reader takes `File.bytes` paths (from the entry's folder), which differ
 /// from renderer paths only for an entry in a subfolder.
 #[cfg(not(target_arch = "wasm32"))]
-fn read_through_project(path: &str, disk_error: std::io::Error) -> Result<Vec<u8>, String> {
+fn read_through_project(
+    reader: Option<&dyn crate::storage::ProjectReader>,
+    path: &str,
+    disk_error: std::io::Error,
+) -> Result<Vec<u8>, String> {
     use crate::storage::ProjectReadError;
-    let reader = crate::storage::project_reader()
+    let reader = reader
         .filter(|_| crate::debug_protocol::validate_project_asset_path(path).is_ok())
         .ok_or_else(|| format!("{path}: {disk_error}"))?;
     reader
@@ -576,27 +591,16 @@ mod tests {
     /// reader (an external prefix, the headset's files); unaskable paths aren't.
     #[test]
     fn missing_assets_fall_back_to_the_project_reader() {
-        let _guard = crate::storage::SAVE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                crate::storage::set_project_reader(None);
-            }
-        }
-        let _reset = Reset;
-        let cache = std::sync::Arc::new(crate::asset::AssetCache::new());
+        let cache = crate::asset::AssetCache::new();
         cache.replace_uploaded("ext/skin.gif", vec![1, 2]);
-        crate::storage::set_project_reader(Some(cache));
-        let missing = || std::io::Error::from(std::io::ErrorKind::NotFound);
-        assert_eq!(
-            read_through_project("ext/skin.gif", missing()),
-            Ok(vec![1, 2])
-        );
-        let err = read_through_project("ext/other.gif", missing()).unwrap_err();
+        let reader = Some(&cache as &dyn crate::storage::ProjectReader);
+        assert_eq!(read_local_asset("ext/skin.gif", reader), Ok(vec![1, 2]));
+        let err = read_local_asset("ext/other.gif", reader).unwrap_err();
         assert!(err.starts_with("ext/other.gif: not pushed"), "{err}");
-        let err = read_through_project("../ext/skin.gif", missing()).unwrap_err();
-        assert!(err.contains("not found"), "{err}");
+        // Unaskable paths and no reader: the disk error, not the reader's.
+        let err = read_local_asset("../ext/skin.gif", reader).unwrap_err();
+        assert!(err.starts_with("../ext/skin.gif: ") && err.contains("os error"), "{err}");
+        let err = read_local_asset("ext/skin.gif", None).unwrap_err();
+        assert!(err.starts_with("ext/skin.gif: ") && err.contains("os error"), "{err}");
     }
 }
