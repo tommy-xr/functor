@@ -215,6 +215,20 @@ pub struct World {
     /// same `Arc` again skips the group without visiting its bodies. World
     /// state, so restoring a checkpoint can't leave a stale fast path.
     groups: BTreeMap<String, Arc<[Body]>>,
+    /// Group key → its fused fixed bodies (copy-on-write, like `tags`). A
+    /// fused body has a declaration but no rigid body: it is one part of a
+    /// compound collider, so fixed–fixed pairs never reach rapier.
+    #[serde(default)]
+    fused: Arc<BTreeMap<String, Vec<FusedStatics>>>,
+    /// Fused parts touching another body as of the last step, `(a, b,
+    /// sensor)` with `a < b`: the per-tag contact state rapier keeps per
+    /// collider pair, diffed each step into events.
+    #[serde(default)]
+    fused_touching: BTreeSet<(String, String, bool)>,
+    /// Live poses of parts unfused by the reconcile in progress, so a body
+    /// leaving a compound keeps its pose. Empty between reconciles.
+    #[serde(skip, default)]
+    unfused: BTreeMap<String, Pose>,
     accumulator: f32,
     frame: u64,
     /// Commands awaiting the next stepped frame (serialized: a snapshot taken
@@ -266,6 +280,9 @@ impl Clone for World {
             declared: self.declared.clone(),
             flat: self.flat.clone(),
             groups: self.groups.clone(),
+            fused: self.fused.clone(),
+            fused_touching: self.fused_touching.clone(),
+            unfused: self.unfused.clone(),
             accumulator: self.accumulator,
             frame: self.frame,
             pending: self.pending.clone(),
@@ -326,6 +343,9 @@ impl World {
             declared: Arc::default(),
             flat: Arc::default(),
             groups: BTreeMap::new(),
+            fused: Arc::default(),
+            fused_touching: BTreeSet::new(),
+            unfused: BTreeMap::new(),
             accumulator: 0.0,
             frame: 0,
             pending: Vec::new(),
@@ -411,7 +431,10 @@ impl World {
     ///
     /// A group whose `Arc` was reconciled last time is skipped: its bodies
     /// would all compare equal. Only flat bodies and changed groups are
-    /// visited, so the rapier history matches declaring every body flat.
+    /// visited. A changed group's still, solid, convex fixed bodies
+    /// ([`fusable`]) become parts of one compound collider per material
+    /// instead of bodies; the compound is rebuilt only when those parts
+    /// changed.
     pub fn reconcile(&mut self, scene: &PhysicsScene) {
         self.gravity = scene.gravity;
         let mut stats = ReconcileStats::default();
@@ -429,10 +452,10 @@ impl World {
                 .get(key)
                 .is_some_and(|old| Arc::ptr_eq(old, bodies))
         };
-        let changed: Vec<&Arc<[Body]>> = groups
+        let changed: Vec<(&str, &Arc<[Body]>)> = groups
             .iter()
             .filter(|(key, bodies)| !reconciled(key, bodies))
-            .map(|(_, bodies)| *bodies)
+            .map(|(key, bodies)| (*key, *bodies))
             .collect();
         // Last versions of groups that changed or went away.
         let retired: Vec<Arc<[Body]>> = self
@@ -447,6 +470,39 @@ impl World {
             .collect();
         stats.groups_skipped = groups.len() - changed.len();
 
+        // Changed groups' fusable bodies. A group whose parts all match the
+        // cache keeps its compounds; the others, and fused groups that went
+        // away, are re-fused.
+        let mut fusing: BTreeSet<&String> = BTreeSet::new();
+        let mut kept: BTreeSet<&String> = BTreeSet::new();
+        let mut refuse: BTreeMap<String, Vec<&Body>> = BTreeMap::new();
+        for (key, bodies) in &changed {
+            let parts: Vec<&Body> = bodies.iter().filter(|b| fusable(b)).collect();
+            stats.compared += parts.len();
+            fusing.extend(parts.iter().map(|b| &b.tag));
+            let old: BTreeSet<&String> = self
+                .fused
+                .get(*key)
+                .into_iter()
+                .flatten()
+                .flat_map(|f| &f.tags)
+                .collect();
+            let same = old.len() == parts.len()
+                && parts
+                    .iter()
+                    .all(|b| old.contains(&b.tag) && self.declared.get(&b.tag) == Some(*b));
+            if same {
+                kept.extend(parts.iter().map(|b| &b.tag));
+            } else {
+                refuse.insert(key.to_string(), parts);
+            }
+        }
+        for key in self.fused.keys() {
+            if !groups.contains_key(key.as_str()) {
+                refuse.insert(key.clone(), Vec::new());
+            }
+        }
+
         let flat_unchanged = self.flat.len() == wanted.len()
             && self.flat.iter().zip(wanted.keys()).all(|(a, b)| a == *b);
         let next_flat =
@@ -454,12 +510,12 @@ impl World {
         let old_flat = Arc::clone(&self.flat);
 
         // Declarations that may differ from the cache, in tag order: flat
-        // bodies and changed groups' bodies. Tags are disjoint across them
-        // (`Physics.scene` enforces it), so an unchanged group owns none of
-        // the tags that went away.
+        // bodies and changed groups' unfused bodies. Tags are disjoint across
+        // them (`Physics.scene` enforces it), so an unchanged group owns none
+        // of the tags that went away.
         let mut updates = wanted;
-        for bodies in &changed {
-            for body in bodies.iter() {
+        for (_, bodies) in &changed {
+            for body in bodies.iter().filter(|b| !fusing.contains(&b.tag)) {
                 updates.entry(&body.tag).or_insert(body);
             }
         }
@@ -470,7 +526,45 @@ impl World {
                     .iter()
                     .flat_map(|bodies| bodies.iter().map(|b| &b.tag)),
             )
-            .filter(|tag| !updates.contains_key(*tag))
+            .filter(|tag| !updates.contains_key(*tag) && !kept.contains(*tag))
+            .collect();
+
+        // Unfuse, keeping each part's live pose for whatever it becomes.
+        for key in refuse.keys() {
+            for fused in cow_remove(&mut self.fused, key).unwrap_or_default() {
+                let compound = self.colliders[fused.collider]
+                    .shape()
+                    .as_compound()
+                    .expect("fused statics are compounds");
+                for (tag, (pose, _)) in fused.tags.iter().zip(compound.shapes()) {
+                    self.unfused.insert(tag.clone(), *pose);
+                }
+                self.colliders
+                    .remove(fused.collider, &mut self.islands, &mut self.bodies, true);
+            }
+        }
+        // A re-fused part keeps its live pose where its declaration didn't
+        // change, as a rebuilt body does.
+        let part_poses: BTreeMap<&String, Pose> = refuse
+            .values()
+            .flatten()
+            .map(|body| {
+                let live = self.unfused.get(&body.tag).copied().or_else(|| {
+                    self.tags
+                        .get(&body.tag)
+                        .map(|rb| *self.bodies[*rb].position())
+                });
+                let mut pose = pose_of(body);
+                if let (Some(prev), Some(live)) = (self.declared.get(&body.tag), live) {
+                    if prev.position == body.position {
+                        pose.translation = live.translation;
+                    }
+                    if prev.rotation == body.rotation {
+                        pose.rotation = live.rotation;
+                    }
+                }
+                (&body.tag, pose)
+            })
             .collect();
 
         // Despawns, in tag order.
@@ -483,7 +577,8 @@ impl World {
             stats.compared += 1;
             let accepted = match self.declared.get(tag) {
                 None => self.spawn(body),
-                Some(prev) if prev != body => {
+                // A part leaving its compound is rebuilt as a body.
+                Some(prev) if prev != body || self.unfused.contains_key(tag.as_str()) => {
                     let prev = prev.clone();
                     self.apply_divergence(&prev, body)
                 }
@@ -494,6 +589,43 @@ impl World {
                 stats.written += 1;
             }
         }
+
+        // Fuse, in key order: one compound per material, parts in tag order.
+        for (key, parts) in &refuse {
+            let mut by_material: BTreeMap<(u32, u32), Vec<&Body>> = BTreeMap::new();
+            for body in parts {
+                by_material
+                    .entry((body.friction.to_bits(), body.restitution.to_bits()))
+                    .or_default()
+                    .push(body);
+            }
+            let mut fused = Vec::new();
+            for bodies in by_material.into_values() {
+                let shapes = bodies
+                    .iter()
+                    .map(|b| {
+                        let shape = collider_of(&b.shape).expect("fusable shapes are convex").shape;
+                        (part_poses[&b.tag], shape)
+                    })
+                    .collect();
+                let collider = ColliderBuilder::compound(shapes)
+                    .friction(bodies[0].friction)
+                    .restitution(bodies[0].restitution)
+                    .build();
+                fused.push(FusedStatics {
+                    collider: self.colliders.insert(collider),
+                    tags: bodies.iter().map(|b| b.tag.clone()).collect(),
+                });
+                for body in bodies {
+                    Arc::make_mut(&mut self.declared).insert(body.tag.clone(), body.clone());
+                    stats.written += 1;
+                }
+            }
+            if !fused.is_empty() {
+                Arc::make_mut(&mut self.fused).insert(key.clone(), fused);
+            }
+        }
+        self.unfused.clear();
 
         self.flat = next_flat.unwrap_or(old_flat);
         if !changed.is_empty() || !retired.is_empty() {
@@ -630,6 +762,7 @@ impl World {
                 });
             }
         }
+        self.diff_fused_contacts();
         self.retired.clear();
         self.frame += 1;
     }
@@ -662,16 +795,20 @@ impl World {
 
     /// Live pose of a declared body: `(position, rotation-quaternion-xyzw)`.
     pub fn body_transform(&self, tag: &str) -> Option<([f32; 3], [f32; 4])> {
-        let rb = self.bodies.get(*self.tags.get(tag)?)?;
-        let pos = rb.translation();
-        let rot = rb.rotation();
+        let pose = match self.tags.get(tag) {
+            Some(rb) => *self.bodies.get(*rb)?.position(),
+            None => self.part_pose(self.fused_part(tag)?),
+        };
+        let (pos, rot) = (pose.translation, pose.rotation);
         Some(([pos.x, pos.y, pos.z], [rot.x, rot.y, rot.z, rot.w]))
     }
 
-    /// Live linear velocity of a declared body.
+    /// Live linear velocity of a declared body (zero for a fused one).
     pub fn body_velocity(&self, tag: &str) -> Option<[f32; 3]> {
-        let rb = self.bodies.get(*self.tags.get(tag)?)?;
-        let v = rb.linvel();
+        let Some(rb) = self.tags.get(tag) else {
+            return self.fused_part(tag).map(|_| [0.0; 3]);
+        };
+        let v = self.bodies.get(*rb)?.linvel();
         Some([v.x, v.y, v.z])
     }
 
@@ -719,10 +856,26 @@ impl World {
             return None;
         }
         let ray = rapier3d::prelude::Ray::new(vec3(origin), d / len);
-        let (col_handle, hit) = self
+        let hit = self
             .queries(QueryFilter::default(), exclude)
-            .cast_ray_and_get_normal(&ray, max_dist, true)?;
-        let tag = self.tag_of_collider(col_handle)?;
+            .cast_ray_and_get_normal(&ray, max_dist, true)
+            .map(|(collider, hit)| {
+                let part = self
+                    .fused_tags(collider)
+                    .and_then(|_| ray_on_parts(self.compound(collider), &ray, max_dist, None));
+                (collider, part.map(|(part, _)| part), hit)
+            });
+        // An excluded fused body's compound was skipped whole: cast on its
+        // other parts.
+        let rest = exclude.and_then(|tag| self.fused_part(tag)).and_then(|(c, skip)| {
+            let (part, hit) = ray_on_parts(self.compound(c), &ray, max_dist, Some(skip))?;
+            Some((c, Some(part), hit))
+        });
+        let (col_handle, part, hit) = [hit, rest]
+            .into_iter()
+            .flatten()
+            .min_by(|a, b| a.2.time_of_impact.total_cmp(&b.2.time_of_impact))?;
+        let tag = self.tag_of_hit(col_handle, part)?;
         let kept = match hit.feature {
             FeatureId::Face(i) => Some(i),
             _ => None,
@@ -760,8 +913,23 @@ impl World {
         let swept = collider_of(shape)?.shape;
         let queries = self.queries(QueryFilter::default(), exclude);
         let from = Pose::from_translation(vec3(origin));
-        let (col_handle, hit) = sweep(&queries, &*swept, &from, d / len, max_dist, 0.0)?;
-        let tag = self.tag_of_collider(col_handle)?;
+        let dir = d / len;
+        let hit = sweep(&queries, &*swept, &from, dir, max_dist, 0.0).map(|(collider, hit)| {
+            let part = self.fused_tags(collider).and_then(|_| {
+                sweep_parts(self.compound(collider), &*swept, &from, dir, max_dist, None)
+            });
+            (collider, part.map(|(part, _)| part), hit)
+        });
+        // As in `raycast_excluding`.
+        let rest = exclude.and_then(|tag| self.fused_part(tag)).and_then(|(c, skip)| {
+            let (part, hit) = sweep_parts(self.compound(c), &*swept, &from, dir, max_dist, Some(skip))?;
+            Some((c, Some(part), hit))
+        });
+        let (col_handle, part, hit) = [hit, rest]
+            .into_iter()
+            .flatten()
+            .min_by(|a, b| a.2.time_of_impact.total_cmp(&b.2.time_of_impact))?;
+        let tag = self.tag_of_hit(col_handle, part)?;
         // Shape casts report no feature, so find the triangle under the
         // contact point (on a shared edge, either neighbour).
         let collider = &self.colliders[col_handle];
@@ -787,8 +955,12 @@ impl World {
     fn queries<'a>(&'a self, mut filter: QueryFilter<'a>, exclude: Option<&str>) -> QueryPipeline<'a> {
         // The rigid body, not the tag's one collider, so a body that later
         // gains a second collider still can't hit itself.
-        if let Some(body) = exclude.and_then(|tag| self.tags.get(tag)) {
-            filter = filter.exclude_rigid_body(*body);
+        if let Some(tag) = exclude {
+            if let Some(body) = self.tags.get(tag) {
+                filter = filter.exclude_rigid_body(*body);
+            } else if let Some((compound, _)) = self.fused_part(tag) {
+                filter = filter.exclude_collider(compound);
+            }
         }
         self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
@@ -868,7 +1040,7 @@ impl World {
             bodies: Vec<BodyDump<'a>>,
         }
 
-        let bodies = self
+        let mut bodies: Vec<BodyDump> = self
             .tags
             .iter()
             .filter_map(|(tag, rb_handle)| {
@@ -885,6 +1057,20 @@ impl World {
                 })
             })
             .collect();
+        // Fused bodies, as the fixed bodies they stand for.
+        for fused in self.fused.values().flatten() {
+            for (tag, (pose, _)) in fused.tags.iter().zip(self.compound(fused.collider).shapes()) {
+                let (pos, rot) = (pose.translation, pose.rotation);
+                bodies.push(BodyDump {
+                    tag,
+                    position: [pos.x, pos.y, pos.z],
+                    rotation: [rot.x, rot.y, rot.z, rot.w],
+                    velocity: [0.0; 3],
+                    sleeping: false,
+                });
+            }
+        }
+        bodies.sort_by(|a, b| a.tag.cmp(b.tag));
 
         serde_json::to_string(&WorldDump {
             frame: self.frame,
@@ -902,9 +1088,23 @@ impl World {
             let (tag, kind) = command.tag_and_kind();
             let (tag, kind) = (tag.to_string(), kind);
             let Some(&rb_handle) = self.tags.get(tag.as_str()) else {
-                self.push_command_warning(format!(
-                    "physics {kind} for unknown tag \"{tag}\""
-                ));
+                match (self.fused_part(&tag), &command) {
+                    // A fused body moves within its compound.
+                    (Some((c, part)), PhysicsCommand::Teleport { position, .. }) => {
+                        let mut shapes = self.compound(c).shapes().to_vec();
+                        shapes[part].0.translation = vec3(*position);
+                        self.colliders[c].set_shape(SharedShape::compound(shapes));
+                    }
+                    (Some(_), PhysicsCommand::Move { .. }) => self.push_command_warning(format!(
+                        "physics move on \"{tag}\", which is not a Physics.character, has no effect"
+                    )),
+                    (Some(_), _) => self.push_command_warning(format!(
+                        "physics {kind} on non-dynamic body \"{tag}\" has no effect"
+                    )),
+                    (None, _) => self.push_command_warning(format!(
+                        "physics {kind} for unknown tag \"{tag}\""
+                    )),
+                }
                 continue;
             };
             if let PhysicsCommand::Move { translation, .. } = &command {
@@ -1149,6 +1349,108 @@ impl World {
             .map(|(tag, _)| tag.clone())
     }
 
+    /// The tag a query hit: `part` of a fused compound, else the body's.
+    fn tag_of_hit(&self, collider: ColliderHandle, part: Option<usize>) -> Option<String> {
+        match (self.fused_tags(collider), part) {
+            (Some(tags), Some(part)) => tags.get(part).cloned(),
+            _ => self.tag_of_collider(collider),
+        }
+    }
+
+    /// The compound part that is body `tag`, if `tag` is fused.
+    fn fused_part(&self, tag: &str) -> Option<(ColliderHandle, usize)> {
+        self.fused.values().flatten().find_map(|f| {
+            let part = f.tags.binary_search_by(|t| t.as_str().cmp(tag)).ok()?;
+            Some((f.collider, part))
+        })
+    }
+
+    /// The tags of `collider`'s parts, if it is a fused compound.
+    fn fused_tags(&self, collider: ColliderHandle) -> Option<&[String]> {
+        self.fused
+            .values()
+            .flatten()
+            .find(|f| f.collider == collider)
+            .map(|f| f.tags.as_slice())
+    }
+
+    fn compound(&self, collider: ColliderHandle) -> &Compound {
+        self.colliders[collider]
+            .shape()
+            .as_compound()
+            .expect("fused statics are compounds")
+    }
+
+    fn part_pose(&self, (collider, part): (ColliderHandle, usize)) -> Pose {
+        self.compound(collider).shapes()[part].0
+    }
+
+    /// Diff which fused parts touch which bodies into this step's events.
+    /// rapier reports the compound as one pair per body; a part touches when
+    /// one of its manifolds has solver contacts (rapier's own rule for a
+    /// pair), and a sensor overlaps the parts it intersects. A pair whose body
+    /// is gone ends unreported, as a despawned body's contacts do.
+    fn diff_fused_contacts(&mut self) {
+        let mut now = BTreeSet::new();
+        let mut touch = |a: &str, b: String, sensor: bool| {
+            let (a, b) = (a.to_string(), b);
+            now.insert(if a <= b { (a, b, sensor) } else { (b, a, sensor) });
+        };
+        for fused in self.fused.values().flatten() {
+            let c = fused.collider;
+            for pair in self.narrow_phase.contact_pairs_with(c) {
+                let mine_first = pair.collider1 == c;
+                let other = if mine_first { pair.collider2 } else { pair.collider1 };
+                let Some(other) = self.tag_of_collider(other) else {
+                    continue;
+                };
+                for m in pair.manifolds.iter().filter(|m| !m.data.solver_contacts.is_empty()) {
+                    let part = if mine_first { m.subshape1 } else { m.subshape2 };
+                    touch(&fused.tags[part as usize], other.clone(), false);
+                }
+            }
+            let compound = self.compound(c);
+            for (c1, c2, hit) in self.narrow_phase.intersection_pairs_with(c) {
+                let other = if c1 == c { c2 } else { c1 };
+                let (Some(tag), true) = (self.tag_of_collider(other), hit) else {
+                    continue;
+                };
+                let other = &self.colliders[other];
+                for i in compound.bvh().intersect_aabb(&other.compute_aabb()) {
+                    let (pose, part) = &compound.shapes()[i as usize];
+                    let overlaps = self
+                        .narrow_phase
+                        .query_dispatcher()
+                        .intersection_test(&pose.inv_mul(other.position()), &**part, other.shape())
+                        .unwrap_or(false);
+                    if overlaps {
+                        touch(&fused.tags[i as usize], tag.clone(), true);
+                    }
+                }
+            }
+        }
+        let alive = |tag: &str| self.declared.contains_key(tag);
+        for (a, b, sensor) in self.fused_touching.difference(&now) {
+            if alive(a) && alive(b) {
+                self.events.push(PhysicsEvent {
+                    started: false,
+                    a: a.clone(),
+                    b: b.clone(),
+                    sensor: *sensor,
+                });
+            }
+        }
+        for (a, b, sensor) in now.difference(&self.fused_touching) {
+            self.events.push(PhysicsEvent {
+                started: true,
+                a: a.clone(),
+                b: b.clone(),
+                sensor: *sensor,
+            });
+        }
+        self.fused_touching = now;
+    }
+
     fn despawn(&mut self, tag: &str) {
         cow_remove(&mut self.rooms, tag);
         // A despawned body's contacts end unreported, retired ones included.
@@ -1248,6 +1550,7 @@ impl World {
         if prev.kind != next.kind
             || (prev.shape != next.shape && rooms.is_none())
             || (prev.mass != next.mass && rooms.is_none())
+            || self.unfused.contains_key(&next.tag)
         {
             if !shape_is_ready(&next.shape) {
                 return false;
@@ -1269,6 +1572,11 @@ impl World {
                     rb.linvel(),
                     rb.angvel(),
                 ))
+            });
+            // An unfused part: a still fixed body at its live pose.
+            let live = live.or_else(|| {
+                let pose = *self.unfused.get(&next.tag)?;
+                Some((pose, pose, Vector::ZERO, Vector::ZERO))
             });
             self.despawn(&next.tag);
             let spawned = self.spawn(next);
@@ -1469,6 +1777,80 @@ fn cow_remove<V: Clone>(map: &mut Arc<BTreeMap<String, V>>, tag: &str) -> Option
     Arc::make_mut(map).remove(tag)
 }
 
+/// A memo group body that becomes a compound part instead of a body: fixed,
+/// still, solid and convex (parry compounds can't nest a mesh).
+fn fusable(body: &Body) -> bool {
+    body.kind == BodyKind::Fixed
+        && !body.sensor
+        && body.velocity == [0.0; 3]
+        && body.character.is_none()
+        && matches!(
+            body.shape,
+            Shape::Cuboid { .. } | Shape::Sphere { .. } | Shape::Capsule { .. }
+        )
+}
+
+/// One material's fused fixed bodies: a parentless compound collider at the
+/// identity pose whose part `i`, at its world pose, is body `tags[i]`.
+#[derive(Clone, Serialize, Deserialize)]
+struct FusedStatics {
+    collider: ColliderHandle,
+    /// Sorted, as group bodies are.
+    tags: Vec<String>,
+}
+
+/// The part of `compound` the ray hits first, skipping `skip`.
+fn ray_on_parts(
+    compound: &Compound,
+    ray: &rapier3d::prelude::Ray,
+    max: f32,
+    skip: Option<usize>,
+) -> Option<(usize, RayIntersection)> {
+    let (part, _) = compound.bvh().cast_ray(ray, max, |i, best| {
+        let (pose, shape) = &compound.shapes()[i as usize];
+        (Some(i as usize) != skip)
+            .then(|| shape.cast_ray(pose, ray, best, true))
+            .flatten()
+    })?;
+    let (pose, shape) = &compound.shapes()[part as usize];
+    Some((part as usize, shape.cast_ray_and_get_normal(pose, ray, max, true)?))
+}
+
+/// The part of `compound` that `shape` swept from `from` along unit `dir`
+/// hits first, skipping `skip`; the hit is in world space, as
+/// [`sweep`]'s.
+fn sweep_parts(
+    compound: &Compound,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    from: &Pose,
+    dir: Vector,
+    max: f32,
+    skip: Option<usize>,
+) -> Option<(usize, rapier3d::parry::query::ShapeCastHit)> {
+    let to = Pose::from_translation(dir * max) * *from;
+    let swept = shape.compute_aabb(from).merged(&shape.compute_aabb(&to));
+    compound
+        .bvh()
+        .intersect_aabb(&swept)
+        .map(|i| i as usize)
+        .filter(|&i| Some(i) != skip)
+        .filter_map(|i| {
+            let (pose, part) = &compound.shapes()[i];
+            let hit = rapier3d::parry::query::cast_shapes(
+                pose,
+                Vector::ZERO,
+                &**part,
+                from,
+                dir,
+                shape,
+                cast_options(max, 0.0),
+            )
+            .ok()??;
+            Some((i, hit.transform1_by(pose)))
+        })
+        .min_by(|a, b| a.1.time_of_impact.total_cmp(&b.1.time_of_impact))
+}
+
 /// The body's contact material, and contact begin/end reporting.
 fn with_material(collider: ColliderBuilder, body: &Body) -> ColliderBuilder {
     collider
@@ -1533,13 +1915,16 @@ fn sweep(
     max: f32,
     target: f32,
 ) -> Option<(ColliderHandle, rapier3d::parry::query::ShapeCastHit)> {
-    let options = ShapeCastOptions {
+    queries.cast_shape(from, dir, shape, cast_options(max, target))
+}
+
+fn cast_options(max: f32, target: f32) -> ShapeCastOptions {
+    ShapeCastOptions {
         max_time_of_impact: max,
         target_distance: target,
         stop_at_penetration: false,
         compute_impact_geometry_on_penetration: true,
-    };
-    queries.cast_shape(from, dir, shape, options)
+    }
 }
 
 /// Resting on an upward-facing contact within the offset plus 5 cm (the
