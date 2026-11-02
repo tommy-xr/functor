@@ -419,7 +419,7 @@ let standIn = () =>
     block(1.0, 0.75, 0.6, Vec3.x(e), 0.375, Vec3.z(e) + 0.5, 0.55),
   ])
 
-let cyan = Color.rgb(0.35, 0.9, 1.0)
+let cyan = () => Color.rgb(0.35, 0.9, 1.0)
 
 // A thin beam from `from` to `to`: the unit cylinder (along Y, about its
 // middle) stood on its base and tipped along the direction.
@@ -443,7 +443,7 @@ let beamScene = (from: Input.point3, to: Input.point3, color) =>
 // white elsewhere (or while one in reach of the hand is taken instead).
 let beam = (views, m: t) =>
   if m.aimTracked && m.held < 0.0 then
-    beamScene(m.aim.position, m.beamEnd, if m.pointed >= 0.0 && m.pointed == selected(views, m) then cyan else Color.rgb(0.8, 0.82, 0.86))
+    beamScene(m.aim.position, m.beamEnd, if m.pointed >= 0.0 && m.pointed == selected(views, m) then cyan() else Color.rgb(0.8, 0.82, 0.86))
   else Scene.group([])
 
 // A see-through box around the part a squeeze would take.
@@ -454,7 +454,7 @@ let highlight = (views, m: t) =>
   | Option.Some(e) =>
     Scene.cube()
       |> Scene.scaleXYZ(e.half.x * 2.0 + 0.006, e.half.y * 2.0 + 0.006, e.half.z * 2.0 + 0.006)
-      |> Scene.emissive(cyan)
+      |> Scene.emissive(cyan())
       |> Scene.opacity(0.22)
       |> posed(e.item)
 
@@ -465,7 +465,7 @@ let gripDot = (views, m: t) =>
       |> Scene.scale(0.008)
       |> Scene.emissive(
         if m.held >= 0.0 then Color.rgb(0.3, 1.0, 0.45)
-        else if inReach(views, m) >= 0.0 then cyan
+        else if inReach(views, m) >= 0.0 then cyan()
         else Color.rgb(0.95, 0.98, 1.0))
       |> at(m.grip.position)
   else Scene.group([])
