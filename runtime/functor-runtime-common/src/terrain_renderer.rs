@@ -2717,16 +2717,19 @@ mod tests {
         ] {
             assert!(!exact(w, h), "{w}×{h}");
         }
-        // A source over the GPU limit is judged by its fitted texture: 8193²
-        // fits to 4095², which the source's seven levels do not land on.
+        // A source over the GPU limit: 129² fits to 65². That texture is
+        // exact for its own one level, but selection still refines to the
+        // source's two, whose vertices fall between its texels.
         let source = HeightmapData {
-            width: 8193,
-            height: 8193,
-            samples: vec![0; 8193 * 8193],
+            width: 129,
+            height: 129,
+            samples: vec![0; 129 * 129],
             revision: 1,
         };
-        let (_, w, h) = fit_heightmap(&source, 4096);
-        assert!(!exact_grid(w, h, max_quadtree_level(8193, 8193)));
+        let (_, w, h) = fit_heightmap(&source, 65);
+        assert_eq!((w, h), (65, 65));
+        assert!(exact_grid(w, h, max_quadtree_level(w, h)));
+        assert!(!exact_grid(w, h, max_quadtree_level(129, 129)));
     }
 
     /// Mirrors the vertex shader's `heightAt` in f32: on an exact grid, every

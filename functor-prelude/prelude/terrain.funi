@@ -8,10 +8,10 @@ type t = host
 
 /// Create a terrain centered on the origin and spanning `width` by `depth` in XZ.
 ///
-/// Prefer a square map of 2ⁿ+1 samples per side (65, 129, …, 1025, 2049,
-/// 4097): every terrain vertex then sits exactly on a sample, so the GPU reads
-/// one height per sample instead of four. Other sizes render the same
-/// surface, only more slowly.
+/// Prefer a square map of 2ⁿ+1 samples per side (65, 129, …, 1025, 2049),
+/// within the GPU's texture size limit: every terrain vertex then sits exactly
+/// on a sample, so the GPU reads one height per sample instead of four. Other
+/// sizes render the same surface, only more slowly.
 let heightmap : (Asset.Texture, float, float, float, float) => t
 
 /// Set the maximum projected vertex spacing in pixels; lower is more detailed.
