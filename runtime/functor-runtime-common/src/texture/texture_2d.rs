@@ -174,6 +174,24 @@ pub(crate) fn min_filter(linear: bool, mipmap: bool) -> u32 {
     }
 }
 
+/// Derive the bound `TEXTURE_2D`'s mip chain from level 0, with up to
+/// `anisotropy` taps. Doesn't touch the minification filter.
+pub(crate) unsafe fn build_mips(gl: &glow::Context, anisotropy: f32) {
+    gl.generate_mipmap(glow::TEXTURE_2D);
+    // Anisotropy only samples levels a mip chain provides, so it is
+    // meaningless (and on some drivers ignored) without one. 1.0 is the GL
+    // default, so skip the probe and the set when nothing is being asked for.
+    if anisotropy > 1.0 {
+        if let Some(device_max) = max_anisotropy(gl) {
+            gl.tex_parameter_f32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAX_ANISOTROPY,
+                anisotropy.min(device_max),
+            );
+        }
+    }
+}
+
 impl RuntimeTexture for Texture2D {
     fn bind(&self, index: u32, render_context: &RenderContext) {
         let texture = self.ora.get(render_context.gl);
@@ -255,20 +273,7 @@ impl RenderableAsset for TextureData {
 
             // After the level-0 upload: the mip chain is derived from it.
             if options.mipmap {
-                gl.generate_mipmap(glow::TEXTURE_2D);
-                // Anisotropy only samples levels a mip chain provides, so it
-                // is meaningless (and on some drivers ignored) without one.
-                // 1.0 is the GL default, so skip the probe and the set when
-                // nothing is being asked for.
-                if options.anisotropy > 1.0 {
-                    if let Some(device_max) = max_anisotropy(gl) {
-                        gl.tex_parameter_f32(
-                            glow::TEXTURE_2D,
-                            glow::TEXTURE_MAX_ANISOTROPY,
-                            options.anisotropy.min(device_max),
-                        );
-                    }
-                }
+                build_mips(gl, options.anisotropy);
             }
 
             gl.bind_texture(glow::TEXTURE_2D, None);
