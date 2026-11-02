@@ -97,8 +97,8 @@ fn flashlight_lights_only_its_cone(harness: &mut Harness, dir: &Path) {
     // Straight down from 10 m with a 20 m range: at the centre the distance
     // falloff is (1 − 10²/20²)² = 0.5625, the cone and N·L are 1.
     let spot = |x: f32| Light::spot(x, 10.0, 0.0, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 20.0, 0.3);
-    let night = |lights: Vec<Light>, normal_map: bool| {
-        let mut frame = terrain_frame(dir, 1.0);
+    let at = |blend: f32, lights: Vec<Light>, normal_map: bool| {
+        let mut frame = terrain_frame(dir, blend);
         let Scene3D { obj: SceneObject::Terrain(terrain), .. } = &mut frame.scene else {
             unreachable!("terrain_frame draws one terrain")
         };
@@ -111,6 +111,7 @@ fn flashlight_lights_only_its_cone(harness: &mut Harness, dir: &Path) {
         frame.lights.extend(lights);
         frame
     };
+    let night = |lights, normal_map| at(1.0, lights, normal_map);
     // Wait for the normal map to decode: the frame changes once it lights.
     let lit = draw_until_changed(harness, &night(vec![spot(0.0)], true), NIGHT);
     let expected: [u8; 3] = std::array::from_fn(|c| {
@@ -118,6 +119,12 @@ fn flashlight_lights_only_its_cone(harness: &mut Harness, dir: &Path) {
         (linear_to_srgb(linear) * 255.0).round() as u8
     });
     assert!(near(lit, expected, 2), "in the cone: drew {lit:?}, expected {expected:?}");
+    // By day too: the beam always lights the day map's color.
+    let day = harness.centre(&at(0.0, vec![spot(0.0)], true));
+    let expected_day: [u8; 3] = std::array::from_fn(|c| {
+        (linear_to_srgb(srgb_u8_to_linear(DAY[c]) * 1.5625) * 255.0).round() as u8
+    });
+    assert!(near(day, expected_day, 2), "by day: drew {day:?}, expected {expected_day:?}");
     // A baked spot is skipped; the next one is the flashlight.
     let baked_first = night(vec![spot(0.0).baked(), spot(0.0)], true);
     assert!(near(harness.centre(&baked_first), expected, 2), "first NON-baked spot");

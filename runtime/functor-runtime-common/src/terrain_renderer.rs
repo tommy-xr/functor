@@ -395,8 +395,7 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
                 float ndotl = max(dot(n, -fromLight / max(dist, 1e-4)), 0.0);
                 // The day map is the albedo: the night map is the same ground
                 // under moonlight, too dark to show a beam.
-                vec3 albedo =
-                    colormapBlend <= 0.0 ? color : textureLod(dayTex, terrainUv, 0.0).rgb;
+                vec3 albedo = textureLod(dayTex, terrainUv, 0.0).rgb;
                 color += albedo * flashColor * ndotl
                     * spotAttenuation(dist, cosAngle, flashRange, flashConeCos);
             }
@@ -644,8 +643,10 @@ struct Flashlight {
 }
 
 impl Flashlight {
+    /// Among the lights the lit shader packs, so a spot past its cap lights
+    /// neither props nor terrain.
     fn find(lights: &[Light]) -> Option<Flashlight> {
-        lights.iter().find_map(|light| match light {
+        lights.iter().take(crate::light::MAX_LIGHTS).find_map(|light| match light {
             Light::Spot {
                 position,
                 direction,
@@ -884,8 +885,13 @@ impl TerrainRenderer {
             .as_ref()
             .filter(|bound| bound.normal_map)
             .and_then(|_| Flashlight::find(ctx.lights));
-        if colormap_bound.is_some() {
-            self.ensure_colormap_program(ctx, flashlight.is_some());
+        if let Some(bound) = &colormap_bound {
+            // Both variants once a normal map is bound, so the first frame
+            // with a flashlight doesn't stall on a compile.
+            self.ensure_colormap_program(ctx, false);
+            if bound.normal_map {
+                self.ensure_colormap_program(ctx, true);
+            }
         } else {
             self.ensure_program(ctx);
         }
@@ -2485,6 +2491,10 @@ mod tests {
         assert_eq!(found.direction, [0.0, -1.0, 0.0]);
         assert_eq!(found.color, crate::light::radiance([0.5, 0.5, 0.5], 2.0));
         assert_eq!((found.range, found.cone_cos), (30.0, 0.25f32.cos()));
+        // Past the lit shader's cap, as for props.
+        let mut capped = vec![Light::ambient(0.1, 0.1, 0.1); crate::light::MAX_LIGHTS];
+        capped.push(spot(1.0));
+        assert_eq!(Flashlight::find(&capped), None);
     }
 
     fn terrain() -> TerrainDescription {
