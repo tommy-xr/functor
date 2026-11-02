@@ -5,9 +5,16 @@
 // defines `part` and none of the names in `<stdlib>/PartViewerDefault.fun`
 // (`update` and `ui` among them) runs with those ten lines; paste them into
 // the file to change any of them.
+//
+// An app showing several parts keeps a `PartViewer.t` in its model, forwards
+// the mouse, key, tick and `update` hooks, shows `uiWith(wrap, m)`, and passes
+// its non-empty PartViews pieces (`{ name, solid, color }`) to `drawPieces` and
+// `sampledInputPieces`.
 
 // `vHeld` latches V so a held key (auto-repeat) toggles once.
-let init = { orbit: OrbitCamera.init, sheet: false, vHeld: false, review: PartReview.init }
+type t = { orbit: OrbitCamera.t, sheet: bool, vHeld: bool, review: PartReview.t }
+
+let init: t = { orbit: OrbitCamera.init, sheet: false, vHeld: false, review: PartReview.init }
 
 let tick = (m, dt: float, tts: float) => { m with orbit: OrbitCamera.tick(m.orbit, dt) }
 
@@ -25,19 +32,25 @@ let input = (m, key: Key.t, isDown: bool) =>
 // Top-level values here stay pure (no host calls): tools load this module
 // without the engine.
 
-let pieces = (part: Solid.t) => [{ name: "part", solid: part, color: Color.rgb(0.25, 0.5, 0.85) }]
+let piecesOf = (part: Solid.t) => [{ name: "part", solid: part, color: Color.rgb(0.25, 0.5, 0.85) }]
 
 // Clicks pin notes on the sheet only: on the orbit view a press drags.
-let sampledInput = (part: Solid.t, m, s: Input.snapshot) =>
-  if m.sheet then { m with review: PartReview.input(m.review, pieces(part), s) } else m
+let sampledInputPieces = (pieces, m, s: Input.snapshot) =>
+  if m.sheet then { m with review: PartReview.input(m.review, pieces, s) } else m
+
+let sampledInput = (part: Solid.t, m, s: Input.snapshot) => sampledInputPieces(piecesOf(part), m, s)
 
 let update = (m, msg: PartReview.msg) => { m with review: PartReview.update(m.review, msg) }
 
-let ui = (m) => if m.sheet then PartReview.ui((msg) => msg, m.review) else Ui.column([])
+// The notes panel on the sheet; `wrap` lifts a `PartReview.msg` into the
+// app's message.
+let uiWith = (wrap, m) => if m.sheet then PartReview.ui(wrap, m.review) else Ui.column([])
 
-let draw = (part: Solid.t, m, tts: float) =>
-  if m.sheet then PartReview.sheet(m.review, pieces(part)) else
-  let b = Solid.bounds(part) in
+let ui = (m) => uiWith((msg) => msg, m)
+
+let drawPieces = (pieces, m, tts: float) =>
+  if m.sheet then PartReview.sheet(m.review, pieces) else
+  let b = PartViews.bounds(pieces) in
   let lo = PartViews.toScene(b.min) in
   let hi = PartViews.toScene(b.max) in
   let center = Vec3.scale(0.5, Vec3.add(lo, hi)) in
@@ -49,8 +62,8 @@ let draw = (part: Solid.t, m, tts: float) =>
         |> Scene.scale(size * 4.0)
         |> Scene.translate(Vec3.make(Vec3.x(center), Vec3.y(lo), Vec3.z(center)))
         |> Scene.lit(Color.rgb(0.55, 0.56, 0.6)),
-      Solid.toScene(part) |> Scene.lit(Color.rgb(0.25, 0.5, 0.85)),
-      PartReview.pins(m.review, pieces(part)),
+      PartViews.scene(pieces),
+      PartReview.pins(m.review, pieces),
     ]),
     [
       Light.ambient(Color.rgb(0.18, 0.18, 0.22)),
@@ -58,3 +71,5 @@ let draw = (part: Solid.t, m, tts: float) =>
       // A low fill from the other side, so walls aren't black.
       Light.directional(Vec3.make(-0.6, -0.2, -0.5), Color.rgb(0.75, 0.8, 1.0), 0.45),
     ])
+
+let draw = (part: Solid.t, m, tts: float) => drawPieces(piecesOf(part), m, tts)

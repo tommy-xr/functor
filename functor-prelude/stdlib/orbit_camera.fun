@@ -11,9 +11,13 @@
 // Seconds without input before the turntable resumes.
 let settle = 2.0
 
-// Looking down a little from the front-right, turning from the start.
 // `anchored`: `x`/`y` hold the pointer's last position during this drag.
-let init =
+type t = {
+  yaw: float, pitch: float, zoom: float, dragging: bool, anchored: bool, x: float, y: float, idle: float
+}
+
+// Looking down a little from the front-right, turning from the start.
+let init: t =
   { yaw: 0.6, pitch: 0.45, zoom: 1.0, dragging: false, anchored: false, x: 0.0, y: 0.0, idle: settle }
 
 // Pointer motion (the mouse hook's coordinates): orbits while dragging. The

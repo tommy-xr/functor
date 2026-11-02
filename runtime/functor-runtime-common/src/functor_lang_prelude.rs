@@ -10900,6 +10900,55 @@ Anim.clip(\"walk\", tts)"
         );
     }
 
+    /// An app with several coloured parts keeps a typed `PartViewer.t` and
+    /// draws them all: one lit node per piece in the orbit view, and the
+    /// eight-view sheet once `V` toggles it.
+    #[test]
+    fn part_viewer_draws_several_pieces() {
+        let sources = vec![(
+            std::path::PathBuf::from("game.fun"),
+            "type Model = { viewer: PartViewer.t }\n\
+             type Msg = | Review(msg: PartReview.msg)\n\
+             let pieces = [\n\
+               { name: \"a\", solid: Solid.box(10.0, 10.0, 10.0), color: Color.rgb(1.0, 0.0, 0.0) },\n\
+               { name: \"b\", solid: Solid.box(5.0, 5.0, 5.0) |> Solid.translate(Vec3.make(20.0, 0.0, 0.0)), color: Color.rgb(0.0, 1.0, 0.0) },\n\
+             ]\n\
+             let init: Model = { viewer: PartViewer.init }\n\
+             let update = (m: Model, msg: Msg) => match msg with | Review(r) => { m with viewer: PartViewer.update(m.viewer, r) }\n\
+             let tick = (m: Model, dt, tts) => { m with viewer: PartViewer.tick(m.viewer, dt, tts) }\n\
+             let input = (m: Model, key: Key.t, isDown: bool) => { m with viewer: PartViewer.input(m.viewer, key, isDown) }\n\
+             let sampledInput = (m: Model, s: Input.snapshot) => { m with viewer: PartViewer.sampledInputPieces(pieces, m.viewer, s) }\n\
+             let ui = (m: Model) => PartViewer.uiWith(Review, m.viewer)\n\
+             let draw = (m: Model, tts) => PartViewer.drawPieces(pieces, m.viewer, tts)\n\
+             let sheet = () => input(input(init, Key.V, true), Key.V, false)\n"
+                .to_string(),
+        )];
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            sources,
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|error| panic!("bundle loads: {}", error.render()));
+        let diagnostics = project.check();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|failure| panic!("session loads: {}", failure.error.message));
+        let init = session.global("init").unwrap();
+        let orbit = session
+            .call("draw", vec![init, Value::Number(1.0)], &mut FunctorHost)
+            .unwrap_or_else(|e| panic!("draw: {}", e.message));
+        let orbit = frame_value(&orbit).expect("a Frame");
+        assert!(orbit.render_targets.is_empty());
+        assert!(format!("{:?}", orbit.scene).matches("Lit").count() == 3, "bed + two pieces");
+        let sheet = session.call("sheet", vec![], &mut FunctorHost).unwrap();
+        let frame = session
+            .call("draw", vec![sheet, Value::Number(1.0)], &mut FunctorHost)
+            .unwrap_or_else(|e| panic!("sheet draw: {}", e.message));
+        assert_eq!(
+            frame_value(&frame).expect("a Frame").render_targets.len(),
+            8
+        );
+    }
+
     /// A file that is only a `part` gets the PartViewer: a valid game whose
     /// turntable turns when idle, orbits on drag, zooms on the wheel, and
     /// toggles the PartViews sheet on `V` (once per press, through key repeat).
