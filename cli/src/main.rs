@@ -33,7 +33,7 @@ struct Args {
 
     /// Which named entry to use when functor.json declares an `entries` map
     /// (e.g. `--entry server`; defaults to `client`, or the sole entry, and
-    /// for `run vr` to an entry named `vr` when there is one).
+    /// for `run vr` / `develop vr` to an entry named `vr` when there is one).
     /// Accepted anywhere on the line — a late `--entry` lands in `run`'s
     /// trailing runner args and is extracted there (see `take_flag_arg`).
     #[arg(long, global = true)]
@@ -559,12 +559,13 @@ async fn run(args: &Args) -> io::Result<()> {
         }
         // `--mount` after the environment lands in runner_args too.
         let (trailing_mounts, runner_args) = take_flag_args(&runner_args, "--mount")?;
-        // `run vr` without `--entry` runs an entry named `vr` when there is
-        // one, so a project with a desktop `client` and a headset view needs
-        // no flag.
+        // `run vr` / `develop vr` without `--entry` run an entry named `vr`
+        // when there is one, so a project with a desktop `client` and a
+        // headset view needs no flag.
         let vr_default = matches!(
             &args.command,
             Command::Run { environment: Some(Environment::Vr), .. }
+                | Command::Develop { environment: Some(Environment::Vr), .. }
         ) && config.has_entry("vr");
         let requested = args
             .entry
