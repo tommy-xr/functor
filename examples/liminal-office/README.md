@@ -177,6 +177,31 @@ shadows; `Terrain.layered` bands lit by the frame's lights. The island's
 Quest budget is 90 Hz with foveation off; not yet measured on a headset
 (`config` still requests 120 Hz).
 
+### Rocks and trees
+
+`island.mjs` also places a few props from the seed, stands them on its own
+ground and writes them into `islandLayout.fun`: 112 firs in 16 groves (three
+near the town) and 38 rocks of 92 boxes. None stands within 90 m of the
+pad's edge (the band and its blend), no tree on the beach, nothing on steep
+ground. The generator fails unless the caps hold: at most 10 trees within
+40 m of any point, 150 trees and 100 rock boxes in all.
+
+`Island.regroup` splits them from the eye, and again once it moves 4 m (so a
+tier changes up to 4 m late): firs within 40 m draw as a three-plane card,
+the rest within the fog as a two-plane card, and rocks within 150 m. A rock
+is two or three lit cubes turned every way and a third buried. Each tier is one `Scene.instanced` node, so
+at most five draws, drawn after the buildings and before the terrain. No
+shadows. Trunks and rocks within 15 m of the eye get colliders.
+
+The fir cards are night-terrain's (`impostor-fir-{a,b}-{near,far}.glb`, baked
+by its `generate-impostors.mjs` from Poly Haven's CC0 [Fir Sapling
+Medium](https://polyhaven.com/a/fir_sapling_medium) by Rob Tuytel and Rico
+Cilliers). The copies are byte-identical, so git stores each once. Their
+silhouettes are cut in geometry, not with `discard`. night-terrain stands its
+fetched trunk-and-branch meshes inside the near card. This example keeps to
+checked-in files, so the near card stands alone and looks blocky within a
+few metres.
+
 ## Day and night
 
 The model holds an `hour`. `hours.fun` maps it to `daylight` (0 at night, 1

@@ -196,6 +196,149 @@ const survey = () => {
   return { steepest, relief: hi - lo, slope, yMin, yMax };
 };
 
+// ---- Props ----------------------------------------------------------------------
+//
+// A few trees in groves and rocks scattered over the island, placed from the
+// seed and stood on `ground`. None within CLEARING of the pad's edge, where
+// the ground is held near the pad (the band and its blend); no trees on the
+// beach; none on steep ground. The caps hold the Quest budget: at most
+// NEAR_CAP trees within MESH_DISTANCE of any point (the near tier), at most
+// TREE_CAP trees (so cards) and ROCK_CAP rocks in all.
+const CLEARING = BAND + BLEND;
+const MESH_DISTANCE = 40;
+const NEAR_CAP = 10;
+const TREE_CAP = 150;
+const ROCK_CAP = 100;
+// Rocks farther than this from the eye aren't drawn.
+const ROCK_DISTANCE = 150;
+const GROVES = 16;
+const GROVE_TREES = 7;
+const GROVE_RADIUS = 20;
+// Apart enough that no MESH_DISTANCE disc reaches two groves.
+const GROVE_GAP = 2 * (MESH_DISTANCE + GROVE_RADIUS) + 10;
+const SCATTERED_ROCKS = 22;
+// So the town sees some: the first few groves and rocks are drawn from a
+// ring around the pad, the rest from the whole island.
+const TOWN_GROVES = 3;
+const TOWN_ROCKS = 12;
+// Rings around the pad's middle, from its corners' clearing outward.
+// Rocks show only within ROCK_DISTANCE, so the town's come closer.
+const TOWN_GROVE_RING = { from: 140, to: 300 };
+const TOWN_ROCK_RING = { from: 140, to: 200 };
+const TREE_GRADE = 0.2;
+const ROCK_GRADE = 0.35;
+
+// [0, 1) from a candidate index and a stream, a pure function of the seed.
+const rand = (k, stream) => hash2(k, 7919 * (stream + 1));
+const grade = (x, z) => Math.hypot(ground(x + 1, z) - ground(x - 1, z), ground(x, z + 1) - ground(x, z - 1)) / 2;
+const apart = (list, x, z, d) => list.every((p) => Math.hypot(p.x - x, p.z - z) >= d);
+// The island's land (`inland` metres from the coast) past the clearing.
+const open = (x, z, minInland) => inland(x, z) >= minInland && fromPad(x, z) >= CLEARING;
+
+// Candidate `id`, uniform over `ring` around the pad's middle, or over the
+// whole map without one.
+const candidate = (id, ring) => {
+  const a = 2 * Math.PI * rand(id, 0);
+  const [c, from, to] = ring ? [PAD_MIDDLE, ring.from, ring.to] : [{ x: 0, z: 0 }, 0, SIZE / 2];
+  const r = Math.sqrt(lerp(from * from, to * to, rand(id, 1)));
+  return [c.x + r * Math.cos(a), c.z + r * Math.sin(a)];
+};
+
+// In the terrain's space.
+const placeProps = () => {
+  const groves = [];
+  for (let k = 0; groves.length < GROVES && k < 4000; k += 1) {
+    const [x, z] = candidate(k, groves.length < TOWN_GROVES ? TOWN_GROVE_RING : null);
+    if (open(x, z, 60) && fromPad(x, z) >= CLEARING + GROVE_RADIUS && apart(groves, x, z, GROVE_GAP)) groves.push({ x, z });
+  }
+  const trees = [];
+  const rocks = [];
+  groves.forEach((g, n) => {
+    const mine = [];
+    for (let k = 0; mine.length < GROVE_TREES && k < 40; k += 1) {
+      const id = n * 1000 + k;
+      const a = 2 * Math.PI * rand(id, 2);
+      const r = GROVE_RADIUS * Math.sqrt(rand(id, 3));
+      const x = g.x + r * Math.cos(a);
+      const z = g.z + r * Math.sin(a);
+      if (!open(x, z, 40) || grade(x, z) > TREE_GRADE || !apart(mine, x, z, 6)) continue;
+      mine.push({ x, z, yaw: 2 * Math.PI * rand(id, 4), size: lerp(1.1, 1.7, rand(id, 5)), variant: rand(id, 6) < 0.5 ? 0 : 1 });
+    }
+    trees.push(...mine);
+  });
+  // A rock is two or three boxes turned every way and a third buried
+  // (island.fun), the second and third smaller and leaning on the first. One
+  // beside each grove, the rest scattered (the beach included).
+  // Box `n` of rock `id` draws from its own streams.
+  const box = (id, n, x, z, scale) => {
+    const r = (stream) => rand(id, 100 * n + stream);
+    return {
+      x, z, yaw: 2 * Math.PI * r(7), tilt: lerp(-0.7, 0.7, r(8)), roll: lerp(-0.7, 0.7, r(12)),
+      sx: scale * lerp(0.9, 2.6, r(9)), sy: scale * lerp(0.9, 2.0, r(10)), sz: scale * lerp(0.8, 2.2, r(11)),
+    };
+  };
+  const rock = (id, x, z) => {
+    const first = box(id, 0, x, z, 1);
+    const more = rand(id, 13) < 0.4 ? 2 : 1;
+    return [first, ...Array.from({ length: more }, (_, k) => {
+      const a = 2 * Math.PI * rand(id, 14 + k);
+      const d = lerp(0.5, 1.0, rand(id, 16 + k)) * Math.max(first.sx, first.sz) / 2;
+      return box(id, k + 1, x + d * Math.cos(a), z + d * Math.sin(a), lerp(0.4, 0.7, rand(id, 18 + k)));
+    })];
+  };
+  // A box is a third buried (island.fun): the ground under its farthest
+  // corner may fall at most 30% of its height.
+  const sites = [];
+  const rockFits = (boxes) => boxes.every((r) => {
+    const g = grade(r.x, r.z);
+    return open(r.x, r.z, 2) && ground(r.x, r.z) > SEA_LEVEL + 0.5 && g <= ROCK_GRADE && (g * Math.hypot(r.sx, r.sz)) / 2 <= 0.3 * r.sy &&
+      apart(trees, r.x, r.z, 4);
+  }) && apart(sites, boxes[0].x, boxes[0].z, 6);
+  const place = (boxes) => {
+    sites.push(boxes[0]);
+    rocks.push(...boxes);
+  };
+  groves.forEach((g, n) => {
+    for (let k = 0; k < 20; k += 1) {
+      const id = 100000 + n * 1000 + k;
+      const a = 2 * Math.PI * rand(id, 2);
+      const r = rock(id, g.x + (GROVE_RADIUS + 6) * Math.cos(a), g.z + (GROVE_RADIUS + 6) * Math.sin(a));
+      if (rockFits(r)) {
+        place(r);
+        break;
+      }
+    }
+  });
+  for (let k = 0, placed = 0; placed < SCATTERED_ROCKS && k < 4000; k += 1) {
+    const id = 200000 + k;
+    const r = rock(id, ...candidate(id, placed < TOWN_ROCKS ? TOWN_ROCK_RING : null));
+    if (!rockFits(r)) continue;
+    place(r);
+    placed += 1;
+  }
+  const sited = (p) => ({ ...p, y: ground(p.x, p.z) });
+  return { trees: trees.map(sited), rocks: rocks.map(sited), sites: sites.length };
+};
+
+// Fails unless the caps hold, and every prop is on the land, off the
+// clearing, and within 5 cm of the heightmap's samples under it.
+const checkProps = ({ trees, rocks }) => {
+  if (trees.length > TREE_CAP || rocks.length > ROCK_CAP) throw new Error(`${trees.length} trees, ${rocks.length} rocks: over the caps`);
+  // Any MESH_DISTANCE disc holding a tree lies within 2 MESH_DISTANCE of it.
+  for (const t of trees) {
+    const near = trees.filter((u) => Math.hypot(u.x - t.x, u.z - t.z) <= 2 * MESH_DISTANCE).length;
+    if (near > NEAR_CAP) throw new Error(`${near} trees within ${2 * MESH_DISTANCE} m of (${t.x}, ${t.z})`);
+  }
+  for (const p of [...trees, ...rocks]) {
+    const i = (p.x + SIZE / 2) / CELL;
+    const j = (p.z + SIZE / 2) / CELL;
+    const [i0, j0] = [Math.floor(i), Math.floor(j)];
+    const [fi, fj] = [i - i0, j - j0];
+    const h = lerp(lerp(sample(i0, j0), sample(i0 + 1, j0), fi), lerp(sample(i0, j0 + 1), sample(i0 + 1, j0 + 1), fi), fj);
+    if (Math.abs(h - p.y) > 0.05 || fromPad(p.x, p.z) < CLEARING || p.y <= SEA_LEVEL) throw new Error(`prop at (${p.x}, ${p.z}) is off the ground or in the clearing`);
+  }
+};
+
 const num = (v, digits = 3) => {
   const s = (Math.round(v * 10 ** digits) / 10 ** digits).toString();
   return s.includes(".") ? s : `${s}.0`;
@@ -204,6 +347,8 @@ const num = (v, digits = 3) => {
 const main = () => {
   generate();
   const s = survey();
+  const props = placeProps();
+  checkProps(props);
   const pixels = Buffer.alloc(SAMPLES * SAMPLES * 2);
   levels.forEach((l, k) => pixels.writeUInt16BE(l, k * 2));
   const png = encodePng(SAMPLES, SAMPLES, 16, 0, pixels);
@@ -225,13 +370,28 @@ let pad = { x0: ${num(PAD.x0)}, z0: ${num(PAD.z0)}, x1: ${num(PAD.x1)}, z1: ${nu
 let ramp = ${num(RAMP)}
 // The ground's range out to \`reach\` past the pad's edge.
 let band = { reach: ${num(BAND)}, yMin: ${num(s.yMin, 6)}, yMax: ${num(s.yMax, 6)} }
+// The props: none within \`clearing\` of the pad's edge. At most \`nearCap\`
+// trees within \`meshDistance\` of any point, \`treeCap\` trees and \`rockCap\`
+// rocks in all; rocks show within \`rockDistance\`.
+let props = { clearing: ${num(CLEARING)}, meshDistance: ${num(MESH_DISTANCE)}, nearCap: ${num(NEAR_CAP)}, treeCap: ${num(TREE_CAP)}, rockCap: ${num(ROCK_CAP)}, rockDistance: ${num(ROCK_DISTANCE)} }
+// Each stands on the ground at (x, z): y is its height there. Yaw and tilt
+// are radians; a tree's variant picks its model.
+let trees = [
+${props.trees.map((t, i) => `  { id: ${num(i)}, x: ${num(t.x + CENTRE.x)}, y: ${num(t.y)}, z: ${num(t.z + CENTRE.z)}, yaw: ${num(t.yaw)}, size: ${num(t.size)}, variant: ${num(t.variant)} },`).join("\n")}
+]
+// A rock is a box sx × sy × sz, tilted (about x), rolled (about z), then
+// turned (yaw); a cluster of boxes makes one boulder.
+let rocks = [
+${props.rocks.map((r, i) => `  { id: ${num(i)}, x: ${num(r.x + CENTRE.x)}, y: ${num(r.y)}, z: ${num(r.z + CENTRE.z)}, yaw: ${num(r.yaw)}, tilt: ${num(r.tilt)}, roll: ${num(r.roll)}, sx: ${num(r.sx)}, sy: ${num(r.sy)}, sz: ${num(r.sz)} },`).join("\n")}
+]
 `;
   writeFileSync(fileURLToPath(new URL("islandLayout.fun", import.meta.url)), fun);
 
   console.log(
     `wrote ${SAMPLES}² heightmap (${png.length} bytes); steepest grade ${(s.steepest * 100).toFixed(1)}%; ` +
       `under the pad ${s.relief.toFixed(2)} m relief, ${(s.slope * 100).toFixed(1)}% grade before flattening; ` +
-      `pad ${PAD_Y.toFixed(3)} m, band ${s.yMin.toFixed(3)}–${s.yMax.toFixed(3)} m`,
+      `pad ${PAD_Y.toFixed(3)} m, band ${s.yMin.toFixed(3)}–${s.yMax.toFixed(3)} m; ` +
+      `${props.trees.length} trees, ${props.sites} rocks of ${props.rocks.length} boxes`,
   );
 };
 

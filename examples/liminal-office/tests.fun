@@ -337,7 +337,12 @@ expect copies |> List.all((c) => yards |> List.all((r) => inCross(worldRect(c, r
 let tagsOf = (cs: List<Block.Copy>): List<string> =>
   cs |> List.concatMap((c) => List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) => Block.tagOf(c, k.tag)))
 let unique = (xs: List<string>): bool => Map.size(Map.fromList(xs |> List.map((x) => (x, true)))) == List.length(xs)
-expect unique(List.flatten([["ground", "block-ground", "island", "island-pad", "player"], tagsOf(copies)]))
+expect unique(List.flatten([
+  ["ground", "block-ground", "island", "island-pad", "player"],
+  IslandLayout.trees |> List.map((t) => $"island-tree-{t.id}"),
+  IslandLayout.rocks |> List.map((r) => $"island-rock-{r.id}"),
+  tagsOf(copies),
+]))
 
 // Activation: on inside `activeOn`, held to `activeOff`, off past it; only
 // the home copy stands outside the block.
@@ -550,3 +555,42 @@ expect outside |> List.all((p) =>
 expect (List.nth(8.0, Game.views) |> Option.map((w) => Island.onPad(w.x, w.z))) == Option.Some(true)
 // The sea is below the pad, the seabed below the sea.
 expect IslandLayout.seaLevel < island.y && IslandLayout.minHeight < IslandLayout.seaLevel
+
+// ---- The island's props --------------------------------------------------------
+
+let props = IslandLayout.props
+let trees = IslandLayout.trees
+let rocks = IslandLayout.rocks
+// Distance from (x, z) to the pad's rect (0 on it).
+let fromPad = (x: float, z: float): float =>
+  let dx = Math.max(0.0, Math.max(island.x0 - x, x - island.x1)) in
+  let dz = Math.max(0.0, Math.max(island.z0 - z, z - island.z1)) in
+  Math.sqrt(dx * dx + dz * dz)
+let apart = (a, b): float => Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.z - b.z) * (a.z - b.z))
+// Off the pad, its ramp and the band (so out of every activation radius and
+// collar), with room for the widest prop.
+expect props.clearing >= IslandLayout.band.reach + Island.propRadius && props.clearing >= IslandLayout.ramp
+expect trees |> List.all((t) => fromPad(t.x, t.z) >= props.clearing)
+expect rocks |> List.all((r) => fromPad(r.x, r.z) >= props.clearing)
+// The caps: trees (so cards) and rocks in all, and the near tier: any
+// `meshDistance` disc holding a tree lies within twice that of it.
+expect List.length(trees) <= props.treeCap && List.length(rocks) <= props.rockCap
+expect trees |> List.all((t) => (trees |> List.filter((u) => apart(t, u) <= 2.0 * props.meshDistance) |> List.length) <= props.nearCap)
+// On land: above the sea, inside the heightmap's range. (island.mjs checks
+// each height against its samples; the e2e against `ground`.)
+expect List.flatten([trees |> List.map((t) => t.y), rocks |> List.map((r) => r.y)])
+  |> List.all((y) => y > IslandLayout.seaLevel && y <= IslandLayout.maxHeight)
+// Each prop has a distinct id, its collider's tag.
+expect (trees |> List.indexedMap((i, t) => t.id == i) |> List.all((same) => same)) && (rocks |> List.indexedMap((i, r) => r.id == i) |> List.all((same) => same))
+// The split from view 9 by day, and from the pad's far corner by night: each
+// tier within its distance and under its cap; off the island, nothing.
+let eyes = [{ x: -12.0, z: -50.0, fog: 500.0 }, { x: island.x1, z: island.z1, fog: 200.0 }]
+let splits = eyes |> List.map((e) => Island.regroup(Island.noProps, true, e.x, e.z, e.fog))
+expect List.zip(splits, eyes) |> List.all((pair) =>
+  let (e, s) = pair in
+  List.length(s.near) <= props.nearCap && List.length(s.near) + List.length(s.far) <= props.treeCap
+  && (s.near |> List.all((t) => Island.within(e.x, e.z, props.meshDistance, t)))
+  && (s.rocks |> List.all((r) => Island.within(e.x, e.z, props.rockDistance, r)))
+  && (s.solid.trees |> List.all((t) => Island.within(e.x, e.z, Island.solidReach + Island.regroupStep + Island.propRadius, t))))
+expect (List.nth(0.0, splits) |> Option.map((s) => List.length(s.far) > 0)) == Option.Some(true)
+expect Island.regroup(List.nth(0.0, splits) |> Option.defaultValue(Island.noProps), false, 0.0, 0.0, 500.0) == Island.noProps

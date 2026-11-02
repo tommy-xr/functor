@@ -41,6 +41,10 @@
 //      and noon; walking south off the pad, the heightfield carries the
 //      walker down the slope island.mjs generated; the model's `uncovered`
 //      stays 0; the right controller's A leaves the island.
+//  12. the props: each stands on island.mjs's ground; at the street camera
+//      (noon, midnight), a hill and a grove's edge, each tier is under its
+//      cap and within its distance, and `/state.cull` counts the prop draws
+//      (≤ 5); walking at a trunk stops at its collider.
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/liminal-office.mjs
@@ -593,13 +597,16 @@ const ROOM_OF = "Scene.modelOf(p.model) |> Scene.inCells([p.cell])";
 const GROUPS = "List.length(Building.spansOf(0.0, List.nth(p.cell, Building.cellParts) |> Option.defaultValue([])))";
 const times = (n) => `Scene.group(List.range(${n}) |> List.map((k) => Scene.modelOf(p.model))) |> Scene.inCells([p.cell])`;
 
+// Push `project` (from `/project`) with `from` replaced by `to` in game.fun.
+const pushVariant = (game, project, from, to) =>
+  game.post("/reload-project", project.map(([path, src], i) => [path, i === 0 ? src.replace(from, to) : src]));
+
 async function staticDraws(game, label) {
   const project = await (await fetch(`${game.base}/project`)).json();
   const entry = project[0][1];
   if (!entry.includes(ROOM_OF)) throw new Error("game.fun's roomOf changed: update the e2e's draw-count variants");
   const tested = async (variant) => {
-    const body = project.map(([path, src], i) => [path, i === 0 ? src.replace(ROOM_OF, variant) : src]);
-    await game.post("/reload-project", body);
+    await pushVariant(game, project, ROOM_OF, variant);
     await game.step(2);
     const s = await game.state();
     return { live: s.cull.tested - s.cull.culled, hidden: s.cells.hidden, walks: s.cells.walks };
@@ -690,6 +697,7 @@ async function island(game) {
   const noon = (await game.state()).terrain;
   console.log(`terrain at the street camera: night ${JSON.stringify(night)}, noon ${JSON.stringify(noon)}`);
   check(noon.patches <= 80 && night.patches <= noon.patches, `street camera: ${night.patches} terrain patches at night (fog 200 m), ${noon.patches} at noon (fog 500 m)`);
+  await islandProps(game);
   await game.hold("n", 1);
 
   // South off the pad, down the ramp and the slope beyond: the capsule's
@@ -723,6 +731,90 @@ async function island(game) {
   check(!m.island && m.town === 1 && m.grounded && near(m.at.z, -50, 0.05) && near(m.at.y, flat.at.y, 0.03),
     `XR A leaves the island for the street (island ${m.island}, town ${m.town}, z ${m.at.z.toFixed(2)}, y ${m.at.y.toFixed(3)}, grounded ${m.grounded})`);
   return { night, noon };
+}
+
+// islandLayout.fun's props and caps, parsed.
+const LAYOUT = readFileSync(join(DIR, "islandLayout.fun"), "utf8");
+const records = (name) =>
+  LAYOUT.split(`let ${name} = [`)[1].split("\n]")[0].trim().split("\n").map((line) =>
+    Object.fromEntries([...line.matchAll(/(\w+): (-?[\d.]+)/g)].map(([, k, v]) => [k, Number(v)])));
+const TREES = records("trees");
+const ROCKS = records("rocks");
+const CAPS = Object.fromEntries([...LAYOUT.match(/let props = \{(.*)\}/)[1].matchAll(/(\w+): (-?[\d.]+)/g)].map(([, k, v]) => [k, Number(v)]));
+// The island's ground in the world at (x, z).
+const islandGround = (x, z) => ground(...toTerrain(x, z)) - padY + GROUND_Y;
+const PROPS_DRAW = 'Scene.memo("island-props", model.props, Island.propsScene)';
+const VIEW_9 = "{ copy: 0.0, x: -12.0, level: 0.0, z: -50.0, yaw: 0.0, pitch: 0.04 },";
+
+// Prop counts per tier from the model, and the draws they submit:
+// `/state.cull`'s tested − culled with and without the props (a pushed
+// variant of game.fun), so the difference counts the instanced prop nodes
+// in view.
+async function propCounts(game, label) {
+  const project = await (await fetch(`${game.base}/project`)).json();
+  if (!project[0][1].includes(PROPS_DRAW)) throw new Error("game.fun's props draw changed: update the e2e");
+  const live = async (variant) => {
+    await pushVariant(game, project, PROPS_DRAW, variant);
+    await game.step(2);
+    const st = await game.state();
+    return st.cull.tested - st.cull.culled;
+  };
+  const without = await live("Scene.group([])");
+  const draws = (await live(PROPS_DRAW)) - without;
+  const m = await game.model();
+  const p = m.props;
+  const row = { label, mesh: p.near.length, cards: p.far.length, rocks: p.rocks.length, solid: p.solid.trees.length + p.solid.rocks.length, draws };
+  const { x, z } = m.at;
+  const within = (q, d) => Math.hypot(q.x - x, q.z - z) <= d + 4; // + regroupStep
+  check(row.mesh <= CAPS.nearCap && row.cards <= CAPS.treeCap && row.rocks <= CAPS.rockCap && draws >= 0 && draws <= 5 &&
+    p.near.every((t) => within(t, CAPS.meshDistance)) && p.rocks.every((r) => within(r, CAPS.rockDistance)),
+    `${label}: ${row.mesh} near trees, ${row.cards} cards, ${row.rocks} rocks, ${row.solid} colliders; ${draws} prop draws`);
+  return row;
+}
+
+// The street camera, night and noon, then a hill and a grove by day: each
+// a pushed variant of game.fun whose view 9 stands there.
+async function islandProps(game) {
+  // Every prop stands on island.mjs's ground (to its 1 m samples' rounding).
+  const worst = Math.max(...[...TREES, ...ROCKS].map((q) => Math.abs(q.y - ground(...toTerrain(q.x, q.z)))));
+  check(worst < 0.002 && TREES.length <= CAPS.treeCap && ROCKS.length <= CAPS.rockCap,
+    `${TREES.length} trees, ${ROCKS.length} rock boxes, each within ${worst.toFixed(4)} m of island.mjs's ground`);
+  const rows = [await propCounts(game, "street camera (view 9), noon")];
+  await game.hold("n", 1);
+  await game.step(2);
+  rows.push(await propCounts(game, "street camera (view 9), midnight"));
+  await game.hold("n", 1);
+  const project = await (await fetch(`${game.base}/project`)).json();
+  if (!project[0][1].includes(VIEW_9)) throw new Error("game.fun's view 9 changed: update the e2e");
+  const standAt = async (x, z, yaw) => {
+    // Dropped from 30 cm over the ground.
+    const level = (islandGround(x, z) + 0.3) / STOREY;
+    await pushVariant(game, project, VIEW_9, `{ copy: 0.0, x: ${x}, level: ${level}, z: ${z}, yaw: ${yaw}, pitch: 0.0 },`);
+    await game.view(9);
+    await game.step(30);
+    return game.model();
+  };
+  // A rise 480 m north of the street, looking back at the town.
+  let m = await standAt(-50, 430, Math.PI);
+  const settle = m.at.y - islandGround(m.at.x, m.at.z);
+  check(m.grounded && near(settle, CENTRE, 0.08), `stands on the hill (y ${m.at.y.toFixed(2)}, ${settle.toFixed(3)} m over the ground)`);
+  rows.push(await propCounts(game, "hill 480 m north, looking south"));
+  // The edge of a grove: its trees in the near tier and solid. Walking at
+  // the nearest trunk stops at it.
+  m = await standAt(-92, 262, 0);
+  rows.push(await propCounts(game, "grove edge"));
+  const [noon, , , grove] = rows;
+  check(noon.cards > 0 && grove.mesh > 0 && grove.rocks > 0 && grove.solid > 0 && grove.draws >= 2,
+    `props draw: ${noon.cards} cards from the street by day; at the grove edge ${grove.mesh} near trees, ${grove.rocks} rocks, ${grove.draws} draws`);
+  const tree = TREES.reduce((a, b) => (Math.hypot(a.x + 92, a.z - 262) < Math.hypot(b.x + 92, b.z - 262) ? a : b));
+  await game.face(Math.atan2(tree.x - m.at.x, tree.z - m.at.z));
+  await game.hold("w", Math.ceil(Math.hypot(tree.x - m.at.x, tree.z - m.at.z) / WALK) + 120);
+  m = await game.model();
+  const gap = Math.hypot(tree.x - m.at.x, tree.z - m.at.z);
+  check(gap > 0.3 * tree.size && gap < 0.35 * tree.size + 0.3 + 0.3, `walking at a trunk stops at it (${gap.toFixed(2)} m from its axis, size ${tree.size})`);
+  await game.post("/reload-project", project);
+  await game.view(9);
+  console.log(`island props: ${JSON.stringify(rows, null, 1)}`);
 }
 
 // Every `--json` frame-stats window so far.

@@ -136,6 +136,8 @@ let init = {
   k: Block.maxActive,
   // On the flat ground or the island (the office alone or the block only).
   island: false,
+  // The island's props drawn and solid near the eye (`Island.regroup`).
+  props: Island.noProps,
   // From the last tick: where the player stood and whether on the ground,
   // the nearest copy and the eye's cell in it (-1: outside every cell),
   // which copies' interiors draw and which have colliders (ids), and
@@ -243,7 +245,8 @@ let tick = (model, dt: float, tts: float) =>
     active: active,
     solid: Block.solidAt(town, model.solid, eye),
     uncovered: model.uncovered + Block.uncovered(town, active, eye),
-    baked: baked } in
+    baked: baked,
+    props: Island.regroup(model.props, model.island, p.x, p.z, Island.fogFar(Hours.daylight(model.hour))) } in
   match List.nth(model.goto - 1.0, views) with
   | Option.Some(view) =>
     let c = Block.copyAt(if inBlock(model.goto) then view.copy else copy) in
@@ -264,7 +267,8 @@ let tick = (model, dt: float, tts: float) =>
 // Each solid copy's colliders are built once, under its own key and tags.
 let physics = (model) =>
   Physics.scene(v(0.0, -9.81, 0.0), List.flatten([
-    if model.island then Island.bodies else [Block.townAt(model.town).groundBody],
+    if model.island then List.append([Physics.memo("island-props", model.props.solid, Island.propBodies)], Island.bodies)
+    else [Block.townAt(model.town).groundBody],
     model.solid |> List.map((id) => let c = Block.copyAt(id) in Physics.memo(c.name, c, Block.bodiesOf)),
     [Physics.character(playerTag, Physics.capsule(0.6, 0.3),
                        { stepHeight: 0.2, maxSlope: 40deg, snap: 0.2, offset: 0.02 })
@@ -303,8 +307,10 @@ let draw = (model, tts: float) =>
     if not town.shells then []
     else [Scene.memo($"{town.name}/shells", { town: model.town, active: active, neon: o.neon, lamps: o.lamps, day: day }, Shells.shellsOf)] in
   let buildings = Scene.group(List.append(shells, copies)) in
-  // The island's terrain draws last, behind the buildings.
-  let scene = if model.island then Scene.group([buildings, Island.ground, resident])
+  // On the island the props draw after the buildings and the terrain last,
+  // so early-Z rejects what's behind them.
+  let scene = if model.island
+    then Scene.group([buildings, Scene.memo("island-props", model.props, Island.propsScene), Island.ground, resident])
     else Scene.group([town.ground, buildings, resident]) in
   let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyAt(id)), eye) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
