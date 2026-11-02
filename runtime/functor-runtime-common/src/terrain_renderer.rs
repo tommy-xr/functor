@@ -472,6 +472,9 @@ struct TerrainGeometry {
     vertex_count: u32,
     last_used_frame: u64,
     cache_key: Option<PatchCacheKey>,
+    /// Selected patches with their draw-order keys; reused so sorting them
+    /// never allocates.
+    scratch_keyed: Vec<(f32, [f32; 4])>,
     scratch_instances: Vec<[f32; 4]>,
     uploaded_instances: Vec<[f32; 4]>,
 }
@@ -667,6 +670,7 @@ impl TerrainRenderer {
                 ctx.viewport_height,
                 ctx.lod_fog,
                 ctx.fog_cull_distance,
+                &mut geometry.scratch_keyed,
                 &mut geometry.scratch_instances,
             );
             if geometry.uploaded_instances != geometry.scratch_instances {
@@ -1094,6 +1098,7 @@ impl TerrainRenderer {
                 vertex_count: vertices.len() as u32,
                 last_used_frame: self.current_frame,
                 cache_key: None,
+                scratch_keyed: Vec::new(),
                 scratch_instances: Vec::new(),
                 uploaded_instances: Vec::new(),
             });
@@ -1752,8 +1757,10 @@ fn select_patches_into(
     // Patches wholly past this distance are skipped (see
     // `RenderContext::fog_cull_distance`).
     fog_cull_distance: Option<f32>,
+    keyed: &mut Vec<(f32, [f32; 4])>,
     patches: &mut Vec<[f32; 4]>,
 ) {
+    keyed.clear();
     patches.clear();
     let inverse = world.invert().unwrap_or_else(Matrix4::identity);
     let local4 = inverse * Vector4::new(camera_world.x, camera_world.y, camera_world.z, 1.0);
@@ -1810,7 +1817,7 @@ fn select_patches_into(
         v: f32,
         scale: f32,
         remaining_splits: &mut usize,
-        out: &mut Vec<[f32; 4]>,
+        out: &mut Vec<(f32, [f32; 4])>,
     ) {
         let half_width = description.width * scale * 0.5;
         let half_depth = description.depth * scale * 0.5;
@@ -1850,9 +1857,11 @@ fn select_patches_into(
             description.max_height,
             center_local.z + half_depth,
         );
-        let dx = (min.x - camera_local.x).max(0.0) + (camera_local.x - max.x).max(0.0);
-        let dy = (min.y - camera_local.y).max(0.0) + (camera_local.y - max.y).max(0.0);
-        let dz = (min.z - camera_local.z).max(0.0) + (camera_local.z - max.z).max(0.0);
+        // Signed offset to the box's nearest point (only one side is ever
+        // nonzero): LOD uses its square, the draw-order key its direction.
+        let dx = (min.x - camera_local.x).max(0.0) - (camera_local.x - max.x).max(0.0);
+        let dy = (min.y - camera_local.y).max(0.0) - (camera_local.y - max.y).max(0.0);
+        let dz = (min.z - camera_local.z).max(0.0) - (camera_local.z - max.z).max(0.0);
         let distance = (dx * dx + dy * dy + dz * dz).sqrt() * min_scale;
         // Wholly past the full-fog distance: every fragment would be the
         // background color. The box reaches down to the skirt, so a skirt
@@ -1955,7 +1964,10 @@ fn select_patches_into(
                 out,
             );
         } else {
-            out.push([u, v, scale, scale]);
+            // World distance to the box's terrain-local nearest point: exact
+            // under rotation and scale, approximate under shear (order only).
+            let key = (world * Vector4::new(dx, dy, dz, 0.0)).truncate().magnitude2();
+            out.push((key, [u, v, scale, scale]));
         }
     }
 
@@ -1976,9 +1988,20 @@ fn select_patches_into(
         0.0,
         1.0,
         &mut remaining_splits,
-        patches,
+        keyed,
     );
-    debug_assert!(patches.len() <= MAX_INSTANCES);
+    debug_assert!(keyed.len() <= MAX_INSTANCES);
+
+    // Draw front to back. Instances rasterize in list order, and the early
+    // depth test rejects a fragment only against depth already written, so
+    // the traversal's spatial order would shade far hills before the near
+    // ones that hide them. (v, u) breaks ties, so the order is total.
+    keyed.sort_unstable_by(|(da, a), (db, b)| {
+        da.total_cmp(db)
+            .then(a[1].total_cmp(&b[1]))
+            .then(a[0].total_cmp(&b[0]))
+    });
+    patches.extend(keyed.iter().map(|&(_, patch)| patch));
 }
 
 #[cfg(test)]
@@ -2005,6 +2028,7 @@ fn select_patches(
         viewport_height,
         None,
         None,
+        &mut Vec::new(),
         &mut patches,
     );
     patches
@@ -2468,6 +2492,7 @@ mod tests {
                 1600.0,
                 None,
                 None,
+                &mut Vec::new(),
                 &mut patches,
             );
             patches
@@ -2557,9 +2582,22 @@ mod tests {
             1600.0,
             fog,
             cull,
+            &mut Vec::new(),
             &mut patches,
         );
         patches
+    }
+
+    /// XZ distance from `select_with_fog`'s eye to a patch's footprint. The
+    /// eye sits within the height range, so this is the distance to the box.
+    fn footprint_distance(patch: &[f32; 4]) -> f32 {
+        let eye = Vector3::new(-1500.0f32, 20.0, -1500.0);
+        let terrain = terrain();
+        let x0 = (patch[0] - 0.5) * terrain.width;
+        let z0 = (patch[1] - 0.5) * terrain.depth;
+        let dx = (x0 - eye.x).max(0.0) + (eye.x - (x0 + patch[2] * terrain.width)).max(0.0);
+        let dz = (z0 - eye.z).max(0.0) + (eye.z - (z0 + patch[3] * terrain.depth)).max(0.0);
+        (dx * dx + dz * dz).sqrt()
     }
 
     #[test]
@@ -2579,6 +2617,22 @@ mod tests {
     }
 
     #[test]
+    fn patches_are_ordered_front_to_back() {
+        let patches = select_with_fog(None);
+        assert!(patches.len() > 100, "needs a refined selection");
+        // A patch under the eye draws first.
+        assert_eq!(footprint_distance(&patches[0]), 0.0);
+        for pair in patches.windows(2) {
+            assert!(
+                footprint_distance(&pair[0]) <= footprint_distance(&pair[1]) + 1e-3,
+                "{:?} draws before nearer {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
     fn fog_end_culls_exactly_the_patches_wholly_past_it() {
         let fog = Fog::linear(20.0, 600.0, 0.0, 0.0, 0.0);
         let all = select_with_fog_cull(Some(&fog), None, &Matrix4::identity());
@@ -2588,20 +2642,13 @@ mod tests {
         assert!(culled.iter().all(|patch| all.contains(patch)));
         // Every survivor reaches within the fog end; every dropped patch
         // lies wholly past it (terrain-local == world here).
-        let eye = Vector3::new(-1500.0f32, 20.0, -1500.0);
-        let terrain = terrain();
-        let nearest = |patch: &[f32; 4]| {
-            let x0 = (patch[0] - 0.5) * terrain.width;
-            let z0 = (patch[1] - 0.5) * terrain.depth;
-            let dx = (x0 - eye.x).max(0.0) + (eye.x - (x0 + patch[2] * terrain.width)).max(0.0);
-            let dz = (z0 - eye.z).max(0.0) + (eye.z - (z0 + patch[3] * terrain.depth)).max(0.0);
-            (dx * dx + dz * dz).sqrt()
-        };
-        assert!(culled.iter().all(|patch| nearest(patch) <= 600.0 + FOG_CULL_MARGIN));
+        assert!(culled
+            .iter()
+            .all(|patch| footprint_distance(patch) <= 600.0 + FOG_CULL_MARGIN));
         assert!(all
             .iter()
             .filter(|patch| !culled.contains(patch))
-            .all(|patch| nearest(patch) > 600.0));
+            .all(|patch| footprint_distance(patch) > 600.0));
     }
 
     #[test]
