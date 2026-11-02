@@ -32,7 +32,8 @@ struct Args {
     dir: Option<PathBuf>,
 
     /// Which named entry to use when functor.json declares an `entries` map
-    /// (e.g. `--entry server`; defaults to `client`, or the sole entry).
+    /// (e.g. `--entry server`; defaults to `client`, or the sole entry, and
+    /// for `run vr` to an entry named `vr` when there is one).
     /// Accepted anywhere on the line — a late `--entry` lands in `run`'s
     /// trailing runner args and is extracted there (see `take_flag_arg`).
     #[arg(long, global = true)]
@@ -558,7 +559,19 @@ async fn run(args: &Args) -> io::Result<()> {
         }
         // `--mount` after the environment lands in runner_args too.
         let (trailing_mounts, runner_args) = take_flag_args(&runner_args, "--mount")?;
-        let mut project = config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
+        // `run vr` without `--entry` runs an entry named `vr` when there is
+        // one, so a project with a desktop `client` and a headset view needs
+        // no flag.
+        let vr_default = matches!(
+            &args.command,
+            Command::Run { environment: Some(Environment::Vr), .. }
+        ) && config.has_entry("vr");
+        let requested = args
+            .entry
+            .as_deref()
+            .or(trailing_entry.as_deref())
+            .or(vr_default.then_some("vr"));
+        let mut project = config.select(requested)?;
         project.mounts = [args.mounts.clone(), trailing_mounts].concat();
         return match &args.command {
             Command::Docs { .. }

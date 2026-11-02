@@ -252,6 +252,11 @@ name → .fun path (e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"
         }
     }
 
+    /// Does `entries` declare one named `name`?
+    pub fn has_entry(&self, name: &str) -> bool {
+        matches!(&self.entries, FunctorLangEntries::Named(map) if map.iter().any(|(k, _)| k == name))
+    }
+
     /// Does this project use the named-`entries` form? `build`'s contract
     /// gate — which EVALUATES the role's top-level defs to resolve its
     /// (possibly prefixed) bindings — is scoped to it, so a classic single
@@ -3000,6 +3005,14 @@ mod tests {
         };
         let err = config.select(None).unwrap_err();
         assert!(err.to_string().contains("cannot combine"), "{err}");
+    }
+
+    #[test]
+    fn has_entry_names_only_declared_entries() {
+        let config = named(&[("client", "tv.fun"), ("vr", "mr.fun")]);
+        assert!(config.has_entry("vr") && config.has_entry("client"));
+        assert!(!config.has_entry("server"));
+        assert!(!single("game.fun").has_entry("vr"));
     }
 
     #[test]
