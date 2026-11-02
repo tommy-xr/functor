@@ -10774,16 +10774,17 @@ Anim.clip(\"walk\", tts)"
         let sources = vec![(
             std::path::PathBuf::from("game.fun"),
             "type Model = { viewer: PartViewer.t }\n\
+             type Msg = | Review(msg: PartReview.msg)\n\
              let pieces = [\n\
                { name: \"a\", solid: Solid.box(10.0, 10.0, 10.0), color: Color.rgb(1.0, 0.0, 0.0) },\n\
                { name: \"b\", solid: Solid.box(5.0, 5.0, 5.0) |> Solid.translate(Vec3.make(20.0, 0.0, 0.0)), color: Color.rgb(0.0, 1.0, 0.0) },\n\
              ]\n\
              let init: Model = { viewer: PartViewer.init }\n\
-             let update = (m: Model, msg: PartReview.msg) => { m with viewer: PartViewer.update(m.viewer, msg) }\n\
+             let update = (m: Model, msg: Msg) => match msg with | Review(r) => { m with viewer: PartViewer.update(m.viewer, r) }\n\
              let tick = (m: Model, dt, tts) => { m with viewer: PartViewer.tick(m.viewer, dt, tts) }\n\
              let input = (m: Model, key: Key.t, isDown: bool) => { m with viewer: PartViewer.input(m.viewer, key, isDown) }\n\
              let sampledInput = (m: Model, s: Input.snapshot) => { m with viewer: PartViewer.sampledInputPieces(pieces, m.viewer, s) }\n\
-             let ui = (m: Model) => PartViewer.uiWith((msg) => msg, m.viewer)\n\
+             let ui = (m: Model) => PartViewer.uiWith(Review, m.viewer)\n\
              let draw = (m: Model, tts) => PartViewer.drawPieces(pieces, m.viewer, tts)\n\
              let sheet = () => input(input(init, Key.V, true), Key.V, false)\n"
                 .to_string(),
@@ -10803,7 +10804,7 @@ Anim.clip(\"walk\", tts)"
             .unwrap_or_else(|e| panic!("draw: {}", e.message));
         let orbit = frame_value(&orbit).expect("a Frame");
         assert!(orbit.render_targets.is_empty());
-        assert!(format!("{:?}", orbit.scene).matches("Lit").count() >= 3, "bed + two pieces");
+        assert!(format!("{:?}", orbit.scene).matches("Lit").count() == 3, "bed + two pieces");
         let sheet = session.call("sheet", vec![], &mut FunctorHost).unwrap();
         let frame = session
             .call("draw", vec![sheet, Value::Number(1.0)], &mut FunctorHost)

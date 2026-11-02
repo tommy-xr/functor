@@ -7,8 +7,9 @@
 // the file to change any of them.
 //
 // An app showing several parts keeps a `PartViewer.t` in its model, forwards
-// the mouse, key and tick hooks, and passes its PartViews pieces
-// (`{ name, solid, color }`) to `drawPieces` and `sampledInputPieces`.
+// the mouse, key, tick and `update` hooks, shows `uiWith(wrap, m)`, and passes
+// its non-empty PartViews pieces (`{ name, solid, color }`) to `drawPieces` and
+// `sampledInputPieces`.
 
 // `vHeld` latches V so a held key (auto-repeat) toggles once.
 type t = { orbit: OrbitCamera.t, sheet: bool, vHeld: bool, review: PartReview.t }
@@ -31,13 +32,13 @@ let input = (m, key: Key.t, isDown: bool) =>
 // Top-level values here stay pure (no host calls): tools load this module
 // without the engine.
 
-let pieces = (part: Solid.t) => [{ name: "part", solid: part, color: Color.rgb(0.25, 0.5, 0.85) }]
+let piecesOf = (part: Solid.t) => [{ name: "part", solid: part, color: Color.rgb(0.25, 0.5, 0.85) }]
 
 // Clicks pin notes on the sheet only: on the orbit view a press drags.
 let sampledInputPieces = (pieces, m, s: Input.snapshot) =>
   if m.sheet then { m with review: PartReview.input(m.review, pieces, s) } else m
 
-let sampledInput = (part: Solid.t, m, s: Input.snapshot) => sampledInputPieces(pieces(part), m, s)
+let sampledInput = (part: Solid.t, m, s: Input.snapshot) => sampledInputPieces(piecesOf(part), m, s)
 
 let update = (m, msg: PartReview.msg) => { m with review: PartReview.update(m.review, msg) }
 
@@ -61,7 +62,7 @@ let drawPieces = (pieces, m, tts: float) =>
         |> Scene.scale(size * 4.0)
         |> Scene.translate(Vec3.make(Vec3.x(center), Vec3.y(lo), Vec3.z(center)))
         |> Scene.lit(Color.rgb(0.55, 0.56, 0.6)),
-      Scene.group(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces)),
+      PartViews.scene(pieces),
       PartReview.pins(m.review, pieces),
     ]),
     [
@@ -71,4 +72,4 @@ let drawPieces = (pieces, m, tts: float) =>
       Light.directional(Vec3.make(-0.6, -0.2, -0.5), Color.rgb(0.75, 0.8, 1.0), 0.45),
     ])
 
-let draw = (part: Solid.t, m, tts: float) => drawPieces(pieces(part), m, tts)
+let draw = (part: Solid.t, m, tts: float) => drawPieces(piecesOf(part), m, tts)

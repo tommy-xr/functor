@@ -110,16 +110,19 @@ let sheetCamera = () =>
 // named `part-views-0` … `part-views-7`, so draw one sheet per frame.
 let sheet = (pieces) => sheetWith(Scene.group([]), pieces)
 
+// The pieces in scene space, each lit in its colour.
+let scene = (pieces) => Scene.group(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces))
+
 // A sheet with `overlay` — scene space, like `Solid.toScene`'s — drawn with
 // the pieces in every view (e.g. `PartReview`'s pins), but not framed.
 let sheetWith = (overlay, pieces) =>
-  let scene = Scene.group(List.map((p) => Solid.toScene(p.solid) |> Scene.lit(p.color), pieces) |> List.append([overlay])) in
+  let drawn = Scene.group([scene(pieces), overlay]) in
   let b = bounds(pieces) in
   let tiles = List.indexedMap((i, view) =>
     { view: view,
       target: RenderTarget.named(Text.concat("part-views-", Text.fixed(i, 0.0))) |> RenderTarget.sized(tilePixels, tilePixels) },
     views()) in
-  List.fold((frame, t) => frame |> Frame.withRenderTarget(t.target, tileFrame(scene, b, t.view)),
+  List.fold((frame, t) => frame |> Frame.withRenderTarget(t.target, tileFrame(drawn, b, t.view)),
     Frame.create(
       sheetCamera(),
       Scene.group(List.map((t) => Scene.quad() |> Scene.screen(t.target) |> Scene.translate(Vec3.make(tileX(t.view), tileY(t.view), 0.0)), tiles)))
