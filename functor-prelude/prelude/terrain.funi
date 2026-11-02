@@ -70,6 +70,23 @@ let colormap : (Asset.Texture, Asset.Texture, float, t) => t
 /// one tile. Requires `colormap`. The terrain is last for piping.
 let colormapDetail : (Asset.Texture, float, float, t) => t
 
+/// Let a flashlight light a `colormap` terrain, using this normal map.
+///
+/// The colormap terrain is unlit, with one exception: the frame's first
+/// `Light.spot` that is not `Light.baked` adds its light where its cone and
+/// range reach the ground, with the same falloff as on lit surfaces and no
+/// shadows. Every other light stays painted into the maps. Pixels outside the
+/// beam pay only a cone test; inside it, the terrain fetches this map. The
+/// beam lights the `day` map's color, at any `blend`: the night map is the
+/// same ground already darkened, so a beam on it would read dim and blue.
+///
+/// The map is laid over the terrain once, like the colormaps, and stores
+/// terrain-local unit normals as `xyz × 0.5 + 0.5` (+Y up, so flat ground is
+/// `(128, 255, 128)`). Bake it for the same width, depth and height range the
+/// heightmap is given. Without a normal map the flashlight does not reach the
+/// terrain. Ignored without `colormap`. The terrain is last for piping.
+let normalMap : (Asset.Texture, t) => t
+
 /// Add camera-local GPU-instanced grass clusters.
 ///
 /// `spacing`, `distance`, and `bladeHeight` are terrain-local world units.

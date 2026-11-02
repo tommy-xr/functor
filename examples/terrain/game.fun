@@ -12,7 +12,8 @@
 //
 // `C` switches the shading between the lit, layered terrain and a baked
 // colormap (unlit: lighting painted into a day and a night map offline). `N`
-// toggles night, cross-fading the maps and the frame's lights and fog.
+// toggles night, cross-fading the maps and the frame's lights and fog. `L`
+// toggles a flashlight: the one light the colormap terrain still receives.
 //
 //   node examples/terrain/generate-heightmap.mjs
 //   node examples/terrain/generate-colormaps.mjs
@@ -78,6 +79,14 @@ let baked = (blend) =>
   banded
   |> Terrain.colormap(Asset.texture("colormap-day.png"), Asset.texture("colormap-night.png"), blend)
   |> Terrain.colormapDetail(Asset.texture("detail-high.jpg"), 8.0, 80.0)
+  // Lets the flashlight light the unlit ground.
+  |> Terrain.normalMap(Asset.texture("normalmap.png"))
+
+// Held just below the eye and aimed where you look, as in night-terrain.
+let flashlightCone = Angle.degrees(20.0)
+let flashlightRange = 60.0
+let flashlightIntensity = 2.6
+let flashlightColor = Color.rgb(1.0, 0.92, 0.78)
 
 // Seconds for a day ↔ night cross-fade.
 let fadeSeconds = 2.0
@@ -106,8 +115,9 @@ let init = {
   shading: Lit,
   night: false,
   blend: 0.0,
+  flashlight: false,
   // Held toggle keys: a held key auto-repeats, and must flip only once.
-  toggleDown: { c: false, n: false },
+  toggleDown: { c: false, n: false, l: false },
 }
 
 let setHeld = (held, key, isDown) =>
@@ -176,6 +186,11 @@ let input = (model, key, isDown) =>
     { model with
         night: if flip then not model.night else model.night,
         toggleDown: { model.toggleDown with n: isDown } }
+  | Key.L =>
+    let flip = isDown && not model.toggleDown.l in
+    { model with
+        flashlight: if flip then not model.flashlight else model.flashlight,
+        toggleDown: { model.toggleDown with l: isDown } }
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
 let mouseButton = (model, button, isDown) =>
@@ -281,17 +296,21 @@ let draw = (model, tts) =>
   // Day → night. The night lights match the colormap bake's moonlight, so
   // lit props agree with the ground under them.
   let b = model.blend in
+  let sky = [
+    Light.ambient(Color.rgb(0.20 |> Math.lerp(0.06, b), 0.23 |> Math.lerp(0.07, b), 0.28 |> Math.lerp(0.12, b))),
+    Light.directional(
+      Vec3.make(0.42, -1.0, 0.28) |> Vec3.lerp(Vec3.make(-0.35, -0.8, -0.45), b),
+      Color.rgb(1.0 |> Math.lerp(0.5, b), 0.84 |> Math.lerp(0.6, b), 0.64 |> Math.lerp(0.85, b)),
+      1.15 |> Math.lerp(0.5, b)),
+  ] in
+  let flashlight =
+    Light.spot(Vec3.make(model.eye.x, model.eye.y - 0.25, model.eye.z), lookDir(model.yaw, model.pitch),
+               flashlightColor, flashlightIntensity, flashlightRange, flashlightCone) in
   Frame.createLit(
     camera,
     Scene.group([Scene.terrain(terrain), water]
                 |> List.append(model.balls |> List.map(ballNode))),
-    [
-      Light.ambient(Color.rgb(0.20 |> Math.lerp(0.06, b), 0.23 |> Math.lerp(0.07, b), 0.28 |> Math.lerp(0.12, b))),
-      Light.directional(
-        Vec3.make(0.42, -1.0, 0.28) |> Vec3.lerp(Vec3.make(-0.35, -0.8, -0.45), b),
-        Color.rgb(1.0 |> Math.lerp(0.5, b), 0.84 |> Math.lerp(0.6, b), 0.64 |> Math.lerp(0.85, b)),
-        1.15 |> Math.lerp(0.5, b)),
-    ])
+    if model.flashlight then sky |> List.append([flashlight]) else sky)
   |> Frame.withFog(
        Fog.linear(700.0, 4800.0,
                   Color.rgb(0.50 |> Math.lerp(0.03, b), 0.64 |> Math.lerp(0.04, b), 0.72 |> Math.lerp(0.07, b))))
@@ -301,6 +320,8 @@ let shadingLabel = (model) =>
   | Lit => ""
   | Baked => " · baked colormap"
 
+let flashlightLabel = (model) => if model.flashlight then " · flashlight" else ""
+
 let ui = (model) =>
-  Ui.text($"4 km terrain · WASD + mouse · SPACE jump · CLICK to launch ({List.length(model.balls)}){shadingLabel(model)}")
+  Ui.text($"4 km terrain · WASD + mouse · SPACE jump · CLICK to launch ({List.length(model.balls)}){shadingLabel(model)}{flashlightLabel(model)}")
   |> Ui.panel(Ui.topLeft())

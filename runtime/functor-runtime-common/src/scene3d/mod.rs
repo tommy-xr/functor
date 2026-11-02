@@ -64,6 +64,8 @@ pub struct SceneContext {
     terrain_detail_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     /// Terrain colormaps: mipped, clamped, color (see `TerrainColormapPipeline`).
     terrain_colormap_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
+    /// Terrain normal maps: linear, unmipped (see `TerrainNormalMapPipeline`).
+    terrain_normal_map_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     cube: RefCell<Box<dyn Geometry>>,
     cylinder: RefCell<Box<dyn Geometry>>,
     sphere: RefCell<Box<dyn Geometry>>,
@@ -755,6 +757,7 @@ impl SceneContext {
         self.linear_texture_pipeline.evict(path);
         self.terrain_detail_pipeline.evict(path);
         self.terrain_colormap_pipeline.evict(path);
+        self.terrain_normal_map_pipeline.evict(path);
         self.raw_image_pipeline.evict(path);
         self.heightmap_pipeline.evict(path);
         self.skyboxes
@@ -799,6 +802,9 @@ impl SceneContext {
             )),
             terrain_colormap_pipeline: asset::build_pipeline(Box::new(
                 crate::asset::pipelines::TerrainColormapPipeline,
+            )),
+            terrain_normal_map_pipeline: asset::build_pipeline(Box::new(
+                crate::asset::pipelines::TerrainNormalMapPipeline,
             )),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
             render_targets: RefCell::new(HashMap::new()),
@@ -1546,6 +1552,11 @@ frame: correct, but each bind re-uploads (atlas {})",
                     &detail.texture,
                 )
             });
+            // Requested whether or not a flashlight is on, so turning one on
+            // uploads nothing.
+            let normal_map = terrain.normal_map.as_ref().and_then(|map| {
+                terrain_texture(render_context, &self.terrain_normal_map_pipeline, map)
+            });
             let [Some(day), Some(night)] = maps else {
                 return None;
             };
@@ -1555,7 +1566,13 @@ frame: correct, but each bind re-uploads (atlas {})",
                 detail.bind(crate::terrain_renderer::COLORMAP_UNITS[2], render_context);
                 detail.average_color()
             });
-            Some(crate::terrain_renderer::ColormapBound { detail_average })
+            let normal_map = normal_map
+                .map(|map| map.bind(crate::terrain_renderer::COLORMAP_UNITS[3], render_context))
+                .is_some();
+            Some(crate::terrain_renderer::ColormapBound {
+                detail_average,
+                normal_map,
+            })
         });
         // Detail maps stream like any other texture. Bind them before the
         // terrain program runs; a map still loading leaves the whole set

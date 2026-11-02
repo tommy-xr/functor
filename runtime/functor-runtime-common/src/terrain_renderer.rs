@@ -14,7 +14,7 @@ use glow::HasContext;
 use crate::{
     asset::pipelines::HeightmapData,
     fog::{Fog, FogUniforms, FOG_GLSL},
-    light::{lighting_glsl, LightingUniforms},
+    light::{lighting_glsl, Light, LightingUniforms, SPOT_ATTENUATION_GLSL},
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
     DebugRenderMode, RenderContext, TerrainDescription, TerrainGrass,
@@ -34,9 +34,9 @@ const FOG_CULL_MARGIN: f32 = 0.1;
 const DETAIL_TEXTURE_UNIT0: i32 = 1;
 /// The baked macro map sits above the four detail units.
 const MACRO_TEXTURE_UNIT: i32 = 5;
-/// The colormap program's units: day, night, detail. It is a separate
-/// program, so these may reuse the lit detail units.
-pub(crate) const COLORMAP_UNITS: [u32; 3] = [1, 2, 3];
+/// The colormap program's units: day, night, detail, normal map. It is a
+/// separate program, so these may reuse the lit detail units.
+pub(crate) const COLORMAP_UNITS: [u32; 4] = [1, 2, 3, 4];
 /// Furthest the detail band may reach, in metres from the camera.
 ///
 /// A cap, not a flat value. Detail stops being resolvable at a distance that
@@ -328,6 +328,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
 /// Prepended to the vertex shader for the colormap program.
 const COLORMAP_DEFINE: &str = "#define TERRAIN_COLORMAP\n";
+/// Prepended to the colormap fragment shader for its flashlight variant; the
+/// variant without it is the plain colormap shader.
+const FLASHLIGHT_DEFINE: &str = "#define TERRAIN_FLASHLIGHT\n";
 
 /// Baked, unlit terrain: colormap × near detail × fog. No lights, normals or
 /// bands: those are painted into the maps.
@@ -347,6 +350,17 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform float detailFadeEnd;
         uniform vec3 detailCameraPos;
         uniform vec3 detailAverage;
+        #ifdef TERRAIN_FLASHLIGHT
+        // The flashlight (see `Flashlight`), in world space.
+        uniform highp vec3 flashPosition;
+        uniform highp vec3 flashDirection; // unit, along the beam
+        uniform float flashRange;
+        uniform highp float flashConeCos;
+        uniform vec3 flashColor; // linear, × intensity
+        // Terrain-local normals, xyz × 0.5 + 0.5.
+        uniform sampler2D normalTex;
+        uniform mat3 normalMatrix;
+        #endif
 
         out vec4 fragColor;
 
@@ -366,6 +380,27 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
                 color = mix(
                     texture(dayTex, terrainUv).rgb, texture(nightTex, terrainUv).rgb, colormapBlend);
             }
+            #ifdef TERRAIN_FLASHLIGHT
+            // Range and cone first: outside the beam this test is the whole
+            // cost. The beam is one blob on screen, so the branch is coherent.
+            highp vec3 fromLight = worldPos - flashPosition;
+            highp float dist = length(fromLight);
+            highp float cosAngle = dot(fromLight, flashDirection) / max(dist, 1e-4);
+            if (dist < flashRange && cosAngle > flashConeCos) {
+                // Level 0: implicit derivatives are undefined in this branch,
+                // and within a flashlight's reach a terrain-wide map's texels
+                // (metres across) are magnified anyway.
+                vec3 n = normalize(
+                    normalMatrix * (textureLod(normalTex, terrainUv, 0.0).rgb * 2.0 - 1.0));
+                float ndotl = max(dot(n, -fromLight / max(dist, 1e-4)), 0.0);
+                // The day map is the albedo: the night map is the same ground
+                // under moonlight, too dark to show a beam.
+                vec3 albedo =
+                    colormapBlend <= 0.0 ? color : textureLod(dayTex, terrainUv, 0.0).rgb;
+                color += albedo * flashColor * ndotl
+                    * spotAttenuation(dist, cosAngle, flashRange, flashConeCos);
+            }
+            #endif
             if (useDetail == 1) {
                 float fade = 1.0 - smoothstep(
                     detailFadeStart, detailFadeEnd, distance(worldPos, detailCameraPos));
@@ -579,8 +614,57 @@ struct ColormapUniforms {
     detail_fade_end: UniformLocation,
     detail_camera_pos: UniformLocation,
     detail_average: UniformLocation,
+    /// Only in the flashlight variant.
+    flashlight: Option<FlashlightUniforms>,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
+}
+
+struct FlashlightUniforms {
+    position: UniformLocation,
+    direction: UniformLocation,
+    range: UniformLocation,
+    cone_cos: UniformLocation,
+    color: UniformLocation,
+    normal_map: UniformLocation,
+    normal_matrix: UniformLocation,
+}
+
+/// The one spot a colormap terrain receives: the frame's first `Light.spot`
+/// that is not `Light.baked`. Every other light is painted into the maps.
+#[derive(Debug, PartialEq)]
+struct Flashlight {
+    position: [f32; 3],
+    /// Normalized.
+    direction: [f32; 3],
+    /// Linear, × intensity.
+    color: [f32; 3],
+    range: f32,
+    cone_cos: f32,
+}
+
+impl Flashlight {
+    fn find(lights: &[Light]) -> Option<Flashlight> {
+        lights.iter().find_map(|light| match light {
+            Light::Spot {
+                position,
+                direction,
+                color,
+                intensity,
+                range,
+                cone_angle,
+                baked: false,
+                ..
+            } => Some(Flashlight {
+                position: *position,
+                direction: Vector3::from(*direction).normalize().into(),
+                color: crate::light::radiance(*color, *intensity),
+                range: *range,
+                cone_cos: cone_angle.cos(),
+            }),
+            _ => None,
+        })
+    }
 }
 
 struct ColormapProgram {
@@ -592,6 +676,8 @@ struct ColormapProgram {
 /// with its mean color once it has loaded (see `COLORMAP_UNITS`).
 pub(crate) struct ColormapBound {
     pub(crate) detail_average: Option<[f32; 3]>,
+    /// The normal map is bound, so a flashlight can light the terrain.
+    pub(crate) normal_map: bool,
 }
 
 struct GrassUniforms {
@@ -740,7 +826,8 @@ impl HeightTexture {
 #[derive(Default)]
 pub(crate) struct TerrainRenderer {
     program: Option<TerrainProgram>,
-    colormap_program: Option<ColormapProgram>,
+    /// The plain colormap program, and its flashlight variant.
+    colormap_programs: [Option<ColormapProgram>; 2],
     geometries: Vec<TerrainGeometry>,
     grass_program: Option<GrassProgram>,
     grass_geometries: Vec<GrassGeometry>,
@@ -793,8 +880,12 @@ impl TerrainRenderer {
                     | DebugRenderMode::Physics
             )
         });
+        let flashlight = colormap_bound
+            .as_ref()
+            .filter(|bound| bound.normal_map)
+            .and_then(|_| Flashlight::find(ctx.lights));
         if colormap_bound.is_some() {
-            self.ensure_colormap_program(ctx);
+            self.ensure_colormap_program(ctx, flashlight.is_some());
         } else {
             self.ensure_program(ctx);
         }
@@ -862,8 +953,7 @@ impl TerrainRenderer {
 
         unsafe {
             if let Some(bound) = colormap_bound {
-                let program = self
-                    .colormap_program
+                let program = self.colormap_programs[flashlight.is_some() as usize]
                     .as_ref()
                     .expect("colormap program initialized");
                 let p = &program.program;
@@ -897,6 +987,15 @@ impl TerrainRenderer {
                         &u.detail_average,
                         &Vector3::new(average[0], average[1], average[2]),
                     );
+                }
+                if let (Some(light), Some(f)) = (&flashlight, &u.flashlight) {
+                    p.set_uniform_vec3(gl, &f.position, &Vector3::from(light.position));
+                    p.set_uniform_vec3(gl, &f.direction, &Vector3::from(light.direction));
+                    p.set_uniform_vec3(gl, &f.color, &Vector3::from(light.color));
+                    p.set_uniform_1f(gl, &f.range, light.range);
+                    p.set_uniform_1f(gl, &f.cone_cos, light.cone_cos);
+                    p.set_uniform_1i(gl, &f.normal_map, COLORMAP_UNITS[3] as i32);
+                    p.set_uniform_matrix3(gl, &f.normal_matrix, &crate::math::normal_matrix(world));
                 }
                 u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
                 u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
@@ -1112,8 +1211,9 @@ impl TerrainRenderer {
         self.program = Some(TerrainProgram { program, uniforms });
     }
 
-    fn ensure_colormap_program(&mut self, ctx: &RenderContext) {
-        if self.colormap_program.is_some() {
+    fn ensure_colormap_program(&mut self, ctx: &RenderContext, flashlight: bool) {
+        let slot = &mut self.colormap_programs[flashlight as usize];
+        if slot.is_some() {
             return;
         }
         let vertex = Shader::build(
@@ -1125,7 +1225,13 @@ impl TerrainRenderer {
         let fragment = Shader::build(
             ctx.gl,
             ShaderType::Fragment,
-            &format!("{FOG_GLSL}\n{COLORMAP_FRAGMENT_SHADER_SOURCE}"),
+            &if flashlight {
+                format!(
+                    "{FLASHLIGHT_DEFINE}{FOG_GLSL}\n{SPOT_ATTENUATION_GLSL}\n{COLORMAP_FRAGMENT_SHADER_SOURCE}"
+                )
+            } else {
+                format!("{FOG_GLSL}\n{COLORMAP_FRAGMENT_SHADER_SOURCE}")
+            },
             ctx.shader_version,
         );
         let program = ShaderProgram::link(ctx.gl, &vertex, &fragment);
@@ -1142,10 +1248,19 @@ impl TerrainRenderer {
             detail_fade_end: get("detailFadeEnd"),
             detail_camera_pos: get("detailCameraPos"),
             detail_average: get("detailAverage"),
+            flashlight: flashlight.then(|| FlashlightUniforms {
+                position: get("flashPosition"),
+                direction: get("flashDirection"),
+                range: get("flashRange"),
+                cone_cos: get("flashConeCos"),
+                color: get("flashColor"),
+                normal_map: get("normalTex"),
+                normal_matrix: get("normalMatrix"),
+            }),
             fog: FogUniforms::get(&program, ctx.gl),
             output: crate::color_space::OutputEncodeUniform::get(&program, ctx.gl),
         };
-        self.colormap_program = Some(ColormapProgram { program, uniforms });
+        *slot = Some(ColormapProgram { program, uniforms });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2353,6 +2468,24 @@ mod tests {
     use cgmath::{perspective, vec3, Deg, EuclideanSpace, Matrix4, Point3};
 
     use super::*;
+
+    // The terrain's flashlight is the first spot that is not baked, with its
+    // direction normalized and its color packed like the lit shader's.
+    #[test]
+    fn flashlight_is_the_first_unbaked_spot() {
+        let spot = |x: f32| Light::spot(x, 1.0, 0.0, 0.0, -2.0, 0.0, 0.5, 0.5, 0.5, 2.0, 30.0, 0.25);
+        assert_eq!(Flashlight::find(&[]), None);
+        assert_eq!(
+            Flashlight::find(&[Light::point(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0), spot(1.0).baked()]),
+            None
+        );
+        let found = Flashlight::find(&[Light::ambient(0.1, 0.1, 0.1), spot(1.0).baked(), spot(2.0), spot(3.0)])
+            .expect("a spot");
+        assert_eq!(found.position, [2.0, 1.0, 0.0]);
+        assert_eq!(found.direction, [0.0, -1.0, 0.0]);
+        assert_eq!(found.color, crate::light::radiance([0.5, 0.5, 0.5], 2.0));
+        assert_eq!((found.range, found.cone_cos), (30.0, 0.25f32.cos()));
+    }
 
     fn terrain() -> TerrainDescription {
         TerrainDescription::heightmap(

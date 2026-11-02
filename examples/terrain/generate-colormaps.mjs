@@ -1,5 +1,6 @@
-// Bake the day and night colormaps for `Terrain.colormap` from heightmap.png,
-// using only Node built-ins. Re-run after regenerating the heightmap:
+// Bake the day and night colormaps for `Terrain.colormap`, and the normal map
+// for `Terrain.normalMap`, from heightmap.png using only Node built-ins.
+// Re-run after regenerating the heightmap:
 //
 //   node examples/terrain/generate-colormaps.mjs
 //
@@ -174,6 +175,10 @@ const horizonAo = (px, py, h0) => {
 
 const day = Buffer.alloc(OUT * OUT * 3);
 const night = Buffer.alloc(OUT * OUT * 3);
+// Terrain-local unit normals, xyz × 0.5 + 0.5 (Y up = green). RGB, not RG: the
+// engine uploads every image as RGBA8, so dropping a channel saves no GPU
+// memory, and the shader then needs no sqrt to rebuild Y.
+const normals = Buffer.alloc(OUT * OUT * 3);
 for (let j = 0; j < OUT; j += 1) {
   for (let i = 0; i < OUT; i += 1) {
     // Texel centre → heightmap sample space, as the shader's terrainUv maps it.
@@ -198,13 +203,15 @@ for (let j = 0; j < OUT; j += 1) {
     const vary = 0.88 + 0.24 * (0.6 * valueNoise(wx, wy) + 0.4 * valueNoise(wx * 3.7, wy * 3.7));
     albedo = lin(albedo).map((c) => c * vary);
 
+    const o = (j * OUT + i) * 3;
+    for (let c = 0; c < 3; c += 1) normals[o + c] = Math.round((n[c] * 0.5 + 0.5) * 255);
+
     const ao = horizonAo(px, py, h);
     for (const [light, out] of [
       [DAY, day],
       [NIGHT, night],
     ]) {
       const ndl = Math.max(0, n[0] * light.dir[0] + n[1] * light.dir[1] + n[2] * light.dir[2]);
-      const o = (j * OUT + i) * 3;
       for (let c = 0; c < 3; c += 1) {
         const lit = albedo[c] * (light.ambient[c] + light.sun[c] * ndl) * ao;
         out[o + c] = Math.round(clamp(toSrgb(lit), 0, 1) * 255);
@@ -217,6 +224,7 @@ for (let j = 0; j < OUT; j += 1) {
 for (const [name, pixels] of [
   ["colormap-day.png", day],
   ["colormap-night.png", night],
+  ["normalmap.png", normals],
 ]) {
   const png = encodePng(OUT, OUT, 8, 2, pixels);
   writeFileSync(here(name), png);

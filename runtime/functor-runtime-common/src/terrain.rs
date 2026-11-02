@@ -154,6 +154,10 @@ pub struct TerrainDescription {
     /// Near detail over the colormap; ignored without `colormap`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colormap_detail: Option<TerrainColormapDetail>,
+    /// Terrain-local normals for the colormap's flashlight; ignored without
+    /// `colormap`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normal_map: Option<TerrainDetailTexture>,
 }
 
 /// One terrain texture, carrying its own `Asset.whilePending` chain so it
@@ -227,6 +231,7 @@ impl TerrainDescription {
             textures: None,
             colormap: None,
             colormap_detail: None,
+            normal_map: None,
         }
     }
 
@@ -263,6 +268,11 @@ impl TerrainDescription {
 
     pub fn with_colormap_detail(mut self, detail: TerrainColormapDetail) -> Self {
         self.colormap_detail = Some(detail);
+        self
+    }
+
+    pub fn with_normal_map(mut self, normal_map: TerrainDetailTexture) -> Self {
+        self.normal_map = Some(normal_map);
         self
     }
 
@@ -338,6 +348,10 @@ mod tests {
             },
             tile_size: 8.0,
             fade_end: 80.0,
+        })
+        .with_normal_map(TerrainDetailTexture {
+            locator: "normals.png".to_string(),
+            while_pending: Vec::new(),
         });
         let json = serde_json::to_string(&terrain).unwrap();
         assert_eq!(
@@ -358,6 +372,7 @@ mod tests {
         );
         let json = serde_json::to_string(&terrain).unwrap();
         assert!(!json.contains("colormap"), "json: {json}");
+        assert!(!json.contains("normal_map"), "json: {json}");
     }
 
     #[test]

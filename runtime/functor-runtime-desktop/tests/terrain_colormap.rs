@@ -4,7 +4,10 @@
 //!   both maps are ready (a first-use upload must not unbind the other map);
 //! - `blend` 1 shows the night map and 0.5 their linear-space mix;
 //! - changing `blend` uploads nothing and creates no texture: both maps stay
-//!   resident from the first draw.
+//!   resident from the first draw;
+//! - a flashlight (`Light.spot`) adds the day map × the spot term inside its
+//!   cone, and leaves the night map untouched outside it or without a
+//!   `Terrain.normalMap`.
 //!
 //! Self-skipping like `pixel_textures` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -31,6 +34,8 @@ use glow::HasContext;
 const SIZE: u32 = 64;
 const DAY: [u8; 3] = [200, 40, 40];
 const NIGHT: [u8; 3] = [20, 40, 200];
+/// A terrain-local +Y normal, packed `xyz × 0.5 + 0.5`.
+const UP: [u8; 3] = [128, 255, 128];
 
 fn main() {
     if !std::env::args().any(|arg| arg == "--ignored" || arg == "--include-ignored") {
@@ -42,7 +47,7 @@ fn main() {
     image::ImageBuffer::<image::Luma<u16>, _>::from_pixel(65, 65, image::Luma([0]))
         .save(dir.join("height.png"))
         .expect("write heightmap");
-    for (name, rgb) in [("day.png", DAY), ("night.png", NIGHT)] {
+    for (name, rgb) in [("day.png", DAY), ("night.png", NIGHT), ("up.png", UP)] {
         image::RgbaImage::from_pixel(8, 8, image::Rgba([rgb[0], rgb[1], rgb[2], 255]))
             .save(dir.join(name))
             .expect("write colormap");
@@ -50,6 +55,8 @@ fn main() {
     let mut harness = Harness::new();
     blend_selects_and_mixes_the_maps_without_uploads(&mut harness, &dir);
     println!("test blend_selects_and_mixes_the_maps_without_uploads ... ok");
+    flashlight_lights_only_its_cone(&mut harness, &dir);
+    println!("test flashlight_lights_only_its_cone ... ok");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -84,6 +91,44 @@ fn blend_selects_and_mixes_the_maps_without_uploads(harness: &mut Harness, dir: 
     assert!(near(day, DAY, 2), "back to day: drew {day:?}");
     assert_eq!(gpu_counters().take_window().bytes_uploaded, 0, "an hour switch uploads nothing");
     assert_eq!(gpu_counters().live().textures, textures, "and creates no texture");
+}
+
+fn flashlight_lights_only_its_cone(harness: &mut Harness, dir: &Path) {
+    // Straight down from 10 m with a 20 m range: at the centre the distance
+    // falloff is (1 − 10²/20²)² = 0.5625, the cone and N·L are 1.
+    let spot = |x: f32| Light::spot(x, 10.0, 0.0, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 20.0, 0.3);
+    let night = |lights: Vec<Light>, normal_map: bool| {
+        let mut frame = terrain_frame(dir, 1.0);
+        let Scene3D { obj: SceneObject::Terrain(terrain), .. } = &mut frame.scene else {
+            unreachable!("terrain_frame draws one terrain")
+        };
+        if normal_map {
+            terrain.normal_map = Some(TerrainDetailTexture {
+                locator: dir.join("up.png").to_string_lossy().into_owned(),
+                while_pending: Vec::new(),
+            });
+        }
+        frame.lights.extend(lights);
+        frame
+    };
+    // Wait for the normal map to decode: the frame changes once it lights.
+    let lit = draw_until_changed(harness, &night(vec![spot(0.0)], true), NIGHT);
+    let expected: [u8; 3] = std::array::from_fn(|c| {
+        let linear = srgb_u8_to_linear(NIGHT[c]) + srgb_u8_to_linear(DAY[c]) * 0.5625;
+        (linear_to_srgb(linear) * 255.0).round() as u8
+    });
+    assert!(near(lit, expected, 2), "in the cone: drew {lit:?}, expected {expected:?}");
+    // A baked spot is skipped; the next one is the flashlight.
+    let baked_first = night(vec![spot(0.0).baked(), spot(0.0)], true);
+    assert!(near(harness.centre(&baked_first), expected, 2), "first NON-baked spot");
+    for (frame, why) in [
+        (night(vec![spot(30.0)], true), "outside the cone"),
+        (night(vec![spot(0.0).baked()], true), "only a baked spot"),
+        (night(vec![spot(0.0)], false), "no normal map"),
+    ] {
+        let centre = harness.centre(&frame);
+        assert!(near(centre, NIGHT, 2), "{why}: drew {centre:?}");
+    }
 }
 
 /// A flat 100 m terrain seen from straight above, shaded only by colormaps.

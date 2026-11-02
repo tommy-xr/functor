@@ -1079,8 +1079,12 @@ reports the drawn patches/vertices.
 offline-baked maps (lighting and occlusion painted in) cross-faded by `blend`
 (0 = day, 1 = night; only those two read one map). Frame lights don't reach it;
 fog does. `Terrain.colormapDetail(tex, tileSize, fadeEnd)` adds one tiled
-structure map that fades out by `fadeEnd`. `examples/terrain` bakes its maps
-with `generate-colormaps.mjs` (`C` toggles the shading, `N` night).
+structure map that fades out by `fadeEnd`. The one exception is a flashlight:
+with `Terrain.normalMap(tex)` (terrain-local normals, `xyz × 0.5 + 0.5`), the
+frame's first non-baked `Light.spot` lights the day map's color inside its
+cone (no shadows); without a normal map no light reaches it. `examples/terrain`
+bakes its maps with `generate-colormaps.mjs` (`C` toggles the shading, `N`
+night, `L` the flashlight).
 
 ### The cross-cutting rules (what a signature won't tell you)
 
