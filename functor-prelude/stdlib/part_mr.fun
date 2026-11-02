@@ -147,14 +147,15 @@ let partsOf = (view, whole: item): List<item> =>
 let fallbackGrip = () =>
   Camera3D.mapTrackedPose(camera(), { position: { x: 0.2, y: -0.3, z: -0.3 }, orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } })
 
-// Which way a pose faces about +Y: its forward's level part, plus its up's
-// turned to the same side, so a hand tipped straight down (setting a part
-// on a desk) or up still faces ahead, with no jump in between.
+// Which way a pose faces about +Y: its forward's level part, with its up's
+// (turned to the same side) blended in as the hand tips toward straight down
+// (setting a part on a desk) or up, so it still faces ahead there, has no
+// jump in between, and a level hand's roll doesn't turn it.
 let heading = (pose: Camera3D.mappedPose) =>
   let f = pose.forward in
   let u = pose.up in
-  let side = if f.y >= 0.0 then 1.0 else -1.0 in
-  Math.atan2(f.x - side * u.x, f.z - side * u.z)
+  let w = (if f.y >= 0.0 then 1.0 else -1.0) * f.y * f.y in
+  Math.atan2(f.x - w * u.x, f.z - w * u.z)
 
 // `grip`: the right controller's grip pose; `squeezing`: its grip held;
 // `index`: the view shown; `whole`: where the assembled view is; `apart`:
@@ -163,10 +164,11 @@ let heading = (pose: Camera3D.mappedPose) =>
 // grip and `yawOffset` from its heading; `active`: the item the thumbstick
 // turns; the `…Pressed` fields latch buttons so a hold acts once.
 // `aim`: its pointing pose; `pointed`: the item the beam is on (-1 none),
-// and `beamEnd` where the beam stops (that item, else the room).
+// and `beamEnd` where the beam stops (that item, else the room); `along`:
+// how far down the beam an item taken with it rides (-1 for one in hand).
 type t = {
   grip: Camera3D.mappedPose, gripTracked: bool, squeezing: bool, stick: Input.point2,
-  aim: Camera3D.mappedPose, aimTracked: bool, pointed: float, beamEnd: Input.point3,
+  aim: Camera3D.mappedPose, aimTracked: bool, pointed: float, beamEnd: Input.point3, along: float,
   index: float, whole: item, apart: bool, parts: List<item>,
   held: float, offset: Input.point3, yawOffset: float, active: float,
   mixedReality: bool, togglePressed: bool, cyclePressed: bool, apartPressed: bool
@@ -177,7 +179,7 @@ type t = {
 let init = (views): t =>
   let e = eye() in
   { grip: fallbackGrip(), gripTracked: false, squeezing: false, stick: { x: 0.0, y: 0.0 },
-    aim: fallbackGrip(), aimTracked: false, pointed: -1.0, beamEnd: point(0.0, 0.0, 0.0),
+    aim: fallbackGrip(), aimTracked: false, pointed: -1.0, beamEnd: point(0.0, 0.0, 0.0), along: -1.0,
     index: 0.0, whole: { position: point(Vec3.x(e), Vec3.y(e) - 0.1, Vec3.z(e) + 0.5), yaw: 0.0, pitch: 0.0, settles: true },
     apart: false, parts: [],
     held: -1.0, offset: point(0.0, 0.0, 0.0), yawOffset: 0.0, active: 0.0,
@@ -212,15 +214,25 @@ let selected = (views, m: t): float =>
   let near = inReach(views, m) in
   if near >= 0.0 then near else m.pointed
 
-// Take the selected item, keeping where the hand holds it — at a distance
-// too, for one taken with the beam.
+let dot = (a: Input.point3, b: Input.point3) => a.x * b.x + a.y * b.y + a.z * b.z
+let scaled = (k: float, v: Input.point3) => point(v.x * k, v.y * k, v.z * k)
+
+// Take the selected item. In reach, it keeps where the hand holds it; taken
+// with the beam, it rides the beam that far out, so pointing moves it.
 let grabbed = (views, m: t): t =>
+  let near = inReach(views, m) >= 0.0 in
   let i = selected(views, m) in
   match List.nth(i, items(views, m)) with
   | Option.None => m
   | Option.Some(e) =>
-    let h = heading(m.grip) in
-    { m with held: i, active: i, offset: turn(0.0 - h, minus(e.item.position, m.grip.position)), yawOffset: e.item.yaw - h }
+    if near then
+      let h = heading(m.grip) in
+      { m with held: i, active: i, along: -1.0, offset: turn(0.0 - h, minus(e.item.position, m.grip.position)), yawOffset: e.item.yaw - h }
+    else
+      let h = heading(m.aim) in
+      let along = dot(minus(e.item.position, m.aim.position), m.aim.forward) in
+      let onBeam = plus(m.aim.position, scaled(along, m.aim.forward)) in
+      { m with held: i, active: i, along: along, offset: turn(0.0 - h, minus(e.item.position, onBeam)), yawOffset: e.item.yaw - h }
 
 // Let go: the held item rests on the room from now on.
 let released = (m: t): t =>
@@ -244,6 +256,57 @@ let cycled = (views, m: t): t =>
   if List.length(views) == 0.0 then m
   else { m with index: Math.mod(m.index + 1.0, List.length(views)), apart: false, held: -1.0, active: 0.0 }
 
+// How far along the ray from `o` (unit direction `d`) it enters the item's
+// posed box, if it does ahead of `o` (0 from inside it): the ray brought
+// into the item's own frame (undo its place, turn and tilt), then the slab
+// test on each axis.
+let alongTo = (o: Input.point3, d: Input.point3, it: item, half: Input.point3) =>
+  let local = (v) => tilt(0.0 - it.pitch, turn(0.0 - it.yaw, v)) in
+  let lo = local(minus(o, it.position)) in
+  let ld = local(d) in
+  let slab = (o1, d1, h) =>
+    if Math.abs(d1) < 0.000001 then (if Math.abs(o1) <= h then { near: -1000000.0, far: 1000000.0 } else { near: 1.0, far: 0.0 })
+    else
+      let a = (0.0 - h - o1) / d1 in
+      let b = (h - o1) / d1 in
+      { near: Math.min(a, b), far: Math.max(a, b) } in
+  let x = slab(lo.x, ld.x, half.x) in
+  let y = slab(lo.y, ld.y, half.y) in
+  let z = slab(lo.z, ld.z, half.z) in
+  let near = Math.max(Math.max(x.near, y.near), z.near) in
+  let far = Math.min(Math.min(x.far, y.far), z.far) in
+  if near > far || far < 0.0 then Option.None else Option.Some(Math.max(near, 0.0))
+
+// How far the beam goes before the room stops it, and how far ahead of the
+// hand the room counts (the depth sensor sees the hand, so it can fuse).
+let beamLength = 3.0
+let handClear = 0.1
+
+// Where the beam from the aim is: the nearest item it meets in front of
+// the room, else as far as `room` says the room lets it go (the fused room
+// in play; tests pass their own). Nothing while not aiming.
+let aimedWith = (views, m: t, room): t =>
+  if not m.aimTracked then { m with pointed: -1.0 }
+  else
+    let o = m.aim.position in
+    let d = m.aim.forward in
+    let wall = room(plus(o, scaled(handClear, d)), d) |> Option.map((t) => t + handClear) |> Option.defaultValue(beamLength) in
+    let hit =
+      items(views, m)
+        |> List.indexedMap((i, e) => { i: i, t: alongTo(o, d, e.item, e.half) |> Option.defaultValue(-1.0) })
+        |> List.filter((c) => c.t >= 0.0 && c.t < wall)
+        |> List.sortBy((c) => c.t)
+        |> List.head in
+    let reach = hit |> Option.map((c) => c.t) |> Option.defaultValue(wall) in
+    { m with
+      pointed: hit |> Option.map((c) => c.i) |> Option.defaultValue(-1.0),
+      beamEnd: plus(o, scaled(reach, d)) }
+
+// How far along the ray the fused room stops it, if within `beamLength`.
+let roomAlong = (o: Input.point3, d: Input.point3) =>
+  let hit = Physics.cast(Vec3.make(o.x, o.y, o.z), Vec3.make(d.x, d.y, d.z), beamLength) in
+  if hit.hit then Option.Some(hit.distance) else Option.None
+
 // Keyboard edges, so a held key's auto-repeat doesn't act again.
 let pressed = (s: Input.snapshot, key) => s.pressedKeys |> List.any((k) => k == key)
 
@@ -251,7 +314,9 @@ let pressed = (s: Input.snapshot, key) => s.pressedKeys |> List.any((k) => k == 
 // halfway doesn't drop and retake.
 let squeezed = (was: bool, squeeze: float) => if was then squeeze > 0.4 else squeeze > 0.6
 
-let sampledInput = (views, current: t, s: Input.snapshot): t =>
+// `room` is `roomAlong` in play: the beam is re-aimed with this step's poses
+// and view, so a squeeze takes what the beam is on now.
+let sampledInputWith = (views, current: t, s: Input.snapshot, room): t =>
   let byKey = if pressed(s, Key.P) then toggled(current) else current in
   let byKey = if pressed(s, Key.B) then apartToggled(views, byKey) else byKey in
   let m = if pressed(s, Key.N) then cycled(views, byKey) else byKey in
@@ -276,9 +341,12 @@ let sampledInput = (views, current: t, s: Input.snapshot): t =>
     let next = if toggle && not m.togglePressed then toggled(next) else next in
     let next = if apart && not m.apartPressed then apartToggled(views, next) else next in
     let next = if cycle && not m.cyclePressed then cycled(views, next) else next in
+    let next = aimedWith(views, next, room) in
     if squeezing && not m.squeezing then grabbed(views, next)
     else if squeezing then next
     else released(next)
+
+let sampledInput = (views, current: t, s: Input.snapshot): t => sampledInputWith(views, current, s, roomAlong)
 
 let approach = (from: Input.point3, target: Input.point3, amount: float): Input.point3 =>
   point(from.x + (target.x - from.x) * amount, from.y + (target.y - from.y) * amount, from.z + (target.z - from.z) * amount)
@@ -308,7 +376,9 @@ let stepped = (m: t, below, dt: float, i: float, it: item, half: Input.point3): 
   let spin = axis(m.stick.x) * turnRate * dt in
   let tilted = if i == m.active then { it with pitch: Math.clamp(0.0 - Math.pi / 2.0, Math.pi / 2.0, it.pitch + axis(m.stick.y) * turnRate * dt) } else it in
   if i == m.held then
-    { tilted with position: plus(m.grip.position, turn(heading(m.grip), m.offset)), yaw: heading(m.grip) + m.yawOffset + spin }
+    let hand = if m.along >= 0.0 then m.aim else m.grip in
+    let from = if m.along >= 0.0 then plus(m.aim.position, scaled(m.along, m.aim.forward)) else m.grip.position in
+    { tilted with position: plus(from, turn(heading(hand), m.offset)), yaw: heading(hand) + m.yawOffset + spin }
   else
     let turned = if i == m.active then { tilted with yaw: tilted.yaw + spin } else tilted in
     if not turned.settles then turned
@@ -333,45 +403,7 @@ let tickWith = (views, m: t, dt: float, below): t =>
       { m with parts: List.zip(view.pieces, m.parts) |> List.indexedMap((i, pair) => let (it, piece) = pair in stepped(still, below, dt, i, it, piece.half)) }
     else { m with whole: stepped(still, below, dt, 0.0, m.whole, view.half) }
 
-let dot = (a: Input.point3, b: Input.point3) => a.x * b.x + a.y * b.y + a.z * b.z
-
-// How far along the ray from `o` (unit direction `d`) it meets the sphere of
-// radius `r` about `c`, if it does ahead of `o`.
-let alongTo = (o: Input.point3, d: Input.point3, c: Input.point3, r: float) =>
-  let oc = minus(c, o) in
-  let t = dot(oc, d) in
-  if t < 0.0 || dot(oc, oc) - t * t > r * r then Option.None else Option.Some(t)
-
-// How far the beam goes before the room stops it.
-let beamLength = 3.0
-
-// Where the beam from the aim is: the nearest item it meets (each as its
-// bounding sphere), else as far as `room` says the room lets it go (the
-// fused room in play; tests pass their own). Nothing while not aiming.
-let aimedWith = (views, m: t, room): t =>
-  if not m.aimTracked then { m with pointed: -1.0 }
-  else
-    let o = m.aim.position in
-    let d = m.aim.forward in
-    let hit =
-      items(views, m)
-        |> List.indexedMap((i, e) => { i: i, t: alongTo(o, d, e.item.position, radius(e.half)) |> Option.defaultValue(-1.0) })
-        |> List.filter((c) => c.t >= 0.0)
-        |> List.sortBy((c) => c.t)
-        |> List.head in
-    let reach = match hit with
-      | Option.Some(c) => c.t
-      | Option.None => room(o, d) |> Option.defaultValue(beamLength) in
-    { m with
-      pointed: hit |> Option.map((c) => c.i) |> Option.defaultValue(-1.0),
-      beamEnd: plus(o, point(d.x * reach, d.y * reach, d.z * reach)) }
-
-// How far along the ray the fused room stops it, if within `beamLength`.
-let roomAlong = (o: Input.point3, d: Input.point3) =>
-  let hit = Physics.cast(Vec3.make(o.x, o.y, o.z), Vec3.make(d.x, d.y, d.z), beamLength) in
-  if hit.hit then Option.Some(hit.distance) else Option.None
-
-let tick = (views, m: t, dt: float): t => aimedWith(views, tickWith(views, m, dt, surfaceBelow), roomAlong)
+let tick = (views, m: t, dt: float): t => tickWith(views, m, dt, surfaceBelow)
 
 let posed = (it: item, scene) =>
   scene |> Scene.rotateX(Angle.radians(it.pitch)) |> Scene.rotateY(Angle.radians(it.yaw)) |> at(it.position)
@@ -407,10 +439,11 @@ let beamScene = (from: Input.point3, to: Input.point3, color) =>
       Scene.sphere() |> Scene.scale(0.006) |> Scene.emissive(color) |> at(to),
     ])
 
-// The beam while aiming and not holding: cyan on a part, white elsewhere.
-let beam = (m: t) =>
+// The beam while aiming and not holding: cyan on the part a squeeze takes,
+// white elsewhere (or while one in reach of the hand is taken instead).
+let beam = (views, m: t) =>
   if m.aimTracked && m.held < 0.0 then
-    beamScene(m.aim.position, m.beamEnd, if m.pointed >= 0.0 then cyan else Color.rgb(0.8, 0.82, 0.86))
+    beamScene(m.aim.position, m.beamEnd, if m.pointed >= 0.0 && m.pointed == selected(views, m) then cyan else Color.rgb(0.8, 0.82, 0.86))
   else Scene.group([])
 
 // A see-through box around the part a squeeze would take.
@@ -451,7 +484,7 @@ let draw = (views, m: t) =>
   let frame =
     Frame.createLit(
       camera(),
-      Scene.group(shown |> List.append([gripDot(views, m), beam(m), highlight(views, m)])),
+      Scene.group(shown |> List.append([gripDot(views, m), beam(views, m), highlight(views, m)])),
       [
         Light.ambient(Color.rgb(0.25, 0.25, 0.3)),
         Light.directional(Vec3.make(-0.4, -1.0, 0.5), Color.rgb(1.0, 0.95, 0.9), 0.9),
