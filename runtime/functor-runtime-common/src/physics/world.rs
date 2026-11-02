@@ -554,15 +554,10 @@ impl World {
                         .get(&body.tag)
                         .map(|rb| *self.bodies[*rb].position())
                 });
-                let mut pose = pose_of(body);
-                if let (Some(prev), Some(live)) = (self.declared.get(&body.tag), live) {
-                    if prev.position == body.position {
-                        pose.translation = live.translation;
-                    }
-                    if prev.rotation == body.rotation {
-                        pose.rotation = live.rotation;
-                    }
-                }
+                let pose = match (self.declared.get(&body.tag), live) {
+                    (Some(prev), Some(live)) => keep_live(prev, body, pose_of(body), live),
+                    _ => pose_of(body),
+                };
                 (&body.tag, pose)
             })
             .collect();
@@ -866,24 +861,13 @@ impl World {
         let ray = rapier3d::prelude::Ray::new(vec3(origin), d / len);
         let hit = self
             .queries(QueryFilter::default(), exclude)
-            .cast_ray_and_get_normal(&ray, max_dist, true)
-            .map(|(collider, hit)| {
-                let part = self
-                    .fused_tags(collider)
-                    .and_then(|_| ray_on_parts(self.compound(collider), &ray, max_dist, None));
-                (collider, part.map(|(part, _)| part), hit)
-            });
-        // An excluded fused body's compound was skipped whole: cast on its
-        // other parts.
-        let rest = exclude.and_then(|tag| self.fused_part(tag)).and_then(|(c, skip)| {
-            let (part, hit) = ray_on_parts(self.compound(c), &ray, max_dist, Some(skip))?;
-            Some((c, Some(part), hit))
-        });
-        let (col_handle, part, hit) = [hit, rest]
-            .into_iter()
-            .flatten()
-            .min_by(|a, b| a.2.time_of_impact.total_cmp(&b.2.time_of_impact))?;
-        let tag = self.tag_of_hit(col_handle, part)?;
+            .cast_ray_and_get_normal(&ray, max_dist, true);
+        let (tag, _, hit) = self.with_fused_parts(
+            hit,
+            exclude,
+            |hit| hit.time_of_impact,
+            |compound, skip| ray_on_parts(compound, &ray, max_dist, skip),
+        )?;
         let kept = match hit.feature {
             FeatureId::Face(i) => Some(i),
             _ => None,
@@ -922,22 +906,13 @@ impl World {
         let queries = self.queries(QueryFilter::default(), exclude);
         let from = Pose::from_translation(vec3(origin));
         let dir = d / len;
-        let hit = sweep(&queries, &*swept, &from, dir, max_dist, 0.0).map(|(collider, hit)| {
-            let part = self.fused_tags(collider).and_then(|_| {
-                sweep_parts(self.compound(collider), &*swept, &from, dir, max_dist, None)
-            });
-            (collider, part.map(|(part, _)| part), hit)
-        });
-        // As in `raycast_excluding`.
-        let rest = exclude.and_then(|tag| self.fused_part(tag)).and_then(|(c, skip)| {
-            let (part, hit) = sweep_parts(self.compound(c), &*swept, &from, dir, max_dist, Some(skip))?;
-            Some((c, Some(part), hit))
-        });
-        let (col_handle, part, hit) = [hit, rest]
-            .into_iter()
-            .flatten()
-            .min_by(|a, b| a.2.time_of_impact.total_cmp(&b.2.time_of_impact))?;
-        let tag = self.tag_of_hit(col_handle, part)?;
+        let hit = sweep(&queries, &*swept, &from, dir, max_dist, 0.0);
+        let (tag, col_handle, hit) = self.with_fused_parts(
+            hit,
+            exclude,
+            |hit| hit.time_of_impact,
+            |compound, skip| sweep_parts(compound, &*swept, &from, dir, max_dist, skip),
+        )?;
         // Shape casts report no feature, so find the triangle under the
         // contact point (on a shared edge, either neighbour).
         let collider = &self.colliders[col_handle];
@@ -1357,12 +1332,36 @@ impl World {
             .map(|(tag, _)| tag.clone())
     }
 
-    /// The tag a query hit: `part` of a fused compound, else the body's.
-    fn tag_of_hit(&self, collider: ColliderHandle, part: Option<usize>) -> Option<String> {
-        match (self.fused_tags(collider), part) {
+    /// A world query's hit, with its tag: a fused compound's hit part is
+    /// found by casting on its parts (`on_parts`). An excluded fused body's
+    /// compound was skipped whole, so its other parts are cast too and the
+    /// nearer hit (by `toi`) wins.
+    fn with_fused_parts<H>(
+        &self,
+        hit: Option<(ColliderHandle, H)>,
+        exclude: Option<&str>,
+        toi: impl Fn(&H) -> f32,
+        on_parts: impl Fn(&Compound, Option<usize>) -> Option<(usize, H)>,
+    ) -> Option<(String, ColliderHandle, H)> {
+        let hit = hit.map(|(collider, hit)| {
+            let part = self
+                .fused_tags(collider)
+                .and_then(|_| on_parts(self.compound(collider), None));
+            (collider, part.map(|(part, _)| part), hit)
+        });
+        let rest = exclude.and_then(|tag| self.fused_part(tag)).and_then(|(c, skip)| {
+            let (part, hit) = on_parts(self.compound(c), Some(skip))?;
+            Some((c, Some(part), hit))
+        });
+        let (collider, part, hit) = [hit, rest]
+            .into_iter()
+            .flatten()
+            .min_by(|a, b| toi(&a.2).total_cmp(&toi(&b.2)))?;
+        let tag = match (self.fused_tags(collider), part) {
             (Some(tags), Some(part)) => tags.get(part).cloned(),
             _ => self.tag_of_collider(collider),
-        }
+        }?;
+        Some((tag, collider, hit))
     }
 
     /// The compound part that is body `tag`, if `tag` is fused.
@@ -1685,13 +1684,7 @@ impl World {
                     rb.set_position(live_pose, true);
                     rb.set_next_kinematic_position(target_pose);
                 } else {
-                    let mut rebuilt_pose = *rb.position();
-                    if prev.position == next.position {
-                        rebuilt_pose.translation = live_pose.translation;
-                    }
-                    if prev.rotation == next.rotation {
-                        rebuilt_pose.rotation = live_pose.rotation;
-                    }
+                    let rebuilt_pose = keep_live(prev, next, *rb.position(), live_pose);
                     if *rb.position() != rebuilt_pose {
                         rb.set_position(rebuilt_pose, true);
                     }
@@ -1816,6 +1809,18 @@ impl World {
 
 fn vec3(v: [f32; 3]) -> Vector {
     Vector::new(v[0], v[1], v[2])
+}
+
+/// `pose` with `live`'s translation and rotation where the declaration
+/// didn't change them: a rebuilt body keeps what the simulation did.
+fn keep_live(prev: &Body, next: &Body, mut pose: Pose, live: Pose) -> Pose {
+    if prev.position == next.position {
+        pose.translation = live.translation;
+    }
+    if prev.rotation == next.rotation {
+        pose.rotation = live.rotation;
+    }
+    pose
 }
 
 fn pose_of(body: &Body) -> Pose {
@@ -3522,6 +3527,20 @@ mod tests {
         }
     }
 
+    /// A step's events as `(a, b, started, sensor)` with `a <= b`, sorted:
+    /// comparable whichever way round rapier named a pair.
+    fn sorted_events(events: Vec<PhysicsEvent>) -> Vec<(String, String, bool, bool)> {
+        let mut events: Vec<_> = events
+            .into_iter()
+            .map(|e| match e.a <= e.b {
+                true => (e.a, e.b, e.started, e.sensor),
+                false => (e.b, e.a, e.started, e.sensor),
+            })
+            .collect();
+        events.sort();
+        events
+    }
+
     /// Bodies fused into compounds.
     fn fused_bodies(w: &World) -> usize {
         w.fused.values().flatten().map(|f| f.tags.len()).sum()
@@ -3689,13 +3708,7 @@ mod tests {
             for _ in 0..90 {
                 w.reconcile(&frame);
                 w.step_frame(FIXED_DT);
-                let mut step: Vec<_> = w
-                    .take_events()
-                    .into_iter()
-                    .map(|e| (e.a.clone().min(e.b.clone()), e.a.max(e.b), e.started, e.sensor))
-                    .collect();
-                step.sort();
-                events.push(step);
+                events.push(sorted_events(w.take_events()));
             }
             events
         };
@@ -3871,17 +3884,6 @@ mod tests {
             }
             cmds
         };
-        let sorted = |events: Vec<PhysicsEvent>| {
-            let mut events: Vec<_> = events
-                .into_iter()
-                .map(|e| match e.a <= e.b {
-                    true => (e.a, e.b, e.started, e.sensor),
-                    false => (e.b, e.a, e.started, e.sensor),
-                })
-                .collect();
-            events.sort();
-            events
-        };
         let crates_agree = |flat: &World, memo: &World| {
             ["a", "b", "c"]
                 .iter()
@@ -3900,8 +3902,8 @@ mod tests {
             let cmds = cmds_at(frame, true);
             log.record(frame, &memo, &cmds);
             let agreed = crates_agree(&flat, &memo);
-            let flat_events = sorted(flat.step(&cmds_at(frame, false)));
-            let memo_events = sorted(memo.step(&cmds));
+            let flat_events = sorted_events(flat.step(&cmds_at(frame, false)));
+            let memo_events = sorted_events(memo.step(&cmds));
             if agreed {
                 assert_eq!(flat_events, memo_events, "frame {frame}");
                 contacts_compared += flat_events.len();
