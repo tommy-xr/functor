@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use super::{LayeredImage, PixelFormat, TextureData};
+use crate::timetravel::fnv1a;
 
 /// The largest side accepted: what every GPU we ship on (desktop, browsers,
 /// Quest) supports in practice, though GLES 3 / WebGL2 promise only 2048.
@@ -58,7 +59,7 @@ pub struct PixelData {
     data: TextureData,
     // An atlas's switchable layers (`Texture.withLayers`); usually empty.
     layers: Vec<LayeredImage>,
-    // `fnv1a(rgba8)`, filled by the first [`digesting`] serialize.
+    // Of `rgba8` and `layers`, filled by the first [`digesting`] serialize.
     digest: OnceLock<u64>,
 }
 
@@ -235,22 +236,30 @@ pub fn digesting<T>(f: impl FnOnce() -> T) -> T {
 impl Serialize for PixelData {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if DIGESTING.with(Cell::get) {
-            let digest = *self.digest.get_or_init(|| crate::timetravel::fnv1a(self.rgba8()));
-            self.wire(digest).serialize(serializer)
+            let digest = *self.digest.get_or_init(|| {
+                let layers = serde_json::to_vec(self.layers()).expect("layers serialize");
+                let parts = [fnv1a(self.rgba8()), fnv1a(&layers)];
+                fnv1a(&parts.map(u64::to_le_bytes).concat())
+            });
+            self.wire(digest, &[]).serialize(serializer)
         } else {
-            self.wire(self.rgba8()).serialize(serializer)
+            self.wire(self.rgba8(), self.layers()).serialize(serializer)
         }
     }
 }
 
 impl PixelData {
-    fn wire<B>(&self, rgba8: B) -> PixelWire<B, &[LayeredImage]> {
+    fn wire<'a, B>(
+        &self,
+        rgba8: B,
+        layers: &'a [LayeredImage],
+    ) -> PixelWire<B, &'a [LayeredImage]> {
         PixelWire {
             width: self.width(),
             height: self.height(),
             color_space: self.color_space,
             rgba8,
-            layers: self.layers(),
+            layers,
         }
     }
 }
@@ -338,6 +347,27 @@ mod tests {
         assert_ne!(json, digest(&other));
         // Outside `digesting` (and after it) the bytes are inline again.
         assert!(serde_json::to_string(&a).unwrap().contains("[9,8,7,255]"));
+        // Layer texels fold into the digest too.
+        let layered = |b: u8| {
+            let layer = crate::texture::Layer {
+                id: 1.0,
+                rgba8: vec![b; 4],
+            };
+            let image = LayeredImage {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                padding: 0,
+                layers: vec![layer],
+            };
+            px(9).with_layers(vec![image]).unwrap()
+        };
+        let json = digest(&layered(5));
+        assert!(!json.contains('[') && !json.contains("layers"), "{json}");
+        assert_eq!(json, digest(&layered(5)));
+        assert_ne!(json, digest(&layered(6)));
+        assert_ne!(json, digest(&a));
     }
 
     #[test]
