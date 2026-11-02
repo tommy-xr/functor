@@ -38,8 +38,37 @@ fn a_space_keeps_the_number_and_the_name_apart() {
     assert_eq!(tokens[1].kind, TokenKind::Ident("deg".to_string()));
 }
 
+/// Scientific notation: `e`/`E`, an optional sign, digits. A unit may follow
+/// the exponent; an `e` NOT followed by (sign and) digits is still a suffix.
+#[test]
+fn exponent_literals_lex_as_numbers() {
+    let tokens = lex("1e-5 2.5E7 3e+2 1e3ms 2em 4e", 0).expect("lexes");
+    let kinds: Vec<&TokenKind> = tokens.iter().map(|t| &t.kind).collect();
+    assert_eq!(
+        kinds[..6],
+        [
+            &TokenKind::Number(1e-5),
+            &TokenKind::Number(2.5e7),
+            &TokenKind::Number(300.0),
+            &TokenKind::NumberUnit(1000.0, "ms".to_string()),
+            &TokenKind::NumberUnit(2.0, "em".to_string()),
+            &TokenKind::NumberUnit(4.0, "e".to_string()),
+        ]
+    );
+    // `1e-x` is not an exponent: `1` with unit `e`, then `-`, then `x`
+    let tokens = lex("1e-x", 0).expect("lexes");
+    assert_eq!(tokens[0].kind, TokenKind::NumberUnit(1.0, "e".to_string()));
+}
+
+/// An exponent literal evaluates like any number.
+#[test]
+fn exponent_literals_evaluate() {
+    let src = "let main = () => 1.5e3 + 2e-1";
+    assert_eq!(main_result(src), "1500.2");
+}
+
 /// A plain literal is untouched — including one followed by a non-identifier
-/// character (there is no scientific notation, so nothing else is ambiguous).
+/// character.
 #[test]
 fn plain_literals_are_unchanged() {
     let tokens = lex("1.5 + 2", 0).expect("lexes");
