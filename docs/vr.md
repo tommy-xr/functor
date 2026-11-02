@@ -182,6 +182,16 @@ let settings = (model) =>
 - `Xr.refreshRate(hz)` belongs in `config`. The APK requests it each time a
   project loads (`functor run vr`'s initial push). An unoffered rate logs a
   warning and falls back to the default.
+- `Xr.msaa(samples)` belongs in `config`: 1, 2 or 4 MSAA samples per
+  eye-buffer pixel, applied each time a project loads (default 1). It
+  smooths thin, high-contrast edges that crawl at a distance (window bands,
+  rooflines). Quest renders through `GL_EXT_multisampled_render_to_texture`,
+  so the samples stay in tile memory and resolve as each tile is stored; a
+  driver without it renders with 1. Only the eye pass is multisampled, not
+  `Frame.withRenderTarget` passes. Logcat prints `MSAA: …x requested, …x in
+  use` on each change, and `/state.views[].samples` reports the count in use.
+  It costs GPU time, so bench it (`npm run bench:quest`) before opting a game
+  in. Desktop and web ignore it.
 - `Xr.foveation(level)` belongs in `settings`. `Xr.Off`/`Low`/`Medium`/`High`
   pin the `XR_FB_foveation` level with dynamic scaling off. Without it the APK
   uses `High` with dynamic scaling on. Logcat prints

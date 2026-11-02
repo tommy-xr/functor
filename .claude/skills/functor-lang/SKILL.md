@@ -1051,7 +1051,7 @@ The generated modules:
 | `Ui` | the lightweight HUD `ui` hook: text, rows/columns, anchored panels, button/slider/textInput |
 | `Html` / `Attr` / `Style` | the `webview` hook: an Elm-style HTML tree, attributes/handlers, typed inline CSS |
 | `Input` | the types `sampledInput` receives: snapshot, mouse, XR poses, `point2`/`point3` |
-| `Config` / `Settings` / `Xr` | what the `config` value and `settings` hook are: launch-time and live shell options (XR refresh rate, passthrough, foveation) |
+| `Config` / `Settings` / `Xr` | what the `config` value and `settings` hook are: launch-time and live shell options (XR refresh rate, passthrough, MSAA, foveation) |
 | `Source` | where a `Config.external` prefix's files come from: `Source.mount("ss2")` (this machine's mount) |
 
 Two more namespaces resolve under the host but have no `.funi` and are NOT in
@@ -1674,7 +1674,8 @@ alone before anything runs, so `config` can't read files. `run vr` sends the
 headset what it reads. Names match case-sensitively; `|> Source.ignoreCase`
 matches them ignoring case (game data authored on Windows). `Source.device(path)` (standalone headset) is declared
 only: `--target device` isn't implemented yet. Each `Xr` knob belongs to
-one bucket — `refreshRate`, `passthrough` and `scene` in `config`, `foveation` and
+one bucket — `refreshRate`, `passthrough`, `scene`, `floorLocked` and `msaa` (1/2/4 eye-buffer
+samples) in `config`, `foveation` and
 `passthroughEnabled` in `settings` — and the other is a teaching error naming
 the right one, raised at load (`settings` is evaluated on `init` there). Unlike every other entry point, each of these two may come
 from a SIBLING file module when the entry (or role) does not define it, so an
