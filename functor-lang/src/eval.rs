@@ -2420,11 +2420,12 @@ definition (a top-level initializer may only use globals defined above it)",
             Builtin::LoopUntil => match args.as_slice() {
                 [done, step, init] if is_function(done) && is_function(step) => {
                     let mut state = init.clone();
-                    for i in 0..=LOOP_UNTIL_MAX_STEPS {
+                    let mut steps = 0;
+                    loop {
                         match self.call(
                             done.clone(),
                             vec![state.clone()],
-                            element_label(b, i),
+                            format!("Loop.until.done[{steps}]"),
                             span,
                             Some(builtin_name(b)),
                         )? {
@@ -2437,19 +2438,20 @@ definition (a top-level initializer may only use globals defined above it)",
                                 ))
                             }
                         }
-                        if i < LOOP_UNTIL_MAX_STEPS {
-                            state = self.call(
-                                step.clone(),
-                                vec![state],
-                                element_label(b, i),
-                                span,
-                                Some(builtin_name(b)),
-                            )?;
+                        if steps == LOOP_UNTIL_MAX_STEPS {
+                            return err(format!(
+                                "Loop.until: not done after {LOOP_UNTIL_MAX_STEPS} steps"
+                            ));
                         }
+                        state = self.call(
+                            step.clone(),
+                            vec![state],
+                            format!("Loop.until.step[{steps}]"),
+                            span,
+                            Some(builtin_name(b)),
+                        )?;
+                        steps += 1;
                     }
-                    err(format!(
-                        "Loop.until: not done after {LOOP_UNTIL_MAX_STEPS} steps"
-                    ))
                 }
                 _ => err(
                     "Loop.until(done, step, init) expects two functions and an initial value"
