@@ -1710,7 +1710,9 @@ floor does not count — declare one); it is dropped under a composited feed and
 ignored on a non-passthrough frame (`GET /state.xr.depth`).
 `frame |> Frame.withSurfaceGrid(cell, color)` shades a world-aligned grid onto
 whatever that depth finds (`examples/scene-grid`); without `Xr.scene(true)` it
-draws nothing. `frame |> Frame.withFusedRoom(cell, color)` draws the same grid
+draws nothing. `frame |> Frame.withRoomOcclusion` makes real surfaces in that
+depth hide the scene behind them over a composited feed (a hand in front of a
+virtual part). `frame |> Frame.withFusedRoom(cell, color)` draws the same grid
 on a mesh the runtime fuses from that depth over time (8 cm voxels; it keeps
 surfaces out of view and forgets moved furniture in a second or two;
 `GET /state.xr.mesh`). `Physics.fusedRoom(tag)` (a body for the `physics`

@@ -304,17 +304,18 @@ impl DepthWalkUniforms {
         }
     }
 
-    /// Set the walk's uniforms and bind `depth` on unit 0.
-    #[allow(clippy::too_many_arguments)]
+    /// Set the walk's uniforms and bind `depth` on unit 0; `None` (nothing
+    /// set) when the camera or depth view is degenerate (no inverse).
     unsafe fn set(
         &self,
         shader: &ShaderProgram,
         gl: &glow::Context,
         depth: &crate::environment_depth::EnvironmentDepthView,
-        depth_inverse: &Matrix4<f32>,
-        eye_inverse: &Matrix4<f32>,
+        eye_view_projection: &Matrix4<f32>,
         eye: [f32; 3],
-    ) {
+    ) -> Option<()> {
+        let eye_inverse = &eye_view_projection.invert()?;
+        let depth_inverse = &depth.view_projection.invert()?;
         shader.set_uniform_1i(gl, &self.depth_texture_loc, 0);
         shader.set_uniform_1f(gl, &self.depth_layer_loc, depth.layer as f32);
         shader.set_uniform_matrix4(gl, &self.depth_view_projection_loc, &depth.view_projection);
@@ -323,6 +324,7 @@ impl DepthWalkUniforms {
         shader.set_uniform_vec3(gl, &self.eye_loc, &cgmath::Vector3::from(eye));
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(depth.texture));
+        Some(())
     }
 }
 
@@ -2015,13 +2017,6 @@ skybox disabled for this set",
             DEPTH_WALK_GLSL, GRID_FRAGMENT_SHADER_SOURCE, GRID_LINES_GLSL,
             GRID_VERTEX_SHADER_SOURCE,
         };
-        // A degenerate camera or depth view has no inverse: draw nothing.
-        let (Some(eye_inverse), Some(depth_inverse)) = (
-            eye_view_projection.invert(),
-            depth.view_projection.invert(),
-        ) else {
-            return;
-        };
         let gl = render_context.gl;
         let mut program = self.surface_grid_program.borrow_mut();
         let (shader, uniforms) = program.get_or_insert_with(|| {
@@ -2048,9 +2043,10 @@ skybox disabled for this set",
         });
         unsafe {
             shader.use_program(gl);
-            uniforms
-                .walk
-                .set(shader, gl, &depth, &depth_inverse, &eye_inverse, eye);
+            // A degenerate camera or depth view has no inverse: draw nothing.
+            if uniforms.walk.set(shader, gl, &depth, eye_view_projection, eye).is_none() {
+                return;
+            }
             shader.set_uniform_1f(gl, &uniforms.cell_loc, grid.cell);
             let [r, g, b] = grid.color;
             shader.set_uniform_vec3(gl, &uniforms.color_loc, &cgmath::vec3(r, g, b));
@@ -2091,13 +2087,10 @@ skybox disabled for this set",
         eye_view_projection: &Matrix4<f32>,
         eye: [f32; 3],
     ) {
-        use crate::room_occlusion::{fragment_shader_source, OCCLUSION_VERTEX_SHADER_SOURCE};
-        let (Some(eye_inverse), Some(depth_inverse)) = (
-            eye_view_projection.invert(),
-            depth.view_projection.invert(),
-        ) else {
-            return;
+        use crate::room_occlusion::{
+            OCCLUSION_FRAGMENT_SHADER_SOURCE, OCCLUSION_VERTEX_SHADER_SOURCE,
         };
+        use crate::surface_grid::DEPTH_WALK_GLSL;
         let gl = render_context.gl;
         let mut program = self.room_occlusion_program.borrow_mut();
         let (shader, uniforms) = program.get_or_insert_with(|| {
@@ -2110,7 +2103,7 @@ skybox disabled for this set",
             let fragment = Shader::build(
                 gl,
                 ShaderType::Fragment,
-                &fragment_shader_source(),
+                &format!("{DEPTH_WALK_GLSL}\n{OCCLUSION_FRAGMENT_SHADER_SOURCE}"),
                 render_context.shader_version,
             );
             let shader = ShaderProgram::link(gl, &vertex, &fragment);
@@ -2122,19 +2115,19 @@ skybox disabled for this set",
         });
         unsafe {
             shader.use_program(gl);
-            uniforms
-                .walk
-                .set(shader, gl, &depth, &depth_inverse, &eye_inverse, eye);
+            if uniforms.walk.set(shader, gl, &depth, eye_view_projection, eye).is_none() {
+                return;
+            }
             shader.set_uniform_matrix4(gl, &uniforms.eye_view_projection_loc, eye_view_projection);
-            // Depth writes need the test on (ALWAYS passes it).
+            // Depth writes need the test on. LESS against the fresh clear
+            // (1.0) keeps one depth direction for the GPU's early culling.
             gl.enable(glow::DEPTH_TEST);
-            gl.color_mask(false, false, false, false);
-            gl.depth_func(glow::ALWAYS);
+            gl.depth_func(glow::LESS);
             gl.depth_mask(true);
+            gl.color_mask(false, false, false, false);
         }
         self.quad.borrow_mut().draw(gl);
         unsafe {
-            gl.depth_func(glow::LESS);
             gl.color_mask(true, true, true, true);
             gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
         }

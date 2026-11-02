@@ -79,10 +79,6 @@ name = "passthrough_alpha"
 harness = false
 
 [[test]]
-name = "room_occlusion"
-harness = false
-
-[[test]]
 name = "stereo_shadow"
 harness = false
 

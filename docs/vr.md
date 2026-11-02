@@ -308,11 +308,14 @@ its distance plus 1 cm, so a part resting on a real desk isn't cut by sensor
 noise. Edges follow the 320x320 depth image, so they are coarse.
 
 - Needs `Xr.scene(true)`; without environment depth nothing is hidden.
-- Where the stand-in room is drawn (desktop, web, a paused feed) its geometry
-  already hides what's behind it, so the pass changes nothing there.
-- `PartMR` turns it on in mixed reality.
-- Verified headlessly by `runtime/functor-runtime-desktop/tests/room_occlusion.rs`
+- `PartMR` turns it on in mixed reality, except while a part is held (the
+  hand holding it would cut into it).
+- Only over a composited feed: elsewhere a hole would show the clear, not
+  the room.
+- Verified headlessly by `runtime/functor-runtime-desktop/tests/passthrough_alpha.rs`
   (a synthetic device depth under a composited clear).
+- Horizon gates the depth on the spatial data permission (see above); until
+  it is granted nothing is hidden.
 
 ### Scene-grid kata
 

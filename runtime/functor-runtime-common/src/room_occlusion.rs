@@ -9,23 +9,15 @@
 // Reuses the compositor's fullscreen quad; `vUv` spans the viewport.
 pub const OCCLUSION_VERTEX_SHADER_SOURCE: &str = crate::composite::COMPOSITE_VERTEX_SHADER_SOURCE;
 
-/// The depth surface is pushed back by `t * RELATIVE + ABSOLUTE` metres, so
-/// sensor noise doesn't cut into geometry resting on a real surface (a part
-/// on a desk), at the cost of thin geometry that close behind it showing.
-const PUSH_BACK_RELATIVE: f32 = 0.03;
-const PUSH_BACK_ABSOLUTE: f32 = 0.01;
-
-/// The fragment shader, after `DEPTH_WALK_GLSL`.
-pub fn fragment_shader_source() -> String {
-    format!(
-        "{}\nconst highp float PUSH_BACK_RELATIVE = {PUSH_BACK_RELATIVE:?};\n\
-         const highp float PUSH_BACK_ABSOLUTE = {PUSH_BACK_ABSOLUTE:?};\n{OCCLUSION_FRAGMENT_SHADER_SOURCE}",
-        crate::surface_grid::DEPTH_WALK_GLSL
-    )
-}
-
-const OCCLUSION_FRAGMENT_SHADER_SOURCE: &str = r#"
+// Compiled after `crate::surface_grid::DEPTH_WALK_GLSL`.
+pub const OCCLUSION_FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec2 vUv;
+
+        // The surface is pushed back by 3% of its distance + 1 cm, so sensor
+        // noise doesn't cut into a part resting on a real desk (at the cost
+        // of thin geometry that close behind a surface showing).
+        const highp float PUSH_BACK_RELATIVE = 0.03;
+        const highp float PUSH_BACK_ABSOLUTE = 0.01;
 
         // World -> this eye's clip.
         uniform highp mat4 eyeViewProjection;

@@ -106,6 +106,8 @@ pub const DEPTH_WALK_GLSL: &str = r#"
         // The eye ray through `ndc`, walked onto the depth surface: a coarse
         // step from a 1.5 m guess, then a filtered one from where it landed.
         highp float walk(highp vec2 ndc, out highp vec3 dir, out bool hit) {
+            // Through the far plane: eye projections are finite (the depth
+            // image's infinite one is handled in onSurface).
             dir = normalize(unproject(eyeInverse, vec3(ndc, 1.0)) - eye);
             hit = true;
             highp float t = onSurface(dir, 1.5, false, hit);

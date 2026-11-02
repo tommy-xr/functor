@@ -94,9 +94,8 @@ let withFusedRoom : (float, Color.t, t) => t
 /// Real surfaces hide the scene behind them: a hand, or a tablet held in
 /// front of a virtual part, shows through it over a composited feed. Read
 /// per pixel from the environment depth, pushed back a few centimetres so a
-/// part resting on a real desk isn't cut by sensor noise. Without
-/// `Xr.scene(true)` nothing is hidden; where the stand-in room is drawn its
-/// own geometry already hides what's behind it.
+/// part resting on a real desk isn't cut by sensor noise. Only over a
+/// composited feed, and only with `Xr.scene(true)`.
 let withRoomOcclusion : (t) => t
 /// Add an ordered sprite pass above the frame's 3D scene.
 ///

@@ -197,5 +197,8 @@ let draw = (views, desk: desk, m: t) =>
         Light.ambient(Color.rgb(0.25, 0.25, 0.3)),
         Light.directional(Vec3.make(-0.4, -1.0, 0.5), Color.rgb(1.0, 0.95, 0.9), 0.9),
       ]) in
-  if m.mixedReality then frame |> Frame.withPassthrough |> Frame.withRoomOcclusion
+  // Real things hide the parts, but not while one is held: the hand holding
+  // it would cut into it.
+  if m.mixedReality && m.grabbing then frame |> Frame.withPassthrough
+  else if m.mixedReality then frame |> Frame.withPassthrough |> Frame.withRoomOcclusion
   else frame |> Frame.withClearColor(Color.rgb(0.02, 0.02, 0.06))

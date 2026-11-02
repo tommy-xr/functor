@@ -423,7 +423,9 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame.drawn_stand_in_room(scene_context.passthrough_composited()),
         frame.surface_grid.as_ref().zip(environment_depth),
         frame.fused_room,
-        environment_depth.filter(|_| frame.room_occlusion),
+        // Only over the real room: elsewhere a hole shows the clear, not it.
+        environment_depth
+            .filter(|_| frame.room_occlusion && frame.passthrough && scene_context.passthrough_composited()),
         viewport.aspect(),
         viewport.height as f32,
         lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
