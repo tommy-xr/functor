@@ -540,6 +540,12 @@ functor -d examples/parts-mr run native --emulate-xr   # desktop stand-in room
   to the floor; look at the surface and it settles. To put a part on the
   floor, let go of it near the floor. It starts half a metre ahead of your head at
   launch, a little below your eyes (`Frame.camera`'s eye is your head then).
+- A beam from the right hand shows where it points, stopping on a part's
+  surface (its posed box) or the room, whichever is nearer; the room counts
+  from 10 cm out, clear of the hand. A see-through cyan box marks the part a
+  squeeze would take: the one in reach of the hand, else the one the beam is
+  on (the beam is cyan when it is that one). Taken with the beam, a part
+  rides the beam at that distance, so pointing moves it.
 - Squeeze the right grip near a part to hold it: it follows your hand, kept
   where you took it and turned with it. Assembled, the grip takes the whole
   view; B takes it apart, each piece staying exactly where the assembly had

@@ -3,7 +3,8 @@
 // The stdlib's PartMR does the work; this file picks the parts.
 //
 // Quest:   functor -d examples/parts-mr run vr
-//          squeeze the right grip near a part to hold it; let go and it drops
+//          a beam from the right hand picks a part (or reach it with the hand);
+//          squeeze the right grip to hold it; let go and it drops
 //          onto the real surface below. B takes it apart (each piece held on
 //          its own) and back together; the right thumbstick turns and tilts,
 //          A cycles parts, X toggles passthrough
@@ -71,5 +72,33 @@ expect [pose(0.0, 1.0, 1.0, 0.0), pose(-0.98, 0.2, 0.2, 0.98), pose(-1.0, 0.0, 0
   |> List.all((p) => Math.abs(PartMR.heading(p)) < 0.000001)
 // A squeeze near halfway neither drops nor retakes.
 expect PartMR.squeezed(true, 0.5) && not PartMR.squeezed(false, 0.5)
+// The beam: aimed at the tag from 40 cm above, it is on the tag and
+// selects it; aimed away, it stops where the room does.
+let noRoom = (o, d) => Option.None
+let aimAt = (m, from, forward) => { m with aimTracked: true, aim: { m.aim with position: from, forward: forward } }
+let above = PartMR.plus(settled.whole.position, PartMR.point(0.0, 0.4, 0.0))
+let pointing = PartMR.aimedWith(views, aimAt(settled, above, PartMR.point(0.0, -1.0, 0.0)), noRoom)
+expect pointing.pointed == 0.0 && PartMR.selected(views, pointing) == 0.0
+// It ends on the tag's top face, 2 mm above its middle.
+expect Math.abs(pointing.beamEnd.y - (settled.whole.position.y + 0.002)) < 0.000001
+// Aimed away, it stops where the room does (counted from 10 cm out, clear of
+// the hand); a room surface in front of the tag hides it from the beam.
+let away = PartMR.aimedWith(views, aimAt(settled, above, PartMR.point(0.0, 1.0, 0.0)), (o, d) => Option.Some(1.4))
+expect away.pointed == -1.0 && Math.abs(away.beamEnd.y - (above.y + 1.5)) < 0.000001
+expect PartMR.aimedWith(views, aimAt(settled, above, PartMR.point(0.0, -1.0, 0.0)), (o, d) => Option.Some(0.1)).pointed == -1.0
+// In reach of the hand wins over the beam: apart, with the hand at the
+// plate and the beam on the relief, a squeeze takes the plate.
+let reachBeam = { apart with gripTracked: true, pointed: 1.0, grip: { apart.grip with position: List.head(apart.parts) |> Option.map((p) => p.position) |> Option.defaultValue(apart.grip.position) } }
+expect PartMR.inReach(views, reachBeam) >= 0.0 && PartMR.selected(views, reachBeam) == PartMR.inReach(views, reachBeam)
+// A squeeze takes the pointed part at a distance: it rides the beam 40 cm
+// out, without a jump, and follows where the beam points.
+let far = PartMR.grabbed(views, { pointing with grip: { pointing.grip with position: above } })
+expect far.held == 0.0 && Math.abs(far.along - 0.4) < 0.000001
+expect near(PartMR.tickWith(views, far, 0.1, desk).whole.position, settled.whole.position)
+let swung = PartMR.tickWith(views, aimAt(far, above, PartMR.point(0.6, -0.8, 0.0)), 0.1, desk)
+expect Math.abs(swung.whole.position.x - (above.x + 0.24)) < 0.000001
+// A level hand's roll doesn't turn what it holds.
+expect Math.abs(PartMR.heading({ position: PartMR.point(0.0, 0.0, 0.0), forward: PartMR.point(0.0, 0.0, 1.0), up: PartMR.point(0.5, 0.866, 0.0) })) < 0.000001
+
 // Back together, it is one item again.
 expect List.length(PartMR.items(views, PartMR.apartToggled(views, apart))) == 1.0
