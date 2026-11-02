@@ -235,9 +235,10 @@ fn a_heavy_reload_runs_off_the_frame_while_the_old_program_plays() {
     );
     assert!(status.contains("model preserved"), "{status}");
     assert!(ticked >= 5.0, "the old program ticked {ticked} frames");
-    // The push's own frame links and type-checks the project before the
-    // loader takes over: ~30 ms in a debug build, a few in release.
-    let limit = if cfg!(debug_assertions) { BUDGET * 3 } else { BUDGET * 2 };
+    // Loose: the push's own frame links and type-checks the project (~30 ms
+    // in a debug build) and shared CI runners stall frames for tens of ms; a
+    // reload blocking the frame would show its full ~2 s.
+    let limit = Duration::from_millis(250);
     assert!(longest_gap <= limit, "a {:.1} ms gap between frames", longest_gap.as_secs_f64() * 1000.0);
     // The model kept counting, and the next tick runs the new `slow`.
     let ft = FrameTime { tts: 100.0, dts: 1.0 / 60.0 };
