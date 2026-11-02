@@ -12,15 +12,16 @@ let groundY = Exterior.street - 0.02
 // The terrain's translation: its pad level to `groundY`.
 let offset = v(IslandLayout.centre.x, groundY - IslandLayout.pad.y, IslandLayout.centre.z)
 
-// Sand at the shore, dry grass inland (the bands blend by height over the
-// declared range). No snow: its band starts above the highest sample.
+// Meadow low down, scree toward the peaks (the bands blend by height over
+// the declared range), rock on steep faces, snow on the highest crests
+// (190 m: the committed island's peak is 222 m).
 let terrain =
   Terrain.heightmap(Asset.texture("island.png"), IslandLayout.size, IslandLayout.size,
                     IslandLayout.minHeight, IslandLayout.maxHeight)
   // 4 px fits the Quest vertex budget.
   |> Terrain.maxPixelError(4.0)
-  |> Terrain.layered(Color.rgb(0.50, 0.47, 0.38), Color.rgb(0.16, 0.24, 0.11),
-                     Color.rgb(0.40, 0.38, 0.36), Color.rgb(0.9, 0.9, 0.9), IslandLayout.maxHeight + 1.0)
+  |> Terrain.layered(Color.rgb(0.36, 0.38, 0.22), Color.rgb(0.40, 0.38, 0.33),
+                     Color.rgb(0.33, 0.31, 0.29), Color.rgb(0.9, 0.9, 0.9), 190.0)
 
 let sea = Scene.plane() |> Scene.scale(2.0 * IslandLayout.size)
   |> Scene.translate(v(IslandLayout.centre.x, IslandLayout.seaLevel + Vec3.y(offset), IslandLayout.centre.z))
