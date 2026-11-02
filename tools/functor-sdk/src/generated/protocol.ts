@@ -2,6 +2,15 @@
 // Regenerate: UPDATE_TS=1 cargo test -p functor_runtime_common --features ts ts_bindings
 
 /**
+ * One-shots the shell has taken from the game since launch (`GET
+ * /state.audio`): `played` was handed to the output device, `dropped` didn't (no
+ * device, a missing or undecodable file). `recent` names the last few,
+ * oldest first. Seeks and rewinds restore frames without re-running their
+ * effects, so these stay put across one.
+ */
+export type AudioCounts = { played: number, dropped: number, recent: Array<string>, };
+
+/**
  * A device battery reading, as `GET /state` reports it. A field the device
  * does not report is `null`.
  */
@@ -448,7 +457,13 @@ build?: string,
  * The headset's scene understanding (v25): `depth`, its environment
  * depth. Omitted unless the game's `config` requests `Xr.scene`.
  */
-xr?: XrState, };
+xr?: XrState, 
+/**
+ * One-shot sounds played and dropped since launch
+ * ([`crate::audio::AudioCounts`]). Omitted by runtimes that don't count
+ * them, such as Quest.
+ */
+audio?: AudioCounts, };
 
 /**
  * One rendered view. Desktop reports one `main` view; stereo XR reports one

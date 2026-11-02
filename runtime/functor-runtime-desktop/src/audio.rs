@@ -22,7 +22,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::audio::{AudioCommand, AudioScene, AudioSource, Listener, SceneUpdate};
+use functor_runtime_common::audio::{
+    record_one_shot, AudioCommand, AudioScene, AudioSource, Listener, SceneUpdate,
+};
 use rodio::source::Source;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 
@@ -264,24 +266,27 @@ impl AudioPlayer {
         }
     }
 
-    /// Perform one queued command.
+    /// Perform one queued command, counting it played or dropped (`/state.audio`).
     pub fn handle(&self, cmd: AudioCommand) {
         let AudioCommand::PlayOneShot {
             token,
-            sound,
+            ref sound,
             gain,
             position,
         } = cmd;
-        let Some(source) = self.decode(&sound) else {
+        let Some(source) = self.decode(sound) else {
+            record_one_shot(&cmd, false);
             return;
         };
         let sink = match Sink::try_new(&self.handle) {
             Ok(sink) => sink,
             Err(e) => {
                 eprintln!("[audio] sink: {e}");
+                record_one_shot(&cmd, false);
                 return;
             }
         };
+        record_one_shot(&cmd, true);
         match position {
             None => {
                 sink.set_volume(gain);

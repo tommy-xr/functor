@@ -976,6 +976,8 @@ fn service_debug_request(
                         xr.mesh = xr.mesh.with_colliders();
                         xr
                     }),
+                    // No audio host on device yet.
+                    audio: None,
                 });
             });
         }

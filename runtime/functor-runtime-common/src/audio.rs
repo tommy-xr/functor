@@ -88,6 +88,48 @@ pub fn drain_commands_json() -> String {
     serde_json::to_string(&drain_commands()).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// One-shots the shell has taken from the game since launch (`GET
+/// /state.audio`): `played` was handed to the output device, `dropped` didn't (no
+/// device, a missing or undecodable file). `recent` names the last few,
+/// oldest first. Seeks and rewinds restore frames without re-running their
+/// effects, so these stay put across one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AudioCounts {
+    pub played: u64,
+    pub dropped: u64,
+    pub recent: Vec<String>,
+}
+
+/// How many sounds [`AudioCounts::recent`] keeps.
+const RECENT_ONE_SHOTS: usize = 8;
+
+static ONE_SHOTS: Mutex<AudioCounts> = Mutex::new(AudioCounts {
+    played: 0,
+    dropped: 0,
+    recent: Vec::new(),
+});
+
+/// Count a one-shot the shell performed (`played`) or dropped.
+pub fn record_one_shot(cmd: &AudioCommand, played: bool) {
+    let AudioCommand::PlayOneShot { sound, .. } = cmd;
+    let mut counts = ONE_SHOTS.lock().unwrap_or_else(|e| e.into_inner());
+    if played {
+        counts.played += 1;
+    } else {
+        counts.dropped += 1;
+    }
+    if counts.recent.len() == RECENT_ONE_SHOTS {
+        counts.recent.remove(0);
+    }
+    counts.recent.push(sound.clone());
+}
+
+/// The one-shot counts so far (see [`AudioCounts`]).
+pub fn one_shot_counts() -> AudioCounts {
+    ONE_SHOTS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 // --- Completion: token minting for `Effect.playThen` ---
 //
 // A `playThen` one-shot correlates its completion with the play via a token.
@@ -355,6 +397,20 @@ pub(crate) static OUTBOUND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::n
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_shot_counts_split_played_from_dropped_and_keep_the_last_few() {
+        let before = one_shot_counts();
+        record_one_shot(&AudioCommand::play_one_shot("a.wav".into()), true);
+        for i in 0..RECENT_ONE_SHOTS {
+            record_one_shot(&AudioCommand::play_one_shot(format!("{i}.wav")), false);
+        }
+        let after = one_shot_counts();
+        assert_eq!(after.played, before.played + 1);
+        assert_eq!(after.dropped, before.dropped + RECENT_ONE_SHOTS as u64);
+        let names: Vec<String> = (0..RECENT_ONE_SHOTS).map(|i| format!("{i}.wav")).collect();
+        assert_eq!(after.recent, names, "a.wav aged out");
+    }
 
     #[test]
     fn push_drain_round_trips_and_serializes_to_json() {

@@ -157,6 +157,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 27 adds the optional `samples` field on each `GET /state` `views` entry:
 /// the MSAA samples per pixel that view renders with (`Xr.msaa`), omitted by
 /// runtimes that don't report it.
+///
+/// Also: the optional `audio` field on `GET /state` (`{played, dropped,
+/// recent}`: one-shot sounds since launch; without a device they count as
+/// dropped). Desktop only for now.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 27;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -473,6 +477,12 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xr: Option<crate::runtime_settings::XrState>,
+    /// One-shot sounds played and dropped since launch
+    /// ([`crate::audio::AudioCounts`]). Omitted by runtimes that don't count
+    /// them, such as Quest.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<crate::audio::AudioCounts>,
 }
 
 /// Mean per-frame stage cost over a shell's last completed [`StageWindow`]
@@ -1389,6 +1399,11 @@ mod tests {
                     floor_m: None,
                 },
             }),
+            audio: Some(crate::audio::AudioCounts {
+                played: 2,
+                dropped: 1,
+                recent: vec!["door.wav".into()],
+            }),
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -1436,7 +1451,8 @@ mod tests {
                         "chunks": 2, "triangles": 64, "fused_frames": 3, "voxel_m": 0.5,
                         "colliders": 2
                     }
-                }
+                },
+                "audio": { "played": 2, "dropped": 1, "recent": ["door.wav"] }
             })
         );
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
