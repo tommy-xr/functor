@@ -41,6 +41,7 @@ use crate::RunError;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Evaluation depth cap: pathological or unboundedly recursive Functor Lang code must
 /// fail as a clean spanned error, not a host stack overflow. Counts *every*
@@ -59,6 +60,12 @@ use std::rc::Rc;
 /// frame-growth headroom under 2 MiB. 200 levels had grown past the budget
 /// (≈2.2 MiB), aborting the whole test binary on a clean tree (#221).
 const MAX_EVAL_DEPTH: usize = 128;
+
+/// Calls between polls of a job's stop flag ([`Session::load_cancellable`]).
+const CANCEL_POLL: u32 = 4096;
+
+/// The error a stopped job's evaluation ends with.
+pub const CANCELLED: &str = "the job was cancelled";
 
 /// Trace-event cap; see the module doc.
 pub const MAX_TRACE_EVENTS: usize = 10_000;
@@ -440,6 +447,7 @@ pub fn run_with_host(
         depth: 0,
         call_depth: 0,
         fuel: None,
+        cancel: None,
         brand_ops: BrandOps::default(),
         brand_ops_complete: true,
         host,
@@ -568,6 +576,7 @@ pub fn run_expects_budgeted(
         depth: 0,
         call_depth: 0,
         fuel: budget.map(Fuel::new),
+        cancel: None,
         brand_ops: BrandOps::default(),
         brand_ops_complete: true,
         host,
@@ -682,6 +691,27 @@ impl Session {
         keep: &dyn Fn(&str) -> bool,
         host: &mut dyn Host,
     ) -> Result<Session, RunFailure> {
+        Session::load_only_with(module, keep, host, None)
+    }
+
+    /// [`Session::load_only`] for a job on a worker: evaluation stops with
+    /// [`CANCELLED`] soon after `stop` is set (it is polled every few
+    /// thousand calls, so a long one-def initializer stops too).
+    pub fn load_cancellable(
+        module: &Module,
+        keep: &dyn Fn(&str) -> bool,
+        host: &mut dyn Host,
+        stop: &AtomicBool,
+    ) -> Result<Session, RunFailure> {
+        Session::load_only_with(module, keep, host, Some(stop))
+    }
+
+    fn load_only_with(
+        module: &Module,
+        keep: &dyn Fn(&str) -> bool,
+        host: &mut dyn Host,
+        stop: Option<&AtomicBool>,
+    ) -> Result<Session, RunFailure> {
         let mut interp = Interp {
             globals: HashMap::new(),
             mut_slots: HashMap::new(),
@@ -691,6 +721,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            cancel: stop.map(|flag| (flag, 0)),
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
             host,
@@ -739,6 +770,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            cancel: None,
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
             host: &mut counted,
@@ -791,6 +823,28 @@ impl Session {
         args: Vec<Value>,
         host: &mut dyn Host,
     ) -> Result<Value, RunError> {
+        self.call_with(name, args, host, None)
+    }
+
+    /// [`Self::call`] that stops with [`CANCELLED`] soon after `stop` is
+    /// set (see [`Session::load_cancellable`]).
+    pub fn call_cancellable(
+        &self,
+        name: &str,
+        args: Vec<Value>,
+        host: &mut dyn Host,
+        stop: &AtomicBool,
+    ) -> Result<Value, RunError> {
+        self.call_with(name, args, host, Some(stop))
+    }
+
+    fn call_with(
+        &self,
+        name: &str,
+        args: Vec<Value>,
+        host: &mut dyn Host,
+        stop: Option<&AtomicBool>,
+    ) -> Result<Value, RunError> {
         let callee = self.globals.get(name).cloned().ok_or_else(|| RunError {
             message: format!("no top-level `let {name}` in the module"),
             span: Span::new(0, 0),
@@ -804,6 +858,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            cancel: stop.map(|flag| (flag, 0)),
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
             host,
@@ -830,6 +885,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
             host,
@@ -863,6 +919,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
             host,
@@ -905,6 +962,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
             host,
@@ -991,6 +1049,10 @@ struct Interp<'h> {
     /// norm — every game-loop path) means zero cost beyond one branch per
     /// eval step, the same hot-path cost class as `recorder`.
     fuel: Option<Fuel>,
+    /// A job's stop flag ([`Session::load_cancellable`]): polled every
+    /// [`CANCEL_POLL`] calls, with the count since. `None` (every frame path)
+    /// costs one branch per call.
+    cancel: Option<(&'h AtomicBool, u32)>,
     /// Declared unit operators, keyed by an operand's runtime brand tag
     /// (see [`brand_tag`]). Empty for every program that declares none, and
     /// consulted ONLY when an arithmetic operand is not a number — so plain
@@ -1317,6 +1379,20 @@ implementation",
             match fuel.remaining.checked_sub(units) {
                 Some(rest) => fuel.remaining = rest,
                 None => return Err(step_budget_error(fuel.limit, span)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Count a call against [`CANCEL_POLL`]; stop when the job's flag is set.
+    #[inline(never)]
+    fn poll_cancel(&mut self, span: Span) -> Result<(), RunError> {
+        let (flag, calls) = self.cancel.as_mut().expect("polled only when set");
+        *calls += 1;
+        if *calls >= CANCEL_POLL {
+            *calls = 0;
+            if flag.load(Ordering::Relaxed) {
+                return Err(RunError { message: CANCELLED.to_string(), span });
             }
         }
         Ok(())
@@ -2100,6 +2176,9 @@ definition (a top-level initializer may only use globals defined above it)",
         // frame loop nothing (frame_bench-verified; a per-eval charge was a
         // measured ~3% wall-clock regression).
         self.charge(1, span)?;
+        if self.cancel.is_some() {
+            self.poll_cancel(span)?;
+        }
         self.trace_enter(&label, &args);
         self.call_depth += 1;
         let result = match &callee {
