@@ -65,6 +65,10 @@ expect List.nth(held.held, spun.parts) |> Option.map((p) => Math.abs(p.yaw - 1.0
 // Let go, it rests on the desk.
 let dropped = PartMR.tickWith(views, PartMR.released(carried), 10.0, desk)
 expect List.nth(held.held, dropped.parts) |> Option.map((p) => p.position.y < 0.76) |> Option.defaultValue(false)
+// Tipped from level to straight down or up, a hand keeps facing ahead.
+let pose = (fy, fz, uy, uz) => { position: PartMR.point(0.0, 0.0, 0.0), forward: PartMR.point(0.0, fy, fz), up: PartMR.point(0.0, uy, uz) }
+expect [pose(0.0, 1.0, 1.0, 0.0), pose(-0.98, 0.2, 0.2, 0.98), pose(-1.0, 0.0, 0.0, 1.0), pose(0.98, 0.2, 0.2, -0.98), pose(1.0, 0.0, 0.0, -1.0)]
+  |> List.all((p) => Math.abs(PartMR.heading(p)) < 0.000001)
 // A squeeze near halfway neither drops nor retakes.
 expect PartMR.squeezed(true, 0.5) && not PartMR.squeezed(false, 0.5)
 // Back together, it is one item again.

@@ -145,12 +145,14 @@ let partsOf = (view, whole: item): List<item> =>
 let fallbackGrip = () =>
   Camera3D.mapTrackedPose(camera(), { position: { x: 0.2, y: -0.3, z: -0.3 }, orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } })
 
-// Which way a pose faces about +Y. Pointing nearly straight down (setting a
-// part on a desk) its forward has no heading, so its up stands in.
+// Which way a pose faces about +Y: its forward's level part, plus its up's
+// turned to the same side, so a hand tipped straight down (setting a part
+// on a desk) or up still faces ahead, with no jump in between.
 let heading = (pose: Camera3D.mappedPose) =>
   let f = pose.forward in
-  if Math.sqrt(f.x * f.x + f.z * f.z) >= 0.2 then Math.atan2(f.x, f.z)
-  else Math.atan2(pose.up.x, pose.up.z)
+  let u = pose.up in
+  let side = if f.y >= 0.0 then 1.0 else -1.0 in
+  Math.atan2(f.x - side * u.x, f.z - side * u.z)
 
 // `grip`: the right controller's grip pose; `squeezing`: its grip held;
 // `index`: the view shown; `whole`: where the assembled view is; `apart`:
