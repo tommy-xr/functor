@@ -46,6 +46,30 @@ let layered : (Color.t, Color.t, Color.t, Color.t, float, t) => t
 /// `layered`. The terrain is last for piping.
 let textured : (Asset.Texture, Asset.Texture, Asset.Texture, Asset.Texture, float, t) => t
 
+/// Shade the terrain from two baked colormaps instead of lighting it.
+///
+/// `day` and `night` are color images laid once over the whole terrain, the
+/// same way as the heightmap, with lighting, occlusion and banding already
+/// painted in. The terrain is then UNLIT: frame lights do not reach it; only
+/// fog applies. `blend` cross-fades the maps, clamped to 0..1: 0 is `day` only
+/// and 1 is `night` only, and only those two values read a single map. Both
+/// maps stay on the GPU while the terrain draws, so changing `blend` uploads
+/// nothing.
+///
+/// Takes precedence over `color`, `layered` and `textured`, which render only
+/// until both maps have streamed in (and in the normals/tangents debug views).
+/// The terrain is last for piping.
+let colormap : (Asset.Texture, Asset.Texture, float, t) => t
+
+/// Dress a `colormap` with one tiled detail map near the camera.
+///
+/// Like `textured`, the map supplies STRUCTURE, not color: it is divided by its
+/// own average, so it roughens the colormap without tinting it. It is full
+/// strength near the camera and fades to nothing by `fadeEnd` world units; past
+/// that, pixels read the colormap alone. `tileSize` is the world-unit span of
+/// one tile. Requires `colormap`. The terrain is last for piping.
+let colormapDetail : (Asset.Texture, float, float, t) => t
+
 /// Add camera-local GPU-instanced grass clusters.
 ///
 /// `spacing`, `distance`, and `bladeHeight` are terrain-local world units.

@@ -132,6 +132,50 @@ impl AssetPipeline<Texture2D> for TerrainDetailPipeline {
     }
 }
 
+/// Terrain colormaps: color stretched once over a whole terrain.
+///
+/// Mipped, because a colormap minifies over most of a terrain (unlike a
+/// lightmap, which is sampled near 1:1). Clamped, since it spans the terrain
+/// exactly once. Anisotropy follows the detail maps: terrain is mostly
+/// grazing-angle, which is where extra taps cost the most on a tiler.
+pub struct TerrainColormapPipeline;
+
+impl AssetPipeline<Texture2D> for TerrainColormapPipeline {
+    fn process(
+        &self,
+        bytes: Vec<u8>,
+        _asset_cache: &AssetCache,
+        context: crate::asset::AssetPipelineContext,
+    ) -> Texture2D {
+        let Some(texture_data) = decode(&bytes) else {
+            return self.unloaded_asset(context);
+        };
+        Texture2D::init_from_data(
+            texture_data,
+            TextureOptions {
+                wrap: false,
+                linear: true,
+                mipmap: true,
+                anisotropy: TERRAIN_DETAIL_ANISOTROPY,
+                compute_average: false,
+                srgb: true,
+            },
+        )
+    }
+
+    fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
+        // Never drawn: the terrain waits for both maps before using them.
+        let texture_data = TextureData::solid_color([128, 128, 128, 255]);
+        Texture2D::init_from_data(
+            texture_data,
+            TextureOptions {
+                srgb: true,
+                ..TextureOptions::default()
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

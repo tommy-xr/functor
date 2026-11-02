@@ -62,6 +62,8 @@ pub struct SceneContext {
     /// Terrain detail maps decode through their own pipeline so their reduced
     /// anisotropy and mean-color scan stay scoped to them.
     terrain_detail_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
+    /// Terrain colormaps: mipped, clamped, color (see `TerrainColormapPipeline`).
+    terrain_colormap_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     cube: RefCell<Box<dyn Geometry>>,
     cylinder: RefCell<Box<dyn Geometry>>,
     sphere: RefCell<Box<dyn Geometry>>,
@@ -200,6 +202,9 @@ enum PreloadHandle {
 /// First texture unit for terrain detail maps; must match the terrain
 /// renderer's `DETAIL_TEXTURE_UNIT0` (unit 0 is the height texture).
 const TERRAIN_DETAIL_UNIT0: u32 = 1;
+/// Colormap mode's units: day, night, detail. It draws with its own program,
+/// so these may reuse the lit detail units.
+const TERRAIN_COLORMAP_UNITS: [u32; 3] = [1, 2, 3];
 
 /// Decoded terrain sources receive one unused shell frame of grace before
 /// eviction. This retains ordinary frame-to-frame reuse without keeping every
@@ -718,6 +723,28 @@ so the reach is ignored"
     }
 }
 
+/// A terrain texture's decode — the map itself, or a loaded `whilePending`
+/// stand-in — or `None` while neither has loaded. Requests the load either way.
+fn terrain_texture(
+    render_context: &RenderContext,
+    pipeline: &Arc<BuiltAssetPipeline<Texture2D>>,
+    map: &crate::terrain::TerrainDetailTexture,
+) -> Option<Arc<Texture2D>> {
+    let asset = render_context
+        .asset_cache
+        .load_asset_with_pipeline(pipeline.clone(), &map.locator);
+    match crate::asset::resolve_while_pending_state(
+        &render_context.asset_cache,
+        pipeline,
+        &asset,
+        &map.while_pending,
+    ) {
+        crate::asset::WhilePendingState::Loaded(texture)
+        | crate::asset::WhilePendingState::Loading(Some(texture)) => Some(texture),
+        _ => None,
+    }
+}
+
 impl SceneContext {
     /// Drop every cached decode of `path` so the next draw reloads it from
     /// disk — asset hot-reload (pair with `AssetCache::evict` for the bytes).
@@ -730,6 +757,7 @@ impl SceneContext {
         self.texture_pipeline.evict(path);
         self.linear_texture_pipeline.evict(path);
         self.terrain_detail_pipeline.evict(path);
+        self.terrain_colormap_pipeline.evict(path);
         self.raw_image_pipeline.evict(path);
         self.heightmap_pipeline.evict(path);
         self.skyboxes
@@ -771,6 +799,9 @@ impl SceneContext {
             })),
             terrain_detail_pipeline: asset::build_pipeline(Box::new(
                 crate::asset::pipelines::TerrainDetailPipeline,
+            )),
+            terrain_colormap_pipeline: asset::build_pipeline(Box::new(
+                crate::asset::pipelines::TerrainColormapPipeline,
             )),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
             render_targets: RefCell::new(HashMap::new()),
@@ -1504,44 +1535,50 @@ frame: correct, but each bind re-uploads (atlas {})",
         {
             crate::terrain::request_heightmap(source_descriptor);
         }
+        // Colormaps first: while both are ready the lit maps are not needed.
+        // Every map is requested each draw, ready or not, so both colormaps
+        // load (and stay cached) before a `blend` change first samples one.
+        let colormap_bound = terrain.colormap.as_ref().and_then(|colormap| {
+            let pipeline = &self.terrain_colormap_pipeline;
+            let maps = [&colormap.day, &colormap.night]
+                .map(|map| terrain_texture(render_context, pipeline, map));
+            let detail = terrain.colormap_detail.as_ref().and_then(|detail| {
+                terrain_texture(
+                    render_context,
+                    &self.terrain_detail_pipeline,
+                    &detail.texture,
+                )
+            });
+            let [Some(day), Some(night)] = maps else {
+                return None;
+            };
+            day.bind(TERRAIN_COLORMAP_UNITS[0], render_context);
+            night.bind(TERRAIN_COLORMAP_UNITS[1], render_context);
+            let detail_average = detail.map(|detail| {
+                detail.bind(TERRAIN_COLORMAP_UNITS[2], render_context);
+                detail.average_color()
+            });
+            Some(crate::terrain_renderer::ColormapBound { detail_average })
+        });
         // Detail maps stream like any other texture. Bind them before the
         // terrain program runs; a map still loading leaves the whole set
         // unbound so the terrain shows its flat band colors rather than a
         // checkerboard smeared across kilometres.
-        let detail_bound = terrain.detail_textures().and_then(|maps| {
-            let handles = maps.map(|map| {
-                let asset = render_context
-                    .asset_cache
-                    .load_asset_with_pipeline(self.terrain_detail_pipeline.clone(), &map.locator);
-                crate::asset::resolve_while_pending_state(
-                    &render_context.asset_cache,
-                    &self.terrain_detail_pipeline,
-                    &asset,
-                    &map.while_pending,
-                )
+        let detail_bound = terrain
+            .detail_textures()
+            .filter(|_| colormap_bound.is_none())
+            .and_then(|maps| {
+                let textures = maps.map(|map| {
+                    terrain_texture(render_context, &self.terrain_detail_pipeline, map)
+                });
+                let mut averages = [[1.0f32; 3]; 4];
+                for (index, texture) in textures.iter().enumerate() {
+                    let texture = texture.as_ref()?;
+                    texture.bind(TERRAIN_DETAIL_UNIT0 + index as u32, render_context);
+                    averages[index] = texture.average_color();
+                }
+                Some(averages)
             });
-            let ready = handles.iter().all(|state| {
-                matches!(
-                    state,
-                    crate::asset::WhilePendingState::Loaded(_)
-                        | crate::asset::WhilePendingState::Loading(Some(_))
-                )
-            });
-            if !ready {
-                return None;
-            }
-            let mut averages = [[1.0f32; 3]; 4];
-            for (index, state) in handles.iter().enumerate() {
-                let texture = match state {
-                    crate::asset::WhilePendingState::Loaded(texture)
-                    | crate::asset::WhilePendingState::Loading(Some(texture)) => texture,
-                    _ => unreachable!("checked above"),
-                };
-                texture.bind(TERRAIN_DETAIL_UNIT0 + index as u32, render_context);
-                averages[index] = texture.average_color();
-            }
-            Some(averages)
-        });
         self.terrain_renderer.borrow_mut().draw(
             render_context,
             terrain,
@@ -1550,6 +1587,7 @@ frame: correct, but each bind re-uploads (atlas {})",
             projection,
             view,
             detail_bound,
+            colormap_bound,
         );
     }
 

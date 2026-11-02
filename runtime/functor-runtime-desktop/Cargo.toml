@@ -91,6 +91,10 @@ name = "pixel_textures"
 harness = false
 
 [[test]]
+name = "terrain_colormap"
+harness = false
+
+[[test]]
 name = "static_models"
 harness = false
 

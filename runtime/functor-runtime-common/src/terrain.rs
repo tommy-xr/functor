@@ -148,10 +148,16 @@ pub struct TerrainDescription {
     pub grass: Option<TerrainGrass>,
     #[serde(default)]
     pub textures: Option<TerrainTextures>,
+    /// Baked, unlit shading; takes precedence over `color`/`layers`/`textures`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colormap: Option<TerrainColormap>,
+    /// Near detail over the colormap; ignored without `colormap`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colormap_detail: Option<TerrainColormapDetail>,
 }
 
-/// One detail albedo map, carrying its own `Asset.whilePending` chain so a
-/// terrain texture streams in exactly like any other asset.
+/// One terrain texture, carrying its own `Asset.whilePending` chain so it
+/// streams in exactly like any other asset.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerrainDetailTexture {
     pub locator: String,
@@ -173,6 +179,26 @@ pub struct TerrainTextures {
     pub snow: TerrainDetailTexture,
     /// World units covered by one tile of each detail map.
     pub tile_size: f32,
+}
+
+/// Baked, unlit terrain shading: two maps stretched once over the terrain,
+/// with lighting and occlusion painted in, cross-faded by `blend`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainColormap {
+    pub day: TerrainDetailTexture,
+    pub night: TerrainDetailTexture,
+    /// 0 = `day` only, 1 = `night` only.
+    pub blend: f32,
+}
+
+/// One tiled detail map over a [`TerrainColormap`], fading out with distance.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainColormapDetail {
+    pub texture: TerrainDetailTexture,
+    /// World units covered by one tile.
+    pub tile_size: f32,
+    /// Distance from the camera at which the detail has faded out.
+    pub fade_end: f32,
 }
 
 impl TerrainDescription {
@@ -199,6 +225,8 @@ impl TerrainDescription {
             layers: None,
             grass: None,
             textures: None,
+            colormap: None,
+            colormap_detail: None,
         }
     }
 
@@ -225,6 +253,16 @@ impl TerrainDescription {
 
     pub fn with_textures(mut self, textures: TerrainTextures) -> Self {
         self.textures = Some(textures);
+        self
+    }
+
+    pub fn with_colormap(mut self, colormap: TerrainColormap) -> Self {
+        self.colormap = Some(colormap);
+        self
+    }
+
+    pub fn with_colormap_detail(mut self, detail: TerrainColormapDetail) -> Self {
+        self.colormap_detail = Some(detail);
         self
     }
 
@@ -281,12 +319,45 @@ mod tests {
             distance: 300.0,
             blade_height: 2.2,
             color: [0.15, 0.32, 0.08],
+        })
+        .with_colormap(TerrainColormap {
+            day: TerrainDetailTexture {
+                locator: "day.png".to_string(),
+                while_pending: vec!["day-low.png".to_string()],
+            },
+            night: TerrainDetailTexture {
+                locator: "night.png".to_string(),
+                while_pending: Vec::new(),
+            },
+            blend: 0.25,
+        })
+        .with_colormap_detail(TerrainColormapDetail {
+            texture: TerrainDetailTexture {
+                locator: "detail.jpg".to_string(),
+                while_pending: Vec::new(),
+            },
+            tile_size: 8.0,
+            fade_end: 80.0,
         });
         let json = serde_json::to_string(&terrain).unwrap();
         assert_eq!(
             serde_json::from_str::<TerrainDescription>(&json).unwrap(),
             terrain
         );
+    }
+
+    #[test]
+    fn a_terrain_without_a_colormap_keeps_its_wire_shape() {
+        let terrain = TerrainDescription::heightmap(
+            "island.png".to_string(),
+            Vec::new(),
+            100.0,
+            100.0,
+            0.0,
+            10.0,
+        );
+        let json = serde_json::to_string(&terrain).unwrap();
+        assert!(!json.contains("colormap"), "json: {json}");
     }
 
     #[test]

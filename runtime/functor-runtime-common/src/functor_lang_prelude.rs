@@ -2198,6 +2198,13 @@ fn transformed(scene: FunctorLangScene, xform: Matrix4<f32>) -> FunctorLangScene
     FunctorLangScene(group(vec![scene.0], xform))
 }
 
+fn terrain_texture(asset: TextureAssetPath) -> crate::terrain::TerrainDetailTexture {
+    crate::terrain::TerrainDetailTexture {
+        locator: asset.path,
+        while_pending: asset.while_pending,
+    }
+}
+
 /// Immutable terrain descriptions are shared by rendering and heightfield
 /// physics. Dimensions and elevation stay attached to the heightmap locator,
 /// so the two consumers cannot silently drift.
@@ -2270,17 +2277,55 @@ four texture Assets and a positive finite tile size in world units";
             if !tile_size.is_finite() || tile_size <= 0.0 {
                 return Err(format!("usage: {TEXTURED}"));
             }
-            let map = |asset: TextureAssetPath| crate::terrain::TerrainDetailTexture {
-                locator: asset.path,
-                while_pending: asset.while_pending,
-            };
             Ok(FunctorLangTerrain(terrain.0.with_textures(
                 crate::terrain::TerrainTextures {
-                    low: map(low),
-                    high: map(high),
-                    rock: map(rock),
-                    snow: map(snow),
+                    low: terrain_texture(low),
+                    high: terrain_texture(high),
+                    rock: terrain_texture(rock),
+                    snow: terrain_texture(snow),
                     tile_size,
+                },
+            )))
+        },
+    );
+    const COLORMAP: &str = "Terrain.colormap(day, night, blend, terrain) — \
+two texture Assets and a finite blend (clamped to 0..1)";
+    reg.fn4(
+        "Terrain.colormap",
+        COLORMAP,
+        |day: TextureAssetPath,
+         night: TextureAssetPath,
+         blend: f64,
+         terrain: FunctorLangTerrain| {
+            let blend = blend as f32;
+            if !blend.is_finite() {
+                return Err(format!("usage: {COLORMAP}"));
+            }
+            Ok(FunctorLangTerrain(terrain.0.with_colormap(
+                crate::terrain::TerrainColormap {
+                    day: terrain_texture(day),
+                    night: terrain_texture(night),
+                    blend: blend.clamp(0.0, 1.0),
+                },
+            )))
+        },
+    );
+    const COLORMAP_DETAIL: &str = "Terrain.colormapDetail(texture, tileSize, fadeEnd, terrain) — \
+a texture Asset and positive finite world-unit sizes";
+    reg.fn4(
+        "Terrain.colormapDetail",
+        COLORMAP_DETAIL,
+        |texture: TextureAssetPath, tile_size: f64, fade_end: f64, terrain: FunctorLangTerrain| {
+            let (tile_size, fade_end) = (tile_size as f32, fade_end as f32);
+            if !tile_size.is_finite() || !fade_end.is_finite() || tile_size <= 0.0 || fade_end <= 0.0
+            {
+                return Err(format!("usage: {COLORMAP_DETAIL}"));
+            }
+            Ok(FunctorLangTerrain(terrain.0.with_colormap_detail(
+                crate::terrain::TerrainColormapDetail {
+                    texture: terrain_texture(texture),
+                    tile_size,
+                    fade_end,
                 },
             )))
         },
@@ -13729,6 +13774,52 @@ row 1 has 3"
         assert!(json.contains(r#""Terrain""#), "json: {json}");
         let back: Frame = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn terrain_colormap_emits_maps_blend_and_detail() {
+        let frame = frame_of(
+            "let world =\n\
+               Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)\n\
+               |> Terrain.colormap(Asset.texture(\"day.png\"), \
+                    Asset.texture(\"night.png\") |> Asset.whilePending(Asset.texture(\"night-low.png\")), 1.5)\n\
+               |> Terrain.colormapDetail(Asset.texture(\"detail.jpg\"), 8.0, 80.0)\n\
+             let main = () =>\n\
+               Frame.create(\n\
+                 Camera3D.lookAt(Vec3.make(0.0, 400.0, -900.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+                 Scene.terrain(world))",
+        );
+        let SceneObject::Terrain(terrain) = &frame.scene.obj else {
+            panic!("expected a Terrain node, got {:?}", frame.scene.obj);
+        };
+        let colormap = terrain.colormap.as_ref().expect("colormap");
+        assert_eq!(colormap.day.locator, "day.png");
+        assert_eq!(colormap.night.locator, "night.png");
+        assert_eq!(colormap.night.while_pending, vec!["night-low.png".to_string()]);
+        assert_eq!(colormap.blend, 1.0, "blend clamps to [0, 1]");
+        let detail = terrain.colormap_detail.as_ref().expect("detail");
+        assert_eq!(detail.texture.locator, "detail.jpg");
+        assert_eq!((detail.tile_size, detail.fade_end), (8.0, 80.0));
+    }
+
+    #[test]
+    fn terrain_colormap_validates_its_numbers() {
+        let base = "Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)";
+        assert_eq!(
+            run_fail(&format!(
+                "let main = () => {base} |> Terrain.colormap(Asset.texture(\"d.png\"), \
+                 Asset.texture(\"n.png\"), 0.0 / 0.0)"
+            )),
+            "usage: Terrain.colormap(day, night, blend, terrain) — \
+two texture Assets and a finite blend (clamped to 0..1)"
+        );
+        assert_eq!(
+            run_fail(&format!(
+                "let main = () => {base} |> Terrain.colormapDetail(Asset.texture(\"t.jpg\"), 8.0, 0.0)"
+            )),
+            "usage: Terrain.colormapDetail(texture, tileSize, fadeEnd, terrain) — \
+a texture Asset and positive finite world-unit sizes"
+        );
     }
 
     #[test]

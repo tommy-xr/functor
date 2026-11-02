@@ -10,7 +10,12 @@
 // heightfield the renderer draws: `Scene.terrain` and `Physics.heightfield`
 // take one descriptor, so the ground you see is the ground you collide with.
 //
+// `C` switches the shading between the lit, layered terrain and a baked
+// colormap (unlit: lighting painted into a day and a night map offline). `N`
+// toggles night, cross-fading the maps and the frame's lights and fog.
+//
 //   node examples/terrain/generate-heightmap.mjs
+//   node examples/terrain/generate-colormaps.mjs
 //   functor -d examples/terrain run native
 
 let worldSize = 4000.0
@@ -42,10 +47,13 @@ let ballRadius = 1.1
 let ballSpeed = 55.0
 let maxBalls = 24.0
 
-let world =
+let ground =
   Terrain.heightmap(Asset.texture("heightmap.png"), worldSize, worldSize, -80.0, 520.0)
   // 4 px fits the Quest vertex budget; 8 swims in stereo.
   |> Terrain.maxPixelError(4.0)
+
+let world =
+  ground
   |> Terrain.layered(
        Color.rgb(0.12, 0.30, 0.12),
        Color.rgb(0.34, 0.49, 0.20),
@@ -59,6 +67,20 @@ let world =
        Asset.texture("detail-snow.jpg"),
        8.0)
   |> Terrain.grass(2.2, 140.0, 1.1, Color.rgb(0.25, 0.46, 0.10))
+
+// The same ground, unlit: generate-colormaps.mjs bakes the bands, sun and
+// occlusion into the maps. `blend` is 0 for day, 1 for night.
+let baked = (blend) =>
+  ground
+  |> Terrain.colormap(Asset.texture("colormap-day.png"), Asset.texture("colormap-night.png"), blend)
+  |> Terrain.colormapDetail(Asset.texture("detail-high.jpg"), 8.0, 80.0)
+
+// Seconds for a day ↔ night cross-fade.
+let fadeSeconds = 2.0
+
+type Shading =
+  | Lit
+  | Baked
 
 let terrainBody = Physics.tag("terrain")
 let walkerTag = Physics.tag("walker")
@@ -77,6 +99,9 @@ let init = {
   grounded: false,
   balls: [],
   nextBall: 0.0,
+  shading: Lit,
+  night: false,
+  blend: 0.0,
 }
 
 let setHeld = (held, key, isDown) =>
@@ -94,6 +119,8 @@ let setHeld = (held, key, isDown) =>
 
 let clamp = (value: float, lo, hi) =>
   if value < lo then lo else if hi < value then hi else value
+
+let lerp = (a: float, b, t) => a + (b - a) * t
 
 let mouseMove = (model, x, y) =>
   match model.lastMouse with
@@ -134,6 +161,11 @@ let input = (model, key, isDown) =>
   match key with
   | Key.Space => { model with jump: isDown }
   | Key.F => if isDown then launch(model) else model
+  | Key.C =>
+    if isDown then
+      { model with shading: match model.shading with | Lit => Baked | Baked => Lit }
+    else model
+  | Key.N => if isDown then { model with night: not model.night } else model
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
 let mouseButton = (model, button, isDown) =>
@@ -168,10 +200,12 @@ let tick = (model, dt, tts) =>
               forward * Math.cos(model.yaw) + right * Math.sin(model.yaw))
     |> Vec3.normalize
     |> Vec3.scale(walkSpeed) in
+  let fade = dt / fadeSeconds in
   let next =
     { model with
         grounded: probe.hit,
-        eye: { x: pos.x, y: pos.y + eyeOffset, z: pos.z } } in
+        eye: { x: pos.x, y: pos.y + eyeOffset, z: pos.z },
+        blend: clamp(if model.night then model.blend + fade else model.blend - fade, 0.0, 1.0) } in
   // Steer the horizontal plane and leave the vertical axis to the solver,
   // which owns the ground contact, the landing impulse and gravity. The only
   // frame that writes vy is the one a jump fires on; the two writes touch
@@ -230,19 +264,33 @@ let draw = (model, tts) =>
     |> Scene.scale(ballRadius)
     |> Scene.lit(Color.rgb(0.97, 0.97, 0.95))
     |> Physics.transformed(ballTag(ball)) in
+  let terrain =
+    match model.shading with
+    | Lit => world
+    | Baked => baked(model.blend) in
+  // Day → night. The night lights match the colormap bake's moonlight, so
+  // lit props agree with the ground under them.
+  let b = model.blend in
   Frame.createLit(
     camera,
-    Scene.group([Scene.terrain(world), water]
+    Scene.group([Scene.terrain(terrain), water]
                 |> List.append(model.balls |> List.map(ballNode))),
     [
-      Light.ambient(Color.rgb(0.20, 0.23, 0.28)),
+      Light.ambient(Color.rgb(lerp(0.20, 0.06, b), lerp(0.23, 0.07, b), lerp(0.28, 0.12, b))),
       Light.directional(
-        Vec3.make(0.42, -1.0, 0.28),
-        Color.rgb(1.0, 0.84, 0.64),
-        1.15),
+        Vec3.make(lerp(0.42, 0.0 - 0.35, b), lerp(0.0 - 1.0, 0.0 - 0.8, b), lerp(0.28, 0.0 - 0.45, b)),
+        Color.rgb(lerp(1.0, 0.5, b), lerp(0.84, 0.6, b), lerp(0.64, 0.85, b)),
+        lerp(1.15, 0.5, b)),
     ])
-  |> Frame.withFog(Fog.linear(700.0, 4800.0, Color.rgb(0.50, 0.64, 0.72)))
+  |> Frame.withFog(
+       Fog.linear(700.0, 4800.0,
+                  Color.rgb(lerp(0.50, 0.03, b), lerp(0.64, 0.04, b), lerp(0.72, 0.07, b))))
+
+let shadingLabel = (model) =>
+  match model.shading with
+  | Lit => ""
+  | Baked => " · baked colormap"
 
 let ui = (model) =>
-  Ui.text($"4 km terrain · WASD + mouse · SPACE jump · CLICK to launch ({List.length(model.balls)})")
+  Ui.text($"4 km terrain · WASD + mouse · SPACE jump · CLICK to launch ({List.length(model.balls)}){shadingLabel(model)}")
   |> Ui.panel(Ui.topLeft())
