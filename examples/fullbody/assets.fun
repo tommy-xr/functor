@@ -168,3 +168,13 @@ let xbotJoints: XbotJoints = {
   mixamorig_Spine1: "mixamorig:Spine1",
   mixamorig_Spine2: "mixamorig:Spine2",
 }
+
+type XbotParts = {
+  beta_Joints: string,
+  beta_Surface: string,
+}
+
+let xbotParts: XbotParts = {
+  beta_Joints: "Beta_Joints",
+  beta_Surface: "Beta_Surface",
+}

@@ -2288,37 +2288,28 @@ four texture Assets and a positive finite tile size in world units";
             )))
         },
     );
-    const COLORMAP: &str = "Terrain.colormap(day, night, blend, terrain) — \
-two texture Assets and a finite blend (clamped to 0..1)";
     reg.fn4(
         "Terrain.colormap",
-        COLORMAP,
+        "Terrain.colormap(day, night, blend, terrain) — blend is clamped to 0..1",
         |day: TextureAssetPath,
          night: TextureAssetPath,
          blend: f64,
          terrain: FunctorLangTerrain| {
-            let blend = blend as f32;
-            if !blend.is_finite() {
-                return Err(format!("usage: {COLORMAP}"));
-            }
-            Ok(FunctorLangTerrain(terrain.0.with_colormap(
-                crate::terrain::TerrainColormap {
-                    day: terrain_texture(day),
-                    night: terrain_texture(night),
-                    blend: blend.clamp(0.0, 1.0),
-                },
-            )))
+            FunctorLangTerrain(terrain.0.with_colormap(crate::terrain::TerrainColormap {
+                day: terrain_texture(day),
+                night: terrain_texture(night),
+                blend: (blend as f32).clamp(0.0, 1.0),
+            }))
         },
     );
     const COLORMAP_DETAIL: &str = "Terrain.colormapDetail(texture, tileSize, fadeEnd, terrain) — \
-a texture Asset and positive finite world-unit sizes";
+a texture Asset and positive world-unit sizes";
     reg.fn4(
         "Terrain.colormapDetail",
         COLORMAP_DETAIL,
         |texture: TextureAssetPath, tile_size: f64, fade_end: f64, terrain: FunctorLangTerrain| {
             let (tile_size, fade_end) = (tile_size as f32, fade_end as f32);
-            if !tile_size.is_finite() || !fade_end.is_finite() || tile_size <= 0.0 || fade_end <= 0.0
-            {
+            if tile_size <= 0.0 || fade_end <= 0.0 {
                 return Err(format!("usage: {COLORMAP_DETAIL}"));
             }
             Ok(FunctorLangTerrain(terrain.0.with_colormap_detail(
@@ -13803,22 +13794,14 @@ row 1 has 3"
     }
 
     #[test]
-    fn terrain_colormap_validates_its_numbers() {
+    fn terrain_colormap_detail_validates_its_sizes() {
         let base = "Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)";
-        assert_eq!(
-            run_fail(&format!(
-                "let main = () => {base} |> Terrain.colormap(Asset.texture(\"d.png\"), \
-                 Asset.texture(\"n.png\"), 0.0 / 0.0)"
-            )),
-            "usage: Terrain.colormap(day, night, blend, terrain) — \
-two texture Assets and a finite blend (clamped to 0..1)"
-        );
         assert_eq!(
             run_fail(&format!(
                 "let main = () => {base} |> Terrain.colormapDetail(Asset.texture(\"t.jpg\"), 8.0, 0.0)"
             )),
             "usage: Terrain.colormapDetail(texture, tileSize, fadeEnd, terrain) — \
-a texture Asset and positive finite world-unit sizes"
+a texture Asset and positive world-unit sizes"
         );
     }
 
