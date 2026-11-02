@@ -1978,9 +1978,11 @@ fn select_patches_into(
     // traversal's spatial order would shade far hills before the near ones
     // that hide them. In place (no allocation); (v, u) breaks ties, so the
     // order is total and the upload stays deterministic.
+    // The key is the world distance to the box's terrain-local nearest point:
+    // exact for rotation and scale, an approximation under shear (order only).
     let world_distance_squared = |patch: &[f32; 4]| {
         let gap = patch_gap(description, patch[0], patch[1], patch[2], camera_local);
-        Vector3::new(gap.x * scales[0], gap.y * scales[1], gap.z * scales[2]).magnitude2()
+        (world * gap.extend(0.0)).truncate().magnitude2()
     };
     patches.sort_unstable_by(|a, b| {
         world_distance_squared(a)
@@ -1990,9 +1992,9 @@ fn select_patches_into(
     });
 }
 
-/// Per-axis gap from `point` to a patch's terrain-local surface box, zero
-/// along an axis the point lies within. Selection's LOD distance and the
-/// draw order both measure it.
+/// Offset from `point` to the nearest point of a patch's terrain-local
+/// surface box, zero along an axis the point lies within. Selection's LOD
+/// distance and the draw order both measure it.
 fn patch_gap(
     description: &TerrainDescription,
     u: f32,
@@ -2015,9 +2017,9 @@ fn patch_gap(
         center_z + half_depth,
     );
     Vector3::new(
-        (min.x - point.x).max(0.0) + (point.x - max.x).max(0.0),
-        (min.y - point.y).max(0.0) + (point.y - max.y).max(0.0),
-        (min.z - point.z).max(0.0) + (point.z - max.z).max(0.0),
+        (min.x - point.x).max(0.0) - (point.x - max.x).max(0.0),
+        (min.y - point.y).max(0.0) - (point.y - max.y).max(0.0),
+        (min.z - point.z).max(0.0) - (point.z - max.z).max(0.0),
     )
 }
 
@@ -2602,6 +2604,18 @@ mod tests {
         patches
     }
 
+    /// XZ distance from `select_with_fog`'s eye to a patch's footprint. The
+    /// eye sits within the height range, so this is the distance to the box.
+    fn footprint_distance(patch: &[f32; 4]) -> f32 {
+        let eye = Vector3::new(-1500.0f32, 20.0, -1500.0);
+        let terrain = terrain();
+        let x0 = (patch[0] - 0.5) * terrain.width;
+        let z0 = (patch[1] - 0.5) * terrain.depth;
+        let dx = (x0 - eye.x).max(0.0) + (eye.x - (x0 + patch[2] * terrain.width)).max(0.0);
+        let dz = (z0 - eye.z).max(0.0) + (eye.z - (z0 + patch[3] * terrain.depth)).max(0.0);
+        (dx * dx + dz * dz).sqrt()
+    }
+
     #[test]
     fn fog_coarsens_only_what_it_hides() {
         let clear = select_with_fog(None);
@@ -2622,23 +2636,11 @@ mod tests {
     fn patches_are_ordered_front_to_back() {
         let patches = select_with_fog(None);
         assert!(patches.len() > 100, "needs a refined selection");
-        // The eye sits within the height range, so the nearest point of each
-        // patch's box is its XZ footprint's.
-        let terrain = terrain();
-        let nearest = |patch: &[f32; 4]| {
-            let x0 = (patch[0] - 0.5) * terrain.width;
-            let z0 = (patch[1] - 0.5) * terrain.depth;
-            let x1 = x0 + patch[2] * terrain.width;
-            let z1 = z0 + patch[3] * terrain.depth;
-            let dx = (x0 + 1500.0).max(0.0) + (-1500.0 - x1).max(0.0);
-            let dz = (z0 + 1500.0).max(0.0) + (-1500.0 - z1).max(0.0);
-            (dx * dx + dz * dz).sqrt()
-        };
-        // A patch under the eye at (-1500, 20, -1500) draws first.
-        assert_eq!(nearest(&patches[0]), 0.0);
+        // A patch under the eye draws first.
+        assert_eq!(footprint_distance(&patches[0]), 0.0);
         for pair in patches.windows(2) {
             assert!(
-                nearest(&pair[0]) <= nearest(&pair[1]) + 1e-3,
+                footprint_distance(&pair[0]) <= footprint_distance(&pair[1]) + 1e-3,
                 "{:?} draws before nearer {:?}",
                 pair[0],
                 pair[1]
@@ -2656,20 +2658,13 @@ mod tests {
         assert!(culled.iter().all(|patch| all.contains(patch)));
         // Every survivor reaches within the fog end; every dropped patch
         // lies wholly past it (terrain-local == world here).
-        let eye = Vector3::new(-1500.0f32, 20.0, -1500.0);
-        let terrain = terrain();
-        let nearest = |patch: &[f32; 4]| {
-            let x0 = (patch[0] - 0.5) * terrain.width;
-            let z0 = (patch[1] - 0.5) * terrain.depth;
-            let dx = (x0 - eye.x).max(0.0) + (eye.x - (x0 + patch[2] * terrain.width)).max(0.0);
-            let dz = (z0 - eye.z).max(0.0) + (eye.z - (z0 + patch[3] * terrain.depth)).max(0.0);
-            (dx * dx + dz * dz).sqrt()
-        };
-        assert!(culled.iter().all(|patch| nearest(patch) <= 600.0 + FOG_CULL_MARGIN));
+        assert!(culled
+            .iter()
+            .all(|patch| footprint_distance(patch) <= 600.0 + FOG_CULL_MARGIN));
         assert!(all
             .iter()
             .filter(|patch| !culled.contains(patch))
-            .all(|patch| nearest(patch) > 600.0));
+            .all(|patch| footprint_distance(patch) > 600.0));
     }
 
     #[test]
