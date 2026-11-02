@@ -69,6 +69,11 @@ pub struct XrConfig {
     /// head, level and yaw-only, instead of the full first head pose.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub floor_locked: bool,
+    /// `Xr.msaa(samples)`: MSAA samples per eye-buffer pixel (1, 2 or 4).
+    /// `None` = 1, no multisampling.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msaa: Option<u32>,
 }
 
 /// The per-frame `settings(model)` value.
@@ -270,6 +275,7 @@ mod tests {
                 passthrough: false,
                 scene: false,
                 floor_locked: false,
+                msaa: None,
             },
             external_key: 7,
         };
@@ -297,13 +303,14 @@ mod tests {
                 passthrough: true,
                 scene: true,
                 floor_locked: true,
+                msaa: Some(4),
             },
             ..GameConfig::default()
         };
         assert_eq!(
             serde_json::to_value(config).unwrap(),
             serde_json::json!({
-                "xr": { "passthrough": true, "scene": true, "floor_locked": true }
+                "xr": { "passthrough": true, "scene": true, "floor_locked": true, "msaa": 4 }
             })
         );
         let depth = XrState {
@@ -352,6 +359,7 @@ mod tests {
                     passthrough: on,
                     scene: false,
                     floor_locked: false,
+                    msaa: None,
                 },
                 ..GameConfig::default()
             })

@@ -20,6 +20,7 @@ struct XrKnobs {
     passthrough: Option<bool>,
     scene: Option<bool>,
     floor_locked: Option<bool>,
+    msaa: Option<u32>,
     foveation: Option<FoveationLevel>,
     passthrough_enabled: Option<bool>,
 }
@@ -146,6 +147,21 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 floor_locked: Some(on),
                 ..xr.0
             })
+        },
+    );
+    reg.fn2(
+        "Xr.msaa",
+        "Xr.msaa(samples, xr)",
+        |samples: f64, xr: FunctorLangXr| {
+            if ![1.0, 2.0, 4.0].contains(&samples) {
+                return Err(format!(
+                    "Xr.msaa: samples must be 1, 2 or 4, got {samples}"
+                ));
+            }
+            Ok(FunctorLangXr(XrKnobs {
+                msaa: Some(samples as u32),
+                ..xr.0
+            }))
         },
     );
     reg.fn2(
@@ -279,6 +295,7 @@ on change — return it from `settings = (model) => Settings.create() |> Setting
                 passthrough: xr.0.passthrough.unwrap_or(false),
                 scene: xr.0.scene.unwrap_or(false),
                 floor_locked: xr.0.floor_locked.unwrap_or(false),
+                msaa: xr.0.msaa,
             };
             Ok(FunctorLangConfig(config))
         },
@@ -316,6 +333,13 @@ in `let config = Config.create() |> Config.xr(…)`, then pause or resume the fe
             if xr.0.floor_locked.is_some() {
                 return Err(
                     "Settings.xr: `Xr.floorLocked` is read once at launch — declare it in \
+`let config = Config.create() |> Config.xr(…)`, not `settings`"
+                        .to_string(),
+                );
+            }
+            if xr.0.msaa.is_some() {
+                return Err(
+                    "Settings.xr: `Xr.msaa` is read once at launch — declare it in \
 `let config = Config.create() |> Config.xr(…)`, not `settings`"
                         .to_string(),
                 );

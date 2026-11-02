@@ -153,7 +153,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 26: `POST /project-files` also takes an unasked reply (bytes or missing)
 /// for a file the session already got — the host's copy changed, and
 /// `functor run vr` sends it from v26.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 26;
+///
+/// 27 adds the optional `samples` field on each `GET /state` `views` entry:
+/// the MSAA samples per pixel that view renders with (`Xr.msaa`), omitted by
+/// runtimes that don't report it.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 27;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -327,6 +331,11 @@ impl RuntimeViewport {
 pub struct RuntimeView {
     pub name: String,
     pub viewport: RuntimeViewport,
+    /// MSAA samples per pixel this view renders with (v27); omitted by
+    /// runtimes that don't report it.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples: Option<u32>,
 }
 
 impl RuntimeView {
@@ -334,6 +343,7 @@ impl RuntimeView {
         Self {
             name: name.into(),
             viewport: RuntimeViewport::new(width, height),
+            samples: None,
         }
     }
 }

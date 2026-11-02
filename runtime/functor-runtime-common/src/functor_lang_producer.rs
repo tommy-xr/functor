@@ -3294,6 +3294,26 @@ Xr.floorLocked(true))\n"
     }
 
     #[test]
+    fn msaa_is_requested_in_config() {
+        let config = |samples: &str| {
+            format!(
+                "{GAME}let config = Config.create() |> Config.xr(Xr.create() |> \
+Xr.msaa({samples}))\n"
+            )
+        };
+        let (_, contract) = contract_of(&[("game.fun", &config("4"))]).expect("loads");
+        assert_eq!(contract.config.unwrap().xr.msaa, Some(4));
+        let err = contract_of(&[("game.fun", &config("3"))]).err().unwrap();
+        assert!(err.contains("1, 2 or 4"), "{err}");
+        let settings = format!(
+            "{GAME}let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> \
+Xr.msaa(4))\n"
+        );
+        let err = contract_of(&[("game.fun", &settings)]).err().unwrap();
+        assert!(err.contains("`Xr.msaa`") && err.contains("config"), "{err}");
+    }
+
+    #[test]
     fn floor_locked_is_requested_in_config() {
         let game = format!(
             "{GAME}let config = Config.create() |> Config.xr(Xr.create() |> Xr.floorLocked(true))\n"
@@ -3428,6 +3448,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
                 passthrough: false,
                 scene: false,
                 floor_locked: false,
+                msaa: None,
             },
             ..GameConfig::default()
         };
