@@ -1,0 +1,9 @@
+{
+  "name": "character-presets",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@gltf-transform/core": "4.5.1",
+    "meshoptimizer": "1.3.0"
+  }
+}
