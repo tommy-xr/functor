@@ -10,7 +10,7 @@
 //   let init = { review: PartReview.init }
 //   let sampledInput = (m, s: Input.snapshot) => { m with review: PartReview.input(m.review, pieces, s) }
 //   let update = (m, msg: Msg) => match msg with | Review(r) => { m with review: PartReview.update(m.review, r) }
-//   let webview = (m) => Html.div([], [Html.style(PartViewer.css), PartReview.webview(Review, m.review)])
+//   let webview = (m) => Html.div([Attr.class("pv")], [Html.style(PartViewer.css), PartReview.webview(Review, m.review)])
 //   let draw = (m, tts) => PartReview.sheet(m.review, pieces)
 //
 // Clicks need a free pointer: `"cursor": "visible"` in `functor.json`.
@@ -81,8 +81,9 @@ let shown = 8.0
 let short = (text: string) =>
   if Text.length(text) <= 32.0 then text else Text.concat(Text.join("", List.take(31.0, Text.chars(text))), "…")
 
+// Where a note sits, to the whole mm (the list row's hint; `/state` has it exact).
 let at3 = (p: Input.point3) =>
-  Text.join(", ", [Text.fixed(p.x, 1.0), Text.fixed(p.y, 1.0), Text.fixed(p.z, 1.0)])
+  Text.join(", ", [Text.fixed(p.x, 0.0), Text.fixed(p.y, 0.0), Text.fixed(p.z, 0.0)])
 
 // The notes card (HTML, for a `webview`), bottom left: the selected note's
 // text field, then the latest `shown` notes — click one to select it, `×` to
@@ -97,13 +98,15 @@ let webview = (wrap, r: t) =>
       Html.button(
         [Attr.class(if n.id == r.selected then "pv-note pv-selected" else "pv-note"), Attr.onClick(wrap(Select(n.id)))],
         [Html.span([Attr.class("pv-id")], [Html.text(Text.fixed(n.id, 0.0))]),
-         Html.span([], [Html.text(if n.text == "" then n.part else short(n.text))]),
+         Html.span([Attr.class(if n.text == "" then "pv-hint" else "")], [Html.text(if n.text == "" then "(no text)" else short(n.text))]),
          Html.span([Attr.class("pv-at")], [Html.text(Text.concat(Text.concat(n.part, " "), at3(n.point)))])]),
       Html.button([Attr.class("pv-x"), Attr.onClick(wrap(Delete(n.id)))], [Html.text("×")]),
     ]) in
   let earlier = List.length(r.notes) - shown in
   let more = if earlier > 0 then [Html.div([Attr.class("pv-hint")], [Html.text(Text.concat(Text.fixed(earlier, 0.0), " earlier notes"))])] else [] in
-  Html.div([Attr.class("pv-card pv-notes")],
+  // The card's own click (on its background) keeps the selection; it stops
+  // the press pinning a note on the part behind the card.
+  Html.div([Attr.class("pv-card pv-notes"), Attr.onClick(wrap(Select(r.selected)))],
     [Html.div([Attr.class("pv-title")], [Html.text("NOTES")])]
       |> List.append(editing) |> List.append(more) |> List.append(List.map(row, List.drop(earlier, r.notes))))
 

@@ -102,8 +102,8 @@ test(
     }
     assert.deepEqual(note.normal, { x: 0, y: -1, z: 0 });
 
-    // The selected note's text field is the webview's second handler (slot
-    // 1), after the toolbar's "3D view" button.
+    // Webview slots number handlers in the order `webview` evaluates them:
+    // the toolbar's "3D view" button (0), then the notes card's text field (1).
     await runner.input({
       type: "webview_event",
       slot: 1,

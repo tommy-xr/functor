@@ -10786,7 +10786,9 @@ Anim.clip(\"walk\", tts)"
              let sampledInput = (m: Model, s: Input.snapshot) => { m with viewer: PartViewer.sampledInputPieces(pieces, m.viewer, s) }\n\
              let webview = (m: Model) => PartViewer.webviewWith(Viewer, m.viewer)\n\
              let draw = (m: Model, tts) => PartViewer.drawPieces(pieces, m.viewer, tts)\n\
-             let sheet = () => input(input(init, Key.V, true), Key.V, false)\n"
+             let sheet = () => input(input(init, Key.V, true), Key.V, false)\n\
+             let hit: PartViews.hit = { piece: 1.0, view: \"FRONT\", point: Vec3.make(20.0, -2.5, 0.0), normal: Vec3.make(0.0, -1.0, 0.0), distance: 1.0 }\n\
+             let noted = () => { viewer: { sheet().viewer with review: PartReview.pinAt(PartReview.init, pieces, Option.Some(hit)) } }\n"
                 .to_string(),
         )];
         let project = functor_lang::project::load_sources_with_bundled_modules(
@@ -10806,7 +10808,10 @@ Anim.clip(\"walk\", tts)"
         assert!(orbit.render_targets.is_empty());
         assert!(format!("{:?}", orbit.scene).matches("Lit").count() == 3, "bed + two pieces");
         let sheet = session.call("sheet", vec![], &mut FunctorHost).unwrap();
-        for model in [session.global("init").unwrap(), sheet.clone()] {
+        // The orbit toolbar, the empty notes card, and a card with a selected note.
+        let noted = session.call("noted", vec![], &mut FunctorHost).unwrap();
+        assert_eq!(value_to_json(&noted)["viewer"]["review"]["notes"][0]["part"], "b");
+        for model in [session.global("init").unwrap(), sheet.clone(), noted] {
             session
                 .call("webview", vec![model], &mut FunctorHost)
                 .unwrap_or_else(|e| panic!("webview: {}", e.message));

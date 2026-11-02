@@ -78,7 +78,7 @@ let update = (m, msg: msg) =>
 // controls can use its classes (`pv-card`, `pv-bar`, `pv-title`, buttons with
 // `aria-pressed`) to match.
 let css = "
-  .pv { position: absolute; left: 0; top: 0; width: 100vw; height: 100vh;
+  .pv { position: absolute; left: 0; top: 0; width: 100%; height: calc(100vh - var(--functor-scrubber-h, 0px));
         font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 14px; color: #e8e6e2; }
   .pv-card { position: absolute; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
              background: rgba(31, 32, 35, 0.92); border: 1px solid #34363a; border-radius: 10px; }
@@ -95,7 +95,7 @@ let css = "
   .pv input { font-size: 14px; padding: 7px 9px; color: #e8e6e2; background: #17181a;
               border: 1px solid #e47a3d; border-radius: 6px; }
   .pv-row { display: flex; gap: 6px; }
-  .pv .pv-note { flex-grow: 1; display: flex; gap: 8px; text-align: left; font-weight: normal; }
+  .pv .pv-note { flex-grow: 1; min-width: 0; overflow: hidden; display: flex; justify-content: flex-start; gap: 8px; text-align: left; font-weight: normal; white-space: nowrap; }
   .pv .pv-selected { border-color: #e47a3d; }
   .pv-id { color: #e47a3d; font-weight: bold; }
   .pv-at { margin-left: auto; white-space: nowrap; color: #9a9ea5; font-family: Menlo, monospace; font-size: 11px; }
@@ -110,10 +110,14 @@ let toggle = (label: string, on: bool, msg) =>
 // app's message.
 let webviewWith = (wrap, m) =>
   let toolbar =
-    if m.sheet then [toggle("3D view", false, wrap(ShowSheet(false)))]
-    else [toggle("Orbit", m.tool == Orbit, wrap(UseTool(Orbit))), toggle("Note", m.tool == Note, wrap(UseTool(Note))), toggle("8 views", false, wrap(ShowSheet(true)))] in
+    let switchTo = (label, sheet) => Html.button([Attr.onClick(wrap(ShowSheet(sheet)))], [Html.text(label)]) in
+    if m.sheet then [switchTo("3D view", false)]
+    else [toggle("Orbit", m.tool == Orbit, wrap(UseTool(Orbit))), toggle("Note", m.tool == Note, wrap(UseTool(Note))), switchTo("8 views", true)] in
   let notes = if m.sheet || m.tool == Note then [PartReview.webview((r) => wrap(Review(r)), m.review)] else [] in
-  Html.div([Attr.class("pv")], [Html.style(css), Html.div([Attr.class("pv-bar")], toolbar)] |> List.append(notes))
+  // The bar's own click (between buttons) changes nothing; it keeps the
+  // press from reaching the part behind it.
+  let bar = Html.div([Attr.class("pv-bar"), Attr.onClick(wrap(ShowSheet(m.sheet)))], toolbar) in
+  Html.div([Attr.class("pv")], [Html.style(css), bar] |> List.append(notes))
 
 let webview = (m) => webviewWith((msg) => msg, m)
 
