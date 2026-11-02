@@ -565,8 +565,7 @@ impl World {
                 .partition(|f| dirty.contains(&f.key));
             self.fused = Arc::new(kept);
             for fused in removed {
-                let poses: Vec<Pose> =
-                    self.compound(fused.collider).shapes().iter().map(|(pose, _)| *pose).collect();
+                let poses: Vec<Pose> = fused.parts.shapes().iter().map(|(pose, _)| *pose).collect();
                 self.unfused.extend(fused.tags.into_iter().zip(poses));
                 self.colliders
                     .remove(fused.collider, &mut self.islands, &mut self.bodies, true);
@@ -627,14 +626,17 @@ impl World {
 
         // Fuse, in key order, parts in tag order.
         for (key, bodies) in refuse.into_iter().filter(|(_, b)| !b.is_empty()) {
-            let shapes = bodies
-                .iter()
-                .map(|b| {
-                    let shape = collider_of(&b.shape).expect("fusable shapes are convex").shape;
-                    (part_poses[&b.tag], shape)
-                })
-                .collect();
-            let collider = ColliderBuilder::compound(shapes)
+            let parts = Compound::new(
+                bodies
+                    .iter()
+                    .map(|b| {
+                        let shape = collider_of(&b.shape).expect("fusable shapes are convex").shape;
+                        (part_poses[&b.tag], shape)
+                    })
+                    .collect(),
+            );
+            let (shape, merged) = merge_boxes(parts.shapes());
+            let collider = ColliderBuilder::new(shape)
                 .friction(bodies[0].friction)
                 .restitution(bodies[0].restitution)
                 .build();
@@ -649,6 +651,8 @@ impl World {
                 key,
                 collider,
                 tags: bodies.iter().map(|b| b.tag.clone()).collect(),
+                parts: Arc::new(parts),
+                merged,
             });
         }
         self.unfused.clear();
@@ -1090,7 +1094,7 @@ impl World {
             .collect();
         // Fused bodies, as the fixed bodies they stand for.
         for fused in self.fused.iter() {
-            for (tag, (pose, _)) in fused.tags.iter().zip(self.compound(fused.collider).shapes()) {
+            for (tag, (pose, _)) in fused.tags.iter().zip(fused.parts.shapes()) {
                 let (pos, rot) = (pose.translation, pose.rotation);
                 bodies.push(BodyDump {
                     tag,
@@ -1122,9 +1126,9 @@ impl World {
                 match (self.fused_part(&tag), &command) {
                     // A fused body moves within its compound.
                     (Some((c, part)), PhysicsCommand::Teleport { position, .. }) => {
-                        let mut shapes = self.compound(c).shapes().to_vec();
-                        shapes[part].0.translation = vec3(*position);
-                        self.colliders[c].set_shape(SharedShape::compound(shapes));
+                        let mut pose = self.part_pose((c, part));
+                        pose.translation = vec3(*position);
+                        self.set_part_pose(c, part, pose);
                     }
                     (Some(_), PhysicsCommand::Move { .. }) => self.push_command_warning(format!(
                         "physics move on \"{tag}\", which is not a Physics.character, has no effect"
@@ -1420,13 +1424,13 @@ impl World {
     ) -> Option<(String, ColliderHandle, H)> {
         let hit = hit.map(|(collider, hit)| {
             // The part's own hit, so tag and geometry agree on a seam.
-            match self.fused_tags(collider).and_then(|_| on_parts(self.compound(collider), None)) {
+            match self.parts(collider).and_then(|parts| on_parts(parts, None)) {
                 Some((part, hit)) => (collider, Some(part), hit),
                 None => (collider, None, hit),
             }
         });
         let rest = exclude.and_then(|tag| self.fused_part(tag)).and_then(|(c, skip)| {
-            let (part, hit) = on_parts(self.compound(c), Some(skip))?;
+            let (part, hit) = on_parts(self.parts(c)?, Some(skip))?;
             Some((c, Some(part), hit))
         });
         let (collider, part, hit) = [hit, rest]
@@ -1448,23 +1452,35 @@ impl World {
         Some((f.collider, part))
     }
 
-    /// The tags of `collider`'s parts, if it is a fused compound.
-    fn fused_tags(&self, collider: ColliderHandle) -> Option<&[String]> {
-        self.fused
-            .iter()
-            .find(|f| f.collider == collider)
-            .map(|f| f.tags.as_slice())
+    /// The fused statics whose compound is `collider`.
+    fn fused_of(&self, collider: ColliderHandle) -> Option<&FusedStatics> {
+        self.fused.iter().find(|f| f.collider == collider)
     }
 
-    fn compound(&self, collider: ColliderHandle) -> &Compound {
-        self.colliders[collider]
-            .shape()
-            .as_compound()
-            .expect("fused statics are compounds")
+    /// The tags of `collider`'s parts, if it is a fused compound.
+    fn fused_tags(&self, collider: ColliderHandle) -> Option<&[String]> {
+        self.fused_of(collider).map(|f| f.tags.as_slice())
+    }
+
+    /// `collider`'s unmerged parts, one per tag, if it is a fused compound.
+    fn parts(&self, collider: ColliderHandle) -> Option<&Compound> {
+        self.fused_of(collider).map(|f| &*f.parts)
     }
 
     fn part_pose(&self, (collider, part): (ColliderHandle, usize)) -> Pose {
-        self.compound(collider).shapes()[part].0
+        self.parts(collider).expect("a fused part's compound").shapes()[part].0
+    }
+
+    /// Move one fused part, re-merging its compound.
+    fn set_part_pose(&mut self, collider: ColliderHandle, part: usize, pose: Pose) {
+        let fused = Arc::make_mut(&mut self.fused);
+        let f = fused.iter_mut().find(|f| f.collider == collider).expect("a fused part's compound");
+        let mut shapes = f.parts.shapes().to_vec();
+        shapes[part].0 = pose;
+        f.parts = Arc::new(Compound::new(shapes));
+        let (shape, merged) = merge_boxes(f.parts.shapes());
+        f.merged = merged;
+        self.colliders[collider].set_shape(shape);
     }
 
     /// Sensor poses as the coming step's collision detection sees them (it
@@ -1488,10 +1504,10 @@ impl World {
 
     /// Diff which fused parts touch which bodies into this step's events.
     /// rapier reports the compound as one pair per body; a part touches when
-    /// one of its manifolds has solver contacts (rapier's own rule for a
-    /// pair), and a sensor overlaps the parts it intersected at detection
-    /// (`sensors`). A pair whose body is gone ends unreported, as a despawned
-    /// body's contacts do.
+    /// a manifold on its (maybe merged) box has solver contacts (rapier's own
+    /// rule for a pair) whose bounds meet the part, and a sensor overlaps the
+    /// parts it intersected at detection (`sensors`). A pair whose body is
+    /// gone ends unreported, as a despawned body's contacts do.
     fn diff_fused_contacts(&mut self, sensors: &[(ColliderHandle, Pose)]) {
         let mut now = BTreeSet::new();
         let mut events = Vec::new();
@@ -1499,6 +1515,7 @@ impl World {
             let (a, b) = (a.to_string(), b);
             now.insert(if a <= b { (a, b, sensor) } else { (b, a, sensor) });
         };
+        let near = self.integration_parameters.prediction_distance();
         for fused in self.fused.iter() {
             let c = fused.collider;
             for pair in self.narrow_phase.contact_pairs_with(c) {
@@ -1508,11 +1525,19 @@ impl World {
                     continue;
                 };
                 for m in pair.manifolds.iter().filter(|m| !m.data.solver_contacts.is_empty()) {
-                    let part = if mine_first { m.subshape1 } else { m.subshape2 };
-                    touch(&fused.tags[part as usize], other.clone(), false);
+                    let sub = if mine_first { m.subshape1 } else { m.subshape2 };
+                    // A merged box stands for several parts: those under its
+                    // contact points (world space, as the compound's frame).
+                    let points = m.data.solver_contacts.iter().map(|p| p.point);
+                    let under = Aabb::from_points(points).loosened(near);
+                    for i in fused.parts.bvh().intersect_aabb(&under) {
+                        if fused.merged[i as usize] == sub {
+                            touch(&fused.tags[i as usize], other.clone(), false);
+                        }
+                    }
                 }
             }
-            let compound = self.compound(c);
+            let compound = &*fused.parts;
             for (c1, c2, hit) in self.narrow_phase.intersection_pairs_with(c) {
                 let other = if c1 == c { c2 } else { c1 };
                 let (Some(tag), true) = (self.tag_of_collider(other), hit) else {
@@ -1550,7 +1575,7 @@ impl World {
             let swept = shape.compute_aabb(&before).merged(&shape.compute_aabb(&after));
             let dispatcher = self.narrow_phase.query_dispatcher();
             for fused in self.fused.iter() {
-                let compound = self.compound(fused.collider);
+                let compound = &*fused.parts;
                 for i in compound.bvh().intersect_aabb(&swept) {
                     let (pose, part) = &compound.shapes()[i as usize];
                     let at = |p: &Pose| dispatcher.intersection_test(&pose.inv_mul(p), &**part, shape);
@@ -1963,14 +1988,87 @@ fn fuse_key(body: &Body) -> FuseKey {
     )
 }
 
-/// One key's fused fixed bodies: a parentless compound collider at the
-/// identity pose whose part `i`, at its world pose, is body `tags[i]`.
+/// One key's fused fixed bodies: `parts` (not in rapier) has part `i`, at
+/// its world pose, as body `tags[i]`; rapier collides them as one parentless
+/// compound collider at the identity pose, boxes merged ([`merge_boxes`]),
+/// whose subshape `merged[i]` holds part `i`.
 #[derive(Clone, Serialize, Deserialize)]
 struct FusedStatics {
     key: FuseKey,
     collider: ColliderHandle,
     /// Sorted (`fused_part` binary-searches them).
     tags: Vec<String>,
+    parts: Arc<Compound>,
+    merged: Vec<u32>,
+}
+
+/// Mismatch (m) under which box faces count as equal or touching.
+const MERGE_TOL: f32 = 1e-4;
+
+/// `parts` as rapier collides them, and each part's subshape there: unrotated
+/// boxes with equal cross-sections that touch or overlap along an axis merge
+/// into one box, so a body sliding across tiles meets no internal edge.
+/// Greedy passes along x, z, then y (a floor's rows, then the rows; a wall's
+/// likewise); other parts and unmerged boxes pass through unchanged.
+fn merge_boxes(parts: &[(Pose, SharedShape)]) -> (SharedShape, Vec<u32>) {
+    // (min corner, max corner, member parts)
+    let mut boxes: Vec<(Vector, Vector, Vec<usize>)> = Vec::new();
+    let mut rest = Vec::new();
+    for (i, (pose, shape)) in parts.iter().enumerate() {
+        match shape.as_cuboid() {
+            Some(c) if pose.rotation == Rotation::IDENTITY => {
+                let (t, h) = (pose.translation, c.half_extents);
+                boxes.push((t - h, t + h, vec![i]));
+            }
+            _ => rest.push(i),
+        }
+    }
+    for (axis, a, b) in [(0, 1, 2), (2, 0, 1), (1, 0, 2)] {
+        // Same cross-section next to each other, in order along `axis`.
+        let key = |(lo, hi, _): &(Vector, Vector, Vec<usize>)| {
+            [lo[a], hi[a], lo[b], hi[b], lo[axis]]
+        };
+        boxes.sort_by(|x, y| {
+            let (x, y) = (key(x), key(y));
+            x.iter().zip(&y).fold(std::cmp::Ordering::Equal, |o, (p, q)| o.then(p.total_cmp(q)))
+        });
+        let mut runs: Vec<(Vector, Vector, Vec<usize>)> = Vec::new();
+        for next in boxes {
+            let near = |p: f32, q: f32| (p - q).abs() <= MERGE_TOL;
+            match runs.last_mut() {
+                Some((lo, hi, members))
+                    if [a, b].iter().all(|&k| near(lo[k], next.0[k]) && near(hi[k], next.1[k]))
+                        && next.0[axis] <= hi[axis] + MERGE_TOL
+                        && next.1[axis] >= lo[axis] - MERGE_TOL =>
+                {
+                    lo[axis] = lo[axis].min(next.0[axis]);
+                    hi[axis] = hi[axis].max(next.1[axis]);
+                    members.extend(next.2);
+                }
+                _ => runs.push(next),
+            }
+        }
+        boxes = runs;
+    }
+    let mut merged = vec![0; parts.len()];
+    let mut shapes = Vec::new();
+    for (lo, hi, members) in boxes {
+        for &i in &members {
+            merged[i] = shapes.len() as u32;
+        }
+        shapes.push(match members[..] {
+            [only] => parts[only].clone(),
+            _ => {
+                let h = (hi - lo) / 2.0;
+                (Pose::from_translation(lo + h), SharedShape::cuboid(h.x, h.y, h.z))
+            }
+        });
+    }
+    for i in rest {
+        merged[i] = shapes.len() as u32;
+        shapes.push(parts[i].clone());
+    }
+    (SharedShape::compound(shapes), merged)
 }
 
 /// The part of `compound` the ray hits first, skipping `skip`.
@@ -2770,9 +2868,7 @@ mod tests {
                 // A fixed body is a compound part: move the part.
                 None => {
                     let (c, part) = w.fused_part("mover").unwrap();
-                    let mut shapes = w.compound(c).shapes().to_vec();
-                    shapes[part].0 = live_pose;
-                    w.colliders[c].set_shape(SharedShape::compound(shapes));
+                    w.set_part_pose(c, part, live_pose);
                 }
             }
 
@@ -4007,20 +4103,32 @@ mod tests {
         assert!(w.tags.contains_key("s0000"));
     }
 
-    /// A body sliding at 5 m/s along +x from `x0` over a row of 30
-    /// frictionless 1 m tiles (`wall`: beside them, pushed against them,
-    /// without gravity), fused or not. Once settled, the worst seam snag:
-    /// offset along the contact normal from its settled distance, normal
-    /// speed, and the speed lost along x by x = 25 (or after 400 frames).
-    fn slide(fused: bool, shape: &Shape, half: [f32; 3], wall: bool, x0: f32) -> [f32; 3] {
-        let tiles: Vec<Body> = (0..30)
+    /// `n` frictionless 1 m tiles in a row along +x from x = 0, fused or
+    /// separate bodies.
+    fn row(n: i32, fused: bool) -> Vec<Body> {
+        (0..n)
             .map(|i| {
                 let tile = Body::fixed(format!("t{i:02}"), Shape::Cuboid { extents: [1.0; 3] })
                     .at([i as f32, 0.0, 0.0])
                     .with_friction(0.0);
                 if fused { tile } else { separate(tile) }
             })
-            .collect();
+            .collect()
+    }
+
+    /// A body sliding at 5 m/s along +x from `x0` over `tiles`, a 1 m row
+    /// along x (`wall`: beside it, pushed against it, without gravity). Once
+    /// settled, the worst seam snag: offset along the contact normal from
+    /// its settled distance, normal speed, and the speed lost along x by
+    /// x = `end` (or after 400 frames).
+    fn slide(
+        tiles: &[Body],
+        shape: &Shape,
+        half: [f32; 3],
+        wall: bool,
+        x0: f32,
+        end: f32,
+    ) -> [f32; 3] {
         let normal = if wall { 2 } else { 1 };
         let mut start = [x0, 0.0, 0.0];
         start[normal] = 0.5 + half[normal] + 0.001;
@@ -4031,7 +4139,7 @@ mod tests {
             rotation_locked: matches!(shape, Shape::Capsule { .. }),
             ..Body::dynamic("slider".to_string(), shape.clone()).at(start).with_friction(0.0)
         };
-        let mut frame = scene(tiles.into_iter().chain([slider]).collect());
+        let mut frame = scene(tiles.iter().cloned().chain([slider]).collect());
         frame.gravity = if wall { [0.0; 3] } else { [0.0, -9.81, 0.0] };
         let mut w = World::new(frame.gravity);
         let (mut settled, mut worst) = (None, [0.0f32; 3]);
@@ -4041,7 +4149,7 @@ mod tests {
             let (p, _) = w.body_transform("slider").unwrap();
             let v = w.body_velocity("slider").unwrap();
             worst[2] = 5.0 - v[0];
-            if p[0] > 25.0 {
+            if p[0] > end {
                 break;
             }
             let Some(rest) = settled else {
@@ -4054,33 +4162,142 @@ mod tests {
         worst
     }
 
-    /// Fused tiles are the same parts with the same contact generation, so a
-    /// slider meets each seam as it does separate bodies. Over 8 start offsets: the
-    /// mean of each snag metric.
-    #[test]
-    fn fused_seams_snag_no_worse_than_separate_bodies() {
+    /// Box and capsule sliders, on (`wall` false) and beside the row: name,
+    /// shape, half extents, wall.
+    fn sliders() -> Vec<(&'static str, Shape, [f32; 3], bool)> {
         let cube = (Shape::Cuboid { extents: [0.8; 3] }, [0.4; 3]);
         let capsule = (Shape::Capsule { half_height: 0.4, radius: 0.3 }, [0.3, 0.7, 0.3]);
-        for (name, (shape, half)) in [("box", cube), ("capsule", capsule)] {
-            for wall in [false, true] {
-                let mean = |fused: bool| {
-                    let mut sum = [0.0f32; 3];
-                    for k in 0..8 {
-                        let m = slide(fused, &shape, half, wall, 0.2 + 0.07 * k as f32);
-                        (0..3).for_each(|i| sum[i] += m[i] / 8.0);
-                    }
-                    sum
-                };
-                let (flat, fused) = (mean(false), mean(true));
-                eprintln!("seams {name} wall={wall}: separate {flat:?} fused {fused:?}");
-                for i in 0..3 {
-                    assert!(
-                        fused[i] <= flat[i] * 1.1 + 1e-3,
-                        "{name} wall={wall} metric {i}: separate {flat:?} fused {fused:?}"
-                    );
-                }
+        [("box", cube), ("capsule", capsule)]
+            .into_iter()
+            .flat_map(|(name, (shape, half))| {
+                [false, true].map(|wall| (name, shape.clone(), half, wall))
+            })
+            .collect()
+    }
+
+    /// Each snag metric over 8 start offsets: per start (`slide`).
+    fn slides(
+        tiles: &[Body],
+        shape: &Shape,
+        half: [f32; 3],
+        wall: bool,
+        end: f32,
+    ) -> Vec<[f32; 3]> {
+        (0..8).map(|k| slide(tiles, shape, half, wall, 0.2 + 0.07 * k as f32, end)).collect()
+    }
+
+    fn mean(runs: &[[f32; 3]]) -> [f32; 3] {
+        [0, 1, 2].map(|i| runs.iter().map(|m| m[i]).sum::<f32>() / runs.len() as f32)
+    }
+
+    /// One cell's tiles merge into one box, so a slider crossing them meets
+    /// no seam: no offset, no off-surface speed, no speed lost (the box
+    /// beside the wall keeps the few mm it settles by, as on separate tiles).
+    #[test]
+    fn merged_tiles_slide_without_seam_kicks() {
+        let (tiles, separate_tiles) = (row(16, true), row(16, false));
+        for (name, shape, half, wall) in sliders() {
+            let merged = slides(&tiles, &shape, half, wall, 11.0);
+            let before = mean(&slides(&separate_tiles, &shape, half, wall, 11.0));
+            eprintln!("seams {name} wall={wall}: separate {before:?} merged {:?}", mean(&merged));
+            for m in &merged {
+                assert!(m.iter().all(|&x| x < 5e-3), "{name} wall={wall}: {m:?}");
             }
         }
+    }
+
+    /// Cells are compound boundaries, so a row crossing one (x = 15.5) keeps
+    /// that seam, and it snags as the seam between two separate boxes does.
+    #[test]
+    fn a_cell_boundary_is_one_ordinary_seam() {
+        let tiles = row(30, true);
+        let halves = [(7.5, 16.0), (22.5, 14.0)].map(|(x, len)| {
+            let half = Body::fixed(format!("h{x}"), Shape::Cuboid { extents: [len, 1.0, 1.0] });
+            separate(half.at([x, 0.0, 0.0]).with_friction(0.0))
+        });
+        for (name, shape, half, wall) in sliders() {
+            let merged = mean(&slides(&tiles, &shape, half, wall, 25.0));
+            let two = mean(&slides(&halves, &shape, half, wall, 25.0));
+            eprintln!("cell seam {name} wall={wall}: two boxes {two:?} merged {merged:?}");
+            for i in 0..3 {
+                assert!(merged[i] <= two[i] * 1.1 + 1e-3, "{name} wall={wall} metric {i}");
+            }
+        }
+    }
+
+    /// A crate resting across three merged tiles touches all three, middle
+    /// included, as it does separate ones.
+    #[test]
+    fn a_body_on_merged_tiles_touches_each_tile_under_it() {
+        let run = |fused: bool| {
+            let plank = Shape::Cuboid { extents: [2.6, 0.4, 0.6] };
+            let crate_ = Body::dynamic("crate".to_string(), plank).at([1.0, 1.0, 0.0]);
+            let frame = scene(row(8, fused).into_iter().chain([crate_]).collect());
+            let mut w = World::new([0.0, -9.81, 0.0]);
+            let mut events = Vec::new();
+            for _ in 0..60 {
+                w.reconcile(&frame);
+                w.step_frame(FIXED_DT);
+                events.extend(sorted_events(w.take_events()));
+            }
+            if fused {
+                assert_eq!(w.fused[0].parts.shapes().len(), 8);
+                let rapier = w.colliders[w.fused[0].collider].shape().as_compound().unwrap();
+                assert_eq!(rapier.shapes().len(), 1);
+            }
+            events
+        };
+        let merged = run(true);
+        assert_eq!(merged, run(false));
+        let touched: Vec<_> = merged.iter().map(|e| e.1.as_str()).collect();
+        assert_eq!(touched, ["t00", "t01", "t02"]);
+    }
+
+    #[test]
+    fn boxes_sharing_faces_merge_and_the_rest_pass_through() {
+        let at = |x: f32, y: f32, z: f32| Pose::from_translation(Vector::new(x, y, z));
+        let cube = SharedShape::cuboid(0.5, 0.5, 0.5);
+        // A 4 x 4 floor whose tile (1, 1) is raised, a sphere, a turned box.
+        let mut parts: Vec<_> = (0..16)
+            .map(|i| (at((i % 4) as f32 - 2.0, 0.0, (i / 4) as f32 - 2.0), cube.clone()))
+            .collect();
+        parts[5].0.translation.y = 0.5;
+        parts.push((at(9.0, 0.0, 0.0), SharedShape::ball(0.5)));
+        let turned = Pose::from_parts(Vector::new(9.0, 0.0, 3.0), Rotation::from_rotation_y(0.3));
+        parts.push((turned, cube.clone()));
+        let (shape, merged) = merge_boxes(&parts);
+        let shapes = shape.as_compound().unwrap().shapes();
+        // Row z = 0; (0, 1); (2..3, 1); the raised tile; rows z = 2..3; ball; turned.
+        assert_eq!(shapes.len(), 7);
+        let rows_2_3: Vec<usize> = (8..16).collect();
+        let groups = [&[0, 1, 2, 3][..], &[4], &[6, 7], &[5], &rows_2_3, &[16], &[17]];
+        for group in groups {
+            let union = group
+                .iter()
+                .map(|&i| parts[i].1.compute_aabb(&parts[i].0))
+                .reduce(|a, b| a.merged(&b))
+                .unwrap();
+            let (pose, box_) = &shapes[merged[group[0]] as usize];
+            assert!(group.iter().all(|&i| merged[i] == merged[group[0]]), "{group:?}");
+            assert_eq!(box_.compute_aabb(pose), union, "{group:?}");
+        }
+        assert_eq!(shapes[merged[17] as usize].0, turned);
+    }
+
+    #[test]
+    fn a_teleported_tile_leaves_its_merged_box() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        w.reconcile(&scene(row(8, true)));
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "t03".to_string(),
+            position: [3.0, 2.0, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        let rapier = w.colliders[w.fused[0].collider].shape().as_compound().unwrap();
+        assert_eq!(rapier.shapes().len(), 3);
+        assert_eq!(w.body_transform("t03").unwrap().0, [3.0, 2.0, 0.0]);
+        let down = |x: f32| w.raycast([x, 5.0, 0.0], [0.0, -1.0, 0.0], 10.0).map(|h| h.tag);
+        assert_eq!([down(2.9), down(4.0)], [Some("t03".into()), Some("t04".into())]);
     }
 
     /// The equivalence golden: the same bodies declared flat or as a group
