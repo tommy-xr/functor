@@ -34,12 +34,15 @@ pub struct Evaluated {
     pub file_reads: BTreeMap<String, Option<String>>,
     /// Value defs that couldn't cross, with what each took on the loader.
     main_only: Vec<(String, f64)>,
+    /// What each def it evaluated took.
+    took: HashMap<String, f64>,
 }
 
 impl Evaluated {
     /// `module`'s session, from these values: `module` must be the project
     /// the job compiled. Defs that couldn't cross evaluate here, on `host`.
-    pub fn adopt(self, module: &Module, host: &mut dyn Host) -> Result<(Session, ReuseStats), RunFailure> {
+    pub fn adopt(self, module: &Module, host: &mut dyn Host, costs: &mut Costs) -> Result<(Session, ReuseStats), RunFailure> {
+        costs.merge(self.took);
         for (name, ms) in &self.main_only {
             if *ms > SLOW_MAIN_ONLY_MS {
                 log::warn!(
@@ -174,29 +177,151 @@ fn serve(requests: mpsc::Receiver<Request>) {
     }
 }
 
-/// Reports defs started over all defs, as progress.
-struct Watch<'p> {
-    progress: &'p Progress,
+/// Times each def a load evaluates; reports defs started over all defs as
+/// progress (the loader), or stops before a heavy one (a deferrable
+/// reload).
+struct Watch<'w> {
+    progress: Option<&'w Progress>,
+    /// With the last load's costs and records: stop before a heavy def.
+    defer: Option<(&'w Costs, Option<&'w Records>)>,
     /// When the def being evaluated started.
     started: f64,
     took: HashMap<String, f64>,
+    /// What this load has evaluated so far, in ms.
+    spent: f64,
+    /// The def evaluating, or last evaluated.
+    current: String,
+    heavy: Option<String>,
+}
+
+impl<'w> Watch<'w> {
+    fn new(progress: Option<&'w Progress>, defer: Option<(&'w Costs, Option<&'w Records>)>) -> Watch<'w> {
+        Watch { progress, defer, started: 0.0, took: HashMap::new(), spent: 0.0, current: String::new(), heavy: None }
+    }
 }
 
 impl LoadWatch for Watch<'_> {
-    fn evaluating(&mut self, index: usize, total: usize, _name: &str) {
-        self.progress.set(index as f64 / total.max(1) as f64);
+    fn evaluating(&mut self, index: usize, total: usize, name: &str) -> bool {
+        if let Some((costs, records)) = self.defer {
+            let slow = costs.0.get(name).is_some_and(|ms| *ms > HEAVY_MS) || self.spent > HEAVY_MS;
+            if slow || records.is_some_and(|records| records.read_files(name)) {
+                self.heavy = Some(name.to_string());
+                return false;
+            }
+        }
+        if let Some(progress) = self.progress {
+            progress.set(index as f64 / total.max(1) as f64);
+        }
+        self.current = name.to_string();
         self.started = now_ms();
+        true
     }
 
     fn evaluated(&mut self, name: &str) {
-        self.took.insert(name.to_string(), now_ms() - self.started);
+        let took = now_ms() - self.started;
+        self.spent += took;
+        self.took.insert(name.to_string(), took);
+    }
+}
+
+/// A def that took longer than this, if a reload must evaluate it again,
+/// sends the reload to the loader.
+pub const HEAVY_MS: f64 = 50.0;
+
+/// Each def's last evaluation time, in ms.
+#[derive(Default)]
+pub struct Costs(HashMap<String, f64>);
+
+impl Costs {
+    fn merge(&mut self, took: HashMap<String, f64>) {
+        self.0.extend(took);
+    }
+}
+
+/// How a load on this thread ended.
+pub enum Inline {
+    Loaded(Session, ReuseStats),
+    /// It would have evaluated this heavy def: the loader should.
+    Heavy(String),
+    Failed(RunFailure),
+}
+
+/// A host that reads no project file, so a deferrable load never waits on
+/// one on the frame thread: file inputs never check as current (a value
+/// that read files evaluates again, and defers), and a file read stops the
+/// load (a value that newly reads files defers too).
+struct Unchecked<'h> {
+    host: &'h mut dyn Host,
+    stopped: bool,
+}
+
+impl Host for Unchecked<'_> {
+    fn provides(&self, path: &str) -> bool {
+        self.host.provides(path)
+    }
+
+    fn call(
+        &mut self,
+        path: &str,
+        args: Vec<functor_lang::Value>,
+        span: functor_lang::Span,
+    ) -> Result<functor_lang::HostReturn, functor_lang::RunError> {
+        if crate::functor_lang_prelude::reads_files(path) {
+            self.stopped = true;
+            let message = functor_lang::eval::LOAD_STOPPED.to_string();
+            return Err(functor_lang::RunError { message, span });
+        }
+        self.host.call(path, args, span)
+    }
+
+    fn begin_inputs(&mut self) {
+        self.host.begin_inputs()
+    }
+
+    fn end_inputs(&mut self) -> Option<Vec<functor_lang::reuse::HostInput>> {
+        self.host.end_inputs()
+    }
+
+    fn inputs_current(&mut self, inputs: &[functor_lang::reuse::HostInput]) -> bool {
+        inputs.is_empty()
+    }
+}
+
+/// [`Session::load_reusing`] on this thread, timing each def into `costs`.
+/// With `defer`, it reads no file and stops before evaluating a heavy def:
+/// slow last time ([`HEAVY_MS`]), a reader of project files (a decode,
+/// typically), or any def once the load has spent that long.
+pub fn load_inline(
+    module: &Module,
+    host: &mut dyn Host,
+    previous: Option<&Session>,
+    types: HashMap<String, String>,
+    costs: &mut Costs,
+    defer: bool,
+) -> Inline {
+    let records = previous.and_then(Session::records);
+    let mut watch = Watch::new(None, defer.then_some((&*costs, records)));
+    let mut unchecked = Unchecked { host, stopped: false };
+    let loaded = if defer {
+        Session::load_watched(module, &mut unchecked, previous, types, None, &mut watch)
+    } else {
+        Session::load_watched(module, unchecked.host, previous, types, None, &mut watch)
+    };
+    let Watch { took, heavy, current, .. } = watch;
+    let heavy = heavy.or(unchecked.stopped.then_some(current));
+    match (loaded, heavy) {
+        (Ok((session, stats)), _) => {
+            costs.merge(took);
+            Inline::Loaded(session, stats)
+        }
+        (Err(_), Some(def)) => Inline::Heavy(def),
+        (Err(failure), None) => Inline::Failed(failure),
     }
 }
 
 /// Compile and evaluate on this thread; the new session, when it loaded,
 /// becomes the next load's previous.
 fn evaluate(request: &Request, previous: Option<&Session>) -> (Outcome, Option<Session>) {
-    let started = now_ms();
     let _reader = crate::storage::scope_reader(request.reader.clone());
     let files = request.source.files.iter().map(|(p, s)| (std::path::PathBuf::from(p), s.clone()));
     let project = match functor_lang::project::load_sources_with_bundled_modules(
@@ -217,7 +342,7 @@ fn evaluate(request: &Request, previous: Option<&Session>) -> (Outcome, Option<S
     let types = functor_lang::reuse::def_types(&project.module, &types);
     crate::functor_lang_prelude::bytes::take_file_reads();
     let live_before = crate::functor_lang_prelude::live_reads();
-    let mut watch = Watch { progress: &request.shared.progress, started, took: HashMap::new() };
+    let mut watch = Watch::new(Some(&request.shared.progress), None);
     let loaded = Session::load_watched(
         &project.module,
         &mut FunctorHost,
@@ -260,6 +385,7 @@ fn evaluate(request: &Request, previous: Option<&Session>) -> (Outcome, Option<S
         stats,
         file_reads,
         main_only,
+        took: watch.took,
     };
     (Outcome::Evaluated(Box::new(evaluated)), Some(session))
 }

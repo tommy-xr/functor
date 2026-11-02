@@ -89,6 +89,16 @@ const _: () = {
     send::<Records>()
 };
 
+impl Records {
+    /// Whether `def`'s last evaluation read project files.
+    pub fn read_files(&self, def: &str) -> bool {
+        self.defs
+            .get(def)
+            .and_then(|record| record.inputs.as_ref())
+            .is_some_and(|inputs| !inputs.is_empty())
+    }
+}
+
 /// A def's code with ids and spans dropped, as a hash, plus the globals it
 /// names.
 struct Shape {

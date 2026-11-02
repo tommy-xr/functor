@@ -22,6 +22,9 @@ const MAX_HEADER_LINES: usize = 64;
 const MAX_COMMAND_BYTES: usize = 64 * 1024;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// A push is answered when its load lands, which off the frame thread can
+/// take a heavy decode's time.
+pub const LOAD_REPLY_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Bind `address`, start the transport thread, and return the actually-bound
 /// address plus the frame loop's request receiver. Port 0 binds an
@@ -751,7 +754,8 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             if tx.send(request).is_err() {
                 return runtime_gone(&mut stream, cors_origin);
             }
-            respond_result(&mut stream, cors_origin, recv(resp_rx), "reload")
+            let reply = resp_rx.recv_timeout(LOAD_REPLY_TIMEOUT);
+            respond_result(&mut stream, cors_origin, reply, "reload")
         }
         _ => respond_text(&mut stream, cors_origin, 404, "Not Found", "not found"),
     }
