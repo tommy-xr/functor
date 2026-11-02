@@ -288,6 +288,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             pass.frame.drawn_stand_in_room(false),
             None,
             None,
+            None,
             width as f32 / height as f32,
             height as f32,
             &pass.frame.camera,
@@ -422,6 +423,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame.drawn_stand_in_room(scene_context.passthrough_composited()),
         frame.surface_grid.as_ref().zip(environment_depth),
         frame.fused_room,
+        environment_depth.filter(|_| frame.room_occlusion),
         viewport.aspect(),
         viewport.height as f32,
         lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
@@ -517,6 +519,7 @@ fn render_sprite_layers(
             None,
             None,
             false,
+            None,
             None,
             None,
             None,
@@ -684,6 +687,7 @@ pub fn render_composited_frames_with_view(
             frame.passthrough,
             frame.fog_cull_distance(),
             frame.drawn_stand_in_room(false),
+            None,
             None,
             None,
             width as f32 / height as f32,
@@ -890,6 +894,9 @@ fn forward_pass(
     // `Frame.withFusedRoom`: the fused room's mesh with this grid's lines,
     // drawn after the surface grid.
     fused_room: Option<crate::surface_grid::SurfaceGrid>,
+    // `Frame.withRoomOcclusion` over this pass's environment depth: written
+    // into the depth buffer before the scene, so the room hides what's behind.
+    room_occlusion: Option<crate::environment_depth::EnvironmentDepthView>,
     aspect: f32,
     viewport_height: f32,
     lod_camera: &Camera,
@@ -1004,6 +1011,15 @@ fn forward_pass(
         );
     } else if let Some(desc) = skybox {
         scene_context.draw_skybox(&render_context, desc, &projection_matrix, &view_matrix);
+    }
+
+    if let Some(depth) = room_occlusion {
+        scene_context.draw_room_occlusion(
+            &render_context,
+            depth,
+            &(projection_matrix * view_matrix),
+            camera.eye,
+        );
     }
 
     // Root material for nodes that don't set their own (scenes typically override

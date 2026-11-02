@@ -46,10 +46,9 @@ pub const GRID_LINES_GLSL: &str = r#"
         }
 "#;
 
-pub const GRID_FRAGMENT_SHADER_SOURCE: &str = r#"
-        in vec2 vUv;
-        out vec4 fragColor;
-
+/// Walk a pixel's eye ray onto the environment depth: shared by this grid
+/// and the room occlusion pass (`crate::room_occlusion`).
+pub const DEPTH_WALK_GLSL: &str = r#"
         uniform highp sampler2DArray depthTexture;
         uniform float depthLayer;
         // World -> depth clip, and back.
@@ -58,8 +57,6 @@ pub const GRID_FRAGMENT_SHADER_SOURCE: &str = r#"
         // Eye clip -> world.
         uniform highp mat4 eyeInverse;
         uniform highp vec3 eye;
-        uniform highp float cell;
-        uniform vec3 color;
 
         // Bilinear depth by hand (depth textures are not filterable): the
         // headset's 320x320 image read nearest would terrace every surface.
@@ -106,14 +103,27 @@ pub const GRID_FRAGMENT_SHADER_SOURCE: &str = r#"
             return dot(surface - eye, dir);
         }
 
-        void main() {
-            highp vec2 ndc = vUv * 2.0 - 1.0;
-            highp vec3 dir = normalize(unproject(eyeInverse, vec3(ndc, 1.0)) - eye);
-            // Walk the eye ray onto the depth surface: a coarse step from a
-            // 1.5 m guess, then a filtered one from where it landed.
-            bool hit = true;
+        // The eye ray through `ndc`, walked onto the depth surface: a coarse
+        // step from a 1.5 m guess, then a filtered one from where it landed.
+        highp float walk(highp vec2 ndc, out highp vec3 dir, out bool hit) {
+            dir = normalize(unproject(eyeInverse, vec3(ndc, 1.0)) - eye);
+            hit = true;
             highp float t = onSurface(dir, 1.5, false, hit);
-            t = onSurface(dir, t, true, hit);
+            return onSurface(dir, t, true, hit);
+        }
+"#;
+
+pub const GRID_FRAGMENT_SHADER_SOURCE: &str = r#"
+        in vec2 vUv;
+        out vec4 fragColor;
+
+        uniform highp float cell;
+        uniform vec3 color;
+
+        void main() {
+            highp vec3 dir;
+            bool hit;
+            highp float t = walk(vUv * 2.0 - 1.0, dir, hit);
             highp vec3 p = eye + dir * t;
 
             float alpha = gridLines(p, cell, t);

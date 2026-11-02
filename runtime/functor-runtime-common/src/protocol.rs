@@ -1065,6 +1065,7 @@ mod tests {
                 cell: 0.5,
                 color: [1.0, 0.5, 0.0],
             }),
+            room_occlusion: true,
         };
         assert_json_stable(&frame);
         assert!(serde_json::to_string(&frame)

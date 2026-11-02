@@ -94,6 +94,10 @@ pub struct Frame {
     /// drawn with this grid's lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fused_room: Option<crate::surface_grid::SurfaceGrid>,
+    /// Real surfaces hide the scene behind them (`Frame.withRoomOcclusion`),
+    /// wherever the frame has environment depth.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub room_occlusion: bool,
 }
 
 /// The clear under a passthrough frame's stand-in room wherever no real feed
@@ -119,6 +123,7 @@ impl Frame {
             stand_in_room: None,
             surface_grid: None,
             fused_room: None,
+            room_occlusion: false,
         }
     }
 
@@ -240,6 +245,12 @@ impl Frame {
     /// Draw the fused room with `grid`'s lines (`Frame.withFusedRoom`).
     pub fn with_fused_room(mut frame: Frame, grid: crate::surface_grid::SurfaceGrid) -> Frame {
         frame.fused_room = Some(grid);
+        frame
+    }
+
+    /// Hide the scene behind real surfaces (`Frame.withRoomOcclusion`).
+    pub fn with_room_occlusion(mut frame: Frame) -> Frame {
+        frame.room_occlusion = true;
         frame
     }
 

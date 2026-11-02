@@ -3028,6 +3028,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 stand_in_room: None,
                 surface_grid: None,
                 fused_room: None,
+                room_occlusion: false,
             })
         },
     );
@@ -3079,6 +3080,12 @@ interactive widgets render but their handlers are inert",
         "Frame.withPassthrough",
         "Frame.withPassthrough(frame)",
         |frame: FunctorLangFrame| FunctorLangFrame(Frame::with_passthrough(frame.0)),
+    );
+    reg.fn1(
+        "Frame.withRoomOcclusion",
+        "Frame.withRoomOcclusion(frame) — real surfaces hide the scene behind \
+them, under config's Xr.scene",
+        |frame: FunctorLangFrame| FunctorLangFrame(Frame::with_room_occlusion(frame.0)),
     );
     reg.fn2(
         "Frame.withStandInRoom",
