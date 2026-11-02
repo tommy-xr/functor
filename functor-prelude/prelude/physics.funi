@@ -251,7 +251,7 @@ let scene : (Vec3.t, List<body>) => world
 ///   fused room inside is an error. A kinematic body that moves belongs
 ///   flat, since its deps would change every frame.
 /// - Still box, sphere and capsule fixed bodies (not sensors) fuse into one
-///   collider, so a large static group adds no per-step physics work.
+///   collider per material, so pairs of them cost nothing per step.
 /// - Each tag belongs to one place. A flat body reusing a group's tag, two
 ///   groups sharing a tag, or one key twice in a scene is an error.
 ///   Reads and commands address group bodies by tag like flat ones.

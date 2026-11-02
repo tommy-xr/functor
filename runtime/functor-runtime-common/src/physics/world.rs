@@ -225,6 +225,11 @@ pub struct World {
     /// collider pair, diffed each step into events.
     #[serde(default)]
     fused_touching: BTreeSet<(String, String, bool)>,
+    /// Touching pairs of bodies that left a compound in the last reconcile:
+    /// the game already heard them start, so the next step drops rapier's
+    /// start for them and reports a stop only if they no longer touch.
+    #[serde(default)]
+    handoff: BTreeSet<(String, String, bool)>,
     /// Live poses of parts unfused by the reconcile in progress, so a body
     /// leaving a compound keeps its pose. Empty between reconciles.
     #[serde(skip, default)]
@@ -282,6 +287,7 @@ impl Clone for World {
             groups: self.groups.clone(),
             fused: self.fused.clone(),
             fused_touching: self.fused_touching.clone(),
+            handoff: self.handoff.clone(),
             unfused: self.unfused.clone(),
             accumulator: self.accumulator,
             frame: self.frame,
@@ -345,6 +351,7 @@ impl World {
             groups: BTreeMap::new(),
             fused: Arc::default(),
             fused_touching: BTreeSet::new(),
+            handoff: BTreeSet::new(),
             unfused: BTreeMap::new(),
             accumulator: 0.0,
             frame: 0,
@@ -527,6 +534,8 @@ impl World {
                     .flat_map(|bodies| bodies.iter().map(|b| &b.tag)),
             )
             .filter(|tag| !updates.contains_key(*tag) && !kept.contains(*tag))
+            // A part fused again needs no despawn; a body becoming one does.
+            .filter(|tag| !fusing.contains(*tag) || self.tags.contains_key(*tag))
             .collect();
 
         // Unfuse, keeping each part's live pose for whatever it becomes.
@@ -561,6 +570,15 @@ impl World {
                 (&body.tag, pose)
             })
             .collect();
+
+        // A body becoming a part hands its contacts over, so the next step
+        // reports only real transitions.
+        let handed: Vec<_> = refuse
+            .values()
+            .flatten()
+            .flat_map(|body| self.touching_of(&body.tag))
+            .collect();
+        self.fused_touching.extend(handed);
 
         // Despawns, in tag order.
         for tag in gone {
@@ -618,6 +636,10 @@ impl World {
                     collider: self.colliders.insert(collider),
                     tags: bodies.iter().map(|b| b.tag.clone()).collect(),
                 });
+                debug_assert!(
+                    fused.last().unwrap().tags.is_sorted(),
+                    "group bodies are tag-sorted (`fused_part` binary-searches them)"
+                );
                 for body in bodies {
                     Arc::make_mut(&mut self.declared).insert(body.tag.clone(), body.clone());
                     stats.written += 1;
@@ -628,6 +650,13 @@ impl World {
             }
         }
         self.unfused.clear();
+        if !refuse.is_empty() {
+            let (still, left): (BTreeSet<_>, BTreeSet<_>) = std::mem::take(&mut self.fused_touching)
+                .into_iter()
+                .partition(|(a, b, _)| self.fused_part(a).is_some() || self.fused_part(b).is_some());
+            self.fused_touching = still;
+            self.handoff.extend(left);
+        }
 
         self.flat = next_flat.unwrap_or(old_flat);
         if !changed.is_empty() || !retired.is_empty() {
@@ -741,6 +770,10 @@ impl World {
                 continue;
             };
             let sensor = flags.contains(CollisionEventFlags::SENSOR);
+            let pair = if a <= b { (a.clone(), b.clone(), sensor) } else { (b.clone(), a.clone(), sensor) };
+            if started && self.handoff.contains(&pair) {
+                continue;
+            }
             if self.rooms.contains_key(&a) || self.rooms.contains_key(&b) {
                 let (a, b) = if a <= b { (a, b) } else { (b, a) };
                 *room_pairs.entry((a, b, sensor)).or_default() += if started { 1 } else { -1 };
@@ -759,6 +792,17 @@ impl World {
             if (before == 0) != (now == 0) {
                 self.events.push(PhysicsEvent {
                     started: now > 0,
+                    a,
+                    b,
+                    sensor,
+                });
+            }
+        }
+        for (a, b, sensor) in std::mem::take(&mut self.handoff) {
+            let alive = self.declared.contains_key(&a) && self.declared.contains_key(&b);
+            if alive && self.touching_pairs(&a, &b, sensor) == 0 {
+                self.events.push(PhysicsEvent {
+                    started: false,
                     a,
                     b,
                     sensor,
@@ -1314,6 +1358,33 @@ impl World {
         touching as i32
     }
 
+    /// The pairs `tag`'s body touches now, as `fused_touching` entries.
+    fn touching_of(&self, tag: &str) -> Vec<(String, String, bool)> {
+        let Some(&rb) = self.tags.get(tag) else {
+            return Vec::new();
+        };
+        let mut pairs = Vec::new();
+        for &c in self.bodies[rb].colliders() {
+            let contacts = self
+                .narrow_phase
+                .contact_pairs_with(c)
+                .filter(|p| p.has_any_active_contact())
+                .map(|p| (if p.collider1 == c { p.collider2 } else { p.collider1 }, false));
+            let overlaps = self
+                .narrow_phase
+                .intersection_pairs_with(c)
+                .filter(|&(_, _, hit)| hit)
+                .map(|(c1, c2, _)| (if c1 == c { c2 } else { c1 }, true));
+            for (other, sensor) in contacts.chain(overlaps) {
+                if let Some(other) = self.tag_of_collider(other) {
+                    let tag = tag.to_string();
+                    pairs.push(if tag <= other { (tag, other, sensor) } else { (other, tag, sensor) });
+                }
+            }
+        }
+        pairs
+    }
+
     /// The tag of the body `collider` belongs to, or belonged to if a
     /// re-fused room removed it this step.
     fn tag_of_collider(&self, collider: ColliderHandle) -> Option<String> {
@@ -1344,10 +1415,11 @@ impl World {
         on_parts: impl Fn(&Compound, Option<usize>) -> Option<(usize, H)>,
     ) -> Option<(String, ColliderHandle, H)> {
         let hit = hit.map(|(collider, hit)| {
-            let part = self
-                .fused_tags(collider)
-                .and_then(|_| on_parts(self.compound(collider), None));
-            (collider, part.map(|(part, _)| part), hit)
+            // The part's own hit, so tag and geometry agree on a seam.
+            match self.fused_tags(collider).and_then(|_| on_parts(self.compound(collider), None)) {
+                Some((part, hit)) => (collider, Some(part), hit),
+                None => (collider, None, hit),
+            }
         });
         let rest = exclude.and_then(|tag| self.fused_part(tag)).and_then(|(c, skip)| {
             let (part, hit) = on_parts(self.compound(c), Some(skip))?;
@@ -1500,16 +1572,11 @@ impl World {
                 }
             }
         }
-        // A pair ends when the part stops touching, not when it left its
-        // compound (its new body reports its own contacts) or either body went
-        // away (unreported, as a despawned body's contacts are).
-        let fused_still = |a: &str, b: &str| {
-            self.declared.contains_key(a)
-                && self.declared.contains_key(b)
-                && (self.fused_part(a).is_some() || self.fused_part(b).is_some())
-        };
+        // A pair whose body went away ends unreported, as a despawned body's
+        // contacts do.
+        let alive = |tag: &str| self.declared.contains_key(tag);
         for (a, b, sensor) in self.fused_touching.difference(&now) {
-            if fused_still(a, b) {
+            if alive(a) && alive(b) {
                 events.push(PhysicsEvent {
                     started: false,
                     a: a.clone(),
@@ -1913,7 +1980,11 @@ fn sweep_parts(
     skip: Option<usize>,
 ) -> Option<(usize, rapier3d::parry::query::ShapeCastHit)> {
     let to = Pose::from_translation(dir * max) * *from;
-    let swept = shape.compute_aabb(from).merged(&shape.compute_aabb(&to));
+    // An unbounded sweep (`max` infinite) may reach any part.
+    let swept = match max.is_finite() {
+        true => shape.compute_aabb(from).merged(&shape.compute_aabb(&to)),
+        false => *compound.local_aabb(),
+    };
     compound
         .bvh()
         .intersect_aabb(&swept)
@@ -3795,22 +3866,41 @@ mod tests {
         assert_eq!(run(true), run(false));
     }
 
-    #[test]
-    fn a_resting_contact_survives_its_part_leaving_the_compound() {
-        let tile = || floor_tiles(1).remove(0);
+    /// A crate resting on tile `s0000` while the tile moves between flat and a
+    /// group at frames 60 and 90 (and to `moved.1` at frame `moved.0`): the
+    /// events.
+    fn handed_over(moved: Option<(u32, [f32; 3])>) -> Vec<(String, String, bool, bool)> {
         let crate_ = crate_at("crate", [-15.0, 1.5, -25.0]);
+        let tile = |frame: u32| {
+            let tile = floor_tiles(1).remove(0);
+            match moved {
+                Some((from, at)) if frame >= from => tile.at(at),
+                _ => tile,
+            }
+        };
         let mut w = World::new([0.0, -9.81, 0.0]);
-        let mut stops = 0;
+        let mut events = Vec::new();
         for frame in 0..120 {
-            w.reconcile(&match frame < 60 {
-                true => with_groups(vec![crate_.clone()], vec![group("g", vec![tile()])]),
-                false => scene(vec![crate_.clone(), tile()]),
+            w.reconcile(&match (60..90).contains(&frame) {
+                true => scene(vec![crate_.clone(), tile(frame)]),
+                false => with_groups(vec![crate_.clone()], vec![group("g", vec![tile(frame)])]),
             });
             w.step_frame(FIXED_DT);
-            stops += w.take_events().iter().filter(|e| !e.started).count();
+            events.extend(sorted_events(w.take_events()));
         }
-        assert_eq!((w.tags.len(), fused_bodies(&w)), (2, 0));
-        assert_eq!(stops, 0);
+        events
+    }
+
+    #[test]
+    fn a_resting_contact_survives_its_tile_moving_in_and_out_of_a_compound() {
+        let touch = |started| ("crate".to_string(), "s0000".to_string(), started, false);
+        assert_eq!(handed_over(None), [touch(true)]);
+        // Moved out from under the crate as it leaves or re-joins the
+        // compound: one stop.
+        for frame in [60, 90] {
+            let away = Some((frame, [-10.0, 0.0, -20.0]));
+            assert_eq!(handed_over(away), [touch(true), touch(false)], "at {frame}");
+        }
     }
 
     #[test]
