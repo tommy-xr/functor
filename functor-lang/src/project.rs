@@ -68,6 +68,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Path",
     "Mesh",
     "Cells",
+    "Nav",
     "Model",
     "Asset",
     "Camera3D",

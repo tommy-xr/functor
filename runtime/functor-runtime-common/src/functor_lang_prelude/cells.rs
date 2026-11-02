@@ -25,7 +25,7 @@ impl HostData for FunctorLangCells {
 crate::host_returnable!(FunctorLangCells);
 
 /// A record's `name` field.
-fn field<'a>(value: &'a Value, name: &str, what: &str) -> Result<&'a Value, String> {
+pub(super) fn field<'a>(value: &'a Value, name: &str, what: &str) -> Result<&'a Value, String> {
     match value {
         Value::Record(fields) => fields.iter().find(|(f, _)| f == name).map(|(_, v)| v),
         _ => None,
@@ -33,14 +33,14 @@ fn field<'a>(value: &'a Value, name: &str, what: &str) -> Result<&'a Value, Stri
     .ok_or_else(|| format!("{what} has no `{name}`"))
 }
 
-fn list<'a>(value: &'a Value, what: &str) -> Result<&'a [Value], String> {
+pub(super) fn list<'a>(value: &'a Value, what: &str) -> Result<&'a [Value], String> {
     match value {
         Value::List(items) => Ok(items),
         other => Err(format!("{what} must be a list, got {}", other.kind_name())),
     }
 }
 
-fn number(value: &Value, what: &str) -> Result<f64, String> {
+pub(super) fn number(value: &Value, what: &str) -> Result<f64, String> {
     match value {
         Value::Number(n) => Ok(*n),
         other => Err(format!(
@@ -50,22 +50,21 @@ fn number(value: &Value, what: &str) -> Result<f64, String> {
     }
 }
 
+/// `n` as an id: a whole number ≥ 0 that fits a `u32`.
+pub(super) fn whole(n: f64) -> Option<u32> {
+    (n >= 0.0 && n.fract() == 0.0 && n <= f64::from(u32::MAX)).then_some(n as u32)
+}
+
 /// A cell id: a whole number ≥ 0.
 fn cell_id(n: f64, what: &str) -> Result<u32, String> {
-    if n >= 0.0 && n.fract() == 0.0 && n <= f64::from(u32::MAX) {
-        Ok(n as u32)
-    } else {
-        Err(format!(
-            "{what} must be a cell id (a whole number ≥ 0), got {n}"
-        ))
-    }
+    whole(n).ok_or_else(|| format!("{what} must be a cell id (a whole number ≥ 0), got {n}"))
 }
 
 fn id(value: &Value, what: &str) -> Result<u32, String> {
     cell_id(number(value, what)?, what)
 }
 
-fn point(value: &Value, what: &str, span: Span) -> Result<[f32; 3], String> {
+pub(super) fn point(value: &Value, what: &str, span: Span) -> Result<[f32; 3], String> {
     vec3_of(value, what, span)
         .map(|(x, y, z)| [x, y, z])
         .map_err(|e| e.message)

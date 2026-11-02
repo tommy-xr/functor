@@ -12,8 +12,9 @@ use functor_lang::Value;
 
 use crate::functor_lang_prelude::bytes::{ByteView, FunctorLangBytes};
 use crate::functor_lang_prelude::model::FunctorLangModel;
+use crate::functor_lang_prelude::nav::FunctorLangNavGraph;
 use crate::functor_lang_prelude::path::FunctorLangPath;
-use crate::functor_lang_prelude::{FunctorLangShape, FunctorLangTexture};
+use crate::functor_lang_prelude::{FunctorLangShape, FunctorLangTexture, FunctorLangVec3};
 use crate::model::ModelData;
 use crate::physics;
 use crate::scene3d::TextureDescription;
@@ -43,8 +44,8 @@ pub enum Key {
     Text(Arc<str>),
 }
 
-/// The host values that may cross: immutable, `Arc` inside. `Path` is
-/// re-wrapped (its text is `Rc`).
+/// The host values that may cross: immutable, `Arc` inside (or plain, like
+/// `Vec3`). `Path` is re-wrapped (its text is `Rc`).
 #[derive(Clone)]
 pub enum HostValue {
     Bytes(ByteView),
@@ -52,6 +53,8 @@ pub enum HostValue {
     Model(Arc<ModelData>),
     Texture(TextureDescription),
     Shape(physics::Shape),
+    Vec3([f32; 3]),
+    NavGraph(Arc<crate::nav::Graph>),
 }
 
 impl std::fmt::Debug for HostValue {
@@ -62,6 +65,8 @@ impl std::fmt::Debug for HostValue {
             HostValue::Model(model) => write!(f, "Model({:p})", Arc::as_ptr(model)),
             HostValue::Texture(texture) => write!(f, "Texture({texture:?})"),
             HostValue::Shape(shape) => write!(f, "{shape:?}"),
+            HostValue::Vec3([x, y, z]) => write!(f, "Vec3({x}, {y}, {z})"),
+            HostValue::NavGraph(graph) => write!(f, "{graph:?}"),
         }
     }
 }
@@ -74,6 +79,8 @@ impl PartialEq for HostValue {
             (HostValue::Model(a), HostValue::Model(b)) => Arc::ptr_eq(a, b),
             (HostValue::Texture(a), HostValue::Texture(b)) => a == b,
             (HostValue::Shape(a), HostValue::Shape(b)) => a == b,
+            (HostValue::Vec3(a), HostValue::Vec3(b)) => a == b,
+            (HostValue::NavGraph(a), HostValue::NavGraph(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -98,6 +105,12 @@ impl HostValue {
         if let Some(texture) = data.downcast_ref::<FunctorLangTexture>() {
             return Some(HostValue::Texture(texture.0.clone()));
         }
+        if let Some(&FunctorLangVec3((x, y, z))) = data.downcast_ref::<FunctorLangVec3>() {
+            return Some(HostValue::Vec3([x, y, z]));
+        }
+        if let Some(graph) = data.downcast_ref::<FunctorLangNavGraph>() {
+            return Some(HostValue::NavGraph(graph.0.clone()));
+        }
         data.downcast_ref::<FunctorLangShape>()
             .map(|shape| HostValue::Shape(shape.0.clone()))
     }
@@ -109,6 +122,8 @@ impl HostValue {
             HostValue::Model(model) => Rc::new(FunctorLangModel(model.clone())),
             HostValue::Texture(texture) => Rc::new(FunctorLangTexture(texture.clone())),
             HostValue::Shape(shape) => Rc::new(FunctorLangShape(shape.clone())),
+            HostValue::Vec3([x, y, z]) => Rc::new(FunctorLangVec3((*x, *y, *z))),
+            HostValue::NavGraph(graph) => Rc::new(FunctorLangNavGraph(graph.clone())),
         };
         Value::HostData(data)
     }
