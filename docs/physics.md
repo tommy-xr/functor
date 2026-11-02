@@ -205,24 +205,29 @@ runtime-owned cache, rebuilt once after a hot reload). The group is one
   body;
 - **keyframes:** the declared cache and tag maps are copy-on-write, so
   keyframes share them while declarations hold still;
-- **rapier:** the group's fixed bodies are fused (below), so pairs of them
-  cost nothing per step and they add no per-body rapier state to keyframes.
+- **rapier:** the group's fixed bodies are fused (below), as flat ones are.
 
 `World.groups` is world state, so checkpoints, rewinds and seeks restore it with
 the bodies; a seek can't leave a stale fast path. A changed group diffs its
 bodies by tag; a rebuilt-but-equal one (after a reload) does no rapier work.
 
-**Fusing:** a group's still, solid, convex fixed bodies (box, sphere or
-capsule; no velocity, not a sensor) become parts of one compound collider per
-material instead of a rigid body each. Fixed–fixed pairs then never reach
-rapier's broad phase, which otherwise re-checks every overlapping pair each
-step. Reads, raycasts, shape casts (`exclude` included), contact and sensor
-events and `teleport` still address each body by tag; a teleport rebuilds the
-compound, so a body teleported often belongs flat. Kinematic, sensor and mesh
-bodies stay bodies. A fused world is not byte-identical to the same
-bodies declared flat: contacts and events match, but the solver orders a
-compound's contacts differently, so trajectories differ slightly (and diverge
-for tumbling bodies).
+**Fusing:** still, solid, convex fixed bodies (box, sphere or capsule; no
+velocity, not a sensor), flat or in a group, become parts of one compound
+collider per material and 16 m grid cell (of the declared position) instead of
+a rigid body each. Fixed–fixed pairs then never reach rapier's broad phase,
+which otherwise re-checks every overlapping pair each step, and they add no
+per-body rapier state to keyframes. Reads, raycasts, shape casts (`exclude`
+included), contact and sensor events and `teleport` still address each body by
+tag. Changing, adding or removing one (or a `teleport`) rebuilds its cell's
+compound, so a fixed body that moves every frame belongs kinematic. Kinematic,
+sensor and mesh bodies stay bodies. Fusing depends only on the declarations,
+so a memoized world stays byte-identical to the same bodies declared flat.
+A compound orders its contacts differently from separate bodies, so a scene's
+trajectories differ slightly from an unfused run. A JSON `snapshot`/`restore` round trip of
+a body touching several parts is equal in value, not bytes: parry keeps a
+compound's per-part contact cache in a hash map, whose order the round trip
+may change (lookups only, so the simulation is unaffected). Checkpoints clone
+the map, so in-process restores stay byte-exact.
 
 **Tag ownership:** a tag belongs to one flat body or one group. `Physics.scene`
 rejects a flat body reusing a group's tag, two groups sharing a tag, and a key
