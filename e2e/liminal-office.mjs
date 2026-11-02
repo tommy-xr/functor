@@ -32,7 +32,8 @@
 //  11. shared uploads (`--json` frame stats): after copy 0's pass, the same
 //      pass through copies 1–3 misses no GPU cache, uploads nothing and adds
 //      no live GL object; with both bakes kept resident, the hour switch
-//      and entering after a walk out of every interior upload nothing.
+//      and entering after a walk out of every interior upload nothing, and
+//      such an entry in the grid of 4 misses no GPU cache.
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/liminal-office.mjs
@@ -716,7 +717,21 @@ async function residency(game) {
   await statsAfter(game, 300);
   const blockNoon = await noonSwitch();
   check(none(blockNoon), `the noon switch uploads nothing with four copies active (${JSON.stringify(blockNoon)})`);
-  return { office: live(office), primed: live(primed), after: live(after), misses, bytes, officeNoon, coldEntry, blockNoon };
+
+  // A grid's copies share the office's cell models, so the same resident set
+  // covers them: entering one from where no copy is active misses no cache.
+  // Only the shells' instances, re-gathered for the new active set, upload.
+  await game.hold("b", 1);
+  await game.view(1);
+  await game.face(Math.PI);
+  await game.walkTo("z", -90);
+  await game.hold("g", 1);
+  await statsAfter(game, 300);
+  const far = await game.model();
+  check(far.town === 2 && far.active.length === 0, `grid of 4: no copy active at z ${far.at.z.toFixed(1)} (${JSON.stringify(far.active)})`);
+  const gridEntry = await uploadsAcross(() => game.view(1));
+  check(gridEntry.misses === 0, `grid of 4: entering a copy then misses no GPU cache (${JSON.stringify(gridEntry)})`);
+  return { office: live(office), primed: live(primed), after: live(after), misses, bytes, officeNoon, coldEntry, blockNoon, gridEntry };
 }
 
 // Render a golden the way runtime/functor-runtime-desktop/tests/golden.rs does.
