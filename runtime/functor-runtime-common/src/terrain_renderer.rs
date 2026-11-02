@@ -472,6 +472,9 @@ struct TerrainGeometry {
     vertex_count: u32,
     last_used_frame: u64,
     cache_key: Option<PatchCacheKey>,
+    /// Selected patches with their draw-order keys; reused so sorting them
+    /// never allocates.
+    scratch_keyed: Vec<(f32, [f32; 4])>,
     scratch_instances: Vec<[f32; 4]>,
     uploaded_instances: Vec<[f32; 4]>,
 }
@@ -667,6 +670,7 @@ impl TerrainRenderer {
                 ctx.viewport_height,
                 ctx.lod_fog,
                 ctx.fog_cull_distance,
+                &mut geometry.scratch_keyed,
                 &mut geometry.scratch_instances,
             );
             if geometry.uploaded_instances != geometry.scratch_instances {
@@ -1094,6 +1098,7 @@ impl TerrainRenderer {
                 vertex_count: vertices.len() as u32,
                 last_used_frame: self.current_frame,
                 cache_key: None,
+                scratch_keyed: Vec::new(),
                 scratch_instances: Vec::new(),
                 uploaded_instances: Vec::new(),
             });
@@ -1752,8 +1757,10 @@ fn select_patches_into(
     // Patches wholly past this distance are skipped (see
     // `RenderContext::fog_cull_distance`).
     fog_cull_distance: Option<f32>,
+    keyed: &mut Vec<(f32, [f32; 4])>,
     patches: &mut Vec<[f32; 4]>,
 ) {
+    keyed.clear();
     patches.clear();
     let inverse = world.invert().unwrap_or_else(Matrix4::identity);
     let local4 = inverse * Vector4::new(camera_world.x, camera_world.y, camera_world.z, 1.0);
@@ -1810,7 +1817,7 @@ fn select_patches_into(
         v: f32,
         scale: f32,
         remaining_splits: &mut usize,
-        out: &mut Vec<[f32; 4]>,
+        out: &mut Vec<(f32, [f32; 4])>,
     ) {
         let half_width = description.width * scale * 0.5;
         let half_depth = description.depth * scale * 0.5;
@@ -1840,17 +1847,26 @@ fn select_patches_into(
             return;
         }
 
-        let Vector3 {
-            x: dx,
-            y: dy,
-            z: dz,
-        } = patch_gap(description, u, v, scale, camera_local);
+        let min = Vector3::new(
+            center_local.x - half_width,
+            description.min_height,
+            center_local.z - half_depth,
+        );
+        let max = Vector3::new(
+            center_local.x + half_width,
+            description.max_height,
+            center_local.z + half_depth,
+        );
+        // Signed offset to the box's nearest point (only one side is ever
+        // nonzero): LOD uses its square, the draw-order key its direction.
+        let dx = (min.x - camera_local.x).max(0.0) - (camera_local.x - max.x).max(0.0);
+        let dy = (min.y - camera_local.y).max(0.0) - (camera_local.y - max.y).max(0.0);
+        let dz = (min.z - camera_local.z).max(0.0) - (camera_local.z - max.z).max(0.0);
         let distance = (dx * dx + dy * dy + dz * dz).sqrt() * min_scale;
         // Wholly past the full-fog distance: every fragment would be the
         // background color. The box reaches down to the skirt, so a skirt
         // seen from below the terrain is never cut.
-        let skirt_dy = (cull_low - camera_local.y).max(0.0)
-            + (camera_local.y - description.max_height).max(0.0);
+        let skirt_dy = (cull_low - camera_local.y).max(0.0) + (camera_local.y - max.y).max(0.0);
         if (dx * dx + skirt_dy * skirt_dy + dz * dz).sqrt() * min_scale
             > cull_distance + FOG_CULL_MARGIN
         {
@@ -1948,7 +1964,10 @@ fn select_patches_into(
                 out,
             );
         } else {
-            out.push([u, v, scale, scale]);
+            // World distance to the box's terrain-local nearest point: exact
+            // under rotation and scale, approximate under shear (order only).
+            let key = (world * Vector4::new(dx, dy, dz, 0.0)).truncate().magnitude2();
+            out.push((key, [u, v, scale, scale]));
         }
     }
 
@@ -1969,58 +1988,20 @@ fn select_patches_into(
         0.0,
         1.0,
         &mut remaining_splits,
-        patches,
+        keyed,
     );
-    debug_assert!(patches.len() <= MAX_INSTANCES);
+    debug_assert!(keyed.len() <= MAX_INSTANCES);
 
-    // Draw front to back. Instances rasterize in list order and early-Z
-    // (Adreno's LRZ) rejects only against depth already written, so the
-    // traversal's spatial order would shade far hills before the near ones
-    // that hide them. In place (no allocation); (v, u) breaks ties, so the
-    // order is total and the upload stays deterministic.
-    // The key is the world distance to the box's terrain-local nearest point:
-    // exact for rotation and scale, an approximation under shear (order only).
-    let world_distance_squared = |patch: &[f32; 4]| {
-        let gap = patch_gap(description, patch[0], patch[1], patch[2], camera_local);
-        (world * gap.extend(0.0)).truncate().magnitude2()
-    };
-    patches.sort_unstable_by(|a, b| {
-        world_distance_squared(a)
-            .total_cmp(&world_distance_squared(b))
+    // Draw front to back. Instances rasterize in list order, and the early
+    // depth test rejects a fragment only against depth already written, so
+    // the traversal's spatial order would shade far hills before the near
+    // ones that hide them. (v, u) breaks ties, so the order is total.
+    keyed.sort_unstable_by(|(da, a), (db, b)| {
+        da.total_cmp(db)
             .then(a[1].total_cmp(&b[1]))
             .then(a[0].total_cmp(&b[0]))
     });
-}
-
-/// Offset from `point` to the nearest point of a patch's terrain-local
-/// surface box, zero along an axis the point lies within. Selection's LOD
-/// distance and the draw order both measure it.
-fn patch_gap(
-    description: &TerrainDescription,
-    u: f32,
-    v: f32,
-    scale: f32,
-    point: Vector3<f32>,
-) -> Vector3<f32> {
-    let half_width = description.width * scale * 0.5;
-    let half_depth = description.depth * scale * 0.5;
-    let center_x = (u + scale * 0.5 - 0.5) * description.width;
-    let center_z = (v + scale * 0.5 - 0.5) * description.depth;
-    let min = Vector3::new(
-        center_x - half_width,
-        description.min_height,
-        center_z - half_depth,
-    );
-    let max = Vector3::new(
-        center_x + half_width,
-        description.max_height,
-        center_z + half_depth,
-    );
-    Vector3::new(
-        (min.x - point.x).max(0.0) - (point.x - max.x).max(0.0),
-        (min.y - point.y).max(0.0) - (point.y - max.y).max(0.0),
-        (min.z - point.z).max(0.0) - (point.z - max.z).max(0.0),
-    )
+    patches.extend(keyed.iter().map(|&(_, patch)| patch));
 }
 
 #[cfg(test)]
@@ -2047,6 +2028,7 @@ fn select_patches(
         viewport_height,
         None,
         None,
+        &mut Vec::new(),
         &mut patches,
     );
     patches
@@ -2510,6 +2492,7 @@ mod tests {
                 1600.0,
                 None,
                 None,
+                &mut Vec::new(),
                 &mut patches,
             );
             patches
@@ -2599,6 +2582,7 @@ mod tests {
             1600.0,
             fog,
             cull,
+            &mut Vec::new(),
             &mut patches,
         );
         patches
