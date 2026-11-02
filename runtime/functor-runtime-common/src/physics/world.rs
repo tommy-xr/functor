@@ -215,7 +215,7 @@ pub struct World {
     /// same `Arc` again skips the group without visiting its bodies. World
     /// state, so restoring a checkpoint can't leave a stale fast path.
     groups: BTreeMap<String, Arc<[Body]>>,
-    /// Fused fixed bodies, one compound per material, in material order
+    /// Fused fixed bodies, one compound per [`FuseKey`], in key order
     /// (copy-on-write, like `tags`). A fused body has a declaration but no
     /// rigid body: it is one part of a compound collider, so fixed–fixed
     /// pairs never reach rapier.
@@ -440,10 +440,10 @@ impl World {
     /// A group whose `Arc` was reconciled last time is skipped: its bodies
     /// would all compare equal. Only flat bodies and changed groups are
     /// visited. Still, solid, convex fixed bodies ([`fusable`]), flat or
-    /// grouped, become parts of one compound collider per material instead
-    /// of bodies; a material's compound is rebuilt only when its parts
-    /// changed. Neither depends on grouping, so the rapier history matches
-    /// declaring every body flat.
+    /// grouped, become parts of one compound collider per material and grid
+    /// cell ([`FuseKey`]) instead of bodies; a compound is rebuilt only when
+    /// its parts changed. Neither depends on grouping, so the rapier history
+    /// matches declaring every body flat.
     pub fn reconcile(&mut self, scene: &PhysicsScene) {
         self.gravity = scene.gravity;
         let mut stats = ReconcileStats::default();
@@ -506,7 +506,7 @@ impl World {
             .filter(|tag| !updates.contains_key(*tag))
             .collect();
 
-        // Changed declarations, and the materials whose compound they change
+        // Changed declarations, and the keys whose compound they change
         // (a part added, edited, removed or turned into a body). Which bodies
         // fuse depends only on the declarations, never on how they were
         // grouped, so flat and memoized scenes build the same compounds.
@@ -515,7 +515,7 @@ impl World {
                 .get(tag)
                 .filter(|prev| fusable(prev) && !self.tags.contains_key(tag))
         };
-        let mut dirty: BTreeSet<Material> = BTreeSet::new();
+        let mut dirty: BTreeSet<FuseKey> = BTreeSet::new();
         let mut bodies_changed: Vec<(&String, &Body)> = Vec::new();
         let mut joining: Vec<&String> = Vec::new();
         for (&tag, &body) in &updates {
@@ -524,22 +524,22 @@ impl World {
                 continue; // unchanged: the simulation owns this body
             }
             if let Some(prev) = part(tag) {
-                dirty.insert(material(prev));
+                dirty.insert(fuse_key(prev));
             }
             if !fuse {
                 bodies_changed.push((tag, body));
                 continue;
             }
-            dirty.insert(material(body));
+            dirty.insert(fuse_key(body));
             if self.tags.contains_key(tag) {
                 joining.push(tag);
             }
         }
-        dirty.extend(gone.iter().filter_map(|tag| part(tag)).map(material));
+        dirty.extend(gone.iter().filter_map(|tag| part(tag)).map(fuse_key));
 
-        // Each dirty material's parts: all its fusable declarations, flat or
+        // Each dirty key's parts: all its fusable declarations, flat or
         // grouped, in tag order.
-        let mut refuse: BTreeMap<Material, Vec<&Body>> =
+        let mut refuse: BTreeMap<FuseKey, Vec<&Body>> =
             dirty.iter().map(|m| (*m, Vec::new())).collect();
         if !dirty.is_empty() {
             let unchanged = groups
@@ -547,7 +547,7 @@ impl World {
                 .filter(|(key, bodies)| reconciled(key, bodies))
                 .flat_map(|(_, bodies)| bodies.iter());
             for body in updates.values().copied().chain(unchanged).filter(|b| fusable(b)) {
-                if let Some(parts) = refuse.get_mut(&material(body)) {
+                if let Some(parts) = refuse.get_mut(&fuse_key(body)) {
                     parts.push(body);
                 }
             }
@@ -562,7 +562,7 @@ impl World {
                 .fused
                 .iter()
                 .cloned()
-                .partition(|f| dirty.contains(&f.material));
+                .partition(|f| dirty.contains(&f.key));
             self.fused = Arc::new(kept);
             for fused in removed {
                 let poses: Vec<Pose> =
@@ -625,8 +625,8 @@ impl World {
             }
         }
 
-        // Fuse, in material order, parts in tag order.
-        for (material, bodies) in refuse.into_iter().filter(|(_, b)| !b.is_empty()) {
+        // Fuse, in key order, parts in tag order.
+        for (key, bodies) in refuse.into_iter().filter(|(_, b)| !b.is_empty()) {
             let shapes = bodies
                 .iter()
                 .map(|b| {
@@ -647,11 +647,11 @@ impl World {
             }
             let fused = Arc::make_mut(&mut self.fused);
             fused.push(FusedStatics {
-                material,
+                key,
                 collider,
                 tags: bodies.iter().map(|b| b.tag.clone()).collect(),
             });
-            fused.sort_by_key(|f| f.material);
+            fused.sort_by_key(|f| f.key);
         }
         self.unfused.clear();
         if !dirty.is_empty() {
@@ -1945,18 +1945,24 @@ fn fusable(body: &Body) -> bool {
         )
 }
 
-/// A fused body's contact material: `(friction, restitution)` bits.
-type Material = (u32, u32);
+/// Side of the grid cells fused bodies are grouped by (m).
+const FUSE_CELL: f32 = 16.0;
 
-fn material(body: &Body) -> Material {
-    (body.friction.to_bits(), body.restitution.to_bits())
+/// The compound a fusable body joins: its contact material (`friction`,
+/// `restitution` bits) and the [`FUSE_CELL`] cell of its declared position.
+/// Cells keep a rebuild (an edit, a teleport) to one cell's parts.
+type FuseKey = (u32, u32, [i32; 3]);
+
+fn fuse_key(body: &Body) -> FuseKey {
+    let cell = body.position.map(|x| (x / FUSE_CELL).floor() as i32);
+    (body.friction.to_bits(), body.restitution.to_bits(), cell)
 }
 
-/// One material's fused fixed bodies: a parentless compound collider at the
+/// One key's fused fixed bodies: a parentless compound collider at the
 /// identity pose whose part `i`, at its world pose, is body `tags[i]`.
 #[derive(Clone, Serialize, Deserialize)]
 struct FusedStatics {
-    material: Material,
+    key: FuseKey,
     collider: ColliderHandle,
     /// Sorted (`fused_part` binary-searches them).
     tags: Vec<String>,
@@ -3847,9 +3853,10 @@ mod tests {
     }
 
     #[test]
-    fn only_still_solid_convex_fixed_bodies_fuse_one_compound_per_material() {
+    fn only_still_solid_convex_fixed_bodies_fuse_one_compound_per_material_and_cell() {
         let mut bodies = floor_tiles(4);
         bodies[1].friction = 0.9;
+        bodies[3].position[0] = 5.0; // the next cell
         bodies.extend([
             Body::kinematic("door".to_string(), Shape::Sphere { radius: 0.5 }).at([0.0, 4.0, 0.0]),
             Body {
@@ -3866,19 +3873,19 @@ mod tests {
         let mut w = World::new([0.0, -9.81, 0.0]);
         w.reconcile(&with_groups(flat, vec![group("g", bodies)]));
         let compounds: Vec<_> = w.fused.iter().map(|f| f.tags.clone()).collect();
-        assert_eq!(compounds, [vec!["s0000", "s0002", "s0003"], vec!["s0001"]]);
+        assert_eq!(compounds, [vec!["s0000", "s0002"], vec!["s0003"], vec!["s0001"]]);
         assert_eq!(w.tags.keys().collect::<Vec<_>>(), ["belt", "door", "zone"]);
-        assert_eq!(w.colliders.len(), 5);
+        assert_eq!(w.colliders.len(), 6);
     }
 
     #[test]
-    fn a_world_with_fused_bodies_restores_byte_exact() {
+    fn a_world_with_fused_bodies_restores_exactly() {
         let frame = with_groups(
             vec![crate_at("a", [0.3, 3.0, -20.2])],
             vec![group("g", floor_tiles(300))],
         );
         let mut w = World::new([0.0, -9.81, 0.0]);
-        for _ in 0..40 {
+        for _ in 0..50 {
             w.reconcile(&frame);
             w.step_frame(FIXED_DT);
         }
@@ -3886,7 +3893,12 @@ mod tests {
         let bytes = w.snapshot();
         let mut restored = World::new([0.0, 0.0, 0.0]);
         restored.restore(&bytes).unwrap();
-        assert!(restored.snapshot() == bytes);
+        // Equal state, not bytes: parry caches a compound's per-part contacts
+        // in a hash map, which a JSON round trip may reorder. (A checkpoint
+        // clones it, so in-process restores stay byte-exact.)
+        let state = |w: &World| serde_json::from_slice::<serde_json::Value>(&w.snapshot()).unwrap();
+        assert_eq!(state(&restored), state(&w));
+        let checkpoint = w.checkpoint();
         for _ in 0..40 {
             for w in [&mut w, &mut restored] {
                 w.reconcile(&frame);
@@ -3894,7 +3906,14 @@ mod tests {
             }
             assert_eq!(w.take_events(), restored.take_events());
         }
-        assert!(restored.snapshot() == w.snapshot());
+        assert_eq!(state(&restored), state(&w));
+        let mut resumed = World::new([0.0, 0.0, 0.0]);
+        resumed.restore_checkpoint(&checkpoint);
+        for _ in 0..40 {
+            resumed.reconcile(&frame);
+            resumed.step_frame(FIXED_DT);
+        }
+        assert!(resumed.snapshot() == w.snapshot());
     }
 
     #[test]
@@ -4134,7 +4153,7 @@ mod tests {
         assert!(events >= 6, "{events} events");
         assert_eq!(memo.body_transform("s0042").unwrap().0, [0.0, 0.5, 0.0]);
         assert!(memo.body_transform("s9999").is_some() && memo.body_transform("s0007").is_none());
-        assert!(memo.tags.len() == 3 && memo.colliders.len() == 4);
+        assert_eq!((memo.tags.len(), fused_bodies(&memo)), (3, 1500));
 
         // Seek to before the edit: the restored world holds the old group,
         // so replaying frame 300 must not take the fast path.
