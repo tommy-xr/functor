@@ -114,5 +114,23 @@
     ],
     "inputScript": "block-window.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-grid16-street",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "grid16-street.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-grid16-street-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "noon-grid16-street.script",
+    "captureAtFrame": 30
   }
 ]
