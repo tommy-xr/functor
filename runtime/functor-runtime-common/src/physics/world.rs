@@ -1526,12 +1526,17 @@ impl World {
                 };
                 for m in pair.manifolds.iter().filter(|m| !m.data.solver_contacts.is_empty()) {
                     let sub = if mine_first { m.subshape1 } else { m.subshape2 };
-                    // A merged box stands for several parts: those under its
-                    // contact points (world space, as the compound's frame).
-                    let points = m.data.solver_contacts.iter().map(|p| p.point);
-                    let under = Aabb::from_points(points).loosened(near);
+                    // A merged box stands for several parts: those its contact
+                    // patch meets (world space, as the compound's frame). A
+                    // point is midway between the surfaces, `dist / 2` off ours.
+                    let contacts = &m.data.solver_contacts;
+                    let points: Vec<Vector> = contacts.iter().map(|p| p.point).collect();
+                    let depth = contacts.iter().map(|p| p.dist.abs()).fold(0.0, f32::max);
+                    let slack = near + depth / 2.0;
+                    let under = Aabb::from_points(points.iter().copied()).loosened(slack);
                     for i in fused.parts.bvh().intersect_aabb(&under) {
-                        if fused.merged[i as usize] == sub {
+                        let part = fused.parts.aabbs()[i as usize].loosened(slack);
+                        if fused.merged[i as usize] == sub && patch_meets(&points, &part) {
                             touch(&fused.tags[i as usize], other.clone(), false);
                         }
                     }
@@ -2002,8 +2007,34 @@ struct FusedStatics {
     merged: Vec<u32>,
 }
 
-/// Mismatch (m) under which box faces count as equal or touching.
-const MERGE_TOL: f32 = 1e-4;
+/// Whether box faces at `p` and `q` coincide up to f32 rounding, so a merged
+/// box covers no point its parts don't (a ray through a real crack still
+/// finds a part).
+fn coincide(p: f32, q: f32) -> bool {
+    (p - q).abs() <= 8.0 * f32::EPSILON * p.abs().max(q.abs()).max(1.0)
+}
+
+/// Whether the contact patch spanned by `points` (a manifold's solver
+/// contacts: a point, a segment or a polygon) meets `aabb`.
+fn patch_meets(points: &[Vector], aabb: &Aabb) -> bool {
+    use rapier3d::parry::shape::{Cuboid, Segment, Triangle};
+    let at = Pose::from_translation(aabb.center());
+    let cuboid = Cuboid::new(aabb.half_extents());
+    let meets = |shape: &dyn rapier3d::parry::shape::Shape| {
+        rapier3d::parry::query::intersection_test(&at, &cuboid, &Pose::IDENTITY, shape)
+            .unwrap_or(false)
+    };
+    match points {
+        [p] => aabb.contains_local_point(*p),
+        [a, b] => meets(&Segment::new(*a, *b)),
+        _ => (0..points.len()).any(|i| {
+            (i + 1..points.len()).any(|j| {
+                (j + 1..points.len())
+                    .any(|k| meets(&Triangle::new(points[i], points[j], points[k])))
+            })
+        }),
+    }
+}
 
 /// `parts` as rapier collides them, and each part's subshape there: unrotated
 /// boxes with equal cross-sections that touch or overlap along an axis merge
@@ -2034,12 +2065,13 @@ fn merge_boxes(parts: &[(Pose, SharedShape)]) -> (SharedShape, Vec<u32>) {
         });
         let mut runs: Vec<(Vector, Vector, Vec<usize>)> = Vec::new();
         for next in boxes {
-            let near = |p: f32, q: f32| (p - q).abs() <= MERGE_TOL;
             match runs.last_mut() {
                 Some((lo, hi, members))
-                    if [a, b].iter().all(|&k| near(lo[k], next.0[k]) && near(hi[k], next.1[k]))
-                        && next.0[axis] <= hi[axis] + MERGE_TOL
-                        && next.1[axis] >= lo[axis] - MERGE_TOL =>
+                    if [a, b]
+                        .iter()
+                        .all(|&k| coincide(lo[k], next.0[k]) && coincide(hi[k], next.1[k]))
+                        && (next.0[axis] <= hi[axis] || coincide(next.0[axis], hi[axis]))
+                        && (next.1[axis] >= lo[axis] || coincide(next.1[axis], lo[axis])) =>
                 {
                     lo[axis] = lo[axis].min(next.0[axis]);
                     hi[axis] = hi[axis].max(next.1[axis]);
@@ -4253,6 +4285,43 @@ mod tests {
         assert_eq!(touched, ["t00", "t01", "t02"]);
     }
 
+    /// Per-tile contact events on merged tiles match separate tiles: a plank
+    /// lying diagonally (its contact patch's bounds cover tiles it misses)
+    /// and a crate sunk deep into thin tiles (contact points below them; it
+    /// then sinks through, differently, so only its first step compares).
+    #[test]
+    fn merged_tiles_report_the_tiles_a_contact_patch_meets() {
+        let quarter = std::f32::consts::FRAC_PI_8.sin();
+        let plank = Body::dynamic("plank".into(), Shape::Cuboid { extents: [5.0, 0.2, 0.3] })
+            .at([3.5, 0.62, 3.5])
+            .facing([0.0, quarter, 0.0, std::f32::consts::FRAC_PI_8.cos()]);
+        let sunk = Body::dynamic("sunk".into(), Shape::Cuboid { extents: [1.6, 1.0, 0.6] })
+            .at([1.0, 0.35, 10.0]);
+        for (body, thick) in [(plank, 1.0), (sunk, 0.04)] {
+            let run = |fused: bool| {
+                let tiles = (0..8 * 12).map(|i| {
+                    let shape = Shape::Cuboid { extents: [1.0, thick, 1.0] };
+                    let tile = Body::fixed(format!("t{i:02}"), shape)
+                        .at([(i % 8) as f32, 0.5 - thick / 2.0, (i / 8) as f32]);
+                    if fused { tile } else { separate(tile) }
+                });
+                let frame = scene(tiles.chain([body.clone()]).collect());
+                let mut w = World::new([0.0, -9.81, 0.0]);
+                let mut events = Vec::new();
+                let frames = if thick < 1.0 { 1 } else { 30 };
+                for _ in 0..frames {
+                    w.reconcile(&frame);
+                    w.step_frame(FIXED_DT);
+                    events.push(sorted_events(w.take_events()));
+                }
+                events
+            };
+            let merged = run(true);
+            assert!(merged.iter().flatten().count() >= 3, "{}: {merged:?}", body.tag);
+            assert_eq!(merged, run(false), "{}", body.tag);
+        }
+    }
+
     #[test]
     fn boxes_sharing_faces_merge_and_the_rest_pass_through() {
         let at = |x: f32, y: f32, z: f32| Pose::from_translation(Vector::new(x, y, z));
@@ -4265,12 +4334,17 @@ mod tests {
         parts.push((at(9.0, 0.0, 0.0), SharedShape::ball(0.5)));
         let turned = Pose::from_parts(Vector::new(9.0, 0.0, 3.0), Rotation::from_rotation_y(0.3));
         parts.push((turned, cube.clone()));
+        // Two boxes with a 0.5 mm crack between them stay two.
+        parts.push((at(9.0, 0.0, 6.0), cube.clone()));
+        parts.push((at(10.0005, 0.0, 6.0), cube.clone()));
         let (shape, merged) = merge_boxes(&parts);
         let shapes = shape.as_compound().unwrap().shapes();
-        // Row z = 0; (0, 1); (2..3, 1); the raised tile; rows z = 2..3; ball; turned.
-        assert_eq!(shapes.len(), 7);
+        // Row z = 0; (0, 1); (2..3, 1); the raised tile; rows z = 2..3; ball;
+        // turned; the cracked pair.
+        assert_eq!(shapes.len(), 9);
         let rows_2_3: Vec<usize> = (8..16).collect();
-        let groups = [&[0, 1, 2, 3][..], &[4], &[6, 7], &[5], &rows_2_3, &[16], &[17]];
+        let groups =
+            [&[0, 1, 2, 3][..], &[4], &[6, 7], &[5], &rows_2_3, &[16], &[17], &[18], &[19]];
         for group in groups {
             let union = group
                 .iter()
