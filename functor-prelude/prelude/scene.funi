@@ -95,7 +95,8 @@ let screen : (RenderTarget.t, t) => t
 
 /// Multiply what is already drawn behind `scene` by `texture` (at the
 /// mesh's UVs), unlit: dirt, smudges, grime, tint. It can only darken; white
-/// leaves the background unchanged.
+/// leaves the background unchanged. The texture's alpha is ignored: author
+/// it on white.
 ///
 /// A blend material, like `Scene.additive` and `Scene.reflection`:
 ///
@@ -106,7 +107,12 @@ let screen : (RenderTarget.t, t) => t
 ///   shadow, and fades to nothing in fog.
 /// - Instanced, it stays one draw, tinted per instance.
 /// - Inside it, a nested material only changes the colour. Under
-///   `Scene.opacity` it draws nothing.
+///   `Scene.opacity` it draws nothing, and `Scene.opacity` inside it draws
+///   nothing. `Scene.opacity` subtrees draw after it, so one behind a pane
+///   shows unglazed.
+/// - Like `Scene.opacity`, it blends in the framebuffer's space: linear on
+///   an sRGB framebuffer (Quest), gamma-encoded on desktop and web. Multiply
+///   reads nearly the same in both; an additive reads brighter on desktop.
 ///
 /// A pane of glass over an open window, both slightly inset:
 ///

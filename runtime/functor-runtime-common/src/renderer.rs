@@ -948,7 +948,7 @@ fn forward_pass(
     // A blend pass fogs toward its identity, so a far pane fades to nothing:
     // white for multiply, black for additive.
     let multiply_fog = fog.map(|fog| fog.with_color([1.0; 3]));
-    let additive_fog = fog.map(|fog| fog.with_color([0.0; 3]));
+    let additive_fog = fog.map(crate::fog::Fog::without_color);
     let make_context = |pass_blends: bool,
                         opacity_stage: OpacityStage,
                         blend_stage: Option<BlendMode>| RenderContext {
@@ -1140,7 +1140,13 @@ fn forward_pass(
     } else {
         render_scene(true);
         draw_sky();
-        if !pass_blends {
+        // The normals/tangents views show surfaces only.
+        if !pass_blends
+            && !matches!(
+                debug_render_mode,
+                DebugRenderMode::Normals | DebugRenderMode::Tangents
+            )
+        {
             blend_passes(
                 gl,
                 scene_context,
@@ -1178,14 +1184,16 @@ fn blend_passes<'a>(
     projection_matrix: &Matrix4<f32>,
     view_matrix: &Matrix4<f32>,
 ) {
-    let modes = blends.modes();
-    if modes.is_empty() {
-        return;
-    }
-    for mode in modes.iter() {
-        // `pass_blends`: this pass owns the blend state; `Scene.opacity`
-        // inside a blend subtree is ignored.
-        let context = make_context(true, OpacityStage::Ignore, Some(mode));
+    let mut drew = false;
+    for mode in crate::scene3d::BLEND_MODES {
+        if !blends.has(mode) {
+            continue;
+        }
+        drew = true;
+        // `pass_blends`: this pass owns the blend state. `Scene.opacity`
+        // subtrees are deferred, so a blend material under one (inside an
+        // expanded template too) draws nothing, as it does elsewhere.
+        let context = make_context(true, OpacityStage::Defer, Some(mode));
         let mut root_material = BasicMaterial::create();
         root_material.initialize(&context);
         unsafe {
@@ -1210,8 +1218,10 @@ fn blend_passes<'a>(
             &root_material,
         );
     }
-    unsafe {
-        end_constant_alpha_blend(gl);
+    if drew {
+        unsafe {
+            end_constant_alpha_blend(gl);
+        }
     }
 }
 

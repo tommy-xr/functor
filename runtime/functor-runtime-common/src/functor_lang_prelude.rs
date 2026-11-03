@@ -9297,12 +9297,8 @@ Asset.model(\"shark.glb\") at the data boundary"
     fn blend_materials_build_their_descriptions() {
         let material_of = |source: &str| {
             let value = eval_with_prelude(&format!("let main = Scene.quad() |> {source}\n")).unwrap();
-            let Value::HostData(data) = value else {
-                panic!("expected a scene");
-            };
-            let scene = &data.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
-            let SceneObject::Material(material, _) = &scene.obj else {
-                panic!("expected a material, got {:?}", scene.obj);
+            let SceneObject::Material(material, _) = &scene_of(&value).unwrap().obj else {
+                panic!("expected a material");
             };
             material.clone()
         };

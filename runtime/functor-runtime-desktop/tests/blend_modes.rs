@@ -48,6 +48,8 @@ fn main() {
     println!("test instanced_panes_match_plain_ones ... ok");
     a_fully_fogged_pane_leaves_the_background(&h);
     println!("test a_fully_fogged_pane_leaves_the_background ... ok");
+    nesting_matches_the_stamp(&h);
+    println!("test nesting_matches_the_stamp ... ok");
 }
 
 const BACKGROUND: [f32; 3] = [0.8, 0.6, 0.4];
@@ -162,6 +164,48 @@ fn a_fully_fogged_pane_leaves_the_background(h: &Harness) {
         let near = h.pixel(&fogged(vec![background(), plain(material, -2.0, 0.0)]));
         assert_ne!(near, bare, "{name}: inside the fog");
     }
+}
+
+fn nesting_matches_the_stamp(h: &Harness) {
+    // An instanced additive pane inside a multiply material takes the
+    // multiply pass, as the same pane drawn plainly does.
+    let pane = || with(additive([0.5, 0.7, 0.9]), Scene3D::quad());
+    let at = InstanceData::at([0.0, 0.0, -2.0]).scaled(4.0);
+    let nested = |inner: Scene3D| frame(vec![background(), with(multiply([1.0; 3]), inner)]);
+    let plain_pixel = h.pixel(&nested(Scene3D {
+        obj: SceneObject::Group(vec![pane()]),
+        xform: Matrix4::from_translation(cgmath::vec3(0.0, 0.0, -2.0)) * Matrix4::from_scale(4.0),
+    }));
+    let instanced_pixel = h.pixel(&nested(Scene3D::instanced(pane(), vec![at.clone()])));
+    assert_near(instanced_pixel, plain_pixel, "nested: instanced vs plain");
+    assert_near(plain_pixel, mul(linear(BACKGROUND), linear([0.5, 0.7, 0.9])), "nested: multiplied");
+    // Under `Scene.opacity` a blend material draws nothing, inside an
+    // expanded (two-leaf) template too.
+    let translucent = Scene3D {
+        obj: SceneObject::Opacity(0.5, vec![pane()]),
+        xform: Matrix4::from_scale(1.0),
+    };
+    let template = Scene3D {
+        obj: SceneObject::Group(vec![
+            translucent,
+            Scene3D {
+                obj: SceneObject::Group(vec![pane()]),
+                xform: Matrix4::from_translation(cgmath::vec3(9.0, 0.0, 0.0)),
+            },
+        ]),
+        xform: Matrix4::from_scale(1.0),
+    };
+    let expanded = h.pixel(&frame(vec![background(), Scene3D::instanced(template, vec![at])]));
+    assert_eq!(expanded, h.pixel(&frame(vec![background()])), "under Scene.opacity");
+    // `Scene.opacity` inside a blend material draws nothing either.
+    let inside = with(
+        additive([0.5, 0.7, 0.9]),
+        Scene3D {
+            obj: SceneObject::Opacity(0.5, vec![Scene3D::quad()]),
+            xform: Matrix4::from_translation(cgmath::vec3(0.0, 0.0, -2.0)) * Matrix4::from_scale(4.0),
+        },
+    );
+    assert_eq!(h.pixel(&frame(vec![background(), inside])), h.pixel(&frame(vec![background()])), "opacity inside");
 }
 
 // ---- Scenes ---------------------------------------------------------------

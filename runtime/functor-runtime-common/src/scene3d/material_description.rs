@@ -104,6 +104,9 @@ pub enum BlendMode {
     Additive,
 }
 
+/// The blend passes, in drawing order.
+pub(crate) const BLEND_MODES: [BlendMode; 2] = [BlendMode::Multiply, BlendMode::Additive];
+
 impl MaterialDescription {
     /// The material's blend mode, if it composes instead of covering.
     pub fn blend_mode(&self) -> Option<BlendMode> {
