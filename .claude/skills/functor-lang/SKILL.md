@@ -1836,8 +1836,8 @@ Three rules follow from that one:
   else: `` no body tagged "ball" in the physics world ``. Except in a stale
   world — not stepped since a seek, rewind or hot reload (a scrubbed frame
   from before a reload added the body): `Physics.transformed` draws the node
-  as a translucent ghost at the origin and `position`/`linearVelocity` read
-  zero, until the next step.
+  translucent at the origin, with a warning, until the next step (pose reads
+  still raise).
 
 The physics world survives hot reload (like the model); deleting the
 `physics` hook drops it. Gotcha: `--fixed-time T` pins the clock with

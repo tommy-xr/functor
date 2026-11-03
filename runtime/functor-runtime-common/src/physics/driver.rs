@@ -473,7 +473,7 @@ mod tests {
         assert!(!stale(), "live stepping");
         sp.seek_to_frame(5);
         assert!(stale(), "a seek");
-        sp.seek_to_frame(11);
+        sp.seek_to_frame(10);
         assert!(stale(), "back to the live tail, still unstepped");
         sp.rewind_to_frame(5);
         assert!(stale(), "a rewind");

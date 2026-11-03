@@ -3673,14 +3673,14 @@ capsule for the moving body"
     // runs in the same process as the world the shell steps, so these are
     // direct reads — no boundary, no copy (the dylib producers can't do
     // this; Functor Lang can). A tag that isn't in the world is a loud
-    // spanned error — declare the body before reading — except in a stale
-    // world ([`stale_world`]). (An Option-shaped variant return could
-    // come now that B5 match exists, but loud-by-default is right for the
-    // common case.)
+    // spanned error — declare the body before reading. (An Option-shaped
+    // variant return could come now that B5 match exists, but
+    // loud-by-default is right for the common case.) `Physics.transformed`
+    // alone, a draw, places a body missing from a stale world.
     reg.fn1(
         "Physics.position",
         "Physics.position(tag)",
-        |tag: std::rc::Rc<str>| match read_transform(&tag) {
+        |tag: std::rc::Rc<str>| match live_transform(&tag) {
             Some((pos, _)) => Ok(Value::Record(Rc::new(vec![
                 ("x".to_string(), Value::Number(pos[0] as f64)),
                 ("y".to_string(), Value::Number(pos[1] as f64)),
@@ -3788,10 +3788,7 @@ capsule for the moving body"
                     * Matrix4::from(rotation);
                 Ok(FunctorLangScene(group(vec![scene.0], xform)))
             }
-            None if stale_world() => Ok(FunctorLangScene(Scene3D {
-                obj: SceneObject::Opacity(GHOST_ALPHA, vec![scene.0]),
-                xform: Matrix4::from_scale(1.0),
-            })),
+            None if stale_world() => Ok(FunctorLangScene(placeholder(&tag, scene.0))),
             None => Err(no_body(&tag)),
         },
     );
@@ -7324,12 +7321,6 @@ fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
         })
 }
 
-/// [`live_transform`] for a pose READ: a body missing from a stale world
-/// answers the identity pose (where its ghost draws) rather than raising.
-fn read_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
-    live_transform(tag).or_else(|| stale_world().then(|| ([0.0; 3], [0.0, 0.0, 0.0, 1.0])))
-}
-
 /// Live linear velocity of a body in the ACTIVE world — the read counterpart
 /// of `Physics.setVelocity`, on the same world-scope rules as
 /// [`live_transform`].
@@ -7337,7 +7328,7 @@ fn live_velocity(tag: &str) -> Option<[f32; 3]> {
     note_read(ReadClass::Physics);
     physics::with_world(physics::active_world(), |w| w.body_velocity(tag))
         .flatten()
-        .or_else(|| (PRIMING.with(|p| p.get()) || stale_world()).then_some([0.0; 3]))
+        .or_else(|| PRIMING.with(|p| p.get()).then_some([0.0; 3]))
 }
 
 /// A synchronous ray (`shape` `None`) or shape cast against the ACTIVE world,
@@ -7391,21 +7382,41 @@ fn sync_query(
 fn no_body(tag: &str) -> String {
     format!(
         "no body tagged \"{tag}\" in the physics world: the `physics` hook isn't \
-         declaring it (declared bodies exist from the first frame — the world is \
-         primed from `init`)"
+         declaring it, or hasn't stepped since it started to (the world is primed \
+         from `init`, so bodies `init` declares exist from the first frame)"
     )
 }
 
 /// Whether the active world is stale (restored history, or kept across a
 /// reload, not stepped since) — where a body the current code names may not
-/// exist yet, so body reads draw a ghost instead of raising.
+/// exist yet, so `Physics.transformed` draws a placeholder instead of raising.
+/// Pose reads still raise: they feed the simulation, a draw doesn't.
 fn stale_world() -> bool {
     physics::with_world(physics::active_world(), |w| w.is_stale()).unwrap_or(false)
 }
 
+/// How translucent [`placeholder`] draws a node.
+const PLACEHOLDER_ALPHA: f32 = 0.3;
+
 /// How `Physics.transformed` draws a body missing from a stale world: its own
-/// content, translucent, at the origin.
-const GHOST_ALPHA: f32 = 0.3;
+/// content, translucent, at the origin. Warns once per tag, so a typo made
+/// while paused doesn't pass silently.
+fn placeholder(tag: &str, scene: Scene3D) -> Scene3D {
+    thread_local! {
+        static WARNED: std::cell::RefCell<std::collections::BTreeSet<String>> =
+            const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+    }
+    if WARNED.with(|warned| warned.borrow_mut().insert(tag.to_string())) {
+        log::warn!(
+            "[physics] no body tagged \"{tag}\" in this frame's world (not stepped since a \
+             seek, rewind or reload) — drawn translucent at the origin until it steps"
+        );
+    }
+    Scene3D {
+        obj: SceneObject::Opacity(PLACEHOLDER_ALPHA, vec![scene]),
+        xform: Matrix4::from_scale(1.0),
+    }
+}
 
 /// A `Group` wrapper carrying `xform` — the transform representation the
 /// prelude uses everywhere (see the module doc for why).
@@ -12920,11 +12931,11 @@ Physics.fusedRoom(tag) without moving or rotating it";
         );
     }
 
-    // In a stale world (a seek/rewind to before a body existed) a body
-    // read answers instead of raising — `transformed` draws a ghost, a pose
-    // reads the origin — until the next step makes the world live again.
+    // In a stale world (a seek/rewind to before a body existed)
+    // `transformed` draws a placeholder instead of raising, until the next step
+    // makes the world live again; pose reads still raise.
     #[test]
-    fn a_body_missing_from_a_stale_world_draws_a_ghost() {
+    fn a_body_missing_from_a_stale_world_draws_a_placeholder() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
         let run = |main: &str| {
             let src = format!("let main = () => {main}");
@@ -12939,20 +12950,19 @@ Physics.fusedRoom(tag) without moving or rotating it";
         let transformed = "Physics.transformed(Physics.tag(\"crate-5\"), Scene.cube())";
         let position = "Physics.position(Physics.tag(\"crate-5\")).y";
         crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.mark_stale());
-        let ghost = run(transformed).expect("a ghost, not an error");
-        let Value::HostData(data) = &ghost else { panic!("a scene, got {ghost}") };
+        let drawn = run(transformed).expect("a placeholder, not an error");
+        let Value::HostData(data) = &drawn else { panic!("a scene, got {drawn}") };
         let scene = &data.as_any().downcast_ref::<FunctorLangScene>().expect("a scene").0;
         assert!(
-            matches!(scene.obj, SceneObject::Opacity(alpha, _) if alpha == GHOST_ALPHA),
+            matches!(scene.obj, SceneObject::Opacity(alpha, _) if alpha == PLACEHOLDER_ALPHA),
             "the node, translucent"
         );
-        assert!(matches!(run(position), Ok(Value::Number(y)) if y == 0.0));
+        assert!(run(position).is_err(), "a pose read feeds the simulation: still loud");
         // Live again after a step: the loud error is back.
         crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.step_fixed());
         let err = run(transformed).err().expect("live: an error");
         assert!(err.contains("no body tagged \"crate-5\""), "{err}");
         assert!(!err.contains("never declares"), "{err}");
-        assert!(run(position).is_err());
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 
