@@ -107,6 +107,15 @@
     "captureAtFrame": 30
   },
   {
+    "name": "liminal-office-block-roofs-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "noon-block-roofs.script",
+    "captureAtFrame": 30
+  },
+  {
     "name": "liminal-office-block-window",
     "debugRender": null,
     "targets": [

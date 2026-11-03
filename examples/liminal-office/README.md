@@ -27,6 +27,7 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `B` | the office alone ⇄ the block (views 1–8 then jump within the nearest copy) |
 | `G` | the next grid: 4, 16, 64 copies (views 9 and 0 stay in it) |
 | `K` | at most 4 → 1 → 2 interiors at once |
+| `O` | overlook: the eye 20 m up, looking down over the roofs (no interiors draw; a view jump ends it) |
 | `I` | the flat ground ⇄ the island (with the block; `G` leaves it) |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
@@ -60,6 +61,13 @@ interior from it, and `exterior.fun` the street side:
   collar's corners, and at the stair opening: a horizontal portal where the
   stairwell's foot meets its head, the upper floor less the landing. Each
   cell's model is `Scene.inCells` it.
+- **Street side** (`exterior.fun`): the facade's outer half, the roof and
+  the window bands are one `Scene.instanced` cube, one draw. The roof sits
+  at the top storey's slab; the facade rising 0.9 m past it is the parapet.
+  Each band is a hole through the facade with a dark panel 8 cm back in it,
+  not a box a few cm in front of it, which z-fought at a distance. The near
+  plane is 0.1 m for the same reason (depth precision goes as 1/near). The
+  roof has no collider: nothing reaches it.
 - **Collision**: `Physics.fixed` boxes along every wall (a storey high, so the
   plenum leaves no gap), a trimesh of the floors and landing. Walls are boxes
   because trimesh faces only block from the front: an inward-facing facade
@@ -117,6 +125,8 @@ own translation and yaw, so the GPU holds one office. Per copy:
 
 In the block, interiors pop in and out at the radius, through doors and
 windows still in view: the fog only starts at 35 m (night) or 70 m (day).
+Each town's `reach` (`hours.fun`'s `Reach`, by night and by day) is where its
+fog ends and its far plane: 140 m for the office, the block and the grids.
 
 The one overcast day bake holds at every yaw (it has no sun).
 
@@ -139,9 +149,10 @@ town. What scales with the eye's surroundings, not with the town:
   only the renderer's portal walk knows. It goes off past 34 m, or when the
   eye walks into another building and all `K` are taken.
 - **Shells**: inactive copies are four `Scene.instanced` cubes for the whole
-  town: massing, canopy, apron, window bands and lamp posts lit; neon, lamp
-  shades, and the entrance and layout.fun's windows glowing (the lit rooms'
-  colour by night, neutral glass by day). An active copy draws its real
+  town: massing up to the roof, parapet, canopy, apron, window bands (10 cm
+  proud) and lamp posts lit; neon, lamp shades, and the entrance and
+  layout.fun's windows glowing (the lit rooms' colour by night, neutral
+  glass by day). An active copy draws its real
   street side and interior instead. Each copy's instances are built once at
   load; a change of the active set only gathers them (and re-uploads them),
   and a change of hour recolours the templates.

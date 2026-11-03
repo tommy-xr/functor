@@ -1,5 +1,5 @@
-// Stand-ins for the grid's inactive copies: the office's massing, canopy,
-// apron, window bands and lamp posts as lit boxes, and its neon, lamp
+// Stand-ins for the grid's inactive copies: the office's massing, parapet,
+// canopy, apron, window bands and lamp posts as lit boxes, and its neon, lamp
 // shades, entrance and real windows as glowing ones — four `Scene.instanced`
 // cubes for the whole town. The windows and entrance glow like the lit
 // rooms behind them, so a distant copy reads as the office it becomes at
@@ -8,14 +8,27 @@
 open Layout
 open Building
 
-// The massing: the facade's outer faces, up to the roofline.
+// The massing: the facade's outer faces, up to the roof's underside; then
+// the street side's roof, and the parapet round it, the facade's outer half
+// on up to the roofline.
 let half = Exterior.half
-let massing = Exterior.box(footprint.x0 - half, Exterior.street, footprint.z0 - half, footprint.x1 + half, facadeHeight, footprint.z1 + half)
+let massing = Exterior.box(footprint.x0 - half, Exterior.street, footprint.z0 - half, footprint.x1 + half, Exterior.roofBox.y0, footprint.z1 + half)
+let parapet =
+  let f = footprint in
+  let y0 = Exterior.roofBox.y0 in
+  [
+    Exterior.box(f.x0 - half, y0, f.z0 - half, f.x1 + half, facadeHeight, f.z0),
+    Exterior.box(f.x0 - half, y0, f.z1, f.x1 + half, facadeHeight, f.z1 + half),
+    Exterior.box(f.x0 - half, y0, f.z0, f.x0, facadeHeight, f.z1),
+    Exterior.box(f.x1, y0, f.z0, f.x1 + half, facadeHeight, f.z1),
+  ]
 
-// An opening on side `s`'s outer face, as the window bands sit: 2 cm proud.
+// An opening on side `s`'s outer face, `proud` of it: far enough that the
+// depth buffer keeps it in front of the massing at a distance.
+let proud = 0.1
 let opening = (s: Side, level: float, h: Hole): Exterior.Box =>
   let f = footprint in
-  let o = half + 0.02 in
+  let o = half + proud in
   let y0 = level * storey + h.bottom in
   let y1 = level * storey + h.top in
   match s with
@@ -31,10 +44,15 @@ let openings: List<Exterior.Box> = List.flatten([
   windows |> List.map((w) => opening(w.side, roomAt(w.room).level, windowHole(w))),
 ])
 
+// The window bands, where the street side cuts them, proud like the openings.
+let bands: List<Exterior.Box> = levels |> List.concatMap((level) =>
+  [South, North, West, East] |> List.concatMap((s) => Exterior.bandHoles(level, s) |> List.map((h) => opening(s, level, h))))
+
 // The lit boxes and their colours, the same at every hour.
 let litBoxes: List<(Exterior.Box, Color.t)> = List.flatten([
-  [(massing, Exterior.concrete), (Exterior.canopyBox, Exterior.concrete), (Exterior.apronBox, Exterior.apronGrey)],
-  Exterior.bandBoxes |> List.map((b) => (b, Exterior.glass)),
+  [(massing, Exterior.concrete), (Exterior.roofBox, Exterior.roofGrey), (Exterior.canopyBox, Exterior.concrete), (Exterior.apronBox, Exterior.apronGrey)],
+  parapet |> List.map((b) => (b, Exterior.concrete)),
+  bands |> List.map((b) => (b, Exterior.glass)),
   Exterior.postBoxes |> List.map((b) => (b, Exterior.postGrey)),
 ])
 

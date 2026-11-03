@@ -44,5 +44,10 @@ let outdoorAt = (d: float): Outdoor => {
   lamps: 1.0 |> Math.lerp(0.0, d),
 }
 
-// The fog's far end at every hour.
-let fogFar = 140.0
+// How far a town is seen, by night and by day: the fog's far end, which is
+// also the camera's far plane (past the fog there is only the sky).
+type Reach = { night: float, day: float }
+let reachAt = (r: Reach, d: float): float => r.night |> Math.lerp(r.day, d)
+let farthest = (r: Reach): float => Math.max(r.night, r.day)
+// The office, the block and the grids.
+let streetReach: Reach = { night: 140.0, day: 140.0 }
