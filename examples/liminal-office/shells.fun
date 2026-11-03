@@ -21,6 +21,7 @@ type Shell = {
   parapet: List<Exterior.Box>,
   openings: List<Exterior.Box>,
   bands: List<Exterior.Box>,
+  litBands: List<Exterior.Box>,
   litBoxes: List<(Exterior.Box, Color.t)>,
   skinned: List<(Exterior.Box, Finishes.Surface)>,
   gables: List<(Exterior.Box, Finishes.Surface)>,
@@ -59,8 +60,19 @@ let shellOf = (a: Archetypes.Archetype): Shell =>
   // The window bands, where the street side cuts them, proud like the openings.
   let bands = levelsOf(l) |> List.concatMap((level) =>
     [South, North, West, East] |> List.concatMap((side) => Exterior.bandHoles(l, level, side) |> List.map((h) => opening(side, level, h)))) in
+  // The bands the street side lights at night (streetscape.fun), glowing
+  // like the openings, 2 cm prouder and wider than the band they cover.
+  let litBands = levelsOf(l) |> List.concatMap((level) =>
+    [South, North, West, East] |> List.concatMap((side) => Exterior.bandHoles(l, level, side)
+      |> List.filter((h) => Streetscape.isLitBand(level, side, (h.lo + h.hi) / 2.0))
+      |> List.map((h) => let b = opening(side, level, { h with lo: h.lo - 0.02, hi: h.hi + 0.02 }) in
+        match side with
+        | South => { b with z0: b.z0 - 0.02 }
+        | North => { b with z1: b.z1 + 0.02 }
+        | West => { b with x0: b.x0 - 0.02 }
+        | East => { b with x1: b.x1 + 0.02 }))) in
   // The lit boxes and their colours, the same at every hour.
-  { massing: massing, parapet: parapet, openings: openings, bands: bands,
+  { massing: massing, parapet: parapet, openings: openings, bands: bands, litBands: litBands,
     litBoxes: List.flatten([
       [(s.canopyBox, s.siding), (s.apronBox, Exterior.apronGrey)],
       bands |> List.map((b) => (b, Exterior.glass)),
@@ -94,7 +106,7 @@ let placeGable = (c: Block.Copy, b: Exterior.Box): Instance.t => placeScaled(c, 
 // and gables (by finish), and what glows, by colour, so the hour changes a
 // template's colour, not the instances; and its window grid, placed.
 type Parts = { lit: List<Instance.t>, skinned: List<List<Instance.t>>, gables: List<List<Instance.t>>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t>,
-               beacons: List<Instance.t>, grid: Option.t<Exterior.Grid> }
+               litBands: List<Instance.t>, beacons: List<Instance.t>, grid: Option.t<Exterior.Grid> }
 let partsOf = (c: Block.Copy): Parts =>
   let shell = shellAt(c.archetype) in
   let street = Block.archetypeOf(c).street in
@@ -105,12 +117,13 @@ let partsOf = (c: Block.Copy): Parts =>
     neon: street.neonBoxes |> List.map((b) => place(c, b)),
     shades: street.shadeBoxes |> List.map((b) => place(c, b)),
     openings: shell.openings |> List.map((b) => place(c, b)),
+    litBands: shell.litBands |> List.map((b) => place(c, b)),
     beacons: street.beaconBoxes |> List.map((b) => place(c, b)),
     grid: street.grid |> Option.map((g) => { night: Block.sceneOf(c, g.night), day: Block.sceneOf(c, g.day) }),
   }
 // Every town's copies' parts, by id, built once at load.
 let parts: List<List<Parts>> = Block.towns |> List.map((t) => t.copies |> List.map(partsOf))
-let none = { lit: [], skinned: [], gables: [], neon: [], shades: [], openings: [], beacons: [], grid: Option.None }
+let none = { lit: [], skinned: [], gables: [], neon: [], shades: [], openings: [], litBands: [], beacons: [], grid: Option.None }
 
 // The openings glow like the lit rooms behind them by night, neutral glass
 // by day; the neon and shades as on the street side.
@@ -136,7 +149,7 @@ let shellsOf = (look: Look): Scene.t =>
     [cubes((s) => s |> Scene.lit(white), (p) => p.lit),
      cubes((s) => s |> Scene.color(Exterior.neonColor(look.neon)), (p) => p.neon),
      cubes((s) => s |> Scene.color(Exterior.shadeColor(look.lamps)), (p) => p.shades),
-     cubes((s) => s |> Scene.color(if look.day then dayGlass else roomGlow), (p) => p.openings),
+     cubes((s) => s |> Scene.color(if look.day then dayGlass else roomGlow), (p) => if look.day then p.openings else List.flatten([p.openings, p.litBands])),
      Finishes.drawn(List.range(List.length(Finishes.all)) |> List.map((k) =>
        idle |> List.concatMap((p) => List.nth(k, p.skinned) |> Option.defaultValue([]))))],
     // Towers and the mall only: an office town draws exactly the four cubes

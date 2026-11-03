@@ -836,9 +836,10 @@ let clearOfOpenings = (a: Archetypes.Archetype): bool =>
     |> List.all((b) => not (glow |> List.any((o) => solidIn(b, o))))
 expect Archetypes.all |> List.all(clearOfOpenings)
 // A street side draws its lit boxes once and once per finish it uses (its
-// shells, once per finish across the town): two for the office, three for a
-// tower, the cinema and the mall, and a house's clapboard (its gable's
-// shingles draw with the gables).
+// shells, once per finish across the town): three for the office, four for
+// a tower, the cinema and the mall (the sidewalk's paving among them), and
+// a house's clapboard (its gable's shingles draw with the gables; the
+// suburb's sidewalk draws with its road paint).
 let finishesOf = (a: Archetypes.Archetype): float =>
   List.length(Finishes.all |> List.filter((f) => a.street.skinned |> List.any((e) => let (_, s) = e in s.finish.name == f.name)))
-expect (Archetypes.all |> List.map(finishesOf)) == [2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 1.0, 1.0]
+expect (Archetypes.all |> List.map(finishesOf)) == [3.0, 4.0, 4.0, 4.0, 4.0, 4.0, 1.0, 1.0]

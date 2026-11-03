@@ -100,29 +100,112 @@ let pinkBands: List<Exterior.Box> =
     let y = 4.0 + 1.5 * k in
     [box(t.x0, y, t.z0 - 0.06, t.x1, y + 0.3, t.z0), box(t.x0 - 0.06, y, t.z0, t.x0, y + 0.3, t.z1)])
 
-// The parking lot: asphalt either side of the apron and south of it, white
-// bays in four rows (stall lines and an end line each), the middle two
-// back to back across the lamps' island; the lamps are the layout's street
-// lamps.
-let asphalt = Building.rgb(38.0, 36.0, 42.0)
-let paintWhite = Building.rgb(196.0, 196.0, 186.0)
-let lotBoxes = [
-  box(0.0 - 10.0, street - 0.02, 0.0 - 50.0, 70.0, street, 0.0 - 12.0),
-  box(0.0 - 10.0, street - 0.02, 0.0 - 12.0, 15.0, street, front),
-  box(45.0, street - 0.02, 0.0 - 12.0, 70.0, street, front),
-]
-// A row of bays from z0 to z1 (5 m deep), its end line at `end`.
-let bayRow = (z0: float, z1: float, end: float): List<Exterior.Box> =>
-  List.flatten([
-    List.range(24.0) |> List.map((j) => let x = 0.0 + 2.6 * j in box(x - 0.06, street, z0, x + 0.06, street + 0.01, z1)),
-    [box(0.0 - 0.06, street, end - 0.06, 59.86, street + 0.01, end + 0.06)],
+// The parking lot (the streetscape kit's): asphalt either side of the apron
+// and south of it, white bays in four rows (stall lines, an end line and a
+// wheel stop each), the middle two back to back across the lamps' planted
+// island, more islands at the rows' ends with a tree each, footings and
+// row letters on the lamp posts (the layout's street lamps), a cart left in
+// a bay; guardrails along its far edges, a lit pylon by its west entry, and
+// a fenced vacant lot east of it. Its frame is the cinema's origin facing
+// south: u is x, d is -z.
+let lotFrame: Streetscape.Frame = { side: South, x: 0.0, z: 0.0 }
+let rowEnds = [(13.0, 18.0), (23.0, 35.0), (40.0, 45.0)]
+let lotPlan: Streetscape.Lot = {
+  fr: lotFrame,
+  // Either side of the apron, from the sidewalk's curb (its ramps meet the lot).
+  areas: [rect(0.0 - 10.0, 12.0, 70.0, 50.0), rect(0.0 - 10.0, Streetscape.depth - front, 15.0, 12.0), rect(45.0, Streetscape.depth - front, 70.0, 12.0)],
+  first: 0.0, n: 23.0, bay: 2.6,
+  rows: [{ d0: 13.0, d1: 18.0, head: 13.0 }, { d0: 23.0, d1: 28.0, head: 28.0 }, { d0: 30.0, d1: 35.0, head: 30.0 }, { d0: 40.0, d1: 45.0, head: 45.0 }],
+  islands: List.flatten([
+    [rect(0.0 - 0.3, 28.05, 60.1, 29.95)],
+    rowEnds |> List.concatMap((e) => let (d0, d1) = e in [rect(0.0 - 2.4, d0, 0.0 - 0.3, d1), rect(60.1, d0, 62.2, d1)]),
+  ]),
+  poles: l.streetLamps |> List.map((p) => (Vec3.x(p), 0.0 - Vec3.z(p))),
+  cart: Option.Some((12.4, 42.6)),
+  seed: 6.0,
+}
+// Row letters on the lamp posts: A by the apron; B and C either side of
+// the island.
+let rowLetters: List<Streetscape.Decal> = l.streetLamps |> List.concatMap((p) =>
+  let d = 0.0 - Vec3.z(p) in
+  let (front, back) = if d < 20.0 then (StreetAtlas.rowA, StreetAtlas.rowA) else (StreetAtlas.rowC, StreetAtlas.rowB) in
+  Streetscape.postMarkers(lotFrame, Vec3.x(p), d, 0.0, front, back))
+// The pylon: two posts and a lit box, "FREE PARKING", facing both ways.
+let pylon: Streetscape.Props =
+  let fr: Streetscape.Frame = { side: South, x: 0.0, z: 0.0 - 12.4 } in
+  let face = (out: bool, d: float) => Streetscape.glow(StreetAtlas.boxLot, Streetscape.faceIn(fr, out, 0.0 - 8.56, 0.0 - 4.44, 2.44, 3.06, d)) in
+  { Streetscape.nothing with
+    plain: [(Streetscape.boxIn(fr, 0.0 - 8.6, 0.0 - 4.4, 2.4, 3.1, 0.0, 0.25), Streetscape.darkSteel),
+            (Streetscape.boxIn(fr, 0.0 - 8.2, 0.0 - 8.0, Streetscape.road, 2.4, 0.03, 0.22), Streetscape.steel),
+            (Streetscape.boxIn(fr, 0.0 - 5.0, 0.0 - 4.8, Streetscape.road, 2.4, 0.03, 0.22), Streetscape.steel)],
+    decals: [face(true, 0.255), face(false, 0.0 - 0.005)],
+    solid: [Streetscape.boxIn(fr, 0.0 - 8.2, 0.0 - 8.0, Streetscape.road, 2.4, 0.03, 0.22), Streetscape.boxIn(fr, 0.0 - 5.0, 0.0 - 4.8, Streetscape.road, 2.4, 0.03, 0.22)] }
+// The vacant lot: chain-link round a dirt patch (a gate gap on the west),
+// weeds and an old slab in it, and its board facing the lot.
+let vacant = rect(74.0, 0.0 - 46.0, 100.0, 0.0 - 8.0)
+let vacantLot: Streetscape.Props =
+  let v0 = vacant in
+  let h = 1.8 in
+  let y = Streetscape.road in
+  let weeds = List.range(16.0) |> List.map((k) =>
+    let x = v0.x0 + 1.0 + (v0.x1 - v0.x0 - 2.0) * Building.noise(k * 3.7 + 1.0) in
+    let z = v0.z0 + 1.0 + (v0.z1 - v0.z0 - 2.0) * Building.noise(k * 5.3 + 2.0) in
+    let r = 0.2 + 0.4 * Building.noise(k * 7.1) in
+    (box(x - r, y, z - r, x + r, y + 0.15 + 0.5 * Building.noise(k * 2.9), z + r), Streetscape.weedGreen)) in
+  let board: Streetscape.Frame = { side: West, x: v0.x0 - 0.6, z: 0.0 } in
+  Streetscape.joined([
+    Streetscape.chainLink({ side: South, x: 0.0, z: v0.z0 }, v0.x0, v0.x1, 0.0, y, h),
+    Streetscape.chainLink({ side: North, x: 0.0, z: v0.z1 }, v0.x0, v0.x1, 0.0, y, h),
+    Streetscape.chainLink({ side: West, x: v0.x0, z: 0.0 }, v0.z0, 0.0 - 30.0, 0.0, y, h),
+    Streetscape.chainLink({ side: West, x: v0.x0, z: 0.0 }, 0.0 - 26.0, v0.z1, 0.0, y, h),
+    Streetscape.chainLink({ side: East, x: v0.x1, z: 0.0 }, v0.z0, v0.z1, 0.0, y, h),
+    { Streetscape.nothing with
+      plain: List.flatten([
+        [(box(v0.x0 + 0.1, y, v0.z0 + 0.1, v0.x1 - 0.1, y + 0.012, v0.z1 - 0.1), Streetscape.dirt),
+         (box(82.0, y, 0.0 - 31.0, 90.0, y + 0.08, 0.0 - 23.0), Streetscape.planterGrey),
+         (Streetscape.boxIn(board, 0.0 - 27.5, 0.0 - 25.7, 1.1, 2.3, 0.0, 0.04), Streetscape.steel),
+         (Streetscape.boxIn(board, 0.0 - 27.3, 0.0 - 27.2, y, 1.1, 0.04, 0.12), Streetscape.steel),
+         (Streetscape.boxIn(board, 0.0 - 26.0, 0.0 - 25.9, y, 1.1, 0.04, 0.12), Streetscape.steel)],
+        weeds,
+      ]),
+      decals: [Streetscape.sign(StreetAtlas.available, Streetscape.faceIn(board, true, 0.0 - 27.4, 0.0 - 25.8, 1.2, 2.2, 0.045))] },
   ])
-let bayLines = List.flatten([
-  bayRow(0.0 - 18.0, 0.0 - 13.0, 0.0 - 13.0),
-  bayRow(0.0 - 28.0, 0.0 - 23.0, 0.0 - 28.0),
-  bayRow(0.0 - 35.0, 0.0 - 30.0, 0.0 - 30.0),
-  bayRow(0.0 - 45.0, 0.0 - 40.0, 0.0 - 45.0),
-])
+// The lot and what stands round it: all of it seen from across the lot, so
+// its decals draw with the shell too (the grid).
+let lotProps: Streetscape.Props = Streetscape.joined(List.flatten([
+  [Streetscape.lotOf(lotPlan), pylon, vacantLot, { Streetscape.nothing with decals: rowLetters }],
+  rowEnds |> List.concatMap((e) => let (d0, d1) = e in
+    [Streetscape.tree(lotFrame, 0.0 - 1.35, (d0 + d1) / 2.0, Streetscape.walk, d0), Streetscape.tree(lotFrame, 61.15, (d0 + d1) / 2.0, Streetscape.walk, d1)]),
+  [Streetscape.guardrail({ side: South, x: 0.0, z: 0.0 - 50.6 }, 0.0 - 10.6, 70.0, 0.0, Streetscape.road),
+   Streetscape.guardrail({ side: West, x: 0.0 - 10.6, z: 0.0 }, 0.0 - 50.6, 0.0 - 12.0, 0.0, Streetscape.road),
+   Streetscape.poleSign(lotFrame, 15.3, 11.6, Streetscape.road, StreetAtlas.noParking),
+   Streetscape.poleSign(lotFrame, 44.7, 11.6, Streetscape.road, StreetAtlas.noParking)],
+]))
+let lotDressing = Streetscape.dressingOf(lotProps.decals)
+
+// The e2e's walk: from the lot (view 9) to the apron and in.
+let paths: List<Streetscape.Path> = [{ x0: 40.0, z0: 0.0 - 26.0, x1: 30.0, z1: 0.0 - 4.0 }, { x0: 30.0, z0: 0.0 - 4.0, x1: 30.0, z1: 2.0 }]
+// The sidewalk: a vending machine, a payphone and a bin west of the
+// marquee, a bike rack, benches under it, bollards across the forecourt,
+// fire lane signs either side; and the lot (its decals in the grid).
+let streetscapeProps = (s: Exterior.Street): Streetscape.Props =>
+  let south = Streetscape.sideFrame(l, South) in
+  let curbside = Streetscape.flipped(south, 3.25) in
+  let walk = Streetscape.walk in
+  let own = [
+    { lotProps with decals: [] },
+    Streetscape.vendingMachine(south, 18.5, 0.15, walk),
+    Streetscape.payphone(south, 16.6, 0.15, walk),
+    Streetscape.bin(south, 19.4, 0.2, walk),
+    Streetscape.bikeRack(south, 12.5, 1.2, walk),
+    Streetscape.bench(curbside, 24.0, 0.0, walk),
+    Streetscape.bench(curbside, 36.0, 0.0, walk),
+    Streetscape.joined([27.4, 32.6] |> List.map((u) => Streetscape.bollard(south, u, 3.55, Exterior.street))),
+    Streetscape.poleSign(south, 14.5, 3.5, walk, StreetAtlas.fireLane),
+    Streetscape.poleSign(south, 45.5, 3.5, walk, StreetAtlas.fireLane),
+  ] in
+  Streetscape.along(l, s, { seed: 3.0, paths: paths, own: own, avoid: [] })
+let streetscape = (s: Exterior.Street): Exterior.Street => Streetscape.dressed(s, streetscapeProps(s))
 
 let pinkColor = (glow: float): Color.t => Building.rgb(255.0 * glow, 60.0 * glow, 190.0 * glow)
 // What glows besides the kit's neon: the posters, the sign tower's pink.
@@ -155,17 +238,15 @@ let dressed = (s: Exterior.Street): Exterior.Street =>
   })
 
 // The kit's street side in stucco with the marquee for its canopy, cyan
-// along the marquee, the roofline and up the sign tower; the tower, lot,
-// bays and poster frames among the lit boxes; the posters and pink as its
-// grid. The facade's outer half (the kit's) is solid all round the
+// along the marquee, the roofline and up the sign tower; the tower and
+// poster frames among the lit boxes; the posters, pink and the lot's signs
+// as its grid; then the streetscape. The facade's outer half (the kit's) is solid all round the
 // footprint.
 let exterior: Exterior.Street =
   let s = Exterior.streetWith(l, stuccoWall) in
   let extras = List.flatten([
     [(signTower, towerDark)],
     posterFrames |> List.map((b) => (b, Building.rgb(14.0, 12.0, 16.0))),
-    lotBoxes |> List.map((b) => (b, asphalt)),
-    bayLines |> List.map((b) => (b, paintWhite)),
   ]) in
   let boxes = List.flatten([s.streetBoxes |> List.map((e) => let (b, c) = e in if b == s.canopyBox then (marquee, c) else e), extras]) in
   let m = marquee in
@@ -177,8 +258,8 @@ let exterior: Exterior.Street =
   ]) in
   let lot = { s with canopyBox: marquee, streetBoxes: boxes, extraBoxes: extras,
                      neonBoxes: neon, neonStrips: Scene.group(neon |> List.map(Exterior.slabOf)),
-                     grid: Option.Some({ night: glowAt(1.0), day: glowAt(0.6) }) } in
-  dressed(lot)
+                     grid: Option.Some({ night: Scene.group([glowAt(1.0), lotDressing.night]), day: Scene.group([glowAt(0.6), lotDressing.day]) }) } in
+  streetscape(dressed(lot))
 
 // ---- Collision -----------------------------------------------------------------------
 

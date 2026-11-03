@@ -32,7 +32,10 @@ let clapboard = finishOf("clapboard", 1.2)
 // Asphalt shingles (houses' gables): 14 cm courses of staggered tabs.
 let shingles = finishOf("shingles", 1.12)
 
-let all = [precast, curtain, stucco, tiles, roofing, splitface, fascia, clapboard, shingles]
+// Sidewalks: 1.5 m concrete slabs in sawn joints (streetscape.fun).
+let paving = finishOf("paving", 3.0)
+
+let all = [precast, curtain, stucco, tiles, roofing, splitface, fascia, clapboard, shingles, paving]
 
 let on = (f: Finish, tint: Color.t): Surface => { finish: f, tint: tint }
 

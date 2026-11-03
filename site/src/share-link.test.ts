@@ -106,7 +106,11 @@ const exampleNames = readdirSync(EXAMPLES, { withFileTypes: true })
 const OVER_CAP = new Set([
   // Not on the site (no Share button) and needs PNGs the site doesn't serve.
   "hoverbike",
-  // Not on the site; its baked lightmaps are project files a link can't carry.
+]);
+// Examples past the codec's source limit: encoding refuses them outright.
+const UNSHAREABLE = new Set([
+  // Not on the site; its baked lightmaps are project files a link can't carry,
+  // and its sources outgrew the limit.
   "liminal-office",
 ]);
 
@@ -114,6 +118,10 @@ test("round-trips every example project, and each stays pasteable", async (t) =>
   assert.ok(exampleNames.length > 10, "expected the examples/ tree to be populated");
   for (const name of exampleNames) {
     const project = readExample(name);
+    if (UNSHAREABLE.has(name)) {
+      await assert.rejects(encodeShare(project), /unshareable/, `${name} now encodes — drop it from UNSHAREABLE`);
+      continue;
+    }
     const raw = project.files.reduce((n, f) => n + f.source.length, 0);
     const { hash, back } = await roundTrip(project);
     const encoded = hash.length - "#code=".length;

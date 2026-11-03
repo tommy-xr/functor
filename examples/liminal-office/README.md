@@ -108,6 +108,27 @@ draws once plus once per finish it uses (two for the office, three for a
 tower or the cinema). Shells keep all of it but the mullions, at the same
 per-finish cost for the whole town. Nothing here is baked.
 
+**Streetscape kit** (`streetscape.fun`, `roads.fun`). Every building
+stands in a sidewalk ring: paving slabs (a `paving` finish) inside a curb
+15 cm over the road, cut back to the road at the entrance and at a kerb
+ramp per corner (a tactile pad), where the towns' crosswalks land; the
+road gets dashed centre lines. Along it: street trees in grates, hedges
+clear of every door and window, planters, benches, bins, bollards, bike
+racks, a payphone, a vending machine whose front glows at night, a tenant
+directory, suite plaques, pole signs, chain-link, guardrails, and parking
+lots (`Streetscape.lotOf`: bays, wheel stops, planted islands, pole
+footings, an abandoned cart): the office's side lot and the cinema's, with
+a fenced vacant lot beside it. Signs and window dressing are quads of one
+atlas (`street-atlas.png`, painted with its 5 × 7 font by
+`streetscape.mjs`): the office's bands and the towers' bays show blinds at
+random heights, vertical blinds, a taped sheet or FOR LEASE by day, and by
+night stay dark but for a few late offices (the office's shells light the
+same bands). Placement is fixed per archetype; boxes ride the street
+side's draws, the decals one static model (two draws), the road paint one
+draw per town. What you'd bump into has a collider, kept off the e2e's
+walks (`functor test` checks); the sidewalk has none, so the feet sink
+13 cm into it.
+
 **Culling caveat.** The cells and portals are right (`functor test`), and
 `/state.cells.hidden` counts the subtrees the walk hides, but the renderer
 currently draws `Model.static` data models whether or not the walk hides them,

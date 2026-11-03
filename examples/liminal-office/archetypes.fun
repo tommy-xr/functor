@@ -42,7 +42,7 @@ let officeBake = bakeOf("office", ["layout.fun", "officeLayout.fun", "building.f
 let officeStatus = Provenance.statusOf(officeBake)
 let officeRooms = roomsOf(officeInterior, officeBake, officeStatus)
 let officeLevel = Portals.levelOf(OfficeLayout.layout, Portals.outsideTop)
-let officeStreet = Facade.office(OfficeLayout.layout)
+let officeStreet = Streetscape.office(OfficeLayout.layout, Facade.office(OfficeLayout.layout))
 let office: Archetype =
   let (night, day) = officeRooms in
   { name: "office", layout: OfficeLayout.layout, colliders: officeInterior.colliders, status: officeStatus,
@@ -62,7 +62,7 @@ let towerOf = (n: float): Archetype =>
   let placed = Tower.placedOf(n, typicalBaked, endsBaked) in
   { name: $"tower-{n}", layout: l, colliders: Tower.collidersOf(n),
     status: if typicalStatus != Provenance.Current then typicalStatus else endsStatus,
-    level: Portals.levelOf(l, Tower.collarTop), street: Tower.streetOf(l, n),
+    level: Portals.levelOf(l, Tower.collarTop), street: Streetscape.tower(l, Tower.streetOf(l, n)),
     night: placed |> List.map(Tower.nightOf), day: placed |> List.map(Tower.dayOf) }
 let tower8 = towerOf(8.0)
 let tower12 = towerOf(12.0)
@@ -98,13 +98,13 @@ let ochreInterior = Building.interiorIn("house-ochre", HouseLayout.layout, House
 let ochreBake = bakeOf("house-ochre", houseSources)
 let ochreStatus = Provenance.statusOf(ochreBake)
 let ochreRooms = roomsOf(ochreInterior, ochreBake, ochreStatus)
-let ochreStreet = HouseExterior.streetOf(HouseLayout.layout, HouseExterior.ochre)
+let ochreStreet = Streetscape.house(HouseLayout.layout, HouseExterior.streetOf(HouseLayout.layout, HouseExterior.ochre))
 let houseOchre = houseOf("house-ochre", ochreInterior, ochreStatus, ochreStreet, ochreRooms)
 let magentaInterior = Building.interiorIn("house-magenta", HouseLayout.layout, HousePalettes.magenta)
 let magentaBake = bakeOf("house-magenta", houseSources)
 let magentaStatus = Provenance.statusOf(magentaBake)
 let magentaRooms = roomsOf(magentaInterior, magentaBake, magentaStatus)
-let magentaStreet = HouseExterior.streetOf(HouseLayout.layout, HouseExterior.magenta)
+let magentaStreet = Streetscape.house(HouseLayout.layout, HouseExterior.streetOf(HouseLayout.layout, HouseExterior.magenta))
 let houseMagenta = houseOf("house-magenta", magentaInterior, magentaStatus, magentaStreet, magentaRooms)
 
 let all = [office, tower8, tower12, tower16, cinema, mall, houseOchre, houseMagenta]
@@ -128,11 +128,13 @@ let baked = all |> List.all((a) => a.status == Provenance.Current)
 
 // Every bake's cell models under both lightmaps, kept on the GPU but never
 // drawn: with no interior active, or at the other hour, the meshes and
-// lightmaps stay loaded, so entering a building or switching the hour
+// lightmaps (and each street side's dressing) stay loaded, so entering a building or switching the hour
 // uploads nothing. (The towers draw the same models, moved.)
 let resident = Scene.keepResident(Scene.group(List.flatten([office.night, office.day, Tower.residentOf(typicalBaked), Tower.residentOf(endsBaked),
                                                          Tower.residentOf(cinemaBaked), Cinema.fixed, Tower.residentOf(mallBaked),
-                                                         houseOchre.night, houseOchre.day, houseMagenta.night, houseMagenta.day])))
+                                                         houseOchre.night, houseOchre.day, houseMagenta.night, houseMagenta.day,
+                                                         [Cinema.lotDressing.night, Cinema.lotDressing.day, Mall.lotDressing.night, Mall.lotDressing.day],
+                                                         all |> List.concatMap((a) => [a.street.dressing.night, a.street.dressing.day])])))
 
 expect (bakes |> List.map((b) => b.name)) == ["office-night", "office-day", "tower-typical-night", "tower-typical-day", "tower-ends-night", "tower-ends-day", "cinema-night", "cinema-day", "mall-night", "mall-day",
   "house-ochre-night", "house-ochre-day", "house-magenta-night", "house-magenta-day"]
