@@ -367,6 +367,31 @@ macro_rules! reader {
     };
 }
 
+/// Register a bulk number reader: `Bytes.u16les(offset, count, bytes)` —
+/// `count` numbers in a row, one host call instead of one per number.
+macro_rules! list_reader {
+    ($reg:ident, $name:literal, $ty:ty, $from:ident) => {
+        $reg.fn3(
+            concat!("Bytes.", $name),
+            concat!("Bytes.", $name, "(offset, count, bytes)"),
+            |Count(offset): Count, Count(count): Count, bytes: FunctorLangBytes| {
+                const N: usize = std::mem::size_of::<$ty>();
+                if !(count >= 0.0 && count.fract() == 0.0) {
+                    return err(offset, format!("count {count} must be a whole number ≥ 0"));
+                }
+                match take(&bytes.0, offset, count * N as f64) {
+                    Ok(raw) => ok(Value::List(Rc::new(
+                        raw.chunks_exact(N)
+                            .map(|c| Value::Number(<$ty>::$from(c.try_into().expect("N bytes")) as f64))
+                            .collect(),
+                    ))),
+                    Err(e) => e,
+                }
+            },
+        );
+    };
+}
+
 /// Register a bulk number writer: `Bytes.fromU16le([1.0, 2.0])`. Integers
 /// must be whole and in range — encoding is the program's own data, so a bad
 /// value is an error at the call, not a recoverable `Result`.
@@ -534,6 +559,20 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reader!(reg, "f32be", f32, from_be_bytes);
     reader!(reg, "f64le", f64, from_le_bytes);
     reader!(reg, "f64be", f64, from_be_bytes);
+    list_reader!(reg, "u8s", u8, from_le_bytes);
+    list_reader!(reg, "i8s", i8, from_le_bytes);
+    list_reader!(reg, "u16les", u16, from_le_bytes);
+    list_reader!(reg, "u16bes", u16, from_be_bytes);
+    list_reader!(reg, "i16les", i16, from_le_bytes);
+    list_reader!(reg, "i16bes", i16, from_be_bytes);
+    list_reader!(reg, "u32les", u32, from_le_bytes);
+    list_reader!(reg, "u32bes", u32, from_be_bytes);
+    list_reader!(reg, "i32les", i32, from_le_bytes);
+    list_reader!(reg, "i32bes", i32, from_be_bytes);
+    list_reader!(reg, "f32les", f32, from_le_bytes);
+    list_reader!(reg, "f32bes", f32, from_be_bytes);
+    list_reader!(reg, "f64les", f64, from_le_bytes);
+    list_reader!(reg, "f64bes", f64, from_be_bytes);
     reg.fn1(
         "Binary.describe",
         "Binary.describe(error)",

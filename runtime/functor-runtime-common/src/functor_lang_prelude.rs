@@ -15612,6 +15612,68 @@ can separate where items 0 and 1 (counting from 0) nearly meet, at 4 points with
         assert!(err.contains("links[0] weight must be finite"), "{err}");
     }
 
+    /// The list readers (`Bytes.f32les`, …) read what the writers wrote and
+    /// what the single readers read, and fail the same way at the edges.
+    #[test]
+    fn bytes_list_readers() {
+        let prelude = "let xs = [-2.0, 0.0, 1.0, 127.0]\n\
+             let fs = [1.5, -0.25, 1.0 / 0.0, 3.0]\n\
+             let ones = (read: (float, Bytes.t) => Result.t<float, Binary.error>, size: float, d: Bytes.t) => \
+               List.map((i) => Binary.require(read(size * i, d)), List.range(Bytes.length(d) / size))\n";
+        let mut checks = vec![
+            "Bytes.u8s(0.0, 0.0, Bytes.zeros(0.0)) == Result.Ok([])".to_string(),
+            "Bytes.u8s(1.0, 2.0, Bytes.fromU8([5.0, 6.0, 7.0])) == Result.Ok([6.0, 7.0])".to_string(),
+            "Bytes.f32les(0.0, 4.0, Bytes.fromF32le(fs)) == Result.Ok(fs)".to_string(),
+            "Bytes.f64bes(0.0, 4.0, Bytes.fromF64be(fs)) == Result.Ok(fs)".to_string(),
+            "(Bytes.slice(2.0, 4.0, Bytes.fromI16le(xs)) |> Result.bind((s) => Bytes.i16les(0.0, 2.0, s))) \
+             == Result.Ok([0.0, 1.0])".to_string(),
+            "match Bytes.u32les(8.0, 3.0, Bytes.zeros(16.0)) with \
+             | Result.Error(e) => Binary.describe(e) == \"at byte 8: needs 12 bytes, 8 left\" \
+             | Result.Ok(_) => false".to_string(),
+            "match Bytes.u8s(0.0, 1.5, Bytes.zeros(4.0)) with \
+             | Result.Error(e) => e.message == \"count 1.5 must be a whole number ≥ 0\" | Result.Ok(_) => false"
+                .to_string(),
+            "Result.isError(Bytes.u8s(0.0, -1.0, Bytes.zeros(4.0))) \
+             && Result.isError(Bytes.u8s(0.0, 0.0 / 0.0, Bytes.zeros(4.0))) \
+             && Result.isError(Bytes.u8s(0.5, 1.0, Bytes.zeros(4.0))) \
+             && Result.isError(Bytes.u8s(5.0, 0.0, Bytes.zeros(4.0))) \
+             && Bytes.u8s(4.0, 0.0, Bytes.zeros(4.0)) == Result.Ok([])"
+                .to_string(),
+        ];
+        // Every width agrees with its single reader.
+        for (list, one, from, size) in [
+            ("u8s", "u8", "fromU8", 1),
+            ("i8s", "i8", "fromI8", 1),
+            ("u16les", "u16le", "fromU16le", 2),
+            ("u16bes", "u16be", "fromU16be", 2),
+            ("i16les", "i16le", "fromI16le", 2),
+            ("i16bes", "i16be", "fromI16be", 2),
+            ("u32les", "u32le", "fromU32le", 4),
+            ("u32bes", "u32be", "fromU32be", 4),
+            ("i32les", "i32le", "fromI32le", 4),
+            ("i32bes", "i32be", "fromI32be", 4),
+            ("f32les", "f32le", "fromF32le", 4),
+            ("f32bes", "f32be", "fromF32be", 4),
+            ("f64les", "f64le", "fromF64le", 8),
+            ("f64bes", "f64be", "fromF64be", 8),
+        ] {
+            let values = if list.starts_with('u') { "[0.0, 1.0, 127.0, 2.0]" } else { "xs" };
+            checks.push(format!(
+                "Bytes.{list}(0.0, 4.0, Bytes.{from}({values})) == Result.Ok({values}) \
+                 && Bytes.{list}(0.0, 4.0, Bytes.{from}({values})) \
+                    == Result.Ok(ones(Bytes.{one}, {size}.0, Bytes.{from}({values})))"
+            ));
+        }
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+    }
+
     /// `Encode` writes what `Decode` reads; a `Codec` round-trips records,
     /// lists and mapped values; writers refuse numbers that don't fit.
     #[test]
