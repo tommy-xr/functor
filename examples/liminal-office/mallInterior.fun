@@ -1,7 +1,8 @@
 // The mall's baked interior, from mallLayout.fun: every cell's surfaces
 // (one mesh, cut into one model per cell at load, as building.fun's), its
 // own materials, and the night and day bake jobs. Faces are polygons, not
-// only quads: the escalator's sides and the pendants need triangles.
+// only quads: the escalator's sides and the pendants need triangles. Of the
+// shops, only each fit-out's first bay is in the mesh (`homeOf`).
 // Editing this file makes the mall's committed bake stale: rebake (README).
 //
 // The bake runs at the kit's 12 texels/m on the mesh at HALF scale, lights
