@@ -93,6 +93,50 @@ let litNormalMapped : (Color.t, 'texture, t) => t
 /// feed reads mirrored.
 let screen : (RenderTarget.t, t) => t
 
+/// Multiply what is already drawn behind `scene` by `texture` (at the
+/// mesh's UVs), unlit: dirt, smudges, grime, tint. It can only darken; white
+/// leaves the background unchanged. The texture's alpha is ignored: author
+/// it on white.
+///
+/// A blend material, like `Scene.additive` and `Scene.reflection`:
+///
+/// - It draws after the opaque scene and the sky, depth-tested but writing
+///   no depth, so it never hides anything. Every multiply draws, then every
+///   additive. Both commute, so they need no sorting.
+/// - It is culled like any node (`Scene.inCells`, the frustum), casts no
+///   shadow, and fades to nothing in fog.
+/// - Instanced, it stays one draw, tinted per instance.
+/// - Inside it, a nested material only changes the colour. Under
+///   `Scene.opacity` it draws nothing, and `Scene.opacity` inside it draws
+///   nothing. `Scene.opacity` subtrees draw after it, so one behind a pane
+///   shows unglazed.
+/// - Like `Scene.opacity`, it blends in the framebuffer's space: linear on
+///   an sRGB framebuffer (Quest), gamma-encoded on desktop and web. Multiply
+///   reads nearly the same in both; an additive reads brighter on desktop.
+///
+/// A pane of glass over an open window, both slightly inset:
+///
+/// ```
+/// let glass = Scene.group([
+///   Scene.quad() |> Scene.multiply(Assets.smudges),
+///   Scene.quad() |> Scene.reflection(Color.rgb(1.0, 1.0, 1.0), 0.04),
+/// ])
+/// ```
+let multiply : ('texture, t) => t
+/// Add `color` to what is already drawn behind `scene`, unlit: sheen, glow.
+/// It can only brighten; black adds nothing. A blend material: see
+/// `Scene.multiply`.
+let additive : (Color.t, t) => t
+/// Add the sky's reflection to what is already drawn behind `scene`: glass.
+///
+/// It adds `color` × the sky along the reflected view ray × Schlick's
+/// fresnel, `base + (1 − base)(1 − |n·v|)⁵`. So a pane is nearly clear
+/// head-on (`base`, about 0.04 for glass) and a mirror at grazing angles. The
+/// sky is the frame's `Frame.withSkyGradient`, or else its background colour,
+/// so reflections dim with the sky. A `base` outside `0..1` is an error. A
+/// blend material: see `Scene.multiply`.
+let reflection : (Color.t, float, t) => t
+
 /// Make a subtree TRANSLUCENT — alpha from 0 (invisible) to 1 (unchanged); the
 /// scene is last for piping.
 ///
@@ -162,8 +206,9 @@ let keepResident : (t) => t
 ///
 /// The renderer draws recognized templates with hardware instancing — a
 /// single cube/sphere/cylinder/quad/billboard/plane leaf under any transforms and at
-/// most one solid `Scene.color` / `Scene.lit` / `Scene.emissive` or a
-/// `Scene.litWorldTexture` material (one draw call), or a `Scene.model` leaf under transforms (one draw call
+/// most one solid `Scene.color` / `Scene.lit` / `Scene.emissive`, a
+/// `Scene.litWorldTexture` or a blend (`Scene.multiply` / `Scene.additive` /
+/// `Scene.reflection`) material (one draw call), or a `Scene.model` leaf under transforms (one draw call
 /// per mesh primitive, textured exactly like the ordinary model draw). A
 /// SKINNED model template — with an attached `Scene.animate` pose or the
 /// zero-config first-clip autoplay — instances at the SHARED pose: the pose

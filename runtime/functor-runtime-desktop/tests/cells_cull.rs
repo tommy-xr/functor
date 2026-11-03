@@ -47,6 +47,7 @@ fn main() {
     each_eye_walks_from_its_own_position(&mut harness);
     an_outside_eye_sees_in_only_through_a_facing_window(&mut harness);
     a_hidden_node_still_casts_its_shadow(&mut harness);
+    a_hidden_blend_pane_is_culled(&mut harness);
 }
 
 fn a_doorway_shows_the_far_room_and_a_wall_hides_it(h: &mut Harness) {
@@ -263,6 +264,53 @@ fn a_hidden_node_still_casts_its_shadow(h: &mut Harness) {
 }
 
 const UP: [f32; 3] = [0.0, 1.0, 0.0];
+
+fn a_hidden_blend_pane_is_culled(h: &mut Harness) {
+    // A multiply pane across room 2, behind its crate, facing the doorways;
+    // `inner` marks it with its cell inside the material instead.
+    let pane = |inner: bool| {
+        let quad = Scene3D::quad().transform(
+            Matrix4::from_translation(vec3(11.0, 1.0, 0.0))
+                * Matrix4::from_angle_y(cgmath::Deg(90.0))
+                * Matrix4::from_nonuniform_scale(3.5, 2.0, 1.0),
+        );
+        Scene3D {
+            obj: SceneObject::Material(
+                MaterialDescription::Multiply {
+                    color: vec4(0.5, 0.5, 0.5, 1.0),
+                    texture: None,
+                },
+                vec![if inner { in_cells(2, quad) } else { quad }],
+            ),
+            xform: Matrix4::identity(),
+        }
+    };
+    let along = |z: f32| Camera::look_at([1.0, 1.5, z], [12.0, 1.0, z], UP, fov());
+    let level = |z: f32, extras| frame(along(z), rooms(true, extras), false);
+
+    // Through the doorways it composes.
+    let seen = h.render(&level(0.0, vec![(2, pane(false))]), &[0], true);
+    assert_eq!(sums(), (1, 3, 0));
+    assert!(
+        seen != h.render(&level(0.0, vec![]), &[0], true),
+        "the pane isn't drawn through the doorways"
+    );
+    // Beside them room 2 is hidden, and so is the pane: no bypass. Marked
+    // inside its material (`extras` sit in room 0, which the eye sees), it
+    // is queued, then hidden by its own cell in the blend pass.
+    for (extras, why) in [
+        (vec![(2, pane(false))], "in its cell"),
+        (vec![(0, pane(true))], "its cell inside the material"),
+    ] {
+        let on = h.render(&level(1.5, extras.clone()), &[0], true);
+        assert_eq!(sums(), (1, 2, 2), "{why}");
+        assert!(
+            on == h.render(&level(1.5, extras), &[0], false),
+            "{why}: culling changed the image"
+        );
+    }
+    println!("test a_hidden_blend_pane_is_culled ... ok");
+}
 
 fn fov() -> Angle {
     Angle::from_degrees(60.0)

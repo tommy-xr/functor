@@ -81,6 +81,17 @@ impl Fog {
         }
     }
 
+    /// The same fog toward `color`.
+    pub fn with_color(&self, color: [f32; 3]) -> Fog {
+        let mut fog = self.clone();
+        match &mut fog {
+            Fog::Linear { color: c, .. } | Fog::Exp { color: c, .. } | Fog::Height { color: c, .. } => {
+                *c = color
+            }
+        }
+        fog
+    }
+
     /// The same fog with its color zeroed: what terrain LOD depends on.
     pub fn without_color(&self) -> Fog {
         match *self {

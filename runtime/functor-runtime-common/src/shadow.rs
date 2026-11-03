@@ -228,6 +228,9 @@ pub(crate) fn depth_only_context<'a>(
         fog_cull_distance: None,
         shadow_casters: false,
         shadow_off: std::cell::Cell::new(false),
+        blend_stage: None,
+        blend_inside: std::cell::Cell::new(false),
+        reflection_sky: ([0.0; 3], [0.0; 3]),
     }
 }
 

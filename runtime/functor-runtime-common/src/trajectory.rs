@@ -724,6 +724,10 @@ fn faded_material(
             source_pixels: *source_pixels,
             sampling: *sampling,
         }),
+        // Glass on a ghost stays glass: it only darkens or brightens.
+        Some(blend @ (MaterialDescription::Multiply { .. } | MaterialDescription::Additive { .. })) => {
+            Some(blend.clone())
+        }
         None => None,
     }
 }
@@ -780,6 +784,10 @@ fn alpha_faded_material(
             source_pixels: *source_pixels,
             sampling: *sampling,
         }),
+        // Glass on a ghost stays glass: it only darkens or brightens.
+        Some(blend @ (MaterialDescription::Multiply { .. } | MaterialDescription::Additive { .. })) => {
+            Some(blend.clone())
+        }
         None => None,
     }
 }

@@ -2723,6 +2723,62 @@ pub struct Scene3D {
     pub xform: Matrix4<f32>,
 }
 
+/// A blend-material node the opaque walk reached, queued for its blend pass.
+pub(crate) struct BlendDraw<'s> {
+    node: &'s Scene3D,
+    /// The matrix the walk passed to `node`.
+    world: Matrix4<f32>,
+    mode: BlendMode,
+    /// The enclosing `Scene.cells` walk's visibility, so `Scene.inCells`
+    /// below `node` culls as it would have.
+    visible: Option<Vec<bool>>,
+}
+
+/// The blend draws one opaque walk queued, in scene order.
+#[derive(Default)]
+pub(crate) struct BlendQueue<'s>(RefCell<Vec<BlendDraw<'s>>>);
+
+impl<'s> BlendQueue<'s> {
+    fn push(&self, node: &'s Scene3D, world: &Matrix4<f32>, mode: BlendMode, ctx: &SceneContext) {
+        self.0.borrow_mut().push(BlendDraw {
+            node,
+            world: *world,
+            mode,
+            visible: ctx.portal_visible.borrow().clone(),
+        });
+    }
+
+    /// Whether a `mode` node is queued: its blend pass has work.
+    pub(crate) fn has(&self, mode: BlendMode) -> bool {
+        self.0.borrow().iter().any(|draw| draw.mode == mode)
+    }
+
+    /// Draw the queued `stage` nodes, in scene order, under a blend pass's
+    /// context (`render_context.blend_stage == Some(stage)`).
+    pub(crate) fn draw(
+        &self,
+        stage: BlendMode,
+        render_context: &RenderContext,
+        scene_context: &SceneContext,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+        root_material: &Box<dyn Material>,
+    ) {
+        for draw in self.0.borrow_mut().iter_mut().filter(|d| d.mode == stage) {
+            let outer = scene_context.portal_visible.replace(draw.visible.take());
+            draw.node.render(
+                render_context,
+                scene_context,
+                &draw.world,
+                projection_matrix,
+                view_matrix,
+                root_material,
+            );
+            scene_context.portal_visible.replace(outer);
+        }
+    }
+}
+
 /// One unit of the transparent pass: an outermost [`SceneObject::Opacity`]
 /// node, ready to be sorted and drawn.
 ///
@@ -3020,6 +3076,28 @@ impl Scene3D {
         }
     }
 
+    /// Whether a `mode` blend material is in this subtree (templates
+    /// included, `Scene.opacity` subtrees not): what an expanded instanced
+    /// template queues.
+    fn has_blend(&self, mode: BlendMode) -> bool {
+        match self.obj.resolved() {
+            SceneObject::Material(material, items) => {
+                material.blend_mode() == Some(mode) || items.iter().any(|i| i.has_blend(mode))
+            }
+            SceneObject::Group(items)
+            | SceneObject::Cells(_, items)
+            | SceneObject::CastShadows(_, items)
+            | SceneObject::Resident(items) => items.iter().any(|i| i.has_blend(mode)),
+            SceneObject::Instanced { template, .. } => template.has_blend(mode),
+            // Under `Scene.opacity` a blend material draws nothing.
+            SceneObject::Opacity(..)
+            | SceneObject::Geometry(_)
+            | SceneObject::Model(_)
+            | SceneObject::Terrain(_) => false,
+            SceneObject::Shared(_) => unreachable!("resolved"),
+        }
+    }
+
     /// Whether this subtree contains any [`SceneObject::Opacity`] node — the
     /// cheap guard that keeps the transparent pass (collect + sort + a second
     /// walk) entirely off the frame path of every scene that never calls
@@ -3027,6 +3105,8 @@ impl Scene3D {
     pub fn has_opacity(&self) -> bool {
         match self.obj.resolved() {
             SceneObject::Opacity(..) => true,
+            // Translucency under a blend material draws nothing.
+            SceneObject::Material(material, _) if material.blend_mode().is_some() => false,
             SceneObject::Group(items)
             | SceneObject::Material(_, items)
             | SceneObject::Cells(_, items)
@@ -3149,6 +3229,7 @@ impl Scene3D {
             }
             // A `Material` node's own `xform` is ignored by `Scene3D::render`
             // (see `accumulate_leaf_origins`), so it must be ignored here too.
+            SceneObject::Material(next_material, _) if next_material.blend_mode().is_some() => {}
             SceneObject::Material(next_material, items) => {
                 for item in items {
                     item.collect_transparent(world, Some(next_material), out);
@@ -3211,6 +3292,53 @@ impl Scene3D {
         view_matrix: &Matrix4<f32>,
         current_material: &Box<dyn Material>,
     ) {
+        self.walk(
+            render_context,
+            scene_context,
+            world_matrix,
+            projection_matrix,
+            view_matrix,
+            current_material,
+            None,
+        )
+    }
+
+    /// [`Self::render`], queueing the blend materials it reaches (and would
+    /// draw: not portal-hidden) for the blend pass instead of skipping them.
+    /// The opaque forward walk's entry point.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_queueing_blends<'s>(
+        &'s self,
+        render_context: &RenderContext,
+        scene_context: &SceneContext,
+        world_matrix: &Matrix4<f32>,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+        current_material: &Box<dyn Material>,
+        queue: &BlendQueue<'s>,
+    ) {
+        self.walk(
+            render_context,
+            scene_context,
+            world_matrix,
+            projection_matrix,
+            view_matrix,
+            current_material,
+            Some(queue),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn walk<'s>(
+        &'s self,
+        render_context: &RenderContext,
+        scene_context: &SceneContext,
+        world_matrix: &Matrix4<f32>,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+        current_material: &Box<dyn Material>,
+        queue: Option<&BlendQueue<'s>>,
+    ) {
         // Under `Scene.castShadows(false, …)` a leaf casts nothing; its forward
         // draw keeps it resident. Instanced nodes decide in their own arm.
         if render_context.shadow_off.get()
@@ -3256,6 +3384,16 @@ impl Scene3D {
         // A portal-hidden primitive has no GPU residency to keep: skip it.
         if scene_context.portal_hidden.get()
             && matches!(self.obj.resolved(), SceneObject::Geometry(shape) if !matches!(shape, Shape::Mesh { .. }))
+        {
+            return;
+        }
+        // A blend pass draws leaves only inside the blend material it draws.
+        if render_context.blend_stage.is_some()
+            && !render_context.blend_inside.get()
+            && matches!(
+                self.obj.resolved(),
+                SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_)
+            )
         {
             return;
         }
@@ -3478,6 +3616,33 @@ impl Scene3D {
             SceneObject::Terrain(_) => {}
 
             SceneObject::Material(material_description, items) => {
+                // A blend material draws only in its blend pass: the opaque
+                // walk queues it (a portal-hidden one walks on, drawing
+                // nothing but keeping its resources resident); every other
+                // pass skips it, so it casts no shadow. Inside it, nested
+                // materials only change the color.
+                let mut entered_blend = false;
+                let mut hidden_blend = None;
+                if let Some(mode) = material_description.blend_mode() {
+                    match render_context.blend_stage {
+                        // Terrain, which a hidden cell still draws, is skipped.
+                        None if scene_context.portal_hidden.get() && !depth_pass => {
+                            hidden_blend = Some(scene_context.resident_only.replace(true));
+                        }
+                        None => {
+                            if let Some(queue) = queue {
+                                queue.push(self, world_matrix, mode, scene_context);
+                            }
+                            return;
+                        }
+                        Some(_) if render_context.blend_inside.get() => {}
+                        Some(stage) if stage == mode => {
+                            entered_blend = true;
+                            render_context.blend_inside.set(true);
+                        }
+                        Some(_) => return,
+                    }
+                }
                 let material = material_description.get(render_context, scene_context);
                 // The 3D forward pass is otherwise fully opaque — every shader
                 // already writes an alpha, but nothing blends it. A material
@@ -3533,13 +3698,14 @@ impl Scene3D {
                     }
                 }
                 for item in items.into_iter() {
-                    item.render(
+                    item.walk(
                         &render_context,
                         &scene_context,
                         &world_matrix,
                         &projection_matrix,
                         &view_matrix,
                         &material,
+                        queue,
                     )
                 }
                 if blend {
@@ -3548,18 +3714,25 @@ impl Scene3D {
                         render_context.gl.disable(glow::BLEND);
                     }
                 }
+                if entered_blend {
+                    render_context.blend_inside.set(false);
+                }
+                if let Some(resident) = hidden_blend {
+                    scene_context.resident_only.set(resident);
+                }
             }
 
             SceneObject::Group(items) => {
                 let new_world_matrix = world_matrix * self.xform;
                 for item in items.into_iter() {
-                    item.render(
+                    item.walk(
                         &render_context,
                         &scene_context,
                         &new_world_matrix,
                         &projection_matrix,
                         &view_matrix,
                         current_material,
+                        queue,
                     )
                 }
             }
@@ -3598,13 +3771,14 @@ impl Scene3D {
                     }
                 }
                 for item in items.into_iter() {
-                    item.render(
+                    item.walk(
                         &render_context,
                         &scene_context,
                         &new_world_matrix,
                         &projection_matrix,
                         &view_matrix,
                         current_material,
+                        queue,
                     )
                 }
                 if blend {
@@ -3618,13 +3792,14 @@ impl Scene3D {
                 let world = world_matrix * self.xform;
                 let render_items = || {
                     for item in items {
-                        item.render(
+                        item.walk(
                             render_context,
                             scene_context,
                             &world,
                             projection_matrix,
                             view_matrix,
                             current_material,
+                            queue,
                         )
                     }
                 };
@@ -3672,13 +3847,14 @@ impl Scene3D {
                 let hidden = scene_context.portal_hidden.replace(true);
                 let resident = scene_context.resident_only.replace(true);
                 for item in items {
-                    item.render(
+                    item.walk(
                         render_context,
                         scene_context,
                         &world,
                         projection_matrix,
                         view_matrix,
                         current_material,
+                        queue,
                     )
                 }
                 scene_context.portal_hidden.set(hidden);
@@ -3692,13 +3868,14 @@ impl Scene3D {
                     .shadow_casters
                     .then(|| render_context.shadow_off.replace(!casts));
                 for item in items {
-                    item.render(
+                    item.walk(
                         render_context,
                         scene_context,
                         &world,
                         projection_matrix,
                         view_matrix,
                         current_material,
+                        queue,
                     )
                 }
                 if let Some(outer) = outer {
@@ -3713,6 +3890,49 @@ impl Scene3D {
                     return;
                 }
                 let recognized = instancing::recognize(template);
+                // A blend template draws in its blend pass, like the Material
+                // arm: a hardware one is wholly blend; an expanded one draws
+                // its opaque parts here and is queued for its blend parts.
+                let hardware_blend = match &recognized {
+                    Some(instancing::RecognizedTemplate::Primitive(primitive)) => {
+                        primitive.material.blend_mode()
+                    }
+                    _ => None,
+                };
+                match render_context.blend_stage {
+                    Some(stage) => {
+                        let draws = match &recognized {
+                            // Nested in a blend material, it takes that pass.
+                            Some(instancing::RecognizedTemplate::Primitive(_))
+                                if hardware_blend.is_some() =>
+                            {
+                                render_context.blend_inside.get() || hardware_blend == Some(stage)
+                            }
+                            Some(_) => render_context.blend_inside.get(),
+                            None => true,
+                        };
+                        if !draws {
+                            return;
+                        }
+                    }
+                    None if !scene_context.portal_hidden.get() => {
+                        if let Some(queue) = queue {
+                            for mode in BLEND_MODES {
+                                let has = match &recognized {
+                                    Some(_) => hardware_blend == Some(mode),
+                                    None => template.has_blend(mode),
+                                };
+                                if has {
+                                    queue.push(self, world_matrix, mode, scene_context);
+                                }
+                            }
+                        }
+                        if hardware_blend.is_some() {
+                            return;
+                        }
+                    }
+                    None => {}
+                }
                 // A hardware template's own `Scene.castShadows` beats the
                 // enclosing one; an expanded template renders its own.
                 if render_context.shadow_casters
@@ -3756,6 +3976,10 @@ impl Scene3D {
                         // or hidden.
                         let texture = match recognized.material {
                             MaterialDescription::Lit {
+                                texture: Some(texture),
+                                ..
+                            }
+                            | MaterialDescription::Multiply {
                                 texture: Some(texture),
                                 ..
                             } => Some(texture),
@@ -3895,7 +4119,8 @@ impl Scene3D {
 — rendering {copies} copies as a stamped group, comparable to writing \
 the group by hand (hardware templates are one cube/sphere/cylinder/quad/billboard/plane \
 leaf under transforms and at most one solid Scene.color / Scene.lit / \
-Scene.emissive material, or a bare Scene.model leaf under transforms)"
+Scene.emissive, Scene.litWorldTexture or blend material, or a bare Scene.model \
+leaf under transforms)"
                                     )
                                 },
                             );
@@ -4513,6 +4738,71 @@ mod preload_tests {
 
         remove_world(DEFAULT_WORLD);
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod blend_tests {
+    use super::*;
+
+    fn with(material: MaterialDescription, child: Scene3D) -> Scene3D {
+        Scene3D {
+            obj: SceneObject::Material(material, vec![child]),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    fn additive() -> MaterialDescription {
+        MaterialDescription::Additive {
+            color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+            fresnel: None,
+        }
+    }
+
+    fn multiply() -> MaterialDescription {
+        MaterialDescription::Multiply {
+            color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+            texture: None,
+        }
+    }
+
+    /// An expanded template queues one draw per blend mode it holds, found
+    /// through groups, nested templates and shared (memo) nodes, but not
+    /// under `Scene.opacity`.
+    #[test]
+    fn blend_modes_are_found_anywhere_in_a_subtree() {
+        let collect = |scene: &Scene3D| {
+            BLEND_MODES.into_iter().filter(|&mode| scene.has_blend(mode)).collect::<Vec<_>>()
+        };
+        assert!(collect(&with(MaterialDescription::color(1.0, 1.0, 1.0, 1.0), Scene3D::cube())).is_empty());
+        let translucent = Scene3D {
+            obj: SceneObject::Opacity(0.5, vec![with(additive(), Scene3D::quad())]),
+            xform: Matrix4::identity(),
+        };
+        assert!(collect(&translucent).is_empty());
+        let pane = with(multiply(), Scene3D::quad());
+        let shared = Scene3D {
+            obj: SceneObject::Shared(Arc::new(with(additive(), Scene3D::quad()).obj)),
+            xform: Matrix4::identity(),
+        };
+        let template = Scene3D {
+            obj: SceneObject::Group(vec![Scene3D::cube(), shared, pane]),
+            xform: Matrix4::identity(),
+        };
+        let instanced = Scene3D::instanced(template, vec![InstanceData::at([0.0, 0.0, 0.0])]);
+        // Multiply first, whatever the scene order.
+        assert_eq!(collect(&instanced), vec![BlendMode::Multiply, BlendMode::Additive]);
+    }
+
+    /// Blend materials never blend by alpha: the Tier A translucent-material
+    /// path must stand down for them.
+    #[test]
+    fn blend_materials_have_no_color_alpha() {
+        assert_eq!(multiply().color_alpha(), None);
+        assert_eq!(additive().color_alpha(), None);
+        assert_eq!(multiply().blend_mode(), Some(BlendMode::Multiply));
+        assert_eq!(additive().blend_mode(), Some(BlendMode::Additive));
+        assert_eq!(MaterialDescription::color(1.0, 1.0, 1.0, 1.0).blend_mode(), None);
     }
 }
 

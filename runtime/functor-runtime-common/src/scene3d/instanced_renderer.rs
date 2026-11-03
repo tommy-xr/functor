@@ -408,6 +408,95 @@ impl SkinnedPrograms {
     }
 }
 
+// `Scene.reflection` (additive, fresnel) on the primitive vertex shader:
+// the instance's tinted color times the reflected sky. Fog fades it toward
+// the additive pass's black.
+const REFLECTION_FRAGMENT_SHADER_SOURCE: &str = r#"
+        out vec4 fragColor;
+
+        in highp vec3 worldPos;
+        in vec3 worldNormal;
+        in vec4 instanceColor;
+
+        void main() {
+            vec3 c = instanceColor.rgb * skyReflection(worldNormal, worldPos);
+            fragColor = functorOutput(vec4(applyFog(c, worldPos), 1.0));
+        }
+"#;
+
+/// The instanced `Scene.reflection` program and its uniforms.
+struct ReflectionProgram {
+    program: ShaderProgram,
+    world: UniformLocation,
+    local: UniformLocation,
+    normal_matrix: UniformLocation,
+    local_normal_matrix: UniformLocation,
+    view: UniformLocation,
+    projection: UniformLocation,
+    base_color: UniformLocation,
+    billboard_mode: UniformLocation,
+    reflection: crate::material::reflection_material::ReflectionUniforms,
+    fog: FogUniforms,
+    output: crate::color_space::OutputEncodeUniform,
+}
+
+impl ReflectionProgram {
+    fn new(gl: &glow::Context, shader_version: &str) -> Self {
+        let program = build_program(
+            gl,
+            shader_version,
+            &format!("{}\n{}", instance_transform_glsl(4), VERTEX_SHADER_SOURCE),
+            &format!(
+                "{}\n{}\n{}",
+                FOG_GLSL,
+                crate::material::reflection_material::REFLECTION_GLSL,
+                REFLECTION_FRAGMENT_SHADER_SOURCE
+            ),
+        );
+        Self {
+            world: program.get_uniform_location(gl, "world"),
+            local: program.get_uniform_location(gl, "local"),
+            normal_matrix: program.get_uniform_location(gl, "normalMatrix"),
+            local_normal_matrix: program.get_uniform_location(gl, "localNormalMatrix"),
+            view: program.get_uniform_location(gl, "view"),
+            projection: program.get_uniform_location(gl, "projection"),
+            base_color: program.get_uniform_location(gl, "baseColor"),
+            billboard_mode: program.get_uniform_location(gl, "billboardMode"),
+            reflection: crate::material::reflection_material::ReflectionUniforms::get(&program, gl),
+            fog: FogUniforms::get(&program, gl),
+            output: crate::color_space::OutputEncodeUniform::get(&program, gl),
+            program,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set(
+        &self,
+        ctx: &RenderContext,
+        world: &Matrix4<f32>,
+        local: &Matrix4<f32>,
+        projection: &Matrix4<f32>,
+        view: &Matrix4<f32>,
+        color: &cgmath::Vector4<f32>,
+        base: f32,
+        billboard: bool,
+    ) {
+        let p = &self.program;
+        p.use_program(ctx.gl);
+        p.set_uniform_matrix4(ctx.gl, &self.world, world);
+        p.set_uniform_matrix4(ctx.gl, &self.local, local);
+        p.set_uniform_matrix3(ctx.gl, &self.normal_matrix, &normal_matrix(world));
+        p.set_uniform_matrix3(ctx.gl, &self.local_normal_matrix, &normal_matrix(local));
+        p.set_uniform_matrix4(ctx.gl, &self.view, view);
+        p.set_uniform_matrix4(ctx.gl, &self.projection, projection);
+        p.set_uniform_vec4(ctx.gl, &self.base_color, color);
+        p.set_uniform_1i(ctx.gl, &self.billboard_mode, billboard as i32);
+        self.reflection.set(p, ctx, base);
+        self.fog.set(p, ctx.gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
+        self.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
+    }
+}
+
 /// Which model an instanced VAO set belongs to.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum ModelKey {
@@ -445,6 +534,8 @@ pub(super) struct InstancedRenderer {
     depth_uniforms: DepthUniforms,
     // Lazily built (see `SkinnedPrograms`); needs the shader version kept.
     skinned: Option<SkinnedPrograms>,
+    // `Scene.reflection` templates' program, built on first use.
+    reflection: Option<ReflectionProgram>,
     shader_version: String,
     instance_buffers: InstanceBufferCache<glow::Buffer>,
 }
@@ -480,6 +571,7 @@ impl InstancedRenderer {
             depth,
             depth_uniforms,
             skinned: None,
+            reflection: None,
             shader_version: shader_version.to_string(),
             instance_buffers: InstanceBufferCache::default(),
         }
@@ -658,35 +750,50 @@ impl InstancedRenderer {
                 view,
             );
         } else {
-            // A world-tiled lit texture is the only texture recognition
-            // accepts on a primitive; the caller bound it to unit 0.
-            let (color, lit, world_tile) = match template.material {
+            // The textures recognition accepts on a primitive — a world-tiled
+            // lit one, or a multiply's — the caller bound to unit 0.
+            let (color, lit, use_texture, world_tile) = match template.material {
                 MaterialDescription::Lit {
                     color, world_tile, ..
-                } => (*color, true, *world_tile),
+                } => (*color, true, world_tile.is_some(), *world_tile),
                 MaterialDescription::Color(color)
-                | MaterialDescription::Emissive { color, .. } => (*color, false, None),
+                | MaterialDescription::Emissive { color, .. }
+                | MaterialDescription::Additive { color, .. } => (*color, false, false, None),
+                MaterialDescription::Multiply { color, texture } => {
+                    (*color, false, texture.is_some(), None)
+                }
                 // Recognition never accepts these; the arm exists only so
                 // the match stays exhaustive if the enum grows.
                 MaterialDescription::Texture(_) | MaterialDescription::SpriteTexture { .. } => {
-                    (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false, None)
+                    (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false, false, None)
                 }
             };
-            set_forward_uniforms(
-                &self.forward,
-                &self.forward_uniforms,
-                ctx,
-                world,
-                &template.local,
-                projection,
-                view,
-                &color,
-                world_tile.is_some(),
-                world_tile.unwrap_or(0.0),
-                lit,
-                1.0,
-                billboard,
-            );
+            match template.material {
+                MaterialDescription::Additive {
+                    fresnel: Some(base),
+                    ..
+                } => {
+                    let reflection = self.reflection.get_or_insert_with(|| {
+                        ReflectionProgram::new(ctx.gl, &self.shader_version)
+                    });
+                    reflection.set(ctx, world, &template.local, projection, view, &color, *base, billboard);
+                }
+                _ => set_forward_uniforms(
+                    &self.forward,
+                    &self.forward_uniforms,
+                    ctx,
+                    world,
+                    &template.local,
+                    projection,
+                    view,
+                    &color,
+                    use_texture,
+                    world_tile.unwrap_or(0.0),
+                    lit,
+                    1.0,
+                    billboard,
+                ),
+            }
         }
         unsafe {
             ctx.gl

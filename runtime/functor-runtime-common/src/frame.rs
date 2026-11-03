@@ -185,6 +185,15 @@ impl Frame {
             .map(|zenith| (self.resolved_clear_color(), zenith))
     }
 
+    /// The sky `Scene.reflection` reflects, `(horizon, zenith)`: the drawn
+    /// sky gradient, else the background colour at both ends.
+    pub fn reflection_sky(&self) -> ([f32; 3], [f32; 3]) {
+        self.drawn_sky_gradient().unwrap_or_else(|| {
+            let background = self.resolved_clear_color();
+            (background, background)
+        })
+    }
+
     /// Whether the main view is the pure sprite frame produced by
     /// `Frame.create2D`. Mixed frames retain their real 3D pass and therefore
     /// use the runtime's 3D debug camera.

@@ -1138,6 +1138,17 @@ back-to-front by the average world position of their leaves, with depth writing
 off and no shadow — see the `Scene.opacity` reference for what that granularity
 does and does not fix. The 2D analogue is `Sprite.fade`.
 
+**Glass is two blend materials, not translucency** — `Scene.multiply(texture)`
+multiplies what is behind by the texture (dirt, smudges, tint: only darkens),
+`Scene.additive(color)` adds a colour (only brightens), and
+`Scene.reflection(color, base)` adds the sky (`Frame.withSkyGradient`, else the
+background colour) along the reflected view ray, scaled by Schlick's fresnel
+(`base` ≈ 0.04 for glass: clear head-on, a mirror at grazing angles). They draw
+after the opaque scene and sky — every multiply, then every additive, unsorted
+(both commute) — depth-tested, no depth writes, no shadow, fading out in fog.
+Unlike `Scene.opacity` they are portal-culled like any node and instance as one
+draw. Under `Scene.opacity` they draw nothing.
+
 **Shadow casting is per light AND per subtree** — `Light.castShadows` picks the
 lights; `s |> Scene.castShadows(false)` keeps a subtree out of the shadow map
 (it still renders and receives shadows). The nearest enclosing call wins, so
@@ -1155,8 +1166,8 @@ each combinator composes within its own channel (rotations multiply with the
 outer pipe applying last; scales and tints multiply componentwise). The
 renderer hardware-instances a recognized template — one
 cube/sphere/cylinder/quad/billboard/plane leaf under transforms and at most one solid
-`Scene.color`/`Scene.lit`/`Scene.emissive` or `Scene.litWorldTexture` material
-(ONE draw call), or a `Scene.model` leaf under transforms (one draw call per mesh primitive,
+`Scene.color`/`Scene.lit`/`Scene.emissive`, a `Scene.litWorldTexture` or a blend
+(`Scene.multiply`/`additive`/`reflection`) material (ONE draw call), or a `Scene.model` leaf under transforms (one draw call per mesh primitive,
 textured like the ordinary model draw; a SKINNED model — via `Scene.animate`
 or the first-clip autoplay — instances at the SHARED pose, sampled and
 uploaded once for every copy); anything else (textured materials, groups,
