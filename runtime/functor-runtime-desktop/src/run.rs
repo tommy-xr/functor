@@ -1081,6 +1081,8 @@ fn service_debug_request(
     sim: &mut SimDriver,
     frame: &Frame,
     frame_count: &mut u64,
+    // `/state.rendered_frames`: buffer swaps so far (0 in headless).
+    rendered_frames: u64,
     tts: f32,
     width: u32,
     height: u32,
@@ -1144,6 +1146,7 @@ fn service_debug_request(
                     // Recorded steps (what `/rewind` takes) where the game
                     // records history; else the shell's tick count.
                     frame: g.state_frame().unwrap_or(frame),
+                    rendered_frames,
                     tts,
                     pending_steps,
                     model_revision: g.model_revision(),
@@ -1632,6 +1635,7 @@ fn run_headless(
                     &mut sim,
                     &frame,
                     &mut frame_count,
+                    0, // headless renders nothing
                     time.tts,
                     0, // no framebuffer in headless
                     0,
@@ -2201,6 +2205,8 @@ Escape releases while captured"
         let mut stage_window = functor_runtime_common::debug_protocol::StageWindow::default();
         let mut stage_timings = None;
         let mut last_rendered = Instant::now();
+        // `/state.rendered_frames`: buffer swaps so far.
+        let mut rendered_frames: u64 = 0;
         let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
 
         while !window.should_close() {
@@ -3872,6 +3878,7 @@ Escape again to quit"
                         &mut sim,
                         &frame,
                         &mut frame_count,
+                        rendered_frames,
                         time.tts,
                         fb_width as u32,
                         fb_height as u32,
@@ -3932,6 +3939,7 @@ Escape again to quit"
             let swap_started = Instant::now();
             window.swap_buffers();
             let swap_ns = swap_started.elapsed().as_nanos() as u64;
+            rendered_frames += 1;
 
             // Hand this frame's shell-measured GL cost to the producer, which
             // folds it into the same rolling window it averages tick/draw over.

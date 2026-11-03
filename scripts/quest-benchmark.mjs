@@ -150,6 +150,12 @@ function parseTelemetry(text) {
   };
 }
 
+// Liveness: frames the shell rendered, which advance under a paused or pinned
+// clock. Pre-v29 runtimes lack `rendered_frames`; fall back to sim steps.
+const rendered = (state) => state.rendered_frames ?? state.frame;
+const renderedLabel = (state) =>
+  state.rendered_frames === undefined ? "sim frame (runtime predates debug protocol v29)" : "rendered_frames";
+
 function parseMemory(text) {
   const number = (pattern) => {
     const match = text.match(pattern);
@@ -210,7 +216,7 @@ async function main() {
   adb(["shell", "am", "start", "--activity-reorder-to-front", "-n", ACTIVITY]);
   const initial = await waitForRuntime();
   const resumedPid = adb(["shell", "pidof", PACKAGE]);
-  if (resumedPid !== runningPid || initial.frame < preflight.frame) {
+  if (resumedPid !== runningPid || rendered(initial) < rendered(preflight)) {
     throw new Error(
       "Functor restarted while foregrounding; push the intended workload again before benchmarking",
     );
@@ -224,8 +230,8 @@ async function main() {
   const telemetryText = await collectVrApi(options.seconds);
   const after = await waitForRuntime();
   const batteryAfter = readBattery(after);
-  if (after.frame <= before.frame) {
-    throw new Error(`runtime did not render during sample (frame stayed ${after.frame})`);
+  if (rendered(after) <= rendered(before)) {
+    throw new Error(`runtime did not render during sample (${renderedLabel(after)} stayed ${rendered(after)})`);
   }
 
   const telemetry = parseTelemetry(telemetryText);
@@ -248,7 +254,7 @@ async function main() {
   console.log("");
   console.log(`- Device: ${model} (${serial})`);
   console.log(`- Build: ${after.build ?? "not reported (runtime predates debug protocol v23)"}`);
-  console.log(`- Runtime frames: ${before.frame} → ${after.frame}`);
+  console.log(`- Rendered frames: ${rendered(before)} → ${rendered(after)} (${renderedLabel(after)}); sim steps ${before.frame} → ${after.frame}`);
   console.log(`- Views: ${views.length ? views.join(", ") : `${after.viewport.width}x${after.viewport.height}`}`);
   console.log(
     display
@@ -287,7 +293,7 @@ async function main() {
 
   // Keep this read so the initial state is not an accidental unused probe: it
   // confirms the endpoint before warmup and helps diagnose a reset in output.
-  if (initial.frame > before.frame) {
+  if (rendered(initial) > rendered(before)) {
     console.error("warning: runtime frame counter moved backwards during warmup");
   }
 }

@@ -250,7 +250,7 @@ by default; `--format json`, `--output <path>`, and `--check <path>` are availab
 For Quest build/install, XR-session recovery, live push, raw stereo capture, and
 on-device benchmarking, use the **`vr-device-loop` skill**
 (`.claude/skills/vr-device-loop/`). In particular, recreate `adb forward` after
-every reconnect and wait for `/state`'s frame to advance before capturing; the
+every reconnect and wait for `/state`'s `rendered_frames` to advance before capturing; the
 debug server remains reachable while a dozing XR session correctly returns 503
 for `/capture`.
 

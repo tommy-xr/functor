@@ -356,7 +356,15 @@ export type RuntimeState = {
  * record nothing, so it stays 0 under `--fixed-time`. The shell's tick
  * count for a game that records no history.
  */
-frame: number, tts: number, 
+frame: number, 
+/**
+ * Frames the shell has rendered and submitted since launch (v29): one per
+ * buffer swap on desktop, one per `xrEndFrame` with layers on a headset,
+ * 0 under `--headless`. Unlike `frame` it advances while the clock is
+ * paused or pinned, so it is the liveness signal for "is it rendering".
+ * `default` because a pre-v29 runtime omits it.
+ */
+rendered_frames: number, tts: number, 
 /**
  * Clock steps queued by `POST /time` `advance` and not yet run. Zero means
  * every requested step has been simulated, which is how a harness knows a

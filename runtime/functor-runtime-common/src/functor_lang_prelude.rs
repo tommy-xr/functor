@@ -13662,6 +13662,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         }
         let state = crate::debug_protocol::RuntimeState {
             frame: 1,
+            rendered_frames: 0,
             tts: 0.0,
             pending_steps: 0,
             model_revision: 0,

@@ -169,7 +169,13 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `/state` reported as frame `N`, and `frame` reads `N` after it. Before,
 /// `frame` counted the shell's ticks (a step or two ahead of the recorder,
 /// counting on through a rewind) and `/rewind` took the recorder's index.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 28;
+///
+/// 29 adds `rendered_frames` to `GET /state`: frames the shell has rendered
+/// and submitted since launch, which advances under a paused or pinned clock
+/// (unlike `frame`). Additive — a pre-v29 runtime omits it, which
+/// deserializes as zero, so gate on the version before reading zero as "not
+/// rendering".
+pub const DEBUG_PROTOCOL_VERSION: u32 = 29;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -223,7 +229,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad/touch), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
+        description: "runtime state JSON: frame, rendered_frames (frames rendered and submitted; advances while paused), tts, pending_steps (queued clock steps not yet run), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad/touch), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -374,6 +380,13 @@ pub struct RuntimeState {
     /// record nothing, so it stays 0 under `--fixed-time`. The shell's tick
     /// count for a game that records no history.
     pub frame: u64,
+    /// Frames the shell has rendered and submitted since launch (v29): one per
+    /// buffer swap on desktop, one per `xrEndFrame` with layers on a headset,
+    /// 0 under `--headless`. Unlike `frame` it advances while the clock is
+    /// paused or pinned, so it is the liveness signal for "is it rendering".
+    /// `default` because a pre-v29 runtime omits it.
+    #[serde(default)]
+    pub rendered_frames: u64,
     pub tts: f32,
     /// Clock steps queued by `POST /time` `advance` and not yet run. Zero means
     /// every requested step has been simulated, which is how a harness knows a
@@ -1333,6 +1346,7 @@ mod tests {
     fn runtime_state_json_preserves_desktop_shape_and_reports_views() {
         let state = RuntimeState {
             frame: 42,
+            rendered_frames: 57,
             tts: 1.5,
             pending_steps: 3,
             model_revision: 17,
@@ -1432,6 +1446,7 @@ mod tests {
             actual,
             json!({
                 "frame": 42,
+                "rendered_frames": 57,
                 "tts": 1.5,
                 "pending_steps": 3,
                 "model_revision": 17,
@@ -1877,5 +1892,7 @@ mod tests {
         .expect("a pre-v10 /state payload decodes");
         assert_eq!(state.model_revision, 0);
         assert_eq!(state.pending_net, 0);
+        // Likewise v29's `rendered_frames`.
+        assert_eq!(state.rendered_frames, 0);
     }
 }

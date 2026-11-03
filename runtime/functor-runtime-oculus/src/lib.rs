@@ -754,6 +754,9 @@ const BUILD_LABEL: &str = match option_env!("FUNCTOR_BUILD_LABEL") {
 #[derive(Default)]
 struct DebugLoopState {
     frame_count: u64,
+    /// `/state.rendered_frames`: frames ended with layers (not dozes, invalid
+    /// tracking, or `should_render == false`).
+    rendered_frames: u64,
     input: InputSnapshot,
     // Debug requests may arrive while paused or between device fixed steps.
     input_edges: functor_runtime_common::InputEdges,
@@ -929,8 +932,12 @@ fn service_debug_request(
                 .collect();
             let mut input = debug.input.clone();
             debug.input_edges.apply_to(&mut input);
-            let (frame, tts, pending_steps) =
-                (debug.frame_count, clock.current_tts(), clock.pending_steps());
+            let (frame, rendered_frames, tts, pending_steps) = (
+                debug.frame_count,
+                debug.rendered_frames,
+                clock.current_tts(),
+                clock.pending_steps(),
+            );
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
             let passthrough = passthrough.state(debug.config);
@@ -949,6 +956,7 @@ fn service_debug_request(
                     // Recorded steps (what `/rewind` takes) where the game
                     // records history; else the shell's tick count.
                     frame: g.state_frame().unwrap_or(frame),
+                    rendered_frames,
                     tts,
                     pending_steps,
                     model_revision: g.model_revision(),
@@ -2117,6 +2125,7 @@ pub fn android_main(app: AndroidApp) {
                     .views(&projection_views),
             )
             .expect("frame end");
+        debug.rendered_frames += 1;
 
         stages.render_ns += render_started.elapsed().as_nanos() as u64;
         stages.frame_ns += last_rendered.elapsed().as_nanos() as u64;
