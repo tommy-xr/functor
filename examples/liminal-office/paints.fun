@@ -50,7 +50,7 @@ let spansOf = (p: Palette, base: float, faces: List<Building.Face>): List<Buildi
     else (out |> List.append([{ mat: m, first: first, count: n }]), first + n), ([], base)) in
   spans
 let groupOf = (p: Palette, s: Building.Span): Model.group =>
-  { first: s.first, count: s.count, texture: Option.Some(lookAt(p, s.mat).texture), unlit: lookAt(p, s.mat).unlit }
+  { first: s.first, count: s.count, texture: Option.Some(lookAt(p, s.mat).texture), unlit: lookAt(p, s.mat).unlit, emissive: 0.0 }
 
 let meshOf = (p: Palette, faces: List<Building.Face>, spans: List<Building.Span>): Model.staticData => {
   positions: Building.positionsOf(faces),

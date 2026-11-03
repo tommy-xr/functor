@@ -1,4 +1,4 @@
-layout=3522901986
+layout=515404049
 sources=layout.fun building.fun paints.fun cinemaLayout.fun cinemaBuilding.fun
 bakes=night day
 bakeVersion=2
