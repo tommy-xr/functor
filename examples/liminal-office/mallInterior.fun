@@ -566,7 +566,7 @@ let spansOf = (pal: Palette, base: float, polys: List<Poly>): List<Building.Span
     if n == 0.0 then acc else (out |> List.append([{ mat: g, first: first, count: n }]), first + n), ([], base)) in
   spans
 let groupOf = (pal: Palette, s: Building.Span): Model.group =>
-  { first: s.first, count: s.count, texture: Option.Some(materialOf(pal.groups, s.mat).texture), unlit: materialOf(pal.groups, s.mat).unlit }
+  { first: s.first, count: s.count, texture: Option.Some(materialOf(pal.groups, s.mat).texture), unlit: materialOf(pal.groups, s.mat).unlit, emissive: 0.0 }
 
 // Polygons, in group order, as static model data, positions scaled by `k`.
 let meshOf = (pal: Palette, k: float, polys: List<Poly>, spans: List<Building.Span>): Model.staticData => {
