@@ -6588,6 +6588,44 @@ pub fn contains_effect(value: &Value) -> bool {
     }
 }
 
+/// [`contains_effect`] for a value that replaced `old`, which was already
+/// checked: parts shared with `old` are skipped, so a model edit costs what
+/// it changed, not the model's size. Containers pair by position (map
+/// entries by key); any pairing is sound, since only identical parts skip.
+pub fn contains_new_effect(value: &Value, old: &Value) -> bool {
+    let new_items = |a: &Rc<Vec<Value>>, b: &Rc<Vec<Value>>| {
+        !Rc::ptr_eq(a, b)
+            && a.iter().enumerate().any(|(i, v)| match b.get(i) {
+                Some(o) => contains_new_effect(v, o),
+                None => contains_effect(v),
+            })
+    };
+    match (value, old) {
+        (Value::Tuple(a), Value::Tuple(b))
+        | (Value::List(a), Value::List(b))
+        | (Value::Variant { args: a, .. }, Value::Variant { args: b, .. }) => new_items(a, b),
+        (Value::Record(a), Value::Record(b)) => {
+            !Rc::ptr_eq(a, b)
+                && a.iter().enumerate().any(|(i, (_, v))| match b.get(i) {
+                    Some((_, o)) => contains_new_effect(v, o),
+                    None => contains_effect(v),
+                })
+        }
+        (Value::Map(a), Value::Map(b)) => {
+            let mut found = false;
+            a.for_each_unshared(b, functor_lang::value::MapKey::compare, |v, o| {
+                found = found
+                    || match o {
+                        Some(o) => contains_new_effect(v, o),
+                        None => contains_effect(v),
+                    }
+            });
+            found
+        }
+        _ => contains_effect(value),
+    }
+}
+
 /// Perform `first` and drain to a fixed point: each performed effect's
 /// tagger result is folded through `update`, whose return may carry MORE
 /// effects — capped so a self-sustaining chain cannot hang the frame (the
@@ -13924,6 +13962,50 @@ Physics.fusedRoom(tag) without moving or rotating it";
         );
         assert!(contains_effect(&in_map));
         assert!(!contains_effect(&Value::Number(1.0)));
+    }
+
+    /// The per-absorb check walks only what changed since the last checked
+    /// model: an Effect in a shared part was reported with that model, a new
+    /// one anywhere unshared is found.
+    #[test]
+    fn contains_new_effect_walks_only_unshared_parts() {
+        use functor_lang::pmap::PMap;
+        use functor_lang::value::MapKey;
+        use std::rc::Rc;
+        let fx = eval("let main = () => Effect.none()");
+        let insert = |map: &PMap<MapKey, Value>, k: f64, v: Value| {
+            let mut map = map.clone();
+            let probe = MapKey::Number(k);
+            let at = map
+                .search(&mut |stored: &MapKey| Ok::<_, std::convert::Infallible>(stored.compare(&probe)))
+                .unwrap();
+            map.insert_at(at, probe, v);
+            map
+        };
+        let model = |table: &PMap<MapKey, Value>, n: f64| {
+            Value::Record(Rc::new(vec![
+                ("table".to_string(), Value::Map(table.clone())),
+                ("n".to_string(), Value::Number(n)),
+            ]))
+        };
+        let table = PMap::from_sorted(
+            (0..1000)
+                .map(|i| (MapKey::Number(i as f64), Value::Number(i as f64)))
+                .collect(),
+        )
+        .0;
+        let stale = insert(&table, 500.0, fx.clone());
+        let old = model(&stale, 0.0);
+        // The table is shared, so its old Effect is not walked again.
+        assert!(contains_effect(&model(&stale, 1.0)));
+        assert!(!contains_new_effect(&model(&stale, 1.0), &old));
+        assert!(!contains_new_effect(&model(&insert(&stale, 7.0, Value::Number(1.0)), 0.0), &old));
+        // New Effects: a map entry, nested in a list, a different shape.
+        assert!(contains_new_effect(&model(&insert(&stale, 2000.0, fx.clone()), 0.0), &old));
+        let listed = Value::List(Rc::new(vec![Value::Number(0.0), fx.clone()]));
+        assert!(contains_new_effect(&model(&insert(&stale, 7.0, listed.clone()), 0.0), &old));
+        assert!(contains_new_effect(&listed, &old));
+        assert!(!contains_new_effect(&Value::Number(1.0), &old));
     }
 
     /// Bare numbers are not durations — the Angle teaching error, for time.
