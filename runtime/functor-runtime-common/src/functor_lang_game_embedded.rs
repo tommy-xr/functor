@@ -697,6 +697,10 @@ impl FunctorLangEmbeddedGame {
             // empty world — the cold-start hole this PR closes, reopened by the
             // most common way to reach it.
             self.ctx().prime_physics();
+        } else {
+            // The kept world predates the new code until it steps: a body the
+            // edit adds draws as a ghost meanwhile (a paused redraw).
+            physics::with_world(physics::DEFAULT_WORLD, |w| w.mark_stale());
         }
         self.has_soundscape = loaded.has_soundscape;
         if !self.has_soundscape {

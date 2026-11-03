@@ -1833,11 +1833,11 @@ Three rules follow from that one:
   non-`Physics.scene` return) keeps the previous frame's declaration, keeps
   stepping the world, and reports the teaching error ONCE — the hot-reload
   broken-edit discipline. An unknown tag is still a spanned error everywhere
-  else: `` no body tagged "ball" in the physics world ``. Except in restored
-  history: while a seek/rewind shows a frame recorded before the body existed
-  (a hot reload added it), `Physics.transformed` draws the node as a
-  translucent ghost at the origin and `position`/`linearVelocity` read zero,
-  until the next step.
+  else: `` no body tagged "ball" in the physics world ``. Except in a stale
+  world — not stepped since a seek, rewind or hot reload (a scrubbed frame
+  from before a reload added the body): `Physics.transformed` draws the node
+  as a translucent ghost at the origin and `position`/`linearVelocity` read
+  zero, until the next step.
 
 The physics world survives hot reload (like the model); deleting the
 `physics` hook drops it. Gotcha: `--fixed-time T` pins the clock with

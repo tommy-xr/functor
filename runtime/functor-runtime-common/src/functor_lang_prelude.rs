@@ -3673,8 +3673,8 @@ capsule for the moving body"
     // runs in the same process as the world the shell steps, so these are
     // direct reads — no boundary, no copy (the dylib producers can't do
     // this; Functor Lang can). A tag that isn't in the world is a loud
-    // spanned error — declare the body before reading — except in restored
-    // history ([`restored_world`]). (An Option-shaped variant return could
+    // spanned error — declare the body before reading — except in a stale
+    // world ([`stale_world`]). (An Option-shaped variant return could
     // come now that B5 match exists, but loud-by-default is right for the
     // common case.)
     reg.fn1(
@@ -3788,7 +3788,7 @@ capsule for the moving body"
                     * Matrix4::from(rotation);
                 Ok(FunctorLangScene(group(vec![scene.0], xform)))
             }
-            None if restored_world() => Ok(FunctorLangScene(Scene3D {
+            None if stale_world() => Ok(FunctorLangScene(Scene3D {
                 obj: SceneObject::Opacity(GHOST_ALPHA, vec![scene.0]),
                 xform: Matrix4::from_scale(1.0),
             })),
@@ -7324,10 +7324,10 @@ fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
         })
 }
 
-/// [`live_transform`] for a pose READ: a body missing from restored history
+/// [`live_transform`] for a pose READ: a body missing from a stale world
 /// answers the identity pose (where its ghost draws) rather than raising.
 fn read_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
-    live_transform(tag).or_else(|| restored_world().then(|| ([0.0; 3], [0.0, 0.0, 0.0, 1.0])))
+    live_transform(tag).or_else(|| stale_world().then(|| ([0.0; 3], [0.0, 0.0, 0.0, 1.0])))
 }
 
 /// Live linear velocity of a body in the ACTIVE world — the read counterpart
@@ -7337,7 +7337,7 @@ fn live_velocity(tag: &str) -> Option<[f32; 3]> {
     note_read(ReadClass::Physics);
     physics::with_world(physics::active_world(), |w| w.body_velocity(tag))
         .flatten()
-        .or_else(|| (PRIMING.with(|p| p.get()) || restored_world()).then_some([0.0; 3]))
+        .or_else(|| (PRIMING.with(|p| p.get()) || stale_world()).then_some([0.0; 3]))
 }
 
 /// A synchronous ray (`shape` `None`) or shape cast against the ACTIVE world,
@@ -7396,15 +7396,15 @@ fn no_body(tag: &str) -> String {
     )
 }
 
-/// Whether the active world is restored history (a scrubbed or rewound
-/// frame) — where a body the current code names may not have existed yet,
-/// so body reads draw a ghost instead of raising.
-fn restored_world() -> bool {
-    physics::with_world(physics::active_world(), |w| w.is_restored()).unwrap_or(false)
+/// Whether the active world is stale (restored history, or kept across a
+/// reload, not stepped since) — where a body the current code names may not
+/// exist yet, so body reads draw a ghost instead of raising.
+fn stale_world() -> bool {
+    physics::with_world(physics::active_world(), |w| w.is_stale()).unwrap_or(false)
 }
 
-/// How `Physics.transformed` draws a body missing from restored history:
-/// its own content, translucent, at the origin.
+/// How `Physics.transformed` draws a body missing from a stale world: its own
+/// content, translucent, at the origin.
 const GHOST_ALPHA: f32 = 0.3;
 
 /// A `Group` wrapper carrying `xform` — the transform representation the
@@ -12920,11 +12920,11 @@ Physics.fusedRoom(tag) without moving or rotating it";
         );
     }
 
-    // In restored history (a seek/rewind to before a body existed) a body
+    // In a stale world (a seek/rewind to before a body existed) a body
     // read answers instead of raising — `transformed` draws a ghost, a pose
     // reads the origin — until the next step makes the world live again.
     #[test]
-    fn a_body_missing_from_restored_history_draws_a_ghost() {
+    fn a_body_missing_from_a_stale_world_draws_a_ghost() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
         let run = |main: &str| {
             let src = format!("let main = () => {main}");
@@ -12938,7 +12938,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         };
         let transformed = "Physics.transformed(Physics.tag(\"crate-5\"), Scene.cube())";
         let position = "Physics.position(Physics.tag(\"crate-5\")).y";
-        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.mark_restored());
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.mark_stale());
         let ghost = run(transformed).expect("a ghost, not an error");
         let Value::HostData(data) = &ghost else { panic!("a scene, got {ghost}") };
         let scene = &data.as_any().downcast_ref::<FunctorLangScene>().expect("a scene").0;
