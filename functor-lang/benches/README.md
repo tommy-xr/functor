@@ -121,6 +121,7 @@ when the currying spike lands.
 | `record_update.fun` | `{ r with … }` record update threaded through a 100k fold |
 | `map_from_list.fun` | canonical `Map.fromList` over reversed input plus 20k binary-search lookups |
 | `map_updates.fun` | 1.5k persistent inserts followed by removals (tree search + path copies) |
+| `float_corners.fun` | a level loader's per-corner float math: `let`s, record fields, `List.nth`, a record out (20k) |
 
 ## Micro-suite vs the frame bench (which to use when)
 

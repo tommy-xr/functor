@@ -40,6 +40,7 @@ use crate::value::{canonicalize_map_entries, Closure, Env, MapKey, Value};
 use crate::RunError;
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::hash::BuildHasherDefault;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -468,6 +469,7 @@ pub fn run_with_host(
         cancel: None,
         brand_ops: BrandOps::default(),
         brand_ops_complete: true,
+        constants: HashMap::default(),
         host,
     };
     match interp.run_module(module) {
@@ -597,6 +599,7 @@ pub fn run_expects_budgeted(
         cancel: None,
         brand_ops: BrandOps::default(),
         brand_ops_complete: true,
+        constants: HashMap::default(),
         host,
     };
     if let Err(error) = interp
@@ -742,6 +745,7 @@ impl Session {
             cancel: stop.map(|flag| (flag, 0)),
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
+            constants: HashMap::default(),
             host,
         };
         let loaded = interp
@@ -805,6 +809,7 @@ impl Session {
             cancel: stop.map(|flag| (flag, 0)),
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
+            constants: HashMap::default(),
             host: &mut counted,
         };
         // Unit operators resolve first, by probing each unit's constructor.
@@ -864,6 +869,7 @@ impl Session {
             cancel: None,
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
+            constants: HashMap::default(),
             host,
         };
         let mut adopt = || -> Result<(), RunError> {
@@ -949,9 +955,10 @@ impl Session {
             cancel: stop.map(|flag| (flag, 0)),
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
+            constants: HashMap::default(),
             host,
         };
-        interp.call(callee, args, name.to_string(), Span::new(0, 0), None)
+        interp.call(callee, args, Label::Text(name), Span::new(0, 0), None)
     }
 
     /// Apply a function VALUE (a closure the host is holding — e.g. an
@@ -976,9 +983,10 @@ impl Session {
             cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
+            constants: HashMap::default(),
             host,
         };
-        interp.call(callee, args, label.to_string(), Span::new(0, 0), None)
+        interp.call(callee, args, Label::Text(label), Span::new(0, 0), None)
     }
 
     /// Like [`Self::call`], but with the binding-site recorder armed: returns
@@ -1010,9 +1018,10 @@ impl Session {
             cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
+            constants: HashMap::default(),
             host,
         };
-        let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
+        let result = interp.call(callee, args, Label::Text(name), Span::new(0, 0), None)?;
         let recorder = interp.recorder.expect("armed above");
         let coverage = recorder.coverage_sorted();
         let invocation = RecordedInvocation {
@@ -1053,9 +1062,10 @@ impl Session {
             cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
+            constants: HashMap::default(),
             host,
         };
-        let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
+        let result = interp.call(callee, args, Label::Text(name), Span::new(0, 0), None)?;
         let recorder = interp.recorder.expect("armed above");
         Ok((result, recorder.coverage_sorted()))
     }
@@ -1150,7 +1160,37 @@ struct Interp<'h> {
     /// False only while a unit's own constructor is still an unevaluated def
     /// (see [`Interp::load_brand_ops`]).
     brand_ops_complete: bool,
+    /// The value of each `External` and `Ctor` node evaluated so far, keyed
+    /// by the address of its path or name: resolving an external joins the
+    /// path and searches the builtin table and the host, and a constructor
+    /// allocates its name — work a hot call site (`List.nth` per vertex)
+    /// would repeat.
+    constants: HashMap<usize, Constant, BuildHasherDefault<AddressHasher>>,
     host: &'h mut dyn Host,
+}
+
+/// A cached node value with what it was resolved from, compared on each hit:
+/// a freed node's address can be reused by another.
+enum Constant {
+    External(Vec<String>, Value),
+    Ctor(String, usize, Value),
+}
+
+/// A hasher for [`Interp::constants`]' address keys.
+#[derive(Default)]
+struct AddressHasher(u64);
+
+impl std::hash::Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("only addresses are hashed")
+    }
+    fn write_usize(&mut self, address: usize) {
+        // Rotated so the bucket bits aren't the always-zero alignment bits.
+        self.0 = (address as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(26);
+    }
 }
 
 impl Interp<'_> {
@@ -1363,7 +1403,7 @@ impl Interp<'_> {
                             self.call(
                                 ctor,
                                 vec![Value::Number(1.0)],
-                                unit.suffix.clone(),
+                                Label::Text(&unit.suffix),
                                 unit_op.span,
                                 None,
                             )
@@ -1449,7 +1489,7 @@ implementation",
         let main = self.globals.get("main").expect("just defined").clone();
         match &main {
             Value::Closure(closure) if closure.params.is_empty() => {
-                self.call(main.clone(), vec![], "main".to_string(), def.span, None)
+                self.call(main.clone(), vec![], Label::Text("main"), def.span, None)
             }
             // Builtins, host functions, and unapplied constructors take
             // arguments by definition, so they get the same error as a
@@ -1663,7 +1703,7 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
                 self.record_ref(name, expr.span, &value);
                 Ok(value)
             }
-            ExprKind::External(path) => self.external_value(path, expr.span),
+            ExprKind::External(path) => self.external_constant(path, expr.span),
             // Container CONSTRUCTION charges one step (the depth invariant
             // behind run_expects_budgeted's stack contract: every level of a
             // value's nesting was constructed once, so value depth ≤ budget.
@@ -1781,7 +1821,7 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
                         .pop();
                     result
                 } else {
-                    let child = env.child(vec![(*binding, value)]);
+                    let child = env.bind(*binding, value);
                     self.eval(body, &child)
                 }
             }
@@ -1839,10 +1879,16 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
                 self.call(
                     callee_value,
                     arg_values,
-                    callee_label(callee),
+                    Label::Callee(callee),
                     expr.span,
                     None,
                 )
+            }
+            // One operator (`a * b`): no spine to collect.
+            ExprKind::Binary { op, lhs, rhs } if !matches!(lhs.kind, ExprKind::Binary { .. }) => {
+                let lhs_value = self.eval(lhs, env)?;
+                let rhs_value = self.eval(rhs, env)?;
+                self.binary_op(*op, lhs_value, rhs_value, expr.span)
             }
             ExprKind::Binary { .. } => {
                 // Left-assoc chains (`a + b + c + …`) nest down the lhs, and
@@ -1938,19 +1984,7 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
             // A nullary constructor used bare IS the variant value; a
             // parameterful one is a callable constructor (so `List.map(xs,
             // Circle)` works like any function argument).
-            ExprKind::Ctor { name, arity } => {
-                if *arity == 0 {
-                    Ok(Value::Variant {
-                        ctor: Rc::from(name.as_str()),
-                        args: Rc::new(Vec::new()),
-                    })
-                } else {
-                    Ok(Value::Ctor {
-                        name: Rc::from(name.as_str()),
-                        arity: *arity,
-                    })
-                }
-            }
+            ExprKind::Ctor { name, arity } => Ok(self.ctor_constant(name, *arity)),
             ExprKind::Match { scrutinee, arms } => {
                 let value = self.eval(scrutinee, env)?;
                 for arm in arms {
@@ -1967,7 +2001,14 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
                                 }
                             }
                         }
-                        let child = env.child(vars);
+                        let child = match vars.len() {
+                            0 => return self.eval(&arm.body, env),
+                            1 => {
+                                let (binding, value) = vars.pop().expect("one binding");
+                                env.bind(binding, value)
+                            }
+                            _ => env.child(vars),
+                        };
                         return self.eval(&arm.body, &child);
                     }
                 }
@@ -2108,7 +2149,7 @@ definition (a top-level initializer may only use globals defined above it)",
             Some((implementation, first, second)) => self.call(
                 implementation,
                 vec![first, second],
-                format!("({})", op.symbol()),
+                Label::Op(op.symbol()),
                 span,
                 None,
             ),
@@ -2226,7 +2267,7 @@ definition (a top-level initializer may only use globals defined above it)",
         let answer = self.call(
             implementation,
             args,
-            format!("({})", op.declarable().symbol()),
+            Label::Op(op.declarable().symbol()),
             span,
             None,
         )?;
@@ -2242,7 +2283,7 @@ definition (a top-level initializer may only use globals defined above it)",
         &mut self,
         callee: Value,
         args: Vec<Value>,
-        label: String,
+        label: Label<'_>,
         span: Span,
         via: Option<&'static str>,
     ) -> Result<Value, RunError> {
@@ -2276,14 +2317,14 @@ definition (a top-level initializer may only use globals defined above it)",
         if self.cancel.is_some() {
             self.poll_cancel(span)?;
         }
-        self.trace_enter(&label, &args);
+        self.trace_enter(label, &args);
         self.call_depth += 1;
         let result = match &callee {
             Value::Closure(closure) => {
                 if closure.params.len() != args.len() {
                     let who = match via {
                         Some(builtin) => format!("the function passed to {builtin}"),
-                        None => format!("`{label}`"),
+                        None => format!("`{}`", label.render()),
                     };
                     Err(RunError {
                         message: format!(
@@ -2294,14 +2335,7 @@ definition (a top-level initializer may only use globals defined above it)",
                         span,
                     })
                 } else {
-                    let vars: Vec<(BindingId, Value)> =
-                        closure.params.iter().map(|p| p.binding).zip(args).collect();
-                    if self.recorder.is_some() {
-                        for (param, (_, value)) in closure.params.iter().zip(vars.iter()) {
-                            self.record_binding(param.binding, &param.name, param.span, value);
-                        }
-                    }
-                    let env = closure.env.child(vars);
+                    let env = self.closure_env(closure, args);
                     let body = closure.body.clone();
                     self.eval(&body, &env)
                 }
@@ -2333,6 +2367,69 @@ definition (a top-level initializer may only use globals defined above it)",
         result
     }
 
+    /// A closure's parameters bound to `args` (counts already match). Out of
+    /// line, like the helpers below, so [`Self::call`]'s recursive frame stays
+    /// small.
+    #[inline(never)]
+    fn closure_env(&mut self, closure: &Closure, args: Vec<Value>) -> Env {
+        if let [param] = closure.params.as_slice() {
+            let value = args.into_iter().next().expect("one argument");
+            self.record_binding(param.binding, &param.name, param.span, &value);
+            return closure.env.bind(param.binding, value);
+        }
+        let vars: Vec<(BindingId, Value)> =
+            closure.params.iter().map(|p| p.binding).zip(args).collect();
+        if self.recorder.is_some() {
+            for (param, (_, value)) in closure.params.iter().zip(vars.iter()) {
+                self.record_binding(param.binding, &param.name, param.span, value);
+            }
+        }
+        closure.env.child(vars)
+    }
+
+    /// An `External` node's value, through [`Interp::constants`]. A host
+    /// function is re-checked with the host, which may stop providing it.
+    #[inline(never)]
+    fn external_constant(&mut self, path: &[String], span: Span) -> Result<Value, RunError> {
+        let key = path.as_ptr() as usize;
+        if let Some(Constant::External(cached, value)) = self.constants.get(&key) {
+            let provided = match value {
+                Value::HostFn(name) => self.host.provides(name),
+                _ => true,
+            };
+            if cached == path && provided {
+                return Ok(value.clone());
+            }
+        }
+        let value = self.external_value(path, span)?;
+        self.constants.insert(key, Constant::External(path.to_vec(), value.clone()));
+        Ok(value)
+    }
+
+    /// A `Ctor` node's value, through [`Interp::constants`].
+    #[inline(never)]
+    fn ctor_constant(&mut self, name: &str, arity: usize) -> Value {
+        let key = name.as_ptr() as usize;
+        if let Some(Constant::Ctor(cached, cached_arity, value)) = self.constants.get(&key) {
+            if cached == name && *cached_arity == arity {
+                return value.clone();
+            }
+        }
+        let value = if arity == 0 {
+            Value::Variant {
+                ctor: Rc::from(name),
+                args: Rc::new(Vec::new()),
+            }
+        } else {
+            Value::Ctor {
+                name: Rc::from(name),
+                arity,
+            }
+        };
+        self.constants.insert(key, Constant::Ctor(name.to_string(), arity, value.clone()));
+        value
+    }
+
     /// Run a host call's [`HostApply`] request. Cold, like the curried paths,
     /// so [`Self::call`]'s hot frame does not grow.
     #[cold]
@@ -2344,7 +2441,7 @@ definition (a top-level initializer may only use globals defined above it)",
             via,
             then,
         } = apply;
-        let value = self.call(callee, args, format!("<{via} function>"), span, Some(via))?;
+        let value = self.call(callee, args, Label::Via(via), span, Some(via))?;
         then(value).map_err(|message| RunError { message, span })
     }
 
@@ -2362,7 +2459,7 @@ definition (a top-level initializer may only use globals defined above it)",
         callee: Value,
         args: Vec<Value>,
         arity: Option<usize>,
-        label: String,
+        label: Label<'_>,
         span: Span,
         via: Option<&'static str>,
     ) -> Result<Value, RunError> {
@@ -2398,11 +2495,11 @@ definition (a top-level initializer may only use globals defined above it)",
         // leftover args to the result (which must itself be callable).
         let mut rest = args;
         let now = rest.drain(..arity).collect();
-        let saturated = self.call(callee, now, label.clone(), span, via)?;
+        let saturated = self.call(callee, now, label, span, via)?;
         self.call(saturated, rest, label, span, None)
     }
 
-    fn trace_enter(&mut self, callee: &str, args: &[Value]) {
+    fn trace_enter(&mut self, callee: Label<'_>, args: &[Value]) {
         if self.tracing == Tracing::Off {
             return;
         }
@@ -2414,7 +2511,7 @@ definition (a top-level initializer may only use globals defined above it)",
         }
         self.trace.push(TraceEvent::Enter {
             depth: self.call_depth,
-            callee: callee.to_string(),
+            callee: callee.render(),
             args: args.iter().map(|a| a.to_string()).collect(),
         });
     }
@@ -2454,7 +2551,7 @@ definition (a top-level initializer may only use globals defined above it)",
                         out.push(self.call(
                             f.clone(),
                             vec![item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )?);
@@ -2471,7 +2568,7 @@ definition (a top-level initializer may only use globals defined above it)",
                         match self.call(
                             f.clone(),
                             vec![item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )? {
@@ -2499,7 +2596,7 @@ definition (a top-level initializer may only use globals defined above it)",
                         acc = self.call(
                             f.clone(),
                             vec![acc, item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )?;
@@ -2522,7 +2619,7 @@ definition (a top-level initializer may only use globals defined above it)",
                         match self.call(
                             done.clone(),
                             vec![state.clone()],
-                            format!("Loop.until.done[{steps}]"),
+                            Label::Element("Loop.until.done", steps),
                             span,
                             Some(builtin_name(b)),
                         )? {
@@ -2543,7 +2640,7 @@ definition (a top-level initializer may only use globals defined above it)",
                         state = self.call(
                             step.clone(),
                             vec![state],
-                            format!("Loop.until.step[{steps}]"),
+                            Label::Element("Loop.until.step", steps),
                             span,
                             Some(builtin_name(b)),
                         )?;
@@ -2569,7 +2666,7 @@ Result.Ok((state, value)) or Result.Error(e)";
                         let step = self.call(
                             f.clone(),
                             vec![state, item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )?;
@@ -2653,7 +2750,7 @@ and a list"
                             row.push(self.call(
                                 f.clone(),
                                 vec![Value::Number(r as f64), Value::Number(c as f64)],
-                                format!("{}[{r}][{c}]", builtin_name(b)),
+                                Label::Cell(builtin_name(b), r, c),
                                 span,
                                 Some(builtin_name(b)),
                             )?);
@@ -2779,7 +2876,7 @@ most 1000000 cells"
                         match self.call(
                             f.clone(),
                             vec![item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )? {
@@ -2806,7 +2903,7 @@ most 1000000 cells"
                         match self.call(
                             f.clone(),
                             vec![item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )? {
@@ -2882,7 +2979,7 @@ most 1000000 cells"
                         match self.call(
                             f.clone(),
                             vec![item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )? {
@@ -2912,7 +3009,7 @@ most 1000000 cells"
                         out.push(self.call(
                             f.clone(),
                             vec![Value::Number(i as f64), item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )?);
@@ -2951,7 +3048,7 @@ most 1000000 cells"
                         let key = self.call(
                             f.clone(),
                             vec![item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )?;
@@ -3059,7 +3156,7 @@ most 1000000 cells"
                         match self.call(
                             f.clone(),
                             vec![item.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )? {
@@ -3227,11 +3324,10 @@ most 1000000 cells"
                         .map_err(|message| RunError { message, span })?;
                     let search = self.map_search(&entries, &key, span)?;
                     let current = entries.get_at(&search).cloned();
-                    let label = format!("<{} function>", builtin_name(b));
                     let next = self.call(
                         f,
                         vec![option_value(current)],
-                        label,
+                        Label::Via(builtin_name(b)),
                         span,
                         Some(builtin_name(b)),
                     )?;
@@ -3281,7 +3377,7 @@ most 1000000 cells"
                         acc = self.call(
                             f.clone(),
                             vec![acc, key.to_value(), value.clone()],
-                            element_label(b, i),
+                            Label::Element(builtin_name(b), i),
                             span,
                             Some(builtin_name(b)),
                         )?;
@@ -4195,22 +4291,51 @@ fn stable_sort_comparison_ceiling(len: usize) -> u64 {
 /// structural equality between the two. Nullary constructors are variants
 /// with no arguments, so `None` is a `Variant`, never a `Ctor`.
 fn option_value(v: Option<Value>) -> Value {
+    // Shared names: `List.nth` and friends build an Option per call.
+    thread_local! {
+        static SOME: Rc<str> = Rc::from("Option.Some");
+        static NONE: Rc<str> = Rc::from("Option.None");
+    }
     match v {
         Some(v) => Value::Variant {
-            ctor: Rc::from("Option.Some"),
+            ctor: SOME.with(Rc::clone),
             args: Rc::new(vec![v]),
         },
         None => Value::Variant {
-            ctor: Rc::from("Option.None"),
+            ctor: NONE.with(Rc::clone),
             args: Rc::new(Vec::new()),
         },
     }
 }
 
-/// The trace label for a builtin invoking its function argument on element
-/// `i` (`List.map[2]`).
-fn element_label(b: Builtin, i: usize) -> String {
-    format!("{}[{i}]", builtin_name(b))
+/// What a call is named in traces and errors — rendered only when one is
+/// needed, so the call hot path never formats a string.
+#[derive(Clone, Copy)]
+enum Label<'a> {
+    /// The callee as written (`callee_label`).
+    Callee(&'a Expr),
+    Text(&'a str),
+    /// A builtin calling its function argument on element `i` (`List.map[2]`).
+    Element(&'static str, usize),
+    /// `List.grid`'s function on row `r`, column `c` (`List.grid[1][2]`).
+    Cell(&'static str, usize, usize),
+    /// A builtin's function argument (`<Map.update function>`).
+    Via(&'static str),
+    /// A declared operator's implementation (`(+)`).
+    Op(&'static str),
+}
+
+impl Label<'_> {
+    fn render(self) -> String {
+        match self {
+            Label::Callee(callee) => callee_label(callee),
+            Label::Text(text) => text.to_string(),
+            Label::Element(name, i) => format!("{name}[{i}]"),
+            Label::Cell(name, r, c) => format!("{name}[{r}][{c}]"),
+            Label::Via(via) => format!("<{via} function>"),
+            Label::Op(symbol) => format!("({symbol})"),
+        }
+    }
 }
 
 /// Is `v` something `self.call` can apply? (Used to validate a callback
