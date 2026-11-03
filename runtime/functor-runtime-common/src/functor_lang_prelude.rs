@@ -3720,7 +3720,8 @@ capsule for the moving body"
     // this; Functor Lang can). A tag that isn't in the world is a loud
     // spanned error — declare the body before reading. (An Option-shaped
     // variant return could come now that B5 match exists, but
-    // loud-by-default is right for the common case.)
+    // loud-by-default is right for the common case.) `Physics.transformed`
+    // alone, a draw, places a body missing from a stale world.
     reg.fn1(
         "Physics.position",
         "Physics.position(tag)",
@@ -3832,6 +3833,7 @@ capsule for the moving body"
                     * Matrix4::from(rotation);
                 Ok(FunctorLangScene(group(vec![scene.0], xform)))
             }
+            None if stale_world() => Ok(FunctorLangScene(placeholder(&tag, scene.0))),
             None => Err(no_body(&tag)),
         },
     );
@@ -7424,10 +7426,41 @@ fn sync_query(
 
 fn no_body(tag: &str) -> String {
     format!(
-        "no body tagged \"{tag}\" in the physics world (bodies exist once the \
-         `physics` hook has declared them — the world is declared from `init` \
-         before the first frame, so this is a tag your hook never declares)"
+        "no body tagged \"{tag}\" in the physics world: the `physics` hook isn't \
+         declaring it, or hasn't stepped since it started to (the world is primed \
+         from `init`, so bodies `init` declares exist from the first frame)"
     )
+}
+
+/// Whether the active world is stale (restored history, or kept across a
+/// reload, not stepped since) — where a body the current code names may not
+/// exist yet, so `Physics.transformed` draws a placeholder instead of raising.
+/// Pose reads still raise: they feed the simulation, a draw doesn't.
+fn stale_world() -> bool {
+    physics::with_world(physics::active_world(), |w| w.is_stale()).unwrap_or(false)
+}
+
+/// How translucent [`placeholder`] draws a node.
+const PLACEHOLDER_ALPHA: f32 = 0.3;
+
+/// How `Physics.transformed` draws a body missing from a stale world: its own
+/// content, translucent, at the origin. Warns once per tag, so a typo made
+/// while paused doesn't pass silently.
+fn placeholder(tag: &str, scene: Scene3D) -> Scene3D {
+    thread_local! {
+        static WARNED: std::cell::RefCell<std::collections::BTreeSet<String>> =
+            const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+    }
+    if WARNED.with(|warned| warned.borrow_mut().insert(tag.to_string())) {
+        log::warn!(
+            "[physics] \"{tag}\" isn't in this frame's world (not stepped since a seek, \
+             rewind or reload) — drawn translucent at the origin until it steps"
+        );
+    }
+    Scene3D {
+        obj: SceneObject::Opacity(PLACEHOLDER_ALPHA, vec![scene]),
+        xform: Matrix4::from_scale(1.0),
+    }
 }
 
 /// A `Group` wrapper carrying `xform` — the transform representation the
@@ -12976,6 +13009,41 @@ Physics.fusedRoom(tag) without moving or rotating it";
             "got: {}",
             failure.error.message
         );
+    }
+
+    // In a stale world (a seek/rewind to before a body existed)
+    // `transformed` draws a placeholder instead of raising, until the next step
+    // makes the world live again; pose reads still raise.
+    #[test]
+    fn a_body_missing_from_a_stale_world_draws_a_placeholder() {
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        let run = |main: &str| {
+            let src = format!("let main = () => {main}");
+            let module = functor_lang::lower(functor_lang::parse(&src).unwrap()).unwrap();
+            functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .map(|record| match record.outcome {
+                    functor_lang::RunOutcome::Main(value) => value,
+                    _ => panic!("expected a main result"),
+                })
+                .map_err(|failure| failure.error.message)
+        };
+        let transformed = "Physics.transformed(Physics.tag(\"crate-5\"), Scene.cube())";
+        let position = "Physics.position(Physics.tag(\"crate-5\")).y";
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.mark_stale());
+        let drawn = run(transformed).expect("a placeholder, not an error");
+        let Value::HostData(data) = &drawn else { panic!("a scene, got {drawn}") };
+        let scene = &data.as_any().downcast_ref::<FunctorLangScene>().expect("a scene").0;
+        assert!(
+            matches!(scene.obj, SceneObject::Opacity(alpha, _) if alpha == PLACEHOLDER_ALPHA),
+            "the node, translucent"
+        );
+        assert!(run(position).is_err(), "a pose read feeds the simulation: still loud");
+        // Live again after a step: the loud error is back.
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.step_fixed());
+        let err = run(transformed).err().expect("live: an error");
+        assert!(err.contains("no body tagged \"crate-5\""), "{err}");
+        assert!(!err.contains("never declares"), "{err}");
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 
     // `main` bound to a host function errors like a builtin, not a value.

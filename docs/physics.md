@@ -258,7 +258,10 @@ origin and jump on frame 1, which the divergence rule would turn into a
 teleport). Both passes are declaration-only and neither reports: a hook broken
 at startup surfaces on frame 1 through the degraded path below. From frame 1 on
 reads answer the real world, and an unknown tag (a typo, an undeclared body)
-raises exactly as it always did.
+raises exactly as it always did — with one exception for drawing: while the
+world hasn't stepped since a seek, rewind or hot reload (a scrubbed frame from
+before a reload added the body), `Physics.transformed` draws the node
+translucent at the origin instead, warning once per tag. Pose reads still raise.
 
 ⚠️ **Priming answers body reads, not ray queries.** `Physics.position` /
 `linearVelocity` / `transformed` read the primed poses on frame 1, but rapier's

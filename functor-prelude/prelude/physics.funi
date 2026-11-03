@@ -318,7 +318,10 @@ let shapeCastExcluding : (tag, shape, Vec3.t, Vec3.t, float) => rayHit
 
 /// Apply a body's live transform to a scene node.
 ///
-/// The scene is last for piping.
+/// The scene is last for piping. An unknown tag is an error, except while
+/// the world hasn't stepped since a seek, rewind or hot reload (a scrubbed
+/// frame from before the body existed): then the node draws translucent at
+/// the origin (with a warning).
 impure[physics]
 let transformed : (tag, Scene.t) => Scene.t
 

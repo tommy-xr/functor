@@ -133,6 +133,7 @@ impl SteppedPhysics {
             // The replayed steps re-emit events/warnings nobody should re-observe.
             let _ = w.take_events();
             let _ = w.take_command_warnings();
+            w.mark_stale();
         })
         .is_some()
     }
@@ -296,6 +297,7 @@ impl SteppedPhysics {
             // The replayed steps re-emit events/warnings nobody should re-observe.
             let _ = w.take_events();
             let _ = w.take_command_warnings();
+            w.mark_stale();
         });
         warnings
     }
@@ -373,6 +375,7 @@ impl SteppedPhysics {
             for command in carried {
                 w.queue_command(command);
             }
+            w.mark_stale();
         });
         // The old future is gone: recording resumes (and BRANCHES) from here.
         self.timeline.truncate_from(target);
@@ -461,6 +464,26 @@ mod tests {
             snapshot() == end_a,
             "replaying identical inputs must reproduce run A"
         );
+    }
+
+    /// A seek or rewind leaves the world stale until its next step; live
+    /// stepping never marks it.
+    #[test]
+    fn seeks_and_rewinds_mark_the_world_stale_until_a_step() {
+        let stale = || with_world(DEFAULT_WORLD, |w| w.is_stale()).unwrap();
+        let mut sp = fresh();
+        for t in 0..10 {
+            sp.advance(&scene_at(t), FIXED_DT);
+        }
+        assert!(!stale(), "live stepping");
+        sp.seek_to_frame(5);
+        assert!(stale(), "a seek");
+        sp.seek_to_frame(10);
+        assert!(stale(), "back to the live tail, still unstepped");
+        sp.rewind_to_frame(5);
+        assert!(stale(), "a rewind");
+        sp.advance(&scene_at(5), FIXED_DT);
+        assert!(!stale(), "the branch's first step");
     }
 
     /// Priming (the cold-start declaration, no steps) is inside the frame-0
