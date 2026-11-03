@@ -1,7 +1,7 @@
 // examples/world-texture — `Scene.litWorldTexture`: a lit texture box-mapped
 // by world position, so boxes of any size show the same square bricks. The
-// three boxes on the left are ONE instanced cube draw, scaled and tinted per
-// copy; the one on the right is an ordinary box. The paving is the same
+// three boxes on the right are ONE instanced cube draw, scaled and tinted per
+// copy; the one on the left is an ordinary box. The paving is the same
 // mapping on a plane's top face.
 
 type Rgb = { r: float, g: float, b: float }
