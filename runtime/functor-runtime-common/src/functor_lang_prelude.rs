@@ -2728,7 +2728,8 @@ row 0 has {cols} heights, row {r} has {}",
         "Scene.litWorldTexture",
         "Scene.litWorldTexture(texture, tile, scene)",
         |texture: FunctorLangTexture, tile: f64, scene: FunctorLangScene| {
-            if !(tile > 0.0 && tile.is_finite()) {
+            // Checked as the f32 it draws with: 1e-50 would round to 0.
+            if !(tile as f32 > 0.0 && (tile as f32).is_finite()) {
                 return Err(format!(
                     "Scene.litWorldTexture: tile must be a positive number of metres, got {tile}"
                 ));
@@ -9257,7 +9258,7 @@ Asset.model(\"shark.glb\") at the data boundary"
             material,
             &MaterialDescription::lit_world_texture(TextureDescription::File("w.png".into()), 2.5)
         );
-        for tile in ["0.0", "(0.0 - 1.0)"] {
+        for tile in ["0.0", "(0.0 - 1.0)", "1e-50"] {
             let message = fail_message(&format!(
                 "let main = () => Scene.cube() |> Scene.litWorldTexture(Texture.file(\"w.png\"), {tile})\n"
             ));

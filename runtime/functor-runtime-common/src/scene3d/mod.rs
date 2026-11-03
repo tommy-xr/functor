@@ -3752,7 +3752,8 @@ impl Scene3D {
                         let bounds = primitive_bounds(recognized.primitive)
                             .map(|bounds| bounds.transform(&recognized.local));
                         // A world-tiled lit texture: bound for the forward
-                        // draw, and kept resident when culled or hidden.
+                        // draw; a pixel texture stays resident when culled
+                        // or hidden.
                         let texture = match recognized.material {
                             MaterialDescription::Lit {
                                 texture: Some(texture),

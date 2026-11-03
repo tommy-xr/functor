@@ -185,7 +185,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         uniform sampler2D texture1;
         uniform int useTexture;   // albedo on unit 0 (glTF base color, or a world-tiled lit texture)
-        uniform float worldTile;  // > 0: box-map texture1 by world position (WORLD_TEXTURE_GLSL)
+        uniform highp float worldTile;  // > 0: box-map texture1 by world position (WORLD_TEXTURE_GLSL)
         uniform int materialMode; // 0 = unlit (color/emissive/model in an unlit frame), 1 = lit
         uniform int debugMode;    // 0 = authored, 1 = normals, 2 = tangents
         uniform float specularScale; // lit mode's highlight: 0 for rough static models

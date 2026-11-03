@@ -434,7 +434,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                         normal_map,
                         world_tile,
                         ..
-                    } => (texture.is_none() || world_tile.is_some()) && normal_map.is_none(),
+                    } => texture.is_some() == world_tile.is_some() && normal_map.is_none(),
                     MaterialDescription::Texture(_) | MaterialDescription::SpriteTexture { .. } => {
                         false
                     }

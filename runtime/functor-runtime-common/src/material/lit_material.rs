@@ -13,15 +13,17 @@ use super::Material;
 
 /// Box mapping for `Scene.litWorldTexture`: a face samples the texture over
 /// the two world axes it spans (picked by its normal's largest component),
-/// one repeat every `tile` metres, upright and unmirrored seen from outside.
-/// Texels stay square however the mesh is scaled. The gradients are made
-/// isotropic, so it is one trilinear tap at any angle: walls seen edge-on
-/// along a street cost no anisotropic taps, whatever the texture requests.
+/// one repeat every `tile` metres, unmirrored seen from outside (walls
+/// upright). Texels stay square however the mesh is scaled. The gradients
+/// are made isotropic, so it is one trilinear tap at any angle: walls seen
+/// edge-on along a street cost no anisotropic taps, whatever the texture
+/// requests. All highp: squared texel-scale gradients underflow mediump.
+/// It repeats only on a repeating (`Srgb`) texture.
 pub(crate) const WORLD_TEXTURE_GLSL: &str = r#"
         highp vec2 worldAxes(highp vec3 q, vec3 n) {
             vec3 a = abs(n);
             if (a.y > max(a.x, a.z)) {
-                return vec2(q.x, q.z);
+                return vec2(n.y > 0.0 ? q.x : -q.x, q.z);
             }
             if (a.x > a.z) {
                 return vec2(n.x > 0.0 ? -q.z : q.z, -q.y);
@@ -29,11 +31,11 @@ pub(crate) const WORLD_TEXTURE_GLSL: &str = r#"
             return vec2(n.z > 0.0 ? q.x : -q.x, -q.y);
         }
 
-        vec4 worldTexture(sampler2D tex, highp vec3 p, vec3 n, float tile) {
+        vec4 worldTexture(sampler2D tex, highp vec3 p, vec3 n, highp float tile) {
             highp vec2 uv = worldAxes(p, n) / tile;
-            vec2 dx = worldAxes(dFdx(p), n) / tile;
-            vec2 dy = worldAxes(dFdy(p), n) / tile;
-            float g = max(length(dx), length(dy));
+            highp vec2 dx = worldAxes(dFdx(p), n) / tile;
+            highp vec2 dy = worldAxes(dFdy(p), n) / tile;
+            highp float g = max(length(dx), length(dy));
             return textureGrad(tex, uv, vec2(g, 0.0), vec2(0.0, g));
         }
 "#;
@@ -103,7 +105,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform int useNormalMap;
         uniform float specularScale;
         // > 0: box-map the texture by world position (WORLD_TEXTURE_GLSL).
-        uniform float worldTile;
+        uniform highp float worldTile;
 
         void main() {
             vec3 n = normalize(worldNormal);

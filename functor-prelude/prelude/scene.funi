@@ -65,7 +65,7 @@ let litTexture : ('texture, t) => t
 let emissiveTexture : ('texture, t) => t
 /// Apply a lit texture mapped by WORLD position instead of the mesh's UVs:
 /// each face shows it across the two world axes it spans (picked by its
-/// normal), one repeat every `tile` metres, upright seen from outside. Texels
+/// normal), one repeat every `tile` metres, walls upright. Texels
 /// stay square however the scene is scaled, so one texture covers boxes of
 /// any size — the instanced massing of a town:
 ///
@@ -77,8 +77,8 @@ let emissiveTexture : ('texture, t) => t
 /// primitive stays one draw. A face at an angle to the world axes takes the
 /// nearest axis's mapping (stretched up to 1.4× at 45°). Sampled with one
 /// trilinear tap at any angle (no anisotropic filtering), so walls seen
-/// edge-on along a street stay cheap. A `tile` that isn't positive is an
-/// error.
+/// edge-on along a street stay cheap. It repeats only on a repeating texture
+/// (a `Texture.Srgb` one). A `tile` that isn't positive is an error.
 let litWorldTexture : ('texture, float, t) => t
 /// Apply a lit color and a TANGENT-SPACE normal-map texture.
 ///
