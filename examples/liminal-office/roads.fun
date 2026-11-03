@@ -1,7 +1,8 @@
 // The towns' road paint, drawn with the ground (game.fun): a zebra
 // crosswalk over each arm of every crossroads, landing on the corners' kerb
-// ramps (streetscape.fun), and a dashed centre line down each street. A
-// lit instanced cube per town: one draw.
+// ramps (streetscape.fun), and a dashed centre line down each street; the
+// suburb's frontage. A lit instanced cube per town (and the suburb's
+// paving): a draw or two.
 
 let box = Exterior.box
 let paintWhite = Building.rgb(196.0, 196.0, 186.0)
@@ -62,13 +63,49 @@ let gridPaint = (side: float): List<(Exterior.Box, Color.t)> =>
       List.flatten([dashes(true, at, lo, hi), dashes(false, at, lo, hi)])),
   ])
 
+// The suburb's frontage along each side of its loop road, the corners
+// clear: a curb at the road's edge, a lawn strip, then a concrete sidewalk
+// up to the houses' fences, cut round each front path. Laid once for the
+// town, so the corner houses' frontages don't overlap.
+let houseCut = HouseExterior.gateOf(HouseLayout.layout)
+let frontage: (List<(Exterior.Box, Color.t)>, List<(Exterior.Box, Finishes.Surface)>) =
+  let r = Suburb.outer in
+  let walkTop = Exterior.street + 0.005 in
+  let fence = Suburb.front - HouseExterior.yard in
+  let half = (HouseLayout.footprint.x1 - HouseLayout.footprint.x0) / 2.0 in
+  let paths = [0.0 - 1.0, 0.0, 1.0] |> List.map((k) => k * Suburb.spacing - half) in
+  // Along [a0, a1], from d0 to d1 out, on the side facing `u`.
+  let boxOn = (u: (float, float), a0: float, a1: float, d0: float, d1: float, y0: float, y1: float): Exterior.Box =>
+    let (ux, uz) = u in
+    let (wx, wz) = Suburb.along(u) in
+    let xs = [d0 * ux + a0 * wx, d0 * ux + a1 * wx, d1 * ux + a0 * wx, d1 * ux + a1 * wx] in
+    let zs = [d0 * uz + a0 * wz, d0 * uz + a1 * wz, d1 * uz + a0 * wz, d1 * uz + a1 * wz] in
+    let lo = (vs: List<float>) => List.minimum(vs) |> Option.defaultValue(0.0) in
+    let hi = (vs: List<float>) => List.maximum(vs) |> Option.defaultValue(0.0) in
+    box(lo(xs), y0, lo(zs), hi(xs), y1, hi(zs)) in
+  // [-r, r] less each house's path.
+  let runs = List.flatten([[0.0 - r], paths |> List.concatMap((t) => [t + houseCut.lo, t + houseCut.hi]), [r]]) in
+  let spans = List.range(List.length(runs) / 2.0) |> List.map((k) =>
+    (List.nth(2.0 * k, runs) |> Option.defaultValue(0.0), List.nth(2.0 * k + 1.0, runs) |> Option.defaultValue(0.0))) in
+  let layer = (d0: float, d1: float, y1: float): List<Exterior.Box> =>
+    Suburb.outward |> List.concatMap((u) => spans |> List.map((e) => let (a0, a1) = e in boxOn(u, a0, a1, d0, d1, Streetscape.road, y1))) in
+  (List.flatten([
+     layer(r, r + Streetscape.curb, Exterior.street + 0.12) |> List.map((b) => (b, Streetscape.curbGrey)),
+     layer(r + Streetscape.curb, r + 1.4, Exterior.street) |> List.map((b) => (b, HouseExterior.lawn)),
+   ]),
+   layer(r + 1.4, fence - 0.3, walkTop) |> List.map((b) => (b, Streetscape.paving)))
+
 let paintOf = (boxes: List<(Exterior.Box, Color.t)>): Scene.t => Exterior.instancedOf(boxes)
+let suburbPaint: Scene.t =
+  let (plain, skinned) = frontage in
+  Scene.group([Exterior.instancedOf(plain), Finishes.instancedBy(skinned |> List.map((e) => let (b, f) = e in (Exterior.instanceOf(b), f)))])
 // Each town's paint, by `Block.towns`' order: the office alone and the
 // block share the block's crossroads (so does the island); the towers
-// theirs, arms to the towers' edge; the cinema has its lot.
+// theirs, arms to the towers' edge; the cinema and mall have their lots;
+// the suburb its frontage.
 let towersReach = (2.0 * (TowerLayout.footprint.x1 - TowerLayout.footprint.x0) + Block.streetWidth) / 2.0
 let paints: List<Scene.t> = Block.towns |> List.map((t) =>
-  paintOf(
+  if t.name == "suburb" then suburbPaint else paintOf(
     if t.name == "office" || t.name == "block" then blockPaint(0.0, 0.0)
     else if t.name == "grid-4" then gridPaint(1.0)
     else if t.name == "grid-16" then gridPaint(2.0)

@@ -204,7 +204,7 @@ let streetscapeProps = (s: Exterior.Street): Streetscape.Props =>
     Streetscape.poleSign(south, 14.5, 3.5, walk, StreetAtlas.fireLane),
     Streetscape.poleSign(south, 45.5, 3.5, walk, StreetAtlas.fireLane),
   ] in
-  Streetscape.along(l, s, { seed: 3.0, paths: paths, own: own })
+  Streetscape.along(l, s, { seed: 3.0, paths: paths, own: own, avoid: [] })
 let streetscape = (s: Exterior.Street): Exterior.Street => Streetscape.dressed(s, streetscapeProps(s))
 
 let pinkColor = (glow: float): Color.t => Building.rgb(255.0 * glow, 60.0 * glow, 190.0 * glow)

@@ -202,7 +202,6 @@ let streetscapeProps = (s: Exterior.Street): Streetscape.Props =>
   let e = s.entrance in
   let own = [
     { lotProps with decals: [] },
-    { Streetscape.nothing with solid: [anchor] },
     Streetscape.planter(south, e.lo - 4.0, 0.2, walk, 1.6, 8.0),
     Streetscape.planter(south, e.hi + 4.0, 0.2, walk, 1.6, 9.0),
     Streetscape.bench(curbside, e.lo - 6.5, 0.0, walk),
@@ -216,7 +215,7 @@ let streetscapeProps = (s: Exterior.Street): Streetscape.Props =>
     Streetscape.vendingMachine(south, e.lo - 9.0, 0.15, walk),
     Streetscape.payphone(south, e.lo - 10.5, 0.15, walk),
   ] in
-  Streetscape.along(layout, s, { seed: 4.0, paths: paths, own: own })
+  Streetscape.along(layout, s, { seed: 4.0, paths: paths, own: own, avoid: [anchor] })
 
 // The kit's street side (facade, canopy, neon roofline, lamps, apron) in
 // split-face block under a metal fascia, the roof opened over the void, the

@@ -16,8 +16,17 @@ let dressings = [(ol, officeProps, Streetscape.officePaths), (tower.layout, towe
 // The mall's lot is the kit's: three double rows of 32 bays, a wheel stop
 // each; a house's frontage cuts round its front path.
 expect List.length(Mall.lotPlan.rows) == 6.0 && Mall.lotPlan.n == 32.0
-let gate = HouseExterior.gateOf(HouseLayout.layout)
-expect houseProps.skinned |> List.all((e) => let (b, _) = e in b.x1 <= gate.lo || b.x0 >= gate.hi)
+// The suburb's frontage stays between the road's corners, so no two sides'
+// overlap, and is cut round every front path.
+let frontBoxes =
+  let (plain, paving) = Roads.frontage in
+  List.flatten([plain |> List.map((e) => let (b, _) = e in b), paving |> List.map((e) => let (b, _) = e in b)])
+let overlapping = (a: Exterior.Box, b: Exterior.Box): bool => a.x0 < b.x1 - 0.001 && b.x0 < a.x1 - 0.001 && a.z0 < b.z1 - 0.001 && b.z0 < a.z1 - 0.001 && a.y1 == b.y1
+expect frontBoxes |> List.indexedMap((i, a) => frontBoxes |> List.indexedMap((j, b) => i == j || not overlapping(a, b)) |> List.all((ok) => ok)) |> List.all((ok) => ok)
+expect Block.townAt(Block.suburbTown).copies |> List.all((c) =>
+  let gate = HouseExterior.gateOf(HouseLayout.layout) in
+  let p = Block.toWorld(c, Vec3.make((gate.lo + gate.hi) / 2.0, 0.0, 0.0 - 7.0)) in
+  not (frontBoxes |> List.any((b) => Vec3.x(p) > b.x0 && Vec3.x(p) < b.x1 && Vec3.z(p) > b.z0 && Vec3.z(p) < b.z1)))
 
 // Nothing solid blocks the e2e's walks (each archetype's, in its space).
 expect dressings |> List.all((e) =>

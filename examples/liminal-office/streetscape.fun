@@ -487,13 +487,15 @@ let lotOf = (lot: Lot): Props =>
   let last = lot.first + lot.n * lot.bay in
   joined(List.flatten([
     [{ nothing with plain: lot.areas |> List.map((r) => (lotBox(fr, r, road, top), asphalt)) }],
-    lot.rows |> List.map((row) =>
+    lot.rows |> List.indexedMap((k, row) =>
       let stop = if row.head == row.d0 then (row.d0 + 0.5, row.d0 + 0.65) else (row.d1 - 0.65, row.d1 - 0.5) in
       let (s0, s1) = stop in
       { nothing with plain: List.flatten([
         List.range(lot.n + 1.0) |> List.map((j) => let u = lot.first + j * lot.bay in
           (boxIn(fr, u - line, u + line, top, paint, row.d0, row.d1), linePaint)),
-        [(boxIn(fr, lot.first - line, last + line, top, paint, row.head - line, row.head + line), linePaint)],
+        // Back-to-back rows share their head line: drawn once.
+        if List.take(k, lot.rows) |> List.any((r) => r.head == row.head) then []
+        else [(boxIn(fr, lot.first - line, last + line, top, paint, row.head - line, row.head + line), linePaint)],
         List.range(lot.n) |> List.map((j) => let u = lot.first + (j + 0.5) * lot.bay in
           (boxIn(fr, u - 0.8, u + 0.8, top, top + 0.12, s0, s1), stopGrey)),
       ]) }),
@@ -529,8 +531,9 @@ let fits = (paths: List<Path>, taken: List<Exterior.Box>, m: float, p: Props): b
   p.solid |> List.all((b) => not (paths |> List.any((q) => blocks(b, q))) && not (taken |> List.any((t) => overlaps(grown(m, b), t))))
 
 // An archetype's dressing: `seed` for its noise, the walks to keep clear,
-// and its own pieces (placed first, as given).
-type Plan = { seed: float, paths: List<Path>, own: List<Props> }
+// its own pieces (placed first, as given), and boxes to keep off that
+// aren't the dressing's (another building's massing).
+type Plan = { seed: float, paths: List<Path>, own: List<Props>, avoid: List<Exterior.Box> }
 
 // Along side `s`: a tree in a grate every 8 m in the curbside strip, 2.8 m
 // out (clear of the forecourt and the lamp posts), and between two trees a
@@ -584,7 +587,7 @@ let hedgesOn = (l: Layout, st: Exterior.Street, plan: Plan, taken: List<Exterior
 // sides where they fit, then the sidewalk under them all.
 let along = (l: Layout, st: Exterior.Street, plan: Plan): Props =>
   let own = joined(plan.own) in
-  let taken = own.solid in
+  let taken = List.append(plan.avoid, own.solid) in
   // A tree keeps half a metre (its grate) from the pieces; hedges are
   // already broken round them.
   let trees = Portals.sides |> List.concatMap((s) => curbside(l, st, plan, s)) |> List.filter((p) => fits(plan.paths, taken, 0.5, p)) in
@@ -678,7 +681,7 @@ let officeProps = (l: Layout, st: Exterior.Street): Props =>
     chainLink({ side: East, x: 16.5, z: 0.0 }, back + 0.2, back + 2.9, 0.0, walk, 1.8),
     { nothing with decals: bandPanesOf(l) },
   ] in
-  along(l, st, { seed: 1.0, paths: officePaths, own: own })
+  along(l, st, { seed: 1.0, paths: officePaths, own: own, avoid: [] })
 let office = (l: Layout, st: Exterior.Street): Exterior.Street => dressed(st, officeProps(l, st))
 
 // ---- The towers -----------------------------------------------------------------------
@@ -706,7 +709,7 @@ let towerProps = (l: Layout, st: Exterior.Street): Props =>
     payphone(west, 6.0, 0.15, walk),
     bin(west, 7.3, 0.2, walk),
   ] in
-  along(l, st, { seed: 2.0, paths: towerPaths, own: own })
+  along(l, st, { seed: 2.0, paths: towerPaths, own: own, avoid: [] })
 let tower = (l: Layout, st: Exterior.Street): Exterior.Street => dressed(st, towerProps(l, st))
 
 // ---- The houses --------------------------------------------------------------------
@@ -721,32 +724,19 @@ let mailbox = (fr: Frame, u: float, d: float, y: float): Props =>
 
 // The e2e's walk from the road up the front path, in a house's space.
 let housePaths: List<Path> = [{ x0: 1.6, z0: -9.5, x1: 1.6, z1: 0.7 }]
-// A house's frontage on the suburb's road, across the front yard's width:
-// a curb at the road's edge, a lawn strip with a street tree, a concrete
-// sidewalk to the fence (all cut round the front path), a mailbox by the
-// path, and a picket fence down the east side to the back yard, the one
-// the next house along shares.
+// By a house's front path, on the lawn strip along the road (roads.fun lays
+// the strip for the whole suburb): a street tree and a mailbox; and a picket
+// fence down its east side to the back yard, the one the next house along
+// shares.
 let houseProps = (l: Layout): Props =>
   let f = l.footprint in
   let g = HouseExterior.gateOf(l) in
-  let x0 = f.x0 - HouseExterior.side in
-  let x1 = f.x1 + HouseExterior.side in
   let edge = f.z0 - HouseExterior.road in
-  let fence = HouseExterior.fenceZ(l) in
   let y = Exterior.street in
-  // A strip from z0 to z1, y0 to y1, either side of the path.
-  let strip = (z0: float, z1: float, y0: float, y1: float): List<Exterior.Box> =>
-    [box(x0, y0, z0, g.lo, y1, z1), box(g.hi, y0, z0, x1, y1, z1)] in
   let front: Frame = { side: South, x: 0.0, z: 0.0 } in
   joined([
-    { nothing with
-      plain: List.flatten([
-        strip(edge, edge + curb, road, y + 0.12) |> List.map((b) => (b, curbGrey)),
-        strip(edge + curb, edge + 1.4, road, y) |> List.map((b) => (b, HouseExterior.lawn)),
-      ]),
-      skinned: strip(edge + 1.4, fence - 0.3, road, y + 0.005) |> List.map((b) => (b, paving)) },
-    tree(front, x1 - 1.6, 0.0 - edge - 0.8, y, f.x1),
+    tree(front, f.x0 + 7.0, 0.0 - edge - 0.8, y, f.x1),
     mailbox(front, g.hi + 0.7, 0.0 - edge - 0.45, y),
-    picket({ side: East, x: x1, z: 0.0 }, fence, f.z1 + 2.0, 0.0, y),
+    picket({ side: East, x: f.x1 + HouseExterior.side, z: 0.0 }, HouseExterior.fenceZ(l), f.z1 + 2.0, 0.0, y),
   ])
 let house = (l: Layout, st: Exterior.Street): Exterior.Street => dressed(st, houseProps(l))
