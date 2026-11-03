@@ -9,7 +9,7 @@
 //   3. a walk round the loop road: the eye is in a cell of the nearest house
 //      at every sample, and no active house's cells ever miss it
 //      (`uncovered` stays 0);
-//   4. B and G leave it for an office town's apron;
+//   4. U again leaves it for the office's apron;
 //   5. the suburb's goldens render byte-identically across runs.
 //
 //   cargo build -p functor-cli --no-default-features
@@ -27,7 +27,7 @@ const MOUSE_RATE = 0.0025; // game.fun's `mouseRate`
 const WALK = 2.2 / 60; // metres per step
 const CENTRE = 0.92; // game.fun's capsule centre above the feet
 // block.fun's `suburbTown`.
-const SUBURB = 7;
+const SUBURB = 8;
 // Cell ids are houseLayout.fun's room positions.
 const PORCH = 0;
 const HALL = 1;
@@ -248,15 +248,11 @@ async function loop(game) {
   check(m.uncovered === 0, `no active house's cells ever lost the eye (uncovered ${m.uncovered})`);
 }
 
-// B and G leave the suburb for view 1 of an office town.
+// U again leaves the suburb for the office alone's entrance (view 1).
 async function leave(game) {
-  for (const [key, town] of [["b", 0], ["g", 2]]) {
-    await game.hold("u", 1);
-    await game.step(3);
-    await game.view(key);
-    const m = await game.model();
-    check(m.town === town && m.cell === 0 && m.grounded, `${key.toUpperCase()} leaves the suburb onto an office's apron (town ${m.town}, cell ${m.cell}, grounded ${m.grounded})`);
-  }
+  await game.view("u");
+  const m = await game.model();
+  check(m.town === 0 && m.cell === 0 && m.grounded, `U leaves the suburb onto the office's apron (town ${m.town}, cell ${m.cell}, grounded ${m.grounded})`);
 }
 
 // Render a golden the way runtime/functor-runtime-desktop/tests/golden.rs does.
