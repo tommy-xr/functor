@@ -286,6 +286,14 @@ fn tint_material(material: MaterialDescription, tint: [f32; 3]) -> MaterialDescr
             source_pixels,
             sampling,
         },
+        MaterialDescription::Multiply { color, texture } => MaterialDescription::Multiply {
+            color: scale(color),
+            texture,
+        },
+        MaterialDescription::Additive { color, fresnel } => MaterialDescription::Additive {
+            color: scale(color),
+            fresnel,
+        },
         // No color channel to multiply.
         texture @ MaterialDescription::Texture(_) => texture,
     }
@@ -354,8 +362,9 @@ impl RecognizedTemplate<'_> {
 /// Recognized: `Group` (or one-child `Scene.castShadows`) chains with exactly
 /// one child (their transforms compose into `local`) ending in either a
 /// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Billboard`/`Plane` leaf under at most ONE material
-/// node — a solid `Color`, `Emissive` (no texture), or `Lit` (no normal map;
-/// a texture only when world-tiled) — or a `Scene.model` leaf with no overrides, with or without
+/// node — a solid `Color`, `Emissive` (no texture), `Lit` (no normal map;
+/// a texture only when world-tiled), `Multiply` or `Additive` — or a
+/// `Scene.model` leaf with no overrides, with or without
 /// an attached `Scene.animate` pose (every copy shows the same sampled pose;
 /// enclosing materials are ignored by the ordinary model draw, so a
 /// material-wrapped model falls back rather than pretending the wrapper
@@ -435,6 +444,11 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                         world_tile,
                         ..
                     } => texture.is_some() == world_tile.is_some() && normal_map.is_none(),
+                    // Blend materials: a multiply's texture reads the mesh's
+                    // UVs as each stamped copy's does (scaled with it).
+                    MaterialDescription::Multiply { .. } | MaterialDescription::Additive { .. } => {
+                        true
+                    }
                     MaterialDescription::Texture(_) | MaterialDescription::SpriteTexture { .. } => {
                         false
                     }
@@ -518,6 +532,8 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
                     MaterialDescription::Emissive { .. } => "emissive[",
                     MaterialDescription::Lit { .. } => "lit[",
                     MaterialDescription::SpriteTexture { .. } => "sprite[",
+                    MaterialDescription::Multiply { .. } => "multiply[",
+                    MaterialDescription::Additive { .. } => "additive[",
                 });
                 for (index, item) in items.iter().enumerate() {
                     if index > 0 {

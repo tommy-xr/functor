@@ -3,7 +3,9 @@ use glow::HasContext;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    material::{BasicMaterial, ColorMaterial, EmissiveMaterial, LitMaterial, Material},
+    material::{
+        BasicMaterial, ColorMaterial, EmissiveMaterial, LitMaterial, Material, ReflectionMaterial,
+    },
     texture::RuntimeTexture,
     RenderContext, SceneContext, TextureDescription,
 };
@@ -66,6 +68,51 @@ pub enum MaterialDescription {
         source_pixels: Option<[f32; 4]>,
         sampling: SpriteSampling,
     },
+    /// Multiplies what is already drawn by `color` × the texture at the
+    /// mesh's UVs: tint, dirt, grime. Unlit; it can only darken. See
+    /// [`BlendMode`].
+    Multiply {
+        #[serde(
+            serialize_with = "serialize_vec4",
+            deserialize_with = "deserialize_vec4"
+        )]
+        color: Vector4<f32>,
+        texture: Option<TextureDescription>,
+    },
+    /// Adds `color` to what is already drawn: sheen. It can only brighten.
+    /// With `fresnel` (Schlick's `base`), it adds `color` × the sky reflected
+    /// at the view angle × `base + (1 − base)(1 − |n·v|)⁵`: near clear head-on,
+    /// reflective at grazing angles. See [`BlendMode`].
+    Additive {
+        #[serde(
+            serialize_with = "serialize_vec4",
+            deserialize_with = "deserialize_vec4"
+        )]
+        color: Vector4<f32>,
+        fresnel: Option<f32>,
+    },
+}
+
+/// How a blend material composes onto what is already drawn. Both are
+/// order-independent (`dst × src` and `dst + src` commute), so they need no
+/// sorting: after the opaque scene and the sky, every visible `Multiply`
+/// draws, then every `Additive`, in scene order, with depth testing on and
+/// depth writes off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendMode {
+    Multiply,
+    Additive,
+}
+
+impl MaterialDescription {
+    /// The material's blend mode, if it composes instead of covering.
+    pub fn blend_mode(&self) -> Option<BlendMode> {
+        match self {
+            MaterialDescription::Multiply { .. } => Some(BlendMode::Multiply),
+            MaterialDescription::Additive { .. } => Some(BlendMode::Additive),
+            _ => None,
+        }
+    }
 }
 
 impl MaterialDescription {
@@ -89,7 +136,10 @@ impl MaterialDescription {
             | MaterialDescription::Emissive { color, .. }
             | MaterialDescription::Lit { color, .. }
             | MaterialDescription::SpriteTexture { color, .. } => Some(color.w),
-            MaterialDescription::Texture(_) => None,
+            // Blend materials compose by their own blend pass, never by alpha.
+            MaterialDescription::Texture(_)
+            | MaterialDescription::Multiply { .. }
+            | MaterialDescription::Additive { .. } => None,
         }
     }
 
@@ -264,6 +314,36 @@ impl MaterialDescription {
                 );
                 let mut material =
                     EmissiveMaterial::create_sprite(*color, source_pixels.map(Vector4::from));
+                material.initialize(&context);
+                material
+            }
+            // The blend pass sets the blend equation; the shader only
+            // supplies the factor (multiply) or the term (additive).
+            MaterialDescription::Multiply { color, texture } => {
+                let use_texture = bind_optional_texture(
+                    texture,
+                    0,
+                    &scene_context.texture_pipeline,
+                    context,
+                    scene_context,
+                );
+                let mut material = EmissiveMaterial::create(*color, use_texture);
+                material.initialize(&context);
+                material
+            }
+            MaterialDescription::Additive {
+                color,
+                fresnel: None,
+            } => {
+                let mut material = EmissiveMaterial::create(*color, false);
+                material.initialize(&context);
+                material
+            }
+            MaterialDescription::Additive {
+                color,
+                fresnel: Some(base),
+            } => {
+                let mut material = ReflectionMaterial::create(*color, *base);
                 material.initialize(&context);
                 material
             }

@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: blend materials — the `MaterialDescription::Multiply` and
+/// `Additive` variants (`Scene.multiply` / `additive` / `reflection`),
+/// emitted only by them.
+///
 /// Also: height fog — the `Fog::Height` variant (`Fog.height`) — and sky
 /// gradients — `Frame.sky_zenith` (`Frame.withSkyGradient`), omitted when
 /// absent. Other frames keep their shape.

@@ -39,6 +39,9 @@
 //!   (a diffuse-lit textured surface — F#'s `Material.litTexture`)
 //! Scene.litWorldTexture(texture, tile, scene)               -> Scene
 //!   (a lit texture box-mapped by world position, every `tile` metres)
+//! Scene.multiply(texture, scene) / Scene.additive(color, scene)
+//! Scene.reflection(color, base, scene)                      -> Scene
+//!   (blend materials: multiply / add onto what is drawn; glass)
 //! Scene.emissiveTexture(texture, scene)                     -> Scene
 //!   (a self-lit textured surface, fullbright — F#'s `Material.emissiveTexture`)
 //! Camera3D.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))                     -> Camera3D
@@ -2753,6 +2756,55 @@ row 0 has {cols} heights, row {r} has {}",
                 MaterialDescription::lit_normal_mapped(r, g, b, 1.0, normal.0),
                 scene,
             )
+        },
+    );
+    // Blend materials: composed onto what is drawn, in passes after the
+    // opaque scene (see `BlendMode`). Glass is a multiply pane (dirt) plus
+    // a reflection pane.
+    reg.fn2(
+        "Scene.multiply",
+        "Scene.multiply(texture, scene)",
+        |texture: FunctorLangTexture, scene: FunctorLangScene| {
+            material_scene(
+                MaterialDescription::Multiply {
+                    color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+                    texture: Some(texture.0),
+                },
+                scene,
+            )
+        },
+    );
+    reg.fn2(
+        "Scene.additive",
+        "Scene.additive(color, scene)",
+        |color: FunctorLangColor, scene: FunctorLangScene| {
+            let (r, g, b) = color.0;
+            material_scene(
+                MaterialDescription::Additive {
+                    color: cgmath::vec4(r, g, b, 1.0),
+                    fresnel: None,
+                },
+                scene,
+            )
+        },
+    );
+    reg.fn3(
+        "Scene.reflection",
+        "Scene.reflection(color, base, scene)",
+        |color: FunctorLangColor, base: f64, scene: FunctorLangScene| {
+            if !(0.0..=1.0).contains(&base) {
+                return Err(format!(
+                    "Scene.reflection: base must be between 0 and 1, got {base}"
+                ));
+            }
+            let (r, g, b) = color.0;
+            Ok(material_scene(
+                MaterialDescription::Additive {
+                    color: cgmath::vec4(r, g, b, 1.0),
+                    fresnel: Some(base as f32),
+                },
+                scene,
+            ))
         },
     );
     // Scene LAST, so it pipes: `Scene.quad() |> Scene.screen(feed)` — an

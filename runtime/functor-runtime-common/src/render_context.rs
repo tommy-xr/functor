@@ -228,6 +228,16 @@ pub struct RenderContext<'a> {
     /// In a `shadow_casters` pass, inside a `Scene.castShadows(false, …)`
     /// subtree with no nearer `true`. A `Cell` like `opacity`.
     pub shadow_off: std::cell::Cell<bool>,
+    /// The blend pass in flight (`Scene.multiply` / `Scene.additive` /
+    /// `Scene.reflection` materials), or `None` in every other pass, where
+    /// blend materials draw nothing.
+    pub blend_stage: Option<crate::BlendMode>,
+    /// In a blend pass, inside the blend material being drawn: only then do
+    /// leaves draw. A `Cell` like `opacity`.
+    pub blend_inside: std::cell::Cell<bool>,
+    /// The sky `Scene.reflection` reflects, `(horizon, zenith)` as authored:
+    /// the frame's sky gradient, or its background colour twice.
+    pub reflection_sky: ([f32; 3], [f32; 3]),
 }
 
 /// A fresh [`RenderContext::pass_serial`]; never 0 (a program's "no pass yet").

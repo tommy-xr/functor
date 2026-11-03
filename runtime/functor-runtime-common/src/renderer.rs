@@ -7,7 +7,7 @@ use crate::asset::AssetCache;
 use crate::material::BasicMaterial;
 use crate::shadow::{self, ShadowMap};
 use crate::{
-    Camera, Camera2D, DebugRenderMode, Frame, FrameTime, Light, OpacityStage, RenderContext,
+    BlendMode, Camera, Camera2D, DebugRenderMode, Frame, FrameTime, Light, OpacityStage, RenderContext,
     RenderPass, Scene3D, SceneContext, ShadowUniforms, TransparentDraw, Viewport,
 };
 
@@ -283,6 +283,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             pass.frame.fog.as_ref(),
             pass.frame.drawn_skybox(),
             pass.frame.drawn_sky_gradient(),
+            pass.frame.reflection_sky(),
             // A target has no camera feed under it: always the stand-in room.
             pass.frame.passthrough,
             pass.frame.fog_cull_distance(),
@@ -419,6 +420,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame.fog.as_ref(),
         frame.drawn_skybox(),
         frame.drawn_sky_gradient(),
+        frame.reflection_sky(),
         // The stand-in room, unless the shell composites the real feed.
         frame.passthrough && !scene_context.passthrough_composited(),
         frame.fog_cull_distance(),
@@ -523,6 +525,7 @@ fn render_sprite_layers(
             None,
             None,
             None,
+            ([0.0; 3], [0.0; 3]),
             false,
             None,
             None,
@@ -690,6 +693,7 @@ pub fn render_composited_frames_with_view(
             frame.fog.as_ref(),
             frame.drawn_skybox(),
             frame.drawn_sky_gradient(),
+            frame.reflection_sky(),
             frame.passthrough,
             frame.fog_cull_distance(),
             frame.drawn_stand_in_room(false),
@@ -887,6 +891,8 @@ fn forward_pass(
     skybox: Option<&crate::skybox::SkyboxDescription>,
     // `Frame::drawn_sky_gradient`: (horizon, zenith).
     sky_gradient: Option<([f32; 3], [f32; 3])>,
+    // `Frame::reflection_sky`: what `Scene.reflection` reflects.
+    reflection_sky: ([f32; 3], [f32; 3]),
     // Draw the stand-in room (`crate::passthrough_room`) instead of a skybox.
     passthrough_room: bool,
     // `Frame::fog_cull_distance` of the frame this pass draws.
@@ -939,7 +945,13 @@ fn forward_pass(
             DebugRenderMode::Normals | DebugRenderMode::Tangents
         )
     });
-    let make_context = |pass_blends: bool, opacity_stage: OpacityStage| RenderContext {
+    // A blend pass fogs toward its identity, so a far pane fades to nothing:
+    // white for multiply, black for additive.
+    let multiply_fog = fog.map(|fog| fog.with_color([1.0; 3]));
+    let additive_fog = fog.map(|fog| fog.with_color([0.0; 3]));
+    let make_context = |pass_blends: bool,
+                        opacity_stage: OpacityStage,
+                        blend_stage: Option<BlendMode>| RenderContext {
         gl,
         shader_version,
         output_srgb_encode,
@@ -961,8 +973,12 @@ fn forward_pass(
         opacity_stage,
         opacity: std::cell::Cell::new(1.0),
         shadow,
-        fog,
-        sky_gradient,
+        fog: match blend_stage {
+            None => fog,
+            Some(BlendMode::Multiply) => multiply_fog.as_ref(),
+            Some(BlendMode::Additive) => additive_fog.as_ref(),
+        },
+        sky_gradient: sky_gradient.filter(|_| blend_stage.is_none()),
         camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
         lod_camera_pos: cgmath::Vector3::new(
             lod_camera.eye[0],
@@ -979,6 +995,9 @@ fn forward_pass(
         fog_cull_distance,
         shadow_casters: false,
         shadow_off: std::cell::Cell::new(false),
+        blend_stage,
+        blend_inside: std::cell::Cell::new(false),
+        reflection_sky,
     };
 
     // The transparent debug material deliberately reuses authored shading.
@@ -999,6 +1018,7 @@ fn forward_pass(
         } else {
             OpacityStage::Defer
         },
+        None,
     );
 
     // The game supplies the camera; derive its ordinary projection from the
@@ -1038,16 +1058,18 @@ fn forward_pass(
 
     // The surface grid blends with its own state, so the transparent-debug
     // recipe (which owns blending for the whole scene) draws without it.
+    // Blend materials the opaque walk reaches, for the blend passes.
+    let blends = crate::scene3d::BlendQueue::default();
     let render_scene = |with_grid: bool| {
         if let Some(room) = stand_in_room {
-            Scene3D::render(
-                room,
+            room.render_queueing_blends(
                 &render_context,
                 scene_context,
                 &world_matrix,
                 &projection_matrix,
                 &view_matrix,
                 &root_material,
+                &blends,
             );
         }
         if let Some((grid, depth)) = surface_grid.filter(|_| with_grid) {
@@ -1068,14 +1090,14 @@ fn forward_pass(
                 stand_in_room.is_some(),
             );
         }
-        Scene3D::render(
-            scene,
+        scene.render_queueing_blends(
             &render_context,
             scene_context,
             &world_matrix,
             &projection_matrix,
             &view_matrix,
             &root_material,
+            &blends,
         );
     };
 
@@ -1118,6 +1140,16 @@ fn forward_pass(
     } else {
         render_scene(true);
         draw_sky();
+        if !pass_blends {
+            blend_passes(
+                gl,
+                scene_context,
+                &blends,
+                &make_context,
+                &projection_matrix,
+                &view_matrix,
+            );
+        }
         for root in stand_in_room.into_iter().chain([scene]) {
             transparent_pass(
                 gl,
@@ -1130,6 +1162,56 @@ fn forward_pass(
                 pass_blends,
             );
         }
+    }
+}
+
+/// Draw the blend materials the opaque walk queued: every multiply, then
+/// every additive, each in scene order. Both equations commute, so no sort:
+/// depth test on, depth writes off, so they never hide each other. Fog fades
+/// each toward its identity (the context's recoloured fog). The alpha channel
+/// keeps what is there. Costs nothing when the queue is empty.
+fn blend_passes<'a>(
+    gl: &glow::Context,
+    scene_context: &SceneContext,
+    blends: &crate::scene3d::BlendQueue<'_>,
+    make_context: &dyn Fn(bool, OpacityStage, Option<BlendMode>) -> RenderContext<'a>,
+    projection_matrix: &Matrix4<f32>,
+    view_matrix: &Matrix4<f32>,
+) {
+    let modes = blends.modes();
+    if modes.is_empty() {
+        return;
+    }
+    for mode in modes.iter() {
+        // `pass_blends`: this pass owns the blend state; `Scene.opacity`
+        // inside a blend subtree is ignored.
+        let context = make_context(true, OpacityStage::Ignore, Some(mode));
+        let mut root_material = BasicMaterial::create();
+        root_material.initialize(&context);
+        unsafe {
+            gl.enable(glow::BLEND);
+            gl.blend_equation(glow::FUNC_ADD);
+            match mode {
+                BlendMode::Multiply => {
+                    gl.blend_func_separate(glow::DST_COLOR, glow::ZERO, glow::ZERO, glow::ONE)
+                }
+                BlendMode::Additive => {
+                    gl.blend_func_separate(glow::ONE, glow::ONE, glow::ZERO, glow::ONE)
+                }
+            }
+            gl.depth_mask(false);
+        }
+        blends.draw(
+            mode,
+            &context,
+            scene_context,
+            projection_matrix,
+            view_matrix,
+            &root_material,
+        );
+    }
+    unsafe {
+        end_constant_alpha_blend(gl);
     }
 }
 
@@ -1154,7 +1236,7 @@ fn transparent_pass<'a>(
     gl: &glow::Context,
     scene_context: &SceneContext,
     scene: &'a Scene3D,
-    make_context: &dyn Fn(bool, OpacityStage) -> RenderContext<'a>,
+    make_context: &dyn Fn(bool, OpacityStage, Option<BlendMode>) -> RenderContext<'a>,
     world_matrix: &Matrix4<f32>,
     projection_matrix: &Matrix4<f32>,
     view_matrix: &Matrix4<f32>,
@@ -1171,7 +1253,7 @@ fn transparent_pass<'a>(
 
     // `pass_blends: true` — this pass owns the blend state, so a translucent
     // runtime overlay nested inside must not switch it back off on the way out.
-    let context = make_context(true, OpacityStage::Draw);
+    let context = make_context(true, OpacityStage::Draw, None);
     let mut root_material = BasicMaterial::create();
     root_material.initialize(&context);
 
