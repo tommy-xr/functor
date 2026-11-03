@@ -469,7 +469,7 @@ pub fn run_with_host(
         cancel: None,
         brand_ops: BrandOps::default(),
         brand_ops_complete: true,
-        externals: HashMap::default(),
+        constants: HashMap::default(),
         host,
     };
     match interp.run_module(module) {
@@ -599,7 +599,7 @@ pub fn run_expects_budgeted(
         cancel: None,
         brand_ops: BrandOps::default(),
         brand_ops_complete: true,
-        externals: HashMap::default(),
+        constants: HashMap::default(),
         host,
     };
     if let Err(error) = interp
@@ -745,7 +745,7 @@ impl Session {
             cancel: stop.map(|flag| (flag, 0)),
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
-            externals: HashMap::default(),
+            constants: HashMap::default(),
             host,
         };
         let loaded = interp
@@ -809,7 +809,7 @@ impl Session {
             cancel: stop.map(|flag| (flag, 0)),
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
-            externals: HashMap::default(),
+            constants: HashMap::default(),
             host: &mut counted,
         };
         // Unit operators resolve first, by probing each unit's constructor.
@@ -869,7 +869,7 @@ impl Session {
             cancel: None,
             brand_ops: BrandOps::default(),
             brand_ops_complete: true,
-            externals: HashMap::default(),
+            constants: HashMap::default(),
             host,
         };
         let mut adopt = || -> Result<(), RunError> {
@@ -955,7 +955,7 @@ impl Session {
             cancel: stop.map(|flag| (flag, 0)),
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
-            externals: HashMap::default(),
+            constants: HashMap::default(),
             host,
         };
         interp.call(callee, args, Label::Text(name), Span::new(0, 0), None)
@@ -983,7 +983,7 @@ impl Session {
             cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
-            externals: HashMap::default(),
+            constants: HashMap::default(),
             host,
         };
         interp.call(callee, args, Label::Text(label), Span::new(0, 0), None)
@@ -1018,7 +1018,7 @@ impl Session {
             cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
-            externals: HashMap::default(),
+            constants: HashMap::default(),
             host,
         };
         let result = interp.call(callee, args, Label::Text(name), Span::new(0, 0), None)?;
@@ -1062,7 +1062,7 @@ impl Session {
             cancel: None,
             brand_ops: self.brand_ops.clone(),
             brand_ops_complete: true,
-            externals: HashMap::default(),
+            constants: HashMap::default(),
             host,
         };
         let result = interp.call(callee, args, Label::Text(name), Span::new(0, 0), None)?;
@@ -1160,15 +1160,17 @@ struct Interp<'h> {
     /// False only while a unit's own constructor is still an unevaluated def
     /// (see [`Interp::load_brand_ops`]).
     brand_ops_complete: bool,
-    /// Each `ExprKind::External` node's resolved value, keyed by its path's
-    /// address: resolving joins the path and searches the builtin table and
-    /// the host, which a hot call site (`List.nth` per vertex) would repeat.
-    /// Paths belong to the loaded program, which outlives the interpreter.
-    externals: HashMap<usize, Value, BuildHasherDefault<AddressHasher>>,
+    /// The value of each `External` and `Ctor` node evaluated so far, keyed
+    /// by the address of its path or name: resolving an external joins the
+    /// path and searches the builtin table and the host, and a constructor
+    /// allocates its name — work a hot call site (`List.nth` per vertex)
+    /// would repeat. The nodes belong to the loaded program, which outlives
+    /// the interpreter.
+    constants: HashMap<usize, Value, BuildHasherDefault<AddressHasher>>,
     host: &'h mut dyn Host,
 }
 
-/// A hasher for [`Interp::externals`]' address keys.
+/// A hasher for [`Interp::constants`]' address keys.
 #[derive(Default)]
 struct AddressHasher(u64);
 
@@ -1696,11 +1698,11 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
             }
             ExprKind::External(path) => {
                 let key = path.as_ptr() as usize;
-                if let Some(value) = self.externals.get(&key) {
+                if let Some(value) = self.constants.get(&key) {
                     return Ok(value.clone());
                 }
                 let value = self.external_value(path, expr.span)?;
-                self.externals.insert(key, value.clone());
+                self.constants.insert(key, value.clone());
                 Ok(value)
             }
             // Container CONSTRUCTION charges one step (the depth invariant
@@ -1984,17 +1986,23 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
             // parameterful one is a callable constructor (so `List.map(xs,
             // Circle)` works like any function argument).
             ExprKind::Ctor { name, arity } => {
-                if *arity == 0 {
-                    Ok(Value::Variant {
+                let key = name.as_ptr() as usize;
+                if let Some(value) = self.constants.get(&key) {
+                    return Ok(value.clone());
+                }
+                let value = if *arity == 0 {
+                    Value::Variant {
                         ctor: Rc::from(name.as_str()),
                         args: Rc::new(Vec::new()),
-                    })
+                    }
                 } else {
-                    Ok(Value::Ctor {
+                    Value::Ctor {
                         name: Rc::from(name.as_str()),
                         arity: *arity,
-                    })
-                }
+                    }
+                };
+                self.constants.insert(key, value.clone());
+                Ok(value)
             }
             ExprKind::Match { scrutinee, arms } => {
                 let value = self.eval(scrutinee, env)?;
@@ -4252,13 +4260,18 @@ fn stable_sort_comparison_ceiling(len: usize) -> u64 {
 /// structural equality between the two. Nullary constructors are variants
 /// with no arguments, so `None` is a `Variant`, never a `Ctor`.
 fn option_value(v: Option<Value>) -> Value {
+    // Shared names: `List.nth` and friends build an Option per call.
+    thread_local! {
+        static SOME: Rc<str> = Rc::from("Option.Some");
+        static NONE: Rc<str> = Rc::from("Option.None");
+    }
     match v {
         Some(v) => Value::Variant {
-            ctor: Rc::from("Option.Some"),
+            ctor: SOME.with(Rc::clone),
             args: Rc::new(vec![v]),
         },
         None => Value::Variant {
-            ctor: Rc::from("Option.None"),
+            ctor: NONE.with(Rc::clone),
             args: Rc::new(Vec::new()),
         },
     }
