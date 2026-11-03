@@ -485,9 +485,10 @@ const unit = ([x, y, z]) => {
 // Linear light from an authored colour × intensity, as the engine packs it.
 const radiance = (rgb, k) => lin(rgb).map((v) => v * k);
 
-// The street lights, read from exterior.fun (lobbyLight, sodiumLight,
-// lampHeads) and block.fun (streetWidth), and placed on every copy as
-// block.fun places them; tests.fun checks the result against game.fun's.
+// The street lights, read from exterior.fun (lobbyLight, sodiumLight),
+// officeLayout.fun (lampHeads) and block.fun (streetWidth), and placed on
+// every copy as block.fun places them; tests.fun checks the result against
+// game.fun's.
 const source = (name) => readFileSync(fileURLToPath(new URL(name, import.meta.url)), "utf8");
 const line = (text, re) => {
   const m = text.match(re);
@@ -499,7 +500,7 @@ const streetLights = () => {
   const exterior = source("exterior.fun");
   const lobby = fields(line(exterior, /^let lobbyLight = \{(.*)\}$/m));
   const lamp = fields(line(exterior, /^let sodiumLight = \{(.*)\}$/m));
-  const heads = [...line(exterior, /^let lampHeads = \[(.*)\]$/m).matchAll(/v\((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)/g)]
+  const heads = [...line(source("officeLayout.fun"), /^let lampHeads = \[(.*)\]$/m).matchAll(/v\((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)/g)]
     .map((m) => m.slice(1).map(Number));
   const centre = -Number(line(source("block.fun"), /^let streetWidth = (-?[\d.]+)$/m)) / 2;
   const turn = (deg, x, z) => {

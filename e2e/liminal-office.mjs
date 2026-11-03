@@ -61,7 +61,7 @@ import { BIN, ROOT, check, failures, sleep } from "./mcp-rpc.mjs";
 const DIR = join(ROOT, "examples/liminal-office");
 const STEP = 1 / 60;
 const MOUSE_RATE = 0.0025; // game.fun's `mouseRate`, radians per point
-// Cell ids are layout.fun's room positions.
+// Cell ids are officeLayout.fun's room positions.
 const APRON = 0;
 const LOBBY = 1;
 const CORRIDOR = 2;
@@ -72,7 +72,7 @@ const CORRIDOR_2 = 13;
 const TURN_2 = 14;
 const OFFICE_206 = 20;
 const WEST_YARD = 22; // the west strip of the collar
-// layout.fun's storey and flight, and game.fun's capsule centre above the feet.
+// officeLayout.fun's storey and flight, and game.fun's capsule centre above the feet.
 const STOREY = 3.3;
 const FLIGHT = { x0: 13.0, tread: 0.3, risers: 18 };
 const CENTRE = 0.92;
@@ -591,11 +591,11 @@ async function gridJump(game) {
 
 // Static draws from `/state.cull` (tested − culled): a static model that
 // isn't portal-hidden is tested once; one inside the frustum submits a draw
-// per material group. Variants of game.fun's `roomOf` draw each cell model
+// per material group. Variants of archetypes.fun's `roomOf` draw each cell model
 // 0×, 1× or once per group, so the differences count the models and the
 // group draws that submitted (the street side's tests cancel).
 const ROOM_OF = "Scene.modelOf(p.model) |> Scene.inCells([p.cell])";
-const GROUPS = "List.length(Building.spansOf(0.0, List.nth(p.cell, Building.cellParts) |> Option.defaultValue([])))";
+const GROUPS = "List.length(Building.spansOf(0.0, List.nth(p.cell, k.cellParts) |> Option.defaultValue([])))";
 const times = (n) => `Scene.group(List.range(${n}) |> List.map((k) => Scene.modelOf(p.model))) |> Scene.inCells([p.cell])`;
 
 // Push `project` (from `/project`) with `from` replaced by `to` in game.fun.
@@ -604,10 +604,11 @@ const pushVariant = (game, project, from, to) =>
 
 async function staticDraws(game, label) {
   const project = await (await fetch(`${game.base}/project`)).json();
-  const entry = project[0][1];
-  if (!entry.includes(ROOM_OF)) throw new Error("game.fun's roomOf changed: update the e2e's draw-count variants");
+  const at = project.findIndex(([path]) => path.endsWith("archetypes.fun"));
+  if (at < 0 || !project[at][1].includes(ROOM_OF)) throw new Error("archetypes.fun's roomOf changed: update the e2e's draw-count variants");
   const tested = async (variant) => {
-    await pushVariant(game, project, ROOM_OF, variant);
+    const body = project.map(([path, src], i) => [path, i === at ? src.replace(ROOM_OF, variant) : src]);
+    await game.post("/reload-project", body);
     await game.step(2);
     const s = await game.state();
     return { live: s.cull.tested - s.cull.culled, hidden: s.cells.hidden, walks: s.cells.walks };

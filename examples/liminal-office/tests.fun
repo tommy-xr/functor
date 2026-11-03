@@ -3,9 +3,28 @@
 
 open Layout
 
+// The office, as the kit derives it.
+let archetype = Archetypes.office
+let l = archetype.layout
+let kit = archetype.interior
+let street = archetype.street
+let shell = Shells.shellAt("office")
+let level = archetype.level
+let rooms = l.rooms
+let doors = l.doors
+let flights = l.flights
+let windows = l.windows
+let footprint = l.footprint
+let storey = l.storey
+let ceiling = l.ceiling
+let partition = l.partition
+let facade = l.facade
+let facadeHeight = l.facadeHeight
+let spawn = l.spawn
+
 let n = List.length(rooms)
 let ids = List.range(n)
-let interiorIds = ids |> List.filter((i) => Building.isInside(Building.roomAt(i)))
+let interiorIds = ids |> List.filter((i) => Building.isInside(Building.roomAt(l, i)))
 
 let overlap = (a: Rect, b: Rect): float =>
   Math.max(0.0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0))
@@ -18,17 +37,17 @@ let near = Building.near
 // Rooms on one level don't overlap; every inside room is within the
 // footprint, on level 0 or 1.
 expect pairs |> List.all((p) =>
-  let (i, j) = p in Building.roomAt(i).level != Building.roomAt(j).level || overlap(Building.roomAt(i).rect, Building.roomAt(j).rect) < 0.0001)
-expect interiorIds |> List.all((i) => within(footprint, Building.roomAt(i).rect))
+  let (i, j) = p in Building.roomAt(l, i).level != Building.roomAt(l, j).level || overlap(Building.roomAt(l, i).rect, Building.roomAt(l, j).rect) < 0.0001)
+expect interiorIds |> List.all((i) => within(footprint, Building.roomAt(l, i).rect))
 expect rooms |> List.all((r) => r.level == 0.0 || r.level == 1.0)
 // Both floors have rooms; upstairs is all inside.
-expect interiorIds |> List.any((i) => Building.roomAt(i).level == 1.0)
+expect interiorIds |> List.any((i) => Building.roomAt(l, i).level == 1.0)
 expect rooms |> List.all((r) => r.level == 0.0 || Building.isInside(r))
 
 // The stretch of wall two rooms share, along it.
 let shared = (d: Door): Building.Hole =>
-  let a = Building.roomAt(d.a).rect in
-  let b = Building.roomAt(d.b).rect in
+  let a = Building.roomAt(l, d.a).rect in
+  let b = Building.roomAt(l, d.b).rect in
   let side = Building.sideBetween(a, b) in
   if side == Option.Some(North) || side == Option.Some(South)
   then { lo: Math.max(a.x0, b.x0), hi: Math.min(a.x1, b.x1), bottom: 0.0, top: 0.0 }
@@ -36,8 +55,8 @@ let shared = (d: Door): Building.Hole =>
 
 // Doors join two rooms on one level across a shared wall, inside its span
 // with a jamb's worth of wall on each side, and are big enough to walk through.
-expect doors |> List.all((d) => Building.roomAt(d.a).level == Building.roomAt(d.b).level)
-expect doors |> List.all((d) => Building.sideBetween(Building.roomAt(d.a).rect, Building.roomAt(d.b).rect) != Option.None)
+expect doors |> List.all((d) => Building.roomAt(l, d.a).level == Building.roomAt(l, d.b).level)
+expect doors |> List.all((d) => Building.sideBetween(Building.roomAt(l, d.a).rect, Building.roomAt(l, d.b).rect) != Option.None)
 expect doors |> List.all((d) =>
   let s = shared(d) in
   let h = Building.holeOf(d) in
@@ -45,7 +64,7 @@ expect doors |> List.all((d) =>
 expect doors |> List.all((d) => d.width >= 0.9 && d.height >= 2.0 && d.height <= ceiling)
 // Holes in one wall never overlap.
 expect interiorIds |> List.all((i) => [North, South, East, West] |> List.all((s) =>
-  let holes = Building.holesIn(i, s) in
+  let holes = Building.holesIn(l, i, s) in
   List.zip(holes, List.drop(1.0, holes)) |> List.all((p) => let (next, prev) = p in prev.hi < next.lo)))
 
 // Every room is reachable from the apron: through doors, up the stairs, or
@@ -53,7 +72,7 @@ expect interiorIds |> List.all((i) => [North, South, East, West] |> List.all((s)
 let neighbours = (i: float): List<float> =>
   List.flatten([
     windows |> List.concatMap((w) =>
-      match Building.outsideOf(w) with
+      match Building.outsideOf(l, w) with
       | Option.Some(o) => if w.room == i then [o] else if o == i then [w.room] else []
       | Option.None => []),
     doors |> List.concatMap((d) => if d.a == i then [d.b] else if d.b == i then [d.a] else []),
@@ -66,42 +85,42 @@ expect List.length(reached) == n
 
 // Clearances: rooms and the corridor leave room for the 0.6 m capsule.
 expect interiorIds |> List.all((i) =>
-  let r = Building.inner(Building.roomAt(i).rect) in Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 2.0)
+  let r = Building.inner(l, Building.roomAt(l, i).rect) in Math.min(r.x1 - r.x0, r.z1 - r.z0) >= 2.0)
 // Panels sit inside their room, clear of the walls.
 expect rooms |> List.all((r) =>
-  let c = Building.inner(r.rect) in
+  let c = Building.inner(l, r.rect) in
   r.panels |> List.all((p) => p.x - 0.6 > c.x0 && p.x + 0.6 < c.x1 && p.z - 0.6 > c.z0 && p.z + 0.6 < c.z1))
 
 // ---- Stairs ----------------------------------------------------------------
 
 // A flight's rooms are one stairwell: the same rect, a level apart.
 expect flights |> List.all((f) =>
-  let lo = Building.roomAt(f.lower) in
-  let up = Building.roomAt(f.upper) in
+  let lo = Building.roomAt(l, f.lower) in
+  let up = Building.roomAt(l, f.upper) in
   lo.kind == Stair && up.kind == Stair && lo.rect == up.rect && up.level == lo.level + 1.0)
 // The flight runs along the south wall, with room to step on at its foot
 // and a landing at its head, and lies inside the stairwell.
 let landingWidth = (f: Flight): float =>
-  Building.inner(Building.roomAt(f.lower).rect).x1 - Building.flightEnd(f) - Building.parapetThickness
+  Building.inner(l, Building.roomAt(l, f.lower).rect).x1 - Building.flightEnd(f) - Building.parapetThickness
 expect flights |> List.all((f) =>
-  let r = Building.inner(Building.roomAt(f.lower).rect) in
+  let r = Building.inner(l, Building.roomAt(l, f.lower).rect) in
   near(f.z0, r.z0) && f.z1 < r.z1 && f.x0 - r.x0 >= 1.0 && landingWidth(f) >= 1.2)
 // Clear width between the wall and the parapet; headroom under the landing.
 expect flights |> List.all((f) => f.z1 - Building.parapetThickness - f.z0 >= 1.2)
 expect storey - Building.slabDepth >= 2.4
 // Comfortable steps, and a ramp the character climbs (maxSlope 40°).
-let slope = (f: Flight): float => Math.atan(Building.riserOf(f) / f.tread) * 180.0 / Math.pi
-expect flights |> List.all((f) => Building.riserOf(f) <= 0.19 && f.tread >= 0.28 && slope(f) <= 35.0)
+let slope = (f: Flight): float => Math.atan(Building.riserOf(l, f) / f.tread) * 180.0 / Math.pi
+expect flights |> List.all((f) => Building.riserOf(l, f) <= 0.19 && f.tread >= 0.28 && slope(f) <= 35.0)
 // The ramp starts on the floor, passes through every step's nosing, and
 // meets the landing at its edge.
 expect flights |> List.all((f) =>
-  near(Building.rampY(f, f.x0 - f.tread), 0.0)
+  near(Building.rampY(l, f, f.x0 - f.tread), 0.0)
     && (List.range(f.risers - 1.0) |> List.all((j) =>
-      near(Building.rampY(f, f.x0 + j * f.tread), (j + 1.0) * Building.riserOf(f))))
-    && near(Building.rampY(f, Building.flightEnd(f)), storey))
+      near(Building.rampY(l, f, f.x0 + j * f.tread), (j + 1.0) * Building.riserOf(l, f))))
+    && near(Building.rampY(l, f, Building.flightEnd(f)), storey))
 // The upper room's door opens onto the landing's walkway.
 expect flights |> List.all((f) =>
-  let r = Building.inner(Building.roomAt(f.upper).rect) in
+  let r = Building.inner(l, Building.roomAt(l, f.upper).rect) in
   doors |> List.filter((d) => d.a == f.upper || d.b == f.upper) |> List.all((d) =>
     let h = Building.holeOf(d) in
     h.lo >= Building.flightEnd(f) + Building.parapetThickness && h.hi <= r.x1))
@@ -109,51 +128,65 @@ expect flights |> List.all((f) =>
 // is only ever seen from it or through its portals: the stairs split at
 // the upper floor, doors and windows at their wall's centre line.
 let inBox = (i: float, p: Vec3.t): bool =>
-  let r = Building.roomAt(i) in
-  let (y0, y1) = if Building.isInside(r) then (Building.baseOf(r), Building.baseOf(r) + Building.wallTop(i)) else (0.0, Portals.outsideTop) in
+  let r = Building.roomAt(l, i) in
+  let (y0, y1) = if Building.isInside(r) then (Building.baseOf(l, r), Building.baseOf(l, r) + Building.wallTop(l, i)) else (0.0, Portals.outsideTop) in
   let e = 0.0001 in
   Vec3.x(p) >= r.rect.x0 - e && Vec3.x(p) <= r.rect.x1 + e && Vec3.z(p) >= r.rect.z0 - e && Vec3.z(p) <= r.rect.z1 + e
     && Vec3.y(p) >= y0 - e && Vec3.y(p) <= y1 + e
-expect ids |> List.all((i) => Building.cellFaces(i) |> List.all((f) => Building.corners(f.q) |> List.all((p) => inBox(i, p))))
+expect ids |> List.all((i) => Building.cellFaces(l, i) |> List.all((f) => Building.corners(f.q) |> List.all((p) => inBox(i, p))))
 // Stacked windows share their patch of sky-lit ground in the day bake.
-expect windows |> List.all((w) => Building.stacked(w.side, Building.windowHole(w)) == 2.0)
+expect windows |> List.all((w) => Building.stacked(l, w.side, Building.windowHole(w)) == 2.0)
+
+// ---- The kit -----------------------------------------------------------------
+
+// The office's Layout derives the cell graph it had as constants: 23 rooms
+// plus 2 collar strips, 54 portals between the same cells in the same order,
+// 558 faces and 173 colliders; and cell ids stay room positions (the e2e's).
+expect List.length(Portals.cellsOf(l)) == 25.0 && List.length(Portals.portalsOf(l)) == 54.0
+expect List.length(kit.allFaces) == 558.0 && List.length(kit.colliders) == 173.0
+expect Text.join(" ", Portals.portalsOf(l) |> List.map((p) => $"{p.from}-{p.to}"))
+  == "0-1 1-0 1-2 2-1 2-3 3-2 4-1 1-4 1-5 5-1 6-2 2-6 2-7 7-2 8-2 2-8 2-9 9-2 10-2 2-10 2-11 11-2 13-14 14-13 15-13 13-15 13-16 16-13 17-13 13-17 13-18 18-13 19-13 13-19 13-20 20-13 21-13 13-21 14-12 12-14 22-6 6-22 22-17 17-22 11-12 12-11 0-22 22-0 0-24 24-0 23-22 22-23 23-24 24-23"
+expect ([0.0, 1.0, 2.0, 9.0, 11.0, 12.0, 13.0, 14.0, 20.0, 22.0] |> List.map((i) => Building.roomAt(l, i).name))
+  == ["apron", "lobby", "corridor", "106", "stair B", "stair B 2", "corridor 2", "turn 2", "206", "west yard"]
+// Every copy in every town names an archetype, and draws its cells.
+expect Block.towns |> List.all((t) => t.copies |> List.all((c) => Block.archetypeOf(c).name == c.archetype))
 
 // ---- Cells and portals -------------------------------------------------------
 
 // Each room's middle, at eye height, is in its own cell; the spawn is on the apron.
 let middle = (i: float): Vec3.t =>
-  let r = Building.roomAt(i).rect in
-  Vec3.make((r.x0 + r.x1) / 2.0, Building.baseOf(Building.roomAt(i)) + 1.6, (r.z0 + r.z1) / 2.0)
-expect ids |> List.all((i) => Cells.locate(middle(i), Portals.level) == Option.Some(i))
-expect Cells.locate(Vec3.make(spawn.x, 1.6, spawn.z), Portals.level) == Option.Some(0.0)
+  let r = Building.roomAt(l, i).rect in
+  Vec3.make((r.x0 + r.x1) / 2.0, Building.baseOf(l, Building.roomAt(l, i)) + 1.6, (r.z0 + r.z1) / 2.0)
+expect ids |> List.all((i) => Cells.locate(middle(i), level) == Option.Some(i))
+expect Cells.locate(Vec3.make(spawn.x, 1.6, spawn.z), level) == Option.Some(0.0)
 // Sight runs through doorways and stops at walls.
-expect Cells.segment(Vec3.make(10.0, 1.6, -6.0), Vec3.make(10.0, 1.6, 20.0), Portals.level)
-expect Cells.segment(Vec3.make(10.0, 1.6, 16.5), Vec3.make(15.6, 1.6, 16.5), Portals.level)
-expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(15.6, 1.6, 16.5), Portals.level)
+expect Cells.segment(Vec3.make(10.0, 1.6, -6.0), Vec3.make(10.0, 1.6, 20.0), level)
+expect Cells.segment(Vec3.make(10.0, 1.6, 16.5), Vec3.make(15.6, 1.6, 16.5), level)
+expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(15.6, 1.6, 16.5), level)
 // The stair opening is a portal between floors: sight runs up through it,
 // but not through the landing, nor through any other floor.
 let up = storey + 1.6
-expect Cells.segment(Vec3.make(12.0, 1.6, 23.0), Vec3.make(15.0, up, 25.0), Portals.level)
-expect not Cells.segment(Vec3.make(19.0, 1.6, 24.0), Vec3.make(19.0, up, 24.0), Portals.level)
-expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(10.0, up, 10.0), Portals.level)
+expect Cells.segment(Vec3.make(12.0, 1.6, 23.0), Vec3.make(15.0, up, 25.0), level)
+expect not Cells.segment(Vec3.make(19.0, 1.6, 24.0), Vec3.make(19.0, up, 24.0), level)
+expect not Cells.segment(Vec3.make(10.0, 1.6, 10.0), Vec3.make(10.0, up, 10.0), level)
 // Upstairs, through doorways as below.
-expect Cells.segment(Vec3.make(10.0, up, 3.0), Vec3.make(15.6, up, 3.0), Portals.level)
+expect Cells.segment(Vec3.make(10.0, up, 3.0), Vec3.make(15.6, up, 3.0), level)
 // Every window is a portal from the street: sight runs in through one,
 // not through the wall beside it.
-expect windows |> List.all((w) => Building.outsideOf(w) != Option.None)
-expect Cells.segment(Vec3.make(-5.0, 1.6, 9.3), Vec3.make(4.0, 1.6, 9.3), Portals.level)
-expect Cells.segment(Vec3.make(-5.0, up, 9.3), Vec3.make(4.0, up, 9.3), Portals.level)
-expect not Cells.segment(Vec3.make(-5.0, 1.6, 16.0), Vec3.make(4.0, 1.6, 16.0), Portals.level)
+expect windows |> List.all((w) => Building.outsideOf(l, w) != Option.None)
+expect Cells.segment(Vec3.make(-5.0, 1.6, 9.3), Vec3.make(4.0, 1.6, 9.3), level)
+expect Cells.segment(Vec3.make(-5.0, up, 9.3), Vec3.make(4.0, up, 9.3), level)
+expect not Cells.segment(Vec3.make(-5.0, 1.6, 16.0), Vec3.make(4.0, 1.6, 16.0), level)
 
 // ---- The mesh and its cells ----------------------------------------------------
 
 // Every face's material has a group, and the committed bake's mesh has
 // exactly the derived triangles.
-let total = 2.0 * List.length(Building.allFaces)
-expect (Building.meshSpans |> List.map((s) => s.count) |> List.sum) == total
-expect (Building.cellRanges |> List.map((r) => r.count) |> List.sum) == total
-expect Provenance.status != Provenance.Current
-  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPath)).triangles) == 12.0 * total
+let total = 2.0 * List.length(kit.allFaces)
+expect (kit.meshSpans |> List.map((s) => s.count) |> List.sum) == total
+expect (kit.cellRanges |> List.map((r) => r.count) |> List.sum) == total
+expect archetype.status != Provenance.Current
+  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(archetype.bake))).triangles) == 12.0 * total
 
 // The split into cell meshes loses and repeats nothing: the cells' triangle
 // ranges and vertex runs tile the mesh in order, each cell's triangles index
@@ -162,8 +195,8 @@ expect Provenance.status != Provenance.Current
 // UV2 included.
 let u32s = (b: Bytes.t): List<float> => Decode.run(Decode.list(Bytes.length(b) / 4.0, Decode.u32le), b) |> Binary.require
 let splitsExactly = (data: Model.staticData): bool =>
-  let runs = Building.runsOf(data) in
-  let cells = runs |> List.map((run) => (run, Building.cellData(data, run))) in
+  let runs = Building.runsOf(kit, data) in
+  let cells = runs |> List.map((run) => (run, Building.cellData(kit, data, run))) in
   let tiled = runs |> List.fold((acc, run) =>
     let (ok, first, v) = acc in (ok && run.first == first && run.v0 == v && run.v1 > run.v0, first + run.count, run.v1),
     (true, 0.0, 0.0)) in
@@ -177,46 +210,46 @@ let splitsExactly = (data: Model.staticData): bool =>
     && Bytes.equals(rejoined((d) => d.normals), data.normals)
     && Bytes.equals(rejoined((d) => d.uvs), data.uvs)
     && Bytes.equals(rejoined((d) => d.uvs2), data.uvs2)
-expect splitsExactly(Building.interiorData)
-expect Provenance.status != Provenance.Current
-  || splitsExactly(Lightmap.readMesh(File.bytes(Provenance.meshPath)))
+expect splitsExactly(kit.interiorData)
+expect archetype.status != Provenance.Current
+  || splitsExactly(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(archetype.bake))))
 // The baked mesh has lightmap UVs to keep.
-expect Provenance.status != Provenance.Current
-  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPath)).uvs2) > 0.0
+expect archetype.status != Provenance.Current
+  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(archetype.bake))).uvs2) > 0.0
 
 // A door's reveal spans its wall's full thickness: its two halves'
 // thresholds together. Doors from outside go through the facade; the rest
 // through partitions.
 let depth = (d: Door, i: float): float =>
-  match List.last(Building.doorHalf(d, i)) with
+  match List.last(Building.doorHalf(l, d, i)) with
   | Option.Some(f) => Vec3.length(Vec3.cross(f.q.b, f.q.a)) / d.width
   | Option.None => 0.0
 expect doors |> List.all((d) =>
-  let wall = if Building.isInside(Building.roomAt(d.a)) then partition else facade in
+  let wall = if Building.isInside(Building.roomAt(l, d.a)) then partition else facade in
   Math.abs(depth(d, d.a) + depth(d, d.b) - wall) < 0.0001 && Math.abs(depth(d, d.a) - depth(d, d.b)) < 0.0001)
 
 // Collider tags are unique.
-let tags = Building.blocks |> List.map((b) => b.tag)
+let tags = kit.blocks |> List.map((b) => b.tag)
 expect tags |> List.indexedMap((i, t) => List.drop(i + 1.0, tags) |> List.any((u) => u == t)) |> List.all((dup) => not dup)
 
 // Windows sit in an outside wall of an inside room, clear of its corners,
 // with a sill and a head under the ceiling.
 expect windows |> List.all((w) =>
-  let r = Building.roomAt(w.room) in
-  let c = Building.inner(r.rect) in
+  let r = Building.roomAt(l, w.room) in
+  let c = Building.inner(l, r.rect) in
   let (lo, hi) = if w.side == North || w.side == South then (c.x0, c.x1) else (c.z0, c.z1) in
-  Building.isInside(r) && Building.onFootprint(w.side, r.rect)
+  Building.isInside(r) && Building.onFootprint(l, w.side, r.rect)
     && w.at - w.width / 2.0 > lo + 0.3 && w.at + w.width / 2.0 < hi - 0.3
     && w.sill >= 0.8 && w.head < ceiling - 0.2)
 // Each window has a sill collider: its floor to its sill, across the
 // window, in its wall.
 expect windows |> List.all((w) =>
-  let l = Building.lineOf(w.side, Building.roomAt(w.room).rect) in
-  let y = Building.baseOf(Building.roomAt(w.room)) in
-  Building.blocks |> List.any((b) =>
+  let line = Building.lineOf(w.side, Building.roomAt(l, w.room).rect) in
+  let y = Building.baseOf(l, Building.roomAt(l, w.room)) in
+  kit.blocks |> List.any((b) =>
     near(b.y - b.h / 2.0, y) && near(b.y + b.h / 2.0, y + w.sill)
-      && (if w.side == North || w.side == South then near(b.z, l) && near(b.x, w.at) && near(b.w, w.width)
-          else near(b.x, l) && near(b.z, w.at) && near(b.d, w.width))))
+      && (if w.side == North || w.side == South then near(b.z, line) && near(b.x, w.at) && near(b.w, w.width)
+          else near(b.x, line) && near(b.z, w.at) && near(b.d, w.width))))
 
 // ---- Hours -------------------------------------------------------------------
 
@@ -246,22 +279,23 @@ expect Hours.outdoorAt(0.5).sky == Hours.duskSky
 
 // The collar's cells: one strip per side, the apron and the west yard
 // among them under their room ids.
-let collarIds = Portals.sides |> List.map(Portals.stripId)
+let collarIds = Portals.sides |> List.map(Portals.stripId(l))
 expect collarIds == [0.0, n, n - 1.0, n + 1.0]
 // Every cell is reachable through portals from the south strip.
+let portals = Portals.portalsOf(l)
 let linked = (i: float): List<float> =>
-  Portals.portals |> List.filter((p) => p.from == i) |> List.map((p) => p.to)
-let cellCount = n + List.length(Portals.extraSides)
+  portals |> List.filter((p) => p.from == i) |> List.map((p) => p.to)
+let cellCount = n + List.length(Portals.extraSides(l))
 let reachedCells = List.range(cellCount) |> List.fold((seen, k) =>
   seen |> List.concatMap(linked) |> List.fold((acc, j) => if List.any((s) => s == j, acc) then acc else acc |> List.append([j]), seen), [0.0])
 expect List.length(reachedCells) == cellCount
 // The street sees round the corners and in through the doors and windows:
 // south strip → east strip; north strip → west strip → office 103's window.
-expect Cells.segment(Vec3.make(30.0, 1.6, -5.0), Vec3.make(30.0, 1.6, 10.0), Portals.level)
-expect Cells.segment(Vec3.make(-34.0, 1.6, 34.0), Vec3.make(2.0, 1.6, 8.0), Portals.level)
-expect Cells.segment(Vec3.make(-34.0, up, 34.0), Vec3.make(2.0, up, 8.0), Portals.level)
-expect Cells.segment(Vec3.make(10.0, 1.6, -30.0), Vec3.make(10.0, 1.6, 3.0), Portals.level)
-expect not Cells.segment(Vec3.make(30.0, 1.6, 10.0), Vec3.make(15.0, 1.6, 10.0), Portals.level)
+expect Cells.segment(Vec3.make(30.0, 1.6, -5.0), Vec3.make(30.0, 1.6, 10.0), level)
+expect Cells.segment(Vec3.make(-34.0, 1.6, 34.0), Vec3.make(2.0, 1.6, 8.0), level)
+expect Cells.segment(Vec3.make(-34.0, up, 34.0), Vec3.make(2.0, up, 8.0), level)
+expect Cells.segment(Vec3.make(10.0, 1.6, -30.0), Vec3.make(10.0, 1.6, 3.0), level)
+expect not Cells.segment(Vec3.make(30.0, 1.6, 10.0), Vec3.make(15.0, 1.6, 10.0), level)
 
 // The collar holds every eye that sees an interior: anywhere up to
 // `activeOff` + `eyeReach` from the footprint (corners rounded, so the strips'
@@ -280,7 +314,7 @@ let outline = (d: float): List<(float, float)> =>
     along(f.z0, f.z1) |> List.concatMap((z) => [(f.x0 - d, z), (f.x1 + d, z)]),
     arc(f.x1, f.z1, 0.0), arc(f.x1, f.z0, 90.0), arc(f.x0, f.z0, 180.0), arc(f.x0, f.z1, 270.0),
   ])
-let held = (x: float, y: float, z: float): bool => Cells.locate(Vec3.make(x, y, z), Portals.level) != Option.None
+let held = (x: float, y: float, z: float): bool => Cells.locate(Vec3.make(x, y, z), level) != Option.None
 let outside = List.range(Math.floor(reach) + 1.0) |> List.map((k) => Math.min(reach, k + 0.001)) |> List.concatMap(outline)
 expect outside |> List.all((p) => let (x, z) = p in [0.3, 1.6, 2.6] |> List.all((y) => held(x, y, z)))
 let inside = List.range(f.x1 - f.x0 + 1.0) |> List.concatMap((x) => List.range(f.z1 - f.z0 + 1.0) |> List.map((z) => (f.x0 + x, f.z0 + z)))
@@ -296,7 +330,7 @@ let allIds = (t: Block.Town): List<float> => List.range(List.length(t.copies))
 
 // Four copies at 0/90/180/270°; the first is the office where it stands.
 expect (copies |> List.map((c) => c.yaw)) == [0.0, 90.0, 180.0, 270.0]
-expect Block.home == { name: "office-0", x: 0.0, z: 0.0, yaw: 0.0 }
+expect Block.home == { name: "office-0", archetype: "office", x: 0.0, z: 0.0, yaw: 0.0 }
 let close = (a: Vec3.t, b: Vec3.t): bool => Vec3.length(a |> Vec3.sub(b)) < 0.00001
 // To the world and back; a heading turns with its copy: forward in the
 // copy's space lands where its heading points in the world.
@@ -335,7 +369,7 @@ expect copies |> List.all((c) => yards |> List.all((r) => inCross(worldRect(c, r
 
 // Collider tags are unique across the copies, the grounds and the player.
 let tagsOf = (cs: List<Block.Copy>): List<string> =>
-  cs |> List.concatMap((c) => List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) => Block.tagOf(c, k.tag)))
+  cs |> List.concatMap((c) => Block.collidersOf(c) |> List.map((k) => Block.tagOf(c, k.tag)))
 let unique = (xs: List<string>): bool => Map.size(Map.fromList(xs |> List.map((x) => (x, true)))) == List.length(xs)
 expect unique(List.flatten([
   ["ground", "block-ground", "island", "island-pad", "player"],
@@ -369,7 +403,7 @@ expect Block.activeAt(block, Block.maxActive, [], Block.toWorld(Block.copyAt(1.0
 // Every copy draws the home copy's scene (one archetype: the same cell
 // models and lightmaps) under its own transform.
 let look = (c: Block.Copy): Game.CopyLook => { copy: c, neon: 1.0, lamps: 1.0, day: false, active: true }
-let local = Scene.group([Exterior.exteriorAt(1.0, 1.0), Scene.cells(Portals.level, Scene.group(Game.nightRooms))])
+let local = Scene.group([Exterior.exteriorAt(street, 1.0, 1.0), Scene.cells(level, Scene.group(archetype.night))])
 expect copies |> List.all((c) => Scene.equals(Game.copyScene(look(c)), Block.sceneOf(c, local)))
 
 // ---- The grids -------------------------------------------------------------------
@@ -394,7 +428,7 @@ expect unique(List.flatten([["player", "ground", "block-ground", "grid-4-ground"
 // The index finds exactly the copies a scan of all 64 would, out to every
 // radius it's asked for, from street level all over the grid and past it.
 let scan = (t: Block.Town, r: float, eye: Vec3.t): List<(float, float)> =>
-  t.copies |> List.indexedMap((id, c) => (id, Block.fromFootprint(Block.toLocal(c, eye)))) |> List.filter((e) => let (id, d) = e in d <= r)
+  t.copies |> List.indexedMap((id, c) => (id, Block.fromFootprint(Block.footprintOf(c), Block.toLocal(c, eye)))) |> List.filter((e) => let (id, d) = e in d <= r)
 let probes = List.range(24.0) |> List.concatMap((i) => List.range(24.0) |> List.map((j) => Vec3.make(-90.0 + 23.0 * i, 1.6, -90.0 + 23.0 * j)))
 expect probes |> List.all((p) =>
   [Block.activeOff, Block.lightReach, Block.solidOn + Block.solidMargin] |> List.all((r) => Block.near(grid64, r, p) == scan(grid64, r, p)))
@@ -403,7 +437,7 @@ expect probes |> List.all((p) =>
 let tight = (n: float, gapX: float, gapZ: float): Block.Town =>
   let side = Math.sqrt(n) in
   let cs = List.range(n) |> List.map((id) =>
-    { name: $"tight-{id}", x: Math.mod(id, side) * (f.x1 + gapX), z: Math.floor(id / side) * (f.z1 + gapZ), yaw: 0.0 }) in
+    { name: $"tight-{id}", archetype: "office", x: Math.mod(id, side) * (f.x1 + gapX), z: Math.floor(id / side) * (f.z1 + gapZ), yaw: 0.0 }) in
   { name: "tight", copies: cs, index: Block.indexOf(cs), shells: true, solidOn: Block.solidOn, lightReach: Block.lightReach, ground: Exterior.ground, groundBody: Exterior.groundBody, reach: Hours.streetReach }
 let tight64 = tight(64.0, 6.0, 6.0)
 let tight16 = tight(16.0, 6.0, 6.0)
@@ -502,20 +536,20 @@ expect not Block.isIn(5.0, Block.solidAt(grid64, [5.0], south(Block.solidOn + Bl
 
 // ---- The street side -------------------------------------------------------------
 
-let outer = Exterior.half
+let outer = street.half
 let eps = Building.eps
-let roof = Exterior.roofBox
+let roof = street.roofBox
 // The roof covers the footprint at the roofline, run into the facade's outer
 // half but not out through it, above every room's ceiling.
 expect roof.x0 < f.x0 && roof.x1 > f.x1 && roof.z0 < f.z0 && roof.z1 > f.z1
 expect roof.x0 > f.x0 - outer && roof.x1 < f.x1 + outer && roof.z0 > f.z0 - outer && roof.z1 < f.z1 + outer
-expect near(roof.y1, List.length(Building.levels) * storey)
-expect interiorIds |> List.all((i) => Building.baseOf(Building.roomAt(i)) + Building.wallTop(i) < roof.y0)
+expect near(roof.y1, List.length(Building.levelsOf(l)) * storey)
+expect interiorIds |> List.all((i) => Building.baseOf(l, Building.roomAt(l, i)) + Building.wallTop(l, i) < roof.y0)
 // It draws with the street side, and on shells: their massing stops under
 // it, inside a parapet like the facade's.
-expect Exterior.streetBoxes |> List.any((e) => let (b, _) = e in b == roof)
-expect Shells.litBoxes |> List.any((e) => let (b, _) = e in b == roof)
-expect near(Shells.massing.y1, roof.y0) && (Shells.parapet |> List.all((b) => near(b.y0, roof.y0) && near(b.y1, facadeHeight)))
+expect street.streetBoxes |> List.any((e) => let (b, _) = e in b == roof)
+expect shell.litBoxes |> List.any((e) => let (b, _) = e in b == roof)
+expect near(shell.massing.y1, roof.y0) && (shell.parapet |> List.all((b) => near(b.y0, roof.y0) && near(b.y1, facadeHeight)))
 // The facade rises on all round as a parapet, unbroken, at least 0.8 m.
 expect facadeHeight - roof.y1 >= 0.8
 // Whether intervals `spans` cover [a, b] without a gap.
@@ -524,7 +558,7 @@ let covers = (spans: List<(float, float)>, a: float, b: float): bool =>
     let (lo, hi) = e in if lo <= at + eps then Math.max(at, hi) else at, a) in
   reach >= b - eps
 let parapetCovers = (onSide: (Exterior.Box) => bool, along: (Exterior.Box) => (float, float), a: float, b: float): bool =>
-  covers(Exterior.facadeBoxes |> List.filter((b) => onSide(b) && b.y0 <= roof.y1 && near(b.y1, facadeHeight)) |> List.map(along), a, b)
+  covers(street.facadeBoxes |> List.filter((b) => onSide(b) && b.y0 <= roof.y1 && near(b.y1, facadeHeight)) |> List.map(along), a, b)
 let spanX = (b: Exterior.Box): (float, float) => (b.x0, b.x1)
 let spanZ = (b: Exterior.Box): (float, float) => (b.z0, b.z1)
 expect parapetCovers((b) => near(b.z1, f.z0), spanX, f.x0 - outer, f.x1 + outer)
@@ -544,15 +578,15 @@ let bandSlice = (level: float, s: Side, h: Building.Hole, d0: float, d1: float):
   | North => Exterior.box(h.lo, y0, f.z1 + outer - d1, h.hi, y1, f.z1 + outer - d0)
   | West => Exterior.box(f.x0 - outer + d0, y0, h.lo, f.x0 - outer + d1, y1, h.hi)
   | East => Exterior.box(f.x1 + outer - d1, y0, h.lo, f.x1 + outer - d0, y1, h.hi)
-let bandSlices = (d0: float, d1: float): List<Exterior.Box> => Building.levels |> List.concatMap((level) =>
-  [South, North, West, East] |> List.concatMap((s) => Exterior.bandHoles(level, s) |> List.map((h) => bandSlice(level, s, h, d0, d1))))
+let bandSlices = (d0: float, d1: float): List<Exterior.Box> => Building.levelsOf(l) |> List.concatMap((level) =>
+  [South, North, West, East] |> List.concatMap((s) => Exterior.bandHoles(l, level, s) |> List.map((h) => bandSlice(level, s, h, d0, d1))))
 let r = Exterior.recess
-expect List.length(bandSlices(0.0, r)) == List.length(Exterior.bandBoxes)
-expect bandSlices(0.0, r) |> List.all((o) => not (List.any((b) => solidIn(o, b), List.append(Exterior.bandBoxes, Exterior.facadeBoxes))))
+expect List.length(bandSlices(0.0, r)) == List.length(street.bandBoxes)
+expect bandSlices(0.0, r) |> List.all((o) => not (List.any((b) => solidIn(o, b), List.append(street.bandBoxes, street.facadeBoxes))))
 // Behind that, a panel fills the hole.
 let contains = (b: Exterior.Box, a: Exterior.Box): bool =>
   b.x0 <= a.x0 && b.x1 >= a.x1 && b.y0 <= a.y0 && b.y1 >= a.y1 && b.z0 <= a.z0 && b.z1 >= a.z1
-expect bandSlices(r, r + 0.01) |> List.all((a) => Exterior.bandBoxes |> List.any((b) => contains(b, a)))
+expect bandSlices(r, r + 0.01) |> List.all((a) => street.bandBoxes |> List.any((b) => contains(b, a)))
 // Every town's fog ends past where it starts.
 expect Block.towns |> List.all((t) => Math.min(t.reach.night, t.reach.day) > Hours.outdoorAt(1.0).fogNear)
 expect Hours.reachAt(Hours.streetReach, 0.0) == Hours.streetReach.night && Hours.reachAt(Hours.streetReach, 1.0) == Hours.streetReach.day
@@ -569,16 +603,16 @@ expect [shellLook([]), { shellLook(Block.townAt(4.0).copies |> List.indexedMap((
 // Every window glows where layout.fun cuts it, in the wall's outer face, and
 // a panel lights the room behind it (so glowing is right); the entrance
 // comes first.
-let half = Exterior.half
-expect List.length(Shells.openings) == List.length(windows) + 1.0
+let half = street.half
+expect List.length(shell.openings) == List.length(windows) + 1.0
 expect windows |> List.indexedMap((i, w) =>
-  match List.nth(i + 1.0, Shells.openings) with
+  match List.nth(i + 1.0, shell.openings) with
   | Option.Some(b) =>
-    let y = Building.baseOf(Building.roomAt(w.room)) in
+    let y = Building.baseOf(l, Building.roomAt(l, w.room)) in
     w.side == West && near(b.x1, f.x0 - half)
       && near(b.z0, w.at - w.width / 2.0) && near(b.z1, w.at + w.width / 2.0) && near(b.y0, y + w.sill) && near(b.y1, y + w.head)
   | Option.None => false) |> List.all((ok) => ok)
-expect windows |> List.all((w) => Building.roomAt(w.room).panels |> List.any((p) => p.on))
+expect windows |> List.all((w) => Building.roomAt(l, w.room).panels |> List.any((p) => p.on))
 // One copy's parts are prebuilt per id, for the largest town.
 expect List.length(Shells.parts) == 64.0
 

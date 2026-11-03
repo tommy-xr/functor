@@ -1,16 +1,17 @@
-// Rebake the office's night and day lightmaps and record their provenance.
+// Rebake every archetype's night and day lightmaps and record their provenance.
 //
-//   node examples/liminal-office/bake.mjs           # bake, copy into baked/, write baked/provenance.txt
+//   node examples/liminal-office/bake.mjs           # bake, copy into baked/<archetype>/, write its provenance.txt
 //   node examples/liminal-office/bake.mjs --check   # bake into a temp dir; fail unless byte-identical to baked/
 //
 // The CLI is $FUNCTOR_BIN, else target/release/functor, else target/debug/functor.
-// provenance.txt records the layout hash (provenance.fun computes the same one
-// at load and reports a mismatch as a stale bake), the bakes, the baker's
-// version and the settings, both read back from the PNGs the baker wrote.
-// Both bakes unwrap the same mesh, so their .mesh.bin files must match; only
-// night.mesh.bin is kept.
+// One `functor bake` makes every archetype's `<archetype>-<bake>` jobs; each
+// lands in baked/<archetype>/<bake>.png. Its provenance.txt records the layout
+// hash (provenance.fun computes the same one at load and reports a mismatch
+// as a stale bake), the bakes, the baker's version and the settings, both read
+// back from the PNGs the baker wrote. Both bakes unwrap the same mesh, so their
+// .mesh.bin files must match; only night.mesh.bin is kept.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,8 +27,8 @@ const SETTINGS = {
   seed: 0,
   "max-size": 2048,
 };
-// Must match `sources` in provenance.fun, and `Building.bakes`.
-const SOURCES = ["layout.fun", "building.fun"];
+// Each archetype's sources: must match `Archetypes.all` (archetypes.fun).
+const ARCHETYPES = { office: ["layout.fun", "officeLayout.fun", "building.fun"] };
 const BAKES = ["night", "day"];
 const ARTIFACTS = [...BAKES.map((b) => `${b}.png`), "night.mesh.bin"];
 
@@ -38,10 +39,10 @@ const bin =
 
 // provenance.fun's hash: u32le words then tail bytes, h = (h * 1000003 + x) mod
 // 4294967291. Every intermediate stays below 2^53, so doubles are exact.
-function layoutHash() {
+function layoutHash(sources) {
   let h = 0;
   const step = (x) => (h = (h * 1000003 + x) % 4294967291);
-  for (const name of SOURCES) {
+  for (const name of sources) {
     const b = readFileSync(join(DIR, name));
     const words = Math.floor(b.length / 4);
     for (let i = 0; i < words; i++) step(b.readUInt32LE(4 * i));
@@ -67,21 +68,32 @@ function pngText(path) {
   return out;
 }
 
-// Bake into `output`, then check the bakes share one mesh and keep only
-// night.mesh.bin. Throws on any failure.
+// Bake into `output`, then sort each archetype's jobs into output/<archetype>/,
+// check its bakes share one mesh and keep only night.mesh.bin. Throws on any
+// failure.
 function bake(output) {
   const flags = Object.entries(SETTINGS).flatMap(([k, v]) => [`--${k}`, String(v)]);
   const start = Date.now();
   const run = spawnSync(bin, ["-d", DIR, "bake", "--output", output, ...flags], { stdio: "inherit" });
   if (run.status !== 0) throw new Error(`functor bake exited with ${run.status}`);
   const seconds = (Date.now() - start) / 1000;
-  const mesh = readFileSync(join(output, "night.mesh.bin"));
-  for (const b of BAKES.filter((b) => b !== "night")) {
-    if (!readFileSync(join(output, `${b}.mesh.bin`)).equals(mesh)) {
-      throw new Error(`${b}.mesh.bin differs from night.mesh.bin: the bakes must share one mesh`);
+  for (const a of Object.keys(ARCHETYPES)) {
+    mkdirSync(join(output, a));
+    for (const b of BAKES) {
+      renameSync(join(output, `${a}-${b}.png`), join(output, a, `${b}.png`));
+      renameSync(join(output, `${a}-${b}.mesh.bin`), join(output, a, `${b}.mesh.bin`));
     }
-    rmSync(join(output, `${b}.mesh.bin`));
+    const mesh = readFileSync(join(output, a, "night.mesh.bin"));
+    for (const b of BAKES.filter((b) => b !== "night")) {
+      if (!readFileSync(join(output, a, `${b}.mesh.bin`)).equals(mesh)) {
+        throw new Error(`${a}: ${b}.mesh.bin differs from night.mesh.bin: the bakes must share one mesh`);
+      }
+      rmSync(join(output, a, `${b}.mesh.bin`));
+    }
   }
+  // A job left over belongs to an archetype missing from ARCHETYPES.
+  const left = readdirSync(output).filter((f) => f.endsWith(".png") || f.endsWith(".mesh.bin"));
+  if (left.length) throw new Error(`bakes of no archetype in ARCHETYPES: ${left.join(", ")}`);
   return seconds;
 }
 
@@ -91,35 +103,44 @@ const temp = mkdtempSync(join(tmpdir(), "liminal-office-bake-"));
 try {
   if (process.argv.includes("--check")) {
     const seconds = bake(temp);
-    const differ = ARTIFACTS.filter((f) => !readFileSync(join(temp, f)).equals(readFileSync(join(baked, f))));
     console.log(`rebaked in ${seconds.toFixed(1)} s`);
+    const files = Object.keys(ARCHETYPES).flatMap((a) => ARTIFACTS.map((f) => join(a, f)));
+    const differ = files.filter((f) => !readFileSync(join(temp, f)).equals(readFileSync(join(baked, f))));
     if (differ.length) throw new Error(`not byte-identical to baked/: ${differ.join(", ")}`);
-    console.log(`byte-identical to baked/: ${ARTIFACTS.join(", ")}`);
+    console.log(`byte-identical to baked/: ${files.join(", ")}`);
   } else {
     // Hash before and after: an edit during the bake would otherwise certify
     // the old bake against the new layout.
-    const hash = layoutHash();
+    const hashes = Object.values(ARCHETYPES).map(layoutHash);
     const seconds = bake(temp);
-    if (layoutHash() !== hash) throw new Error(`${SOURCES.join(" or ")} changed during the bake: rerun it`);
-    const made = BAKES.map((b) => {
-      const text = pngText(join(temp, `${b}.png`));
-      return [text["functor-bake-version"], text["functor-bake-settings"]];
+    Object.entries(ARCHETYPES).forEach(([a, sources], i) => {
+      if (layoutHash(sources) !== hashes[i]) throw new Error(`${sources.join(" or ")} changed during the bake: rerun it`);
     });
-    const [version, settings] = made[0];
-    if (!version || !settings || made.some(([v, s]) => v !== version || s !== settings)) {
-      throw new Error("the PNGs lack or disagree on their functor-bake-version / functor-bake-settings text chunks");
+    const records = Object.entries(ARCHETYPES).map(([a, sources], i) => {
+      const made = BAKES.map((b) => {
+        const text = pngText(join(temp, a, `${b}.png`));
+        return [text["functor-bake-version"], text["functor-bake-settings"]];
+      });
+      const [version, settings] = made[0];
+      if (!version || !settings || made.some(([v, s]) => v !== version || s !== settings)) {
+        throw new Error(`${a}: the PNGs lack or disagree on their functor-bake-version / functor-bake-settings text chunks`);
+      }
+      const record = [
+        `layout=${hashes[i]}`,
+        `sources=${sources.join(" ")}`,
+        `bakes=${BAKES.join(" ")}`,
+        `bakeVersion=${version}`,
+        `settings=${settings}`,
+        "",
+      ].join("\n");
+      return [a, record];
+    });
+    for (const [a, record] of records) {
+      mkdirSync(join(baked, a), { recursive: true });
+      for (const f of ARTIFACTS) copyFileSync(join(temp, a, f), join(baked, a, f));
+      writeFileSync(join(baked, a, "provenance.txt"), record);
     }
-    for (const f of ARTIFACTS) copyFileSync(join(temp, f), join(baked, f));
-    const record = [
-      `layout=${hash}`,
-      `sources=${SOURCES.join(" ")}`,
-      `bakes=${BAKES.join(" ")}`,
-      `bakeVersion=${version}`,
-      `settings=${settings}`,
-      "",
-    ].join("\n");
-    writeFileSync(join(baked, "provenance.txt"), record);
-    console.log(`baked in ${seconds.toFixed(1)} s; wrote baked/provenance.txt`);
+    console.log(`baked in ${seconds.toFixed(1)} s; wrote ${records.map(([a]) => `baked/${a}/provenance.txt`).join(", ")}`);
   }
 } catch (e) {
   console.error(e.message);

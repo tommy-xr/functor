@@ -20,20 +20,21 @@
 // the island; the right trigger toggles the flashlight, held in the right
 // hand.
 //
-// layout.fun is the one layout authority; building.fun derives the mesh,
-// colliders and bake jobs from it, portals.fun the culling cells, and
-// exterior.fun the street side. The interior's light is baked
-// (`Building.night`, `Building.day`) and committed under baked/; bake.mjs
-// rebakes it and records its provenance, which provenance.fun checks at load.
+// officeLayout.fun is the office's one layout authority (a layout.fun
+// `Layout`); building.fun derives the mesh, colliders and bake jobs from it,
+// portals.fun the culling cells, exterior.fun the street side, and
+// archetypes.fun holds them, once per archetype. The interior's light is
+// baked and committed under baked/office/; bake.mjs rebakes it and records
+// its provenance, which provenance.fun checks at load.
 // hours.fun maps the hour to the bake and the outdoor light.
 
 let v = Vec3.make
 
 // ---- Lights ------------------------------------------------------------------
 
-// The bake jobs (`Building.night`, `Building.day`) hold the panels' light and
-// the daylight through openings; `functor bake` reads this list.
-let bakes = Building.bakes
+// Every archetype's night and day bake jobs hold the panels' light and the
+// daylight through openings; `functor bake` reads this list.
+let bakes = Archetypes.bakes
 
 // The frame's lights reach only unlightmapped geometry (the street, the
 // facade, the lamps): all are `Light.baked`, so the lit interior ignores
@@ -50,7 +51,7 @@ let streetLights = (c: Block.Copy): List<StreetLight> =>
   List.flatten([
     [{ at: Block.toWorld(c, v(lobby.x, lobby.y, lobby.z)), r: lobby.r, g: lobby.g, b: lobby.b,
        intensity: lobby.intensity, range: lobby.range, switched: false }],
-    Exterior.lampHeads |> List.map((p) =>
+    Block.archetypeOf(c).street.lampHeads |> List.map((p) =>
       { at: Block.toWorld(c, p |> Vec3.add(v(0.0, 0.0 - lamp.drop, 0.0))), r: lamp.r, g: lamp.g, b: lamp.b,
         intensity: lamp.intensity, range: lamp.range, switched: true }),
   ])
@@ -82,32 +83,7 @@ let unbakedLight = Light.ambient(Color.rgb(0.55, 0.57, 0.5))
 
 // ---- The interior --------------------------------------------------------------
 
-let interior: List<Building.CellModel> =
-  match Provenance.status with
-  | Provenance.Current =>
-    let mesh = Provenance.meshPath |> File.bytes |> Lightmap.readMesh in
-    Building.cellModels({ mesh with lightmap: Option.Some({
-      texture: Texture.fromPng(File.bytes(Provenance.lightPath), Texture.Srgb),
-      scale: Building.bakeScale, floor: Color.rgb(0.0, 0.0, 0.0) }) })
-  | _ => Building.cellModels(Building.interiorData)
-
-let baked = Provenance.status == Provenance.Current
-
-// Each cell's mesh in its cell, under the night bake, and the same models under the
-// day bake: one mesh, two resident lightmaps, picked per frame. Built once:
-// every copy in the block draws these same values.
-let roomOf = (p: Building.CellModel): Scene.t => Scene.modelOf(p.model) |> Scene.inCells([p.cell])
-let nightRooms = interior |> List.map(roomOf)
-let dayRooms =
-  if not baked then nightRooms
-  else
-    let dayLightmap = Texture.fromPng(File.bytes(Provenance.dayLightPath), Texture.Srgb) in
-    nightRooms |> List.map((room) => room |> Scene.withLightmap(dayLightmap))
-
-// Both sets, kept on the GPU but never drawn: with no interior active, or
-// at the other hour, the meshes and both lightmaps stay loaded, so entering
-// a building or switching the hour uploads nothing.
-let resident = Scene.keepResident(Scene.group(List.flatten([nightRooms, dayRooms])))
+let baked = Archetypes.baked
 
 // ---- The player ------------------------------------------------------------------
 
@@ -123,6 +99,9 @@ type Look =
   | NoMouse
   | MouseAt(x: float, y: float)
 
+// The office's spawn, on its apron.
+let spawn = OfficeLayout.layout.spawn
+
 // Views 1–8 (in the office, or the block's nearest copy) and 9, 0 (in the
 // block, or a grid): in which copy (9 and 0 only), where in it, on which level, and which way. 4 faces office 103's window;
 // 5 looks up the stairs from their foot, 6 down them from the landing; 7 is
@@ -131,7 +110,7 @@ type Look =
 // 180°.
 type View = { copy: float, x: float, level: float, z: float, yaw: float, pitch: float }
 let views = [
-  { copy: 0.0, x: Layout.spawn.x, level: 0.0, z: Layout.spawn.z, yaw: 0.0, pitch: 0.06 },
+  { copy: 0.0, x: spawn.x, level: 0.0, z: spawn.z, yaw: 0.0, pitch: 0.06 },
   { copy: 0.0, x: 10.0, level: 0.0, z: 6.8, yaw: 0.0, pitch: 0.0 },
   { copy: 0.0, x: 18.5, level: 0.0, z: 14.5, yaw: -1.3, pitch: 0.0 },
   { copy: 0.0, x: 7.6, level: 0.0, z: 7.0, yaw: -1.1, pitch: -0.2 },
@@ -145,7 +124,7 @@ let views = [
 // Views 9 and 0 are in the block (or the grid you're in).
 let inBlock = (n: float): bool => n > 8.0
 
-let spawnAt = v(Layout.spawn.x, centreAboveFeet, Layout.spawn.z)
+let spawnAt = v(spawn.x, centreAboveFeet, spawn.z)
 
 let init = {
   yaw: 0.0, pitch: 0.06, look: NoMouse, vy: 0.0,
@@ -179,7 +158,7 @@ let init = {
   // the nearest copy and the eye's cell in it (-1: outside every cell),
   // which copies' interiors draw and which have colliders (ids), and
   // whether the bake is current.
-  at: { x: Layout.spawn.x, y: centreAboveFeet, z: Layout.spawn.z },
+  at: { x: spawn.x, y: centreAboveFeet, z: spawn.z },
   grounded: false,
   copy: 0.0,
   cell: 0.0,
@@ -292,7 +271,7 @@ let tick = (model, dt: float, tts: float) =>
     at: p,
     grounded: Physics.grounded(playerTag),
     copy: copy,
-    cell: Cells.locate(Block.toLocal(Block.copyAt(copy), eye), Portals.level) |> Option.defaultValue(-1.0),
+    cell: (let c = Block.copyAt(copy) in Cells.locate(Block.toLocal(c, eye), Block.archetypeOf(c).level)) |> Option.defaultValue(-1.0),
     active: active,
     solid: Block.solidAt(town, model.solid, eye),
     uncovered: model.uncovered + Block.uncovered(town, active, eye),
@@ -301,7 +280,7 @@ let tick = (model, dt: float, tts: float) =>
   match List.nth(model.goto - 1.0, views) with
   | Option.Some(view) =>
     let c = Block.copyAt(if inBlock(model.goto) then view.copy else copy) in
-    let to = Block.toWorld(c, v(view.x, view.level * Layout.storey + centreAboveFeet, view.z)) in
+    let to = Block.toWorld(c, v(view.x, view.level * Block.archetypeOf(c).layout.storey + centreAboveFeet, view.z)) in
     let t = if inBlock(model.goto) && model.town == 0.0 then 1.0 else model.town in
     // Solid where the player lands, before the teleport lands.
     ({ observed with goto: 0.0, vy: 0.0, overlook: false, yaw: Block.headingToWorld(c, view.yaw), pitch: view.pitch,
@@ -328,14 +307,15 @@ let physics = (model) =>
 
 // ---- Drawing ---------------------------------------------------------------------
 
-// What a copy draws: its street side at the hour's neon and lamps, and its
-// interior when active, under the day or night bake.
+// What a copy draws: its archetype's street side at the hour's neon and
+// lamps, and its interior when active, under the day or night bake.
 type CopyLook = { copy: Block.Copy, neon: float, lamps: float, day: bool, active: bool }
 let copyScene = (look: CopyLook): Scene.t =>
+  let a = Block.archetypeOf(look.copy) in
   let interiorScene =
     if not look.active then Scene.group([])
-    else Scene.cells(Portals.level, Scene.group(if look.day then dayRooms else nightRooms)) in
-  Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(look.neon, look.lamps), interiorScene]))
+    else Scene.cells(a.level, Scene.group(if look.day then a.day else a.night)) in
+  Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps), interiorScene]))
 
 // The near plane. Depth precision at a distance goes as 1/near: at 0.05 m,
 // faces 2 cm apart z-fought from about 60 m. At 0.1 m its corners sit about
@@ -368,8 +348,8 @@ let draw = (model, tts: float) =>
   // so early-Z rejects what's behind them.
   let scene = if model.island
     then Scene.group([buildings, Scene.memo("island-props", model.props, Island.propsScene),
-                      Scene.memo("island-ground", { biome: model.biome, night: 1.0 - daylight }, Island.ground), resident])
-    else Scene.group([town.ground, buildings, resident]) in
+                      Scene.memo("island-ground", { biome: model.biome, night: 1.0 - daylight }, Island.ground), Archetypes.resident])
+    else Scene.group([town.ground, buildings, Archetypes.resident]) in
   // On XR the beam follows the right controller, mapped through the camera.
   let (from, dir) = match model.hand with
     | Option.None => (eye |> Vec3.add(v(0.0, -0.25, 0.0)), lookDir(model.yaw, model.pitch))
@@ -383,9 +363,9 @@ let draw = (model, tts: float) =>
     |> Frame.withFog(Fog.linear(o.fogNear, far, Hours.color(o.sky)))
     |> Frame.withClearColor(Hours.color(o.sky))
 
-// Only shown when the committed bake doesn't match the layout.
+// Only shown when an archetype's committed bake doesn't match its layout.
 let ui = (model) =>
-  match Provenance.status with
+  match Archetypes.stale |> Option.map((a) => a.status) |> Option.defaultValue(Provenance.Current) with
   | Provenance.Current => Ui.column([])
   | Provenance.Missing => Ui.text("no bake: lighting is flat. Run node examples/liminal-office/bake.mjs") |> Ui.panel(Ui.topLeft())
   | Provenance.Stale(why) => Ui.text($"stale bake ({why}): lighting is flat. Run node examples/liminal-office/bake.mjs") |> Ui.panel(Ui.topLeft())
