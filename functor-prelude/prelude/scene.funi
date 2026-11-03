@@ -196,8 +196,9 @@ let memo : (string, 'd, ('d) => t) => t
 
 /// Portal-cull `scene` against `cells` (in this node's space), separately
 /// for each eye: a node marked with `Scene.inCells` draws only when one of its
-/// cells is visible from that eye through portals. Unmarked nodes always
-/// draw, and so does everything when the eye is outside every cell. Hidden
+/// cells is visible from that eye through portals. An eye in no cell sees
+/// in through the exterior portals (`Cells.outside`) facing it; with none,
+/// everything draws. Unmarked nodes always draw. Hidden
 /// nodes still cast shadows and stay loaded on the GPU, so turning around
 /// costs no uploads. `Scene.opacity` subtrees and terrain always draw.
 /// `FUNCTOR_CULL=0` turns it off.

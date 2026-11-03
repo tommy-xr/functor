@@ -26,14 +26,25 @@ type plane = { n: Vec3.t, d: float }
 type cell = { planes: List<plane> }
 /// A flat, convex polygon on a face of cell `from`, leading to cell `to`.
 /// Portals are one-way and always open: list each direction of a doorway.
+/// Either end may be `outside()`: an exterior door or window.
 type portal = { from: float, to: float, polygon: List<Vec3.t> }
 /// A level's cells and portals. Cell ids are list positions.
 type level = { cells: List<cell>, portals: List<portal> }
 
 /// Validate a level. An error names the first problem: an unbounded or empty
-/// cell, or a portal that isn't flat, convex, on a face of `from` (to 1 mm),
-/// or between existing cells.
+/// cell, or a portal that isn't flat, convex, on a face of each cell it joins
+/// (to 1 mm), or between existing cells or a cell and outside.
 let make : (level) => t
+/// The portal end standing for outside every cell. `Scene.cells` walks in
+/// from outside through portals `from: Cells.outside()` when the eye is in
+/// no cell, and stops at portals `to` it.
+let outside : () => float
+/// These cells with `Scene.cells` walks stopping at any portal whose screen
+/// rectangle, clipped to the view through the portals before it, is under
+/// `fraction` of the viewport's width and of its height. The room behind is
+/// hidden; draw a stand-in for it. 0 (the default) walks every portal; an
+/// error outside 0 to 1.
+let withMinPortal : (float, t) => t
 /// The cell containing a point (to 1 mm); the lowest id on a shared face.
 let locate : (Vec3.t, t) => Option.t<float>
 /// Line of sight from `a` to `b`: true when the segment stays in cells,

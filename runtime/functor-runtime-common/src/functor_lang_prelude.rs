@@ -15488,6 +15488,8 @@ can separate where items 0 and 1 (counting from 0) nearly meet, at 4 points with
              ] }\n\
              let door = [Vec3.make(4.0, 0.0, -0.5), Vec3.make(4.0, 0.0, 0.5),\n\
                          Vec3.make(4.0, 2.0, 0.5), Vec3.make(4.0, 2.0, -0.5)]\n\
+             let window = [Vec3.make(1.0, 1.0, -2.0), Vec3.make(3.0, 1.0, -2.0),\n\
+                           Vec3.make(3.0, 2.0, -2.0), Vec3.make(1.0, 2.0, -2.0)]\n\
              let world = Cells.make({\n\
                cells: [room(0.0, 4.0), room(4.0, 8.0)],\n\
                portals: [{ from: 0.0, to: 1.0, polygon: door },\n\
@@ -15499,6 +15501,11 @@ can separate where items 0 and 1 (counting from 0) nearly meet, at 4 points with
             "Cells.locate(Vec3.make(9.0, 1.0, 0.0), world) == Option.None",
             "Cells.segment(Vec3.make(1.0, 1.0, 0.0), Vec3.make(7.0, 1.0, 0.0), world)",
             "Cells.segment(Vec3.make(1.0, 1.0, 1.5), Vec3.make(7.0, 1.0, 1.5), world) == false",
+            // An exterior window both ways, and a minimum portal size.
+            "Cells.locate(Vec3.make(2.0, 1.0, 0.0), Cells.make({ cells: [room(0.0, 4.0)], portals: [\n\
+               { from: Cells.outside(), to: 0.0, polygon: window },\n\
+               { from: 0.0, to: Cells.outside(), polygon: List.reverse(window) }] })\n\
+               |> Cells.withMinPortal(0.05)) == Option.Some(0.0)",
         ];
         for check in checks {
             let src = format!("{prelude}let main = {check}\n");
@@ -15524,6 +15531,8 @@ can separate where items 0 and 1 (counting from 0) nearly meet, at 4 points with
             "Cells.make({ cells: [room(0.0, 4.0), room(4.0, 8.0)], portals: [{ from: 0.5, to: 1.0, polygon: door }] })",
         );
         assert!(err.contains("portal 0 `from` must be a cell id"), "{err}");
+        let err = failure("Cells.withMinPortal(2.0, world)");
+        assert!(err.contains("Cells.withMinPortal: the minimum portal size 2"), "{err}");
         let err = failure("Cells.make({ cells: [{ planes: [] }], portals: [] })");
         assert!(err.contains("cell 0 is unbounded"), "{err}");
         let err = failure("Scene.inCells([1.5], Scene.cube())");

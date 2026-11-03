@@ -30,8 +30,13 @@ pub struct Cell {
     pub planes: Vec<Plane>,
 }
 
+/// The id standing for outside every cell, at either end of a portal.
+pub const OUTSIDE: u32 = u32::MAX;
+
 /// A convex polygon on a face of `from`, leading to `to`. One-way: the walk
-/// from `to` back to `from` needs its own portal.
+/// from `to` back to `from` needs its own portal. An exterior portal joins a
+/// cell and [`OUTSIDE`]: from it, an eye in no cell walks in; to it, the
+/// walk stops.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Portal {
     pub from: u32,
@@ -43,6 +48,14 @@ pub struct Portal {
 pub struct CellsData {
     pub cells: Vec<Cell>,
     pub portals: Vec<Portal>,
+    /// The walk stops at a portal whose clipped screen rectangle is under
+    /// this fraction of the viewport on both axes. 0 walks every portal.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub min_portal: f32,
+}
+
+fn is_zero(x: &f32) -> bool {
+    *x == 0.0
 }
 
 /// Validated [`CellsData`] (unit plane normals) plus lookup tables.
@@ -53,8 +66,10 @@ pub struct Cells {
     // Per cell: its box (within the tolerance) and its portals' indices.
     bounds: Vec<Aabb>,
     outgoing: Vec<Vec<u32>>,
-    // Per portal: the `from` face it lies on, and its unit normal wound
-    // like its corners.
+    // The exterior portals in from outside.
+    entries: Vec<u32>,
+    // Per portal: the face it lies on, facing into `from` (out of `to`
+    // for an entry), and its unit normal wound like its corners.
     faces: Vec<(Plane, Vector3<f32>)>,
 }
 
@@ -82,8 +97,15 @@ fn v(p: [f32; 3]) -> Vector3<f32> {
 
 impl Cells {
     /// Validate: every cell bounded and non-empty; every portal flat, convex,
-    /// with area, on a face of `from`, and between two existing cells.
+    /// with area, on a face of each cell it joins, and between two existing
+    /// cells or a cell and outside.
     pub fn new(mut data: CellsData) -> Result<Cells, String> {
+        if !(0.0..=1.0).contains(&data.min_portal) {
+            return Err(format!(
+                "the minimum portal size {} isn't a fraction from 0 to 1",
+                data.min_portal
+            ));
+        }
         let count = data.cells.len();
         let mut bounds = Vec::with_capacity(count);
         for (i, cell) in data.cells.iter_mut().enumerate() {
@@ -104,17 +126,23 @@ impl Cells {
         }
 
         let mut outgoing = vec![Vec::new(); count];
+        let mut entries = Vec::new();
         let mut faces = Vec::with_capacity(data.portals.len());
         for (k, portal) in data.portals.iter().enumerate() {
-            let what = format!("portal {k} ({} → {})", portal.from, portal.to);
+            let end = |id: u32| match id {
+                OUTSIDE => "outside".to_string(),
+                id => id.to_string(),
+            };
+            let what = format!("portal {k} ({} → {})", end(portal.from), end(portal.to));
             let (from, to) = (portal.from as usize, portal.to as usize);
-            if from >= count || to >= count {
+            let exists = |id: u32| id == OUTSIDE || (id as usize) < count;
+            if !(exists(portal.from) && exists(portal.to)) {
                 return Err(format!(
                     "{what} names a cell that doesn't exist (there are {count})"
                 ));
             }
             if from == to {
-                return Err(format!("{what} leads back into its own cell"));
+                return Err(format!("{what} leads back to where it starts"));
             }
             let polygon: Vec<Vector3<f32>> = portal.polygon.iter().map(|&p| v(p)).collect();
             if polygon.len() < 3 {
@@ -165,20 +193,44 @@ impl Cells {
                     })
                     .filter(|_| inside)
             };
-            let Some(face) = face_of(from) else {
-                return Err(format!("{what} isn't on a face of cell {from}"));
+            let on = |cell: usize| {
+                face_of(cell)
+                    .copied()
+                    .ok_or_else(|| format!("{what} isn't on a face of cell {cell}"))
             };
-            if face_of(to).is_none() {
-                return Err(format!("{what} isn't on a face of cell {to}"));
-            }
-            faces.push((*face, normal));
-            outgoing[from].push(k as u32);
+            // An entry faces out of `to`; an exit to outside isn't walked.
+            let face = if portal.from == OUTSIDE {
+                let face = on(to)?;
+                entries.push(k as u32);
+                Plane {
+                    n: (-v(face.n)).into(),
+                    d: -face.d,
+                }
+            } else {
+                let face = on(from)?;
+                if portal.to != OUTSIDE {
+                    on(to)?;
+                    outgoing[from].push(k as u32);
+                }
+                face
+            };
+            faces.push((face, normal));
         }
         Ok(Cells {
             data,
             bounds,
             outgoing,
+            entries,
             faces,
+        })
+    }
+
+    /// These cells with `Scene.cells` walks stopping at portals under
+    /// `fraction` of the viewport (see [`CellsData::min_portal`]).
+    pub fn with_min_portal(&self, fraction: f32) -> Result<Cells, String> {
+        Cells::new(CellsData {
+            min_portal: fraction,
+            ..self.data.clone()
         })
     }
 
@@ -262,20 +314,43 @@ type Rect = [f32; 4];
 
 const FULL: Rect = [-1.0, -1.0, 1.0, 1.0];
 
+/// One portal walk: what it reached, and how.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Walk {
+    /// Per cell, whether the walk reached it. `None` draws every cell.
+    pub cells: Option<Vec<bool>>,
+    /// Portals the walk passed through.
+    pub portals: u32,
+    /// Portals it stopped at for being under the minimum size.
+    pub cut: u32,
+    /// Whether the eye was in no cell and the walk entered through the
+    /// exterior portals.
+    pub outside: bool,
+}
+
 impl Cells {
     /// The cells an eye at `eye` sees through portals, flooding from its
     /// cell (every cell holding it, on a shared face) and narrowing a screen
-    /// rectangle at each portal. `clip` is the
-    /// eye's `projection * view * world`, `eye` in this cells' space. `None`
-    /// (draw every cell) when the eye is outside every cell, or the walk runs
-    /// long.
-    pub fn visible(&self, eye: Vector3<f32>, clip: &Matrix4<f32>) -> Option<Vec<bool>> {
+    /// rectangle at each portal. An eye in no cell starts outside, entering
+    /// through the exterior portals. `clip` is the eye's
+    /// `projection * view * world`, `eye` in this cells' space. Draws every
+    /// cell (`cells: None`) when the eye is in no cell and there are no
+    /// exterior portals, or the walk runs long.
+    pub fn visible(&self, eye: Vector3<f32>, clip: &Matrix4<f32>) -> Walk {
+        let mut walk = Walk::default();
         let mut stack: Vec<(usize, Rect)> = (0..self.len())
             .filter(|&cell| self.contains(cell, eye))
             .map(|cell| (cell, FULL))
             .collect();
         if stack.is_empty() {
-            return None;
+            if self.entries.is_empty() {
+                return walk;
+            }
+            // Outside needn't be convex: the walk only leaves it.
+            walk.outside = true;
+            for &k in &self.entries {
+                self.cross(k as usize, eye, clip, FULL, &mut stack, &mut walk);
+            }
         }
         let mut reached: Vec<Option<Rect>> = vec![None; self.len()];
         // Each visit reaches a new cell or grows its rectangle; cap the
@@ -290,26 +365,55 @@ impl Cells {
                 None => rect,
             };
             reached[cell] = Some(rect);
-            budget = budget.checked_sub(1)?;
-            for &k in &self.outgoing[cell] {
-                let k = k as usize;
-                let distance = self.faces[k].0.distance(eye);
-                // Leaving a cell through a face needs the eye on its inner side.
-                // On the portal's plane its projection degenerates, so it
-                // passes the whole rectangle.
-                let through = if distance < -TOLERANCE {
-                    None
-                } else if distance <= TOLERANCE {
-                    Some(rect)
-                } else {
-                    project(clip, &self.data.portals[k].polygon).and_then(|p| intersect(rect, p))
+            let Some(left) = budget.checked_sub(1) else {
+                return Walk {
+                    cells: None,
+                    ..walk
                 };
-                if let Some(through) = through {
-                    stack.push((self.data.portals[k].to as usize, through));
-                }
+            };
+            budget = left;
+            for &k in &self.outgoing[cell] {
+                self.cross(k as usize, eye, clip, rect, &mut stack, &mut walk);
             }
         }
-        Some(reached.iter().map(Option::is_some).collect())
+        walk.cells = Some(reached.iter().map(Option::is_some).collect());
+        walk
+    }
+
+    /// Portal `k` seen through `rect`: on to its cell with the view narrowed
+    /// to it, unless it faces away, is out of view, or is under the minimum
+    /// size.
+    fn cross(
+        &self,
+        k: usize,
+        eye: Vector3<f32>,
+        clip: &Matrix4<f32>,
+        rect: Rect,
+        stack: &mut Vec<(usize, Rect)>,
+        walk: &mut Walk,
+    ) {
+        let distance = self.faces[k].0.distance(eye);
+        // Going through a face needs the eye on its `from` side. On the
+        // portal's plane its projection degenerates, so it passes the whole
+        // rectangle.
+        let through = if distance < -TOLERANCE {
+            None
+        } else if distance <= TOLERANCE {
+            Some(rect)
+        } else {
+            project(clip, &self.data.portals[k].polygon).and_then(|p| intersect(rect, p))
+        };
+        let Some(through) = through else {
+            return;
+        };
+        // NDC spans 2 per viewport.
+        let min = 2.0 * self.data.min_portal;
+        if through[2] - through[0] < min && through[3] - through[1] < min {
+            walk.cut += 1;
+            return;
+        }
+        walk.portals += 1;
+        stack.push((self.data.portals[k].to as usize, through));
     }
 }
 
@@ -497,6 +601,7 @@ pub(crate) mod tests {
         Cells::new(CellsData {
             cells: rooms,
             portals,
+            ..Default::default()
         })
         .unwrap()
     }
@@ -530,7 +635,12 @@ pub(crate) mod tests {
                 [4.0, 3.0, 2.0],
             ],
         ));
-        Cells::new(CellsData { cells, portals }).unwrap()
+        Cells::new(CellsData {
+            cells,
+            portals,
+            ..Default::default()
+        })
+        .unwrap()
     }
 
     fn p(x: f32, y: f32, z: f32) -> Vector3<f32> {
@@ -605,6 +715,7 @@ pub(crate) mod tests {
         let cells = Cells::new(CellsData {
             cells: vec![prism],
             portals: vec![],
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(cells.locate(p(1.0012, 0.0, 0.5)), Some(0));
@@ -616,7 +727,8 @@ pub(crate) mod tests {
         let far = room([60_000.0, 0.0, 0.0], [60_004.0, 3.0, 4.0]);
         assert!(Cells::new(CellsData {
             cells: vec![far],
-            portals: vec![]
+            portals: vec![],
+            ..Default::default()
         })
         .is_ok());
     }
@@ -650,6 +762,7 @@ pub(crate) mod tests {
         let cells = Cells::new(CellsData {
             cells: vec![at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0)],
             portals,
+            ..Default::default()
         })
         .unwrap();
         for off in [0.0, 0.0005] {
@@ -683,12 +796,176 @@ pub(crate) mod tests {
         assert!(!cells.segment(p(6.0, 1.0, 0.0), p(1.0, 1.0, 0.0)));
     }
 
-    /// The cells seen from `eye` looking at `target` (90° square view).
-    fn seen(cells: &Cells, eye: [f32; 3], target: [f32; 3]) -> Option<Vec<bool>> {
+    /// The walk from `eye` looking at `target` (90° square view).
+    fn walk(cells: &Cells, eye: [f32; 3], target: [f32; 3]) -> Walk {
         use cgmath::{perspective, Deg, Point3};
-        let clip = perspective(Deg(90.0), 1.0, 0.1, 100.0)
+        let clip = perspective(Deg(90.0), 1.0, 0.1, 1000.0)
             * Matrix4::look_at_rh(Point3::from(eye), Point3::from(target), Vector3::unit_y());
         cells.visible(v(eye), &clip)
+    }
+
+    /// The cells seen from `eye` looking at `target`.
+    fn seen(cells: &Cells, eye: [f32; 3], target: [f32; 3]) -> Option<Vec<bool>> {
+        walk(cells, eye, target).cells
+    }
+
+    /// [`three_rooms`] with a 2 × 1 window into rooms 0 and 2 in the south
+    /// wall (z = -2), listed both ways.
+    fn windowed() -> Cells {
+        let mut data = three_rooms().data().clone();
+        for (room, x) in [(0, 1.0), (2, 9.0)] {
+            let window = vec![
+                [x, 1.0, -2.0],
+                [x + 2.0, 1.0, -2.0],
+                [x + 2.0, 2.0, -2.0],
+                [x, 2.0, -2.0],
+            ];
+            data.portals.extend(door(OUTSIDE, room, window));
+        }
+        Cells::new(data).unwrap()
+    }
+
+    #[test]
+    fn an_outside_eye_sees_a_room_only_through_a_facing_window() {
+        let cells = windowed();
+        // In front of room 0's window: room 2's is out of view, and the
+        // doorway on to room 1 is out of line.
+        let front = walk(&cells, [2.0, 1.5, -6.0], [2.0, 1.5, 0.0]);
+        assert_eq!(front.cells, Some(vec![true, false, false]));
+        assert!(front.outside);
+        assert_eq!((front.portals, front.cut), (1, 0));
+        // Further back both windows show; room 1 has none.
+        assert_eq!(
+            seen(&cells, [6.0, 1.5, -10.0], [6.0, 1.5, 0.0]),
+            Some(vec![true, false, true])
+        );
+        // Behind the building the windows face away; turned round, they are
+        // out of view.
+        assert_eq!(
+            seen(&cells, [6.0, 1.5, 10.0], [6.0, 1.5, 0.0]),
+            Some(vec![false, false, false])
+        );
+        assert_eq!(
+            seen(&cells, [2.0, 1.5, -6.0], [2.0, 1.5, -20.0]),
+            Some(vec![false, false, false])
+        );
+    }
+
+    #[test]
+    fn an_outside_eye_walks_on_through_the_rooms_beyond() {
+        // Through room 0's window, its doorway into room 1 (which has no
+        // window).
+        let cells = windowed();
+        let through = walk(&cells, [-1.0, 1.5, -5.0], [4.0, 1.5, 0.0]);
+        assert_eq!(through.cells, Some(vec![true, true, true]));
+        assert!(through.outside);
+    }
+
+    #[test]
+    fn without_exterior_portals_an_outside_eye_draws_everything() {
+        let cells = three_rooms();
+        let outside = walk(&cells, [2.0, 1.5, -6.0], [2.0, 1.5, 0.0]);
+        assert_eq!(outside.cells, None);
+        assert!(!outside.outside);
+    }
+
+    #[test]
+    fn inside_the_walk_ignores_exterior_portals() {
+        // Facing the window from inside room 0: the way out stops the walk.
+        let (plain, windowed) = (three_rooms(), windowed());
+        for (eye, target) in [
+            ([2.0, 1.5, 0.0], [2.0, 1.5, -10.0]),
+            ([1.0, 1.5, 0.0], [12.0, 1.5, 0.0]),
+            ([6.0, 1.5, 1.5], [12.0, 1.5, -2.0]),
+        ] {
+            let walked = walk(&windowed, eye, target);
+            assert!(!walked.outside);
+            assert_eq!(walked, walk(&plain, eye, target));
+        }
+        // Sight lines stay inside the cells.
+        assert!(!windowed.segment(p(2.0, 1.5, 0.0), p(2.0, 1.5, -6.0)));
+        assert!(!windowed.segment(p(2.0, 1.5, -6.0), p(2.0, 1.5, 0.0)));
+    }
+
+    #[test]
+    fn a_portal_under_the_minimum_size_ends_the_walk() {
+        // From room 0 the near doorway fills a third of the view's height,
+        // the far one a seventh.
+        let cells = three_rooms().with_min_portal(0.2).unwrap();
+        let near = walk(&cells, [1.0, 1.5, 0.0], [12.0, 1.5, 0.0]);
+        assert_eq!(near.cells, Some(vec![true, true, false]));
+        assert_eq!((near.portals, near.cut), (1, 1));
+        // From far down the street both windows are specks.
+        let far = [6.0, 1.5, -200.0];
+        let distant = walk(&windowed().with_min_portal(0.01).unwrap(), far, [6.0, 1.5, 0.0]);
+        assert_eq!(distant.cells, Some(vec![false, false, false]));
+        assert_eq!((distant.portals, distant.cut), (0, 2));
+        assert_eq!(
+            seen(&windowed(), far, [6.0, 1.5, 0.0]),
+            Some(vec![true, false, true])
+        );
+    }
+
+    #[test]
+    fn make_checks_exterior_portals_and_the_minimum_size() {
+        let mut data = three_rooms().data().clone();
+        let window = vec![
+            [1.0, 1.0, -2.0],
+            [3.0, 1.0, -2.0],
+            [3.0, 2.0, -2.0],
+            [1.0, 2.0, -2.0],
+        ];
+        let with = |from, to| {
+            let mut data = data.clone();
+            data.portals = vec![Portal {
+                from,
+                to,
+                polygon: window.clone(),
+            }];
+            Cells::new(data)
+        };
+        assert!(with(OUTSIDE, 0).is_ok() && with(0, OUTSIDE).is_ok());
+        assert_eq!(
+            with(OUTSIDE, 1).unwrap_err(),
+            "portal 0 (outside → 1) isn't on a face of cell 1"
+        );
+        assert_eq!(
+            with(OUTSIDE, OUTSIDE).unwrap_err(),
+            "portal 0 (outside → outside) leads back to where it starts"
+        );
+        for bad in [-0.1, 1.5, f32::NAN] {
+            assert!(three_rooms().with_min_portal(bad).is_err(), "{bad}");
+        }
+        // Both round-trip; a zero minimum isn't written.
+        data.min_portal = 0.05;
+        data.portals.extend(door(OUTSIDE, 0, window));
+        let cells = Cells::new(data).unwrap();
+        let back: Cells = serde_json::from_str(&serde_json::to_string(&cells).unwrap()).unwrap();
+        assert_eq!(back, cells);
+        let plain = serde_json::to_string(&three_rooms()).unwrap();
+        assert!(!plain.contains("min_portal"));
+    }
+
+    #[test]
+    fn each_eye_starts_outside_or_in_its_own_cell() {
+        let cells = windowed();
+        // Eyes 3.5 m apart facing the wall: only the left one sees room 0's
+        // window, and room 1's doorway through it.
+        assert_eq!(
+            seen(&cells, [2.0, 1.5, -3.0], [2.0, 1.5, 0.0]),
+            Some(vec![true, true, false])
+        );
+        assert_eq!(
+            seen(&cells, [5.5, 1.5, -3.0], [5.5, 1.5, 0.0]),
+            Some(vec![false, false, false])
+        );
+        // Straddling the window: one eye walks from room 0, the other in
+        // through the window.
+        let inside = walk(&cells, [2.0, 1.5, -1.99], [2.0, 1.5, 4.0]);
+        let outside = walk(&cells, [2.0, 1.5, -2.01], [2.0, 1.5, 4.0]);
+        assert!(!inside.outside && outside.outside);
+        assert_eq!(inside.cells, Some(vec![true, true, false]));
+        assert_eq!(outside.cells, inside.cells);
     }
 
     #[test]
@@ -749,6 +1026,7 @@ pub(crate) mod tests {
                 ),
             ]
             .concat(),
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(
@@ -790,6 +1068,7 @@ pub(crate) mod tests {
                 door(1, 2, x_door(8.0, 1.5)),
             ]
             .concat(),
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(
@@ -835,6 +1114,7 @@ pub(crate) mod tests {
                 room([4.0, 0.0, -2.0], [8.0, 3.0, 2.0]),
             ],
             portals: vec![],
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(
@@ -864,7 +1144,8 @@ pub(crate) mod tests {
         assert_eq!(
             err(CellsData {
                 cells: vec![open],
-                portals: vec![]
+                portals: vec![],
+                ..Default::default()
             }),
             "cell 0 is unbounded: its planes don't close it"
         );
@@ -873,7 +1154,8 @@ pub(crate) mod tests {
         assert_eq!(
             err(CellsData {
                 cells: vec![empty],
-                portals: vec![]
+                portals: vec![],
+                ..Default::default()
             }),
             "cell 0 is empty: its planes enclose no point"
         );
@@ -881,7 +1163,8 @@ pub(crate) mod tests {
         zero.planes[0].n = [0.0; 3];
         assert!(err(CellsData {
             cells: vec![zero],
-            portals: vec![]
+            portals: vec![],
+            ..Default::default()
         })
         .contains("zero or non-finite normal"));
 
@@ -895,6 +1178,7 @@ pub(crate) mod tests {
         let portal = |from, to, polygon: Vec<[f32; 3]>| CellsData {
             cells: two(),
             portals: vec![Portal { from, to, polygon }],
+            ..Default::default()
         };
         assert!(Cells::new(portal(0, 1, face.clone())).is_ok());
         assert_eq!(
@@ -903,7 +1187,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             err(portal(0, 0, face.clone())),
-            "portal 0 (0 → 0) leads back into its own cell"
+            "portal 0 (0 → 0) leads back to where it starts"
         );
         assert!(err(portal(0, 1, face[..2].to_vec())).contains("it needs 3 or more"));
         // Off the face: the plane x = 0.5 cuts through cell 0.
@@ -920,6 +1204,7 @@ pub(crate) mod tests {
                 to: 1,
                 polygon: face.clone(),
             }],
+            ..Default::default()
         };
         assert_eq!(err(gap), "portal 0 (0 → 1) isn't on a face of cell 1");
         // On the face's plane but past the cell's edge.
@@ -949,6 +1234,7 @@ pub(crate) mod tests {
         let cells = Cells::new(CellsData {
             cells: vec![cell],
             portals: vec![],
+            ..Default::default()
         })
         .unwrap();
         // 2x - 1 ≥ 0 is x ≥ 0.5.

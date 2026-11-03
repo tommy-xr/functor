@@ -954,6 +954,7 @@ mod tests {
         let cells = Cells::new(CellsData {
             cells: vec![cell],
             portals: vec![],
+            ..Default::default()
         })
         .unwrap();
         let marked = Scene3D {
