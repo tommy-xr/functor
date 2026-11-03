@@ -229,8 +229,14 @@ pub struct Partial {
 pub struct Env(Option<Rc<Scope>>);
 
 struct Scope {
-    vars: Vec<(BindingId, Value)>,
+    vars: Vars,
     parent: Env,
+}
+
+/// A scope's bindings; one (a `let`, a one-parameter call) needs no `Vec`.
+enum Vars {
+    One(BindingId, Value),
+    Many(Vec<(BindingId, Value)>),
 }
 
 impl Env {
@@ -240,7 +246,15 @@ impl Env {
 
     pub fn child(&self, vars: Vec<(BindingId, Value)>) -> Env {
         Env(Some(Rc::new(Scope {
-            vars,
+            vars: Vars::Many(vars),
+            parent: self.clone(),
+        })))
+    }
+
+    /// [`Env::child`] with one binding.
+    pub fn bind(&self, binding: BindingId, value: Value) -> Env {
+        Env(Some(Rc::new(Scope {
+            vars: Vars::One(binding, value),
             parent: self.clone(),
         })))
     }
@@ -248,8 +262,14 @@ impl Env {
     pub fn lookup(&self, binding: BindingId) -> Option<Value> {
         let mut cur = self;
         while let Some(scope) = &cur.0 {
-            if let Some((_, value)) = scope.vars.iter().find(|(b, _)| *b == binding) {
-                return Some(value.clone());
+            match &scope.vars {
+                Vars::One(b, value) if *b == binding => return Some(value.clone()),
+                Vars::One(..) => {}
+                Vars::Many(vars) => {
+                    if let Some((_, value)) = vars.iter().find(|(b, _)| *b == binding) {
+                        return Some(value.clone());
+                    }
+                }
             }
             cur = &scope.parent;
         }
