@@ -102,8 +102,9 @@ full, proven sequence. The short path is:
    machine when the game asks for them; the game reloads once they arrive, and
    the headset keeps them for later sessions.
 3. If Meta Home remains visible, recreate `adb forward`, send `prox_close`, and
-   restart NativeActivity with `am start -S`. Wait for `/state`'s frame to
-   advance; server readiness alone does not mean XR is rendering.
+   restart NativeActivity with `am start -S`. Wait for `/state`'s
+   `rendered_frames` to advance; server readiness alone does not mean XR is
+   rendering.
 4. Capture with `POST /capture` using curl's `--fail` and retry flags. A focused
    Quest 3 returns a raw 3360x1760 left/right PNG.
 5. Install a non-debuggable release APK, push the explicit workload, and run

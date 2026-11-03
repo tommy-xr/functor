@@ -79,8 +79,9 @@ adb -s SERIAL logcat -s functor
 ```
 
 Expect `READY -> SYNCHRONIZED -> VISIBLE -> FOCUSED`. `am start` and `GET /`
-becoming ready do not prove XR is rendering. Poll `/state` twice until `frame`
-advances. If Meta Home remains visible, send Back, repeat `prox_close`, and
+becoming ready do not prove XR is rendering. Poll `/state` twice until
+`rendered_frames` advances (`frame` counts sim steps and stands still under a
+paused or pinned clock). If Meta Home remains visible, send Back, repeat `prox_close`, and
 restart with `-S`. Check that NativeActivity is top-resumed with `dumpsys
 activity activities`.
 
@@ -120,8 +121,8 @@ multi-client assertions. Validate clock behavior by observing a stable frame
 after `set`, exactly one increment after `advance`, and progression after
 `resume`.
 
-For controller work, inspect `/state.input.xr` only after two advancing frame
-samples. Require a near-identity rig-local head pose after centering; wake each
+For controller work, inspect `/state.input.xr` only after two advancing
+`rendered_frames` samples. Require a near-identity rig-local head pose after centering; wake each
 controller and verify `active`, independently valid grip/aim poses, analog
 range/motion, and button transitions. Never accept a retained pose after a
 controller becomes inactive or tracking validity is lost.
@@ -158,7 +159,9 @@ FPS mean/p5/min, stale/torn frames, App and Timewarp time, CPU/GPU time,
 clock levels and load, and memory. The benchmark prints the requested and
 current display rate from `/state` beside VrApi's `FPS=<fps>/<target>` target
 (the FPS row is the achieved frame rate); a run whose rate changed mid-sample
-fails rather than mixing two budgets. Run a representative scene and a stress
+fails rather than mixing two budgets. It checks liveness with
+`/state.rendered_frames`, so a paused or pinned workload needs no `/time`
+nudge (a pre-v29 runtime falls back to sim `frame`). Run a representative scene and a stress
 scene. State explicitly when missing asset sync means a source-heavy workload
 is representative of CPU/geometry cost but not final texture behavior.
 
