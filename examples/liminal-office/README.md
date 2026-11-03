@@ -441,7 +441,8 @@ bay, and an EXIT at the lower one's east end.
   towers' trick), so the bake holds three shops whatever the bay count. The
   fit-outs are baked geometry, not unbaked props: they get the bake's
   occlusion and contact shadows for no draws, since they share the cell's
-  atlas groups.
+  atlas groups. Bake-only sheets close each home's shopfront and corridor
+  door, so a shop bakes in its own light alone and every copy matches.
 
 - **Cells**: the court's void is one box, floor to apex; round it, four
   strips on each level (the lower concourse, the galleries). Open-plan
@@ -451,7 +452,8 @@ bay, and an EXIT at the lower one's east end.
   the corridors are one box a level. 34 cells (the yard outside the exit
   among them) and 2 more collar strips, 118 portals. A walk stops at a
   portal under 6% of the view both ways (`Cells.withMinPortal`), so far
-  shops drop out.
+  shops drop out; an unlit dark stand-in 5 cm behind each shop's and
+  stockroom's surfaces fills a dropped one's opening (1 draw).
 - **Escalators**: a stopped pair, 23 risers at 30°, from the court's floor
   west onto the west bridge, inside the void: cleated treads, balustrade
   panels, solid sides; lane 2 is barred. Collision: a ramp per lane through
