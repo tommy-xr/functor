@@ -302,14 +302,21 @@ impl Dispatch for Pool {
     }
 }
 
-/// Workers beside the render and sim threads: Quest runs one native job at
-/// a time (the platform reserves cores); desktop leaves two cores free.
+/// Workers beside the render and sim threads, from the cores this process
+/// may run on. Quest leaves four to the render, sim and XR runtime threads
+/// and the system, at most two workers (Quest 3's six cores: two); desktop
+/// leaves two, at most four. `FUNCTOR_JOB_WORKERS=n` overrides it, for
+/// benchmarks.
 fn workers() -> usize {
-    if cfg!(target_os = "android") {
-        return 1;
+    if let Some(n) = std::env::var("FUNCTOR_JOB_WORKERS").ok().and_then(|n| n.parse().ok()) {
+        return usize::clamp(n, 1, 16);
     }
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    cores.saturating_sub(2).clamp(1, 4)
+    if cfg!(target_os = "android") {
+        cores.saturating_sub(4).clamp(1, 2)
+    } else {
+        cores.saturating_sub(2).clamp(1, 4)
+    }
 }
 
 /// Runs each job at dispatch, on the calling thread: the web (no threads).
