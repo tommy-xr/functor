@@ -22,9 +22,9 @@ const MAX_HEADER_LINES: usize = 64;
 const MAX_COMMAND_BYTES: usize = 64 * 1024;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
-/// A capture is answered at the end of the next rendered frame; give up well
-/// before a typical 20 s client timeout so the caller gets a reason, not a hang.
-const CAPTURE_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+/// A capture is answered at the end of the next rendered frame; give up
+/// before the SDK client's 10 s timeout so the caller gets a reason, not a hang.
+const CAPTURE_REPLY_TIMEOUT: Duration = Duration::from_secs(8);
 /// A push is answered when its load lands, which off the frame thread can
 /// take a heavy decode's time.
 pub const LOAD_REPLY_TIMEOUT: Duration = Duration::from_secs(180);
@@ -89,14 +89,6 @@ fn read_body(
         .read_exact(&mut body)
         .map_err(|_| BodyError::Invalid)?;
     Ok(body)
-}
-
-/// Read and drop a body the route ignores: closing the socket with request
-/// bytes unread sends a reset, which can destroy the reply before the client
-/// reads it.
-fn discard_body(reader: &mut BufReader<TcpStream>, content_length: Option<usize>) {
-    let len = content_length.unwrap_or(0).min(MAX_COMMAND_BYTES) as u64;
-    let _ = std::io::copy(&mut Read::by_ref(reader).take(len), &mut std::io::sink());
 }
 
 fn parse_json<T: DeserializeOwned>(
@@ -200,7 +192,13 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             debug_protocol::discovery_json().as_bytes(),
         ),
         ("POST", "/capture") => {
-            discard_body(&mut reader, content_length);
+            // Capture takes no body, but one sent must still be read: closing
+            // with request bytes unread resets the connection, which can
+            // destroy the PNG before the client reads it.
+            if read_body(&mut reader, content_length.or(Some(0)), MAX_COMMAND_BYTES).is_err() {
+                respond_text(&mut stream, cors_origin, 400, "Bad Request", "bad body");
+                return Some(());
+            }
             let (resp_tx, resp_rx) = mpsc::channel();
             if tx.send(DebugRequest::Capture(resp_tx)).is_err() {
                 return runtime_gone(&mut stream, cors_origin);
@@ -228,8 +226,11 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     cors_origin,
                     503,
                     "Service Unavailable",
-                    "runtime rendered no frame to capture within 10 s (is `GET /state`'s \
-                     frame still advancing?)",
+                    &format!(
+                        "runtime rendered no frame to capture within {} s (is `GET /state`'s \
+                         frame still advancing?)",
+                        CAPTURE_REPLY_TIMEOUT.as_secs()
+                    ),
                 ),
                 Err(mpsc::RecvTimeoutError::Disconnected) => respond_text(
                     &mut stream,
@@ -1220,6 +1221,7 @@ Content-Length: {}\r\n\r\n{body}",
             let address = listener.local_addr().unwrap();
             let client = std::thread::spawn(move || {
                 let mut stream = TcpStream::connect(address).unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 // Headers and body in separate writes, as HTTP clients send
                 // them, so the body lands after the server's first read.
                 stream
