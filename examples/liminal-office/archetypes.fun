@@ -76,7 +76,16 @@ let cinema: Archetype =
   { name: "cinema", layout: CinemaLayout.layout, colliders: Cinema.colliders, status: cinemaStatus,
     level: Cinema.level, street: Cinema.exterior, night: Cinema.nightOf(cinemaBaked), day: Cinema.dayOf(cinemaBaked) }
 
-let all = [office, tower8, tower12, tower16, cinema]
+// The mall: one bake at 6 texels/m (mallInterior.fun), its own cells,
+// colliders and street side (mall.fun).
+let mallBake = bakeOf("mall", ["layout.fun", "building.fun", "mallLayout.fun", "mallInterior.fun"])
+let mallStatus = Provenance.statusOf(mallBake)
+let mallBaked = MallInterior.bakedOf(mallBake, mallStatus)
+let mall: Archetype =
+  { name: "mall", layout: MallLayout.layout, colliders: Mall.colliders, status: mallStatus,
+    level: Mall.level, street: Mall.street, night: Mall.nightOf(mallBaked), day: Mall.dayOf(mallBaked) }
+
+let all = [office, tower8, tower12, tower16, cinema, mall]
 
 // The archetype a copy names.
 let named = (name: string): Archetype =>
@@ -89,7 +98,8 @@ let stale = all |> List.find((a) => a.status != Provenance.Current)
 // Every bake's jobs, for `functor bake` (through game.fun): `<bake>-night`
 // and `<bake>-day`.
 let bakes = [officeInterior.night, officeInterior.day, Tower.typicalInterior.night, Tower.typicalInterior.day,
-             Tower.endsInterior.night, Tower.endsInterior.day, CinemaBuilding.interior.night, CinemaBuilding.interior.day]
+             Tower.endsInterior.night, Tower.endsInterior.day, CinemaBuilding.interior.night, CinemaBuilding.interior.day,
+             MallInterior.interior.night, MallInterior.interior.day]
 // Whether every archetype's bake is current.
 let baked = all |> List.all((a) => a.status == Provenance.Current)
 
@@ -98,8 +108,8 @@ let baked = all |> List.all((a) => a.status == Provenance.Current)
 // lightmaps stay loaded, so entering a building or switching the hour
 // uploads nothing. (The towers draw the same models, moved.)
 let resident = Scene.keepResident(Scene.group(List.flatten([office.night, office.day, Tower.residentOf(typicalBaked), Tower.residentOf(endsBaked),
-                                                         Tower.residentOf(cinemaBaked), Cinema.fixed])))
+                                                         Tower.residentOf(cinemaBaked), Cinema.fixed, Tower.residentOf(mallBaked)])))
 
-expect (bakes |> List.map((b) => b.name)) == ["office-night", "office-day", "tower-typical-night", "tower-typical-day", "tower-ends-night", "tower-ends-day", "cinema-night", "cinema-day"]
+expect (bakes |> List.map((b) => b.name)) == ["office-night", "office-day", "tower-typical-night", "tower-typical-day", "tower-ends-night", "tower-ends-day", "cinema-night", "cinema-day", "mall-night", "mall-day"]
 // The committed bakes match their layouts: rebake after editing (README).
 expect all |> List.all((a) => a.status == Provenance.Current)

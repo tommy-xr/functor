@@ -35,6 +35,8 @@ const ARCHETYPES = {
   "tower-typical": TOWER,
   "tower-ends": TOWER,
   cinema: ["layout.fun", "building.fun", "paints.fun", "cinemaLayout.fun", "cinemaBuilding.fun"],
+  // Baked at half scale: 6 texels/m (mallInterior.fun).
+  mall: ["layout.fun", "building.fun", "mallLayout.fun", "mallInterior.fun"],
 };
 const BAKES = ["night", "day"];
 const ARTIFACTS = [...BAKES.map((b) => `${b}.png`), "night.mesh.bin"];

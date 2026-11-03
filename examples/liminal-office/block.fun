@@ -154,18 +154,24 @@ let towersOf = (floors: List<float>): Town =>
     { name: $"tower-{k}", archetype: $"tower-{n}", x: centre - x, z: centre - z, yaw: yaw }), true, ground, groundBody)
 
 // The towns, by the model's `town`: the office alone, the block, the grids
-// of 4, 16 and 64, the towers and the cinema. B toggles the office alone
-// and the block; G cycles the grids; H toggles the towers, C the cinema.
+// of 4, 16 and 64, the towers, the cinema and the mall. B toggles the office
+// alone and the block; G cycles the grids; H toggles the towers, C the
+// cinema, P the mall.
 let office = townOf("office", 1.0, false, Exterior.ground, Exterior.groundBody)
 let towers = towersOf([8.0, 16.0, 12.0, 8.0])
 // The cinema alone on the block's ground, its parking lot south of it;
 // beyond its interior's reach it draws as its shell. Solid across the lot,
 // whose lamp posts stand up to 46 m out.
 let cinema = { townWith("cinema", [{ name: "cinema-0", archetype: "cinema", x: 0.0, z: 0.0, yaw: 0.0 }], true, ground, groundBody) with solidOn: 50.0 }
-let towns = [office, townOf("block", 4.0, false, ground, groundBody), gridOf(4.0), gridOf(16.0), gridOf(64.0), towers, cinema]
+// The mall and its lot, on the same ground; P toggles it. Solid and lit
+// out past the lot's far lamps and the anchor store's end.
+let mall = { townWith("mall", [{ name: "mall-0", archetype: "mall", x: 0.0, z: 0.0, yaw: 0.0 }], true, ground, groundBody)
+             with solidOn: 45.0, lightReach: 70.0 }
+let towns = [office, townOf("block", 4.0, false, ground, groundBody), gridOf(4.0), gridOf(16.0), gridOf(64.0), towers, cinema, mall]
 let townAt = (t: float): Town => List.nth(t, towns) |> Option.defaultValue(office)
 let towersTown = 5.0
 let cinemaTown = 6.0
+let mallTown = 7.0
 // Copy `id` of `town`: ids are positions in its copies.
 let copyIn = (town: Town, id: float): Copy =>
   match List.nth(id, town.copies) with

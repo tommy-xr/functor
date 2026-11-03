@@ -69,6 +69,7 @@
     "test:liminal-office": "cargo build -p functor-cli --no-default-features && node e2e/liminal-office.mjs",
     "test:liminal-tower": "cargo build -p functor-cli --no-default-features && node e2e/liminal-tower.mjs",
     "test:liminal-cinema": "cargo build -p functor-cli --no-default-features && node e2e/liminal-cinema.mjs",
+    "test:liminal-mall": "cargo build -p functor-cli --no-default-features && node e2e/liminal-mall.mjs",
     "test:mcp": "cargo build -p functor-cli --no-default-features && node e2e/mcp-server.mjs",
     "test:mcp-step-all": "cargo build -p functor-cli --no-default-features && node e2e/mcp-step-all.mjs",
     "test:code-garden": "cargo build -p functor-cli --no-default-features && node e2e/code-garden.mjs",
