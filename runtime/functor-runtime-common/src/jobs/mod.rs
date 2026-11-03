@@ -227,6 +227,7 @@ impl Pool {
                 Err(e) => log::warn!("[functor-lang] couldn't start job worker {n}: {e}"),
             }
         }
+        log::info!("[functor-lang] {started} job worker(s)");
         Pool { queue, workers: started, in_flight }
     }
 }
@@ -265,12 +266,18 @@ fn spawn_worker(
 }
 
 /// Background work: utility QoS on macOS, so jobs don't contend with the
-/// frame's threads for performance cores.
+/// frame's threads for performance cores; nice 10 on Android, where workers
+/// share the app's three cores with the render (and sim) thread.
 fn lower_priority() {
     #[cfg(target_os = "macos")]
     // SAFETY: plain libc call on the calling thread; no pointers involved.
     unsafe {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
+    }
+    #[cfg(target_os = "android")]
+    // SAFETY: plain libc call; `who` 0 is the calling thread on Linux.
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, 0, 10);
     }
 }
 
@@ -303,9 +310,12 @@ impl Dispatch for Pool {
 }
 
 /// Workers beside the render and sim threads, from the cores this process
-/// may run on. A Quest app gets three (Quest 3: cores 3–5 of six), so leave
-/// one to the frame, at most two workers; desktop leaves two, at most four.
-/// `FUNCTOR_JOB_WORKERS=n` overrides it, for benchmarks.
+/// may run on. A Quest app gets three (Quest 3: cores 3–5 of six): two
+/// workers, below the frame's priority (see [`lower_priority`]) so a
+/// pipelined frame's two threads still win; desktop leaves two cores, at
+/// most four workers.
+/// `FUNCTOR_JOB_WORKERS=n` (clamped to 1..=16, read when the pool starts)
+/// overrides it, for benchmarks.
 fn workers() -> usize {
     if let Some(n) = std::env::var("FUNCTOR_JOB_WORKERS").ok().and_then(|n| n.parse().ok()) {
         return usize::clamp(n, 1, 16);
