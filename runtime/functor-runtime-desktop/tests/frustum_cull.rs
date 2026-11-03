@@ -350,6 +350,7 @@ fn static_model(positions: Vec<[f32; 3]>, triangles: Vec<[u32; 3]>) -> Scene3D {
             count: triangles.len() as u32,
             texture: Some(pixels(ColorSpace::Srgb, [200, 80, 40])),
             unlit: false,
+            emissive: 0.0,
         }],
         triangles,
         // Layered, so its residency (keyed by the base) is covered too.

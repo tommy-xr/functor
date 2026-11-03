@@ -16089,8 +16089,8 @@ colorSpace: Texture.Srgb, pixels: Bytes.fromU8([200.0, 100.0, 50.0]) })\n\
           uvs2: Bytes.fromF32le([0.0, 0.0, 0.5, 0.0, 0.5, 0.5, 0.0, 0.5]),\n\
           triangles: Bytes.fromU32le([0.0, 1.0, 2.0, 0.0, 2.0, 3.0]),\n\
           groups: [\n\
-            { first: 0.0, count: 1.0, texture: Option.Some(px), unlit: false },\n\
-            { first: 1.0, count: 1.0, texture: Option.None, unlit: true }\n\
+            { first: 0.0, count: 1.0, texture: Option.Some(px), unlit: false, emissive: 0.0 },\n\
+            { first: 1.0, count: 1.0, texture: Option.None, unlit: true, emissive: 0.0 }\n\
           ],\n\
           lightmap: Option.Some({ texture: px, scale: 2.0, floor: Color.rgb(0.1, 0.0, 0.0) })\n\
         }\n\

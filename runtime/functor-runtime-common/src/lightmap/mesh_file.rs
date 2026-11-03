@@ -4,7 +4,7 @@
 //! Little-endian: `FLMB`, u32 version, vertex count, triangle count, group
 //! count, flags (bit 0: has `uvs`); then positions and normals (3 × f32
 //! each), uvs if flagged and uvs2 (2 × f32), triangles (3 × u32), and per
-//! group `first`, `count`, `unlit` (u32).
+//! group `first`, `count`, `unlit` (u32) — not `emissive`, which reads back 0.
 
 use crate::model::{GroupSource, ModelSource};
 
@@ -107,6 +107,7 @@ pub fn read_mesh(bytes: &[u8]) -> Result<ModelSource, String> {
             count: g[1],
             texture: None,
             unlit: g[2] != 0,
+            emissive: 0.0,
         })
         .collect();
     if at != bytes.len() {
@@ -154,12 +155,14 @@ mod tests {
                     count: 1,
                     texture: None,
                     unlit: false,
+                    emissive: 0.0,
                 },
                 GroupSource {
                     first: 1,
                     count: 1,
                     texture: None,
                     unlit: true,
+                    emissive: 0.0,
                 },
             ],
             lightmap: None,

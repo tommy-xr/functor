@@ -52,7 +52,7 @@ let greenPaint = (105.0, 179.0, 85.0)
 let solid = (paint) => let (r, g, b) = paint in Option.Some(Texture.fromPixels({
   width: 1.0, height: 1.0, format: Texture.Rgb8, colorSpace: Texture.Srgb, pixels: Bytes.fromU8([r, g, b]) }))
 let colour = (paint) => let (r, g, b) = paint in Color.rgb(r / 255.0, g / 255.0, b / 255.0)
-let group = (first: float, count: float, texture) => { first: first, count: count, texture: texture, unlit: false }
+let group = (first: float, count: float, texture) => { first: first, count: count, texture: texture, unlit: false, emissive: 0.0 }
 let whiteCount = 2.0 * List.length(white)
 let groups = [
   group(0.0, whiteCount, solid(whitePaint)),

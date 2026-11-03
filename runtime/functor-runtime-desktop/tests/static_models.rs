@@ -2,7 +2,7 @@
 //!
 //! - groups draw with their own base textures, in one model; an `unlit`
 //!   group ignores the frame's lights, and a frame without lights draws
-//!   every group fullbright;
+//!   every group fullbright; a lit group adds `emissive` × base;
 //! - one model drawn by several nodes uploads once, steady frames upload
 //!   nothing, and undrawn it is deleted;
 //! - the shadow pass and the instanced (stamped) path draw it;
@@ -51,6 +51,8 @@ fn main() {
     let mut harness = Harness::new();
     groups(&mut harness);
     println!("test groups ... ok");
+    emissive(&mut harness);
+    println!("test emissive ... ok");
     one_upload_for_many_nodes(&mut harness);
     println!("test one_upload_for_many_nodes ... ok");
     shadow_and_instanced(&mut harness);
@@ -93,6 +95,7 @@ fn file_texture_mips(harness: &mut Harness) {
             count: 2,
             texture: Some(file.clone()),
             unlit: true,
+            emissive: 0.0,
         }],
         ..self::room(&file, &file)
     });
@@ -150,6 +153,7 @@ fn lightmapped(
             count: 2,
             texture: Some(base),
             unlit: false,
+            emissive: 0.0,
         }],
         lightmap: Some(LightmapSource {
             texture: lightmap,
@@ -373,12 +377,14 @@ fn room(red: &TextureDescription, green: &TextureDescription) -> ModelSource {
                 count: 2,
                 texture: Some(red.clone()),
                 unlit: false,
+                emissive: 0.0,
             },
             GroupSource {
                 first: 2,
                 count: 2,
                 texture: Some(green.clone()),
                 unlit: true,
+                emissive: 0.0,
             },
         ],
         lightmap: None,
@@ -411,6 +417,30 @@ fn groups(harness: &mut Harness) {
     });
     let white = harness.render(&frame(&plain, 1, false, vec![Light::ambient(1.0, 1.0, 1.0)]));
     assert_near(rgb(&white, 96, 64), [255, 255, 255], "no groups: white");
+}
+
+/// A lit group adds `emissive` × base to its lit colour (0, 0.5, 1 under a
+/// dim ambient); an unlit group and a frame without lights ignore it.
+fn emissive(harness: &mut Harness) {
+    let (red, green) = (solid([255, 0, 0]), solid([0, 255, 0]));
+    let glowing = |emissive: f32| {
+        let mut source = room(&red, &green);
+        for group in &mut source.groups {
+            group.emissive = emissive;
+        }
+        model(source)
+    };
+    let dim = || vec![Light::ambient(0.5, 0.5, 0.5)];
+    let lit = srgb_u8_to_linear(rgb(&harness.render(&frame(&glowing(0.0), 1, false, dim())), 32, 64)[0]);
+    for emissive in [0.0, 0.5, 1.0] {
+        let room = glowing(emissive);
+        let drawn = harness.render(&frame(&room, 1, false, dim()));
+        let want = (linear_to_srgb((lit + emissive).min(1.0)) * 255.0).round() as u8;
+        assert_near(rgb(&drawn, 32, 64), [want, 0, 0], &format!("lit group, emissive {emissive}"));
+        assert_near(rgb(&drawn, 96, 64), [0, 255, 0], "unlit group");
+        let bright = harness.render(&frame(&room, 1, false, vec![]));
+        assert_near(rgb(&bright, 32, 64), [255, 0, 0], "no lights: fullbright");
+    }
 }
 
 /// `keep_resident` draws nothing, but keeps a static model's mesh, group

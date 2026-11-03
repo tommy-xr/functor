@@ -250,11 +250,16 @@ pub(super) fn static_source(value: &Value, span: Span) -> Result<ModelSource, Ru
                     )
                 }
             };
+            let emissive = number(get("emissive")?, &format!("{what}.emissive"), span)?;
+            if !(0.0..=1.0).contains(&emissive) {
+                return fail(format!("{what}.emissive must be between 0 and 1, got {emissive}"), span);
+            }
             Ok(GroupSource {
                 first: whole(get("first")?, &format!("{what}.first"))?,
                 count: whole(get("count")?, &format!("{what}.count"))?,
                 texture: texture_option(get("texture")?, &format!("{what}.texture"), span)?,
                 unlit,
+                emissive: emissive as f32,
             })
         })
         .collect::<Result<_, RunError>>()?;

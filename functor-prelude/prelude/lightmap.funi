@@ -66,6 +66,6 @@ let unwrap : (Model.staticData, options) => unwrapped
 type bakeJob = { name: string, mesh: Model.staticData, lights: List<Light.t>, albedo: List<Color.t>, scale: float }
 
 /// The mesh in a `.mesh.bin` that `functor bake` wrote: `Model.staticData`
-/// with its `uvs2`, groups without textures (the triangles keep their order,
-/// so the original `groups` fit), and no lightmap. Bad bytes are an error.
+/// with its `uvs2`, groups without textures or emission (the triangles keep
+/// their order, so the original `groups` fit), and no lightmap. Bad bytes are an error.
 let readMesh : (Bytes.t) => Model.staticData
