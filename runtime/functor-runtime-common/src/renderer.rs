@@ -962,7 +962,7 @@ fn forward_pass(
         opacity: std::cell::Cell::new(1.0),
         shadow,
         fog,
-        sky_zenith: sky_gradient.map(|(_, zenith)| zenith),
+        sky_gradient,
         camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
         lod_camera_pos: cgmath::Vector3::new(
             lod_camera.eye[0],

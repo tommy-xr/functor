@@ -121,7 +121,7 @@ impl Material for BasicMaterial {
                     p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                     p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
                     p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
-                    uniforms.fog.set(p, ctx.gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
+                    uniforms.fog.set(p, ctx.gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
                 }
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }

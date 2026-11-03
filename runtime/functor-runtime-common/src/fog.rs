@@ -149,11 +149,12 @@ pub fn clear_color(fog: Option<&Fog>) -> [f32; 3] {
 pub const FOG_GLSL: &str = r#"
         uniform int fogEnabled;      // 0 = off (the default frame state)
         uniform int fogMode;         // 0 = linear, 1 = exp, 2 = height
-        uniform vec3 fogColor;       // the horizon's, under a sky gradient
+        uniform vec3 fogColor;       // the sky's horizon, under a sky gradient
         uniform highp float fogNear;
         uniform highp float fogFar;
-        uniform highp float fogDensity; // height: the density at the camera
+        uniform highp float fogDensity; // height: the density at fogBaseY
         uniform highp float fogFalloff;
+        uniform highp float fogBaseY;
         uniform highp vec3 fogCameraPos;   // camera world position
         uniform int fogSky;          // 1: fog takes the sky gradient's color
         uniform vec3 fogSkyZenith;
@@ -181,12 +182,15 @@ pub const FOG_GLSL: &str = r#"
                 return ramp;
             }
             // Height: the optical depth of density * exp(-falloff * height)
-            // along the ray is fogDensity * dist * (1 - exp(-k)) / k, with k
-            // the falloff times the ray's rise. Clamped so a steep downward
-            // ray stays finite; near-level rays take the series 1 - k/2.
-            highp float k = max(fogFalloff * (worldPosition.y - fogCameraPos.y), -80.0);
-            highp float shape = abs(k) > 1e-3 ? (1.0 - exp(-k)) / k : 1.0 - 0.5 * k;
-            return ramp * exp(-fogDensity * dist * shape);
+            // along the ray is the density at its lower (denser) end, times
+            // dist * (1 - exp(-x)) / x, with x the falloff times the ray's
+            // rise. Both factors stay finite (the first capped at e^80);
+            // near-level rays take the series 1 - x/2.
+            highp float lowest = min(worldPosition.y, fogCameraPos.y) - fogBaseY;
+            highp float densest = fogDensity * exp(min(-fogFalloff * lowest, 80.0));
+            highp float x = fogFalloff * abs(worldPosition.y - fogCameraPos.y);
+            highp float shape = x > 1e-3 ? (1.0 - exp(-x)) / x : 1.0 - 0.5 * x;
+            return ramp * exp(-densest * dist * shape);
         }
 
         // The color fog blends toward: under a sky gradient, the sky behind
@@ -219,6 +223,7 @@ pub struct FogUniforms {
     far_loc: UniformLocation,
     density_loc: UniformLocation,
     falloff_loc: UniformLocation,
+    base_y_loc: UniformLocation,
     camera_pos_loc: UniformLocation,
     sky_loc: UniformLocation,
     sky_zenith_loc: UniformLocation,
@@ -234,6 +239,7 @@ impl FogUniforms {
             far_loc: shader.get_uniform_location(gl, "fogFar"),
             density_loc: shader.get_uniform_location(gl, "fogDensity"),
             falloff_loc: shader.get_uniform_location(gl, "fogFalloff"),
+            base_y_loc: shader.get_uniform_location(gl, "fogBaseY"),
             camera_pos_loc: shader.get_uniform_location(gl, "fogCameraPos"),
             sky_loc: shader.get_uniform_location(gl, "fogSky"),
             sky_zenith_loc: shader.get_uniform_location(gl, "fogSkyZenith"),
@@ -244,14 +250,15 @@ impl FogUniforms {
     /// other uniforms are dead behind the shader's early return).
     /// `camera_pos` is the camera's world position — frame-constant, so the
     /// renderer computes it once per pass (`RenderContext::camera_pos`).
-    /// `sky_zenith` is the drawn sky gradient's zenith, if any
-    /// (`RenderContext::sky_zenith`).
+    /// `sky` is the drawn sky gradient's `(horizon, zenith)`, if any
+    /// (`RenderContext::sky_gradient`): fog then blends toward that sky, its
+    /// horizon replacing the fog's own color.
     pub fn set(
         &self,
         p: &ShaderProgram,
         gl: &glow::Context,
         fog: Option<&Fog>,
-        sky_zenith: Option<[f32; 3]>,
+        sky: Option<([f32; 3], [f32; 3])>,
         camera_pos: &Vector3<f32>,
     ) {
         let Some(fog) = fog else {
@@ -264,16 +271,15 @@ impl FogUniforms {
         // serialized Fog keeps its authored value). The clear color decodes
         // the same way where an sRGB attachment is cleared, so fully fogged
         // geometry still dissolves exactly into the background.
-        let c = crate::color_space::srgb_to_linear3(fog.color());
+        let (horizon, zenith) = sky.unwrap_or((fog.color(), [0.0; 3]));
+        let c = crate::color_space::srgb_to_linear3(horizon);
         p.set_uniform_vec3(gl, &self.color_loc, &Vector3::new(c[0], c[1], c[2]));
-        p.set_uniform_1i(gl, &self.sky_loc, sky_zenith.is_some() as i32);
-        let z = crate::color_space::srgb_to_linear3(sky_zenith.unwrap_or([0.0; 3]));
+        p.set_uniform_1i(gl, &self.sky_loc, sky.is_some() as i32);
+        let z = crate::color_space::srgb_to_linear3(zenith);
         p.set_uniform_vec3(gl, &self.sky_zenith_loc, &Vector3::new(z[0], z[1], z[2]));
-        let (mode, near, far, density, falloff) = match *fog {
-            Fog::Linear { near, far, .. } => (0, near, far, 0.0, 0.0),
-            Fog::Exp { density, .. } => (1, 0.0, 0.0, density, 0.0),
-            // The density at the camera's height is frame-constant: fold it
-            // here so the shader's integral needs no base height.
+        let (mode, near, far, density, falloff, base_y) = match *fog {
+            Fog::Linear { near, far, .. } => (0, near, far, 0.0, 0.0, 0.0),
+            Fog::Exp { density, .. } => (1, 0.0, 0.0, density, 0.0, 0.0),
             Fog::Height {
                 density,
                 falloff,
@@ -281,16 +287,14 @@ impl FogUniforms {
                 near,
                 far,
                 ..
-            } => {
-                let rise = (-falloff * (camera_pos.y - base_y)).clamp(-80.0, 80.0);
-                (2, near, far, density * rise.exp(), falloff)
-            }
+            } => (2, near, far, density, falloff, base_y),
         };
         p.set_uniform_1i(gl, &self.mode_loc, mode);
         p.set_uniform_1f(gl, &self.near_loc, near);
         p.set_uniform_1f(gl, &self.far_loc, far);
         p.set_uniform_1f(gl, &self.density_loc, density);
         p.set_uniform_1f(gl, &self.falloff_loc, falloff);
+        p.set_uniform_1f(gl, &self.base_y_loc, base_y);
     }
 }
 

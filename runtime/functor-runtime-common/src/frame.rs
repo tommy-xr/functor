@@ -159,14 +159,14 @@ impl Frame {
 
     /// The distance past which nothing this frame draws can be told from its
     /// background: the fog's [`end`](crate::fog::Fog::end), when the pass
-    /// clears to the fog color with no skybox or passthrough behind it. A sky
-    /// gradient keeps it: fully fogged geometry takes the sky's color.
+    /// clears to the fog color with no skybox or passthrough behind it, or
+    /// draws a sky gradient (fully fogged geometry takes the sky's color).
     /// Renderers may skip geometry entirely beyond it.
     pub fn fog_cull_distance(&self) -> Option<f32> {
         let fog = self.fog.as_ref()?;
         let background_is_fog = !self.passthrough
             && self.skybox.is_none()
-            && self.resolved_clear_color() == fog.color();
+            && (self.sky_zenith.is_some() || self.resolved_clear_color() == fog.color());
         background_is_fog.then(|| fog.end()).flatten()
     }
 
@@ -235,8 +235,8 @@ impl Frame {
 
     /// A vertical sky gradient behind the frame: the clear color at the
     /// horizon (the fog color by default) up to `zenith` overhead. Fog takes
-    /// the sky's color behind each fragment, so fully fogged geometry
-    /// vanishes into it. Subject-first so it pipes.
+    /// the sky's color behind each fragment, horizon included, so fully
+    /// fogged geometry vanishes into it. Subject-first so it pipes.
     pub fn with_sky_gradient(mut frame: Frame, zenith: [f32; 3]) -> Frame {
         frame.sky_zenith = Some(zenith);
         frame
@@ -372,6 +372,10 @@ mod tests {
         let gradient = Some(([0.5, 0.6, 0.7], [0.1, 0.2, 0.9]));
         assert_eq!(sky.drawn_sky_gradient(), gradient);
         assert_eq!(sky.fog_cull_distance(), Some(30.0));
+        // The fog takes the sky's horizon, so a different clear still culls.
+        let red = Frame::with_clear_color(sky.clone(), 1.0, 0.0, 0.0);
+        assert_eq!(red.drawn_sky_gradient(), Some(([1.0, 0.0, 0.0], [0.1, 0.2, 0.9])));
+        assert_eq!(red.fog_cull_distance(), Some(30.0));
         let cube = SkyboxDescription::new("px", "nx", "py", "ny", "pz", "nz");
         assert_eq!(Frame::with_skybox(sky.clone(), cube).drawn_sky_gradient(), None);
         assert_eq!(Frame::with_passthrough(sky).drawn_sky_gradient(), None);

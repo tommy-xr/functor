@@ -23,8 +23,9 @@ let linear : (float, float, Color.t) => t
 let exp : (float, Color.t) => t
 /// Create exponential height fog: `density` per unit at `baseY`, thinning by
 /// a factor of e every `1 / falloff` units above it and thickening below, so
-/// valleys fill and peaks clear. It fades linearly from `near` and is total
-/// by `far`, so the far plane can hide behind it.
+/// valleys fill and peaks clear. It applies at every distance; on top of it a
+/// linear `near`..`far` fade makes it total by `far`, so the far plane can
+/// hide behind it.
 ///
 /// `density` must be positive, `falloff` and `near` at least 0, and `far`
 /// greater than `near`. Terrain LOD coarsens by the `near`..`far` fade alone.

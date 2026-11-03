@@ -74,19 +74,35 @@ pub const SKYBOX_FRAGMENT_SHADER_SOURCE: &str = r#"
         }
 "#;
 
+/// `Frame.withSkyGradient`'s fullscreen triangle at the far depth (no vertex
+/// buffer). `farPoint` unprojects each corner through the translation-free
+/// view, so it is the eye-relative far-plane point: the view ray under a
+/// perspective camera, and what the fog measures under an orthographic one.
+pub const SKY_GRADIENT_VERTEX_SHADER_SOURCE: &str = r#"
+        uniform mat4 inverseViewProjection;
+
+        out highp vec4 farPoint;
+
+        void main() {
+            vec2 pos = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)) * 2.0 - 1.0;
+            farPoint = inverseViewProjection * vec4(pos, 1.0, 1.0);
+            gl_Position = vec4(pos, 1.0, 1.0);
+        }
+"#;
+
 /// `Frame.withSkyGradient`'s fragment shader, after `FOG_GLSL` (for
-/// `skyGradient`, the function the fog shares) and over the skybox's vertex
-/// shader, whose `texDir` is the world view direction.
+/// `skyGradient`, the function the fog shares).
 pub const SKY_GRADIENT_FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
-        in vec3 texDir;
+        in highp vec4 farPoint;
 
         uniform vec3 skyHorizon;
         uniform vec3 skyZenith;
 
         void main() {
-            fragColor = functorOutput(vec4(skyGradient(skyHorizon, skyZenith, texDir), 1.0));
+            fragColor = functorOutput(
+                vec4(skyGradient(skyHorizon, skyZenith, farPoint.xyz / farPoint.w), 1.0));
         }
 "#;
 

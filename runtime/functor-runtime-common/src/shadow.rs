@@ -213,7 +213,7 @@ pub(crate) fn depth_only_context<'a>(
         shadow: None,
         // Fog is a forward-pass concern; the depth pass renders no color.
         fog: None,
-        sky_zenith: None,
+        sky_gradient: None,
         camera_pos: cgmath::Vector3::new(0.0, 0.0, 0.0),
         // Terrain currently skips the shadow-only pass; keep a complete
         // context so adding that pass later cannot accidentally select LOD

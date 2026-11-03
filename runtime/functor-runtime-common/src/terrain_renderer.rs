@@ -1135,7 +1135,7 @@ impl TerrainRenderer {
                     p.set_uniform_1i(gl, &f.normal_map, COLORMAP_UNITS[3] as i32);
                     p.set_uniform_matrix3(gl, &f.normal_matrix, &crate::math::normal_matrix(world));
                 }
-                u.fog.set(p, gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
+                u.fog.set(p, gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
                 u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
             } else {
                 Self::set_lit_uniforms(
@@ -1287,7 +1287,7 @@ impl TerrainRenderer {
             }
         }
         u.lighting.set(p, ctx, view);
-        u.fog.set(p, gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
+        u.fog.set(p, gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
         u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
     }
 
@@ -1495,7 +1495,7 @@ impl TerrainRenderer {
                 &u.color,
                 &Vector3::new(grass_color[0], grass_color[1], grass_color[2]),
             );
-            u.fog.set(p, gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
+            u.fog.set(p, gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
             u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
 
             gl.active_texture(glow::TEXTURE0);

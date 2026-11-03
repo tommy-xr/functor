@@ -20,7 +20,6 @@
 
 use std::sync::Arc;
 
-use cgmath::vec4;
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::math::Angle;
 use functor_runtime_common::shadow::ShadowMap;
@@ -127,25 +126,25 @@ fn draw(
 fn colored(color: [f32; 4], leaf: Scene3D) -> Scene3D {
     Scene3D {
         obj: SceneObject::Material(
-            MaterialDescription::Color(vec4(color[0], color[1], color[2], color[3])),
+            MaterialDescription::color(color[0], color[1], color[2], color[3]),
             vec![leaf],
         ),
         xform: cgmath::Matrix4::from_scale(1.0),
     }
 }
 
-const CAMERA: [f32; 3] = [3.0, 30.0, -2.0];
-const HEIGHT_FOG: (f32, f32, f32, f32, f32) = (0.02, 0.05, 0.0, 100.0, 400.0);
+/// `Fog.height`'s (density, falloff, baseY, near, far).
+type HeightFog = (f32, f32, f32, f32, f32);
 
 /// Visibility by brute force: the linear end ramp times `exp(-∫ density)`
 /// along the ray, the density `density * exp(-falloff * (y - baseY))`.
-fn reference_visibility(point: [f32; 3]) -> f64 {
-    let (density, falloff, base, near, far) = HEIGHT_FOG;
-    let c = CAMERA.map(f64::from);
+fn reference_visibility(fog: HeightFog, camera: [f32; 3], point: [f32; 3]) -> f64 {
+    let (density, falloff, base, near, far) = fog;
+    let c = camera.map(f64::from);
     let p = point.map(f64::from);
     let dist = ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt();
     let ramp = ((far as f64 - dist) / (far - near) as f64).clamp(0.0, 1.0);
-    let steps = 20_000;
+    let steps = 200_000;
     let mut depth = 0.0;
     for i in 0..steps {
         let t = (i as f64 + 0.5) / steps as f64;
@@ -162,35 +161,43 @@ fn height_fog_matches_the_integral(gl: &glow::Context) {
     // No epilogue encode: the float target stores the shaded linear value,
     // mix(fog = 0, surface = 1, visibility) = visibility.
     context.set_output_colorspace(OutputColorspace::Srgb);
-    let (density, falloff, base, near, far) = HEIGHT_FOG;
-    let fog = Fog::height(density, falloff, base, near, far, 0.0, 0.0, 0.0);
-    let points: [[f32; 3]; 8] = [
-        [60.0, 30.0, 40.0],    // level: the Taylor branch
-        [80.0, 30.05, 9.0],    // nearly level
-        [180.0, 0.0, 90.0],    // down into the dense layer
-        [130.0, -40.0, -60.0], // below the base height
-        [90.0, 140.0, 70.0],   // up through thinning fog
-        [20.0, 300.0, 40.0],   // steeply up
-        [-300.0, 20.0, 200.0], // inside the end ramp
-        [250.0, 10.0, 150.0],  // in the ramp, looking down
+    let mist: HeightFog = (0.02, 0.05, 0.0, 100.0, 400.0);
+    let camera = [3.0, 30.0, -2.0];
+    let cases: [(HeightFog, [f32; 3], [f32; 3]); 11] = [
+        (mist, camera, [60.0, 30.0, 40.0]),     // level: the series branch
+        (mist, camera, [80.0, 30.05, 9.0]),     // nearly level
+        (mist, camera, [180.0, 0.0, 90.0]),     // down into the dense layer
+        (mist, camera, [130.0, -40.0, -60.0]),  // below the base height
+        (mist, camera, [90.0, 140.0, 70.0]),    // up through thinning fog
+        (mist, camera, [20.0, 300.0, 40.0]),    // steeply up
+        (mist, camera, [-300.0, 20.0, 200.0]),  // inside the end ramp
+        (mist, camera, [250.0, 10.0, 150.0]),   // in the ramp, looking down
+        // Thin ground mist seen from far above it: exponents past 80.
+        ((1.0, 1.0, 0.0, 100.0, 4000.0), [0.0, 100.0, 0.0], [30.0, 5.0, 0.0]),
+        ((0.5, 0.5, 0.0, 100.0, 4000.0), [0.0, 200.0, 0.0], [200.0, 4.0, 50.0]),
+        ((0.05, 0.2, 0.0, 100.0, 4000.0), [0.0, 450.0, 0.0], [400.0, 10.0, 0.0]),
     ];
     // The billboard draws: unfogged, it stores 1.
-    let unfogged = visibility(gl, &context, fbo, None, points[0]);
+    let unfogged = visibility(gl, &context, fbo, None, camera, cases[0].2);
     assert_eq!(unfogged, 1.0, "unfogged billboard: {unfogged}");
-    for point in points {
-        let got = visibility(gl, &context, fbo, Some(&fog), point);
-        let want = reference_visibility(point);
+    for (params, camera, point) in cases {
+        let (density, falloff, base, near, far) = params;
+        let fog = Fog::height(density, falloff, base, near, far, 0.0, 0.0, 0.0);
+        let got = visibility(gl, &context, fbo, Some(&fog), camera, point);
+        let want = reference_visibility(params, camera, point);
         assert!(
             (got as f64 - want).abs() < 2e-4,
-            "height fog at {point:?}: shader {got}, integral {want}"
+            "height fog {params:?} from {camera:?} at {point:?}: shader {got}, integral {want}"
         );
     }
     // Exactly zero at and past the end, so fully fogged fragments early-out.
+    let (density, falloff, base, near, far) = mist;
+    let fog = Fog::height(density, falloff, base, near, far, 0.0, 0.0, 0.0);
     let dir = [0.6f32, -0.08, 0.8];
     let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
     for distance in [far + 0.01, far * 1.5] {
-        let point = [0, 1, 2].map(|i| CAMERA[i] + dir[i] / len * distance);
-        let got = visibility(gl, &context, fbo, Some(&fog), point);
+        let point = [0, 1, 2].map(|i| camera[i] + dir[i] / len * distance);
+        let got = visibility(gl, &context, fbo, Some(&fog), camera, point);
         assert_eq!(got, 0.0, "past the end ({distance}): {got}");
     }
 }
@@ -201,9 +208,10 @@ fn visibility(
     context: &SceneContext,
     fbo: glow::Framebuffer,
     fog: Option<&Fog>,
+    eye: [f32; 3],
     point: [f32; 3],
 ) -> f32 {
-    let mut camera = Camera::look_at(CAMERA, point, [0.0, 1.0, 0.0], Angle::from_degrees(1.0));
+    let mut camera = Camera::look_at(eye, point, [0.0, 1.0, 0.0], Angle::from_degrees(1.0));
     camera.far = 10_000.0;
     let billboard = colored(
         [1.0, 1.0, 1.0, 1.0],
@@ -260,7 +268,14 @@ fn fully_fogged_geometry_is_the_background(gl: &glow::Context) {
         context.set_output_colorspace(colorspace);
         let srgb = colorspace == OutputColorspace::Srgb;
         for (fog_name, fog) in &fogs {
-            for sky in [None, Some([0.18f32, 0.34, 0.62])] {
+            // (zenith, clear override): the fog must take the sky's horizon
+            // even when the clear color differs from the fog's.
+            let zenith = [0.18f32, 0.34, 0.62];
+            for (sky, clear) in [
+                (None, None),
+                (Some(zenith), None),
+                (Some(zenith), Some([0.30f32, 0.20, 0.40])),
+            ] {
                 let render = |wall_at: Option<f32>| {
                     let mut camera = Camera::look_at(
                         [0.0, 10.0, 0.0],
@@ -282,6 +297,7 @@ fn fully_fogged_geometry_is_the_background(gl: &glow::Context) {
                     };
                     let mut frame = Frame::with_fog(Frame::new(camera, scene), fog.clone());
                     frame.sky_zenith = sky;
+                    frame.clear_color = clear;
                     if srgb {
                         unsafe { gl.enable(glow::FRAMEBUFFER_SRGB) };
                     }
@@ -290,7 +306,11 @@ fn fully_fogged_geometry_is_the_background(gl: &glow::Context) {
                     unsafe { gl.disable(glow::FRAMEBUFFER_SRGB) };
                     pixels
                 };
-                let label = format!("{surface} / {fog_name} / sky {}", sky.is_some());
+                let label = format!(
+                    "{surface} / {fog_name} / sky {} / clear override {}",
+                    sky.is_some(),
+                    clear.is_some()
+                );
                 let background = render(None);
                 let past_end = render(Some(320.0));
                 let worst = max_diff(&background, &past_end);
@@ -300,7 +320,7 @@ fn fully_fogged_geometry_is_the_background(gl: &glow::Context) {
                     max_diff(&background, &inside) > 20,
                     "{label}: a wall inside the fog must show"
                 );
-                // The horizon is the fog colour: the row the camera's level
+                // The horizon is the background colour: the row the camera's level
                 // line projects to (the view pitches up ~2.3°, so just below
                 // the centre).
                 if sky.is_some() {
@@ -313,7 +333,8 @@ fn fully_fogged_geometry_is_the_background(gl: &glow::Context) {
                         })
                         .unwrap();
                     let at = (row * SIZE as usize + SIZE as usize / 2) * 4;
-                    let fog_bytes = [color.0, color.1, color.2].map(|c| (c * 255.0).round() as i32);
+                    let horizon = clear.unwrap_or([color.0, color.1, color.2]);
+                    let fog_bytes = horizon.map(|c| (c * 255.0).round() as i32);
                     for c in 0..3 {
                         let diff = (background[at + c] as i32 - fog_bytes[c]).abs();
                         assert!(

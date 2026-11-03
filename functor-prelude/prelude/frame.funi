@@ -35,9 +35,10 @@ let withSkybox : (Skybox.t, t) => t
 /// horizon and below (the fog color, unless `withClearColor` sets one),
 /// blending to `zenith` straight up.
 ///
-/// Fog then blends toward the sky color behind each fragment instead of one
-/// flat color, so fully fogged geometry vanishes into it at any height. A
-/// `withSkybox` sky or `withPassthrough` replaces it.
+/// Fog then blends toward the sky color behind each fragment, horizon
+/// included, instead of its own flat color, so fully fogged geometry
+/// vanishes into the sky at any height. A `withSkybox` sky or
+/// `withPassthrough` replaces it.
 let withSkyGradient : (Color.t, t) => t
 /// Override a frame's background clear color.
 ///

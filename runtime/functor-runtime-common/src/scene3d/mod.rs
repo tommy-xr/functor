@@ -31,7 +31,7 @@ use crate::{
     shader_program::{ShaderProgram, UniformLocation},
     skybox::{
         SkyboxDescription, SKYBOX_FRAGMENT_SHADER_SOURCE, SKYBOX_VERTEX_SHADER_SOURCE,
-        SKY_GRADIENT_FRAGMENT_SHADER_SOURCE,
+        SKY_GRADIENT_FRAGMENT_SHADER_SOURCE, SKY_GRADIENT_VERTEX_SHADER_SOURCE,
     },
     terrain_renderer::TerrainRenderer,
     texture::{RuntimeTexture, Texture2D, TextureData},
@@ -295,8 +295,10 @@ struct SkyboxUniforms {
 }
 
 struct SkyGradientUniforms {
-    view_loc: UniformLocation,
-    projection_loc: UniformLocation,
+    // The fullscreen triangle has no vertex buffer, but core GL draws need a
+    // bound vertex array.
+    vao: glow::VertexArray,
+    inverse_view_projection_loc: UniformLocation,
     horizon_loc: UniformLocation,
     zenith_loc: UniformLocation,
     output: crate::color_space::OutputEncodeUniform,
@@ -2117,9 +2119,9 @@ skybox disabled for this set",
         }
     }
 
-    /// Draw `Frame.withSkyGradient`'s sky on the skybox's camera-centred cube:
-    /// at the far depth, so only pixels the scene left uncovered shade it.
-    /// Colors are authored sRGB; they decode here like the fog's.
+    /// Draw `Frame.withSkyGradient`'s sky as a fullscreen triangle at the far
+    /// depth, so only pixels the scene left uncovered shade it. Colors are
+    /// authored sRGB; they decode here like the fog's.
     pub fn draw_sky_gradient(
         &self,
         render_context: &RenderContext,
@@ -2134,7 +2136,7 @@ skybox disabled for this set",
             let vertex = Shader::build(
                 gl,
                 ShaderType::Vertex,
-                SKYBOX_VERTEX_SHADER_SOURCE,
+                SKY_GRADIENT_VERTEX_SHADER_SOURCE,
                 render_context.shader_version,
             );
             let fragment = Shader::build(
@@ -2145,8 +2147,9 @@ skybox disabled for this set",
             );
             let shader = ShaderProgram::link(gl, &vertex, &fragment);
             let uniforms = SkyGradientUniforms {
-                view_loc: shader.get_uniform_location(gl, "view"),
-                projection_loc: shader.get_uniform_location(gl, "projection"),
+                vao: unsafe { gl.create_vertex_array() }.expect("sky gradient: create vao"),
+                inverse_view_projection_loc: shader
+                    .get_uniform_location(gl, "inverseViewProjection"),
                 horizon_loc: shader.get_uniform_location(gl, "skyHorizon"),
                 zenith_loc: shader.get_uniform_location(gl, "skyZenith"),
                 output: crate::color_space::OutputEncodeUniform::get(&shader, gl),
@@ -2154,15 +2157,17 @@ skybox disabled for this set",
             (shader, uniforms)
         });
 
-        // Strip the view translation so the cube is centered on the camera.
+        // Without the view translation, unprojected points are eye-relative.
         let mut view = *view_matrix;
         view.w = cgmath::vec4(0.0, 0.0, 0.0, 1.0);
+        let Some(inverse) = (projection_matrix * view).invert() else {
+            return;
+        };
         let [hr, hg, hb] = crate::color_space::srgb_to_linear3(horizon);
         let [zr, zg, zb] = crate::color_space::srgb_to_linear3(zenith);
         unsafe {
             shader.use_program(gl);
-            shader.set_uniform_matrix4(gl, &uniforms.view_loc, &view);
-            shader.set_uniform_matrix4(gl, &uniforms.projection_loc, projection_matrix);
+            shader.set_uniform_matrix4(gl, &uniforms.inverse_view_projection_loc, &inverse);
             shader.set_uniform_vec3(gl, &uniforms.horizon_loc, &cgmath::vec3(hr, hg, hb));
             shader.set_uniform_vec3(gl, &uniforms.zenith_loc, &cgmath::vec3(zr, zg, zb));
             uniforms.output.set(
@@ -2173,9 +2178,9 @@ skybox disabled for this set",
             );
             gl.depth_func(glow::LEQUAL);
             gl.depth_mask(false);
-        }
-        self.cube.borrow_mut().draw(gl);
-        unsafe {
+            gl.bind_vertex_array(Some(uniforms.vao));
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            gl.bind_vertex_array(None);
             gl.depth_mask(true);
             gl.depth_func(glow::LESS);
         }
