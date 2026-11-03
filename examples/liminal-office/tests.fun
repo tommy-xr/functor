@@ -404,7 +404,7 @@ expect Block.activeAt(block, Block.maxActive, [], Block.toWorld(Block.copyAt(1.0
 // Every copy draws the home copy's scene (one archetype: the same cell
 // models and lightmaps) under its own transform.
 let look = (c: Block.Copy): Game.CopyLook => { copy: c, neon: 1.0, lamps: 1.0, day: false, active: true }
-let local = Scene.group([Exterior.exteriorAt(street, 1.0, 1.0, false), Scene.cells(level, Scene.group(archetype.night))])
+let local = Scene.group([Exterior.exteriorAt(street, 1.0, 1.0, false), Scene.cells(level, Scene.group(archetype.night)), Glass.glazingOf("office").outside])
 expect copies |> List.all((c) => Scene.equals(Game.copyScene(look(c)), Block.sceneOf(c, local)))
 
 // ---- The grids -------------------------------------------------------------------

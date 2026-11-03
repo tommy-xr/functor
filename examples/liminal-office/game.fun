@@ -375,7 +375,7 @@ let physics = (model) =>
   Physics.scene(v(0.0, -9.81, 0.0), List.flatten([
     if model.island then List.append([Physics.memo("island-props", model.props.solid, Island.propBodies)], Island.bodies)
     else [Block.townAt(model.town).groundBody],
-    model.solid |> List.map((id) => let c = Block.copyIn(Block.townAt(model.town), id) in Physics.memo(c.name, c, Block.bodiesOf)),
+    model.solid |> List.map((id) => let c = Block.copyIn(Block.townAt(model.town), id) in Physics.memo(c.name, c, (c) => List.append(Block.bodiesOf(c), Glass.bodiesOf(c)))),
     [Physics.character(playerTag, Physics.capsule(0.6, 0.3),
                        { stepHeight: 0.2, maxSlope: 40deg, snap: 0.2, offset: 0.02 })
        |> Physics.at(spawnAt)],
@@ -388,10 +388,11 @@ let physics = (model) =>
 type CopyLook = { copy: Block.Copy, neon: float, lamps: float, day: bool, active: bool }
 let copyScene = (look: CopyLook): Scene.t =>
   let a = Block.archetypeOf(look.copy) in
+  let glass = Glass.glazingOf(a.name) in
   let interiorScene =
     if not look.active then Scene.group([])
-    else Scene.cells(a.level, Scene.group(if look.day then a.day else a.night)) in
-  Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps, look.day), interiorScene]))
+    else Scene.cells(a.level, Scene.group(List.append(if look.day then a.day else a.night, glass.inside))) in
+  Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps, look.day), interiorScene, glass.outside]))
 
 // The near plane. Depth precision at a distance goes as 1/near: at 0.05 m,
 // faces 2 cm apart z-fought from about 60 m. At 0.1 m its corners sit about
@@ -425,8 +426,8 @@ let draw = (model, tts: float) =>
   // ground (roads.fun).
   let scene = if model.island
     then Scene.group([Roads.paintAt(model.town), buildings, Scene.memo("island-props", model.props, Island.propsScene),
-                      Scene.memo("island-ground", { biome: model.biome, night: 1.0 - daylight }, Island.ground), Archetypes.resident])
-    else Scene.group([town.ground, Roads.paintAt(model.town), buildings, Archetypes.resident]) in
+                      Scene.memo("island-ground", { biome: model.biome, night: 1.0 - daylight }, Island.ground), Archetypes.resident, Glass.resident])
+    else Scene.group([town.ground, Roads.paintAt(model.town), buildings, Archetypes.resident, Glass.resident]) in
   // On XR the beam follows the right controller, mapped through the camera.
   let (from, dir) = match model.hand with
     | Option.None => (eye |> Vec3.add(v(0.0, -0.25, 0.0)), lookDir(model.yaw, model.pitch))

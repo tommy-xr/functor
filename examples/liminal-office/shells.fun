@@ -6,7 +6,8 @@
 // glowing ones — five `Scene.instanced` cubes for the whole town, plus one
 // per finish and a tower's window grid. The windows and entrance glow like the
 // lit rooms behind them, so a distant copy reads as the building it becomes
-// at `Block.activeOn`.
+// at `Block.activeOn`. Its bands, windows and grid are glazed (glass.fun):
+// two draws more for the town.
 
 open Layout
 open Building
@@ -106,7 +107,7 @@ let placeGable = (c: Block.Copy, b: Exterior.Box): Instance.t => placeScaled(c, 
 // and gables (by finish), and what glows, by colour, so the hour changes a
 // template's colour, not the instances; and its window grid, placed.
 type Parts = { lit: List<Instance.t>, skinned: List<List<Instance.t>>, gables: List<List<Instance.t>>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t>,
-               litBands: List<Instance.t>, beacons: List<Instance.t>, grid: Option.t<Exterior.Grid> }
+               litBands: List<Instance.t>, beacons: List<Instance.t>, grid: Option.t<Exterior.Grid>, panes: List<Instance.t> }
 let partsOf = (c: Block.Copy): Parts =>
   let shell = shellAt(c.archetype) in
   let street = Block.archetypeOf(c).street in
@@ -120,10 +121,11 @@ let partsOf = (c: Block.Copy): Parts =>
     litBands: shell.litBands |> List.map((b) => place(c, b)),
     beacons: street.beaconBoxes |> List.map((b) => place(c, b)),
     grid: street.grid |> Option.map((g) => { night: Block.sceneOf(c, g.night), day: Block.sceneOf(c, g.day) }),
+    panes: Glass.shellOf(c.archetype, Block.archetypeOf(c).layout, street.half + proud + Glass.shellGap) |> List.map((p) => Glass.place(c, p)),
   }
 // Every town's copies' parts, by id, built once at load.
 let parts: List<List<Parts>> = Block.towns |> List.map((t) => t.copies |> List.map(partsOf))
-let none = { lit: [], skinned: [], gables: [], neon: [], shades: [], openings: [], litBands: [], beacons: [], grid: Option.None }
+let none = { lit: [], skinned: [], gables: [], neon: [], shades: [], openings: [], litBands: [], beacons: [], grid: Option.None, panes: [] }
 
 // The openings glow like the lit rooms behind them by night, neutral glass
 // by day; the neon and shades as on the street side.
@@ -152,8 +154,8 @@ let shellsOf = (look: Look): Scene.t =>
      cubes((s) => s |> Scene.color(if look.day then dayGlass else roomGlow), (p) => if look.day then p.openings else List.flatten([p.openings, p.litBands])),
      Finishes.drawn(List.range(List.length(Finishes.all)) |> List.map((k) =>
        idle |> List.concatMap((p) => List.nth(k, p.skinned) |> Option.defaultValue([]))))],
-    // Towers and the mall only: an office town draws exactly the four cubes
-    // and its finishes.
+    // Towers and the mall only: an office town draws exactly the four cubes,
+    // its finishes and its glass.
     if idle |> List.any((p) => Option.isSome(p.grid)) then
       List.flatten([[cubes((s) => s |> Scene.color(Exterior.beaconRed), (p) => p.beacons)],
         idle |> List.concatMap((p) => p.grid |> Option.map((g) => Exterior.gridAt(look.day, g)) |> Option.toList)])
@@ -161,4 +163,6 @@ let shellsOf = (look: Look): Scene.t =>
     // Houses only: their gables.
     [Finishes.drawnAs(Exterior.gableTemplate, List.range(List.length(Finishes.all)) |> List.map((k) =>
        idle |> List.concatMap((p) => List.nth(k, p.gables) |> Option.defaultValue([]))))],
+    // Their glass: two draws for the town.
+    [Glass.panesOf(idle |> List.concatMap((p) => p.panes))],
   ]))
