@@ -211,7 +211,7 @@ let glassLit = Building.paint(158.0, 168.0, 128.0)
 let glassDark = Building.paint(16.0, 16.0, 24.0)
 let glassDay = Building.paint(76.0, 84.0, 96.0)
 let unlitGroup = (first: float, count: float, p: Building.Paint): Model.group =>
-  { first: first, count: count, texture: Option.Some(Texture.fromPixels(Building.solid(p))), unlit: true }
+  { first: first, count: count, texture: Option.Some(Texture.fromPixels(Building.solid(p))), unlit: true, emissive: 0.0 }
 // The grid as one mesh, two groups by night and one by day.
 let gridOf = (l: Layout, n: float): Exterior.Grid =>
   let quads = gridFaces(l, n) in
