@@ -68,7 +68,11 @@ let castConcrete = 9.0
 let mustard = 10.0
 let steel = 11.0
 let doorPanel = 12.0
+// A niche's panel (`Niche` fixtures).
+let niche = 13.0
 
+// A palette: a `Material` per index above, in that order. This is the
+// office's; another archetype may repaint it (housePalettes.fun).
 let materials = [
   material(carpetPaint, 1.0, false, speckled(0.35, carpetPaint)),
   material(terrazzoPaint, 0.6, false, tiled(32.0, 1.0, shade(0.8, terrazzoPaint), terrazzoPaint)),
@@ -90,10 +94,11 @@ let materials = [
   material(steelPaint, 0.0, false, image(16.0, 4.0, (x, y) => shade(1.0 + 0.12 * (noise(x) - 0.5), steelPaint))),
   material(doorPaint, 0.0, false, image(8.0, 16.0, (x, y) =>
     if x < 1.0 || x > 6.0 || y < 1.0 then shade(0.8, doorPaint) else doorPaint)),
+  material(ceilingPaint, 0.0, false, solid(ceilingPaint)),
 ]
 
-let materialAt = (i: float): Material =>
-  match List.nth(i, materials) with
+let materialIn = (p: List<Material>, i: float): Material =>
+  match List.nth(i, p) with
   | Option.Some(m) => m
   | Option.None => Binary.invalid($"no material {i}")
 
@@ -154,7 +159,9 @@ let isStairFoot = (l: Layout, i: float): bool => l.flights |> List.any((f) => f.
 let isStairHead = (l: Layout, i: float): bool => l.flights |> List.any((f) => f.upper == i)
 let wallTop = (l: Layout, i: float): float => if isStairFoot(l, i) then l.storey else l.ceiling
 let floorMatOf = (r: Room): float =>
-  if r.kind == Office || r.kind == Corridor then carpet else if r.kind == LiftLobby then mustard else terrazzo
+  if r.kind == Office || r.kind == Corridor || r.kind == StairHall then carpet else if r.kind == LiftLobby then mustard else terrazzo
+// A flight's treads and landing: its stairwell's floor.
+let treadMatOf = (l: Layout, f: Flight): float => floorMatOf(roomAt(l, f.lower))
 
 // The side of `r` that `o` sits against, if they share a wall line.
 let sideBetween = (r: Rect, o: Rect): Option.t<Side> =>
@@ -329,6 +336,7 @@ let signFace = (l: Layout, f: Fixture): Face =>
   | LiftDoor => plate(l, steel, f.room, f.side, f.at, 1.1, 0.0, 2.2, 0.02)
   | ShutDoor => plate(l, doorPanel, f.room, f.side, f.at, 0.9, 0.0, 2.05, 0.02)
   | Skylight => Binary.invalid("a skylight is a slot, not a plate")
+  | Niche => plate(l, niche, f.room, f.side, f.at, 1.4, 0.3, 2.2, 0.02)
 let isPlate = (f: Fixture): bool => f.sign != Skylight
 
 // A skylight's slot in its room's ceiling: 1 m across the room's middle,
@@ -403,13 +411,14 @@ let straightFaces = (l: Layout, f: Flight): List<Face> =>
   let rise = riserOf(l, f) in
   let x1 = flightEnd(f) in
   let zp = f.z1 - parapetThickness in
+  let tread = treadMatOf(l, f) in
   let steps = List.range(f.risers - 1.0) |> List.concatMap((j) =>
     let xa = f.x0 + j * f.tread in
     let xb = xa + f.tread in
     let y = (j + 1.0) * rise in
     let top = y + parapetHeight in
     List.flatten([
-      [floorFace(terrazzo, xa, f.z0, xb, zp, y), wallX(castConcrete, f.z0, zp, y - rise, y, xa, false)],
+      [floorFace(tread, xa, f.z0, xb, zp, y), wallX(castConcrete, f.z0, zp, y - rise, y, xa, false)],
       wallZs(l, castConcrete, xa, xb, 0.0, top, f.z1, true),
       wallZs(l, castConcrete, xa, xb, y, top, zp, false),
       [floorFace(castConcrete, xa, zp, xb, f.z1, top)],
@@ -421,7 +430,7 @@ let straightFaces = (l: Layout, f: Flight): List<Face> =>
     [wallX(castConcrete, zp, f.z1, 0.0, rise + parapetHeight, f.x0, false),
      wallX(castConcrete, f.z0, zp, storey - rise, storey, x1, false),
      wallZ(castConcrete, x1, r.x1, 0.0, storey - slabDepth, f.z1, true),
-     floorFace(terrazzo, x1, r.z0, r.x1, r.z1, storey),
+     floorFace(tread, x1, r.z0, r.x1, r.z1, storey),
      ceilingFace(castConcrete, x1, f.z1, r.x1, r.z1, storey - slabDepth),
      floorFace(castConcrete, x1, zp, x1 + parapetThickness, r.z1, storey + parapetHeight),
      wallZ(castConcrete, x1, x1 + parapetThickness, storey, storey + parapetHeight, zp, false)],
@@ -545,7 +554,7 @@ let levelAtY = (l: Layout, y: float): float => Math.floor((y + eps) / l.storey)
 // gets both shares, and a flight's soffit under the floor its floor.
 let stairFaces = (l: Layout, i: float): List<Face> =>
   let room = roomAt(l, i) in
-  if room.kind != Stair then []
+  if room.kind != Stair && room.kind != StairHall then []
   else l.flights |> List.concatMap((f) =>
     if roomAt(l, f.lower).rect != room.rect then []
     else flightFaces(l, f) |> List.filter((face) => levelAtY(l, lowestY(face)) == room.level))
@@ -571,8 +580,8 @@ let quadTriangles = (n: float): Bytes.t =>
   Bytes.fromU32le(List.range(n) |> List.concatMap((k) => [0.0, 1.0, 2.0, 0.0, 2.0, 3.0] |> List.map((i) => 4.0 * k + i)))
 // Texture UVs: world-anchored repeats along the face's axes, so tiles line
 // up across neighbouring faces; tile 0 stretches the texture over the face.
-let uvsOf = (f: Face): List<float> =>
-  let t = materialAt(f.mat).tile in
+let uvsOf = (p: List<Material>, f: Face): List<float> =>
+  let t = materialIn(p, f.mat).tile in
   if t == 0.0 then [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
   else
     let au = Vec3.normalize(f.q.a) in
@@ -597,19 +606,19 @@ let spansOf = (base: float, faces: List<Face>): List<Span> =>
     if n == 0.0 then acc
     else (out |> List.append([{ mat: m, first: first, count: n }]), first + n), ([], base)) in
   spans
-let groupOf = (s: Span): Model.group =>
-  { first: s.first, count: s.count, texture: Option.Some(materialAt(s.mat).texture), unlit: materialAt(s.mat).unlit, emissive: 0.0 }
+let groupOf = (p: List<Material>, s: Span): Model.group =>
+  { first: s.first, count: s.count, texture: Option.Some(materialIn(p, s.mat).texture), unlit: materialIn(p, s.mat).unlit, emissive: 0.0 }
 
 // The mesh of every cell's faces, in cell order: each cell is a contiguous
 // triangle range.
-let meshOf = (allFaces: List<Face>, spans: List<Span>): Model.staticData => {
+let meshOf = (p: List<Material>, allFaces: List<Face>, spans: List<Span>): Model.staticData => {
   positions: positionsOf(allFaces),
   normals: Bytes.fromF32le(allFaces |> List.concatMap((f) =>
     let n = xyz(normalOf(f.q)) in List.flatten([n, n, n, n]))),
-  uvs: Bytes.fromF32le(allFaces |> List.concatMap(uvsOf)),
+  uvs: Bytes.fromF32le(allFaces |> List.concatMap((f) => uvsOf(p, f))),
   uvs2: Bytes.fromF32le([]),
   triangles: quadTriangles(List.length(allFaces)),
-  groups: spans |> List.map(groupOf),
+  groups: spans |> List.map((s) => groupOf(p, s)),
   lightmap: Option.None
 }
 
@@ -829,11 +838,13 @@ let daylightLights = (l: Layout): List<Light.t> => List.flatten([
 
 // ---- One archetype's interior ------------------------------------------------
 
-// Everything above for one layout, derived once (archetypes.fun holds one
-// per archetype): the cells' faces and the mesh, the colliders, and the
-// `night` and `day` bake jobs, named `<name>-night` and `<name>-day`. Day:
-// the same mesh, so the same charts; the panels stay on.
+// Everything above for one layout in one palette, derived once
+// (archetypes.fun holds one per archetype): the cells' faces and the mesh,
+// the colliders, and the `night` and `day` bake jobs, named `<name>-night`
+// and `<name>-day`. Day: the same mesh, so the same charts; the panels stay
+// on.
 type Interior = {
+  palette: List<Material>,
   cellParts: List<List<Face>>,
   allFaces: List<Face>,
   cellRanges: List<Range>,
@@ -844,22 +855,23 @@ type Interior = {
   night: Lightmap.bakeJob,
   day: Lightmap.bakeJob,
 }
-let interiorOf = (name: string, l: Layout): Interior =>
+let interiorOf = (name: string, l: Layout): Interior => interiorIn(name, l, materials)
+let interiorIn = (name: string, l: Layout, palette: List<Material>): Interior =>
   let cellParts = List.range(List.length(l.rooms)) |> List.map((i) => cellFaces(l, i)) in
   let allFaces = List.flatten(cellParts) in
   let cellRanges = rangesOf(cellParts) in
   let meshSpans = cellParts |> List.zip(cellRanges) |> List.concatMap((pair) =>
     let (faces, range) = pair in spansOf(range.first, faces)) in
-  let interiorData = meshOf(allFaces, meshSpans) in
+  let interiorData = meshOf(palette, allFaces, meshSpans) in
   let blocks = blocksOf(l) in
   let night: Lightmap.bakeJob = {
     name: $"{name}-night",
     mesh: interiorData,
     lights: nightLights(l),
-    albedo: meshSpans |> List.map((s) => materialAt(s.mat).albedo),
+    albedo: meshSpans |> List.map((s) => materialIn(palette, s.mat).albedo),
     scale: bakeScale,
   } in
-  { cellParts: cellParts, allFaces: allFaces, cellRanges: cellRanges, meshSpans: meshSpans,
+  { palette: palette, cellParts: cellParts, allFaces: allFaces, cellRanges: cellRanges, meshSpans: meshSpans,
     interiorData: interiorData, blocks: blocks,
     colliders: collidersOf(l, blocks, floorFacesOf(l, allFaces)),
     night: night,
@@ -896,7 +908,7 @@ let cellData = (k: Interior, data: Model.staticData, run: Run): Model.staticData
     uvs2: sliceRun(8.0, run, data.uvs2),
     triangles: Bytes.fromU32le(List.range(3.0 * run.count) |> List.map((j) =>
       (Bytes.u32le(4.0 * (3.0 * run.first + j), data.triangles) |> Binary.require) - run.v0)),
-    groups: spansOf(0.0, List.nth(run.cell, k.cellParts) |> Option.defaultValue([])) |> List.map(groupOf) }
+    groups: spansOf(0.0, List.nth(run.cell, k.cellParts) |> Option.defaultValue([])) |> List.map((s) => groupOf(k.palette, s)) }
 
 // A static model per non-empty cell, drawn `Scene.inCells` it.
 type CellModel = { cell: float, model: Model.t }

@@ -10,7 +10,8 @@
 
 type Rect = { x0: float, z0: float, x1: float, z1: float }
 
-// `Roof`: open to the sky on a roof; the street side draws it.
+// `Roof`: open to the sky on a roof; the street side draws it. `StairHall`: a
+// carpeted stairwell (the house's).
 type Kind =
   | Outside
   | Lobby
@@ -19,6 +20,7 @@ type Kind =
   | Stair
   | LiftLobby
   | Roof
+  | StairHall
 
 type Side =
   | North
@@ -59,13 +61,15 @@ type Window = { room: float, side: Side, at: float, width: float, sill: float, h
 // Signs on a room's inner wall, centred at `at` along it.
 // A stair sign is a lit amber plate over a stairwell door; a lift door and a
 // shut door are plates on the floor. A skylight is a slot in the room's
-// ceiling (`side` unused), centred `at` along its z.
+// ceiling (`side` unused), centred `at` along its z. A niche is a panel
+// floor to head height, shaded at its edges like a recess.
 type Sign =
   | ExitSign
   | StairSign
   | LiftDoor
   | ShutDoor
   | Skylight
+  | Niche
 
 type Fixture = { room: float, side: Side, at: float, sign: Sign }
 

@@ -85,7 +85,29 @@ let mall: Archetype =
   { name: "mall", layout: MallLayout.layout, colliders: Mall.colliders, status: mallStatus,
     level: Mall.level, street: Mall.street, night: Mall.nightOf(mallBaked), day: Mall.dayOf(mallBaked) }
 
-let all = [office, tower8, tower12, tower16, cinema, mall]
+
+// The house in two palettes (housePalettes.fun): one layout, cells and
+// shape; two interiors, bakes and street sides.
+let houseSources = ["layout.fun", "houseLayout.fun", "building.fun", "housePalettes.fun"]
+let houseLevel = Portals.levelOf(HouseLayout.layout, Portals.outsideTop)
+let houseColliders = HouseExterior.ownCollidersOf(HouseLayout.layout)
+let houseOf = (name: string, k: Building.Interior, status: Provenance.Status, street: Exterior.Street, rooms: (List<Scene.t>, List<Scene.t>)): Archetype =>
+  let (night, day) = rooms in
+  { name: name, layout: HouseLayout.layout, colliders: List.append(k.colliders, houseColliders), status: status, level: houseLevel, street: street, night: night, day: day }
+let ochreInterior = Building.interiorIn("house-ochre", HouseLayout.layout, HousePalettes.ochre)
+let ochreBake = bakeOf("house-ochre", houseSources)
+let ochreStatus = Provenance.statusOf(ochreBake)
+let ochreRooms = roomsOf(ochreInterior, ochreBake, ochreStatus)
+let ochreStreet = HouseExterior.streetOf(HouseLayout.layout, HouseExterior.ochre)
+let houseOchre = houseOf("house-ochre", ochreInterior, ochreStatus, ochreStreet, ochreRooms)
+let magentaInterior = Building.interiorIn("house-magenta", HouseLayout.layout, HousePalettes.magenta)
+let magentaBake = bakeOf("house-magenta", houseSources)
+let magentaStatus = Provenance.statusOf(magentaBake)
+let magentaRooms = roomsOf(magentaInterior, magentaBake, magentaStatus)
+let magentaStreet = HouseExterior.streetOf(HouseLayout.layout, HouseExterior.magenta)
+let houseMagenta = houseOf("house-magenta", magentaInterior, magentaStatus, magentaStreet, magentaRooms)
+
+let all = [office, tower8, tower12, tower16, cinema, mall, houseOchre, houseMagenta]
 
 // The archetype a copy names.
 let named = (name: string): Archetype =>
@@ -99,7 +121,8 @@ let stale = all |> List.find((a) => a.status != Provenance.Current)
 // and `<bake>-day`.
 let bakes = [officeInterior.night, officeInterior.day, Tower.typicalInterior.night, Tower.typicalInterior.day,
              Tower.endsInterior.night, Tower.endsInterior.day, CinemaBuilding.interior.night, CinemaBuilding.interior.day,
-             MallInterior.interior.night, MallInterior.interior.day]
+             MallInterior.interior.night, MallInterior.interior.day,
+             ochreInterior.night, ochreInterior.day, magentaInterior.night, magentaInterior.day]
 // Whether every archetype's bake is current.
 let baked = all |> List.all((a) => a.status == Provenance.Current)
 
@@ -108,8 +131,10 @@ let baked = all |> List.all((a) => a.status == Provenance.Current)
 // lightmaps stay loaded, so entering a building or switching the hour
 // uploads nothing. (The towers draw the same models, moved.)
 let resident = Scene.keepResident(Scene.group(List.flatten([office.night, office.day, Tower.residentOf(typicalBaked), Tower.residentOf(endsBaked),
-                                                         Tower.residentOf(cinemaBaked), Cinema.fixed, Tower.residentOf(mallBaked)])))
+                                                         Tower.residentOf(cinemaBaked), Cinema.fixed, Tower.residentOf(mallBaked),
+                                                         houseOchre.night, houseOchre.day, houseMagenta.night, houseMagenta.day])))
 
-expect (bakes |> List.map((b) => b.name)) == ["office-night", "office-day", "tower-typical-night", "tower-typical-day", "tower-ends-night", "tower-ends-day", "cinema-night", "cinema-day", "mall-night", "mall-day"]
+expect (bakes |> List.map((b) => b.name)) == ["office-night", "office-day", "tower-typical-night", "tower-typical-day", "tower-ends-night", "tower-ends-day", "cinema-night", "cinema-day", "mall-night", "mall-day",
+  "house-ochre-night", "house-ochre-day", "house-magenta-night", "house-magenta-day"]
 // The committed bakes match their layouts: rebake after editing (README).
 expect all |> List.all((a) => a.status == Provenance.Current)
