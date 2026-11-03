@@ -7,7 +7,8 @@ empty apron. `B` turns it into a block of four turned copies around a
 crossroads; `G` into grids of 4, 16 and 64; `H` into four towers of 8 to 16
 floors, climbed by a dog-leg stair; `C` stands a multiplex cinema on its
 parking lot; `P` a two-level mall round a skylit court, and its parking lot;
-`U` a suburb of twelve houses; `I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
+`U` a suburb of twelve houses; `R` the block with a park and a plaza; `I`
+puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
 checked on a headset. Not the web: baked files load with `File.bytes`.
 
 ```sh
@@ -18,6 +19,7 @@ functor -d examples/liminal-office test     # layout, stairs, cells, partition, 
 npm run test:liminal-office                 # routes, stairs, wall push, hours, cells, island, goldens
 npm run test:liminal-mall                   # the mall: lot to gallery, shop to service exit, draws, goldens
 npm run test:liminal-house                  # the suburb: porch → stair → bedroom window, the loop road
+npm run test:liminal-park                   # the parks: gate → fountain → playground → monolith, draws, the island plaza
 ```
 
 | Input | Action |
@@ -40,6 +42,7 @@ npm run test:liminal-house                  # the suburb: porch → stair → be
 | `V` | the island's next biome: grass, snow, desert |
 | `L` | flashlight on / off |
 | `U` | the suburb, from its road (`U` again: back to the office); views 1–8 jump within the nearest house, 9 the road, 0 the magenta stair |
+| `R` | the block with a park and a plaza, at the park's gate (`R` again: back to the office); views 1–0 in them (`Parks.views`) |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
 | VR `X` / `Y` | next hour / midnight ⇄ noon |
@@ -128,6 +131,27 @@ side's draws, the decals one static model (two draws), the road paint one
 draw per town. What you'd bump into has a collider, kept off the e2e's
 walks (`functor test` checks); the sidewalk has none, so the feet sink
 13 cm into it.
+
+**Parks kit** (`parks.fun`). A park plot, 44 × 36 m: a lawn inside clipped
+hedges, curving concrete paths (paving segments along Bézier curves, each run
+into the next) from a gate on two sides to a ring round a fountain (still
+opaque water in an octagonal rim, or a dry basin with leaves), and on to an
+open pavilion and an empty playground (a slide, two still swings and a
+climbing frame on rubber mulch); benches facing nothing in particular, park
+lamps, bins, a few trees, two signs. A plaza, 30 × 26 m: paving with a border,
+a larger fountain whose eight jets and plume are thin unlit boxes stepped by
+the clock (six steps a second, a twelve-step cycle), lit teal from over its
+water by night; benches round it facing out, trees, planters, lamps. And the
+monolith: a dark slab on a sunk plinth, a faint seam of light at its foot,
+no label, as streetscape Props so any street side can stand one (it stands
+on a park's lawn). Each placement is built once in its own space and turned
+and moved as a whole; it draws once per material (a lit instanced cube, the
+paving finish, the globes, its signs; a plaza's jets), and only near the
+player do its solid pieces (benches, bins, posts, hedges, rims, the
+playground, the pavilion's posts and rails, the monolith) become colliders.
+Paths and paving have none. `functor test` keeps every walk clear and every
+piece inside its plot. `R` stands the block with a park west of it and a
+plaza at the end of the street south of it, on the block's ground.
 
 **Culling caveat.** The cells and portals are right (`functor test`), and
 `/state.cells.hidden` counts the subtrees the walk hides, but the renderer
@@ -332,6 +356,19 @@ silhouettes are cut in geometry, not with `discard`. night-terrain stands its
 fetched trunk-and-branch meshes inside the near card. This example keeps to
 checked-in files, so the near card stands alone and looks blocky within a
 few metres.
+
+### Parks
+
+`island.mjs` places a plaza 50 m off the pad and two parks farther out (one
+with the monolith, one with a dry fountain), after the props, so they don't
+move: each where the ground under it varies by at most 15 cm (the plaza) or
+25 cm, 8 m clear of the tracks (so of the e2e's walk), trees and rocks, its
+gate turned to the town. It records each park's highest ground under it and
+how far every upright box sinks to reach the lowest; no sample of the
+heightmap changes. Paths and paving have no collider, so the feet sink up to
+that far into them. It paints the parks' lawns (`lawn` in each biome: snowed
+over, watered in the desert) and the plaza's ground into the albedo, and the
+parks' lamps into the night map; outside them the maps are unchanged.
 
 ## The house
 

@@ -248,6 +248,34 @@ let lamps = [
   { x: -20.0, y: 4.6, z: 4.4, r: 1.0, g: 0.68, b: 0.36, intensity: 0.9, range: 14.0 },
   { x: -20.0, y: 4.6, z: 15.6, r: 1.0, g: 0.68, b: 0.36, intensity: 0.9, range: 14.0 },
 ]
+// The parks (parks.fun builds them): a plaza by the town and two parks,
+// each on flat ground, its middle at (x, z), `y` the
+// highest ground under it and every upright box `sink` into it; turned
+// `yaw` degrees, its gate to the town. Their lamps, in the world, are
+// painted into the night map.
+let parks = [
+  { name: "island-plaza", kind: "plaza", x: 85.496, y: 17.164, z: 57.794, yaw: 90.0, sink: 0.16, wet: true, monolith: false, seed: 3.0 },
+  { name: "island-park-0", kind: "park", x: -144.398, y: 16.99, z: 81.907, yaw: 270.0, sink: 0.128, wet: true, monolith: true, seed: 4.0 },
+  { name: "island-park-1", kind: "park", x: -41.468, y: 16.735, z: 120.501, yaw: 0.0, sink: 0.222, wet: false, monolith: false, seed: 5.0 },
+]
+let parkLamps = [
+  { x: 77.496, y: 4.165, z: 66.794, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: 77.496, y: 4.165, z: 48.794, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: 93.496, y: 4.165, z: 66.794, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: 93.496, y: 4.165, z: 48.794, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -129.898, y: 3.991, z: 84.307, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -137.998, y: 3.991, z: 77.107, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -142.198, y: 3.991, z: 89.507, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -152.798, y: 3.991, z: 74.907, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -152.998, y: 3.991, z: 85.307, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -146.798, y: 3.991, z: 97.907, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -39.068, y: 3.736, z: 106.001, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -46.268, y: 3.736, z: 114.101, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -33.868, y: 3.736, z: 118.301, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -48.468, y: 3.736, z: 128.901, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -38.068, y: 3.736, z: 129.101, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+  { x: -25.468, y: 3.736, z: 122.901, r: 1.0, g: 0.9, b: 0.74, intensity: 0.8, range: 12.0 },
+]
 let light = {
   day: { ambient: { r: 0.7, g: 0.72, b: 0.78 }, sun: { r: 1.0, g: 0.94, b: 0.82 }, intensity: 1.5, direction: { x: 0.42, y: -0.87, z: 0.27 } },
   night: { ambient: { r: 0.09, g: 0.08, b: 0.14 }, sun: { r: 0.35, g: 0.38, b: 0.55 }, intensity: 0.6, direction: { x: 0.3, y: -0.8, z: 0.5 } },

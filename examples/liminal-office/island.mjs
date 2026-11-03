@@ -34,18 +34,22 @@ const PRESETS = {
 };
 // Biomes: the colormaps' palette (sRGB, like `Color.rgb`), independent of
 // the terrain's shape. `rock` is the grade where bare rock starts; `snowLine`
-// the height snow starts on gentle ground (none above the peak: no snow).
+// the height snow starts on gentle ground (none above the peak: no snow);
+// `lawn` a park's mown grass (snowed over in the snow biome; watered in the
+// desert).
 // island.fun pairs each with its detail texture.
 const BIOMES = {
   grass: {
     lush: [0.33, 0.36, 0.21], dry: [0.42, 0.4, 0.27], hill: [0.4, 0.39, 0.25], gravel: [0.4, 0.37, 0.31],
     dirt: [0.39, 0.32, 0.24], road: [0.32, 0.31, 0.3], sand: [0.62, 0.57, 0.46], wet: [0.42, 0.39, 0.32],
     scree: [0.47, 0.46, 0.43], rock: [0.37, 0.35, 0.33], snow: [0.86, 0.87, 0.9], rockGrade: 0.75, snowLine: 185,
+    lawn: [0.32, 0.38, 0.2],
   },
   snow: {
     lush: [0.67, 0.69, 0.73], dry: [0.63, 0.65, 0.69], hill: [0.69, 0.7, 0.74], gravel: [0.6, 0.61, 0.64],
     dirt: [0.45, 0.43, 0.41], road: [0.38, 0.37, 0.37], sand: [0.36, 0.35, 0.34], wet: [0.27, 0.27, 0.27],
     scree: [0.6, 0.61, 0.64], rock: [0.32, 0.31, 0.3], snow: [0.72, 0.73, 0.77], rockGrade: 0.65, snowLine: 120,
+    lawn: [0.74, 0.76, 0.8],
   },
   // Cracked hardpan on the flats, rippled sand on the hills, warm gravel on
   // slopes and scree, red rock; no snow.
@@ -53,6 +57,7 @@ const BIOMES = {
     lush: [0.66, 0.55, 0.42], dry: [0.71, 0.59, 0.43], hill: [0.73, 0.59, 0.42], gravel: [0.55, 0.43, 0.33],
     dirt: [0.56, 0.46, 0.35], road: [0.5, 0.44, 0.37], sand: [0.76, 0.69, 0.55], wet: [0.55, 0.49, 0.38],
     scree: [0.57, 0.45, 0.35], rock: [0.5, 0.37, 0.29], snow: [0.64, 0.54, 0.44], rockGrade: 0.75, snowLine: 1000,
+    lawn: [0.36, 0.42, 0.22],
   },
 };
 // Run as a script: `[--preset <name>] [--biome <name>]`; without `--biome`
@@ -452,6 +457,111 @@ const checkProps = ({ trees, rocks }) => {
   }
 };
 
+// ---- Parks ----------------------------------------------------------------------
+//
+// A plaza beside the town and two parks farther out: parks.fun builds them;
+// this places them, paints their lawns (and the plaza's ground) and their
+// lamps' pools. Each stands on ground flat enough that its pieces, sunk to
+// its lowest point, never float: at most PARK_RELIEF (PLAZA_RELIEF) across it
+// and MARGIN round it. Clear of the tracks, the props and each other, past
+// PARK_PAD of the pad's edge, and turned a quarter at a time so its gate
+// (its local south) faces the town. After the props, so they don't move.
+const PARK_RELIEF = 0.25;
+const PLAZA_RELIEF = 0.15;
+const MARGIN = 2;
+const PLAZA_RING = { from: 70, to: 120 };
+const PARK_RING = { from: 110, to: 320 };
+// From the tracks (and so the e2e's walk down the south one), trees and rocks.
+const PARK_CLEAR = 8;
+const PARK_GAP = 20;
+const PARK_PAD = 36;
+const PARK_KINDS = [
+  { name: "island-plaza", kind: "plaza", ring: PLAZA_RING, relief: PLAZA_RELIEF, wet: true, monolith: false, seed: 3 },
+  { name: "island-park-0", kind: "park", ring: PARK_RING, relief: PARK_RELIEF, wet: true, monolith: true, seed: 4 },
+  { name: "island-park-1", kind: "park", ring: PARK_RING, relief: PARK_RELIEF, wet: false, monolith: false, seed: 5 },
+];
+// parks.fun's sizes, lamp spots (in a park's space) and lamp light.
+const parkSpec = () => {
+  const parks = source("parks.fun");
+  const record = (name) => fields(line(parks, new RegExp(`^let ${name} = \\{(.*)\\}$`, "m")));
+  const spots = (name) => [...line(parks, new RegExp(`^let ${name} = \\[(.*)\\]$`, "m")).matchAll(/\((-?[\d.]+), (-?[\d.]+)\)/g)]
+    .map((m) => [Number(m[1]), Number(m[2])]);
+  return {
+    park: { ...record("parkSize"), lamps: spots("parkLampSpots") },
+    plaza: { ...record("plazaSize"), lamps: spots("plazaLampSpots") },
+    light: record("parkLight"),
+  };
+};
+// (x, z) turned `deg` about y, as block.fun's `turn` (and `Scene.rotateY`).
+const turn = (deg, x, z) => {
+  const a = (deg * Math.PI) / 180;
+  return [x * Math.cos(a) + z * Math.sin(a), z * Math.cos(a) - x * Math.sin(a)];
+};
+// How far outside site `p`'s rect (x, z) is, in the terrain's space: the
+// larger of the two axis distances, negative inside.
+const outside = (p, x, z) => {
+  const [lx, lz] = turn(-p.yaw, x - p.x, z - p.z);
+  return Math.max(Math.abs(lx) - p.w / 2, Math.abs(lz) - p.d / 2);
+};
+// Points 2 m apart over a site's rect grown by `m`, in the terrain's space.
+const siteSamples = (p, m) => {
+  const out = [];
+  for (let lz = -p.d / 2 - m; lz <= p.d / 2 + m + 0.001; lz += 2) {
+    for (let lx = -p.w / 2 - m; lx <= p.w / 2 + m + 0.001; lx += 2) {
+      const [x, z] = turn(p.yaw, lx, lz);
+      out.push([p.x + x, p.z + z]);
+    }
+  }
+  return out;
+};
+const placeParks = (props, spec) => {
+  const paths = tracks(props.groves);
+  const toTrack = (x, z) => Math.min(...paths.flatMap((t) => t.slice(1).map((b, k) => toSegment(x, z, t[k], b))));
+  const placed = [];
+  for (const kind of PARK_KINDS) {
+    const size = kind.kind === "plaza" ? spec.plaza : spec.park;
+    const radius = Math.hypot(size.w, size.d) / 2;
+    for (let k = 0; k < 4000; k += 1) {
+      const id = 300000 + 10000 * placed.length + k;
+      const [x, z] = candidate(id, kind.ring);
+      // The quarter turn whose local south faces the pad's middle.
+      const facing = (Math.atan2(x - PAD_MIDDLE.x, z - PAD_MIDDLE.z) * 180) / Math.PI;
+      const yaw = (((Math.round(facing / 90) * 90) % 360) + 360) % 360;
+      const p = { ...kind, x, z, yaw, w: size.w, d: size.d, size };
+      if (inland(x, z) < 60 + radius || !placed.every((q) => Math.hypot(q.x - x, q.z - z) >= radius + q.radius + PARK_GAP)) continue;
+      if (![...props.trees, ...props.rocks].every((t) => outside(p, t.x, t.z) >= PARK_CLEAR)) continue;
+      const inner = siteSamples(p, 0);
+      if (!inner.every(([sx, sz]) => fromPad(sx, sz) >= PARK_PAD && toTrack(sx, sz) >= PARK_CLEAR)) continue;
+      const hs = siteSamples(p, MARGIN).map(([sx, sz]) => ground(sx, sz));
+      if (Math.max(...hs) - Math.min(...hs) > kind.relief) continue;
+      const under = inner.map(([sx, sz]) => ground(sx, sz));
+      const [lo, hi] = [Math.min(...under), Math.max(...under)];
+      placed.push({ ...p, radius, y: hi, sink: hi - lo + 0.05, relief: Math.max(...hs) - Math.min(...hs) });
+      break;
+    }
+  }
+  if (placed.length !== PARK_KINDS.length) throw new Error(`placed ${placed.length} of ${PARK_KINDS.length} parks: loosen the rings or the relief`);
+  // Every lamp in the world (the block's space), as game.fun lights them.
+  const lamps = placed.flatMap((p) => p.size.lamps.map(([lx, lz]) => {
+    const [x, z] = turn(p.yaw, lx, lz);
+    const { y, r, g, b, intensity, range } = spec.light;
+    return { x: p.x + x + CENTRE.x, y: p.y - PAD_Y + GROUND_Y + y, z: p.z + z + CENTRE.z, r, g, b, intensity, range };
+  }));
+  return { parks: placed, lamps };
+};
+// What a texel's ground is under the parks: (lawn, paved) weights, over a
+// texel's feather at the edge.
+const parkWeights = (parks, x, z) => {
+  let lawn = 0;
+  let paved = 0;
+  for (const p of parks) {
+    const w = 1 - smoothstep(-STEP / 2, STEP / 2, outside(p, x, z));
+    if (p.kind === "plaza") paved = Math.max(paved, w);
+    else lawn = Math.max(lawn, w);
+  }
+  return [lawn, paved];
+};
+
 // ---- Colormaps -------------------------------------------------------------------
 //
 // `Terrain.colormap`'s day and night maps and `Terrain.normalMap`'s normals,
@@ -503,10 +613,6 @@ const streetLights = () => {
   const heads = [...line(source("officeLayout.fun"), /^let lampHeads = \[(.*)\]$/m).matchAll(/v\((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)/g)]
     .map((m) => m.slice(1).map(Number));
   const centre = -Number(line(source("block.fun"), /^let streetWidth = (-?[\d.]+)$/m)) / 2;
-  const turn = (deg, x, z) => {
-    const a = (deg * Math.PI) / 180;
-    return [x * Math.cos(a) + z * Math.sin(a), z * Math.cos(a) - x * Math.sin(a)];
-  };
   const lights = [];
   for (let k = 0; k < 4; k += 1) {
     const [cx, cz] = turn(90 * k, centre, centre);
@@ -587,8 +693,9 @@ const horizon = (si, sj, h0) => {
 };
 
 // The biome's albedo (linear) at a texel, from the ground there: `part` is
-// `islandAt`'s, `track` the distance to the nearest dirt track.
-const albedoAt = (b, x, z, h, grade, part, track) => {
+// `islandAt`'s, `track` the distance to the nearest dirt track, the last
+// the parks' (lawn, paved) weights.
+const albedoAt = (b, x, z, h, grade, part, track, [lawn, paved]) => {
   const pad = fromPad(x, z);
   // Macro variation: broad patches of lusher and drier ground, finer mottling.
   const macro = 0.5 + fbm(x / 160 + 41.3, z / 160 - 12.9, 3);
@@ -608,6 +715,9 @@ const albedoAt = (b, x, z, h, grade, part, track) => {
   const dirt = Math.max(1 - smoothstep(4, 18 + 10 * (mottle + 0.5), pad), 1 - smoothstep(1.4, 3 + 2 * mottle, track));
   c = mix3(c, b.dirt, dirt);
   c = mix3(c, b.road, 1 - smoothstep(0, 2, pad));
+  // The parks: mown lawn, the plaza's paving.
+  c = mix3(c, b.lawn, lawn);
+  c = mix3(c, b.road, paved);
   const vary = 0.9 + 0.2 * (0.5 + mottle);
   return lin(c).map((v) => v * vary);
 };
@@ -615,7 +725,7 @@ const albedoAt = (b, x, z, h, grade, part, track) => {
 // Each biome's day and night maps (sRGB RGB8) and the normal map
 // (terrain-local, xyz × 0.5 + 0.5, as `Terrain.normalMap` reads it). The
 // light at a texel is the same for every biome; only the albedo differs.
-const paint = (biomes, props, lights) => {
+const paint = (biomes, props, lights, parks) => {
   const maps = biomes.map((name) => ({ name, b: BIOMES[name], day: Buffer.alloc(COLORMAP * COLORMAP * 3), night: Buffer.alloc(COLORMAP * COLORMAP * 3) }));
   const normals = Buffer.alloc(COLORMAP * COLORMAP * 3);
   const sky = ["day", "night"].map((k) => ({
@@ -638,6 +748,7 @@ const paint = (biomes, props, lights) => {
       let track = Infinity;
       for (const p of paths) for (let k = 0; k + 1 < p.length; k += 1) track = Math.min(track, toSegment(x, z, p[k], p[k + 1]));
       const part = islandAt(x, z);
+      const park = parkWeights(parks, x, z);
       const occlusion = horizon(si, sj, h) * shade[j * COLORMAP + i];
       const [dayLight, nightLight] = sky.map((l) => {
         const ndl = Math.max(0, n[0] * l.toward[0] + n[1] * l.toward[1] + n[2] * l.toward[2]);
@@ -653,7 +764,7 @@ const paint = (biomes, props, lights) => {
       }
       const o = (j * COLORMAP + i) * 3;
       for (const m of maps) {
-        const albedo = albedoAt(m.b, x, z, h, Math.hypot(dx, dz), part, track);
+        const albedo = albedoAt(m.b, x, z, h, Math.hypot(dx, dz), part, track, park);
         for (let c = 0; c < 3; c += 1) {
           m.day[o + c] = Math.round(clamp(toSrgb(albedo[c] * dayLight[c]), 0, 1) * 255);
           m.night[o + c] = Math.round(clamp(toSrgb(albedo[c] * nightLight[c]), 0, 1) * 255);
@@ -676,6 +787,7 @@ const main = () => {
   const props = placeProps();
   checkProps(props);
   const lights = streetLights();
+  const parks = placeParks(props, parkSpec());
   const pixels = Buffer.alloc(SAMPLES * SAMPLES * 2);
   levels.forEach((l, k) => pixels.writeUInt16BE(l, k * 2));
   const png = encodePng(SAMPLES, SAMPLES, 16, 0, pixels);
@@ -720,6 +832,17 @@ let groundY = ${num(GROUND_Y)}
 let lamps = [
 ${lights.map((l) => `  { x: ${num(l.x)}, y: ${num(l.y)}, z: ${num(l.z)}, r: ${num(l.r)}, g: ${num(l.g)}, b: ${num(l.b)}, intensity: ${num(l.intensity)}, range: ${num(l.range)} },`).join("\n")}
 ]
+// The parks (parks.fun builds them): a plaza by the town and two parks,
+// each on flat ground, its middle at (x, z), \`y\` the
+// highest ground under it and every upright box \`sink\` into it; turned
+// \`yaw\` degrees, its gate to the town. Their lamps, in the world, are
+// painted into the night map.
+let parks = [
+${parks.parks.map((p) => `  { name: "${p.name}", kind: "${p.kind}", x: ${num(p.x + CENTRE.x)}, y: ${num(p.y)}, z: ${num(p.z + CENTRE.z)}, yaw: ${num(p.yaw)}, sink: ${num(p.sink)}, wet: ${p.wet}, monolith: ${p.monolith}, seed: ${num(p.seed)} },`).join("\n")}
+]
+let parkLamps = [
+${parks.lamps.map((l) => `  { x: ${num(l.x)}, y: ${num(l.y)}, z: ${num(l.z)}, r: ${num(l.r)}, g: ${num(l.g)}, b: ${num(l.b)}, intensity: ${num(l.intensity)}, range: ${num(l.range)} },`).join("\n")}
+]
 let light = {
 ${["day", "night"].map((k) => {
     const { ambient: a, sun: c, intensity, direction: d } = LIGHT[k];
@@ -730,7 +853,7 @@ ${["day", "night"].map((k) => {
 `;
   writeFileSync(fileURLToPath(new URL("islandLayout.fun", import.meta.url)), fun);
 
-  const { maps, normals } = paint(PAINTED, props, lights);
+  const { maps, normals } = paint(PAINTED, props, [...lights, ...parks.lamps], parks.parks);
   const sizes = [...maps.flatMap((m) => [[`island-${m.name}-day.png`, m.day], [`island-${m.name}-night.png`, m.night]]), ["island-normal.png", normals]]
     .map(([name, pixels]) => {
       const bytes = encodePng(COLORMAP, COLORMAP, 8, 2, pixels);
@@ -742,7 +865,8 @@ ${["day", "night"].map((k) => {
     `wrote ${SAMPLES}² heightmap (${png.length} bytes); steepest grade ${(s.steepest * 100).toFixed(1)}%; ` +
       `under the pad ${s.relief.toFixed(2)} m relief, ${(s.slope * 100).toFixed(1)}% grade before flattening; ` +
       `highest ${s.highest.toFixed(1)} m; pad ${PAD_Y.toFixed(3)} m, band ${s.yMin.toFixed(3)}–${s.yMax.toFixed(3)} m; ` +
-      `${props.trees.length} trees, ${props.sites} rocks of ${props.rocks.length} boxes; ${COLORMAP}² maps: ${sizes.join(", ")} bytes`,
+      `${props.trees.length} trees, ${props.sites} rocks of ${props.rocks.length} boxes; ` +
+      `parks ${parks.parks.map((p) => `${p.name} (${num(p.x + CENTRE.x, 1)}, ${num(p.z + CENTRE.z, 1)}) ${num(p.relief, 2)} m`).join(", ")}; ${COLORMAP}² maps: ${sizes.join(", ")} bytes`,
   );
 };
 
