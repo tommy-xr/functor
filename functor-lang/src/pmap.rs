@@ -189,6 +189,29 @@ fn search_internal<K, E>(
     Ok(left)
 }
 
+/// `node` (at `height`) descended to `target` height along the range
+/// holding `low` (the leftmost for no bound). A node already at or below
+/// `target` is returned as is.
+fn align<'a, K, V>(
+    mut node: &'a Node<K, V>,
+    mut height: usize,
+    target: usize,
+    low: Option<&K>,
+    cmp: &impl Fn(&K, &K) -> Ordering,
+) -> (&'a Node<K, V>, usize) {
+    while height > target {
+        let Node::Internal { keys, children } = node else { break };
+        let index = match low {
+            Some(low) => search_internal(keys, &mut |k| Ok::<_, std::convert::Infallible>(cmp(k, low)))
+                .unwrap_or_else(|never| match never {}),
+            None => 0,
+        };
+        node = &children[index];
+        height -= 1;
+    }
+    (node, height)
+}
+
 impl<K: Clone, V: Clone> PMap<K, V> {
     pub fn new() -> Self {
         PMap::default()
@@ -437,6 +460,66 @@ impl<K: Clone, V: Clone> PMap<K, V> {
             }
         }
         true
+    }
+
+    /// Call `f` with each value outside the nodes this map shares with
+    /// `old`, beside `old`'s value under the same key when the old leaf
+    /// paired with it holds one. Each node pairs with the old node at its
+    /// height covering its lowest key, so versions a few edits apart
+    /// (inserts, removals, a root split) cost O(edits × depth × CAP), not
+    /// O(len).
+    pub fn for_each_unshared<'a>(
+        &'a self,
+        old: &'a Self,
+        cmp: impl Fn(&K, &K) -> Ordering,
+        mut f: impl FnMut(&'a V, Option<&'a V>),
+    ) {
+        let Some(root) = self.root.as_deref() else {
+            return;
+        };
+        let height = self.height();
+        let paired = old.root.as_deref().map(|r| align(r, old.height(), height, None, &cmp));
+        let mut work = vec![(root, height, None, paired)];
+        while let Some((node, height, low, paired)) = work.pop() {
+            if paired.is_some_and(|(p, h)| h == height && p.ptr() == node.ptr()) {
+                continue;
+            }
+            match node {
+                Node::Internal { keys, children } => {
+                    for (i, child) in children.iter().enumerate() {
+                        let low = if i == 0 { low } else { Some(&keys[i - 1]) };
+                        let paired = paired.map(|(p, h)| align(p, h, height - 1, low, &cmp));
+                        work.push((child, height - 1, low, paired));
+                    }
+                }
+                Node::Leaf(entries) => {
+                    let olds: &[(K, V)] = match paired {
+                        Some((Node::Leaf(olds), _)) => olds,
+                        _ => &[],
+                    };
+                    // Both leaves are sorted: one merge pass.
+                    let mut j = 0;
+                    for (key, value) in entries {
+                        while j < olds.len() && cmp(&olds[j].0, key) == Ordering::Less {
+                            j += 1;
+                        }
+                        let same = olds.get(j).filter(|(k, _)| cmp(k, key) == Ordering::Equal);
+                        f(value, same.map(|(_, v)| v));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Internal levels above the leaves (0 for a single leaf or empty map).
+    fn height(&self) -> usize {
+        let mut height = 0;
+        let mut node = self.root.as_deref();
+        while let Some(Node::Internal { children, .. }) = node {
+            height += 1;
+            node = Some(&children[0]);
+        }
+        height
     }
 
     /// The map with each value replaced where `f` returns `Some`, or `None`
@@ -1206,6 +1289,60 @@ mod tests {
             pairs <= CAP && cmps <= depth(a) * CAP,
             "{pairs} pairs, {cmps} cmps"
         );
+    }
+
+    #[test]
+    fn unshared_walks_visit_every_change_and_pair_by_key() {
+        // Values are `key * 10 + generation`, so a pair names its key.
+        let visit = |new: &Map, old: &Map| {
+            let mut seen = Vec::new();
+            new.for_each_unshared(old, |a, b| a.cmp(b), |v, o| seen.push((*v, o.copied())));
+            for (v, o) in &seen {
+                if let Some(o) = o {
+                    assert_eq!(o / 10, v / 10, "paired across keys");
+                    assert_eq!(get(old, v / 10), Some(*o));
+                }
+            }
+            let visited: HashSet<i64> = seen.iter().map(|(v, _)| v / 10).collect();
+            for (k, v) in new.iter() {
+                if get(old, *k) != Some(*v) {
+                    assert!(visited.contains(k), "missed changed key {k}");
+                }
+            }
+            seen.len()
+        };
+        let base = Map::from_sorted((0..6800).map(|k| (k, k * 10)).collect()).0;
+        assert_eq!(visit(&base, &base), 0);
+        assert_eq!(visit(&base, &Map::new()), 6800);
+        // Updates, inserts (splits) and removals (merges), each against its
+        // predecessor: cost stays near the edited leaves.
+        let mut prev = base.clone();
+        for gen in 1..10 {
+            let mut next = prev.clone();
+            for j in 0..20 {
+                let k = (gen * 977 + j * 331) % 7000;
+                match j % 3 {
+                    0 => drop(remove(&mut next, k)),
+                    _ => drop(insert(&mut next, k, k * 10 + gen)),
+                }
+            }
+            let visits = visit(&next, &prev);
+            assert!(visits <= 20 * 2 * CAP, "gen {gen}: {visits} visits");
+            prev = next;
+        }
+        // A root split (one more level) and its undo stay near the edit.
+        let full = Map::from_sorted((0..4096).map(|k| (k, k * 10)).collect()).0;
+        let mut grown = full.clone();
+        insert(&mut grown, 4096, 40960);
+        assert!(depth(&grown) > depth(&full));
+        assert!(visit(&grown, &full) <= 2 * CAP, "split");
+        let mut shrunk = grown.clone();
+        remove(&mut shrunk, 4096);
+        visit(&shrunk, &grown);
+        // Different shapes still pair what they can.
+        let edited = build((0..800).rev());
+        assert_eq!(visit(&edited, &base), 800);
+        visit(&base, &edited);
     }
 
     #[test]

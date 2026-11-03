@@ -32,7 +32,8 @@ use functor_lang::{line_col, project::SourceMap, RunError, Session, Span, Value}
 use crate::asset::AssetProgress;
 use crate::frame_telemetry::{self, SimStage};
 use crate::functor_lang_prelude::{
-    asset_progress_value, assets_taggers, config_of, contains_effect, deliver_physics_events,
+    asset_progress_value, assets_taggers, config_of, contains_effect, contains_new_effect,
+    deliver_physics_events,
     drain_effects, frame_value, http_response_value, job_progress_taggers, needs_update,
     net_conn_subs, net_event_value,
     perform_deferred_queries, physics_event_taggers, physics_scene_value, settings_of,
@@ -1418,6 +1419,7 @@ impl FrameCtx<'_> {
     /// (Desktop times this as `physics_ns`.)
     pub fn physics_phase(&mut self, frame_time: FrameTime) {
         let _physics = frame_telemetry::span(SimStage::Physics);
+        let before = self.model.clone();
         let physics_steps = self.step_physics(frame_time.dts as f32);
         // Post-step query drain: deferred raycasts answer against the world
         // just stepped; their messages fold through `update` before `draw`,
@@ -1487,6 +1489,8 @@ impl FrameCtx<'_> {
                 Err(err) => self.reporter.frame_error(self.names.subscriptions, &err),
             }
         }
+        // Query answers and collision events fold `update` outside `absorb`.
+        self.warn_on_new_effect(&before);
     }
 
     /// Record the settled model of this rendered frame (docs/time-travel.md T1)
@@ -1879,18 +1883,33 @@ impl FrameCtx<'_> {
     /// count — see [`crate::protocol::GameProducer::model_revision`].
     pub fn absorb(&mut self, returned: Value) {
         let (model, effects) = split_model_effect(returned);
-        *self.model = model;
+        let before = std::mem::replace(self.model, model);
         *self.model_revision = self.model_revision.saturating_add(1);
-        // Effects are commands, not data — one stored in the model would make
-        // the pair sniff ambiguous on a later return (see `split_model_effect`).
-        if contains_effect(self.model) {
+        self.warn_on_new_effect(&before);
+        if let Some(effects) = effects {
+            let adopted = self.model.clone();
+            self.drain(effects);
+            self.warn_on_new_effect(&adopted);
+        }
+    }
+
+    /// Effects are commands, not data — one stored in the model would make
+    /// the pair sniff ambiguous on a later return (see `split_model_effect`).
+    /// Every game-logic model write ends here (absorb, the physics phase), so
+    /// `before` was already checked and only what changed since is walked:
+    /// the warning fires when an Effect lands, not again while it stays.
+    fn warn_on_new_effect(&mut self, before: &Value) {
+        if contains_new_effect(self.model, before) {
             self.reporter.report_once(
                 "[functor-lang] the model contains an Effect value — Effects are commands, \
 not data; return them beside the model as `(model, effect)` instead of storing them"
                     .to_string(),
             );
         }
-        let Some(effects) = effects else { return };
+    }
+
+    /// Drain an entry point's effects to a fixed point through `update`.
+    fn drain(&mut self, effects: EffectTree) {
         // Only MESSAGE-producing effects need an `update` to receive them —
         // tagger-less physics commands must not be dropped over a missing hook.
         if needs_update(&effects) && self.session.global(self.names.update).is_none() {
@@ -4087,6 +4106,69 @@ let ui = (model) =>
             reporter: &mut reporter,
         };
         assert!(ctx.before_physics(FrameTime { dts: 0.2, tts: 1.1 }, None));
+    }
+
+    /// An Effect an effect-result `update` stores (a drained fold, after the
+    /// tick's own model was checked) is still reported, once.
+    #[test]
+    fn a_drained_update_storing_an_effect_is_reported() {
+        const SRC: &str = "\
+            type Msg = | GotTime(t: Float)\n\
+            let init = { stash: [] }\n\
+            let update = (m, msg) => match msg with | GotTime(t) => { stash: [Effect.none()] }\n\
+            let tick = (m, dt: Float, tts: Float) => (m, Effect.now((t) => GotTime(t)))\n\
+            let draw = (m, tts: Float) =>\n\
+              Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let project = functor_lang::project::load_single_source("game", SRC)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut model = session.global("init").expect("init");
+        let mut physics_rt = SteppedPhysics::new();
+        let mut physics_frame = 0u64;
+        let mut recorder = SceneRecorder::new();
+        let mut effect_runner = FakeEffects::new(42.0, vec![0.0]);
+        let mut deferred_queries: Vec<EffectTree> = Vec::new();
+        let mut pending_events: Vec<PhysicsEvent> = Vec::new();
+        let mut live_conn_keys: HashSet<String> = HashSet::new();
+        let mut connect_retries: HashMap<String, ConnectRetryState> = HashMap::new();
+        let mut prev_tts: Option<f64> = None;
+        let mut next: Vec<Entry> = Vec::new();
+        let mut delivered_asset_progress: Option<AssetProgress> = None;
+        let mut reporter = Reporter::new(
+            SpanSource::Single { src: SRC.to_string(), path: "game".to_string() },
+            capture,
+        );
+        let mut model_revision = 0u64;
+        let mut ctx = FrameCtx {
+            session: &session,
+            names: &EntryNames::UNPREFIXED,
+            model: &mut model,
+            model_revision: &mut model_revision,
+            physics_rt: &mut physics_rt,
+            physics_frame: &mut physics_frame,
+            recorder: &mut recorder,
+            effect_runner: &mut effect_runner as &mut dyn EffectRunner,
+            deferred_queries: &mut deferred_queries,
+            pending_events: &mut pending_events,
+            live_conn_keys: &mut live_conn_keys,
+            connect_retries: &mut connect_retries,
+            prev_tts: &mut prev_tts,
+            next: &mut next,
+            has_physics: false,
+            has_subscriptions: false,
+            asset_progress: None,
+            delivered_asset_progress: &mut delivered_asset_progress,
+            suppress_outbound: false,
+            reporter: &mut reporter,
+        };
+        let warned = || {
+            EMITTED.with(|e| e.borrow().iter().filter(|m| m.contains("the model contains an Effect")).count())
+        };
+        for tts in [0.1, 0.2] {
+            assert!(ctx.before_physics(FrameTime { dts: 0.1, tts }, None));
+        }
+        assert_eq!(warned(), 1);
     }
 
     const ASSETS_SRC: &str = "\
