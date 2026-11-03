@@ -1,8 +1,9 @@
-// Everything derived from layout.fun except the exterior (exterior.fun) and
+// Everything derived from a `Layout` except the exterior (exterior.fun) and
 // the culling cells (portals.fun): the interior surfaces (one mesh, baked
 // together, then cut into one mesh per cell), the bake jobs and their lights,
-// and the wall, floor and stair colliders. Editing this file makes the committed
-// bake stale (provenance.fun hashes it with layout.fun).
+// and the wall, floor and stair colliders. `interiorOf` derives them once
+// per archetype. Editing this file makes every committed bake stale
+// (provenance.fun hashes it with the layouts).
 
 open Layout
 
@@ -115,29 +116,30 @@ let normalOf = (q: Quad): Vec3.t => q.a |> Vec3.cross(q.b) |> Vec3.normalize
 // The lowest corner's height.
 let lowestY = (f: Face): float => corners(f.q) |> List.map(Vec3.y) |> List.minimum |> Option.defaultValue(0.0)
 
+
 // ---- Rooms, walls and doors --------------------------------------------------
 
 let eps = 0.001
 let near = (a: float, b: float): bool => Math.abs(a - b) < eps
 
-let roomAt = (i: float): Room =>
-  match List.nth(i, rooms) with
+let roomAt = (l: Layout, i: float): Room =>
+  match List.nth(i, l.rooms) with
   | Option.Some(r) => r
   | Option.None => Binary.invalid($"no room {i}")
 let isInside = (r: Room): bool => r.kind != Outside
 // A room's floor height, and the levels' floors.
-let baseOf = (r: Room): float => r.level * storey
-let levels = [0.0, 1.0]
+let baseOf = (l: Layout, r: Room): float => r.level * l.storey
+let levelsOf = (l: Layout): List<float> => List.range(l.levels)
 // How high the facade rises from `level`'s floor: a storey, or to the
 // roofline from the top one.
-let facadeTop = (level: float): float =>
-  if level == List.length(levels) - 1.0 then facadeHeight - level * storey else storey
+let facadeTop = (l: Layout, level: float): float =>
+  if level == l.levels - 1.0 then l.facadeHeight - level * l.storey else l.storey
 
 // A stairwell is a room on each level: the foot (the lower one) has no
 // ceiling and walls a full storey high; the head's floor is the landing.
-let isStairFoot = (i: float): bool => flights |> List.any((f) => f.lower == i)
-let isStairHead = (i: float): bool => flights |> List.any((f) => f.upper == i)
-let wallTop = (i: float): float => if isStairFoot(i) then storey else ceiling
+let isStairFoot = (l: Layout, i: float): bool => l.flights |> List.any((f) => f.lower == i)
+let isStairHead = (l: Layout, i: float): bool => l.flights |> List.any((f) => f.upper == i)
+let wallTop = (l: Layout, i: float): float => if isStairFoot(l, i) then l.storey else l.ceiling
 let floorMatOf = (r: Room): float => if r.kind == Office || r.kind == Corridor then carpet else terrazzo
 
 // The side of `r` that `o` sits against, if they share a wall line.
@@ -158,19 +160,20 @@ let lineOf = (side: Side, r: Rect): float =>
 
 // Whether that line is an outside wall, seen from either side: the apron's
 // north edge is the lobby's south facade.
-let onFootprint = (side: Side, r: Rect): bool =>
-  let l = lineOf(side, r) in
-  if side == North || side == South then near(l, footprint.z0) || near(l, footprint.z1)
-  else near(l, footprint.x0) || near(l, footprint.x1)
+let onFootprint = (l: Layout, side: Side, r: Rect): bool =>
+  let line = lineOf(side, r) in
+  let f = l.footprint in
+  if side == North || side == South then near(line, f.z0) || near(line, f.z1)
+  else near(line, f.x0) || near(line, f.x1)
 
 // Half the thickness of the wall along a side: facade or partition.
-let halfWall = (side: Side, r: Rect): float =>
-  if onFootprint(side, r) then facade / 2.0 else partition / 2.0
+let halfWall = (l: Layout, side: Side, r: Rect): float =>
+  if onFootprint(l, side, r) then l.facade / 2.0 else l.partition / 2.0
 
 // A room's inside: its rect less half of each wall.
-let inner = (r: Rect): Rect =>
-  rect(r.x0 + halfWall(West, r), r.z0 + halfWall(South, r),
-       r.x1 - halfWall(East, r), r.z1 - halfWall(North, r))
+let inner = (l: Layout, r: Rect): Rect =>
+  rect(r.x0 + halfWall(l, West, r), r.z0 + halfWall(l, South, r),
+       r.x1 - halfWall(l, East, r), r.z1 - halfWall(l, North, r))
 
 // An opening's span along its wall, and its bottom and top.
 type Hole = { lo: float, hi: float, bottom: float, top: float }
@@ -178,24 +181,24 @@ let holeOf = (d: Door): Hole => { lo: d.at - d.width / 2.0, hi: d.at + d.width /
 let windowHole = (w: Window): Hole => { lo: w.at - w.width / 2.0, hi: w.at + w.width / 2.0, bottom: w.sill, top: w.head }
 
 // The doors and windows in a room's side, as holes in increasing order.
-let holesIn = (i: float, side: Side): List<Hole> =>
-  let doorHoles = doors
+let holesIn = (l: Layout, i: float, side: Side): List<Hole> =>
+  let doorHoles = l.doors
     |> List.filter((d) =>
       let other = if d.a == i then Option.Some(d.b) else if d.b == i then Option.Some(d.a) else Option.None in
       match other with
-      | Option.Some(o) => sideBetween(roomAt(i).rect, roomAt(o).rect) == Option.Some(side)
+      | Option.Some(o) => sideBetween(roomAt(l, i).rect, roomAt(l, o).rect) == Option.Some(side)
       | Option.None => false)
     |> List.map(holeOf) in
-  let windowHoles = windows |> List.filter((w) => w.room == i && w.side == side) |> List.map(windowHole) in
+  let windowHoles = l.windows |> List.filter((w) => w.room == i && w.side == side) |> List.map(windowHole) in
   List.flatten([doorHoles, windowHoles]) |> List.sortBy((h) => h.lo)
 
 // The openings through the facade on footprint side `s` at `level`: the
 // entrance and the windows, in order along it, their heights from that
 // level's floor.
-let openingsIn = (level: float, s: Side): List<Hole> =>
-  List.range(List.length(rooms))
-    |> List.filter((i) => isInside(roomAt(i)) && roomAt(i).level == level && onFootprint(s, roomAt(i).rect))
-    |> List.concatMap((i) => holesIn(i, s))
+let openingsIn = (l: Layout, level: float, s: Side): List<Hole> =>
+  List.range(List.length(l.rooms))
+    |> List.filter((i) => isInside(roomAt(l, i)) && roomAt(l, i).level == level && onFootprint(l, s, roomAt(l, i).rect))
+    |> List.concatMap((i) => holesIn(l, i, s))
     |> List.sortBy((h) => h.lo)
 
 // The solid parts of a wall run [s0, s1] × [0, top] around its holes: full
@@ -214,10 +217,10 @@ let pieces = (s0: float, s1: float, top: float, holes: List<Hole>): List<Piece> 
   out |> List.append(strip(cursor, s1))
 
 // A room's four inner walls, facing in, from its own floor.
-let wallFaces = (i: float): List<Face> =>
-  let r = inner(roomAt(i).rect) in
+let wallFaces = (l: Layout, i: float): List<Face> =>
+  let r = inner(l, roomAt(l, i).rect) in
   let side = (s: Side, s0: float, s1: float, make: (Piece) => Face) =>
-    pieces(s0, s1, wallTop(i), holesIn(i, s)) |> List.map(make) in
+    pieces(s0, s1, wallTop(l, i), holesIn(l, i, s)) |> List.map(make) in
   List.flatten([
     side(South, r.x0, r.x1, (p) => wallZ(wall, p.u0, p.u1, p.y0, p.y1, r.z0, true)),
     side(North, r.x0, r.x1, (p) => wallZ(wall, p.u0, p.u1, p.y0, p.y1, r.z1, false)),
@@ -245,58 +248,58 @@ let revealFaces = (side: Side, l0: float, l1: float, h: Hole, jamb: float, top: 
 // face on `i`'s side: each half is in its own room's cell, so a half seen
 // from the other room is always seen through the doorway's portal. A
 // floor-to-ceiling opening's head is a ceiling strip.
-let doorHalf = (d: Door, i: float): List<Face> =>
-  let ra = roomAt(d.a).rect in
-  match sideBetween(ra, roomAt(d.b).rect) with
+let doorHalf = (l: Layout, d: Door, i: float): List<Face> =>
+  let ra = roomAt(l, d.a).rect in
+  match sideBetween(ra, roomAt(l, d.b).rect) with
   | Option.None => []
   | Option.Some(side) =>
-    let l = lineOf(side, ra) in
-    let t = halfWall(side, ra) in
+    let line = lineOf(side, ra) in
+    let t = halfWall(l, side, ra) in
     let h = holeOf(d) in
-    let room = roomAt(i) in
+    let room = roomAt(l, i) in
     // Room `a` is below the line when the line is its North or East side.
     let below = (i == d.a) == (side == North || side == East) in
-    let top = if h.top < ceiling - eps then frame else ceilingTile in
-    let half = if below then revealFaces(side, l - t, l, h, frame, top, floorMatOf(room))
-      else revealFaces(side, l, l + t, h, frame, top, floorMatOf(room)) in
-    half |> List.map((f) => lift(baseOf(room), f))
+    let top = if h.top < l.ceiling - eps then frame else ceilingTile in
+    let half = if below then revealFaces(side, line - t, line, h, frame, top, floorMatOf(room))
+      else revealFaces(side, line, line + t, h, frame, top, floorMatOf(room)) in
+    half |> List.map((f) => lift(baseOf(l, room), f))
 
-// The outside room a window looks onto, if layout.fun has one there.
-let outsideOf = (w: Window): Option.t<float> =>
-  List.range(List.length(rooms)) |> List.find((o) =>
-    not isInside(roomAt(o)) && sideBetween(roomAt(w.room).rect, roomAt(o).rect) == Option.Some(w.side))
+// The outside room a window looks onto, if the layout has one there.
+let outsideOf = (l: Layout, w: Window): Option.t<float> =>
+  List.range(List.length(l.rooms)) |> List.find((o) =>
+    not isInside(roomAt(l, o)) && sideBetween(roomAt(l, w.room).rect, roomAt(l, o).rect) == Option.Some(w.side))
 
 // Cell `i`'s share of the window reveals, painted like the walls: the inner
 // half of those in its walls, the outer half of those looking onto it (an
 // outside room). With no outside room there, the room has the whole reveal.
-let windowHalves = (i: float): List<Face> =>
-  windows |> List.concatMap((w) =>
-    let room = roomAt(w.room) in
-    let l = lineOf(w.side, room.rect) in
-    let t = halfWall(w.side, room.rect) in
+let windowHalves = (l: Layout, i: float): List<Face> =>
+  l.windows |> List.concatMap((w) =>
+    let room = roomAt(l, w.room) in
+    let line = lineOf(w.side, room.rect) in
+    let t = halfWall(l, w.side, room.rect) in
     // The room is below the line when the line is its North or East side.
     let below = w.side == North || w.side == East in
     let half = (l0: float, l1: float) =>
-      revealFaces(w.side, l0, l1, windowHole(w), wall, wall, wall) |> List.map((f) => lift(baseOf(room), f)) in
-    let outside = outsideOf(w) in
+      revealFaces(w.side, l0, l1, windowHole(w), wall, wall, wall) |> List.map((f) => lift(baseOf(l, room), f)) in
+    let outside = outsideOf(l, w) in
     if w.room == i then
-      (if outside == Option.None then half(l - t, l + t) else if below then half(l - t, l) else half(l, l + t))
-    else if outside == Option.Some(i) then (if below then half(l, l + t) else half(l - t, l))
+      (if outside == Option.None then half(line - t, line + t) else if below then half(line - t, line) else half(line, line + t))
+    else if outside == Option.Some(i) then (if below then half(line, line + t) else half(line - t, line))
     else [])
 
 let panelW = 0.6
 let panelL = 1.2
 // A ceiling panel, its long side along the room's long axis.
-let panelFace = (r: Rect, p: Panel): Face =>
+let panelFace = (l: Layout, r: Rect, p: Panel): Face =>
   let alongZ = r.z1 - r.z0 >= r.x1 - r.x0 in
   let hx = (if alongZ then panelW else panelL) / 2.0 in
   let hz = (if alongZ then panelL else panelW) / 2.0 in
-  ceilingFace(if p.on then panelOn else panelOff, p.x - hx, p.z - hz, p.x + hx, p.z + hz, ceiling - 0.01)
+  ceilingFace(if p.on then panelOn else panelOff, p.x - hx, p.z - hz, p.x + hx, p.z + hz, l.ceiling - 0.01)
 
 // A plate `w` wide over [y0, y1], `out` proud of room `room`'s inner wall
 // on `side`, centred `at` along it.
-let plate = (mat: float, room: float, side: Side, at: float, w: float, y0: float, y1: float, out: float): Face =>
-  let r = inner(roomAt(room).rect) in
+let plate = (l: Layout, mat: float, room: float, side: Side, at: float, w: float, y0: float, y1: float, out: float): Face =>
+  let r = inner(l, roomAt(l, room).rect) in
   let lo = at - w / 2.0 in
   let hi = at + w / 2.0 in
   match side with
@@ -305,91 +308,95 @@ let plate = (mat: float, room: float, side: Side, at: float, w: float, y0: float
   | East => wallX(mat, lo, hi, y0, y1, r.x1 - out, false)
   | West => wallX(mat, lo, hi, y0, y1, r.x0 + out, true)
 
-let signFace = (f: Fixture): Face =>
+let signFace = (l: Layout, f: Fixture): Face =>
   match f.sign with
-  | ExitSign => plate(exitGreen, f.room, f.side, f.at, 0.5, 2.2, 2.45, 0.02)
-  | StairSign => plate(sodium, f.room, f.side, f.at, 0.7, 2.2, 2.42, 0.02)
-let lampFace = (l: Lamp): Face => plate(sodium, l.room, l.side, l.at, 0.5, l.y - 0.1, l.y + 0.1, 0.03)
+  | ExitSign => plate(l, exitGreen, f.room, f.side, f.at, 0.5, 2.2, 2.45, 0.02)
+  | StairSign => plate(l, sodium, f.room, f.side, f.at, 0.7, 2.2, 2.42, 0.02)
+let lampFace = (l: Layout, lamp: Lamp): Face => plate(l, sodium, lamp.room, lamp.side, lamp.at, 0.5, lamp.y - 0.1, lamp.y + 0.1, 0.03)
 
 // Room `i`'s own faces: floor, ceiling, walls, panels, signs and lamps.
-let roomFaces = (i: float): List<Face> =>
-  let room = roomAt(i) in
+let roomFaces = (l: Layout, i: float): List<Face> =>
+  let room = roomAt(l, i) in
   if not isInside(room) then []
   else
-    let r = inner(room.rect) in
+    let r = inner(l, room.rect) in
     let mat = floorMatOf(room) in
     // A stairwell's foot has no floor under its flight and landing (solid).
-    let floors = (match flights |> List.find((f) => f.lower == i) with
+    let floors = (match l.flights |> List.find((f) => f.lower == i) with
       | Option.Some(f) => [floorFace(mat, r.x0, r.z0, f.x0, r.z1, 0.0), floorFace(mat, f.x0, f.z1, r.x1, r.z1, 0.0)]
-      | Option.None => if isStairHead(i) then [] else [floorFace(mat, r.x0, r.z0, r.x1, r.z1, 0.0)]) in
+      | Option.None => if isStairHead(l, i) then [] else [floorFace(mat, r.x0, r.z0, r.x1, r.z1, 0.0)]) in
     List.flatten([
       floors,
-      if isStairFoot(i) then [] else [ceilingFace(ceilingTile, r.x0, r.z0, r.x1, r.z1, ceiling)],
-      wallFaces(i),
-      room.panels |> List.map((p) => panelFace(room.rect, p)),
-      fixtures |> List.filter((f) => f.room == i) |> List.map(signFace),
-      lamps |> List.filter((l) => l.room == i) |> List.map(lampFace),
-    ]) |> List.map((f) => lift(baseOf(room), f))
+      if isStairFoot(l, i) then [] else [ceilingFace(ceilingTile, r.x0, r.z0, r.x1, r.z1, l.ceiling)],
+      wallFaces(l, i),
+      room.panels |> List.map((p) => panelFace(l, room.rect, p)),
+      l.fixtures |> List.filter((f) => f.room == i) |> List.map((f) => signFace(l, f)),
+      l.lamps |> List.filter((lamp) => lamp.room == i) |> List.map((lamp) => lampFace(l, lamp)),
+    ]) |> List.map((f) => lift(baseOf(l, room), f))
 
 // ---- Stairs ------------------------------------------------------------------
 
 let parapetHeight = 1.0
 let parapetThickness = 0.15
 let slabDepth = 0.3
-let riserOf = (f: Flight): float => storey / f.risers
+let riserOf = (l: Layout, f: Flight): float => l.storey / f.risers
 // Where the last riser rises to the landing.
 let flightEnd = (f: Flight): float => f.x0 + (f.risers - 1.0) * f.tread
 
-// [y0, y1], cut where the upper room starts, so each piece lies in one cell.
-let cut = (y0: float, y1: float): List<(float, float)> =>
-  if y0 < storey - eps && y1 > storey + eps then [(y0, storey), (storey, y1)] else [(y0, y1)]
-let wallZs = (mat: float, x0: float, x1: float, y0: float, y1: float, z: float, plus: bool): List<Face> =>
-  cut(y0, y1) |> List.map((ys) => let (a, b) = ys in wallZ(mat, x0, x1, a, b, z, plus))
-let wallXs = (mat: float, z0: float, z1: float, y0: float, y1: float, x: float, plus: bool): List<Face> =>
-  cut(y0, y1) |> List.map((ys) => let (a, b) = ys in wallX(mat, z0, z1, a, b, x, plus))
+// [y0, y1] from a flight's lower floor, cut where its upper room starts,
+// so each piece lies in one cell.
+let cut = (l: Layout, y0: float, y1: float): List<(float, float)> =>
+  if y0 < l.storey - eps && y1 > l.storey + eps then [(y0, l.storey), (l.storey, y1)] else [(y0, y1)]
+let wallZs = (l: Layout, mat: float, x0: float, x1: float, y0: float, y1: float, z: float, plus: bool): List<Face> =>
+  cut(l, y0, y1) |> List.map((ys) => let (a, b) = ys in wallZ(mat, x0, x1, a, b, z, plus))
+let wallXs = (l: Layout, mat: float, z0: float, z1: float, y0: float, y1: float, x: float, plus: bool): List<Face> =>
+  cut(l, y0, y1) |> List.map((ys) => let (a, b) = ys in wallX(mat, z0, z1, a, b, x, plus))
 
 // A flight's treads and risers, its stepped parapet (1 m above each tread,
 // solid down to the floor), the solid under the landing, and the landing
 // with its parapet; from the lower room's floor.
-let flightFaces = (f: Flight): List<Face> =>
-  let r = inner(roomAt(f.lower).rect) in
-  let rise = riserOf(f) in
-  let x1 = flightEnd(f) in
-  let zp = f.z1 - parapetThickness in
-  let steps = List.range(f.risers - 1.0) |> List.concatMap((j) =>
-    let xa = f.x0 + j * f.tread in
-    let xb = xa + f.tread in
-    let y = (j + 1.0) * rise in
-    let top = y + parapetHeight in
+let flightFaces = (l: Layout, f: Flight): List<Face> =>
+  match f.kind with
+  | Straight =>
+    let r = inner(l, roomAt(l, f.lower).rect) in
+    let storey = l.storey in
+    let rise = riserOf(l, f) in
+    let x1 = flightEnd(f) in
+    let zp = f.z1 - parapetThickness in
+    let steps = List.range(f.risers - 1.0) |> List.concatMap((j) =>
+      let xa = f.x0 + j * f.tread in
+      let xb = xa + f.tread in
+      let y = (j + 1.0) * rise in
+      let top = y + parapetHeight in
+      List.flatten([
+        [floorFace(terrazzo, xa, f.z0, xb, zp, y), wallX(castConcrete, f.z0, zp, y - rise, y, xa, false)],
+        wallZs(l, castConcrete, xa, xb, 0.0, top, f.z1, true),
+        wallZs(l, castConcrete, xa, xb, y, top, zp, false),
+        [floorFace(castConcrete, xa, zp, xb, f.z1, top)],
+        // Up to the next step's parapet, or the landing's.
+        wallXs(l, castConcrete, zp, f.z1, top, top + rise, xb, false),
+      ])) in
     List.flatten([
-      [floorFace(terrazzo, xa, f.z0, xb, zp, y), wallX(castConcrete, f.z0, zp, y - rise, y, xa, false)],
-      wallZs(castConcrete, xa, xb, 0.0, top, f.z1, true),
-      wallZs(castConcrete, xa, xb, y, top, zp, false),
-      [floorFace(castConcrete, xa, zp, xb, f.z1, top)],
-      // Up to the next step's parapet, or the landing's.
-      wallXs(castConcrete, zp, f.z1, top, top + rise, xb, false),
-    ])) in
-  List.flatten([
-    steps,
-    [wallX(castConcrete, zp, f.z1, 0.0, rise + parapetHeight, f.x0, false),
-     wallX(castConcrete, f.z0, zp, storey - rise, storey, x1, false),
-     wallZ(castConcrete, x1, r.x1, 0.0, storey - slabDepth, f.z1, true),
-     floorFace(terrazzo, x1, r.z0, r.x1, r.z1, storey),
-     ceilingFace(castConcrete, x1, f.z1, r.x1, r.z1, storey - slabDepth),
-     floorFace(castConcrete, x1, zp, x1 + parapetThickness, r.z1, storey + parapetHeight),
-     wallZ(castConcrete, x1, x1 + parapetThickness, storey, storey + parapetHeight, zp, false)],
-    // The landing's edge and its parapet's face over the stair opening.
-    wallXs(castConcrete, f.z1, r.z1, storey - slabDepth, storey + parapetHeight, x1, false),
-    wallXs(castConcrete, zp, r.z1, storey, storey + parapetHeight, x1 + parapetThickness, true),
-  ]) |> List.map((face) => lift(baseOf(roomAt(f.lower)), face))
+      steps,
+      [wallX(castConcrete, zp, f.z1, 0.0, rise + parapetHeight, f.x0, false),
+       wallX(castConcrete, f.z0, zp, storey - rise, storey, x1, false),
+       wallZ(castConcrete, x1, r.x1, 0.0, storey - slabDepth, f.z1, true),
+       floorFace(terrazzo, x1, r.z0, r.x1, r.z1, storey),
+       ceilingFace(castConcrete, x1, f.z1, r.x1, r.z1, storey - slabDepth),
+       floorFace(castConcrete, x1, zp, x1 + parapetThickness, r.z1, storey + parapetHeight),
+       wallZ(castConcrete, x1, x1 + parapetThickness, storey, storey + parapetHeight, zp, false)],
+      // The landing's edge and its parapet's face over the stair opening.
+      wallXs(l, castConcrete, f.z1, r.z1, storey - slabDepth, storey + parapetHeight, x1, false),
+      wallXs(l, castConcrete, zp, r.z1, storey, storey + parapetHeight, x1 + parapetThickness, true),
+    ]) |> List.map((face) => lift(baseOf(l, roomAt(l, f.lower)), face))
 
 // Room `i`'s share of the stairs: below its flight's upper floor for the
 // foot, at or above it for the head.
-let stairFaces = (i: float): List<Face> =>
-  flights |> List.concatMap((f) =>
-    let split = baseOf(roomAt(f.upper)) - eps in
-    if f.lower == i then flightFaces(f) |> List.filter((face) => lowestY(face) < split)
-    else if f.upper == i then flightFaces(f) |> List.filter((face) => lowestY(face) >= split)
+let stairFaces = (l: Layout, i: float): List<Face> =>
+  l.flights |> List.concatMap((f) =>
+    let split = baseOf(l, roomAt(l, f.upper)) - eps in
+    if f.lower == i then flightFaces(l, f) |> List.filter((face) => lowestY(face) < split)
+    else if f.upper == i then flightFaces(l, f) |> List.filter((face) => lowestY(face) >= split)
     else [])
 
 // ---- The interior mesh -----------------------------------------------------
@@ -397,18 +404,13 @@ let stairFaces = (i: float): List<Face> =>
 // Every face in cell `i` (room `i`), sorted by material (one group each):
 // the room's own, its halves of its doors and windows, and its share of the
 // stairs.
-let cellFaces = (i: float): List<Face> =>
+let cellFaces = (l: Layout, i: float): List<Face> =>
   List.flatten([
-    roomFaces(i),
-    doors |> List.filter((d) => d.a == i || d.b == i) |> List.concatMap((d) => doorHalf(d, i)),
-    windowHalves(i),
-    stairFaces(i),
+    roomFaces(l, i),
+    l.doors |> List.filter((d) => d.a == i || d.b == i) |> List.concatMap((d) => doorHalf(l, d, i)),
+    windowHalves(l, i),
+    stairFaces(l, i),
   ]) |> List.sortBy((f) => f.mat)
-
-// The mesh is every cell's faces, in cell order: each cell is a contiguous
-// triangle range.
-let cellParts: List<List<Face>> = List.range(List.length(rooms)) |> List.map(cellFaces)
-let allFaces = List.flatten(cellParts)
 
 let xyz = (p: Vec3.t): List<float> => [Vec3.x(p), Vec3.y(p), Vec3.z(p)]
 let positionsOf = (faces: List<Face>): Bytes.t =>
@@ -428,7 +430,7 @@ let uvsOf = (f: Face): List<float> =>
 
 // Each cell's triangle range, in cell order.
 type Range = { first: float, count: float }
-let cellRanges: List<Range> =
+let rangesOf = (cellParts: List<List<Face>>): List<Range> =>
   let (ranges, total) = cellParts |> List.fold((acc, faces) =>
     let (out, first) = acc in
     let count = 2.0 * List.length(faces) in
@@ -447,59 +449,18 @@ let spansOf = (base: float, faces: List<Face>): List<Span> =>
 let groupOf = (s: Span): Model.group =>
   { first: s.first, count: s.count, texture: Option.Some(materialAt(s.mat).texture), unlit: materialAt(s.mat).unlit }
 
-// For the whole mesh, and per cell (its triangles counted from 0).
-let meshSpans = cellParts |> List.zip(cellRanges) |> List.concatMap((pair) =>
-  let (faces, range) = pair in spansOf(range.first, faces))
-let meshAlbedo = meshSpans |> List.map((s) => materialAt(s.mat).albedo)
-
-let interiorData: Model.staticData = {
+// The mesh of every cell's faces, in cell order: each cell is a contiguous
+// triangle range.
+let meshOf = (allFaces: List<Face>, spans: List<Span>): Model.staticData => {
   positions: positionsOf(allFaces),
   normals: Bytes.fromF32le(allFaces |> List.concatMap((f) =>
     let n = xyz(normalOf(f.q)) in List.flatten([n, n, n, n]))),
   uvs: Bytes.fromF32le(allFaces |> List.concatMap(uvsOf)),
   uvs2: Bytes.fromF32le([]),
   triangles: quadTriangles(List.length(allFaces)),
-  groups: meshSpans |> List.map(groupOf),
+  groups: spans |> List.map(groupOf),
   lightmap: Option.None
 }
-
-// ---- One mesh per cell -------------------------------------------------------
-
-// The bake keeps triangle order, numbers its vertices by first use, and no
-// two faces share a vertex; so each cell's vertices are one run, from the
-// first index of its first triangle up to the next cell's. A cell's mesh
-// is that run of every vertex array (UV2 byte for byte) and its triangles
-// less the run's start. The unbaked mesh is laid out the same way.
-type Run = { cell: float, first: float, count: float, v0: float, v1: float }
-let runsOf = (data: Model.staticData): List<Run> =>
-  let cells = cellRanges
-    |> List.indexedMap((i, r) => { cell: i, first: r.first, count: r.count, v0: 0.0, v1: 0.0 })
-    |> List.filter((run) => run.count > 0.0) in
-  let starts = cells |> List.map((run) => Bytes.u32le(12.0 * run.first, data.triangles) |> Binary.require) in
-  let ends = List.drop(1.0, starts) |> List.append([Bytes.length(data.positions) / 12.0]) in
-  cells |> List.zip(starts) |> List.zip(ends) |> List.map((pair) =>
-    let (started, v1) = pair in
-    let (run, v0) = started in
-    { run with v0: v0, v1: v1 })
-
-let sliceRun = (stride: float, run: Run, b: Bytes.t): Bytes.t =>
-  if Bytes.length(b) == 0.0 then b
-  else b |> Bytes.slice(stride * run.v0, stride * (run.v1 - run.v0)) |> Binary.require
-// `run`'s cell's mesh, cut from `data` (keeping its lightmap).
-let cellData = (data: Model.staticData, run: Run): Model.staticData =>
-  { data with
-    positions: sliceRun(12.0, run, data.positions),
-    normals: sliceRun(12.0, run, data.normals),
-    uvs: sliceRun(8.0, run, data.uvs),
-    uvs2: sliceRun(8.0, run, data.uvs2),
-    triangles: Bytes.fromU32le(List.range(3.0 * run.count) |> List.map((k) =>
-      (Bytes.u32le(4.0 * (3.0 * run.first + k), data.triangles) |> Binary.require) - run.v0)),
-    groups: spansOf(0.0, List.nth(run.cell, cellParts) |> Option.defaultValue([])) |> List.map(groupOf) }
-
-// A static model per non-empty cell, drawn `Scene.inCells` it.
-type CellModel = { cell: float, model: Model.t }
-let cellModels = (data: Model.staticData): List<CellModel> =>
-  runsOf(data) |> List.map((run) => { cell: run.cell, model: Model.static(cellData(data, run)) })
 
 // ---- Collision ---------------------------------------------------------------
 
@@ -515,67 +476,70 @@ type Block = { tag: string, x: float, y: float, z: float, w: float, h: float, d:
 let block = (tag: string, x0: float, y0: float, z0: float, x1: float, y1: float, z1: float): Block =>
   { tag: tag, x: (x0 + x1) / 2.0, y: (y0 + y1) / 2.0, z: (z0 + z1) / 2.0, w: x1 - x0, h: y1 - y0, d: z1 - z0 }
 
-let wallBlocks = (i: float): List<Block> =>
-  let room = roomAt(i) in
+let wallBlocks = (l: Layout, i: float): List<Block> =>
+  let room = roomAt(l, i) in
   let r = room.rect in
-  let y = baseOf(room) in
+  let y = baseOf(l, room) in
   let side = (s: Side, s0: float, s1: float) =>
-    let l = lineOf(s, r) in
-    let t = halfWall(s, r) in
-    let top = if onFootprint(s, r) then facadeTop(room.level) else storey in
-    pieces(s0, s1, top, holesIn(i, s)) |> List.indexedMap((k, p) =>
+    let line = lineOf(s, r) in
+    let t = halfWall(l, s, r) in
+    let top = if onFootprint(l, s, r) then facadeTop(l, room.level) else l.storey in
+    pieces(s0, s1, top, holesIn(l, i, s)) |> List.indexedMap((k, p) =>
       let tag = $"wall-{i}-{s}-{k}" in
-      if s == North || s == South then block(tag, p.u0, y + p.y0, l - t, p.u1, y + p.y1, l + t)
-      else block(tag, l - t, y + p.y0, p.u0, l + t, y + p.y1, p.u1)) in
+      if s == North || s == South then block(tag, p.u0, y + p.y0, line - t, p.u1, y + p.y1, line + t)
+      else block(tag, line - t, y + p.y0, p.u0, line + t, y + p.y1, p.u1)) in
   if not isInside(room) then []
   else List.flatten([side(South, r.x0, r.x1), side(North, r.x0, r.x1), side(West, r.z0, r.z1), side(East, r.z0, r.z1)])
 // A flight's parapet, from the floor to its top, so nothing walks under or
 // off the steps; the solid under its landing; the landing's parapet.
-let flightBlocks = (k: float, f: Flight): List<Block> =>
-  let r = inner(roomAt(f.lower).rect) in
-  let y = baseOf(roomAt(f.lower)) in
-  let x1 = flightEnd(f) in
-  let zp = f.z1 - parapetThickness in
-  [block($"parapet-{k}", f.x0, y, zp, x1, y + storey + parapetHeight, f.z1),
-   block($"under-landing-{k}", x1, y, zp, r.x1, y + storey - slabDepth, f.z1),
-   block($"landing-parapet-{k}", x1, y + storey - slabDepth, zp, x1 + parapetThickness, y + storey + parapetHeight, r.z1)]
+let flightBlocks = (l: Layout, k: float, f: Flight): List<Block> =>
+  match f.kind with
+  | Straight =>
+    let r = inner(l, roomAt(l, f.lower).rect) in
+    let y = baseOf(l, roomAt(l, f.lower)) in
+    let x1 = flightEnd(f) in
+    let zp = f.z1 - parapetThickness in
+    [block($"parapet-{k}", f.x0, y, zp, x1, y + l.storey + parapetHeight, f.z1),
+     block($"under-landing-{k}", x1, y, zp, r.x1, y + l.storey - slabDepth, f.z1),
+     block($"landing-parapet-{k}", x1, y + l.storey - slabDepth, zp, x1 + parapetThickness, y + l.storey + parapetHeight, r.z1)]
 
-let blocks = List.flatten([
-  List.range(List.length(rooms)) |> List.concatMap(wallBlocks),
-  flights |> List.indexedMap(flightBlocks) |> List.flatten,
+let blocksOf = (l: Layout): List<Block> => List.flatten([
+  List.range(List.length(l.rooms)) |> List.concatMap((i) => wallBlocks(l, i)),
+  l.flights |> List.indexedMap((k, f) => flightBlocks(l, k, f)) |> List.flatten,
 ])
 
 // Interior floors, door thresholds and landings, from the faces the mesh
 // draws: up-facing floor surfaces level with a storey's floor (not treads).
-let isFloorLevel = (y: float): bool => levels |> List.any((l) => near(y, l * storey))
-let floorFaces = allFaces |> List.filter((f) =>
-  (f.mat == carpet || f.mat == terrazzo) && Vec3.y(normalOf(f.q)) > 0.5 && isFloorLevel(Vec3.y(f.q.o)))
-let floorShape = Physics.trimesh({ positions: positionsOf(floorFaces), triangles: quadTriangles(List.length(floorFaces)) })
+let isFloorLevel = (l: Layout, y: float): bool => levelsOf(l) |> List.any((level) => near(y, level * l.storey))
+let floorFacesOf = (l: Layout, allFaces: List<Face>): List<Face> => allFaces |> List.filter((f) =>
+  (f.mat == carpet || f.mat == terrazzo) && Vec3.y(normalOf(f.q)) > 0.5 && isFloorLevel(l, Vec3.y(f.q.o)))
 
 // A flight's ramp: one smooth slope through its steps' nosings, from a
 // tread before the first riser up to the landing's edge, so the character
 // walks it instead of hopping each step. It faces up (trimesh faces block
 // only from the front). `rampY` is its height at `x`, from the lower floor.
-let rampY = (f: Flight, x: float): float =>
-  Math.clamp(0.0, storey, (x - (f.x0 - f.tread)) * riserOf(f) / f.tread)
-let rampFace = (f: Flight): Face =>
-  let start = f.x0 - f.tread in
-  let end = flightEnd(f) in
-  let zp = f.z1 - parapetThickness in
-  face(carpet, v(start, baseOf(roomAt(f.lower)) + rampY(f, start), zp),
-    v(end - start, rampY(f, end) - rampY(f, start), 0.0), v(0.0, 0.0, f.z0 - zp))
-let rampShape = (f: Flight): Physics.shape =>
-  Physics.trimesh({ positions: positionsOf([rampFace(f)]), triangles: quadTriangles(1.0) })
+let rampY = (l: Layout, f: Flight, x: float): float =>
+  Math.clamp(0.0, l.storey, (x - (f.x0 - f.tread)) * riserOf(l, f) / f.tread)
+let rampFace = (l: Layout, f: Flight): Face =>
+  match f.kind with
+  | Straight =>
+    let start = f.x0 - f.tread in
+    let end = flightEnd(f) in
+    let zp = f.z1 - parapetThickness in
+    face(carpet, v(start, baseOf(l, roomAt(l, f.lower)) + rampY(l, f, start), zp),
+      v(end - start, rampY(l, f, end) - rampY(l, f, start), 0.0), v(0.0, 0.0, f.z0 - zp))
+let rampShape = (l: Layout, f: Flight): Physics.shape =>
+  Physics.trimesh({ positions: positionsOf([rampFace(l, f)]), triangles: quadTriangles(1.0) })
 
 // Every collider, in the building's space, for the caller to place as a
 // fixed body: the wall boxes, the floors and each flight's ramp.
 type Collider = { tag: string, shape: Physics.shape, at: Vec3.t }
-let colliders: List<Collider> =
+let collidersOf = (l: Layout, blocks: List<Block>, floorFaces: List<Face>): List<Collider> =>
   let origin = v(0.0, 0.0, 0.0) in
   List.flatten([
     blocks |> List.map((b) => { tag: b.tag, shape: Physics.box(b.w, b.h, b.d), at: v(b.x, b.y, b.z) }),
-    [{ tag: "floors", shape: floorShape, at: origin }],
-    flights |> List.indexedMap((k, f) => { tag: $"ramp-{k}", shape: rampShape(f), at: origin }),
+    [{ tag: "floors", shape: Physics.trimesh({ positions: positionsOf(floorFaces), triangles: quadTriangles(List.length(floorFaces)) }), at: origin }],
+    l.flights |> List.indexedMap((k, f) => { tag: $"ramp-{k}", shape: rampShape(l, f), at: origin }),
   ])
 
 // ---- The bake job --------------------------------------------------------------
@@ -583,39 +547,34 @@ let colliders: List<Collider> =
 // Fluorescent panels and sodium lamps: in the bake jobs ONLY. Submitting
 // them to the frame would spend the 8 forward-light slots on light the
 // lightmap already holds.
-let panelLight = (base: float, p: Panel): Light.t =>
-  Light.point(v(p.x, base + ceiling - 0.12, p.z), Color.rgb(0.93, 0.97, 0.86), 0.9, 5.5) |> Light.castShadows
+let panelLight = (l: Layout, base: float, p: Panel): Light.t =>
+  Light.point(v(p.x, base + l.ceiling - 0.12, p.z), Color.rgb(0.93, 0.97, 0.86), 0.9, 5.5) |> Light.castShadows
 // 0.3 m out from its lens, a little below it.
-let lampLight = (l: Lamp): Light.t =>
-  let lens = lampFace(l) in
+let lampLight = (l: Layout, lamp: Lamp): Light.t =>
+  let lens = lampFace(l, lamp) in
   let centre = lens.q.o |> Vec3.add(Vec3.scale(0.5, lens.q.a)) |> Vec3.add(Vec3.scale(0.5, lens.q.b)) in
-  let at = centre |> Vec3.add(Vec3.scale(0.3, normalOf(lens.q))) |> Vec3.add(v(0.0, baseOf(roomAt(l.room)) - 0.15, 0.0)) in
+  let at = centre |> Vec3.add(Vec3.scale(0.3, normalOf(lens.q))) |> Vec3.add(v(0.0, baseOf(l, roomAt(l, lamp.room)) - 0.15, 0.0)) in
   Light.point(at, Color.rgb(1.0, 0.62, 0.3), 0.5, 7.0) |> Light.castShadows
 
 // The lightmap stores light ÷ `bakeScale`; the game loads both bakes with it.
 let bakeScale = 2.0
-let night: Lightmap.bakeJob = {
-  name: "night",
-  mesh: interiorData,
-  lights: List.flatten([
-    [Light.ambient(Color.rgb(0.035, 0.04, 0.035))],
-    rooms |> List.concatMap((r) => r.panels |> List.filter((p) => p.on) |> List.map((p) => panelLight(baseOf(r), p))),
-    lamps |> List.map(lampLight),
-  ]),
-  albedo: meshAlbedo,
-  scale: bakeScale,
-}
+let nightLights = (l: Layout): List<Light.t> => List.flatten([
+  [Light.ambient(Color.rgb(0.035, 0.04, 0.035))],
+  l.rooms |> List.concatMap((r) => r.panels |> List.filter((p) => p.on) |> List.map((p) => panelLight(l, baseOf(l, r), p))),
+  l.lamps |> List.map((lamp) => lampLight(l, lamp)),
+])
 
 // ---- Daylight: the day bake only -----------------------------------------------
 
 // A point `u` along footprint side `s`, `y` up, `out` metres outside the
 // wall's centre line.
-let outsideFacade = (s: Side, u: float, y: float, out: float): Vec3.t =>
+let outsideFacade = (l: Layout, s: Side, u: float, y: float, out: float): Vec3.t =>
+  let f = l.footprint in
   match s with
-  | North => v(u, y, footprint.z1 + out)
-  | South => v(u, y, footprint.z0 - out)
-  | East => v(footprint.x1 + out, y, u)
-  | West => v(footprint.x0 - out, y, u)
+  | North => v(u, y, f.z1 + out)
+  | South => v(u, y, f.z0 - out)
+  | East => v(f.x1 + out, y, u)
+  | West => v(f.x0 - out, y, u)
 
 // An overcast day: no sun, so the bake holds at any yaw of the building
 // (every daylight below is placed relative to its opening). Each facade
@@ -628,17 +587,17 @@ let outsideFacade = (s: Side, u: float, y: float, out: float): Vec3.t =>
 // rooms too.
 // A patch `out` m outside the wall's centre line, `height` m tall from the
 // opening's head (sky) or the street (ground), aimed at the floor or the
-// ceiling 2 m inside.
-type Patch = { out: float, aboveHead: bool, height: float, aimY: float, color: Color.t, perSquareMetre: float }
-let skyPatch = { out: 1.0, aboveHead: true, height: 2.0, aimY: 0.0, color: Color.rgb(0.72, 0.84, 1.0), perSquareMetre: 0.6 }
+// ceiling 2 m inside (`aimCeiling`).
+type Patch = { out: float, aboveHead: bool, height: float, aimCeiling: bool, color: Color.t, perSquareMetre: float }
+let skyPatch = { out: 1.0, aboveHead: true, height: 2.0, aimCeiling: false, color: Color.rgb(0.72, 0.84, 1.0), perSquareMetre: 0.6 }
 // The ground reflects a quarter of the sky's light per square metre, in the
 // sky's colour (grey pavement under an overcast sky).
 let groundAlbedo = 0.25
-let groundPatch = { out: 2.0, aboveHead: false, height: 0.5, aimY: ceiling, color: skyPatch.color, perSquareMetre: groundAlbedo * skyPatch.perSquareMetre }
+let groundPatch = { out: 2.0, aboveHead: false, height: 0.5, aimCeiling: true, color: skyPatch.color, perSquareMetre: groundAlbedo * skyPatch.perSquareMetre }
 
 // `p`'s spots for opening `h` in side `s`, on the storey whose floor is
 // `base` up. The ground is always the street.
-let patchLights = (s: Side, base: float, h: Hole, p: Patch): List<Light.t> =>
+let patchLights = (l: Layout, s: Side, base: float, h: Hole, p: Patch): List<Light.t> =>
   let y0 = if p.aboveHead then base + h.top else 0.0 in
   let lo = h.lo - 1.0 in
   let width = h.hi - h.lo + 2.0 in
@@ -646,25 +605,95 @@ let patchLights = (s: Side, base: float, h: Hole, p: Patch): List<Light.t> =>
   let nv = Math.ceil(p.height / 0.5) in
   let du = width / nu in
   let dv = p.height / nv in
-  let target = outsideFacade(s, (h.lo + h.hi) / 2.0, base + p.aimY, -2.0) in
+  let target = outsideFacade(l, s, (h.lo + h.hi) / 2.0, base + (if p.aimCeiling then l.ceiling else 0.0), -2.0) in
   List.range(nu * nv) |> List.map((k) =>
-    let at = outsideFacade(s, lo + (Math.mod(k, nu) + 0.5) * du, y0 + (Math.floor(k / nu) + 0.5) * dv, p.out) in
+    let at = outsideFacade(l, s, lo + (Math.mod(k, nu) + 0.5) * du, y0 + (Math.floor(k / nu) + 0.5) * dv, p.out) in
     Light.spot(at, Vec3.normalize(target |> Vec3.sub(at)), p.color, p.perSquareMetre * du * dv, 12.0, 80deg)
       |> Light.castShadows)
 // Openings stacked over each other on `s` see one patch of ground, so they
 // share its light: each emits its share.
-let stacked = (s: Side, h: Hole): float =>
-  levels |> List.map((l) => openingsIn(l, s) |> List.filter((o) => near(o.lo, h.lo) && near(o.hi, h.hi)) |> List.length)
+let stacked = (l: Layout, s: Side, h: Hole): float =>
+  levelsOf(l) |> List.map((level) => openingsIn(l, level, s) |> List.filter((o) => near(o.lo, h.lo) && near(o.hi, h.hi)) |> List.length)
     |> List.sum
-let openingLights = (s: Side, base: float, h: Hole): List<Light.t> =>
-  let ground = { groundPatch with perSquareMetre: groundPatch.perSquareMetre / stacked(s, h) } in
-  List.flatten([patchLights(s, base, h, skyPatch), patchLights(s, base, h, ground)])
+let openingLights = (l: Layout, s: Side, base: float, h: Hole): List<Light.t> =>
+  let ground = { groundPatch with perSquareMetre: groundPatch.perSquareMetre / stacked(l, s, h) } in
+  List.flatten([patchLights(l, s, base, h, skyPatch), patchLights(l, s, base, h, ground)])
 
-let daylightLights = levels |> List.concatMap((l) => [North, South, East, West] |> List.concatMap((s) =>
-  openingsIn(l, s) |> List.concatMap((h) => openingLights(s, l * storey, h))))
+let daylightLights = (l: Layout): List<Light.t> => levelsOf(l) |> List.concatMap((level) => [North, South, East, West] |> List.concatMap((s) =>
+  openingsIn(l, level, s) |> List.concatMap((h) => openingLights(l, s, level * l.storey, h))))
 
-// Day: the same mesh, so the same charts; the panels stay on.
-let day: Lightmap.bakeJob = { night with name: "day", lights: List.flatten([night.lights, daylightLights]) }
+// ---- One archetype's interior ------------------------------------------------
 
-// `functor bake` reads these through game.fun.
-let bakes = [night, day]
+// Everything above for one layout, derived once (archetypes.fun holds one
+// per archetype): the cells' faces and the mesh, the colliders, and the
+// `night` and `day` bake jobs, named `<name>-night` and `<name>-day`. Day:
+// the same mesh, so the same charts; the panels stay on.
+type Interior = {
+  cellParts: List<List<Face>>,
+  allFaces: List<Face>,
+  cellRanges: List<Range>,
+  meshSpans: List<Span>,
+  interiorData: Model.staticData,
+  blocks: List<Block>,
+  colliders: List<Collider>,
+  night: Lightmap.bakeJob,
+  day: Lightmap.bakeJob,
+}
+let interiorOf = (name: string, l: Layout): Interior =>
+  let cellParts = List.range(List.length(l.rooms)) |> List.map((i) => cellFaces(l, i)) in
+  let allFaces = List.flatten(cellParts) in
+  let cellRanges = rangesOf(cellParts) in
+  let meshSpans = cellParts |> List.zip(cellRanges) |> List.concatMap((pair) =>
+    let (faces, range) = pair in spansOf(range.first, faces)) in
+  let interiorData = meshOf(allFaces, meshSpans) in
+  let blocks = blocksOf(l) in
+  let night: Lightmap.bakeJob = {
+    name: $"{name}-night",
+    mesh: interiorData,
+    lights: nightLights(l),
+    albedo: meshSpans |> List.map((s) => materialAt(s.mat).albedo),
+    scale: bakeScale,
+  } in
+  { cellParts: cellParts, allFaces: allFaces, cellRanges: cellRanges, meshSpans: meshSpans,
+    interiorData: interiorData, blocks: blocks,
+    colliders: collidersOf(l, blocks, floorFacesOf(l, allFaces)),
+    night: night,
+    day: { night with name: $"{name}-day", lights: List.flatten([night.lights, daylightLights(l)]) } }
+
+// ---- One mesh per cell -------------------------------------------------------
+
+// The bake keeps triangle order, numbers its vertices by first use, and no
+// two faces share a vertex; so each cell's vertices are one run, from the
+// first index of its first triangle up to the next cell's. A cell's mesh
+// is that run of every vertex array (UV2 byte for byte) and its triangles
+// less the run's start. The unbaked mesh is laid out the same way.
+type Run = { cell: float, first: float, count: float, v0: float, v1: float }
+let runsOf = (k: Interior, data: Model.staticData): List<Run> =>
+  let cells = k.cellRanges
+    |> List.indexedMap((i, r) => { cell: i, first: r.first, count: r.count, v0: 0.0, v1: 0.0 })
+    |> List.filter((run) => run.count > 0.0) in
+  let starts = cells |> List.map((run) => Bytes.u32le(12.0 * run.first, data.triangles) |> Binary.require) in
+  let ends = List.drop(1.0, starts) |> List.append([Bytes.length(data.positions) / 12.0]) in
+  cells |> List.zip(starts) |> List.zip(ends) |> List.map((pair) =>
+    let (started, v1) = pair in
+    let (run, v0) = started in
+    { run with v0: v0, v1: v1 })
+
+let sliceRun = (stride: float, run: Run, b: Bytes.t): Bytes.t =>
+  if Bytes.length(b) == 0.0 then b
+  else b |> Bytes.slice(stride * run.v0, stride * (run.v1 - run.v0)) |> Binary.require
+// `run`'s cell's mesh, cut from `data` (keeping its lightmap).
+let cellData = (k: Interior, data: Model.staticData, run: Run): Model.staticData =>
+  { data with
+    positions: sliceRun(12.0, run, data.positions),
+    normals: sliceRun(12.0, run, data.normals),
+    uvs: sliceRun(8.0, run, data.uvs),
+    uvs2: sliceRun(8.0, run, data.uvs2),
+    triangles: Bytes.fromU32le(List.range(3.0 * run.count) |> List.map((j) =>
+      (Bytes.u32le(4.0 * (3.0 * run.first + j), data.triangles) |> Binary.require) - run.v0)),
+    groups: spansOf(0.0, List.nth(run.cell, k.cellParts) |> Option.defaultValue([])) |> List.map(groupOf) }
+
+// A static model per non-empty cell, drawn `Scene.inCells` it.
+type CellModel = { cell: float, model: Model.t }
+let cellModels = (k: Interior, data: Model.staticData): List<CellModel> =>
+  runsOf(k, data) |> List.map((run) => { cell: run.cell, model: Model.static(cellData(k, data, run)) })

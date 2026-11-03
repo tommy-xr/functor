@@ -40,10 +40,14 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 
 ## One layout, four consumers
 
-`layout.fun` is plain data: the footprint, rooms (rects between wall centre
-lines, on level 0 or 1), doors on shared walls, the stair flight, windows in
-outside walls, ceiling panels, signs and lamps. `building.fun` derives the
-interior from it, and `exterior.fun` the street side:
+The office is one `Layout` (`layout.fun`'s building kit), the plain data in
+`officeLayout.fun`: the footprint, storey and level count, rooms (rects
+between wall centre lines, on a level), doors on shared walls, the stair
+flight, windows in outside walls, ceiling panels, signs and lamps, and the
+street side's window bands and lamps. `building.fun` derives the interior
+from a layout, `portals.fun` its cells and `exterior.fun` its street side;
+`archetypes.fun` derives each archetype once, at load, and every copy draws
+those values:
 
 - **Mesh**: one `Model.staticData` of every cell's faces in cell order: a
   room's inner surfaces, panels, signs and lamps, its half of each door and
@@ -118,7 +122,7 @@ own translation and yaw, so the GPU holds one office. Per copy:
   `functor test` checks the collar holds every point of that region, corners
   included; the model's `uncovered` counts ticks where an active copy's cells
   missed the eye (the e2e checks it stays 0).
-- **Colliders**: `building.fun`'s and the lamp posts' as fixed bodies under
+- **Colliders**: its archetype's walls, floors, ramp and lamp posts as fixed bodies under
   the copy's own tags, each copy one `Physics.memo`.
 - **Scene**: one `Scene.memo` per copy, rebuilt when the hour or its
   activation changes.
@@ -154,7 +158,7 @@ town. What scales with the eye's surroundings, not with the town:
 - **Shells**: inactive copies are four `Scene.instanced` cubes for the whole
   town: massing up to the roof, parapet, canopy, apron, window bands (10 cm
   proud) and lamp posts lit; neon, lamp shades, and the entrance and
-  layout.fun's windows glowing (the lit rooms' colour by night, neutral
+  the layout's windows glowing (the lit rooms' colour by night, neutral
   glass by day). An active copy draws its real
   street side and interior instead. Each copy's instances are built once at
   load; a change of the active set only gathers them (and re-uploads them),
@@ -306,15 +310,16 @@ opening, so the bake holds at any yaw of the building. The frame's sun
 
 ## Rebaking
 
-Editing `layout.fun` or `building.fun` (which holds the bake jobs and their
-lights) makes the committed bakes stale:
+Each archetype's bakes live in `baked/<archetype>/`. Editing `layout.fun`,
+`building.fun` (which holds the bake jobs and their lights) or an
+archetype's `<archetype>Layout.fun` makes its committed bakes stale:
 
 ```sh
-node examples/liminal-office/bake.mjs           # bake, then write baked/provenance.txt
+node examples/liminal-office/bake.mjs           # bake, then write baked/<archetype>/provenance.txt
 node examples/liminal-office/bake.mjs --check   # rebake to a temp dir; fail unless byte-identical
 ```
 
-`baked/provenance.txt` records a hash of those two files, the bakes, the
+`baked/office/provenance.txt` records a hash of those three files, the bakes, the
 baker's version and its settings; `bake.mjs` refuses to record it if they
 change mid-bake. It keeps one `night.mesh.bin`, failing if the day bake's
 mesh differs. `provenance.fun` hashes the files again at load: on a mismatch,

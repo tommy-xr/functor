@@ -1,6 +1,6 @@
-// The block: the office as an archetype, built ONCE in its own space (its
-// cell models and lightmaps in game.fun, portals.fun's cells, building.fun's
-// and exterior.fun's colliders, exterior.fun's street side), placed as four
+// The block: the office as an archetype, built ONCE in its own space
+// (archetypes.fun: its cell models and lightmaps, cells, colliders and
+// street side), placed as four
 // copies at 0/90/180/270° yaw around a crossroads. Every copy draws the same
 // `Model.static` values, so the GPU holds one office. The grids repeat the
 // block, a street apart, to 16 and 64 copies.
@@ -13,9 +13,12 @@ open Layout
 
 let v = Vec3.make
 
-// Where a copy stands: `local` → rotate `yaw` degrees about Y, then move by
-// (x, z). Plain data, so it can be a `Scene.memo`/`Physics.memo` key.
-type Copy = { name: string, x: float, z: float, yaw: float }
+// Where a copy of archetype `archetype` stands: `local` → rotate `yaw`
+// degrees about Y, then move by (x, z). Plain data, so it can be a
+// `Scene.memo`/`Physics.memo` key.
+type Copy = { name: string, archetype: string, x: float, z: float, yaw: float }
+let archetypeOf = (c: Copy): Archetypes.Archetype => Archetypes.named(c.archetype)
+let footprintOf = (c: Copy): Rect => archetypeOf(c).layout.footprint
 
 // (x, z) turned `deg` degrees about Y, as `Scene.rotateY` turns it: +z
 // swings toward +x.
@@ -37,7 +40,10 @@ let streetWidth = 24.0
 let centre = 0.0 - streetWidth / 2.0
 // A block of four spans this far along x and z; the grids repeat it every
 // `blockPitch`, a street apart.
-let blockSpan = 2.0 * Math.max(footprint.x1 - footprint.x0, footprint.z1 - footprint.z0) + streetWidth
+// (The towns are grids of offices.)
+let blockSpan =
+  let f = Archetypes.office.layout.footprint in
+  2.0 * Math.max(f.x1 - f.x0, f.z1 - f.z0) + streetWidth
 let blockPitch = blockSpan + streetWidth
 
 // Block `s`'s cell in a grid, in rings out from (0, 0): 0 is (0, 0); 1–3 are
@@ -56,23 +62,24 @@ let copyAt = (id: float): Copy =>
   let (bx, bz) = ringCell(Math.floor(id / 4.0)) in
   let yaw = 90.0 * k in
   let (x, z) = turn(yaw, centre, centre) in
-  { name: $"office-{id}", x: centre - x + bx * blockPitch, z: centre - z + bz * blockPitch, yaw: yaw }
+  { name: $"office-{id}", archetype: "office", x: centre - x + bx * blockPitch, z: centre - z + bz * blockPitch, yaw: yaw }
 let home = copyAt(0.0)
 
 let sceneOf = (c: Copy, s: Scene.t): Scene.t =>
   s |> Scene.rotateY(Angle.degrees(c.yaw)) |> Scene.translate(v(c.x, 0.0, c.z))
 
-// A copy's colliders: building.fun's and the lamp posts, each a fixed body
-// under its own tag.
+// A copy's colliders: its archetype's building and lamp posts, each a fixed
+// body under its own tag.
 let tagOf = (c: Copy, local: string): string => $"{c.name}/{local}"
+let collidersOf = (c: Copy): List<Building.Collider> =>
+  let a = archetypeOf(c) in List.flatten([a.interior.colliders, a.street.lampColliders])
 let bodiesOf = (c: Copy): List<Physics.body> =>
-  List.flatten([Building.colliders, Exterior.lampColliders]) |> List.map((k) =>
+  collidersOf(c) |> List.map((k) =>
     Physics.fixed(Physics.tag(tagOf(c, k.tag)), k.shape)
       |> Physics.at(toWorld(c, k.at)) |> Physics.rotateY(Angle.degrees(c.yaw)))
 
-// How far a local point is from the footprint (0 inside it).
-let fromFootprint = (p: Vec3.t): float =>
-  let f = footprint in
+// How far a local point is from footprint `f` (0 inside it).
+let fromFootprint = (f: Rect, p: Vec3.t): float =>
   let dx = Math.max(0.0, Math.max(f.x0 - Vec3.x(p), Vec3.x(p) - f.x1)) in
   let dz = Math.max(0.0, Math.max(f.z0 - Vec3.z(p), Vec3.z(p) - f.z1)) in
   Math.sqrt(dx * dx + dz * dz)
@@ -83,14 +90,15 @@ let fromFootprint = (p: Vec3.t): float =>
 // tile holding its footprint's middle, so a query reads only the tiles near
 // the eye, however many copies there are. `i0`..`j1` bound the tiles in use.
 let tile = blockPitch / 2.0
-let halfDiagonal =
-  let w = footprint.x1 - footprint.x0 in
-  let d = footprint.z1 - footprint.z0 in
-  Math.sqrt(w * w + d * d) / 2.0
+// The largest footprint's, so a query reaches any archetype's copies.
+let halfDiagonal = Archetypes.all |> List.map((a) =>
+  let f = a.layout.footprint in
+  Math.sqrt((f.x1 - f.x0) * (f.x1 - f.x0) + (f.z1 - f.z0) * (f.z1 - f.z0)) / 2.0) |> List.maximum |> Option.defaultValue(0.0)
 let tileOf = (x: float): float => Math.floor(x / tile)
 let tileKey = (i: float, j: float): float => i * 4096.0 + j
 let middleOf = (c: Copy): Vec3.t =>
-  toWorld(c, v((footprint.x0 + footprint.x1) / 2.0, 0.0, (footprint.z0 + footprint.z1) / 2.0))
+  let f = footprintOf(c) in
+  toWorld(c, v((f.x0 + f.x1) / 2.0, 0.0, (f.z0 + f.z1) / 2.0))
 type Index = { tiles: Map<float, List<(float, Copy)>>, i0: float, i1: float, j0: float, j1: float }
 let indexOf = (copies: List<Copy>): Index =>
   let filed = copies |> List.indexedMap((id, c) => (tileOf(Vec3.x(middleOf(c))), tileOf(Vec3.z(middleOf(c))), id, c)) in
@@ -153,7 +161,7 @@ let near = (town: Town, r: float, eye: Vec3.t): List<(float, float)> =>
   span(x.i0, x.i1, Vec3.x(eye)) |> List.concatMap((i) =>
     span(x.j0, x.j1, Vec3.z(eye)) |> List.concatMap((j) =>
       Map.get(tileKey(i, j), x.tiles) |> Option.defaultValue([])))
-    |> List.map((e) => let (id, c) = e in (id, fromFootprint(toLocal(c, eye))))
+    |> List.map((e) => let (id, c) = e in (id, fromFootprint(footprintOf(c), toLocal(c, eye))))
     |> List.filter((e) => let (id, d) = e in d <= r)
     |> List.sortBy((e) => let (id, d) = e in id)
 
@@ -199,7 +207,7 @@ let activeAt = (town: Town, k: float, was: List<float>, eye: Vec3.t): List<float
 // How many active copies' cells don't hold `eye`: each would draw its whole
 // interior (`Scene.cells`' fallback). Zero by construction; the e2e checks it.
 let uncovered = (town: Town, active: List<float>, eye: Vec3.t): float =>
-  active |> List.filter((id) => Cells.locate(toLocal(copyAt(id), eye), Portals.level) == Option.None) |> List.length
+  active |> List.filter((id) => let c = copyAt(id) in Cells.locate(toLocal(c, eye), archetypeOf(c).level) == Option.None) |> List.length
 
 // Copies with colliders: within the town's `solidOn` of the player, staying
 // solid to `solidMargin` past it. Not capped: the streets bound how many

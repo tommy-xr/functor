@@ -1,5 +1,5 @@
-layout=1812633000
-sources=layout.fun building.fun
+layout=41134261
+sources=layout.fun officeLayout.fun building.fun
 bakes=night day
 bakeVersion=2
 settings=texelsPerMeter=12 aoSamples=64 aoDistance=1 bounces=2 giSamples=32 seed=0 maxSize=2048

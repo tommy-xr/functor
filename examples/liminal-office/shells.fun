@@ -1,60 +1,74 @@
-// Stand-ins for the grid's inactive copies: the office's massing, parapet,
-// canopy, apron, window bands and lamp posts as lit boxes, and its neon, lamp
-// shades, entrance and real windows as glowing ones — four `Scene.instanced`
-// cubes for the whole town. The windows and entrance glow like the lit
-// rooms behind them, so a distant copy reads as the office it becomes at
-// `Block.activeOn`.
+// Stand-ins for the grid's inactive copies: each archetype's massing,
+// parapet, canopy, apron, window bands and lamp posts as lit boxes, and its
+// neon, lamp shades, entrance and real windows as glowing ones — four
+// `Scene.instanced` cubes for the whole town. The windows and entrance glow
+// like the lit rooms behind them, so a distant copy reads as the building it
+// becomes at `Block.activeOn`.
 
 open Layout
 open Building
 
-// The massing: the facade's outer faces, up to the roof's underside; then
-// the street side's roof, and the parapet round it, the facade's outer half
-// on up to the roofline.
-let half = Exterior.half
-let massing = Exterior.box(footprint.x0 - half, Exterior.street, footprint.z0 - half, footprint.x1 + half, Exterior.roofBox.y0, footprint.z1 + half)
-let parapet =
-  let f = footprint in
-  let y0 = Exterior.roofBox.y0 in
-  [
-    Exterior.box(f.x0 - half, y0, f.z0 - half, f.x1 + half, facadeHeight, f.z0),
-    Exterior.box(f.x0 - half, y0, f.z1, f.x1 + half, facadeHeight, f.z1 + half),
-    Exterior.box(f.x0 - half, y0, f.z0, f.x0, facadeHeight, f.z1),
-    Exterior.box(f.x1, y0, f.z0, f.x1 + half, facadeHeight, f.z1),
-  ]
-
 // An opening on side `s`'s outer face, `proud` of it: far enough that the
 // depth buffer keeps it in front of the massing at a distance.
 let proud = 0.1
-let opening = (s: Side, level: float, h: Hole): Exterior.Box =>
-  let f = footprint in
-  let o = half + proud in
-  let y0 = level * storey + h.bottom in
-  let y1 = level * storey + h.top in
-  match s with
-  | South => Exterior.box(h.lo, y0, f.z0 - o, h.hi, y1, f.z0 - half)
-  | North => Exterior.box(h.lo, y0, f.z1 + half, h.hi, y1, f.z1 + o)
-  | West => Exterior.box(f.x0 - o, y0, h.lo, f.x0 - half, y1, h.hi)
-  | East => Exterior.box(f.x1 + half, y0, h.lo, f.x1 + o, y1, h.hi)
 
-// The entrance and layout.fun's windows (tests.fun checks a panel lights
-// every window's room; the lobby is lit).
-let openings: List<Exterior.Box> = List.flatten([
-  [opening(South, 0.0, Exterior.entrance)],
-  windows |> List.map((w) => opening(w.side, roomAt(w.room).level, windowHole(w))),
-])
+// One archetype's shell boxes, in its own space.
+type Shell = {
+  massing: Exterior.Box,
+  parapet: List<Exterior.Box>,
+  openings: List<Exterior.Box>,
+  bands: List<Exterior.Box>,
+  litBoxes: List<(Exterior.Box, Color.t)>,
+}
+let shellOf = (a: Archetypes.Archetype): Shell =>
+  let l = a.layout in
+  let s = a.street in
+  let f = l.footprint in
+  let half = s.half in
+  // The massing: the facade's outer faces, up to the roof's underside; then
+  // the street side's roof, and the parapet round it, the facade's outer
+  // half on up to the roofline.
+  let massing = Exterior.box(f.x0 - half, Exterior.street, f.z0 - half, f.x1 + half, s.roofBox.y0, f.z1 + half) in
+  let y0 = s.roofBox.y0 in
+  let parapet = [
+    Exterior.box(f.x0 - half, y0, f.z0 - half, f.x1 + half, l.facadeHeight, f.z0),
+    Exterior.box(f.x0 - half, y0, f.z1, f.x1 + half, l.facadeHeight, f.z1 + half),
+    Exterior.box(f.x0 - half, y0, f.z0, f.x0, l.facadeHeight, f.z1),
+    Exterior.box(f.x1, y0, f.z0, f.x1 + half, l.facadeHeight, f.z1),
+  ] in
+  let opening = (side: Side, level: float, h: Hole): Exterior.Box =>
+    let o = half + proud in
+    let ya = level * l.storey + h.bottom in
+    let yb = level * l.storey + h.top in
+    match side with
+    | South => Exterior.box(h.lo, ya, f.z0 - o, h.hi, yb, f.z0 - half)
+    | North => Exterior.box(h.lo, ya, f.z1 + half, h.hi, yb, f.z1 + o)
+    | West => Exterior.box(f.x0 - o, ya, h.lo, f.x0 - half, yb, h.hi)
+    | East => Exterior.box(f.x1 + half, ya, h.lo, f.x1 + o, yb, h.hi) in
+  // The entrance and the layout's windows (tests.fun checks a panel lights
+  // every window's room; the lobby is lit).
+  let openings = List.flatten([
+    [opening(South, 0.0, s.entrance)],
+    l.windows |> List.map((w) => opening(w.side, roomAt(l, w.room).level, windowHole(w))),
+  ]) in
+  // The window bands, where the street side cuts them, proud like the openings.
+  let bands = levelsOf(l) |> List.concatMap((level) =>
+    [South, North, West, East] |> List.concatMap((side) => Exterior.bandHoles(l, level, side) |> List.map((h) => opening(side, level, h)))) in
+  // The lit boxes and their colours, the same at every hour.
+  { massing: massing, parapet: parapet, openings: openings, bands: bands,
+    litBoxes: List.flatten([
+      [(massing, Exterior.concrete), (s.roofBox, Exterior.roofGrey), (s.canopyBox, Exterior.concrete), (s.apronBox, Exterior.apronGrey)],
+      parapet |> List.map((b) => (b, Exterior.concrete)),
+      bands |> List.map((b) => (b, Exterior.glass)),
+      s.postBoxes |> List.map((b) => (b, Exterior.postGrey)),
+    ]) }
 
-// The window bands, where the street side cuts them, proud like the openings.
-let bands: List<Exterior.Box> = levels |> List.concatMap((level) =>
-  [South, North, West, East] |> List.concatMap((s) => Exterior.bandHoles(level, s) |> List.map((h) => opening(s, level, h))))
-
-// The lit boxes and their colours, the same at every hour.
-let litBoxes: List<(Exterior.Box, Color.t)> = List.flatten([
-  [(massing, Exterior.concrete), (Exterior.roofBox, Exterior.roofGrey), (Exterior.canopyBox, Exterior.concrete), (Exterior.apronBox, Exterior.apronGrey)],
-  parapet |> List.map((b) => (b, Exterior.concrete)),
-  bands |> List.map((b) => (b, Exterior.glass)),
-  Exterior.postBoxes |> List.map((b) => (b, Exterior.postGrey)),
-])
+// Every archetype's shell, by name, built once.
+let shells: Map<string, Shell> = Map.fromList(Archetypes.all |> List.map((a) => (a.name, shellOf(a))))
+let shellAt = (name: string): Shell =>
+  match Map.get(name, shells) with
+  | Option.Some(s) => s
+  | Option.None => Binary.invalid($"no archetype {name}")
 
 // Box `b` of copy `c` as an instance of the unit cube.
 let place = (c: Block.Copy, b: Exterior.Box): Instance.t =>
@@ -64,12 +78,15 @@ let place = (c: Block.Copy, b: Exterior.Box): Instance.t =>
 // A copy's shell as instances: the lit boxes (tinted), and what glows, by
 // colour, so the hour changes a template's colour, not the instances.
 type Parts = { lit: List<Instance.t>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t> }
-let partsOf = (c: Block.Copy): Parts => {
-  lit: litBoxes |> List.map((e) => let (b, color) = e in place(c, b) |> Instance.tint(color)),
-  neon: Exterior.neonBoxes |> List.map((b) => place(c, b)),
-  shades: Exterior.shadeBoxes |> List.map((b) => place(c, b)),
-  openings: openings |> List.map((b) => place(c, b)),
-}
+let partsOf = (c: Block.Copy): Parts =>
+  let shell = shellAt(c.archetype) in
+  let street = Block.archetypeOf(c).street in
+  {
+    lit: shell.litBoxes |> List.map((e) => let (b, color) = e in place(c, b) |> Instance.tint(color)),
+    neon: street.neonBoxes |> List.map((b) => place(c, b)),
+    shades: street.shadeBoxes |> List.map((b) => place(c, b)),
+    openings: shell.openings |> List.map((b) => place(c, b)),
+  }
 // Every copy's parts, built once at load: an id is the same copy in every
 // town, so the largest town's serve them all.
 let parts: List<Parts> = Block.towns |> List.last |> Option.map((t) => t.copies) |> Option.defaultValue([]) |> List.map(partsOf)
