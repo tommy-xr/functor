@@ -136,7 +136,7 @@ pub struct CellsCounts {
 pub const MAX_CELLS_WALKS: usize = 256;
 
 /// One `Scene.cells` graph's walk from one eye: the cells it reached (all
-/// when it drew everything), the portals it passed and those it cut for
+/// when it drew everything), its portal crossings and those it cut for
 /// size, whether it started outside every cell, and whether it drew
 /// everything (an eye in no cell and no exterior portal, or a walk too long).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -190,13 +190,13 @@ fn each_eye_walks_from_its_own_position(h: &mut Harness) {
 }
 
 fn an_outside_eye_sees_in_only_through_a_facing_window(h: &mut Harness) {
-    // 4 m south of the rooms; room 0 has a window in the south wall (the
-    // wall is drawn solid, so culling is exact).
+    // 4 m south of the rooms, looking in at room 0's crate through its
+    // window, with and without the window's exterior portal.
     let at = |target: [f32; 3]| Camera::look_at([2.0, 1.5, -6.0], target, UP, fov());
-    let scene = |window: bool| rooms_in(cells(window), true, vec![]);
+    let scene = |portal: bool| rooms_in(true, portal, true, vec![]);
 
     // Without exterior portals everything draws.
-    let toward = |window| frame(at([2.0, 1.0, 0.0]), scene(window), false);
+    let toward = |portal| frame(at([2.0, 1.0, 0.0]), scene(portal), false);
     h.render(&toward(false), &[0], true);
     assert_eq!(sums(), (1, 3, 0));
     assert!(gpu_counters().frame_cells().graphs[0].everything);
@@ -216,6 +216,11 @@ fn an_outside_eye_sees_in_only_through_a_facing_window(h: &mut Harness) {
         }]
     );
     assert!(gpu_counters().frame_cull().tested < tested);
+    let walled = frame(at([2.0, 1.0, 0.0]), rooms(true, vec![]), false);
+    assert!(
+        on != h.render(&walled, &[0], true),
+        "the window shows nothing"
+    );
     assert!(
         on == h.render(&toward(true), &[0], false),
         "culling changed the image"
@@ -342,19 +347,30 @@ fn cells(window: bool) -> Arc<Cells> {
 /// each room marked with its cell (room 2's only when `far`), and `extras`
 /// marked with their cells.
 fn rooms(far: bool, extras: Vec<(u32, Scene3D)>) -> Scene3D {
-    rooms_in(cells(false), far, extras)
+    rooms_in(false, false, far, extras)
 }
 
-/// [`rooms`] under `cells`.
-fn rooms_in(cells: Arc<Cells>, far: bool, extras: Vec<(u32, Scene3D)>) -> Scene3D {
+/// [`rooms`], with `window` a hole for room 0's window in the south wall,
+/// and with `portal` its exterior portal in the cells.
+fn rooms_in(window: bool, portal: bool, far: bool, extras: Vec<(u32, Scene3D)>) -> Scene3D {
     let wall = [0.7, 0.7, 0.75];
+    let south = |x0: f32, y0: f32, x1: f32, y1: f32| boxed([x0, y0, -2.1], [x1, y1, -2.0], wall);
     let mut items = vec![
         boxed([0.0, -0.1, -2.0], [12.0, 0.0, 2.0], [0.5, 0.45, 0.4]),
-        boxed([0.0, 0.0, -2.1], [12.0, 3.0, -2.0], wall),
         boxed([0.0, 0.0, 2.0], [12.0, 3.0, 2.1], wall),
         boxed([-0.1, 0.0, -2.0], [0.0, 3.0, 2.0], wall),
         boxed([12.0, 0.0, -2.0], [12.1, 3.0, 2.0], wall),
     ];
+    if window {
+        items.extend([
+            south(0.0, 0.0, 1.0, 3.0),
+            south(3.0, 0.0, 12.0, 3.0),
+            south(1.0, 0.0, 3.0, 1.0),
+            south(1.0, 2.0, 3.0, 3.0),
+        ]);
+    } else {
+        items.push(south(0.0, 0.0, 12.0, 3.0));
+    }
     for x in [4.0, 8.0] {
         items.push(boxed([x - 0.05, 0.0, -2.0], [x + 0.05, 3.0, -0.5], wall));
         items.push(boxed([x - 0.05, 0.0, 0.5], [x + 0.05, 3.0, 2.0], wall));
@@ -379,7 +395,7 @@ fn rooms_in(cells: Arc<Cells>, far: bool, extras: Vec<(u32, Scene3D)>) -> Scene3
         items.push(in_cells(cell, extra));
     }
     Scene3D {
-        obj: SceneObject::Cells(CellsNode::Walk(cells), vec![group(items)]),
+        obj: SceneObject::Cells(CellsNode::Walk(cells(portal)), vec![group(items)]),
         xform: Matrix4::identity(),
     }
 }

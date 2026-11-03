@@ -58,9 +58,19 @@ fn is_zero(x: &f32) -> bool {
     *x == 0.0
 }
 
+fn check_min_portal(fraction: f32) -> Result<(), String> {
+    if (0.0..=1.0).contains(&fraction) {
+        Ok(())
+    } else {
+        Err(format!(
+            "the minimum portal size {fraction} isn't a fraction from 0 to 1"
+        ))
+    }
+}
+
 /// Validated [`CellsData`] (unit plane normals) plus lookup tables.
 /// Serializes as its data; deserializing validates again.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Cells {
     data: CellsData,
     // Per cell: its box (within the tolerance) and its portals' indices.
@@ -100,12 +110,7 @@ impl Cells {
     /// with area, on a face of each cell it joins, and between two existing
     /// cells or a cell and outside.
     pub fn new(mut data: CellsData) -> Result<Cells, String> {
-        if !(0.0..=1.0).contains(&data.min_portal) {
-            return Err(format!(
-                "the minimum portal size {} isn't a fraction from 0 to 1",
-                data.min_portal
-            ));
-        }
+        check_min_portal(data.min_portal)?;
         let count = data.cells.len();
         let mut bounds = Vec::with_capacity(count);
         for (i, cell) in data.cells.iter_mut().enumerate() {
@@ -228,10 +233,10 @@ impl Cells {
     /// These cells with `Scene.cells` walks stopping at portals under
     /// `fraction` of the viewport (see [`CellsData::min_portal`]).
     pub fn with_min_portal(&self, fraction: f32) -> Result<Cells, String> {
-        Cells::new(CellsData {
-            min_portal: fraction,
-            ..self.data.clone()
-        })
+        check_min_portal(fraction)?;
+        let mut cells = self.clone();
+        cells.data.min_portal = fraction;
+        Ok(cells)
     }
 
     pub fn data(&self) -> &CellsData {
@@ -319,9 +324,10 @@ const FULL: Rect = [-1.0, -1.0, 1.0, 1.0];
 pub struct Walk {
     /// Per cell, whether the walk reached it. `None` draws every cell.
     pub cells: Option<Vec<bool>>,
-    /// Portals the walk passed through.
+    /// Portal crossings the walk made (a cell re-walked with a wider view
+    /// crosses its portals again).
     pub portals: u32,
-    /// Portals it stopped at for being under the minimum size.
+    /// Crossings it stopped for being under the minimum size.
     pub cut: u32,
     /// Whether the eye was in no cell and the walk entered through the
     /// exterior portals.
@@ -395,13 +401,16 @@ impl Cells {
         let distance = self.faces[k].0.distance(eye);
         // Going through a face needs the eye on its `from` side. On the
         // portal's plane its projection degenerates, so it passes the whole
-        // rectangle.
+        // rectangle; an outside eye only in the opening itself, not anywhere
+        // along the facade.
+        let portal = &self.data.portals[k];
         let through = if distance < -TOLERANCE {
             None
         } else if distance <= TOLERANCE {
-            Some(rect)
+            (portal.from != OUTSIDE || inside_edges(&portal.polygon, self.faces[k].1, eye))
+                .then_some(rect)
         } else {
-            project(clip, &self.data.portals[k].polygon).and_then(|p| intersect(rect, p))
+            project(clip, &portal.polygon).and_then(|p| intersect(rect, p))
         };
         let Some(through) = through else {
             return;
@@ -413,7 +422,7 @@ impl Cells {
             return;
         }
         walk.portals += 1;
-        stack.push((self.data.portals[k].to as usize, through));
+        stack.push((portal.to as usize, through));
     }
 }
 
@@ -847,6 +856,12 @@ pub(crate) mod tests {
         );
         assert_eq!(
             seen(&cells, [2.0, 1.5, -6.0], [2.0, 1.5, -20.0]),
+            Some(vec![false, false, false])
+        );
+        // On the facade's plane, past its end and facing away: the windows
+        // are edge-on behind the eye.
+        assert_eq!(
+            seen(&cells, [-10.0, 1.5, -2.0], [-20.0, 1.5, -2.0]),
             Some(vec![false, false, false])
         );
     }
