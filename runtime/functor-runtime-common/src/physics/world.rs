@@ -264,6 +264,11 @@ pub struct World {
     command_warnings: Vec<String>,
     #[serde(skip, default)]
     reconcile_stats: ReconcileStats,
+    /// Restored from recorded history (a seek, rewind or past-frame
+    /// preview) and not stepped since: a body the current `draw` names may
+    /// not have existed then (see [`World::is_restored`]).
+    #[serde(skip, default)]
+    restored: bool,
 }
 
 impl Clone for World {
@@ -298,6 +303,7 @@ impl Clone for World {
             events: self.events.clone(),
             command_warnings: self.command_warnings.clone(),
             reconcile_stats: self.reconcile_stats,
+            restored: self.restored,
         }
     }
 }
@@ -362,6 +368,7 @@ impl World {
             events: Vec::new(),
             command_warnings: Vec::new(),
             reconcile_stats: ReconcileStats::default(),
+            restored: false,
         }
     }
 
@@ -373,6 +380,19 @@ impl World {
 
     pub fn restore_checkpoint(&mut self, snapshot: &PhysicsSnapshot) {
         *self = snapshot.world.as_ref().clone();
+    }
+
+    /// Mark this world as restored history until its next step.
+    pub fn mark_restored(&mut self) {
+        self.restored = true;
+    }
+
+    /// Whether this world is restored history not stepped since — what a
+    /// scrubbed or rewound `draw` reads. Its bodies are the recorded ones, so
+    /// a body added after that frame (a hot reload that declares more) is
+    /// missing for a reason, not a typo.
+    pub fn is_restored(&self) -> bool {
+        self.restored
     }
 
     /// Queue a command for the next stepped frame (applied after that frame's
@@ -716,6 +736,7 @@ impl World {
     /// Advance exactly one fixed step, collecting contact transitions into
     /// the frame's event buffer.
     pub fn step_fixed(&mut self) {
+        self.restored = false;
         // EventHandler must be Send + Sync; a Mutex'd Vec is the simplest
         // sink (single-threaded here — the lock is uncontended).
         #[derive(Default)]

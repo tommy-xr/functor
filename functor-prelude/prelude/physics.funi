@@ -265,7 +265,8 @@ let memo : (string, 'd, ('d) => List<body>) => body
 /// Read a body's live, stepped world position.
 ///
 /// Answers with the LAST stepped world, so a pre-step caller (`tick`, the
-/// `physics` hook) sees the previous step and `draw` sees this frame's.
+/// `physics` hook) sees the previous step and `draw` sees this frame's. A
+/// body missing from a scrubbed or rewound frame reads as the origin.
 impure[physics]
 let position : (tag) => position
 
@@ -318,7 +319,9 @@ let shapeCastExcluding : (tag, shape, Vec3.t, Vec3.t, float) => rayHit
 
 /// Apply a body's live transform to a scene node.
 ///
-/// The scene is last for piping.
+/// The scene is last for piping. An unknown tag is an error, except while
+/// the world is a scrubbed or rewound frame from before the body existed:
+/// then the node draws as a translucent ghost at the origin.
 impure[physics]
 let transformed : (tag, Scene.t) => Scene.t
 
