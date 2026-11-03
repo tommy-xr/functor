@@ -31,6 +31,15 @@ let withUiTarget : (RenderTarget.t, Ui.view, t) => t
 let withFog : (Fog.t, t) => t
 /// Attach a cubemap skybox to a frame; the frame is last for piping.
 let withSkybox : (Skybox.t, t) => t
+/// Paint a vertical sky gradient behind a frame: the background color at the
+/// horizon and below (the fog color, unless `withClearColor` sets one),
+/// blending to `zenith` straight up.
+///
+/// Fog then blends toward the sky color behind each fragment, horizon
+/// included, instead of its own flat color, so fully fogged geometry
+/// vanishes into the sky at any height. A `withSkybox` sky or
+/// `withPassthrough` replaces it.
+let withSkyGradient : (Color.t, t) => t
 /// Override a frame's background clear color.
 ///
 /// This overrides the default of clearing to the fog color, and paints the

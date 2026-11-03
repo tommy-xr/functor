@@ -1158,7 +1158,7 @@ fn set_forward_uniforms(
         p.set_uniform_1i(ctx.gl, billboard_mode, billboard as i32);
     }
     u.lighting.set(p, ctx, view);
-    u.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+    u.fog.set(p, ctx.gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
     u.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
 }
 

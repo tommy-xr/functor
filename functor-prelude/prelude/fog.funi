@@ -4,9 +4,10 @@
 //! also becomes the frame's clear color unless `Frame.withClearColor` says
 //! otherwise. A skybox is never fogged.
 //!
-//! When the background is the fog color (no skybox or override), terrain
-//! wholly past linear fog's `far` is not drawn at all; set the camera's far
-//! plane there too (`Camera3D.clip`) so fog bounds the work.
+//! When the background is the fog color (no skybox or override; a sky
+//! gradient is fine), terrain wholly past linear or height fog's `far` is
+//! not drawn at all; set the camera's far plane there too (`Camera3D.clip`)
+//! so fog bounds the work.
 
 /// An opaque fog description.
 type t = host
@@ -20,3 +21,12 @@ let linear : (float, float, Color.t) => t
 ///
 /// The density must be positive.
 let exp : (float, Color.t) => t
+/// Create exponential height fog: `density` per unit at `baseY`, thinning by
+/// a factor of e every `1 / falloff` units above it and thickening below, so
+/// valleys fill and peaks clear. It applies at every distance; on top of it a
+/// linear `near`..`far` fade makes it total by `far`, so the far plane can
+/// hide behind it.
+///
+/// `density` must be positive, `falloff` and `near` at least 0, and `far`
+/// greater than `near`. Terrain LOD coarsens by the `near`..`far` fade alone.
+let height : (float, float, float, float, float, Color.t) => t

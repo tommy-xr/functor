@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: height fog — the `Fog::Height` variant (`Fog.height`) — and sky
+/// gradients — `Frame.sky_zenith` (`Frame.withSkyGradient`), omitted when
+/// absent. Other frames keep their shape.
+///
 /// Also: room occlusion — `Frame.room_occlusion` (`Frame.withRoomOcclusion`),
 /// omitted when false, so other frames keep their shape.
 ///
@@ -1141,6 +1145,7 @@ mod tests {
                 "px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg",
             )),
             clear_color: Some([0.2, 0.4, 0.6]),
+            sky_zenith: Some([0.3, 0.5, 0.9]),
             sprite_layers: vec![],
             pure_2d: false,
             passthrough: true,
@@ -1165,6 +1170,9 @@ mod tests {
         assert!(serde_json::to_string(&frame)
             .unwrap()
             .contains(r#""fused_room":{"cell":0.5,"color":[1.0,0.5,0.0]}"#));
+        assert!(serde_json::to_string(&frame)
+            .unwrap()
+            .contains(r#""sky_zenith":[0.3,0.5,0.9]"#));
 
         // `lights` was added to Frame later (`render_targets` and `fog` later
         // still); a frame serialized without them must still decode
@@ -1338,6 +1346,10 @@ mod tests {
         assert_wire(
             &Fog::exp(0.08, 0.5, 0.6, 0.7),
             r#"{"Exp":{"density":0.08,"color":[0.5,0.6,0.7]}}"#,
+        );
+        assert_wire(
+            &Fog::height(0.02, 0.05, 1.0, 100.0, 400.0, 0.5, 0.6, 0.7),
+            r#"{"Height":{"density":0.02,"falloff":0.05,"base_y":1.0,"near":100.0,"far":400.0,"color":[0.5,0.6,0.7]}}"#,
         );
     }
 

@@ -26,7 +26,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
-        in vec3 worldPos;
+        in highp vec3 worldPos; // full precision for the fog distance (see FOG_GLSL)
 
         uniform vec4 color;
 
@@ -116,7 +116,7 @@ impl Material for ColorMaterial {
                 if uniforms.pass.begin(ctx) {
                     p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                     p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                    uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                    uniforms.fog.set(p, ctx.gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
                 }
                 // Authored color: decode sRGB→linear at the uniform boundary.
                 p.set_uniform_vec4(
