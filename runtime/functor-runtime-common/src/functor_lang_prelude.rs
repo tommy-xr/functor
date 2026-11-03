@@ -7408,8 +7408,8 @@ fn placeholder(tag: &str, scene: Scene3D) -> Scene3D {
     }
     if WARNED.with(|warned| warned.borrow_mut().insert(tag.to_string())) {
         log::warn!(
-            "[physics] no body tagged \"{tag}\" in this frame's world (not stepped since a \
-             seek, rewind or reload) — drawn translucent at the origin until it steps"
+            "[physics] \"{tag}\" isn't in this frame's world (not stepped since a seek, \
+             rewind or reload) — drawn translucent at the origin until it steps"
         );
     }
     Scene3D {
