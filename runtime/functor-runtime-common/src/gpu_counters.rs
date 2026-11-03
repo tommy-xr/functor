@@ -30,6 +30,9 @@ pub struct GpuCounters {
     live_buffers: AtomicU64,
     live_textures: AtomicU64,
     bytes_uploaded: AtomicU64,
+    // Every byte uploaded since launch, never drained: shells difference it
+    // per frame for `/frames`.
+    bytes_uploaded_total: AtomicU64,
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
     instance_uploads: AtomicU64,
@@ -164,6 +167,7 @@ impl GpuCounters {
             live_buffers: AtomicU64::new(0),
             live_textures: AtomicU64::new(0),
             bytes_uploaded: AtomicU64::new(0),
+            bytes_uploaded_total: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
             instance_uploads: AtomicU64::new(0),
@@ -202,6 +206,13 @@ impl GpuCounters {
     /// `buffer_sub_data` / `tex_image` payload).
     pub fn uploaded(&self, bytes: usize) {
         self.bytes_uploaded.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.bytes_uploaded_total
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    /// Bytes uploaded since launch.
+    pub fn bytes_uploaded_total(&self) -> u64 {
+        self.bytes_uploaded_total.load(Ordering::Relaxed)
     }
 
     /// Record one instance-buffer upload of `bytes` (also counted in the

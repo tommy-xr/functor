@@ -556,6 +556,8 @@ impl World {
             }
         }
 
+        // `/frames` counters: bodies and fused compounds built and dropped.
+        let (mut created_count, mut removed_count) = (0, 0);
         // Unfuse, keeping each part's live pose for whatever it becomes.
         if !dirty.is_empty() {
             let (removed, kept): (Vec<_>, Vec<_>) = self
@@ -564,6 +566,7 @@ impl World {
                 .cloned()
                 .partition(|f| dirty.contains(&f.key));
             self.fused = Arc::new(kept);
+            removed_count += removed.len();
             for fused in removed {
                 let poses: Vec<Pose> = fused.parts.shapes().iter().map(|(pose, _)| *pose).collect();
                 self.unfused.extend(fused.tags.into_iter().zip(poses));
@@ -597,6 +600,7 @@ impl World {
 
         // Despawns (bodies that went away or become parts), in tag order.
         let despawns: BTreeSet<&String> = gone.into_iter().chain(joining).collect();
+        removed_count += despawns.len();
         for tag in despawns {
             self.despawn(tag);
         }
@@ -604,7 +608,11 @@ impl World {
         // Spawns / updates of bodies, in tag order.
         for (tag, body) in bodies_changed {
             let accepted = match self.declared.get(tag) {
-                None => self.spawn(body),
+                None => {
+                    let spawned = self.spawn(body);
+                    created_count += usize::from(spawned);
+                    spawned
+                }
                 // Changed, or a part leaving its compound.
                 Some(prev) => {
                     let prev = prev.clone();
@@ -641,6 +649,7 @@ impl World {
                 .restitution(bodies[0].restitution)
                 .build();
             let collider = self.colliders.insert(collider);
+            created_count += 1;
             for body in &bodies {
                 if self.declared.get(&body.tag) != Some(*body) {
                     Arc::make_mut(&mut self.declared).insert(body.tag.clone(), (*body).clone());
@@ -674,11 +683,17 @@ impl World {
                 .collect();
         }
         self.reconcile_stats = stats;
+        crate::frame_telemetry::note_reconcile(created_count, removed_count);
     }
 
     /// What the last [`World::reconcile`] did.
     pub fn reconcile_stats(&self) -> ReconcileStats {
         self.reconcile_stats
+    }
+
+    /// Report the world's size to `/frames`.
+    pub(crate) fn note_size(&self) {
+        crate::frame_telemetry::note_world_size(self.bodies.len(), self.colliders.len());
     }
 
     /// Accumulate real (variable) dt and run whole fixed substeps, carrying the

@@ -30,6 +30,7 @@ use std::collections::{HashMap, HashSet};
 use functor_lang::{line_col, project::SourceMap, RunError, Session, Span, Value};
 
 use crate::asset::AssetProgress;
+use crate::frame_telemetry::{self, SimStage};
 use crate::functor_lang_prelude::{
     asset_progress_value, assets_taggers, config_of, contains_effect, deliver_physics_events,
     drain_effects, frame_value, http_response_value, job_progress_taggers, needs_update,
@@ -1206,12 +1207,16 @@ impl FrameCtx<'_> {
                 }
             }
         }
+        let update = frame_telemetry::span(SimStage::Update);
         self.deliver_parked();
         self.deliver_job_results();
         if let Some(snapshot) = sampled_input {
             self.deliver_sampled_input(snapshot, true);
         }
-        self.subscriptions_and_tick(frame_time);
+        self.pump_subscriptions(frame_time.tts as f64);
+        drop(update);
+        let _tick = frame_telemetry::span(SimStage::Tick);
+        self.call_tick(frame_time);
         true
     }
 
@@ -1386,6 +1391,11 @@ impl FrameCtx<'_> {
     /// (the F# executor's ordering).
     fn subscriptions_and_tick(&mut self, frame_time: FrameTime) {
         self.pump_subscriptions(frame_time.tts as f64);
+        self.call_tick(frame_time);
+    }
+
+    /// Run `tick` and absorb its result.
+    fn call_tick(&mut self, frame_time: FrameTime) {
         let args = vec![
             self.model.clone(),
             Value::Number(frame_time.dts as f64),
@@ -1402,6 +1412,7 @@ impl FrameCtx<'_> {
     /// queries and deliver collision events against the just-stepped world.
     /// (Desktop times this as `physics_ns`.)
     pub fn physics_phase(&mut self, frame_time: FrameTime) {
+        let _physics = frame_telemetry::span(SimStage::Physics);
         let physics_steps = self.step_physics(frame_time.dts as f32);
         // Post-step query drain: deferred raycasts answer against the world
         // just stepped; their messages fold through `update` before `draw`,
@@ -1560,6 +1571,8 @@ impl FrameCtx<'_> {
         capture_from_division: usize,
         mut sampled_input: Option<crate::InputSnapshot>,
     ) -> Vec<(Value, Option<physics::PhysicsSnapshot>)> {
+        // A projection, not the live frame: keep it out of the frame's stages.
+        let _projection = frame_telemetry::Suspended::new();
         let mut out = Vec::with_capacity(divisions.saturating_sub(capture_from_division));
         let mut step = 0usize;
         let mut ui_table = LastGoodTable::new(self.session, self.names.ui);

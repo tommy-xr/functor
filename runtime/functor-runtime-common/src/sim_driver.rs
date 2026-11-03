@@ -69,6 +69,8 @@ pub struct SimSnapshot {
     pub seq: u64,
     /// Producer time spent since the previous snapshot, this frame included.
     pub sim_ns: u64,
+    /// The timed parts of `sim_ns`, and physics counters.
+    pub stages: crate::frame_telemetry::SimStages,
     /// The time the frame was drawn at, which render-time animation samples.
     pub time: FrameTime,
     pub frame: Arc<Frame>,
@@ -450,6 +452,7 @@ impl SimSnapshot {
         );
         self.terrain_pending |= older.terrain_pending;
         self.sim_ns += older.sim_ns;
+        self.stages.absorb_older(older.stages);
     }
 }
 
@@ -568,7 +571,9 @@ fn parse_drain<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Vec<T>
 /// shell reads preloads at the top of the next frame instead
 /// ([`SimDriver::drain_preloads`]).
 fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> SimSnapshot {
+    let draw = crate::frame_telemetry::span(crate::frame_telemetry::SimStage::Draw);
     let frame = Arc::new(game.render_at(req.time.clone(), req.alpha));
+    drop(draw);
     let audio_scene = req.audio_scene.then(|| {
         serde_json::from_str::<AudioScene>(&game.audio_scene_json())
             .map_err(|e| eprintln!("[audio] bad scene json: {e}"))
@@ -620,6 +625,7 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
         caps: caps(game),
         settings: game.settings(),
         config: game.config(),
+        stages: crate::frame_telemetry::take_sim(),
     }
 }
 

@@ -70,6 +70,7 @@ pub mod fog;
 pub mod gpu_counters;
 mod frame;
 pub mod frame_capture;
+pub mod frame_telemetry;
 mod frame_time;
 pub mod game_clock;
 pub mod geometry;

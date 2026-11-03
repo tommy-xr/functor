@@ -13687,6 +13687,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
             build: None,
             xr: None,
             audio: None,
+            frame_stats: None,
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
             .expect("a deep model must stay parseable by stock serde_json");

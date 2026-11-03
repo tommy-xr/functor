@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{PhysicsCommand, PhysicsEvent, PhysicsScene, PhysicsSnapshot, World};
+use crate::frame_telemetry::{self, SimStage};
 
 /// A fixed-step frame number.
 pub type Frame = u64;
@@ -80,10 +81,14 @@ impl Simulatable for World {
         self.events_clear();
         for cmd in cmds {
             match cmd {
-                Command::DeclareScene(scene) => self.reconcile(scene),
+                Command::DeclareScene(scene) => {
+                    let _reconcile = frame_telemetry::span(SimStage::PhysicsReconcile);
+                    self.reconcile(scene)
+                }
                 Command::Apply(command) => self.queue_command(command.clone()),
             }
         }
+        let _step = frame_telemetry::span(SimStage::PhysicsStep);
         // Same per-frame command discipline as `step_frame`: queued commands
         // land after this frame's reconcile, forces last exactly one frame.
         // NOTE one live-vs-timeline difference: `step_frame` may run 0–8
@@ -95,6 +100,7 @@ impl Simulatable for World {
         self.apply_pending();
         self.step_fixed();
         self.clear_frame_forces();
+        self.note_size();
         self.take_events()
     }
 }

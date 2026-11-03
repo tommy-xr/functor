@@ -21,6 +21,7 @@ use super::{
     with_world, Command, PhysicsCommand, PhysicsEvent, PhysicsScene, Simulatable, Timeline,
     TimelineLog, World, WorldId, DEFAULT_WORLD, FIXED_DT, MAX_SUBSTEPS_PER_FRAME,
 };
+use crate::frame_telemetry::{self, SimStage};
 
 /// Snapshot cadence for the live recorder: every half second at 60Hz. Seeks
 /// replay at most 29 frames — imperceptible — while snapshots stay rare.
@@ -216,7 +217,9 @@ impl SteppedPhysics {
             // boundary, then move that exact immutable scene into the command
             // log. Replays must never consult whatever revision happens to be
             // loaded later.
+            let hydrate = frame_telemetry::span(SimStage::PhysicsReconcile);
             let mut scene = scene.map(|scene| scene.hydrated());
+            drop(hydrate);
             let (events, warnings) = with_world(self.world, |w| {
                 let mut events = Vec::new();
                 for i in 0..steps {
@@ -235,7 +238,9 @@ impl SteppedPhysics {
                             cmds.push(Command::Apply(command));
                         }
                     }
+                    let keyframe = frame_telemetry::span(SimStage::PhysicsStep);
                     self.timeline.record(w.frame(), w, &cmds);
+                    drop(keyframe);
                     events.extend(w.step(&cmds));
                 }
                 (events, w.take_command_warnings())

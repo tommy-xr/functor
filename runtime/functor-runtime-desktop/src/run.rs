@@ -25,6 +25,7 @@ use glfw::{Action, Key};
 use glow::*;
 
 use crate::game::Game;
+use functor_runtime_common::frame_telemetry::{us, FrameRecord, FrameTelemetry};
 use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use crate::{
     asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
@@ -1120,6 +1121,8 @@ fn service_debug_request(
     sim_thread: &str,
     // `/state.stages`; `None` in the headless loop, which renders nothing.
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
+    // `/frames`, `/spikes`, `/state.frame_stats`.
+    telemetry: &FrameTelemetry,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
 ) -> bool {
     let mut sampled_input_changed = false;
@@ -1129,8 +1132,15 @@ fn service_debug_request(
         }
         // Producer reads reply from the sim side, after every call queued
         // before them, so the shell never waits on them.
+        debug_server::DebugRequest::Frames(last, resp) => {
+            let _ = resp.send(telemetry.frames(last));
+        }
+        debug_server::DebugRequest::Spikes(resp) => {
+            let _ = resp.send(telemetry.spikes());
+        }
         debug_server::DebugRequest::State(resp) => {
             let frame = *frame_count;
+            let frame_stats = telemetry.stats();
             let pending_steps = clock.pending_steps();
             let sim_thread = sim_thread.to_string();
             let counters = functor_runtime_common::gpu_counters::gpu_counters();
@@ -1178,6 +1188,7 @@ fn service_debug_request(
                         fused_room.with_colliders(),
                     ),
                     audio: Some(functor_runtime_common::audio::one_shot_counts()),
+                    frame_stats,
                 });
             });
         }
@@ -1523,7 +1534,10 @@ fn run_headless(
     let mut ws_manager = ws_host::WsManager::new(ws_tx);
     let mut caps;
 
+    // Spikes are judged against a 60 Hz frame unless `--display-hz` says otherwise.
+    let mut telemetry = FrameTelemetry::new(display_hz.unwrap_or(60.0));
     loop {
+        let iteration_started = Instant::now();
         let elapsed = start_time.elapsed().as_secs_f32();
         if input_script.is_some() {
             clock.step(script_dt);
@@ -1614,6 +1628,18 @@ fn run_headless(
         let sim_ns = snapshot.sim_ns;
         sim.post(move |g| g.record_stage_timing(sim_ns, 0));
         let frame = snapshot.frame;
+        // Headless renders nothing: the record is the sim side, and its
+        // `frame_us` this iteration's work (the pacing sleep excluded).
+        let mut record = FrameRecord {
+            frame: frame_count,
+            steps: sub_frames.len() as u32,
+            frame_us: us(iteration_started.elapsed().as_nanos() as u64),
+            ..FrameRecord::default()
+        };
+        record.set_sim(sim_ns, &snapshot.stages);
+        if let Some(note) = telemetry.push(record) {
+            eprintln!("[functor] {note}");
+        }
 
         if let Some(rx) = &debug_requests {
             while let Ok(req) = rx.try_recv() {
@@ -1656,6 +1682,7 @@ fn run_headless(
                     net_transport,
                     &sim_thread,
                     None,
+                    &telemetry,
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
@@ -2207,6 +2234,9 @@ Escape releases while captured"
         let mut last_rendered = Instant::now();
         // `/state.rendered_frames`: buffer swaps so far.
         let mut rendered_frames: u64 = 0;
+        // `/frames` and `/spikes`; spikes are judged against a 60 Hz frame
+        // unless `--display-hz` says otherwise.
+        let mut telemetry = FrameTelemetry::new(args.display_hz.unwrap_or(60.0));
         let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
 
         while !window.should_close() {
@@ -3058,6 +3088,10 @@ Escape again to quit"
             }
             // A new snapshot's effects are consumed once, here.
             let mut audio_commands = Vec::new();
+            let mut record = FrameRecord {
+                steps: sub_frames.len() as u32,
+                ..FrameRecord::default()
+            };
             if let Some(mut fresh) = fresh {
                 caps = fresh.caps;
                 feedback |= !fresh.preload_commands.is_empty() || fresh.terrain_pending;
@@ -3070,6 +3104,8 @@ Escape again to quit"
                 let (sim_ns, wait_ns) = (fresh.sim_ns, sim.take_wait_ns());
                 stage_window.sim_ns += sim_ns;
                 stage_window.wait_ns += wait_ns;
+                record.set_sim(sim_ns, &fresh.stages);
+                record.sim_wait_us = us(wait_ns);
                 sim.post(move |g| g.record_stage_timing(sim_ns, wait_ns));
                 shown = Some(fresh);
             }
@@ -3524,8 +3560,11 @@ Escape again to quit"
             }
             let render_ns = render_started.elapsed().as_nanos() as u64;
             stage_window.render_ns += render_ns;
-            stage_window.frame_ns += last_rendered.elapsed().as_nanos() as u64;
+            let frame_ns = last_rendered.elapsed().as_nanos() as u64;
+            stage_window.frame_ns += frame_ns;
             last_rendered = Instant::now();
+            record.render_us = us(render_ns);
+            record.frame_us = us(frame_ns);
             if let Some(timings) = stage_window.end_frame() {
                 stage_timings = Some(timings);
             }
@@ -3906,6 +3945,7 @@ Escape again to quit"
                         args.net_transport,
                         &sim_thread,
                         stage_timings,
+                        &telemetry,
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
                             functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
@@ -3940,6 +3980,13 @@ Escape again to quit"
             window.swap_buffers();
             let swap_ns = swap_started.elapsed().as_nanos() as u64;
             rendered_frames += 1;
+            record.present_us = us(swap_ns);
+            record.frame = frame_count;
+            record.rendered_frame = rendered_frames;
+            telemetry.record_gpu(&mut record);
+            if let Some(note) = telemetry.push(record) {
+                eprintln!("[functor] {note}");
+            }
 
             // Hand this frame's shell-measured GL cost to the producer, which
             // folds it into the same rolling window it averages tick/draw over.
