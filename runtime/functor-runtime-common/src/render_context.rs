@@ -189,6 +189,10 @@ pub struct RenderContext<'a> {
     /// normals/tangents debug materials ignore it (no fog block in their
     /// shaders); the physics overlay mode shades normally, so fog applies.
     pub fog: Option<&'a Fog>,
+    /// The zenith of the sky gradient drawn behind this pass
+    /// ([`Frame::drawn_sky_gradient`](crate::Frame::drawn_sky_gradient)): fog
+    /// then blends toward the sky color behind each fragment.
+    pub sky_zenith: Option<[f32; 3]>,
     /// The pass camera's world position — frame-constant, computed once per
     /// pass rather than per draw (the fog shader blends by distance from it).
     pub camera_pos: Vector3<f32>,

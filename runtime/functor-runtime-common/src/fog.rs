@@ -22,6 +22,18 @@ pub enum Fog {
     Linear { near: f32, far: f32, color: [f32; 3] },
     /// `factor = exp(-density * d)`: the classic atmospheric falloff.
     Exp { density: f32, color: [f32; 3] },
+    /// Exponential height fog cut off by a linear end: the linear factor
+    /// times `exp(-τ)`, where τ integrates
+    /// `density * exp(-falloff * (y - base_y))` along the view ray. Valleys
+    /// below `base_y` fill; peaks above it clear. Fully fogged by `far`.
+    Height {
+        density: f32,
+        falloff: f32,
+        base_y: f32,
+        near: f32,
+        far: f32,
+        color: [f32; 3],
+    },
 }
 
 impl Fog {
@@ -40,9 +52,32 @@ impl Fog {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn height(
+        density: f32,
+        falloff: f32,
+        base_y: f32,
+        near: f32,
+        far: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+    ) -> Fog {
+        Fog::Height {
+            density,
+            falloff,
+            base_y,
+            near,
+            far,
+            color: [r, g, b],
+        }
+    }
+
     pub fn color(&self) -> [f32; 3] {
         match self {
-            Fog::Linear { color, .. } | Fog::Exp { color, .. } => *color,
+            Fog::Linear { color, .. } | Fog::Exp { color, .. } | Fog::Height { color, .. } => {
+                *color
+            }
         }
     }
 
@@ -51,25 +86,41 @@ impl Fog {
         match *self {
             Fog::Linear { near, far, .. } => Fog::linear(near, far, 0.0, 0.0, 0.0),
             Fog::Exp { density, .. } => Fog::exp(density, 0.0, 0.0, 0.0),
+            Fog::Height {
+                density,
+                falloff,
+                base_y,
+                near,
+                far,
+                ..
+            } => Fog::height(density, falloff, base_y, near, far, 0.0, 0.0, 0.0),
         }
     }
 
     /// Where the fog becomes total: past this distance every surface renders
-    /// as exactly the fog color, however bright. Only linear fog has one;
-    /// exponential fog never reaches zero visibility.
+    /// as exactly the fog color, however bright. Linear and height fog have
+    /// one; exponential fog never reaches zero visibility.
     pub fn end(&self) -> Option<f32> {
         match *self {
-            Fog::Linear { near, far, .. } if far > near && far.is_finite() => Some(far),
+            Fog::Linear { near, far, .. } | Fog::Height { near, far, .. }
+                if far > near && far.is_finite() =>
+            {
+                Some(far)
+            }
             _ => None,
         }
     }
 
     /// How much of a surface's own color survives at `distance`: the
     /// shader's `applyFog` factor, clamped to 0..1 (NaN reads as no fog).
-    /// Terrain LOD scales its screen-space error by it.
+    /// Terrain LOD scales its screen-space error by it. Height fog depends on
+    /// the ray's heights too; this is its linear end term alone, an upper
+    /// bound, so LOD never coarsens past what the fog hides.
     pub fn visibility(&self, distance: f32) -> f32 {
         let factor = match self {
-            Fog::Linear { near, far, .. } => (far - distance) / (far - near).max(1e-4),
+            Fog::Linear { near, far, .. } | Fog::Height { near, far, .. } => {
+                (far - distance) / (far - near).max(1e-4)
+            }
             Fog::Exp { density, .. } => (-density * distance).exp(),
         };
         if factor.is_nan() {
@@ -91,41 +142,75 @@ pub fn clear_color(fog: Option<&Fog>) -> [f32; 3] {
 /// frame renders bit-identically to the pre-fog engine — the golden-image
 /// contract. Distance is radial world-space (not view-z): consistent across
 /// materials and rotation-invariant.
+///
+/// The distance math is `highp`: GLES fragment shaders default to mediump
+/// (fp16 on Adreno), where `distance()` overflows past ~256 m and every
+/// fragment beyond reads as fully fogged.
 pub const FOG_GLSL: &str = r#"
         uniform int fogEnabled;      // 0 = off (the default frame state)
-        uniform int fogMode;         // 0 = linear, 1 = exp
-        uniform vec3 fogColor;
-        uniform float fogNear;
-        uniform float fogFar;
-        uniform float fogDensity;
-        uniform vec3 fogCameraPos;   // camera world position
+        uniform int fogMode;         // 0 = linear, 1 = exp, 2 = height
+        uniform vec3 fogColor;       // the horizon's, under a sky gradient
+        uniform highp float fogNear;
+        uniform highp float fogFar;
+        uniform highp float fogDensity; // height: the density at the camera
+        uniform highp float fogFalloff;
+        uniform highp vec3 fogCameraPos;   // camera world position
+        uniform int fogSky;          // 1: fog takes the sky gradient's color
+        uniform vec3 fogSkyZenith;
+
+        // The sky gradient (`Frame.withSkyGradient`): horizon at elevation 0
+        // and below, blending linearly in dir.y to zenith straight up. The sky
+        // pass and the fog share it, so fully fogged geometry takes exactly
+        // the sky color behind it.
+        vec3 skyGradient(vec3 horizon, vec3 zenith, highp vec3 dir) {
+            return mix(horizon, zenith, clamp(normalize(dir).y, 0.0, 1.0));
+        }
 
         // How much of a surface's own color survives at worldPosition; 1.0
-        // with fog off.
-        float fogVisibility(vec3 worldPosition) {
+        // with fog off, exactly 0.0 at and past linear/height fog's far.
+        float fogVisibility(highp vec3 worldPosition) {
             if (fogEnabled == 0) {
                 return 1.0;
             }
-            float dist = distance(worldPosition, fogCameraPos);
-            if (fogMode == 0) {
-                return clamp((fogFar - dist) / max(fogFar - fogNear, 1e-4), 0.0, 1.0);
+            highp float dist = distance(worldPosition, fogCameraPos);
+            if (fogMode == 1) {
+                return exp(-fogDensity * dist);
             }
-            return exp(-fogDensity * dist);
+            highp float ramp = clamp((fogFar - dist) / max(fogFar - fogNear, 1e-4), 0.0, 1.0);
+            if (fogMode == 0 || ramp <= 0.0) {
+                return ramp;
+            }
+            // Height: the optical depth of density * exp(-falloff * height)
+            // along the ray is fogDensity * dist * (1 - exp(-k)) / k, with k
+            // the falloff times the ray's rise. Clamped so a steep downward
+            // ray stays finite; near-level rays take the series 1 - k/2.
+            highp float k = max(fogFalloff * (worldPosition.y - fogCameraPos.y), -80.0);
+            highp float shape = abs(k) > 1e-3 ? (1.0 - exp(-k)) / k : 1.0 - 0.5 * k;
+            return ramp * exp(-fogDensity * dist * shape);
         }
 
-        vec3 applyFog(vec3 color, vec3 worldPosition) {
+        // The color fog blends toward: under a sky gradient, the sky behind
+        // the fragment, so fully fogged geometry vanishes into it.
+        vec3 fogColorAt(highp vec3 worldPosition) {
+            if (fogSky == 0) {
+                return fogColor;
+            }
+            return skyGradient(fogColor, fogSkyZenith, worldPosition - fogCameraPos);
+        }
+
+        vec3 applyFog(vec3 color, highp vec3 worldPosition) {
             if (fogEnabled == 0) {
                 return color;
             }
-            return mix(fogColor, color, fogVisibility(worldPosition));
+            return mix(fogColorAt(worldPosition), color, fogVisibility(worldPosition));
         }
 "#;
 
 /// The fog uniform locations of one forward shader program. Every material
 /// whose fragment shader includes [`FOG_GLSL`] looks these up in
-/// `initialize` and uploads via [`FogUniforms::set`] each draw. All seven
-/// uniforms are statically referenced inside `applyFog`, so they stay active
-/// and `get_uniform_location` never panics.
+/// `initialize` and uploads via [`FogUniforms::set`] each draw. Every uniform
+/// is statically referenced inside `applyFog`, so they stay active and
+/// `get_uniform_location` never panics.
 pub struct FogUniforms {
     enabled_loc: UniformLocation,
     mode_loc: UniformLocation,
@@ -133,7 +218,10 @@ pub struct FogUniforms {
     near_loc: UniformLocation,
     far_loc: UniformLocation,
     density_loc: UniformLocation,
+    falloff_loc: UniformLocation,
     camera_pos_loc: UniformLocation,
+    sky_loc: UniformLocation,
+    sky_zenith_loc: UniformLocation,
 }
 
 impl FogUniforms {
@@ -145,7 +233,10 @@ impl FogUniforms {
             near_loc: shader.get_uniform_location(gl, "fogNear"),
             far_loc: shader.get_uniform_location(gl, "fogFar"),
             density_loc: shader.get_uniform_location(gl, "fogDensity"),
+            falloff_loc: shader.get_uniform_location(gl, "fogFalloff"),
             camera_pos_loc: shader.get_uniform_location(gl, "fogCameraPos"),
+            sky_loc: shader.get_uniform_location(gl, "fogSky"),
+            sky_zenith_loc: shader.get_uniform_location(gl, "fogSkyZenith"),
         }
     }
 
@@ -153,11 +244,14 @@ impl FogUniforms {
     /// other uniforms are dead behind the shader's early return).
     /// `camera_pos` is the camera's world position — frame-constant, so the
     /// renderer computes it once per pass (`RenderContext::camera_pos`).
+    /// `sky_zenith` is the drawn sky gradient's zenith, if any
+    /// (`RenderContext::sky_zenith`).
     pub fn set(
         &self,
         p: &ShaderProgram,
         gl: &glow::Context,
         fog: Option<&Fog>,
+        sky_zenith: Option<[f32; 3]>,
         camera_pos: &Vector3<f32>,
     ) {
         let Some(fog) = fog else {
@@ -172,20 +266,31 @@ impl FogUniforms {
         // geometry still dissolves exactly into the background.
         let c = crate::color_space::srgb_to_linear3(fog.color());
         p.set_uniform_vec3(gl, &self.color_loc, &Vector3::new(c[0], c[1], c[2]));
-        match fog {
-            Fog::Linear { near, far, .. } => {
-                p.set_uniform_1i(gl, &self.mode_loc, 0);
-                p.set_uniform_1f(gl, &self.near_loc, *near);
-                p.set_uniform_1f(gl, &self.far_loc, *far);
-                p.set_uniform_1f(gl, &self.density_loc, 0.0);
+        p.set_uniform_1i(gl, &self.sky_loc, sky_zenith.is_some() as i32);
+        let z = crate::color_space::srgb_to_linear3(sky_zenith.unwrap_or([0.0; 3]));
+        p.set_uniform_vec3(gl, &self.sky_zenith_loc, &Vector3::new(z[0], z[1], z[2]));
+        let (mode, near, far, density, falloff) = match *fog {
+            Fog::Linear { near, far, .. } => (0, near, far, 0.0, 0.0),
+            Fog::Exp { density, .. } => (1, 0.0, 0.0, density, 0.0),
+            // The density at the camera's height is frame-constant: fold it
+            // here so the shader's integral needs no base height.
+            Fog::Height {
+                density,
+                falloff,
+                base_y,
+                near,
+                far,
+                ..
+            } => {
+                let rise = (-falloff * (camera_pos.y - base_y)).clamp(-80.0, 80.0);
+                (2, near, far, density * rise.exp(), falloff)
             }
-            Fog::Exp { density, .. } => {
-                p.set_uniform_1i(gl, &self.mode_loc, 1);
-                p.set_uniform_1f(gl, &self.density_loc, *density);
-                p.set_uniform_1f(gl, &self.near_loc, 0.0);
-                p.set_uniform_1f(gl, &self.far_loc, 0.0);
-            }
-        }
+        };
+        p.set_uniform_1i(gl, &self.mode_loc, mode);
+        p.set_uniform_1f(gl, &self.near_loc, near);
+        p.set_uniform_1f(gl, &self.far_loc, far);
+        p.set_uniform_1f(gl, &self.density_loc, density);
+        p.set_uniform_1f(gl, &self.falloff_loc, falloff);
     }
 }
 
@@ -212,6 +317,17 @@ mod tests {
         assert_eq!(linear.visibility(200.0), 0.0);
         assert_eq!(Fog::linear(200.0, 20.0, 0.0, 0.0, 0.0).end(), None);
         assert_eq!(Fog::exp(0.01, 0.0, 0.0, 0.0).end(), None);
+    }
+
+    #[test]
+    fn height_fog_ends_like_linear_fog() {
+        let fog = Fog::height(0.02, 0.05, 0.0, 100.0, 300.0, 0.0, 0.0, 0.0);
+        assert_eq!(fog.end(), Some(300.0));
+        // LOD's distance-only bound: the linear end term.
+        assert_eq!(fog.visibility(50.0), 1.0);
+        assert_eq!(fog.visibility(200.0), 0.5);
+        assert_eq!(fog.visibility(300.0), 0.0);
+        assert_eq!(fog.without_color().color(), [0.0; 3]);
     }
 
     #[test]

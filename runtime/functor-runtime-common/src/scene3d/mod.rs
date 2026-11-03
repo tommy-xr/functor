@@ -29,7 +29,10 @@ use crate::{
     render_target::{warn_line, RenderTargetBuffers, RenderTargetDescriptor},
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
-    skybox::{SkyboxDescription, SKYBOX_FRAGMENT_SHADER_SOURCE, SKYBOX_VERTEX_SHADER_SOURCE},
+    skybox::{
+        SkyboxDescription, SKYBOX_FRAGMENT_SHADER_SOURCE, SKYBOX_VERTEX_SHADER_SOURCE,
+        SKY_GRADIENT_FRAGMENT_SHADER_SOURCE,
+    },
     terrain_renderer::TerrainRenderer,
     texture::{RuntimeTexture, Texture2D, TextureData},
     DebugRenderMode, RenderContext, RenderPass,
@@ -152,6 +155,8 @@ pub struct SceneContext {
     raw_image_pipeline: Arc<BuiltAssetPipeline<TextureData>>,
     skyboxes: RefCell<HashMap<String, SkyboxEntry>>,
     skybox_program: RefCell<Option<(ShaderProgram, SkyboxUniforms)>>,
+    // `Frame.withSkyGradient`'s program, built lazily like the skybox's.
+    sky_gradient_program: RefCell<Option<(ShaderProgram, SkyGradientUniforms)>>,
     // The emulated passthrough room's program, built lazily like the skybox's.
     passthrough_room_program: RefCell<Option<(ShaderProgram, RoomUniforms)>>,
     // `Frame.withSurfaceGrid`'s fullscreen program, built lazily likewise.
@@ -286,6 +291,14 @@ struct SkyboxUniforms {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     skybox_loc: UniformLocation,
+    output: crate::color_space::OutputEncodeUniform,
+}
+
+struct SkyGradientUniforms {
+    view_loc: UniformLocation,
+    projection_loc: UniformLocation,
+    horizon_loc: UniformLocation,
+    zenith_loc: UniformLocation,
     output: crate::color_space::OutputEncodeUniform,
 }
 
@@ -877,6 +890,7 @@ impl SceneContext {
             raw_image_pipeline: asset::build_pipeline(Box::new(RawImagePipeline)),
             skyboxes: RefCell::new(HashMap::new()),
             skybox_program: RefCell::new(None),
+            sky_gradient_program: RefCell::new(None),
             passthrough_room_program: RefCell::new(None),
             surface_grid_program: RefCell::new(None),
             room_occlusion_program: RefCell::new(None),
@@ -2100,6 +2114,70 @@ skybox disabled for this set",
             gl.depth_mask(true);
             gl.depth_func(glow::LESS);
             gl.bind_texture(glow::TEXTURE_CUBE_MAP, None);
+        }
+    }
+
+    /// Draw `Frame.withSkyGradient`'s sky on the skybox's camera-centred cube:
+    /// at the far depth, so only pixels the scene left uncovered shade it.
+    /// Colors are authored sRGB; they decode here like the fog's.
+    pub fn draw_sky_gradient(
+        &self,
+        render_context: &RenderContext,
+        horizon: [f32; 3],
+        zenith: [f32; 3],
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+    ) {
+        let gl = render_context.gl;
+        let mut program = self.sky_gradient_program.borrow_mut();
+        let (shader, uniforms) = program.get_or_insert_with(|| {
+            let vertex = Shader::build(
+                gl,
+                ShaderType::Vertex,
+                SKYBOX_VERTEX_SHADER_SOURCE,
+                render_context.shader_version,
+            );
+            let fragment = Shader::build(
+                gl,
+                ShaderType::Fragment,
+                &format!("{}\n{}", crate::fog::FOG_GLSL, SKY_GRADIENT_FRAGMENT_SHADER_SOURCE),
+                render_context.shader_version,
+            );
+            let shader = ShaderProgram::link(gl, &vertex, &fragment);
+            let uniforms = SkyGradientUniforms {
+                view_loc: shader.get_uniform_location(gl, "view"),
+                projection_loc: shader.get_uniform_location(gl, "projection"),
+                horizon_loc: shader.get_uniform_location(gl, "skyHorizon"),
+                zenith_loc: shader.get_uniform_location(gl, "skyZenith"),
+                output: crate::color_space::OutputEncodeUniform::get(&shader, gl),
+            };
+            (shader, uniforms)
+        });
+
+        // Strip the view translation so the cube is centered on the camera.
+        let mut view = *view_matrix;
+        view.w = cgmath::vec4(0.0, 0.0, 0.0, 1.0);
+        let [hr, hg, hb] = crate::color_space::srgb_to_linear3(horizon);
+        let [zr, zg, zb] = crate::color_space::srgb_to_linear3(zenith);
+        unsafe {
+            shader.use_program(gl);
+            shader.set_uniform_matrix4(gl, &uniforms.view_loc, &view);
+            shader.set_uniform_matrix4(gl, &uniforms.projection_loc, projection_matrix);
+            shader.set_uniform_vec3(gl, &uniforms.horizon_loc, &cgmath::vec3(hr, hg, hb));
+            shader.set_uniform_vec3(gl, &uniforms.zenith_loc, &cgmath::vec3(zr, zg, zb));
+            uniforms.output.set(
+                shader,
+                gl,
+                render_context.output_srgb_encode,
+                render_context.output_alpha(),
+            );
+            gl.depth_func(glow::LEQUAL);
+            gl.depth_mask(false);
+        }
+        self.cube.borrow_mut().draw(gl);
+        unsafe {
+            gl.depth_mask(true);
+            gl.depth_func(glow::LESS);
         }
     }
 

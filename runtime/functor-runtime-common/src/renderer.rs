@@ -282,6 +282,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             shadow,
             pass.frame.fog.as_ref(),
             pass.frame.drawn_skybox(),
+            pass.frame.drawn_sky_gradient(),
             // A target has no camera feed under it: always the stand-in room.
             pass.frame.passthrough,
             pass.frame.fog_cull_distance(),
@@ -417,6 +418,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         shadow,
         frame.fog.as_ref(),
         frame.drawn_skybox(),
+        frame.drawn_sky_gradient(),
         // The stand-in room, unless the shell composites the real feed.
         frame.passthrough && !scene_context.passthrough_composited(),
         frame.fog_cull_distance(),
@@ -517,6 +519,7 @@ fn render_sprite_layers(
             &camera,
             frame_time.clone(),
             DebugRenderMode::Default,
+            None,
             None,
             None,
             None,
@@ -686,6 +689,7 @@ pub fn render_composited_frames_with_view(
             shadow,
             frame.fog.as_ref(),
             frame.drawn_skybox(),
+            frame.drawn_sky_gradient(),
             frame.passthrough,
             frame.fog_cull_distance(),
             frame.drawn_stand_in_room(false),
@@ -881,6 +885,8 @@ fn forward_pass(
     shadow: Option<ShadowUniforms>,
     fog: Option<&crate::fog::Fog>,
     skybox: Option<&crate::skybox::SkyboxDescription>,
+    // `Frame::drawn_sky_gradient`: (horizon, zenith).
+    sky_gradient: Option<([f32; 3], [f32; 3])>,
     // Draw the stand-in room (`crate::passthrough_room`) instead of a skybox.
     passthrough_room: bool,
     // `Frame::fog_cull_distance` of the frame this pass draws.
@@ -956,6 +962,7 @@ fn forward_pass(
         opacity: std::cell::Cell::new(1.0),
         shadow,
         fog,
+        sky_zenith: sky_gradient.map(|(_, zenith)| zenith),
         camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
         lod_camera_pos: cgmath::Vector3::new(
             lod_camera.eye[0],
@@ -1072,7 +1079,24 @@ fn forward_pass(
         );
     };
 
+    // The sky gradient fills only what the opaque scene left at the far
+    // depth, so covered pixels never shade it. The transparent-debug recipe
+    // draws it first instead, like a skybox, since its blend reads the
+    // background.
+    let draw_sky = || {
+        if let Some((horizon, zenith)) = sky_gradient {
+            scene_context.draw_sky_gradient(
+                &render_context,
+                horizon,
+                zenith,
+                &projection_matrix,
+                &view_matrix,
+            );
+        }
+    };
+
     if transparent_debug {
+        draw_sky();
         unsafe {
             gl.disable(glow::BLEND);
             gl.color_mask(false, false, false, false);
@@ -1093,6 +1117,7 @@ fn forward_pass(
         }
     } else {
         render_scene(true);
+        draw_sky();
         for root in stand_in_room.into_iter().chain([scene]) {
             transparent_pass(
                 gl,

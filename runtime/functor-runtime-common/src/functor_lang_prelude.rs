@@ -82,12 +82,17 @@
 //!   (the reader: an emissive "screen" surface showing the target's texture;
 //!    an id no frame declares shows magenta and warns once)
 //! Fog.linear(near, far, color) / Fog.exp(density, color)    -> Fog
+//! Fog.height(density, falloff, baseY, near, far, color)     -> Fog
+//!   (exponential height fog, fully fogged by `far`)
 //! Frame.withFog(fog, frame)                                  -> Frame
 //!   (frame-level distance fog on every forward material, emissive included —
 //!    fog occludes glow; the fog color is also the pass's clear color)
 //! Frame.withClearColor(color, frame)                         -> Frame
 //!   (explicit background clear color, overriding the fog-color default; it
 //!    only paints the background, not fog blending)
+//! Frame.withSkyGradient(zenith, frame)                       -> Frame
+//!   (the background fades from the clear color at the horizon to zenith;
+//!    fog takes the sky's color behind each fragment)
 //! Frame.withPassthrough(frame)                              -> Frame
 //!   (the background is the real world: no skybox; a headset compositing
 //!    its camera feed clears transparent, elsewhere a stand-in room)
@@ -2001,6 +2006,37 @@ piped through RenderTarget.sized";
             Ok(FunctorLangFog(Fog::exp(density as f32, r, g, b)))
         },
     );
+    reg.fn6(
+        "Fog.height",
+        "Fog.height(density, falloff, baseY, near, far, color)",
+        |density: f64, falloff: f64, base_y: f64, near: f64, far: f64, color: FunctorLangColor| {
+            if density <= 0.0 {
+                return Err(format!("Fog.height density must be positive, got {density}"));
+            }
+            if falloff < 0.0 {
+                return Err(format!("Fog.height falloff must not be negative, got {falloff}"));
+            }
+            if near < 0.0 {
+                return Err(format!("Fog.height near must not be negative, got {near}"));
+            }
+            if far <= near {
+                return Err(format!(
+                    "Fog.height: far ({far}) must be greater than near ({near})"
+                ));
+            }
+            let (r, g, b) = color.0;
+            Ok(FunctorLangFog(Fog::height(
+                density as f32,
+                falloff as f32,
+                base_y as f32,
+                near as f32,
+                far as f32,
+                r,
+                g,
+                b,
+            )))
+        },
+    );
 }
 
 crate::host_returnable!(
@@ -3133,6 +3169,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 fog: None,
                 skybox: None,
                 clear_color: None,
+                sky_zenith: None,
                 sprite_layers: vec![],
                 pure_2d: false,
                 passthrough: false,
@@ -3175,6 +3212,14 @@ interactive widgets render but their handlers are inert",
         "Frame.withSkybox(skybox, frame)",
         |sky: FunctorLangSkybox, frame: FunctorLangFrame| {
             FunctorLangFrame(Frame::with_skybox(frame.0, sky.0))
+        },
+    );
+    reg.fn2(
+        "Frame.withSkyGradient",
+        "Frame.withSkyGradient(zenith, frame)",
+        |zenith: FunctorLangColor, frame: FunctorLangFrame| {
+            let (r, g, b) = zenith.0;
+            FunctorLangFrame(Frame::with_sky_gradient(frame.0, [r, g, b]))
         },
     );
     // Sets the background clear color explicitly, overriding the fog-color
@@ -11872,6 +11917,41 @@ Fog.linear(near, far, color) or Fog.exp(density, color)"
             fail("let main = () => Fog.exp(-1.0, Color.rgb(0.5, 0.5, 0.5))"),
             "Fog.exp density must be positive, got -1"
         );
+        assert_eq!(
+            fail(
+                "let main = () => \
+                 Fog.height(0.02, 0.05, 0.0, 300.0, 100.0, Color.rgb(0.5, 0.5, 0.5))"
+            ),
+            "Fog.height: far (100) must be greater than near (300)"
+        );
+        assert_eq!(
+            fail(
+                "let main = () => \
+                 Fog.height(0.02, -0.1, 0.0, 0.0, 100.0, Color.rgb(0.5, 0.5, 0.5))"
+            ),
+            "Fog.height falloff must not be negative, got -0.1"
+        );
+    }
+
+    // Height fog and the sky gradient: a branded Fog and a zenith color on
+    // the frame; the gradient's horizon is the resolved background.
+    #[test]
+    fn functor_lang_snippet_declares_height_fog_and_a_sky_gradient() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
+             |> Frame.withFog(Fog.height(0.02, 0.05, 10.0, 100.0, 400.0, Color.rgb(0.5, 0.6, 0.7)))\n\
+             |> Frame.withSkyGradient(Color.rgb(0.2, 0.3, 0.8))",
+        );
+        assert_eq!(
+            frame.fog,
+            Some(Fog::height(0.02, 0.05, 10.0, 100.0, 400.0, 0.5, 0.6, 0.7))
+        );
+        assert_eq!(
+            frame.drawn_sky_gradient(),
+            Some(([0.5, 0.6, 0.7], [0.2, 0.3, 0.8]))
+        );
+        assert_eq!(frame.fog_cull_distance(), Some(400.0));
     }
 
     // The skybox vocabulary: a branded Skybox on the frame, six faces in GL

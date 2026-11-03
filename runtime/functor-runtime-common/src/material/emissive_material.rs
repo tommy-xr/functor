@@ -35,7 +35,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
         in highp vec2 texCoord;
-        in vec3 worldPos;
+        in highp vec3 worldPos; // full precision for the fog distance (see FOG_GLSL)
 
         uniform vec4 emissiveColor;
         uniform sampler2D texture1;
@@ -159,7 +159,7 @@ impl Material for EmissiveMaterial {
                     p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                     p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
                     p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
-                    uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                    uniforms.fog.set(p, ctx.gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
                 }
                 // Authored color: decode sRGB→linear at the uniform boundary.
                 p.set_uniform_vec4(

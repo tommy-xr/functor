@@ -230,15 +230,15 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                 return;
             }
 
-            // Fully fogged (past linear fog's far): the result is exactly the
-            // fog color whatever the surface, so skip the lights and every
+            // Fully fogged (past linear or height fog's far): the result is
+            // exactly the fog color whatever the surface, so skip the lights and every
             // texture fetch. A branch, not a discard, so early depth testing
             // stays on. In a quad straddling this edge the later fetches'
             // implicit derivatives are undefined, but those fragments lie
             // within a pixel's footprint of total fog, so the fog mix scales
             // any wrong mip down with the rest of their color.
             if (fogVisibility(worldPos) <= 0.0) {
-                fragColor = functorOutput(vec4(fogColor, 1.0));
+                fragColor = functorOutput(vec4(fogColorAt(worldPos), 1.0));
                 return;
             }
 
@@ -412,7 +412,7 @@ const COLORMAP_FRAGMENT_SHADER_SOURCE: &str = r#"
         void main() {
             // Fully fogged: as in the lit shader, skip every fetch.
             if (fogVisibility(worldPos) <= 0.0) {
-                fragColor = functorOutput(vec4(fogColor, 1.0));
+                fragColor = functorOutput(vec4(fogColorAt(worldPos), 1.0));
                 return;
             }
             // One fetch except mid cross-fade.
@@ -579,7 +579,7 @@ const GRASS_VERTEX_SHADER_SOURCE: &str = r#"
 "#;
 
 const GRASS_FRAGMENT_SHADER_SOURCE: &str = r#"
-        in vec3 worldPos;
+        in highp vec3 worldPos; // full precision for the fog distance (see FOG_GLSL)
         in float shade;
         in float visibility;
 
@@ -1135,7 +1135,7 @@ impl TerrainRenderer {
                     p.set_uniform_1i(gl, &f.normal_map, COLORMAP_UNITS[3] as i32);
                     p.set_uniform_matrix3(gl, &f.normal_matrix, &crate::math::normal_matrix(world));
                 }
-                u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
+                u.fog.set(p, gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
                 u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
             } else {
                 Self::set_lit_uniforms(
@@ -1287,7 +1287,7 @@ impl TerrainRenderer {
             }
         }
         u.lighting.set(p, ctx, view);
-        u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
+        u.fog.set(p, gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
         u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
     }
 
@@ -1495,7 +1495,7 @@ impl TerrainRenderer {
                 &u.color,
                 &Vector3::new(grass_color[0], grass_color[1], grass_color[2]),
             );
-            u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
+            u.fog.set(p, gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
             u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
 
             gl.active_texture(glow::TEXTURE0);

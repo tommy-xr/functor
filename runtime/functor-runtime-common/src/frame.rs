@@ -66,6 +66,11 @@ pub struct Frame {
     /// paints the background — it does not affect fog blending.
     #[serde(default)]
     pub clear_color: Option<[f32; 3]>,
+    /// A sky gradient's zenith color (`Frame.withSkyGradient`): the
+    /// background fades from the clear color at the horizon to it straight
+    /// up, and fog blends toward that sky rather than one flat color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky_zenith: Option<[f32; 3]>,
     /// Ordered center-origin, Y-up 2D passes. They render after the 3D scene;
     /// later layers appear above earlier ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -117,6 +122,7 @@ impl Frame {
             fog: None,
             skybox: None,
             clear_color: None,
+            sky_zenith: None,
             sprite_layers: vec![],
             pure_2d: false,
             passthrough: false,
@@ -153,7 +159,8 @@ impl Frame {
 
     /// The distance past which nothing this frame draws can be told from its
     /// background: the fog's [`end`](crate::fog::Fog::end), when the pass
-    /// clears to the fog color with no skybox or passthrough behind it.
+    /// clears to the fog color with no skybox or passthrough behind it. A sky
+    /// gradient keeps it: fully fogged geometry takes the sky's color.
     /// Renderers may skip geometry entirely beyond it.
     pub fn fog_cull_distance(&self) -> Option<f32> {
         let fog = self.fog.as_ref()?;
@@ -167,6 +174,15 @@ impl Frame {
     /// is the real world.
     pub fn drawn_skybox(&self) -> Option<&SkyboxDescription> {
         self.skybox.as_ref().filter(|_| !self.passthrough)
+    }
+
+    /// The sky gradient to draw, as `(horizon, zenith)`: the horizon is the
+    /// resolved clear color. None behind a passthrough frame or a cubemap
+    /// skybox, which replace the background it paints.
+    pub fn drawn_sky_gradient(&self) -> Option<([f32; 3], [f32; 3])> {
+        self.sky_zenith
+            .filter(|_| !self.passthrough && self.skybox.is_none())
+            .map(|zenith| (self.resolved_clear_color(), zenith))
     }
 
     /// Whether the main view is the pure sprite frame produced by
@@ -214,6 +230,15 @@ impl Frame {
     /// (`frame |> Frame.withSkybox(sky)`).
     pub fn with_skybox(mut frame: Frame, skybox: SkyboxDescription) -> Frame {
         frame.skybox = Some(skybox);
+        frame
+    }
+
+    /// A vertical sky gradient behind the frame: the clear color at the
+    /// horizon (the fog color by default) up to `zenith` overhead. Fog takes
+    /// the sky's color behind each fragment, so fully fogged geometry
+    /// vanishes into it. Subject-first so it pipes.
+    pub fn with_sky_gradient(mut frame: Frame, zenith: [f32; 3]) -> Frame {
+        frame.sky_zenith = Some(zenith);
         frame
     }
 
@@ -338,5 +363,19 @@ mod tests {
         let sky = SkyboxDescription::new("px", "nx", "py", "ny", "pz", "nz");
         assert_eq!(Frame::with_skybox(fogged.clone(), sky).fog_cull_distance(), None);
         assert_eq!(Frame::with_passthrough(fogged).fog_cull_distance(), None);
+    }
+
+    #[test]
+    fn a_sky_gradient_keeps_the_fog_cull_and_yields_to_a_skybox() {
+        let fog = Fog::height(0.02, 0.05, 0.0, 4.0, 30.0, 0.5, 0.6, 0.7);
+        let sky = Frame::with_sky_gradient(Frame::with_fog(bare(), fog), [0.1, 0.2, 0.9]);
+        let gradient = Some(([0.5, 0.6, 0.7], [0.1, 0.2, 0.9]));
+        assert_eq!(sky.drawn_sky_gradient(), gradient);
+        assert_eq!(sky.fog_cull_distance(), Some(30.0));
+        let cube = SkyboxDescription::new("px", "nx", "py", "ny", "pz", "nz");
+        assert_eq!(Frame::with_skybox(sky.clone(), cube).drawn_sky_gradient(), None);
+        assert_eq!(Frame::with_passthrough(sky).drawn_sky_gradient(), None);
+        // Additive on the wire: a frame without one serializes without it.
+        assert!(!serde_json::to_string(&bare()).unwrap().contains("sky_zenith"));
     }
 }

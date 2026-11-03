@@ -74,6 +74,22 @@ pub const SKYBOX_FRAGMENT_SHADER_SOURCE: &str = r#"
         }
 "#;
 
+/// `Frame.withSkyGradient`'s fragment shader, after `FOG_GLSL` (for
+/// `skyGradient`, the function the fog shares) and over the skybox's vertex
+/// shader, whose `texDir` is the world view direction.
+pub const SKY_GRADIENT_FRAGMENT_SHADER_SOURCE: &str = r#"
+        out vec4 fragColor;
+
+        in vec3 texDir;
+
+        uniform vec3 skyHorizon;
+        uniform vec3 skyZenith;
+
+        void main() {
+            fragColor = functorOutput(vec4(skyGradient(skyHorizon, skyZenith, texDir), 1.0));
+        }
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;

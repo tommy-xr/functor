@@ -173,7 +173,7 @@ impl Material for SkinnedMaterial {
                     p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
                     p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                     uniforms.lighting.set_pass(p, ctx, view_matrix);
-                    uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                    uniforms.fog.set(p, ctx.gl, ctx.fog, ctx.sky_zenith, &ctx.camera_pos);
                 }
 
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
