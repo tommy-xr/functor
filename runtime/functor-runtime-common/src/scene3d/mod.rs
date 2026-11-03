@@ -4779,6 +4779,63 @@ mod preload_tests {
 }
 
 #[cfg(test)]
+mod blend_tests {
+    use super::*;
+
+    fn with(material: MaterialDescription, child: Scene3D) -> Scene3D {
+        Scene3D {
+            obj: SceneObject::Material(material, vec![child]),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    fn additive() -> MaterialDescription {
+        MaterialDescription::Additive {
+            color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+            fresnel: None,
+        }
+    }
+
+    fn multiply() -> MaterialDescription {
+        MaterialDescription::Multiply {
+            color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+            texture: None,
+        }
+    }
+
+    /// An expanded template queues one draw per blend mode it holds, found
+    /// through groups, nested templates and shared (memo) nodes.
+    #[test]
+    fn blend_modes_are_found_anywhere_in_a_subtree() {
+        let collect = |scene: &Scene3D| scene.blend_modes().iter().collect::<Vec<_>>();
+        assert!(collect(&with(MaterialDescription::color(1.0, 1.0, 1.0, 1.0), Scene3D::cube())).is_empty());
+        let pane = with(multiply(), Scene3D::quad());
+        let shared = Scene3D {
+            obj: SceneObject::Shared(Arc::new(with(additive(), Scene3D::quad()).obj)),
+            xform: Matrix4::identity(),
+        };
+        let template = Scene3D {
+            obj: SceneObject::Group(vec![Scene3D::cube(), shared, pane]),
+            xform: Matrix4::identity(),
+        };
+        let instanced = Scene3D::instanced(template, vec![InstanceData::at([0.0, 0.0, 0.0])]);
+        // Multiply first, whatever the scene order.
+        assert_eq!(collect(&instanced), vec![BlendMode::Multiply, BlendMode::Additive]);
+    }
+
+    /// Blend materials never blend by alpha: the Tier A translucent-material
+    /// path must stand down for them.
+    #[test]
+    fn blend_materials_have_no_color_alpha() {
+        assert_eq!(multiply().color_alpha(), None);
+        assert_eq!(additive().color_alpha(), None);
+        assert_eq!(multiply().blend_mode(), Some(BlendMode::Multiply));
+        assert_eq!(additive().blend_mode(), Some(BlendMode::Additive));
+        assert_eq!(MaterialDescription::color(1.0, 1.0, 1.0, 1.0).blend_mode(), None);
+    }
+}
+
+#[cfg(test)]
 mod opacity_tests {
     use super::*;
     use cgmath::vec3;

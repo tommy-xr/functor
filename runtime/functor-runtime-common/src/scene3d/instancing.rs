@@ -824,6 +824,39 @@ mod tests {
         assert!(recognize(&nested).is_none());
     }
 
+    /// Blend templates instance as one draw: a multiply's texture reads the
+    /// mesh's UVs as each stamped copy does, and a tint scales the colour.
+    #[test]
+    fn recognizer_accepts_blend_templates_and_tints_them() {
+        use crate::scene3d::TextureDescription;
+
+        let multiply = MaterialDescription::Multiply {
+            color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+            texture: Some(TextureDescription::File("dirt.png".into())),
+        };
+        let reflection = MaterialDescription::Additive {
+            color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+            fresnel: Some(0.04),
+        };
+        for material in [multiply, reflection] {
+            let template = Scene3D {
+                obj: SceneObject::Material(material.clone(), vec![Scene3D::quad()]),
+                xform: Matrix4::from_scale(1.0),
+            };
+            let Some(RecognizedTemplate::Primitive(recognized)) = recognize(&template) else {
+                panic!("expected a primitive template for {material:?}");
+            };
+            assert_eq!(recognized.material, &material);
+            let tinted = tint_material(material, [0.5, 0.25, 1.0]);
+            let (MaterialDescription::Multiply { color, .. }
+            | MaterialDescription::Additive { color, .. }) = tinted
+            else {
+                panic!("tinting keeps the blend material");
+            };
+            assert_eq!(color, cgmath::vec4(0.5, 0.25, 1.0, 1.0));
+        }
+    }
+
     #[test]
     fn template_summary_is_short_and_structural() {
         assert_eq!(template_summary(&lit_cube()), "lit[cube]");

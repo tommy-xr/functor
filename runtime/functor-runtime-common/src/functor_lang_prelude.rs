@@ -9291,6 +9291,50 @@ Asset.model(\"shark.glb\") at the data boundary"
     }
 
 
+    /// The blend materials carry their texture, colour and fresnel base; a
+    /// base outside 0..1 is an error.
+    #[test]
+    fn blend_materials_build_their_descriptions() {
+        let material_of = |source: &str| {
+            let value = eval_with_prelude(&format!("let main = Scene.quad() |> {source}\n")).unwrap();
+            let Value::HostData(data) = value else {
+                panic!("expected a scene");
+            };
+            let scene = &data.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+            let SceneObject::Material(material, _) = &scene.obj else {
+                panic!("expected a material, got {:?}", scene.obj);
+            };
+            material.clone()
+        };
+        assert_eq!(
+            material_of("Scene.multiply(Texture.file(\"dirt.png\"))"),
+            MaterialDescription::Multiply {
+                color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+                texture: Some(TextureDescription::File("dirt.png".into())),
+            }
+        );
+        assert_eq!(
+            material_of("Scene.additive(Color.rgb(0.5, 0.25, 0.0))"),
+            MaterialDescription::Additive {
+                color: cgmath::vec4(0.5, 0.25, 0.0, 1.0),
+                fresnel: None,
+            }
+        );
+        assert_eq!(
+            material_of("Scene.reflection(Color.rgb(1.0, 1.0, 1.0), 0.04)"),
+            MaterialDescription::Additive {
+                color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+                fresnel: Some(0.04),
+            }
+        );
+        for base in ["(0.0 - 0.1)", "1.5"] {
+            let message = fail_message(&format!(
+                "let main = () => Scene.quad() |> Scene.reflection(Color.rgb(1.0, 1.0, 1.0), {base})\n"
+            ));
+            assert!(message.contains("base must be between 0 and 1"), "{message}");
+        }
+    }
+
     /// `Scene.litWorldTexture` is a lit texture with its world tile; a tile
     /// that isn't positive is an error.
     #[test]
