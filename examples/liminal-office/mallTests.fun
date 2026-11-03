@@ -10,6 +10,8 @@ let near = Building.near
 let eps = Building.eps
 let cellCount = List.length(cells)
 let cellAt = MallInterior.cellAt
+// An eye on `level` at (x, z).
+let eye = (x: float, level: float, z: float): Vec3.t => Vec3.make(x, level * storey + 1.6, z)
 
 // 18 cells, two per open shop (8), and two more collar strips; a portal
 // each way on every open-plan face, door and collar corner.
@@ -37,19 +39,29 @@ let inBox = (i: float, p: Vec3.t): bool =>
   let (y0, y1) = Mall.spanOf(i) in
   Vec3.x(p) >= r.x0 - eps && Vec3.x(p) <= r.x1 + eps && Vec3.z(p) >= r.z0 - eps && Vec3.z(p) <= r.z1 + eps
     && Vec3.y(p) >= y0 - eps && Vec3.y(p) <= y1 + eps
-let facesOf = (i: float): List<MallInterior.Poly> =>
-  if MallInterior.isEcho(i) then MallInterior.cellFaces(i) else List.nth(i, MallInterior.interior.cellParts) |> Option.defaultValue([])
-expect List.range(cellCount) |> List.all((i) => facesOf(i) |> List.all((p) => p.pts |> List.all((q) => inBox(i, q))))
+expect List.range(cellCount) |> List.all((i) => MallInterior.facesOf(i) |> List.all((p) => p.pts |> List.all((q) => inBox(i, q))))
 // Faces are flat, and each polygon's normal is its triangles'.
 expect Mall.faces |> List.all((p) =>
   let n = MallInterior.normalOf(p) in
   p.pts |> List.all((q) => near(Vec3.dot(n, q |> Vec3.sub(MallInterior.pt(0.0, p))), 0.0)))
-// One model per cell with faces of its own; the apron's and the yard's are
-// their halves of the doors to them. Every cell draws one.
+// One model per cell with faces of its own (the apron's and the yard's are
+// their halves of the doors to them), and the bake's blockers'. Every cell
+// draws one; the skylight and the stand-ins draw too.
 let echoes = List.range(cellCount) |> List.filter(MallInterior.isEcho)
-expect List.length(Archetypes.mallBaked.models) == cellCount - List.length(echoes)
+expect List.length(Archetypes.mallBaked.models) == cellCount - List.length(echoes) + 1.0
 expect List.length(Mall.placedOf(Archetypes.mallBaked)) == cellCount
-expect List.length(mall.night) == cellCount + 1.0 && List.length(mall.day) == cellCount + 1.0
+expect List.length(mall.night) == cellCount + 2.0 && List.length(mall.day) == cellCount + 2.0
+// The blockers cover each home's shopfront and corridor door.
+expect List.length(MallInterior.blockers) == 6.0
+// The stand-ins sit behind the rooms' surfaces: no corner strictly inside a
+// shop's or stockroom's inner box, where it would show in front of them.
+let strictlyIn = (i: float, q: Vec3.t): bool =>
+  let r = MallInterior.inner(i) in
+  let y = MallInterior.baseOf(i) in
+  Vec3.x(q) > r.x0 + eps && Vec3.x(q) < r.x1 - eps && Vec3.z(q) > r.z0 + eps && Vec3.z(q) < r.z1 - eps
+    && Vec3.y(q) > y + eps && Vec3.y(q) < y + MallInterior.ceilingOf(i) - eps
+expect Mall.standInPolys |> List.all((p) => p.pts |> List.all((q) => not (List.range(cellCount) |> List.any((i) =>
+  (cellAt(i).kind == Shop || cellAt(i).kind == Stock) && strictlyIn(i, q)))))
 
 // ---- Shops ------------------------------------------------------------------------
 
@@ -89,20 +101,19 @@ expect Mall.street.facadeBoxes |> List.all((b) =>
 
 // Sight: from the corridor through a stockroom into its shop, but never on
 // out to the concourse; the concourse never sees the corridor.
-let eyeAt = (x: float, level: float, z: float): Vec3.t => Vec3.make(x, level * storey + 1.6, z)
 let serviceEyes = List.range(2.0) |> List.concatMap((level) => List.range(19.0) |> List.concatMap((k) =>
-  [46.0, 46.8, 47.6] |> List.map((z) => eyeAt(2.0 + 4.0 * k, level, z))))
+  [46.0, 46.8, 47.6] |> List.map((z) => eye(2.0 + 4.0 * k, level, z))))
 let concourseEyes = List.range(2.0) |> List.concatMap((level) => List.range(13.0) |> List.concatMap((k) =>
-  [11.0, 20.0, 31.0] |> List.map((z) => eyeAt(2.0 + 6.0 * k, level, z))))
+  [11.0, 20.0, 31.0] |> List.map((z) => eye(2.0 + 6.0 * k, level, z))))
 expect serviceEyes |> List.all((a) => concourseEyes |> List.all((b) => not Cells.segment(a, b, mall.level)))
 expect List.range(List.length(bays)) |> List.all((k) =>
   let b = MallInterior.bayAt(k) in
-  Cells.segment(eyeAt(b.at + staffOffset, b.level, 47.0), eyeAt(b.at + staffOffset - 0.5, b.level, stockZ0 + 0.5), mall.level)
-    && Cells.segment(eyeAt(b.at - staffOffset, b.level, stockZ0 + 1.0), eyeAt(b.at - staffOffset + 0.5, b.level, stockZ0 - 2.0), mall.level)
-    && Cells.segment(eyeAt(b.at, b.level, shopZ0 - 2.0), eyeAt(b.at, b.level, shopZ0 + 5.0), mall.level))
+  Cells.segment(eye(b.at + staffOffset, b.level, 47.0), eye(b.at + staffOffset - 0.5, b.level, stockZ0 + 0.5), mall.level)
+    && Cells.segment(eye(b.at - staffOffset, b.level, stockZ0 + 1.0), eye(b.at - staffOffset + 0.5, b.level, stockZ0 - 2.0), mall.level)
+    && Cells.segment(eye(b.at, b.level, shopZ0 - 2.0), eye(b.at, b.level, shopZ0 + 5.0), mall.level))
 // The walk: shop, stockroom, corridor, out of the exit into the yard.
 expect [(13.0, 36.0, shopOf(0.0)), (12.0, 43.8, stockOf(0.0)), (40.0, 46.8, service0), (80.0, 46.8, yard)] |> List.all((e) =>
-  let (x, z, c) = e in Cells.locate(eyeAt(x, 0.0, z), mall.level) == Option.Some(c))
+  let (x, z, c) = e in Cells.locate(eye(x, 0.0, z), mall.level) == Option.Some(c))
 
 // The galleries: a balustrade 1.1 m high along every edge of the void,
 // open only where the escalators land; the lower concourse has none.
@@ -137,7 +148,6 @@ expect List.range(20.0) |> List.all((k) =>
 // Sight: down into the court from each gallery, across it between the
 // galleries and the lower concourse, into the entrance from the lot; not
 // through a gallery's floor, nor into a shuttered shop band.
-let eye = (x: float, level: float, z: float): Vec3.t => Vec3.make(x, level * storey + 1.6, z)
 expect Cells.segment(eye(41.0, 1.0, 13.0), Vec3.make(41.0, 0.3, 21.0), mall.level)
 expect Cells.segment(eye(41.0, 1.0, 29.0), eye(41.0, 0.0, 12.0), mall.level)
 expect Cells.segment(eye(41.0, 1.0, 13.0), eye(41.0, 1.0, 29.0), mall.level)

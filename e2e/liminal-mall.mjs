@@ -13,9 +13,9 @@
 //   4. the shops: from the food court into a shop, through its stockroom's
 //      door, along the service corridor, back out through another bay's
 //      stockroom and shop into the east hall; then down the corridor and out
-//      of its exit into the yard. Nothing snags, and each leg ends in the
-//      cell it should;
-//   5. from the service corridor the concourse never draws; the views into
+//      of its exit into the yard; upstairs, through a reused bay into the
+//      upper corridor. Nothing snags, and each leg ends in the cell it should;
+//   5. from either service corridor the concourse never draws; the views into
 //      a shop and down the corridor stay at most 80 draws too;
 //   6. the mall goldens render byte-identically across runs.
 //
@@ -38,6 +38,7 @@ const CENTRE = 0.92; // the capsule's centre above its feet
 const COURT = 8;
 const BRIDGE_W = 12;
 const GALLERY_S = 10;
+const GALLERY_N = 11;
 const WEST_HALL = 2;
 const EAST_HALL = 7;
 const SERVICE_0 = 15;
@@ -227,13 +228,15 @@ async function staticDraws(game, label) {
 
 // The food court → shop 0 → its stockroom → the service corridor → bay 3's
 // stockroom → its shop (bay 0's models, moved) → the east hall; then the
-// corridor's exit into the yard. Each leg checks the cell it ends in.
+// corridor's exit into the yard; then upstairs, from the north gallery
+// through bay 6 (bay 0's models, a storey up) into the upper corridor. Each
+// leg checks the cell it ends in.
 async function shopWalk(game) {
   const snags = [];
-  const go = async (x, z, label, cell) => {
+  const go = async (x, z, label, cell, level = 0) => {
     const m = await walkToPoint(game, [x, z]);
     if (Math.hypot(m.at.x - x, m.at.z - z) > 0.1) snags.push(`${label} (stopped at ${m.at.x.toFixed(2)}, ${m.at.y.toFixed(2)}, ${m.at.z.toFixed(2)})`);
-    if (cell !== undefined) check(m.cell === cell && Math.abs(m.at.y - CENTRE) < 0.05, `${label}: in cell ${cell} (cell ${m.cell}, y ${m.at.y.toFixed(3)})`);
+    if (cell !== undefined) check(m.cell === cell && Math.abs(m.at.y - (level * STOREY + CENTRE)) < 0.05, `${label}: in cell ${cell} (cell ${m.cell}, y ${m.at.y.toFixed(3)})`);
     return m;
   };
   await game.view(6);
@@ -253,7 +256,15 @@ async function shopWalk(game) {
   await game.view(8);
   await go(75.4, 46.8, "the corridor's east end", SERVICE_0);
   await go(79, 46.8, "out of the exit into the yard", YARD);
-  check(snags.length === 0, `no snag from the food court through the shops and corridor to the exit${snags.length ? `: ${snags.join("; ")}` : ""}`);
+  await game.view(5);
+  await go(41, 29.2, "the north gallery, before bay 6", GALLERY_N, 1);
+  await go(41, 36, "into bay 6's shop (racks, a storey up)", shopOf(6), 1);
+  await go(41, 39.2, "its back", undefined);
+  await go(38.4, 41.3, "its stockroom door", undefined);
+  await go(38.4, 43.0, "through it", stockOf(6), 1);
+  await go(43.6, 44.3, "across the stockroom", undefined);
+  await go(43.6, 46.8, "out into the upper service corridor", SERVICE_0 + 1, 1);
+  check(snags.length === 0,`no snag from the food court through the shops and corridor to the exit${snags.length ? `: ${snags.join("; ")}` : ""}`);
 }
 
 // Render a golden the way runtime/functor-runtime-desktop/tests/golden.rs does.
@@ -321,6 +332,13 @@ try {
   await shopWalk(game);
   m = await game.model();
   check(m.uncovered === 0, `the eye never left the mall's cells through the shops (uncovered ${m.uncovered})`);
+  // The walk ends in the upper corridor: west down it, and back east.
+  for (const [yaw, label] of [[-Math.PI / 2, "west"], [Math.PI / 2, "east"]]) {
+    await game.face(yaw, 0);
+    const r = await staticDraws(game, `the upper corridor, looking ${label}`);
+    check(r.concourse === 0 && r.draws <= MAX_DRAWS, `${r.label}: the concourse doesn't draw (${r.concourse} concourse draws, ${r.draws} static draws)`);
+    console.log(`draws: ${JSON.stringify(r)}`);
+  }
 
   for (const name of ["court-day", "gallery", "escalator", "lot-dusk", "service"].map((n) => `liminal-office-mall-${n}`)) {
     check(golden(name).equals(golden(name)), `${name}: byte-identical across runs`);

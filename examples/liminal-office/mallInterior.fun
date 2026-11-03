@@ -113,8 +113,8 @@ let litAtlas = atlasOf((bx, by, x, y) =>
   else if by == 1.0 && bx == 2.0 then Building.shade(1.0 + 0.12 * (Building.noise(x + 32.0 * y) - 0.5), if x > 13.0 && x < 18.0 then Building.shade(1.15, cartonPaint) else cartonPaint)
   else if by == 1.0 && bx == 3.0 then concretePaint
   else if by == 2.0 && bx == 0.0 then servicePaint
-  // A paper banner: CLOSING in red between red rules, rows 12 to 19.
-  else if by == 2.0 && bx == 1.0 then (if y == 12.0 || y == 19.0 || inText("CLOSING", 2.0, 14.0, x, y) then redPaint else paperPaint)
+  // A paper banner: CLOSING in red between red rules, rows 12 to 20.
+  else if by == 2.0 && bx == 1.0 then (if y == 12.0 || y == 20.0 || inText("CLOSING", 2.0, 14.0, x, y) then redPaint else paperPaint)
   // A red plate, EMPLOYEES over ONLY, 48 × 16 texels across two blocks.
   else if by == 2.0 && bx >= 2.0 then
     let px = x + 32.0 * (bx - 2.0) in
@@ -129,7 +129,7 @@ let glowAtlas = atlasOf((bx, by, x, y) =>
   else if by == 1.0 && bx == 1.0 then drumPaint
   // A dead screen: near black, a faint sheen across it.
   else if by == 1.0 && bx == 2.0 then (if x - y > 3.0 && x - y < 10.0 then Building.shade(1.8, screenPaint) else screenPaint)
-  // EXIT in green, rows 11 to 20.
+  // EXIT in green on dark green, its letters rows 13 to 17.
   else if by == 1.0 && bx == 3.0 then (if inText("EXIT", 9.0, 13.0, x, y) then exitPaint else exitDark)
   else darkPaint)
 
@@ -442,10 +442,12 @@ let wallRail = (wx: float, dir: float, z0: float, z1: float): Item =>
   let bar = span(x, x + dir * 0.03, 1.58, 1.61, z0, z1) in
   let arms = [z0, (z0 + z1) / 2.0, z1 - 0.03] |> List.map((za) => span(wx + dir * 0.005, x, 1.58, 1.61, za, za + 0.03)) in
   { faces: List.flatten([hung(rack, bar), arms |> List.concatMap((b) => hung(rack, b))]), solid: [span(wx, x + dir * 0.03, 1.5, 1.65, z0, z1)] }
+// A `w`-square post in each corner of [x0, x1] × [z0, z1], from the floor to `h`.
+let postsIn = (x0: float, z0: float, x1: float, z1: float, w: float, h: float): List<Box3> =>
+  [(x0, z0), (x1 - w, z0), (x0, z1 - w), (x1 - w, z1 - w)] |> List.map((p) => let (x, z) = p in box3(x, 0.0, z, x + w, h, z + w))
 // Steel shelving over `b`: a post at each corner, boards at `levels`.
 let shelvesItem = (b: Box3, levels: List<float>): Item =>
-  let posts = [(b.x0, b.z0), (b.x1 - 0.04, b.z0), (b.x0, b.z1 - 0.04), (b.x1 - 0.04, b.z1 - 0.04)]
-    |> List.map((p) => let (x, z) = p in box3(x, 0.0, z, x + 0.04, b.y1, z + 0.04)) in
+  let posts = postsIn(b.x0, b.z0, b.x1, b.z1, 0.04, b.y1) in
   let boards = levels |> List.map((y) => box3(b.x0 + 0.005, y, b.z0 + 0.005, b.x1 - 0.005, y + 0.03, b.z1 - 0.005)) in
   { faces: List.flatten([posts |> List.concatMap((p) => standing(rack, rack, p)), boards |> List.concatMap((p) => hung(rack, p))]), solid: [b] }
 // A counter, a dead till on it at its east end.
@@ -455,12 +457,12 @@ let counterItem = (x0: float, z0: float, x1: float, z1: float): Item =>
   { faces: List.append(standing(trim, enamel, b), standing(dark, dark, box3(x1 - 0.6, 1.0, zm - 0.18, x1 - 0.2, 1.22, zm + 0.18))), solid: [b] }
 // A table, its top `h` up on four legs.
 let tableItem = (x0: float, z0: float, x1: float, z1: float, h: float): Item =>
-  let legs = [(x0, z0), (x1 - 0.04, z0), (x0, z1 - 0.04), (x1 - 0.04, z1 - 0.04)]
-    |> List.map((p) => let (x, z) = p in box3(x + 0.03, 0.0, z + 0.03, x + 0.07, h - 0.04, z + 0.07)) in
+  let legs = postsIn(x0 + 0.03, z0 + 0.03, x1 - 0.03, z1 - 0.03, 0.04, h - 0.04) in
   { faces: List.flatten([hung(trim, box3(x0, h - 0.04, z0, x1, h, z1)), legs |> List.concatMap((b) => sidesOf(rack, b))]),
     solid: [box3(x0, 0.0, z0, x1, h, z1)] }
-// A plinth, the old shops' display stand.
-let plinthItem = (b: Box3): Item => { faces: standing(enamel, trim, b), solid: [b] }
+// A solid block: a plinth, a low cabinet, a display table.
+let blockItem = (sides: float, top: float, b: Box3): Item => { faces: standing(sides, top, b), solid: [b] }
+let plinthItem = (b: Box3): Item => blockItem(enamel, trim, b)
 
 // A box against cell `i`'s inner wall `s`, `out` deep: [lo, hi] along it.
 let wallBox = (i: float, s: Side, lo: float, hi: float, y0: float, y1: float, out: float): Box3 =>
@@ -493,48 +495,61 @@ let monitorOn = (x: float, y: float, z: float): List<Poly> =>
     standing(trim, trim, box3(x - 0.08, y, z - 0.08, x + 0.08, y + 0.05, z + 0.08)),
   ])
 
-// Every shop's "EMPLOYEES ONLY" over its stockroom door, then its fit-out.
-// The shop's inside runs [x0, x1] round `c`, its front `f` to its back `k`;
-// the walk from the front to the stockroom door keeps clear down the middle
-// and the back's west end.
-let fitOf = (i: float): (List<Item>, List<Poly>) =>
+// A shop's inside: [x0, x1] round `c`, from its front `f` to its back `k`.
+// The walk from the front to the stockroom door keeps clear down the middle
+// and along the back's west end.
+type Plan = { r: Rect, c: float, f: float, k: float }
+let planOf = (i: float): Plan =>
   let r = inner(i) in
-  let c = (r.x0 + r.x1) / 2.0 in
-  let f = r.z0 in
-  let k = r.z1 in
-  let sign = onWall(i, North, staffSign, c - staffOffset - 0.3, c - staffOffset + 0.3, 2.25, 2.45, 0.02) in
-  match bayAt(bayOf(i) |> Option.defaultValue(0.0)).fit with
-  | Racks => (List.flatten([
-      [counterItem(c + 0.6, k - 2.5, c + 3.3, k - 1.9), wallRail(r.x0, 1.0, f + 1.5, k - 3.0), wallRail(r.x1, -1.0, f + 1.5, k - 3.6),
+  { r: r, c: (r.x0 + r.x1) / 2.0, f: r.z0, k: r.z1 }
+let fitAt = (i: float): FitOut => bayAt(bayOf(i) |> Option.defaultValue(0.0)).fit
+// The display tables' corners, in a shop of dead screens.
+let tablesOf = (p: Plan): List<(float, float)> =>
+  [p.c - 2.9, p.c + 1.3] |> List.concatMap((x) => [p.f + 2.5, p.f + 5.0] |> List.map((z) => (x, z)))
+// Shop `i`'s fit-out's furniture.
+let fitItems = (i: float): List<Item> =>
+  let p = planOf(i) in
+  let c = p.c in
+  let f = p.f in
+  let k = p.k in
+  match fitAt(i) with
+  | Racks => List.flatten([
+      [counterItem(c + 0.6, k - 2.5, c + 3.3, k - 1.9), wallRail(p.r.x0, 1.0, f + 1.5, k - 3.0), wallRail(p.r.x1, -1.0, f + 1.5, k - 3.6),
        plinthItem(box3(c + 1.6, 0.0, f + 0.5, c + 2.8, 0.45, f + 1.3))],
       [c - 2.2, c + 2.2] |> List.concatMap((x) => [f + 2.6, f + 5.2] |> List.map((z) => rackItem(x, z))),
-    ]), [sign])
-  | Screens =>
-    let tables = [c - 2.9, c + 1.3] |> List.concatMap((x) => [f + 2.5, f + 5.0] |> List.map((z) => (x, z))) in
-    (List.flatten([
-      [plinthItem(box3(c - 1.7, 0.0, k - 0.5, c + 3.8, 0.7, k - 0.02))],
-      tables |> List.map((t) => let (x, z) = t in { faces: standing(trim, enamel, box3(x, 0.0, z, x + 1.6, 0.8, z + 0.9)), solid: [box3(x, 0.0, z, x + 1.6, 0.8, z + 0.9)] }),
-    ]), List.flatten([
-      [sign],
-      [c - 0.85, c + 0.75, c + 2.35] |> List.concatMap((x) => screenOn(i, North, x - 0.7, x + 0.7, 1.15, 1.95)),
-      [West, East] |> List.concatMap((s) => [f + 1.8, f + 3.4, f + 5.0, f + 6.6] |> List.concatMap((z) =>
-        [1.0, 1.75] |> List.concatMap((y) => screenOn(i, s, z - 0.5, z + 0.5, y, y + 0.6)))),
-      tables |> List.concatMap((t) => let (x, z) = t in [x + 0.4, x + 1.2] |> List.concatMap((xm) => monitorOn(xm, 0.8, z + 0.45))),
-    ]))
+    ])
+  | Screens => List.append([plinthItem(box3(c - 1.7, 0.0, k - 0.5, c + 3.8, 0.7, k - 0.02))],
+      tablesOf(p) |> List.map((t) => let (x, z) = t in blockItem(trim, enamel, box3(x, 0.0, z, x + 1.6, 0.8, z + 0.9))))
   | Boxes =>
     let stack = (x: float, z: float, n: float): List<Item> =>
       List.range(n) |> List.map((j) => carton(x + 0.04 * Math.mod(j, 2.0), 0.45 * j, z + 0.03 * j, 0.6 - 0.05 * j, 0.5, 0.45, true)) in
-    (List.flatten([
-      [shelvesItem(box3(r.x0 + 0.02, 0.0, f + 1.5, r.x0 + 0.52, 1.7, k - 2.5), [0.15, 0.6, 1.05, 1.5]),
+    List.flatten([
+      [shelvesItem(box3(p.r.x0 + 0.02, 0.0, f + 1.5, p.r.x0 + 0.52, 1.7, k - 2.5), [0.15, 0.6, 1.05, 1.5]),
        tableItem(c + 0.9, f + 6.4, c + 2.7, f + 7.2, 0.74),
        carton(c + 1.1, 0.74, f + 6.5, 0.6, 0.5, 0.4, false), carton(c + 1.9, 0.74, f + 6.55, 0.5, 0.45, 0.35, false)],
       stack(c - 2.5, f + 0.8, 3.0), stack(c - 1.7, f + 0.9, 1.0),
       stack(c + 1.8, f + 2.8, 2.0), stack(c + 2.6, f + 3.0, 1.0), stack(c + 2.0, f + 3.5, 1.0),
       stack(c + 1.4, k - 1.4, 2.0), stack(c + 2.2, k - 1.2, 3.0),
-    ]), [sign,
-      onWall(i, North, closing, c - 0.6, c + 2.4, 2.4, 3.4, 0.02),
-      // A banner hung behind the shopfront, read from the concourse.
-      wallZ(closing, c - 1.5, c + 1.5, 2.5, 3.5, f + 0.5, false), wallZ(wall, c - 1.5, c + 1.5, 2.5, 3.5, f + 0.51, true)])
+    ])
+// Shop `i`'s other faces: "EMPLOYEES ONLY" over its stockroom door, and the
+// fit-out's screens or banners.
+let fitFaces = (i: float): List<Poly> =>
+  let p = planOf(i) in
+  let c = p.c in
+  let f = p.f in
+  let sign = onWall(i, North, staffSign, c - staffOffset - 0.3, c - staffOffset + 0.3, 2.25, 2.45, 0.02) in
+  List.append([sign], (match fitAt(i) with
+    | Racks => []
+    | Screens => List.flatten([
+        [c - 0.85, c + 0.75, c + 2.35] |> List.concatMap((x) => screenOn(i, North, x - 0.7, x + 0.7, 1.15, 1.95)),
+        [West, East] |> List.concatMap((s) => [f + 1.8, f + 3.4, f + 5.0, f + 6.6] |> List.concatMap((z) =>
+          [1.0, 1.75] |> List.concatMap((y) => screenOn(i, s, z - 0.5, z + 0.5, y, y + 0.6)))),
+        tablesOf(p) |> List.concatMap((t) => let (x, z) = t in [x + 0.4, x + 1.2] |> List.concatMap((xm) => monitorOn(xm, 0.8, z + 0.45))),
+      ])
+    | Boxes => [
+        onWall(i, North, closing, c - 0.6, c + 2.4, 2.4, 3.4, 0.02),
+        // A banner hung behind the shopfront, read from the concourse.
+        wallZ(closing, c - 1.5, c + 1.5, 2.5, 3.5, f + 0.5, false), wallZ(wall, c - 1.5, c + 1.5, 2.5, 3.5, f + 0.51, true)]))
 
 // A mop sink in box `b`: a rim round a basin; a tap over it, a mop by it.
 let sinkItem = (b: Box3): Item =>
@@ -568,7 +583,7 @@ let stockItems = (i: float): List<Item> =>
      sinkItem(box3(c + 2.9, 0.0, r.z0 + 0.02, r.x1 - 0.02, 0.35, r.z0 + 0.82))],
     [carton(c - 2.9, 0.63, back, 0.5, 0.4, 0.35, false), carton(c - 2.3, 0.63, back, 0.6, 0.4, 0.4, false),
      carton(c - 0.6, 1.13, back, 0.5, 0.4, 0.3, false), carton(c + 0.7, 0.15, back, 0.6, 0.4, 0.35, false),
-     carton(c - 1.4, 1.63, back, 0.55, 0.4, 0.3, false), carton(r.x0 + 0.07, 0.63, r.z0 + 0.7, 0.4, 0.5, 0.35, false),
+     carton(c - 1.4, 1.63, back, 0.55, 0.4, 0.27, false), carton(r.x0 + 0.07, 0.63, r.z0 + 0.7, 0.4, 0.5, 0.35, false),
      carton(r.x0 + 0.07, 1.13, r.z0 + 1.6, 0.4, 0.45, 0.4, false)],
     [carton(c + 0.4, 0.0, r.z0 + 0.02, 0.6, 0.5, 0.5, true), carton(c + 1.05, 0.0, r.z0 + 0.02, 0.6, 0.5, 0.45, true),
      carton(c + 0.5, 0.5, r.z0 + 0.04, 0.5, 0.45, 0.4, true)],
@@ -594,12 +609,12 @@ let frontXs = fronts |> List.filter((f) => f.side == North && cellAt(f.cell).lev
 // shelving, the corridor's signs.
 let itemsOf = (i: float): List<Item> =>
   match cellAt(i).kind with
-  | Shop => let (items, _) = fitOf(i) in items
+  | Shop => fitItems(i)
   | Stock => stockItems(i)
   | _ => []
 let backFaces = (i: float): List<Poly> =>
   List.append(itemsOf(i) |> List.concatMap((t) => t.faces), (match cellAt(i).kind with
-    | Shop => let (_, faces) = fitOf(i) in faces
+    | Shop => fitFaces(i)
     | Service => serviceFaces(i)
     | _ => []))
 
@@ -933,12 +948,22 @@ let dayLights = List.flatten([nightLights, skylightLights, entranceLights])
 
 // ---- The interior --------------------------------------------------------------------
 
+// Bake only: a sheet over each home's shopfront and corridor door, so each
+// fit-out bakes in its own light alone, the same in every bay that reuses it,
+// and spills none onto the concourse or corridor (nor do the reusing bays).
+// The mesh's last part, after the cells': a model of no cell, never drawn.
+let blockers = List.range(List.length(bays)) |> List.filter((k) => homeOf(k) == k) |> List.concatMap((k) =>
+  let b = bayAt(k) in
+  let y = b.level * storey in
+  [wallZ(trim, b.at - 3.0, b.at + 3.0, y, y + 3.2, shopZ0, true),
+   wallZ(trim, b.at + staffOffset - 0.45, b.at + staffOffset + 0.45, y, y + 2.1, serviceZ0, false)])
+
 // The cells' faces and the mesh, at full scale; the bake jobs, at half. A
 // bay that reuses its home's models has no faces of its own in the mesh.
 type Interior = { cellParts: List<List<Poly>>, cellRanges: List<Building.Range>, data: Model.staticData,
                   night: Lightmap.bakeJob, day: Lightmap.bakeJob }
 let interiorOf = (name: string): Interior =>
-  let cellParts = List.range(List.length(cells)) |> List.map((i) => if isEcho(i) then [] else cellFaces(i)) in
+  let cellParts = List.range(List.length(cells)) |> List.map((i) => if isEcho(i) then [] else cellFaces(i)) |> List.append([blockers]) in
   let all = List.flatten(cellParts) in
   let cellRanges = rangesOf(cellParts) in
   let spans = cellParts |> List.zip(cellRanges) |> List.concatMap((pair) => let (polys, range) = pair in spansOf(palette, range.first, polys)) in
@@ -952,6 +977,9 @@ let interiorOf = (name: string): Interior =>
   { cellParts: cellParts, cellRanges: cellRanges, data: meshOf(palette, 1.0, all, spans),
     night: night, day: { night with name: $"{name}-day", lights: dayLights } }
 let interior = interiorOf("mall")
+// Cell `i`'s faces: its part of the mesh, or a reusing bay's own.
+let facesOf = (i: float): List<Poly> =>
+  if isEcho(i) then cellFaces(i) else List.nth(i, interior.cellParts) |> Option.defaultValue([])
 
 // ---- One model per cell ----------------------------------------------------------------
 

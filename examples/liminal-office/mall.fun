@@ -103,9 +103,10 @@ let roofGlass: Exterior.Grid = {
 // Where a cell model draws: in `cell`, moved by `at`. `part` is the mesh's
 // cell it was cut from: a bay's home cell, drawn again in every bay with its
 // fit-out (the same `Model.static`, so one GPU copy, as the towers' floors).
+// The bake's blockers, past the cells, don't draw.
 type Placed = { model: Model.t, part: float, cell: float, at: Vec3.t }
 let placedOf = (b: Provenance.Baked): List<Placed> =>
-  b.models |> List.concatMap((p) =>
+  b.models |> List.filter((p) => p.cell < List.length(cells)) |> List.concatMap((p) =>
     match MallInterior.bayOf(p.cell) with
     | Option.Some(home) =>
       List.range(List.length(bays)) |> List.filter((k) => MallInterior.homeOf(k) == home) |> List.map((k) =>
@@ -114,10 +115,24 @@ let placedOf = (b: Provenance.Baked): List<Placed> =>
 // A placed model in its cell. (`roomOf`'s body is the e2e's draw-count
 // seam, as archetypes.fun's.)
 let roomOf = (p: Placed): Scene.t => Scene.modelOf(p.model) |> Scene.translate(p.at) |> Scene.inCells([p.cell])
-// The cell models and the skylight by night, and under the day bake.
-let nightOf = (b: Provenance.Baked): List<Scene.t> => List.flatten([placedOf(b) |> List.map(roomOf), [skylightNight]])
+// Stand-ins for the shops and stockrooms a walk cuts (`minPortal`): their
+// walls, floor and ceiling 5 cm behind the real ones, one unlit dark mesh. A
+// room that draws hides its stand-in; through a cut room's opening it shows
+// instead of the clear colour.
+let standInPaint = Building.paint(46.0, 43.0, 38.0)
+let standInPalette: MallInterior.Palette =
+  { groups: [Building.material(standInPaint, 1.0, true, Building.solid(standInPaint))], slots: [MallInterior.tiledSlot(0.0, 1.0)] }
+let standInPolys = List.range(List.length(cells)) |> List.filter((i) => cellAt(i).kind == Shop || cellAt(i).kind == Stock) |> List.concatMap((i) =>
+  let r = MallInterior.inner(i) in
+  List.flatten([[MallInterior.floorAt(0.0, r.x0, r.z0, r.x1, r.z1, 0.0), MallInterior.ceilingAt(0.0, r.x0, r.z0, r.x1, r.z1, MallInterior.ceilingOf(i))], MallInterior.wallsOf(i)])
+    |> List.map((p) => { mat: 0.0, pts: p.pts |> List.map((q) => q |> Vec3.sub(Vec3.scale(0.05, MallInterior.normalOf(p))) |> Vec3.add(v(0.0, baseOf(i), 0.0))) }))
+let standIn = Scene.modelOf(Model.static(MallInterior.meshOf(standInPalette, 1.0, standInPolys, MallInterior.spansOf(standInPalette, 0.0, standInPolys))))
+  |> Scene.inCells(List.range(List.length(cells)) |> List.filter(MallInterior.isInside))
+// The cell models, the skylight and the stand-ins by night, and under the
+// day bake.
+let nightOf = (b: Provenance.Baked): List<Scene.t> => List.flatten([placedOf(b) |> List.map(roomOf), [skylightNight, standIn]])
 let dayOf = (b: Provenance.Baked): List<Scene.t> =>
-  List.flatten([placedOf(b) |> List.map((p) => Provenance.underDay(b.day, roomOf(p))), [skylightDay]])
+  List.flatten([placedOf(b) |> List.map((p) => Provenance.underDay(b.day, roomOf(p))), [skylightDay, standIn]])
 
 // ---- The street side and the lot -------------------------------------------------
 
@@ -236,8 +251,7 @@ let furnitureBlocks = List.flatten([
 ])
 
 // Every cell's faces, a bay's own though the mesh has only its home's.
-let faces = List.range(List.length(cells)) |> List.concatMap((i) =>
-  if MallInterior.isEcho(i) then MallInterior.cellFaces(i) else List.nth(i, MallInterior.interior.cellParts) |> Option.defaultValue([]))
+let faces = List.range(List.length(cells)) |> List.concatMap(MallInterior.facesOf)
 // Floors: up-facing faces level with a storey's floor (thresholds, plates).
 let floorPolys = faces |> List.filter((p) =>
   Vec3.y(MallInterior.normalOf(p)) > 0.99 && (p.mat == MallInterior.tile || p.mat == MallInterior.trim || p.mat == MallInterior.concrete)

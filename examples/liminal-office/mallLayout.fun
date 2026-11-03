@@ -227,7 +227,6 @@ let kindOf = (c: Cell): Kind =>
   | Lot => Outside
   | Entry => Lobby
   | Shop => Office
-  | Stock => Office
   | _ => Corridor
 let isLot = (i: float): bool => List.nth(i, cells) |> Option.map((c) => c.kind == Lot) |> Option.defaultValue(false)
 let layout: Layout = {
