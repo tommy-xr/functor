@@ -180,25 +180,30 @@ let lotBoxes: List<(Exterior.Box, Color.t)> =
     ])),
   ])
 
-// The kit's street side (facade, canopy, neon roofline, lamps, apron), the
-// roof opened over the void, the ridges, the anchor and the lot; the
-// skylight's glazing in the window grid's place.
-let kitStreet = Exterior.streetOf(layout)
+// The kit's street side (facade, canopy, neon roofline, lamps, apron) in
+// split-face block under a metal fascia, the roof opened over the void, the
+// ridges, the anchor and the lot; the skylight's glazing in the window
+// grid's place.
+let blockWall = Finishes.on(Finishes.splitface, Building.rgb(168.0, 152.0, 128.0))
+let metalFascia = Finishes.on(Finishes.fascia, Building.rgb(92.0, 100.0, 108.0))
 let street: Exterior.Street =
-  let s = kitStreet in
+  let s = Exterior.streetWith(layout, blockWall) in
   let extras = List.flatten([
     ridges |> List.map((b) => (b, Exterior.glass)),
     [(anchor, Exterior.concrete), (anchorSign, Exterior.glass)],
     lotBoxes,
   ]) in
-  let boxes = List.flatten([
-    s.streetBoxes |> List.filter((e) => let (b, _) = e in b != s.roofBox),
-    roofSlabs |> List.map((b) => (b, Exterior.roofGrey)),
-    extras,
+  let boxes = List.append(s.streetBoxes, extras) in
+  // The roof's slabs, round the void, in the kit roof's finish.
+  let skinned = List.flatten([
+    s.skinned |> List.filter((e) => let (b, _) = e in b != s.roofBox),
+    roofSlabs |> List.map((b) => (b, Exterior.roofing)),
   ]) in
   let neon = List.append(s.neonBoxes, [anchorNeon]) in
-  { s with streetBoxes: boxes, streetSide: Exterior.instancedOf(boxes), extraBoxes: extras,
-           neonBoxes: neon, neonStrips: Scene.group(neon |> List.map(Exterior.slabOf)), grid: Option.Some(roofGlass) }
+  let kit = { s with streetBoxes: boxes, skinned: skinned, streetSide: Exterior.sideOf(boxes, skinned), extraBoxes: extras,
+                     neonBoxes: neon, neonStrips: Scene.group(neon |> List.map(Exterior.slabOf)), grid: Option.Some(roofGlass) } in
+  // The fascia caps the parapet above the roofline's neon.
+  Facade.trimmed(kit, { plain: [], skinned: Facade.clad(metalFascia, Facade.cornice(layout, 0.15, 0.6)), fine: [] })
 
 // ---- Collision ---------------------------------------------------------------------
 

@@ -548,8 +548,8 @@ expect near(roof.y1, List.length(Building.levelsOf(l)) * storey)
 expect interiorIds |> List.all((i) => Building.baseOf(l, Building.roomAt(l, i)) + Building.wallTop(l, i) < roof.y0)
 // It draws with the street side, and on shells: their massing stops under
 // it, inside a parapet like the facade's.
-expect street.streetBoxes |> List.any((e) => let (b, _) = e in b == roof)
-expect shell.litBoxes |> List.any((e) => let (b, _) = e in b == roof)
+expect street.skinned |> List.any((e) => let (b, _) = e in b == roof)
+expect shell.skinned |> List.any((e) => let (b, _) = e in b == roof)
 expect near(shell.massing.y1, roof.y0) && (shell.parapet |> List.all((b) => near(b.y0, roof.y0) && near(b.y1, facadeHeight)))
 // The facade rises on all round as a parapet, unbroken, at least 0.8 m.
 expect facadeHeight - roof.y1 >= 0.8
@@ -825,3 +825,20 @@ expect Cells.locate(Vec3.make(12.0, 9.0 * storey + 1.6, 4.0), tower.level) == Op
 // The towers stand a street apart.
 expect (Block.towers.copies |> List.map((c) => Block.archetypeOf(c).name)) == ["tower-8", "tower-16", "tower-12", "tower-8"]
 expect pairsOf(Block.towers.copies) |> List.all((p) => let (a, b) = p in gap(worldRect(a, tf), worldRect(b, tf)) >= Block.streetWidth - 0.001)
+
+// The facade kit's trim (and every archetype's own boxes) stands clear of
+// the shells' glowing windows, entrance and bands, so no face lies in front
+// of one's.
+let clearOfOpenings = (a: Archetypes.Archetype): bool =>
+  let sh = Shells.shellAt(a.name) in
+  let glow = List.flatten([sh.openings, sh.bands]) in
+  List.flatten([a.street.extraBoxes |> List.map((e) => let (b, _) = e in b), a.street.extraSkinned |> List.map((e) => let (b, _) = e in b)])
+    |> List.all((b) => not (glow |> List.any((o) => solidIn(b, o))))
+expect Archetypes.all |> List.all(clearOfOpenings)
+// A street side draws its lit boxes once and once per finish it uses (its
+// shells, once per finish across the town): two for the office, three for a
+// tower, the cinema and the mall, and a house's clapboard (its gable's
+// shingles draw with the gables).
+let finishesOf = (a: Archetypes.Archetype): float =>
+  List.length(Finishes.all |> List.filter((f) => a.street.skinned |> List.any((e) => let (_, s) = e in s.finish.name == f.name)))
+expect (Archetypes.all |> List.map(finishesOf)) == [2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 1.0, 1.0]

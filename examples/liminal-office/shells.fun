@@ -1,8 +1,10 @@
 // Stand-ins for the grid's inactive copies: each archetype's massing,
-// parapet, canopy, apron, window bands, lamp posts and own boxes (a tower's
-// plant room) as lit boxes, and its neon, lamp shades, beacon, entrance and
-// real windows as glowing ones — five `Scene.instanced` cubes for the whole
-// town, plus a tower's window grid. The windows and entrance glow like the
+// parapet and roof in their finishes (one `Scene.instanced` cube per
+// finish), its canopy, apron, window bands, lamp posts and own boxes (a
+// tower's plant room, the facade kit's trim) as lit boxes or in their
+// finishes, and its neon, lamp shades, beacon, entrance and real windows as
+// glowing ones — five `Scene.instanced` cubes for the whole town, plus one
+// per finish and a tower's window grid. The windows and entrance glow like the
 // lit rooms behind them, so a distant copy reads as the building it becomes
 // at `Block.activeOn`.
 
@@ -20,7 +22,8 @@ type Shell = {
   openings: List<Exterior.Box>,
   bands: List<Exterior.Box>,
   litBoxes: List<(Exterior.Box, Color.t)>,
-  gables: List<(Exterior.Box, Color.t)>,
+  skinned: List<(Exterior.Box, Finishes.Surface)>,
+  gables: List<(Exterior.Box, Finishes.Surface)>,
 }
 let shellOf = (a: Archetypes.Archetype): Shell =>
   let l = a.layout in
@@ -59,11 +62,15 @@ let shellOf = (a: Archetypes.Archetype): Shell =>
   // The lit boxes and their colours, the same at every hour.
   { massing: massing, parapet: parapet, openings: openings, bands: bands,
     litBoxes: List.flatten([
-      [(massing, s.siding), (s.roofBox, Exterior.roofGrey), (s.canopyBox, s.siding), (s.apronBox, Exterior.apronGrey)],
-      parapet |> List.map((b) => (b, s.siding)),
+      [(s.canopyBox, s.siding), (s.apronBox, Exterior.apronGrey)],
       bands |> List.map((b) => (b, Exterior.glass)),
       s.postBoxes |> List.map((b) => (b, Exterior.postGrey)),
       s.extraBoxes,
+    ]),
+    skinned: List.flatten([
+      [(massing, s.wall), (s.roofBox, Exterior.roofing)],
+      parapet |> List.map((b) => (b, s.wall)),
+      s.extraSkinned,
     ]),
     gables: s.gables }
 
@@ -83,17 +90,18 @@ let place = (c: Block.Copy, b: Exterior.Box): Instance.t => placeScaled(c, b, Ve
 // As an instance of `Exterior.gableTemplate`.
 let placeGable = (c: Block.Copy, b: Exterior.Box): Instance.t => placeScaled(c, b, Exterior.gableScale(b))
 
-// A copy's shell as instances: the lit boxes and gables (tinted), and what
-// glows, by colour, so the hour changes a template's colour, not the
-// instances; and its window grid, placed.
-type Parts = { lit: List<Instance.t>, gables: List<Instance.t>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t>,
+// A copy's shell as instances: the lit boxes (tinted), its finished boxes
+// and gables (by finish), and what glows, by colour, so the hour changes a
+// template's colour, not the instances; and its window grid, placed.
+type Parts = { lit: List<Instance.t>, skinned: List<List<Instance.t>>, gables: List<List<Instance.t>>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t>,
                beacons: List<Instance.t>, grid: Option.t<Exterior.Grid> }
 let partsOf = (c: Block.Copy): Parts =>
   let shell = shellAt(c.archetype) in
   let street = Block.archetypeOf(c).street in
   {
     lit: shell.litBoxes |> List.map((e) => let (b, color) = e in place(c, b) |> Instance.tint(color)),
-    gables: shell.gables |> List.map((e) => let (b, color) = e in placeGable(c, b) |> Instance.tint(color)),
+    skinned: Finishes.groupedBy(shell.skinned |> List.map((e) => let (b, f) = e in (place(c, b), f))),
+    gables: Finishes.groupedBy(shell.gables |> List.map((e) => let (b, f) = e in (placeGable(c, b), f))),
     neon: street.neonBoxes |> List.map((b) => place(c, b)),
     shades: street.shadeBoxes |> List.map((b) => place(c, b)),
     openings: shell.openings |> List.map((b) => place(c, b)),
@@ -102,7 +110,7 @@ let partsOf = (c: Block.Copy): Parts =>
   }
 // Every town's copies' parts, by id, built once at load.
 let parts: List<List<Parts>> = Block.towns |> List.map((t) => t.copies |> List.map(partsOf))
-let none = { lit: [], gables: [], neon: [], shades: [], openings: [], beacons: [], grid: Option.None }
+let none = { lit: [], skinned: [], gables: [], neon: [], shades: [], openings: [], beacons: [], grid: Option.None }
 
 // The openings glow like the lit rooms behind them by night, neutral glass
 // by day; the neon and shades as on the street side.
@@ -114,27 +122,30 @@ let dayGlass = Color.rgb(0.36, 0.39, 0.42)
 let idleOf = (look: Look): List<float> =>
   List.range(List.length(Block.townAt(look.town).copies)) |> List.filter((id) => not Block.isIn(id, look.active))
 
-// Every idle copy's shell: four instanced cubes for the town, and the
-// gables if it has any. A change of the active set only gathers the
-// prebuilt instances (and re-uploads them); a change of hour recolours the
-// templates.
+// Every idle copy's shell: four instanced cubes for the town, and one per
+// finish (and per gable finish, for houses). A change of the active set
+// only gathers the prebuilt instances (and re-uploads them); a change of
+// hour recolours the templates.
 let white = Color.rgb(1.0, 1.0, 1.0)
 let shellsOf = (look: Look): Scene.t =>
   let town = List.nth(look.town, parts) |> Option.defaultValue([]) in
   let idle = idleOf(look) |> List.map((id) => List.nth(id, town) |> Option.defaultValue(none)) in
   let cubes = (material: (Scene.t) => Scene.t, of: (Parts) => List<Instance.t>): Scene.t =>
     Scene.cube() |> material |> Scene.instanced(idle |> List.concatMap(of)) in
-  let gables = idle |> List.concatMap((p) => p.gables) in
   Scene.group(List.flatten([
     [cubes((s) => s |> Scene.lit(white), (p) => p.lit),
      cubes((s) => s |> Scene.color(Exterior.neonColor(look.neon)), (p) => p.neon),
      cubes((s) => s |> Scene.color(Exterior.shadeColor(look.lamps)), (p) => p.shades),
-     cubes((s) => s |> Scene.color(if look.day then dayGlass else roomGlow), (p) => p.openings)],
-    // Towers and the mall only: an office town draws exactly the four cubes.
+     cubes((s) => s |> Scene.color(if look.day then dayGlass else roomGlow), (p) => p.openings),
+     Finishes.drawn(List.range(List.length(Finishes.all)) |> List.map((k) =>
+       idle |> List.concatMap((p) => List.nth(k, p.skinned) |> Option.defaultValue([]))))],
+    // Towers and the mall only: an office town draws exactly the four cubes
+    // and its finishes.
     if idle |> List.any((p) => Option.isSome(p.grid)) then
       List.flatten([[cubes((s) => s |> Scene.color(Exterior.beaconRed), (p) => p.beacons)],
         idle |> List.concatMap((p) => p.grid |> Option.map((g) => Exterior.gridAt(look.day, g)) |> Option.toList)])
     else [],
     // Houses only: their gables.
-    if List.length(gables) == 0.0 then [] else [Exterior.gableTemplate |> Scene.lit(white) |> Scene.instanced(gables)],
+    [Finishes.drawnAs(Exterior.gableTemplate, List.range(List.length(Finishes.all)) |> List.map((k) =>
+       idle |> List.concatMap((p) => List.nth(k, p.gables) |> Option.defaultValue([]))))],
   ]))

@@ -220,7 +220,7 @@ expect (List.last(sets) |> Option.map((e) => let (eye, s) = e in Block.isIn(1.0,
 let look = (active: List<float>): Shells.Look => { town: Block.suburbTown, active: active, neon: 1.0, lamps: 1.0, day: false }
 expect List.length(Shells.idleOf(look([1.0]))) == 11.0
 let suburbParts = List.nth(Block.suburbTown, Shells.parts) |> Option.defaultValue([])
-expect List.length(suburbParts) == 12.0 && (suburbParts |> List.all((p) => List.length(p.gables) == 1.0))
+expect List.length(suburbParts) == 12.0 && (suburbParts |> List.all((p) => List.length(List.flatten(p.gables)) == 1.0))
 expect Scene.equals(Shells.shellsOf(look([])), Shells.shellsOf(look([])))
 // Each of the suburb's views stands in the room it names: the front walk
 // (the porch's strip), the hall, living room, kitchen, landing, corridor,

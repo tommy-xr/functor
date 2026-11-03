@@ -42,7 +42,7 @@ let officeBake = bakeOf("office", ["layout.fun", "officeLayout.fun", "building.f
 let officeStatus = Provenance.statusOf(officeBake)
 let officeRooms = roomsOf(officeInterior, officeBake, officeStatus)
 let officeLevel = Portals.levelOf(OfficeLayout.layout, Portals.outsideTop)
-let officeStreet = Exterior.streetOf(OfficeLayout.layout)
+let officeStreet = Facade.office(OfficeLayout.layout)
 let office: Archetype =
   let (night, day) = officeRooms in
   { name: "office", layout: OfficeLayout.layout, colliders: officeInterior.colliders, status: officeStatus,
