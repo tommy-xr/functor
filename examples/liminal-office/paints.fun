@@ -80,7 +80,7 @@ let interiorOf = (p: Palette, name: string, cellParts: List<List<Building.Face>>
     albedo: meshSpans |> List.map((s) => lookAt(p, s.mat).albedo),
     scale: Building.bakeScale,
   } in
-  { cellParts: parts, allFaces: allFaces, cellRanges: cellRanges, meshSpans: meshSpans,
+  { palette: Building.materials, cellParts: parts, allFaces: allFaces, cellRanges: cellRanges, meshSpans: meshSpans,
     interiorData: interiorData, blocks: [], colliders: [],
     night: night, day: { night with name: $"{name}-day", lights: dayLights } }
 

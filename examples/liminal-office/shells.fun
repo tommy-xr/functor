@@ -20,6 +20,7 @@ type Shell = {
   openings: List<Exterior.Box>,
   bands: List<Exterior.Box>,
   litBoxes: List<(Exterior.Box, Color.t)>,
+  gables: List<(Exterior.Box, Color.t)>,
 }
 let shellOf = (a: Archetypes.Archetype): Shell =>
   let l = a.layout in
@@ -58,12 +59,13 @@ let shellOf = (a: Archetypes.Archetype): Shell =>
   // The lit boxes and their colours, the same at every hour.
   { massing: massing, parapet: parapet, openings: openings, bands: bands,
     litBoxes: List.flatten([
-      [(massing, Exterior.concrete), (s.roofBox, Exterior.roofGrey), (s.canopyBox, Exterior.concrete), (s.apronBox, Exterior.apronGrey)],
-      parapet |> List.map((b) => (b, Exterior.concrete)),
+      [(massing, s.siding), (s.roofBox, Exterior.roofGrey), (s.canopyBox, s.siding), (s.apronBox, Exterior.apronGrey)],
+      parapet |> List.map((b) => (b, s.siding)),
       bands |> List.map((b) => (b, Exterior.glass)),
       s.postBoxes |> List.map((b) => (b, Exterior.postGrey)),
       s.extraBoxes,
-    ]) }
+    ]),
+    gables: s.gables }
 
 // Every archetype's shell, by name, built once.
 let shells: Map<string, Shell> = Map.fromList(Archetypes.all |> List.map((a) => (a.name, shellOf(a))))
@@ -72,21 +74,26 @@ let shellAt = (name: string): Shell =>
   | Option.Some(s) => s
   | Option.None => Binary.invalid($"no archetype {name}")
 
-// Box `b` of copy `c` as an instance of the unit cube.
-let place = (c: Block.Copy, b: Exterior.Box): Instance.t =>
+// Box `b` of copy `c`, centred on it and scaled by `s`.
+let placeScaled = (c: Block.Copy, b: Exterior.Box, s: Vec3.t): Instance.t =>
   let mid = Vec3.make((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0) in
-  Instance.trs(Block.toWorld(c, mid), Angle.degrees(c.yaw), b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0)
+  Instance.trs(Block.toWorld(c, mid), Angle.degrees(c.yaw), Vec3.x(s), Vec3.y(s), Vec3.z(s))
+// As an instance of the unit cube.
+let place = (c: Block.Copy, b: Exterior.Box): Instance.t => placeScaled(c, b, Vec3.make(b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0))
+// As an instance of `Exterior.gableTemplate`.
+let placeGable = (c: Block.Copy, b: Exterior.Box): Instance.t => placeScaled(c, b, Exterior.gableScale(b))
 
-// A copy's shell as instances: the lit boxes (tinted), and what glows, by
-// colour, so the hour changes a template's colour, not the instances; and
-// its window grid, placed.
-type Parts = { lit: List<Instance.t>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t>,
+// A copy's shell as instances: the lit boxes and gables (tinted), and what
+// glows, by colour, so the hour changes a template's colour, not the
+// instances; and its window grid, placed.
+type Parts = { lit: List<Instance.t>, gables: List<Instance.t>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t>,
                beacons: List<Instance.t>, grid: Option.t<Exterior.Grid> }
 let partsOf = (c: Block.Copy): Parts =>
   let shell = shellAt(c.archetype) in
   let street = Block.archetypeOf(c).street in
   {
     lit: shell.litBoxes |> List.map((e) => let (b, color) = e in place(c, b) |> Instance.tint(color)),
+    gables: shell.gables |> List.map((e) => let (b, color) = e in placeGable(c, b) |> Instance.tint(color)),
     neon: street.neonBoxes |> List.map((b) => place(c, b)),
     shades: street.shadeBoxes |> List.map((b) => place(c, b)),
     openings: shell.openings |> List.map((b) => place(c, b)),
@@ -95,7 +102,7 @@ let partsOf = (c: Block.Copy): Parts =>
   }
 // Every town's copies' parts, by id, built once at load.
 let parts: List<List<Parts>> = Block.towns |> List.map((t) => t.copies |> List.map(partsOf))
-let none = { lit: [], neon: [], shades: [], openings: [], beacons: [], grid: Option.None }
+let none = { lit: [], gables: [], neon: [], shades: [], openings: [], beacons: [], grid: Option.None }
 
 // The openings glow like the lit rooms behind them by night, neutral glass
 // by day; the neon and shades as on the street side.
@@ -107,15 +114,17 @@ let dayGlass = Color.rgb(0.36, 0.39, 0.42)
 let idleOf = (look: Look): List<float> =>
   List.range(List.length(Block.townAt(look.town).copies)) |> List.filter((id) => not Block.isIn(id, look.active))
 
-// Every idle copy's shell: four instanced cubes for the town. A change of
-// the active set only gathers the prebuilt instances (and re-uploads them);
-// a change of hour recolours the templates.
+// Every idle copy's shell: four instanced cubes for the town, and the
+// gables if it has any. A change of the active set only gathers the
+// prebuilt instances (and re-uploads them); a change of hour recolours the
+// templates.
 let white = Color.rgb(1.0, 1.0, 1.0)
 let shellsOf = (look: Look): Scene.t =>
   let town = List.nth(look.town, parts) |> Option.defaultValue([]) in
   let idle = idleOf(look) |> List.map((id) => List.nth(id, town) |> Option.defaultValue(none)) in
   let cubes = (material: (Scene.t) => Scene.t, of: (Parts) => List<Instance.t>): Scene.t =>
     Scene.cube() |> material |> Scene.instanced(idle |> List.concatMap(of)) in
+  let gables = idle |> List.concatMap((p) => p.gables) in
   Scene.group(List.flatten([
     [cubes((s) => s |> Scene.lit(white), (p) => p.lit),
      cubes((s) => s |> Scene.color(Exterior.neonColor(look.neon)), (p) => p.neon),
@@ -126,4 +135,6 @@ let shellsOf = (look: Look): Scene.t =>
       List.flatten([[cubes((s) => s |> Scene.color(Exterior.beaconRed), (p) => p.beacons)],
         idle |> List.concatMap((p) => p.grid |> Option.map((g) => Exterior.gridAt(look.day, g)) |> Option.toList)])
     else [],
+    // Houses only: their gables.
+    if List.length(gables) == 0.0 then [] else [Exterior.gableTemplate |> Scene.lit(white) |> Scene.instanced(gables)],
   ]))

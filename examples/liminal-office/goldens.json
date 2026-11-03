@@ -285,5 +285,32 @@
     ],
     "inputScript": "mall-service.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-house-porch-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "house-porch-day.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-house-stair-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "house-stair-day.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-suburb-street",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "suburb-street.script",
+    "captureAtFrame": 30
   }
 ]

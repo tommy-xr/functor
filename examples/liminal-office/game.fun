@@ -18,7 +18,8 @@
 // midnight and noon; B toggles the block; G cycles the grids; K cycles how many
 // interiors draw (4, 1, 2); O overlooks the roofs from 20 m up; H toggles the
 // towers, where 1–0 jump to their own views (`towerViews`); C the cinema
-// (`cinemaViews`); P the mall and its lot (mall.fun; `mallViews`); I puts the block
+// (`cinemaViews`); P the mall and its lot (mall.fun; `mallViews`); U the
+// suburb's houses (suburb.fun); I puts the block
 // on the island (island.fun), V cycles its biome; L toggles a flashlight. VR:
 // the left thumbstick walks and strafes; the right turns and walks; X steps
 // the hour, Y jumps midnight ⇄ noon; B toggles the block, A the island; the
@@ -176,9 +177,12 @@ let mallViews = [
   { copy: 0.0, x: 8.0, level: 0.0, z: -52.0, yaw: 0.55, pitch: 0.06 },
   { copy: 0.0, x: 28.5, level: 1.0, z: 16.4, yaw: 1.5708, pitch: -0.2 },
 ]
+// The suburb's views (suburb.fun).
+let houseViews = Suburb.views |> List.map((e) =>
+  let (copy, x, level, z, yaw, pitch) = e in { copy: copy, x: x, level: level, z: z, yaw: yaw, pitch: pitch })
 let viewsOf = (town: float): List<View> =>
   if town == Block.towersTown then towerViews else if town == Block.cinemaTown then cinemaViews
-  else if town == Block.mallTown then mallViews else views
+  else if town == Block.mallTown then mallViews else if town == Block.suburbTown then houseViews else views
 // Views 9 and 0 are in the block (or the grid you're in).
 let inBlock = (n: float): bool => n > 8.0
 
@@ -237,9 +241,9 @@ let still = { x: 0.0, y: 0.0 }
 
 // I and A: onto the island, with the block; or back to the flat ground.
 // Only the pad is level on both grounds: from anywhere else, or from a town
-// of other buildings than the block's (the towers, the cinema, the mall:
-// `towersTown` on), the walker goes to the street (view 9) rather than end
-// up under the other ground or inside a wall.
+// of other buildings than the block's (the towers, the cinema, the mall,
+// the suburb: `towersTown` on), the walker goes to the street (view 9)
+// rather than end up under the other ground or inside a wall.
 // On the island B and VR B keep the block: its night map has every copy's
 // lamp pools painted in.
 let toggleIsland = (model) =>
@@ -311,6 +315,10 @@ let input = (model, key, isDown: bool) =>
       let leaving = model.town == Block.cinemaTown in
       { model with island: false, town: if leaving then 0.0 else Block.cinemaTown, goto: if leaving then 1.0 else 9.0 }
     | Key.P => { model with island: false, town: if model.town == Block.mallTown then 0.0 else Block.mallTown, goto: 1.0 }
+    // Onto the suburb's road (view 9), or back to the office's entrance.
+    | Key.U =>
+      let leaving = model.town == Block.suburbTown in
+      { model with island: false, town: if leaving then 0.0 else Block.suburbTown, goto: if leaving then 1.0 else 9.0 }
     | Key.K => { model with k: nextK(model.k) }
     | Key.I => toggleIsland(model)
     | Key.V => { model with biome: Math.mod(model.biome + 1.0, List.length(Island.biomes)) }

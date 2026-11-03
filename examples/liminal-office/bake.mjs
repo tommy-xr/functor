@@ -30,6 +30,7 @@ const SETTINGS = {
 };
 // Each bake's sources: must match archetypes.fun's `bakeOf` calls.
 const TOWER = ["layout.fun", "towerLayout.fun", "building.fun"];
+const HOUSE = ["layout.fun", "houseLayout.fun", "building.fun", "housePalettes.fun"];
 const ARCHETYPES = {
   office: ["layout.fun", "officeLayout.fun", "building.fun"],
   "tower-typical": TOWER,
@@ -37,6 +38,8 @@ const ARCHETYPES = {
   cinema: ["layout.fun", "building.fun", "paints.fun", "cinemaLayout.fun", "cinemaBuilding.fun"],
   // Baked at half scale: 6 texels/m (mallInterior.fun).
   mall: ["layout.fun", "building.fun", "mallLayout.fun", "mallInterior.fun"],
+  "house-ochre": HOUSE,
+  "house-magenta": HOUSE,
 };
 const BAKES = ["night", "day"];
 const ARTIFACTS = [...BAKES.map((b) => `${b}.png`), "night.mesh.bin"];

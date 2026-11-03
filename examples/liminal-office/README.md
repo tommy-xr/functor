@@ -7,7 +7,7 @@ empty apron. `B` turns it into a block of four turned copies around a
 crossroads; `G` into grids of 4, 16 and 64; `H` into four towers of 8 to 16
 floors, climbed by a dog-leg stair; `C` stands a multiplex cinema on its
 parking lot; `P` a two-level mall round a skylit court, and its parking lot;
-`I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
+`U` a suburb of twelve houses; `I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
 checked on a headset. Not the web: baked files load with `File.bytes`.
 
 ```sh
@@ -17,6 +17,7 @@ functor -d examples/liminal-office run vr
 functor -d examples/liminal-office test     # layout, stairs, cells, partition, provenance, island; no GPU
 npm run test:liminal-office                 # routes, stairs, wall push, hours, cells, island, goldens
 npm run test:liminal-mall                   # the mall: lot to gallery, shop to service exit, draws, goldens
+npm run test:liminal-house                  # the suburb: porch → stair → bedroom window, the loop road
 ```
 
 | Input | Action |
@@ -38,6 +39,7 @@ npm run test:liminal-mall                   # the mall: lot to gallery, shop to 
 | `I` | the flat ground ⇄ the island (with the block; `G` and `H` leave it) |
 | `V` | the island's next biome: grass, snow, desert |
 | `L` | flashlight on / off |
+| `U` | the suburb, from its road (`U` again: back to the office); views 1–8 jump within the nearest house, 9 the road, 0 the magenta stair |
 | VR left thumbstick | walk, strafe |
 | VR right thumbstick | turn, walk |
 | VR `X` / `Y` | next hour / midnight ⇄ noon |
@@ -291,6 +293,35 @@ fetched trunk-and-branch meshes inside the near card. This example keeps to
 checked-in files, so the near card stands alone and looks blocky within a
 few metres.
 
+## The house
+
+A second archetype, in the same kit: `houseLayout.fun`, 10 × 12 m, two
+storeys of 2.85 m. Downstairs a porch (an outside room, like the apron), a
+hall with a straight flight of 15 risers along its south wall, living room,
+dining room, kitchen (back door) and den; upstairs the landing, a corridor
+and three bedrooms. Four windows downstairs and two up portal onto the
+porch strip and yards, which are the collar's four strips: 14 cells, 46
+portals. Lamps light it, bake only, one by the porch door.
+
+- **Palettes** (`housePalettes.fun`): building.fun's materials index for
+  index, repainted. `house-ochre` is sepia; `house-magenta` a children's
+  wing (magenta carpet stair, pink walls, orange trim and ceiling, a white
+  niche). Each is its own archetype and bake: the same mesh, its own
+  textures and albedo. 512² per bake, about 1 MB resident each: 4.2 MB for
+  both palettes, day and night.
+- **Street side** (`houseExterior.fun`): siding up to the eaves, where the
+  gable sits: a cube turned 45° about its long axis, scaled, its lower half
+  sunk into the facade above the bedroom ceilings, its ends just inside
+  the front and back facades so only the upper triangle shows. A porch
+  roof on four posts, two rocking chairs, the porch light's glow, a picket fence with a
+  gate, a path to the road, lawns, a street lamp. Its shell keeps all of
+  that but the facade's holes, gable included (a fifth instanced draw).
+- **The suburb** (`suburb.fun`): twelve houses round a green, three a
+  side facing it across a square loop road that every front path meets,
+  palettes alternating. Quarter-turn yaws only: a mirrored copy would
+  turn its faces inside out. It is a town like the grids (shells, at most
+  `K` interiors, nearby colliders and lights).
+
 ## Day and night
 
 The model holds an `hour`. `hours.fun` maps it to `daylight` (0 at night, 1
@@ -487,10 +518,12 @@ and counts the draws (the concourse's from the corridor: none).
 ## Rebaking
 
 Each bake lives in `baked/<bake>/`: `office`, `tower-typical`, `tower-ends`,
-`cinema`, `mall`. Editing `layout.fun`, `building.fun` (which holds the bake jobs and their
-lights) or an archetype's `<archetype>Layout.fun` (the cinema's
-`paints.fun`, `cinemaLayout.fun` and `cinemaBuilding.fun`; the mall's
-`mallLayout.fun` and `mallInterior.fun`) makes its committed bakes stale:
+`cinema`, `mall`, `house-ochre`, `house-magenta`. Editing `layout.fun`,
+`building.fun` (which holds the bake jobs and their lights) or an
+archetype's `<archetype>Layout.fun` (the cinema's `paints.fun`,
+`cinemaLayout.fun` and `cinemaBuilding.fun`; the mall's `mallLayout.fun`
+and `mallInterior.fun`; the house's `housePalettes.fun`) makes its
+committed bakes stale:
 
 ```sh
 node examples/liminal-office/bake.mjs           # bake, then write baked/<archetype>/provenance.txt

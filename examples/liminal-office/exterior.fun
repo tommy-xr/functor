@@ -141,8 +141,9 @@ type Grid = { night: Scene.t, day: Scene.t }
 
 // The street side's lit boxes, by colour, as instances of one white cube: a
 // single draw; and the neon and the shades, which glow. `extraBoxes` (lit,
-// among `streetBoxes`) and `beaconBoxes` (red) are an archetype's own, on
-// top of the kit's; `lobbyLight` is where the lobby's light spills out.
+// among `streetBoxes`, kept on shells), `beaconBoxes` (red), `siding` (the
+// massing's colour on shells) and `gables` are an archetype's own, on top of
+// the kit's; `lobbyLight` is where the lobby's light spills out.
 type Street = {
   half: float,
   facadeBoxes: List<Box>,
@@ -164,6 +165,8 @@ type Street = {
   extraBoxes: List<(Box, Color.t)>,
   beaconBoxes: List<Box>,
   grid: Option.t<Grid>,
+  siding: Color.t,
+  gables: List<(Box, Color.t)>,
 }
 // Lit boxes as instances of one white cube, tinted.
 let instancedOf = (boxes: List<(Box, Color.t)>): Scene.t =>
@@ -198,7 +201,7 @@ let streetOf = (l: Layout): Street =>
       { tag: $"lamp-{i}", shape: Physics.box(0.12, 4.9, 0.12), at: v(Vec3.x(p), 2.45, Vec3.z(p)) }),
     // Inside the entrance, at head height.
     lobbyLight: (let e = entranceOf(l) in v((e.lo + e.hi) / 2.0, 2.0, l.footprint.z0 + 0.9)),
-    extraBoxes: [], beaconBoxes: [], grid: Option.None }
+    extraBoxes: [], beaconBoxes: [], grid: Option.None, siding: concrete, gables: [] }
 
 // The building's street side, in its own space, with the neon and the lamp
 // heads glowing at `neon` and `lamps` (1 at night), and its window grid by
@@ -220,6 +223,16 @@ let shadeColor = (lamps: float): Color.t => Hours.color(Hours.mix(shadeByDay, so
 // Off by day: about the grey the lit posts show at noon.
 let shadeByDay: Hours.Rgb = { r: 110.0 / 255.0, g: 110.0 / 255.0, b: 116.0 / 255.0 }
 let sodiumGlow: Hours.Rgb = { r: 255.0 / 255.0, g: 190.0 / 255.0, b: 110.0 / 255.0 }
+
+// A gable: a cube turned 45° about its long axis (z), scaled to fill box
+// `b`, ridge at the top; its lower half sinks into what it sits on. As an
+// instance, `gableTemplate` scaled by `gableScale(b)`.
+let gableTemplate = Scene.cube() |> Scene.rotateZ(45deg)
+let gableScale = (b: Box): Vec3.t => v((b.x1 - b.x0) / Math.sqrt(2.0), (b.y1 - b.y0) / Math.sqrt(2.0), b.z1 - b.z0)
+let gableOf = (b: Box, color: Color.t): Scene.t =>
+  let s = gableScale(b) in
+  gableTemplate |> Scene.scaleXYZ(Vec3.x(s), Vec3.y(s), Vec3.z(s))
+    |> Scene.translate(v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0)) |> Scene.lit(color)
 
 // ---- The ground ------------------------------------------------------------------
 

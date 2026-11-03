@@ -218,7 +218,7 @@ let gridOf = (l: Layout, n: float): Exterior.Grid =>
   let faces = quads |> List.map((e) => let (q, lit) = e in q) in
   let lit = 2.0 * List.length(quads |> List.filter((e) => let (q, on) = e in on)) in
   let all = 2.0 * List.length(faces) in
-  let data = { Building.meshOf(faces, []) with groups: [unlitGroup(0.0, lit, glassLit), unlitGroup(lit, all - lit, glassDark)] } in
+  let data = { Building.meshOf(Building.materials, faces, []) with groups: [unlitGroup(0.0, lit, glassLit), unlitGroup(lit, all - lit, glassDark)] } in
   { night: Scene.modelOf(Model.static(data)), day: Scene.modelOf(Model.static({ data with groups: [unlitGroup(0.0, all, glassDay)] })) }
 
 let planterGreen = Building.rgb(58.0, 70.0, 56.0)
