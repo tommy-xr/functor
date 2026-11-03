@@ -1837,6 +1837,8 @@ mod tests {
             "GET /",
             "POST /capture",
             "GET /state",
+            "GET /frames",
+            "GET /spikes",
             "GET /scene",
             "GET /trace",
             "GET /project",

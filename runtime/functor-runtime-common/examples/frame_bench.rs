@@ -408,6 +408,36 @@ fn bench_tick(side: u32) -> f64 {
     call(10_000).as_nanos() as f64 / 10_000.0 / 1_000.0 // us/call
 }
 
+/// The always-on frame telemetry (`GET /frames`): one span per sim stage, the
+/// snapshot drain, and one ring push — what every shell frame adds. Returns
+/// (ns/frame, allocs/frame); allocs must stay 0.
+fn bench_telemetry() -> (f64, f64) {
+    use functor_runtime_common::frame_telemetry::{self as telemetry, FrameRecord, SimStage};
+    let mut ring = telemetry::FrameTelemetry::new(60.0);
+    let mut frame = |n: u64| {
+        for stage in [
+            SimStage::Update,
+            SimStage::Tick,
+            SimStage::Physics,
+            SimStage::PhysicsReconcile,
+            SimStage::PhysicsStep,
+            SimStage::Draw,
+        ] {
+            drop(telemetry::span(stage));
+        }
+        let mut record = FrameRecord { frame: n, ..FrameRecord::default() };
+        record.set_sim(0, &telemetry::take_sim());
+        black_box(ring.push(record));
+    };
+    (0..1_000).for_each(&mut frame); // warmup
+    const FRAMES: u64 = 100_000;
+    let allocs = ALLOC_COUNT.load(Relaxed);
+    let start = Instant::now();
+    (0..FRAMES).for_each(&mut frame);
+    let ns = start.elapsed().as_nanos() as f64 / FRAMES as f64;
+    (ns, (ALLOC_COUNT.load(Relaxed) - allocs) as f64 / FRAMES as f64)
+}
+
 /// The 2D text table: cost as a function of glyphs on screen. Reported
 /// per-glyph as well as per-frame, since glyph count is the thing a game
 /// controls.
@@ -533,4 +563,6 @@ fn main() {
         "tick (identity model pass-through): {:.2} us/call",
         bench_tick(sides[0])
     );
+    let (ns, allocs) = bench_telemetry();
+    println!("frame telemetry (6 stage spans + ring push): {ns:.0} ns/frame, {allocs} allocs/frame");
 }

@@ -1880,7 +1880,10 @@ pub fn android_main(app: AndroidApp) {
         sim.post(move |g| g.push_asset_progress(progress));
         let mut feedback = false;
         preloads.extend(sim.drain_preloads());
-        for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
+        let assets_started = Instant::now();
+        let settled = scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads));
+        let assets_ns = assets_started.elapsed().as_nanos() as u64;
+        for token in settled {
             sim.post(move |g| g.preload_push_settled(token));
         }
         let loads_pending = scene_context.has_pending_loads();
@@ -1918,6 +1921,7 @@ pub fn android_main(app: AndroidApp) {
         let mut record = FrameRecord {
             steps: sub_frames.len() as u32,
             present_us: us(wait_ns),
+            assets_us: us(assets_ns),
             ..FrameRecord::default()
         };
         if let Some(mut fresh) = fresh {

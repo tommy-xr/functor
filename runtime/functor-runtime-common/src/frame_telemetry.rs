@@ -209,6 +209,8 @@ pub struct FrameRecord {
     pub draw_us: u32,
     /// The render thread blocked on the sim thread.
     pub sim_wait_us: u32,
+    /// Shell asset driving: preloads and terrain heightmap decodes.
+    pub assets_us: u32,
     /// Shell rendering. Quest's includes swapchain waits and frame submission.
     pub render_us: u32,
     /// Desktop: the buffer swap. Quest: `xrWaitFrame`.
@@ -255,7 +257,7 @@ pub fn us(ns: u64) -> u32 {
 type Stage = (&'static str, fn(&FrameRecord) -> u32);
 
 /// The stages `frame_stats` summarizes, in report order.
-const SUMMARIZED: [Stage; 11] = [
+const SUMMARIZED: [Stage; 12] = [
     ("frame", |r| r.frame_us),
     ("sim", |r| r.sim_us),
     ("update", |r| r.update_us),
@@ -265,13 +267,16 @@ const SUMMARIZED: [Stage; 11] = [
     ("physics.step", |r| r.physics_step_us),
     ("draw", |r| r.draw_us),
     ("sim.wait", |r| r.sim_wait_us),
+    ("assets", |r| r.assets_us),
     ("render", |r| r.render_us),
     ("present", |r| r.present_us),
 ];
 
 /// Disjoint stages, for naming the one that dominated a spike. The `other`s
-/// are the parent's time outside its timed parts (e.g. the physics hook).
-const LEAVES: [Stage; 10] = [
+/// are the parent's time outside its timed parts: the physics hook, a hot
+/// reload, or untimed shell work (inline-sim time; pipelined, the sim's own
+/// time is not subtracted, so `shell.other` reads low).
+const LEAVES: [Stage; 12] = [
     ("update", |r| r.update_us),
     ("tick", |r| r.tick_us),
     ("physics.reconcile", |r| r.physics_reconcile_us),
@@ -286,8 +291,14 @@ const LEAVES: [Stage; 10] = [
             .saturating_sub(r.update_us + r.tick_us + r.physics_us + r.draw_us)
     }),
     ("sim.wait", |r| r.sim_wait_us),
+    ("assets", |r| r.assets_us),
     ("render", |r| r.render_us),
     ("present", |r| r.present_us),
+    ("shell.other", |r| {
+        r.frame_us.saturating_sub(
+            r.sim_us + r.sim_wait_us + r.assets_us + r.render_us + r.present_us,
+        )
+    }),
 ];
 
 /// The leaf stage that took longest.
@@ -317,7 +328,7 @@ pub struct FrameStats {
     pub spikes: u64,
     pub spike_threshold_us: u32,
     /// `frame`, `sim`, `update`, `tick`, `physics`, `physics.reconcile`,
-    /// `physics.step`, `draw`, `sim.wait`, `render`, `present`.
+    /// `physics.step`, `draw`, `sim.wait`, `assets`, `render`, `present`.
     pub stages: BTreeMap<String, StagePercentiles>,
 }
 

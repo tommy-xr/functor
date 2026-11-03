@@ -1563,7 +1563,10 @@ fn run_headless(
             crate::desktop_xr_emulator::head_y(emulate_xr, caps.xr_floor_locked, xr_eye_height);
         let progress = asset_cache.progress();
         sim.post(move |g| g.push_asset_progress(progress));
-        for token in scene_context.drive_preloads(&asset_cache, sim.drain_preloads()) {
+        let assets_started = Instant::now();
+        let settled = scene_context.drive_preloads(&asset_cache, sim.drain_preloads());
+        let assets_ns = assets_started.elapsed().as_nanos() as u64;
+        for token in settled {
             sim.post(move |g| g.preload_push_settled(token));
         }
         deliver_net_ws(&mut sim, &net_rx, &ws_rx);
@@ -1634,6 +1637,7 @@ fn run_headless(
             frame: frame_count,
             steps: sub_frames.len() as u32,
             frame_us: us(iteration_started.elapsed().as_nanos() as u64),
+            assets_us: us(assets_ns),
             ..FrameRecord::default()
         };
         record.set_sim(sim_ns, &snapshot.stages);
@@ -2305,7 +2309,10 @@ Escape releases while captured"
             // frame queued and drive in-flight ones to settlement; a settled
             // preloadThen delivers its message through update.
             preloads.extend(sim.drain_preloads());
-            for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
+            let assets_started = Instant::now();
+            let settled = scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads));
+            let assets_ns = assets_started.elapsed().as_nanos() as u64;
+            for token in settled {
                 sim.post(move |g| g.preload_push_settled(token));
             }
             let loads_pending = scene_context.has_pending_loads();
@@ -3090,6 +3097,7 @@ Escape again to quit"
             let mut audio_commands = Vec::new();
             let mut record = FrameRecord {
                 steps: sub_frames.len() as u32,
+                assets_us: us(assets_ns),
                 ..FrameRecord::default()
             };
             if let Some(mut fresh) = fresh {
