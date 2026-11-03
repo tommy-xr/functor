@@ -1,0 +1,12 @@
+# The island (I) at midnight, view 9 (up the street), the flashlight on (L)
+# and the eye tilted down to the ground ahead (the first mouse move only
+# anchors the pointer); the liminal-office-island-street-night-flashlight
+# golden captures frame 300.
+2 i down
+4 i up
+10 9 down
+12 9 up
+20 l down
+22 l up
+30 Mouse.Move 400 300
+32 Mouse.Move 400 420

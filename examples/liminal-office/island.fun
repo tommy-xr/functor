@@ -12,9 +12,11 @@ let groundY = Exterior.street - 0.02
 // The terrain's translation: its pad level to `groundY`.
 let offset = v(IslandLayout.centre.x, groundY - IslandLayout.pad.y, IslandLayout.centre.z)
 
-// Meadow low down, scree toward the peaks (the bands blend by height over
-// the declared range), rock on steep faces, snow on the highest crests
-// (190 m: the committed island's peak is 222 m).
+// The heightfield, lit by bands: what the colliders take, and what draws
+// until the colormaps stream in. Meadow low down, scree toward the peaks
+// (the bands blend by height over the declared range), rock on steep
+// faces, snow on the highest crests (190 m: the committed island's peak is
+// 222 m).
 let terrain =
   Terrain.heightmap(Asset.texture("island.png"), IslandLayout.size, IslandLayout.size,
                     IslandLayout.minHeight, IslandLayout.maxHeight)
@@ -23,13 +25,35 @@ let terrain =
   |> Terrain.layered(Color.rgb(0.36, 0.38, 0.22), Color.rgb(0.40, 0.38, 0.33),
                      Color.rgb(0.33, 0.31, 0.29), Color.rgb(0.9, 0.9, 0.9), 190.0)
 
+// The biomes island.mjs paints (`--biome`): a pair of baked colormaps (the
+// light is in them: unlit terrain) and one detail texture, a tile `tile` m
+// across that fades out by `detailFade` m. V cycles them.
+type Biome = { name: string, day: Asset.Texture, night: Asset.Texture, detail: Asset.Texture, tile: float }
+let biome = (name: string, detail: string, tile: float): Biome =>
+  { name: name, day: Asset.texture($"island-{name}-day.png"), night: Asset.texture($"island-{name}-night.png"),
+    detail: Asset.texture(detail), tile: tile }
+let grass = biome("grass", "detail-grass.jpg", 2.0)
+let biomes = [grass, biome("snow", "detail-snow.jpg", 2.5), biome("desert", "detail-sand.jpg", 3.0)]
+let detailFade = 80.0
+let biomeAt = (k: float): Biome => List.nth(k, biomes) |> Option.defaultValue(grass)
+
+// Biome `k`'s ground at `night` (0 by day, 1 by night): its maps cross-faded,
+// and the normal map that lets the flashlight light it.
+type Look = { biome: float, night: float }
+let shaded = (look: Look) =>
+  let b = biomeAt(look.biome) in
+  terrain
+  |> Terrain.colormap(b.day, b.night, look.night)
+  |> Terrain.colormapDetail(b.detail, b.tile, detailFade)
+  |> Terrain.normalMap(Asset.texture("island-normal.png"))
+
 let sea = Scene.plane() |> Scene.scale(2.0 * IslandLayout.size)
   |> Scene.translate(v(IslandLayout.centre.x, IslandLayout.seaLevel + Vec3.y(offset), IslandLayout.centre.z))
   |> Scene.lit(Color.rgb(0.16, 0.23, 0.29))
 
 // Drawn after the block (game.fun), so early-Z rejects terrain behind the
 // buildings; the sea after the terrain, so the land rejects the sea under it.
-let ground = Scene.group([Scene.terrain(terrain) |> Scene.translate(offset), sea])
+let ground = (look: Look): Scene.t => Scene.group([Scene.terrain(shaded(look)) |> Scene.translate(offset), sea])
 
 // Whether (x, z) is on the pad, where the island's ground is the flat
 // ground's height.

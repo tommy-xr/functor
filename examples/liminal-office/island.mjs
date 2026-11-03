@@ -1,10 +1,12 @@
-// Generate the island the block stands on: a 16-bit heightmap PNG and
-// `islandLayout.fun`, the generated constants the game places it with. Node
-// built-ins only; re-running reproduces both files byte for byte (with the
-// same Node: its zlib does the deflate):
+// Generate the island the block stands on: a 16-bit heightmap PNG,
+// `islandLayout.fun` (the generated constants the game places it with) and
+// the terrain's colormaps and normal map (see Colormaps). Node built-ins
+// only; re-running reproduces every file byte for byte (with the same Node:
+// its zlib does the deflate):
 //
-//   node examples/liminal-office/island.mjs                   # the committed island (mixed)
-//   node examples/liminal-office/island.mjs --preset alpine   # or rolling: overwrites both files
+//   node examples/liminal-office/island.mjs                   # the committed island (mixed), every biome
+//   node examples/liminal-office/island.mjs --preset alpine   # or rolling: overwrites every file
+//   node examples/liminal-office/island.mjs --biome snow      # only that biome's maps (quicker, to tune a palette)
 //
 // 2049² samples over 2048 m: one sample per metre, so every terrain LOD
 // vertex lands on a sample. `Physics.heightfield` keeps every other one
@@ -18,7 +20,7 @@
 // plains around it and a smoothstep ramp. Out to `BAND` past the pad's edge
 // the ground stays between the pad and `CAP` above it, so the block's
 // collars (0–8 m over the street) hold every eye there.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { encodePng } from "../../scripts/png.mjs";
 
@@ -30,11 +32,43 @@ const PRESETS = {
   mixed: { cover: 0, peak: 210, massif: 1 },
   alpine: { cover: 0.14, peak: 250, massif: 1 },
 };
-// Run as a script: no arguments, or `--preset <name>`. Imported: `mixed`.
+// Biomes: the colormaps' palette (sRGB, like `Color.rgb`), independent of
+// the terrain's shape. `rock` is the grade where bare rock starts; `snowLine`
+// the height snow starts on gentle ground (none above the peak: no snow).
+// island.fun pairs each with its detail texture.
+const BIOMES = {
+  grass: {
+    lush: [0.33, 0.36, 0.21], dry: [0.42, 0.4, 0.27], hill: [0.4, 0.39, 0.25], gravel: [0.4, 0.37, 0.31],
+    dirt: [0.39, 0.32, 0.24], road: [0.32, 0.31, 0.3], sand: [0.62, 0.57, 0.46], wet: [0.42, 0.39, 0.32],
+    scree: [0.47, 0.46, 0.43], rock: [0.37, 0.35, 0.33], snow: [0.86, 0.87, 0.9], rockGrade: 0.75, snowLine: 185,
+  },
+  snow: {
+    lush: [0.67, 0.69, 0.73], dry: [0.63, 0.65, 0.69], hill: [0.69, 0.7, 0.74], gravel: [0.6, 0.61, 0.64],
+    dirt: [0.45, 0.43, 0.41], road: [0.38, 0.37, 0.37], sand: [0.36, 0.35, 0.34], wet: [0.27, 0.27, 0.27],
+    scree: [0.6, 0.61, 0.64], rock: [0.32, 0.31, 0.3], snow: [0.72, 0.73, 0.77], rockGrade: 0.65, snowLine: 120,
+  },
+  // Cracked hardpan on the flats, rippled sand on the hills, warm gravel on
+  // slopes and scree, red rock; no snow.
+  desert: {
+    lush: [0.66, 0.55, 0.42], dry: [0.71, 0.59, 0.43], hill: [0.73, 0.59, 0.42], gravel: [0.55, 0.43, 0.33],
+    dirt: [0.56, 0.46, 0.35], road: [0.5, 0.44, 0.37], sand: [0.76, 0.69, 0.55], wet: [0.55, 0.49, 0.38],
+    scree: [0.57, 0.45, 0.35], rock: [0.5, 0.37, 0.29], snow: [0.64, 0.54, 0.44], rockGrade: 0.75, snowLine: 1000,
+  },
+};
+// Run as a script: `[--preset <name>] [--biome <name>]`; without `--biome`
+// every biome's maps are painted. Imported: `mixed`.
 const RUN = process.argv[1] === fileURLToPath(import.meta.url);
 const args = RUN ? process.argv.slice(2) : [];
-const PRESET_NAME = args.length === 0 ? "mixed" : args.length === 2 && args[0] === "--preset" ? args[1] : "";
-if (!Object.hasOwn(PRESETS, PRESET_NAME)) throw new Error(`usage: island.mjs [--preset ${Object.keys(PRESETS).join("|")}]`);
+const OPTIONS = { preset: "mixed", biome: "" };
+const usage = () => new Error(`usage: island.mjs [--preset ${Object.keys(PRESETS).join("|")}] [--biome ${Object.keys(BIOMES).join("|")}]`);
+for (let k = 0; k < args.length; k += 2) {
+  const name = args[k].slice(2);
+  if (!args[k].startsWith("--") || !Object.hasOwn(OPTIONS, name) || k + 1 >= args.length) throw usage();
+  OPTIONS[name] = args[k + 1];
+}
+const PRESET_NAME = OPTIONS.preset;
+const PAINTED = OPTIONS.biome === "" ? Object.keys(BIOMES) : [OPTIONS.biome];
+if (!Object.hasOwn(PRESETS, PRESET_NAME) || !PAINTED.every((b) => Object.hasOwn(BIOMES, b))) throw usage();
 const PRESET = PRESETS[PRESET_NAME];
 const SEED = 2049;
 const SAMPLES = 2049;
@@ -156,9 +190,11 @@ const region = (x, z, s) => {
 // 350 m inland. Inland, the region mask blends gentle plains, rolling
 // hills, and ridged mountains, all over a warped domain so the borders
 // wander.
-const island = (x, z) => {
+// `islandAt` also returns what the colormaps paint from: `s` (inland) and
+// the hill and mountain weights.
+const islandAt = (x, z) => {
   const s = inland(x, z);
-  if (s < 0) return SEA_LEVEL - shelf(26, 300, -s);
+  if (s < 0) return { h: SEA_LEVEL - shelf(26, 300, -s), s, hills: 0, mount: 0 };
   const wx = x + 140 * fbm(x / 500 + 1.7, z / 500 + 9.2, 3);
   const wz = z + 140 * fbm(x / 500 - 4.4, z / 500 - 2.8, 3);
   const r = region(wx, wz, s);
@@ -170,8 +206,9 @@ const island = (x, z) => {
   const hills = hillWeight > 0 ? hillWeight * 60 * (fbm(wx / 240 - 3.3, wz / 240 + 8.8, 5, 0.5) + 0.5) : 0;
   const mountains = mountWeight > 0 ? PRESET.peak * mountWeight * (0.3 * mountWeight + 0.7 * ridged(wx / 300 + 2.9, wz / 300 - 5.7)) : 0;
   const calm = lerp(0.25, 1, smoothstep(80, 320, Math.hypot(x - PAD_MIDDLE.x, z - PAD_MIDDLE.z)));
-  return SEA_LEVEL + shelf(16, 350, s) + land * (plains * calm + hills + mountains);
+  return { h: SEA_LEVEL + shelf(16, 350, s) + land * (plains * calm + hills + mountains), s, hills: hillWeight, mount: mountWeight };
 };
+const island = (x, z) => islandAt(x, z).h;
 
 // Distance from (x, z) to the pad's rect, in the terrain's space (0 on it).
 const fromPad = (x, z) => {
@@ -393,7 +430,7 @@ const placeProps = () => {
     placed += 1;
   }
   const sited = (p) => ({ ...p, y: ground(p.x, p.z) });
-  return { trees: trees.map(sited), rocks: rocks.map(sited), sites: sites.length };
+  return { trees: trees.map(sited), rocks: rocks.map(sited), sites: sites.length, groves };
 };
 
 // Fails unless the caps hold, and every prop is on the land, off the
@@ -415,6 +452,218 @@ const checkProps = ({ trees, rocks }) => {
   }
 };
 
+// ---- Colormaps -------------------------------------------------------------------
+//
+// `Terrain.colormap`'s day and night maps and `Terrain.normalMap`'s normals,
+// COLORMAP² over the island: one texel per 2 m, its centre on an odd sample
+// ((i + 0.5) / COLORMAP of the way across, as the shader's terrainUv maps it).
+// Albedo from the biome's palette by region, coast, grade, height and the
+// town; then lit: day = albedo × (ambient + sun·N·L) × occlusion, night the
+// same under the moon plus the street lights. No cast shadows.
+const COLORMAP = 1024;
+const STEP = SIZE / COLORMAP; // 2 m, two samples
+
+// The bake's light, authored as the frame's lights are (sRGB colour ×
+// intensity; `direction` is the way the light travels). islandLayout.fun
+// carries it to hours.fun, so props and buildings match the ground. By day
+// a high sun (60°), so slopes facing away still read under the flashlight.
+const LIGHT = {
+  day: { ambient: [0.7, 0.72, 0.78], sun: [1.0, 0.94, 0.82], intensity: 1.5, direction: [0.42, -0.87, 0.27] },
+  night: { ambient: [0.09, 0.08, 0.14], sun: [0.35, 0.38, 0.55], intensity: 0.6, direction: [0.3, -0.8, 0.5] },
+};
+// island.fun's `groundY` (tests.fun checks it): the pad's height in the world.
+export const GROUND_Y = -0.05;
+
+const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const toSrgb = (c) => (c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055);
+const lin = (rgb) => rgb.map(toLinear);
+const mix3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const unit = ([x, y, z]) => {
+  const l = Math.hypot(x, y, z);
+  return [x / l, y / l, z / l];
+};
+// Linear light from an authored colour × intensity, as the engine packs it.
+const radiance = (rgb, k) => lin(rgb).map((v) => v * k);
+
+// The street lights, read from exterior.fun (lobbyLight, sodiumLight,
+// lampHeads) and block.fun (streetWidth), and placed on every copy as
+// block.fun places them; tests.fun checks the result against game.fun's.
+const source = (name) => readFileSync(fileURLToPath(new URL(name, import.meta.url)), "utf8");
+const line = (text, re) => {
+  const m = text.match(re);
+  if (!m) throw new Error(`island.mjs can't find ${re}: update its parser`);
+  return m[1];
+};
+const fields = (text) => Object.fromEntries([...text.matchAll(/(\w+): (-?[\d.]+)/g)].map(([, k, v]) => [k, Number(v)]));
+const streetLights = () => {
+  const exterior = source("exterior.fun");
+  const lobby = fields(line(exterior, /^let lobbyLight = \{(.*)\}$/m));
+  const lamp = fields(line(exterior, /^let sodiumLight = \{(.*)\}$/m));
+  const heads = [...line(exterior, /^let lampHeads = \[(.*)\]$/m).matchAll(/v\((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)/g)]
+    .map((m) => m.slice(1).map(Number));
+  const centre = -Number(line(source("block.fun"), /^let streetWidth = (-?[\d.]+)$/m)) / 2;
+  const turn = (deg, x, z) => {
+    const a = (deg * Math.PI) / 180;
+    return [x * Math.cos(a) + z * Math.sin(a), z * Math.cos(a) - x * Math.sin(a)];
+  };
+  const lights = [];
+  for (let k = 0; k < 4; k += 1) {
+    const [cx, cz] = turn(90 * k, centre, centre);
+    const world = (x, y, z) => {
+      const [tx, tz] = turn(90 * k, x, z);
+      return { x: tx + centre - cx, y, z: tz + centre - cz };
+    };
+    const { r, g, b, intensity, range } = lobby;
+    lights.push({ ...world(lobby.x, lobby.y, lobby.z), r, g, b, intensity, range });
+    for (const [x, y, z] of heads) {
+      lights.push({ ...world(x, y - lamp.drop, z), r: lamp.r, g: lamp.g, b: lamp.b, intensity: lamp.intensity, range: lamp.range });
+    }
+  }
+  return lights;
+};
+
+// Dirt tracks from the pad's edge out to the town groves and down to the
+// south beach: polylines (8 m steps) that wander up to 6 m either side.
+const tracks = (groves) => {
+  const targets = groves.slice(0, TOWN_GROVES).map((g) => [g.x, g.z, GROVE_RADIUS]);
+  let south = PAD_MIDDLE.z;
+  while (inland(PAD_MIDDLE.x, south) > 15) south -= 4;
+  targets.push([PAD_MIDDLE.x, south, 0]);
+  // No two leave within 30° of each other.
+  const heading = ([x, z]) => Math.atan2(z - PAD_MIDDLE.z, x - PAD_MIDDLE.x);
+  const apartFrom = (t, k) => targets.slice(0, k).every((u) => Math.abs(Math.atan2(Math.sin(heading(t) - heading(u)), Math.cos(heading(t) - heading(u)))) > Math.PI / 6);
+  return targets.filter(apartFrom).map(([tx, tz, stop], n) => {
+    const length = Math.hypot(tx - PAD_MIDDLE.x, tz - PAD_MIDDLE.z);
+    const [ux, uz] = [(tx - PAD_MIDDLE.x) / length, (tz - PAD_MIDDLE.z) / length];
+    const points = [];
+    for (let d = 40; d <= length - stop; d += 8) {
+      const side = 6 * perlin(d / 45 + 7.3 * n, 3.1 * n) * smoothstep(40, 80, d);
+      points.push([PAD_MIDDLE.x + ux * d - uz * side, PAD_MIDDLE.z + uz * d + ux * side]);
+    }
+    return points;
+  });
+};
+const toSegment = (x, z, [ax, az], [bx, bz]) => {
+  const [dx, dz] = [bx - ax, bz - az];
+  const t = clamp(((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz), 0, 1);
+  return Math.hypot(x - ax - t * dx, z - az - t * dz);
+};
+
+// Soft occlusion under every tree and rock: a darkening that fades out at
+// `reach` metres from the prop, multiplied into both maps.
+const propShade = ({ trees, rocks }) => {
+  const shade = new Float32Array(COLORMAP * COLORMAP).fill(1);
+  const texel = (v) => (v + SIZE / 2) / STEP - 0.5;
+  const blob = (x, z, reach, depth) => {
+    for (let j = Math.max(0, Math.floor(texel(z - reach))); j <= Math.min(COLORMAP - 1, Math.ceil(texel(z + reach))); j += 1) {
+      for (let i = Math.max(0, Math.floor(texel(x - reach))); i <= Math.min(COLORMAP - 1, Math.ceil(texel(x + reach))); i += 1) {
+        const d = Math.hypot(-SIZE / 2 + (i + 0.5) * STEP - x, -SIZE / 2 + (j + 0.5) * STEP - z) / reach;
+        if (d < 1) shade[j * COLORMAP + i] *= 1 - depth * (1 - d * d) ** 2;
+      }
+    }
+  };
+  for (const t of trees) blob(t.x, t.z, 3.2 * t.size, 0.45);
+  for (const r of rocks) blob(r.x, r.z, 0.7 * Math.max(r.sx, r.sz) + 1, 0.35);
+  return shade;
+};
+
+// Horizon occlusion: the mean openness over 8 directions, marched out to
+// ~350 m in growing steps; valleys and the feet of slopes darken.
+const horizon = (si, sj, h0) => {
+  let open = 0;
+  for (let d = 0; d < 8; d += 1) {
+    const [dx, dz] = [Math.cos((d * Math.PI) / 4), Math.sin((d * Math.PI) / 4)];
+    let tangent = 0;
+    for (let k = 0, dist = 3; k < 10; k += 1, dist *= 1.7) {
+      const i = clamp(Math.round(si + (dx * dist) / CELL), 0, SAMPLES - 1);
+      const j = clamp(Math.round(sj + (dz * dist) / CELL), 0, SAMPLES - 1);
+      tangent = Math.max(tangent, (sample(i, j) - h0) / dist);
+    }
+    open += 1 - tangent / Math.hypot(1, tangent);
+  }
+  const ao = open / 8;
+  return 1 + (ao * ao - 1) * 0.6;
+};
+
+// The biome's albedo (linear) at a texel, from the ground there: `part` is
+// `islandAt`'s, `track` the distance to the nearest dirt track.
+const albedoAt = (b, x, z, h, grade, part, track) => {
+  const pad = fromPad(x, z);
+  // Macro variation: broad patches of lusher and drier ground, finer mottling.
+  const macro = 0.5 + fbm(x / 160 + 41.3, z / 160 - 12.9, 3);
+  const mottle = fbm(x / 30 - 8.1, z / 30 + 27.4, 2);
+  let c = mix3(b.lush, b.dry, smoothstep(0.2, 0.8, macro + 0.25 * mottle));
+  c = mix3(c, b.hill, 0.6 * smoothstep(0.05, 0.5, part.hills) * smoothstep(0.35, 0.65, 0.5 + mottle));
+  c = mix3(c, b.gravel, smoothstep(0.3, 0.55, grade + 0.2 * mottle));
+  // Above the treeline scree; steep faces bare rock; snow on gentler ground
+  // from the snow line.
+  c = mix3(c, b.scree, smoothstep(TREELINE - 10, TREELINE + 30, h + 25 * mottle));
+  c = mix3(c, b.rock, smoothstep(b.rockGrade - 0.2, b.rockGrade + 0.15, grade + 0.15 * part.mount * mottle));
+  c = mix3(c, b.snow, smoothstep(b.snowLine, b.snowLine + 15, h + 12 * mottle) * (1 - smoothstep(0.6, 1.0, grade)));
+  // The beach: wet sand at the waterline, dry above (and the seabed).
+  const beach = (1 - smoothstep(18, 45, part.s + 30 * mottle)) * (1 - smoothstep(2, 5, h));
+  c = mix3(c, mix3(b.wet, b.sand, smoothstep(0.1, 1.2, h)), beach);
+  // The town: dirt around the pad and along the tracks, the road on it.
+  const dirt = Math.max(1 - smoothstep(4, 18 + 10 * (mottle + 0.5), pad), 1 - smoothstep(1.4, 3 + 2 * mottle, track));
+  c = mix3(c, b.dirt, dirt);
+  c = mix3(c, b.road, 1 - smoothstep(0, 2, pad));
+  const vary = 0.9 + 0.2 * (0.5 + mottle);
+  return lin(c).map((v) => v * vary);
+};
+
+// Each biome's day and night maps (sRGB RGB8) and the normal map
+// (terrain-local, xyz × 0.5 + 0.5, as `Terrain.normalMap` reads it). The
+// light at a texel is the same for every biome; only the albedo differs.
+const paint = (biomes, props, lights) => {
+  const maps = biomes.map((name) => ({ name, b: BIOMES[name], day: Buffer.alloc(COLORMAP * COLORMAP * 3), night: Buffer.alloc(COLORMAP * COLORMAP * 3) }));
+  const normals = Buffer.alloc(COLORMAP * COLORMAP * 3);
+  const sky = ["day", "night"].map((k) => ({
+    ambient: lin(LIGHT[k].ambient), sun: radiance(LIGHT[k].sun, LIGHT[k].intensity), toward: unit(LIGHT[k].direction.map((v) => -v)),
+  }));
+  const lamps = lights.map((l) => {
+    const [x, z] = toTerrain(l.x, l.z);
+    return { x, z, y: l.y - GROUND_Y + PAD_Y, range: l.range, light: radiance([l.r, l.g, l.b], l.intensity) };
+  });
+  const paths = tracks(props.groves);
+  const shade = propShade(props);
+  for (let j = 0; j < COLORMAP; j += 1) {
+    for (let i = 0; i < COLORMAP; i += 1) {
+      const [si, sj] = [2 * i + 1, 2 * j + 1];
+      const [x, z] = [at(si), at(sj)];
+      const h = sample(si, sj);
+      const dx = (sample(si + 1, sj) - sample(si - 1, sj)) / (2 * CELL);
+      const dz = (sample(si, sj + 1) - sample(si, sj - 1)) / (2 * CELL);
+      const n = unit([-dx, 1, -dz]);
+      let track = Infinity;
+      for (const p of paths) for (let k = 0; k + 1 < p.length; k += 1) track = Math.min(track, toSegment(x, z, p[k], p[k + 1]));
+      const part = islandAt(x, z);
+      const occlusion = horizon(si, sj, h) * shade[j * COLORMAP + i];
+      const [dayLight, nightLight] = sky.map((l) => {
+        const ndl = Math.max(0, n[0] * l.toward[0] + n[1] * l.toward[1] + n[2] * l.toward[2]);
+        return [0, 1, 2].map((c) => (l.ambient[c] + l.sun[c] * ndl) * occlusion);
+      });
+      // The street lights, at night only: the engine's falloff, (1 − d²/r²)².
+      for (const l of lamps) {
+        const v = [l.x - x, l.y - h, l.z - z];
+        const d = Math.hypot(...v);
+        if (d >= l.range) continue;
+        const f = (1 - (d * d) / (l.range * l.range)) ** 2 * Math.max(0, (n[0] * v[0] + n[1] * v[1] + n[2] * v[2]) / d);
+        for (let c = 0; c < 3; c += 1) nightLight[c] += l.light[c] * f * shade[j * COLORMAP + i];
+      }
+      const o = (j * COLORMAP + i) * 3;
+      for (const m of maps) {
+        const albedo = albedoAt(m.b, x, z, h, Math.hypot(dx, dz), part, track);
+        for (let c = 0; c < 3; c += 1) {
+          m.day[o + c] = Math.round(clamp(toSrgb(albedo[c] * dayLight[c]), 0, 1) * 255);
+          m.night[o + c] = Math.round(clamp(toSrgb(albedo[c] * nightLight[c]), 0, 1) * 255);
+        }
+      }
+      for (let c = 0; c < 3; c += 1) normals[o + c] = Math.round((n[c] * 0.5 + 0.5) * 255);
+    }
+  }
+  return { maps, normals };
+};
+
 const num = (v, digits = 3) => {
   const s = (Math.round(v * 10 ** digits) / 10 ** digits).toString();
   return s.includes(".") ? s : `${s}.0`;
@@ -425,13 +674,14 @@ const main = () => {
   const s = survey();
   const props = placeProps();
   checkProps(props);
+  const lights = streetLights();
   const pixels = Buffer.alloc(SAMPLES * SAMPLES * 2);
   levels.forEach((l, k) => pixels.writeUInt16BE(l, k * 2));
   const png = encodePng(SAMPLES, SAMPLES, 16, 0, pixels);
   writeFileSync(fileURLToPath(new URL("island.png", import.meta.url)), png);
 
   const fun = `// islandLayout.fun — GENERATED by island.mjs (preset ${PRESET_NAME}, seed ${SEED}); do not edit.
-// Rerun the script after changing the island; it rewrites this and island.png.
+// Rerun the script after changing the island; it rewrites this, island.png and the maps.
 // Heights are the terrain's own (its samples' range); x and z are the block's.
 
 let size = ${num(SIZE)} // m, square
@@ -460,14 +710,38 @@ ${props.trees.map((t, i) => `  { id: ${num(i)}, x: ${num(t.x + CENTRE.x)}, y: ${
 let rocks = [
 ${props.rocks.map((r, i) => `  { id: ${num(i)}, x: ${num(r.x + CENTRE.x)}, y: ${num(r.y)}, z: ${num(r.z + CENTRE.z)}, yaw: ${num(r.yaw)}, tilt: ${num(r.tilt)}, roll: ${num(r.roll)}, sx: ${num(r.sx)}, sy: ${num(r.sy)}, sz: ${num(r.sz)} },`).join("\n")}
 ]
+// The colormaps' bake (island-<biome>-day/-night.png, island-normal.png):
+// the pad's height in the world, the street lights painted into the night
+// map (exterior.fun's, on every copy, in the world), and the sun or moon
+// and ambient each map was lit with, as \`Light.directional\` and
+// \`Light.ambient\` take them.
+let groundY = ${num(GROUND_Y)}
+let lamps = [
+${lights.map((l) => `  { x: ${num(l.x)}, y: ${num(l.y)}, z: ${num(l.z)}, r: ${num(l.r)}, g: ${num(l.g)}, b: ${num(l.b)}, intensity: ${num(l.intensity)}, range: ${num(l.range)} },`).join("\n")}
+]
+let light = {
+${["day", "night"].map((k) => {
+    const { ambient: a, sun: c, intensity, direction: d } = LIGHT[k];
+    const rgb = ([r, g, b]) => `{ r: ${num(r)}, g: ${num(g)}, b: ${num(b)} }`;
+    return `  ${k}: { ambient: ${rgb(a)}, sun: ${rgb(c)}, intensity: ${num(intensity)}, direction: { x: ${num(d[0])}, y: ${num(d[1])}, z: ${num(d[2])} } },`;
+  }).join("\n")}
+}
 `;
   writeFileSync(fileURLToPath(new URL("islandLayout.fun", import.meta.url)), fun);
+
+  const { maps, normals } = paint(PAINTED, props, lights);
+  const sizes = [...maps.flatMap((m) => [[`island-${m.name}-day.png`, m.day], [`island-${m.name}-night.png`, m.night]]), ["island-normal.png", normals]]
+    .map(([name, pixels]) => {
+      const bytes = encodePng(COLORMAP, COLORMAP, 8, 2, pixels);
+      writeFileSync(fileURLToPath(new URL(name, import.meta.url)), bytes);
+      return `${name} ${bytes.length}`;
+    });
 
   console.log(
     `wrote ${SAMPLES}² heightmap (${png.length} bytes); steepest grade ${(s.steepest * 100).toFixed(1)}%; ` +
       `under the pad ${s.relief.toFixed(2)} m relief, ${(s.slope * 100).toFixed(1)}% grade before flattening; ` +
       `highest ${s.highest.toFixed(1)} m; pad ${PAD_Y.toFixed(3)} m, band ${s.yMin.toFixed(3)}–${s.yMax.toFixed(3)} m; ` +
-      `${props.trees.length} trees, ${props.sites} rocks of ${props.rocks.length} boxes`,
+      `${props.trees.length} trees, ${props.sites} rocks of ${props.rocks.length} boxes; ${COLORMAP}² maps: ${sizes.join(", ")} bytes`,
   );
 };
 

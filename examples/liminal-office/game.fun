@@ -14,9 +14,11 @@
 // the street, and a turned copy's window. T steps the hour; N jumps between
 // midnight and noon; B toggles the block; G cycles the grids; K cycles how many
 // interiors draw (4, 1, 2); O overlooks the roofs from 20 m up; I puts the
-// block on the island (island.fun). VR: the left thumbstick walks and
-// strafes; the right turns and walks; X steps the hour, Y jumps midnight ⇄
-// noon; B toggles the block, A the island.
+// block on the island (island.fun), V cycles its biome; L toggles a
+// flashlight. VR: the left thumbstick walks and strafes; the right turns and
+// walks; X steps the hour, Y jumps midnight ⇄ noon; B toggles the block, A
+// the island; the right trigger toggles the flashlight, held in the right
+// hand.
 //
 // layout.fun is the one layout authority; building.fun derives the mesh,
 // colliders and bake jobs from it, portals.fun the culling cells, and
@@ -38,19 +40,43 @@ let bakes = Building.bakes
 // them, by day as by night. None casts shadows: a shadow pass would draw
 // every hidden room. Each copy has a lobby spill and two street lamps; the
 // frame takes those nearest the eye that fit the 8 forward-light slots.
-let pointLights = (o: Hours.Outdoor, c: Block.Copy): List<(Vec3.t, Light.t)> =>
-  let point = (at: Vec3.t, color: Color.t, intensity: float, range: float) =>
-    let p = Block.toWorld(c, at) in (p, Light.point(p, color, intensity, range) |> Light.baked) in
+// A copy's street lights in the world, as plain data: the lobby's spill and
+// a sodium lamp under each head (`switched`: off by day). island.mjs paints
+// the same lights into the island's night map; tests.fun checks they agree.
+type StreetLight = { at: Vec3.t, r: float, g: float, b: float, intensity: float, range: float, switched: bool }
+let streetLights = (c: Block.Copy): List<StreetLight> =>
+  let lobby = Exterior.lobbyLight in
+  let lamp = Exterior.sodiumLight in
   List.flatten([
-    // The lobby's light spilling onto the apron.
-    [point(v(10.0, 2.0, 0.9), Color.rgb(0.85, 0.95, 0.8), 1.2, 9.0)],
-    Exterior.lampHeads |> List.map((p) => point(p |> Vec3.add(v(0.0, -0.2, 0.0)), Color.rgb(1.0, 0.68, 0.36), 0.9 * o.lamps, 14.0)),
+    [{ at: Block.toWorld(c, v(lobby.x, lobby.y, lobby.z)), r: lobby.r, g: lobby.g, b: lobby.b,
+       intensity: lobby.intensity, range: lobby.range, switched: false }],
+    Exterior.lampHeads |> List.map((p) =>
+      { at: Block.toWorld(c, p |> Vec3.add(v(0.0, 0.0 - lamp.drop, 0.0))), r: lamp.r, g: lamp.g, b: lamp.b,
+        intensity: lamp.intensity, range: lamp.range, switched: true }),
   ])
-let frameLights = (o: Hours.Outdoor, copies: List<Block.Copy>, eye: Vec3.t): List<Light.t> => List.flatten([
+let pointLights = (o: Hours.Outdoor, c: Block.Copy): List<(Vec3.t, Light.t)> =>
+  streetLights(c) |> List.map((s) =>
+    (s.at, Light.point(s.at, Color.rgb(s.r, s.g, s.b), if s.switched then s.intensity * o.lamps else s.intensity, s.range)
+             |> Light.baked))
+// The flashlight (none, or one spot) goes third: the island's colormap
+// terrain is lit only by the first unbaked spot within the first 8 lights,
+// so it takes a point light's slot rather than queue behind them.
+let frameLights = (o: Hours.Outdoor, copies: List<Block.Copy>, eye: Vec3.t, flashlight: List<Light.t>): List<Light.t> => List.flatten([
   [Light.ambient(Hours.color(o.ambient)) |> Light.baked,
    Light.directional(o.sunDirection, Hours.color(o.sun), o.sunIntensity) |> Light.baked],
-  Block.nearestLights(eye, copies |> List.concatMap((c) => pointLights(o, c))),
+  flashlight,
+  Block.nearestLights(Block.pointSlots - List.length(flashlight), eye, copies |> List.concatMap((c) => pointLights(o, c))),
 ])
+
+// The flashlight: L on the desktop, held just below the eye and aimed where
+// you look; in VR the right trigger, aimed with the right controller.
+let flashlightCone = Angle.degrees(20.0)
+let flashlightRange = 60.0
+let flashlightIntensity = 1.6
+let flashlightColor = Color.rgb(1.0, 0.92, 0.78)
+// Where the camera points: yaw 0 / pitch 0 looks down +Z, positive pitch up.
+let lookDir = (yaw: float, pitch: float): Vec3.t =>
+  v(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch))
 // Without a bake, light the interior flatly so it stays walkable.
 let unbakedLight = Light.ambient(Color.rgb(0.55, 0.57, 0.5))
 
@@ -141,6 +167,14 @@ let init = {
   props: Island.noProps,
   // The eye overlooking the roofs (O).
   overlook: false,
+  // The island's biome (an index into `Island.biomes`).
+  biome: 0.0,
+  // The flashlight; whether L or the right trigger was down at the last
+  // event (a press is a change), and the right controller's aim in VR.
+  flashlight: false,
+  flashKey: false,
+  padTrigger: false,
+  hand: Option.None,
   // From the last tick: where the player stood and whether on the ground,
   // the nearest copy and the eye's cell in it (-1: outside every cell),
   // which copies' interiors draw and which have colliders (ids), and
@@ -167,6 +201,8 @@ let still = { x: 0.0, y: 0.0 }
 // I and A: onto the island, with the block; or back to the flat ground.
 // Only the pad is level on both grounds: from anywhere else, the walker
 // goes to the street (view 9) rather than end up under the other ground.
+// On the island B and VR B keep the block: its night map has every copy's
+// lamp pools painted in.
 let toggleIsland = (model) =>
   { model with island: not model.island, town: if model.island then model.town else 1.0,
                goto: if Island.onPad(model.at.x, model.at.z) then model.goto else 9.0 }
@@ -184,13 +220,15 @@ let toGrid = (model) => { (if model.island then toggleIsland(model) else model) 
 
 let sampledInput = (model, snap: Input.snapshot) =>
   let pad = (match snap.xr with
-    | Option.Some(xr) => { stick: xr.left.thumbstick, look: xr.right.thumbstick, x: xr.left.primaryPressed, y: xr.left.secondaryPressed, a: xr.right.primaryPressed, b: xr.right.secondaryPressed }
-    | Option.None => { stick: still, look: still, x: false, y: false, a: false, b: false }) in
+    | Option.Some(xr) => { stick: xr.left.thumbstick, look: xr.right.thumbstick, x: xr.left.primaryPressed, y: xr.left.secondaryPressed, a: xr.right.primaryPressed, b: xr.right.secondaryPressed,
+                           trigger: xr.right.trigger > 0.5, hand: xr.right.aim }
+    | Option.None => { stick: still, look: still, x: false, y: false, a: false, b: false, trigger: false, hand: Option.None }) in
   let stepped = if pad.x && not model.padX then nextHour(model.hour) else model.hour in
-  let toggled = { model with town: if pad.b && not model.padB then toggleBlock(model.town) else model.town } in
+  let toggled = { model with town: if model.island || not (pad.b && not model.padB) then model.town else toggleBlock(model.town) } in
   { (if pad.a && not model.padA then toggleIsland(toggled) else toggled) with
     hour: if pad.y && not model.padY then dayOrNight(stepped) else stepped,
-    padX: pad.x, padY: pad.y, padA: pad.a, padB: pad.b,
+    padX: pad.x, padY: pad.y, padA: pad.a, padB: pad.b, padTrigger: pad.trigger, hand: pad.hand,
+    flashlight: model.flashlight != (pad.trigger && not model.padTrigger),
     // In a headset the head pitches; a tilted camera would tilt the horizon.
     pitch: if snap.xr == Option.None then model.pitch else 0.0,
     walk: unit(axis(Key.S, Key.W, snap) + axis(Key.Down, Key.Up, snap) + deadzone(pad.stick.y) + deadzone(pad.look.y)),
@@ -208,7 +246,9 @@ let mouseMove = (model, x: float, y: float) =>
       look: MouseAt(x, y) }
 
 let input = (model, key, isDown: bool) =>
-  if not isDown then model
+  // L toggles once per press: a held key repeats.
+  if key == Key.L then { model with flashlight: model.flashlight != (isDown && not model.flashKey), flashKey: isDown }
+  else if not isDown then model
   else match key with
     | Key.Num1 => { model with goto: 1.0 }
     | Key.Num2 => { model with goto: 2.0 }
@@ -222,10 +262,11 @@ let input = (model, key, isDown: bool) =>
     | Key.Num0 => { model with goto: 10.0 }
     | Key.T => { model with hour: nextHour(model.hour) }
     | Key.N => { model with hour: dayOrNight(model.hour) }
-    | Key.B => { model with town: toggleBlock(model.town) }
+    | Key.B => { model with town: if model.island then model.town else toggleBlock(model.town) }
     | Key.G => toGrid(model)
     | Key.K => { model with k: nextK(model.k) }
     | Key.I => toggleIsland(model)
+    | Key.V => { model with biome: Math.mod(model.biome + 1.0, List.length(Island.biomes)) }
     | Key.O => { model with overlook: not model.overlook, pitch: if model.overlook then 0.0 else overlookPitch }
     | _ => model
 
@@ -305,7 +346,7 @@ let draw = (model, tts: float) =>
   let p = Physics.position(playerTag) in
   let eye = eyeOf(model, p) in
   let daylight = Hours.daylight(model.hour) in
-  let o = Hours.outdoorAt(daylight) in
+  let o = if model.island then Hours.islandOutdoorAt(daylight) else Hours.outdoorAt(daylight) in
   let town = Block.townAt(model.town) in
   // On the island, the island's reach.
   let far = Hours.reachAt(if model.island then Island.reach else town.reach, daylight) in
@@ -326,9 +367,18 @@ let draw = (model, tts: float) =>
   // On the island the props draw after the buildings and the terrain last,
   // so early-Z rejects what's behind them.
   let scene = if model.island
-    then Scene.group([buildings, Scene.memo("island-props", model.props, Island.propsScene), Island.ground, resident])
+    then Scene.group([buildings, Scene.memo("island-props", model.props, Island.propsScene),
+                      Scene.memo("island-ground", { biome: model.biome, night: 1.0 - daylight }, Island.ground), resident])
     else Scene.group([town.ground, buildings, resident]) in
-  let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyAt(id)), eye) in
+  // On XR the beam follows the right controller, mapped through the camera.
+  let (from, dir) = match model.hand with
+    | Option.None => (eye |> Vec3.add(v(0.0, -0.25, 0.0)), lookDir(model.yaw, model.pitch))
+    | Option.Some(pose) =>
+      let m = Camera3D.mapTrackedPose(camera, pose) in
+      (v(m.position.x, m.position.y, m.position.z), v(m.forward.x, m.forward.y, m.forward.z)) in
+  let flashlight = if model.flashlight
+    then [Light.spot(from, dir, flashlightColor, flashlightIntensity, flashlightRange, flashlightCone)] else [] in
+  let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyAt(id)), eye, flashlight) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
     |> Frame.withFog(Fog.linear(o.fogNear, far, Hours.color(o.sky)))
     |> Frame.withClearColor(Hours.color(o.sky))
