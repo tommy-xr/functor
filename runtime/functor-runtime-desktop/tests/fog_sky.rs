@@ -107,6 +107,8 @@ fn draw(
     let shadow_map = ShadowMap::new(gl, 16);
     unsafe {
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        // As every shell does: the sky's far-depth test needs it.
+        gl.enable(glow::DEPTH_TEST);
     }
     render_frame(
         gl,
@@ -172,8 +174,11 @@ fn height_fog_matches_the_integral(gl: &glow::Context) {
         [-300.0, 20.0, 200.0], // inside the end ramp
         [250.0, 10.0, 150.0],  // in the ramp, looking down
     ];
+    // The billboard draws: unfogged, it stores 1.
+    let unfogged = visibility(gl, &context, fbo, None, points[0]);
+    assert_eq!(unfogged, 1.0, "unfogged billboard: {unfogged}");
     for point in points {
-        let got = visibility(gl, &context, fbo, &fog, point);
+        let got = visibility(gl, &context, fbo, Some(&fog), point);
         let want = reference_visibility(point);
         assert!(
             (got as f64 - want).abs() < 2e-4,
@@ -185,7 +190,7 @@ fn height_fog_matches_the_integral(gl: &glow::Context) {
     let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
     for distance in [far + 0.01, far * 1.5] {
         let point = [0, 1, 2].map(|i| CAMERA[i] + dir[i] / len * distance);
-        let got = visibility(gl, &context, fbo, &fog, point);
+        let got = visibility(gl, &context, fbo, Some(&fog), point);
         assert_eq!(got, 0.0, "past the end ({distance}): {got}");
     }
 }
@@ -195,16 +200,20 @@ fn visibility(
     gl: &glow::Context,
     context: &SceneContext,
     fbo: glow::Framebuffer,
-    fog: &Fog,
+    fog: Option<&Fog>,
     point: [f32; 3],
 ) -> f32 {
     let mut camera = Camera::look_at(CAMERA, point, [0.0, 1.0, 0.0], Angle::from_degrees(1.0));
     camera.far = 10_000.0;
-    let billboard = colored([1.0, 1.0, 1.0, 1.0], Scene3D::billboard()).transform(
-        cgmath::Matrix4::from_translation(cgmath::Vector3::from(point))
-            * cgmath::Matrix4::from_scale(0.01),
+    let billboard = colored(
+        [1.0, 1.0, 1.0, 1.0],
+        Scene3D::billboard().transform(
+            cgmath::Matrix4::from_translation(cgmath::Vector3::from(point))
+                * cgmath::Matrix4::from_scale(0.5),
+        ),
     );
-    let frame = Frame::with_fog(Frame::new(camera, billboard), fog.clone());
+    let mut frame = Frame::new(camera, billboard);
+    frame.fog = fog.cloned();
     draw(gl, context, fbo, &frame, 1);
     let mut pixel = [0f32; 4];
     unsafe {
@@ -262,10 +271,10 @@ fn fully_fogged_geometry_is_the_background(gl: &glow::Context) {
                     camera.far = 1000.0;
                     // Wide and tall: it spans the horizon up to ~25°.
                     let wall = wall_at.map(|z| {
-                        colored([1.0, 0.0, 0.0, 1.0], Scene3D::cube()).transform(
+                        let xform =
                             cgmath::Matrix4::from_translation(cgmath::Vector3::new(0.0, 60.0, z))
-                                * cgmath::Matrix4::from_nonuniform_scale(2000.0, 300.0, 1.0),
-                        )
+                                * cgmath::Matrix4::from_nonuniform_scale(2000.0, 300.0, 1.0);
+                        colored([1.0, 0.0, 0.0, 1.0], Scene3D::cube().transform(xform))
                     });
                     let scene = Scene3D {
                         obj: SceneObject::Group(wall.into_iter().collect()),
