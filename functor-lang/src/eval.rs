@@ -39,8 +39,8 @@ use crate::span::Span;
 use crate::value::{canonicalize_map_entries, Closure, Env, MapKey, Value};
 use crate::RunError;
 use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
 use std::fmt::Write;
+use std::hash::BuildHasherDefault;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1164,10 +1164,16 @@ struct Interp<'h> {
     /// by the address of its path or name: resolving an external joins the
     /// path and searches the builtin table and the host, and a constructor
     /// allocates its name — work a hot call site (`List.nth` per vertex)
-    /// would repeat. The nodes belong to the loaded program, which outlives
-    /// the interpreter.
-    constants: HashMap<usize, Value, BuildHasherDefault<AddressHasher>>,
+    /// would repeat.
+    constants: HashMap<usize, Constant, BuildHasherDefault<AddressHasher>>,
     host: &'h mut dyn Host,
+}
+
+/// A cached node value with what it was resolved from, compared on each hit:
+/// a freed node's address can be reused by another.
+enum Constant {
+    External(Vec<String>, Value),
+    Ctor(String, usize, Value),
 }
 
 /// A hasher for [`Interp::constants`]' address keys.
@@ -1182,7 +1188,8 @@ impl std::hash::Hasher for AddressHasher {
         unreachable!("only addresses are hashed")
     }
     fn write_usize(&mut self, address: usize) {
-        self.0 = (address as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        // Rotated so the bucket bits aren't the always-zero alignment bits.
+        self.0 = (address as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(26);
     }
 }
 
@@ -1696,15 +1703,7 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
                 self.record_ref(name, expr.span, &value);
                 Ok(value)
             }
-            ExprKind::External(path) => {
-                let key = path.as_ptr() as usize;
-                if let Some(value) = self.constants.get(&key) {
-                    return Ok(value.clone());
-                }
-                let value = self.external_value(path, expr.span)?;
-                self.constants.insert(key, value.clone());
-                Ok(value)
-            }
+            ExprKind::External(path) => self.external_constant(path, expr.span),
             // Container CONSTRUCTION charges one step (the depth invariant
             // behind run_expects_budgeted's stack contract: every level of a
             // value's nesting was constructed once, so value depth ≤ budget.
@@ -1985,25 +1984,7 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
             // A nullary constructor used bare IS the variant value; a
             // parameterful one is a callable constructor (so `List.map(xs,
             // Circle)` works like any function argument).
-            ExprKind::Ctor { name, arity } => {
-                let key = name.as_ptr() as usize;
-                if let Some(value) = self.constants.get(&key) {
-                    return Ok(value.clone());
-                }
-                let value = if *arity == 0 {
-                    Value::Variant {
-                        ctor: Rc::from(name.as_str()),
-                        args: Rc::new(Vec::new()),
-                    }
-                } else {
-                    Value::Ctor {
-                        name: Rc::from(name.as_str()),
-                        arity: *arity,
-                    }
-                };
-                self.constants.insert(key, value.clone());
-                Ok(value)
-            }
+            ExprKind::Ctor { name, arity } => Ok(self.ctor_constant(name, *arity)),
             ExprKind::Match { scrutinee, arms } => {
                 let value = self.eval(scrutinee, env)?;
                 for arm in arms {
@@ -2021,7 +2002,7 @@ Loop.until; they loop in the interpreter and consume no evaluation depth."
                             }
                         }
                         let child = match vars.len() {
-                            0 => env.clone(),
+                            0 => return self.eval(&arm.body, env),
                             1 => {
                                 let (binding, value) = vars.pop().expect("one binding");
                                 env.bind(binding, value)
@@ -2353,21 +2334,8 @@ definition (a top-level initializer may only use globals defined above it)",
                         ),
                         span,
                     })
-                } else if let [param] = closure.params.as_slice() {
-                    let value = args.into_iter().next().expect("one argument");
-                    self.record_binding(param.binding, &param.name, param.span, &value);
-                    let env = closure.env.bind(param.binding, value);
-                    let body = closure.body.clone();
-                    self.eval(&body, &env)
                 } else {
-                    let vars: Vec<(BindingId, Value)> =
-                        closure.params.iter().map(|p| p.binding).zip(args).collect();
-                    if self.recorder.is_some() {
-                        for (param, (_, value)) in closure.params.iter().zip(vars.iter()) {
-                            self.record_binding(param.binding, &param.name, param.span, value);
-                        }
-                    }
-                    let env = closure.env.child(vars);
+                    let env = self.closure_env(closure, args);
                     let body = closure.body.clone();
                     self.eval(&body, &env)
                 }
@@ -2397,6 +2365,69 @@ definition (a top-level initializer may only use globals defined above it)",
             self.trace_exit(value);
         }
         result
+    }
+
+    /// A closure's parameters bound to `args` (counts already match). Out of
+    /// line, like the helpers below, so [`Self::call`]'s recursive frame stays
+    /// small.
+    #[inline(never)]
+    fn closure_env(&mut self, closure: &Closure, args: Vec<Value>) -> Env {
+        if let [param] = closure.params.as_slice() {
+            let value = args.into_iter().next().expect("one argument");
+            self.record_binding(param.binding, &param.name, param.span, &value);
+            return closure.env.bind(param.binding, value);
+        }
+        let vars: Vec<(BindingId, Value)> =
+            closure.params.iter().map(|p| p.binding).zip(args).collect();
+        if self.recorder.is_some() {
+            for (param, (_, value)) in closure.params.iter().zip(vars.iter()) {
+                self.record_binding(param.binding, &param.name, param.span, value);
+            }
+        }
+        closure.env.child(vars)
+    }
+
+    /// An `External` node's value, through [`Interp::constants`]. A host
+    /// function is re-checked with the host, which may stop providing it.
+    #[inline(never)]
+    fn external_constant(&mut self, path: &[String], span: Span) -> Result<Value, RunError> {
+        let key = path.as_ptr() as usize;
+        if let Some(Constant::External(cached, value)) = self.constants.get(&key) {
+            let provided = match value {
+                Value::HostFn(name) => self.host.provides(name),
+                _ => true,
+            };
+            if cached == path && provided {
+                return Ok(value.clone());
+            }
+        }
+        let value = self.external_value(path, span)?;
+        self.constants.insert(key, Constant::External(path.to_vec(), value.clone()));
+        Ok(value)
+    }
+
+    /// A `Ctor` node's value, through [`Interp::constants`].
+    #[inline(never)]
+    fn ctor_constant(&mut self, name: &str, arity: usize) -> Value {
+        let key = name.as_ptr() as usize;
+        if let Some(Constant::Ctor(cached, cached_arity, value)) = self.constants.get(&key) {
+            if cached == name && *cached_arity == arity {
+                return value.clone();
+            }
+        }
+        let value = if arity == 0 {
+            Value::Variant {
+                ctor: Rc::from(name),
+                args: Rc::new(Vec::new()),
+            }
+        } else {
+            Value::Ctor {
+                name: Rc::from(name),
+                arity,
+            }
+        };
+        self.constants.insert(key, Constant::Ctor(name.to_string(), arity, value.clone()));
+        value
     }
 
     /// Run a host call's [`HostApply`] request. Cold, like the curried paths,
