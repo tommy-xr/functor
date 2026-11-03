@@ -555,6 +555,8 @@ expect outside |> List.all((p) =>
 expect (List.nth(8.0, Game.views) |> Option.map((w) => Island.onPad(w.x, w.z))) == Option.Some(true)
 // The sea is below the pad, the seabed below the sea.
 expect IslandLayout.seaLevel < island.y && IslandLayout.minHeight < IslandLayout.seaLevel
+// The 16-bit samples step at most 1 cm over the range.
+expect (IslandLayout.maxHeight - IslandLayout.minHeight) / 65535.0 <= 0.01
 
 // ---- The island's props --------------------------------------------------------
 
@@ -580,6 +582,8 @@ expect trees |> List.all((t) => (trees |> List.filter((u) => apart(t, u) <= 2.0 
 // each height against its samples; the e2e against `ground`.)
 expect List.flatten([trees |> List.map((t) => t.y), rocks |> List.map((r) => r.y)])
   |> List.all((y) => y > IslandLayout.seaLevel && y <= IslandLayout.maxHeight)
+// No tree above the treeline: the peaks are bare.
+expect (trees |> List.all((t) => t.y <= props.treeline)) && props.treeline < IslandLayout.maxHeight
 // Each prop has a distinct id, its collider's tag.
 expect (trees |> List.indexedMap((i, t) => t.id == i) |> List.all((same) => same)) && (rocks |> List.indexedMap((i, r) => r.id == i) |> List.all((same) => same))
 // The split from view 9 by day, and from the pad's far corner by night: each

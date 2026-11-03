@@ -734,6 +734,8 @@ async function island(game) {
 
 // islandLayout.fun's props and caps, parsed.
 const LAYOUT = readFileSync(join(DIR, "islandLayout.fun"), "utf8");
+// The spots below stand on the committed island.
+if (!LAYOUT.includes("(preset mixed,")) throw new Error("islandLayout.fun isn't island.mjs's default preset: rerun it without --preset");
 const records = (name) =>
   LAYOUT.split(`let ${name} = [`)[1].split("\n]")[0].trim().split("\n").map((line) =>
     Object.fromEntries([...line.matchAll(/(\w+): (-?[\d.]+)/g)].map(([, k, v]) => [k, Number(v)])));
@@ -793,19 +795,21 @@ async function islandProps(game) {
     await game.step(30);
     return game.model();
   };
-  // A rise 480 m north of the street, looking back at the town.
-  let m = await standAt(-50, 430, Math.PI);
+  // A smooth hillside 420 m north-east of the town and 47 m above it, the
+  // ridge to its west, looking back at the town. (The mountains are rough at
+  // the metre scale, so a capsule there rests on the bumps, not on `ground`.)
+  let m = await standAt(142, 374, Math.atan2(-154, -386));
   const settle = m.at.y - islandGround(m.at.x, m.at.z);
   check(m.grounded && near(settle, CENTRE, 0.08), `stands on the hill (y ${m.at.y.toFixed(2)}, ${settle.toFixed(3)} m over the ground)`);
-  rows.push(await propCounts(game, "hill 480 m north, looking south"));
+  rows.push(await propCounts(game, "hill 420 m north-east, looking at the town"));
   // The edge of a grove: its trees in the near tier and solid. Walking at
   // the nearest trunk stops at it.
-  m = await standAt(-92, 262, 0);
+  m = await standAt(-64, -270, 0);
   rows.push(await propCounts(game, "grove edge"));
   const [noon, , , grove] = rows;
   check(noon.cards > 0 && grove.mesh > 0 && grove.rocks > 0 && grove.solid > 0 && grove.draws >= 2,
     `props draw: ${noon.cards} cards from the street by day; at the grove edge ${grove.mesh} near trees, ${grove.rocks} rocks, ${grove.draws} draws`);
-  const tree = TREES.reduce((a, b) => (Math.hypot(a.x + 92, a.z - 262) < Math.hypot(b.x + 92, b.z - 262) ? a : b));
+  const tree = TREES.reduce((a, b) => (Math.hypot(a.x - m.at.x, a.z - m.at.z) < Math.hypot(b.x - m.at.x, b.z - m.at.z) ? a : b));
   await game.face(Math.atan2(tree.x - m.at.x, tree.z - m.at.z));
   await game.hold("w", Math.ceil(Math.hypot(tree.x - m.at.x, tree.z - m.at.z) / WALK) + 120);
   m = await game.model();

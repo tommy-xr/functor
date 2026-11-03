@@ -156,8 +156,12 @@ town. What scales with the eye's surroundings, not with the town:
 `island.mjs` generates a 2 km island: `island.png`, a 16-bit heightmap of
 2049² samples a metre apart (2ⁿ + 1, so every terrain LOD vertex lands on a
 sample), and `islandLayout.fun`, the constants the game places it with. A
-seabed, a beach, a gentle rise inland (calmest around the town, so within
-the fog it reads as an open plain); the block's pad is one flat u16 level (the
+seabed, a beach, and inland a warped low-frequency mask that blends smooth
+plains, rolling hills (gradient-noise fBm) and rocky mountains (ridged
+multifractal) up to about 220 m. The town sits on calm plains; a ridge
+300–450 m to its north rises inside the day fog, so the street sees a peak.
+Trees keep to gentle ground below a 110 m treeline (the grade limit already
+keeps them under about 55 m). The block's pad is one flat u16 level (the
 four copies, the streets and a 6 m apron), with a 16 m smoothstep ramp
 around it. Out to 30 m past the pad, the ground stays within 3 m above it,
 so the collars (0–8 m over the street) hold the eye through the activation
@@ -165,7 +169,11 @@ radius; `functor test` checks it from the layout's recorded range.
 
 ```sh
 node examples/liminal-office/island.mjs   # rewrites island.png and islandLayout.fun, byte-identical on rerun
+node examples/liminal-office/island.mjs --preset alpine   # A/B: rolling (low hills, ~85 m), mixed (default), alpine (~280 m)
 ```
+
+Only the default (`mixed`) is checked in, and the e2e's spots stand on it:
+rerun without `--preset` before committing.
 
 `I` swaps the flat ground for `Scene.terrain` and `Physics.heightfield`,
 translated so the pad lands where the ground was: the block stands on it
@@ -181,7 +189,7 @@ Quest budget is 90 Hz with foveation off; not yet measured on a headset
 
 `island.mjs` also places a few props from the seed, stands them on its own
 ground and writes them into `islandLayout.fun`: 112 firs in 16 groves (three
-near the town) and 38 rocks of 92 boxes. None stands within 90 m of the
+near the town) and 38 rocks of 90 boxes. None stands within 90 m of the
 pad's edge (the band and its blend), no tree on the beach, nothing on steep
 ground. The generator fails unless the caps hold: at most 10 trees within
 40 m of any point, 150 trees and 100 rock boxes in all.
