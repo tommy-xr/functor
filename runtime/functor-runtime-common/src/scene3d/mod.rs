@@ -3751,9 +3751,35 @@ impl Scene3D {
                     Some(instancing::RecognizedTemplate::Primitive(recognized)) => {
                         let bounds = primitive_bounds(recognized.primitive)
                             .map(|bounds| bounds.transform(&recognized.local));
+                        // A world-tiled lit texture: bound for the forward
+                        // draw; a pixel texture stays resident when culled
+                        // or hidden.
+                        let texture = match recognized.material {
+                            MaterialDescription::Lit {
+                                texture: Some(texture),
+                                ..
+                            } => Some(texture),
+                            _ => None,
+                        };
                         let mut renderer = scene_context.instanced_renderer(render_context);
                         if culled(&mut renderer, bounds) {
+                            if let Some(texture) = texture {
+                                scene_context.keep_texture(render_context.gl, texture, true);
+                            }
                             return;
+                        }
+                        if let Some(texture) =
+                            texture.filter(|_| render_context.render_pass != RenderPass::DepthOnly)
+                        {
+                            material_description::bind_texture_description(
+                                texture,
+                                0,
+                                SpriteSampling::Linear,
+                                true,
+                                &scene_context.texture_pipeline,
+                                render_context,
+                                scene_context,
+                            );
                         }
                         renderer.draw_primitive(
                             render_context,

@@ -140,6 +140,7 @@ fn scene_frame(model: Scene3D, instanced: bool) -> Frame {
                 color: cgmath::vec4(0.8, 0.8, 0.8, 1.0),
                 texture: None,
                 normal_map: None,
+                world_tile: None,
             },
             vec![Scene3D::cube().scale_x(8.0).scale_y(0.02).scale_z(8.0)],
         ),

@@ -268,10 +268,12 @@ fn tint_material(material: MaterialDescription, tint: [f32; 3]) -> MaterialDescr
             color,
             texture,
             normal_map,
+            world_tile,
         } => MaterialDescription::Lit {
             color: scale(color),
             texture,
             normal_map,
+            world_tile,
         },
         MaterialDescription::SpriteTexture {
             color,
@@ -352,8 +354,8 @@ impl RecognizedTemplate<'_> {
 /// Recognized: `Group` (or one-child `Scene.castShadows`) chains with exactly
 /// one child (their transforms compose into `local`) ending in either a
 /// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Billboard`/`Plane` leaf under at most ONE material
-/// node — a solid `Color`, `Emissive` (no texture), or `Lit` (no texture, no
-/// normal map) — or a `Scene.model` leaf with no overrides, with or without
+/// node — a solid `Color`, `Emissive` (no texture), or `Lit` (no normal map;
+/// a texture only when world-tiled) — or a `Scene.model` leaf with no overrides, with or without
 /// an attached `Scene.animate` pose (every copy shows the same sampled pose;
 /// enclosing materials are ignored by the ordinary model draw, so a
 /// material-wrapped model falls back rather than pretending the wrapper
@@ -425,11 +427,14 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                 let recognized = match description {
                     MaterialDescription::Color(_) => true,
                     MaterialDescription::Emissive { texture, .. } => texture.is_none(),
+                    // A world-tiled texture reads no mesh UVs, so the
+                    // copies' scales can't stretch it.
                     MaterialDescription::Lit {
                         texture,
                         normal_map,
+                        world_tile,
                         ..
-                    } => texture.is_none() && normal_map.is_none(),
+                    } => texture.is_some() == world_tile.is_some() && normal_map.is_none(),
                     MaterialDescription::Texture(_) | MaterialDescription::SpriteTexture { .. } => {
                         false
                     }
@@ -636,6 +641,22 @@ mod tests {
             recognized.local,
             Matrix4::from_nonuniform_scale(2.0, 1.0, 1.0)
         );
+
+        // A world-tiled lit texture: no mesh UVs for the copies to stretch.
+        let world_tiled = Scene3D {
+            obj: SceneObject::Material(
+                MaterialDescription::lit_world_texture(
+                    crate::scene3d::TextureDescription::File("t.png".into()),
+                    2.0,
+                ),
+                vec![Scene3D::cube()],
+            ),
+            xform: Matrix4::from_scale(1.0),
+        };
+        assert!(matches!(
+            recognize(&world_tiled),
+            Some(RecognizedTemplate::Primitive(_))
+        ));
 
         for (scene, primitive) in [
             (Scene3D::sphere(), InstancedPrimitive::Sphere),

@@ -170,8 +170,9 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 // BEFORE its uniform-boundary decode — so matching it exactly requires
 // `srgbToLinear(base * tint)`, which only the shader can compute (per vertex:
 // both factors are per-instance constants). Recognition
-// guarantees the two channels never mix with texturing: primitive templates
-// (tint active) never sample a texture, model templates (textured) pin the
+// guarantees the tint only meets a texture where the stamp multiplies it
+// in too: a primitive template's texture is a world-tiled lit one (the stamp
+// tints its color, then samples), and model templates (textured) pin the
 // tint to white.
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
@@ -183,7 +184,8 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec4 instanceColor;
 
         uniform sampler2D texture1;
-        uniform int useTexture;   // model albedo on unit 0 (glTF base color)
+        uniform int useTexture;   // albedo on unit 0 (glTF base color, or a world-tiled lit texture)
+        uniform highp float worldTile;  // > 0: box-map texture1 by world position (WORLD_TEXTURE_GLSL)
         uniform int materialMode; // 0 = unlit (color/emissive/model in an unlit frame), 1 = lit
         uniform int debugMode;    // 0 = authored, 1 = normals, 2 = tangents
         uniform float specularScale; // lit mode's highlight: 0 for rough static models
@@ -201,7 +203,10 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                 vec3 albedo = instanceColor.rgb;
                 float alpha = instanceColor.a;
                 if (useTexture == 1) {
-                    vec4 texel = texture(texture1, texCoord); // linear (sRGB storage)
+                    // linear (sRGB storage)
+                    vec4 texel = worldTile > 0.0
+                        ? worldTexture(texture1, worldPos, normalize(worldNormal), worldTile)
+                        : texture(texture1, texCoord);
                     albedo = albedo * texel.rgb;
                     alpha = alpha * texel.a;
                 }
@@ -307,6 +312,7 @@ struct ForwardUniforms {
     base_color: UniformLocation,
     texture1: UniformLocation,
     use_texture: UniformLocation,
+    world_tile: UniformLocation,
     material_mode: UniformLocation,
     debug_mode: UniformLocation,
     specular_scale: UniformLocation,
@@ -652,14 +658,18 @@ impl InstancedRenderer {
                 view,
             );
         } else {
-            let (color, lit) = match template.material {
-                MaterialDescription::Lit { color, .. } => (*color, true),
+            // A world-tiled lit texture is the only texture recognition
+            // accepts on a primitive; the caller bound it to unit 0.
+            let (color, lit, world_tile) = match template.material {
+                MaterialDescription::Lit {
+                    color, world_tile, ..
+                } => (*color, true, *world_tile),
                 MaterialDescription::Color(color)
-                | MaterialDescription::Emissive { color, .. } => (*color, false),
+                | MaterialDescription::Emissive { color, .. } => (*color, false, None),
                 // Recognition never accepts these; the arm exists only so
                 // the match stays exhaustive if the enum grows.
                 MaterialDescription::Texture(_) | MaterialDescription::SpriteTexture { .. } => {
-                    (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false)
+                    (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false, None)
                 }
             };
             set_forward_uniforms(
@@ -671,7 +681,8 @@ impl InstancedRenderer {
                 projection,
                 view,
                 &color,
-                false,
+                world_tile.is_some(),
+                world_tile.unwrap_or(0.0),
                 lit,
                 1.0,
                 billboard,
@@ -774,6 +785,7 @@ impl InstancedRenderer {
                     view,
                     &cgmath::vec4(1.0, 1.0, 1.0, 1.0),
                     true,
+                    0.0,
                     // Lit when the frame has lights, and rough (no highlight),
                     // like the stamped draw's `LitMaterial::model`.
                     !ctx.lights.is_empty(),
@@ -890,6 +902,7 @@ impl InstancedRenderer {
                     view,
                     &cgmath::vec4(1.0, 1.0, 1.0, 1.0),
                     true,
+                    0.0,
                     true,
                     1.0,
                     false,
@@ -930,9 +943,10 @@ fn build_program(
 /// The forward fragment source shared by the plain and skinned programs.
 fn forward_fragment_source() -> String {
     format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         FOG_GLSL,
         lighting_glsl(),
+        crate::material::WORLD_TEXTURE_GLSL,
         FRAGMENT_SHADER_SOURCE
     )
 }
@@ -1081,6 +1095,7 @@ fn forward_uniforms_of(program: &ShaderProgram, gl: &glow::Context) -> ForwardUn
         base_color: program.get_uniform_location(gl, "baseColor"),
         texture1: program.get_uniform_location(gl, "texture1"),
         use_texture: program.get_uniform_location(gl, "useTexture"),
+        world_tile: program.get_uniform_location(gl, "worldTile"),
         material_mode: program.get_uniform_location(gl, "materialMode"),
         debug_mode: program.get_uniform_location(gl, "debugMode"),
         specular_scale: program.get_uniform_location(gl, "specularScale"),
@@ -1130,6 +1145,8 @@ fn set_forward_uniforms(
     view: &Matrix4<f32>,
     color: &cgmath::Vector4<f32>,
     use_texture: bool,
+    // > 0: box-map the texture by world position.
+    world_tile: f32,
     lit: bool,
     // Multiplies the lit mode's highlight (0 for rough static models).
     specular: f32,
@@ -1146,6 +1163,7 @@ fn set_forward_uniforms(
     p.set_uniform_vec4(ctx.gl, &u.base_color, color);
     p.set_uniform_1i(ctx.gl, &u.texture1, 0);
     p.set_uniform_1i(ctx.gl, &u.use_texture, use_texture as i32);
+    p.set_uniform_1f(ctx.gl, &u.world_tile, world_tile);
     p.set_uniform_1i(ctx.gl, &u.material_mode, lit as i32);
     p.set_uniform_1f(ctx.gl, &u.specular_scale, specular);
     let debug_mode = match ctx.debug_render_mode {

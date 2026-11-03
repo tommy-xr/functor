@@ -432,6 +432,7 @@ fn lit(scene: Scene3D, [r, g, b]: [f32; 3]) -> Scene3D {
                 color: vec4(r, g, b, 1.0),
                 texture: None,
                 normal_map: None,
+                world_tile: None,
             },
             vec![scene],
         ),

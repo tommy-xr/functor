@@ -37,6 +37,8 @@
 //!    the Angle rule applied to assets)
 //! Scene.litTexture(texture, scene)                          -> Scene
 //!   (a diffuse-lit textured surface — F#'s `Material.litTexture`)
+//! Scene.litWorldTexture(texture, tile, scene)               -> Scene
+//!   (a lit texture box-mapped by world position, every `tile` metres)
 //! Scene.emissiveTexture(texture, scene)                     -> Scene
 //!   (a self-lit textured surface, fullbright — F#'s `Material.emissiveTexture`)
 //! Camera3D.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))                     -> Camera3D
@@ -2719,6 +2721,24 @@ row 0 has {cols} heights, row {r} has {}",
         "Scene.emissiveTexture",
         "Scene.emissiveTexture(texture, scene)",
         textured(true),
+    );
+    // A lit texture box-mapped by world position, repeating every `tile`
+    // metres: square texels on scaled (and instanced) boxes.
+    reg.fn3(
+        "Scene.litWorldTexture",
+        "Scene.litWorldTexture(texture, tile, scene)",
+        |texture: FunctorLangTexture, tile: f64, scene: FunctorLangScene| {
+            // Checked as the f32 it draws with: 1e-50 would round to 0.
+            if !(tile as f32 > 0.0 && (tile as f32).is_finite()) {
+                return Err(format!(
+                    "Scene.litWorldTexture: tile must be a positive number of metres, got {tile}"
+                ));
+            }
+            Ok(material_scene(
+                MaterialDescription::lit_world_texture(texture.0, tile as f32),
+                scene,
+            ))
+        },
     );
     // Lit material with a tangent-space normal map perturbing the surface
     // normal (F#'s `Material.litNormalMapped`), so the lights and specular
@@ -9218,6 +9238,36 @@ Asset.model(\"shark.glb\") at the data boundary"
         }
     }
 
+
+    /// `Scene.litWorldTexture` is a lit texture with its world tile; a tile
+    /// that isn't positive is an error.
+    #[test]
+    fn lit_world_texture_carries_its_tile() {
+        let value = eval_with_prelude(
+            "let main = Scene.cube() |> Scene.litWorldTexture(Texture.file(\"w.png\"), 2.5)\n",
+        )
+        .unwrap();
+        let Value::HostData(data) = value else {
+            panic!("expected a scene");
+        };
+        let scene = &data.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        let SceneObject::Material(material, _) = &scene.obj else {
+            panic!("expected a material, got {:?}", scene.obj);
+        };
+        assert_eq!(
+            material,
+            &MaterialDescription::lit_world_texture(TextureDescription::File("w.png".into()), 2.5)
+        );
+        for tile in ["0.0", "(0.0 - 1.0)", "1e-50"] {
+            let message = fail_message(&format!(
+                "let main = () => Scene.cube() |> Scene.litWorldTexture(Texture.file(\"w.png\"), {tile})\n"
+            ));
+            assert!(
+                message.contains("tile must be a positive number of metres"),
+                "{message}"
+            );
+        }
+    }
 
     /// `Asset.sound` in the one-shot effects queues the expected
     /// AudioCommands (paths unwrapped from the branded values).
