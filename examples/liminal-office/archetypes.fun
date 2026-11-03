@@ -98,13 +98,13 @@ let ochreInterior = Building.interiorIn("house-ochre", HouseLayout.layout, House
 let ochreBake = bakeOf("house-ochre", houseSources)
 let ochreStatus = Provenance.statusOf(ochreBake)
 let ochreRooms = roomsOf(ochreInterior, ochreBake, ochreStatus)
-let ochreStreet = HouseExterior.streetOf(HouseLayout.layout, HouseExterior.ochre)
+let ochreStreet = Streetscape.house(HouseLayout.layout, HouseExterior.streetOf(HouseLayout.layout, HouseExterior.ochre))
 let houseOchre = houseOf("house-ochre", ochreInterior, ochreStatus, ochreStreet, ochreRooms)
 let magentaInterior = Building.interiorIn("house-magenta", HouseLayout.layout, HousePalettes.magenta)
 let magentaBake = bakeOf("house-magenta", houseSources)
 let magentaStatus = Provenance.statusOf(magentaBake)
 let magentaRooms = roomsOf(magentaInterior, magentaBake, magentaStatus)
-let magentaStreet = HouseExterior.streetOf(HouseLayout.layout, HouseExterior.magenta)
+let magentaStreet = Streetscape.house(HouseLayout.layout, HouseExterior.streetOf(HouseLayout.layout, HouseExterior.magenta))
 let houseMagenta = houseOf("house-magenta", magentaInterior, magentaStatus, magentaStreet, magentaRooms)
 
 let all = [office, tower8, tower12, tower16, cinema, mall, houseOchre, houseMagenta]
@@ -133,7 +133,7 @@ let baked = all |> List.all((a) => a.status == Provenance.Current)
 let resident = Scene.keepResident(Scene.group(List.flatten([office.night, office.day, Tower.residentOf(typicalBaked), Tower.residentOf(endsBaked),
                                                          Tower.residentOf(cinemaBaked), Cinema.fixed, Tower.residentOf(mallBaked),
                                                          houseOchre.night, houseOchre.day, houseMagenta.night, houseMagenta.day,
-                                                         [Cinema.lotDressing.night, Cinema.lotDressing.day],
+                                                         [Cinema.lotDressing.night, Cinema.lotDressing.day, Mall.lotDressing.night, Mall.lotDressing.day],
                                                          all |> List.concatMap((a) => [a.street.dressing.night, a.street.dressing.day])])))
 
 expect (bakes |> List.map((b) => b.name)) == ["office-night", "office-day", "tower-typical-night", "tower-typical-day", "tower-ends-night", "tower-ends-day", "cinema-night", "cinema-day", "mall-night", "mall-day",

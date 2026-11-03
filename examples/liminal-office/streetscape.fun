@@ -598,7 +598,9 @@ let collidersOf = (p: Props): List<Building.Collider> => p.solid |> List.indexed
   { tag: $"prop-{k}", shape: Physics.box(b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0), at: v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0) })
 let dressed = (st: Exterior.Street, p: Props): Exterior.Street =>
   let t = Facade.trimmed(st, { plain: p.plain, skinned: p.skinned, fine: p.fine }) in
-  { t with dressing: dressingOf(p.decals), lampColliders: List.flatten([t.lampColliders, collidersOf(p)]) }
+  // A house's gables draw beside its side.
+  let side = if List.isEmpty(st.gables) then t.streetSide else Scene.group([t.streetSide, Exterior.gablesOf(st.gables)]) in
+  { t with streetSide: side, dressing: dressingOf(p.decals), lampColliders: List.flatten([t.lampColliders, collidersOf(p)]) }
 
 // ---- Shared dressing -----------------------------------------------------------------
 
@@ -706,3 +708,45 @@ let towerProps = (l: Layout, st: Exterior.Street): Props =>
   ] in
   along(l, st, { seed: 2.0, paths: towerPaths, own: own })
 let tower = (l: Layout, st: Exterior.Street): Exterior.Street => dressed(st, towerProps(l, st))
+
+// ---- The houses --------------------------------------------------------------------
+
+// A mailbox on a post, its door to the road (+d), its red flag up.
+let mailbox = (fr: Frame, u: float, d: float, y: float): Props =>
+  let p = partIn(fr, u, d, y) in
+  { nothing with
+    plain: [(p(-0.04, 0.04, 0.0, 1.0, -0.04, 0.04), wood), (p(-0.12, 0.12, 1.0, 1.24, -0.28, 0.24), darkSteel),
+            (p(0.12, 0.14, 1.12, 1.4, -0.2, -0.16), rgb(170.0, 40.0, 34.0))],
+    solid: [p(-0.12, 0.14, 0.0, 1.4, -0.28, 0.24)] }
+
+// The e2e's walk from the road up the front path, in a house's space.
+let housePaths: List<Path> = [{ x0: 1.6, z0: -9.5, x1: 1.6, z1: 0.7 }]
+// A house's frontage on the suburb's road, across the front yard's width:
+// a curb at the road's edge, a lawn strip with a street tree, a concrete
+// sidewalk to the fence (all cut round the front path), a mailbox by the
+// path, and a picket fence down the east side to the back yard, the one
+// the next house along shares.
+let houseProps = (l: Layout): Props =>
+  let f = l.footprint in
+  let g = HouseExterior.gateOf(l) in
+  let x0 = f.x0 - HouseExterior.side in
+  let x1 = f.x1 + HouseExterior.side in
+  let edge = f.z0 - HouseExterior.road in
+  let fence = HouseExterior.fenceZ(l) in
+  let y = Exterior.street in
+  // A strip from z0 to z1, y0 to y1, either side of the path.
+  let strip = (z0: float, z1: float, y0: float, y1: float): List<Exterior.Box> =>
+    [box(x0, y0, z0, g.lo, y1, z1), box(g.hi, y0, z0, x1, y1, z1)] in
+  let front: Frame = { side: South, x: 0.0, z: 0.0 } in
+  joined([
+    { nothing with
+      plain: List.flatten([
+        strip(edge, edge + curb, road, y + 0.12) |> List.map((b) => (b, curbGrey)),
+        strip(edge + curb, edge + 1.4, road, y) |> List.map((b) => (b, HouseExterior.lawn)),
+      ]),
+      skinned: strip(edge + 1.4, fence - 0.3, road, y + 0.005) |> List.map((b) => (b, paving)) },
+    tree(front, x1 - 1.6, 0.0 - edge - 0.8, y, f.x1),
+    mailbox(front, g.hi + 0.7, 0.0 - edge - 0.45, y),
+    picket({ side: East, x: x1, z: 0.0 }, fence, f.z1 + 2.0, 0.0, y),
+  ])
+let house = (l: Layout, st: Exterior.Street): Exterior.Street => dressed(st, houseProps(l))

@@ -320,6 +320,7 @@ const CELLS = [
   ["rowA", rowMarker("A")],
   ["rowB", rowMarker("B")],
   ["rowC", rowMarker("C")],
+  ["rowD", rowMarker("D")],
   ["rowP", rowMarker("P")],
   ["boxOffice", boxSign("BUSINESS CENTRE", 96, [1, 10])],
   ["boxLot", boxSign("FREE PARKING", 80, [2, 8])],

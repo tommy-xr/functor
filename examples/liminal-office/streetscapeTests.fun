@@ -8,8 +8,16 @@ let tower = Archetypes.tower8
 let officeProps = Streetscape.officeProps(ol, office.street)
 let towerProps = Streetscape.towerProps(tower.layout, tower.street)
 let cinemaProps = Cinema.streetscapeProps(Cinema.exterior)
+let mallProps = Mall.streetscapeProps(Mall.street)
+let houseProps = Streetscape.houseProps(HouseLayout.layout)
 let dressings = [(ol, officeProps, Streetscape.officePaths), (tower.layout, towerProps, Streetscape.towerPaths),
-                 (CinemaLayout.layout, cinemaProps, Cinema.paths)]
+                 (CinemaLayout.layout, cinemaProps, Cinema.paths), (MallLayout.layout, mallProps, Mall.paths),
+                 (HouseLayout.layout, houseProps, Streetscape.housePaths)]
+// The mall's lot is the kit's: three double rows of 32 bays, a wheel stop
+// each; a house's frontage cuts round its front path.
+expect List.length(Mall.lotPlan.rows) == 6.0 && Mall.lotPlan.n == 32.0
+let gate = HouseExterior.gateOf(HouseLayout.layout)
+expect houseProps.skinned |> List.all((e) => let (b, _) = e in b.x1 <= gate.lo || b.x0 >= gate.hi)
 
 // Nothing solid blocks the e2e's walks (each archetype's, in its space).
 expect dressings |> List.all((e) =>
