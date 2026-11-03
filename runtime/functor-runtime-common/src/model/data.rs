@@ -378,6 +378,9 @@ fn validate_static(s: &ModelSource) -> Result<(), String> {
         if group.texture.is_some() && s.uvs.is_empty() {
             return Err(format!("groups[{i}]: texture needs uvs (one per vertex)"));
         }
+        if !(0.0..=1.0).contains(&group.emissive) {
+            return Err(format!("groups[{i}]: emissive must be from 0 to 1, got {}", group.emissive));
+        }
         next += group.count as u64;
     }
     let triangles = s.triangles.len() as u64;

@@ -16195,6 +16195,10 @@ Light.point(Vec3.make(0.0, 1.0, 0.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 5.0)])\n";
             fail(("scale: 2.0", "scale: 0.0 - 1.0")),
             "Model.static: lightmap: scale must be a finite number from 0, got -1"
         );
+        assert_eq!(
+            fail(("unlit: false, emissive: 0.0", "unlit: false, emissive: 2.0")),
+            "Model.static: groups[0]: emissive must be from 0 to 1, got 2"
+        );
         let ungrouped = "Model.static({ roomData with groups: [] })";
         assert!(eval_with_prelude(&format!("{ROOM}let main = {ungrouped}\n")).is_ok());
     }
@@ -16221,6 +16225,14 @@ maxSize: 64.0 })\n";
             assert!(uv.iter().all(|&x| (1.0 / 32.0..=17.0 / 32.0).contains(&x)), "{uv:?}");
         }
         assert_eq!((s.groups.len(), s.groups[1].unlit), (2, true));
+        let Value::HostData(glowing) =
+            main("Model.static({ u.mesh with groups: List.map((g) => { g with emissive: 0.5 }, u.mesh.groups) })")
+                .unwrap()
+        else {
+            panic!("expected a Model");
+        };
+        let glowing = glowing.as_any().downcast_ref::<model::FunctorLangModel>().unwrap().0.source().clone();
+        assert_eq!(glowing.groups[0].emissive, 0.5);
         // The old lightmap was baked for the old uvs2.
         assert!(s.lightmap.is_none());
     }

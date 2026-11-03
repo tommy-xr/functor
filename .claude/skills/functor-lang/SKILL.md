@@ -1278,7 +1278,7 @@ texture (`Asset.texture` or `Texture.fromPixels`), `unlit` flag and `emissive`
 amount (0–1: a lit group adds that much of its base). No skin,
 no clips; lit by the frame's lights. `lightmap: Option.Some({ texture, scale,
 floor })` adds baked light sampled at `uvs2`: lit groups draw `max(base ×
-lightmap × scale, floor) + base × unbaked lights`, so mark lights already in
+lightmap × scale, floor) + base × unbaked lights (+ base × emissive)`, so mark lights already in
 the lightmap with `Light.baked` (they still light everything else). A
 `Texture.Linear` lightmap is multiplied as stored; an `Srgb` one (or any
 file) is decoded first, which matches multiplying in gamma space. Pack

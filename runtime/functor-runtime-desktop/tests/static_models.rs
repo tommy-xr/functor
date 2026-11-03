@@ -419,27 +419,36 @@ fn groups(harness: &mut Harness) {
     assert_near(rgb(&white, 96, 64), [255, 255, 255], "no groups: white");
 }
 
-/// A lit group adds `emissive` × base to its lit colour (0, 0.5, 1 under a
-/// dim ambient); an unlit group and a frame without lights ignore it.
+/// A lit group adds `emissive` × base to its lit colour — under a dim
+/// ambient, and lightmapped without frame lights; an unlit group and a frame
+/// without lights ignore it. Mid-grey bases, so nothing clips.
 fn emissive(harness: &mut Harness) {
-    let (red, green) = (solid([255, 0, 0]), solid([0, 255, 0]));
-    let glowing = |emissive: f32| {
-        let mut source = room(&red, &green);
+    let (red, green) = (solid([128, 0, 0]), solid([0, 128, 0]));
+    let base = srgb_u8_to_linear(128);
+    let glowing = |source: ModelSource, emissive: f32| {
+        let mut source = source;
         for group in &mut source.groups {
             group.emissive = emissive;
         }
         model(source)
     };
-    let dim = || vec![Light::ambient(0.5, 0.5, 0.5)];
-    let lit = srgb_u8_to_linear(rgb(&harness.render(&frame(&glowing(0.0), 1, false, dim())), 32, 64)[0]);
-    for emissive in [0.0, 0.5, 1.0] {
-        let room = glowing(emissive);
+    let dim = || vec![Light::ambient(0.1, 0.1, 0.1)];
+    let unlit_room = glowing(room(&red, &green), 0.0);
+    let lit = srgb_u8_to_linear(rgb(&harness.render(&frame(&unlit_room, 1, false, dim())), 32, 64)[0]);
+    let lightmap = || lightmapped(solid([128, 128, 128]), solid_in([64, 64, 64], ColorSpace::Linear), 1.0, [0.0; 3]);
+    let srgb = |linear: f32| (linear_to_srgb(linear) * 255.0).round() as u8;
+    for emissive in [0.0, 0.25, 0.5] {
+        let room = glowing(room(&red, &green), emissive);
         let drawn = harness.render(&frame(&room, 1, false, dim()));
-        let want = (linear_to_srgb((lit + emissive).min(1.0)) * 255.0).round() as u8;
+        let want = srgb(lit + emissive * base);
         assert_near(rgb(&drawn, 32, 64), [want, 0, 0], &format!("lit group, emissive {emissive}"));
-        assert_near(rgb(&drawn, 96, 64), [0, 255, 0], "unlit group");
+        assert_near(rgb(&drawn, 96, 64), [0, 128, 0], "unlit group");
         let bright = harness.render(&frame(&room, 1, false, vec![]));
-        assert_near(rgb(&bright, 32, 64), [255, 0, 0], "no lights: fullbright");
+        assert_near(rgb(&bright, 32, 64), [128, 0, 0], "no lights: fullbright");
+        let baked = glowing(lightmap().source().clone(), emissive);
+        let drawn = harness.render(&frame(&baked, 1, false, vec![]));
+        let want = srgb(base * 64.0 / 255.0 + emissive * base);
+        assert_near(rgb(&drawn, 32, 64), [want; 3], &format!("lightmapped, emissive {emissive}"));
     }
 }
 
