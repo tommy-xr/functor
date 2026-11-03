@@ -177,49 +177,24 @@ let collidersOf = (n: float): List<Building.Collider> => List.flatten([
 // The window grid's bays along every facade, and how far it stands proud.
 let bays = List.range(15.0) |> List.map((k) => 0.8 + 1.6 * k)
 let gridProud = 0.1
-// Whether bay `u` on side `s` of floor `k` is lit, at night.
-let isLit = (s: Side, k: float, u: float): bool =>
-  let side = (match s with
-    | South => 0.0
-    | West => 1.0
-    | North => 2.0
-    | East => 3.0) in
-  Building.noise(side * 977.0 + k * 61.0 + u * 7.0) < 0.4
-// A window in every bay of floors 1..n, but where a real one is: a glass
-// quad on the facade's outer face, `gridProud` out, sill to head; lit ones
-// first.
-let gridFaces = (l: Layout, n: float): List<(Building.Face, bool)> =>
-  let f = l.footprint in
-  let o = l.facade / 2.0 + gridProud in
+// Bay `u` on side `s` of floor `k`'s id, for its window dressing's noise.
+let bayId = (s: Side, k: float, u: float): float => Streetscape.sideId(s) * 977.0 + k * 61.0 + u * 7.0
+// A window in every bay of floors 1..n, but where a real one is: a pane on
+// the facade's outer face, `gridProud` out, sill to head, with its id.
+let gridFaces = (l: Layout, n: float): List<(Building.Quad, float)> =>
   let isReal = (s: Side, k: float, u: float): bool =>
     l.windows |> List.any((w) => w.side == s && Building.roomAt(l, w.room).level == k && Math.abs(w.at - u) < 0.1) in
-  let quad = (s: Side, y: float, u: float): Building.Face =>
-    let y0 = y + 0.9 in
-    let y1 = y + 2.3 in
-    (match s with
-      | South => Building.wallZ(0.0, u - 0.6, u + 0.6, y0, y1, f.z0 - o, false)
-      | North => Building.wallZ(0.0, u - 0.6, u + 0.6, y0, y1, f.z1 + o, true)
-      | West => Building.wallX(0.0, u - 0.6, u + 0.6, y0, y1, f.x0 - o, false)
-      | East => Building.wallX(0.0, u - 0.6, u + 0.6, y0, y1, f.x1 + o, true)) in
-  let all = List.range(n) |> List.concatMap((k0) =>
+  let quad = (s: Side, y: float, u: float): Building.Quad =>
+    Streetscape.faceIn(Streetscape.sideFrame(l, s), true, u - 0.6, u + 0.6, y + 0.9, y + 2.3, gridProud) in
+  List.range(n) |> List.concatMap((k0) =>
     let k = k0 + 1.0 in
     [South, West, North, East] |> List.concatMap((s) =>
-      bays |> List.filter((u) => not isReal(s, k, u)) |> List.map((u) => (quad(s, k * l.storey, u), isLit(s, k, u))))) in
-  List.flatten([all |> List.filter((e) => let (q, lit) = e in lit), all |> List.filter((e) => let (q, lit) = e in not lit)])
+      bays |> List.filter((u) => not isReal(s, k, u)) |> List.map((u) => (quad(s, k * l.storey, u), bayId(s, k, u)))))
 
-let glassLit = Building.paint(158.0, 168.0, 128.0)
-let glassDark = Building.paint(16.0, 16.0, 24.0)
-let glassDay = Building.paint(76.0, 84.0, 96.0)
-let unlitGroup = (first: float, count: float, p: Building.Paint): Model.group =>
-  { first: first, count: count, texture: Option.Some(Texture.fromPixels(Building.solid(p))), unlit: true, emissive: 0.0 }
-// The grid as one mesh, two groups by night and one by day.
+// The grid as one model, its panes the streetscape kit's window dressing
+// (blinds, by night mostly dark, a few lit).
 let gridOf = (l: Layout, n: float): Exterior.Grid =>
-  let quads = gridFaces(l, n) in
-  let faces = quads |> List.map((e) => let (q, lit) = e in q) in
-  let lit = 2.0 * List.length(quads |> List.filter((e) => let (q, on) = e in on)) in
-  let all = 2.0 * List.length(faces) in
-  let data = { Building.meshOf(Building.materials, faces, []) with groups: [unlitGroup(0.0, lit, glassLit), unlitGroup(lit, all - lit, glassDark)] } in
-  { night: Scene.modelOf(Model.static(data)), day: Scene.modelOf(Model.static({ data with groups: [unlitGroup(0.0, all, glassDay)] })) }
+  Streetscape.dressingOf(gridFaces(l, n) |> List.map((e) => let (q, id) = e in Streetscape.pane(Streetscape.bayPanes, id, false, q)))
 
 let planterGreen = Building.rgb(58.0, 70.0, 56.0)
 let curtainWall = Finishes.on(Finishes.curtain, Building.rgb(150.0, 162.0, 178.0))

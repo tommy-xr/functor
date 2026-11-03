@@ -9,7 +9,7 @@ open Building
 let concrete = rgb(72.0, 72.0, 82.0)
 let glass = rgb(26.0, 32.0, 44.0)
 let postGrey = rgb(60.0, 60.0, 66.0)
-let apronGrey = rgb(96.0, 94.0, 102.0)
+let apronGrey = rgb(62.0, 60.0, 68.0)
 // The kit's finishes (finishes.fun): the facade's outer half by default, and
 // every flat roof.
 let precastWall = Finishes.on(Finishes.precast, rgb(118.0, 118.0, 116.0))
@@ -150,6 +150,8 @@ type Grid = { night: Scene.t, day: Scene.t }
 // massing is `wall`; `siding` colours a shell's canopy, and `gables` (a
 // house's) are pitched roofs in a finish. `lobbyLight` is where the lobby's
 // light spills out.
+// `dressing` (signs and window dressing, streetscape.fun) draws on the
+// street side only.
 type Street = {
   half: float,
   facadeBoxes: List<Box>,
@@ -176,6 +178,7 @@ type Street = {
   extraSkinned: List<(Box, Finishes.Surface)>,
   siding: Color.t,
   gables: List<(Box, Finishes.Surface)>,
+  dressing: Grid,
 }
 // Lit boxes as instances of one white cube, tinted.
 let instancedOf = (boxes: List<(Box, Color.t)>): Scene.t =>
@@ -217,7 +220,8 @@ let streetWith = (l: Layout, wall: Finishes.Surface): Street =>
     // Inside the entrance, at head height.
     lobbyLight: (let e = entranceOf(l) in v((e.lo + e.hi) / 2.0, 2.0, l.footprint.z0 + 0.9)),
     extraBoxes: [], beaconBoxes: [], grid: Option.None,
-    wall: wall, skinned: skinned, extraSkinned: [], siding: concrete, gables: [] }
+    wall: wall, skinned: skinned, extraSkinned: [], siding: concrete, gables: [],
+    dressing: { night: Scene.group([]), day: Scene.group([]) } }
 
 // The building's street side, in its own space, with the neon and the lamp
 // heads glowing at `neon` and `lamps` (1 at night), and its window grid by
@@ -229,6 +233,7 @@ let exteriorAt = (s: Street, neon: float, lamps: float, day: bool): Scene.t => S
   s.lampShades |> Scene.color(shadeColor(lamps)),
   Scene.group(s.beaconBoxes |> List.map(slabOf)) |> Scene.color(beaconRed),
   s.grid |> Option.map((g) => gridAt(day, g)) |> Option.defaultValue(Scene.group([])),
+  gridAt(day, s.dressing),
 ])
 let gridAt = (day: bool, g: Grid): Scene.t => if day then g.day else g.night
 // An aircraft warning light: red at every hour.

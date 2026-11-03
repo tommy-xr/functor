@@ -421,11 +421,12 @@ let draw = (model, tts: float) =>
     else [Scene.memo($"{town.name}/shells", { town: model.town, active: active, neon: o.neon, lamps: o.lamps, day: day }, Shells.shellsOf)] in
   let buildings = Scene.group(List.append(shells, copies)) in
   // On the island the props draw after the buildings and the terrain last,
-  // so early-Z rejects what's behind them.
+  // so early-Z rejects what's behind them. The road paint goes on the
+  // ground (roads.fun).
   let scene = if model.island
-    then Scene.group([buildings, Scene.memo("island-props", model.props, Island.propsScene),
+    then Scene.group([Roads.paintAt(model.town), buildings, Scene.memo("island-props", model.props, Island.propsScene),
                       Scene.memo("island-ground", { biome: model.biome, night: 1.0 - daylight }, Island.ground), Archetypes.resident])
-    else Scene.group([town.ground, buildings, Archetypes.resident]) in
+    else Scene.group([town.ground, Roads.paintAt(model.town), buildings, Archetypes.resident]) in
   // On XR the beam follows the right controller, mapped through the camera.
   let (from, dir) = match model.hand with
     | Option.None => (eye |> Vec3.add(v(0.0, -0.25, 0.0)), lookDir(model.yaw, model.pitch))

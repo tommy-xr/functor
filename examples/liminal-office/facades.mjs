@@ -92,6 +92,18 @@ const FINISHES = {
       return 0.86 + glaze + 0.02 * (hash(x, y, 43) - 0.5) + (y % t === 1 ? 0.06 : 0);
     },
   },
+  // Sidewalks: 1.5 m concrete slabs (four per 3 m repeat) in sawn joints,
+  // each slab a shade apart, with grit and a few gum-dark spots.
+  paving: {
+    size: 128,
+    texel: (x, y, n) => {
+      const slab = n / 2;
+      if (x % slab < 2 || y % slab < 2) return 0.5;
+      const tone = 0.05 * (hash(Math.floor(x / slab), Math.floor(y / slab), 61) - 0.5);
+      const spot = hash(x >> 1, y >> 1, 67) < 0.004 ? 0.25 : 0;
+      return 0.86 + tone + 0.06 * (fbm(x, y, n, 4, 63) - 0.5) + 0.06 * (hash(x, y, 65) - 0.5) - spot;
+    },
+  },
   // Flat roofs: membrane in 1 m strips (four per 4 m repeat) with lapped
   // seams, gravel grit and ponding stains.
   roofing: {
