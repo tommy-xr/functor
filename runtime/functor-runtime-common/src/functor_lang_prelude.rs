@@ -15637,7 +15637,10 @@ can separate where items 0 and 1 (counting from 0) nearly meet, at 4 points with
              && Result.isError(Bytes.u8s(0.0, 0.0 / 0.0, Bytes.zeros(4.0))) \
              && Result.isError(Bytes.u8s(0.5, 1.0, Bytes.zeros(4.0))) \
              && Result.isError(Bytes.u8s(5.0, 0.0, Bytes.zeros(4.0))) \
-             && Bytes.u8s(4.0, 0.0, Bytes.zeros(4.0)) == Result.Ok([])"
+             && Bytes.u8s(4.0, 0.0, Bytes.zeros(4.0)) == Result.Ok([]) \
+             && (match Bytes.f64les(0.0, Math.pow(10.0, 20.0), Bytes.zeros(4.0)) with \
+                 | Result.Error(e) => Text.contains(\"count\", e.message) | Result.Ok(_) => false) \
+             && Bytes.u16les(1.0, 2.0, Bytes.fromU8([9.0, 1.0, 0.0, 2.0, 0.0])) == Result.Ok([1.0, 2.0])"
                 .to_string(),
         ];
         // Every width agrees with its single reader.

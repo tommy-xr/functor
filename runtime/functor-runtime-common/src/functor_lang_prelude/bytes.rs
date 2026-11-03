@@ -376,7 +376,7 @@ macro_rules! list_reader {
             concat!("Bytes.", $name, "(offset, count, bytes)"),
             |Count(offset): Count, Count(count): Count, bytes: FunctorLangBytes| {
                 const N: usize = std::mem::size_of::<$ty>();
-                if !(count >= 0.0 && count.fract() == 0.0) {
+                if !(count >= 0.0 && count.fract() == 0.0 && count * N as f64 <= 9_007_199_254_740_992.0) {
                     return err(offset, format!("count {count} must be a whole number ≥ 0"));
                 }
                 match take(&bytes.0, offset, count * N as f64) {
