@@ -74,8 +74,10 @@ let sceneOf = (c: Copy, s: Scene.t): Scene.t =>
 let tagOf = (c: Copy, local: string): string => $"{c.name}/{local}"
 let collidersOf = (c: Copy): List<Building.Collider> =>
   let a = archetypeOf(c) in List.flatten([a.colliders, a.street.lampColliders])
-let bodiesOf = (c: Copy): List<Physics.body> =>
-  collidersOf(c) |> List.map((k) =>
+let bodiesOf = (c: Copy): List<Physics.body> => bodiesFrom(c, collidersOf(c))
+// Colliders `ks`, in copy `c`'s space, as fixed bodies.
+let bodiesFrom = (c: Copy, ks: List<Building.Collider>): List<Physics.body> =>
+  ks |> List.map((k) =>
     Physics.fixed(Physics.tag(tagOf(c, k.tag)), k.shape)
       |> Physics.at(toWorld(c, k.at)) |> Physics.rotateY(Angle.degrees(c.yaw)))
 

@@ -30,7 +30,7 @@ let isOpen = (l: Layout, level: float, s: Side, at: float): bool =>
   l.windows |> List.any((w) =>
     roomAt(l, w.room).level == level && w.side == s && Math.abs(w.at - at) < (w.width + 2.2) / 2.0)
 // The layout's dark window bands on `level` along side `s`, except where it
-// opens a real window (open, no glass: glass would bypass culling). Each is
+// opens a real window (an open portal, glazed by glass.fun). Each is
 // a hole through the facade's outer half with a panel set back in it, so no
 // face lies just behind another: two faces a few cm apart z-fight at a
 // distance.
