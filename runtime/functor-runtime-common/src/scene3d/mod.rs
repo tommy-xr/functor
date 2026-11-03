@@ -540,6 +540,7 @@ fn draw_static_model(
         count: source.triangles.len() as u32,
         texture: None,
         unlit: false,
+        emissive: 0.0,
     }];
     let groups = if source.groups.is_empty() {
         &whole[..]
@@ -597,7 +598,7 @@ fn draw_static_model(
                 scene_context,
             );
         }
-        material.set_group(render_context, group.texture.is_some(), group.unlit);
+        material.set_group(render_context, group.texture.is_some(), group.unlit, group.emissive);
         mesh.draw_range(gl, group.first as i32 * 3, group.count as i32 * 3);
     }
     if source.lightmap.is_some() {

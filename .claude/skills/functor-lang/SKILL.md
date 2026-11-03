@@ -1274,10 +1274,11 @@ the image top, as in glTF); `Option.None` draws white. See `examples/skinned`.
 `Model.static(data)` is the static counterpart for world geometry: the same
 packed positions/normals/uvs/triangles plus `uvs2` (a second UV set) and
 `groups` — consecutive triangle ranges, each with its own optional base
-texture (`Asset.texture` or `Texture.fromPixels`) and `unlit` flag. No skin,
+texture (`Asset.texture` or `Texture.fromPixels`), `unlit` flag and `emissive`
+amount (0–1: a lit group adds that much of its base). No skin,
 no clips; lit by the frame's lights. `lightmap: Option.Some({ texture, scale,
 floor })` adds baked light sampled at `uvs2`: lit groups draw `max(base ×
-lightmap × scale, floor) + base × unbaked lights`, so mark lights already in
+lightmap × scale, floor) + base × unbaked lights (+ base × emissive)`, so mark lights already in
 the lightmap with `Light.baked` (they still light everything else). A
 `Texture.Linear` lightmap is multiplied as stored; an `Srgb` one (or any
 file) is decoded first, which matches multiplying in gamma space. Pack

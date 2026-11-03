@@ -239,6 +239,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                         ("count", Value::Number(g.count as f64)),
                         ("texture", crate::input::option_value(None)),
                         ("unlit", Value::Bool(g.unlit)),
+                        ("emissive", Value::Number(g.emissive as f64)),
                     ])
                 })
                 .collect();

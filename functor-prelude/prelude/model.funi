@@ -76,11 +76,14 @@ type data = {
 
 /// `count` triangles from triangle `first`, drawn with one base texture
 /// (`Option.None` draws white). `unlit` draws it fullbright, ignoring the
-/// frame's lights.
-type group = { first: float, count: float, texture: Option.t<Asset.Texture>, unlit: bool }
+/// frame's lights. `emissive` (0 to 1) adds that much of the base on top of
+/// the lit colour — a self-lit screen or lamp; 0 for most surfaces. An
+/// unlit group, or one in a frame without lights or lightmap, ignores it.
+type group = { first: float, count: float, texture: Option.t<Asset.Texture>, unlit: bool, emissive: float }
 
 /// Baked light for a static model, sampled at `uvs2`. Lit groups draw
-/// `max(base × lightmap × scale, floor) + base × the frame's other lights`:
+/// `max(base × lightmap × scale, floor) + base × the frame's other lights`
+/// (+ `base × emissive`):
 /// the lightmap replaces every `Light.baked` light, so mark the lights it
 /// already holds. `floor` is a minimum colour (SS2-style ambient).
 ///
@@ -111,7 +114,7 @@ type lightmap = { texture: Asset.Texture, scale: float, floor: Color.t }
 ///   uvs: Bytes.fromF32le([0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
 ///   uvs2: Bytes.fromF32le([]),
 ///   triangles: Bytes.fromU32le([0.0, 1.0, 2.0, 0.0, 2.0, 3.0]),
-///   groups: [{ first: 0.0, count: 2.0, texture: Option.Some(Asset.texture("tiles.png")), unlit: false }],
+///   groups: [{ first: 0.0, count: 2.0, texture: Option.Some(Asset.texture("tiles.png")), unlit: false, emissive: 0.0 }],
 ///   lightmap: Option.None
 /// })
 /// ```

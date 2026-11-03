@@ -91,8 +91,8 @@ let room = Model.static({
   uvs2: Bytes.fromF32le(uvs2),
   triangles: Bytes.fromU32le(triangles),
   groups: [
-    { first: 0.0, count: 2.0, texture: Option.Some(checker), unlit: false },
-    { first: 2.0, count: 8.0, texture: Option.Some(plaster), unlit: false }
+    { first: 0.0, count: 2.0, texture: Option.Some(checker), unlit: false, emissive: 0.0 },
+    { first: 2.0, count: 8.0, texture: Option.Some(plaster), unlit: false, emissive: 0.0 }
   ],
   lightmap: Option.Some({ texture: baked.texture, scale: 1.0, floor: Color.rgb(0.02, 0.02, 0.03) })
 })

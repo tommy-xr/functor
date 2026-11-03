@@ -16,7 +16,8 @@ use super::Material;
 // lightmap (unit 3, sampled at uv2) the baked light replaces the `Light.baked`
 // lights: max(base × lightmap × scale, floor) + base × the other lights. An
 // `unlit` group, or an unlightmapped group in a frame without lights, draws
-// its base fullbright, as static models do in `Frame.create`.
+// its base fullbright, as static models do in `Frame.create`. A lit group
+// adds `emissive` × base (self-lit: screens, lamps).
 const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
         layout (location = 1) in vec2 inTex;
@@ -56,6 +57,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform sampler2D texture1;
         uniform int useTexture;
         uniform int unlit;
+        uniform float emissive;
         uniform sampler2D lightmap;
         uniform int useLightmap;
         uniform float lightmapScale;
@@ -73,6 +75,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     vec3 baked = texture(lightmap, lightmapCoord).rgb * lightmapScale;
                     color += max(base.rgb * baked, lightmapFloor);
                 }
+                color += base.rgb * emissive;
             }
             fragColor = functorOutput(vec4(applyFog(color, worldPos), base.a));
         }
@@ -86,6 +89,7 @@ struct Uniforms {
     texture_loc: UniformLocation,
     use_texture_loc: UniformLocation,
     unlit_loc: UniformLocation,
+    emissive_loc: UniformLocation,
     lightmap_loc: UniformLocation,
     use_lightmap_loc: UniformLocation,
     lightmap_scale_loc: UniformLocation,
@@ -133,6 +137,7 @@ impl Material for StaticMaterial {
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     use_texture_loc: shader.get_uniform_location(ctx.gl, "useTexture"),
                     unlit_loc: shader.get_uniform_location(ctx.gl, "unlit"),
+                    emissive_loc: shader.get_uniform_location(ctx.gl, "emissive"),
                     lightmap_loc: shader.get_uniform_location(ctx.gl, "lightmap"),
                     use_lightmap_loc: shader.get_uniform_location(ctx.gl, "useLightmap"),
                     lightmap_scale_loc: shader.get_uniform_location(ctx.gl, "lightmapScale"),
@@ -190,12 +195,13 @@ impl Material for StaticMaterial {
 
 impl StaticMaterial {
     /// The next group's state; call after `draw_opaque`, before its draw.
-    pub fn set_group(&self, ctx: &RenderContext, use_texture: bool, unlit: bool) {
+    pub fn set_group(&self, ctx: &RenderContext, use_texture: bool, unlit: bool, emissive: f32) {
         unsafe {
             #[allow(static_mut_refs)]
             if let Some((p, uniforms)) = &SHADER_PROGRAM {
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, use_texture as i32);
                 p.set_uniform_1i(ctx.gl, &uniforms.unlit_loc, unlit as i32);
+                p.set_uniform_1f(ctx.gl, &uniforms.emissive_loc, emissive);
             }
         }
     }

@@ -447,7 +447,7 @@ let spansOf = (base: float, faces: List<Face>): List<Span> =>
     else (out |> List.append([{ mat: m, first: first, count: n }]), first + n), ([], base)) in
   spans
 let groupOf = (s: Span): Model.group =>
-  { first: s.first, count: s.count, texture: Option.Some(materialAt(s.mat).texture), unlit: materialAt(s.mat).unlit }
+  { first: s.first, count: s.count, texture: Option.Some(materialAt(s.mat).texture), unlit: materialAt(s.mat).unlit, emissive: 0.0 }
 
 // The mesh of every cell's faces, in cell order: each cell is a contiguous
 // triangle range.

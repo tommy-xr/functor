@@ -52,7 +52,8 @@ pub struct ModelSource {
 }
 
 /// `count` triangles from `first`, drawn with one base texture (`None` is
-/// white); `unlit` draws it fullbright.
+/// white); `unlit` draws it fullbright; `emissive` adds that much of the
+/// base to a lit group.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupSource {
     pub first: u32,
@@ -61,6 +62,12 @@ pub struct GroupSource {
     pub texture: Option<TextureDescription>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unlit: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub emissive: f32,
+}
+
+fn is_zero(x: &f32) -> bool {
+    *x == 0.0
 }
 
 /// A static model's lightmap: lit groups draw `max(base × lightmap × scale,
@@ -370,6 +377,9 @@ fn validate_static(s: &ModelSource) -> Result<(), String> {
         }
         if group.texture.is_some() && s.uvs.is_empty() {
             return Err(format!("groups[{i}]: texture needs uvs (one per vertex)"));
+        }
+        if !(0.0..=1.0).contains(&group.emissive) {
+            return Err(format!("groups[{i}]: emissive must be from 0 to 1, got {}", group.emissive));
         }
         next += group.count as u64;
     }
@@ -796,12 +806,13 @@ mod tests {
             weights: vec![],
             triangles: vec![[0, 1, 2], [0, 2, 3]],
             groups: vec![
-                GroupSource { first: 0, count: 1, texture: None, unlit: false },
+                GroupSource { first: 0, count: 1, texture: None, unlit: false, emissive: 0.0 },
                 GroupSource {
                     first: 1,
                     count: 1,
                     texture: Some(TextureDescription::File("wall.png".into())),
                     unlit: true,
+                    emissive: 0.0,
                 },
             ],
             lightmap: Some(LightmapSource {

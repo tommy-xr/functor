@@ -460,6 +460,7 @@ fn static_quad(x: f32, z: f32) -> Scene3D {
             count: 2,
             texture: Some(pixels(ColorSpace::Srgb, [40, 200, 200])),
             unlit: false,
+            emissive: 0.0,
         }],
         lightmap: Some(LightmapSource {
             texture: pixels(ColorSpace::Linear, [255, 255, 255]),
