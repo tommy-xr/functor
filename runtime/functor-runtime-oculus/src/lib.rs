@@ -1793,6 +1793,7 @@ pub fn android_main(app: AndroidApp) {
                 )
                 .expect("frame end (invalid tracking)");
             last_frame_at = None;
+            last_display_ns = None;
             last_rendered = Instant::now();
             continue;
         }
@@ -1852,6 +1853,8 @@ pub fn android_main(app: AndroidApp) {
                 )
                 .expect("frame end (no render)");
             last_rendered = Instant::now();
+            // A declined frame is the compositor's choice, not a miss.
+            last_display_ns = None;
             continue;
         }
 

@@ -94,13 +94,22 @@ fn with_sim(f: impl FnOnce(&mut SimStages)) {
     });
 }
 
-/// Drain this thread's sim stages (once per snapshot).
+/// Drain this thread's sim stages (once per snapshot). The world size carries
+/// over: a frame with no physics step keeps the last one.
 pub fn take_sim() -> SimStages {
-    SIM.with(Cell::take)
+    SIM.with(|cell| {
+        let stages = cell.get();
+        cell.set(SimStages {
+            bodies: stages.bodies,
+            colliders: stages.colliders,
+            ..SimStages::ZERO
+        });
+        stages
+    })
 }
 
-/// Count a reconcile's spawned and despawned bodies.
-pub fn note_reconcile(created: usize, removed: usize) {
+/// Count bodies (or fused compounds) inserted into and removed from a world.
+pub fn note_bodies(created: usize, removed: usize) {
     with_sim(|s| {
         // Saturating: a thread no snapshot drains (the web shell) keeps adding.
         s.bodies_created = s.bodies_created.saturating_add(created as u32);
@@ -283,23 +292,30 @@ const LEAVES: [Stage; 12] = [
     ("physics.step", |r| r.physics_step_us),
     ("physics.other", |r| {
         r.physics_us
-            .saturating_sub(r.physics_reconcile_us + r.physics_step_us)
+            .saturating_sub(r.physics_reconcile_us.saturating_add(r.physics_step_us))
     }),
     ("draw", |r| r.draw_us),
     ("sim.other", |r| {
-        r.sim_us
-            .saturating_sub(r.update_us + r.tick_us + r.physics_us + r.draw_us)
+        r.sim_us.saturating_sub(sum(&[r.update_us, r.tick_us, r.physics_us, r.draw_us]))
     }),
     ("sim.wait", |r| r.sim_wait_us),
     ("assets", |r| r.assets_us),
     ("render", |r| r.render_us),
     ("present", |r| r.present_us),
     ("shell.other", |r| {
-        r.frame_us.saturating_sub(
-            r.sim_us + r.sim_wait_us + r.assets_us + r.render_us + r.present_us,
-        )
+        r.frame_us.saturating_sub(sum(&[
+            r.sim_us,
+            r.sim_wait_us,
+            r.assets_us,
+            r.render_us,
+            r.present_us,
+        ]))
     }),
 ];
+
+fn sum(parts: &[u32]) -> u32 {
+    parts.iter().fold(0, |total, part| total.saturating_add(*part))
+}
 
 /// The leaf stage that took longest.
 fn dominant(record: &FrameRecord) -> (&'static str, u32) {
@@ -373,7 +389,12 @@ pub struct SpikeNote {
     pub frame_us: u32,
     pub stage: &'static str,
     pub stage_us: u32,
+    /// Spikes since the last note that went unlogged (see [`LOG_EVERY`]).
+    pub unlogged: u32,
 }
+
+/// At most one spike log line per this interval; `/spikes` still keeps them all.
+pub const LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl std::fmt::Display for SpikeNote {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -385,7 +406,11 @@ impl std::fmt::Display for SpikeNote {
             ms(self.frame_us),
             self.stage,
             ms(self.stage_us)
-        )
+        )?;
+        if self.unlogged > 0 {
+            write!(f, " (+{} unlogged)", self.unlogged)?;
+        }
+        Ok(())
     }
 }
 
@@ -414,6 +439,9 @@ pub struct FrameTelemetry {
     threshold_pinned: bool,
     spikes: [Spike; SPIKES],
     spikes_total: u64,
+    /// When the last spike note was returned, and spikes since left unlogged.
+    last_note: Option<std::time::Instant>,
+    unlogged: u32,
 }
 
 impl Default for FrameTelemetry {
@@ -440,6 +468,8 @@ impl FrameTelemetry {
             threshold_pinned: pinned.is_some(),
             spikes: [Spike::default(); SPIKES],
             spikes_total: 0,
+            last_note: None,
+            unlogged: 0,
         };
         match pinned {
             Some(ms) => telemetry.threshold_us = (ms * 1000.0) as u32,
@@ -468,7 +498,7 @@ impl FrameTelemetry {
     }
 
     /// Record one frame. Returns a note when it is a spike, for the shell to
-    /// log.
+    /// log, at most once per [`LOG_EVERY`].
     pub fn push(&mut self, record: FrameRecord) -> Option<SpikeNote> {
         for spike in self.spikes.iter_mut().take(self.spikes_total.min(SPIKES as u64) as usize) {
             if spike.len < WINDOW && spike.len - spike.at <= SPIKE_CONTEXT {
@@ -476,7 +506,7 @@ impl FrameTelemetry {
                 spike.len += 1;
             }
         }
-        let note = (record.frame_us > self.threshold_us).then(|| {
+        let spiked = (record.frame_us > self.threshold_us).then(|| {
             let (stage, stage_us) = dominant(&record);
             let mut spike = Spike {
                 stage,
@@ -497,12 +527,21 @@ impl FrameTelemetry {
                 frame_us: record.frame_us,
                 stage,
                 stage_us,
+                unlogged: 0,
             }
         });
         self.ring[self.next] = record;
         self.next = (self.next + 1) % RING_FRAMES;
         self.len = (self.len + 1).min(RING_FRAMES);
-        note
+        let mut note = spiked?;
+        let now = std::time::Instant::now();
+        if self.last_note.is_some_and(|last| now - last < LOG_EVERY) {
+            self.unlogged += 1;
+            return None;
+        }
+        self.last_note = Some(now);
+        note.unlogged = std::mem::take(&mut self.unlogged);
+        Some(note)
     }
 
     /// The newest `n` records, newest first.
@@ -691,6 +730,8 @@ mod tests {
         for frame in 0..(SPIKES as u64 + 3) {
             t.push(record(frame, 50_000));
         }
+        // Logged once a second; the rest are only counted.
+        assert_eq!(t.unlogged, SPIKES as u32 + 2);
         let report = t.spikes();
         assert_eq!(report.total, SPIKES as u64 + 3);
         let frames: Vec<u64> = report.spikes.iter().map(|s| s.frame.frame).collect();
@@ -704,12 +745,14 @@ mod tests {
         {
             let _dry_run = Suspended::new();
             drop(span(SimStage::Draw));
-            note_reconcile(3, 1);
+            note_bodies(3, 1);
         }
         note_world_size(7, 9);
         let stages = take_sim();
         assert_eq!(stages.draw_ns, 0);
         assert_eq!((stages.bodies_created, stages.bodies, stages.colliders), (0, 7, 9));
-        assert_eq!(take_sim(), SimStages::default());
+        // The world size carries over to a frame that does not step.
+        let next = take_sim();
+        assert_eq!((next.tick_ns, next.bodies, next.colliders), (0, 7, 9));
     }
 }

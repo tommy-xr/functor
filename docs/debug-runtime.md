@@ -201,7 +201,8 @@ a constant zero from an old runtime is indistinguishable from real quiescence.
 
 ### Frame telemetry: `GET /frames` and `GET /spikes` (protocol v30)
 
-Every shell keeps a ring of its last 600 frames. Each record carries the frame
+The desktop (windowed and `--headless`) and Quest shells keep a ring of their
+last 600 frames. Each record carries the frame
 numbers (`frame`, `rendered_frame`), the fixed `steps` it ran, and stage times
 in µs:
 
@@ -216,7 +217,7 @@ in µs:
 | `assets_us` | shell asset driving: preloads and terrain heightmap decodes |
 | `render_us` | shell rendering (Quest: both eyes, swapchain waits, `xrEndFrame`) |
 | `present_us` | desktop: the buffer swap; Quest: `xrWaitFrame` |
-| `frame_us` | wall time since the previous frame (`--headless`: the iteration's work) |
+| `frame_us` | the frame's wall time: desktop, its loop iteration through the swap (a hidden or `--fixed-time` run's pacing sleep excluded; `--headless`, the iteration's work); Quest, end of frame to end of frame |
 
 and counters: `instance_uploads`, `upload_bytes` (GPU buffer and texture
 bytes), `cull_tested`/`cull_culled`, `bodies_created`/`bodies_removed` (bodies
@@ -234,7 +235,8 @@ overrides on desktop) is a **spike**. The shell logs one line —
 the disjoint stage that took longest (`physics.other`, `sim.other`, and
 `shell.other` are the parent's untimed rest: the physics hook, a hot reload,
 untimed shell work), and keeps the
-newest 8 in `GET /spikes` with up to 4 frames either side.
+newest 8 in `GET /spikes` with up to 4 frames either side. At most one line
+is logged per second; the next notes how many went unlogged.
 
 Recording costs a few clock reads per stage and one fixed-size copy per frame;
 it never allocates, so it is always on. On Android each sim stage is also an

@@ -1130,14 +1130,14 @@ fn service_debug_request(
         debug_server::DebugRequest::Capture(resp) => {
             let _ = resp.send(capture());
         }
-        // Producer reads reply from the sim side, after every call queued
-        // before them, so the shell never waits on them.
         debug_server::DebugRequest::Frames(last, resp) => {
             let _ = resp.send(telemetry.frames(last));
         }
         debug_server::DebugRequest::Spikes(resp) => {
             let _ = resp.send(telemetry.spikes());
         }
+        // Producer reads reply from the sim side, after every call queued
+        // before them, so the shell never waits on them.
         debug_server::DebugRequest::State(resp) => {
             let frame = *frame_count;
             let frame_stats = telemetry.stats();
@@ -2244,6 +2244,9 @@ Escape releases while captured"
         let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
 
         while !window.should_close() {
+            // `/frames`' `frame_us`: this iteration through its swap, so the
+            // pacing sleep of hidden / `--fixed-time` runs is not frame time.
+            let iteration_started = Instant::now();
             let elapsed_time = start_time.elapsed().as_secs_f32();
             // Scripted deterministic playback (docs/time-travel.md T6b): advance
             // the game clock by a FIXED --script-dt this frame instead of
@@ -3568,11 +3571,9 @@ Escape again to quit"
             }
             let render_ns = render_started.elapsed().as_nanos() as u64;
             stage_window.render_ns += render_ns;
-            let frame_ns = last_rendered.elapsed().as_nanos() as u64;
-            stage_window.frame_ns += frame_ns;
+            stage_window.frame_ns += last_rendered.elapsed().as_nanos() as u64;
             last_rendered = Instant::now();
             record.render_us = us(render_ns);
-            record.frame_us = us(frame_ns);
             if let Some(timings) = stage_window.end_frame() {
                 stage_timings = Some(timings);
             }
@@ -3989,6 +3990,7 @@ Escape again to quit"
             let swap_ns = swap_started.elapsed().as_nanos() as u64;
             rendered_frames += 1;
             record.present_us = us(swap_ns);
+            record.frame_us = us(iteration_started.elapsed().as_nanos() as u64);
             record.frame = frame_count;
             record.rendered_frame = rendered_frames;
             telemetry.record_gpu(&mut record);

@@ -1711,7 +1711,7 @@ MCP server before reconnecting or reusing that runtime URL.",
     }
 
     /// Per-frame stage timings (µs: update, tick, physics and its
-    /// reconcile/step, draw, sim, sim_wait, render, present, frame) and
+    /// reconcile/step, draw, sim, sim_wait, assets, render, present, frame) and
     /// counters (steps, GPU uploads, culls, physics bodies created/removed and
     /// world size), newest last, plus p50/p99/max per stage. `GET /frames`.
     #[tool]

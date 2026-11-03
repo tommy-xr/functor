@@ -241,7 +241,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/frames",
-        description: "the last ?last=N frames (default all, up to 600) as {stats, frames}: per-frame stage times in µs (update, tick, physics + its reconcile/step, draw, sim, sim_wait, render, present, frame), steps, GPU uploads, frustum culls, physics bodies created/removed and world size, Quest display periods",
+        description: "the last ?last=N frames (default all, up to 600) as {stats, frames}: per-frame stage times in µs (update, tick, physics + its reconcile/step, draw, sim, sim_wait, assets, render, present, frame), steps, GPU uploads, frustum culls, physics bodies created/removed and world size, Quest display periods",
     },
     DebugRoute {
         method: "GET",

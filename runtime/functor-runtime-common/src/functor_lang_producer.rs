@@ -1179,6 +1179,8 @@ impl FrameCtx<'_> {
         // seek already dropped the ones from before it).
         let retry_tts_before_scrub = *self.prev_tts;
         if frame_time.dts > 0.0 {
+            // A branch replays physics; its cost is not this frame's stages.
+            let _replay = frame_telemetry::Suspended::new();
             match self.recorder.commit_scrub_if_resuming(
                 self.model,
                 self.physics_rt,
@@ -1243,6 +1245,8 @@ impl FrameCtx<'_> {
     /// to `target` and branch the future away (in-flight requests follow the
     /// recorder's rule), then drop the frame work that must not cross it.
     pub fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
+        // Restoring replays physics; it is not a frame's stages.
+        let _replay = frame_telemetry::Suspended::new();
         let retry_tts_before_rewind = *self.prev_tts;
         let result = self.recorder.rewind_scene_to(
             target,
@@ -1273,6 +1277,7 @@ impl FrameCtx<'_> {
     /// Non-destructive scrub, for every producer: restore every participant
     /// to `target`; Δ (input since the frame, and the queries it issued) goes.
     pub fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let _replay = frame_telemetry::Suspended::new();
         let result = self.recorder.seek_scene_to(
             target,
             self.model,
