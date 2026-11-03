@@ -1,9 +1,10 @@
 // Stand-ins for the grid's inactive copies: each archetype's massing,
-// parapet, canopy, apron, window bands and lamp posts as lit boxes, and its
-// neon, lamp shades, entrance and real windows as glowing ones — four
-// `Scene.instanced` cubes for the whole town. The windows and entrance glow
-// like the lit rooms behind them, so a distant copy reads as the building it
-// becomes at `Block.activeOn`.
+// parapet, canopy, apron, window bands, lamp posts and own boxes (a tower's
+// plant room) as lit boxes, and its neon, lamp shades, beacon, entrance and
+// real windows as glowing ones — five `Scene.instanced` cubes for the whole
+// town, plus a tower's window grid. The windows and entrance glow like the
+// lit rooms behind them, so a distant copy reads as the building it becomes
+// at `Block.activeOn`.
 
 open Layout
 open Building
@@ -61,6 +62,7 @@ let shellOf = (a: Archetypes.Archetype): Shell =>
       parapet |> List.map((b) => (b, Exterior.concrete)),
       bands |> List.map((b) => (b, Exterior.glass)),
       s.postBoxes |> List.map((b) => (b, Exterior.postGrey)),
+      s.extraBoxes,
     ]) }
 
 // Every archetype's shell, by name, built once.
@@ -76,8 +78,10 @@ let place = (c: Block.Copy, b: Exterior.Box): Instance.t =>
   Instance.trs(Block.toWorld(c, mid), Angle.degrees(c.yaw), b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0)
 
 // A copy's shell as instances: the lit boxes (tinted), and what glows, by
-// colour, so the hour changes a template's colour, not the instances.
-type Parts = { lit: List<Instance.t>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t> }
+// colour, so the hour changes a template's colour, not the instances; and
+// its window grid, placed.
+type Parts = { lit: List<Instance.t>, neon: List<Instance.t>, shades: List<Instance.t>, openings: List<Instance.t>,
+               beacons: List<Instance.t>, grid: Option.t<Exterior.Grid> }
 let partsOf = (c: Block.Copy): Parts =>
   let shell = shellAt(c.archetype) in
   let street = Block.archetypeOf(c).street in
@@ -86,11 +90,12 @@ let partsOf = (c: Block.Copy): Parts =>
     neon: street.neonBoxes |> List.map((b) => place(c, b)),
     shades: street.shadeBoxes |> List.map((b) => place(c, b)),
     openings: shell.openings |> List.map((b) => place(c, b)),
+    beacons: street.beaconBoxes |> List.map((b) => place(c, b)),
+    grid: street.grid |> Option.map((g) => { night: Block.sceneOf(c, g.night), day: Block.sceneOf(c, g.day) }),
   }
-// Every copy's parts, built once at load: an id is the same copy in every
-// town, so the largest town's serve them all.
-let parts: List<Parts> = Block.towns |> List.last |> Option.map((t) => t.copies) |> Option.defaultValue([]) |> List.map(partsOf)
-let none = { lit: [], neon: [], shades: [], openings: [] }
+// Every town's copies' parts, by id, built once at load.
+let parts: List<List<Parts>> = Block.towns |> List.map((t) => t.copies |> List.map(partsOf))
+let none = { lit: [], neon: [], shades: [], openings: [], beacons: [], grid: Option.None }
 
 // The openings glow like the lit rooms behind them by night, neutral glass
 // by day; the neon and shades as on the street side.
@@ -107,12 +112,18 @@ let idleOf = (look: Look): List<float> =>
 // a change of hour recolours the templates.
 let white = Color.rgb(1.0, 1.0, 1.0)
 let shellsOf = (look: Look): Scene.t =>
-  let idle = idleOf(look) |> List.map((id) => List.nth(id, parts) |> Option.defaultValue(none)) in
+  let town = List.nth(look.town, parts) |> Option.defaultValue([]) in
+  let idle = idleOf(look) |> List.map((id) => List.nth(id, town) |> Option.defaultValue(none)) in
   let cubes = (material: (Scene.t) => Scene.t, of: (Parts) => List<Instance.t>): Scene.t =>
     Scene.cube() |> material |> Scene.instanced(idle |> List.concatMap(of)) in
-  Scene.group([
-    cubes((s) => s |> Scene.lit(white), (p) => p.lit),
-    cubes((s) => s |> Scene.color(Exterior.neonColor(look.neon)), (p) => p.neon),
-    cubes((s) => s |> Scene.color(Exterior.shadeColor(look.lamps)), (p) => p.shades),
-    cubes((s) => s |> Scene.color(if look.day then dayGlass else roomGlow), (p) => p.openings),
-  ])
+  Scene.group(List.flatten([
+    [cubes((s) => s |> Scene.lit(white), (p) => p.lit),
+     cubes((s) => s |> Scene.color(Exterior.neonColor(look.neon)), (p) => p.neon),
+     cubes((s) => s |> Scene.color(Exterior.shadeColor(look.lamps)), (p) => p.shades),
+     cubes((s) => s |> Scene.color(if look.day then dayGlass else roomGlow), (p) => p.openings)],
+    // Towers only: an office town draws exactly the four cubes.
+    if idle |> List.any((p) => Option.isSome(p.grid)) then
+      List.flatten([[cubes((s) => s |> Scene.color(Exterior.beaconRed), (p) => p.beacons)],
+        idle |> List.concatMap((p) => p.grid |> Option.map((g) => Exterior.gridAt(look.day, g)) |> Option.toList)])
+    else [],
+  ]))

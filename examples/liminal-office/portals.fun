@@ -4,9 +4,11 @@
 //
 // `Scene.cells` draws every cell when the eye is outside them all, so the
 // collar must hold every eye that sees the interior: block.fun's activation
-// radius plus an eye's reach (tests.fun checks it). A ring isn't convex, so
-// it is four boxes: the south and north strips run the full width, corners
-// included; the west and east strips fill between them.
+// radius plus an eye's reach (tests.fun checks it), from the street up to
+// `top`, over the highest eye nearby. A ring isn't convex, so it is four
+// boxes: the south and north strips run the full width, corners included;
+// the west and east strips fill between them. A roof room opens onto the
+// strips over its edges.
 
 open Layout
 open Building
@@ -15,7 +17,7 @@ open Building
 
 // How far the collar reaches out from the footprint's wall lines.
 let collar = 35.0
-// The outside cells' top: over the roofline.
+// The office's collar top: over its roofline.
 let outsideTop = 8.0
 
 let box3 = (r: Rect, y0: float, y1: float): Cells.cell => { planes: [
@@ -42,7 +44,7 @@ let within = (outer: Rect, r: Rect): bool =>
 // cell id stays its room id. Sides with no outside room get ids after the
 // rooms', in `sides` order.
 let roomOn = (l: Layout, s: Side): Option.t<float> =>
-  List.range(List.length(l.rooms)) |> List.find((i) => not isInside(roomAt(l, i)) && within(stripOf(l, s), roomAt(l, i).rect))
+  List.range(List.length(l.rooms)) |> List.find((i) => roomAt(l, i).kind == Outside && within(stripOf(l, s), roomAt(l, i).rect))
 let extraSides = (l: Layout): List<Side> => sides |> List.filter((s) => roomOn(l, s) == Option.None)
 let stripId = (l: Layout, s: Side): float =>
   match roomOn(l, s) with
@@ -53,22 +55,37 @@ let stripId = (l: Layout, s: Side): float =>
 let sideOfRoom = (l: Layout, i: float): Side =>
   sides |> List.find((s) => roomOn(l, s) == Option.Some(i)) |> Option.defaultValue(South)
 
-let strip = (l: Layout, s: Side): Cells.cell => box3(stripOf(l, s), 0.0, outsideTop)
+let strip = (l: Layout, top: float, s: Side): Cells.cell => box3(stripOf(l, s), 0.0, top)
 
 // Where a west or east strip meets the south or north one: the face they
 // share, on the footprint's south or north line.
-let corner = (l: Layout, ns: Side, we: Side): List<Vec3.t> =>
+let corner = (l: Layout, top: float, ns: Side, we: Side): List<Vec3.t> =>
   let r = stripOf(l, we) in
   let z = if ns == South then l.footprint.z0 else l.footprint.z1 in
-  [v(r.x0, 0.0, z), v(r.x1, 0.0, z), v(r.x1, outsideTop, z), v(r.x0, outsideTop, z)]
+  [v(r.x0, 0.0, z), v(r.x1, 0.0, z), v(r.x1, top, z), v(r.x0, top, z)]
+
+// A roof room's edges on the footprint, open to the strip beyond each, from
+// its floor up to `top`.
+let roofEdges = (l: Layout, top: float): List<Cells.portal> =>
+  List.range(List.length(l.rooms)) |> List.filter((i) => roomAt(l, i).kind == Roof) |> List.concatMap((i) =>
+    let room = roomAt(l, i) in
+    let r = room.rect in
+    let y = baseOf(l, room) in
+    sides |> List.filter((s) => onFootprint(l, s, r)) |> List.concatMap((s) =>
+      let along = if s == North || s == South then (r.x0, r.x1) else (r.z0, r.z1) in
+      let (lo, hi) = along in
+      both(i, stripId(l, s), opening(s, lineOf(s, r), y, { lo: lo, hi: hi, bottom: 0.0, top: top - y }))))
 
 // ---- Rooms ---------------------------------------------------------------------
 
 // Room `i`'s cell: its rect, from its floor up to its walls' top; an
-// outside room's is its strip.
-let cellOf = (l: Layout, i: float): Cells.cell =>
+// outside room's is its strip; a roof's rises to the collar's top.
+let cellOf = (l: Layout, top: float, i: float): Cells.cell =>
   let r = roomAt(l, i) in
-  if isInside(r) then box3(r.rect, baseOf(l, r), baseOf(l, r) + wallTop(l, i)) else strip(l, sideOfRoom(l, i))
+  match r.kind with
+  | Outside => strip(l, top, sideOfRoom(l, i))
+  | Roof => box3(r.rect, baseOf(l, r), top)
+  | _ => box3(r.rect, baseOf(l, r), baseOf(l, r) + wallTop(l, i))
 
 // Hole `h` in the wall on line `line` along `side`, from a floor at `y`, as
 // a polygon on that line.
@@ -86,12 +103,15 @@ let doorway = (l: Layout, d: Door): List<Vec3.t> =>
 
 // A flight's stair opening: the floor of its upper room less the landing.
 let stairOpening = (l: Layout, f: Flight): List<Vec3.t> =>
+  let r = inner(l, roomAt(l, f.lower).rect) in
+  let y = baseOf(l, roomAt(l, f.upper)) in
   match f.kind with
   | Straight =>
-    let r = inner(l, roomAt(l, f.lower).rect) in
-    let y = baseOf(l, roomAt(l, f.upper)) in
     let x1 = flightEnd(f) in
     [v(r.x0, y, r.z0), v(x1, y, r.z0), v(x1, y, r.z1), v(r.x0, y, r.z1)]
+  | DogLeg(well, landing) =>
+    let z = legOf(l, f, well, landing).zL in
+    [v(r.x0, y, z), v(r.x1, y, z), v(r.x1, y, r.z1), v(r.x0, y, r.z1)]
 
 let windowOpening = (l: Layout, w: Window): List<Vec3.t> =>
   let r = roomAt(l, w.room) in
@@ -102,8 +122,9 @@ let both = (a: float, b: float, polygon: List<Vec3.t>): List<Cells.portal> =>
   [{ from: a, to: b, polygon: polygon }, { from: b, to: a, polygon: List.reverse(polygon) }]
 
 // Portals: each door, each window onto an outside room (the street sees in),
-// a horizontal one at each stair opening, and the collar's four corners.
-let portalsOf = (l: Layout): List<Cells.portal> => List.flatten([
+// a horizontal one at each stair opening, the collar's four corners, and
+// each roof's edges.
+let portalsOf = (l: Layout, top: float): List<Cells.portal> => List.flatten([
   l.doors |> List.concatMap((d) => both(d.a, d.b, doorway(l, d))),
   l.windows |> List.concatMap((w) =>
     match outsideOf(l, w) with
@@ -111,11 +132,13 @@ let portalsOf = (l: Layout): List<Cells.portal> => List.flatten([
     | Option.None => []),
   l.flights |> List.concatMap((f) => both(f.lower, f.upper, stairOpening(l, f))),
   [South, North] |> List.concatMap((ns) => [West, East] |> List.concatMap((we) =>
-    both(stripId(l, ns), stripId(l, we), corner(l, ns, we)))),
+    both(stripId(l, ns), stripId(l, we), corner(l, top, ns, we)))),
+  roofEdges(l, top),
 ])
 
 // Every cell: the rooms', then the collar strips no outside room holds.
-let cellsOf = (l: Layout): List<Cells.cell> =>
-  List.flatten([List.range(List.length(l.rooms)) |> List.map((i) => cellOf(l, i)), extraSides(l) |> List.map((s) => strip(l, s))])
+let cellsOf = (l: Layout, top: float): List<Cells.cell> =>
+  List.flatten([List.range(List.length(l.rooms)) |> List.map((i) => cellOf(l, top, i)), extraSides(l) |> List.map((s) => strip(l, top, s))])
 
-let levelOf = (l: Layout): Cells.t => Cells.make({ cells: cellsOf(l), portals: portalsOf(l) })
+// A layout's cells, its collar up to `top`.
+let levelOf = (l: Layout, top: float): Cells.t => Cells.make({ cells: cellsOf(l, top), portals: portalsOf(l, top) })

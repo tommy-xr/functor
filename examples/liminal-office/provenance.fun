@@ -59,6 +59,24 @@ let statusOf = (s: Spec): Status =>
     let bytes = File.bytes(recordPathOf(s)) in
     check(s, Bytes.utf8(0.0, Bytes.length(bytes), bytes) |> Binary.require, layoutHash(s))
 
+// A bake's cell models (building.fun's cut of its mesh) under its night
+// lightmap, and its day lightmap; flat-lit without a current bake.
+type Baked = { models: List<Building.CellModel>, day: Option.t<Asset.Texture> }
+let bakedOf = (k: Building.Interior, s: Spec, status: Status): Baked =>
+  match status with
+  | Current =>
+    let mesh = meshPathOf(s) |> File.bytes |> Lightmap.readMesh in
+    { models: Building.cellModels(k, { mesh with lightmap: Option.Some({
+        texture: Texture.fromPng(File.bytes(lightPathOf(s, "night")), Texture.Srgb),
+        scale: Building.bakeScale, floor: Color.rgb(0.0, 0.0, 0.0) }) }),
+      day: Option.Some(Texture.fromPng(File.bytes(lightPathOf(s, "day")), Texture.Srgb)) }
+  | _ => { models: Building.cellModels(k, k.interiorData), day: Option.None }
+// `scene` under a day lightmap, if there is one.
+let underDay = (day: Option.t<Asset.Texture>, scene: Scene.t): Scene.t =>
+  match day with
+  | Option.Some(t) => scene |> Scene.withLightmap(t)
+  | Option.None => scene
+
 // A record checked against a made-up spec and hash.
 let testSpec = { dir: "baked/test", sources: ["layout.fun", "testLayout.fun"], bakes: ["night", "day"] }
 let testHash = 7.0

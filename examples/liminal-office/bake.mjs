@@ -1,11 +1,12 @@
-// Rebake every archetype's night and day lightmaps and record their provenance.
+// Rebake every bake's night and day lightmaps and record their provenance.
 //
 //   node examples/liminal-office/bake.mjs           # bake, copy into baked/<archetype>/, write its provenance.txt
 //   node examples/liminal-office/bake.mjs --check   # bake into a temp dir; fail unless byte-identical to baked/
 //
 // The CLI is $FUNCTOR_BIN, else target/release/functor, else target/debug/functor.
-// One `functor bake` makes every archetype's `<archetype>-<bake>` jobs; each
-// lands in baked/<archetype>/<bake>.png. Its provenance.txt records the layout
+// One `functor bake` makes every bake's `<bake>-<hour>` jobs (an archetype's
+// own, or a tower's two); each lands in baked/<bake>/<hour>.png. Its
+// provenance.txt records the layout
 // hash (provenance.fun computes the same one at load and reports a mismatch
 // as a stale bake), the bakes, the baker's version and the settings, both read
 // back from the PNGs the baker wrote. Both bakes unwrap the same mesh, so their
@@ -27,8 +28,9 @@ const SETTINGS = {
   seed: 0,
   "max-size": 2048,
 };
-// Each archetype's sources: must match `Archetypes.all` (archetypes.fun).
-const ARCHETYPES = { office: ["layout.fun", "officeLayout.fun", "building.fun"] };
+// Each bake's sources: must match archetypes.fun's `bakeOf` calls.
+const TOWER = ["layout.fun", "towerLayout.fun", "building.fun"];
+const ARCHETYPES = { office: ["layout.fun", "officeLayout.fun", "building.fun"], "tower-typical": TOWER, "tower-ends": TOWER };
 const BAKES = ["night", "day"];
 const ARTIFACTS = [...BAKES.map((b) => `${b}.png`), "night.mesh.bin"];
 

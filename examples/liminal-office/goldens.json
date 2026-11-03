@@ -168,5 +168,41 @@
     ],
     "inputScript": "flashlight-island-street.script",
     "captureAtFrame": 300
+  },
+  {
+    "name": "liminal-office-tower-lifts",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "tower-lifts.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-tower-well-down",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "tower-well-down.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-tower-well-up",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "tower-well-up.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-tower-roof",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "tower-roof.script",
+    "captureAtFrame": 30
   }
 ]

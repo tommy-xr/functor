@@ -4,7 +4,8 @@ Two floors of an empty office block, by night or day: carpeted corridors under
 drop ceilings and fluorescent panels, open empty offices (103 and 203 have
 windows), a sodium-lit stairwell between the floors, a neon entrance on an
 empty apron. `B` turns it into a block of four turned copies around a
-crossroads; `G` into grids of 4, 16 and 64; `I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
+crossroads; `G` into grids of 4, 16 and 64; `H` into four towers of 8 to 16
+floors, climbed by a dog-leg stair; `I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
 checked on a headset. Not the web: baked files load with `File.bytes`.
 
 ```sh
@@ -26,9 +27,10 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `N` | midnight ⇄ noon |
 | `B` | the office alone ⇄ the block (views 1–8 then jump within the nearest copy) |
 | `G` | the next grid: 4, 16, 64 copies (views 9 and 0 stay in it) |
+| `H` | the office alone ⇄ the towers (views 1–0 become the towers', below) |
 | `K` | at most 4 → 1 → 2 interiors at once |
 | `O` | overlook: the eye 20 m up, looking down over the roofs (no interiors draw; a view jump ends it) |
-| `I` | the flat ground ⇄ the island (with the block; `G` leaves it) |
+| `I` | the flat ground ⇄ the island (with the block; `G` and `H` leave it) |
 | `V` | the island's next biome: grass, snow, desert |
 | `L` | flashlight on / off |
 | VR left thumbstick | walk, strafe |
@@ -308,11 +310,62 @@ connects to. The bake has no sun: every daylight is placed relative to its
 opening, so the bake holds at any yaw of the building. The frame's sun
 (`Hours.sunDirection`) lights only the outdoors.
 
+## The towers
+
+`H` stands four towers round the block's crossroads, one per yaw: 8, 16,
+12 and 8 floors (`towerLayout.fun`, derived by `tower.fun`). A 24 m square
+plan, 3.3 m storeys, round a core that is the same rect on every floor
+(`functor test` pins it): a dog-leg stair and a lift lobby (mustard carpet,
+a panel grid, three brushed steel doors). The ground floor is a lobby with
+the entrance, two side rooms and a back room; each typical floor a ring of
+corridors (four convex strips) with two open offices, each with a window,
+and four shut doors, a sodium sconce by every door; the roof the stair's
+head room, a skylight slot over the well, and a terrace along the parapet.
+
+- **Stairs**: two flights of 9 risers (0.183 m, 0.28 m treads, 33°) round
+  a 0.3 m well, a half-landing at the north wall, a landing at each floor's
+  door. A flight's steps have a stepped soffit, never below its own floor,
+  so the flight below has 2.8 m of headroom; the ground flight
+  stands solid on its floor; the top one ends at a balustrade. A middle
+  floor's stairwell room is both the head of the flight below and the foot
+  of the one above: walls a storey high, no floor but its landing, no
+  ceiling. Each face goes to the stairwell room whose storey holds its
+  lowest corner.
+- **Cells**: floor `k`'s room `j` is cell `8k + j`; a horizontal portal
+  (the stairwell less the landing) joins each floor's stairwell to the next.
+  Down the well the frustum stays in the well, so only stairwell cells draw.
+  The collar strips rise over the tallest tower's roof terrace, which a
+  neighbour's eye can stand on.
+- **Collision**: per flight, a smooth ramp through each lane's nosings
+  and the half-landing (no step bumps), and lane parapets a storey high
+  (stacked, they wall off the well). Each floor's colliders are built once,
+  in its bake's space, and moved up per floor; the roof adds the terrace,
+  its parapet and the plant room.
+- **Bakes**: two, shared by every tower. `tower-typical` is one floor
+  between the stairwells of the floors below and above (so light crosses the
+  shaft), 512²; its floor's cell models are drawn once per floor, moved up,
+  the same `Model.static` values (one GPU copy). `tower-ends` is the ground
+  and the roof, each beside its neighbouring stairwell, 1024². With both
+  hours that is 10.5 MB of lightmaps.
+- **Street side**: the kit's facade, roof (open over the stairwell) and
+  entrance canopy, plus the plant room and a planter on the roof and a red
+  beacon; a window grid on every facade, one mesh (lit at random by night,
+  dark glass by day), with holes where the real windows are. Shells draw the
+  same grid.
+
+Views in the towers (in the nearest tower): `1` the lobby, `2` a lift
+lobby, `3` a corridor, `4` an office window (floor 3), `5` up the well from
+floor 1, `6` down the well from floor 6's landing, `7` up a flight, `8`
+floor 8's window; `9` the 8-floor tower's terrace facing the taller ones,
+`0` the street between them. `node e2e/liminal-tower.mjs` climbs every tower
+ground to roof and checks the well's culling.
+
 ## Rebaking
 
-Each archetype's bakes live in `baked/<archetype>/`. Editing `layout.fun`,
-`building.fun` (which holds the bake jobs and their lights) or an
-archetype's `<archetype>Layout.fun` makes its committed bakes stale:
+Each bake lives in `baked/<bake>/`: `office`, `tower-typical`, `tower-ends`.
+Editing `layout.fun`, `building.fun` (which holds the bake jobs and their
+lights) or an archetype's `<archetype>Layout.fun` makes its committed bakes
+stale:
 
 ```sh
 node examples/liminal-office/bake.mjs           # bake, then write baked/<archetype>/provenance.txt

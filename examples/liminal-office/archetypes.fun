@@ -1,16 +1,17 @@
 // The building archetypes: each is a `Layout` (its `<name>Layout.fun`)
 // derived ONCE, at load, into its interior (building.fun), culling cells
-// (portals.fun) and street side (exterior.fun), and its committed bake
-// (baked/<name>/) loaded into per-cell models. Every copy of an archetype
-// (block.fun) draws these same values, so the GPU holds one of each.
+// (portals.fun) and street side (exterior.fun), and its committed bakes
+// (baked/<bake>/) loaded into per-cell models. Every copy of an archetype
+// (block.fun) draws these same values, so the GPU holds one of each. The
+// towers (tower.fun) stack one typical floor's models, at three heights.
 
-// An archetype's derived parts. `night` and `day`: its cell models in their
-// cells under each bake (flat-lit without a current one).
+// An archetype's derived parts: its layout, colliders, cells and street
+// side, and whether its bakes are current. `night` and `day`: its cell
+// models in their cells under each bake (flat-lit without a current one).
 type Archetype = {
   name: string,
   layout: Layout.Layout,
-  interior: Building.Interior,
-  bake: Provenance.Spec,
+  colliders: List<Building.Collider>,
   status: Provenance.Status,
   level: Cells.t,
   street: Exterior.Street,
@@ -25,20 +26,12 @@ let roomOf = (k: Building.Interior, p: Building.CellModel): Scene.t => Scene.mod
 // The baked mesh cut into cell models, under the night bake, and the same
 // models under the day bake: one mesh, two lightmaps.
 let roomsOf = (k: Building.Interior, s: Provenance.Spec, status: Provenance.Status): (List<Scene.t>, List<Scene.t>) =>
-  match status with
-  | Provenance.Current =>
-    let mesh = Provenance.meshPathOf(s) |> File.bytes |> Lightmap.readMesh in
-    let night = Building.cellModels(k, { mesh with lightmap: Option.Some({
-      texture: Texture.fromPng(File.bytes(Provenance.lightPathOf(s, "night")), Texture.Srgb),
-      scale: Building.bakeScale, floor: Color.rgb(0.0, 0.0, 0.0) }) }) |> List.map((p) => roomOf(k, p)) in
-    let dayLightmap = Texture.fromPng(File.bytes(Provenance.lightPathOf(s, "day")), Texture.Srgb) in
-    (night, night |> List.map((room) => room |> Scene.withLightmap(dayLightmap)))
-  | _ =>
-    let night = Building.cellModels(k, k.interiorData) |> List.map((p) => roomOf(k, p)) in
-    (night, night)
+  let b = Provenance.bakedOf(k, s, status) in
+  let night = b.models |> List.map((p) => roomOf(k, p)) in
+  (night, night |> List.map((room) => Provenance.underDay(b.day, room)))
 
-// Archetype `name`'s bake, from `sources` (bake.mjs lists the same files),
-// in baked/<name>/.
+// Bake `name`, from `sources` (bake.mjs lists the same files), in
+// baked/<name>/.
 let bakeOf = (name: string, sources: List<string>): Provenance.Spec =>
   { dir: $"baked/{name}", sources: sources, bakes: ["night", "day"] }
 
@@ -48,14 +41,34 @@ let officeInterior = Building.interiorOf("office", OfficeLayout.layout)
 let officeBake = bakeOf("office", ["layout.fun", "officeLayout.fun", "building.fun"])
 let officeStatus = Provenance.statusOf(officeBake)
 let officeRooms = roomsOf(officeInterior, officeBake, officeStatus)
-let officeLevel = Portals.levelOf(OfficeLayout.layout)
+let officeLevel = Portals.levelOf(OfficeLayout.layout, Portals.outsideTop)
 let officeStreet = Exterior.streetOf(OfficeLayout.layout)
 let office: Archetype =
   let (night, day) = officeRooms in
-  { name: "office", layout: OfficeLayout.layout, interior: officeInterior, bake: officeBake, status: officeStatus,
+  { name: "office", layout: OfficeLayout.layout, colliders: officeInterior.colliders, status: officeStatus,
     level: officeLevel, street: officeStreet, night: night, day: day }
 
-let all = [office]
+// The towers' two bakes, the typical floor's and the ground and roof's.
+let towerSources = ["layout.fun", "towerLayout.fun", "building.fun"]
+let typicalBake = bakeOf("tower-typical", towerSources)
+let typicalStatus = Provenance.statusOf(typicalBake)
+let typicalBaked = Provenance.bakedOf(Tower.typicalInterior, typicalBake, typicalStatus)
+let endsBake = bakeOf("tower-ends", towerSources)
+let endsStatus = Provenance.statusOf(endsBake)
+let endsBaked = Provenance.bakedOf(Tower.endsInterior, endsBake, endsStatus)
+// A tower of `n` typical floors.
+let towerOf = (n: float): Archetype =>
+  let l = TowerLayout.towerOf(n) in
+  let placed = Tower.placedOf(n, typicalBaked, endsBaked) in
+  { name: $"tower-{n}", layout: l, colliders: Tower.collidersOf(n),
+    status: if typicalStatus != Provenance.Current then typicalStatus else endsStatus,
+    level: Portals.levelOf(l, Tower.collarTop), street: Tower.streetOf(l, n),
+    night: placed |> List.map(Tower.nightOf), day: placed |> List.map(Tower.dayOf) }
+let tower8 = towerOf(8.0)
+let tower12 = towerOf(12.0)
+let tower16 = towerOf(16.0)
+
+let all = [office, tower8, tower12, tower16]
 
 // The archetype a copy names.
 let named = (name: string): Archetype =>
@@ -65,18 +78,19 @@ let named = (name: string): Archetype =>
 // The first archetype whose bake isn't current, if any.
 let stale = all |> List.find((a) => a.status != Provenance.Current)
 
-// Every archetype's bake jobs, for `functor bake` (through game.fun):
-// `<name>-night` and `<name>-day`.
-let bakes = all |> List.concatMap((a) => [a.interior.night, a.interior.day])
+// Every bake's jobs, for `functor bake` (through game.fun): `<bake>-night`
+// and `<bake>-day`.
+let bakes = [officeInterior.night, officeInterior.day, Tower.typicalInterior.night, Tower.typicalInterior.day,
+             Tower.endsInterior.night, Tower.endsInterior.day]
 // Whether every archetype's bake is current.
 let baked = all |> List.all((a) => a.status == Provenance.Current)
 
-// Every archetype's cell models under both bakes, kept on the GPU but never
+// Every bake's cell models under both lightmaps, kept on the GPU but never
 // drawn: with no interior active, or at the other hour, the meshes and
 // lightmaps stay loaded, so entering a building or switching the hour
-// uploads nothing.
-let resident = Scene.keepResident(Scene.group(all |> List.concatMap((a) => List.flatten([a.night, a.day]))))
+// uploads nothing. (The towers draw the same models, moved.)
+let resident = Scene.keepResident(Scene.group(List.flatten([office.night, office.day, Tower.residentOf(typicalBaked), Tower.residentOf(endsBaked)])))
 
-expect (bakes |> List.map((b) => b.name)) == ["office-night", "office-day"]
+expect (bakes |> List.map((b) => b.name)) == ["office-night", "office-day", "tower-typical-night", "tower-typical-day", "tower-ends-night", "tower-ends-day"]
 // The committed bakes match their layouts: rebake after editing (README).
 expect all |> List.all((a) => a.status == Provenance.Current)

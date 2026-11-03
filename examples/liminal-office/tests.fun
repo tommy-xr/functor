@@ -6,7 +6,7 @@ open Layout
 // The office, as the kit derives it.
 let archetype = Archetypes.office
 let l = archetype.layout
-let kit = archetype.interior
+let kit = Archetypes.officeInterior
 let street = archetype.street
 let shell = Shells.shellAt("office")
 let level = archetype.level
@@ -142,9 +142,9 @@ expect windows |> List.all((w) => Building.stacked(l, w.side, Building.windowHol
 // The office's Layout derives the cell graph it had as constants: 23 rooms
 // plus 2 collar strips, 54 portals between the same cells in the same order,
 // 558 faces and 173 colliders; and cell ids stay room positions (the e2e's).
-expect List.length(Portals.cellsOf(l)) == 25.0 && List.length(Portals.portalsOf(l)) == 54.0
+expect List.length(Portals.cellsOf(l, Portals.outsideTop)) == 25.0 && List.length(Portals.portalsOf(l, Portals.outsideTop)) == 54.0
 expect List.length(kit.allFaces) == 558.0 && List.length(kit.colliders) == 173.0
-expect Text.join(" ", Portals.portalsOf(l) |> List.map((p) => $"{p.from}-{p.to}"))
+expect Text.join(" ", Portals.portalsOf(l, Portals.outsideTop) |> List.map((p) => $"{p.from}-{p.to}"))
   == "0-1 1-0 1-2 2-1 2-3 3-2 4-1 1-4 1-5 5-1 6-2 2-6 2-7 7-2 8-2 2-8 2-9 9-2 10-2 2-10 2-11 11-2 13-14 14-13 15-13 13-15 13-16 16-13 17-13 13-17 13-18 18-13 19-13 13-19 13-20 20-13 21-13 13-21 14-12 12-14 22-6 6-22 22-17 17-22 11-12 12-11 0-22 22-0 0-24 24-0 23-22 22-23 23-24 24-23"
 expect ([0.0, 1.0, 2.0, 9.0, 11.0, 12.0, 13.0, 14.0, 20.0, 22.0] |> List.map((i) => Building.roomAt(l, i).name))
   == ["apron", "lobby", "corridor", "106", "stair B", "stair B 2", "corridor 2", "turn 2", "206", "west yard"]
@@ -186,7 +186,7 @@ let total = 2.0 * List.length(kit.allFaces)
 expect (kit.meshSpans |> List.map((s) => s.count) |> List.sum) == total
 expect (kit.cellRanges |> List.map((r) => r.count) |> List.sum) == total
 expect archetype.status != Provenance.Current
-  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(archetype.bake))).triangles) == 12.0 * total
+  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(Archetypes.officeBake))).triangles) == 12.0 * total
 
 // The split into cell meshes loses and repeats nothing: the cells' triangle
 // ranges and vertex runs tile the mesh in order, each cell's triangles index
@@ -212,10 +212,10 @@ let splitsExactly = (data: Model.staticData): bool =>
     && Bytes.equals(rejoined((d) => d.uvs2), data.uvs2)
 expect splitsExactly(kit.interiorData)
 expect archetype.status != Provenance.Current
-  || splitsExactly(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(archetype.bake))))
+  || splitsExactly(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(Archetypes.officeBake))))
 // The baked mesh has lightmap UVs to keep.
 expect archetype.status != Provenance.Current
-  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(archetype.bake))).uvs2) > 0.0
+  || Bytes.length(Lightmap.readMesh(File.bytes(Provenance.meshPathOf(Archetypes.officeBake))).uvs2) > 0.0
 
 // A door's reveal spans its wall's full thickness: its two halves'
 // thresholds together. Doors from outside go through the facade; the rest
@@ -282,7 +282,7 @@ expect Hours.outdoorAt(0.5).sky == Hours.duskSky
 let collarIds = Portals.sides |> List.map(Portals.stripId(l))
 expect collarIds == [0.0, n, n - 1.0, n + 1.0]
 // Every cell is reachable through portals from the south strip.
-let portals = Portals.portalsOf(l)
+let portals = Portals.portalsOf(l, Portals.outsideTop)
 let linked = (i: float): List<float> =>
   portals |> List.filter((p) => p.from == i) |> List.map((p) => p.to)
 let cellCount = n + List.length(Portals.extraSides(l))
@@ -305,7 +305,8 @@ let reach = Block.activeOff + Block.eyeReach
 expect reach <= Portals.collar
 let f = footprint
 // The footprint grown by `d`, its outline every metre or so.
-let outline = (d: float): List<(float, float)> =>
+let outline = (d: float): List<(float, float)> => outlineOf(f, d)
+let outlineOf = (f: Rect, d: float): List<(float, float)> =>
   let along = (a: float, b: float): List<float> => List.range(Math.ceil(b - a) + 1.0) |> List.map((k) => Math.min(b, a + k)) in
   let arc = (cx: float, cz: float, from: float): List<(float, float)> =>
     List.range(19.0) |> List.map((k) => let a = (from + 5.0 * k) * Math.pi / 180.0 in (cx + d * Math.sin(a), cz + d * Math.cos(a))) in
@@ -403,17 +404,17 @@ expect Block.activeAt(block, Block.maxActive, [], Block.toWorld(Block.copyAt(1.0
 // Every copy draws the home copy's scene (one archetype: the same cell
 // models and lightmaps) under its own transform.
 let look = (c: Block.Copy): Game.CopyLook => { copy: c, neon: 1.0, lamps: 1.0, day: false, active: true }
-let local = Scene.group([Exterior.exteriorAt(street, 1.0, 1.0), Scene.cells(level, Scene.group(archetype.night))])
+let local = Scene.group([Exterior.exteriorAt(street, 1.0, 1.0, false), Scene.cells(level, Scene.group(archetype.night))])
 expect copies |> List.all((c) => Scene.equals(Game.copyScene(look(c)), Block.sceneOf(c, local)))
 
 // ---- The grids -------------------------------------------------------------------
 
 let grid64 = Block.townAt(4.0)
-expect (Block.towns |> List.map((t) => List.length(t.copies))) == [1.0, 4.0, 4.0, 16.0, 64.0]
-expect (Block.towns |> List.map((t) => t.shells)) == [false, false, true, true, true]
-// An id is the same building in every town: each extends the smaller ones,
-// and the grid of 4 stands where the block does.
-expect Block.towns |> List.all((t) => t.copies == List.take(List.length(t.copies), grid64.copies))
+expect (Block.towns |> List.map((t) => List.length(t.copies))) == [1.0, 4.0, 4.0, 16.0, 64.0, 4.0]
+expect (Block.towns |> List.map((t) => t.shells)) == [false, false, true, true, true, true]
+// An id is the same office in every office town: each extends the smaller
+// ones, and the grid of 4 stands where the block does.
+expect List.take(5.0, Block.towns) |> List.all((t) => t.copies == List.take(List.length(t.copies), grid64.copies))
 expect Block.townAt(2.0).copies == copies
 // The blocks fill 2 × 2, then 4 × 4.
 let cells = (n: float): List<(float, float)> => List.range(n) |> List.map(Block.ringCell)
@@ -613,8 +614,9 @@ expect windows |> List.indexedMap((i, w) =>
       && near(b.z0, w.at - w.width / 2.0) && near(b.z1, w.at + w.width / 2.0) && near(b.y0, y + w.sill) && near(b.y1, y + w.head)
   | Option.None => false) |> List.all((ok) => ok)
 expect windows |> List.all((w) => Building.roomAt(l, w.room).panels |> List.any((p) => p.on))
-// One copy's parts are prebuilt per id, for the largest town.
-expect List.length(Shells.parts) == 64.0
+// Each copy's parts are prebuilt, per town.
+expect (Shells.parts |> List.map(List.length)) == (Block.towns |> List.map((t) => List.length(t.copies)))
+
 
 // ---- The island ----------------------------------------------------------------
 
@@ -721,3 +723,105 @@ let streetEye = Vec3.make(-12.0, 1.6, -50.0)
 let lit = Game.frameLights(Hours.islandOutdoorAt(0.0), copies, streetEye, [beam])
 expect List.length(lit) == 8.0
 expect List.length(Game.frameLights(Hours.islandOutdoorAt(0.0), copies, streetEye, [])) == 8.0
+
+// ---- The towers ------------------------------------------------------------------
+
+let tower = Archetypes.tower8
+let tl = tower.layout
+let roomOf = (lay: Layout, i: float): Room => Building.roomAt(lay, i)
+let stairsOf = (lay: Layout): List<float> => List.range(List.length(lay.rooms)) |> List.filter((i) => roomOf(lay, i).kind == Stair)
+// The stairwell is one core rect on every floor, ground to roof, a level
+// apart, in the tower and both bake layouts; a flight joins each pair.
+expect [tl, TowerLayout.typical, TowerLayout.ends] |> List.all((lay) => stairsOf(lay) |> List.all((i) => roomOf(lay, i).rect == TowerLayout.stairRect))
+expect (stairsOf(tl) |> List.map((i) => roomOf(tl, i).level)) == List.range(10.0)
+expect (tl.flights |> List.map((fl) => [fl.lower, fl.upper]))
+  == (List.zip(List.drop(1.0, stairsOf(tl)), List.take(9.0, stairsOf(tl))) |> List.map((p) => let (a, b) = p in [a, b]))
+// Floor k's room j is cell 8k + j: the typical floor's rooms, then the
+// roof's, each named and levelled as in its bake.
+expect List.range(8.0) |> List.all((k0) => List.range(TowerLayout.cellsPerFloor) |> List.all((j) =>
+  roomOf(tl, Tower.cellOf(k0 + 1.0, j)).name == roomOf(TowerLayout.typical, Tower.typicalFirst + j).name
+    && roomOf(tl, Tower.cellOf(k0 + 1.0, j)).level == k0 + 1.0))
+expect List.range(2.0) |> List.all((j) => roomOf(tl, Tower.cellOf(9.0, j)).name == roomOf(TowerLayout.ends, Tower.endsRoofFirst + j).name)
+expect List.range(TowerLayout.cellsPerFloor) |> List.all((j) => roomOf(tl, j).name == roomOf(TowerLayout.ends, j).name)
+expect [roomOf(tl, Tower.apron).name, roomOf(tl, Tower.westYard).name, roomOf(TowerLayout.typical, Tower.typicalApron).name, roomOf(TowerLayout.typical, Tower.typicalYard).name]
+  == ["apron", "west yard", "apron", "west yard"]
+// 74 rooms and 2 more collar strips, 210 portals; 88 cell models (the
+// e2e's), 10 of them stairwells; one model per inside cell.
+expect List.length(Portals.cellsOf(tl, Tower.collarTop)) == 76.0 && List.length(Portals.portalsOf(tl, Tower.collarTop)) == 210.0
+let towerPlaced = Tower.placedOf(8.0, Archetypes.typicalBaked, Archetypes.endsBaked)
+expect List.length(tower.night) == 88.0 && List.length(towerPlaced |> List.filter((p) => roomOf(tl, p.cell).kind == Stair)) == 10.0
+expect towerPlaced |> List.all((p) => roomOf(tl, p.cell).kind == Outside || List.length(towerPlaced |> List.filter((q) => q.cell == p.cell)) == 1.0)
+// Every bake layout's cell's faces lie in its cell (a stairwell room
+// between two flights gets both shares), and a placed model is lifted from
+// its bake's level to its cell's.
+let inCell = (lay: Layout, i: float, p: Vec3.t): bool =>
+  let r = roomOf(lay, i) in
+  let e = 0.0001 in
+  not Building.isInside(r) || (Vec3.x(p) >= r.rect.x0 - e && Vec3.x(p) <= r.rect.x1 + e && Vec3.z(p) >= r.rect.z0 - e && Vec3.z(p) <= r.rect.z1 + e
+    && Vec3.y(p) >= Building.baseOf(lay, r) - e && Vec3.y(p) <= Building.baseOf(lay, r) + Building.wallTop(lay, i) + e)
+expect [TowerLayout.typical, TowerLayout.ends] |> List.all((lay) => List.range(List.length(lay.rooms)) |> List.all((i) =>
+  Building.cellFaces(lay, i) |> List.all((fc) => Building.corners(fc.q) |> List.all((p) => inCell(lay, i, p)))))
+let bakeLevel = (p: Tower.Placed): float =>
+  if p.cell >= Tower.cellOf(9.0, 0.0) then TowerLayout.endsRoof else if p.cell < TowerLayout.cellsPerFloor then 0.0 else 1.0
+expect towerPlaced |> List.all((p) => roomOf(tl, p.cell).kind == Outside
+  || near(Building.baseOf(tl, roomOf(tl, p.cell)), bakeLevel(p) * storey + p.dy))
+// No flight reaches below its own floor: the typical floor's model holds
+// its whole flight, with no flight below in its bake to lend the rest.
+expect [tl, TowerLayout.typical, TowerLayout.ends] |> List.all((lay) => lay.flights |> List.all((fl) =>
+  Building.flightFaces(lay, fl) |> List.all((fc) => Building.lowestY(fc) >= Building.baseOf(lay, roomOf(lay, fl.lower)) - eps)))
+// The dog-leg: comfortable steps and a ramp the character climbs, 1.2 m
+// clear in each lane, headroom under the flight above, landings to step
+// onto, its half-landing halfway up.
+let leg = (fl: Flight): Building.Leg =>
+  match fl.kind with
+  | DogLeg(well, landing) => Building.legOf(tl, fl, well, landing)
+  | Straight => Binary.invalid("a straight flight in the tower")
+expect tl.flights |> List.all((fl) =>
+  let g = leg(fl) in
+  Building.riserOf(tl, fl) <= 0.19 && fl.tread >= 0.28 && Math.atan(Building.riserOf(tl, fl) / fl.tread) * 180.0 / Math.pi <= 35.0
+    && g.ax1 - Building.parapetThickness - g.r.x0 >= 1.2 - eps && g.r.x1 - g.bx0 - Building.parapetThickness >= 1.2 - eps
+    && tl.storey - Building.soffitDepth(tl, fl) >= 2.4 && g.zL - g.r.z0 >= 1.5 && g.r.z1 - g.zH >= 1.5 && near(g.half, tl.storey / 2.0))
+// Each lane's ramp runs from a tread before its first riser through every
+// nosing; the half-landing between them.
+let rampAt = (q: Building.Quad, z: float): float => Vec3.y(q.o) + Vec3.y(q.b) * (z - Vec3.z(q.o)) / Vec3.z(q.b)
+expect tl.flights |> List.all((fl) =>
+  let g = leg(fl) in
+  let rise = Building.riserOf(tl, fl) in
+  let y = Building.baseOf(tl, roomOf(tl, fl.lower)) in
+  match Building.rampFaces(tl, fl) with
+  | [up, half, back] =>
+    (List.range(g.n) |> List.all((j) =>
+      near(rampAt(up.q, g.zL + j * fl.tread), y + (j + 1.0) * rise) && near(rampAt(back.q, g.zH - j * fl.tread), y + g.half + (j + 1.0) * rise)))
+      && near(rampAt(up.q, g.zL - fl.tread), y) && near(Vec3.y(half.q.o), y + g.half)
+  | _ => false)
+// Sight: down the well from floor 6's landing to the ground, and up it to
+// the roof's head room; not from that landing into a corridor below, nor
+// up through a floor.
+let wellAt = (y: float): Vec3.t => Vec3.make(9.2, y, 12.0)
+expect Cells.segment(Vec3.make(9.2, 6.0 * storey + 1.6, 11.0), wellAt(1.0), tower.level)
+expect Cells.segment(wellAt(1.0), wellAt(9.0 * storey + 1.0), tower.level)
+expect not Cells.segment(Vec3.make(9.2, 6.0 * storey + 1.6, 10.6), Vec3.make(12.0, 5.0 * storey + 1.6, 7.6), tower.level)
+expect not Cells.segment(Vec3.make(12.0, 3.0 * storey + 1.6, 7.6), Vec3.make(12.0, 4.0 * storey + 1.6, 7.6), tower.level)
+// The street sees in through each floor's west window, and the terrace
+// out over its parapet.
+expect List.range(8.0) |> List.all((k) =>
+  Cells.segment(Vec3.make(-5.0, (k + 1.0) * storey + 1.6, 12.0), Vec3.make(2.5, (k + 1.0) * storey + 1.6, 12.0), tower.level))
+expect Cells.segment(Vec3.make(12.0, 9.0 * storey + 1.6, 4.0), Vec3.make(12.0, 25.0, -20.0), tower.level)
+// Collider tags are unique in every archetype and in the towers' town.
+expect Archetypes.all |> List.all((a) => unique(a.colliders |> List.map((c) => c.tag)))
+expect unique(List.flatten([["player", "block-ground"], tagsOf(Block.towers.copies)]))
+// Every tower is at most the tallest, and its collar holds every eye up to
+// that one's roof terrace, out to `activeOff` + `eyeReach`; the terrace is
+// a cell.
+expect [Archetypes.tower8, Archetypes.tower12, Archetypes.tower16] |> List.all((a) => a.layout.levels - 1.0 <= Tower.maxFloors)
+expect Block.townAt(Block.towersTown).name == "towers"
+let roofEye = (Tower.maxFloors + 1.0) * storey + 0.92 + 0.73 + Block.eyeReach
+expect roofEye < Tower.collarTop
+let tf = tl.footprint
+let towerOutline = List.range(Math.floor(reach) + 1.0) |> List.map((k) => Math.min(reach, k + 0.001)) |> List.concatMap((d) => outlineOf(tf, d))
+expect [Archetypes.tower8, Archetypes.tower12, Archetypes.tower16] |> List.all((a) => towerOutline |> List.all((p) =>
+  let (x, z) = p in [0.3, 1.6, 20.0, roofEye] |> List.all((y) => Cells.locate(Vec3.make(x, y, z), a.level) != Option.None)))
+expect Cells.locate(Vec3.make(12.0, 9.0 * storey + 1.6, 4.0), tower.level) == Option.Some(Tower.cellOf(9.0, 1.0))
+// The towers stand a street apart.
+expect (Block.towers.copies |> List.map((c) => Block.archetypeOf(c).name)) == ["tower-8", "tower-16", "tower-12", "tower-8"]
+expect pairsOf(Block.towers.copies) |> List.all((p) => let (a, b) = p in gap(worldRect(a, tf), worldRect(b, tf)) >= Block.streetWidth - 0.001)

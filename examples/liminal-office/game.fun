@@ -4,6 +4,7 @@
 // entrance on an empty apron. B turns it into a block: four turned copies of
 // the office around a crossroads (block.fun). G cycles grids of 4, 16 and 64
 // copies, where at most K interiors draw and the rest are shells (shells.fun).
+// H stands four towers there instead (tower.fun), climbed by dog-leg stairs.
 //
 //   functor -d examples/liminal-office run native
 //   functor -d examples/liminal-office run native --emulate-xr
@@ -13,12 +14,12 @@
 // landing, upstairs corridor, upstairs window. 9 and 0 jump into the block:
 // the street, and a turned copy's window. T steps the hour; N jumps between
 // midnight and noon; B toggles the block; G cycles the grids; K cycles how many
-// interiors draw (4, 1, 2); O overlooks the roofs from 20 m up; I puts the
-// block on the island (island.fun), V cycles its biome; L toggles a
-// flashlight. VR: the left thumbstick walks and strafes; the right turns and
-// walks; X steps the hour, Y jumps midnight ⇄ noon; B toggles the block, A
-// the island; the right trigger toggles the flashlight, held in the right
-// hand.
+// interiors draw (4, 1, 2); O overlooks the roofs from 20 m up; H toggles the
+// towers, where 1–0 jump to their own views (`towerViews`); I puts the block
+// on the island (island.fun), V cycles its biome; L toggles a flashlight. VR:
+// the left thumbstick walks and strafes; the right turns and walks; X steps
+// the hour, Y jumps midnight ⇄ noon; B toggles the block, A the island; the
+// right trigger toggles the flashlight, held in the right hand.
 //
 // officeLayout.fun is the office's one layout authority (a layout.fun
 // `Layout`); building.fun derives the mesh, colliders and bake jobs from it,
@@ -49,7 +50,7 @@ let streetLights = (c: Block.Copy): List<StreetLight> =>
   let lobby = Exterior.lobbyLight in
   let lamp = Exterior.sodiumLight in
   List.flatten([
-    [{ at: Block.toWorld(c, v(lobby.x, lobby.y, lobby.z)), r: lobby.r, g: lobby.g, b: lobby.b,
+    [{ at: Block.toWorld(c, Block.archetypeOf(c).street.lobbyLight), r: lobby.r, g: lobby.g, b: lobby.b,
        intensity: lobby.intensity, range: lobby.range, switched: false }],
     Block.archetypeOf(c).street.lampHeads |> List.map((p) =>
       { at: Block.toWorld(c, p |> Vec3.add(v(0.0, 0.0 - lamp.drop, 0.0))), r: lamp.r, g: lamp.g, b: lamp.b,
@@ -121,6 +122,24 @@ let views = [
   { copy: 0.0, x: -12.0, level: 0.0, z: -50.0, yaw: 0.0, pitch: 0.04 },
   { copy: 2.0, x: 7.6, level: 0.0, z: 7.0, yaw: -1.1, pitch: -0.2 },
 ]
+// The towers' views, in the nearest tower: 1 the lobby, 2 a lift lobby
+// (floor 3), 3 down its corridor, 4 its west office's window; 5 up the
+// well from floor 1's landing, 6 down the well from floor 6's
+// landing, 7 up a flight (floor 2), 8 floor 8's west window. 9 the 8-floor
+// tower's roof terrace, facing the taller ones; 0 the street between them.
+let towerViews = [
+  { copy: 0.0, x: 12.0, level: 0.0, z: 1.0, yaw: 0.0, pitch: 0.05 },
+  { copy: 0.0, x: 13.6, level: 3.0, z: 7.0, yaw: 0.0, pitch: 0.05 },
+  { copy: 0.0, x: 18.2, level: 3.0, z: 7.6, yaw: -1.5708, pitch: 0.0 },
+  { copy: 0.0, x: 3.2, level: 3.0, z: 12.0, yaw: -1.5708, pitch: -0.1 },
+  { copy: 0.0, x: 9.2, level: 1.0, z: 10.6, yaw: 0.0, pitch: 1.0 },
+  { copy: 0.0, x: 9.2, level: 6.0, z: 10.2, yaw: 0.0, pitch: -1.2 },
+  { copy: 0.0, x: 8.3, level: 2.0, z: 9.8, yaw: 0.0, pitch: 0.3 },
+  { copy: 0.0, x: 3.2, level: 8.0, z: 12.0, yaw: -1.5708, pitch: -0.1 },
+  { copy: 0.0, x: 6.0, level: 9.0, z: 3.0, yaw: -2.7, pitch: 0.25 },
+  { copy: 0.0, x: -12.0, level: 0.0, z: -36.0, yaw: 0.0, pitch: 0.35 },
+]
+let viewsOf = (town: float): List<View> => if town == Block.towersTown then towerViews else views
 // Views 9 and 0 are in the block (or the grid you're in).
 let inBlock = (n: float): bool => n > 8.0
 
@@ -178,13 +197,14 @@ let unit = (x: float): float => Math.clamp(-1.0, 1.0, x)
 let still = { x: 0.0, y: 0.0 }
 
 // I and A: onto the island, with the block; or back to the flat ground.
-// Only the pad is level on both grounds: from anywhere else, the walker
-// goes to the street (view 9) rather than end up under the other ground.
+// Only the pad is level on both grounds: from anywhere else, or from the
+// towers (other buildings than the block's), the walker goes to the street
+// (view 9) rather than end up under the other ground or inside a wall.
 // On the island B and VR B keep the block: its night map has every copy's
 // lamp pools painted in.
 let toggleIsland = (model) =>
   { model with island: not model.island, town: if model.island then model.town else 1.0,
-               goto: if Island.onPad(model.at.x, model.at.z) then model.goto else 9.0 }
+               goto: if Island.onPad(model.at.x, model.at.z) && model.town != Block.towersTown then model.goto else 9.0 }
 
 // T and X: the next hour. N and Y: midnight ⇄ noon.
 let nextHour = (hour: float): float => Math.mod(hour + 1.0, 24.0)
@@ -243,6 +263,9 @@ let input = (model, key, isDown: bool) =>
     | Key.N => { model with hour: dayOrNight(model.hour) }
     | Key.B => { model with town: if model.island then model.town else toggleBlock(model.town) }
     | Key.G => toGrid(model)
+    // Into the other town's view 1: its building where the player stands
+    // differs. The towers stand on the flat ground.
+    | Key.H => { model with island: false, town: if model.town == Block.towersTown then 0.0 else Block.towersTown, goto: 1.0 }
     | Key.K => { model with k: nextK(model.k) }
     | Key.I => toggleIsland(model)
     | Key.V => { model with biome: Math.mod(model.biome + 1.0, List.length(Island.biomes)) }
@@ -271,17 +294,17 @@ let tick = (model, dt: float, tts: float) =>
     at: p,
     grounded: Physics.grounded(playerTag),
     copy: copy,
-    cell: (let c = Block.copyAt(copy) in Cells.locate(Block.toLocal(c, eye), Block.archetypeOf(c).level)) |> Option.defaultValue(-1.0),
+    cell: (let c = Block.copyIn(town, copy) in Cells.locate(Block.toLocal(c, eye), Block.archetypeOf(c).level)) |> Option.defaultValue(-1.0),
     active: active,
     solid: Block.solidAt(town, model.solid, eye),
     uncovered: model.uncovered + Block.uncovered(town, active, eye),
     baked: baked,
     props: Island.regroup(model.props, model.island, p.x, p.z, Hours.reachAt(Island.reach, Hours.daylight(model.hour))) } in
-  match List.nth(model.goto - 1.0, views) with
+  match List.nth(model.goto - 1.0, viewsOf(model.town)) with
   | Option.Some(view) =>
-    let c = Block.copyAt(if inBlock(model.goto) then view.copy else copy) in
-    let to = Block.toWorld(c, v(view.x, view.level * Block.archetypeOf(c).layout.storey + centreAboveFeet, view.z)) in
     let t = if inBlock(model.goto) && model.town == 0.0 then 1.0 else model.town in
+    let c = Block.copyIn(Block.townAt(t), if inBlock(model.goto) then view.copy else copy) in
+    let to = Block.toWorld(c, v(view.x, view.level * Block.archetypeOf(c).layout.storey + centreAboveFeet, view.z)) in
     // Solid where the player lands, before the teleport lands.
     ({ observed with goto: 0.0, vy: 0.0, overlook: false, yaw: Block.headingToWorld(c, view.yaw), pitch: view.pitch,
                      town: t, solid: Block.solidAt(Block.townAt(t), observed.solid, to) },
@@ -299,7 +322,7 @@ let physics = (model) =>
   Physics.scene(v(0.0, -9.81, 0.0), List.flatten([
     if model.island then List.append([Physics.memo("island-props", model.props.solid, Island.propBodies)], Island.bodies)
     else [Block.townAt(model.town).groundBody],
-    model.solid |> List.map((id) => let c = Block.copyAt(id) in Physics.memo(c.name, c, Block.bodiesOf)),
+    model.solid |> List.map((id) => let c = Block.copyIn(Block.townAt(model.town), id) in Physics.memo(c.name, c, Block.bodiesOf)),
     [Physics.character(playerTag, Physics.capsule(0.6, 0.3),
                        { stepHeight: 0.2, maxSlope: 40deg, snap: 0.2, offset: 0.02 })
        |> Physics.at(spawnAt)],
@@ -315,7 +338,7 @@ let copyScene = (look: CopyLook): Scene.t =>
   let interiorScene =
     if not look.active then Scene.group([])
     else Scene.cells(a.level, Scene.group(if look.day then a.day else a.night)) in
-  Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps), interiorScene]))
+  Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps, look.day), interiorScene]))
 
 // The near plane. Depth precision at a distance goes as 1/near: at 0.05 m,
 // faces 2 cm apart z-fought from about 60 m. At 0.1 m its corners sit about
@@ -338,7 +361,7 @@ let draw = (model, tts: float) =>
   // grid only the active copies draw as themselves; the rest are shells.
   let drawn = if town.shells then active else List.range(List.length(town.copies)) in
   let copies = drawn |> List.map((id) =>
-    let c = Block.copyAt(id) in
+    let c = Block.copyIn(town, id) in
     Scene.memo(c.name, { copy: c, neon: o.neon, lamps: o.lamps, day: day, active: Block.isIn(id, active) }, copyScene)) in
   let shells =
     if not town.shells then []
@@ -358,7 +381,7 @@ let draw = (model, tts: float) =>
       (v(m.position.x, m.position.y, m.position.z), v(m.forward.x, m.forward.y, m.forward.z)) in
   let flashlight = if model.flashlight
     then [Light.spot(from, dir, flashlightColor, flashlightIntensity, flashlightRange, flashlightCone)] else [] in
-  let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyAt(id)), eye, flashlight) in
+  let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyIn(town, id)), eye, flashlight) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
     |> Frame.withFog(Fog.linear(o.fogNear, far, Hours.color(o.sky)))
     |> Frame.withClearColor(Hours.color(o.sky))

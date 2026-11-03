@@ -50,6 +50,9 @@ let ceilingPaint = paint(200.0, 202.0, 186.0)
 let panelPaint = paint(240.0, 246.0, 216.0)
 let framePaint = paint(58.0, 72.0, 62.0)
 let concretePaint = paint(148.0, 144.0, 134.0)
+let mustardPaint = paint(176.0, 138.0, 48.0)
+let steelPaint = paint(170.0, 174.0, 178.0)
+let doorPaint = paint(122.0, 110.0, 92.0)
 
 // Indices into `materials`, in draw order.
 let carpet = 0.0
@@ -62,6 +65,9 @@ let frame = 6.0
 let exitGreen = 7.0
 let sodium = 8.0
 let castConcrete = 9.0
+let mustard = 10.0
+let steel = 11.0
+let doorPanel = 12.0
 
 let materials = [
   material(carpetPaint, 1.0, false, speckled(0.35, carpetPaint)),
@@ -79,6 +85,11 @@ let materials = [
     else paint(70.0, 205.0, 125.0))),
   material(paint(214.0, 158.0, 78.0), 0.0, true, solid(paint(214.0, 158.0, 78.0))),
   material(concretePaint, 1.0, false, speckled(0.12, concretePaint)),
+  material(mustardPaint, 1.0, false, speckled(0.35, mustardPaint)),
+  // Brushed: faint vertical streaks, stretched over each lift door.
+  material(steelPaint, 0.0, false, image(16.0, 4.0, (x, y) => shade(1.0 + 0.12 * (noise(x) - 0.5), steelPaint))),
+  material(doorPaint, 0.0, false, image(8.0, 16.0, (x, y) =>
+    if x < 1.0 || x > 6.0 || y < 1.0 then shade(0.8, doorPaint) else doorPaint)),
 ]
 
 let materialAt = (i: float): Material =>
@@ -126,7 +137,8 @@ let roomAt = (l: Layout, i: float): Room =>
   match List.nth(i, l.rooms) with
   | Option.Some(r) => r
   | Option.None => Binary.invalid($"no room {i}")
-let isInside = (r: Room): bool => r.kind != Outside
+// Whether a room has its own inner surfaces: not the street, not a roof.
+let isInside = (r: Room): bool => r.kind != Outside && r.kind != Roof
 // A room's floor height, and the levels' floors.
 let baseOf = (l: Layout, r: Room): float => r.level * l.storey
 let levelsOf = (l: Layout): List<float> => List.range(l.levels)
@@ -136,11 +148,13 @@ let facadeTop = (l: Layout, level: float): float =>
   if level == l.levels - 1.0 then l.facadeHeight - level * l.storey else l.storey
 
 // A stairwell is a room on each level: the foot (the lower one) has no
-// ceiling and walls a full storey high; the head's floor is the landing.
+// ceiling and walls a full storey high; the head's floor is the landing. A
+// room between two flights is both.
 let isStairFoot = (l: Layout, i: float): bool => l.flights |> List.any((f) => f.lower == i)
 let isStairHead = (l: Layout, i: float): bool => l.flights |> List.any((f) => f.upper == i)
 let wallTop = (l: Layout, i: float): float => if isStairFoot(l, i) then l.storey else l.ceiling
-let floorMatOf = (r: Room): float => if r.kind == Office || r.kind == Corridor then carpet else terrazzo
+let floorMatOf = (r: Room): float =>
+  if r.kind == Office || r.kind == Corridor then carpet else if r.kind == LiftLobby then mustard else terrazzo
 
 // The side of `r` that `o` sits against, if they share a wall line.
 let sideBetween = (r: Rect, o: Rect): Option.t<Side> =>
@@ -267,7 +281,7 @@ let doorHalf = (l: Layout, d: Door, i: float): List<Face> =>
 // The outside room a window looks onto, if the layout has one there.
 let outsideOf = (l: Layout, w: Window): Option.t<float> =>
   List.range(List.length(l.rooms)) |> List.find((o) =>
-    not isInside(roomAt(l, o)) && sideBetween(roomAt(l, w.room).rect, roomAt(l, o).rect) == Option.Some(w.side))
+    roomAt(l, o).kind == Outside && sideBetween(roomAt(l, w.room).rect, roomAt(l, o).rect) == Option.Some(w.side))
 
 // Cell `i`'s share of the window reveals, painted like the walls: the inner
 // half of those in its walls, the outer half of those looking onto it (an
@@ -312,6 +326,27 @@ let signFace = (l: Layout, f: Fixture): Face =>
   match f.sign with
   | ExitSign => plate(l, exitGreen, f.room, f.side, f.at, 0.5, 2.2, 2.45, 0.02)
   | StairSign => plate(l, sodium, f.room, f.side, f.at, 0.7, 2.2, 2.42, 0.02)
+  | LiftDoor => plate(l, steel, f.room, f.side, f.at, 1.1, 0.0, 2.2, 0.02)
+  | ShutDoor => plate(l, doorPanel, f.room, f.side, f.at, 0.9, 0.0, 2.05, 0.02)
+  | Skylight => Binary.invalid("a skylight is a slot, not a plate")
+let isPlate = (f: Fixture): bool => f.sign != Skylight
+
+// A skylight's slot in its room's ceiling: 1 m across the room's middle,
+// 3 m along z, centred `at`.
+let slotOf = (l: Layout, f: Fixture): Rect =>
+  let r = inner(l, roomAt(l, f.room).rect) in
+  let x = (r.x0 + r.x1) / 2.0 in
+  rect(x - 0.5, f.at - 1.5, x + 0.5, f.at + 1.5)
+// Room `i`'s ceiling, less any skylight slot in it (open to the sky).
+let ceilingFaces = (l: Layout, i: float): List<Face> =>
+  let r = inner(l, roomAt(l, i).rect) in
+  let y = l.ceiling in
+  match l.fixtures |> List.find((f) => f.room == i && f.sign == Skylight) with
+  | Option.None => [ceilingFace(ceilingTile, r.x0, r.z0, r.x1, r.z1, y)]
+  | Option.Some(f) =>
+    let s = slotOf(l, f) in
+    [ceilingFace(ceilingTile, r.x0, r.z0, r.x1, s.z0, y), ceilingFace(ceilingTile, r.x0, s.z1, r.x1, r.z1, y),
+     ceilingFace(ceilingTile, r.x0, s.z0, s.x0, s.z1, y), ceilingFace(ceilingTile, s.x1, s.z0, r.x1, s.z1, y)]
 let lampFace = (l: Layout, lamp: Lamp): Face => plate(l, sodium, lamp.room, lamp.side, lamp.at, 0.5, lamp.y - 0.1, lamp.y + 0.1, 0.03)
 
 // Room `i`'s own faces: floor, ceiling, walls, panels, signs and lamps.
@@ -321,16 +356,20 @@ let roomFaces = (l: Layout, i: float): List<Face> =>
   else
     let r = inner(l, room.rect) in
     let mat = floorMatOf(room) in
-    // A stairwell's foot has no floor under its flight and landing (solid).
-    let floors = (match l.flights |> List.find((f) => f.lower == i) with
-      | Option.Some(f) => [floorFace(mat, r.x0, r.z0, f.x0, r.z1, 0.0), floorFace(mat, f.x0, f.z1, r.x1, r.z1, 0.0)]
-      | Option.None => if isStairHead(l, i) then [] else [floorFace(mat, r.x0, r.z0, r.x1, r.z1, 0.0)]) in
+    // A stairwell's head floors with the flight's landing; a straight
+    // flight's foot has no floor under its flight and landing (solid).
+    let whole = [floorFace(mat, r.x0, r.z0, r.x1, r.z1, 0.0)] in
+    let floors = if isStairHead(l, i) then [] else (match l.flights |> List.find((f) => f.lower == i) with
+      | Option.Some(f) => (match f.kind with
+        | Straight => [floorFace(mat, r.x0, r.z0, f.x0, r.z1, 0.0), floorFace(mat, f.x0, f.z1, r.x1, r.z1, 0.0)]
+        | DogLeg(_, _) => whole)
+      | Option.None => whole) in
     List.flatten([
       floors,
-      if isStairFoot(l, i) then [] else [ceilingFace(ceilingTile, r.x0, r.z0, r.x1, r.z1, l.ceiling)],
+      if isStairFoot(l, i) then [] else ceilingFaces(l, i),
       wallFaces(l, i),
       room.panels |> List.map((p) => panelFace(l, room.rect, p)),
-      l.fixtures |> List.filter((f) => f.room == i) |> List.map((f) => signFace(l, f)),
+      l.fixtures |> List.filter((f) => f.room == i && isPlate(f)) |> List.map((f) => signFace(l, f)),
       l.lamps |> List.filter((lamp) => lamp.room == i) |> List.map((lamp) => lampFace(l, lamp)),
     ]) |> List.map((f) => lift(baseOf(l, room), f))
 
@@ -343,10 +382,13 @@ let riserOf = (l: Layout, f: Flight): float => l.storey / f.risers
 // Where the last riser rises to the landing.
 let flightEnd = (f: Flight): float => f.x0 + (f.risers - 1.0) * f.tread
 
-// [y0, y1] from a flight's lower floor, cut where its upper room starts,
-// so each piece lies in one cell.
+// [y0, y1] from a flight's lower floor, cut at every floor it crosses, so
+// each piece lies in one cell.
 let cut = (l: Layout, y0: float, y1: float): List<(float, float)> =>
-  if y0 < l.storey - eps && y1 > l.storey + eps then [(y0, l.storey), (l.storey, y1)] else [(y0, y1)]
+  let first = Math.floor((y0 + eps) / l.storey) + 1.0 in
+  let floors = List.range(Math.max(0.0, Math.ceil((y1 - eps) / l.storey) - first)) |> List.map((k) => (first + k) * l.storey) in
+  let edges = List.flatten([[y0], floors, [y1]]) in
+  List.take(List.length(edges) - 1.0, edges) |> List.zip(List.drop(1.0, edges))
 let wallZs = (l: Layout, mat: float, x0: float, x1: float, y0: float, y1: float, z: float, plus: bool): List<Face> =>
   cut(l, y0, y1) |> List.map((ys) => let (a, b) = ys in wallZ(mat, x0, x1, a, b, z, plus))
 let wallXs = (l: Layout, mat: float, z0: float, z1: float, y0: float, y1: float, x: float, plus: bool): List<Face> =>
@@ -355,59 +397,168 @@ let wallXs = (l: Layout, mat: float, z0: float, z1: float, y0: float, y1: float,
 // A flight's treads and risers, its stepped parapet (1 m above each tread,
 // solid down to the floor), the solid under the landing, and the landing
 // with its parapet; from the lower room's floor.
-let flightFaces = (l: Layout, f: Flight): List<Face> =>
-  match f.kind with
-  | Straight =>
-    let r = inner(l, roomAt(l, f.lower).rect) in
-    let storey = l.storey in
-    let rise = riserOf(l, f) in
-    let x1 = flightEnd(f) in
-    let zp = f.z1 - parapetThickness in
-    let steps = List.range(f.risers - 1.0) |> List.concatMap((j) =>
-      let xa = f.x0 + j * f.tread in
-      let xb = xa + f.tread in
-      let y = (j + 1.0) * rise in
-      let top = y + parapetHeight in
-      List.flatten([
-        [floorFace(terrazzo, xa, f.z0, xb, zp, y), wallX(castConcrete, f.z0, zp, y - rise, y, xa, false)],
-        wallZs(l, castConcrete, xa, xb, 0.0, top, f.z1, true),
-        wallZs(l, castConcrete, xa, xb, y, top, zp, false),
-        [floorFace(castConcrete, xa, zp, xb, f.z1, top)],
-        // Up to the next step's parapet, or the landing's.
-        wallXs(l, castConcrete, zp, f.z1, top, top + rise, xb, false),
-      ])) in
+let straightFaces = (l: Layout, f: Flight): List<Face> =>
+  let r = inner(l, roomAt(l, f.lower).rect) in
+  let storey = l.storey in
+  let rise = riserOf(l, f) in
+  let x1 = flightEnd(f) in
+  let zp = f.z1 - parapetThickness in
+  let steps = List.range(f.risers - 1.0) |> List.concatMap((j) =>
+    let xa = f.x0 + j * f.tread in
+    let xb = xa + f.tread in
+    let y = (j + 1.0) * rise in
+    let top = y + parapetHeight in
     List.flatten([
-      steps,
-      [wallX(castConcrete, zp, f.z1, 0.0, rise + parapetHeight, f.x0, false),
-       wallX(castConcrete, f.z0, zp, storey - rise, storey, x1, false),
-       wallZ(castConcrete, x1, r.x1, 0.0, storey - slabDepth, f.z1, true),
-       floorFace(terrazzo, x1, r.z0, r.x1, r.z1, storey),
-       ceilingFace(castConcrete, x1, f.z1, r.x1, r.z1, storey - slabDepth),
-       floorFace(castConcrete, x1, zp, x1 + parapetThickness, r.z1, storey + parapetHeight),
-       wallZ(castConcrete, x1, x1 + parapetThickness, storey, storey + parapetHeight, zp, false)],
-      // The landing's edge and its parapet's face over the stair opening.
-      wallXs(l, castConcrete, f.z1, r.z1, storey - slabDepth, storey + parapetHeight, x1, false),
-      wallXs(l, castConcrete, zp, r.z1, storey, storey + parapetHeight, x1 + parapetThickness, true),
-    ]) |> List.map((face) => lift(baseOf(l, roomAt(l, f.lower)), face))
+      [floorFace(terrazzo, xa, f.z0, xb, zp, y), wallX(castConcrete, f.z0, zp, y - rise, y, xa, false)],
+      wallZs(l, castConcrete, xa, xb, 0.0, top, f.z1, true),
+      wallZs(l, castConcrete, xa, xb, y, top, zp, false),
+      [floorFace(castConcrete, xa, zp, xb, f.z1, top)],
+      // Up to the next step's parapet, or the landing's.
+      wallXs(l, castConcrete, zp, f.z1, top, top + rise, xb, false),
+    ])) in
+  List.flatten([
+    steps,
+    [wallX(castConcrete, zp, f.z1, 0.0, rise + parapetHeight, f.x0, false),
+     wallX(castConcrete, f.z0, zp, storey - rise, storey, x1, false),
+     wallZ(castConcrete, x1, r.x1, 0.0, storey - slabDepth, f.z1, true),
+     floorFace(terrazzo, x1, r.z0, r.x1, r.z1, storey),
+     ceilingFace(castConcrete, x1, f.z1, r.x1, r.z1, storey - slabDepth),
+     floorFace(castConcrete, x1, zp, x1 + parapetThickness, r.z1, storey + parapetHeight),
+     wallZ(castConcrete, x1, x1 + parapetThickness, storey, storey + parapetHeight, zp, false)],
+    // The landing's edge and its parapet's face over the stair opening.
+    wallXs(l, castConcrete, f.z1, r.z1, storey - slabDepth, storey + parapetHeight, x1, false),
+    wallXs(l, castConcrete, zp, r.z1, storey, storey + parapetHeight, x1 + parapetThickness, true),
+  ])
 
-// Room `i`'s share of the stairs: below its flight's upper floor for the
-// foot, at or above it for the head.
+// A dog-leg's plan in its lower room `r`: the floor landing's edge `zL`
+// (the first riser), the half-landing's edge `zH`, the up lane
+// [r.x0, ax1] and the back lane [bx0, r.x1] either side of the well, `n`
+// risers each, `half` the half-landing's height.
+type Leg = { r: Rect, zL: float, zH: float, ax1: float, bx0: float, n: float, rise: float, half: float }
+let legOf = (l: Layout, f: Flight, well: float, landing: float): Leg =>
+  let r = inner(l, roomAt(l, f.lower).rect) in
+  let mid = (r.x0 + r.x1) / 2.0 in
+  let n = f.risers / 2.0 in
+  { r: r, zL: r.z0 + landing, zH: r.z0 + landing + (n - 1.0) * f.tread, ax1: mid - well / 2.0, bx0: mid + well / 2.0,
+    n: n, rise: riserOf(l, f), half: n * riserOf(l, f) }
+// A dog-leg step's underside is this far below its tread, a storey under
+// the flight above's: a stepped soffit, level with the landings' undersides.
+let soffitDepth = (l: Layout, f: Flight): float => riserOf(l, f) + slabDepth
+// Whether a dog-leg stands on its floor (no flight comes up under it), and
+// whether it is the top one (its landing closes the up lane).
+let isSolid = (l: Layout, f: Flight): bool => not isStairHead(l, f.lower)
+let isTop = (l: Layout, f: Flight): bool => not isStairFoot(l, f.upper)
+
+// A dog-leg's steps, each lane with a stepped parapet (1 m above each tread)
+// on its well side and a stepped soffit, or solid to the floor; the
+// half-landing; and the next floor's landing, with a balustrade across the
+// up lane and the well when it is the top. Faces a middle storey's room
+// draws never depend on whether a flight continues above.
+let dogLegFaces = (l: Layout, f: Flight, well: float, landing: float): List<Face> =>
+  let g = legOf(l, f, well, landing) in
+  let r = g.r in
+  let t = f.tread in
+  let pt = parapetThickness in
+  let ph = parapetHeight in
+  let storey = l.storey in
+  let solid = isSolid(l, f) in
+  // Never below its own floor, so a storey's room holds all of its flight
+  // (a typical floor's bake has no flight below to lend those faces).
+  let under = (y: float): float => if solid then 0.0 else Math.max(0.0, y - soffitDepth(l, f)) in
+  // A step in the soffit, if there is one.
+  let soffitStep = (x0: float, x1: float, y0: float, y1: float, z: float, plus: bool): List<Face> =>
+    if y1 - y0 > eps then wallZs(l, castConcrete, x0, x1, y0, y1, z, plus) else [] in
+  let steps = List.range(g.n - 1.0) in
+  let up = steps |> List.concatMap((j) =>
+    let za = g.zL + j * t in
+    let zb = za + t in
+    let y = (j + 1.0) * g.rise in
+    let last = j == g.n - 2.0 in
+    let u = under(y) in
+    List.flatten([
+      [wallZ(castConcrete, r.x0, g.ax1 - pt, y - g.rise, y, za, false),
+       floorFace(terrazzo, r.x0, za, g.ax1 - pt, zb, y),
+       floorFace(castConcrete, g.ax1 - pt, za, g.ax1, zb, y + ph)],
+      if solid then [] else List.flatten([
+        [ceilingFace(castConcrete, r.x0, za, g.ax1, zb, u)],
+        soffitStep(r.x0, g.ax1, u, if last then g.half - slabDepth else under(y + g.rise), zb, true)]),
+      wallXs(l, castConcrete, za, zb, y, y + ph, g.ax1 - pt, false),
+      wallXs(l, castConcrete, za, zb, u, y + ph, g.ax1, true),
+      if last then wallZs(l, castConcrete, g.ax1 - pt, g.ax1, g.half, y + ph, zb, true)
+      else wallZs(l, castConcrete, g.ax1 - pt, g.ax1, y + ph, y + ph + g.rise, zb, false),
+    ])) in
+  let back = steps |> List.concatMap((j) =>
+    let zb = g.zH - j * t in
+    let za = zb - t in
+    let y = g.half + (j + 1.0) * g.rise in
+    let last = j == g.n - 2.0 in
+    let u = under(y) in
+    List.flatten([
+      [wallZ(castConcrete, g.bx0 + pt, r.x1, y - g.rise, y, zb, true),
+       floorFace(terrazzo, g.bx0 + pt, za, r.x1, zb, y),
+       floorFace(castConcrete, g.bx0, za, g.bx0 + pt, zb, y + ph)],
+      if solid then [] else List.flatten([
+        [ceilingFace(castConcrete, g.bx0, za, r.x1, zb, u)],
+        soffitStep(g.bx0, r.x1, u, if last then storey - slabDepth else under(y + g.rise), za, false)]),
+      wallXs(l, castConcrete, za, zb, y, y + ph, g.bx0 + pt, true),
+      wallXs(l, castConcrete, za, zb, u, y + ph, g.bx0, false),
+      if last then wallZs(l, castConcrete, g.bx0, g.bx0 + pt, storey, y + ph, za, false)
+      else wallZs(l, castConcrete, g.bx0, g.bx0 + pt, y + ph, y + ph + g.rise, za, true),
+    ])) in
+  List.flatten([
+    // Each lane's first and last risers, and its parapet's ends.
+    [wallZ(castConcrete, r.x0, g.ax1 - pt, g.half - g.rise, g.half, g.zH, false),
+     wallZ(castConcrete, g.bx0 + pt, r.x1, storey - g.rise, storey, g.zL, true)],
+    wallZs(l, castConcrete, g.ax1 - pt, g.ax1, under(g.rise), g.rise + ph, g.zL, false),
+    wallZs(l, castConcrete, g.bx0, g.bx0 + pt, g.half, g.half + g.rise + ph, g.zH, true),
+    up,
+    back,
+    // The half-landing, its edge over the well; solid, the back lane's end.
+    [floorFace(terrazzo, r.x0, g.zH, r.x1, r.z1, g.half),
+     wallZ(castConcrete, g.ax1, g.bx0, if solid then 0.0 else g.half - slabDepth, g.half, g.zH, false)],
+    if solid then wallZs(l, castConcrete, g.bx0, r.x1, 0.0, storey - slabDepth, g.zL, false)
+    else [ceilingFace(castConcrete, r.x0, g.zH, r.x1, r.z1, g.half - slabDepth)],
+    // The next floor's landing, its underside, and its edge over the up
+    // lane (under the next flight's first steps) and the well.
+    [floorFace(terrazzo, r.x0, r.z0, r.x1, g.zL, storey),
+     ceilingFace(castConcrete, r.x0, r.z0, r.x1, g.zL, storey - slabDepth),
+     wallZ(castConcrete, r.x0, g.bx0, storey - slabDepth, storey, g.zL, true)],
+    if isTop(l, f) then
+      [wallZ(castConcrete, r.x0, g.bx0, storey, storey + ph, g.zL, false),
+       floorFace(castConcrete, r.x0, g.zL, g.bx0, g.zL + pt, storey + ph),
+       wallZ(castConcrete, r.x0, g.bx0, storey, storey + ph, g.zL + pt, true)]
+    else [],
+  ])
+
+// A flight's faces, from the floor up, in the building's space.
+let flightFaces = (l: Layout, f: Flight): List<Face> =>
+  (match f.kind with
+    | Straight => straightFaces(l, f)
+    | DogLeg(well, landing) => dogLegFaces(l, f, well, landing))
+    |> List.map((face) => lift(baseOf(l, roomAt(l, f.lower)), face))
+
+// The level whose storey holds height `y`.
+let levelAtY = (l: Layout, y: float): float => Math.floor((y + eps) / l.storey)
+// Stair room `i`'s share of the stairs in its stairwell (the rooms over its
+// rect): every face whose lowest corner is in its storey. A foot gets its
+// flight below the upper floor, a head the rest; a room between two flights
+// gets both shares, and a flight's soffit under the floor its floor.
 let stairFaces = (l: Layout, i: float): List<Face> =>
-  l.flights |> List.concatMap((f) =>
-    let split = baseOf(l, roomAt(l, f.upper)) - eps in
-    if f.lower == i then flightFaces(l, f) |> List.filter((face) => lowestY(face) < split)
-    else if f.upper == i then flightFaces(l, f) |> List.filter((face) => lowestY(face) >= split)
-    else [])
+  let room = roomAt(l, i) in
+  if room.kind != Stair then []
+  else l.flights |> List.concatMap((f) =>
+    if roomAt(l, f.lower).rect != room.rect then []
+    else flightFaces(l, f) |> List.filter((face) => levelAtY(l, lowestY(face)) == room.level))
 
 // ---- The interior mesh -----------------------------------------------------
 
 // Every face in cell `i` (room `i`), sorted by material (one group each):
 // the room's own, its halves of its doors and windows, and its share of the
-// stairs.
+// stairs. A roof has none: the street side draws it.
 let cellFaces = (l: Layout, i: float): List<Face> =>
   List.flatten([
     roomFaces(l, i),
-    l.doors |> List.filter((d) => d.a == i || d.b == i) |> List.concatMap((d) => doorHalf(l, d, i)),
+    l.doors |> List.filter((d) => (d.a == i || d.b == i) && roomAt(l, i).kind != Roof) |> List.concatMap((d) => doorHalf(l, d, i)),
     windowHalves(l, i),
     stairFaces(l, i),
   ]) |> List.sortBy((f) => f.mat)
@@ -491,28 +642,52 @@ let wallBlocks = (l: Layout, i: float): List<Block> =>
   if not isInside(room) then []
   else List.flatten([side(South, r.x0, r.x1), side(North, r.x0, r.x1), side(West, r.z0, r.z1), side(East, r.z0, r.z1)])
 // A flight's parapet, from the floor to its top, so nothing walks under or
-// off the steps; the solid under its landing; the landing's parapet.
+// off the steps; the solid under its landing; the landing's parapet. A
+// dog-leg's lane parapets are a storey high (stacked, they wall off the
+// well), and solid, it has boxes under its back lane and half-landing.
 let flightBlocks = (l: Layout, k: float, f: Flight): List<Block> =>
+  let y = baseOf(l, roomAt(l, f.lower)) in
   match f.kind with
   | Straight =>
     let r = inner(l, roomAt(l, f.lower).rect) in
-    let y = baseOf(l, roomAt(l, f.lower)) in
     let x1 = flightEnd(f) in
     let zp = f.z1 - parapetThickness in
     [block($"parapet-{k}", f.x0, y, zp, x1, y + l.storey + parapetHeight, f.z1),
      block($"under-landing-{k}", x1, y, zp, r.x1, y + l.storey - slabDepth, f.z1),
      block($"landing-parapet-{k}", x1, y + l.storey - slabDepth, zp, x1 + parapetThickness, y + l.storey + parapetHeight, r.z1)]
+  | DogLeg(well, landing) =>
+    let g = legOf(l, f, well, landing) in
+    let pt = parapetThickness in
+    List.flatten([
+      [block($"parapet-up-{k}", g.ax1 - pt, y, g.zL, g.ax1, y + l.storey, g.zH),
+       block($"parapet-back-{k}", g.bx0, y, g.zL, g.bx0 + pt, y + l.storey, g.zH)],
+      if isSolid(l, f) then
+        [block($"under-back-{k}", g.bx0, y, g.zL, g.r.x1, y + g.half, g.zH),
+         block($"under-half-{k}", g.r.x0, y, g.zH, g.r.x1, y + g.half - slabDepth, g.r.z1)]
+      else [],
+    ])
+// The top dog-leg's balustrade across its up lane and well, on the upper
+// floor (its upper room's colliders).
+let balustradeBlocks = (l: Layout, k: float, f: Flight): List<Block> =>
+  match f.kind with
+  | Straight => []
+  | DogLeg(well, landing) =>
+    if not isTop(l, f) then []
+    else
+      let g = legOf(l, f, well, landing) in
+      let y = baseOf(l, roomAt(l, f.upper)) in
+      [block($"balustrade-{k}", g.r.x0, y, g.zL, g.bx0, y + parapetHeight, g.zL + parapetThickness)]
 
 let blocksOf = (l: Layout): List<Block> => List.flatten([
   List.range(List.length(l.rooms)) |> List.concatMap((i) => wallBlocks(l, i)),
-  l.flights |> List.indexedMap((k, f) => flightBlocks(l, k, f)) |> List.flatten,
+  l.flights |> List.indexedMap((k, f) => List.append(balustradeBlocks(l, k, f), flightBlocks(l, k, f))) |> List.flatten,
 ])
 
 // Interior floors, door thresholds and landings, from the faces the mesh
 // draws: up-facing floor surfaces level with a storey's floor (not treads).
 let isFloorLevel = (l: Layout, y: float): bool => levelsOf(l) |> List.any((level) => near(y, level * l.storey))
 let floorFacesOf = (l: Layout, allFaces: List<Face>): List<Face> => allFaces |> List.filter((f) =>
-  (f.mat == carpet || f.mat == terrazzo) && Vec3.y(normalOf(f.q)) > 0.5 && isFloorLevel(l, Vec3.y(f.q.o)))
+  (f.mat == carpet || f.mat == terrazzo || f.mat == mustard) && Vec3.y(normalOf(f.q)) > 0.5 && isFloorLevel(l, Vec3.y(f.q.o)))
 
 // A flight's ramp: one smooth slope through its steps' nosings, from a
 // tread before the first riser up to the landing's edge, so the character
@@ -520,16 +695,29 @@ let floorFacesOf = (l: Layout, allFaces: List<Face>): List<Face> => allFaces |> 
 // only from the front). `rampY` is its height at `x`, from the lower floor.
 let rampY = (l: Layout, f: Flight, x: float): float =>
   Math.clamp(0.0, l.storey, (x - (f.x0 - f.tread)) * riserOf(l, f) / f.tread)
-let rampFace = (l: Layout, f: Flight): Face =>
+// A dog-leg's: each lane's slope, a tread before its first riser to its
+// landing, and the half-landing between them.
+let rampFaces = (l: Layout, f: Flight): List<Face> =>
+  let y = baseOf(l, roomAt(l, f.lower)) in
   match f.kind with
   | Straight =>
     let start = f.x0 - f.tread in
     let end = flightEnd(f) in
     let zp = f.z1 - parapetThickness in
-    face(carpet, v(start, baseOf(l, roomAt(l, f.lower)) + rampY(l, f, start), zp),
-      v(end - start, rampY(l, f, end) - rampY(l, f, start), 0.0), v(0.0, 0.0, f.z0 - zp))
+    [face(carpet, v(start, y + rampY(l, f, start), zp),
+      v(end - start, rampY(l, f, end) - rampY(l, f, start), 0.0), v(0.0, 0.0, f.z0 - zp))]
+  | DogLeg(well, landing) =>
+    let g = legOf(l, f, well, landing) in
+    let pt = parapetThickness in
+    // Up-facing, rising from (za, ya) to (zb, yb) or falling, za < zb.
+    let slope = (x0: float, x1: float, za: float, ya: float, zb: float, yb: float): Face =>
+      face(carpet, v(x0, y + yb, zb), v(x1 - x0, 0.0, 0.0), v(0.0, ya - yb, za - zb)) in
+    [slope(g.r.x0, g.ax1 - pt, g.zL - f.tread, 0.0, g.zH, g.half),
+     floorFace(carpet, g.r.x0, g.zH, g.r.x1, g.r.z1, y + g.half),
+     slope(g.bx0 + pt, g.r.x1, g.zL, l.storey, g.zH + f.tread, g.half)]
 let rampShape = (l: Layout, f: Flight): Physics.shape =>
-  Physics.trimesh({ positions: positionsOf([rampFace(l, f)]), triangles: quadTriangles(1.0) })
+  let faces = rampFaces(l, f) in
+  Physics.trimesh({ positions: positionsOf(faces), triangles: quadTriangles(List.length(faces)) })
 
 // Every collider, in the building's space, for the caller to place as a
 // fixed body: the wall boxes, the floors and each flight's ramp.
@@ -619,8 +807,25 @@ let openingLights = (l: Layout, s: Side, base: float, h: Hole): List<Light.t> =>
   let ground = { groundPatch with perSquareMetre: groundPatch.perSquareMetre / stacked(l, s, h) } in
   List.flatten([patchLights(l, s, base, h, skyPatch), patchLights(l, s, base, h, ground)])
 
-let daylightLights = (l: Layout): List<Light.t> => levelsOf(l) |> List.concatMap((level) => [North, South, East, West] |> List.concatMap((s) =>
-  openingsIn(l, level, s) |> List.concatMap((h) => openingLights(l, s, level * l.storey, h))))
+// Over each skylight's slot, a patch of sky 1 m wider each side, 1 m above
+// the ceiling, aimed straight down.
+let skylightLights = (l: Layout): List<Light.t> =>
+  l.fixtures |> List.filter((f) => f.sign == Skylight) |> List.concatMap((f) =>
+    let s = slotOf(l, f) in
+    let y = baseOf(l, roomAt(l, f.room)) + l.ceiling + 1.0 in
+    let nu = Math.ceil((s.x1 - s.x0 + 2.0) / 0.5) in
+    let nv = Math.ceil((s.z1 - s.z0 + 2.0) / 0.5) in
+    let du = (s.x1 - s.x0 + 2.0) / nu in
+    let dv = (s.z1 - s.z0 + 2.0) / nv in
+    List.range(nu * nv) |> List.map((k) =>
+      Light.spot(v(s.x0 - 1.0 + (Math.mod(k, nu) + 0.5) * du, y, s.z0 - 1.0 + (Math.floor(k / nu) + 0.5) * dv),
+        v(0.0, -1.0, 0.0), skyPatch.color, skyPatch.perSquareMetre * du * dv, 12.0, 80deg) |> Light.castShadows))
+
+let daylightLights = (l: Layout): List<Light.t> => List.flatten([
+  levelsOf(l) |> List.concatMap((level) => [North, South, East, West] |> List.concatMap((s) =>
+    openingsIn(l, level, s) |> List.concatMap((h) => openingLights(l, s, level * l.storey, h)))),
+  skylightLights(l),
+])
 
 // ---- One archetype's interior ------------------------------------------------
 

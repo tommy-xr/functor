@@ -10,12 +10,15 @@
 
 type Rect = { x0: float, z0: float, x1: float, z1: float }
 
+// `Roof`: open to the sky on a roof; the street side draws it.
 type Kind =
   | Outside
   | Lobby
   | Corridor
   | Office
   | Stair
+  | LiftLobby
+  | Roof
 
 type Side =
   | North
@@ -33,13 +36,19 @@ type Room = { name: string, kind: Kind, level: float, rect: Rect, panels: List<P
 type Door = { a: float, b: float, at: float, width: float, height: float }
 
 // How a flight climbs. Straight: risers in one run, onto a landing.
+// DogLeg: half the risers north up the west lane from a floor landing
+// `landing` deep, a half-landing across the north end, then the rest south
+// down the east lane onto the next floor's landing; the lanes are split by a
+// `well` wide gap down the room's middle.
 type FlightKind =
   | Straight
+  | DogLeg(well: float, landing: float)
 
 // A flight of `risers` steps up one storey, from room `lower` to `upper`
-// (the same rect, a level up). Straight: it runs east from `x0` along the
-// lower room's south wall, between `z0` and `z1` (its parapet included), one
-// `tread` per step, onto a landing that fills the rest of the east end.
+// (the same rect, a level up), one `tread` per step. Straight: it runs east
+// from `x0` along the lower room's south wall, between `z0` and `z1` (its
+// parapet included), onto a landing that fills the rest of the east end
+// (DogLeg ignores `x0`, `z0` and `z1`).
 type Flight = { kind: FlightKind, lower: float, upper: float, x0: float, z0: float, z1: float, risers: float, tread: float }
 
 // An opening in room `room`'s outside wall on `side`, centred at `at` along
@@ -48,10 +57,15 @@ type Flight = { kind: FlightKind, lower: float, upper: float, x0: float, z0: flo
 type Window = { room: float, side: Side, at: float, width: float, sill: float, head: float }
 
 // Signs on a room's inner wall, centred at `at` along it.
-// A stair sign is a lit amber plate over a stairwell door.
+// A stair sign is a lit amber plate over a stairwell door; a lift door and a
+// shut door are plates on the floor. A skylight is a slot in the room's
+// ceiling (`side` unused), centred `at` along its z.
 type Sign =
   | ExitSign
   | StairSign
+  | LiftDoor
+  | ShutDoor
+  | Skylight
 
 type Fixture = { room: float, side: Side, at: float, sign: Sign }
 
