@@ -146,8 +146,9 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// Also reports `cull` (`{tested, culled}`: the last rendered frame's frustum
 /// tests and skipped draws, summed over its passes) and `cells` (`{walks,
-/// visible, hidden}`: its `Scene.cells` portal walks, the cells they
-/// reached, and `Scene.inCells` subtrees hidden) on `GET /state`.
+/// visible, hidden, graphs}`: its `Scene.cells` portal walks, the cells they
+/// reached, `Scene.inCells` subtrees hidden, and each walk's `{visible,
+/// portals, cut, outside, everything}`) on `GET /state`.
 /// Additive — a runtime that doesn't report them omits them, which deserializes as zero.
 ///
 /// 26: `POST /project-files` also takes an unasked reply (bytes or missing)
@@ -1386,6 +1387,13 @@ mod tests {
                 walks: 2,
                 visible: 5,
                 hidden: 3,
+                graphs: vec![crate::gpu_counters::CellsWalk {
+                    visible: 2,
+                    portals: 3,
+                    cut: 1,
+                    outside: true,
+                    everything: false,
+                }],
             },
             stages: Some(StageTimings {
                 frames: 300,
@@ -1455,7 +1463,10 @@ mod tests {
                 "passthrough": { "mode": "composited" },
                 "skinned": { "draws": 8, "pose_evals": 4 },
                 "cull": { "tested": 12, "culled": 9 },
-                "cells": { "walks": 2, "visible": 5, "hidden": 3 },
+                "cells": {
+                    "walks": 2, "visible": 5, "hidden": 3,
+                    "graphs": [{ "visible": 2, "portals": 3, "cut": 1, "outside": true, "everything": false }]
+                },
                 "stages": { "frames": 300, "sim_ms": 1.5, "render_ms": 2.25, "sim_wait_ms": 0.0, "frame_ms": 11.25 },
                 "build": "pr | 0123abc",
                 "xr": {

@@ -1343,8 +1343,8 @@ frame: correct, but each bind re-uploads (atlas {})",
 
     /// The cells visible through portals from this pass's eye, for a
     /// `Scene.cells` node at `world`. `None` (draw all) with culling off,
-    /// for an orthographic view (no eye point), or with the eye outside
-    /// every cell.
+    /// for an orthographic view (no eye point), or with the eye in no cell
+    /// and no exterior portal.
     fn walk_cells(
         &self,
         cells: &crate::cells::Cells,
@@ -1357,12 +1357,9 @@ frame: correct, but each bind re-uploads (atlas {})",
         }
         let view_world = view * world;
         let eye = view_world.invert()?.w.truncate();
-        let visible = cells.visible(eye, &(projection * view_world));
-        let reached = visible
-            .as_ref()
-            .map_or(cells.len(), |v| v.iter().filter(|&&seen| seen).count());
-        crate::gpu_counters::gpu_counters().cells_walked(reached);
-        visible
+        let walk = cells.visible(eye, &(projection * view_world));
+        crate::gpu_counters::gpu_counters().cells_walked(&walk, cells.len());
+        walk.cells
     }
 
     /// The instanced renderer, created on first use.

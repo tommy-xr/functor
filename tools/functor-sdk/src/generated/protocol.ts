@@ -63,9 +63,23 @@ ortho_half_height?: number, };
 /**
  * One frame's `Scene.cells` portal culling, summed over its eye and
  * render-target passes: portal walks, the cells they reached, and
- * `Scene.inCells` subtrees hidden.
+ * `Scene.inCells` subtrees hidden; then each walk.
  */
-export type CellsCounts = { walks: number, visible: number, hidden: number, };
+export type CellsCounts = { walks: number, visible: number, hidden: number, 
+/**
+ * One per walk (graph and pass) in draw order, the first
+ * [`MAX_CELLS_WALKS`]. `default` because a runtime that doesn't report
+ * it omits it.
+ */
+graphs: Array<CellsWalk>, };
+
+/**
+ * One `Scene.cells` graph's walk from one eye: the cells it reached (all
+ * when it drew everything), its portal crossings and those it cut for
+ * size, whether it started outside every cell, and whether it drew
+ * everything (an eye in no cell and no exterior portal, or a walk too long).
+ */
+export type CellsWalk = { visible: number, portals: number, cut: number, outside: boolean, everything: boolean, };
 
 /**
  * One frame's frustum culling, summed over every pass (shadow, render

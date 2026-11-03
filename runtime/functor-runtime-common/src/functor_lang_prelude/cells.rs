@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::cells::{Cell, Cells, CellsData, Plane, Portal};
+use crate::cells::{Cell, Cells, CellsData, Plane, Portal, OUTSIDE};
 
 use super::*;
 
@@ -57,11 +57,20 @@ pub(super) fn whole(n: f64) -> Option<u32> {
 
 /// A cell id: a whole number ≥ 0.
 fn cell_id(n: f64, what: &str) -> Result<u32, String> {
-    whole(n).ok_or_else(|| format!("{what} must be a cell id (a whole number ≥ 0), got {n}"))
+    whole(n)
+        .filter(|&id| id != OUTSIDE)
+        .ok_or_else(|| format!("{what} must be a cell id (a whole number ≥ 0), got {n}"))
 }
 
-fn id(value: &Value, what: &str) -> Result<u32, String> {
-    cell_id(number(value, what)?, what)
+/// `Cells.outside()`'s value.
+const OUTSIDE_ID: f64 = -1.0;
+
+/// A portal end: a cell id, or `Cells.outside()`.
+fn end(value: &Value, what: &str) -> Result<u32, String> {
+    match number(value, what)? {
+        n if n == OUTSIDE_ID => Ok(OUTSIDE),
+        n => cell_id(n, what),
+    }
 }
 
 pub(super) fn point(value: &Value, what: &str, span: Span) -> Result<[f32; 3], String> {
@@ -88,8 +97,8 @@ fn level(value: &Value, span: Span) -> Result<CellsData, String> {
         let what = format!("portal {k}");
         let polygon = list(field(portal, "polygon", &what)?, &what)?;
         Ok(Portal {
-            from: id(field(portal, "from", &what)?, &format!("{what} `from`"))?,
-            to: id(field(portal, "to", &what)?, &format!("{what} `to`"))?,
+            from: end(field(portal, "from", &what)?, &format!("{what} `from`"))?,
+            to: end(field(portal, "to", &what)?, &format!("{what} `to`"))?,
             polygon: polygon
                 .iter()
                 .map(|p| point(p, &what, span))
@@ -107,6 +116,7 @@ fn level(value: &Value, span: Span) -> Result<CellsData, String> {
             .enumerate()
             .map(portal)
             .collect::<Result<_, String>>()?,
+        min_portal: 0.0,
     })
 }
 
@@ -127,6 +137,18 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             Cells::new(data)
                 .map(|cells| FunctorLangCells(Arc::new(cells)))
                 .map_err(|e| format!("Cells.make: {e}"))
+        },
+    );
+    reg.fn0("Cells.outside", "Cells.outside()", || Value::Number(OUTSIDE_ID));
+    reg.fn2(
+        "Cells.withMinPortal",
+        "Cells.withMinPortal(fraction, cells)",
+        |fraction: f64, cells: FunctorLangCells| {
+            cells
+                .0
+                .with_min_portal(fraction as f32)
+                .map(|cells| FunctorLangCells(Arc::new(cells)))
+                .map_err(|e| format!("Cells.withMinPortal: {e}"))
         },
     );
     reg.fn2(

@@ -20,6 +20,7 @@
 //! window); the shared create sites still bump it on wasm, harmlessly unread.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// The counters. `live_*` persist across frames (current count of alive GL
 /// objects); the rest are per-window accumulators the reporter drains with
@@ -54,6 +55,8 @@ pub struct GpuCounters {
     // The current rendered frame's portal walks (same contract). One word
     // (walks << 48 | cells reached << 24 | subtrees hidden).
     frame_cells: AtomicU64,
+    // The current rendered frame's walks, one each (same contract).
+    frame_cell_walks: Mutex<Vec<CellsWalk>>,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -115,13 +118,35 @@ pub struct CullCounts {
 
 /// One frame's `Scene.cells` portal culling, summed over its eye and
 /// render-target passes: portal walks, the cells they reached, and
-/// `Scene.inCells` subtrees hidden.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// `Scene.inCells` subtrees hidden; then each walk.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CellsCounts {
     pub walks: u64,
     pub visible: u64,
     pub hidden: u64,
+    /// One per walk (graph and pass) in draw order, the first
+    /// [`MAX_CELLS_WALKS`]. `default` because a runtime that doesn't report
+    /// it omits it.
+    #[serde(default)]
+    pub graphs: Vec<CellsWalk>,
+}
+
+/// How many walks a frame lists.
+pub const MAX_CELLS_WALKS: usize = 256;
+
+/// One `Scene.cells` graph's walk from one eye: the cells it reached (all
+/// when it drew everything), its portal crossings and those it cut for
+/// size, whether it started outside every cell, and whether it drew
+/// everything (an eye in no cell and no exterior portal, or a walk too long).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CellsWalk {
+    pub visible: u64,
+    pub portals: u64,
+    pub cut: u64,
+    pub outside: bool,
+    pub everything: bool,
 }
 
 /// One frame's `Scene.instanced` instance-buffer uploads.
@@ -150,6 +175,7 @@ impl GpuCounters {
             frame_uniforms: AtomicU64::new(0),
             frame_cull: AtomicU64::new(0),
             frame_cells: AtomicU64::new(0),
+            frame_cell_walks: Mutex::new(Vec::new()),
         }
     }
 
@@ -276,12 +302,33 @@ impl GpuCounters {
     pub fn begin_cull_frame(&self) {
         self.frame_cull.store(0, Ordering::Relaxed);
         self.frame_cells.store(0, Ordering::Relaxed);
+        self.walks().clear();
     }
 
-    /// Record one portal walk that reached `visible` cells.
-    pub fn cells_walked(&self, visible: usize) {
+    fn walks(&self) -> std::sync::MutexGuard<'_, Vec<CellsWalk>> {
+        self.frame_cell_walks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Record one portal walk of a graph of `cells` cells.
+    pub fn cells_walked(&self, walk: &crate::cells::Walk, cells: usize) {
+        let visible = walk
+            .cells
+            .as_ref()
+            .map_or(cells, |v| v.iter().filter(|&&seen| seen).count());
         self.frame_cells
             .fetch_add(1 << 48 | (visible as u64) << 24, Ordering::Relaxed);
+        let mut walks = self.walks();
+        if walks.len() < MAX_CELLS_WALKS {
+            walks.push(CellsWalk {
+                visible: visible as u64,
+                portals: walk.portals.into(),
+                cut: walk.cut.into(),
+                outside: walk.outside,
+                everything: walk.cells.is_none(),
+            });
+        }
     }
 
     /// Record one `Scene.inCells` subtree hidden.
@@ -297,6 +344,7 @@ impl GpuCounters {
             walks: packed >> 48,
             visible: field(24),
             hidden: field(0),
+            graphs: self.walks().clone(),
         }
     }
 

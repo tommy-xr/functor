@@ -6,6 +6,7 @@
 //! - turning away hides the other rooms and turning back uploads nothing;
 //! - a hidden `Model.static` draws nothing;
 //! - each eye walks from its own position;
+//! - an eye outside sees in only through a facing exterior window;
 //! - a hidden node still casts its shadow.
 //!
 //! Self-skipping like `frustum_cull` (needs a GL display; GLFW on the main
@@ -19,8 +20,8 @@ use std::sync::Arc;
 
 use cgmath::{vec3, vec4, Matrix4, SquareMatrix};
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::cells::{Cell, Cells, CellsData, Plane, Portal};
-use functor_runtime_common::gpu_counters::{gpu_counters, CellsCounts};
+use functor_runtime_common::cells::{Cell, Cells, CellsData, Plane, Portal, OUTSIDE};
+use functor_runtime_common::gpu_counters::{gpu_counters, CellsWalk};
 use functor_runtime_common::math::Angle;
 use functor_runtime_common::model::{GroupSource, LightmapSource, ModelData, ModelSource};
 use functor_runtime_common::shadow::ShadowMap;
@@ -44,6 +45,7 @@ fn main() {
     turning_back_uploads_nothing(&mut harness);
     a_hidden_static_model_draws_nothing(&mut harness);
     each_eye_walks_from_its_own_position(&mut harness);
+    an_outside_eye_sees_in_only_through_a_facing_window(&mut harness);
     a_hidden_node_still_casts_its_shadow(&mut harness);
 }
 
@@ -53,12 +55,8 @@ fn a_doorway_shows_the_far_room_and_a_wall_hides_it(h: &mut Harness) {
 
     let on = h.render(&level(true), &[0], true);
     assert_eq!(
-        gpu_counters().frame_cells(),
-        CellsCounts {
-            walks: 1,
-            visible: 3,
-            hidden: 0
-        }
+        sums(),
+        (1, 3, 0)
     );
     assert!(
         on == h.render(&level(true), &[0], false),
@@ -73,12 +71,8 @@ fn a_doorway_shows_the_far_room_and_a_wall_hides_it(h: &mut Harness) {
     let beside = frame(along(1.5), rooms(true, vec![]), false);
     let on = h.render(&beside, &[0], true);
     assert_eq!(
-        gpu_counters().frame_cells(),
-        CellsCounts {
-            walks: 1,
-            visible: 2,
-            hidden: 1
-        }
+        sums(),
+        (1, 2, 1)
     );
     assert!(
         on == h.render(&beside, &[0], false),
@@ -92,7 +86,7 @@ fn a_doorway_shows_the_far_room_and_a_wall_hides_it(h: &mut Harness) {
     };
     let translucent = frame(along(1.5), translucent, false);
     let on = h.render(&translucent, &[0], true);
-    assert_eq!(gpu_counters().frame_cells(), CellsCounts::default());
+    assert_eq!(sums(), (0, 0, 0));
     assert!(
         on == h.render(&translucent, &[0], false),
         "culling changed the image"
@@ -184,12 +178,8 @@ fn each_eye_walks_from_its_own_position(h: &mut Harness) {
     h.ipd = 1.5;
     let on = h.render(&stereo, &[0, 1], true);
     assert_eq!(
-        gpu_counters().frame_cells(),
-        CellsCounts {
-            walks: 2,
-            visible: 3 + 2,
-            hidden: 1
-        }
+        sums(),
+        (2, 3 + 2, 1)
     );
     assert!(
         on == h.render(&stereo, &[0, 1], false),
@@ -197,6 +187,54 @@ fn each_eye_walks_from_its_own_position(h: &mut Harness) {
     );
     h.ipd = 0.064;
     println!("test each_eye_walks_from_its_own_position ... ok");
+}
+
+fn an_outside_eye_sees_in_only_through_a_facing_window(h: &mut Harness) {
+    // 4 m south of the rooms, looking in at room 0's crate through its
+    // window, with and without the window's exterior portal.
+    let at = |target: [f32; 3]| Camera::look_at([2.0, 1.5, -6.0], target, UP, fov());
+    let scene = |portal: bool| rooms_in(true, portal, true, vec![]);
+
+    // Without exterior portals everything draws.
+    let toward = |portal| frame(at([2.0, 1.0, 0.0]), scene(portal), false);
+    h.render(&toward(false), &[0], true);
+    assert_eq!(sums(), (1, 3, 0));
+    assert!(gpu_counters().frame_cells().graphs[0].everything);
+    let tested = gpu_counters().frame_cull().tested;
+
+    // Facing the window: room 0 draws, rooms 1 and 2 are skipped.
+    let on = h.render(&toward(true), &[0], true);
+    assert_eq!(sums(), (1, 1, 2));
+    assert_eq!(
+        gpu_counters().frame_cells().graphs,
+        [CellsWalk {
+            visible: 1,
+            portals: 1,
+            cut: 0,
+            outside: true,
+            everything: false
+        }]
+    );
+    assert!(gpu_counters().frame_cull().tested < tested);
+    let walled = frame(at([2.0, 1.0, 0.0]), rooms(true, vec![]), false);
+    assert!(
+        on != h.render(&walled, &[0], true),
+        "the window shows nothing"
+    );
+    assert!(
+        on == h.render(&toward(true), &[0], false),
+        "culling changed the image"
+    );
+
+    // Facing away, no window is in view: every room is skipped.
+    let away = frame(at([2.0, 1.0, -20.0]), scene(true), false);
+    let on = h.render(&away, &[0], true);
+    assert_eq!(sums(), (1, 0, 3));
+    assert!(
+        on == h.render(&away, &[0], false),
+        "culling changed the image"
+    );
+    println!("test an_outside_eye_sees_in_only_through_a_facing_window ... ok");
 }
 
 fn a_hidden_node_still_casts_its_shadow(h: &mut Harness) {
@@ -230,9 +268,16 @@ fn fov() -> Angle {
     Angle::from_degrees(60.0)
 }
 
+/// The last frame's portal walks, cells reached and subtrees hidden.
+fn sums() -> (u64, u64, u64) {
+    let cells = gpu_counters().frame_cells();
+    (cells.walks, cells.visible, cells.hidden)
+}
+
 /// The three rooms' cells, a doorway (z ±0.5, 2 high) both ways in each
-/// shared wall.
-fn cells() -> Arc<Cells> {
+/// shared wall, and with `window` a 2 × 1 window into room 0 in its south
+/// wall (z = -2) from outside.
+fn cells(window: bool) -> Arc<Cells> {
     let room = |x: f32| Cell {
         planes: vec![
             Plane {
@@ -278,9 +323,22 @@ fn cells() -> Arc<Cells> {
             polygon: back,
         });
     }
+    if window {
+        portals.push(Portal {
+            from: OUTSIDE,
+            to: 0,
+            polygon: vec![
+                [1.0, 1.0, -2.0],
+                [3.0, 1.0, -2.0],
+                [3.0, 2.0, -2.0],
+                [1.0, 2.0, -2.0],
+            ],
+        });
+    }
     let data = CellsData {
         cells: vec![room(0.0), room(4.0), room(8.0)],
         portals,
+        ..Default::default()
     };
     Arc::new(Cells::new(data).unwrap())
 }
@@ -289,14 +347,30 @@ fn cells() -> Arc<Cells> {
 /// each room marked with its cell (room 2's only when `far`), and `extras`
 /// marked with their cells.
 fn rooms(far: bool, extras: Vec<(u32, Scene3D)>) -> Scene3D {
+    rooms_in(false, false, far, extras)
+}
+
+/// [`rooms`], with `window` a hole for room 0's window in the south wall,
+/// and with `portal` its exterior portal in the cells.
+fn rooms_in(window: bool, portal: bool, far: bool, extras: Vec<(u32, Scene3D)>) -> Scene3D {
     let wall = [0.7, 0.7, 0.75];
+    let south = |x0: f32, y0: f32, x1: f32, y1: f32| boxed([x0, y0, -2.1], [x1, y1, -2.0], wall);
     let mut items = vec![
         boxed([0.0, -0.1, -2.0], [12.0, 0.0, 2.0], [0.5, 0.45, 0.4]),
-        boxed([0.0, 0.0, -2.1], [12.0, 3.0, -2.0], wall),
         boxed([0.0, 0.0, 2.0], [12.0, 3.0, 2.1], wall),
         boxed([-0.1, 0.0, -2.0], [0.0, 3.0, 2.0], wall),
         boxed([12.0, 0.0, -2.0], [12.1, 3.0, 2.0], wall),
     ];
+    if window {
+        items.extend([
+            south(0.0, 0.0, 1.0, 3.0),
+            south(3.0, 0.0, 12.0, 3.0),
+            south(1.0, 0.0, 3.0, 1.0),
+            south(1.0, 2.0, 3.0, 3.0),
+        ]);
+    } else {
+        items.push(south(0.0, 0.0, 12.0, 3.0));
+    }
     for x in [4.0, 8.0] {
         items.push(boxed([x - 0.05, 0.0, -2.0], [x + 0.05, 3.0, -0.5], wall));
         items.push(boxed([x - 0.05, 0.0, 0.5], [x + 0.05, 3.0, 2.0], wall));
@@ -321,7 +395,7 @@ fn rooms(far: bool, extras: Vec<(u32, Scene3D)>) -> Scene3D {
         items.push(in_cells(cell, extra));
     }
     Scene3D {
-        obj: SceneObject::Cells(CellsNode::Walk(cells()), vec![group(items)]),
+        obj: SceneObject::Cells(CellsNode::Walk(cells(portal)), vec![group(items)]),
         xform: Matrix4::identity(),
     }
 }
