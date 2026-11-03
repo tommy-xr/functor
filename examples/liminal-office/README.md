@@ -6,7 +6,8 @@ windows), a sodium-lit stairwell between the floors, a neon entrance on an
 empty apron. `B` turns it into a block of four turned copies around a
 crossroads; `G` into grids of 4, 16 and 64; `H` into four towers of 8 to 16
 floors, climbed by a dog-leg stair; `C` stands a multiplex cinema on its
-parking lot; `I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
+parking lot; `P` a two-level mall round a skylit court, and its parking lot;
+`I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
 checked on a headset. Not the web: baked files load with `File.bytes`.
 
 ```sh
@@ -15,6 +16,7 @@ functor -d examples/liminal-office run native --emulate-xr   # arrows drive the 
 functor -d examples/liminal-office run vr
 functor -d examples/liminal-office test     # layout, stairs, cells, partition, provenance, island; no GPU
 npm run test:liminal-office                 # routes, stairs, wall push, hours, cells, island, goldens
+npm run test:liminal-mall                   # the mall: lot to gallery by the escalator, draws, goldens
 ```
 
 | Input | Action |
@@ -30,6 +32,7 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `G` | the next grid: 4, 16, 64 copies (views 9 and 0 stay in it) |
 | `H` | the office alone ⇄ the towers (views 1–0 become the towers', below) |
 | `C` | the office alone ⇄ the cinema, from its parking lot (views 1–0 become the cinema's, below) |
+| `P` | the office alone ⇄ the mall (views 1–0 become the mall's, below) |
 | `K` | at most 4 → 1 → 2 interiors at once |
 | `O` | overlook: the eye 20 m up, looking down over the roofs (no interiors draw; a view jump ends it) |
 | `I` | the flat ground ⇄ the island (with the block; `G` and `H` leave it) |
@@ -416,13 +419,55 @@ toward the entrance, `8` auditorium 4's playset, `9` the parking lot, `0`
 the lot's far corner (the shell). `node e2e/liminal-cinema.mjs` walks in
 from the lot to the top of auditorium 3's rake and back down.
 
+## The mall
+
+`P` puts a mall and its parking lot on the flat ground (`mallLayout.fun`,
+derived by `mallInterior.fun` and `mall.fun`): a two-level concourse 76 ×
+22 m, 4.5 m storeys, round a 30 × 22 m atrium court under a space-frame
+pyramid skylight 13 m up. 5 m galleries run along the court's long sides
+and 4 m bridges across its ends. A food court (fixed tables, drum pendants)
+fills the west end; the east end is an anchor store's blank wall with a dark
+entrance. Four shops (8 × 10 m) are open; every other shopfront is a shutter.
+
+- **Cells**: the court's void is one box, floor to apex; round it, four
+  strips on each level (the lower concourse, the galleries). Open-plan
+  neighbours share a portal over their whole face. The balustrades (1.1 m,
+  opaque) are geometry inside the galleries. 19 cells and 3 collar strips,
+  76 portals.
+- **Escalators**: a stopped pair, 23 risers at 30°, from the court's floor
+  west onto the west bridge, inside the void: cleated treads, balustrade
+  panels, solid sides; lane 2 is barred. Collision: a ramp per lane through
+  the nosings, boxes along the balustrades.
+- **Fountain**: a basin, opaque unlit teal water, a planter island.
+- **Bake**: one, `mall`, at 6 texels/m. `bake.mjs` bakes at the kit's 12, so
+  `mallInterior.fun` gives the baker the mesh and its lights at half scale
+  (light falloff is relative to range, so it lights the same; ambient
+  occlusion reaches 2 m) and doubles the baked positions at load. 1024²,
+  both hours 8.4 MB. By day, a grid of sky spots under the skylight aims
+  down, and the entrance gets the kit's sky and ground patches; no sun, so
+  any yaw holds. The skylight's panels are unlit and not baked: sky-blue by
+  day, navy by night.
+- **Materials**: five groups (floor tiles, ceiling tiles, treads, a lit atlas
+  and an unlit one), so a cell draws at most five; from the court a view
+  draws at most 80.
+- **Street side**: the kit's facade, canopy and neon; the roof open over
+  the void, the pyramid's glazing in the window grid's slot (shells draw it
+  too); two glazed ridges; the anchor store's box; the lot (asphalt, bay
+  lines, wheel stops, 12 lamp posts), instanced with the street side.
+
+Views in the mall: `1` the lot, `2` the court, `3` the south gallery, `4` the
+escalators' foot, `5` down into the court from the north gallery, `6` the
+food court, `7` an upstairs shop, `8` the anchor store's end, `9` the far
+lot, `0` the escalators' head. `node e2e/liminal-mall.mjs` walks from the lot
+up the escalator and along the gallery, and counts the court's draws.
+
 ## Rebaking
 
 Each bake lives in `baked/<bake>/`: `office`, `tower-typical`, `tower-ends`,
-`cinema`. Editing `layout.fun`, `building.fun` (which holds the bake jobs and their
+`cinema`, `mall`. Editing `layout.fun`, `building.fun` (which holds the bake jobs and their
 lights) or an archetype's `<archetype>Layout.fun` (the cinema's
-`paints.fun`, `cinemaLayout.fun` and `cinemaBuilding.fun`) makes its
-committed bakes stale:
+`paints.fun`, `cinemaLayout.fun` and `cinemaBuilding.fun`; the mall's
+`mallLayout.fun` and `mallInterior.fun`) makes its committed bakes stale:
 
 ```sh
 node examples/liminal-office/bake.mjs           # bake, then write baked/<archetype>/provenance.txt

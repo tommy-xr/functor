@@ -121,7 +121,7 @@ let shellsOf = (look: Look): Scene.t =>
      cubes((s) => s |> Scene.color(Exterior.neonColor(look.neon)), (p) => p.neon),
      cubes((s) => s |> Scene.color(Exterior.shadeColor(look.lamps)), (p) => p.shades),
      cubes((s) => s |> Scene.color(if look.day then dayGlass else roomGlow), (p) => p.openings)],
-    // Towers only: an office town draws exactly the four cubes.
+    // Towers and the mall only: an office town draws exactly the four cubes.
     if idle |> List.any((p) => Option.isSome(p.grid)) then
       List.flatten([[cubes((s) => s |> Scene.color(Exterior.beaconRed), (p) => p.beacons)],
         idle |> List.concatMap((p) => p.grid |> Option.map((g) => Exterior.gridAt(look.day, g)) |> Option.toList)])

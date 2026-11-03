@@ -240,5 +240,41 @@
     ],
     "inputScript": "cinema-neon.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-mall-court-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "mall-court-day.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-mall-gallery",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "mall-gallery.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-mall-escalator",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "mall-escalator.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-mall-lot-dusk",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "mall-lot-dusk.script",
+    "captureAtFrame": 30
   }
 ]
