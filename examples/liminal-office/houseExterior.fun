@@ -120,9 +120,11 @@ let ownCollidersOf = (l: Layout): List<Collider> =>
     chairsOf(l) |> List.indexedMap((k, c) => let (x, cz) = c in solidBox($"chair-{k}", box(x - 0.25, street, cz - 0.35, x + 0.25, 1.05, cz + 0.35))),
   ])
 
-// The house's street side, in its own space.
+// The house's street side, in its own space: the facade in clapboard and
+// the gable in shingles, tinted by the palette.
 let streetOf = (l: Layout, look: Look): Exterior.Street =>
-  let base = Exterior.streetOf(l) in
+  let wall = Finishes.on(Finishes.clapboard, look.siding) in
+  let base = Exterior.streetWith(l, wall) in
   let porchRoof = porchRoofOf(l) in
   let posts = postsOf(l) in
   let chairs = chairsOf(l) in
@@ -134,21 +136,22 @@ let streetOf = (l: Layout, look: Look): Exterior.Street =>
     chairs |> List.concatMap((c) => let (x, cz) = c in chairAt(x, cz)) |> List.map((b) => (b, chairWood)),
   ]) in
   let lit = List.flatten([
-    base.facadeBoxes |> List.map((b) => (b, look.siding)),
     [(porchRoof, look.siding), (base.apronBox, Exterior.apronGrey)],
     base.postBoxes |> List.map((b) => (b, Exterior.postGrey)),
     extra,
   ]) in
-  let gable = gableBoxOf(l) in
+  let skinned = base.facadeBoxes |> List.map((b) => (b, wall)) in
+  let gables = [(gableBoxOf(l), Finishes.on(Finishes.shingles, look.roof))] in
   let shades = List.append(base.shadeBoxes, porchLightsOf(l)) in
   { base with
     canopyBox: porchRoof,
     neonBoxes: [],
     shadeBoxes: shades,
     streetBoxes: lit,
-    streetSide: Scene.group([Exterior.instancedOf(lit), Exterior.gableOf(gable, look.roof)]),
+    skinned: skinned,
+    streetSide: Scene.group([Exterior.sideOf(lit, skinned), Exterior.gablesOf(gables)]),
     neonStrips: Scene.group([]),
     lampShades: shades |> List.map(Exterior.slabOf) |> Scene.group,
     siding: look.siding,
     extraBoxes: extra,
-    gables: [(gable, look.roof)] }
+    gables: gables }

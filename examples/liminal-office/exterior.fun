@@ -8,9 +8,12 @@ open Building
 
 let concrete = rgb(72.0, 72.0, 82.0)
 let glass = rgb(26.0, 32.0, 44.0)
-let roofGrey = rgb(60.0, 58.0, 62.0)
 let postGrey = rgb(60.0, 60.0, 66.0)
 let apronGrey = rgb(96.0, 94.0, 102.0)
+// The kit's finishes (finishes.fun): the facade's outer half by default, and
+// every flat roof.
+let precastWall = Finishes.on(Finishes.precast, rgb(118.0, 118.0, 116.0))
+let roofing = Finishes.on(Finishes.roofing, rgb(104.0, 102.0, 106.0))
 
 let slab = (x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) =>
   Scene.cube() |> Scene.scaleXYZ(x1 - x0, y1 - y0, z1 - z0) |> Scene.translate(v((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0))
@@ -140,10 +143,13 @@ let apronBoxOf = (l: Layout): Box =>
 type Grid = { night: Scene.t, day: Scene.t }
 
 // The street side's lit boxes, by colour, as instances of one white cube: a
-// single draw; and the neon and the shades, which glow. `extraBoxes` (lit,
-// among `streetBoxes`, kept on shells), `beaconBoxes` (red), `siding` (the
-// massing's colour on shells) and `gables` are an archetype's own, on top of
-// the kit's; `lobbyLight` is where the lobby's light spills out.
+// single draw; its textured ones (the facade, the roof), a draw per finish;
+// and the neon and the shades, which glow. `extraBoxes` (lit, among
+// `streetBoxes`), `extraSkinned` (among `skinned`) and `beaconBoxes` (red)
+// are an archetype's own, on top of the kit's, and kept on shells, whose
+// massing is `wall`; `siding` colours a shell's canopy, and `gables` (a
+// house's) are pitched roofs in a finish. `lobbyLight` is where the lobby's
+// light spills out.
 type Street = {
   half: float,
   facadeBoxes: List<Box>,
@@ -165,16 +171,25 @@ type Street = {
   extraBoxes: List<(Box, Color.t)>,
   beaconBoxes: List<Box>,
   grid: Option.t<Grid>,
+  wall: Finishes.Surface,
+  skinned: List<(Box, Finishes.Surface)>,
+  extraSkinned: List<(Box, Finishes.Surface)>,
   siding: Color.t,
-  gables: List<(Box, Color.t)>,
+  gables: List<(Box, Finishes.Surface)>,
 }
 // Lit boxes as instances of one white cube, tinted.
 let instancedOf = (boxes: List<(Box, Color.t)>): Scene.t =>
   Scene.cube() |> Scene.lit(rgb(255.0, 255.0, 255.0)) |> Scene.instanced(boxes |> List.map((e) =>
-    let (b, color) = e in
-    Instance.trs(v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0), 0deg, b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0)
-      |> Instance.tint(color)))
-let streetOf = (l: Layout): Street =>
+    let (b, color) = e in instanceOf(b) |> Instance.tint(color)))
+// Box `b` as an instance of the unit cube.
+let instanceOf = (b: Box): Instance.t =>
+  Instance.trs(v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0), 0deg, b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0)
+// A street side's lit and textured boxes: a draw, and one per finish.
+let sideOf = (plain: List<(Box, Color.t)>, skinned: List<(Box, Finishes.Surface)>): Scene.t =>
+  Scene.group([instancedOf(plain), Finishes.instancedBy(skinned |> List.map((e) => let (b, f) = e in (instanceOf(b), f)))])
+// The street side with the facade's outer half in `wall`.
+let streetOf = (l: Layout): Street => streetWith(l, precastWall)
+let streetWith = (l: Layout, wall: Finishes.Surface): Street =>
   let facadeBoxes = facadeBoxesOf(l) in
   let bandBoxes = bandBoxesOf(l) in
   let roofBox = roofBoxOf(l) in
@@ -184,15 +199,15 @@ let streetOf = (l: Layout): Street =>
   let neonBoxes = neonBoxesOf(l) in
   let shadeBoxes = shadeBoxesOf(l) in
   let streetBoxes = List.flatten([
-    facadeBoxes |> List.map((b) => (b, concrete)),
     bandBoxes |> List.map((b) => (b, glass)),
-    [(roofBox, roofGrey), (canopyBox, concrete), (apronBox, apronGrey)],
+    [(canopyBox, concrete), (apronBox, apronGrey)],
     postBoxes |> List.map((b) => (b, postGrey)),
   ]) in
+  let skinned = List.flatten([facadeBoxes |> List.map((b) => (b, wall)), [(roofBox, roofing)]]) in
   { half: halfOf(l), facadeBoxes: facadeBoxes, bandBoxes: bandBoxes, roofBox: roofBox, entrance: entranceOf(l),
     canopyBox: canopyBox, apronBox: apronBox, postBoxes: postBoxes, neonBoxes: neonBoxes, shadeBoxes: shadeBoxes,
     streetBoxes: streetBoxes,
-    streetSide: instancedOf(streetBoxes),
+    streetSide: sideOf(streetBoxes, skinned),
     neonStrips: Scene.group(neonBoxes |> List.map(slabOf)),
     lampShades: shadeBoxes |> List.map(slabOf) |> Scene.group,
     lampHeads: l.streetLamps,
@@ -201,7 +216,8 @@ let streetOf = (l: Layout): Street =>
       { tag: $"lamp-{i}", shape: Physics.box(0.12, 4.9, 0.12), at: v(Vec3.x(p), 2.45, Vec3.z(p)) }),
     // Inside the entrance, at head height.
     lobbyLight: (let e = entranceOf(l) in v((e.lo + e.hi) / 2.0, 2.0, l.footprint.z0 + 0.9)),
-    extraBoxes: [], beaconBoxes: [], grid: Option.None, siding: concrete, gables: [] }
+    extraBoxes: [], beaconBoxes: [], grid: Option.None,
+    wall: wall, skinned: skinned, extraSkinned: [], siding: concrete, gables: [] }
 
 // The building's street side, in its own space, with the neon and the lamp
 // heads glowing at `neon` and `lamps` (1 at night), and its window grid by
@@ -229,10 +245,11 @@ let sodiumGlow: Hours.Rgb = { r: 255.0 / 255.0, g: 190.0 / 255.0, b: 110.0 / 255
 // instance, `gableTemplate` scaled by `gableScale(b)`.
 let gableTemplate = Scene.cube() |> Scene.rotateZ(45deg)
 let gableScale = (b: Box): Vec3.t => v((b.x1 - b.x0) / Math.sqrt(2.0), (b.y1 - b.y0) / Math.sqrt(2.0), b.z1 - b.z0)
-let gableOf = (b: Box, color: Color.t): Scene.t =>
+let gableInstance = (b: Box): Instance.t =>
   let s = gableScale(b) in
-  gableTemplate |> Scene.scaleXYZ(Vec3.x(s), Vec3.y(s), Vec3.z(s))
-    |> Scene.translate(v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0)) |> Scene.lit(color)
+  Instance.trs(v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0), 0deg, Vec3.x(s), Vec3.y(s), Vec3.z(s))
+let gablesOf = (gs: List<(Box, Finishes.Surface)>): Scene.t =>
+  Finishes.drawnAs(gableTemplate, Finishes.groupedBy(gs |> List.map((e) => let (b, f) = e in (gableInstance(b), f))))
 
 // ---- The ground ------------------------------------------------------------------
 

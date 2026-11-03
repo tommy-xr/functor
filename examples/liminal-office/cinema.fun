@@ -129,12 +129,38 @@ let pinkColor = (glow: float): Color.t => Building.rgb(255.0 * glow, 60.0 * glow
 let glowAt = (glow: float): Scene.t =>
   Scene.group([posterMesh, Scene.group(List.append([facadeBand], pinkBands) |> List.map(Exterior.slabOf)) |> Scene.color(pinkColor(glow))])
 
-// The kit's street side with the marquee for its canopy, cyan along the
-// marquee, the roofline and up the sign tower; the tower, lot, bays and
-// poster frames among the lit boxes; the posters and pink as its grid.
-// The facade's outer half (the kit's) is solid all round the footprint.
+// Painted stucco over a tiled base, in piers and a cap of a paler coat.
+let stuccoWall = Finishes.on(Finishes.stucco, Building.rgb(122.0, 104.0, 132.0))
+let stuccoPale = Finishes.on(Finishes.stucco, Building.rgb(146.0, 132.0, 154.0))
+let baseTiles = Finishes.on(Finishes.tiles, Building.rgb(64.0, 118.0, 124.0))
+
+// The facade kit's trim: the tiled base, piers every 10 m (under the pink
+// band) and the cap, a
+// frame round the doors and under the marquee, and plant on the roof by a
+// stair's head house.
+let dressed = (s: Exterior.Street): Exterior.Street =>
+  let roof = l.levels * l.storey in
+  let head = rect(4.0, 30.0, 8.0, 34.0) in
+  Facade.trimmed(s, {
+    plain: List.flatten([
+      Facade.painted(Facade.frameDark, List.flatten([Facade.portal(l, s, 0.4, 0.12), Facade.canopyEdge(s, 0.2)])),
+      Facade.stairHead(head, roof, 2.7, Facade.headGrey),
+      Facade.rooftop(3.0, rect(2.0, 2.0, 58.0, 38.0), roof, [head]),
+    ]),
+    skinned: List.flatten([
+      Facade.clad(baseTiles, Facade.courses(l, s, [(street, 1.1)], 0.04)),
+      Facade.clad(stuccoPale, List.flatten([Facade.pilasters(l, s, 10.0, 0.9, 0.12, facadeBand.y0 - 0.1), Facade.cornice(l, 0.2, 0.35)])),
+    ]),
+    fine: [],
+  })
+
+// The kit's street side in stucco with the marquee for its canopy, cyan
+// along the marquee, the roofline and up the sign tower; the tower, lot,
+// bays and poster frames among the lit boxes; the posters and pink as its
+// grid. The facade's outer half (the kit's) is solid all round the
+// footprint.
 let exterior: Exterior.Street =
-  let s = Exterior.streetOf(l) in
+  let s = Exterior.streetWith(l, stuccoWall) in
   let extras = List.flatten([
     [(signTower, towerDark)],
     posterFrames |> List.map((b) => (b, Building.rgb(14.0, 12.0, 16.0))),
@@ -149,9 +175,10 @@ let exterior: Exterior.Street =
     [box(m.x0, m.y0 + 0.1, m.z0 - 0.06, m.x1, m.y0 + 0.2, m.z0)],
     towerTubes,
   ]) in
-  { s with canopyBox: marquee, streetBoxes: boxes, streetSide: Exterior.instancedOf(boxes), extraBoxes: extras,
-           neonBoxes: neon, neonStrips: Scene.group(neon |> List.map(Exterior.slabOf)),
-           grid: Option.Some({ night: glowAt(1.0), day: glowAt(0.6) }) }
+  let lot = { s with canopyBox: marquee, streetBoxes: boxes, extraBoxes: extras,
+                     neonBoxes: neon, neonStrips: Scene.group(neon |> List.map(Exterior.slabOf)),
+                     grid: Option.Some({ night: glowAt(1.0), day: glowAt(0.6) }) } in
+  dressed(lot)
 
 // ---- Collision -----------------------------------------------------------------------
 

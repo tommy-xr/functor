@@ -222,16 +222,44 @@ let gridOf = (l: Layout, n: float): Exterior.Grid =>
   { night: Scene.modelOf(Model.static(data)), day: Scene.modelOf(Model.static({ data with groups: [unlitGroup(0.0, all, glassDay)] })) }
 
 let planterGreen = Building.rgb(58.0, 70.0, 56.0)
+let curtainWall = Finishes.on(Finishes.curtain, Building.rgb(150.0, 162.0, 178.0))
+let plantWall = Finishes.on(Finishes.precast, Building.rgb(120.0, 120.0, 124.0))
+let finGrey = Building.rgb(150.0, 154.0, 160.0)
+let spandrelDark = Building.rgb(64.0, 70.0, 80.0)
 // A tower's street side: the kit's (facade, roof, entrance canopy, neon,
-// lamps), the roof slab opened over the stairwell, the plant room and
-// planter, the beacon and the window grid.
+// lamps) in curtain wall, the roof slab opened over the stairwell, the plant
+// room and planter, the beacon and the window grid; fins between the bays
+// and spandrels at each floor above the lobby, corner piers, a cap, and a
+// water tank, a mast and plant on the plant room's roof.
 let streetOf = (l: Layout, n: float): Exterior.Street =>
-  let s = Exterior.streetOf(l) in
-  let extras = List.flatten([plantBoxes(n) |> List.map((b) => (b, Exterior.concrete)), [(planter(n), planterGreen)]]) in
-  let boxes = List.flatten([
-    s.streetBoxes |> List.filter((e) => let (b, _) = e in b != s.roofBox),
-    roofSlabs(n) |> List.map((b) => (b, Exterior.roofGrey)),
-    extras,
+  let s = Exterior.streetWith(l, curtainWall) in
+  let plant = Facade.clad(plantWall, plantBoxes(n)) in
+  let extras = [(planter(n), planterGreen)] in
+  let skinned = List.flatten([
+    s.skinned |> List.filter((e) => let (b, _) = e in b != s.roofBox),
+    Facade.clad(Exterior.roofing, roofSlabs(n)),
+    plant,
   ]) in
-  { s with streetBoxes: boxes, streetSide: Exterior.instancedOf(boxes), extraBoxes: extras,
-           beaconBoxes: [beacon(n)], grid: Option.Some(gridOf(l, n)) }
+  let towered = { s with streetBoxes: List.flatten([s.streetBoxes, extras]), skinned: skinned, extraBoxes: extras,
+                         extraSkinned: plant, beaconBoxes: [beacon(n)], grid: Option.Some(gridOf(l, n)) } in
+  let top = roofTop(n) + plantHeight in
+  let capTop = l.facadeHeight - 0.15 in
+  Facade.trimmed(towered, {
+    plain: List.flatten([
+      Facade.painted(finGrey, List.flatten([
+        Facade.fins(l, towered, List.range(14.0) |> List.map((k) => 1.6 * (k + 1.0)), storey, capTop, 0.12, 0.35),
+        // 0.3 wide: the grid's corner bays start 0.35 in from the corner.
+        Facade.pilasters(l, towered, 0.0, 0.3, 0.12, capTop),
+        Facade.cornice(l, 0.4, 0.3),
+      ])),
+      Facade.painted(spandrelDark, Facade.courses(l, towered, List.range(n) |> List.map((k) =>
+        let y = (k + 1.0) * storey in (y - 0.3, y + 0.3)), 0.14)),
+      Facade.painted(Facade.frameDark, List.flatten([Facade.portal(l, towered, 0.4, 0.12), Facade.canopyEdge(towered, 0.15)])),
+      Facade.waterTank(3.8, 17.0, top, 1.4),
+      Facade.antenna(13.5, 11.5, top, 9.0),
+      Facade.hvac(18.0, 13.0, top, false),
+      Facade.vents(14.0, 21.0, top),
+    ]),
+    skinned: [],
+    fine: [],
+  })

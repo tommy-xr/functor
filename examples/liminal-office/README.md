@@ -77,8 +77,9 @@ those values:
   collar's corners, and at the stair opening: a horizontal portal where the
   stairwell's foot meets its head, the upper floor less the landing. Each
   cell's model is `Scene.inCells` it.
-- **Street side** (`exterior.fun`): the facade's outer half, the roof and
-  the window bands are one `Scene.instanced` cube, one draw. The roof sits
+- **Street side** (`exterior.fun`): the window bands, canopy, apron and
+  posts are one `Scene.instanced` cube, one draw; the facade's outer half
+  and the roof are one per finish (below). The roof sits
   at the top storey's slab; the facade rising 0.9 m past it is the parapet.
   Each band is a hole through the facade with a dark panel 8 cm back in it,
   not a box a few cm in front of it, which z-fought at a distance. The near
@@ -89,6 +90,23 @@ those values:
   because trimesh faces only block from the front: an inward-facing facade
   would let the capsule walk in from outside. The street (a ground box, the
   lamp posts) sits 3 cm lower. The player is a `Physics.character`.
+
+**Facade kit** (`finishes.fun`, `facade.fun`). Each archetype's walls take a
+finish: a tileable texture box-mapped by world position
+(`Scene.litWorldTexture`), so texels stay square on boxes of any size and
+every box in a finish is one instanced draw, tinted per box. The office
+uses precast panels, the towers a curtain wall with spandrel bands, the
+cinema stucco over a tiled base, and every main roof a membrane.
+`facades.mjs` paints the textures (`facade-*.png`, at most 256², one
+trilinear tap). The trim is boxes: a cornice cap, corner and intermediate
+piers, string courses and spandrels, the towers' fins, mullions in the
+dark bands, a frame round the entrance and a fascia under the canopy, and
+rooftop plant: air handlers, vents and dishes placed by noise per archetype,
+a stair head house, and a tower's water tank and mast. It stands clear of
+every opening (`tests.fun`). Plain trim rides the lit draw, so a street side
+draws once plus once per finish it uses (two for the office, three for a
+tower or the cinema). Shells keep all of it but the mullions, at the same
+per-finish cost for the whole town. Nothing here is baked.
 
 **Culling caveat.** The cells and portals are right (`functor test`), and
 `/state.cells.hidden` counts the subtrees the walk hides, but the renderer
@@ -165,8 +183,9 @@ town. What scales with the eye's surroundings, not with the town:
   only the renderer's portal walk knows. It goes off past 34 m, or when the
   eye walks into another building and all `K` are taken.
 - **Shells**: inactive copies are four `Scene.instanced` cubes for the whole
-  town: massing up to the roof, parapet, canopy, apron, window bands (10 cm
-  proud) and lamp posts lit; neon, lamp shades, and the entrance and
+  town, plus one per finish: massing up to the roof and parapet in the
+  archetype's finish, the roof in membrane, the facade kit's trim, canopy,
+  apron, window bands (10 cm proud) and lamp posts lit; neon, lamp shades, and the entrance and
   the layout's windows glowing (the lit rooms' colour by night, neutral
   glass by day). An active copy draws its real
   street side and interior instead. Each copy's instances are built once at
