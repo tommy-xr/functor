@@ -564,6 +564,7 @@ impl World {
                 .cloned()
                 .partition(|f| dirty.contains(&f.key));
             self.fused = Arc::new(kept);
+            crate::frame_telemetry::note_bodies(0, removed.len());
             for fused in removed {
                 let poses: Vec<Pose> = fused.parts.shapes().iter().map(|(pose, _)| *pose).collect();
                 self.unfused.extend(fused.tags.into_iter().zip(poses));
@@ -641,6 +642,7 @@ impl World {
                 .restitution(bodies[0].restitution)
                 .build();
             let collider = self.colliders.insert(collider);
+            crate::frame_telemetry::note_bodies(1, 0);
             for body in &bodies {
                 if self.declared.get(&body.tag) != Some(*body) {
                     Arc::make_mut(&mut self.declared).insert(body.tag.clone(), (*body).clone());
@@ -679,6 +681,11 @@ impl World {
     /// What the last [`World::reconcile`] did.
     pub fn reconcile_stats(&self) -> ReconcileStats {
         self.reconcile_stats
+    }
+
+    /// Report the world's size to `/frames`.
+    pub(crate) fn note_size(&self) {
+        crate::frame_telemetry::note_world_size(self.bodies.len(), self.colliders.len());
     }
 
     /// Accumulate real (variable) dt and run whole fixed substeps, carrying the
@@ -1219,6 +1226,7 @@ impl World {
         if let Shape::FusedRoom { room } = &body.shape {
             // A fixed body with a collider per chunk.
             let rb_handle = self.bodies.insert(RigidBodyBuilder::fixed().build());
+            crate::frame_telemetry::note_bodies(1, 0);
             Arc::make_mut(&mut self.tags).insert(body.tag.clone(), rb_handle);
             Arc::make_mut(&mut self.rooms).insert(body.tag.clone(), LiveRoom::default());
             self.sync_room(body, &RoomMeshes::default(), room);
@@ -1258,6 +1266,7 @@ impl World {
         }
 
         let rb_handle = self.bodies.insert(rb);
+        crate::frame_telemetry::note_bodies(1, 0);
         self.colliders
             .insert_with_parent(collider.build(), rb_handle, &mut self.bodies);
         Arc::make_mut(&mut self.tags).insert(body.tag.clone(), rb_handle);
@@ -1635,6 +1644,7 @@ impl World {
         // A despawned body's contacts end unreported, retired ones included.
         self.retired.retain(|(_, retired)| retired != tag);
         if let Some(rb_handle) = cow_remove(&mut self.tags, tag) {
+            crate::frame_telemetry::note_bodies(0, 1);
             // Removes attached colliders and joints too.
             self.bodies.remove(
                 rb_handle,

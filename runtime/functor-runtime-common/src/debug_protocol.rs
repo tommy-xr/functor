@@ -175,7 +175,14 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// (unlike `frame`). Additive — a pre-v29 runtime omits it, which
 /// deserializes as zero, so gate on the version before reading zero as "not
 /// rendering".
-pub const DEBUG_PROTOCOL_VERSION: u32 = 29;
+///
+/// 30 adds `GET /frames?last=N` (the shell's per-frame stage timings and
+/// counters, [`crate::frame_telemetry::FramesReport`]), `GET /spikes` (frames
+/// over the spike threshold with their neighbours,
+/// [`crate::frame_telemetry::SpikesReport`]), and the optional `frame_stats`
+/// on `GET /state` (p50/p99/max per stage over the ring). A pre-v30 runtime
+/// answers 404 and omits `frame_stats`.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 30;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -230,6 +237,16 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "GET",
         path: "/state",
         description: "runtime state JSON: frame, rendered_frames (frames rendered and submitted; advances while paused), tts, pending_steps (queued clock steps not yet run), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad/touch), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
+    },
+    DebugRoute {
+        method: "GET",
+        path: "/frames",
+        description: "the last ?last=N frames (default all, up to 600) as {stats, frames}: per-frame stage times in µs (update, tick, physics + its reconcile/step, draw, sim, sim_wait, assets, render, present, frame), steps, GPU uploads, frustum culls, physics bodies created/removed and world size, Quest display periods",
+    },
+    DebugRoute {
+        method: "GET",
+        path: "/spikes",
+        description: "frames over the spike threshold (1.5 display periods, or FUNCTOR_SPIKE_MS) with the stage that dominated and up to 4 frames either side: {threshold_us, total, spikes}",
     },
     DebugRoute {
         method: "GET",
@@ -509,6 +526,11 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<crate::audio::AudioCounts>,
+    /// p50/p99/max per stage over the shell's frame ring (v30); `GET /frames`
+    /// has the frames. Omitted before the first frame.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_stats: Option<crate::frame_telemetry::FrameStats>,
 }
 
 /// Mean per-frame stage cost over a shell's last completed [`StageWindow`]
@@ -1143,6 +1165,9 @@ pub enum DebugRequest {
     State(Sender<RuntimeState>),
     Scene(Sender<String>),
     Trace(Sender<String>),
+    /// `GET /frames`: the newest `last` frames (all when `None`).
+    Frames(Option<usize>, Sender<crate::frame_telemetry::FramesReport>),
+    Spikes(Sender<crate::frame_telemetry::SpikesReport>),
     Input(InputCommand, Sender<Result<(), String>>),
     /// `Err` is a conflict the operator must resolve — today, a `/time` command
     /// under an unconditional `--fixed-time` pin, which the clock cannot honor.
@@ -1439,6 +1464,7 @@ mod tests {
                 dropped: 1,
                 recent: vec!["door.wav".into()],
             }),
+            frame_stats: None,
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -1811,6 +1837,8 @@ mod tests {
             "GET /",
             "POST /capture",
             "GET /state",
+            "GET /frames",
+            "GET /spikes",
             "GET /scene",
             "GET /trace",
             "GET /project",

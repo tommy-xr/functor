@@ -37,6 +37,7 @@ use functor_runtime_common::debug_protocol::{
 };
 use functor_runtime_common::device_files::DeviceFiles;
 use functor_runtime_common::environment_depth::EnvironmentDepthSource;
+use functor_runtime_common::frame_telemetry::{us, FrameRecord, FrameTelemetry};
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::runtime_settings::FoveationLevel;
@@ -768,6 +769,8 @@ struct DebugLoopState {
     config: Option<functor_runtime_common::runtime_settings::GameConfig>,
     /// The last completed stage window, for `/state.stages`.
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
+    /// `/frames`, `/spikes`, `/state.frame_stats`.
+    telemetry: FrameTelemetry,
     /// The `/load-project` waiting on a load job, and where its status
     /// arrives: answered when it lands.
     pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
@@ -950,6 +953,7 @@ fn service_debug_request(
             let cull = functor_runtime_common::gpu_counters::gpu_counters().frame_cull();
             let cells = functor_runtime_common::gpu_counters::gpu_counters().frame_cells();
             let stages = debug.stages;
+            let frame_stats = debug.telemetry.stats();
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
                 let _ = response.send(RuntimeState {
@@ -988,8 +992,15 @@ fn service_debug_request(
                     }),
                     // No audio host on device yet.
                     audio: None,
+                    frame_stats,
                 });
             });
+        }
+        DebugRequest::Frames(last, response) => {
+            let _ = response.send(debug.telemetry.frames(last));
+        }
+        DebugRequest::Spikes(response) => {
+            let _ = response.send(debug.telemetry.spikes());
         }
         DebugRequest::Scene(response) => {
             let json = debug
@@ -1564,6 +1575,9 @@ pub fn android_main(app: AndroidApp) {
 
     let mut clock = GameClock::new(None);
     let mut last_frame_at: Option<Instant> = None;
+    // The last rendered frame's predicted display time, for `/frames`'
+    // `display_periods`.
+    let mut last_display_ns: Option<i64> = None;
     let mut debug = DebugLoopState {
         display_refresh_rate,
         ..DebugLoopState::default()
@@ -1730,10 +1744,13 @@ pub fn android_main(app: AndroidApp) {
             std::thread::sleep(std::time::Duration::from_millis(50));
             // A doze is not frame time.
             last_rendered = Instant::now();
+            last_display_ns = None;
             continue;
         }
 
+        let wait_started = Instant::now();
         let xr_frame_state = frame_wait.wait().expect("frame wait");
+        let wait_ns = wait_started.elapsed().as_nanos() as u64;
         frame_stream.begin().expect("frame begin");
         if session_focused {
             session
@@ -1776,6 +1793,7 @@ pub fn android_main(app: AndroidApp) {
                 )
                 .expect("frame end (invalid tracking)");
             last_frame_at = None;
+            last_display_ns = None;
             last_rendered = Instant::now();
             continue;
         }
@@ -1835,6 +1853,8 @@ pub fn android_main(app: AndroidApp) {
                 )
                 .expect("frame end (no render)");
             last_rendered = Instant::now();
+            // A declined frame is the compositor's choice, not a miss.
+            last_display_ns = None;
             continue;
         }
 
@@ -1863,7 +1883,10 @@ pub fn android_main(app: AndroidApp) {
         sim.post(move |g| g.push_asset_progress(progress));
         let mut feedback = false;
         preloads.extend(sim.drain_preloads());
-        for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
+        let assets_started = Instant::now();
+        let settled = scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads));
+        let assets_ns = assets_started.elapsed().as_nanos() as u64;
+        for token in settled {
             sim.post(move |g| g.preload_push_settled(token));
         }
         let loads_pending = scene_context.has_pending_loads();
@@ -1898,11 +1921,18 @@ pub fn android_main(app: AndroidApp) {
             // A capture renders the newest frame.
             lockstep || capture_due,
         );
+        let mut record = FrameRecord {
+            steps: sub_frames.len() as u32,
+            present_us: us(wait_ns),
+            assets_us: us(assets_ns),
+            ..FrameRecord::default()
+        };
         if let Some(mut fresh) = fresh {
             caps = fresh.caps;
             feedback |= !fresh.preload_commands.is_empty() || fresh.terrain_pending;
             preloads.append(&mut fresh.preload_commands);
             scene_context.queue_terrain_requests(std::mem::take(&mut fresh.terrain_requests));
+            record.set_sim(fresh.sim_ns, &fresh.stages);
             let foveation = fresh.settings.and_then(|settings| settings.xr.foveation);
             if foveation_available && foveation != applied_foveation {
                 apply_foveation(&instance, &session, &eyes, foveation);
@@ -1911,7 +1941,9 @@ pub fn android_main(app: AndroidApp) {
             stages.sim_ns += fresh.sim_ns;
             shown = Some(fresh);
         }
-        stages.wait_ns += sim.take_wait_ns();
+        let sim_wait_ns = sim.take_wait_ns();
+        stages.wait_ns += sim_wait_ns;
+        record.sim_wait_us = us(sim_wait_ns);
         let snapshot = shown.as_ref().expect("the first frame always yields a snapshot");
         // Run the camera feed while `config` asks and `settings` allows; a
         // passthrough frame clears transparent only while it is composited.
@@ -2127,9 +2159,29 @@ pub fn android_main(app: AndroidApp) {
             .expect("frame end");
         debug.rendered_frames += 1;
 
-        stages.render_ns += render_started.elapsed().as_nanos() as u64;
-        stages.frame_ns += last_rendered.elapsed().as_nanos() as u64;
+        let render_ns = render_started.elapsed().as_nanos() as u64;
+        let frame_ns = last_rendered.elapsed().as_nanos() as u64;
+        stages.render_ns += render_ns;
+        stages.frame_ns += frame_ns;
         last_rendered = Instant::now();
+        // One `/frames` record per rendered frame. `display_periods` counts
+        // display refreshes since the last one's: 2+ means a missed refresh.
+        let display_ns = xr_frame_state.predicted_display_time.as_nanos();
+        let period_ns = xr_frame_state.predicted_display_period.as_nanos();
+        if period_ns > 0 {
+            debug.telemetry.set_display_hz(1e9 / period_ns as f32);
+            record.display_periods = last_display_ns
+                .map_or(0, |last| ((display_ns - last) as f64 / period_ns as f64).round() as u32);
+        }
+        last_display_ns = Some(display_ns);
+        record.frame = debug.frame_count;
+        record.rendered_frame = debug.rendered_frames;
+        record.render_us = us(render_ns);
+        record.frame_us = us(frame_ns);
+        debug.telemetry.record_gpu(&mut record);
+        if let Some(note) = debug.telemetry.push(record) {
+            log::warn!("{note}");
+        }
         if let Some(timings) = stages.end_frame() {
             log::info!(
                 "stages over {} frames: sim {:.2} ms, render {:.2} ms, sim-wait {:.2} ms ({sim_thread})",

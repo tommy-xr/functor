@@ -282,6 +282,27 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 ),
             }
         }
+        ("GET", "/frames") => {
+            let last = match parse_last_query(query) {
+                Ok(last) => last,
+                Err(error) => {
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
+                    return Some(());
+                }
+            };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::Frames(last, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_report(&mut stream, cors_origin, recv(resp_rx));
+        }
+        ("GET", "/spikes") => {
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::Spikes(resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_report(&mut stream, cors_origin, recv(resp_rx));
+        }
         ("GET", "/project") => {
             let (resp_tx, resp_rx) = mpsc::channel();
             if tx.send(DebugRequest::Project(resp_tx)).is_err() {
@@ -762,6 +783,15 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
     Some(())
 }
 
+/// `last=N` from a `GET /frames` query (`None` when absent).
+fn parse_last_query(query: &str) -> Result<Option<usize>, String> {
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("last="))
+        .map(|n| n.parse().map_err(|_| format!("last must be a whole number, got {n:?}")))
+        .transpose()
+}
+
 fn is_protocol_path(path: &str) -> bool {
     debug_protocol::DEBUG_ROUTES
         .iter()
@@ -814,6 +844,27 @@ fn is_loopback_origin(origin: &str) -> bool {
     match port {
         None => true,
         Some(port) => !port.is_empty() && port.parse::<u16>().is_ok(),
+    }
+}
+
+/// Answer a telemetry report as JSON, serialized on this transport thread.
+fn respond_report<T: serde::Serialize>(
+    stream: &mut TcpStream,
+    cors_origin: Option<&str>,
+    report: Result<T, mpsc::RecvTimeoutError>,
+) {
+    match report {
+        Ok(report) => respond_bytes(
+            stream,
+            cors_origin,
+            200,
+            "OK",
+            "application/json",
+            serde_json::to_string(&report)
+                .expect("telemetry reports are plain data")
+                .as_bytes(),
+        ),
+        Err(_) => respond_text(stream, cors_origin, 500, "Internal Server Error", "telemetry failed"),
     }
 }
 
@@ -932,6 +983,35 @@ mod tests {
         assert!(!response.contains("Access-Control-Allow-Origin"));
         let body = response.split("\r\n\r\n").nth(1).unwrap();
         assert_eq!(body, debug_protocol::discovery_json());
+    }
+
+    #[test]
+    fn frames_passes_last_through_and_rejects_a_bad_one() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = connect(&listener, "GET /frames?last=2 HTTP/1.1\r\n\r\n".into());
+        let (tx, rx) = mpsc::channel();
+        let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+        match rx.recv().unwrap() {
+            DebugRequest::Frames(last, response) => {
+                assert_eq!(last, Some(2));
+                let mut telemetry = crate::frame_telemetry::FrameTelemetry::new(60.0);
+                for frame in 0..5 {
+                    telemetry.push(crate::frame_telemetry::FrameRecord { frame, ..Default::default() });
+                }
+                response.send(telemetry.frames(last)).unwrap();
+            }
+            _ => panic!("expected a frames request"),
+        }
+        server.join().unwrap();
+        let response = client.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        let body: serde_json::Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["frames"][0]["frame"], 3);
+        assert_eq!(body["frames"].as_array().unwrap().len(), 2);
+
+        assert_eq!(parse_last_query(""), Ok(None));
+        assert!(parse_last_query("last=many").is_err());
     }
 
     #[test]

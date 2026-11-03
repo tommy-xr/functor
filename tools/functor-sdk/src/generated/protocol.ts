@@ -133,6 +133,102 @@ frames: number, warning?: string, };
 export type FoveationLevel = "off" | "low" | "medium" | "high";
 
 /**
+ * One frame as the shell saw it. Times are µs; counts are this frame's (the
+ * sim side's since the previous snapshot).
+ */
+export type FrameRecord = { 
+/**
+ * The shell's sim step count after this frame's steps.
+ */
+frame: number, 
+/**
+ * `/state.rendered_frames` after this frame (0 under `--headless`).
+ */
+rendered_frame: number, 
+/**
+ * Fixed sim steps this frame ran.
+ */
+steps: number, 
+/**
+ * Wall time since the previous frame (headless: this iteration's work).
+ */
+frame_us: number, 
+/**
+ * All producer work in this frame's snapshot; the stages below are parts
+ * of it.
+ */
+sim_us: number, update_us: number, tick_us: number, 
+/**
+ * The whole physics phase, `physics_reconcile_us` and `physics_step_us`
+ * included.
+ */
+physics_us: number, physics_reconcile_us: number, physics_step_us: number, draw_us: number, 
+/**
+ * The render thread blocked on the sim thread.
+ */
+sim_wait_us: number, 
+/**
+ * Shell asset driving: preloads and terrain heightmap decodes.
+ */
+assets_us: number, 
+/**
+ * Shell rendering. Quest's includes swapchain waits and frame submission.
+ */
+render_us: number, 
+/**
+ * Desktop: the buffer swap. Quest: `xrWaitFrame`.
+ */
+present_us: number, 
+/**
+ * `Scene.instanced` instance-buffer uploads.
+ */
+instance_uploads: number, 
+/**
+ * GPU bytes uploaded: buffers and textures, instance data included.
+ */
+upload_bytes: number, 
+/**
+ * Frustum tests and the draws they skipped.
+ */
+cull_tested: number, cull_culled: number, bodies_created: number, bodies_removed: number, 
+/**
+ * The physics world's size after its last step.
+ */
+bodies: number, colliders: number, 
+/**
+ * Quest: display periods since the previous frame's predicted display
+ * time (1 = on time, 2 or more = missed). 0 where unknown.
+ */
+display_periods: number, };
+
+/**
+ * `/state.frame_stats`: the ring's stage distributions.
+ */
+export type FrameStats = { 
+/**
+ * Frames in the ring.
+ */
+frames: number, 
+/**
+ * Spikes since launch.
+ */
+spikes: number, spike_threshold_us: number, 
+/**
+ * `frame`, `sim`, `update`, `tick`, `physics`, `physics.reconcile`,
+ * `physics.step`, `draw`, `sim.wait`, `assets`, `render`, `present`.
+ */
+stages: { [key in string]: StagePercentiles }, };
+
+/**
+ * `GET /frames`.
+ */
+export type FramesReport = { stats: FrameStats, 
+/**
+ * The newest frames, oldest first.
+ */
+frames: Array<FrameRecord>, };
+
+/**
  * `GET /state.xr.mesh` (debug protocol v25): the room fused from the
  * environment depth (`Frame.withFusedRoom`).
  */
@@ -493,7 +589,12 @@ xr?: XrState,
  * ([`crate::audio::AudioCounts`]). Omitted by runtimes that don't count
  * them, such as Quest.
  */
-audio?: AudioCounts, };
+audio?: AudioCounts, 
+/**
+ * p50/p99/max per stage over the shell's frame ring (v30); `GET /frames`
+ * has the frames. Omitted before the first frame.
+ */
+frame_stats?: FrameStats, };
 
 /**
  * One rendered view. Desktop reports one `main` view; stereo XR reports one
@@ -518,6 +619,38 @@ export type RuntimeViewport = { width: number, height: number, };
  * evaluations (one per skinned model per pass).
  */
 export type SkinnedWork = { draws: number, pose_evals: number, };
+
+/**
+ * A frame over the spike threshold, with its neighbours.
+ */
+export type SpikeRecord = { frame: FrameRecord, 
+/**
+ * The disjoint stage that took longest, e.g. `physics.reconcile`.
+ */
+stage: string, stage_us: number, 
+/**
+ * Up to [`SPIKE_CONTEXT`] frames either side, oldest first, the spike
+ * included. Frames after it fill in as they render.
+ */
+frames: Array<FrameRecord>, };
+
+/**
+ * `GET /spikes`.
+ */
+export type SpikesReport = { threshold_us: number, 
+/**
+ * Spikes since launch; `spikes` keeps the newest [`SPIKES`].
+ */
+total: number, 
+/**
+ * Oldest first.
+ */
+spikes: Array<SpikeRecord>, };
+
+/**
+ * One stage's distribution over the ring, µs.
+ */
+export type StagePercentiles = { p50_us: number, p99_us: number, max_us: number, };
 
 /**
  * Mean per-frame stage cost over a shell's last completed [`StageWindow`]

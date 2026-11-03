@@ -1042,6 +1042,13 @@ pub struct WireLogArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct FramesArgs {
+    pub session: String,
+    /// How many of the newest frames to return (default: the whole ring, 600).
+    pub last: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct RewindArgs {
     pub session: String,
     /// The recorded frame to restore, as `/state` reports `frame`.
@@ -1701,6 +1708,32 @@ MCP server before reconnecting or reusing that runtime URL.",
         Parameters(args): Parameters<SessionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         self.proxy_get(&args.session, "/state").await
+    }
+
+    /// Per-frame stage timings (µs: update, tick, physics and its
+    /// reconcile/step, draw, sim, sim_wait, assets, render, present, frame) and
+    /// counters (steps, GPU uploads, culls, physics bodies created/removed and
+    /// world size), newest last, plus p50/p99/max per stage. `GET /frames`.
+    #[tool]
+    async fn get_frames(
+        &self,
+        Parameters(args): Parameters<FramesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let path = match args.last {
+            Some(last) => format!("/frames?last={last}"),
+            None => "/frames".to_string(),
+        };
+        self.proxy_get(&args.session, &path).await
+    }
+
+    /// Frames over the spike threshold (1.5 display periods), each with the
+    /// stage that dominated and up to 4 frames either side. `GET /spikes`.
+    #[tool]
+    async fn get_spikes(
+        &self,
+        Parameters(args): Parameters<SessionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.proxy_get(&args.session, "/spikes").await
     }
 
     /// The current frame as data: the camera, the scene graph, and the lights

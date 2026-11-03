@@ -105,6 +105,8 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `get_state` | `frame`, `tts`, `pending_steps`, `model_revision`, `pending_net`, viewports, sampled `input`, and the model — the structured JSON view (the default read; `model_debug` is the Debug text). |
 | `get_scene` | The camera, scene graph, and lights `draw` produced. Pure data, so it works headlessly. |
 | `get_trace` | The paused inspector trace: every entry point's binder and variable values for the last real frame. Pause first. |
+| `get_frames` | The last `last` frames' stage times (µs) and counters (`GET /frames`), plus p50/p99/max per stage. |
+| `get_spikes` | Frames over the spike threshold, each naming the stage that dominated, with up to 4 frames either side (`GET /spikes`). |
 | `capture_frame` | A PNG of the next rendered frame, returned as an MCP image block. |
 | `wire_log` | Every packet the coordinator routed for a session group, as data: `{seq, frame, at_ms, from, to, conn, kind, size, payload_text}`, with `since` / `limit` / `link` / `direction` filters. Group sessions only. |
 

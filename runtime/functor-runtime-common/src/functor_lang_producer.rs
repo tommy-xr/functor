@@ -30,6 +30,7 @@ use std::collections::{HashMap, HashSet};
 use functor_lang::{line_col, project::SourceMap, RunError, Session, Span, Value};
 
 use crate::asset::AssetProgress;
+use crate::frame_telemetry::{self, SimStage};
 use crate::functor_lang_prelude::{
     asset_progress_value, assets_taggers, config_of, contains_effect, deliver_physics_events,
     drain_effects, frame_value, http_response_value, job_progress_taggers, needs_update,
@@ -1178,6 +1179,8 @@ impl FrameCtx<'_> {
         // seek already dropped the ones from before it).
         let retry_tts_before_scrub = *self.prev_tts;
         if frame_time.dts > 0.0 {
+            // A branch replays physics; its cost is not this frame's stages.
+            let _replay = frame_telemetry::Suspended::new();
             match self.recorder.commit_scrub_if_resuming(
                 self.model,
                 self.physics_rt,
@@ -1206,12 +1209,16 @@ impl FrameCtx<'_> {
                 }
             }
         }
+        let update = frame_telemetry::span(SimStage::Update);
         self.deliver_parked();
         self.deliver_job_results();
         if let Some(snapshot) = sampled_input {
             self.deliver_sampled_input(snapshot, true);
         }
-        self.subscriptions_and_tick(frame_time);
+        self.pump_subscriptions(frame_time.tts as f64);
+        drop(update);
+        let _tick = frame_telemetry::span(SimStage::Tick);
+        self.call_tick(frame_time);
         true
     }
 
@@ -1238,6 +1245,8 @@ impl FrameCtx<'_> {
     /// to `target` and branch the future away (in-flight requests follow the
     /// recorder's rule), then drop the frame work that must not cross it.
     pub fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
+        // Restoring replays physics; it is not a frame's stages.
+        let _replay = frame_telemetry::Suspended::new();
         let retry_tts_before_rewind = *self.prev_tts;
         let result = self.recorder.rewind_scene_to(
             target,
@@ -1268,6 +1277,7 @@ impl FrameCtx<'_> {
     /// Non-destructive scrub, for every producer: restore every participant
     /// to `target`; Δ (input since the frame, and the queries it issued) goes.
     pub fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let _replay = frame_telemetry::Suspended::new();
         let result = self.recorder.seek_scene_to(
             target,
             self.model,
@@ -1386,6 +1396,11 @@ impl FrameCtx<'_> {
     /// (the F# executor's ordering).
     fn subscriptions_and_tick(&mut self, frame_time: FrameTime) {
         self.pump_subscriptions(frame_time.tts as f64);
+        self.call_tick(frame_time);
+    }
+
+    /// Run `tick` and absorb its result.
+    fn call_tick(&mut self, frame_time: FrameTime) {
         let args = vec![
             self.model.clone(),
             Value::Number(frame_time.dts as f64),
@@ -1402,6 +1417,7 @@ impl FrameCtx<'_> {
     /// queries and deliver collision events against the just-stepped world.
     /// (Desktop times this as `physics_ns`.)
     pub fn physics_phase(&mut self, frame_time: FrameTime) {
+        let _physics = frame_telemetry::span(SimStage::Physics);
         let physics_steps = self.step_physics(frame_time.dts as f32);
         // Post-step query drain: deferred raycasts answer against the world
         // just stepped; their messages fold through `update` before `draw`,
@@ -1560,6 +1576,8 @@ impl FrameCtx<'_> {
         capture_from_division: usize,
         mut sampled_input: Option<crate::InputSnapshot>,
     ) -> Vec<(Value, Option<physics::PhysicsSnapshot>)> {
+        // A projection, not the live frame: keep it out of the frame's stages.
+        let _projection = frame_telemetry::Suspended::new();
         let mut out = Vec::with_capacity(divisions.saturating_sub(capture_from_division));
         let mut step = 0usize;
         let mut ui_table = LastGoodTable::new(self.session, self.names.ui);
