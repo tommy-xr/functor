@@ -702,10 +702,12 @@ fn faded_material(
             color,
             texture,
             normal_map,
+            world_tile,
         }) => Some(MaterialDescription::Lit {
             color: lerp(*color),
             texture: texture.clone(),
             normal_map: normal_map.clone(),
+            world_tile: *world_tile,
         }),
         Some(MaterialDescription::Texture(t)) => Some(MaterialDescription::Emissive {
             color: lerp(vec4(1.0, 1.0, 1.0, 1.0)),
@@ -756,10 +758,12 @@ fn alpha_faded_material(
             color,
             texture,
             normal_map,
+            world_tile,
         }) => Some(MaterialDescription::Lit {
             color: fade(*color),
             texture: texture.clone(),
             normal_map: normal_map.clone(),
+            world_tile: *world_tile,
         }),
         Some(MaterialDescription::Texture(texture)) => Some(MaterialDescription::Emissive {
             color: vec4(1.0, 1.0, 1.0, k),

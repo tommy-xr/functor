@@ -40,6 +40,8 @@ pub enum MaterialDescription {
     /// A diffuse-lit surface: albedo `color` (optionally modulated by a texture)
     /// shaded by the frame's lights (Lambert + specular), optionally with a
     /// tangent-space `normal_map` perturbing the surface normal.
+    /// `world_tile`: the texture is box-mapped by world position, one repeat
+    /// every that many metres, instead of read at the mesh's UVs.
     Lit {
         #[serde(
             serialize_with = "serialize_vec4",
@@ -49,6 +51,8 @@ pub enum MaterialDescription {
         texture: Option<TextureDescription>,
         #[serde(default)]
         normal_map: Option<TextureDescription>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        world_tile: Option<f32>,
     },
     /// A fullbright sprite image. `source_pixels`, when present, is a
     /// top-left-origin `[x, y, width, height]` rectangle in the source image.
@@ -130,6 +134,7 @@ impl MaterialDescription {
             color: vec4(r, g, b, a),
             texture: None,
             normal_map: None,
+            world_tile: None,
         }
     }
 
@@ -139,6 +144,18 @@ impl MaterialDescription {
             color: vec4(1.0, 1.0, 1.0, 1.0),
             texture: Some(tex),
             normal_map: None,
+            world_tile: None,
+        }
+    }
+
+    /// A diffuse-lit texture box-mapped by world position, repeating every
+    /// `tile` metres (white albedo tint).
+    pub fn lit_world_texture(tex: TextureDescription, tile: f32) -> MaterialDescription {
+        MaterialDescription::Lit {
+            color: vec4(1.0, 1.0, 1.0, 1.0),
+            texture: Some(tex),
+            normal_map: None,
+            world_tile: Some(tile),
         }
     }
 
@@ -156,6 +173,7 @@ impl MaterialDescription {
             color: vec4(r, g, b, a),
             texture: None,
             normal_map: Some(normal_map),
+            world_tile: None,
         }
     }
 }
@@ -200,6 +218,7 @@ impl MaterialDescription {
                 color,
                 texture,
                 normal_map,
+                world_tile,
             } => {
                 // Albedo on unit 0, the normal map on unit 2 (the shadow map
                 // uses unit 1). Albedo decodes through the color (sRGB)
@@ -219,7 +238,12 @@ impl MaterialDescription {
                     context,
                     scene_context,
                 );
-                let mut lit_material = LitMaterial::create(*color, use_texture, use_normal_map);
+                let mut lit_material = LitMaterial::create(
+                    *color,
+                    use_texture,
+                    use_normal_map,
+                    world_tile.unwrap_or(0.0),
+                );
                 lit_material.initialize(&context);
                 lit_material
             }

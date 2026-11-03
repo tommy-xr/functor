@@ -11,6 +11,33 @@ use crate::RenderContext;
 
 use super::Material;
 
+/// Box mapping for `Scene.litWorldTexture`: a face samples the texture over
+/// the two world axes it spans (picked by its normal's largest component),
+/// one repeat every `tile` metres, upright and unmirrored seen from outside.
+/// Texels stay square however the mesh is scaled. The gradients are made
+/// isotropic, so it is one trilinear tap at any angle: walls seen edge-on
+/// along a street cost no anisotropic taps, whatever the texture requests.
+pub(crate) const WORLD_TEXTURE_GLSL: &str = r#"
+        highp vec2 worldAxes(highp vec3 q, vec3 n) {
+            vec3 a = abs(n);
+            if (a.y > max(a.x, a.z)) {
+                return vec2(q.x, q.z);
+            }
+            if (a.x > a.z) {
+                return vec2(n.x > 0.0 ? -q.z : q.z, -q.y);
+            }
+            return vec2(n.z > 0.0 ? q.x : -q.x, -q.y);
+        }
+
+        vec4 worldTexture(sampler2D tex, highp vec3 p, vec3 n, float tile) {
+            highp vec2 uv = worldAxes(p, n) / tile;
+            vec2 dx = worldAxes(dFdx(p), n) / tile;
+            vec2 dy = worldAxes(dFdy(p), n) / tile;
+            float g = max(length(dx), length(dy));
+            return textureGrad(tex, uv, vec2(g, 0.0), vec2(0.0, g));
+        }
+"#;
+
 // Diffuse-lit surface: albedo (a color, optionally modulated by a texture) shaded
 // by a bounded array of lights (ambient / directional / point / spot) via Lambert
 // plus distance + cone falloff. Reads the frame's lights from `RenderContext`.
@@ -75,9 +102,12 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform sampler2D normalMap;
         uniform int useNormalMap;
         uniform float specularScale;
+        // > 0: box-map the texture by world position (WORLD_TEXTURE_GLSL).
+        uniform float worldTile;
 
         void main() {
             vec3 n = normalize(worldNormal);
+            vec3 faceNormal = n;
             // Perturb the surface normal by the tangent-space normal map.
             if (useNormalMap == 1) {
                 vec3 tn = texture(normalMap, texCoord).xyz * 2.0 - 1.0;
@@ -93,7 +123,10 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
             vec4 albedo = baseColor;
             if (useTexture == 1) {
-                albedo = texture(texture1, texCoord) * baseColor;
+                vec4 texel = worldTile > 0.0
+                    ? worldTexture(texture1, worldPos, faceNormal, worldTile)
+                    : texture(texture1, texCoord);
+                albedo = texel * baseColor;
             }
             fragColor = functorOutput(
                 vec4(applyFog(albedo.rgb * diffuseLight + specularLight * specularScale, worldPos), albedo.a));
@@ -111,6 +144,7 @@ struct Uniforms {
     normal_map_loc: UniformLocation,
     use_normal_map_loc: UniformLocation,
     specular_scale_loc: UniformLocation,
+    world_tile_loc: UniformLocation,
     lighting: LightingUniforms,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
@@ -126,6 +160,8 @@ pub struct LitMaterial {
     /// Multiplies the shared Blinn-Phong highlight: 1 for authored lit
     /// surfaces, 0 for glTF models (see `LitMaterial::model`).
     specular_scale: f32,
+    /// Metres per repeat of a world box-mapped texture; 0 reads mesh UVs.
+    world_tile: f32,
 }
 
 use crate::shader::Shader;
@@ -143,8 +179,13 @@ impl Material for LitMaterial {
                     ctx.shader_version,
                 );
 
-                let fragment_source =
-                    format!("{}\n{}\n{}", FOG_GLSL, lighting_glsl(), FRAGMENT_SHADER_SOURCE);
+                let fragment_source = format!(
+                    "{}\n{}\n{}\n{}",
+                    FOG_GLSL,
+                    lighting_glsl(),
+                    WORLD_TEXTURE_GLSL,
+                    FRAGMENT_SHADER_SOURCE
+                );
                 let fragment_shader =
                     Shader::build(ctx.gl, ShaderType::Fragment, &fragment_source, ctx.shader_version);
 
@@ -165,6 +206,7 @@ impl Material for LitMaterial {
                     normal_map_loc: shader.get_uniform_location(ctx.gl, "normalMap"),
                     use_normal_map_loc: shader.get_uniform_location(ctx.gl, "useNormalMap"),
                     specular_scale_loc: shader.get_uniform_location(ctx.gl, "specularScale"),
+                    world_tile_loc: shader.get_uniform_location(ctx.gl, "worldTile"),
                     lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
                     output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
@@ -222,6 +264,7 @@ impl Material for LitMaterial {
                     self.use_normal_map as i32,
                 );
                 p.set_uniform_1f(ctx.gl, &uniforms.specular_scale_loc, self.specular_scale);
+                p.set_uniform_1f(ctx.gl, &uniforms.world_tile_loc, self.world_tile);
 
                 LightingUniforms::bind_shadow_map(ctx);
                 // Per draw: a translucent subtree switches the alpha mode.
@@ -237,16 +280,19 @@ impl LitMaterial {
     /// `use_texture` expects an albedo texture bound to unit 0 (the caller binds
     /// it); the sampled texel is multiplied by `color` as a tint/albedo.
     /// `use_normal_map` expects a tangent-space normal map bound to unit 2.
+    /// `world_tile` > 0 box-maps the texture by world position instead.
     pub fn create(
         color: Vector4<f32>,
         use_texture: bool,
         use_normal_map: bool,
+        world_tile: f32,
     ) -> Box<dyn Material> {
         Box::new(LitMaterial {
             color,
             use_texture,
             use_normal_map,
             specular_scale: 1.0,
+            world_tile,
         })
     }
 
@@ -261,6 +307,7 @@ impl LitMaterial {
             use_texture: true,
             use_normal_map: false,
             specular_scale: 0.0,
+            world_tile: 0.0,
         })
     }
 }
