@@ -303,17 +303,16 @@ impl Dispatch for Pool {
 }
 
 /// Workers beside the render and sim threads, from the cores this process
-/// may run on. Quest leaves four to the render, sim and XR runtime threads
-/// and the system, at most two workers (Quest 3's six cores: two); desktop
-/// leaves two, at most four. `FUNCTOR_JOB_WORKERS=n` overrides it, for
-/// benchmarks.
+/// may run on. A Quest app gets three (Quest 3: cores 3–5 of six), so leave
+/// one to the frame, at most two workers; desktop leaves two, at most four.
+/// `FUNCTOR_JOB_WORKERS=n` overrides it, for benchmarks.
 fn workers() -> usize {
     if let Some(n) = std::env::var("FUNCTOR_JOB_WORKERS").ok().and_then(|n| n.parse().ok()) {
         return usize::clamp(n, 1, 16);
     }
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     if cfg!(target_os = "android") {
-        cores.saturating_sub(4).clamp(1, 2)
+        cores.saturating_sub(1).clamp(1, 2)
     } else {
         cores.saturating_sub(2).clamp(1, 4)
     }
