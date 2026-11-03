@@ -31,7 +31,7 @@ const CENTRE = 0.92; // the capsule's centre above its feet
 const COURT = 8;
 const BRIDGE_W = 14;
 const GALLERY_S = 12;
-const MALL_TOWN = 6;
+const MALL_TOWN = 7;
 const MAX_DRAWS = 80;
 
 // Another session on the port would take this run's input: refuse it.
