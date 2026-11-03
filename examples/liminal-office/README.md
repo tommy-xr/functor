@@ -16,7 +16,7 @@ functor -d examples/liminal-office run native --emulate-xr   # arrows drive the 
 functor -d examples/liminal-office run vr
 functor -d examples/liminal-office test     # layout, stairs, cells, partition, provenance, island; no GPU
 npm run test:liminal-office                 # routes, stairs, wall push, hours, cells, island, goldens
-npm run test:liminal-mall                   # the mall: lot to gallery by the escalator, draws, goldens
+npm run test:liminal-mall                   # the mall: lot to gallery, shop to service exit, draws, goldens
 ```
 
 | Input | Action |
@@ -427,13 +427,33 @@ derived by `mallInterior.fun` and `mall.fun`): a two-level concourse 76 ×
 pyramid skylight 13 m up. 5 m galleries run along the court's long sides
 and 4 m bridges across its ends. A food court (fixed tables, drum pendants)
 fills the west end; the east end is an anchor store's blank wall with a dark
-entrance. Four shops (8 × 10 m) are open; every other shopfront is a shutter.
+entrance. Eight shops (8 × 10 m) are open along the north side, four a
+level; every other shopfront is a shutter. Behind each open shop, through an
+"EMPLOYEES ONLY" door, is a stockroom (steel shelving, cartons, a mop sink),
+and behind the stockrooms a 76 m service corridor on each level: 2.2 m wide,
+low ceiling, two panels lit in three, a shut door behind every shuttered
+bay, and an EXIT at the lower one's east end.
+
+- **Shops**: three fit-outs, empty clothing racks and a counter, a dead
+  electronics display (unlit dark screens), and stacked cartons under
+  "CLOSING" banners. Each is baked once, in its first bay; every other bay
+  with that fit-out draws the same shop and stockroom models moved (the
+  towers' trick), so the bake holds three shops whatever the bay count. The
+  fit-outs are baked geometry, not unbaked props: they get the bake's
+  occlusion and contact shadows for no draws, since they share the cell's
+  atlas groups. Bake-only sheets close each home's shopfront and corridor
+  door, so a shop bakes in its own light alone and every copy matches.
 
 - **Cells**: the court's void is one box, floor to apex; round it, four
   strips on each level (the lower concourse, the galleries). Open-plan
   neighbours share a portal over their whole face. The balustrades (1.1 m,
-  opaque) are geometry inside the galleries. 19 cells and 3 collar strips,
-  76 portals.
+  opaque) are geometry inside the galleries. Each open shop is two cells,
+  its stockroom's doors offset so the corridor never sees the concourse;
+  the corridors are one box a level. 34 cells (the yard outside the exit
+  among them) and 2 more collar strips, 118 portals. A walk stops at a
+  portal under 6% of the view both ways (`Cells.withMinPortal`), so far
+  shops drop out; an unlit dark stand-in 5 cm behind each shop's and
+  stockroom's surfaces fills a dropped one's opening (1 draw).
 - **Escalators**: a stopped pair, 23 risers at 30°, from the court's floor
   west onto the west bridge, inside the void: cleated treads, balustrade
   panels, solid sides; lane 2 is barred. Collision: a ramp per lane through
@@ -443,7 +463,8 @@ entrance. Four shops (8 × 10 m) are open; every other shopfront is a shutter.
   `mallInterior.fun` gives the baker the mesh and its lights at half scale
   (light falloff is relative to range, so it lights the same; ambient
   occlusion reaches 2 m) and doubles the baked positions at load. 1024²,
-  both hours 8.4 MB. By day, a grid of sky spots under the skylight aims
+  both hours 8.4 MB, the three shops and the corridors included (59% of the
+  atlas). By day, a grid of sky spots under the skylight aims
   down, and the entrance gets the kit's sky and ground patches; no sun, so
   any yaw holds. The skylight's panels are unlit and not baked: sky-blue by
   day, navy by night.
@@ -457,9 +478,11 @@ entrance. Four shops (8 × 10 m) are open; every other shopfront is a shutter.
 
 Views in the mall: `1` the lot, `2` the court, `3` the south gallery, `4` the
 escalators' foot, `5` down into the court from the north gallery, `6` the
-food court, `7` an upstairs shop, `8` the anchor store's end, `9` the far
-lot, `0` the escalators' head. `node e2e/liminal-mall.mjs` walks from the lot
-up the escalator and along the gallery, and counts the court's draws.
+food court, `7` into the electronics shop, `8` down the service corridor,
+`9` the far lot, `0` the escalators' head. `node e2e/liminal-mall.mjs` walks
+from the lot up the escalator and along the gallery, then through a shop,
+its stockroom and the service corridor out of another shop and the exit,
+and counts the draws (the concourse's from the corridor: none).
 
 ## Rebaking
 

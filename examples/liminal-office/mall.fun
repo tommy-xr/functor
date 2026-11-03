@@ -52,7 +52,10 @@ let portalList = List.flatten([
   [South, North] |> List.concatMap((ns) => [West, East] |> List.concatMap((we) =>
     Portals.both(Portals.stripId(layout, ns), Portals.stripId(layout, we), Portals.corner(layout, collarTop, ns, we)))),
 ])
-let level = Cells.make({ cells: cellList, portals: portalList })
+// A walk stops at a portal under `minPortal` of the view both ways: a shop
+// seen far down the concourse, a stockroom door through a far shopfront.
+let minPortal = 0.06
+let level = Cells.make({ cells: cellList, portals: portalList }) |> Cells.withMinPortal(minPortal)
 
 // ---- The skylight ------------------------------------------------------------------
 
@@ -97,13 +100,39 @@ let roofGlass: Exterior.Grid = {
 
 // ---- Drawing -----------------------------------------------------------------------
 
-// A cell model drawn in its cell. (`roomOf`'s body is the e2e's draw-count
+// Where a cell model draws: in `cell`, moved by `at`. `part` is the mesh's
+// cell it was cut from: a bay's home cell, drawn again in every bay with its
+// fit-out (the same `Model.static`, so one GPU copy, as the towers' floors).
+// The bake's blockers, past the cells, don't draw.
+type Placed = { model: Model.t, part: float, cell: float, at: Vec3.t }
+let placedOf = (b: Provenance.Baked): List<Placed> =>
+  b.models |> List.filter((p) => p.cell < List.length(cells)) |> List.concatMap((p) =>
+    match MallInterior.bayOf(p.cell) with
+    | Option.Some(home) =>
+      List.range(List.length(bays)) |> List.filter((k) => MallInterior.homeOf(k) == home) |> List.map((k) =>
+        { model: p.model, part: p.cell, cell: p.cell + 2.0 * (k - home), at: MallInterior.offsetOf(k) })
+    | Option.None => [{ model: p.model, part: p.cell, cell: p.cell, at: v(0.0, 0.0, 0.0) }])
+// A placed model in its cell. (`roomOf`'s body is the e2e's draw-count
 // seam, as archetypes.fun's.)
-let roomOf = (p: Building.CellModel): Scene.t => Scene.modelOf(p.model) |> Scene.inCells([p.cell])
-// The cell models and the skylight by night, and under the day bake.
-let nightOf = (b: Provenance.Baked): List<Scene.t> => List.flatten([b.models |> List.map(roomOf), [skylightNight]])
+let roomOf = (p: Placed): Scene.t => Scene.modelOf(p.model) |> Scene.translate(p.at) |> Scene.inCells([p.cell])
+// Stand-ins for the shops and stockrooms a walk cuts (`minPortal`): their
+// walls, floor and ceiling 5 cm behind the real ones, one unlit dark mesh. A
+// room that draws hides its stand-in; through a cut room's opening it shows
+// instead of the clear colour.
+let standInPaint = Building.paint(46.0, 43.0, 38.0)
+let standInPalette: MallInterior.Palette =
+  { groups: [Building.material(standInPaint, 1.0, true, Building.solid(standInPaint))], slots: [MallInterior.tiledSlot(0.0, 1.0)] }
+let standInPolys = List.range(List.length(cells)) |> List.filter((i) => cellAt(i).kind == Shop || cellAt(i).kind == Stock) |> List.concatMap((i) =>
+  let r = MallInterior.inner(i) in
+  List.flatten([[MallInterior.floorAt(0.0, r.x0, r.z0, r.x1, r.z1, 0.0), MallInterior.ceilingAt(0.0, r.x0, r.z0, r.x1, r.z1, MallInterior.ceilingOf(i))], MallInterior.wallsOf(i)])
+    |> List.map((p) => { mat: 0.0, pts: p.pts |> List.map((q) => q |> Vec3.sub(Vec3.scale(0.05, MallInterior.normalOf(p))) |> Vec3.add(v(0.0, baseOf(i), 0.0))) }))
+let standIn = Scene.modelOf(Model.static(MallInterior.meshOf(standInPalette, 1.0, standInPolys, MallInterior.spansOf(standInPalette, 0.0, standInPolys))))
+  |> Scene.inCells(List.range(List.length(cells)) |> List.filter(MallInterior.isInside))
+// The cell models, the skylight and the stand-ins by night, and under the
+// day bake.
+let nightOf = (b: Provenance.Baked): List<Scene.t> => List.flatten([placedOf(b) |> List.map(roomOf), [skylightNight, standIn]])
 let dayOf = (b: Provenance.Baked): List<Scene.t> =>
-  List.flatten([b.models |> List.map((p) => Provenance.underDay(b.day, roomOf(p))), [skylightDay]])
+  List.flatten([placedOf(b) |> List.map((p) => Provenance.underDay(b.day, roomOf(p))), [skylightDay, standIn]])
 
 // ---- The street side and the lot -------------------------------------------------
 
@@ -209,21 +238,23 @@ let escalatorBlocks = List.flatten([
   MallInterior.barrierBoxes(escalator, steps) |> List.indexedMap((k, b) => fromBox($"barrier-{k}", 0.0, b)),
 ])
 
-// Furniture: tables, the shops' counters and plinths, the fountain, the
-// galleries' balustrades and planters.
+// Furniture: tables, the shops' fit-outs and the stockrooms' shelving, the
+// fountain, the galleries' balustrades and planters.
 let furnitureBlocks = List.flatten([
   tables |> List.indexedMap((k, t) => let top = MallInterior.tableBox(t) in fromBox($"table-{k}", 0.0, { top with y0: 0.0 })),
   [fromBox("fountain", 0.0, MallInterior.box3(basin.x0, 0.0, basin.z0, basin.x1, MallInterior.rimHeight, basin.z1))],
   List.range(List.length(cells)) |> List.concatMap((i) => List.flatten([
-    if cellAt(i).kind == Shop then MallInterior.shopBoxes(i) |> List.indexedMap((k, b) => fromBox($"shop-{i}-{k}", baseOf(i), b)) else [],
+    MallInterior.itemsOf(i) |> List.concatMap((t) => t.solid) |> List.indexedMap((k, b) => fromBox($"item-{i}-{k}", baseOf(i), b)),
     MallInterior.balustradeBoxes(i) |> List.indexedMap((k, b) => fromBox($"balustrade-{i}-{k}", baseOf(i), b)),
     MallInterior.planterBoxes(i) |> List.indexedMap((k, b) => fromBox($"planter-{i}-{k}", baseOf(i), b)),
   ])),
 ])
 
+// Every cell's faces, a bay's own though the mesh has only its home's.
+let faces = List.range(List.length(cells)) |> List.concatMap(MallInterior.facesOf)
 // Floors: up-facing faces level with a storey's floor (thresholds, plates).
-let floorPolys = MallInterior.interior.cellParts |> List.flatten |> List.filter((p) =>
-  Vec3.y(MallInterior.normalOf(p)) > 0.99 && (p.mat == MallInterior.tile || p.mat == MallInterior.trim)
+let floorPolys = faces |> List.filter((p) =>
+  Vec3.y(MallInterior.normalOf(p)) > 0.99 && (p.mat == MallInterior.tile || p.mat == MallInterior.trim || p.mat == MallInterior.concrete)
     && (Building.near(Vec3.y(MallInterior.pt(0.0, p)), 0.0) || Building.near(Vec3.y(MallInterior.pt(0.0, p)), storey)))
 let trimeshOf = (polys: List<MallInterior.Poly>): Physics.shape =>
   Physics.trimesh({ positions: Bytes.fromF32le(polys |> List.concatMap((p) => p.pts |> List.concatMap((q) => MallInterior.xyz(1.0, q)))),

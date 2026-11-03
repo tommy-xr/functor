@@ -1,0 +1,7 @@
+# P (the mall) at midnight, then view 8: down the service corridor behind
+# the north shops to its exit; the liminal-office-mall-service golden
+# captures frame 30.
+8 p down
+10 p up
+16 8 down
+18 8 up

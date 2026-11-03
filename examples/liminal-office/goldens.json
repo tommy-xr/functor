@@ -276,5 +276,14 @@
     ],
     "inputScript": "mall-lot-dusk.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-mall-service",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "mall-service.script",
+    "captureAtFrame": 30
   }
 ]

@@ -162,8 +162,8 @@ let cinemaViews = [
 // The mall's views (P): 1 the lot, facing the entrance; 2 the court from
 // the lower concourse; 3 along the south gallery; 4 the escalators from
 // their foot; 5 down into the court from the north gallery; 6 the food
-// court; 7 into an upstairs shop; 8 the anchor store's end; 9 the far lot;
-// 0 the escalators' head, over the court.
+// court; 7 into the dead electronics shop; 8 down the service corridor to
+// its exit; 9 the far lot; 0 the escalators' head, over the court.
 let mallViews = [
   { copy: 0.0, x: 41.0, level: 0.0, z: -26.0, yaw: 0.0, pitch: 0.08 },
   { copy: 0.0, x: 50.0, level: 0.0, z: 12.6, yaw: -0.93, pitch: 0.3 },
@@ -171,8 +171,8 @@ let mallViews = [
   { copy: 0.0, x: 43.5, level: 0.0, z: 16.4, yaw: -1.5708, pitch: 0.28 },
   { copy: 0.0, x: 39.0, level: 1.0, z: 27.6, yaw: 3.1416, pitch: -0.5 },
   { copy: 0.0, x: 19.0, level: 0.0, z: 21.0, yaw: -1.5708, pitch: 0.0 },
-  { copy: 0.0, x: 33.0, level: 1.0, z: 11.6, yaw: 3.1416, pitch: -0.05 },
-  { copy: 0.0, x: 60.0, level: 0.0, z: 21.0, yaw: 1.5708, pitch: 0.05 },
+  { copy: 0.0, x: 33.0, level: 0.0, z: 30.0, yaw: 0.0, pitch: 0.0 },
+  { copy: 0.0, x: 2.0, level: 0.0, z: 46.8, yaw: 1.5708, pitch: 0.0 },
   { copy: 0.0, x: 8.0, level: 0.0, z: -52.0, yaw: 0.55, pitch: 0.06 },
   { copy: 0.0, x: 28.5, level: 1.0, z: 16.4, yaw: 1.5708, pitch: -0.2 },
 ]

@@ -10,7 +10,14 @@
 //      (one per material group) stay at most 80. Variants of mall.fun's
 //      `roomOf` draw each cell model 0×, once, or once per group
 //      (liminal-office.mjs's method);
-//   4. the mall goldens render byte-identically across runs.
+//   4. the shops: from the food court into a shop, through its stockroom's
+//      door, along the service corridor, back out through another bay's
+//      stockroom and shop into the east hall; then down the corridor and out
+//      of its exit into the yard; upstairs, through a reused bay into the
+//      upper corridor. Nothing snags, and each leg ends in the cell it should;
+//   5. from either service corridor the concourse never draws; the views into
+//      a shop and down the corridor stay at most 80 draws too;
+//   6. the mall goldens render byte-identically across runs.
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/liminal-mall.mjs
@@ -29,13 +36,21 @@ const STOREY = 4.5;
 const CENTRE = 0.92; // the capsule's centre above its feet
 // mallLayout.fun's cells.
 const COURT = 8;
-const BRIDGE_W = 14;
-const GALLERY_S = 12;
+const BRIDGE_W = 12;
+const GALLERY_S = 10;
+const GALLERY_N = 11;
+const WEST_HALL = 2;
+const EAST_HALL = 7;
+const SERVICE_0 = 15;
+const YARD = 17;
+// Bay k's shop and stockroom (mallLayout.fun's `shopOf`, `stockOf`).
+const shopOf = (k) => 18 + 2 * k;
+const stockOf = (k) => 19 + 2 * k;
 const MALL_TOWN = 7;
 const MAX_DRAWS = 80;
 
 // Another session on the port would take this run's input: refuse it.
-const PORT = 8661;
+const PORT = 8677;
 const isFree = (port) => new Promise((resolve) => {
   const s = createServer().once("error", () => resolve(false)).once("listening", () => s.close(() => resolve(true)));
   s.listen(port, "127.0.0.1");
@@ -175,10 +190,12 @@ async function walk(game) {
 // Static draws from `/state.cull` (tested − culled), as liminal-office.mjs:
 // variants of mall.fun's `roomOf` draw each cell model 0×, once, or once per
 // material group.
-const ROOM_OF = "Scene.modelOf(p.model) |> Scene.inCells([p.cell])";
-const GROUPS = "List.length(MallInterior.spansOf(MallInterior.palette, 0.0, List.nth(p.cell, MallInterior.interior.cellParts) |> Option.defaultValue([])))";
-const times = (n) => `Scene.group(List.range(${n}) |> List.map((k) => Scene.modelOf(p.model))) |> Scene.inCells([p.cell])`;
+const ROOM_OF = "Scene.modelOf(p.model) |> Scene.translate(p.at) |> Scene.inCells([p.cell])";
+const GROUPS = "List.length(MallInterior.spansOf(MallInterior.palette, 0.0, List.nth(p.part, MallInterior.interior.cellParts) |> Option.defaultValue([])))";
+const times = (n) => `Scene.group(List.range(${n}) |> List.map((k) => Scene.modelOf(p.model))) |> Scene.translate(p.at) |> Scene.inCells([p.cell])`;
 const COURT_ONLY = `(if p.cell == ${COURT}.0 then ${ROOM_OF} else Scene.group([]))`;
+// The concourse: the entrance, and each level's halls, strips and the void.
+const CONCOURSE_ONLY = `(if p.cell >= 1.0 && p.cell <= 14.0 then ${ROOM_OF} else Scene.group([]))`;
 
 async function staticDraws(game, label) {
   const project = await (await fetch(`${game.base}/project`)).json();
@@ -202,9 +219,52 @@ async function staticDraws(game, label) {
   };
   const none = await tested(times("0.0"));
   const court = await tested(COURT_ONLY);
+  const concourse = await tested(CONCOURSE_ONLY);
   const groups = await tested(times(GROUPS));
   const once = await tested(ROOM_OF);
-  return { label, models: once.live - none.live, draws: groups.live - none.live, court: court.live - none.live, hidden: once.hidden, visible: once.visible };
+  return { label, models: once.live - none.live, draws: groups.live - none.live, court: court.live - none.live,
+           concourse: concourse.live - none.live, hidden: once.hidden, visible: once.visible };
+}
+
+// The food court → shop 0 → its stockroom → the service corridor → bay 3's
+// stockroom → its shop (bay 0's models, moved) → the east hall; then the
+// corridor's exit into the yard; then upstairs, from the north gallery
+// through bay 6 (bay 0's models, a storey up) into the upper corridor. Each
+// leg checks the cell it ends in.
+async function shopWalk(game) {
+  const snags = [];
+  const go = async (x, z, label, cell, level = 0) => {
+    const m = await walkToPoint(game, [x, z]);
+    if (Math.hypot(m.at.x - x, m.at.z - z) > 0.1) snags.push(`${label} (stopped at ${m.at.x.toFixed(2)}, ${m.at.y.toFixed(2)}, ${m.at.z.toFixed(2)})`);
+    if (cell !== undefined) check(m.cell === cell && Math.abs(m.at.y - (level * STOREY + CENTRE)) < 0.05, `${label}: in cell ${cell} (cell ${m.cell}, y ${m.at.y.toFixed(3)})`);
+    return m;
+  };
+  await game.view(6);
+  await go(13, 30, "the west hall, before shop 0", WEST_HALL);
+  await go(13, 36, "into shop 0 (racks)", shopOf(0));
+  await go(13, 39.4, "shop 0's back");
+  await go(10.4, 41.4, "shop 0's stockroom door");
+  await go(10.4, 42.8, "through it", stockOf(0));
+  await go(15.6, 44.3, "across the stockroom");
+  await go(15.6, 46.8, "out into the service corridor", SERVICE_0);
+  await go(72.6, 46.8, "down the corridor to bay 3's door", SERVICE_0);
+  await go(72.6, 44.3, "into bay 3's stockroom", stockOf(3));
+  await go(67.4, 42.8, "across it");
+  await go(67.4, 41.4, "into bay 3's shop", shopOf(3));
+  await go(70, 38, "its aisle");
+  await go(70, 31, "out of its shopfront into the east hall", EAST_HALL);
+  await game.view(8);
+  await go(75.4, 46.8, "the corridor's east end", SERVICE_0);
+  await go(79, 46.8, "out of the exit into the yard", YARD);
+  await game.view(5);
+  await go(41, 29.2, "the north gallery, before bay 6", GALLERY_N, 1);
+  await go(41, 36, "into bay 6's shop (racks, a storey up)", shopOf(6), 1);
+  await go(41, 39.2, "its back", undefined);
+  await go(38.4, 41.3, "its stockroom door", undefined);
+  await go(38.4, 43.0, "through it", stockOf(6), 1);
+  await go(43.6, 44.3, "across the stockroom", undefined);
+  await go(43.6, 46.8, "out into the upper service corridor", SERVICE_0 + 1, 1);
+  check(snags.length === 0,`no snag from the food court through the shops and corridor to the exit${snags.length ? `: ${snags.join("; ")}` : ""}`);
 }
 
 // Render a golden the way runtime/functor-runtime-desktop/tests/golden.rs does.
@@ -248,6 +308,19 @@ try {
   rows.push(await staticDraws(game, "down into the court from the north gallery (view 5)"));
   await game.view(4);
   rows.push(await staticDraws(game, "the escalators' foot (view 4)"));
+  await game.view(7);
+  rows.push(await staticDraws(game, "into the electronics shop (view 7)"));
+  // Down the service corridor; at a stockroom's door, facing it; back west.
+  const corridor = [];
+  await game.view(8);
+  corridor.push(await staticDraws(game, "down the service corridor (view 8)"));
+  await walkToPoint(game, [15.6, 46.6]);
+  await game.face(Math.PI, 0);
+  corridor.push(await staticDraws(game, "the corridor, facing shop 0's stockroom door"));
+  await game.face(-Math.PI / 2, 0);
+  corridor.push(await staticDraws(game, "the corridor, looking west"));
+  for (const r of corridor) check(r.concourse === 0, `${r.label}: the concourse doesn't draw (${r.concourse} concourse draws)`);
+  rows.push(...corridor);
   for (const r of rows) {
     check(r.models > 0 && r.draws >= r.models && r.draws <= MAX_DRAWS,
       `${r.label}: ${r.models} cell models, ${r.draws} static draws (at most ${MAX_DRAWS}), ${r.hidden} hidden`);
@@ -256,7 +329,18 @@ try {
   m = await game.model();
   check(m.uncovered === 0, `no fallback walks while measuring (uncovered ${m.uncovered})`);
 
-  for (const name of ["court-day", "gallery", "escalator", "lot-dusk"].map((n) => `liminal-office-mall-${n}`)) {
+  await shopWalk(game);
+  m = await game.model();
+  check(m.uncovered === 0, `the eye never left the mall's cells through the shops (uncovered ${m.uncovered})`);
+  // The walk ends in the upper corridor: west down it, and back east.
+  for (const [yaw, label] of [[-Math.PI / 2, "west"], [Math.PI / 2, "east"]]) {
+    await game.face(yaw, 0);
+    const r = await staticDraws(game, `the upper corridor, looking ${label}`);
+    check(r.concourse === 0 && r.draws <= MAX_DRAWS, `${r.label}: the concourse doesn't draw (${r.concourse} concourse draws, ${r.draws} static draws)`);
+    console.log(`draws: ${JSON.stringify(r)}`);
+  }
+
+  for (const name of ["court-day", "gallery", "escalator", "lot-dusk", "service"].map((n) => `liminal-office-mall-${n}`)) {
     check(golden(name).equals(golden(name)), `${name}: byte-identical across runs`);
   }
 } catch (e) {

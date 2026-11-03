@@ -1,7 +1,8 @@
 // The mall's baked interior, from mallLayout.fun: every cell's surfaces
 // (one mesh, cut into one model per cell at load, as building.fun's), its
 // own materials, and the night and day bake jobs. Faces are polygons, not
-// only quads: the escalator's sides and the pendants need triangles.
+// only quads: the escalator's sides and the pendants need triangles. Of the
+// shops, only each fit-out's first bay is in the mesh (`homeOf`).
 // Editing this file makes the mall's committed bake stale: rebake (README).
 //
 // The bake runs at the kit's 12 texels/m on the mesh at HALF scale, lights
@@ -32,6 +33,15 @@ let steelPaint = paint(128.0, 130.0, 132.0)
 let enamelPaint = paint(150.0, 192.0, 172.0)
 let darkPaint = paint(8.0, 8.0, 10.0)
 let drumPaint = paint(255.0, 214.0, 150.0)
+let rackPaint = paint(176.0, 178.0, 184.0)
+let cartonPaint = paint(168.0, 126.0, 80.0)
+let concretePaint = paint(146.0, 144.0, 138.0)
+let servicePaint = paint(184.0, 190.0, 172.0)
+let paperPaint = paint(236.0, 232.0, 220.0)
+let redPaint = paint(190.0, 36.0, 36.0)
+let screenPaint = paint(14.0, 16.0, 22.0)
+let exitPaint = paint(70.0, 205.0, 125.0)
+let exitDark = paint(20.0, 48.0, 32.0)
 
 // The faces' materials. Each draws in one of the palette's groups (one
 // draw per group per cell): the tiled floor, ceiling and treads, and two
@@ -51,6 +61,42 @@ let tread = 10.0
 let enamel = 11.0
 let dark = 12.0
 let drum = 13.0
+let rack = 14.0
+let cardboard = 15.0
+let concrete = 16.0
+let serviceWall = 17.0
+let closing = 18.0
+let staffSign = 19.0
+let screen = 20.0
+let exitSign = 21.0
+
+// Sign lettering: 3 × 5 texel glyphs, each row's bits left to right.
+let glyphOf = (c: string): List<float> =>
+  match c with
+  | "C" => [7.0, 4.0, 4.0, 4.0, 7.0]
+  | "E" => [7.0, 4.0, 7.0, 4.0, 7.0]
+  | "G" => [7.0, 4.0, 5.0, 5.0, 7.0]
+  | "I" => [7.0, 2.0, 2.0, 2.0, 7.0]
+  | "L" => [4.0, 4.0, 4.0, 4.0, 7.0]
+  | "M" => [5.0, 7.0, 7.0, 5.0, 5.0]
+  | "N" => [6.0, 5.0, 5.0, 5.0, 5.0]
+  | "O" => [7.0, 5.0, 5.0, 5.0, 7.0]
+  | "P" => [7.0, 5.0, 7.0, 4.0, 4.0]
+  | "S" => [7.0, 4.0, 7.0, 1.0, 7.0]
+  | "T" => [7.0, 2.0, 2.0, 2.0, 2.0]
+  | "X" => [5.0, 5.0, 2.0, 5.0, 5.0]
+  | "Y" => [5.0, 5.0, 2.0, 2.0, 2.0]
+  | _ => [0.0, 0.0, 0.0, 0.0, 0.0]
+// Whether texel (x, y) is ink in `text` set from (x0, y0), a glyph every 4.
+let inText = (text: string, x0: float, y0: float, x: float, y: float): bool =>
+  let col = x - x0 in
+  let row = y - y0 in
+  let k = Math.floor(col / 4.0) in
+  let bit = 2.0 - (col - 4.0 * k) in
+  if col < 0.0 || row < 0.0 || row > 4.0 || bit < 0.0 || k >= Text.length(text) then false
+  else
+    let bits = List.nth(k, Text.chars(text)) |> Option.map(glyphOf) |> Option.defaultValue([]) in
+    Math.mod(Math.floor((List.nth(row, bits) |> Option.defaultValue(0.0)) / (if bit == 2.0 then 4.0 else if bit == 1.0 then 2.0 else 1.0)), 2.0) == 1.0
 
 // An atlas: 32-texel blocks in a 4 × 4 grid; `block` paints block (bx, by)
 // at (x, y) within it, each 0..31.
@@ -62,6 +108,17 @@ let litAtlas = atlasOf((bx, by, x, y) =>
   // A roller shutter's slats, and its bottom bar.
   else if by == 0.0 && bx == 3.0 then (if y > 28.0 then trimPaint else Building.shade(if Math.mod(Math.floor(y / 2.0), 2.0) == 0.0 then 0.82 else 1.0, shutterPaint))
   else if by == 1.0 && bx == 0.0 then Building.shade(1.0 + 0.6 * (Building.noise(x + 32.0 * y) - 0.5), leafPaint)
+  else if by == 1.0 && bx == 1.0 then rackPaint
+  // Kraft board with a strip of tape across it.
+  else if by == 1.0 && bx == 2.0 then Building.shade(1.0 + 0.12 * (Building.noise(x + 32.0 * y) - 0.5), if x > 13.0 && x < 18.0 then Building.shade(1.15, cartonPaint) else cartonPaint)
+  else if by == 1.0 && bx == 3.0 then concretePaint
+  else if by == 2.0 && bx == 0.0 then servicePaint
+  // A paper banner: CLOSING in red between red rules, rows 12 to 20.
+  else if by == 2.0 && bx == 1.0 then (if y == 12.0 || y == 20.0 || inText("CLOSING", 2.0, 14.0, x, y) then redPaint else paperPaint)
+  // A red plate, EMPLOYEES over ONLY, 48 × 16 texels across two blocks.
+  else if by == 2.0 && bx >= 2.0 then
+    let px = x + 32.0 * (bx - 2.0) in
+    (if inText("EMPLOYEES", 6.0, 3.0, px, y) || inText("ONLY", 16.0, 9.0, px, y) then paperPaint else redPaint)
   else wallPaint)
 let glowAtlas = atlasOf((bx, by, x, y) =>
   // A lit lens in a dark frame.
@@ -70,6 +127,10 @@ let glowAtlas = atlasOf((bx, by, x, y) =>
   else if by == 0.0 && bx == 2.0 then tealPaint
   else if by == 0.0 && bx == 3.0 then waterPaint
   else if by == 1.0 && bx == 1.0 then drumPaint
+  // A dead screen: near black, a faint sheen across it.
+  else if by == 1.0 && bx == 2.0 then (if x - y > 3.0 && x - y < 10.0 then Building.shade(1.8, screenPaint) else screenPaint)
+  // EXIT in green on dark green, its letters rows 13 to 17.
+  else if by == 1.0 && bx == 3.0 then (if inText("EXIT", 9.0, 13.0, x, y) then exitPaint else exitDark)
   else darkPaint)
 
 // Groups, in draw order.
@@ -98,6 +159,9 @@ let blockSlot = (group: float, bx: float, by: float, textured: bool): Slot =>
   let inset = if textured then 1.0 else 16.0 in
   { group: group, tile: 0.0, u0: (32.0 * bx + inset) / 128.0, v0: (32.0 * by + inset) / 128.0,
     u1: (32.0 * bx + 32.0 - inset) / 128.0, v1: (32.0 * by + 32.0 - inset) / 128.0 }
+// The atlas texels [x0, x1] × [y0, y1], stretched: a sign.
+let rectSlot = (group: float, x0: float, y0: float, x1: float, y1: float): Slot =>
+  { group: group, tile: 0.0, u0: x0 / 128.0, v0: y0 / 128.0, u1: x1 / 128.0, v1: y1 / 128.0 }
 let palette: Palette = { groups: materials, slots: [
   tiledSlot(tileGroup, 1.2),
   blockSlot(litGroup, 0.0, 0.0, false),
@@ -113,6 +177,14 @@ let palette: Palette = { groups: materials, slots: [
   blockSlot(litGroup, 2.0, 0.0, false),
   blockSlot(glowGroup, 0.0, 1.0, false),
   blockSlot(glowGroup, 1.0, 1.0, false),
+  blockSlot(litGroup, 1.0, 1.0, false),
+  blockSlot(litGroup, 2.0, 1.0, true),
+  blockSlot(litGroup, 3.0, 1.0, false),
+  blockSlot(litGroup, 0.0, 2.0, false),
+  rectSlot(litGroup, 32.5, 75.0, 62.5, 85.0),
+  rectSlot(litGroup, 64.0, 64.0, 112.0, 80.0),
+  blockSlot(glowGroup, 2.0, 1.0, true),
+  rectSlot(glowGroup, 101.0, 42.0, 123.0, 53.0),
 ] }
 
 let materialOf = (mats: List<Building.Material>, i: float): Building.Material =>
@@ -165,6 +237,11 @@ let cellAt = (i: float): Cell =>
 let rectOf = (i: float): Rect => cellAt(i).rect
 let baseOf = (i: float): float => cellAt(i).level * storey
 let isInside = (i: float): bool => cellAt(i).kind != Lot
+// Behind the shops: low ceilings, painted walls, a concrete floor.
+let isBack = (i: float): bool => cellAt(i).kind == Stock || cellAt(i).kind == Service
+let ceilingOf = (i: float): float => if isBack(i) then lowCeiling else ceiling
+let floorMatOf = (i: float): float => if isBack(i) then concrete else tile
+let wallMatOf = (i: float): float => if isBack(i) then serviceWall else wall
 
 // Cell `i`'s open-plan neighbours, and whether its side `s` is open: the
 // void's every side, and a side shared with a neighbour.
@@ -214,7 +291,7 @@ let sides = [South, North, West, East]
 let wallsOf = (i: float): List<Poly> =>
   sides |> List.filter((s) => not isOpen(i, s)) |> List.concatMap((s) =>
     let run = runOf(i, s) in
-    Building.pieces(run.s0, run.s1, ceiling, holesOn(i, s)) |> List.map((p) => onWall(i, s, wall, p.u0, p.u1, p.y0, p.y1, 0.0)))
+    Building.pieces(run.s0, run.s1, ceilingOf(i), holesOn(i, s)) |> List.map((p) => onWall(i, s, wallMatOf(i), p.u0, p.u1, p.y0, p.y1, 0.0)))
 
 // Cell `i`'s half of door `d`'s reveal (building.fun's `doorHalf`).
 let doorHalf = (d: Door, i: float): List<Poly> =>
@@ -228,13 +305,13 @@ let doorHalf = (d: Door, i: float): List<Poly> =>
     // Cell `a` is below the line when the line is its North or East side.
     let below = (i == d.a) == (side == North || side == East) in
     let top = if h.top < ceiling - eps then trim else ceilingMat in
-    let half = if below then Building.revealFaces(side, line - t, line, h, trim, top, tile)
-      else Building.revealFaces(side, line, line + t, h, trim, top, tile) in
+    let half = if below then Building.revealFaces(side, line - t, line, h, trim, top, floorMatOf(i))
+      else Building.revealFaces(side, line, line + t, h, trim, top, floorMatOf(i)) in
     half |> List.map(ofFace)
 
 // A ceiling panel's lens (building.fun's panel); panels that are off are
 // plain ceiling.
-let lensOf = (i: float, p: Panel): Poly => ofFace({ Building.panelFace(layout, rectOf(i), p) with mat: lens })
+let lensOf = (i: float, p: Panel): Poly => ofFace({ Building.panelFace({ layout with ceiling: ceilingOf(i) }, rectOf(i), p) with mat: lens })
 
 // ---- Shopfronts --------------------------------------------------------------------
 
@@ -309,17 +386,237 @@ let drumFaces = (c: Spot): List<Poly> =>
     sidesOf(trim, box3(c.x - 0.02, drumY1, c.z - 0.02, c.x + 0.02, ceiling, c.z + 0.02)),
   ])
 
-// The open shops: a counter along the back wall, two display plinths.
-let shopBoxes = (i: float): List<Box3> =>
+// ---- The shops -----------------------------------------------------------------------
+
+// mallLayout.fun's bay `k`, and the bay a cell is part of.
+let bayAt = (k: float): Bay =>
+  match List.nth(k, bays) with
+  | Option.Some(b) => b
+  | Option.None => Binary.invalid($"no bay {k}")
+let bayOf = (i: float): Option.t<float> =>
+  let k = Math.floor((i - firstBay) / 2.0) in
+  if i >= firstBay && k < List.length(bays) then Option.Some(k) else Option.None
+// The bay whose geometry bay `k` reuses: the first with its fit-out. Only
+// those homes are in the mesh and the bake; every other bay draws its
+// home's models moved by `offsetOf`, so the GPU holds one of each.
+let homeOf = (k: float): float =>
+  List.range(List.length(bays)) |> List.find((j) => bayAt(j).fit == bayAt(k).fit) |> Option.defaultValue(k)
+let offsetOf = (k: float): Vec3.t =>
+  let h = bayAt(homeOf(k)) in
+  v(bayAt(k).at - h.at, (bayAt(k).level - h.level) * storey, 0.0)
+let isEcho = (i: float): bool =>
+  match bayOf(i) with
+  | Option.Some(k) => homeOf(k) != k
+  | Option.None => false
+// Cell `i`'s counterpart in its bay's home; outside the bays, itself.
+let homeCellOf = (i: float): float =>
+  match bayOf(i) with
+  | Option.Some(k) => i + 2.0 * (homeOf(k) - k)
+  | Option.None => i
+
+// Furniture: its faces, and the boxes that block a walk.
+type Item = { faces: List<Poly>, solid: List<Box3> }
+// A box off the floor: all six faces.
+let hung = (mat: float, b: Box3): List<Poly> => List.append(sidesOf(mat, b), [topOf(mat, b), bottomOf(mat, b)])
+let boundsOf = (bs: List<Box3>): Box3 =>
+  let first = List.head(bs) |> Option.defaultValue(box3(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)) in
+  bs |> List.fold((a, b) => box3(Math.min(a.x0, b.x0), Math.min(a.y0, b.y0), Math.min(a.z0, b.z0),
+                                 Math.max(a.x1, b.x1), Math.max(a.y1, b.y1), Math.max(a.z1, b.z1)), first)
+// A carton `w` × `d` × `h` from (x, y, z); `loose` ones block a walk.
+let carton = (x: float, y: float, z: float, w: float, d: float, h: float, loose: bool): Item =>
+  let b = box3(x, y, z, x + w, y + h, z + d) in
+  { faces: standing(cardboard, cardboard, b), solid: if loose then [b] else [] }
+// A chrome T-rack 1.4 m long down z, centred (x, z): a foot and an upright
+// at each end, the bar across them.
+let rackItem = (x: float, z: float): Item =>
+  let ends = [z - 0.7, z + 0.66] in
+  let feet = ends |> List.map((z0) => box3(x - 0.25, 0.0, z0, x + 0.25, 0.03, z0 + 0.04)) in
+  let posts = ends |> List.map((z0) => box3(x - 0.02, 0.03, z0, x + 0.02, 1.4, z0 + 0.04)) in
+  let bar = box3(x - 0.015, 1.4, z - 0.7, x + 0.015, 1.44, z + 0.7) in
+  { faces: List.flatten([feet |> List.concatMap((b) => standing(rack, rack, b)), posts |> List.concatMap((b) => sidesOf(rack, b)), hung(rack, bar)]),
+    solid: [boundsOf(List.append(feet, [bar]))] }
+// A rail along a side wall at `wx` (`dir` into the room), on arms.
+let wallRail = (wx: float, dir: float, z0: float, z1: float): Item =>
+  let x = wx + dir * 0.35 in
+  let span = (a: float, b: float, y0: float, y1: float, za: float, zb: float): Box3 => box3(Math.min(a, b), y0, za, Math.max(a, b), y1, zb) in
+  let bar = span(x, x + dir * 0.03, 1.58, 1.61, z0, z1) in
+  let arms = [z0, (z0 + z1) / 2.0, z1 - 0.03] |> List.map((za) => span(wx + dir * 0.005, x, 1.58, 1.61, za, za + 0.03)) in
+  { faces: List.flatten([hung(rack, bar), arms |> List.concatMap((b) => hung(rack, b))]), solid: [span(wx, x + dir * 0.03, 1.5, 1.65, z0, z1)] }
+// A `w`-square post in each corner of [x0, x1] × [z0, z1], from the floor to `h`.
+let postsIn = (x0: float, z0: float, x1: float, z1: float, w: float, h: float): List<Box3> =>
+  [(x0, z0), (x1 - w, z0), (x0, z1 - w), (x1 - w, z1 - w)] |> List.map((p) => let (x, z) = p in box3(x, 0.0, z, x + w, h, z + w))
+// Steel shelving over `b`: a post at each corner, boards at `levels`.
+let shelvesItem = (b: Box3, levels: List<float>): Item =>
+  let posts = postsIn(b.x0, b.z0, b.x1, b.z1, 0.04, b.y1) in
+  let boards = levels |> List.map((y) => box3(b.x0 + 0.005, y, b.z0 + 0.005, b.x1 - 0.005, y + 0.03, b.z1 - 0.005)) in
+  { faces: List.flatten([posts |> List.concatMap((p) => standing(rack, rack, p)), boards |> List.concatMap((p) => hung(rack, p))]), solid: [b] }
+// A counter, a dead till on it at its east end.
+let counterItem = (x0: float, z0: float, x1: float, z1: float): Item =>
+  let b = box3(x0, 0.0, z0, x1, 1.0, z1) in
+  let zm = (z0 + z1) / 2.0 in
+  { faces: List.append(standing(trim, enamel, b), standing(dark, dark, box3(x1 - 0.6, 1.0, zm - 0.18, x1 - 0.2, 1.22, zm + 0.18))), solid: [b] }
+// A table, its top `h` up on four legs.
+let tableItem = (x0: float, z0: float, x1: float, z1: float, h: float): Item =>
+  let legs = postsIn(x0 + 0.03, z0 + 0.03, x1 - 0.03, z1 - 0.03, 0.04, h - 0.04) in
+  { faces: List.flatten([hung(trim, box3(x0, h - 0.04, z0, x1, h, z1)), legs |> List.concatMap((b) => sidesOf(rack, b))]),
+    solid: [box3(x0, 0.0, z0, x1, h, z1)] }
+// A solid block: a plinth, a low cabinet, a display table.
+let blockItem = (sides: float, top: float, b: Box3): Item => { faces: standing(sides, top, b), solid: [b] }
+let plinthItem = (b: Box3): Item => blockItem(enamel, trim, b)
+
+// A box against cell `i`'s inner wall `s`, `out` deep: [lo, hi] along it.
+let wallBox = (i: float, s: Side, lo: float, hi: float, y0: float, y1: float, out: float): Box3 =>
+  let line = runOf(i, s).line in
+  match s with
+  | South => box3(lo, y0, line, hi, y1, line + out)
+  | North => box3(lo, y0, line - out, hi, y1, line)
+  | West => box3(line, y0, lo, line + out, y1, hi)
+  | East => box3(line - out, y0, lo, line, y1, hi)
+// A dead screen on that wall: its face, and its case's edges.
+let screenOn = (i: float, s: Side, lo: float, hi: float, y0: float, y1: float): List<Poly> =>
+  let b = wallBox(i, s, lo, hi, y0, y1, 0.06) in
+  // `sidesOf`'s faces facing the wall and the room, which these skip.
+  let (back, front) = (match s with
+    | South => (2.0, 3.0)
+    | North => (3.0, 2.0)
+    | West => (0.0, 1.0)
+    | East => (1.0, 0.0)) in
+  List.flatten([
+    [onWall(i, s, screen, lo, hi, y0, y1, 0.06), topOf(trim, b), bottomOf(trim, b)],
+    sidesOf(trim, b) |> List.indexedMap((k, p) => (k, p)) |> List.filter((e) => let (k, p) = e in k != back && k != front)
+      |> List.map((e) => let (k, p) = e in p),
+  ])
+// A monitor on a table at `y`, its dead screen to the shopfront (-z).
+let monitorOn = (x: float, y: float, z: float): List<Poly> =>
+  let b = box3(x - 0.28, y + 0.05, z - 0.02, x + 0.28, y + 0.42, z + 0.02) in
+  List.flatten([
+    sidesOf(trim, b) |> List.indexedMap((k, p) => if k == 2.0 then { p with mat: screen } else p),
+    [topOf(trim, b), bottomOf(trim, b)],
+    standing(trim, trim, box3(x - 0.08, y, z - 0.08, x + 0.08, y + 0.05, z + 0.08)),
+  ])
+
+// A shop's inside: [x0, x1] round `c`, from its front `f` to its back `k`.
+// The walk from the front to the stockroom door keeps clear down the middle
+// and along the back's west end.
+type Plan = { r: Rect, c: float, f: float, k: float }
+let planOf = (i: float): Plan =>
   let r = inner(i) in
-  let back = if holesOn(i, North) == [] then r.z1 - 1.6 else r.z0 + 1.0 in
-  let mid = (r.x0 + r.x1) / 2.0 in
-  let midZ = (r.z0 + r.z1) / 2.0 in
-  [box3(r.x0 + 1.5, 0.0, back, r.x1 - 1.5, 1.0, back + 0.6),
-   box3(mid - 2.3, 0.0, midZ - 0.5, mid - 1.3, 0.6, midZ + 0.5),
-   box3(mid + 1.3, 0.0, midZ - 0.5, mid + 2.3, 0.6, midZ + 0.5)]
-let shopFaces = (i: float): List<Poly> =>
-  shopBoxes(i) |> List.indexedMap((k, b) => if k == 0.0 then standing(trim, enamel, b) else standing(enamel, trim, b)) |> List.flatten
+  { r: r, c: (r.x0 + r.x1) / 2.0, f: r.z0, k: r.z1 }
+let fitAt = (i: float): FitOut => bayAt(bayOf(i) |> Option.defaultValue(0.0)).fit
+// The display tables' corners, in a shop of dead screens.
+let tablesOf = (p: Plan): List<(float, float)> =>
+  [p.c - 2.9, p.c + 1.3] |> List.concatMap((x) => [p.f + 2.5, p.f + 5.0] |> List.map((z) => (x, z)))
+// Shop `i`'s fit-out's furniture.
+let fitItems = (i: float): List<Item> =>
+  let p = planOf(i) in
+  let c = p.c in
+  let f = p.f in
+  let k = p.k in
+  match fitAt(i) with
+  | Racks => List.flatten([
+      [counterItem(c + 0.6, k - 2.5, c + 3.3, k - 1.9), wallRail(p.r.x0, 1.0, f + 1.5, k - 3.0), wallRail(p.r.x1, -1.0, f + 1.5, k - 3.6),
+       plinthItem(box3(c + 1.6, 0.0, f + 0.5, c + 2.8, 0.45, f + 1.3))],
+      [c - 2.2, c + 2.2] |> List.concatMap((x) => [f + 2.6, f + 5.2] |> List.map((z) => rackItem(x, z))),
+    ])
+  | Screens => List.append([plinthItem(box3(c - 1.7, 0.0, k - 0.5, c + 3.8, 0.7, k - 0.02))],
+      tablesOf(p) |> List.map((t) => let (x, z) = t in blockItem(trim, enamel, box3(x, 0.0, z, x + 1.6, 0.8, z + 0.9))))
+  | Boxes =>
+    let stack = (x: float, z: float, n: float): List<Item> =>
+      List.range(n) |> List.map((j) => carton(x + 0.04 * Math.mod(j, 2.0), 0.45 * j, z + 0.03 * j, 0.6 - 0.05 * j, 0.5, 0.45, true)) in
+    List.flatten([
+      [shelvesItem(box3(p.r.x0 + 0.02, 0.0, f + 1.5, p.r.x0 + 0.52, 1.7, k - 2.5), [0.15, 0.6, 1.05, 1.5]),
+       tableItem(c + 0.9, f + 6.4, c + 2.7, f + 7.2, 0.74),
+       carton(c + 1.1, 0.74, f + 6.5, 0.6, 0.5, 0.4, false), carton(c + 1.9, 0.74, f + 6.55, 0.5, 0.45, 0.35, false)],
+      stack(c - 2.5, f + 0.8, 3.0), stack(c - 1.7, f + 0.9, 1.0),
+      stack(c + 1.8, f + 2.8, 2.0), stack(c + 2.6, f + 3.0, 1.0), stack(c + 2.0, f + 3.5, 1.0),
+      stack(c + 1.4, k - 1.4, 2.0), stack(c + 2.2, k - 1.2, 3.0),
+    ])
+// Shop `i`'s other faces: "EMPLOYEES ONLY" over its stockroom door, and the
+// fit-out's screens or banners.
+let fitFaces = (i: float): List<Poly> =>
+  let p = planOf(i) in
+  let c = p.c in
+  let f = p.f in
+  let sign = onWall(i, North, staffSign, c - staffOffset - 0.3, c - staffOffset + 0.3, 2.25, 2.45, 0.02) in
+  List.append([sign], (match fitAt(i) with
+    | Racks => []
+    | Screens => List.flatten([
+        [c - 0.85, c + 0.75, c + 2.35] |> List.concatMap((x) => screenOn(i, North, x - 0.7, x + 0.7, 1.15, 1.95)),
+        [West, East] |> List.concatMap((s) => [f + 1.8, f + 3.4, f + 5.0, f + 6.6] |> List.concatMap((z) =>
+          [1.0, 1.75] |> List.concatMap((y) => screenOn(i, s, z - 0.5, z + 0.5, y, y + 0.6)))),
+        tablesOf(p) |> List.concatMap((t) => let (x, z) = t in [x + 0.4, x + 1.2] |> List.concatMap((xm) => monitorOn(xm, 0.8, z + 0.45))),
+      ])
+    | Boxes => [
+        onWall(i, North, closing, c - 0.6, c + 2.4, 2.4, 3.4, 0.02),
+        // A banner hung behind the shopfront, read from the concourse.
+        wallZ(closing, c - 1.5, c + 1.5, 2.5, 3.5, f + 0.5, false), wallZ(wall, c - 1.5, c + 1.5, 2.5, 3.5, f + 0.51, true)]))
+
+// A mop sink in box `b`: a rim round a basin; a tap over it, a mop by it.
+let sinkItem = (b: Box3): Item =>
+  let w = 0.08 in
+  let n = rect(b.x0 + w, b.z0 + w, b.x1 - w, b.z1 - w) in
+  let y0 = b.y0 + 0.08 in
+  let x = (b.x0 + b.x1) / 2.0 in
+  { faces: List.flatten([
+      sidesOf(enamel, b),
+      [floorAt(enamel, b.x0, b.z0, b.x1, n.z0, b.y1), floorAt(enamel, b.x0, n.z1, b.x1, b.z1, b.y1),
+       floorAt(enamel, b.x0, n.z0, n.x0, n.z1, b.y1), floorAt(enamel, n.x1, n.z0, b.x1, n.z1, b.y1),
+       wallZ(enamel, n.x0, n.x1, y0, b.y1, n.z0, true), wallZ(enamel, n.x0, n.x1, y0, b.y1, n.z1, false),
+       wallX(enamel, n.z0, n.z1, y0, b.y1, n.x0, true), wallX(enamel, n.z0, n.z1, y0, b.y1, n.x1, false),
+       floorAt(trim, n.x0, n.z0, n.x1, n.z1, y0)],
+      hung(trim, box3(x - 0.04, 0.75, b.z0 + 0.005, x + 0.04, 0.8, b.z0 + 0.22)),
+      standing(rack, rack, box3(b.x0 - 0.2, 0.0, b.z0 + 0.06, b.x0 - 0.17, 1.3, b.z0 + 0.09)),
+      standing(dark, trim, box3(b.x0 - 0.33, 0.0, b.z0 + 0.02, b.x0 - 0.04, 0.08, b.z0 + 0.14)),
+    ]), solid: [box3(b.x0 - 0.33, 0.0, b.z0, b.x1, b.y1, b.z1)] }
+
+// A stockroom: steel shelving down its west wall and along its back, cartons
+// on it and on the floor, a mop sink in the south-east corner. The walk from
+// the shop's door to the corridor's crosses it diagonally.
+let stockItems = (i: float): List<Item> =>
+  let r = inner(i) in
+  let c = (r.x0 + r.x1) / 2.0 in
+  let levels = [0.12, 0.6, 1.1, 1.6, 1.92] in
+  let back = r.z1 - 0.47 in
+  List.flatten([
+    [shelvesItem(box3(r.x0 + 0.02, 0.0, r.z0 + 0.5, r.x0 + 0.52, 1.98, r.z1 - 0.02), levels),
+     shelvesItem(box3(r.x0 + 0.6, 0.0, r.z1 - 0.52, c + 1.8, 1.98, r.z1 - 0.02), levels),
+     sinkItem(box3(c + 2.9, 0.0, r.z0 + 0.02, r.x1 - 0.02, 0.35, r.z0 + 0.82))],
+    [carton(c - 2.9, 0.63, back, 0.5, 0.4, 0.35, false), carton(c - 2.3, 0.63, back, 0.6, 0.4, 0.4, false),
+     carton(c - 0.6, 1.13, back, 0.5, 0.4, 0.3, false), carton(c + 0.7, 0.15, back, 0.6, 0.4, 0.35, false),
+     carton(c - 1.4, 1.63, back, 0.55, 0.4, 0.27, false), carton(r.x0 + 0.07, 0.63, r.z0 + 0.7, 0.4, 0.5, 0.35, false),
+     carton(r.x0 + 0.07, 1.13, r.z0 + 1.6, 0.4, 0.45, 0.4, false)],
+    [carton(c + 0.4, 0.0, r.z0 + 0.02, 0.6, 0.5, 0.5, true), carton(c + 1.05, 0.0, r.z0 + 0.02, 0.6, 0.5, 0.45, true),
+     carton(c + 0.5, 0.5, r.z0 + 0.04, 0.5, 0.45, 0.4, true)],
+  ])
+
+// The service corridor: "EMPLOYEES ONLY" over each stockroom door, a shut
+// door (and its sign) behind every shuttered bay, the EXIT sign over the
+// exit.
+let serviceFaces = (i: float): List<Poly> =>
+  let level = cellAt(i).level in
+  let doorX = (x: float): float => x + staffOffset in
+  let open = bays |> List.filter((b) => b.level == level) |> List.map((b) => b.at) in
+  let shut = frontXs |> List.filter((x) => not (open |> List.any((o) => near(o, x)))) in
+  List.flatten([
+    List.append(open, shut) |> List.map((x) => onWall(i, South, staffSign, doorX(x) - 0.3, doorX(x) + 0.3, 2.22, 2.42, 0.02)),
+    shut |> List.map((x) => onWall(i, South, trim, doorX(x) - 0.45, doorX(x) + 0.45, 0.0, 2.05, 0.02)),
+    if i == service0 then [onWall(i, East, exitSign, exitAt - 0.22, exitAt + 0.22, 2.2, 2.42, 0.02)] else [],
+  ])
+// The north shopfronts' centres, the same on both levels.
+let frontXs = fronts |> List.filter((f) => f.side == North && cellAt(f.cell).level == 0.0) |> List.map((f) => f.at)
+
+// Cell `i`'s furniture and its other faces: a shop's fit-out, a stockroom's
+// shelving, the corridor's signs.
+let itemsOf = (i: float): List<Item> =>
+  match cellAt(i).kind with
+  | Shop => fitItems(i)
+  | Stock => stockItems(i)
+  | _ => []
+let backFaces = (i: float): List<Poly> =>
+  List.append(itemsOf(i) |> List.concatMap((t) => t.faces), (match cellAt(i).kind with
+    | Shop => fitFaces(i)
+    | Service => serviceFaces(i)
+    | _ => []))
 
 // ---- The galleries -------------------------------------------------------------------
 
@@ -509,17 +806,17 @@ let cellFaces = (i: float): List<Poly> =>
   let r = inner(i) in
   let own = if not isInside(i) then []
     else List.flatten([
-      [floorAt(tile, r.x0, r.z0, r.x1, r.z1, 0.0)],
+      [floorAt(floorMatOf(i), r.x0, r.z0, r.x1, r.z1, 0.0)],
       if c.kind == Void then List.flatten([voidEdges, escalatorFaces(escalator), fountainFaces])
       else List.flatten([
-        [ceilingAt(ceilingMat, r.x0, r.z0, r.x1, r.z1, ceiling)],
+        [ceilingAt(ceilingMat, r.x0, r.z0, r.x1, r.z1, ceilingOf(i))],
         wallsOf(i),
         c.panels |> List.filter((p) => p.on) |> List.map((p) => lensOf(i, p)),
         fronts |> List.filter((f) => f.cell == i) |> List.concatMap(frontFaces),
         anchorFaces(i),
         balustradeFaces(i),
         planterFaces(i),
-        if c.kind == Shop then shopFaces(i) else [],
+        backFaces(i),
         if i == westHall then List.flatten([tables |> List.concatMap(tableFaces), drums |> List.concatMap(drumFaces)]) else [],
       ]),
     ]) in
@@ -595,14 +892,16 @@ let pinkGlow = Color.rgb(1.0, 0.45, 0.7)
 let tealGlow = Color.rgb(0.35, 0.95, 0.85)
 let sky = Color.rgb(0.72, 0.84, 1.0)
 
-// The panels that are on; a warm light under each drum; a glow before each
-// lit sign; four floods in the skylight's corners and the fountain's glow.
+// The panels that are on (a shop's only in its bay's home, the one baked);
+// a warm light under each drum; a glow before each lit sign and under the
+// EXIT sign; four floods in the skylight's corners and the fountain's glow.
 let nightLights: List<Light.t> =
   let w = voidRect in
   List.flatten([
     [Light.ambient(Color.rgb(0.03, 0.032, 0.036))],
-    List.range(List.length(cells)) |> List.concatMap((i) =>
-      cellAt(i).panels |> List.filter((p) => p.on) |> List.map((p) => pointAt(v(p.x, baseOf(i) + ceiling - 0.12, p.z), panelColor, 1.0, 8.0))),
+    List.range(List.length(cells)) |> List.filter((i) => not isEcho(i)) |> List.concatMap((i) =>
+      cellAt(i).panels |> List.filter((p) => p.on) |> List.map((p) => pointAt(v(p.x, baseOf(i) + ceilingOf(i) - 0.12, p.z), panelColor, 1.0, 8.0))),
+    [pointAt(v(footprint.x1 - 0.5, 2.1, exitAt), Color.rgb(0.3, 0.9, 0.55), 0.3, 3.0)],
     drums |> List.map((c) => pointAt(v(c.x, drumY0 - 0.25, c.z), warm, 0.9, 7.0)),
     fronts |> List.filter(isLitSign) |> List.map((f) =>
       let band = signBand(f) in
@@ -649,11 +948,22 @@ let dayLights = List.flatten([nightLights, skylightLights, entranceLights])
 
 // ---- The interior --------------------------------------------------------------------
 
-// The cells' faces and the mesh, at full scale; the bake jobs, at half.
+// Bake only: a sheet over each home's shopfront and corridor door, so each
+// fit-out bakes in its own light alone, the same in every bay that reuses it,
+// and spills none onto the concourse or corridor (nor do the reusing bays).
+// The mesh's last part, after the cells': a model of no cell, never drawn.
+let blockers = List.range(List.length(bays)) |> List.filter((k) => homeOf(k) == k) |> List.concatMap((k) =>
+  let b = bayAt(k) in
+  let y = b.level * storey in
+  [wallZ(trim, b.at - 3.0, b.at + 3.0, y, y + 3.2, shopZ0, true),
+   wallZ(trim, b.at + staffOffset - 0.45, b.at + staffOffset + 0.45, y, y + 2.1, serviceZ0, false)])
+
+// The cells' faces and the mesh, at full scale; the bake jobs, at half. A
+// bay that reuses its home's models has no faces of its own in the mesh.
 type Interior = { cellParts: List<List<Poly>>, cellRanges: List<Building.Range>, data: Model.staticData,
                   night: Lightmap.bakeJob, day: Lightmap.bakeJob }
 let interiorOf = (name: string): Interior =>
-  let cellParts = List.range(List.length(cells)) |> List.map(cellFaces) in
+  let cellParts = List.range(List.length(cells)) |> List.map((i) => if isEcho(i) then [] else cellFaces(i)) |> List.append([blockers]) in
   let all = List.flatten(cellParts) in
   let cellRanges = rangesOf(cellParts) in
   let spans = cellParts |> List.zip(cellRanges) |> List.concatMap((pair) => let (polys, range) = pair in spansOf(palette, range.first, polys)) in
@@ -667,6 +977,9 @@ let interiorOf = (name: string): Interior =>
   { cellParts: cellParts, cellRanges: cellRanges, data: meshOf(palette, 1.0, all, spans),
     night: night, day: { night with name: $"{name}-day", lights: dayLights } }
 let interior = interiorOf("mall")
+// Cell `i`'s faces: its part of the mesh, or a reusing bay's own.
+let facesOf = (i: float): List<Poly> =>
+  if isEcho(i) then cellFaces(i) else List.nth(i, interior.cellParts) |> Option.defaultValue([])
 
 // ---- One model per cell ----------------------------------------------------------------
 
