@@ -90,7 +90,7 @@ let roofBoxOf = (l: Layout): Box =>
   box(f.x0 - half / 2.0, top - 0.3, f.z0 - half / 2.0, f.x1 + half / 2.0, top, f.z1 + half / 2.0)
 
 // The entrance: the first door from an outside room (the apron).
-let entranceDoorOf = (l: Layout): Option.t<Door> => l.doors |> List.find((d) => not isInside(roomAt(l, d.a)))
+let entranceDoorOf = (l: Layout): Option.t<Door> => l.doors |> List.find((d) => roomAt(l, d.a).kind == Outside)
 let entranceOf = (l: Layout): Hole =>
   entranceDoorOf(l) |> Option.map(holeOf) |> Option.defaultValue({ lo: 0.0, hi: 0.0, bottom: 0.0, top: 0.0 })
 // The canopy over the entrance, in the south facade.
@@ -135,8 +135,14 @@ let apronBoxOf = (l: Layout): Box =>
   let apron = entranceDoorOf(l) |> Option.map((d) => roomAt(l, d.a).rect) |> Option.defaultValue(rect(0.0, 0.0, 0.0, 0.0)) in
   box(apron.x0, street - 0.02, apron.z0, apron.x1, street, apron.z1 - halfOf(l))
 
+// A window grid on a facade, in a building's space: by night some bays lit,
+// by day all dark glass.
+type Grid = { night: Scene.t, day: Scene.t }
+
 // The street side's lit boxes, by colour, as instances of one white cube: a
-// single draw; and the neon and the shades, which glow.
+// single draw; and the neon and the shades, which glow. `extraBoxes` (lit,
+// among `streetBoxes`) and `beaconBoxes` (red) are an archetype's own, on
+// top of the kit's; `lobbyLight` is where the lobby's light spills out.
 type Street = {
   half: float,
   facadeBoxes: List<Box>,
@@ -154,7 +160,17 @@ type Street = {
   lampShades: Scene.t,
   lampHeads: List<Vec3.t>,
   lampColliders: List<Collider>,
+  lobbyLight: Vec3.t,
+  extraBoxes: List<(Box, Color.t)>,
+  beaconBoxes: List<Box>,
+  grid: Option.t<Grid>,
 }
+// Lit boxes as instances of one white cube, tinted.
+let instancedOf = (boxes: List<(Box, Color.t)>): Scene.t =>
+  Scene.cube() |> Scene.lit(rgb(255.0, 255.0, 255.0)) |> Scene.instanced(boxes |> List.map((e) =>
+    let (b, color) = e in
+    Instance.trs(v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0), 0deg, b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0)
+      |> Instance.tint(color)))
 let streetOf = (l: Layout): Street =>
   let facadeBoxes = facadeBoxesOf(l) in
   let bandBoxes = bandBoxesOf(l) in
@@ -173,25 +189,31 @@ let streetOf = (l: Layout): Street =>
   { half: halfOf(l), facadeBoxes: facadeBoxes, bandBoxes: bandBoxes, roofBox: roofBox, entrance: entranceOf(l),
     canopyBox: canopyBox, apronBox: apronBox, postBoxes: postBoxes, neonBoxes: neonBoxes, shadeBoxes: shadeBoxes,
     streetBoxes: streetBoxes,
-    streetSide: Scene.cube() |> Scene.lit(rgb(255.0, 255.0, 255.0)) |> Scene.instanced(streetBoxes |> List.map((e) =>
-      let (b, color) = e in
-      Instance.trs(v((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0, (b.z0 + b.z1) / 2.0), 0deg, b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0)
-        |> Instance.tint(color))),
+    streetSide: instancedOf(streetBoxes),
     neonStrips: Scene.group(neonBoxes |> List.map(slabOf)),
     lampShades: shadeBoxes |> List.map(slabOf) |> Scene.group,
     lampHeads: l.streetLamps,
     // The lamp posts' colliders, in the building's space.
     lampColliders: l.streetLamps |> List.indexedMap((i, p) =>
-      { tag: $"lamp-{i}", shape: Physics.box(0.12, 4.9, 0.12), at: v(Vec3.x(p), 2.45, Vec3.z(p)) }) }
+      { tag: $"lamp-{i}", shape: Physics.box(0.12, 4.9, 0.12), at: v(Vec3.x(p), 2.45, Vec3.z(p)) }),
+    // Inside the entrance, at head height.
+    lobbyLight: (let e = entranceOf(l) in v((e.lo + e.hi) / 2.0, 2.0, l.footprint.z0 + 0.9)),
+    extraBoxes: [], beaconBoxes: [], grid: Option.None }
 
 // The building's street side, in its own space, with the neon and the lamp
-// heads glowing at `neon` and `lamps` (1 at night): only those two colours
-// change with the hour. The ground isn't part of it.
-let exteriorAt = (s: Street, neon: float, lamps: float): Scene.t => Scene.group([
+// heads glowing at `neon` and `lamps` (1 at night), and its window grid by
+// `day` or night: only those change with the hour. The ground isn't part of
+// it.
+let exteriorAt = (s: Street, neon: float, lamps: float, day: bool): Scene.t => Scene.group([
   s.streetSide,
   s.neonStrips |> Scene.color(neonColor(neon)),
   s.lampShades |> Scene.color(shadeColor(lamps)),
+  Scene.group(s.beaconBoxes |> List.map(slabOf)) |> Scene.color(beaconRed),
+  s.grid |> Option.map((g) => gridAt(day, g)) |> Option.defaultValue(Scene.group([])),
 ])
+let gridAt = (day: bool, g: Grid): Scene.t => if day then g.day else g.night
+// An aircraft warning light: red at every hour.
+let beaconRed = rgb(255.0, 40.0, 30.0)
 // The neon and the sodium shades at `neon` and `lamps` (1 at night).
 let neonColor = (neon: float): Color.t => rgb(110.0 * neon, 240.0 * neon, 230.0 * neon)
 let shadeColor = (lamps: float): Color.t => Hours.color(Hours.mix(shadeByDay, sodiumGlow, lamps))

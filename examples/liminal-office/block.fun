@@ -3,7 +3,8 @@
 // street side), placed as four
 // copies at 0/90/180/270° yaw around a crossroads. Every copy draws the same
 // `Model.static` values, so the GPU holds one office. The grids repeat the
-// block, a street apart, to 16 and 64 copies.
+// block, a street apart, to 16 and 64 copies; the towers stand four tower
+// archetypes round the same crossroads.
 //
 // A copy is translation plus a yaw about Y, unit scale. Its interior draws
 // only within `activeOn` of its footprint (staying on out to `activeOff`),
@@ -72,7 +73,7 @@ let sceneOf = (c: Copy, s: Scene.t): Scene.t =>
 // body under its own tag.
 let tagOf = (c: Copy, local: string): string => $"{c.name}/{local}"
 let collidersOf = (c: Copy): List<Building.Collider> =>
-  let a = archetypeOf(c) in List.flatten([a.interior.colliders, a.street.lampColliders])
+  let a = archetypeOf(c) in List.flatten([a.colliders, a.street.lampColliders])
 let bodiesOf = (c: Copy): List<Physics.body> =>
   collidersOf(c) |> List.map((k) =>
     Physics.fixed(Physics.tag(tagOf(c, k.tag)), k.shape)
@@ -124,10 +125,11 @@ type Town = { name: string, copies: List<Copy>, index: Index, shells: bool, soli
 // Grids have shells and nearby-only colliders and lights; the office alone
 // and the block keep every copy solid and lit (views 9 and 0 teleport
 // between copies).
-let townOf = (name: string, n: float, shells: bool, ground: Scene.t, groundBody: Physics.body): Town =>
-  let copies = List.range(n) |> List.map(copyAt) in
+let townWith = (name: string, copies: List<Copy>, shells: bool, ground: Scene.t, groundBody: Physics.body): Town =>
   { name: name, copies: copies, index: indexOf(copies), shells: shells, solidOn: if shells then solidOn else everywhere,
     lightReach: if shells then lightReach else everywhere, ground: ground, groundBody: groundBody, reach: Hours.streetReach }
+let townOf = (name: string, n: float, shells: bool, ground: Scene.t, groundBody: Physics.body): Town =>
+  townWith(name, List.range(n) |> List.map(copyAt), shells, ground, groundBody)
 
 // The block's ground and its collider, past every collar.
 let groundSize = 400.0
@@ -143,12 +145,27 @@ let gridOf = (n: float): Town =>
   townOf($"grid-{n}", n, true,
     Exterior.groundAt(mid, mid, size), Exterior.groundBodyAt($"grid-{n}-ground", mid, mid, size))
 
-// The towns, by the model's `town`: the office alone, the block, then the
-// grids of 4, 16 and 64. B toggles the office alone and the block; G cycles
-// the grids.
+// Four towers of `floors` round the block's crossroads, turned as its
+// copies are, so each entrance and west window faces a street.
+let towersOf = (floors: List<float>): Town =>
+  townWith("towers", floors |> List.indexedMap((k, n) =>
+    let yaw = 90.0 * k in
+    let (x, z) = turn(yaw, centre, centre) in
+    { name: $"tower-{k}", archetype: $"tower-{n}", x: centre - x, z: centre - z, yaw: yaw }), true, ground, groundBody)
+
+// The towns, by the model's `town`: the office alone, the block, the grids
+// of 4, 16 and 64, and the towers. B toggles the office alone and the
+// block; G cycles the grids; H toggles the towers.
 let office = townOf("office", 1.0, false, Exterior.ground, Exterior.groundBody)
-let towns = [office, townOf("block", 4.0, false, ground, groundBody), gridOf(4.0), gridOf(16.0), gridOf(64.0)]
+let towers = towersOf([8.0, 16.0, 12.0, 8.0])
+let towns = [office, townOf("block", 4.0, false, ground, groundBody), gridOf(4.0), gridOf(16.0), gridOf(64.0), towers]
 let townAt = (t: float): Town => List.nth(t, towns) |> Option.defaultValue(office)
+let towersTown = 5.0
+// Copy `id` of `town`: ids are positions in its copies.
+let copyIn = (town: Town, id: float): Copy =>
+  match List.nth(id, town.copies) with
+  | Option.Some(c) => c
+  | Option.None => Binary.invalid($"no copy {id} in {town.name}")
 
 // The copies whose footprints lie within `r` of `eye`, as (id, distance), by
 // id. Reads only the index tiles within `r` plus a footprint's reach.
@@ -207,7 +224,7 @@ let activeAt = (town: Town, k: float, was: List<float>, eye: Vec3.t): List<float
 // How many active copies' cells don't hold `eye`: each would draw its whole
 // interior (`Scene.cells`' fallback). Zero by construction; the e2e checks it.
 let uncovered = (town: Town, active: List<float>, eye: Vec3.t): float =>
-  active |> List.filter((id) => let c = copyAt(id) in Cells.locate(toLocal(c, eye), archetypeOf(c).level) == Option.None) |> List.length
+  active |> List.filter((id) => let c = copyIn(town, id) in Cells.locate(toLocal(c, eye), archetypeOf(c).level) == Option.None) |> List.length
 
 // Copies with colliders: within the town's `solidOn` of the player, staying
 // solid to `solidMargin` past it. Not capped: the streets bound how many
