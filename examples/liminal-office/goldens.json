@@ -204,5 +204,41 @@
     ],
     "inputScript": "tower-roof.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-cinema-lobby-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "cinema-lobby-day.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-cinema-corridor",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "cinema-corridor.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-cinema-auditorium",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "cinema-auditorium.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-cinema-neon",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "cinema-neon.script",
+    "captureAtFrame": 30
   }
 ]

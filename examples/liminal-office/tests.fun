@@ -410,8 +410,8 @@ expect copies |> List.all((c) => Scene.equals(Game.copyScene(look(c)), Block.sce
 // ---- The grids -------------------------------------------------------------------
 
 let grid64 = Block.townAt(4.0)
-expect (Block.towns |> List.map((t) => List.length(t.copies))) == [1.0, 4.0, 4.0, 16.0, 64.0, 4.0]
-expect (Block.towns |> List.map((t) => t.shells)) == [false, false, true, true, true, true]
+expect (Block.towns |> List.map((t) => List.length(t.copies))) == [1.0, 4.0, 4.0, 16.0, 64.0, 4.0, 1.0]
+expect (Block.towns |> List.map((t) => t.shells)) == [false, false, true, true, true, true, true]
 // An id is the same office in every office town: each extends the smaller
 // ones, and the grid of 4 stands where the block does.
 expect List.take(5.0, Block.towns) |> List.all((t) => t.copies == List.take(List.length(t.copies), grid64.copies))

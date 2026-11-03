@@ -30,7 +30,12 @@ const SETTINGS = {
 };
 // Each bake's sources: must match archetypes.fun's `bakeOf` calls.
 const TOWER = ["layout.fun", "towerLayout.fun", "building.fun"];
-const ARCHETYPES = { office: ["layout.fun", "officeLayout.fun", "building.fun"], "tower-typical": TOWER, "tower-ends": TOWER };
+const ARCHETYPES = {
+  office: ["layout.fun", "officeLayout.fun", "building.fun"],
+  "tower-typical": TOWER,
+  "tower-ends": TOWER,
+  cinema: ["layout.fun", "building.fun", "paints.fun", "cinemaLayout.fun", "cinemaBuilding.fun"],
+};
 const BAKES = ["night", "day"];
 const ARTIFACTS = [...BAKES.map((b) => `${b}.png`), "night.mesh.bin"];
 

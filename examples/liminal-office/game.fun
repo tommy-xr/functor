@@ -5,6 +5,7 @@
 // the office around a crossroads (block.fun). G cycles grids of 4, 16 and 64
 // copies, where at most K interiors draw and the rest are shells (shells.fun).
 // H stands four towers there instead (tower.fun), climbed by dog-leg stairs.
+// C stands a multiplex cinema on its parking lot (cinema.fun).
 //
 //   functor -d examples/liminal-office run native
 //   functor -d examples/liminal-office run native --emulate-xr
@@ -15,7 +16,8 @@
 // the street, and a turned copy's window. T steps the hour; N jumps between
 // midnight and noon; B toggles the block; G cycles the grids; K cycles how many
 // interiors draw (4, 1, 2); O overlooks the roofs from 20 m up; H toggles the
-// towers, where 1–0 jump to their own views (`towerViews`); I puts the block
+// towers, where 1–0 jump to their own views (`towerViews`); C the cinema
+// (`cinemaViews`); I puts the block
 // on the island (island.fun), V cycles its biome; L toggles a flashlight. VR:
 // the left thumbstick walks and strafes; the right turns and walks; X steps
 // the hour, Y jumps midnight ⇄ noon; B toggles the block, A the island; the
@@ -139,7 +141,25 @@ let towerViews = [
   { copy: 0.0, x: 6.0, level: 9.0, z: 3.0, yaw: -2.7, pitch: 0.25 },
   { copy: 0.0, x: -12.0, level: 0.0, z: -36.0, yaw: 0.0, pitch: 0.35 },
 ]
-let viewsOf = (town: float): List<View> => if town == Block.towersTown then towerViews else views
+// The cinema's views: 1 the lobby; 2 down the numbered corridor (B) by
+// night; 3 auditorium 3 from the screen, up the rake; 4 down it from the top
+// row; 5 up corridor A to its bend; 6 the service corridor; 7 the lobby's
+// posters; 8 auditorium 4's playset from its aisle; 9 the parking lot,
+// facing the entrance; 0 the lot's far corner, where the cinema is a shell.
+let cinemaViews = [
+  { copy: 0.0, x: 30.0, level: 0.0, z: 2.2, yaw: 0.0, pitch: 0.08 },
+  { copy: 0.0, x: 47.9, level: 0.0, z: 19.75, yaw: -1.5708, pitch: 0.03 },
+  { copy: 0.0, x: 41.9, level: 0.0, z: 22.3, yaw: -0.45, pitch: 0.2 },
+  { copy: 0.0, x: 29.75, level: CinemaBuilding.rakeTop / CinemaLayout.roofline, z: 38.6, yaw: 3.1416, pitch: -0.18 },
+  { copy: 0.0, x: 46.75, level: 0.0, z: 8.8, yaw: 0.0, pitch: 0.05 },
+  { copy: 0.0, x: 13.8, level: 0.0, z: 19.0, yaw: 0.0, pitch: 0.0 },
+  { copy: 0.0, x: 33.0, level: 0.0, z: 12.5, yaw: -2.2, pitch: 0.05 },
+  { copy: 0.0, x: 28.25, level: CinemaBuilding.treadY(5.0) / CinemaLayout.roofline, z: 31.0, yaw: -2.6, pitch: -0.2 },
+  { copy: 0.0, x: 40.0, level: 0.0, z: -26.0, yaw: 0.1, pitch: 0.22 },
+  { copy: 0.0, x: 65.0, level: 0.0, z: -49.0, yaw: -0.7, pitch: 0.06 },
+]
+let viewsOf = (town: float): List<View> =>
+  if town == Block.towersTown then towerViews else if town == Block.cinemaTown then cinemaViews else views
 // Views 9 and 0 are in the block (or the grid you're in).
 let inBlock = (n: float): bool => n > 8.0
 
@@ -204,7 +224,7 @@ let still = { x: 0.0, y: 0.0 }
 // lamp pools painted in.
 let toggleIsland = (model) =>
   { model with island: not model.island, town: if model.island then model.town else 1.0,
-               goto: if Island.onPad(model.at.x, model.at.z) && model.town != Block.towersTown then model.goto else 9.0 }
+               goto: if Island.onPad(model.at.x, model.at.z) && model.town != Block.towersTown && model.town != Block.cinemaTown then model.goto else 9.0 }
 
 // T and X: the next hour. N and Y: midnight ⇄ noon.
 let nextHour = (hour: float): float => Math.mod(hour + 1.0, 24.0)
@@ -266,6 +286,10 @@ let input = (model, key, isDown: bool) =>
     // Into the other town's view 1: its building where the player stands
     // differs. The towers stand on the flat ground.
     | Key.H => { model with island: false, town: if model.town == Block.towersTown then 0.0 else Block.towersTown, goto: 1.0 }
+    // Onto the cinema's parking lot (view 9), or back to the office's entrance.
+    | Key.C =>
+      let leaving = model.town == Block.cinemaTown in
+      { model with island: false, town: if leaving then 0.0 else Block.cinemaTown, goto: if leaving then 1.0 else 9.0 }
     | Key.K => { model with k: nextK(model.k) }
     | Key.I => toggleIsland(model)
     | Key.V => { model with biome: Math.mod(model.biome + 1.0, List.length(Island.biomes)) }

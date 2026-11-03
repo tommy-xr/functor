@@ -5,7 +5,8 @@ drop ceilings and fluorescent panels, open empty offices (103 and 203 have
 windows), a sodium-lit stairwell between the floors, a neon entrance on an
 empty apron. `B` turns it into a block of four turned copies around a
 crossroads; `G` into grids of 4, 16 and 64; `H` into four towers of 8 to 16
-floors, climbed by a dog-leg stair; `I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
+floors, climbed by a dog-leg stair; `C` stands a multiplex cinema on its
+parking lot; `I` puts the block on a 2 km island. Desktop; Quest is configured (120 Hz, foveation off) but not yet
 checked on a headset. Not the web: baked files load with `File.bytes`.
 
 ```sh
@@ -28,6 +29,7 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 | `B` | the office alone ⇄ the block (views 1–8 then jump within the nearest copy) |
 | `G` | the next grid: 4, 16, 64 copies (views 9 and 0 stay in it) |
 | `H` | the office alone ⇄ the towers (views 1–0 become the towers', below) |
+| `C` | the office alone ⇄ the cinema, from its parking lot (views 1–0 become the cinema's, below) |
 | `K` | at most 4 → 1 → 2 interiors at once |
 | `O` | overlook: the eye 20 m up, looking down over the roofs (no interiors draw; a view jump ends it) |
 | `I` | the flat ground ⇄ the island (with the block; `G` and `H` leave it) |
@@ -360,12 +362,67 @@ floor 8's window; `9` the 8-floor tower's terrace facing the taller ones,
 `0` the street between them. `node e2e/liminal-tower.mjs` climbs every tower
 ground to roof and checks the well's culling.
 
+## The cinema
+
+`C` stands a 60 × 40 m multiplex on its parking lot (`cinemaLayout.fun`'s
+data, `cinemaBuilding.fun`'s interior, `cinema.fun`'s unbaked parts), one
+tall level. A 30 × 18 m lobby under a black ceiling and a teal soffit ring
+with a pink tube: a concession counter under three glowing menu boards, a
+ticket desk, poster light boxes. An arch opens onto the numbered corridor,
+3.5 m wide and about 42 m long round one bend (two convex cells): purple
+walls under an exposed black ceiling, teal and orange-red soffits stepping
+on a wave, orange-red columns edged in pink and cyan neon, posters, a lit
+number over each of four doors. Screens 1 and 2 are shut doors; 3 and 4 open
+onto 14 × 18.5 m auditoria, 8 m tall: a dark screen by the door, twelve
+rows of seats rising away from it, aisles down both sides, house lights
+on. Auditorium 4 has a playset marooned by its screen and a staff door
+into a white-tiled, fluorescent service corridor, which runs round to a
+rear exit.
+
+- **Palette** (`paints.fun`): building.fun's mesh pipeline over the
+  cinema's own materials. Every sign, poster, menu, lens, tube and the
+  screen is a cell of one glow atlas, so a cell draws one group for all of
+  them. Unlit looks (the glow atlas, and the black of the ceilings) take
+  no light, so their faces stay out of the bake: each cell draws a baked
+  model of its lit faces and a plain one of its unlit ones. A cell draws at
+  most 7 groups; `node e2e/liminal-cinema.mjs` counts at most 30 static
+  draws from any of its views.
+- **Cells**: a cell per room, 8 m tall (over the eye at the top of the
+  rake), the kit's collar round the footprint. The rake and seats lie in
+  their auditorium's cell.
+- **The rake**: 12 rows of 1 m, 0.3 m each (17°), from 4.4 m in from the
+  screen to the back wall. The character walks a smooth ramp through the
+  rows' nosings, as on the stairs; each row of seats is a box collider, so
+  only the aisles are walkable.
+- **Seats**: not baked. 216 per auditorium, four tinted boxes each, one
+  `Scene.instanced` cube (a draw) per auditorium, `Scene.inCells` it,
+  unlit.
+- **Bake**: `cinema`, one 1024² lightmap per hour at 12 texels/m, 8.4 MB
+  for both. The lights: downlights in the ring, the lobby's ceiling, the
+  soffits and the auditoria's ceilings, sconces down the auditoria's walls,
+  pink and cyan points by the tubes, the menu's glow, the service
+  corridor's panels; by day, daylight through the entrance and the rear
+  exit.
+- **Street side**: the kit's blank facade (9.5 m), a marquee over the
+  entrance with four posters under it, a pink band under the roofline's
+  cyan, and an 18 m sign tower with cyan tubes up its corners and pink
+  bands across it; a parking lot of painted bays and eight sodium lamps.
+  Past 34 m it draws as its shell.
+
+Views in the cinema: `1` the lobby, `2` down the numbered corridor, `3`
+auditorium 3 from beside its screen, `4` down its rake from the top row,
+`5` up corridor A to the bend, `6` the service corridor, `7` the lobby
+toward the entrance, `8` auditorium 4's playset, `9` the parking lot, `0`
+the lot's far corner (the shell). `node e2e/liminal-cinema.mjs` walks in
+from the lot to the top of auditorium 3's rake and back down.
+
 ## Rebaking
 
-Each bake lives in `baked/<bake>/`: `office`, `tower-typical`, `tower-ends`.
-Editing `layout.fun`, `building.fun` (which holds the bake jobs and their
-lights) or an archetype's `<archetype>Layout.fun` makes its committed bakes
-stale:
+Each bake lives in `baked/<bake>/`: `office`, `tower-typical`, `tower-ends`,
+`cinema`. Editing `layout.fun`, `building.fun` (which holds the bake jobs and their
+lights) or an archetype's `<archetype>Layout.fun` (the cinema's
+`paints.fun`, `cinemaLayout.fun` and `cinemaBuilding.fun`) makes its
+committed bakes stale:
 
 ```sh
 node examples/liminal-office/bake.mjs           # bake, then write baked/<archetype>/provenance.txt
