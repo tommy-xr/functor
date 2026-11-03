@@ -1027,9 +1027,9 @@ The generated modules:
 | `Sprite` | pure 2D picture values: shapes, text, images, transforms |
 | `Camera3D` | 3D cameras (`lookAt`, `firstPerson`, `fromPose`), clip planes, screen→world rays, tracked-pose mapping |
 | `Camera2D` | center-origin 2D camera: pan, zoom, screen→world |
-| `Frame` | what `draw` returns: 3D / lit / 2D frames, fog, skybox, clear color, render targets, 2D layers |
+| `Frame` | what `draw` returns: 3D / lit / 2D frames, fog, skybox, sky gradient, clear color, render targets, 2D layers |
 | `Light` | ambient / directional / point / spot lights and shadow casting |
-| `Fog` | linear and exponential distance fog |
+| `Fog` | linear, exponential, and height fog (`Fog.height` pools in valleys, total by `far`) |
 | `Skybox` | six-face cubemaps |
 | `Color` | `Color.rgb` — the ONE color type across 3D, lighting, fog, and UI |
 | `Vec3` | branded 3D vectors and their arithmetic |
@@ -1069,8 +1069,9 @@ height sampling, skirts, bounded instanced grass) — one `Scene.terrain` node,
 not thousands of scene nodes. Fog coarsens it: without a skybox,
 `Terrain.maxPixelError` is divided by the frame fog's visibility at each patch
 (at most 4×), so fogged distance costs fewer vertices. When the background IS the fog
-(no skybox, no passthrough, clear color left at — or set to — the fog color), patches
-wholly past linear fog's `far` are not drawn at all, and fully fogged terrain pixels
+(no skybox, no passthrough, clear color left at — or set to — the fog color; a
+`Frame.withSkyGradient` sky is fine, since fog takes its color), patches
+wholly past linear or height fog's `far` are not drawn at all, and fully fogged terrain pixels
 skip lighting and texturing (exp fog never reaches zero visibility, so it culls
 nothing; neither do the normals/tangents debug views, which draw unfogged). Props are the game's to cull: `examples/night-terrain` drops them past the
 fog in `regroup` and sets the camera's far plane to the fog end. `/state.terrain`

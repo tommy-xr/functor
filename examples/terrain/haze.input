@@ -1,0 +1,11 @@
+# haze.input — height fog under a sky gradient, day → night.
+#
+#   functor -d examples/terrain run native -- --input-script haze.input \
+#     --capture-frame /tmp/f.png --capture-at-frame 180 --capture-size 1600x1200
+#
+#   f 10    H: height fog + sky gradient   (golden at 180: day)
+#   f 200   N: night                       (golden at 400: night)
+10 H down
+11 H up
+200 N down
+201 N up

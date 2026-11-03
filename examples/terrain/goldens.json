@@ -85,5 +85,23 @@
     ],
     "inputScript": "materials-flashlight.input",
     "captureAtFrame": 400
+  },
+  {
+    "name": "terrain-haze-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "haze.input",
+    "captureAtFrame": 180
+  },
+  {
+    "name": "terrain-haze-night",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "haze.input",
+    "captureAtFrame": 400
   }
 ]

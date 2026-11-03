@@ -15,7 +15,8 @@
 // toggles night, cross-fading the maps and the frame's lights and fog. `L`
 // toggles a flashlight: the one light the colormap terrain still receives.
 // `M` swaps the colormap's single detail map for four splat-painted ground
-// materials (grass, dirt, rock, snow).
+// materials (grass, dirt, rock, snow). `H` swaps the linear fog for height
+// fog pooling in the valleys, under a sky gradient.
 //
 //   node examples/terrain/generate-heightmap.mjs
 //   node examples/terrain/generate-colormaps.mjs
@@ -131,8 +132,9 @@ let init = {
   blend: 0.0,
   flashlight: false,
   materials: false,
+  haze: false,
   // Held toggle keys: a held key auto-repeats, and must flip only once.
-  toggleDown: { c: false, n: false, l: false, m: false },
+  toggleDown: { c: false, n: false, l: false, m: false, h: false },
 }
 
 let setHeld = (held, key, isDown) =>
@@ -211,6 +213,11 @@ let input = (model, key, isDown) =>
     { model with
         materials: if flip then not model.materials else model.materials,
         toggleDown: { model.toggleDown with m: isDown } }
+  | Key.H =>
+    let flip = isDown && not model.toggleDown.h in
+    { model with
+        haze: if flip then not model.haze else model.haze,
+        toggleDown: { model.toggleDown with h: isDown } }
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
 let mouseButton = (model, button, isDown) =>
@@ -326,14 +333,20 @@ let draw = (model, tts) =>
   let flashlight =
     Light.spot(Vec3.make(model.eye.x, model.eye.y - 0.25, model.eye.z), lookDir(model.yaw, model.pitch),
                flashlightColor, flashlightIntensity, flashlightRange, flashlightCone) in
-  Frame.createLit(
-    camera,
-    Scene.group([Scene.terrain(terrain), water]
-                |> List.append(model.balls |> List.map(ballNode))),
-    if model.flashlight then sky |> List.append([flashlight]) else sky)
-  |> Frame.withFog(
-       Fog.linear(700.0, 4800.0,
-                  Color.rgb(0.50 |> Math.lerp(0.03, b), 0.64 |> Math.lerp(0.04, b), 0.72 |> Math.lerp(0.07, b))))
+  let fogColor = Color.rgb(0.50 |> Math.lerp(0.03, b), 0.64 |> Math.lerp(0.04, b), 0.72 |> Math.lerp(0.07, b)) in
+  let frame =
+    Frame.createLit(
+      camera,
+      Scene.group([Scene.terrain(terrain), water]
+                  |> List.append(model.balls |> List.map(ballNode))),
+      if model.flashlight then sky |> List.append([flashlight]) else sky) in
+  // Haze: dense at the water line, thinning by e every ~60 m up, so the
+  // valleys fill and the ridges stand clear. Same end as the linear fog.
+  if model.haze then
+    frame
+    |> Frame.withFog(Fog.height(0.006, 0.016, 28.0, 700.0, 4800.0, fogColor))
+    |> Frame.withSkyGradient(Color.rgb(0.24 |> Math.lerp(0.01, b), 0.42 |> Math.lerp(0.015, b), 0.72 |> Math.lerp(0.04, b)))
+  else frame |> Frame.withFog(Fog.linear(700.0, 4800.0, fogColor))
 
 let shadingLabel = (model) =>
   match model.shading with
@@ -342,6 +355,8 @@ let shadingLabel = (model) =>
 
 let flashlightLabel = (model) => if model.flashlight then " · flashlight" else ""
 
+let hazeLabel = (model) => if model.haze then " · height fog" else ""
+
 let ui = (model) =>
-  Ui.text($"4 km terrain · WASD + mouse · SPACE jump · CLICK to launch ({List.length(model.balls)}){shadingLabel(model)}{flashlightLabel(model)}")
+  Ui.text($"4 km terrain · WASD + mouse · SPACE jump · CLICK to launch ({List.length(model.balls)}){shadingLabel(model)}{flashlightLabel(model)}{hazeLabel(model)}")
   |> Ui.panel(Ui.topLeft())
