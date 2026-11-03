@@ -3,7 +3,9 @@
 //! byte counts — whole numbers ≥ 0, relative to the bytes given (a slice starts
 //! at 0, and so do its errors' offsets). Readers return a `Result`, so a decoder can
 //! report or recover from short or malformed data; `Binary.require` turns an
-//! error into a located one.
+//! error into a located one. The list readers (`u8s` … `f64bes`) read `count`
+//! numbers in a row in one call — much cheaper than a reader per number
+//! (`Bytes.f32les(0.0, 3.0, data)` is the first three floats).
 //!
 //! ```
 //! let data = "data/model.bin" |> Path.of |> File.bytes
@@ -51,6 +53,35 @@ let f32be : (float, t) => Result.t<float, Binary.error>
 let f64le : (float, t) => Result.t<float, Binary.error>
 /// The 64-bit big-endian float at `offset`.
 let f64be : (float, t) => Result.t<float, Binary.error>
+
+/// `count` unsigned bytes from `offset`.
+let u8s : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` signed bytes from `offset`.
+let i8s : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` unsigned 16-bit little-endian integers from `offset`.
+let u16les : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` unsigned 16-bit big-endian integers from `offset`.
+let u16bes : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` signed 16-bit little-endian integers from `offset`.
+let i16les : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` signed 16-bit big-endian integers from `offset`.
+let i16bes : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` unsigned 32-bit little-endian integers from `offset`.
+let u32les : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` unsigned 32-bit big-endian integers from `offset`.
+let u32bes : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` signed 32-bit little-endian integers from `offset`.
+let i32les : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` signed 32-bit big-endian integers from `offset`.
+let i32bes : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` 32-bit little-endian floats from `offset`.
+let f32les : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` 32-bit big-endian floats from `offset`.
+let f32bes : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` 64-bit little-endian floats from `offset`.
+let f64les : (float, float, t) => Result.t<List<float>, Binary.error>
+/// `count` 64-bit big-endian floats from `offset`.
+let f64bes : (float, float, t) => Result.t<List<float>, Binary.error>
 
 /// The parts joined into one.
 let concat : (List<t>) => t
