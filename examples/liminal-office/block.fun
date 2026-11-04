@@ -173,12 +173,16 @@ let mall = { townWith("mall", [{ name: "mall-0", archetype: "mall", x: 0.0, z: 0
 let suburb = townWith("suburb", Suburb.placements |> List.indexedMap((id, p) =>
     let (archetype, x, z, yaw) = p in { name: $"house-{id}", archetype: archetype, x: x, z: z, yaw: yaw }),
   true, Suburb.ground, Suburb.groundBody)
-let towns = [office, townOf("block", 4.0, false, ground, groundBody), gridOf(4.0), gridOf(16.0), gridOf(64.0), towers, cinema, mall, suburb]
+// The block with a park west of it and a plaza south of it (parks.fun); R
+// toggles it.
+let parks = townOf("park", 4.0, false, ground, groundBody)
+let towns = [office, townOf("block", 4.0, false, ground, groundBody), gridOf(4.0), gridOf(16.0), gridOf(64.0), towers, cinema, mall, suburb, parks]
 let townAt = (t: float): Town => List.nth(t, towns) |> Option.defaultValue(office)
 let towersTown = 5.0
 let cinemaTown = 6.0
 let mallTown = 7.0
 let suburbTown = 8.0
+let parkTown = 9.0
 // Copy `id` of `town`: ids are positions in its copies.
 let copyIn = (town: Town, id: float): Copy =>
   match List.nth(id, town.copies) with

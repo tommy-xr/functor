@@ -328,6 +328,10 @@ const CELLS = [
   ["phone", phone],
   ["tactile", tactile],
   ["available", available],
+  // The parks kit (parks.fun): park signs, and the monolith's base seam.
+  ["parkCloses", poleSign(["PARK", "CLOSES", "AT", "DUSK"], GREEN)],
+  ["noAdults", poleSign(["NO", "ADULTS", "WITHOUT", "A CHILD"], BLUE)],
+  ["seam", () => canvas(8, 8, [0.74, 0.82, 0.9])],
 ];
 
 // ---- Packing ---------------------------------------------------------------------

@@ -20,7 +20,8 @@
 // towers, where 1–0 jump to their own views (`towerViews`); C the cinema
 // (`cinemaViews`); P the mall and its lot (mall.fun; `mallViews`); U the
 // suburb's houses (suburb.fun); I puts the block
-// on the island (island.fun), V cycles its biome; L toggles a flashlight. VR:
+// on the island (island.fun), V cycles its biome; R the block with a park
+// and a plaza (parks.fun); L toggles a flashlight. VR:
 // the left thumbstick walks and strafes; the right turns and walks; X steps
 // the hour, Y jumps midnight ⇄ noon; B toggles the block, A the island; the
 // right trigger toggles the flashlight, held in the right hand.
@@ -67,11 +68,14 @@ let pointLights = (o: Hours.Outdoor, c: Block.Copy): List<(Vec3.t, Light.t)> =>
 // The flashlight (none, or one spot) goes third: the island's colormap
 // terrain is lit only by the first unbaked spot within the first 8 lights,
 // so it takes a point light's slot rather than queue behind them.
-let frameLights = (o: Hours.Outdoor, copies: List<Block.Copy>, eye: Vec3.t, flashlight: List<Light.t>): List<Light.t> => List.flatten([
+let frameLights = (o: Hours.Outdoor, copies: List<Block.Copy>, eye: Vec3.t, flashlight: List<Light.t>): List<Light.t> =>
+  lightsAmong(o, copies |> List.concatMap((c) => pointLights(o, c)), eye, flashlight)
+// The same, from point lights already placed (the copies', then the parks').
+let lightsAmong = (o: Hours.Outdoor, points: List<(Vec3.t, Light.t)>, eye: Vec3.t, flashlight: List<Light.t>): List<Light.t> => List.flatten([
   [Light.ambient(Hours.color(o.ambient)) |> Light.baked,
    Light.directional(o.sunDirection, Hours.color(o.sun), o.sunIntensity) |> Light.baked],
   flashlight,
-  Block.nearestLights(Block.pointSlots - List.length(flashlight), eye, copies |> List.concatMap((c) => pointLights(o, c))),
+  Block.nearestLights(Block.pointSlots - List.length(flashlight), eye, points),
 ])
 
 // The flashlight: L on the desktop, held just below the eye and aimed where
@@ -180,9 +184,17 @@ let mallViews = [
 // The suburb's views (suburb.fun).
 let houseViews = Suburb.views |> List.map((e) =>
   let (copy, x, level, z, yaw, pitch) = e in { copy: copy, x: x, level: level, z: z, yaw: yaw, pitch: pitch })
+// The park town's views (parks.fun), in the world: copy 0 stands at the
+// origin, unturned.
+let parkViews = Parks.views |> List.map((e) =>
+  let (x, z, yaw, pitch) = e in { copy: 0.0, x: x, level: 0.0, z: z, yaw: yaw, pitch: pitch })
 let viewsOf = (town: float): List<View> =>
   if town == Block.towersTown then towerViews else if town == Block.cinemaTown then cinemaViews
-  else if town == Block.mallTown then mallViews else if town == Block.suburbTown then houseViews else views
+  else if town == Block.mallTown then mallViews else if town == Block.suburbTown then houseViews
+  else if town == Block.parkTown then parkViews else views
+// The parks drawn and solid: the park town's, or the island's.
+let parksOf = (model): List<Parks.Placement> =>
+  if model.island then Parks.islandParks else if model.town == Block.parkTown then Parks.townParks else []
 // Views 9 and 0 are in the block (or the grid you're in).
 let inBlock = (n: float): bool => n > 8.0
 
@@ -319,6 +331,8 @@ let input = (model, key, isDown: bool) =>
     | Key.U =>
       let leaving = model.town == Block.suburbTown in
       { model with island: false, town: if leaving then 0.0 else Block.suburbTown, goto: if leaving then 1.0 else 9.0 }
+    // Into the park town at its park's gate, or back to the office's entrance.
+    | Key.R => { model with island: false, town: if model.town == Block.parkTown then 0.0 else Block.parkTown, goto: 1.0 }
     | Key.K => { model with k: nextK(model.k) }
     | Key.I => toggleIsland(model)
     | Key.V => { model with biome: Math.mod(model.biome + 1.0, List.length(Island.biomes)) }
@@ -356,7 +370,8 @@ let tick = (model, dt: float, tts: float) =>
   match List.nth(model.goto - 1.0, viewsOf(model.town)) with
   | Option.Some(view) =>
     let t = if inBlock(model.goto) && model.town == 0.0 then 1.0 else model.town in
-    let c = Block.copyIn(Block.townAt(t), if inBlock(model.goto) then view.copy else copy) in
+    // The park town's views are in the world (copy 0's space).
+    let c = Block.copyIn(Block.townAt(t), if inBlock(model.goto) || t == Block.parkTown then view.copy else copy) in
     let to = Block.toWorld(c, v(view.x, view.level * Block.archetypeOf(c).layout.storey + centreAboveFeet, view.z)) in
     // Solid where the player lands, before the teleport lands.
     ({ observed with goto: 0.0, vy: 0.0, overlook: false, yaw: Block.headingToWorld(c, view.yaw), pitch: view.pitch,
@@ -376,6 +391,7 @@ let physics = (model) =>
     if model.island then List.append([Physics.memo("island-props", model.props.solid, Island.propBodies)], Island.bodies)
     else [Block.townAt(model.town).groundBody],
     model.solid |> List.map((id) => let c = Block.copyIn(Block.townAt(model.town), id) in Physics.memo(c.name, c, (c) => List.append(Block.bodiesOf(c), Glass.bodiesOf(c)))),
+    Parks.bodiesNear(parksOf(model), model.at),
     [Physics.character(playerTag, Physics.capsule(0.6, 0.3),
                        { stepHeight: 0.2, maxSlope: 40deg, snap: 0.2, offset: 0.02 })
        |> Physics.at(spawnAt)],
@@ -421,13 +437,15 @@ let draw = (model, tts: float) =>
     if not town.shells then []
     else [Scene.memo($"{town.name}/shells", { town: model.town, active: active, neon: o.neon, lamps: o.lamps, day: day }, Shells.shellsOf)] in
   let buildings = Scene.group(List.append(shells, copies)) in
+  let parks = parksOf(model) in
+  let parkScene = Parks.scenesAt(parks, eye, far, o.lamps, day, tts) in
   // On the island the props draw after the buildings and the terrain last,
   // so early-Z rejects what's behind them. The road paint goes on the
   // ground (roads.fun).
   let scene = if model.island
-    then Scene.group([Roads.paintAt(model.town), buildings, Scene.memo("island-props", model.props, Island.propsScene),
+    then Scene.group([Roads.paintAt(model.town), buildings, parkScene, Scene.memo("island-props", model.props, Island.propsScene),
                       Scene.memo("island-ground", { biome: model.biome, night: 1.0 - daylight }, Island.ground), Archetypes.resident, Glass.resident])
-    else Scene.group([town.ground, Roads.paintAt(model.town), buildings, Archetypes.resident, Glass.resident]) in
+    else Scene.group([town.ground, Roads.paintAt(model.town), buildings, parkScene, Archetypes.resident, Glass.resident]) in
   // On XR the beam follows the right controller, mapped through the camera.
   let (from, dir) = match model.hand with
     | Option.None => (eye |> Vec3.add(v(0.0, -0.25, 0.0)), lookDir(model.yaw, model.pitch))
@@ -436,7 +454,8 @@ let draw = (model, tts: float) =>
       (v(m.position.x, m.position.y, m.position.z), v(m.forward.x, m.forward.y, m.forward.z)) in
   let flashlight = if model.flashlight
     then [Light.spot(from, dir, flashlightColor, flashlightIntensity, flashlightRange, flashlightCone)] else [] in
-  let lights = frameLights(o, Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyIn(town, id)), eye, flashlight) in
+  let near = Block.near(town, town.lightReach, eye) |> List.map((e) => let (id, d) = e in Block.copyIn(town, id)) in
+  let lights = lightsAmong(o, List.append(near |> List.concatMap((c) => pointLights(o, c)), Parks.lightsOf(o.lamps, parks)), eye, flashlight) in
   Frame.createLit(camera, scene, if baked then lights else lights |> List.append([unbakedLight]))
     |> Frame.withFog(Fog.linear(o.fogNear, far, Hours.color(o.sky)))
     |> Frame.withClearColor(Hours.color(o.sky))

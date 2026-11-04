@@ -312,5 +312,23 @@
     ],
     "inputScript": "suburb-street.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-park-day",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "park-day.script",
+    "captureAtFrame": 30
+  },
+  {
+    "name": "liminal-office-plaza-night",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "plaza-night.script",
+    "captureAtFrame": 30
   }
 ]

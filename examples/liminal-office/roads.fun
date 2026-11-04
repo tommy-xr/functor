@@ -99,14 +99,14 @@ let paintOf = (boxes: List<(Exterior.Box, Color.t)>): Scene.t => Exterior.instan
 let suburbPaint: Scene.t =
   let (plain, skinned) = frontage in
   Scene.group([Exterior.instancedOf(plain), Finishes.instancedBy(skinned |> List.map((e) => let (b, f) = e in (Exterior.instanceOf(b), f)))])
-// Each town's paint, by `Block.towns`' order: the office alone and the
-// block share the block's crossroads (so does the island); the towers
+// Each town's paint, by `Block.towns`' order: the office alone, the block
+// and the park town share the block's crossroads (so does the island); the towers
 // theirs, arms to the towers' edge; the cinema and mall have their lots;
 // the suburb its frontage.
 let towersReach = (2.0 * (TowerLayout.footprint.x1 - TowerLayout.footprint.x0) + Block.streetWidth) / 2.0
 let paints: List<Scene.t> = Block.towns |> List.map((t) =>
   if t.name == "suburb" then suburbPaint else paintOf(
-    if t.name == "office" || t.name == "block" then blockPaint(0.0, 0.0)
+    if t.name == "office" || t.name == "block" || t.name == "park" then blockPaint(0.0, 0.0)
     else if t.name == "grid-4" then gridPaint(1.0)
     else if t.name == "grid-16" then gridPaint(2.0)
     else if t.name == "grid-64" then gridPaint(4.0)
