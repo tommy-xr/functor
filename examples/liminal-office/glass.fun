@@ -3,8 +3,8 @@
 // reflection (clear head-on, a mirror at grazing angles). Neither writes
 // depth or touches a portal, so interiors stay visible and culled.
 // Real windows, the dark window bands, a tower's window grid, the cinema's
-// entrance and the mall's open shopfronts are glazed; shells glaze their
-// bands, windows and grid the same way.
+// entrance and front and the mall's open shopfronts are glazed; shells
+// glaze their bands, windows and grid the same way.
 
 open Layout
 open Building
@@ -134,9 +134,13 @@ let entranceOf = (name: string, l: Layout, glass: (Hole) => List<Hole>): List<Pa
   if name != "cinema" then []
   else doorPanes(glass(Exterior.entranceOf(l)), 0.0, l.footprint.z0 - windowOut(l))
 
+// The cinema front's own: its door leaves, booth window and poster cases.
+let frontOf = (name: string): List<Pane> =>
+  if name != "cinema" then []
+  else CinemaFront.panes |> List.map((e) => let (at, yaw, w, h) = e in { at: at, yaw: yaw, w: w, h: h })
 // An archetype's street-side panes, in its own space.
 let streetPanesOf = (name: string, l: Layout): List<Pane> =>
-  alternated(List.flatten([windowsAt(l, windowOut(l)), bandsAt(l, bandOut(l)), gridOf(name, l), entranceOf(name, l, doorGlass)]))
+  alternated(List.flatten([windowsAt(l, windowOut(l)), bandsAt(l, bandOut(l)), gridOf(name, l), entranceOf(name, l, doorGlass), frontOf(name)]))
 // A shell's, `out` from the wall line: its windows and bands with its
 // openings, and its grid.
 let shellOf = (name: string, l: Layout, out: float): List<Pane> =>

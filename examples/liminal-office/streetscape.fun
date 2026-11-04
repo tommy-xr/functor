@@ -128,8 +128,10 @@ let rankOf = (k: DecalKind): float =>
   | Pane => 2.0
 let cellUvs = (c: StreetAtlas.Cell): List<float> => [c.u0, c.v1, c.u1, c.v1, c.u1, c.v0, c.u0, c.v0]
 // Decals as one static model by night or day: the signs, the glowing faces
-// (unlit by night), then the panes (unlit): a draw or two.
-let modelOf = (ds: List<Decal>, night: bool): Scene.t =>
+// (unlit by night), then the panes (unlit): a draw or two. `atlasModelOf`
+// for another atlas's cells.
+let modelOf = (ds: List<Decal>, night: bool): Scene.t => atlasModelOf(atlas, ds, night)
+let atlasModelOf = (atlas: Asset.Texture, ds: List<Decal>, night: bool): Scene.t =>
   let sorted = ds |> List.sortBy((d) => rankOf(d.kind)) in
   let count = (k: DecalKind): float => 2.0 * List.length(ds |> List.filter((d) => d.kind == k)) in
   let signs = count(Sign) in
