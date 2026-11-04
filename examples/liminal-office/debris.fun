@@ -2,9 +2,11 @@
 // mug, a binder, a fallen chair. Not baked: each copy strews its own (from
 // its seed), at most `cap` a room, clear of the furniture and the doors,
 // drawn as one instanced unlit cube per copy in their cells, each box tinted
-// to the light the bake gives its spot. Data first: each is a debris
-// candidate, a tag and a body's box shape, which a later change can make a
-// dynamic body without placing it again. No bodies yet.
+// to the light the bake gives its spot. Each is a debris candidate, a tag
+// and a body's box shape. In a copy with colliders each is also a dynamic
+// body (`Body`), resting where it was strewn; one that has moved (`Loose`)
+// draws on its own at its body's pose, the rest stay in the instanced cube.
+// A broken window blows litter (papers, leaves, a takeaway carton) in.
 
 open Layout
 
@@ -17,6 +19,8 @@ type Thing =
   | Mug
   | Binder
   | FallenChair
+  | Leaf
+  | Takeaway
 
 // A box of an item: its centre (x, y, z) in the item's frame, from the
 // floor, its size, and its colour (0 to 1).
@@ -39,6 +43,8 @@ let tape = (0.72, 0.62, 0.42)
 let mugWhite = (0.82, 0.8, 0.74)
 let binderBlue = (0.18, 0.26, 0.46)
 let binderRed = (0.5, 0.16, 0.14)
+let leafBrown = (0.42, 0.28, 0.14)
+let leafOchre = (0.62, 0.5, 0.2)
 
 // A furniture box as a part, in its swatch's colour from `swatches`.
 let ofSolid = (swatches: List<Building.Paint>, s: Furniture.Solid): Part =>
@@ -60,6 +66,8 @@ let partsOf = (swatches: List<Building.Paint>, kind: Thing, k: float): List<Part
                box(0.0, 0.003, 0.02, 0.27, 0.054, 0.28, paper)]
   | FallenChair => Furniture.grounded(Furniture.moved((p) => Furniture.tilted(-90.0, p), v(0.0, 0.0, 0.0), Furniture.sideChairParts))
       |> List.map((s) => ofSolid(swatches, s))
+  | Leaf => [box(0.0, 0.0, 0.0, 0.07 + 0.04 * noise(k), 0.004, 0.05 + 0.03 * noise(k + 1.0), if noise(k + 2.0) < 0.5 then leafBrown else leafOchre)]
+  | Takeaway => [box(0.0, 0.0, 0.0, 0.13, 0.08, 0.1, mugWhite), box(0.0, 0.03, 0.0, 0.132, 0.025, 0.102, binderRed)]
 
 // An item's extent in its own frame: its body's box, centred on (0, 0).
 type Extent = { x0: float, x1: float, z0: float, z1: float, top: float }
@@ -166,9 +174,10 @@ let lightAt = (l: Layout, i: float, p: Vec3.t, day: bool, base: float): (float, 
 // The cinema's bake lights aren't in its layout, and the mall's reach
 // further: they start brighter.
 let baseFor = (archetype: string): float => if archetype == "cinema" then 0.3 else if archetype == "mall" then 0.45 else 0.0
-// A copy's debris, drawn.
-let ofCopy = (c: Block.Copy, l: Layout, archetype: string, day: bool): Scene.t =>
-  sceneOf(candidatesOf(swatchesFor(archetype), seedOf(c), l), l, day, baseFor(archetype))
+// A copy's debris, drawn, but for its `loose` ones (by candidate tag).
+let ofCopy = (c: Block.Copy, l: Layout, archetype: string, day: bool, loose: List<string>): Scene.t =>
+  sceneOf(candidatesOf(swatchesFor(archetype), seedOf(c), l) |> List.filter((d) => not (loose |> List.any((t) => t == d.tag))),
+          l, day, baseFor(archetype))
 // The furniture swatches an archetype paints its chairs in.
 let swatchesFor = (archetype: string): List<Building.Paint> =>
   if archetype == "cinema" then CinemaBuilding.furnishSwatches
@@ -178,10 +187,124 @@ let swatchesFor = (archetype: string): List<Building.Paint> =>
 // One instanced unlit cube for all of `cs`, in their cells.
 let sceneOf = (cs: List<Candidate>, l: Layout, day: bool, base: float): Scene.t =>
   if List.length(cs) == 0.0 then Scene.group([])
-  else Scene.cube() |> Scene.color(Color.rgb(1.0, 1.0, 1.0)) |> Scene.instanced(cs |> List.concatMap((c) =>
-      let (kr, kg, kb) = lightAt(l, c.cell, c.at, day, base) in
-      c.parts |> List.map((p) =>
-        let (dx, dz) = Block.turn(c.yaw, p.x, p.z) in
-        Instance.trs(v(Vec3.x(c.at) + dx, Vec3.y(c.at) - Vec3.y(c.shape) / 2.0 + p.y, Vec3.z(c.at) + dz), Angle.degrees(c.yaw), p.w, p.h, p.d)
-          |> Instance.tint(Color.rgb(p.r * kr, p.g * kg, p.b * kb)))))
+  else cubes(cs |> List.concatMap((c) => placed(c.at, c.yaw, Vec3.y(c.shape), lightAt(l, c.cell, c.at, day, base), c.parts)))
     |> Scene.inCells(roomsOf(l))
+// An item's parts as instances, its body's centre at `at`, turned `yaw`
+// degrees, `h` tall, tinted `k`.
+let placed = (at: Vec3.t, yaw: float, h: float, k: (float, float, float), parts: List<Part>): List<Instance.t> =>
+  let (kr, kg, kb) = k in
+  parts |> List.map((p) =>
+    let (dx, dz) = Block.turn(yaw, p.x, p.z) in
+    Instance.trs(v(Vec3.x(at) + dx, Vec3.y(at) - h / 2.0 + p.y, Vec3.z(at) + dz), Angle.degrees(yaw), p.w, p.h, p.d)
+      |> Instance.tint(Color.rgb(p.r * kr, p.g * kg, p.b * kb)))
+let cubes = (is: List<Instance.t>): Scene.t => Scene.cube() |> Scene.color(Color.rgb(1.0, 1.0, 1.0)) |> Scene.instanced(is)
+
+// ---- Bodies ----------------------------------------------------------------------
+
+// A debris body, as plain data the model holds: its world tag and its
+// candidate's (`local`), its kind and cell (-1: outdoors), where it rests in
+// the world (its centre, turned `yaw` degrees), its box, its parts, their
+// tints by night and by day, and where it is once it has moved (`pose`).
+type Pose = { x: float, y: float, z: float, still: bool }
+type Body = { tag: string, local: string, kind: Thing, cell: float, x: float, y: float, z: float, yaw: float,
+              w: float, h: float, d: float, parts: List<Part>, night: (float, float, float), day: (float, float, float),
+              pose: Option.t<Pose> }
+// A copy's bodies (by its name), and the windows it has
+// broken, each with its draft.
+type Group = { copy: string, broken: List<float>, bodies: List<Body>, drafts: List<Glass.Draft> }
+
+let bodyOf = (c: Block.Copy, local: string, kind: Thing, cell: float, at: Vec3.t, yaw: float, parts: List<Part>,
+              night: (float, float, float), day: (float, float, float)): Body =>
+  let p = Block.toWorld(c, at) in
+  let e = extentOf(parts) in
+  { tag: Block.tagOf(c, local), local: local, kind: kind, cell: cell, x: Vec3.x(p), y: Vec3.y(p), z: Vec3.z(p), yaw: yaw + c.yaw,
+    w: e.x1 - e.x0, h: e.top, d: e.z1 - e.z0, parts: parts, night: night, day: day, pose: Option.None }
+
+// Copy `c`'s strewn debris, resting where it was strewn.
+let strewnBodies = (c: Block.Copy): List<Body> =>
+  let l = Block.archetypeOf(c).layout in
+  let base = baseFor(c.archetype) in
+  candidatesOf(swatchesFor(c.archetype), seedOf(c), l) |> List.map((d) =>
+    bodyOf(c, d.tag, d.kind, d.cell, d.at, d.yaw, d.parts, lightAt(l, d.cell, d.at, false, base), lightAt(l, d.cell, d.at, true, base)))
+
+// Litter outside copy `c`'s window `i` (`o`), there once it breaks: papers,
+// leaves and a takeaway carton across the opening, just outside it, between
+// its sill and head. Its draft carries them in.
+let litterKinds = [Paper, Leaf, Paper, Leaf, Takeaway, Paper]
+let litterOf = (c: Block.Copy, i: float, o: Glass.Opening): List<Body> =>
+  let n = List.length(litterKinds) in
+  litterKinds |> List.indexedMap((k, kind) =>
+    let s = seedOf(c) + i * 5.3 + k * 1.9 in
+    let along = (o.w - 0.5) * ((k + 0.5) / n - 0.5) in
+    let out = 0.35 + 0.3 * noise(s + 0.7) in
+    let up = o.sill + 0.3 + (o.head - o.sill - 0.6) * noise(s + 0.3) in
+    let at = Block.toLocal(c, v(o.x + o.nx * out + o.ax * along, up, o.z + o.nz * out + o.az * along)) in
+    bodyOf(c, $"litter-{i}-{k}", kind, -1.0, at, 360.0 * noise(s + 0.9), centred(partsOf([], kind, s)), (0.32, 0.32, 0.34), (0.85, 0.86, 0.88)))
+
+// How each kind moves: its mass (kg) and damping. Paper, leaves and the
+// takeaway drift and settle; a carton or a chair barely notices a draft.
+type Stuff = { mass: float, linear: float, angular: float }
+let stuffOf = (kind: Thing): Stuff =>
+  match kind with
+  | Paper => { mass: 0.03, linear: 1.2, angular: 0.6 }
+  | Leaf => { mass: 0.02, linear: 1.5, angular: 0.8 }
+  | Takeaway => { mass: 0.04, linear: 0.8, angular: 0.5 }
+  | Mug => { mass: 0.35, linear: 0.2, angular: 0.4 }
+  | Binder => { mass: 0.8, linear: 0.3, angular: 0.4 }
+  | Carton => { mass: 3.0, linear: 0.2, angular: 0.3 }
+  | FallenChair => { mass: 5.0, linear: 0.1, angular: 0.2 }
+
+// A body as a dynamic body at its rest. Swept (`continuous`): thin things
+// thrown fast would otherwise step through the floor's or a wall's face.
+// Declared at rest on the floor, it settles and sleeps.
+let declare = (b: Body): Physics.body =>
+  let s = stuffOf(b.kind) in
+  Physics.dynamic(Physics.tag(b.tag), Physics.box(b.w, b.h, b.d)) |> Physics.at(v(b.x, b.y, b.z)) |> Physics.rotateY(Angle.degrees(b.yaw))
+    |> Physics.mass(s.mass) |> Physics.linearDamping(s.linear) |> Physics.angularDamping(s.angular) |> Physics.continuous
+
+// ---- Tracking ----------------------------------------------------------------------
+
+// Each group's bodies with their poses read back (a pre-step read: the last
+// step's world): a body more than 2 cm from its rest is loose, and still
+// once it sleeps (a sleeper's velocity is exactly zero). One at rest keeps
+// its record.
+let observed = (groups: List<Group>): List<Group> =>
+  groups |> List.map((g) => { g with bodies: g.bodies |> List.map((b) =>
+    let t = Physics.tag(b.tag) in
+    let p = Physics.position(t) in
+    let (dx, dy, dz) = (p.x - b.x, p.y - b.y, p.z - b.z) in
+    if dx * dx + dy * dy + dz * dz < 0.0004 && b.pose == Option.None then b
+    else
+      let u = Physics.linearVelocity(t) in
+      { b with pose: Option.Some({ x: p.x, y: p.y, z: p.z, still: u.x == 0.0 && u.y == 0.0 && u.z == 0.0 }) }) })
+
+// The groups for the copies `solid` of `town`, with `broken` (copy name,
+// window) windows: a copy that stays keeps its group (its bodies where
+// they are), one that breaks a window adds its litter and draft, and a copy
+// newly solid strews afresh.
+type Broken = { copy: string, window: float }
+let groupsFor = (town: Block.Town, solid: List<float>, broken: List<Broken>, was: List<Group>): List<Group> =>
+  solid |> List.map((id) =>
+    let c = Block.copyIn(town, id) in
+    let mine = broken |> List.filter((w) => w.copy == c.name) |> List.map((w) => w.window) in
+    let g = was |> List.find((g) => g.copy == c.name) |> Option.defaultWith(() => { copy: c.name, broken: [], bodies: strewnBodies(c), drafts: [] }) in
+    let fresh = mine |> List.filter((i) => not Block.isIn(i, g.broken)) in
+    if List.isEmpty(fresh) then g
+    else
+      let opened = Glass.openingsOf(c) |> List.filter((e) => let (i, o) = e in Block.isIn(i, fresh)) in
+      { g with broken: mine,
+               bodies: g.bodies |> List.append(opened |> List.concatMap((e) => let (i, o) = e in litterOf(c, i, o))),
+               drafts: g.drafts |> List.append(opened |> List.map((e) => let (i, o) = e in Glass.draftOf(Block.tagOf(c, $"draft-{i}"), o))) })
+
+// The candidate tags of a group's loose bodies (the copy's instanced cube
+// leaves them out).
+let looseTags = (g: Group): List<string> =>
+  g.bodies |> List.filter((b) => b.pose != Option.None) |> List.map((b) => b.local)
+
+// Every loose body, each drawn at its body's live pose: one instanced cube
+// of its parts round its centre, built once (`Scene.memo`).
+type Look = { h: float, parts: List<Part>, tint: (float, float, float) }
+let looseScenes = (groups: List<Group>, day: bool): List<Scene.t> =>
+  groups |> List.concatMap((g) => g.bodies |> List.filter((b) => b.pose != Option.None) |> List.map((b) =>
+    Scene.memo(b.tag, { h: b.h, parts: b.parts, tint: if day then b.day else b.night }, lookScene) |> Physics.transformed(Physics.tag(b.tag))))
+let lookScene = (k: Look): Scene.t => cubes(placed(v(0.0, 0.0, 0.0), 0.0, k.h, k.tint, k.parts))

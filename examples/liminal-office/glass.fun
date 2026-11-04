@@ -172,8 +172,61 @@ let sidelightColliders = (name: string): List<Collider> =>
   if name == "cinema" then entranceOf(name, Archetypes.cinema.layout, sidelights) |> List.indexedMap(colliderOf)
   else if name == "mall" then shopDoors |> List.concatMap((d) => shopfrontPanes(d, sidelights)) |> List.indexedMap(colliderOf)
   else []
-// A copy's sidelight bodies.
-let bodiesOf = (c: Block.Copy): List<Physics.body> => Block.bodiesFrom(c, sidelightColliders(c.archetype))
+// A copy's sidelight bodies, and a thin box across each of its real
+// windows but those in `broken` (indices into its layout's windows).
+let bodiesOf = (c: Block.Copy, broken: List<float>): List<Physics.body> =>
+  let l = Block.archetypeOf(c).layout in
+  Block.bodiesFrom(c, List.append(sidelightColliders(c.archetype),
+    windowsAt(l, windowOut(l)) |> List.indexedMap((i, p) => if Block.isIn(i, broken) then [] else [windowCollider(i, p)]) |> List.flatten))
+// A pane faces ±z (yaw 0, 180) or ±x (90, 270).
+let windowCollider = (i: float, p: Pane): Collider =>
+  let across = Math.abs(Math.sin(p.yaw * Math.pi / 180.0)) > 0.5 in
+  { tag: $"window-{i}", shape: if across then Physics.box(0.06, p.h, Math.abs(p.w)) else Physics.box(Math.abs(p.w), p.h, 0.06), at: p.at }
+
+// ---- Broken windows ----------------------------------------------------------------
+
+// An archetype's street-side panes without the real windows in `broken`
+// (the windows come first in `streetPanesOf`).
+let outsideWithout = (name: string, l: Layout, broken: List<float>): Scene.t =>
+  streetPanesOf(name, l) |> List.indexedMap((i, p) => if Block.isIn(i, broken) then [] else [instanceOf(p)]) |> List.flatten |> panesOf
+
+// Copy `c`'s window `i` in the world: its pane's centre, which way is out
+// (n) and along it (a), as unit (x, z), its width, and its room's floor,
+// sill and head heights.
+type Opening = { x: float, y: float, z: float, nx: float, nz: float, ax: float, az: float, w: float, floor: float, sill: float, head: float }
+let openingOf = (c: Block.Copy, i: float, win: Window): Opening =>
+  let l = Block.archetypeOf(c).layout in
+  let base = roomAt(l, win.room).level * l.storey in
+  let at = Block.toWorld(c, paneOn(l, win.side, base, windowHole(win), windowOut(l)).at) in
+  let (ox, oz) = match win.side with
+    | South => (0.0, -1.0)
+    | North => (0.0, 1.0)
+    | West => (-1.0, 0.0)
+    | East => (1.0, 0.0) in
+  let (nx, nz) = Block.turn(c.yaw, ox, oz) in
+  { x: Vec3.x(at), y: Vec3.y(at), z: Vec3.z(at), nx: nx, nz: nz, ax: 0.0 - nz, az: nx, w: win.width,
+    floor: base, sill: base + win.sill, head: base + win.head }
+// Every real window of copy `c`, by index.
+let openingsOf = (c: Block.Copy): List<(float, Opening)> =>
+  Block.archetypeOf(c).layout.windows |> List.indexedMap((i, win) => (i, openingOf(c, i, win)))
+
+// The draft through a broken window: a world-axis box (copies turn in
+// quarter turns) from `draftOut` outside to `draftIn` inside, floor to above
+// the head, blowing in and nearly floating a sheet of paper (0.29 N of
+// weight), with gusts. Plain data, so the model can hold it.
+type Draft = { tag: string, cx: float, cy: float, cz: float, sx: float, sy: float, sz: float, fx: float, fz: float }
+let draftOut = 1.2
+let draftIn = 3.5
+let draftOf = (tag: string, o: Opening): Draft =>
+  let mid = (draftOut - draftIn) / 2.0 in
+  let deep = draftOut + draftIn in
+  let wide = o.w + 0.4 in
+  { tag: tag, cx: o.x + o.nx * mid, cy: (o.floor + o.head + 0.3) / 2.0, cz: o.z + o.nz * mid,
+    sx: Math.abs(o.nx) * deep + Math.abs(o.ax) * wide, sy: o.head + 0.3 - o.floor, sz: Math.abs(o.nz) * deep + Math.abs(o.az) * wide,
+    fx: -0.15 * o.nx, fz: -0.15 * o.nz }
+let volumeOf = (d: Draft): Physics.body =>
+  Physics.forceVolume(Physics.tag(d.tag), { center: v(d.cx, d.cy, d.cz), size: v(d.sx, d.sy, d.sz),
+    force: v(d.fx, 0.26, d.fz), turbulence: 0.12, drag: 1.0 })
 
 // A shell pane placed in copy `c`.
 let place = (c: Block.Copy, p: Pane): Instance.t =>
@@ -206,3 +259,12 @@ expect List.length(doorGlass({ lo: 0.0, hi: 1.6, bottom: 0.0, top: 2.7 })) == 1
 expect List.length(shopfronts) == List.length(MallLayout.bays)
 expect List.length(sidelightColliders("mall")) == 2.0 * List.length(MallLayout.bays)
 expect List.length(sidelightColliders("cinema")) == 2.0
+// Each real window is solid until broken.
+expect List.length(bodiesOf(Block.home, [])) == List.length(office.windows)
+expect List.length(bodiesOf(Block.home, [0.0])) == List.length(office.windows) - 1.0
+// Office 103's window faces west: its draft blows in along +x, from outside it.
+expect (match openingsOf(Block.home) with
+  | [first, .._] =>
+    let (i, o) = first in
+    let d = draftOf("d", o) in o.nx == -1.0 && d.fx > 0.0 && d.fz == 0.0 && d.cx > o.x && d.cx - d.sx / 2.0 < o.x
+  | _ => false)
