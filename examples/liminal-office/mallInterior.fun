@@ -605,13 +605,27 @@ let serviceFaces = (i: float): List<Poly> =>
 // The north shopfronts' centres, the same on both levels.
 let frontXs = fronts |> List.filter((f) => f.side == North && cellAt(f.cell).level == 0.0) |> List.map((f) => f.at)
 
+// The layout's furniture (furniture.fun) in the lit atlas's colours: a
+// piece's faces and its collider.
+let swatchMat = (s: float): float =>
+  if s == Furniture.white || s == Furniture.water || s == Furniture.laminate then enamel
+  else if s == Furniture.metal then rack
+  else if s == Furniture.leaf then leaves
+  else if s == Furniture.fabric then shutter
+  else if s == Furniture.books || s == Furniture.dead then cardboard
+  else trim
+let furnishItem = (f: Furnish): Item =>
+  let b = Furniture.solidOf(inner(f.room), f) in
+  { faces: Furniture.facesOf(inner(f.room), f) |> List.map((s) => quad(swatchMat(s.swatch), s.o, s.a, s.b)),
+    solid: [box3(b.x0, b.y0, b.z0, b.x1, b.y1, b.z1)] }
+
 // Cell `i`'s furniture and its other faces: a shop's fit-out, a stockroom's
-// shelving, the corridor's signs.
+// shelving, the layout's pieces, the corridor's signs.
 let itemsOf = (i: float): List<Item> =>
-  match cellAt(i).kind with
-  | Shop => fitItems(i)
-  | Stock => stockItems(i)
-  | _ => []
+  List.append(Furniture.inRoom(layout, i) |> List.map(furnishItem), (match cellAt(i).kind with
+    | Shop => fitItems(i)
+    | Stock => stockItems(i)
+    | _ => []))
 let backFaces = (i: float): List<Poly> =>
   List.append(itemsOf(i) |> List.concatMap((t) => t.faces), (match cellAt(i).kind with
     | Shop => fitFaces(i)

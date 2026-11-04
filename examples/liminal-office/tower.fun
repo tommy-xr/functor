@@ -68,7 +68,7 @@ let residentOf = (b: Provenance.Baked): List<Scene.t> =>
 
 // Bake layout `l`'s colliders on `level`, from its interior `k`: its rooms'
 // walls, its flights' parapets and ramps, the balustrade of a flight ending
-// on it, and its floors.
+// on it, its furniture, and its floors.
 let levelColliders = (l: Layout, k: Building.Interior, level: float): List<Building.Collider> =>
   let flights = l.flights |> List.indexedMap((j, f) => (j, f)) in
   let from = flights |> List.filter((e) => let (j, f) = e in Building.roomAt(l, f.lower).level == level) in
@@ -76,6 +76,7 @@ let levelColliders = (l: Layout, k: Building.Interior, level: float): List<Build
     List.range(List.length(l.rooms)) |> List.filter((i) => Building.roomAt(l, i).level == level) |> List.concatMap((i) => Building.wallBlocks(l, i)),
     from |> List.concatMap((e) => let (j, f) = e in Building.flightBlocks(l, j, f)),
     flights |> List.concatMap((e) => let (j, f) = e in if Building.roomAt(l, f.upper).level == level then Building.balustradeBlocks(l, j, f) else []),
+    Building.furnitureBlocks(l) |> List.filter((b) => Building.levelAtY(l, b.y - b.h / 2.0) == level),
   ]) in
   let floors = Building.floorFacesOf(l, k.allFaces) |> List.filter((f) => Building.near(Vec3.y(f.q.o), level * l.storey)) in
   Building.collidersOf({ l with flights: from |> List.map((e) => let (j, f) = e in f) }, blocks, floors)

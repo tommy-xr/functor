@@ -70,6 +70,46 @@ let steel = 11.0
 let doorPanel = 12.0
 // A niche's panel (`Niche` fixtures).
 let niche = 13.0
+// The furniture's swatch atlas (furniture.fun). A furniture face shows
+// swatch `s` of it: its `mat` is `swatchBase + s`.
+let furnish = 14.0
+let swatchBase = 100.0
+
+// The atlas: each swatch's block from its paint, textured by kind (grain,
+// weave, book spines), as furniture.fun lays them out.
+let furnishImage = (paints: List<Paint>): Texture.pixels =>
+  let n = Furniture.blockTexels in
+  let side = Furniture.atlasSide * n in
+  image(side, side, (x, y) =>
+    let s = Math.floor(y / n) * Furniture.atlasSide + Math.floor(x / n) in
+    let p = List.nth(s, paints) |> Option.defaultValue(paint(128.0, 128.0, 128.0)) in
+    let u = Math.mod(x, n) in
+    let t = Math.mod(y, n) in
+    let grain = noise(x + 977.0 * y) in
+    if s == Furniture.books then
+      (let spine = Math.floor(u / 2.0) + 8.0 * Math.floor(y / n) in
+       let k = noise(spine * 7.0 + 3.0) in
+       let hue = if k < 0.33 then paint(p.r, p.g * 0.5, p.b * 0.4) else if k < 0.66 then paint(p.r * 0.45, p.g * 0.6, p.b) else p in
+       shade(0.7 + 0.5 * noise(spine) + (if t < 2.0 then 0.25 else 0.0), hue))
+    else if s == Furniture.laminate || s == Furniture.wood then shade(0.92 + 0.12 * noise(Math.floor(t / 2.0) * 13.0 + s) + 0.04 * grain, p)
+    else if s == Furniture.fabric then shade(0.88 + 0.24 * grain + (if Math.mod(u + t, 4.0) == 0.0 then -0.06 else 0.0), p)
+    else if s == Furniture.leaf || s == Furniture.dead then shade(0.8 + 0.4 * grain, p)
+    else shade(0.96 + 0.08 * grain, p))
+let swatchAverage = (paints: List<Paint>): Paint =>
+  let n = Math.max(1.0, List.length(paints)) in
+  paint((paints |> List.map((p) => p.r) |> List.sum) / n, (paints |> List.map((p) => p.g) |> List.sum) / n,
+        (paints |> List.map((p) => p.b) |> List.sum) / n)
+// The furnish material over swatch colours, in furniture.fun's order.
+let furnishMaterial = (paints: List<Paint>): Material =>
+  { tile: 0.0, unlit: false, texture: Texture.fromPixels(furnishImage(paints)), albedo: rgb(swatchAverage(paints).r, swatchAverage(paints).g, swatchAverage(paints).b) }
+// The office's: pale laminate, blue-grey upholstery, near-black plastic,
+// putty steel, brown wood, leaf green, off-white plastic, bottle blue,
+// book spines, dead leaves.
+let officeSwatches = [
+  paint(196.0, 178.0, 140.0), paint(84.0, 98.0, 118.0), paint(34.0, 34.0, 36.0), paint(168.0, 164.0, 150.0),
+  paint(112.0, 78.0, 50.0), paint(62.0, 104.0, 56.0), paint(214.0, 208.0, 192.0), paint(150.0, 196.0, 216.0),
+  paint(150.0, 120.0, 90.0), paint(124.0, 96.0, 58.0),
+]
 
 // A palette: a `Material` per index above, in that order. This is the
 // office's; another archetype may repaint it (housePalettes.fun).
@@ -95,10 +135,11 @@ let materials = [
   material(doorPaint, 0.0, false, image(8.0, 16.0, (x, y) =>
     if x < 1.0 || x > 6.0 || y < 1.0 then shade(0.8, doorPaint) else doorPaint)),
   material(ceilingPaint, 0.0, false, solid(ceilingPaint)),
+  furnishMaterial(officeSwatches),
 ]
 
 let materialIn = (p: List<Material>, i: float): Material =>
-  match List.nth(i, p) with
+  match List.nth(if i >= swatchBase then furnish else i, p) with
   | Option.Some(m) => m
   | Option.None => Binary.invalid($"no material {i}")
 
@@ -559,17 +600,32 @@ let stairFaces = (l: Layout, i: float): List<Face> =>
     if roomAt(l, f.lower).rect != room.rect then []
     else flightFaces(l, f) |> List.filter((face) => levelAtY(l, lowestY(face)) == room.level))
 
+// ---- Furniture -----------------------------------------------------------------
+
+// Room `i`'s furniture (furniture.fun), its faces from its floor up.
+let furnitureFaces = (l: Layout, i: float): List<Face> =>
+  let y = baseOf(l, roomAt(l, i)) in
+  let r = inner(l, roomAt(l, i).rect) in
+  Furniture.inRoom(l, i) |> List.concatMap((f) => Furniture.facesOf(r, f)) |> List.map((s) => lift(y, face(swatchBase + s.swatch, s.o, s.a, s.b)))
+// A collider box per piece, in the building's space.
+let furnitureBlocks = (l: Layout): List<Block> =>
+  l.furniture |> List.indexedMap((k, f) =>
+    let b = Furniture.solidOf(inner(l, roomAt(l, f.room).rect), f) in
+    let y = baseOf(l, roomAt(l, f.room)) in
+    block($"furniture-{k}", b.x0, y + b.y0, b.z0, b.x1, y + b.y1, b.z1))
+
 // ---- The interior mesh -----------------------------------------------------
 
 // Every face in cell `i` (room `i`), sorted by material (one group each):
-// the room's own, its halves of its doors and windows, and its share of the
-// stairs. A roof has none: the street side draws it.
+// the room's own, its halves of its doors and windows, its share of the
+// stairs, and its furniture. A roof has none: the street side draws it.
 let cellFaces = (l: Layout, i: float): List<Face> =>
   List.flatten([
     roomFaces(l, i),
     l.doors |> List.filter((d) => (d.a == i || d.b == i) && roomAt(l, i).kind != Roof) |> List.concatMap((d) => doorHalf(l, d, i)),
     windowHalves(l, i),
     stairFaces(l, i),
+    furnitureFaces(l, i),
   ]) |> List.sortBy((f) => f.mat)
 
 let xyz = (p: Vec3.t): List<float> => [Vec3.x(p), Vec3.y(p), Vec3.z(p)]
@@ -582,7 +638,9 @@ let quadTriangles = (n: float): Bytes.t =>
 // up across neighbouring faces; tile 0 stretches the texture over the face.
 let uvsOf = (p: List<Material>, f: Face): List<float> =>
   let t = materialIn(p, f.mat).tile in
-  if t == 0.0 then [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+  if f.mat >= swatchBase then
+    (let r = Furniture.swatchRect(f.mat - swatchBase) in [r.u0, r.v1, r.u1, r.v1, r.u1, r.v0, r.u0, r.v0])
+  else if t == 0.0 then [0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
   else
     let au = Vec3.normalize(f.q.a) in
     let bu = Vec3.normalize(f.q.b) in
@@ -602,10 +660,13 @@ type Span = { mat: float, first: float, count: float }
 let spansOf = (base: float, faces: List<Face>): List<Span> =>
   let (spans, next) = List.range(List.length(materials)) |> List.fold((acc, m) =>
     let (out, first) = acc in
-    let n = 2.0 * List.length(faces |> List.filter((f) => f.mat == m)) in
+    let n = 2.0 * List.length(faces |> List.filter((f) => groupMat(f) == m)) in
     if n == 0.0 then acc
     else (out |> List.append([{ mat: m, first: first, count: n }]), first + n), ([], base)) in
   spans
+// The material a face draws in: a furniture face's swatch is the furnish
+// material's.
+let groupMat = (f: Face): float => if f.mat >= swatchBase then furnish else f.mat
 let groupOf = (p: List<Material>, s: Span): Model.group =>
   { first: s.first, count: s.count, texture: Option.Some(materialIn(p, s.mat).texture), unlit: materialIn(p, s.mat).unlit, emissive: 0.0 }
 
@@ -690,6 +751,7 @@ let balustradeBlocks = (l: Layout, k: float, f: Flight): List<Block> =>
 let blocksOf = (l: Layout): List<Block> => List.flatten([
   List.range(List.length(l.rooms)) |> List.concatMap((i) => wallBlocks(l, i)),
   l.flights |> List.indexedMap((k, f) => List.append(balustradeBlocks(l, k, f), flightBlocks(l, k, f))) |> List.flatten,
+  furnitureBlocks(l),
 ])
 
 // Interior floors, door thresholds and landings, from the faces the mesh

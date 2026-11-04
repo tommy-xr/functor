@@ -26,7 +26,7 @@ let recessed = (p: Paint): Texture.pixels =>
   image(16.0, 16.0, (x, y) => shade(0.8 + 0.05 * Math.min(4.0, Math.min(Math.min(x, y), Math.min(15.0 - x, 15.0 - y))), p))
 let lamp = paint(250.0, 204.0, 140.0)
 
-type Colours = { carpet: Paint, linoA: Paint, linoB: Paint, wall: Paint, ceiling: Paint, trim: Paint, stair: Paint, niche: Paint }
+type Colours = { carpet: Paint, linoA: Paint, linoB: Paint, wall: Paint, ceiling: Paint, trim: Paint, stair: Paint, niche: Paint, upholstery: Paint }
 
 // A palette from its colours, in building.fun's material order.
 let paletteOf = (c: Colours): List<Material> => [
@@ -44,6 +44,10 @@ let paletteOf = (c: Colours): List<Material> => [
   office(steel),
   office(doorPanel),
   material(c.niche, 0.0, false, recessed(c.niche)),
+  // The furniture: the office's swatches, its upholstery and wood the
+  // house's.
+  furnishMaterial(officeSwatches |> List.indexedMap((k, p) =>
+    if k == Furniture.fabric then c.upholstery else if k == Furniture.wood then c.trim else p)),
 ]
 
 let ochre = paletteOf({
@@ -54,6 +58,7 @@ let ochre = paletteOf({
   trim: paint(96.0, 66.0, 40.0),
   stair: paint(128.0, 92.0, 56.0),
   niche: paint(232.0, 220.0, 190.0),
+  upholstery: paint(126.0, 70.0, 44.0),
 })
 
 let magenta = paletteOf({
@@ -64,6 +69,7 @@ let magenta = paletteOf({
   trim: paint(228.0, 120.0, 56.0),
   stair: paint(150.0, 28.0, 104.0),
   niche: paint(246.0, 246.0, 240.0),
+  upholstery: paint(70.0, 150.0, 156.0),
 })
 
 expect List.length(ochre) == List.length(materials) && List.length(magenta) == List.length(materials)

@@ -73,6 +73,14 @@ let lampHeads = List.flatten([
   [5.0, 20.0, 40.0, 55.0] |> List.map((x) => v(x, 4.8, 0.0 - 29.0)),
 ])
 
+// The lobby's waiting corner: a couch under the west posters, a bench and
+// a plant.
+let furniture = [
+  { room: lobby, piece: Couch, x: 15.6, z: 8.0, facing: East, mess: 0.3 },
+  { room: lobby, piece: Bench, x: 18.6, z: 5.0, facing: West, mess: 0.0 },
+  { room: lobby, piece: Plant, x: 15.5, z: 10.0, facing: East, mess: 0.7 },
+]
+
 let layout: Layout = {
   footprint: footprint,
   ceiling: cellHeight,
@@ -87,6 +95,7 @@ let layout: Layout = {
   windows: [],
   fixtures: [],
   lamps: [],
+  furniture: furniture,
   bands: [],
   streetLamps: lampHeads,
   // In the parking lot, facing the entrance (+Z).

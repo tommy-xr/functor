@@ -130,6 +130,8 @@ let toyAtlas = Texture.atlas({ images: toyImages |> List.map((p) => { pixels: p,
 let rgb = (p: Building.Paint): Color.t => Building.rgb(p.r, p.g, p.b)
 let look = (p: Building.Paint, unlit: bool, pixels: Texture.pixels): Paints.Look =>
   { texture: Texture.fromPixels(pixels), unlit: unlit, albedo: rgb(p) }
+// The furniture's swatches (furniture.fun): the office's, upholstered teal.
+let furnishSwatches = Building.officeSwatches |> List.indexedMap((k, p) => if k == Furniture.fabric then paint(40.0, 112.0, 118.0) else p)
 let looks: List<Paints.Look> = [
   look(carpetBase, false, carpetImage),
   look(wallPaint, false, speckled(0.06, wallPaint)),
@@ -142,14 +144,17 @@ let looks: List<Paints.Look> = [
   look(ceilingPaint, false, Building.tiled(32.0, 1.0, shade(0.62, ceilingPaint), ceilingPaint)),
   { texture: glowAtlas.texture, unlit: true, albedo: rgb(paint(60.0, 50.0, 60.0)) },
   { texture: toyAtlas.texture, unlit: false, albedo: rgb(paint(150.0, 110.0, 80.0)) },
+  { texture: Texture.fromPixels(Building.furnishImage(furnishSwatches)), unlit: false, albedo: rgb(Building.swatchAverage(furnishSwatches)) },
 ]
 let glowLook = 8.0
 let toyLook = 9.0
+let furnishLook = 10.0
 
 let plain = (lk: float, tile: float): Paints.Paint => { look: lk, tile: tile, cell: Option.None }
 let cellOf = (lk: float, rects: List<Texture.rect>, i: float): Paints.Paint => { look: lk, tile: 0.0, cell: List.nth(i, rects) }
 
-// Paint ids: the plain ones, then the glow atlas's cells, then the toys'.
+// Paint ids: the plain ones, then the glow atlas's cells, the toys', the
+// furniture's swatches.
 let carpet = 0.0
 let wall = 1.0
 let black = 2.0
@@ -171,12 +176,14 @@ let exit = glowBase + 14.0
 let arrow = glowBase + 15.0
 let toyBase = glowBase + 16.0
 let toyPaint = (c: float): float => toyBase + c
+let furnishBase = toyBase + List.length(toyImages)
 
 let palette: Paints.Palette = { looks: looks, paints: List.flatten([
   [plain(0.0, 2.0), plain(1.0, 1.0), plain(2.0, 1.0), plain(3.0, 1.0), plain(4.0, 1.0), plain(5.0, 1.0),
    plain(6.0, 0.6), plain(7.0, 0.6)],
   List.range(List.length(glowImages)) |> List.map((i) => cellOf(glowLook, glowAtlas.rects, i)),
   List.range(List.length(toyImages)) |> List.map((i) => cellOf(toyLook, toyAtlas.rects, i)),
+  List.range(Furniture.swatches) |> List.map((s) => { look: furnishLook, tile: 0.0, cell: Option.Some(Furniture.swatchRect(s)) }),
 ]) }
 
 // ---- Faces --------------------------------------------------------------------------
@@ -480,10 +487,12 @@ let servicePanels = (i: float): List<Vec3.t> =>
     let a = a0 + pad + 3.0 * k in
     if alongX then v(a, heightOf(i), (r.z0 + r.z1) / 2.0) else v((r.x0 + r.x1) / 2.0, heightOf(i), a))
 
-// Cell `i`'s faces: its room's own, its door halves, its posters.
+// Cell `i`'s faces: its room's own, its door halves, its posters, its
+// furniture.
 let cellFaces = (i: float): List<Building.Face> =>
   let room = Building.roomAt(l, i) in
   List.flatten([
+    Furniture.inRoom(l, i) |> List.concatMap((f) => Furniture.facesOf(innerOf(i), f)) |> List.map((s) => face(furnishBase + s.swatch, s.o, s.a, s.b)),
     if not Building.isInside(room) then []
     else if i == CinemaLayout.lobby then lobbyFaces()
     else if isAuditorium(i) then auditoriumFaces(i)

@@ -84,10 +84,33 @@ type Band = { level: float, side: Side, at: float }
 // Where the player starts, on the ground.
 type Spot = { x: float, z: float }
 
+// Box-built furniture, baked into its room (furniture.fun). `Stack`: four
+// side chairs stacked in a corner.
+type Article =
+  | Desk
+  | Chair
+  | SideChair
+  | Stack
+  | Couch
+  | CoffeeTable
+  | Cabinet
+  | Counter
+  | Bookshelf
+  | Cooler
+  | Plant
+  | Bed
+  | Bench
+  | Kiosk
+
+// A piece in room `room`, centred (x, z), its front toward `facing`.
+// `mess` (0 to 1) scales its disorder: turned or pushed off its place, a
+// chair tipped, a drawer pulled out; which, from the noise at (x, z).
+type Furnish = { room: float, piece: Article, x: float, z: float, facing: Side, mess: float }
+
 // One archetype. `levels` storeys, `storey` floor to floor; `facadeHeight`
 // is the roofline. Room ids are list positions, and they are the cell ids.
 // `bands` and `streetLamps` (lamp heads, in its space) are the street side's.
-// The player starts at `spawn`.
+// The player starts at `spawn`. Most rooms have no `furniture`.
 type Layout = {
   footprint: Rect,
   ceiling: float,
@@ -102,6 +125,7 @@ type Layout = {
   windows: List<Window>,
   fixtures: List<Fixture>,
   lamps: List<Lamp>,
+  furniture: List<Furnish>,
   bands: List<Band>,
   streetLamps: List<Vec3.t>,
   spawn: Spot,

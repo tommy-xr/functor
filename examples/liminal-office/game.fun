@@ -400,14 +400,16 @@ let physics = (model) =>
 // ---- Drawing ---------------------------------------------------------------------
 
 // What a copy draws: its archetype's street side at the hour's neon and
-// lamps, and its interior when active, under the day or night bake.
+// lamps, and its interior when active, under the day or night bake, with
+// its own strewn debris.
 type CopyLook = { copy: Block.Copy, neon: float, lamps: float, day: bool, active: bool }
 let copyScene = (look: CopyLook): Scene.t =>
   let a = Block.archetypeOf(look.copy) in
   let glass = Glass.glazingOf(a.name) in
   let interiorScene =
     if not look.active then Scene.group([])
-    else Scene.cells(a.level, Scene.group(List.append(if look.day then a.day else a.night, glass.inside))) in
+    else Scene.cells(a.level, Scene.group(List.flatten([if look.day then a.day else a.night, glass.inside,
+                                                        [Debris.ofCopy(look.copy, a.layout, a.name, look.day)]]))) in
   Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps, look.day), interiorScene, glass.outside]))
 
 // Each town's cinema copies.

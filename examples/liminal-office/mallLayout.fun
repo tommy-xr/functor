@@ -203,6 +203,17 @@ let drums = [4.0, 10.0] |> List.concatMap((x) => [15.0, 21.0, 27.0] |> List.map(
 // span along the wall, and its height.
 let anchorDoor = { lo: 17.0, hi: 25.0, bottom: 0.0, top: 3.6 }
 
+// In the lower east hall, a shut kiosk under its canopy, benches round it
+// and two plants.
+let furniture = [
+  { room: eastHall, piece: Kiosk, x: 66.0, z: 21.0, facing: South, mess: 0.0 },
+  { room: eastHall, piece: Bench, x: 62.6, z: 21.0, facing: East, mess: 0.0 },
+  { room: eastHall, piece: Bench, x: 69.4, z: 21.0, facing: West, mess: 0.0 },
+  { room: eastHall, piece: Bench, x: 66.0, z: 17.6, facing: North, mess: 0.0 },
+  { room: eastHall, piece: Plant, x: 63.2, z: 18.2, facing: North, mess: 0.4 },
+  { room: eastHall, piece: Plant, x: 68.8, z: 23.8, facing: North, mess: 0.8 },
+]
+
 // ---- The lot ---------------------------------------------------------------------
 
 // South of the mall: three double rows of bays, lamp posts on the first
@@ -243,6 +254,7 @@ let layout: Layout = {
   windows: [],
   fixtures: [],
   lamps: [],
+  furniture: furniture,
   bands: [],
   streetLamps: lampHeads,
   // In the lot, facing the entrance.
