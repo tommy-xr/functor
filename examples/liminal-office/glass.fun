@@ -190,11 +190,11 @@ let windowCollider = (i: float, p: Pane): Collider =>
 let outsideWithout = (name: string, l: Layout, broken: List<float>): Scene.t =>
   streetPanesOf(name, l) |> List.indexedMap((i, p) => if Block.isIn(i, broken) then [] else [instanceOf(p)]) |> List.flatten |> panesOf
 
-// Copy `c`'s window `i` in the world: its pane's centre, which way is out
-// (n) and along it (a), as unit (x, z), its width, and its room's floor,
-// sill and head heights.
-type Opening = { x: float, y: float, z: float, nx: float, nz: float, ax: float, az: float, w: float, floor: float, sill: float, head: float }
-let openingOf = (c: Block.Copy, i: float, win: Window): Opening =>
+// Copy `c`'s window `win` in the world: its room, its pane's centre, which
+// way is out (n) and along it (a), as unit (x, z), its width, and its
+// room's floor, sill and head heights.
+type Opening = { room: float, x: float, y: float, z: float, nx: float, nz: float, ax: float, az: float, w: float, floor: float, sill: float, head: float }
+let openingOf = (c: Block.Copy, win: Window): Opening =>
   let l = Block.archetypeOf(c).layout in
   let base = roomAt(l, win.room).level * l.storey in
   let at = Block.toWorld(c, paneOn(l, win.side, base, windowHole(win), windowOut(l)).at) in
@@ -204,11 +204,11 @@ let openingOf = (c: Block.Copy, i: float, win: Window): Opening =>
     | West => (-1.0, 0.0)
     | East => (1.0, 0.0) in
   let (nx, nz) = Block.turn(c.yaw, ox, oz) in
-  { x: Vec3.x(at), y: Vec3.y(at), z: Vec3.z(at), nx: nx, nz: nz, ax: 0.0 - nz, az: nx, w: win.width,
+  { room: win.room, x: Vec3.x(at), y: Vec3.y(at), z: Vec3.z(at), nx: nx, nz: nz, ax: 0.0 - nz, az: nx, w: win.width,
     floor: base, sill: base + win.sill, head: base + win.head }
 // Every real window of copy `c`, by index.
 let openingsOf = (c: Block.Copy): List<(float, Opening)> =>
-  Block.archetypeOf(c).layout.windows |> List.indexedMap((i, win) => (i, openingOf(c, i, win)))
+  Block.archetypeOf(c).layout.windows |> List.indexedMap((i, win) => (i, openingOf(c, win)))
 
 // The draft through a broken window: a world-axis box (copies turn in
 // quarter turns) from `draftOut` outside to `draftIn` inside, floor to above
