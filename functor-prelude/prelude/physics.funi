@@ -228,7 +228,34 @@ let upright : (body) => body
 /// fast. Changing it reconciles onto the live body.
 let continuous : (body) => body
 
-/// Declare a physics world from gravity and bodies.
+/// A box field for `Physics.forceVolume`. `center` and the full `size` are
+/// world-axis (it does not rotate). `force` is in newtons, so a light body
+/// accelerates more than a heavy one. `turbulence` is the peak gust per axis
+/// in newtons (`0.0` is steady): smooth, seeded by the volume's and the
+/// body's tags, so a replay gusts identically. `drag` takes that fraction of a
+/// body's velocity per second while it is inside, whatever its mass (`0.0`
+/// is none).
+type volume = { center: Vec3.t, size: Vec3.t, force: Vec3.t, turbulence: float, drag: float }
+
+/// A persistent force field: a draft through a broken window, an air vent.
+///
+/// Declare it in `Physics.scene`'s list beside the bodies. Every physics step,
+/// each dynamic body whose centre of mass is inside gets the volume's force
+/// and gusts, and is woken for it, so a body inside never sleeps. It is
+/// declared each frame like a body and stops when it is no longer declared.
+/// The tag names the volume (it seeds the gusts) and is not a body:
+/// reads, commands and contacts never see it. For paper that flutters and
+/// settles, give the light bodies `Physics.linearDamping` and
+/// `Physics.angularDamping` too.
+///
+/// ```functor
+/// Physics.forceVolume(fanTag, { center: Vec3.make(0.0, 1.0, 3.0),
+///   size: Vec3.make(2.0, 2.0, 6.0), force: Vec3.make(0.0, 0.0, 2.0),
+///   turbulence: 0.5, drag: 0.0 })
+/// ```
+let forceVolume : (tag, volume) => body
+
+/// Declare a physics world from gravity, bodies and force volumes.
 let scene : (Vec3.t, List<body>) => world
 
 /// Build fixed and kinematic bodies once and reuse them while their inputs
@@ -365,6 +392,33 @@ let teleport : (tag, Vec3.t) => Effect.t
 /// `Physics.cast`, a move sees bodies as of the last step, so one declared
 /// this frame doesn't block it yet.
 let move : (tag, Vec3.t) => Effect.t
+
+/// How an explosion's push fades from full at its centre to zero at its
+/// radius: `Linear` is `1 - d / r`, `Quadratic` is `(1 - d / r)²` (most of
+/// the push close in).
+type falloff =
+  | Linear
+  | Quadratic
+
+/// `Physics.explodeWith`'s options. `lift` biases each push upward, as games
+/// do: `0.0` is purely radial, `1.0` lifts a level push to 45°.
+type blast = { falloff: falloff, lift: float }
+
+/// Push every dynamic body near a point away from it, at the next step:
+/// `(center, radius, strength)`.
+///
+/// A body is in range when its collider comes within `radius` of `center`,
+/// and the push lands at that nearest point, so off-centre hits spin it.
+/// `strength` is the impulse at the centre, in newton-seconds, so lighter
+/// bodies fly further; it fades linearly to zero at `radius`. Sleeping bodies
+/// wake. Kinematic and fixed bodies, characters included, are untouched. The
+/// blast is a recorded command like `Physics.applyImpulse`, so replays repeat
+/// it exactly.
+let explode : (Vec3.t, float, float) => Effect.t
+
+/// `Physics.explode` with a falloff and an upward lift:
+/// `Physics.explodeWith(center, 4.0, 6.0, { falloff: Physics.Quadratic, lift: 0.5 })`.
+let explodeWith : (Vec3.t, float, float, blast) => Effect.t
 
 /// Cast a ray and tag its `Physics.rayHit` result as a message.
 let raycast : (Vec3.t, Vec3.t, float, (rayHit) => 'msg) => Effect.t

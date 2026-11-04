@@ -20,7 +20,7 @@ use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::{Body, BodyKind, CharacterSettings, PhysicsScene, Shape};
+use super::{Blast, Body, BodyKind, CharacterSettings, Falloff, ForceVolume, PhysicsScene, Shape};
 use super::room::{self, RoomMeshes};
 use crate::fused_mesh::ChunkKey;
 
@@ -76,6 +76,9 @@ pub enum PhysicsCommand {
     /// collide and slide, climb slopes up to its limit, step up ledges and
     /// follow the ground down. Moves queued for one step chain.
     Move { tag: String, translation: [f32; 3] },
+    /// A radial impulse on every dynamic body in range (`Physics.explode`).
+    /// Names no body, so it never warns about a tag.
+    Explode(Blast),
 }
 
 impl PhysicsCommand {
@@ -89,6 +92,7 @@ impl PhysicsCommand {
             PhysicsCommand::SetVelocityY { tag, .. } => (tag, "setVelocityY"),
             PhysicsCommand::Teleport { tag, .. } => (tag, "teleport"),
             PhysicsCommand::Move { tag, .. } => (tag, "move"),
+            PhysicsCommand::Explode(_) => ("", "explode"),
         }
     }
 }
@@ -245,6 +249,10 @@ pub struct World {
     /// state, so snapshots, rewinds and replays restore it.
     #[serde(default)]
     grounded: BTreeMap<String, bool>,
+    /// The declared force volumes, applied every step (world state, so a
+    /// degraded frame keeps them and a seek restores them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    volumes: Vec<ForceVolume>,
     /// Bodies given an [`PhysicsCommand::ApplyForce`] this frame — their
     /// forces are cleared once the frame's substeps finish. Intra-call state:
     /// populated and cleared within one `step_frame`/`step`, so it is always
@@ -298,6 +306,7 @@ impl Clone for World {
             frame: self.frame,
             pending: self.pending.clone(),
             grounded: self.grounded.clone(),
+            volumes: self.volumes.clone(),
             forced: self.forced.clone(),
             events: self.events.clone(),
             command_warnings: self.command_warnings.clone(),
@@ -363,6 +372,7 @@ impl World {
             frame: 0,
             pending: Vec::new(),
             grounded: BTreeMap::new(),
+            volumes: Vec::new(),
             forced: Vec::new(),
             events: Vec::new(),
             command_warnings: Vec::new(),
@@ -466,6 +476,9 @@ impl World {
     /// matches declaring every body flat.
     pub fn reconcile(&mut self, scene: &PhysicsScene) {
         self.gravity = scene.gravity;
+        if self.volumes != scene.volumes {
+            self.volumes = scene.volumes.clone();
+        }
         let mut stats = ReconcileStats::default();
 
         let mut wanted: BTreeMap<&String, &Body> = BTreeMap::new();
@@ -744,6 +757,7 @@ impl World {
     /// the frame's event buffer.
     pub fn step_fixed(&mut self) {
         self.stale = false;
+        self.apply_volumes();
         // EventHandler must be Send + Sync; a Mutex'd Vec is the simplest
         // sink (single-threaded here — the lock is uncontended).
         #[derive(Default)]
@@ -1148,6 +1162,10 @@ impl World {
     /// game can't avoid, so it must not be fatal.
     pub(super) fn apply_pending(&mut self) {
         for command in std::mem::take(&mut self.pending) {
+            if let PhysicsCommand::Explode(blast) = &command {
+                self.explode(blast);
+                continue;
+            }
             let (tag, kind) = command.tag_and_kind();
             let (tag, kind) = (tag.to_string(), kind);
             let Some(&rb_handle) = self.tags.get(tag.as_str()) else {
@@ -1227,7 +1245,78 @@ impl World {
                     let rotation = *rb.rotation();
                     rb.set_position(Pose::from_parts(vec3(*position), rotation), true);
                 }
-                PhysicsCommand::Move { .. } => unreachable!("handled above"),
+                PhysicsCommand::Move { .. } | PhysicsCommand::Explode(_) => {
+                    unreachable!("handled above")
+                }
+            }
+        }
+    }
+
+    /// Push every dynamic body whose collider is within the blast radius
+    /// away from its centre, in tag order. The distance is to the nearest
+    /// collider point, so a large crate beside the blast counts; the push
+    /// lands at that point, so off-centre hits spin the body.
+    fn explode(&mut self, blast: &Blast) {
+        let center = vec3(blast.center);
+        for &handle in self.tags.values() {
+            let rb = &self.bodies[handle];
+            if !rb.is_dynamic() {
+                continue;
+            }
+            // Pose from the body, not the collider: a body teleported this
+            // frame moves its colliders only at the step.
+            let nearest = rb
+                .colliders()
+                .iter()
+                .map(|&c| {
+                    let collider = &self.colliders[c];
+                    let pose = match collider.position_wrt_parent() {
+                        Some(local) => *rb.position() * *local,
+                        None => *rb.position(),
+                    };
+                    collider.shape().project_point(&pose, center, true).point
+                })
+                .min_by(|a, b| a.distance(center).total_cmp(&b.distance(center)));
+            let Some(point) = nearest else { continue };
+            let distance = point.distance(center);
+            if distance > blast.radius {
+                continue;
+            }
+            let scale = falloff(blast.falloff, distance / blast.radius);
+            let impulse =
+                blast_direction(center, rb.center_of_mass(), blast.lift) * blast.strength * scale;
+            self.bodies[handle].apply_impulse_at_point(impulse, point, true);
+        }
+    }
+
+    /// One step of every force volume on the dynamic bodies inside it.
+    /// O(volumes × bodies), and only when a volume is declared.
+    fn apply_volumes(&mut self) {
+        if self.volumes.is_empty() {
+            return;
+        }
+        let time = self.frame as f32 * FIXED_DT;
+        for volume in &self.volumes {
+            let (center, half) = (vec3(volume.center), vec3(volume.size) * 0.5);
+            let force = vec3(volume.force);
+            let seed = fnv1a(FNV_OFFSET, volume.tag.as_bytes());
+            for (tag, &handle) in self.tags.iter() {
+                let rb = &mut self.bodies[handle];
+                let outside = ((rb.center_of_mass() - center).abs() - half).max_element() > 0.0;
+                if !rb.is_dynamic() || outside {
+                    continue;
+                }
+                let mut push = force;
+                if volume.turbulence > 0.0 {
+                    push += gust(fnv1a(seed, tag.as_bytes()), time) * volume.turbulence;
+                }
+                let mut impulse = push * FIXED_DT;
+                if volume.drag > 0.0 {
+                    impulse -= rb.linvel() * rb.mass() * (volume.drag * FIXED_DT).min(1.0);
+                }
+                if impulse != Vector::ZERO {
+                    rb.apply_impulse(impulse, true);
+                }
             }
         }
     }
@@ -1936,6 +2025,54 @@ impl World {
         // written to the live world.
         true
     }
+}
+
+/// A blast's fraction at `t = distance / radius` in `0..=1`.
+fn falloff(falloff: Falloff, t: f32) -> f32 {
+    let linear = (1.0 - t).clamp(0.0, 1.0);
+    match falloff {
+        Falloff::Linear => linear,
+        Falloff::Quadratic => linear * linear,
+    }
+}
+
+/// The unit push from `center` toward `com`, biased up by `lift`. A body at
+/// the centre goes straight up.
+fn blast_direction(center: Vector, com: Vector, lift: f32) -> Vector {
+    let radial = (com - center).try_normalize().unwrap_or(Vector::Y);
+    (radial + Vector::Y * lift).try_normalize().unwrap_or(radial)
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// FNV-1a: a stable string hash, so gust seeds match across runs and builds.
+fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash = (hash ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// A smooth per-axis gust in `[-1, 1]` at `time` seconds: two sines per axis
+/// whose 0.4–2 Hz frequencies and phases come from `seed`. Smooth, so light
+/// bodies sway rather than jitter.
+fn gust(seed: u64, time: f32) -> Vector {
+    // SplitMix64 of (seed, i): independent draws in [0, 1).
+    let unit = |i: u64| {
+        let mut z = seed.wrapping_add(i.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
+    };
+    let axis = |a: u64| {
+        let wave = |k: u64, weight: f32| {
+            let hz = 0.4 + 1.6 * unit(a * 4 + k * 2);
+            let phase = std::f32::consts::TAU * unit(a * 4 + k * 2 + 1);
+            weight * (std::f32::consts::TAU * hz * time + phase).sin()
+        };
+        wave(0, 0.6) + wave(1, 0.4)
+    };
+    Vector::new(axis(0), axis(1), axis(2))
 }
 
 fn vec3(v: [f32; 3]) -> Vector {

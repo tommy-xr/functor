@@ -153,11 +153,13 @@
 //! Physics.sensor(body)                                      -> Body
 //! Physics.upright(body)                                     -> Body
 //! Physics.continuous(body)                                  -> Body
+//! Physics.forceVolume(tag, { center, size, force, … })      -> Body (scene-only)
 //! Physics.scene(Vec3.make(gx, gy, gz), [body, …])                      -> PhysicsScene
 //! Physics.position(tag)                                     -> {x, y, z}
 //! Physics.transformed(tag, scene)                           -> Scene
 //! Physics.applyImpulse/applyForce/setVelocity/teleport(tag, v)
 //!                                                           -> Effect
+//! Physics.explode(center, radius, strength)                 -> Effect
 //! ```
 //!
 //! The `Physics.*` reads target the singleton world the shell reconciles and
@@ -1624,6 +1626,10 @@ pub struct FunctorLangBody(pub physics::Body);
 /// `Physics.scene` accepts it.
 pub struct FunctorLangBodyGroup(pub physics::BodyGroup);
 
+/// A `Physics.forceVolume`: typed `body` in Functor Lang, but only
+/// `Physics.scene` accepts it.
+pub struct FunctorLangForceVolume(pub physics::ForceVolume);
+
 /// A [`physics::PhysicsScene`] as an opaque Functor Lang value — what a Functor Lang `physics`
 /// hook returns.
 pub struct FunctorLangPhysicsScene(pub physics::PhysicsScene);
@@ -1653,6 +1659,15 @@ impl HostData for FunctorLangBody {
 impl HostData for FunctorLangBodyGroup {
     fn type_name(&self) -> &'static str {
         "Physics.memo group"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HostData for FunctorLangForceVolume {
+    fn type_name(&self) -> &'static str {
+        "Physics.forceVolume"
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -2063,6 +2078,7 @@ crate::host_returnable!(
     FunctorLangSkybox,
     FunctorLangShape,
     FunctorLangBody,
+    FunctorLangForceVolume,
     FunctorLangPhysicsScene,
     FunctorLangAnim,
     FunctorLangEffect,
@@ -3774,10 +3790,53 @@ capsule for the moving body"
                 match entry {
                     PhysicsEntry::Body(body) => scene.bodies.push(body),
                     PhysicsEntry::Group(group) => scene.groups.push(group),
+                    PhysicsEntry::Volume(volume) => scene.volumes.push(volume),
                 }
             }
             check_tag_owners(&scene.bodies, &scene.groups)?;
             Ok(FunctorLangPhysicsScene(scene))
+        },
+    );
+    // A box force field, declared in `Physics.scene`'s list and reconciled
+    // with it (world state, not an Effect: it persists until undeclared).
+    reg.fn2(
+        "Physics.forceVolume",
+        "Physics.forceVolume(tag, { center, size, force, turbulence, drag })",
+        |tag: std::rc::Rc<str>, volume: Value| {
+            const WHAT: &str = "Physics.forceVolume";
+            let Value::Record(fields) = &volume else {
+                return Err(format!(
+                    "{WHAT}: expected a {{ center, size, force, turbulence, drag }} record, got {}",
+                    volume.kind_name()
+                ));
+            };
+            let span = Span::new(0, 0);
+            let vector = |name: &str| {
+                let field = fields
+                    .iter()
+                    .find(|(f, _)| f == name)
+                    .ok_or_else(|| format!("{WHAT}: missing `{name}`"))?;
+                let (x, y, z) = vec3_of(&field.1, &format!("{WHAT} {name}"), span)
+                    .map_err(|e| e.message)?;
+                Ok::<_, String>([x, y, z])
+            };
+            let number = |name: &str| {
+                finite_record_number(fields, name, "volume", WHAT, span).map_err(|e| e.message)
+            };
+            let size = vector("size")?;
+            if size.iter().any(|&s| s.is_nan() || s <= 0.0) {
+                return Err(format!("{WHAT}: every `size` axis must be positive"));
+            }
+            let turbulence = non_negative(number("turbulence")? as f64, "Physics.forceVolume turbulence")?;
+            let drag = non_negative(number("drag")? as f64, "Physics.forceVolume drag")?;
+            Ok(FunctorLangForceVolume(physics::ForceVolume {
+                tag: tag.to_string(),
+                center: vector("center")?,
+                size,
+                force: vector("force")?,
+                turbulence: turbulence as f32,
+                drag: drag as f32,
+            }))
         },
     );
     // A memoized group of fixed/kinematic bodies (see `physics_memo`).
@@ -3973,6 +4032,70 @@ capsule for the moving body"
                 tag: tag.to_string(),
                 y: v as f32,
             }))
+        },
+    );
+    // A radial impulse on every dynamic body in range: a recorded command
+    // like `applyImpulse`, but naming a point instead of a tag.
+    fn blast(
+        center: FunctorLangVec3,
+        radius: f64,
+        strength: f64,
+        falloff: physics::Falloff,
+        lift: f64,
+        what: &str,
+    ) -> Result<FunctorLangEffect, String> {
+        let radius = positive(radius, &format!("{what} radius"))?;
+        if !(radius.is_finite() && strength.is_finite() && lift.is_finite()) {
+            return Err(format!("{what}: radius, strength and lift must be finite"));
+        }
+        let (x, y, z) = center.0;
+        Ok(FunctorLangEffect(EffectTree::Physics(physics::PhysicsCommand::Explode(
+            physics::Blast {
+                center: [x, y, z],
+                radius: radius as f32,
+                strength: strength as f32,
+                falloff,
+                lift: lift as f32,
+            },
+        ))))
+    }
+    reg.fn3(
+        "Physics.explode",
+        "Physics.explode(center, radius, strength)",
+        |center: FunctorLangVec3, radius: f64, strength: f64| {
+            blast(center, radius, strength, physics::Falloff::Linear, 0.0, "Physics.explode")
+        },
+    );
+    reg.fn4(
+        "Physics.explodeWith",
+        "Physics.explodeWith(center, radius, strength, { falloff, lift })",
+        |center: FunctorLangVec3, radius: f64, strength: f64, options: Value| {
+            const WHAT: &str = "Physics.explodeWith";
+            let Value::Record(fields) = &options else {
+                return Err(format!(
+                    "{WHAT}: expected a {{ falloff, lift }} record, got {}",
+                    options.kind_name()
+                ));
+            };
+            let falloff = match fields.iter().find(|(f, _)| f == "falloff").map(|(_, v)| v) {
+                Some(Value::Variant { ctor, args }) if args.is_empty() => match ctor.as_ref() {
+                    "Physics.Linear" => physics::Falloff::Linear,
+                    "Physics.Quadratic" => physics::Falloff::Quadratic,
+                    other => {
+                        return Err(format!(
+                            "{WHAT}: `falloff` must be Physics.Linear or Physics.Quadratic, got {other}"
+                        ))
+                    }
+                },
+                _ => {
+                    return Err(format!(
+                        "{WHAT}: `falloff` must be Physics.Linear or Physics.Quadratic"
+                    ))
+                }
+            };
+            let lift = finite_record_number(fields, "lift", "blast", WHAT, Span::new(0, 0))
+                .map_err(|e| e.message)?;
+            blast(center, radius, strength, falloff, lift as f64, WHAT)
         },
     );
     // Query EFFECT (docs/physics.md Phase 4): deferred until after the
@@ -5229,6 +5352,13 @@ Physics.scene takes it; apply {path} to the bodies inside its builder",
                 group.0.key
             ));
         }
+        if let Some(volume) = data.as_any().downcast_ref::<FunctorLangForceVolume>() {
+            return Err(format!(
+                "{path}: Physics.forceVolume(\"{}\") is a force volume, not a body — only \
+Physics.scene takes it; set its box in the volume record",
+                volume.0.tag
+            ));
+        }
     }
     Err(format!(
         "{path}: expected a Body, got {}",
@@ -5244,10 +5374,12 @@ impl crate::host_registry::FromArg for FunctorLangBody {
     }
 }
 
-/// One element of `Physics.scene`'s list: a body or a `Physics.memo` group.
+/// One element of `Physics.scene`'s list: a body, a `Physics.memo` group or
+/// a `Physics.forceVolume`.
 enum PhysicsEntry {
     Body(physics::Body),
     Group(physics::BodyGroup),
+    Volume(physics::ForceVolume),
 }
 
 impl crate::host_registry::FromArg for PhysicsEntry {
@@ -5255,6 +5387,9 @@ impl crate::host_registry::FromArg for PhysicsEntry {
         if let Value::HostData(data) = value {
             if let Some(group) = data.as_any().downcast_ref::<FunctorLangBodyGroup>() {
                 return Ok(PhysicsEntry::Group(group.0.clone()));
+            }
+            if let Some(volume) = data.as_any().downcast_ref::<FunctorLangForceVolume>() {
+                return Ok(PhysicsEntry::Volume(volume.0.clone()));
             }
         }
         FunctorLangBody::from_arg(value, path, span).map(|body| PhysicsEntry::Body(body.0))
@@ -13028,6 +13163,82 @@ Physics.fusedRoom(tag) without moving or rotating it";
                 "`{src}`: got {}",
                 failure.error.message
             );
+        }
+    }
+
+    // `Physics.explode`/`explodeWith` build one `Explode` command, and
+    // `Physics.forceVolume` lands in the scene's volumes, not its bodies.
+    #[test]
+    fn explode_and_force_volumes_cross_the_prelude() {
+        let command = |src: &str| {
+            let value = eval_with_prelude(&format!("let main = () => {src}"))
+                .unwrap_or_else(|e| panic!("`{src}`: {e}"));
+            match &effect_of(&value).expect("an Effect").0 {
+                EffectTree::Physics(physics::PhysicsCommand::Explode(blast)) => *blast,
+                _ => panic!("expected an Explode command"),
+            }
+        };
+        let plain = command("Physics.explode(Vec3.make(1.0, 2.0, 3.0), 4.0, 5.0)");
+        assert_eq!(
+            plain,
+            physics::Blast {
+                center: [1.0, 2.0, 3.0],
+                radius: 4.0,
+                strength: 5.0,
+                falloff: physics::Falloff::Linear,
+                lift: 0.0,
+            }
+        );
+        let tuned = command(
+            "Physics.explodeWith(Vec3.make(0.0, 0.0, 0.0), 2.0, 3.0, { falloff: Physics.Quadratic, lift: 0.5 })",
+        );
+        assert_eq!((tuned.falloff, tuned.lift), (physics::Falloff::Quadratic, 0.5));
+
+        let scene = eval_with_prelude(
+            "let fan = Physics.forceVolume(Physics.tag(\"fan\"), { center: Vec3.make(0.0, 1.0, 0.0), \
+size: Vec3.make(2.0, 2.0, 4.0), force: Vec3.make(0.0, 0.0, 3.0), turbulence: 0.5, drag: 0.25 })\n\
+let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), \
+[Physics.dynamic(Physics.tag(\"box\"), Physics.box(1.0, 1.0, 1.0)), fan])",
+        )
+        .unwrap();
+        let scene = physics_scene_value(&scene).expect("a PhysicsScene");
+        assert_eq!(scene.bodies.len(), 1);
+        assert_eq!(
+            scene.volumes,
+            vec![physics::ForceVolume {
+                tag: "fan".to_string(),
+                center: [0.0, 1.0, 0.0],
+                size: [2.0, 2.0, 4.0],
+                force: [0.0, 0.0, 3.0],
+                turbulence: 0.5,
+                drag: 0.25,
+            }]
+        );
+
+        let volume = "Physics.forceVolume(Physics.tag(\"v\"), { center: Vec3.make(0.0, 0.0, 0.0), \
+size: Vec3.make(1.0, 1.0, 1.0), force: Vec3.make(0.0, 0.0, 0.0), turbulence: 0.0, drag: 0.0 })";
+        for (src, needle) in [
+            (
+                "Physics.explode(Vec3.make(0.0, 0.0, 0.0), 0.0, 1.0)".to_string(),
+                "Physics.explode radius must be positive",
+            ),
+            (
+                volume.replace("size: Vec3.make(1.0, 1.0, 1.0)", "size: Vec3.make(1.0, 0.0, 1.0)"),
+                "every `size` axis must be positive",
+            ),
+            (
+                volume.replace("drag: 0.0", "drag: -1.0"),
+                "Physics.forceVolume drag must not be negative",
+            ),
+            (
+                format!("{volume} |> Physics.at(Vec3.make(1.0, 0.0, 0.0))"),
+                "is a force volume, not a body",
+            ),
+        ] {
+            let error = eval_with_prelude(&format!("let main = () => {src}"))
+                .err()
+                .unwrap_or_else(|| panic!("`{src}` should fail"));
+            assert!(error.contains(needle), "`{src}`: got {error}");
         }
     }
 
