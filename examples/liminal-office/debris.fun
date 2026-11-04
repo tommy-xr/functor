@@ -3,10 +3,11 @@
 // its seed), at most `cap` a room, clear of the furniture and the doors,
 // drawn as one instanced unlit cube per copy in their cells, each box tinted
 // to the light the bake gives its spot. Each is a debris candidate, a tag
-// and a body's box shape. In a copy with colliders each is also a dynamic
-// body (`Body`), resting where it was strewn; one that has moved (`Loose`)
-// draws on its own at its body's pose, the rest stay in the instanced cube.
-// A broken window blows litter (papers, leaves, a takeaway carton) in.
+// and a body's box shape. Once a blast or a broken window disturbs a copy
+// with colliders, each is a dynamic body (`Body`, in a `Group`), resting
+// where it was strewn; one that has moved (loose) draws on its own at its
+// body's pose, the rest stay in the instanced cube. A broken window blows
+// litter (papers, leaves, a takeaway carton) in.
 
 open Layout
 

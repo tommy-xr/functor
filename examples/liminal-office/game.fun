@@ -21,7 +21,8 @@
 // (`cinemaViews`); P the mall and its lot (mall.fun; `mallViews`); U the
 // suburb's houses (suburb.fun); I puts the block
 // on the island (island.fun), V cycles its biome; R the block with a park
-// and a plaza (parks.fun); L toggles a flashlight. VR:
+// and a plaza (parks.fun); L toggles a flashlight. F breaks the nearest
+// window and E sets off a blast ahead (debris.fun). VR:
 // the left thumbstick walks and strafes; the right turns and walks; X steps
 // the hour, Y jumps midnight ⇄ noon; B toggles the block, A the island; the
 // right trigger toggles the flashlight, held in the right hand.
