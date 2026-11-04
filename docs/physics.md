@@ -432,8 +432,11 @@ is inside the world-axis box `force × FIXED_DT` of impulse, plus a gust, minus
 - **Paper** is mostly the game's job: a light, flat box with
   `linearDamping` (~1) and `angularDamping` (~0.6) drifts and settles. True
   aerodynamic lift is out of scope.
-- **Cost.** O(volumes × bodies) per step, zero without a volume. A body inside
-  a volume is woken every step, so it never sleeps.
+- **Sleep.** Only awake bodies are pushed, so a crate the draft can't move
+  settles and sleeps; gusting paper keeps itself awake. Declaring or changing a
+  volume wakes the sleeping bodies inside it, so a fan switching on (or a
+  window breaking) blows what was resting there.
+- **Cost.** O(volumes × bodies) per step, zero without a volume.
 
 `examples/blast` is the demo: E blasts a crate pile, and a fan volume blows
 paper cards down a lane.

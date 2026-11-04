@@ -205,6 +205,43 @@ fn turbulence_is_seeded_per_body_and_drag_slows_without_reversing() {
     assert!(v > 0.0 && v < 4.0 * 0.8, "drag 2/s over 1/6 s: {v}");
 }
 
+#[test]
+fn a_body_the_draft_cannot_move_sleeps_until_the_volume_changes() {
+    let ground = Body::fixed(
+        "ground".to_string(),
+        Shape::Cuboid {
+            extents: [20.0, 0.2, 20.0],
+        },
+    )
+    .at([0.0, -0.1, 0.0]);
+    let crate_ = Body::dynamic(
+        "crate".to_string(),
+        Shape::Cuboid {
+            extents: [1.0, 1.0, 1.0],
+        },
+    )
+    .at([0.0, 0.5, 0.0]);
+    // 0.1 N against ~4.9 N of friction on a 1 kg crate.
+    let scene = |force: f32| PhysicsScene {
+        gravity: [0.0, -9.81, 0.0],
+        ..with_volume(vec![ground.clone(), crate_.clone()], fan([force, 0.0, 0.0], 0.0, 0.0))
+    };
+    let mut w = World::new([0.0, -9.81, 0.0]);
+    w.step(&[Command::DeclareScene(scene(0.1))]);
+    for _ in 0..300 {
+        w.step(&[Command::DeclareScene(scene(0.1))]);
+    }
+    assert!(sleeping(&w, "crate"), "a draft too weak to move it lets it sleep");
+
+    // A stronger fan wakes it and slides it.
+    w.step(&[Command::DeclareScene(scene(20.0))]);
+    assert!(!sleeping(&w, "crate"));
+    for _ in 0..30 {
+        w.step(&[Command::DeclareScene(scene(20.0))]);
+    }
+    assert!(velocity(&w, "crate")[0] > 1.0, "{:?}", velocity(&w, "crate"));
+}
+
 /// A blast and a gusty volume, recorded live, rewind and replay byte-exact.
 #[test]
 fn explosions_and_volumes_replay_byte_identically() {

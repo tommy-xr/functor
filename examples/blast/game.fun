@@ -66,7 +66,7 @@ let physics = (model) =>
       |> List.append(List.range(crateCount) |> List.map((i) => crateBody(model.drop, i)))
       |> List.append(List.range(cardCount) |> List.map(cardBody)))
 
-let init = { drop: 0.0, flash: 0.0, spin: 0.0, awake: 0.0 }
+let init = { drop: 0.0, spin: 0.0, awake: 0.0 }
 
 // A sleeping body's velocity is exactly zero, so `awake` (in `/state`'s
 // model) counts the crates still simulating after a blast.
@@ -76,7 +76,6 @@ let moving = (tag) =>
 
 let tick = (model, dt, tts) =>
   { model with
-      flash: Math.max(0.0, model.flash - dt),
       spin: model.spin + dt * 900.0,
       awake: List.length(List.filter((i) => moving(crateTag(i)), List.range(crateCount))) }
 
@@ -86,8 +85,7 @@ let input = (model, key, isDown) =>
   else
     match key with
     | Key.E =>
-      ({ model with flash: 0.25 },
-       Physics.explodeWith(blastAt, 4.5, 4.0, { falloff: Physics.Linear, lift: 0.7 }))
+      (model, Physics.explodeWith(blastAt, 4.5, 4.0, { falloff: Physics.Linear, lift: 0.7 }))
     | Key.Space => { model with drop: model.drop + 1.0 }
     | _ => model
 
@@ -123,14 +121,6 @@ let draftVisual =
     |> Scene.additive(Color.rgb(0.015, 0.035, 0.05))
     |> Scene.translate(lane)
 
-let flashVisual = (model) =>
-  if model.flash > 0.0 then
-    Scene.sphere()
-      |> Scene.scale(0.6 + (0.25 - model.flash) * 14.0)
-      |> Scene.additive(Color.rgb(model.flash * 3.6, model.flash * 2.0, model.flash * 0.6))
-      |> Scene.translate(blastAt)
-  else Scene.group([])
-
 let draw = (model, tts) =>
   Frame.createLit(
     Camera3D.lookAt(Vec3.make(9.0, 6.5, -9.0), Vec3.make(1.0, 0.8, 1.0)),
@@ -140,7 +130,6 @@ let draw = (model, tts) =>
       Scene.group(List.range(cardCount) |> List.map(cardVisual)),
       fanVisual(model),
       draftVisual,
-      flashVisual(model),
     ]),
     [
       Light.ambient(Color.rgb(0.14, 0.14, 0.17)),

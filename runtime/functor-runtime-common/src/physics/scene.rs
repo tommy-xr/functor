@@ -291,8 +291,8 @@ pub struct Blast {
 }
 
 /// A persistent box field (`Physics.forceVolume`): every fixed step, each
-/// dynamic body whose centre of mass is inside gets `force` plus a seeded
-/// gust, and loses `drag` of its velocity per second.
+/// awake dynamic body whose centre of mass is inside gets `force` plus a
+/// seeded gust, and loses `drag` of its velocity per second.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForceVolume {
     /// Seeds the gusts, so each volume and body gusts independently.

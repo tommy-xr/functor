@@ -253,6 +253,11 @@ pub struct World {
     /// degraded frame keeps them and a seek restores them).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     volumes: Vec<ForceVolume>,
+    /// The volumes changed since the last step, so it wakes the sleeping
+    /// bodies inside them (a fan switching on). Otherwise a body that settles
+    /// in a draft too weak to move it sleeps like any other.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    volumes_changed: bool,
     /// Bodies given an [`PhysicsCommand::ApplyForce`] this frame — their
     /// forces are cleared once the frame's substeps finish. Intra-call state:
     /// populated and cleared within one `step_frame`/`step`, so it is always
@@ -307,6 +312,7 @@ impl Clone for World {
             pending: self.pending.clone(),
             grounded: self.grounded.clone(),
             volumes: self.volumes.clone(),
+            volumes_changed: self.volumes_changed,
             forced: self.forced.clone(),
             events: self.events.clone(),
             command_warnings: self.command_warnings.clone(),
@@ -373,6 +379,7 @@ impl World {
             pending: Vec::new(),
             grounded: BTreeMap::new(),
             volumes: Vec::new(),
+            volumes_changed: false,
             forced: Vec::new(),
             events: Vec::new(),
             command_warnings: Vec::new(),
@@ -478,6 +485,7 @@ impl World {
         self.gravity = scene.gravity;
         if self.volumes != scene.volumes {
             self.volumes = scene.volumes.clone();
+            self.volumes_changed = true;
         }
         let mut stats = ReconcileStats::default();
 
@@ -1289,9 +1297,11 @@ impl World {
         }
     }
 
-    /// One step of every force volume on the dynamic bodies inside it.
-    /// O(volumes × bodies), and only when a volume is declared.
+    /// One step of every force volume on the awake dynamic bodies inside it
+    /// (all of them, the step after the volumes change). O(volumes × bodies),
+    /// and only when a volume is declared.
     fn apply_volumes(&mut self) {
+        let wake = std::mem::take(&mut self.volumes_changed);
         if self.volumes.is_empty() {
             return;
         }
@@ -1303,7 +1313,7 @@ impl World {
             for (tag, &handle) in self.tags.iter() {
                 let rb = &mut self.bodies[handle];
                 let outside = ((rb.center_of_mass() - center).abs() - half).max_element() > 0.0;
-                if !rb.is_dynamic() || outside {
+                if !rb.is_dynamic() || outside || (rb.is_sleeping() && !wake) {
                     continue;
                 }
                 let mut push = force;
@@ -1315,7 +1325,12 @@ impl World {
                     impulse -= rb.linvel() * rb.mass() * (volume.drag * FIXED_DT).min(1.0);
                 }
                 if impulse != Vector::ZERO {
-                    rb.apply_impulse(impulse, true);
+                    // Waking restarts the sleep timer, so waking every step
+                    // would keep a body the draft can't move awake forever.
+                    if rb.is_sleeping() {
+                        rb.wake_up(true);
+                    }
+                    rb.apply_impulse(impulse, false);
                 }
             }
         }
