@@ -21,7 +21,8 @@
 // (`cinemaViews`); P the mall and its lot (mall.fun; `mallViews`); U the
 // suburb's houses (suburb.fun); I puts the block
 // on the island (island.fun), V cycles its biome; R the block with a park
-// and a plaza (parks.fun); L toggles a flashlight. VR:
+// and a plaza (parks.fun); L toggles a flashlight. F breaks the nearest
+// window and E sets off a blast ahead (debris.fun). VR:
 // the left thumbstick walks and strafes; the right turns and walks; X steps
 // the hour, Y jumps midnight ⇄ noon; B toggles the block, A the island; the
 // right trigger toggles the flashlight, held in the right hand.
@@ -242,6 +243,15 @@ let init = {
   // would have drawn its whole interior. Stays 0.
   uncovered: 0.0,
   baked: baked,
+  // The windows F broke; the disturbed solid copies' debris bodies and
+  // litter (debris.fun), as the last physics step left them; the copies E's
+  // blast reached and the windows F broke since the last tick, for it to
+  // give bodies and litter; and how many more ticks to read the bodies back.
+  broken: [],
+  debris: [],
+  blasted: [],
+  fresh: [],
+  stir: 0.0,
 }
 
 let held = (k, snap: Input.snapshot) => snap.heldKeys |> List.any((h) => h == k)
@@ -303,7 +313,8 @@ let mouseMove = (model, x: float, y: float) =>
 let input = (model, key, isDown: bool) =>
   // L toggles once per press: a held key repeats.
   if key == Key.L then { model with flashlight: model.flashlight != (isDown && not model.flashKey), flashKey: isDown }
-  else if not isDown then model
+  // F and E act on release: a held key repeats its press, never its release.
+  else if not isDown then (if key == Key.F then smash(model) else if key == Key.E then blast(model) else model)
   else match key with
     | Key.Num1 => { model with goto: 1.0 }
     | Key.Num2 => { model with goto: 2.0 }
@@ -347,6 +358,48 @@ let eyeOf = (model, p: Physics.position): Vec3.t =>
   v(p.x, p.y + eyeAboveCentre + (if model.overlook then overlookLift else 0.0), p.z)
 let interiorsOf = (model): float => if model.overlook then 0.0 else model.k
 
+// F: break the unbroken window nearest the eye that it can see (a ray
+// reaches its pane first), within `smashReach`, of a copy with colliders.
+// Its pane goes, and a draft blows litter in.
+let smashReach = 12.0
+let smash = (model) =>
+  let town = Block.townAt(model.town) in
+  let eye = eyeOf(model, model.at) in
+  let windows = model.solid |> List.concatMap((id) =>
+    let c = Block.copyIn(town, id) in
+    let broken = brokenIn(model, c.name) in
+    Glass.openingsOf(c)
+      |> List.filter((e) => let (i, o) = e in not Block.isIn(i, broken))
+      |> List.map((e) =>
+        let (i, o) = e in
+        let w: Debris.Broken = { copy: c.name, window: i, draft: Glass.draftOf(Block.tagOf(c, $"draft-{i}"), o) } in
+        (w, Physics.tag(Block.tagOf(c, $"window-{i}")), v(o.x, o.y, o.z) |> Vec3.sub(eye)))) in
+  let seen = (e): bool =>
+    let (w, pane, to) = e in
+    Vec3.length(to) < smashReach && Physics.castExcluding(playerTag, eye, to, Vec3.length(to) + 0.1).tag == pane in
+  match windows |> List.sortBy((e) => let (w, pane, to) = e in Vec3.length(to)) |> List.find(seen) with
+  | Option.Some(e) =>
+    let (w, pane, to) = e in { model with broken: model.broken |> List.append([w]), fresh: model.fresh |> List.append([w]), stir: stirSteps }
+  | Option.None => model
+
+// E: a blast `blastAhead` in front, at the feet (short of a wall), lifting
+// what lies within `blastRadius` up and out. The copies it reaches get their
+// debris's bodies this frame, before the blast lands.
+let blastAhead = 3.0
+let blastRadius = 4.5
+let blastStrength = 1.5
+let blast = (model) =>
+  let ahead = lookDir(model.yaw, 0.0) in
+  let hit = Physics.castExcluding(playerTag, v(model.at.x, model.at.y, model.at.z), ahead, blastAhead) in
+  let d = if hit.hit then Math.max(0.0, hit.distance - 0.3) else blastAhead in
+  let at = v(model.at.x + Vec3.x(ahead) * d, model.at.y - centreAboveFeet + 0.3, model.at.z + Vec3.z(ahead) * d) in
+  let reached = Block.near(Block.townAt(model.town), blastRadius, at) |> List.map((e) => let (id, dist) = e in id) in
+  ({ model with blasted: reached, stir: stirSteps },
+   Physics.explodeWith(at, blastRadius, blastStrength, { falloff: Physics.Linear, lift: 0.5 }))
+// After a blast or a break, debris is read back for this many ticks (one a
+// fixed step; then only while some of it moves).
+let stirSteps = 30.0
+
 let gravity = 9.81
 
 let tick = (model, dt: float, tts: float) =>
@@ -367,6 +420,9 @@ let tick = (model, dt: float, tts: float) =>
     uncovered: model.uncovered + Block.uncovered(town, active, eye),
     baked: baked,
     props: Island.regroup(model.props, model.island, p.x, p.z, Hours.reachAt(Island.reach, Hours.daylight(model.hour))) } in
+  // Last frame's bodies read back, then regrouped for this frame's solid copies.
+  let debris = Debris.observed(model.stir > 0.0, model.debris) in
+  let stir = Math.max(0.0, model.stir - 1.0) in
   match List.nth(model.goto - 1.0, viewsOf(model.town)) with
   | Option.Some(view) =>
     let t = if inBlock(model.goto) && model.town == 0.0 then 1.0 else model.town in
@@ -374,8 +430,10 @@ let tick = (model, dt: float, tts: float) =>
     let c = Block.copyIn(Block.townAt(t), if inBlock(model.goto) || t == Block.parkTown then view.copy else copy) in
     let to = Block.toWorld(c, v(view.x, view.level * Block.archetypeOf(c).layout.storey + centreAboveFeet, view.z)) in
     // Solid where the player lands, before the teleport lands.
+    let solid = Block.solidAt(Block.townAt(t), observed.solid, to) in
     ({ observed with goto: 0.0, vy: 0.0, overlook: false, yaw: Block.headingToWorld(c, view.yaw), pitch: view.pitch,
-                     town: t, solid: Block.solidAt(Block.townAt(t), observed.solid, to) },
+                     town: t, solid: solid, debris: Debris.groupsFor(Block.townAt(t), solid, model.blasted, model.fresh, debris),
+                     blasted: [], fresh: [], stir: stir },
      Physics.teleport(playerTag, to))
   | Option.None =>
     let yaw = model.yaw + model.turn * turnRate * dt in
@@ -383,14 +441,28 @@ let tick = (model, dt: float, tts: float) =>
     let vx = walkSpeed * (model.walk * Math.sin(yaw) - model.strafe * Math.cos(yaw)) in
     let vz = walkSpeed * (model.walk * Math.cos(yaw) + model.strafe * Math.sin(yaw)) in
     let vy = (if Physics.grounded(playerTag) && model.vy <= 0.0 then 0.0 else model.vy) - gravity * dt in
-    ({ observed with goto: 0.0, yaw: yaw, vy: vy }, Physics.move(playerTag, v(vx * dt, vy * dt, vz * dt)))
+    ({ observed with goto: 0.0, yaw: yaw, vy: vy, debris: Debris.groupsFor(town, observed.solid, model.blasted, model.fresh, debris),
+                     blasted: [], fresh: [], stir: stir },
+     Physics.move(playerTag, v(vx * dt, vy * dt, vz * dt)))
 
-// Each solid copy's colliders are built once, under its own key and tags.
+// The windows broken in the copy named `name`.
+let brokenIn = (model, name: string): List<float> =>
+  model.broken |> List.filter((w) => w.copy == name) |> List.map((w) => w.window)
+
+// Each solid copy's colliders are built once, under its own key and tags
+// (again when it breaks a window); its disturbed debris and its drafts are
+// declared flat.
+type Solid = { copy: Block.Copy, broken: List<float> }
 let physics = (model) =>
   Physics.scene(v(0.0, -9.81, 0.0), List.flatten([
     if model.island then List.append([Physics.memo("island-props", model.props.solid, Island.propBodies)], Island.bodies)
     else [Block.townAt(model.town).groundBody],
-    model.solid |> List.map((id) => let c = Block.copyIn(Block.townAt(model.town), id) in Physics.memo(c.name, c, (c) => List.append(Block.bodiesOf(c), Glass.bodiesOf(c)))),
+    model.solid |> List.map((id) =>
+      let c = Block.copyIn(Block.townAt(model.town), id) in
+      Physics.memo(c.name, { copy: c, broken: brokenIn(model, c.name) }, (s: Solid) => List.append(Block.bodiesOf(s.copy), Glass.bodiesOf(s.copy, s.broken)))),
+    model.debris |> List.concatMap((g) => g.bodies |> List.map(Debris.declare)),
+    // A broken window's copy has a group while it is solid.
+    model.broken |> List.filter((w) => model.debris |> List.any((g) => g.copy == w.copy)) |> List.map((w) => Glass.volumeOf(w.draft)),
     Parks.bodiesNear(parksOf(model), model.at),
     [Physics.character(playerTag, Physics.capsule(0.6, 0.3),
                        { stepHeight: 0.2, maxSlope: 40deg, snap: 0.2, offset: 0.02 })
@@ -401,16 +473,22 @@ let physics = (model) =>
 
 // What a copy draws: its archetype's street side at the hour's neon and
 // lamps, and its interior when active, under the day or night bake, with
-// its own strewn debris.
-type CopyLook = { copy: Block.Copy, neon: float, lamps: float, day: bool, active: bool }
+// its own strewn debris but the `loose` (debris.fun draws those), and its
+// panes but the `broken` windows'.
+type CopyLook = { copy: Block.Copy, neon: float, lamps: float, day: bool, active: bool, loose: List<string>, broken: List<float> }
 let copyScene = (look: CopyLook): Scene.t =>
   let a = Block.archetypeOf(look.copy) in
   let glass = Glass.glazingOf(a.name) in
   let interiorScene =
     if not look.active then Scene.group([])
     else Scene.cells(a.level, Scene.group(List.flatten([if look.day then a.day else a.night, glass.inside,
-                                                        [Debris.ofCopy(look.copy, a.layout, a.name, look.day)]]))) in
-  Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps, look.day), interiorScene, glass.outside]))
+                                                        [Debris.ofCopy(look.copy, a.layout, a.name, look.day, look.loose)]]))) in
+  let outside = if List.isEmpty(look.broken) then glass.outside else Glass.outsideWithout(a.name, a.layout, look.broken) in
+  Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps, look.day), interiorScene, outside]))
+// The copy named `name`'s loose debris, by candidate tag. Read in `tick`,
+// before the step: a piece thrown this frame leaves the cube a frame late.
+let looseIn = (model, name: string): List<string> =>
+  model.debris |> List.find((g) => g.copy == name) |> Option.map((g) => g.loose) |> Option.defaultValue([])
 
 // Each town's cinema copies.
 let cinemaCopies = Block.towns |> List.map((t) => t.copies |> List.filter((c) => c.archetype == "cinema"))
@@ -437,14 +515,16 @@ let draw = (model, tts: float) =>
   let drawn = if town.shells then active else List.range(List.length(town.copies)) in
   let copies = drawn |> List.map((id) =>
     let c = Block.copyIn(town, id) in
-    Scene.memo(c.name, { copy: c, neon: o.neon, lamps: o.lamps, day: day, active: Block.isIn(id, active) }, copyScene)) in
+    Scene.memo(c.name, { copy: c, neon: o.neon, lamps: o.lamps, day: day, active: Block.isIn(id, active),
+                         loose: looseIn(model, c.name), broken: brokenIn(model, c.name) }, copyScene)) in
   let shells =
     if not town.shells then []
-    else [Scene.memo($"{town.name}/shells", { town: model.town, active: active, neon: o.neon, lamps: o.lamps, day: day }, Shells.shellsOf)] in
+    else [Scene.memo($"{town.name}/shells", { town: model.town, active: active, neon: o.neon, lamps: o.lamps, day: day,
+                                                     broken: model.broken |> List.map((w) => (w.copy, w.window)) }, Shells.shellsOf)] in
   // The cinema's chasing bulbs (out by day) and tubes, by the clock and the hour.
   let cinemas = List.nth(model.town, cinemaCopies) |> Option.defaultValue([])
     |> List.map((c) => Block.sceneOf(c, Cinema.liveAt(tts, o.neon, if day then 0.0 else o.lamps))) in
-  let buildings = Scene.group(List.flatten([copies, shells, cinemas])) in
+  let buildings = Scene.group(List.flatten([copies, shells, cinemas, Debris.looseScenes(model.debris, day)])) in
   let parks = parksOf(model) in
   let parkScene = Parks.scenesAt(parks, eye, far, o.lamps, day, tts) in
   // On the island the props draw after the buildings and the terrain last,

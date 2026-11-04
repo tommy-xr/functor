@@ -20,6 +20,7 @@ npm run test:liminal-office                 # routes, stairs, wall push, hours, 
 npm run test:liminal-mall                   # the mall: lot to gallery, shop to service exit, draws, goldens
 npm run test:liminal-house                  # the suburb: porch → stair → bedroom window, the loop road
 npm run test:liminal-park                   # the parks: gate → fountain → playground → monolith, draws, the island plaza
+npm run test:liminal-debris                 # a blast, a broken window's draft, and both twice for the same poses
 ```
 
 | Input | Action |
@@ -41,6 +42,8 @@ npm run test:liminal-park                   # the parks: gate → fountain → p
 | `I` | the flat ground ⇄ the island (with the block; `G` and `H` leave it) |
 | `V` | the island's next biome: grass, snow, desert |
 | `L` | flashlight on / off |
+| `F` (on release) | break the window nearest the eye (within 12 m): its pane and collider go, a draft blows litter in |
+| `E` (on release) | a blast 3 m ahead (short of a wall), at the feet: scatters the debris within 4.5 m |
 | `U` | the suburb, from its road (`U` again: back to the office); views 1–8 jump within the nearest house, 9 the road, 0 the magenta stair |
 | `R` | the block with a park and a plaza, at the park's gate (`R` again: back to the office); views 1–0 in them (`Parks.views`) |
 | VR left thumbstick | walk, strafe |
@@ -173,7 +176,25 @@ a couch and bench in the lobby. Small things (papers, binders, mugs,
 cartons, a fallen chair) are strewn unbaked in the furnished rooms, at
 most 6 a room, each copy its own: one instanced unlit cube per active
 copy, each box tinted to the light the bake gives its spot. Each is a
-debris candidate (a tag and a body's box), with no body yet.
+debris candidate (a tag and a body's box).
+
+**Dynamic debris.** A copy's debris stays in that cube, with no bodies,
+until something disturbs it: `E`'s blast reaching its footprint, or `F`
+breaking one of its windows. Then, while the copy has colliders, each piece
+is a `Physics.dynamic` body (mass and damping by kind: paper drifts, a
+carton or a fallen chair barely moves), declared where it was strewn. A
+piece more than 2 cm from its rest is loose: it leaves the cube and draws
+at its body's pose. The model holds the bodies as plain data
+(`model.debris`), read back only while something moves, so `/state` shows
+each loose piece's pose and whether it sleeps. A broken window's pane and
+collider go (real windows are solid until broken); a `Physics.forceVolume`
+blows in through the opening, nearly floating paper, and six pieces of
+litter (papers, leaves, a takeaway carton) start just outside it. A copy
+that loses its colliders (walking away, in a grid or a shell town) drops
+its bodies: its debris is back where it was strewn when it returns, and its
+broken windows stay broken (the shells' too).
+Untouched, a building costs nothing: every dynamic body is declared every
+frame (they can't be memoised), about 10 µs each on the desktop.
 
 **Culling caveat.** The cells and portals are right (`functor test`), and
 `/state.cells.hidden` counts the subtrees the walk hides, but the renderer
