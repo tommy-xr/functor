@@ -29,15 +29,15 @@ const SETTINGS = {
   "max-size": 2048,
 };
 // Each bake's sources: must match archetypes.fun's `bakeOf` calls.
-const TOWER = ["layout.fun", "towerLayout.fun", "building.fun"];
-const HOUSE = ["layout.fun", "houseLayout.fun", "building.fun", "housePalettes.fun"];
+const TOWER = ["layout.fun", "towerLayout.fun", "building.fun", "furniture.fun"];
+const HOUSE = ["layout.fun", "houseLayout.fun", "building.fun", "furniture.fun", "housePalettes.fun"];
 const ARCHETYPES = {
-  office: ["layout.fun", "officeLayout.fun", "building.fun"],
+  office: ["layout.fun", "officeLayout.fun", "building.fun", "furniture.fun"],
   "tower-typical": TOWER,
   "tower-ends": TOWER,
-  cinema: ["layout.fun", "building.fun", "paints.fun", "cinemaLayout.fun", "cinemaBuilding.fun"],
+  cinema: ["layout.fun", "building.fun", "furniture.fun", "paints.fun", "cinemaLayout.fun", "cinemaBuilding.fun"],
   // Baked at half scale: 6 texels/m (mallInterior.fun).
-  mall: ["layout.fun", "building.fun", "mallLayout.fun", "mallInterior.fun"],
+  mall: ["layout.fun", "building.fun", "furniture.fun", "mallLayout.fun", "mallInterior.fun"],
   "house-ochre": HOUSE,
   "house-magenta": HOUSE,
 };

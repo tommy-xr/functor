@@ -30,10 +30,10 @@
 //  10. the grid of 64: view 0 lands on copy 2's floor (its colliders are in
 //      place before the teleport), and K = 1 leaves only the eye's copy on;
 //  11. shared uploads (`--json` frame stats): after copy 0's pass, the same
-//      pass through copies 1–3 misses no GPU cache, uploads nothing and adds
-//      no live GL object; with both bakes kept resident, the hour switch
-//      and entering after a walk out of every interior upload nothing, and
-//      such an entry in the grid of 4 misses no GPU cache.
+//      pass through copies 1–3 misses no GPU cache and uploads only their
+//      own debris instances; with both bakes kept resident, the hour switch
+//      uploads nothing, entering after a walk out of every interior only its
+//      debris, and such an entry in the grid of 4 misses no GPU cache.
 //
 // The island (I): the block on island.mjs's terrain.
 //  11. the walker stands on the pad, 2 cm below the flat ground's street;
@@ -877,9 +877,12 @@ async function statsAfter(game, n) {
 // The copies share one office's uploads, and game.fun keeps both bakes'
 // cell models resident (`Scene.keepResident`). So after copy 0's pass (its
 // lobby, corridor, facade and window), the same pass through copies 1–3
-// misses the GPU caches never, uploads nothing, and grows no live GL object;
-// and switching the hour, or entering after a walk out of every interior's
-// activation radius, uploads nothing either.
+// misses the GPU caches never and uploads only each copy's own debris
+// instances (debris.fun), a buffer per active copy at most; switching the
+// hour uploads nothing, and entering after a walk out of every interior's
+// activation radius only that copy's debris.
+// Copies 1–3's debris instances, at most (debris.fun caps each copy).
+const DEBRIS_BYTES = 64 * 1024;
 async function residency(game) {
   const windows = () => frameStats(game);
   const live = (s) => `${s.gpu_live_buffers} buffers, ${s.gpu_live_textures} textures, ${s.gpu_live_vaos} VAOs`;
@@ -911,7 +914,8 @@ async function residency(game) {
   await statsAfter(game, 300);
   const coldEntry = await uploadsAcross(() => game.view(1));
   const entered = (await game.model()).active;
-  check(entered.length > 0 && none(coldEntry), `entering after the walk out uploads nothing (${JSON.stringify(coldEntry)}, active ${JSON.stringify(entered)})`);
+  check(entered.length > 0 && coldEntry.misses === 0 && coldEntry.bytes <= DEBRIS_BYTES / 4,
+    `entering after the walk out uploads only its debris (${JSON.stringify(coldEntry)}, active ${JSON.stringify(entered)})`);
 
   await game.hold("b", 1);
   const pass = async (c) => {
@@ -931,9 +935,9 @@ async function residency(game) {
   const after = later[later.length - 1];
   check(none({ misses: office.gpu_cache_misses, bytes: office.gpu_bytes_uploaded }) && none({ misses: primed.gpu_cache_misses, bytes: primed.gpu_bytes_uploaded }),
     `standing still uploads nothing (office ${office.gpu_cache_misses} misses, ${office.gpu_bytes_uploaded} B; block ${primed.gpu_cache_misses} misses, ${primed.gpu_bytes_uploaded} B)`);
-  check(later.length >= 3 && misses === 0 && bytes === 0, `copies 1–3's passes (${later.length} stats windows) miss ${misses} times and upload ${bytes} bytes after copy 0's`);
-  check(after.gpu_live_buffers === primed.gpu_live_buffers && after.gpu_live_textures === primed.gpu_live_textures && after.gpu_live_vaos === primed.gpu_live_vaos,
-    `live GL objects after all four copies equal those after copy 0's (${live(after)} vs ${live(primed)}; the office from its entrance: ${live(office)})`);
+  check(later.length >= 3 && misses === 0 && bytes <= DEBRIS_BYTES, `copies 1–3's passes (${later.length} stats windows) miss ${misses} times and upload ${bytes} bytes (their debris) after copy 0's`);
+  check(Math.abs(after.gpu_live_buffers - primed.gpu_live_buffers) <= COPIES.length && after.gpu_live_textures === primed.gpu_live_textures && after.gpu_live_vaos === primed.gpu_live_vaos,
+    `live GL objects after all four copies match those after copy 0's, but debris buffers (${live(after)} vs ${live(primed)}; the office from its entrance: ${live(office)})`);
 
   await walkToPoint(game, [CROSS, CROSS]);
   check((await game.model()).active.length === 4, "residency: all four copies active at the crossroads");

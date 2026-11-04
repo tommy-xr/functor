@@ -153,6 +153,28 @@ Paths and paving have none. `functor test` keeps every walk clear and every
 piece inside its plot. `R` stands the block with a park west of it and a
 plaza at the end of the street south of it, on the block's ground.
 
+**Furniture kit** (`furniture.fun`, `debris.fun`). A few rooms per
+building are furnished; most stay empty. A layout's `furniture` lists
+pieces (desks, swivel and stacking chairs, a stack of chairs, couches, low
+tables, filing cabinets, a reception counter, shelving, a water cooler,
+plants, a bed, benches, a kiosk), each a room, a spot, the side it faces
+and a `mess` from 0 to 1. Pieces are chunky boxes baked with their room,
+so they take its light, occlusion and contact shadows and draw in its
+model (one more group: a swatch atlas each archetype paints its own way).
+The mess turns and pushes a piece off its spot, tips a chair, pulls out a
+drawer, drops a cushion, books or a cooler's bottle, kills a plant; which,
+by the noise at the spot, so every copy of an archetype matches. Each
+piece is a collider box, kept clear of its room's doors and the e2e's
+walks (`functor test`). The office: a waiting area and reception counter
+in the lobby, a pod of desks in 102, worse in 202. A tower: its lobby and
+each typical floor's south office. The house: the living room and bedroom
+2. The mall: a shut kiosk and benches in the lower east hall. The cinema:
+a couch and bench in the lobby. Small things (papers, binders, mugs,
+cartons, a fallen chair) are strewn unbaked in the furnished rooms, at
+most 6 a room, each copy its own: one instanced unlit cube per active
+copy, each box tinted to the light the bake gives its spot. Each is a
+debris candidate (a tag and a body's box), with no body yet.
+
 **Culling caveat.** The cells and portals are right (`functor test`), and
 `/state.cells.hidden` counts the subtrees the walk hides, but the renderer
 currently draws `Model.static` data models whether or not the walk hides them,

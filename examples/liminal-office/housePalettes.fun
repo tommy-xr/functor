@@ -26,7 +26,7 @@ let recessed = (p: Paint): Texture.pixels =>
   image(16.0, 16.0, (x, y) => shade(0.8 + 0.05 * Math.min(4.0, Math.min(Math.min(x, y), Math.min(15.0 - x, 15.0 - y))), p))
 let lamp = paint(250.0, 204.0, 140.0)
 
-type Colours = { carpet: Paint, linoA: Paint, linoB: Paint, wall: Paint, ceiling: Paint, trim: Paint, stair: Paint, niche: Paint }
+type Colours = { carpet: Paint, linoA: Paint, linoB: Paint, wall: Paint, ceiling: Paint, trim: Paint, stair: Paint, niche: Paint, upholstery: Paint }
 
 // A palette from its colours, in building.fun's material order.
 let paletteOf = (c: Colours): List<Material> => [
@@ -44,9 +44,14 @@ let paletteOf = (c: Colours): List<Material> => [
   office(steel),
   office(doorPanel),
   material(c.niche, 0.0, false, recessed(c.niche)),
+  furnishMaterial(swatchesOf(c)),
 ]
+// The furniture's swatches: the office's, its upholstery and wood the
+// house's.
+let swatchesOf = (c: Colours): List<Paint> =>
+  officeSwatches |> List.indexedMap((k, p) => if k == Furniture.fabric then c.upholstery else if k == Furniture.wood then c.trim else p)
 
-let ochre = paletteOf({
+let ochreColours = {
   carpet: paint(150.0, 112.0, 52.0),
   linoA: paint(214.0, 200.0, 160.0), linoB: paint(150.0, 110.0, 66.0),
   wall: paint(196.0, 170.0, 116.0),
@@ -54,9 +59,11 @@ let ochre = paletteOf({
   trim: paint(96.0, 66.0, 40.0),
   stair: paint(128.0, 92.0, 56.0),
   niche: paint(232.0, 220.0, 190.0),
-})
+  upholstery: paint(126.0, 70.0, 44.0),
+}
+let ochre = paletteOf(ochreColours)
 
-let magenta = paletteOf({
+let magentaColours = {
   carpet: paint(176.0, 36.0, 120.0),
   linoA: paint(240.0, 206.0, 210.0), linoB: paint(250.0, 244.0, 236.0),
   wall: paint(232.0, 150.0, 168.0),
@@ -64,6 +71,8 @@ let magenta = paletteOf({
   trim: paint(228.0, 120.0, 56.0),
   stair: paint(150.0, 28.0, 104.0),
   niche: paint(246.0, 246.0, 240.0),
-})
+  upholstery: paint(70.0, 150.0, 156.0),
+}
+let magenta = paletteOf(magentaColours)
 
 expect List.length(ochre) == List.length(materials) && List.length(magenta) == List.length(materials)

@@ -38,7 +38,7 @@ let bakeOf = (name: string, sources: List<string>): Provenance.Spec =>
 // Each part is its own top-level value, so a hot reload re-derives only what
 // an edit touched: a street-side edit keeps the interior and its bake.
 let officeInterior = Building.interiorOf("office", OfficeLayout.layout)
-let officeBake = bakeOf("office", ["layout.fun", "officeLayout.fun", "building.fun"])
+let officeBake = bakeOf("office", ["layout.fun", "officeLayout.fun", "building.fun", "furniture.fun"])
 let officeStatus = Provenance.statusOf(officeBake)
 let officeRooms = roomsOf(officeInterior, officeBake, officeStatus)
 let officeLevel = Portals.levelOf(OfficeLayout.layout, Portals.outsideTop)
@@ -49,7 +49,7 @@ let office: Archetype =
     level: officeLevel, street: officeStreet, night: night, day: day }
 
 // The towers' two bakes, the typical floor's and the ground and roof's.
-let towerSources = ["layout.fun", "towerLayout.fun", "building.fun"]
+let towerSources = ["layout.fun", "towerLayout.fun", "building.fun", "furniture.fun"]
 let typicalBake = bakeOf("tower-typical", towerSources)
 let typicalStatus = Provenance.statusOf(typicalBake)
 let typicalBaked = Provenance.bakedOf(Tower.typicalInterior, typicalBake, typicalStatus)
@@ -69,7 +69,7 @@ let tower12 = towerOf(12.0)
 let tower16 = towerOf(16.0)
 
 // The cinema: its own palette's cell models (paints.fun), and its seats.
-let cinemaBake = bakeOf("cinema", ["layout.fun", "building.fun", "paints.fun", "cinemaLayout.fun", "cinemaBuilding.fun"])
+let cinemaBake = bakeOf("cinema", ["layout.fun", "building.fun", "furniture.fun", "paints.fun", "cinemaLayout.fun", "cinemaBuilding.fun"])
 let cinemaStatus = Provenance.statusOf(cinemaBake)
 let cinemaBaked = Paints.bakedOf(CinemaBuilding.palette, CinemaBuilding.interior, cinemaBake, cinemaStatus)
 let cinema: Archetype =
@@ -78,7 +78,7 @@ let cinema: Archetype =
 
 // The mall: one bake at 6 texels/m (mallInterior.fun), its own cells,
 // colliders and street side (mall.fun).
-let mallBake = bakeOf("mall", ["layout.fun", "building.fun", "mallLayout.fun", "mallInterior.fun"])
+let mallBake = bakeOf("mall", ["layout.fun", "building.fun", "furniture.fun", "mallLayout.fun", "mallInterior.fun"])
 let mallStatus = Provenance.statusOf(mallBake)
 let mallBaked = MallInterior.bakedOf(mallBake, mallStatus)
 let mall: Archetype =
@@ -88,7 +88,7 @@ let mall: Archetype =
 
 // The house in two palettes (housePalettes.fun): one layout, cells and
 // shape; two interiors, bakes and street sides.
-let houseSources = ["layout.fun", "houseLayout.fun", "building.fun", "housePalettes.fun"]
+let houseSources = ["layout.fun", "houseLayout.fun", "building.fun", "furniture.fun", "housePalettes.fun"]
 let houseLevel = Portals.levelOf(HouseLayout.layout, Portals.outsideTop)
 let houseColliders = HouseExterior.ownCollidersOf(HouseLayout.layout)
 let houseOf = (name: string, k: Building.Interior, status: Provenance.Status, street: Exterior.Street, rooms: (List<Scene.t>, List<Scene.t>)): Archetype =>

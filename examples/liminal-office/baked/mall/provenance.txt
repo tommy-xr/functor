@@ -1,5 +1,5 @@
-layout=1953059626
-sources=layout.fun building.fun mallLayout.fun mallInterior.fun
+layout=3215092239
+sources=layout.fun building.fun furniture.fun mallLayout.fun mallInterior.fun
 bakes=night day
 bakeVersion=2
 settings=texelsPerMeter=12 aoSamples=64 aoDistance=1 bounces=2 giSamples=32 seed=0 maxSize=2048
