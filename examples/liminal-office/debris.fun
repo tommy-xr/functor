@@ -135,11 +135,11 @@ let seedOf = (c: Block.Copy): float => Math.abs(c.x * 3.1 + c.z * 7.7 + c.yaw * 
 
 // ---- Light -----------------------------------------------------------------------
 
-// How lit the bake leaves a spot on room `i`'s floor, roughly: the bake's
-// panels and lamps in the room, with the engine's falloff, over the
-// ambient; by day, more for a room with windows. `base` lifts an archetype
-// whose bake lights aren't the layout's (the cinema's).
-let lightAt = (l: Layout, i: float, p: Vec3.t, day: bool, base: float): float =>
+// How lit the bake leaves a spot on room `i`'s floor, roughly, as (r, g,
+// b): the bake's panels and amber lamps in the room, with the engine's
+// falloff, over the ambient; by day, sky for a room with windows. `base`
+// lifts an archetype whose bake lights aren't the layout's (the cinema's).
+let lightAt = (l: Layout, i: float, p: Vec3.t, day: bool, base: float): (float, float, float) =>
   let room = Building.roomAt(l, i) in
   let y = Building.baseOf(l, room) in
   let falloff = (at: Vec3.t, intensity: float, range: float): float =>
@@ -154,16 +154,19 @@ let lightAt = (l: Layout, i: float, p: Vec3.t, day: bool, base: float): float =>
       | South => v(q.at, y + q.y, r.z0 + 0.3)
       | East => v(r.x1 - 0.3, y + q.y, q.at)
       | West => v(r.x0 + 0.3, y + q.y, q.at)) in
-    0.6 * falloff(at, 0.5, 7.0)) |> List.sum in
-  let daylight = if day && (l.windows |> List.any((w) => w.room == i)) then 0.25 else 0.0 in
-  Math.clamp(0.06, 1.0, base + 0.1 + 1.2 * (panels + lamps) + daylight)
+    falloff(at, 0.5, 7.0)) |> List.sum in
+  let sky = if day && (l.windows |> List.any((w) => w.room == i)) then 0.25 else 0.0 in
+  let channel = (panel: float, lamp: float, daylight: float): float =>
+    Math.clamp(0.06, 1.1, base + 0.1 + 1.2 * panel * panels + 1.5 * lamp * lamps + daylight * sky) in
+  (channel(0.93, 1.0, 0.72), channel(0.97, 0.62, 0.84), channel(0.86, 0.3, 1.0))
 
 // ---- Drawing ---------------------------------------------------------------------
 
 let turnY = (deg: float, x: float, z: float): (float, float) =>
   let a = deg * Math.pi / 180.0 in (x * Math.cos(a) + z * Math.sin(a), z * Math.cos(a) - x * Math.sin(a))
-// The cinema's bake lights aren't in its layout: it starts brighter.
-let baseFor = (archetype: string): float => if archetype == "cinema" then 0.3 else 0.0
+// The cinema's bake lights aren't in its layout, and the mall's reach
+// further: they start brighter.
+let baseFor = (archetype: string): float => if archetype == "cinema" then 0.3 else if archetype == "mall" then 0.45 else 0.0
 // A copy's debris, drawn.
 let ofCopy = (c: Block.Copy, l: Layout, archetype: string, day: bool): Scene.t =>
   sceneOf(candidatesOf(seedOf(c), l), l, day, baseFor(archetype))
@@ -171,10 +174,10 @@ let ofCopy = (c: Block.Copy, l: Layout, archetype: string, day: bool): Scene.t =
 let sceneOf = (cs: List<Candidate>, l: Layout, day: bool, base: float): Scene.t =>
   if List.length(cs) == 0.0 then Scene.group([])
   else Scene.cube() |> Scene.color(Color.rgb(1.0, 1.0, 1.0)) |> Scene.instanced(cs |> List.concatMap((c) =>
-      let k = lightAt(l, c.cell, c.at, day, base) in
+      let (kr, kg, kb) = lightAt(l, c.cell, c.at, day, base) in
       c.parts |> List.map((p) =>
         let (dx, dz) = turnY(c.yaw, p.x, p.z) in
         Instance.at(v(Vec3.x(c.at) + dx, Vec3.y(c.at) - Vec3.y(c.shape) / 2.0 + p.y, Vec3.z(c.at) + dz))
           |> Instance.scaleXYZ(p.w, p.h, p.d) |> Instance.rotateY(Angle.degrees(c.yaw))
-          |> Instance.tint(Color.rgb(p.r * k, p.g * k, p.b * k)))))
+          |> Instance.tint(Color.rgb(p.r * kr, p.g * kg, p.b * kb)))))
     |> Scene.inCells(roomsOf(l))
