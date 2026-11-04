@@ -36,7 +36,7 @@ let crateBody = (drop, i) =>
     |> Physics.friction(0.7)
 
 // The fan's lane runs along -Z from the fan housing.
-let lane = Vec3.make(3.5, 1.0, 0.5)
+let lane = Vec3.make(4.5, 1.0, 0.5)
 let laneSize = Vec3.make(2.6, 2.0, 9.0)
 let cardCount = 14.0
 
@@ -54,10 +54,10 @@ let cardBody = (i) =>
 // A draft along -Z that nearly floats a card (0.29 N of weight), with gusts.
 let draft = Physics.forceVolume(fanTag, {
   center: lane, size: laneSize,
-  force: Vec3.make(0.0, 0.22, -0.16),
-  turbulence: 0.14, drag: 0.0 })
+  force: Vec3.make(0.0, 0.3, -0.05),
+  turbulence: 0.3, drag: 1.0 })
 
-let blastAt = Vec3.make(Vec3.x(pileAt), 0.2, Vec3.z(pileAt) - 0.3)
+let blastAt = Vec3.make(Vec3.x(pileAt), 0.2, Vec3.z(pileAt))
 
 let physics = (model) =>
   Physics.scene(Vec3.make(0.0, -9.81, 0.0),
@@ -66,10 +66,19 @@ let physics = (model) =>
       |> List.append(List.range(crateCount) |> List.map((i) => crateBody(model.drop, i)))
       |> List.append(List.range(cardCount) |> List.map(cardBody)))
 
-let init = { drop: 0.0, flash: 0.0, spin: 0.0 }
+let init = { drop: 0.0, flash: 0.0, spin: 0.0, awake: 0.0 }
+
+// A sleeping body's velocity is exactly zero, so `awake` (in `/state`'s
+// model) counts the crates still simulating after a blast.
+let moving = (tag) =>
+  let v = Physics.linearVelocity(tag) in
+  v.x != 0.0 || v.y != 0.0 || v.z != 0.0
 
 let tick = (model, dt, tts) =>
-  { model with flash: Math.max(0.0, model.flash - dt), spin: model.spin + dt * 900.0 }
+  { model with
+      flash: Math.max(0.0, model.flash - dt),
+      spin: model.spin + dt * 900.0,
+      awake: List.length(List.filter((i) => moving(crateTag(i)), List.range(crateCount))) }
 
 // Key-ups never repeat, so acting on release needs no latch.
 let input = (model, key, isDown) =>
@@ -78,7 +87,7 @@ let input = (model, key, isDown) =>
     match key with
     | Key.E =>
       ({ model with flash: 0.25 },
-       Physics.explodeWith(blastAt, 4.5, 9.0, { falloff: Physics.Linear, lift: 0.7 }))
+       Physics.explodeWith(blastAt, 4.5, 4.0, { falloff: Physics.Linear, lift: 0.7 }))
     | Key.Space => { model with drop: model.drop + 1.0 }
     | _ => model
 
@@ -124,7 +133,7 @@ let flashVisual = (model) =>
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera3D.lookAt(Vec3.make(9.5, 8.0, -11.0), Vec3.make(0.5, 0.8, 0.5)),
+    Camera3D.lookAt(Vec3.make(9.0, 6.5, -9.0), Vec3.make(1.0, 0.8, 1.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(30.0) |> Scene.lit(Color.rgb(0.5, 0.53, 0.57)),
       Scene.group(List.range(crateCount) |> List.map(crateVisual)),
@@ -138,5 +147,5 @@ let draw = (model, tts) =>
       Light.directional(Vec3.make(0.5, -1.0, 0.35), Color.rgb(1.0, 0.98, 0.95), 0.9) |> Light.castShadows,
     ])
 
-expect Vec3.y(crateSpot(0.0, 0.0)) == crateSize / 2.0
-expect List.length(List.range(crateCount)) == 50.0
+expect Math.abs(Vec3.y(crateSpot(0.0, 0.0)) - crateSize / 2.0) < 0.0001
+expect crateCount == 50.0

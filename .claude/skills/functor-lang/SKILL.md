@@ -1391,6 +1391,18 @@ the next step without disturbing its pose or velocity — the same divergence
 rule as `friction`/`restitution`. Per-frame velocity commands are still right
 for *steering* (the controller recipe below); they are the wrong tool for *drag*.
 
+**Explosions and wind.** `Physics.explode(center, radius, strength)` is one
+command effect pushing every DYNAMIC body whose collider is within `radius`
+(linear falloff, sleepers woken, kinematic/fixed untouched);
+`Physics.explodeWith(center, radius, strength, { falloff: Physics.Quadratic,
+lift: 0.5 })` tunes it. A persistent draft is NOT an effect: declare
+`Physics.forceVolume(tag, { center, size, force, turbulence, drag })` in
+`Physics.scene`'s list beside the bodies — every step it pushes the dynamic
+bodies whose centre is inside the world-axis box (`force` in newtons, so light
+bodies blow further; seeded `turbulence` gusts; in-volume `drag`). The tag
+seeds the gusts and is not a body (reads/commands never see it). See
+`examples/blast`.
+
 **Level geometry is `Physics.trimesh`.** `Physics.fixed(tag,
 Physics.trimesh({ positions, triangles }))` collides with a triangle mesh
 (`Model.skinned`'s byte layout: f32 `x, y, z` per vertex, u32 index triples).

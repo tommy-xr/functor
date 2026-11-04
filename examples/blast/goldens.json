@@ -1,0 +1,20 @@
+[
+  {
+    "name": "blast-flight",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "blast.script",
+    "captureAtFrame": 80
+  },
+  {
+    "name": "blast-rest",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "blast.script",
+    "captureAtFrame": 420
+  }
+]
