@@ -240,6 +240,42 @@ fn a_body_the_draft_cannot_move_sleeps_until_the_volume_changes() {
         w.step(&[Command::DeclareScene(scene(20.0))]);
     }
     assert!(velocity(&w, "crate")[0] > 1.0, "{:?}", velocity(&w, "crate"));
+
+    // Changing a different, disjoint volume leaves a sleeper in this one be.
+    let mut w = World::new([0.0, -9.81, 0.0]);
+    let two = |far: f32| {
+        let mut scene = scene(0.1);
+        scene.volumes.push(ForceVolume {
+            tag: "far".to_string(),
+            center: [10.0, 0.0, 0.0],
+            ..fan([far, 0.0, 0.0], 0.0, 0.0)
+        });
+        scene
+    };
+    for _ in 0..300 {
+        w.step(&[Command::DeclareScene(two(1.0))]);
+    }
+    assert!(sleeping(&w, "crate"));
+    w.step(&[Command::DeclareScene(two(2.0))]);
+    assert!(sleeping(&w, "crate"), "only the changed volume's bodies wake");
+}
+
+#[test]
+fn removing_a_volume_wakes_what_it_held_up() {
+    let hover = |up: Option<f32>| PhysicsScene {
+        gravity: [0.0, -9.81, 0.0],
+        volumes: up.map(|f| fan([0.0, f, 0.0], 0.0, 0.0)).into_iter().collect(),
+        ..weightless(vec![ball("a", [0.0; 3])])
+    };
+    let mut w = World::new([0.0, -9.81, 0.0]);
+    for _ in 0..300 {
+        w.step(&[Command::DeclareScene(hover(Some(9.81)))]);
+    }
+    assert!(sleeping(&w, "a"), "an updraft that balances gravity lets it sleep");
+    for _ in 0..10 {
+        w.step(&[Command::DeclareScene(hover(None))]);
+    }
+    assert!(velocity(&w, "a")[1] < -1.0, "it falls: {:?}", velocity(&w, "a"));
 }
 
 /// A blast and a gusty volume, recorded live, rewind and replay byte-exact.

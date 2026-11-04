@@ -242,8 +242,8 @@ type volume = { center: Vec3.t, size: Vec3.t, force: Vec3.t, turbulence: float, 
 /// Declare it in `Physics.scene`'s list beside the bodies. Every physics step,
 /// each awake dynamic body whose centre of mass is inside gets the volume's
 /// force and gusts. A body the draft can't move (a crate under a weak fan)
-/// settles and sleeps as usual; declaring or changing a volume wakes the
-/// bodies inside it. It is declared each frame like a body and stops when it
+/// settles and sleeps as usual; declaring, changing or removing a volume
+/// wakes the bodies inside it. It is declared each frame like a body and stops when it
 /// is no longer declared.
 /// The tag names the volume (it seeds the gusts) and is not a body:
 /// reads, commands and contacts never see it. For paper that flutters and

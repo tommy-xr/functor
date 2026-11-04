@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use super::{Blast, Body, BodyKind, CharacterSettings, Falloff, ForceVolume, PhysicsScene, Shape};
 use super::room::{self, RoomMeshes};
 use crate::fused_mesh::ChunkKey;
+use crate::timetravel::fnv1a;
 
 /// The fixed simulation timestep. `step_frame` accumulates real dt and steps
 /// the world in whole `FIXED_DT` substeps — Rapier is never stepped with a
@@ -253,11 +254,12 @@ pub struct World {
     /// degraded frame keeps them and a seek restores them).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     volumes: Vec<ForceVolume>,
-    /// The volumes changed since the last step, so it wakes the sleeping
-    /// bodies inside them (a fan switching on). Otherwise a body that settles
-    /// in a draft too weak to move it sleeps like any other.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    volumes_changed: bool,
+    /// Boxes `(center, size)` of volumes added, changed or removed since the
+    /// last step: it wakes the sleeping bodies in them (a fan switching on or
+    /// off). Otherwise a body that settles in a draft too weak to move it
+    /// sleeps like any other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    wake_boxes: Vec<([f32; 3], [f32; 3])>,
     /// Bodies given an [`PhysicsCommand::ApplyForce`] this frame — their
     /// forces are cleared once the frame's substeps finish. Intra-call state:
     /// populated and cleared within one `step_frame`/`step`, so it is always
@@ -312,7 +314,7 @@ impl Clone for World {
             pending: self.pending.clone(),
             grounded: self.grounded.clone(),
             volumes: self.volumes.clone(),
-            volumes_changed: self.volumes_changed,
+            wake_boxes: self.wake_boxes.clone(),
             forced: self.forced.clone(),
             events: self.events.clone(),
             command_warnings: self.command_warnings.clone(),
@@ -379,7 +381,7 @@ impl World {
             pending: Vec::new(),
             grounded: BTreeMap::new(),
             volumes: Vec::new(),
-            volumes_changed: false,
+            wake_boxes: Vec::new(),
             forced: Vec::new(),
             events: Vec::new(),
             command_warnings: Vec::new(),
@@ -418,9 +420,10 @@ impl World {
     pub fn queue_command(&mut self, command: PhysicsCommand) {
         if self.pending.len() >= MAX_PENDING_COMMANDS {
             let (tag, kind) = command.tag_and_kind();
+            let what = if tag.is_empty() { kind.to_string() } else { format!("{kind} \"{tag}\"") };
             self.push_command_warning(format!(
-                "physics command queue full ({MAX_PENDING_COMMANDS}); dropping {kind} \
-                 \"{tag}\" (is anything stepping the world?)"
+                "physics command queue full ({MAX_PENDING_COMMANDS}); dropping {what} \
+                 (is anything stepping the world?)"
             ));
             return;
         }
@@ -484,8 +487,11 @@ impl World {
     pub fn reconcile(&mut self, scene: &PhysicsScene) {
         self.gravity = scene.gravity;
         if self.volumes != scene.volumes {
+            let (old, new) = (&self.volumes, &scene.volumes);
+            let changed = (old.iter().filter(|v| !new.contains(v)))
+                .chain(new.iter().filter(|v| !old.contains(v)));
+            self.wake_boxes.extend(changed.map(|v| (v.center, v.size)));
             self.volumes = scene.volumes.clone();
-            self.volumes_changed = true;
         }
         let mut stats = ReconcileStats::default();
 
@@ -1287,7 +1293,7 @@ impl World {
                 .min_by(|a, b| a.distance(center).total_cmp(&b.distance(center)));
             let Some(point) = nearest else { continue };
             let distance = point.distance(center);
-            if distance > blast.radius {
+            if !(distance <= blast.radius) {
                 continue;
             }
             let scale = falloff(blast.falloff, distance / blast.radius);
@@ -1297,41 +1303,42 @@ impl World {
         }
     }
 
-    /// One step of every force volume on the awake dynamic bodies inside it
-    /// (all of them, the step after the volumes change). O(volumes × bodies),
-    /// and only when a volume is declared.
+    /// One step of every force volume on the awake dynamic bodies inside it,
+    /// after waking the sleepers where volumes changed. O(volumes × bodies),
+    /// and only when a volume is declared or changed.
     fn apply_volumes(&mut self) {
-        let wake = std::mem::take(&mut self.volumes_changed);
-        if self.volumes.is_empty() {
-            return;
+        let inside = |rb: &RigidBody, (center, size): ([f32; 3], [f32; 3])| {
+            ((rb.center_of_mass() - vec3(center)).abs() - vec3(size) * 0.5).max_element() <= 0.0
+        };
+        for region in std::mem::take(&mut self.wake_boxes) {
+            for &handle in self.tags.values() {
+                let rb = &mut self.bodies[handle];
+                if rb.is_dynamic() && rb.is_sleeping() && inside(rb, region) {
+                    rb.wake_up(true);
+                }
+            }
         }
         let time = self.frame as f32 * FIXED_DT;
         for volume in &self.volumes {
-            let (center, half) = (vec3(volume.center), vec3(volume.size) * 0.5);
             let force = vec3(volume.force);
-            let seed = fnv1a(FNV_OFFSET, volume.tag.as_bytes());
+            let seed = fnv1a(volume.tag.as_bytes());
             for (tag, &handle) in self.tags.iter() {
                 let rb = &mut self.bodies[handle];
-                let outside = ((rb.center_of_mass() - center).abs() - half).max_element() > 0.0;
-                if !rb.is_dynamic() || outside || (rb.is_sleeping() && !wake) {
+                if !rb.is_dynamic() || rb.is_sleeping() || !inside(rb, (volume.center, volume.size)) {
                     continue;
                 }
                 let mut push = force;
                 if volume.turbulence > 0.0 {
-                    push += gust(fnv1a(seed, tag.as_bytes()), time) * volume.turbulence;
+                    push += gust(seed ^ fnv1a(tag.as_bytes()).rotate_left(1), time)
+                        * volume.turbulence;
                 }
                 let mut impulse = push * FIXED_DT;
                 if volume.drag > 0.0 {
                     impulse -= rb.linvel() * rb.mass() * (volume.drag * FIXED_DT).min(1.0);
                 }
-                if impulse != Vector::ZERO {
-                    // Waking restarts the sleep timer, so waking every step
-                    // would keep a body the draft can't move awake forever.
-                    if rb.is_sleeping() {
-                        rb.wake_up(true);
-                    }
-                    rb.apply_impulse(impulse, false);
-                }
+                // No wake: it restarts the sleep timer, which would keep a body
+                // the draft can't move awake forever.
+                rb.apply_impulse(impulse, false);
             }
         }
     }
@@ -2058,36 +2065,18 @@ fn blast_direction(center: Vector, com: Vector, lift: f32) -> Vector {
     (radial + Vector::Y * lift).try_normalize().unwrap_or(radial)
 }
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-
-/// FNV-1a: a stable string hash, so gust seeds match across runs and builds.
-fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        hash = (hash ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
 /// A smooth per-axis gust in `[-1, 1]` at `time` seconds: two sines per axis
 /// whose 0.4–2 Hz frequencies and phases come from `seed`. Smooth, so light
 /// bodies sway rather than jitter.
 fn gust(seed: u64, time: f32) -> Vector {
-    // SplitMix64 of (seed, i): independent draws in [0, 1).
-    let unit = |i: u64| {
-        let mut z = seed.wrapping_add(i.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
+    let mut rng = crate::net::Rng::new(seed);
+    let mut wave = |weight: f32| {
+        let hz = 0.4 + 1.6 * rng.next_f32();
+        let phase = std::f32::consts::TAU * rng.next_f32();
+        weight * (std::f32::consts::TAU * hz * time + phase).sin()
     };
-    let axis = |a: u64| {
-        let wave = |k: u64, weight: f32| {
-            let hz = 0.4 + 1.6 * unit(a * 4 + k * 2);
-            let phase = std::f32::consts::TAU * unit(a * 4 + k * 2 + 1);
-            weight * (std::f32::consts::TAU * hz * time + phase).sin()
-        };
-        wave(0, 0.6) + wave(1, 0.4)
-    };
-    Vector::new(axis(0), axis(1), axis(2))
+    let mut axis = || wave(0.6) + wave(0.4);
+    Vector::new(axis(), axis(), axis())
 }
 
 fn vec3(v: [f32; 3]) -> Vector {

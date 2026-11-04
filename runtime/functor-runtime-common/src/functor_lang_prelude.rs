@@ -3818,6 +3818,9 @@ capsule for the moving body"
                     .ok_or_else(|| format!("{WHAT}: missing `{name}`"))?;
                 let (x, y, z) = vec3_of(&field.1, &format!("{WHAT} {name}"), span)
                     .map_err(|e| e.message)?;
+                if ![x, y, z].iter().all(|n| n.is_finite()) {
+                    return Err(format!("{WHAT}: `{name}` must be finite"));
+                }
                 Ok::<_, String>([x, y, z])
             };
             let number = |name: &str| {
@@ -4044,18 +4047,20 @@ capsule for the moving body"
         lift: f64,
         what: &str,
     ) -> Result<FunctorLangEffect, String> {
-        let radius = positive(radius, &format!("{what} radius"))?;
-        if !(radius.is_finite() && strength.is_finite() && lift.is_finite()) {
-            return Err(format!("{what}: radius, strength and lift must be finite"));
-        }
+        // Checked as the f32s the world uses: 1e100 is finite only as an f64.
+        let radius = positive(radius as f32 as f64, &format!("{what} radius"))? as f32;
+        let (strength, lift) = (strength as f32, lift as f32);
         let (x, y, z) = center.0;
+        if ![radius, strength, lift, x, y, z].iter().all(|n| n.is_finite()) {
+            return Err(format!("{what}: center, radius, strength and lift must be finite"));
+        }
         Ok(FunctorLangEffect(EffectTree::Physics(physics::PhysicsCommand::Explode(
             physics::Blast {
                 center: [x, y, z],
-                radius: radius as f32,
-                strength: strength as f32,
+                radius,
+                strength,
                 falloff,
-                lift: lift as f32,
+                lift,
             },
         ))))
     }
@@ -13221,6 +13226,15 @@ size: Vec3.make(1.0, 1.0, 1.0), force: Vec3.make(0.0, 0.0, 0.0), turbulence: 0.0
             (
                 "Physics.explode(Vec3.make(0.0, 0.0, 0.0), 0.0, 1.0)".to_string(),
                 "Physics.explode radius must be positive",
+            ),
+            // Valid f64s that are zero or infinite as f32s.
+            (
+                "Physics.explode(Vec3.make(0.0, 0.0, 0.0), Math.pow(10.0, -100.0), 1.0)".to_string(),
+                "Physics.explode radius must be positive",
+            ),
+            (
+                "Physics.explode(Vec3.make(0.0, 0.0, 0.0), 1.0, Math.pow(10.0, 100.0))".to_string(),
+                "finite",
             ),
             (
                 volume.replace("size: Vec3.make(1.0, 1.0, 1.0)", "size: Vec3.make(1.0, 0.0, 1.0)"),

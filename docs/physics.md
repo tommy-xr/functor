@@ -433,9 +433,9 @@ is inside the world-axis box `force × FIXED_DT` of impulse, plus a gust, minus
   `linearDamping` (~1) and `angularDamping` (~0.6) drifts and settles. True
   aerodynamic lift is out of scope.
 - **Sleep.** Only awake bodies are pushed, so a crate the draft can't move
-  settles and sleeps; gusting paper keeps itself awake. Declaring or changing a
-  volume wakes the sleeping bodies inside it, so a fan switching on (or a
-  window breaking) blows what was resting there.
+  settles and sleeps; gusting paper keeps itself awake. Declaring, changing or
+  removing a volume wakes the sleeping bodies in its box, so a fan switching
+  on blows what was resting there, and one switching off drops what it held.
 - **Cost.** O(volumes × bodies) per step, zero without a volume.
 
 `examples/blast` is the demo: E blasts a crate pile, and a fan volume blows
