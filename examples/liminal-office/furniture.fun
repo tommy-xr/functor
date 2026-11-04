@@ -106,8 +106,8 @@ let unseen = (parts: List<Solid>): List<Slab> =>
 
 // ---- Disorder --------------------------------------------------------------------
 
-// Deterministic noise in [0, 1) (building.fun's), and the `k`th draw for a
-// piece: from its place, so it never changes with the list around it.
+// Deterministic noise in [0, 1) (building.fun's textures use it too), and
+// the `k`th draw for a piece: from its place, so it never changes with the list around it.
 let noise = (i: float): float =>
   let s = Math.sin(i * 12.9898 + 78.233) * 43758.5453 in
   s - Math.floor(s)
@@ -209,7 +209,8 @@ let stack = (f: Furnish): List<Solid> =>
   List.flatten([
     List.range(n - 1.0) |> List.concatMap((k) =>
       moved((p) => yawed(4.0 * swing(f, 10.0 + k), p), v(0.03 * swing(f, 20.0 + k), 0.09 * k, 0.03 * swing(f, 30.0 + k)), sideChairParts)),
-    if happens(f, 3.0, 0.6) then moved((p) => rolled(180.0, p), v(0.0, 0.09 * (n - 2.0) + 0.96, 0.04), sideChairParts)
+    // Flipped front to back too, so its back hangs clear in front of the stack.
+    if happens(f, 3.0, 0.6) then moved((p) => tilted(180.0, p), v(0.0, 0.09 * (n - 2.0) + 0.96, 0.04), sideChairParts)
     else moved((p) => yawed(6.0 * swing(f, 13.0), p), v(0.0, 0.09 * (n - 1.0), 0.0), sideChairParts),
   ])
 
@@ -290,8 +291,15 @@ let plant = (f: Furnish): List<Solid> =>
   let blades = List.range(5.0) |> List.concatMap((k) =>
     moved((p) => yawed(72.0 * k + 30.0 * draw(f, 10.0 + k), tilted(20.0 + 20.0 * draw(f, 20.0 + k), p)), v(0.0, 0.38, 0.0),
       [part(colour, -0.07, 0.0, -0.015, 0.07, 0.6 + 0.25 * draw(f, 30.0 + k), 0.015)])) in
-  let whole = List.append([part(dark, -0.19, 0.0, -0.19, 0.19, 0.4, 0.19)], blades) in
-  if happens(f, 4.0, 0.25) then grounded(moved((p) => tilted(85.0, p), v(0.0, 0.0, 0.0), whole)) else whole
+  let pot = part(dark, -0.19, 0.0, -0.19, 0.19, 0.4, 0.19) in
+  let whole = List.append([pot], blades) in
+  // Over, it lies on its pot, less the blades that would go through the
+  // floor.
+  let over = (p: Vec3.t): Vec3.t => tilted(85.0, p) in
+  if happens(f, 4.0, 0.25) then
+    shifted(0.0, 0.0 - lowest(moved(over, v(0.0, 0.0, 0.0), [pot])), 0.0, moved(over, v(0.0, 0.0, 0.0), whole))
+      |> List.filter((s) => lowest([s]) > -0.001)
+  else whole
 
 // A bed 2 m long down its z (its foot to the front): a frame, a
 // headboard, the mattress (askew, with mess), a pillow and a blanket.
@@ -336,21 +344,26 @@ let partsOf = (f: Furnish): List<Solid> =>
 
 // ---- In the room -----------------------------------------------------------------
 
-// `f`'s boxes in its room's space, from the room's floor: turned to
-// face its side, then knocked off its place by its mess.
-let placed = (f: Furnish): List<Solid> =>
-  let d = driftOf(f.piece) in
-  moved((p) => yawed(yawOf(f.facing) + d.spin * swing(f, 0.0), p),
-    v(f.x + d.slide * swing(f, 1.0), 0.0, f.z + d.slide * swing(f, 2.0)), partsOf(f))
-// Nudged inside `r` (the room inside its walls), 2 cm clear, where its
-// mess pushed it into a wall.
+// Where `f` goes in its room's space, from the room's floor: turned to
+// face its side and knocked off its place by its mess, then nudged inside
+// `r` (the room inside its walls), 2 cm clear, where that pushed it into a
+// wall. As (turn, offset) for `moved`.
 let gap = 0.02
 let into = (lo: float, hi: float, b0: float, b1: float): float =>
   if b0 < lo + gap then lo + gap - b0 else if b1 > hi - gap then hi - gap - b1 else 0.0
+let poseIn = (r: Rect, f: Furnish): ((Vec3.t) => Vec3.t, Vec3.t) =>
+  let d = driftOf(f.piece) in
+  let turn = (p: Vec3.t): Vec3.t => yawed(yawOf(f.facing) + d.spin * swing(f, 0.0), p) in
+  let by = v(f.x + d.slide * swing(f, 1.0), 0.0, f.z + d.slide * swing(f, 2.0)) in
+  let b = boundsOf(moved(turn, by, partsOf(f))) in
+  (turn, by |> Vec3.add(v(into(r.x0, r.x1, b.x0, b.x1), 0.0, into(r.z0, r.z1, b.z0, b.z1))))
 let placedIn = (r: Rect, f: Furnish): List<Solid> =>
-  let parts = placed(f) in
-  let b = boundsOf(parts) in
-  shifted(into(r.x0, r.x1, b.x0, b.x1), 0.0, into(r.z0, r.z1, b.z0, b.z1), parts)
+  let (turn, by) = poseIn(r, f) in moved(turn, by, partsOf(f))
+// Its footprint: the box round all but its loose boxes, turned with it.
+let footprintIn = (r: Rect, f: Furnish): Solid =>
+  let (turn, by) = poseIn(r, f) in
+  let b = boundsOf(partsOf(f) |> List.filter((s) => not s.loose)) in
+  moved(turn, by, [part(0.0, b.x0, b.y0, b.z0, b.x1, b.y1, b.z1)]) |> List.head |> Option.defaultValue(part(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 // Its faces, and its collider: the bounds of all but its loose boxes.
 let facesOf = (r: Rect, f: Furnish): List<Slab> => unseen(placedIn(r, f))
 let solidOf = (r: Rect, f: Furnish): Bounds => boundsOf(placedIn(r, f) |> List.filter((s) => not s.loose))
@@ -373,7 +386,7 @@ expect pieces |> List.all((p) => let b = solidOf(anywhere, tidy(p)) in Math.abs(
 expect solidOf(anywhere, tidy(Desk)) == boundsOf(desk(tidy(Desk)))
 // Messy, nothing sinks into the floor, and the same entry always comes out
 // the same.
-expect pieces |> List.all((p) => List.range(8.0) |> List.all((k) => lowest(placed(messy(p, k))) > -0.001))
+expect pieces |> List.all((p) => List.range(8.0) |> List.all((k) => lowest(placedIn(anywhere, messy(p, k))) > -0.001))
 let numbersOf = (fs: List<Slab>): List<float> =>
   fs |> List.concatMap((f) => List.append([f.swatch], [f.o, f.a, f.b] |> List.concatMap((p) => [Vec3.x(p), Vec3.y(p), Vec3.z(p)])))
 expect numbersOf(facesOf(anywhere, messy(Chair, 3.0))) == numbersOf(facesOf(anywhere, messy(Chair, 3.0)))

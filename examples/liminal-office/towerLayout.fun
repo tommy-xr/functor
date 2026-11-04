@@ -34,8 +34,6 @@ let throughway = (a: float, b: float, at: float): Door =>
   { a: a, b: b, at: at, width: 2.4 - partition, height: ceiling }
 let mouth = (a: float, b: float, at: float): Door => { a: a, b: b, at: at, width: 3.0, height: 2.4 }
 let window = (r: float, side: Side, at: float): Window => { room: r, side: side, at: at, width: 1.2, sill: 0.9, head: 2.3 }
-let piece = (room: float, p: Article, x: float, z: float, facing: Side, mess: float): Furnish =>
-  { room: room, piece: p, x: x, z: z, facing: facing, mess: mess }
 
 // The lift lobby: three brushed steel doors on its north wall, a grid of
 // panels. The stairwell: a sodium lamp by the landing's door and one over

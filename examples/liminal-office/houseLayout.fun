@@ -102,8 +102,6 @@ let lamps = [
 // The living room: a couch under the window, a low table, a shelf, a
 // plant, a chair over. Bedroom 2: a bed against its north wall, a chair
 // and a chest of drawers. Every other room empty.
-let piece = (room: float, p: Article, x: float, z: float, facing: Side, mess: float): Furnish =>
-  { room: room, piece: p, x: x, z: z, facing: facing, mess: mess }
 let furniture = [
   piece(2.0, Couch, 0.58, 5.8, East, 0.3),
   piece(2.0, CoffeeTable, 1.6, 5.8, East, 0.4),

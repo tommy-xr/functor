@@ -1,4 +1,4 @@
-layout=377488714
+layout=2445064079
 sources=layout.fun officeLayout.fun building.fun furniture.fun
 bakes=night day
 bakeVersion=2

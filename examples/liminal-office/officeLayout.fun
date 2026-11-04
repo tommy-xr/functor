@@ -110,8 +110,6 @@ let lamps = [
 // chairs, cabinets, a stack of chairs, a plant. Office 202 upstairs, worse:
 // two desks off the wall, chairs over, cabinets gaping, books on the
 // floor, a cooler's bottle down.
-let piece = (room: float, p: Article, x: float, z: float, facing: Side, mess: float): Furnish =>
-  { room: room, piece: p, x: x, z: z, facing: facing, mess: mess }
 let furniture = [
   piece(1.0, Couch, 6.6, 2.0, East, 0.4),
   piece(1.0, CoffeeTable, 7.65, 2.0, East, 0.6),
@@ -121,15 +119,15 @@ let furniture = [
   piece(1.0, Counter, 12.7, 2.1, West, 0.0),
   piece(1.0, Chair, 13.45, 2.3, West, 0.7),
   piece(1.0, Cooler, 13.6, 5.55, West, 0.0),
-  piece(5.0, Desk, 16.65, 2.225, South, 0.3),
-  piece(5.0, Desk, 18.15, 2.225, South, 0.5),
-  piece(5.0, Desk, 16.65, 2.975, North, 0.6),
-  piece(5.0, Desk, 18.15, 2.975, North, 0.2),
-  piece(5.0, Chair, 16.65, 1.45, North, 0.5),
-  piece(5.0, Chair, 18.2, 1.4, North, 1.0),
-  piece(5.0, Chair, 16.7, 3.8, South, 0.9),
-  piece(5.0, Cabinet, 15.5, 5.55, South, 0.3),
-  piece(5.0, Cabinet, 16.0, 5.55, South, 0.8),
+  piece(5.0, Desk, 16.5, 2.05, South, 0.3),
+  piece(5.0, Desk, 18.3, 2.05, South, 0.3),
+  piece(5.0, Desk, 16.5, 3.15, North, 0.4),
+  piece(5.0, Desk, 18.3, 3.15, North, 0.2),
+  piece(5.0, Chair, 16.5, 1.3, North, 0.8),
+  piece(5.0, Chair, 18.35, 1.25, North, 1.0),
+  piece(5.0, Chair, 16.55, 3.98, South, 0.9),
+  piece(5.0, Cabinet, 15.4, 5.55, South, 0.3),
+  piece(5.0, Cabinet, 16.1, 5.55, South, 0.8),
   piece(5.0, Stack, 19.45, 0.5, North, 0.6),
   piece(5.0, Plant, 19.45, 5.5, South, 0.2),
   piece(16.0, Desk, 14.4, 0.6, North, 0.9),
@@ -138,8 +136,8 @@ let furniture = [
   piece(16.0, Chair, 17.2, 1.55, South, 0.9),
   piece(16.0, Chair, 18.2, 4.2, West, 1.0),
   piece(16.0, Bookshelf, 16.5, 5.7, South, 1.0),
-  piece(16.0, Cabinet, 18.7, 5.55, South, 1.0),
-  piece(16.0, Cabinet, 19.2, 5.55, South, 1.0),
+  piece(16.0, Cabinet, 18.6, 5.55, South, 1.0),
+  piece(16.0, Cabinet, 19.3, 5.55, South, 1.0),
   piece(16.0, Cooler, 12.0, 5.6, South, 1.0),
   piece(16.0, Stack, 19.4, 3.2, West, 1.0),
 ]

@@ -106,6 +106,8 @@ type Article =
 // `mess` (0 to 1) scales its disorder: turned or pushed off its place, a
 // chair tipped, a drawer pulled out; which, from the noise at (x, z).
 type Furnish = { room: float, piece: Article, x: float, z: float, facing: Side, mess: float }
+let piece = (room: float, p: Article, x: float, z: float, facing: Side, mess: float): Furnish =>
+  { room: room, piece: p, x: x, z: z, facing: facing, mess: mess }
 
 // One archetype. `levels` storeys, `storey` floor to floor; `facadeHeight`
 // is the roofline. Room ids are list positions, and they are the cell ids.

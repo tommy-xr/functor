@@ -38,6 +38,22 @@ expect cases |> List.all((c) => solids(c) |> List.all((e) =>
   let (f, b) = e in
   let r = c.inner(f.room) in
   b.x0 >= r.x0 && b.x1 <= r.x1 && b.z0 >= r.z0 && b.z1 <= r.z1 && b.y0 > -0.001 && b.y1 < c.l.ceiling))
+// No two big pieces in a room overlap, however their mess turned them
+// (their footprints, by separating axes): chairs and plants may tuck in.
+let big = (f: Furnish): bool => f.piece != Chair && f.piece != SideChair && f.piece != Plant
+let apart = (a: Furniture.Solid, b: Furniture.Solid): bool =>
+  let corners = (s: Furniture.Solid): List<Vec3.t> => Furniture.cornersOf(s) in
+  [a.ax, a.az, b.ax, b.az] |> List.any((axis) =>
+    let span = (s: Furniture.Solid): (float, float) =>
+      let ds = corners(s) |> List.map((p) => Vec3.dot(p, axis)) in
+      (List.minimum(ds) |> Option.defaultValue(0.0), List.maximum(ds) |> Option.defaultValue(0.0)) in
+    let (a0, a1) = span(a) in
+    let (b0, b1) = span(b) in
+    a1 <= b0 || b1 <= a0)
+expect cases |> List.all((c) =>
+  let fs = c.l.furniture |> List.filter(big) |> List.indexedMap((k, f) => (k, f, Furniture.footprintIn(c.inner(f.room), f))) in
+  fs |> List.all((e) => let (k, f, a) = e in fs |> List.all((o) =>
+    let (j, g, b) = o in j <= k || f.room != g.room || apart(a, b))))
 // Nothing stands within a metre of a door into its room.
 expect cases |> List.all((c) => solids(c) |> List.all((e) =>
   let (f, b) = e in Debris.doorZones(c.l, f.room) |> List.all((z) => not overlaps(b, z))))
@@ -75,7 +91,7 @@ expect [5.0, 16.0] |> List.all((i) => office.furniture |> List.any((f) => f.room
 // ---- Debris --------------------------------------------------------------------
 
 let seeds = List.range(4.0) |> List.map((k) => Debris.seedOf(Block.copyAt(k)))
-let strewnIn = (c: Case, seed: float): List<Debris.Candidate> => Debris.candidatesOf(seed, c.l)
+let strewnIn = (c: Case, seed: float): List<Debris.Candidate> => Debris.candidatesOf(Building.officeSwatches, seed, c.l)
 let numbers = (cs: List<Debris.Candidate>): List<float> =>
   cs |> List.concatMap((d) => [d.cell, Vec3.x(d.at), Vec3.y(d.at), Vec3.z(d.at), d.yaw])
 // At most `cap` a room, only in furnished rooms, every one inside its room
@@ -86,7 +102,7 @@ expect cases |> List.all((c) => seeds |> List.all((s) =>
   (Debris.roomsOf(c.l) |> List.all((i) => (ds |> List.filter((d) => d.cell == i) |> List.length) <= Debris.cap))
     && (ds |> List.all((d) =>
       let r = Building.inner(c.l, Building.roomAt(c.l, d.cell).rect) in
-      let rad = Math.max(Vec3.x(d.shape), Vec3.z(d.shape)) / 2.0 in
+      let rad = Math.sqrt(Vec3.x(d.shape) * Vec3.x(d.shape) + Vec3.z(d.shape) * Vec3.z(d.shape)) / 2.0 in
       List.length(Furniture.inRoom(c.l, d.cell)) > 0.0
         && Vec3.x(d.at) - rad >= r.x0 && Vec3.x(d.at) + rad <= r.x1 && Vec3.z(d.at) - rad >= r.z0 && Vec3.z(d.at) + rad <= r.z1
         && Debris.clearOf(Debris.keepsOf(c.l, d.cell), Vec3.x(d.at), Vec3.z(d.at), rad)
@@ -97,7 +113,7 @@ expect cases |> List.all((c) =>
   let tags = strewnIn(c, 1.0) |> List.map((d) => d.tag) in
   tags |> List.all((t) => (tags |> List.filter((u) => u == t) |> List.length) == 1.0))
 // A copy's debris is the same every time; no two of the block's copies match.
-let ofCopy = (k: float): List<float> => numbers(Debris.candidatesOf(Debris.seedOf(Block.copyAt(k)), office))
+let ofCopy = (k: float): List<float> => numbers(Debris.candidatesOf(Building.officeSwatches, Debris.seedOf(Block.copyAt(k)), office))
 expect ofCopy(1.0) == ofCopy(1.0)
 expect List.range(4.0) |> List.all((a) => List.range(4.0) |> List.all((b) =>
   a == b || ofCopy(a) != ofCopy(b)))
