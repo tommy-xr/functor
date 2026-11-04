@@ -1,0 +1,5 @@
+# Sets off the blast at frame 60:
+#   functor -d examples/blast run native -- --input-script blast.script \
+#     --capture-at-frame 80 --capture-size 1600x1200
+60 E down
+61 E up

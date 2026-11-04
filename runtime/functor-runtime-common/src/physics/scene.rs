@@ -266,6 +266,49 @@ impl BodyGroup {
     }
 }
 
+/// How a [`Blast`]'s impulse fades from its centre (full) to its radius (zero).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Falloff {
+    /// `1 - d / r`.
+    #[default]
+    Linear,
+    /// `(1 - d / r)^2`: concentrated near the centre.
+    Quadratic,
+}
+
+/// A one-shot radial impulse (`Physics.explode`) on every dynamic body whose
+/// collider is within `radius` of `center`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Blast {
+    pub center: [f32; 3],
+    pub radius: f32,
+    /// Impulse magnitude (N·s) at the centre, so lighter bodies fly further.
+    pub strength: f32,
+    pub falloff: Falloff,
+    /// Upward bias added to the unit push direction before renormalizing:
+    /// 0 is purely radial, 1 lifts a level push to 45°.
+    pub lift: f32,
+}
+
+/// A persistent box field (`Physics.forceVolume`): every fixed step, each
+/// awake dynamic body whose centre of mass is inside gets `force` plus a
+/// seeded gust, and loses `drag` of its velocity per second.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ForceVolume {
+    /// Seeds the gusts, so each volume and body gusts independently.
+    pub tag: String,
+    pub center: [f32; 3],
+    /// Full world-axis extents.
+    pub size: [f32; 3],
+    /// Newtons.
+    pub force: [f32; 3],
+    /// Peak gust per axis, in newtons; 0 is steady.
+    pub turbulence: f32,
+    /// Per-second linear velocity decay inside the volume, like
+    /// `linear_damping` but independent of mass.
+    pub drag: f32,
+}
+
 /// The full set of bodies the game wants this frame — what `physicsScape model`
 /// returns (Phase 2). Reconciled against the live world by `World::reconcile`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -277,6 +320,9 @@ pub struct PhysicsScene {
     /// heightfield): `Physics.scene` and `Physics.memo` enforce both.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<BodyGroup>,
+    /// `Physics.forceVolume` fields, applied every step until undeclared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<ForceVolume>,
 }
 
 impl PhysicsScene {
@@ -285,6 +331,7 @@ impl PhysicsScene {
             gravity,
             bodies,
             groups: Vec::new(),
+            volumes: Vec::new(),
         }
     }
 

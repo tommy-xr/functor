@@ -391,6 +391,56 @@ into it. It rides a `Physics.heightfield` dune course and holds still after
 each spawn until every probe has hit: a heightfield's collider appears only
 once its heightmap decodes, so on a cold load the first probes miss.
 
+### Explosions and force volumes
+
+`Physics.explode(center, radius, strength)` is one command effect that pushes
+every dynamic body whose collider comes within `radius` of `center`.
+`Physics.explodeWith(center, radius, strength, { falloff, lift })` picks the
+falloff and an upward bias.
+
+- **Range and push.** The distance is to the body's nearest collider point,
+  and the impulse lands there: a face-on hit pushes, an off-centre one also
+  spins. The direction is from the centre to the body's centre of mass, plus
+  `lift` up, renormalized, so lift redirects the push without adding to it.
+- **Falloff.** `strength` (N·s) at the centre fades to zero at `radius`.
+  `Linear` (`1 − d/r`, the default) makes the radius read as the radius:
+  bodies near the edge still visibly move. `Quadratic` (`(1 − d/r)²`) keeps
+  the edge nearly still and concentrates the blast close in.
+- **Who moves.** Dynamic bodies only, so kinematic characters and fixed level
+  geometry are untouched, and sleeping bodies wake. There is no tag filter: the
+  body kinds already exclude players and the level, and `Physics.applyImpulse`
+  covers a hand-picked set.
+- **Determinism.** It is a `PhysicsCommand`, recorded in the frame's command
+  log like `applyImpulse`, and bodies are visited in tag order. Seeks and
+  replays repeat it exactly.
+
+`Physics.forceVolume(tag, { center, size, force, turbulence, drag })` is a
+scene entry, not an effect: declared in `Physics.scene`'s list, reconciled
+with the bodies, and world state, so a degraded frame keeps it and a seek
+restores it. Every fixed step it gives each dynamic body whose centre of mass
+is inside the world-axis box `force × FIXED_DT` of impulse, plus a gust, minus
+`drag × velocity × mass × FIXED_DT`.
+
+- **Force, not acceleration.** Mass is the body factor: one draft slides a
+  0.03 kg card and leaves an 8 kg chair alone. No per-body wind attribute.
+- **Turbulence** is the peak gust per axis in newtons: two sines per axis at
+  0.4–2 Hz, phases and rates hashed from the volume's and the body's tags.
+  Smooth rather than per-step noise, so cards sway instead of buzzing, and a
+  pure function of the world's frame number, so replays gust identically.
+- **Drag** is linear damping that applies only inside the volume, independent
+  of mass: an updraft that slows a falling card.
+- **Paper** is mostly the game's job: a light, flat box with
+  `linearDamping` (~1) and `angularDamping` (~0.6) drifts and settles. True
+  aerodynamic lift is out of scope.
+- **Sleep.** Only awake bodies are pushed, so a crate the draft can't move
+  settles and sleeps; gusting paper keeps itself awake. Declaring, changing or
+  removing a volume wakes the sleeping bodies in its box, so a fan switching
+  on blows what was resting there, and one switching off drops what it held.
+- **Cost.** O(volumes × bodies) per step, zero without a volume.
+
+`examples/blast` is the demo: E blasts a crate pile, and a fan volume blows
+paper cards down a lane.
+
 ## API (F# — reference design, deferred)
 
 **Per-frame draw context.** `draw3d` takes a `DrawContext` record (not a bare
