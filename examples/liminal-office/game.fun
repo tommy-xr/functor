@@ -410,6 +410,9 @@ let copyScene = (look: CopyLook): Scene.t =>
     else Scene.cells(a.level, Scene.group(List.append(if look.day then a.day else a.night, glass.inside))) in
   Block.sceneOf(look.copy, Scene.group([Exterior.exteriorAt(a.street, look.neon, look.lamps, look.day), interiorScene, glass.outside]))
 
+// Each town's cinema copies.
+let cinemaCopies = Block.towns |> List.map((t) => t.copies |> List.filter((c) => c.archetype == "cinema"))
+
 // The near plane. Depth precision at a distance goes as 1/near: at 0.05 m,
 // faces 2 cm apart z-fought from about 60 m. At 0.1 m its corners sit about
 // 0.17 m from the eye, inside the capsule's 0.3 m radius.
@@ -436,7 +439,10 @@ let draw = (model, tts: float) =>
   let shells =
     if not town.shells then []
     else [Scene.memo($"{town.name}/shells", { town: model.town, active: active, neon: o.neon, lamps: o.lamps, day: day }, Shells.shellsOf)] in
-  let buildings = Scene.group(List.append(shells, copies)) in
+  // The cinema's chasing bulbs (out by day) and tubes, by the clock and the hour.
+  let cinemas = List.nth(model.town, cinemaCopies) |> Option.defaultValue([])
+    |> List.map((c) => Block.sceneOf(c, Cinema.liveAt(tts, o.neon, if day then 0.0 else o.lamps))) in
+  let buildings = Scene.group(List.flatten([copies, shells, cinemas])) in
   let parks = parksOf(model) in
   let parkScene = Parks.scenesAt(parks, eye, far, o.lamps, day, tts) in
   // On the island the props draw after the buildings and the terrain last,

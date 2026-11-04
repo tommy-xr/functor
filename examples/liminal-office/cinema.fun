@@ -1,6 +1,6 @@
 // The cinema archetype's unbaked parts (archetypes.fun assembles it): its
 // cells, colliders, the auditoria's seats and the street side (a blank box,
-// a neon sign tower, posters under a marquee, a parking lot). Not hashed
+// a neon sign tower, the front (cinemaFront.fun), a parking lot). Not hashed
 // into the bake's provenance: the bake doesn't depend on it.
 
 open Layout
@@ -70,18 +70,6 @@ let box = Exterior.box
 let street = Exterior.street
 // The facade's south face.
 let front = l.footprint.z0 - l.facade / 2.0
-
-// The marquee over the entrance, and the posters under it: four light
-// boxes on the facade, 10 cm proud (glowing faces in the glow atlas), in
-// shallow black frames.
-let marquee = box(21.0, 3.1, front - 4.5, 39.0, 3.6, front)
-let posterSpans = [(22.4, 23.8), (24.8, 26.2), (33.8, 35.2), (36.2, 37.6)]
-let posterFrames = posterSpans |> List.map((e) => let (x0, x1) = e in box(x0 - 0.06, 0.44, front - 0.07, x1 + 0.06, 2.56, front))
-let posterMesh: Scene.t =
-  let faces = posterSpans |> List.indexedMap((k, e) =>
-    let (x0, x1) = e in Building.wallZ(CinemaBuilding.posterPaint(k), x0, x1, 0.5, 2.5, front - 0.1, false)) in
-  let p = CinemaBuilding.palette in
-  Scene.modelOf(Model.static(Paints.meshOf(p, faces, Paints.spansOf(p, 0.0, faces))))
 
 // A pink band along the facade under the roofline's cyan.
 let facadeBand = box(l.footprint.x0 - 0.15, 7.6, front - 0.06, l.footprint.x1 + 0.15, 7.8, front)
@@ -186,20 +174,21 @@ let lotDressing = Streetscape.dressingOf(lotProps.decals)
 // The e2e's walk: from the lot (view 9) to the apron and in.
 let paths: List<Streetscape.Path> = [{ x0: 40.0, z0: 0.0 - 26.0, x1: 30.0, z1: 0.0 - 4.0 }, { x0: 30.0, z0: 0.0 - 4.0, x1: 30.0, z1: 2.0 }]
 // The sidewalk: a vending machine, a payphone and a bin west of the
-// marquee, a bike rack, benches under it, bollards across the forecourt,
-// fire lane signs either side; and the lot (its decals in the grid).
+// marquee, a bike rack, the front's pieces under it and a bench past them,
+// bollards across the forecourt, fire lane signs either side; and the lot
+// (its decals in the grid).
 let streetscapeProps = (s: Exterior.Street): Streetscape.Props =>
   let south = Streetscape.sideFrame(l, South) in
   let curbside = Streetscape.flipped(south, 3.25) in
   let walk = Streetscape.walk in
   let own = [
     { lotProps with decals: [] },
-    Streetscape.vendingMachine(south, 18.5, 0.15, walk),
-    Streetscape.payphone(south, 16.6, 0.15, walk),
-    Streetscape.bin(south, 19.4, 0.2, walk),
+    Streetscape.vendingMachine(south, 17.6, 0.15, walk),
+    Streetscape.payphone(south, 15.9, 0.15, walk),
+    Streetscape.bin(south, 18.5, 0.2, walk),
     Streetscape.bikeRack(south, 12.5, 1.2, walk),
-    Streetscape.bench(curbside, 24.0, 0.0, walk),
-    Streetscape.bench(curbside, 36.0, 0.0, walk),
+    CinemaFront.props,
+    Streetscape.bench(curbside, 39.0, 0.0, CinemaFront.pave),
     Streetscape.joined([27.4, 32.6] |> List.map((u) => Streetscape.bollard(south, u, 3.55, Exterior.street))),
     Streetscape.poleSign(south, 14.5, 3.5, walk, StreetAtlas.fireLane),
     Streetscape.poleSign(south, 45.5, 3.5, walk, StreetAtlas.fireLane),
@@ -208,25 +197,35 @@ let streetscapeProps = (s: Exterior.Street): Streetscape.Props =>
 let streetscape = (s: Exterior.Street): Exterior.Street => Streetscape.dressed(s, streetscapeProps(s))
 
 let pinkColor = (glow: float): Color.t => Building.rgb(255.0 * glow, 60.0 * glow, 190.0 * glow)
-// What glows besides the kit's neon: the posters, the sign tower's pink.
-let glowAt = (glow: float): Scene.t =>
-  Scene.group([posterMesh, Scene.group(List.append([facadeBand], pinkBands) |> List.map(Exterior.slabOf)) |> Scene.color(pinkColor(glow))])
+// The tubes: cyan (the kit's roofline less its canopy strip, the
+// marquee's, the sign tower's) and pink (the facade's band, the tower's,
+// the blade's), each one instanced draw at the hour's `neon`.
+let cyan = List.flatten([Exterior.neonBoxesOf(l) |> List.drop(1.0), CinemaFront.neon, towerTubes])
+let pink = List.flatten([[facadeBand], pinkBands, CinemaFront.pink])
+let tubes = (boxes: List<Exterior.Box>, c: Color.t): Scene.t =>
+  Scene.cube() |> Scene.color(c) |> Scene.instanced(boxes |> List.map(Exterior.instanceOf))
+type Tubes = { neon: float }
+let tubesOf = (t: Tubes): Scene.t => Scene.group([tubes(cyan, Exterior.neonColor(t.neon)), tubes(pink, pinkColor(t.neon))])
+// What changes with the clock or the hour, in the cinema's space: the
+// bulbs' chase and the tubes. game.fun draws it for each cinema copy
+// outside the copies' memos, so the street side and the shell share it.
+let liveAt = (tts: float, neon: float, lamps: float): Scene.t =>
+  Scene.group([CinemaFront.chaseAt(tts, lamps), Scene.memo("cinema-tubes", { neon: neon }, tubesOf)])
 
 // Painted stucco over a tiled base, in piers and a cap of a paler coat.
-let stuccoWall = Finishes.on(Finishes.stucco, Building.rgb(122.0, 104.0, 132.0))
-let stuccoPale = Finishes.on(Finishes.stucco, Building.rgb(146.0, 132.0, 154.0))
-let baseTiles = Finishes.on(Finishes.tiles, Building.rgb(64.0, 118.0, 124.0))
+let stuccoWall = CinemaFront.stuccoWall
+let stuccoPale = CinemaFront.stuccoPale
+let baseTiles = CinemaFront.baseTiles
 
 // The facade kit's trim: the tiled base, piers every 10 m (under the pink
-// band) and the cap, a
-// frame round the doors and under the marquee, and plant on the roof by a
-// stair's head house.
+// band) and the cap, a frame round the doors, and plant on the roof by a
+// stair's head house; the front's propped doors on the street side only.
 let dressed = (s: Exterior.Street): Exterior.Street =>
   let roof = l.levels * l.storey in
   let head = rect(4.0, 30.0, 8.0, 34.0) in
   Facade.trimmed(s, {
     plain: List.flatten([
-      Facade.painted(Facade.frameDark, List.flatten([Facade.portal(l, s, 0.4, 0.12), Facade.canopyEdge(s, 0.2)])),
+      Facade.painted(Facade.frameDark, Facade.portal(l, s, 0.4, 0.12)),
       Facade.stairHead(head, roof, 2.7, Facade.headGrey),
       Facade.rooftop(3.0, rect(2.0, 2.0, 58.0, 38.0), roof, [head]),
     ]),
@@ -234,31 +233,22 @@ let dressed = (s: Exterior.Street): Exterior.Street =>
       Facade.clad(baseTiles, Facade.courses(l, s, [(street, 1.1)], 0.04)),
       Facade.clad(stuccoPale, List.flatten([Facade.pilasters(l, s, 10.0, 0.9, 0.12, facadeBand.y0 - 0.1), Facade.cornice(l, 0.2, 0.35)])),
     ]),
-    fine: [],
+    fine: CinemaFront.doorBoxes,
   })
 
-// The kit's street side in stucco with the marquee for its canopy, cyan
-// along the marquee, the roofline and up the sign tower; the tower and
-// poster frames among the lit boxes; the posters, pink and the lot's signs
-// as its grid; then the streetscape. The facade's outer half (the kit's) is solid all round the
-// footprint.
+// The kit's street side in stucco with the marquee (its shell's canopy in
+// the fascia's colour); the tower among the lit boxes; no neon of the kit's
+// (`liveAt` draws the tubes); the front's signs, the terrazzo and the lot's
+// signs as its grid; then the streetscape. The facade's outer half (the
+// kit's) is solid all round the footprint.
 let exterior: Exterior.Street =
   let s = Exterior.streetWith(l, stuccoWall) in
-  let extras = List.flatten([
-    [(signTower, towerDark)],
-    posterFrames |> List.map((b) => (b, Building.rgb(14.0, 12.0, 16.0))),
-  ]) in
-  let boxes = List.flatten([s.streetBoxes |> List.map((e) => let (b, c) = e in if b == s.canopyBox then (marquee, c) else e), extras]) in
-  let m = marquee in
-  // The kit's neon past its canopy's strip: the roofline.
-  let neon = List.flatten([
-    Exterior.neonBoxesOf(l) |> List.drop(1.0),
-    [box(m.x0, m.y0 + 0.1, m.z0 - 0.06, m.x1, m.y0 + 0.2, m.z0)],
-    towerTubes,
-  ]) in
-  let lot = { s with canopyBox: marquee, streetBoxes: boxes, extraBoxes: extras,
-                     neonBoxes: neon, neonStrips: Scene.group(neon |> List.map(Exterior.slabOf)),
-                     grid: Option.Some({ night: Scene.group([glowAt(1.0), lotDressing.night]), day: Scene.group([glowAt(0.6), lotDressing.day]) }) } in
+  let extras = [(signTower, towerDark)] in
+  let marquee = CinemaFront.marquee in
+  let boxes = List.flatten([s.streetBoxes |> List.map((e) => let (b, c) = e in if b == s.canopyBox then (marquee, CinemaFront.fascia) else e), extras]) in
+  let lot = { s with canopyBox: marquee, streetBoxes: boxes, extraBoxes: extras, neonBoxes: [], neonStrips: Scene.group([]), siding: CinemaFront.fascia,
+                     grid: Option.Some({ night: Scene.group([CinemaFront.glow.night, CinemaFront.terrazzoScene, lotDressing.night]),
+                                         day: Scene.group([CinemaFront.glow.day, CinemaFront.terrazzoScene, lotDressing.day]) }) } in
   streetscape(dressed(lot))
 
 // ---- Collision -----------------------------------------------------------------------
@@ -292,6 +282,7 @@ let fittingBlocks: List<Building.Block> =
         block($"seats-{i}-{k}", r.x0 + CinemaLayout.aisle, y, z + 0.3, r.x1 - CinemaLayout.aisle, y + 1.0, z + 0.92))),
     CinemaLayout.playset |> List.indexedMap((k, t) => block($"toy-{k}", t.x0, t.y0, t.z0, t.x1, t.y1, t.z1)),
     exterior.facadeBoxes |> List.indexedMap((k, b) => boxBlock($"facade-{k}", b)),
+    CinemaFront.doorBlocks |> List.indexedMap((k, b) => boxBlock($"door-{k}", b)),
   ])
 
 // The rake's ramp, one per auditorium: a slope through the rows' nosings

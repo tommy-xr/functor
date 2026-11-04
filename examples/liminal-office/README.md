@@ -514,11 +514,22 @@ rear exit.
   pink and cyan points by the tubes, the menu's glow, the service
   corridor's panels; by day, daylight through the entrance and the rear
   exit.
-- **Street side**: the kit's blank facade (9.5 m), a marquee over the
-  entrance with four posters under it, a pink band under the roofline's
-  cyan, and an 18 m sign tower with cyan tubes up its corners and pink
-  bands across it; a parking lot of painted bays and eight sodium lamps.
-  Past 34 m it draws as its shell.
+- **Street side**: the kit's blank facade (9.5 m), a pink band under the
+  roofline's cyan, and an 18 m sign tower with cyan tubes up its corners
+  and pink bands across it; a parking lot of painted bays and eight sodium
+  lamps. Past 34 m it draws as its shell.
+- **Front** (`cinemaFront.fun`): a 22 × 4.2 m marquee, its letter boards
+  and soffit lit, a cyan strip under its lip and bulbs round its edges
+  chasing in three phases at 6 steps a second; a blade sign at the west
+  corner, pink-edged, a few bulbs dead; six backlit poster cases under
+  glass; a ticket booth with a dark window and a speaker grille; the doors
+  set back between tiled cheeks, propped open; a terrazzo forecourt with a
+  roped queue, an A-frame and a bin. By day the boards and posters are
+  faded paint and the bulbs are out. The signs and posters are one atlas
+  (`cinemaFront.mjs` paints it and the terrazzo; every title is made up),
+  one static model; the bulbs three instanced draws, recoloured by the
+  clock outside the street side's memo; the neon and the pink one draw
+  each.
 
 Views in the cinema: `1` the lobby, `2` down the numbered corridor, `3`
 auditorium 3 from beside its screen, `4` down its rake from the top row,
