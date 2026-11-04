@@ -90,6 +90,20 @@ let slabsOf = (s: Solid): List<Slab> =>
     |> List.filter((f) => [f.o, f.o |> Vec3.add(f.a), f.o |> Vec3.add(f.b), f.o |> Vec3.add(f.a) |> Vec3.add(f.b)]
       |> List.any((p) => Vec3.y(p) > 0.005))
 
+// Whether `p` is inside box `s` (its faces included).
+let holds = (s: Solid, p: Vec3.t): bool =>
+  let d = p |> Vec3.sub(s.c) in
+  [s.ax, s.ay, s.az] |> List.all((h) => Math.abs(Vec3.dot(d, h)) <= Vec3.dot(h, h) + 0.0001)
+// Every box's faces less those flush against or buried in another box of
+// the same piece (a drawer's back on its pedestal, a leg's top under a
+// table top): unseen, they'd only take lightmap texels.
+let unseen = (parts: List<Solid>): List<Slab> =>
+  parts |> List.indexedMap((k, s) => slabsOf(s) |> List.filter((f) =>
+    let n = Vec3.scale(0.002, Vec3.normalize(f.a |> Vec3.cross(f.b))) in
+    let at = (u: float, w: float): Vec3.t => f.o |> Vec3.add(Vec3.scale(u, f.a)) |> Vec3.add(Vec3.scale(w, f.b)) |> Vec3.add(n) in
+    let probes = [at(0.5, 0.5), at(0.05, 0.05), at(0.95, 0.05), at(0.05, 0.95), at(0.95, 0.95)] in
+    not (probes |> List.all((p) => parts |> List.indexedMap((j, o) => j != k && holds(o, p)) |> List.any((x) => x))))) |> List.flatten
+
 // ---- Disorder --------------------------------------------------------------------
 
 // Deterministic noise in [0, 1) (building.fun's), and the `k`th draw for a
@@ -338,7 +352,7 @@ let placedIn = (r: Rect, f: Furnish): List<Solid> =>
   let b = boundsOf(parts) in
   shifted(into(r.x0, r.x1, b.x0, b.x1), 0.0, into(r.z0, r.z1, b.z0, b.z1), parts)
 // Its faces, and its collider: the bounds of all but its loose boxes.
-let facesOf = (r: Rect, f: Furnish): List<Slab> => placedIn(r, f) |> List.concatMap(slabsOf)
+let facesOf = (r: Rect, f: Furnish): List<Slab> => unseen(placedIn(r, f))
 let solidOf = (r: Rect, f: Furnish): Bounds => boundsOf(placedIn(r, f) |> List.filter((s) => not s.loose))
 
 // Room `i`'s pieces.

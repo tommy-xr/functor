@@ -136,14 +136,11 @@ let typicalFloor: Floor = {
      { room: 5.0, side: East, at: 13.0, y: 2.0 }, { room: 4.0, side: North, at: 9.5, y: 2.0 },
      { room: 4.0, side: North, at: 16.3, y: 2.0 }],
   ]),
-  // The south office, abandoned: a desk against its west wall, another
-  // pushed off its place, chairs over, a cabinet gaping.
+  // The south office, abandoned: a desk pushed off its place, its chair
+  // over. (More would outgrow the floor's 512² bake.)
   furniture: [
-    piece(7.0, Desk, 5.73, 3.0, East, 0.4),
-    piece(7.0, Chair, 6.6, 3.0, West, 1.0),
     piece(7.0, Desk, 10.9, 2.2, West, 0.9),
     piece(7.0, Chair, 10.0, 2.4, East, 0.8),
-    piece(7.0, Cabinet, 11.55, 5.75, West, 1.0),
   ],
 }
 let cellsPerFloor = 8.0

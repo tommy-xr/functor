@@ -141,10 +141,10 @@ expect windows |> List.all((w) => Building.stacked(l, w.side, Building.windowHol
 
 // The office's Layout derives the cell graph it had as constants: 23 rooms
 // plus 2 collar strips, 54 portals between the same cells in the same order,
-// 558 faces and 173 colliders, plus the furniture's 1823 and 29; and cell
+// 558 faces and 173 colliders, plus the furniture's 1455 and 29; and cell
 // ids stay room positions (the e2e's).
 expect List.length(Portals.cellsOf(l, Portals.outsideTop)) == 25.0 && List.length(Portals.portalsOf(l, Portals.outsideTop)) == 54.0
-expect List.length(kit.allFaces) == 558.0 + 1823.0 && List.length(kit.colliders) == 173.0 + 29.0
+expect List.length(kit.allFaces) == 558.0 + 1455.0 && List.length(kit.colliders) == 173.0 + 29.0
 expect Text.join(" ", Portals.portalsOf(l, Portals.outsideTop) |> List.map((p) => $"{p.from}-{p.to}"))
   == "0-1 1-0 1-2 2-1 2-3 3-2 4-1 1-4 1-5 5-1 6-2 2-6 2-7 7-2 8-2 2-8 2-9 9-2 10-2 2-10 2-11 11-2 13-14 14-13 15-13 13-15 13-16 16-13 17-13 13-17 13-18 18-13 19-13 13-19 13-20 20-13 21-13 13-21 14-12 12-14 22-6 6-22 22-17 17-22 11-12 12-11 0-22 22-0 0-24 24-0 23-22 22-23 23-24 24-23"
 expect ([0.0, 1.0, 2.0, 9.0, 11.0, 12.0, 13.0, 14.0, 20.0, 22.0] |> List.map((i) => Building.roomAt(l, i).name))

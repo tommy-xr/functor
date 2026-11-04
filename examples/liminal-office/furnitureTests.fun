@@ -60,7 +60,7 @@ expect tagged(Archetypes.office.colliders) == List.length(OfficeLayout.layout.fu
 expect tagged(Archetypes.houseOchre.colliders) == List.length(HouseLayout.layout.furniture)
 expect tagged(Archetypes.cinema.colliders) == List.length(CinemaLayout.layout.furniture)
 // The tower's ground floor, and every typical floor of the tallest.
-expect tagged(Archetypes.tower16.colliders) == 9.0 + 16.0 * 5.0
+expect tagged(Archetypes.tower16.colliders) == 9.0 + 16.0 * 2.0
 
 // The office's mess, pinned: two chairs over in 202 and one in 102, a
 // drawer out in each, and every desk turned off square.
