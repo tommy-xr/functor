@@ -599,7 +599,7 @@ expect Hours.reachAt(Hours.streetReach, 0.0) == Hours.streetReach.night && Hours
 // ---- Shells --------------------------------------------------------------------
 
 // An inactive copy is a shell, an active one isn't.
-let shellLook = (active: List<float>): Shells.Look => { town: 4.0, active: active, neon: 1.0, lamps: 1.0, day: false }
+let shellLook = (active: List<float>): Shells.Look => { town: 4.0, active: active, neon: 1.0, lamps: 1.0, day: false, broken: [] }
 expect List.length(Shells.idleOf(shellLook([0.0, 37.0]))) == 62.0
 expect Shells.idleOf(shellLook([0.0, 37.0])) |> List.all((id) => id != 0.0 && id != 37.0)
 // The shells build, by night and day, with every copy idle or none.

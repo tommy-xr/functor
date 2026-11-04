@@ -165,30 +165,31 @@ let glazing: Map<string, Glazing> = Map.fromList(Archetypes.all |> List.map((a) 
 let glazingOf = (name: string): Glazing =>
   Map.get(name, glazing) |> Option.defaultValue({ outside: Scene.group([]), inside: [] })
 
-// Sidelights are solid: a thin box collider each (doorways face ±z).
-let colliderOf = (i: float, p: Pane): Collider =>
-  { tag: $"glass-{i}", shape: Physics.box(Math.abs(p.w), p.h, 0.06), at: p.at }
+// Sidelights and real windows are solid: a thin box collider each, tagged
+// `<kind>-<i>`. A pane faces ±z (yaw 0, 180) or ±x (90, 270).
+let colliderOf = (kind: string, i: float, p: Pane): Collider =>
+  let across = Math.abs(Math.sin(p.yaw * Math.pi / 180.0)) > 0.5 in
+  { tag: $"{kind}-{i}", shape: if across then Physics.box(0.06, p.h, Math.abs(p.w)) else Physics.box(Math.abs(p.w), p.h, 0.06), at: p.at }
 let sidelightColliders = (name: string): List<Collider> =>
-  if name == "cinema" then entranceOf(name, Archetypes.cinema.layout, sidelights) |> List.indexedMap(colliderOf)
-  else if name == "mall" then shopDoors |> List.concatMap((d) => shopfrontPanes(d, sidelights)) |> List.indexedMap(colliderOf)
+  if name == "cinema" then entranceOf(name, Archetypes.cinema.layout, sidelights) |> List.indexedMap((i, p) => colliderOf("glass", i, p))
+  else if name == "mall" then shopDoors |> List.concatMap((d) => shopfrontPanes(d, sidelights)) |> List.indexedMap((i, p) => colliderOf("glass", i, p))
   else []
-// A copy's sidelight bodies, and a thin box across each of its real
-// windows but those in `broken` (indices into its layout's windows).
+// A copy's sidelight bodies, and its real windows' but those in `broken`
+// (indices into its layout's windows).
 let bodiesOf = (c: Block.Copy, broken: List<float>): List<Physics.body> =>
   let l = Block.archetypeOf(c).layout in
   Block.bodiesFrom(c, List.append(sidelightColliders(c.archetype),
-    windowsAt(l, windowOut(l)) |> List.indexedMap((i, p) => if Block.isIn(i, broken) then [] else [windowCollider(i, p)]) |> List.flatten))
-// A pane faces ±z (yaw 0, 180) or ±x (90, 270).
-let windowCollider = (i: float, p: Pane): Collider =>
-  let across = Math.abs(Math.sin(p.yaw * Math.pi / 180.0)) > 0.5 in
-  { tag: $"window-{i}", shape: if across then Physics.box(0.06, p.h, Math.abs(p.w)) else Physics.box(Math.abs(p.w), p.h, 0.06), at: p.at }
+    windowsAt(l, windowOut(l)) |> List.indexedMap((i, p) => colliderOf("window", i, p)) |> unbroken(broken)))
+// `panes` but the `broken` real windows' (by index: `windowsAt`,
+// `streetPanesOf` and `shellOf` all list the real windows first).
+let unbroken = (broken: List<float>, panes: List<'p>): List<'p> =>
+  panes |> List.indexedMap((i, p) => if Block.isIn(i, broken) then [] else [p]) |> List.flatten
 
 // ---- Broken windows ----------------------------------------------------------------
 
-// An archetype's street-side panes without the real windows in `broken`
-// (the windows come first in `streetPanesOf`).
+// An archetype's street-side panes without the real windows in `broken`.
 let outsideWithout = (name: string, l: Layout, broken: List<float>): Scene.t =>
-  streetPanesOf(name, l) |> List.indexedMap((i, p) => if Block.isIn(i, broken) then [] else [instanceOf(p)]) |> List.flatten |> panesOf
+  streetPanesOf(name, l) |> unbroken(broken) |> List.map(instanceOf) |> panesOf
 
 // Copy `c`'s window `win` in the world: its room, its pane's centre, which
 // way is out (n) and along it (a), as unit (x, z), its width, and its
@@ -259,6 +260,8 @@ expect List.length(doorGlass({ lo: 0.0, hi: 1.6, bottom: 0.0, top: 2.7 })) == 1
 expect List.length(shopfronts) == List.length(MallLayout.bays)
 expect List.length(sidelightColliders("mall")) == 2.0 * List.length(MallLayout.bays)
 expect List.length(sidelightColliders("cinema")) == 2.0
+// A broken window's pane is left out by its index, whatever the list.
+expect unbroken([1.0], [10.0, 11.0, 12.0]) == [10.0, 12.0]
 // Each real window is solid until broken.
 expect List.length(bodiesOf(Block.home, [])) == List.length(office.windows)
 expect List.length(bodiesOf(Block.home, [0.0])) == List.length(office.windows) - 1.0

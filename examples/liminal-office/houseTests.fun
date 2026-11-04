@@ -217,7 +217,7 @@ expect (List.last(sets) |> Option.map((e) => let (eye, s) = e in Block.isIn(1.0,
 
 // Idle houses draw as shells with their gables; the shells build (a
 // derivation error would fail this).
-let look = (active: List<float>): Shells.Look => { town: Block.suburbTown, active: active, neon: 1.0, lamps: 1.0, day: false }
+let look = (active: List<float>): Shells.Look => { town: Block.suburbTown, active: active, neon: 1.0, lamps: 1.0, day: false, broken: [] }
 expect List.length(Shells.idleOf(look([1.0]))) == 11.0
 let suburbParts = List.nth(Block.suburbTown, Shells.parts) |> Option.defaultValue([])
 expect List.length(suburbParts) == 12.0 && (suburbParts |> List.all((p) => List.length(List.flatten(p.gables)) == 1.0))

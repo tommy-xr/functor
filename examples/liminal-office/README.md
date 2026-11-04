@@ -189,7 +189,10 @@ at its body's pose. The model holds the bodies as plain data
 each loose piece's pose and whether it sleeps. A broken window's pane and
 collider go (real windows are solid until broken); a `Physics.forceVolume`
 blows in through the opening, nearly floating paper, and six pieces of
-litter (papers, leaves, a takeaway carton) start just outside it.
+litter (papers, leaves, a takeaway carton) start just outside it. A copy
+that loses its colliders (walking away, in a grid or a shell town) drops
+its bodies: its debris is back where it was strewn when it returns, and its
+broken windows stay broken (the shells' too).
 Untouched, a building costs nothing: every dynamic body is declared every
 frame (they can't be memoised), about 10 µs each on the desktop.
 

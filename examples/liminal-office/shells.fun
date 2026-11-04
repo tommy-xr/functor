@@ -128,8 +128,9 @@ let parts: List<List<Parts>> = Block.towns |> List.map((t) => t.copies |> List.m
 let none = { lit: [], skinned: [], gables: [], neon: [], shades: [], openings: [], litBands: [], beacons: [], grid: Option.None, panes: [] }
 
 // The openings glow like the lit rooms behind them by night, neutral glass
-// by day; the neon and shades as on the street side.
-type Look = { town: float, active: List<float>, neon: float, lamps: float, day: bool }
+// by day; the neon and shades as on the street side. `broken`: (copy name,
+// window) of the real windows that have lost their panes.
+type Look = { town: float, active: List<float>, neon: float, lamps: float, day: bool, broken: List<(string, float)> }
 let roomGlow = Color.rgb(0.62, 0.66, 0.5)
 let dayGlass = Color.rgb(0.36, 0.39, 0.42)
 
@@ -163,6 +164,9 @@ let shellsOf = (look: Look): Scene.t =>
     // Houses only: their gables.
     [Finishes.drawnAs(Exterior.gableTemplate, List.range(List.length(Finishes.all)) |> List.map((k) =>
        idle |> List.concatMap((p) => List.nth(k, p.gables) |> Option.defaultValue([]))))],
-    // Their glass: two draws for the town.
-    [Glass.panesOf(idle |> List.concatMap((p) => p.panes))],
+    // Their glass, but the broken windows': two draws for the town.
+    [Glass.panesOf(idleOf(look) |> List.concatMap((id) =>
+      let name = Block.copyIn(Block.townAt(look.town), id).name in
+      let broken = look.broken |> List.filter((w) => let (copy, i) = w in copy == name) |> List.map((w) => let (copy, i) = w in i) in
+      List.nth(id, town) |> Option.map((p) => Glass.unbroken(broken, p.panes)) |> Option.defaultValue([])))],
   ]))

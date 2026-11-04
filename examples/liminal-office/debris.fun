@@ -270,33 +270,31 @@ let declare = (b: Body): Physics.body =>
 // A copy's debris as bodies. A copy's debris stays in its instanced cube,
 // with no bodies, until something disturbs it: a blast that reaches it, or
 // a window it breaks. Each body is declared every frame (dynamic bodies
-// can't be memoised), so an untouched building costs nothing. `windows`:
-// the broken windows whose litter it holds; `loose`: the candidate tags of
-// its loose bodies; `moving`: whether any of those is awake.
-type Group = { copy: string, windows: List<float>, bodies: List<Body>, loose: List<string>, moving: bool }
+// can't be memoised), so an untouched building costs nothing. `loose`: the
+// candidate tags of its loose bodies; `moving`: whether any body is awake.
+type Group = { copy: string, bodies: List<Body>, loose: List<string>, moving: bool }
 
 // Each group's bodies read back while one might move (`stirred`, or one
-// is): a body more than 2 cm from its rest is loose, and still once it
-// sleeps (a sleeper's velocity is exactly zero). A pre-step read: the last
-// step's world.
+// was awake at the last read): a body more than 2 cm from its rest is
+// loose, and still once it sleeps (a sleeper's velocity is exactly zero).
+// Once all sleep only a blast or a break can wake them, and either stirs.
+// A pre-step read: the last step's world.
 let observed = (stirred: bool, groups: List<Group>): List<Group> =>
   groups |> List.map((g) =>
     if not (stirred || g.moving) then g
     else
-      let bodies = g.bodies |> List.map((b) =>
+      let read = g.bodies |> List.map((b) =>
         let t = Physics.tag(b.tag) in
         let p = Physics.position(t) in
+        let u = Physics.linearVelocity(t) in
+        let still = u.x == 0.0 && u.y == 0.0 && u.z == 0.0 in
         let (dx, dy, dz) = (p.x - b.x, p.y - b.y, p.z - b.z) in
-        if dx * dx + dy * dy + dz * dz < 0.0004 && b.pose == Option.None then b
-        else
-          let u = Physics.linearVelocity(t) in
-          { b with pose: Option.Some({ x: p.x, y: p.y, z: p.z, still: u.x == 0.0 && u.y == 0.0 && u.z == 0.0 }) }) in
-      withLoose({ g with bodies: bodies }))
+        let moved = b.pose != Option.None || dx * dx + dy * dy + dz * dz >= 0.0004 in
+        ((if moved then { b with pose: Option.Some({ x: p.x, y: p.y, z: p.z, still: still }) } else b), not still)) in
+      { (withLoose({ g with bodies: read |> List.map((e) => let (b, awake) = e in b) })) with
+        moving: read |> List.any((e) => let (b, awake) = e in awake) })
 let withLoose = (g: Group): Group =>
-  let posed = g.bodies |> List.concatMap((b) => match b.pose with
-    | Option.Some(p) => [(b.local, p.still)]
-    | Option.None => []) in
-  { g with loose: posed |> List.map((e) => let (t, s) = e in t), moving: posed |> List.any((e) => let (t, s) = e in not s) }
+  { g with loose: g.bodies |> List.filter((b) => b.pose != Option.None) |> List.map((b) => b.local) }
 
 // A broken window: its copy's name, its index in the layout's windows, and
 // the draft through it.
@@ -304,23 +302,21 @@ type Broken = { copy: string, window: float, draft: Glass.Draft }
 
 // The groups for town `town`'s copies `solid`: each solid copy keeps its
 // group (its bodies where they are), and gets one when a blast reached it
-// (`blasted`) or it has a broken window; a broken window without its litter
-// gets it. A copy that leaves the solid ones drops its group.
-let groupsFor = (town: Block.Town, solid: List<float>, broken: List<Broken>, blasted: List<float>, was: List<Group>): List<Group> =>
+// (`blasted`, by id) or it broke a window since the last tick (`fresh`),
+// whose litter it adds. A copy that leaves the solid ones drops its group
+// (a broken window's litter doesn't come back with it).
+let groupsFor = (town: Block.Town, solid: List<float>, blasted: List<float>, fresh: List<Broken>, was: List<Group>): List<Group> =>
   solid |> List.concatMap((id) =>
     let c = Block.copyIn(town, id) in
-    let windows = broken |> List.filter((w) => w.copy == c.name) |> List.map((w) => w.window) in
-    match was |> List.find((g) => g.copy == c.name) with
-    | Option.Some(g) => [littered(c, windows, g)]
-    | Option.None =>
-      if List.isEmpty(windows) && not Block.isIn(id, blasted) then []
-      else [littered(c, windows, { copy: c.name, windows: [], bodies: strewnBodies(c), loose: [], moving: false })])
-let littered = (c: Block.Copy, windows: List<float>, g: Group): Group =>
-  let fresh = windows |> List.filter((i) => not Block.isIn(i, g.windows)) in
-  if List.isEmpty(fresh) then g
-  else
-    withLoose({ g with windows: windows, bodies: g.bodies |> List.append(Glass.openingsOf(c)
-      |> List.filter((e) => let (i, o) = e in Block.isIn(i, fresh)) |> List.concatMap((e) => let (i, o) = e in litterOf(c, i, o))) })
+    let windows = fresh |> List.filter((w) => w.copy == c.name) |> List.map((w) => w.window) in
+    let litter = if List.isEmpty(windows) then [] else Glass.openingsOf(c) |> List.filter((e) => let (i, o) = e in Block.isIn(i, windows))
+      |> List.concatMap((e) => let (i, o) = e in litterOf(c, i, o)) in
+    let kept = was |> List.find((g) => g.copy == c.name) in
+    if Option.isNone(kept) && List.isEmpty(windows) && not Block.isIn(id, blasted) then []
+    else
+      let g = kept |> Option.defaultWith(() => { copy: c.name, bodies: strewnBodies(c), loose: [], moving: false }) in
+      if List.isEmpty(litter) then [g] else [withLoose({ g with bodies: g.bodies |> List.append(litter), moving: true })])
+
 
 // Every loose body, each drawn at its body's live pose: one instanced cube
 // of its parts round its centre, built once (`Scene.memo`).
@@ -329,3 +325,19 @@ let looseScenes = (groups: List<Group>, day: bool): List<Scene.t> =>
   groups |> List.concatMap((g) => g.bodies |> List.filter((b) => b.pose != Option.None) |> List.map((b) =>
     Scene.memo(b.tag, { h: b.h, parts: b.parts, tint: if day then b.day else b.night }, lookScene) |> Physics.transformed(Physics.tag(b.tag))))
 let lookScene = (k: Look): Scene.t => cubes(placed(v(0.0, 0.0, 0.0), 0.0, k.h, k.tint, k.parts))
+
+// ---- Checks --------------------------------------------------------------------
+
+// A blast gives a copy its strewn debris as bodies, at rest; a fresh break
+// adds the window's six pieces of litter, already loose; a kept group gains
+// nothing more, and a copy that leaves the solid ones drops its group.
+let office = Block.townAt(0.0)
+let strewnCount = List.length(strewnBodies(Block.home))
+let breaks = Glass.openingsOf(Block.home) |> List.map((e) =>
+  let (i, o) = e in { copy: Block.home.name, window: i, draft: Glass.draftOf("d", o) })
+let blasted = groupsFor(office, [0.0], [0.0], [], [])
+let broke = groupsFor(office, [0.0], [], List.take(1.0, breaks), blasted)
+expect strewnCount > 0.0 && (blasted |> List.map((g) => List.length(g.bodies))) == [strewnCount] && (blasted |> List.all((g) => List.isEmpty(g.loose)))
+expect (broke |> List.map((g) => (List.length(g.bodies), List.length(g.loose), g.moving))) == [(strewnCount + 6.0, 6.0, true)]
+expect List.length(groupsFor(office, [0.0], [], [], broke) |> List.concatMap((g) => g.bodies)) == strewnCount + 6.0
+expect List.isEmpty(groupsFor(office, [], [], [], broke)) && List.isEmpty(groupsFor(office, [0.0], [], [], []))
