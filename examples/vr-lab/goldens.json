@@ -1,0 +1,19 @@
+[
+  {
+    "name": "vr-lab-grab-table",
+    "fixedTime": 0.0,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
+  },
+  {
+    "name": "vr-lab-grab-table-selected",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "reset.script",
+    "captureAtFrame": 30
+  }
+]
