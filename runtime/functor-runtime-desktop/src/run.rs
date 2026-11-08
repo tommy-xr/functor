@@ -780,6 +780,11 @@ pub struct Args {
     #[arg(long)]
     fixed_time: Option<f32>,
 
+    /// Let `Xr.streamDepth` upload depth frames to this origin
+    /// (`http://host[:port]`) besides loopback. Repeatable.
+    #[arg(long, value_parser = functor_runtime_common::depth_stream::parse_origin)]
+    allow_sensor_upload: Vec<String>,
+
     /// Drive the game deterministically from a scripted input file instead of
     /// live window input (docs/time-travel.md T6b). Each line is either
     /// `<frame:int> <control> <down|up>` — a KeyName like `Right`, `Up`, `A`,
@@ -1149,6 +1154,7 @@ fn service_debug_request(
             let skinned = counters.frame_skinned();
             let stand_in_depth = scene_context.stand_in_depth_stats();
             let fused_room = scene_context.fused_room_state();
+            let depth_stream = scene_context.depth_stream_state();
             let cull = counters.frame_cull();
             let cells = counters.frame_cells();
             sim.post(move |g| {
@@ -1174,7 +1180,7 @@ fn service_debug_request(
                     terrain,
                     passthrough: functor_runtime_common::runtime_settings::PassthroughState::emulated(
                         g.config(),
-                        g.settings(),
+                        g.settings().as_ref(),
                     ),
                     battery: None,
                     skinned,
@@ -1186,6 +1192,7 @@ fn service_debug_request(
                         g.config(),
                         stand_in_depth,
                         fused_room.with_colliders(),
+                        depth_stream,
                     ),
                     audio: Some(functor_runtime_common::audio::one_shot_counts()),
                     frame_stats,
@@ -2159,6 +2166,7 @@ Escape releases while captured"
         // Deterministic runs fuse the room inline, so frame N always shows
         // the same mesh.
         scene_context.set_fusion_inline(args.fixed_time.is_some() || args.input_script.is_some());
+        scene_context.set_sensor_upload_origins(args.allow_sensor_upload.clone());
         // The GLFW backbuffer is driven as a non-sRGB surface (shader
         // epilogue encodes), exactly like the WebGL2 canvas: FRAMEBUFFER_SRGB
         // stays off outside render-target writes (see
@@ -3132,6 +3140,18 @@ Escape again to quit"
                 ),
             );
             scene_context.set_fused_room_wanted(snapshot.wants_fused_room);
+            // `Xr.streamDepth` (with `Xr.scene`) uploads only from a live
+            // clock: not paused, scrubbed, scripted or replayed.
+            scene_context.set_depth_stream(
+                snapshot
+                    .settings
+                    .as_ref()
+                    .and_then(|settings| settings.xr.stream_depth.as_ref())
+                    .filter(|_| {
+                        functor_runtime_common::runtime_settings::scene_requested(snapshot.config)
+                    }),
+                !clock.is_pinned() && !args.replay && input_script.is_none(),
+            );
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.

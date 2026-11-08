@@ -77,7 +77,7 @@ pub struct XrConfig {
 }
 
 /// The per-frame `settings(model)` value.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct GameSettings {
     #[serde(default)]
@@ -85,7 +85,7 @@ pub struct GameSettings {
 }
 
 /// `settings`' XR knobs, applied live on change.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct XrSettings {
     /// A pinned foveation level. `None` = the shell's default (dynamic).
@@ -97,6 +97,19 @@ pub struct XrSettings {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passthrough: Option<bool>,
+    /// `Xr.streamDepth({url, hz})`: POST the environment depth to `url`.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_depth: Option<DepthStreamSettings>,
+}
+
+/// Where and how often `Xr.streamDepth` sends depth frames.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DepthStreamSettings {
+    pub url: String,
+    /// Frames a second, at most the readback rate.
+    pub hz: f32,
 }
 
 /// Whether the game's `config` requests passthrough (`Xr.passthrough(true)`).
@@ -116,7 +129,7 @@ pub fn floor_locked_requested(config: Option<GameConfig>) -> bool {
 
 /// Whether the camera feed should run: `config` asked for it and the latest
 /// `settings` (if any) has not paused it.
-pub fn passthrough_wanted(config: Option<GameConfig>, settings: Option<GameSettings>) -> bool {
+pub fn passthrough_wanted(config: Option<GameConfig>, settings: Option<&GameSettings>) -> bool {
     passthrough_requested(config) && settings.and_then(|s| s.xr.passthrough).unwrap_or(true)
 }
 
@@ -151,7 +164,7 @@ pub struct PassthroughState {
 
 impl PassthroughState {
     /// A shell with no camera feed (desktop, web): emulated while wanted.
-    pub fn emulated(config: Option<GameConfig>, settings: Option<GameSettings>) -> Option<Self> {
+    pub fn emulated(config: Option<GameConfig>, settings: Option<&GameSettings>) -> Option<Self> {
         passthrough_requested(config).then(|| PassthroughState {
             mode: if passthrough_wanted(config, settings) {
                 PassthroughMode::Emulated
@@ -233,22 +246,45 @@ impl FusedMeshState {
     }
 }
 
+/// `GET /state.xr.stream`: the `Xr.streamDepth` stream, present while
+/// `settings` asks for one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DepthStreamState {
+    pub url: String,
+    pub hz: f32,
+    /// Frames the server answered 2xx.
+    pub sent: u64,
+    /// Frames replaced by a newer one while a POST was in flight.
+    pub dropped: u64,
+    /// Frames that failed: a non-2xx answer, a timeout, no connection.
+    pub errors: u64,
+    /// The latest failure, or why nothing streams (a refused origin).
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
 /// `GET /state.xr`: headset scene state, omitted while it has nothing to say.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct XrState {
     pub depth: EnvironmentDepthState,
     pub mesh: FusedMeshState,
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<DepthStreamState>,
 }
 
 impl XrState {
     /// A shell without depth sensing (desktop, web), while `config` requests
     /// `Xr.scene`: the stand-in room's depth so far, `(width, height, passes)`,
-    /// and the room fused from it.
+    /// the room fused from it, and the depth stream.
     pub fn emulated(
         config: Option<GameConfig>,
         (width, height, frames): (u32, u32, u64),
         mesh: FusedMeshState,
+        stream: Option<DepthStreamState>,
     ) -> Option<Self> {
         scene_requested(config).then_some(XrState {
             depth: EnvironmentDepthState {
@@ -259,6 +295,7 @@ impl XrState {
                 warning: None,
             },
             mesh,
+            stream,
         })
     }
 }
@@ -286,7 +323,7 @@ mod tests {
         let settings = GameSettings {
             xr: XrSettings {
                 foveation: Some(FoveationLevel::High),
-                passthrough: None,
+                ..XrSettings::default()
             },
         };
         assert_eq!(
@@ -329,6 +366,12 @@ mod tests {
                 colliders: 3,
                 floor_m: Some(0.0),
             },
+            stream: Some(DepthStreamState {
+                url: "http://127.0.0.1:9000/frames".to_string(),
+                hz: 15.0,
+                sent: 4,
+                ..DepthStreamState::default()
+            }),
         };
         assert_eq!(
             serde_json::to_value(depth).unwrap(),
@@ -337,6 +380,10 @@ mod tests {
                 "mesh": {
                     "chunks": 3, "triangles": 120, "fused_frames": 2, "voxel_m": 0.08f32,
                     "colliders": 3, "floor_m": 0.0
+                },
+                "stream": {
+                    "url": "http://127.0.0.1:9000/frames", "hz": 15.0,
+                    "sent": 4, "dropped": 0, "errors": 0
                 }
             })
         );
@@ -367,19 +414,19 @@ mod tests {
         let settings = |on| {
             Some(GameSettings {
                 xr: XrSettings {
-                    foveation: None,
                     passthrough: on,
+                    ..XrSettings::default()
                 },
             })
         };
         assert!(!passthrough_wanted(None, None));
-        assert!(!passthrough_wanted(config(false), settings(Some(true))));
+        assert!(!passthrough_wanted(config(false), settings(Some(true)).as_ref()));
         assert!(passthrough_wanted(config(true), None));
-        assert!(passthrough_wanted(config(true), settings(None)));
-        assert!(!passthrough_wanted(config(true), settings(Some(false))));
+        assert!(passthrough_wanted(config(true), settings(None).as_ref()));
+        assert!(!passthrough_wanted(config(true), settings(Some(false)).as_ref()));
         assert_eq!(PassthroughState::emulated(config(false), None), None);
         assert_eq!(
-            PassthroughState::emulated(config(true), settings(Some(false))).unwrap().mode,
+            PassthroughState::emulated(config(true), settings(Some(false)).as_ref()).unwrap().mode,
             PassthroughMode::Paused
         );
         assert_eq!(

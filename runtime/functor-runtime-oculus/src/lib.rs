@@ -945,7 +945,11 @@ fn service_debug_request(
             let display_refresh_rate = debug.display_refresh_rate.clone();
             let passthrough = passthrough.state(debug.config);
             let battery = battery::latest();
-            let xr = environment_depth.state(debug.config, scene_context.fused_room_state());
+            let xr = environment_depth.state(
+                debug.config,
+                scene_context.fused_room_state(),
+                scene_context.depth_stream_state(),
+            );
             let instance_uploads =
                 functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
             let terrain = functor_runtime_common::gpu_counters::gpu_counters().frame_terrain();
@@ -1546,6 +1550,21 @@ pub fn android_main(app: AndroidApp) {
     // Launch-time opt-in, like desktop `--pipelined` (the APK has no command
     // line): `adb shell setprop debug.functor.pipelined 1`, then restart.
     let pipelined = system_property("debug.functor.pipelined").as_deref() == Some("1");
+    // Origins besides loopback `Xr.streamDepth` may upload to, comma
+    // separated: `adb shell setprop debug.functor.allow_sensor_upload
+    // http://192.168.1.5:9000`, then restart.
+    scene_context.set_sensor_upload_origins(
+        system_property("debug.functor.allow_sensor_upload")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|origin| !origin.trim().is_empty())
+            .filter_map(|origin| {
+                functor_runtime_common::depth_stream::parse_origin(origin.trim())
+                    .map_err(|e| log::warn!("debug.functor.allow_sensor_upload: {e}"))
+                    .ok()
+            })
+            .collect(),
+    );
     let mut sim = if pipelined {
         SimDriver::spawn(make_game)
     } else {
@@ -1933,7 +1952,7 @@ pub fn android_main(app: AndroidApp) {
             preloads.append(&mut fresh.preload_commands);
             scene_context.queue_terrain_requests(std::mem::take(&mut fresh.terrain_requests));
             record.set_sim(fresh.sim_ns, &fresh.stages);
-            let foveation = fresh.settings.and_then(|settings| settings.xr.foveation);
+            let foveation = fresh.settings.as_ref().and_then(|settings| settings.xr.foveation);
             if foveation_available && foveation != applied_foveation {
                 apply_foveation(&instance, &session, &eyes, foveation);
                 applied_foveation = foveation;
@@ -1951,11 +1970,23 @@ pub fn android_main(app: AndroidApp) {
             &session,
             functor_runtime_common::runtime_settings::passthrough_wanted(
                 debug.config,
-                snapshot.settings,
+                snapshot.settings.as_ref(),
             ),
         );
         scene_context.set_passthrough_composited(passthrough.composited());
         scene_context.set_fused_room_wanted(snapshot.wants_fused_room);
+        // `Xr.streamDepth` (with `Xr.scene`) uploads only while the clock
+        // runs (not paused or scrubbed).
+        scene_context.set_depth_stream(
+            snapshot
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.xr.stream_depth.as_ref())
+                .filter(|_| {
+                    functor_runtime_common::runtime_settings::scene_requested(debug.config)
+                }),
+            !clock.is_pinned(),
+        );
         // Likewise the depth provider while `config` asks for `Xr.scene`.
         environment_depth.update(
             &session,

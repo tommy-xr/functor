@@ -79,6 +79,10 @@ name = "passthrough_alpha"
 harness = false
 
 [[test]]
+name = "depth_stream"
+harness = false
+
+[[test]]
 name = "stereo_shadow"
 harness = false
 

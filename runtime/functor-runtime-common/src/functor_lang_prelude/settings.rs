@@ -9,12 +9,13 @@
 use super::*;
 
 use crate::runtime_settings::{
-    ExternalPrefix, FoveationLevel, GameConfig, GameSettings, XrConfig, XrSettings,
+    DepthStreamSettings, ExternalPrefix, FoveationLevel, GameConfig, GameSettings, XrConfig,
+    XrSettings,
 };
 
 /// Every headset knob, before `Config.xr` / `Settings.xr` sorts it into a
 /// bucket.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct XrKnobs {
     refresh_rate: Option<f32>,
     passthrough: Option<bool>,
@@ -23,6 +24,7 @@ struct XrKnobs {
     msaa: Option<u32>,
     foveation: Option<FoveationLevel>,
     passthrough_enabled: Option<bool>,
+    stream_depth: Option<DepthStreamSettings>,
 }
 
 struct FunctorLangXr(XrKnobs);
@@ -99,6 +101,32 @@ impl crate::host_registry::FromArg for FoveationLevel {
     }
 }
 
+/// `Xr.streamDepth`'s `{url, hz}`.
+struct StreamOptionsArg(DepthStreamSettings);
+
+impl crate::host_registry::FromArg for StreamOptionsArg {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let field = |name: &str| match value {
+            Value::Record(fields) => fields.iter().find(|(f, _)| f == name).map(|(_, v)| v),
+            _ => None,
+        };
+        let fail = |message: String| Err(RunError { message, span });
+        let (Some(Value::String(url)), Some(Value::Number(hz))) = (field("url"), field("hz")) else {
+            return fail(format!("{path}: expected {{url: string, hz: float}}, got {value}"));
+        };
+        if !(hz.is_finite() && *hz > 0.0) {
+            return fail(format!("{path}: hz must be a positive number, got {hz}"));
+        }
+        if let Err(e) = crate::depth_stream::Destination::parse(url) {
+            return fail(format!("{path}: {e}"));
+        }
+        Ok(StreamOptionsArg(DepthStreamSettings {
+            url: url.to_string(),
+            hz: *hz as f32,
+        }))
+    }
+}
+
 crate::host_returnable!(
     FunctorLangXr,
     FunctorLangConfig,
@@ -170,6 +198,16 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         |on: bool, xr: FunctorLangXr| {
             FunctorLangXr(XrKnobs {
                 passthrough_enabled: Some(on),
+                ..xr.0
+            })
+        },
+    );
+    reg.fn2(
+        "Xr.streamDepth",
+        "Xr.streamDepth({url, hz}, xr)",
+        |options: StreamOptionsArg, xr: FunctorLangXr| {
+            FunctorLangXr(XrKnobs {
+                stream_depth: Some(options.0),
                 ..xr.0
             })
         },
@@ -279,6 +317,8 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 Some("Xr.foveation")
             } else if xr.0.passthrough_enabled.is_some() {
                 Some("Xr.passthroughEnabled")
+            } else if xr.0.stream_depth.is_some() {
+                Some("Xr.streamDepth")
             } else {
                 None
             };
@@ -348,6 +388,7 @@ in `let config = Config.create() |> Config.xr(…)`, then pause or resume the fe
             settings.xr = XrSettings {
                 foveation: xr.0.foveation,
                 passthrough: xr.0.passthrough_enabled,
+                stream_depth: xr.0.stream_depth,
             };
             Ok(FunctorLangSettings(settings))
         },
@@ -383,7 +424,7 @@ pub fn settings_of(value: &Value) -> Option<GameSettings> {
         Value::HostData(data) => data
             .as_any()
             .downcast_ref::<FunctorLangSettings>()
-            .map(|s| s.0),
+            .map(|s| s.0.clone()),
         _ => None,
     }
 }

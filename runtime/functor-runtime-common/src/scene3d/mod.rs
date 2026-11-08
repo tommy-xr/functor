@@ -181,16 +181,29 @@ pub struct SceneContext {
     // the stand-in room's rendered depth (`crate::environment_depth`).
     environment_depth_source: Cell<crate::environment_depth::EnvironmentDepthSource>,
     pub(crate) stand_in_depth: RefCell<Option<crate::environment_depth::StandInDepth>>,
-    // That depth read back to the CPU, carrying the view each readback read.
-    depth_readback: RefCell<
-        Option<crate::depth_readback::DepthReadback<crate::environment_depth::EnvironmentDepthView>>,
-    >,
+    // That depth read back to the CPU, carrying what each readback read.
+    depth_readback: RefCell<Option<crate::depth_readback::DepthReadback<DepthCapture>>>,
+    // `Xr.streamDepth`'s stream of those readbacks, the origins the operator
+    // allows it besides loopback, and the world frame's epoch.
+    depth_stream: RefCell<Option<crate::depth_stream::DepthStreamer>>,
+    depth_sender: RefCell<Option<crate::depth_stream::DepthSender>>,
+    sensor_upload_origins: RefCell<Vec<String>>,
+    space_epoch: Cell<u64>,
     // The room fused from that depth while `Xr.scene` is on, and whether it
     // fuses on the render thread (`set_fusion_inline`).
     fused_room: RefCell<Option<crate::fused_room::FusedRoom>>,
     fusion_inline: Cell<bool>,
     // A `Physics.fusedRoom` body wants the room fused, drawn or not.
     fused_room_wanted: Cell<bool>,
+}
+
+/// What one environment depth readback read, and for whom.
+#[derive(Clone, Copy)]
+pub(crate) struct DepthCapture {
+    view: crate::environment_depth::EnvironmentDepthView,
+    space_epoch: u64,
+    fuse: bool,
+    stream: Option<crate::depth_stream::StreamCapture>,
 }
 
 /// One in-flight `Effect.preload` target: the handle being driven plus every
@@ -908,6 +921,10 @@ impl SceneContext {
             environment_depth_source: Cell::new(Default::default()),
             stand_in_depth: RefCell::new(None),
             depth_readback: RefCell::new(None),
+            depth_stream: RefCell::new(None),
+            depth_sender: RefCell::new(None),
+            sensor_upload_origins: RefCell::new(Vec::new()),
+            space_epoch: Cell::new(0),
             fused_room: RefCell::new(None),
             // wasm has no threads.
             fusion_inline: Cell::new(cfg!(target_arch = "wasm32")),
@@ -977,9 +994,10 @@ impl SceneContext {
     }
 
     /// Read this main pass's environment depth back every few frames for
-    /// the fused room: created on the first frame that draws it
-    /// (`requested`) or a `Physics.fusedRoom` body wants it, fused from then
-    /// on while `Xr.scene` is on, dropped (with the readback) when it goes off.
+    /// the fused room and the depth stream. The room is created on the first
+    /// frame that draws it (`requested`) or a `Physics.fusedRoom` body wants
+    /// it and fused from then on while `Xr.scene` is on; it and the readback
+    /// are dropped when it goes off.
     pub(crate) fn read_back_environment_depth(
         &self,
         gl: &glow::Context,
@@ -989,6 +1007,7 @@ impl SceneContext {
     ) {
         let mut room = self.fused_room.borrow_mut();
         let mut readback = self.depth_readback.borrow_mut();
+        let mut stream = self.depth_stream.borrow_mut();
         if self.environment_depth_source() == crate::environment_depth::EnvironmentDepthSource::None
         {
             if let Some(room) = room.take() {
@@ -1002,34 +1021,94 @@ impl SceneContext {
         if room.is_none() && (requested || self.fused_room_wanted.get()) {
             *room = Some(crate::fused_room::FusedRoom::new(self.fusion_inline.get()));
         }
-        let Some(room) = room.as_mut() else {
+        if room.is_none() && stream.is_none() {
+            if let Some(readback) = readback.take() {
+                readback.delete(gl);
+            }
             return;
-        };
+        }
         let readback =
             readback.get_or_insert_with(|| crate::depth_readback::DepthReadback::new(gl, shader_version));
         let frame = self.current_frame.get();
         // Asked every pass, so a stereo pair's second eye never starts one.
         let can_start = readback.can_start(frame);
         if let Some(view) = view.filter(|_| can_start) {
-            readback.start(gl, &mut **self.quad.borrow_mut(), view, view);
+            let capture = DepthCapture {
+                view,
+                space_epoch: self.space_epoch.get(),
+                fuse: room.is_some(),
+                stream: stream.as_mut().and_then(|stream| stream.capture()),
+            };
+            if capture.fuse || capture.stream.is_some() {
+                readback.start(gl, &mut **self.quad.borrow_mut(), view, capture);
+            }
         }
         // Inline: read now. Threaded: only once the GPU is done, so the
         // render thread never waits.
-        if let Some((rgba, view)) = readback.poll(gl, self.fusion_inline.get()) {
-            room.fuse(rgba, view.view_projection);
+        if let Some((mut rgba, capture)) = readback.poll(gl, self.fusion_inline.get()) {
+            // A recentre since the capture: its pixels belong to the old room.
+            let room = room
+                .as_mut()
+                .filter(|_| capture.fuse && capture.space_epoch == self.space_epoch.get());
+            if let (Some(stream), Some(stream_capture)) = (stream.as_mut(), capture.stream) {
+                let pixels = match room {
+                    Some(_) => rgba.clone(),
+                    None => std::mem::take(&mut rgba),
+                };
+                stream.send(pixels, &capture.view, capture.space_epoch, stream_capture);
+            }
+            if let Some(room) = room {
+                room.fuse(rgba, capture.view.view_projection);
+            }
         }
-        room.drain();
+        if let Some(room) = room.as_mut() {
+            room.drain();
+        }
+    }
+
+    /// Follow `settings`' `Xr.streamDepth`: `None` stops streaming; new
+    /// settings start a new stream. Frames upload only while `live` — not
+    /// paused, scrubbing or replaying.
+    pub fn set_depth_stream(
+        &self,
+        settings: Option<&crate::runtime_settings::DepthStreamSettings>,
+        live: bool,
+    ) {
+        let mut slot = self.depth_stream.borrow_mut();
+        let Some(settings) = settings else {
+            *slot = None;
+            return;
+        };
+        if slot.as_ref().is_none_or(|stream| stream.settings() != settings) {
+            let mut sender = self.depth_sender.borrow_mut();
+            *slot = Some(crate::depth_stream::DepthStreamer::new(
+                settings.clone(),
+                &self.sensor_upload_origins.borrow(),
+                sender.get_or_insert_with(crate::depth_stream::DepthSender::new),
+            ));
+        }
+        slot.as_mut().expect("set above").set_live(live);
+    }
+
+    /// The origins besides loopback `Xr.streamDepth` may upload to
+    /// (`--allow-sensor-upload`), in [`crate::depth_stream::parse_origin`]'s
+    /// form. Set before the first stream.
+    pub fn set_sensor_upload_origins(&self, origins: Vec<String>) {
+        *self.sensor_upload_origins.borrow_mut() = origins;
+    }
+
+    /// `GET /state.xr.stream`: present while `settings` asks for a stream.
+    pub fn depth_stream_state(&self) -> Option<crate::runtime_settings::DepthStreamState> {
+        self.depth_stream.borrow().as_ref().map(|stream| stream.state())
     }
 
     /// Forget the fused room — for a shell whose depth-to-world mapping just
     /// changed (a recentred rig), where the old mesh no longer lines up.
+    /// Streamed frames count it as a new `space_epoch`.
     pub fn reset_fused_room(&self, gl: &glow::Context) {
+        self.space_epoch.set(self.space_epoch.get() + 1);
         if let Some(room) = self.fused_room.borrow_mut().take() {
             room.delete(gl);
-        }
-        // Its pending pixels were read in the old frame.
-        if let Some(readback) = self.depth_readback.borrow_mut().take() {
-            readback.delete(gl);
         }
     }
 
