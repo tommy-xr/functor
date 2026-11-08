@@ -222,8 +222,8 @@ let grab = (side: Side, grip: Input.pose, item: Input.point3, t: float): Held =>
 
 /// One step of a held item. Tracking lost (`grip` None): it freezes where it
 /// is and forgets its history, so the throw restarts from the hand's return.
-/// Opened: released at the swept pose with the estimated velocity. Held
-/// farther than `breakDistance` from the hand: dropped where it stopped.
+/// Held farther than `breakDistance` from the hand: dropped where it stopped,
+/// even if the hand opened. Opened: released with the estimated velocity.
 let step = (cast: (Input.point3, Input.point3) => Hit, held: Held, grip: Option.t<Input.pose>, hand: Hand, t: float): Outcome =>
   match grip with
   | Option.None => Holding({ held with history: [] })
@@ -231,8 +231,9 @@ let step = (cast: (Input.point3, Input.point3) => Hit, held: Held, grip: Option.
     let wanted = target(g, held.offset) in
     let accepted = sweep(cast, held.accepted, wanted) in
     let history = push({ t: t, p: accepted }, held.history) in
-    if not hand.squeezed then Released(accepted, estimate(history))
-    else if Quat.length(Quat.sub(wanted, accepted)) > breakDistance then Broke(accepted)
+    // A break wins over an open hand in the same step: never a throw.
+    if Quat.length(Quat.sub(wanted, accepted)) > breakDistance then Broke(accepted)
+    else if not hand.squeezed then Released(accepted, estimate(history))
     else Holding({ held with accepted: accepted, history: history })
 
 let pose = (p: Input.point3): Input.pose => { position: p, orientation: Quat.identity }
@@ -281,5 +282,13 @@ expect (
       && (match step(wallCast, h, Option.Some(pose(Quat.v3(1.3, 0.0, 0.0))), closed, 2.0 / 60.0) with
           | Broke(at) => near3(at, h.accepted)
           | _ => false)
+  | _ => false
+)
+// Opening the hand on the same step it passes `breakDistance` is a break,
+// not a throw.
+expect (
+  let held = grab(Right, pose(Quat.v3(0.9, 0.0, 0.0)), Quat.v3(0.9, 0.0, 0.0), 0.0) in
+  match step(wallCast, held, Option.Some(pose(Quat.v3(1.3, 0.0, 0.0))), opened, 1.0 / 60.0) with
+  | Broke(_) => true
   | _ => false
 )
