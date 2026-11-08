@@ -190,6 +190,15 @@ enum Command {
         #[arg(long = "part")]
         parts: Vec<String>,
 
+        /// A part function `(params) => Solid` to export instead, called with
+        /// `--params`. E.g. `export --function plate --params p.json -o p.stl`.
+        #[arg(long, value_name = "NAME", requires = "params", conflicts_with_all = ["parts", "views", "html", "model"])]
+        function: Option<String>,
+
+        /// With `--function`: its params record, a JSON object of numbers (mm).
+        #[arg(long, value_name = "FILE", requires = "function")]
+        params: Option<PathBuf>,
+
         /// Write the 8-view sheet as this `.png` (2304x2304: 720 px views).
         #[arg(long, value_name = "FILE", conflicts_with_all = ["output", "model"])]
         views: Option<PathBuf>,
@@ -630,6 +639,15 @@ async fn run(args: &Args) -> io::Result<()> {
             } => {
                 let loaded = project.build(&working_directory_str, false)?;
                 project.export_html(&working_directory_str, &loaded, parts, html)
+            }
+            Command::Export {
+                output: Some(output),
+                function: Some(function),
+                params: Some(params),
+                ..
+            } => {
+                let loaded = project.build(&working_directory_str, false)?;
+                project.export_function(loaded, function, params, output)
             }
             Command::Export { output, parts, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;

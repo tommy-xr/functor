@@ -104,9 +104,8 @@ impl Evaluator {
         let result = self.session.call(function, vec![record], &mut FunctorHost);
         // `Ui.*` constructors queue handlers nothing here consumes.
         let _ = take_ui_handlers();
-        let value = result.map_err(|e| {
-            Diagnostics::one(self.project.sources.render(e.span.start, &e.message))
-        })?;
+        let value = result
+            .map_err(|e| Diagnostics::one(self.project.sources.render(e.span.start, &e.message)))?;
         if let Some((class, reader)) = read_since(before) {
             return Err(Diagnostics::one(format!(
                 "`{function}` read {} state through `{}` at call time; bind it at top level so it is fixed at load",

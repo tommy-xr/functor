@@ -79,7 +79,8 @@ fn params_match_an_edited_source() {
     let mesh = evaluator
         .evaluate("plate", &params(r#"{"w": 41, "d": 30, "h": 4, "hole": 5}"#))
         .unwrap();
-    let edited = "let part = Solid.box(41.0, 30.0, 4.0) |> Solid.subtract(Solid.cylinder(5.0, 8.0))";
+    let edited =
+        "let part = Solid.box(41.0, 30.0, 4.0) |> Solid.subtract(Solid.cylinder(5.0, 8.0))";
     let dir = tempfile::tempdir().unwrap();
     let entry = dir.path().join("part.fun");
     std::fs::write(&entry, edited).unwrap();
@@ -94,8 +95,8 @@ fn params_match_an_edited_source() {
         &mut functor_runtime_common::functor_lang_prelude::FunctorHost,
     )
     .unwrap_or_else(|f| panic!("{}", f.error.message));
-    let solid =
-        functor_runtime_common::functor_lang_prelude::solid::solid_global(&session, "part").unwrap();
+    let solid = functor_runtime_common::functor_lang_prelude::solid::solid_global(&session, "part")
+        .unwrap();
     assert_eq!(stl(&solid.mesh().unwrap()), stl(&mesh));
 }
 
@@ -104,7 +105,10 @@ fn a_param_changes_the_mesh() {
     let (_dir, evaluator) = project(PLATE);
     let volume = |w: f64| {
         evaluator
-            .evaluate("block", &params(&format!(r#"{{"w": {w}, "d": 30, "h": 4}}"#)))
+            .evaluate(
+                "block",
+                &params(&format!(r#"{{"w": {w}, "d": 30, "h": 4}}"#)),
+            )
             .unwrap()
             .volume()
     };
@@ -122,7 +126,10 @@ fn bad_params_are_clear_diagnostics() {
             .to_string()
     };
     let missing = error("block", r#"{"w": 1, "d": 1}"#);
-    assert!(missing.contains("part.fun:5:") && missing.contains("no field `h`"), "{missing}");
+    assert!(
+        missing.contains("part.fun:5:") && missing.contains("no field `h`"),
+        "{missing}"
+    );
     let mut nan = params(r#"{"w": 1, "d": 1}"#);
     nan.insert("h".into(), f64::NAN);
     let nan = evaluator.evaluate("block", &nan).unwrap_err().to_string();
@@ -132,12 +139,18 @@ fn bad_params_are_clear_diagnostics() {
         "`notSolid` must return a Solid, got a number"
     );
     let reads = error("reads", r#"{"w": 1}"#);
-    assert!(reads.contains("read file state through `File.exists`"), "{reads}");
+    assert!(
+        reads.contains("read file state through `File.exists`"),
+        "{reads}"
+    );
     assert!(error("nope", "{}").contains("no top-level `let nope`"));
 
     let parse = |json: &str| parse_params(json).unwrap_err().to_string();
     assert!(parse("[1, 2]").starts_with("params must be a JSON object of numbers"));
-    assert_eq!(parse(r#"{"w": "wide"}"#), "param `w` must be a number, got \"wide\"");
+    assert_eq!(
+        parse(r#"{"w": "wide"}"#),
+        "param `w` must be a number, got \"wide\""
+    );
     assert!(parse("{").starts_with("params: "));
 }
 
@@ -154,7 +167,12 @@ fn a_check_error_fails_load() {
 /// print throughput, split into evaluation and meshing.
 fn ten_thousand(function: &str) {
     let (_dir, evaluator) = project(PLATE);
-    let sample = |i: usize| params(&format!(r#"{{"w": {}, "d": 30, "h": 4, "hole": 5}}"#, 40 + i % 7));
+    let sample = |i: usize| {
+        params(&format!(
+            r#"{{"w": {}, "d": 30, "h": 4, "hole": 5}}"#,
+            40 + i % 7
+        ))
+    };
     let (mut eval, mut mesh) = (Duration::ZERO, Duration::ZERO);
     let mut run = |range: std::ops::Range<usize>| {
         for i in range {
@@ -179,7 +197,10 @@ fn ten_thousand(function: &str) {
         mesh.as_secs_f64() * 1e6 / n,
     );
     // A leak of even 100 B per evaluation would be ~1 MB.
-    assert!(grown < 256 * 1024, "heap grew {grown} B over 9,900 evaluations");
+    assert!(
+        grown < 256 * 1024,
+        "heap grew {grown} B over 9,900 evaluations"
+    );
 }
 
 #[test]
