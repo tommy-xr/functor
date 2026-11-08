@@ -845,9 +845,10 @@ paths are external — read it in a top-level value `config` doesn't use"
     ) -> Result<(), Error> {
         use functor_runtime_common::part_eval::{parse_params, Evaluator};
         let three_mf = export_format(output)?;
-        let params = std::fs::read_to_string(params)
+        let text = std::fs::read_to_string(params)
             .map_err(|e| Error::other(format!("cannot read {}: {e}", params.display())))?;
-        let params = parse_params(&params).map_err(Error::other)?;
+        let params = parse_params(&text)
+            .map_err(|e| Error::other(format!("{}: {e}", params.display())))?;
         let mesh = Evaluator::from_project(project)
             .and_then(|evaluator| evaluator.evaluate(function, &params))
             .map_err(Error::other)?;

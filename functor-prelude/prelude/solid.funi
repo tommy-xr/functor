@@ -16,9 +16,8 @@
 //! `let plate = (p) => Solid.box(p.w, p.d, p.h)` beside
 //! `let part = plate({ w: 40.0, d: 30.0, h: 4.0 })`. `functor export --function
 //! plate --params p.json -o plate.stl` calls it with `p.json`'s object of
-//! numbers instead of editing the source; Rust hosts evaluating many params use
-//! `functor_runtime_common::part_eval::Evaluator`. The function may not read
-//! files at call time.
+//! numbers instead of editing the source. The function may not read files at
+//! call time.
 //!
 //! ```
 //! let part = Solid.group([

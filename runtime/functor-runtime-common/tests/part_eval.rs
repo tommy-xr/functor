@@ -143,7 +143,7 @@ fn bad_params_are_clear_diagnostics() {
         reads.contains("read file state through `File.exists`"),
         "{reads}"
     );
-    assert!(error("nope", "{}").contains("no top-level `let nope`"));
+    assert_eq!(error("nope", "{}"), "no top-level `let nope` in the module");
 
     let parse = |json: &str| parse_params(json).unwrap_err().to_string();
     assert!(parse("[1, 2]").starts_with("params must be a JSON object of numbers"));
@@ -152,6 +152,27 @@ fn bad_params_are_clear_diagnostics() {
         "param `w` must be a number, got \"wide\""
     );
     assert!(parse("{").starts_with("params: "));
+}
+
+/// Load-time file reads resolve from each evaluator's own project.
+#[test]
+fn top_level_reads_use_the_entry_folder() {
+    let src = "let w = Bytes.length(File.bytes(Path.of(\"w.txt\")))\n\
+               let block = (p) => Solid.box(w, p.d, p.h)\n";
+    let load = |w: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("w.txt"), w).unwrap();
+        std::fs::write(dir.path().join("part.fun"), src).unwrap();
+        let evaluator = Evaluator::load(&dir.path().join("part.fun")).unwrap();
+        (dir, evaluator)
+    };
+    let ((_a, two), (_b, three)) = (load("ab"), load("abc"));
+    let volume = |e: &Evaluator| {
+        e.evaluate("block", &params(r#"{"d": 1, "h": 1}"#))
+            .unwrap()
+            .volume()
+    };
+    assert_eq!((volume(&two), volume(&three)), (2.0, 3.0));
 }
 
 #[test]
@@ -167,11 +188,10 @@ fn a_check_error_fails_load() {
 /// print throughput, split into evaluation and meshing.
 fn ten_thousand(function: &str) {
     let (_dir, evaluator) = project(PLATE);
+    // A distinct record each time, so a cache keyed by params would show.
     let sample = |i: usize| {
-        params(&format!(
-            r#"{{"w": {}, "d": 30, "h": 4, "hole": 5}}"#,
-            40 + i % 7
-        ))
+        let w = 40.0 + i as f64 * 1e-3;
+        params(&format!(r#"{{"w": {w}, "d": 30, "h": 4, "hole": 5}}"#))
     };
     let (mut eval, mut mesh) = (Duration::ZERO, Duration::ZERO);
     let mut run = |range: std::ops::Range<usize>| {
