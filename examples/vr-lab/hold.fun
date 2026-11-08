@@ -93,12 +93,11 @@ expect (let (h, _) = release(idle) in let (held, _) = press(h) in not (let (_, e
 type Reacher = { side: Side, edge: bool, hover: bool, gap: float }
 
 let pick = (left: Reacher, right: Reacher): Option.t<Side> =>
+  // `sortBy` is stable: listing the right hand first wins it the tie.
   [right, left]
     |> List.filter((r) => r.edge && r.hover)
-    |> List.fold((best, r) => (
-         match best with
-         | Option.Some(b) => if r.gap < b.gap then Option.Some(r) else best
-         | Option.None => Option.Some(r)), Option.None)
+    |> List.sortBy((r) => r.gap)
+    |> List.head
     |> Option.map((r) => r.side)
 
 let reacher = (side, edge, hover, gap): Reacher => { side: side, edge: edge, hover: hover, gap: gap }

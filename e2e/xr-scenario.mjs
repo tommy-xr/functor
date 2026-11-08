@@ -14,7 +14,7 @@
 // One step = one injected sample + one pinned `/time` advance, waiting for the
 // frame to land before the next sample (a sample is level state, not a queue).
 import { spawn } from "node:child_process";
-import { BIN, ROOT, sleep } from "./mcp-rpc.mjs";
+import { BIN, ROOT, portIsBound, sleep } from "./mcp-rpc.mjs";
 
 export const DT = 1 / 60;
 const HEAD = [0, 1.6, 0];
@@ -22,6 +22,8 @@ const REST = { left: [-0.25, 0.95, -0.2], right: [0.25, 0.95, -0.2] };
 
 /** Launch `functor run native` on `project` with the debug server on `port`. */
 export async function launch(project, port, extra = []) {
+  // A stale runtime on the port would answer in place of this one.
+  if (await portIsBound(port)) throw new Error(`port ${port} is taken: stop what's listening there`);
   const proc = spawn(BIN, ["-d", project, "run", "native", "--debug-port", String(port), ...extra], {
     cwd: ROOT,
     stdio: ["ignore", "pipe", "pipe"],
