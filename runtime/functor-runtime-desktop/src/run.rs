@@ -1168,6 +1168,11 @@ fn service_debug_request(
         debug_server::DebugRequest::Spikes(resp) => {
             let _ = resp.send(telemetry.spikes());
         }
+        debug_server::DebugRequest::InputLog(from, resp) => {
+            sim.post(move |g| {
+                let _ = resp.send(functor_runtime_common::protocol::input_log(g, from));
+            });
+        }
         // Producer reads reply from the sim side, after every call queued
         // before them, so the shell never waits on them.
         debug_server::DebugRequest::State(resp) => {

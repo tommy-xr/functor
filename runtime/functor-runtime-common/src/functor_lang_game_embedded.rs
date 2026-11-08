@@ -1153,6 +1153,10 @@ impl GameProducer for FunctorLangEmbeddedGame {
         self.recorder.inputs_at(rendered_frame)
     }
 
+    fn recorded_frame_time_at(&self, rendered_frame: u64) -> Option<FrameTime> {
+        self.recorder.frame_time_at(rendered_frame)
+    }
+
     fn scene_timeline_generation(&self) -> u64 {
         self.recorder.generation()
     }
@@ -2583,6 +2587,46 @@ let draw = (model, tts) =>
             game.recorded_inputs_at(1).as_slice(),
             [crate::RecordedInput::Snapshot(recorded)] if recorded.mouse.x == 10
         ));
+    }
+
+    /// `GET /input-log` numbers steps as `/state` numbers `frame`, with the
+    /// clock and the snapshot each consumed.
+    #[test]
+    fn the_input_log_reports_each_steps_clock_and_snapshot() {
+        let source = r#"
+let init = { sample: 0 }
+let sampledInput = (model, snapshot: Input.snapshot) => { sample: snapshot.mouse.x }
+let tick = (model, dt, tts) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), source.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("sampled-input game loads");
+        let dt = 1.0 / 60.0;
+        for x in 1..=3 {
+            let snapshot = crate::InputSnapshot {
+                mouse: crate::MouseSnapshot { x, ..Default::default() },
+                ..crate::InputSnapshot::default()
+            };
+            game.sampled_input(&snapshot);
+            game.tick(frame_time(x as f32 * dt, dt));
+        }
+
+        let log = crate::protocol::input_log(&game, 2);
+        assert_eq!((log.oldest, log.newest), (1, 3));
+        assert_eq!(game.state_frame(), Some(log.newest));
+        let steps: Vec<_> = log
+            .steps
+            .iter()
+            .map(|s| (s.frame, s.tts, s.dts, s.input.as_ref().map(|i| i.mouse.x)))
+            .collect();
+        assert_eq!(steps, vec![(2, 2.0 * dt, dt, Some(2)), (3, 3.0 * dt, dt, Some(3))]);
+        assert!(crate::protocol::input_log(&game, 4).steps.is_empty());
     }
 
     /// Each key press counts and fires a raycast; each answer counts.

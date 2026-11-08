@@ -1015,6 +1015,11 @@ fn service_debug_request(
         DebugRequest::Spikes(response) => {
             let _ = response.send(debug.telemetry.spikes());
         }
+        DebugRequest::InputLog(from, response) => {
+            sim.post(move |g| {
+                let _ = response.send(functor_runtime_common::protocol::input_log(g, from));
+            });
+        }
         DebugRequest::Scene(response) => {
             let json = debug
                 .last_frame

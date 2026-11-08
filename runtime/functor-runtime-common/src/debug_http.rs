@@ -310,6 +310,20 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
             respond_report(&mut stream, cors_origin, recv(resp_rx));
         }
+        ("GET", "/input-log") => {
+            let from = match parse_from_query(query) {
+                Ok(from) => from,
+                Err(error) => {
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
+                    return Some(());
+                }
+            };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::InputLog(from, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_report(&mut stream, cors_origin, recv(resp_rx));
+        }
         ("GET", "/spikes") => {
             let (resp_tx, resp_rx) = mpsc::channel();
             if tx.send(DebugRequest::Spikes(resp_tx)).is_err() {
@@ -827,6 +841,17 @@ fn parse_last_query(query: &str) -> Result<Option<usize>, String> {
         .transpose()
 }
 
+/// `from=N` (default 0: everything retained).
+fn parse_from_query(query: &str) -> Result<u64, String> {
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("from="))
+        .map_or(Ok(0), |n| {
+            n.parse()
+                .map_err(|_| format!("from must be a whole number, got {n:?}"))
+        })
+}
+
 fn is_protocol_path(path: &str) -> bool {
     debug_protocol::DEBUG_ROUTES
         .iter()
@@ -1047,6 +1072,13 @@ mod tests {
 
         assert_eq!(parse_last_query(""), Ok(None));
         assert!(parse_last_query("last=many").is_err());
+    }
+
+    #[test]
+    fn input_log_parses_from() {
+        assert_eq!(parse_from_query(""), Ok(0));
+        assert_eq!(parse_from_query("x=1&from=42"), Ok(42));
+        assert!(parse_from_query("from=-1").is_err());
     }
 
     #[test]

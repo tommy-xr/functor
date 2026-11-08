@@ -130,6 +130,7 @@ screenshot run has no reason to grab your mouse.
 | `POST /project-files` | answer one request: big-endian u32 header length, JSON header `{session, path, status: "bytes"\|"current"\|"missing", version?, message?}`, then the bytes; 409 for another session or an unrequested path (protocol v24) |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /camera` | point the shell's debug camera at `{"type":"set","eye":[x,y,z],"target":[x,y,z],"fov":60}` (fov optional), or return to the authored camera with `{"type":"attach"}` — see below (protocol v32) |
+| `GET /input-log` | the recorded sampled input of each retained step from `?from=N` on, numbered as `/state` numbers `frame` — see below (protocol v33) |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` — the state `GET /state` reported as frame 42 — and branch from there (pin the clock first) |
 | `POST /display-refresh-rate` | request a headset display rate, `{"hz":90}`; it must be one of `display_refresh_rate.available`, and `current` moves once the runtime confirms the switch. 400 on desktop (protocol v15) |
 | `GET /net/outbound` | **embedder transport only** — take-and-consume the game's queued `ConnCommand`s (see below) |
@@ -644,6 +645,27 @@ An invalid view (eye equal to target, looking straight up or down, a field of
 view outside 0–180°) is a 400 and shows the authored view again. So is
 `--headless` (nothing is rendered) and the headset, whose view follows the
 wearer.
+
+### `GET /input-log` — record a session's input (protocol v33)
+
+The recorder's input log, read back: each retained step from state frame
+`from` on (default all), with the clock it ran at and the sampled snapshot
+its `sampledInput` received — the same shape as `/state`'s `input` (`null`
+for a game without `sampledInput`). Step `N` produced the state `/state`
+reported as frame `N`. Desktop and Quest serve it alike, so a driver can
+record a worn session over `adb forward` and replay it on desktop through
+`POST /input` + `/time advance`.
+
+```jsonc
+{"generation": 0, "oldest": 1, "newest": 3,
+ "steps": [{"frame": 3, "tts": 0.05, "dts": 0.016666668, "input": {"held_keys": [], "xr": {...}, ...}}]}
+```
+
+Retention is the time-travel window (900 steps), so poll with `from` = the
+last step you hold + 1; `oldest > from` means steps were lost. A changed
+`generation` means history was replaced (a rewind, a project load): steps
+from before it don't continue. `e2e/xr-fixture.mjs` records and replays this
+as XR fixtures.
 
 ### `POST /reload-source` — network hot-reload (Functor Lang)
 
