@@ -661,7 +661,7 @@ record a worn session over `adb forward` and replay it on desktop through
  "steps": [{"frame": 3, "tts": 0.05, "dts": 0.016666668, "input": {"held_keys": [], "xr": {...}, ...}}]}
 ```
 
-Retention is the time-travel window (900 steps), so poll with `from` = the
+Retention is the time-travel window (up to 900 steps), so poll with `from` = the
 last step you hold + 1; `oldest > from` means steps were lost. A changed
 `generation` means history was replaced (a rewind, a project load): steps
 from before it don't continue. `e2e/xr-fixture.mjs` records and replays this
