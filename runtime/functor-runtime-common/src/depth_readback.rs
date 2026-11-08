@@ -31,7 +31,9 @@ const PACK_FRAGMENT_SHADER_SOURCE: &str = r#"
 
         void main() {
             highp float d = textureLod(depthTexture, vec3(vUv, depthLayer), 0.0).r;
-            highp float v = floor(clamp(d, 0.0, 1.0) * 16777215.0 + 0.5);
+            // At d = 1 the sum rounds to 2^24 in float32: clamp, or "no
+            // surface" would pack as FF0000.
+            highp float v = min(floor(clamp(d, 0.0, 1.0) * 16777215.0 + 0.5), 16777215.0);
             highp float hi = floor(v / 65536.0);
             highp float mid = floor((v - hi * 65536.0) / 256.0);
             highp float lo = v - hi * 65536.0 - mid * 256.0;
