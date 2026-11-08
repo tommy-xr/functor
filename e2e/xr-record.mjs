@@ -6,10 +6,10 @@
 //
 // Attached (the default): reads a running runtime's input log over its debug
 // server — the headset's under `functor run vr` (which forwards port 8123),
-// or a desktop one's (`--port`). It first taps the scenarios module's
-// `resetKey` (jump to the station and reset it) and the fixture starts at
-// that step, so a replay from a fresh launch starts from the same state.
-// Stops on Ctrl-C or after `--seconds`.
+// or a desktop one's (`--port`). It first restarts the game from `init`
+// (`POST /load-project` with its own sources) and taps the scenarios module's
+// `resetKey`; the fixture starts at that step, so a replay from a fresh
+// launch starts from the same state. Stops on Ctrl-C or after `--seconds`.
 //
 // `--scenario <name>`: launches the desktop runtime under `--emulate-xr`,
 // plays that scripted scenario, and records it with its marks.
@@ -22,7 +22,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { encode, readLog, recordLive } from "./xr-fixture.mjs";
-import { launch, play } from "./xr-scenario.mjs";
+import { attach, launch, play } from "./xr-scenario.mjs";
 
 const [scenariosPath, out, ...rest] = process.argv.slice(2);
 if (!out) {
@@ -60,23 +60,15 @@ if (scenarioName) {
     await rt.kill();
   }
 } else {
-  const base = `http://127.0.0.1:${opt("--port", "8123")}`;
-  const call = async (path, init) => {
-    const res = await fetch(`${base}${path}`, init);
-    if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${path} → ${res.status}: ${await res.text()}`);
-    return res;
-  };
-  const rt = {
-    get: async (path) => (await call(path)).json(),
-    post: (path, body) => call(path, { method: "POST", body: JSON.stringify(body) }),
-  };
+  const port = opt("--port", "8123");
+  const rt = attach(port);
   const seconds = opt("--seconds");
   const stopped = new Promise((done) => {
     process.once("SIGINT", done);
     if (seconds) setTimeout(done, Number(seconds) * 1000);
   });
   const resetKey = opt("--key", mod.resetKey);
-  console.log(`recording ${base} (reset key ${resetKey}); Ctrl-C to stop`);
+  console.log(`restarting the game on port ${port}, then recording (reset key ${resetKey}); Ctrl-C to stop`);
   const steps = await recordLive(rt, { resetKey, stopped });
   const { build } = await rt.get("/state");
   write(encode(steps, { source: { runtime: build ? `quest ${build}` : "desktop", recorded: new Date().toISOString() } }));

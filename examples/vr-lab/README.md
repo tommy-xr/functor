@@ -50,14 +50,15 @@ vr` running:
 npm run record:vr-lab -- /tmp/throws.xr.json     # Ctrl-C to stop (or --seconds 20)
 ```
 
-It resets station 1 first, so the fixture replays from a fresh launch. A
+It restarts the game and resets station 1 first, so the fixture replays from
+a fresh launch. A
 fixture plays anywhere a scenario does: `npm run demo:vr-lab --
 /tmp/throws.xr.json out.gif --mp4 out.mp4` films it on desktop, and a
 scenario entry `{ fixture: "<path>" }` runs it under `e2e/vr-lab.mjs`
 (`grab-throw-recorded` is the checked-in one, re-recorded with `npm run
 record:vr-lab -- e2e/fixtures/vr-lab/grab-throw.xr.json --scenario
-grab-throw`). Replay is on desktop: the headset reads its own tracking, so it
-rejects injected XR samples.
+grab-throw`). Replay is on desktop. The headset also accepts injected XR
+samples (`POST /input`), but fixture playback there is untested.
 
 ## 1. Grab table
 

@@ -85,10 +85,20 @@ export function encode(logSteps, { marks = {}, source } = {}) {
   if (logSteps.length === 0) throw new Error("no steps to record");
   const dt = logSteps[0].dts;
   const first = logSteps[0].frame;
+  // Replay rebuilds the clock as t0 + dt + dt ... and key levels from the
+  // edges alone (press, then release, from nothing held): refuse a log that
+  // didn't run that way.
+  let held = new Set();
   const steps = logSteps.map((s, i) => {
     if (s.frame !== first + i) throw new Error(`steps skip from frame ${first + i - 1} to ${s.frame}`);
     if (s.dts !== dt) throw new Error(`frame ${s.frame} ran dt ${s.dts}, not ${dt}`);
+    const tts = i && Math.fround(Math.fround(logSteps[i - 1].tts) + Math.fround(dt));
+    if (i && tts !== Math.fround(s.tts)) throw new Error(`the clock jumped at frame ${s.frame} (${s.tts}, not ${tts})`);
     if (!s.input) throw new Error(`frame ${s.frame} has no sampled input: does the game define sampledInput?`);
+    held = new Set([...held, ...s.input.pressed_keys].filter((k) => !s.input.released_keys.includes(k)));
+    if (!same([...held].sort(), [...s.input.held_keys].sort())) {
+      throw new Error(`frame ${s.frame} holds ${s.input.held_keys}, which its key edges don't replay to`);
+    }
     return s.input;
   });
   const fixture = {
@@ -149,33 +159,43 @@ export async function readLog(rt, from) {
   return log;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /**
  * Record a live (unpinned) session attached over `rt` (`{ get, post }`):
+ * restart the game from `init` (`POST /load-project` with its own sources),
  * tap `resetKey`, poll the input log until `stopped` resolves, then read it
  * once more. The steps start at the reset's, so a replay from a fresh
  * launch starts from the same state. Returns `GET /input-log` steps.
  */
 export async function recordLive(rt, { resetKey, stopped }) {
   const { protocol_version: version } = await rt.get("/");
-  if (version < 32) throw new Error(`the runtime speaks debug protocol v${version}; recording needs v32 (GET /input-log)`);
+  if (version < 33) throw new Error(`the runtime speaks debug protocol v${version}; recording needs v33 (GET /input-log)`);
+  // A reset alone keeps state from before it (vr-lab's ball generation).
+  await rt.post("/load-project", await rt.get("/project"));
+  const deadline = Date.now() + 10000;
+  while ((await rt.get("/state")).frame === 0) {
+    if (Date.now() > deadline) throw new Error("the restarted game never stepped: is its clock paused?");
+    await sleep(50);
+  }
   const { generation } = await rt.get(`/input-log?from=${Number.MAX_SAFE_INTEGER}`);
   let next = (await rt.get("/state")).frame + 1;
   // Tapped after `next` was read, so the reset lands in the recording.
   await rt.post("/input", { type: "key", key: resetKey, down: true });
-  await new Promise((r) => setTimeout(r, 100));
+  await sleep(100);
   await rt.post("/input", { type: "key", key: resetKey, down: false });
   let stop = false;
   stopped.then(() => (stop = true));
   const steps = [];
-  // The runtime keeps 15 s of steps: polling twice a second loses none.
+  // The runtime keeps up to 15 s of steps; `readLog` throws if any were lost.
   for (;;) {
     const done = stop;
     const log = await readLog(rt, next);
     if (log.generation !== generation) throw new Error("the runtime's history was replaced (a rewind or project load): record again");
     steps.push(...log.steps);
-    next = Math.max(next, log.newest + 1);
+    if (log.steps.length) next = log.steps.at(-1).frame + 1;
     if (done) break;
-    await Promise.race([new Promise((r) => setTimeout(r, 500)), stopped]);
+    await Promise.race([sleep(500), stopped]);
   }
   const reset = steps.findIndex((s) => s.input?.pressed_keys.some((k) => keyName(k).toLowerCase() === resetKey.toLowerCase()));
   if (reset < 0) throw new Error(`the reset key ${resetKey} never reached the game`);

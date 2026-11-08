@@ -29,31 +29,13 @@ export const DT = 1 / 60;
 const HEAD = [0, 1.6, 0];
 const REST = { left: [-0.25, 0.95, -0.2], right: [0.25, 0.95, -0.2] };
 
-/** Launch `functor run native` on `project` with the debug server on `port`. */
-export async function launch(project, port, extra = []) {
-  // A stale runtime on the port would answer in place of this one.
-  if (await portIsBound(port)) throw new Error(`port ${port} is taken: stop what's listening there`);
-  const proc = spawn(BIN, ["-d", project, "run", "native", "--debug-port", String(port), ...extra], {
-    cwd: ROOT,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let log = "";
-  proc.stdout.on("data", (d) => (log += d));
-  proc.stderr.on("data", (d) => (log += d));
+/** A client for the debug server on `port` (a desktop runtime, or a headset's over `adb forward`). */
+export function attach(port) {
   const base = `http://127.0.0.1:${port}`;
-  const rt = {
-    proc,
-    log: () => log,
-    // Resolves once the process is gone, so the port is free for the next.
-    kill: () =>
-      new Promise((done) => {
-        if (proc.exitCode !== null || proc.signalCode !== null) return done();
-        proc.once("exit", done);
-        proc.kill("SIGKILL");
-      }),
+  return {
     async get(path) {
       const res = await fetch(`${base}${path}`);
-      if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
+      if (!res.ok) throw new Error(`GET ${path} → ${res.status}: ${await res.text()}`);
       return res.json();
     },
     async post(path, body) {
@@ -67,6 +49,31 @@ export async function launch(project, port, extra = []) {
       if (!res.ok) throw new Error(`POST /capture → ${res.status}: ${await res.text()}`);
       return Buffer.from(await res.arrayBuffer());
     },
+  };
+}
+
+/** Launch `functor run native` on `project` with the debug server on `port`. */
+export async function launch(project, port, extra = []) {
+  // A stale runtime on the port would answer in place of this one.
+  if (await portIsBound(port)) throw new Error(`port ${port} is taken: stop what's listening there`);
+  const proc = spawn(BIN, ["-d", project, "run", "native", "--debug-port", String(port), ...extra], {
+    cwd: ROOT,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  proc.stdout.on("data", (d) => (log += d));
+  proc.stderr.on("data", (d) => (log += d));
+  const rt = {
+    ...attach(port),
+    proc,
+    log: () => log,
+    // Resolves once the process is gone, so the port is free for the next.
+    kill: () =>
+      new Promise((done) => {
+        if (proc.exitCode !== null || proc.signalCode !== null) return done();
+        proc.once("exit", done);
+        proc.kill("SIGKILL");
+      }),
   };
   const deadline = Date.now() + 60000;
   for (;;) {

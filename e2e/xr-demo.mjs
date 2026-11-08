@@ -20,7 +20,7 @@
 //   --view rig       film the player's own view instead of the spectator's
 //   --port <n>       debug-server port (default 8197)
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -44,7 +44,7 @@ const view = opt("--view", "spectator");
 
 const { project, scenarios, defaultSpectator } = await import(pathToFileURL(resolve(scenariosPath)).href);
 const scenario = name.endsWith(".json")
-  ? { fixture: JSON.parse(readFileSync(name, "utf8")), spectator: defaultSpectator }
+  ? { fixture: resolve(name), spectator: defaultSpectator }
   : scenarios[name];
 if (!scenario) {
   console.error(`no scenario "${name}"; have: ${Object.keys(scenarios).join(", ")}`);

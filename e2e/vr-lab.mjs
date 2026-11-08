@@ -201,6 +201,12 @@ await run(
   "record a live emulated session",
   async (rt) => {
     await rt.post("/time", { type: "resume" });
+    // Resets before recording: a fresh launch never saw them.
+    for (const down of [true, false, true, false]) {
+      await rt.post("/input", { type: "key", key: "1", down });
+      await sleep(100);
+    }
+    check((await rt.get("/state")).model.ballGen === 3, "reset twice before recording");
     let stop;
     const stopped = new Promise((done) => (stop = done));
     const recorded = recordLive(rt, { resetKey: "1", stopped });

@@ -7,7 +7,12 @@ const DT = 0.016666668;
 const pose = (x) => ({ position: [x, 1, -0.5], orientation: [0, 0, 0, 1] });
 const hand = (x, extra = {}) => ({ active: true, grip: pose(x), aim: pose(x), squeeze: 0, ...extra });
 const xr = (x, right = {}) => ({ head: pose(0), left: hand(-x), right: hand(x, right) });
-const input = (sample, pressed = [], released = []) => ({ pressed_keys: pressed, released_keys: released, xr: sample });
+// Each press is held until its release (a release in the same step wins).
+let level = new Set();
+const input = (sample, pressed = [], released = []) => {
+  level = new Set([...level, ...pressed].filter((k) => !released.includes(k)));
+  return { held_keys: [...level], pressed_keys: pressed, released_keys: released, xr: sample };
+};
 // `GET /input-log` steps from frame 10, on a clock at 0.5 s.
 const log = (inputs, t = Math.fround(0.5)) =>
   inputs.map((input, i) => {
@@ -73,6 +78,13 @@ test("encode refuses logs it can't replay", () => {
   assert.throws(() => encode([steps[0], { ...steps[1], frame: 12 }]), /skip/);
   assert.throws(() => encode([steps[0], { ...steps[1], dts: 0.02 }]), /dt/);
   assert.throws(() => encode([steps[0], { ...steps[1], input: null }]), /sampledInput/);
+  assert.throws(() => encode([steps[0], { ...steps[1], tts: 10 }]), /clock jumped/);
+  // A key held from before the recording, or released and pressed again in
+  // one step, can't be replayed as press-then-release edges.
+  const holding = { ...input(xr(0.2)), held_keys: ["W"] };
+  assert.throws(() => encode([{ ...steps[0], input: holding }]), /holds W/);
+  const repressed = { ...input(xr(0.2), ["W"], ["W"]), held_keys: ["W"] };
+  assert.throws(() => encode([steps[0], { ...steps[1], input: repressed }]), /holds W/);
   // A field the next sample drops can't be written as a patch.
   const { head, ...headless } = xr(0.3);
   assert.throws(() => encode([steps[0], { ...steps[1], input: input(headless) }]), /round-trip/);
