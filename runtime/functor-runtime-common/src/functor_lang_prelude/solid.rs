@@ -69,17 +69,21 @@ pub fn solid_global(session: &functor_lang::Session, name: &str) -> Result<Arc<S
     let value = session
         .global(name)
         .ok_or_else(|| format!("no top-level `let {name} = …` to export"))?;
-    match &value {
-        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangSolid>(),
-        _ => None,
-    }
-    .map(|solid| solid.0.clone())
-    .ok_or_else(|| {
+    solid_of(&value).ok_or_else(|| {
         format!(
             "`{name}` must be a Solid (e.g. `Solid.box(…)`), got {}",
             value.kind_name()
         )
     })
+}
+
+/// The solid `value` holds, if it is one.
+pub(crate) fn solid_of(value: &Value) -> Option<Arc<Solid>> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangSolid>(),
+        _ => None,
+    }
+    .map(|solid| solid.0.clone())
 }
 
 /// Render meshes kept at most; the least recently used is evicted beyond it.

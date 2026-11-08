@@ -93,6 +93,7 @@ pub mod functor_lang_producer;
 pub mod functor_lang_test;
 pub mod model;
 pub mod nav;
+pub mod part_eval;
 pub mod net;
 pub mod physics;
 pub mod protocol;

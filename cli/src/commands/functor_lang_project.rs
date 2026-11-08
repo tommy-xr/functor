@@ -834,6 +834,41 @@ paths are external — read it in a top-level value `config` doesn't use"
         Ok(())
     }
 
+    /// Call the part function `function` with the params record in the JSON
+    /// file `params`, and write its Solid as [`Self::export`] does.
+    pub fn export_function(
+        &self,
+        project: functor_lang::project::Project,
+        function: &str,
+        params: &Path,
+        output: &Path,
+    ) -> Result<(), Error> {
+        use functor_runtime_common::part_eval::{parse_params, Evaluator};
+        let three_mf = export_format(output)?;
+        let text = std::fs::read_to_string(params)
+            .map_err(|e| Error::other(format!("cannot read {}: {e}", params.display())))?;
+        let params = parse_params(&text)
+            .map_err(|e| Error::other(format!("{}: {e}", params.display())))?;
+        let mesh = Evaluator::from_project(project)
+            .and_then(|evaluator| evaluator.evaluate(function, &params))
+            .map_err(Error::other)?;
+        check_printable(function, &mesh)?;
+        let name = Path::new(&self.entry)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("part");
+        write_parts(output, three_mf, name, &[(function, &mesh)])?;
+        emit(Event::Info {
+            message: format!(
+                "exported `{function}` to {}: {} triangles, {}",
+                output.display(),
+                mesh.triangles.len(),
+                size_label(&mesh)
+            ),
+        });
+        Ok(())
+    }
+
     /// The parts to show: `bindings`, or (when empty) the entry file's own
     /// top-level Solids in source order. Errors list the available parts.
     fn entry_parts(
@@ -4015,6 +4050,52 @@ examples move?",
         project.export(&loaded, &parts, &out).unwrap();
         assert!(std::fs::metadata(&out).unwrap().len() > 1000);
         std::fs::remove_file(&out).ok();
+    }
+
+    /// `export --function --params` writes the library evaluator's mesh, byte
+    /// for byte; a bad params file writes nothing.
+    #[test]
+    fn export_function_matches_the_library() {
+        use functor_runtime_common::part_eval::{parse_params, Evaluator};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("functor.json"),
+            r#"{"language":"functor-lang","entry":"part.fun"}"#,
+        )
+        .unwrap();
+        let entry = dir.path().join("part.fun");
+        std::fs::write(
+            &entry,
+            "let plate = (p) => Solid.box(p.w, p.d, p.h) |> Solid.subtract(Solid.cylinder(4.0, 20.0))\n\
+             let part = plate({ w: 40.0, d: 30.0, h: 4.0 })\n",
+        )
+        .unwrap();
+        let json = r#"{"w": 41.5, "d": 30, "h": 6}"#;
+        std::fs::write(dir.path().join("p.json"), json).unwrap();
+        let dir_str = dir.path().to_string_lossy().into_owned();
+        let project = super::detect(&dir_str).unwrap().select(None).unwrap();
+        let export = |params: &str, out: &str| {
+            let loaded = project.build(&dir_str, false).unwrap();
+            let out = dir.path().join(out);
+            project
+                .export_function(loaded, "plate", &dir.path().join(params), &out)
+                .map(|()| std::fs::read(&out).unwrap())
+        };
+
+        let mesh = Evaluator::load(&entry)
+            .unwrap()
+            .evaluate("plate", &parse_params(json).unwrap())
+            .unwrap();
+        let mut library = Vec::new();
+        functor_solid::stl::write_binary(&mesh, &mut library).unwrap();
+        assert_eq!(export("p.json", "cli.stl").unwrap(), library);
+        let three_mf = export("p.json", "cli.3mf").unwrap();
+        assert_eq!(&three_mf[..4], b"PK\x03\x04");
+
+        std::fs::write(dir.path().join("bad.json"), r#"{"w": 41.5, "d": 30}"#).unwrap();
+        let err = export("bad.json", "bad.stl").unwrap_err().to_string();
+        assert!(err.contains("no field `h`"), "{err}");
+        assert!(!dir.path().join("bad.stl").exists());
     }
 
     /// A `part` that is not a Solid gets a teaching error, and nothing is written.

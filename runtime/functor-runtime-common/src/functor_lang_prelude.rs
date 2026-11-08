@@ -6057,14 +6057,16 @@ fn read_count(class: ReadClass) -> u64 {
 }
 
 /// The read counts of every class, to compare around an evaluation.
-fn read_counts() -> [u64; ReadClass::ALL.len()] {
+pub(crate) fn read_counts() -> [u64; ReadClass::ALL.len()] {
     ReadClass::ALL.map(read_count)
 }
 
 /// The first class (in [`ReadClass::ALL`] order) read since `before`
 /// ([`read_counts`]), with the built-in that last read it:
 /// `(Physics, Some("Physics.cast"))`.
-fn read_since(before: [u64; ReadClass::ALL.len()]) -> Option<(ReadClass, Option<&'static str>)> {
+pub(crate) fn read_since(
+    before: [u64; ReadClass::ALL.len()],
+) -> Option<(ReadClass, Option<&'static str>)> {
     let class = ReadClass::ALL
         .into_iter()
         .find(|&class| read_count(class) != before[class as usize])?;
