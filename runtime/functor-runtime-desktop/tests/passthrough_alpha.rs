@@ -251,8 +251,8 @@ impl Harness {
         );
         sensor.far = f32::INFINITY;
         let half = 30f32.to_radians();
-        let view_projection =
-            sensor.projection_matrix_from_fov_angles(-half, half, -half, half) * sensor.view_matrix();
+        let projection = sensor.projection_matrix_from_fov_angles(-half, half, -half, half);
+        let view_projection = projection * sensor.view_matrix();
         let depth = distance.map_or(1.0, |d| {
             let ndc = view_projection.transform_point(Point3::new(0.0, 0.0, 3.0 - d));
             ndc.z * 0.5 + 0.5
@@ -284,6 +284,9 @@ impl Harness {
                 texture: self.depth,
                 layer: 0,
                 view_projection,
+                view: sensor.view_matrix(),
+                projection,
+                display_ns: Some(0),
             }));
     }
 

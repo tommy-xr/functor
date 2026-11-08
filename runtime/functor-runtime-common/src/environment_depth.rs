@@ -24,7 +24,14 @@ use crate::{asset::AssetCache, Frame, FrameTime, Scene3D, SceneContext};
 pub struct EnvironmentDepthView {
     pub texture: glow::Texture,
     pub layer: i32,
+    /// `projection * view`.
     pub view_projection: Matrix4<f32>,
+    /// World → depth camera.
+    pub view: Matrix4<f32>,
+    pub projection: Matrix4<f32>,
+    /// The XR display time the device image was acquired for, nanoseconds;
+    /// `None` for the stand-in room's depth.
+    pub display_ns: Option<i64>,
 }
 
 /// Where the environment depth comes from, declared by the shell before each
@@ -171,7 +178,8 @@ pub(crate) fn prepare(
     frame_time: FrameTime,
     scene_context: &SceneContext,
     frame: &Frame,
-    view_projection: Matrix4<f32>,
+    view: Matrix4<f32>,
+    projection: Matrix4<f32>,
     viewport: crate::Viewport,
 ) -> Option<EnvironmentDepthView> {
     let source = scene_context.environment_depth_source();
@@ -185,14 +193,15 @@ pub(crate) fn prepare(
             frame_time,
             scene_context,
             room,
-            view_projection,
+            view,
+            projection,
             viewport.width,
             viewport.height,
         )),
     }
 }
 
-/// Render `room`'s depth from `view_projection` at `width`×`height`.
+/// Render `room`'s depth from `projection * view` at `width`×`height`.
 #[allow(clippy::too_many_arguments)]
 fn render_stand_in_depth(
     gl: &glow::Context,
@@ -201,10 +210,12 @@ fn render_stand_in_depth(
     frame_time: FrameTime,
     scene_context: &SceneContext,
     room: &Scene3D,
-    view_projection: Matrix4<f32>,
+    view: Matrix4<f32>,
+    projection: Matrix4<f32>,
     width: u32,
     height: u32,
 ) -> EnvironmentDepthView {
+    let view_projection = projection * view;
     let previous_fbo = crate::renderer::ambient_framebuffer(gl);
     let mut slot = scene_context.stand_in_depth.borrow_mut();
     let mut frames = 0;
@@ -258,6 +269,9 @@ fn render_stand_in_depth(
         texture,
         layer: 0,
         view_projection,
+        view,
+        projection,
+        display_ns: None,
     }
 }
 
@@ -272,6 +286,9 @@ mod tests {
             texture: glow::NativeTexture(std::num::NonZeroU32::new(7).unwrap()),
             layer: 1,
             view_projection: Matrix4::from_scale(2.0),
+            view: Matrix4::from_scale(1.0),
+            projection: Matrix4::from_scale(2.0),
+            display_ns: Some(0),
         };
         let device = EnvironmentDepthSource::Device(view);
         let plain = Frame::new(Camera::default(), Scene3D::cube());
