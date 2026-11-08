@@ -245,6 +245,7 @@ impl DebugCamera {
         fov_degrees: Option<f32>,
     ) -> bool {
         if frame.is_pure_2d() {
+            self.reattach();
             return false;
         }
         let mut camera = frame.camera.clone();
@@ -736,6 +737,7 @@ mod tests {
         assert!(!debug.is_detached());
         assert!(!debug.detach_at(&frame, [0.0, 5.0, 0.0], [0.0, 0.0, 0.0], None));
         assert!(!debug.detach_at(&frame, [0.0, 1.0, 0.0], [0.0, 1.0, 1.0], Some(200.0)));
+        assert!(debug.detach(&frame_2d()));
         assert!(!debug.detach_at(&frame_2d(), [0.0, 1.0, 0.0], [0.0, 1.0, 1.0], None));
         assert!(!debug.is_detached());
     }

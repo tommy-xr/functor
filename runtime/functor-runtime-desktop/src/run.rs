@@ -1083,10 +1083,6 @@ for the host process to be its network";
 const DESKTOP_READS_FILES: &str =
     "the desktop runtime reads project files from disk; nothing to fetch";
 
-/// Service one debug-server request. `capture` produces the PNG (or a
-/// `CaptureError`) for `POST /capture` — a framebuffer readback in the windowed
-/// loop, or `Unavailable` in headless.
-#[allow(clippy::too_many_arguments)]
 /// Point the detached debug camera where `POST /camera` asks, or reattach it.
 fn apply_camera_command(
     camera: &mut DebugCamera,
@@ -1109,6 +1105,10 @@ fn apply_camera_command(
     }
 }
 
+/// Service one debug-server request. `capture` produces the PNG (or a
+/// `CaptureError`) for `POST /capture` — a framebuffer readback in the windowed
+/// loop, or `Unavailable` in headless.
+#[allow(clippy::too_many_arguments)]
 fn service_debug_request(
     req: debug_server::DebugRequest,
     sim: &mut SimDriver,
@@ -3959,7 +3959,9 @@ Escape again to quit"
                 while let Ok(req) = rx.try_recv() {
                     debug_active = true;
                     // `POST /camera`: shell state, like the timeline's Debug
-                    // camera, but without capturing the cursor.
+                    // camera, but it never captures the cursor. Requests after
+                    // it wait for the next frame, so a `/capture` that follows
+                    // reads the new view.
                     let req = match req {
                         debug_server::DebugRequest::Camera(command, resp) => {
                             let _ = resp.send(apply_camera_command(
@@ -3967,7 +3969,14 @@ Escape again to quit"
                                 &frame,
                                 command,
                             ));
-                            continue;
+                            if !detached_camera.is_detached() {
+                                last_detached_cursor = None;
+                                if cursor_captured {
+                                    window.set_cursor_mode(glfw::CursorMode::Normal);
+                                    cursor_captured = false;
+                                }
+                            }
+                            break;
                         }
                         req => req,
                     };

@@ -625,9 +625,14 @@ is the vertical field of view in degrees and defaults to the authored one.
 `attach` returns to the authored view. It is shell state only: the game's
 `draw`, model, recorded input and replay never see it, so a stepped scenario
 captures the same simulation from any angle. Unlike the timeline control it
-works under `--hidden` and `--emulate-xr` (it never captures the cursor), and
-the view ignores the tracked head, which is what makes it a spectator for an
-XR session: inject poses, step, and `/capture` the hands from the side.
+works under `--hidden` and `--emulate-xr` (the request itself never captures
+the cursor), and the view ignores an injected or emulated XR head, which is
+what makes it a spectator for an XR session: inject poses, step, and
+`/capture` the hands from the side. While detached the shell renders as the
+timeline's Debug camera does: its diagnostics settings replace a
+`--debug-render` launch mode, and they decide whether the game UI shows.
+Requests that arrive after a `/camera` are serviced on the next frame, so a
+`/capture` sent next always shows the new view.
 
 ```sh
 curl -s -X POST $H/camera -d '{"type":"set","eye":[2.0,1.8,-1.0],"target":[0.0,1.0,0.6],"fov":55}'
