@@ -314,7 +314,7 @@ fn pick_entry(
             {
                 return Err(Error::other(format!(
                     "functor.json entry `{name}`: unknown key \"{unknown}\" — the object form \
-takes \"file\", one of \"module\" / \"prefix\", and \"reverse\""
+takes \"file\", one of \"module\" / \"prefix\", and optionally \"reverse\""
                 )));
             }
             let entry = match map.get("file") {
@@ -412,6 +412,13 @@ fn reverse_ports(name: &str, value: Option<&serde_json::Value>) -> Result<Vec<u1
         if ports.contains(&port) {
             return Err(Error::other(format!(
                 "functor.json entry `{name}`: \"reverse\" lists port {port} twice"
+            )));
+        }
+        // `run vr` forwards this port to the headset; reversing it too loops.
+        if port == VR_PORT {
+            return Err(Error::other(format!(
+                "functor.json entry `{name}`: \"reverse\" can't list {VR_PORT} — \
+`run vr` already uses it for the headset's debug endpoint"
             )));
         }
         ports.push(port);
@@ -3184,6 +3191,12 @@ mod tests {
         )]);
         let err = config.select(Some("vr")).unwrap_err();
         assert!(err.to_string().contains("port 9000 twice"), "{err}");
+        let config = named_json(&[(
+            "vr",
+            serde_json::json!({ "file": "vr.fun", "reverse": [8123] }),
+        )]);
+        let err = config.select(Some("vr")).unwrap_err();
+        assert!(err.to_string().contains("can't list 8123"), "{err}");
     }
 
     #[test]

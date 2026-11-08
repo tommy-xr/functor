@@ -104,9 +104,10 @@ full, proven sequence. The short path is:
    A role can list host ports to `adb reverse` before the push —
    `"entries": { "vr": { "file": "scanner.fun", "reverse": [9000] } }` — so
    the game's `http://127.0.0.1:9000` reaches this machine on the headset as
-   it does on desktop. Ports are 1–65535, without duplicates; other shells
-   ignore the field. Like the forward, adb drops the rule on disconnect.
-3. If Meta Home remains visible, recreate `adb forward`, send `prox_close`, and
+   it does on desktop. Ports are 1–65535, without duplicates or 8123; other
+   shells ignore the field. Like the forward, adb drops the rule on
+   disconnect; re-running `run vr` recreates both.
+3. If Meta Home remains visible, recreate `adb forward` (and any `reverse`), send `prox_close`, and
    restart NativeActivity with `am start -S`. Wait for `/state`'s
    `rendered_frames` to advance; server readiness alone does not mean XR is
    rendering.
