@@ -261,7 +261,10 @@ role into the served/exported page's boot config (`window.__functorLangEntryModu
 one of the two). On **vr** the role rides each device push as a query string
 (`POST /load-project?module=Server` / `?prefix=server`), so the APK's embedded
 producer re-resolves it on every re-push exactly as native re-resolves it on
-every save. `entry` and `entries` together are refused.
+every save. `entry` and `entries` together are refused. An object role may
+also list host ports — `"vr": { "file": "scanner.fun", "reverse": [9000] }` —
+that `run vr` bridges with `adb reverse`, so the game's `http://127.0.0.1:9000`
+reaches this machine on the headset too; other shells ignore it.
 
 ```functor
 // utils.fun                                  // → module Utils
