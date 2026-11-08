@@ -16,13 +16,19 @@
 //   4. Losing the hand mid-swing and opening it on return never throws.
 //   5. A station reset mid-hold drops the hold and respawns the ball at rest.
 //   6. The same throw in two fresh runtimes ends bit-identically.
+//   7. Recorded fixtures (`e2e/xr-fixture.mjs`): the checked-in grab-throw
+//      recording lands in the basket; a scripted run recorded under
+//      `--emulate-xr` and a live (wall-clock) emulated session recorded over
+//      `GET /input-log` each replay in fresh runtimes to a bit-identical
+//      model, twice.
 //
 // Run (needs the CLI; the wasm bundle is not required):
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab.mjs
-import { check, failures } from "./mcp-rpc.mjs";
-import { advance, dirToWorld, launch, play, tap } from "./xr-scenario.mjs";
+import { check, failures, sleep } from "./mcp-rpc.mjs";
+import { decode, encode, readLog, recordLive } from "./xr-fixture.mjs";
+import { advance, dirToWorld, launch, play, playFixture, tap } from "./xr-scenario.mjs";
 import { BALL, FAST_V, THROW_V, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8293;
@@ -38,11 +44,11 @@ const angleDeg = (a, b) =>
 const some = (opt) => (opt?.$ctor === "Option.Some" ? opt.args[0] : undefined);
 const fmt = (v) => `[${v.map((x) => x.toFixed(3)).join(", ")}]`;
 
-async function run(name, body) {
+async function run(name, body, flags = ["--headless"]) {
   console.log(`\n▸ ${name}`);
   let rt;
   try {
-    rt = await launch(project, PORT, ["--headless"]);
+    rt = await launch(project, PORT, flags);
     await body(rt);
   } catch (e) {
     failures.push(`${name}: ${e}`);
@@ -148,6 +154,71 @@ await run("replay", async (rt) => {
   const b = JSON.stringify([m.landed.model.ballPos, m.landed.model.ballVel]);
   check(a === b, `the same throw in a fresh runtime ends identically (${b})`);
 });
+
+await run("recorded fixture", async (rt) => {
+  const m = await play(rt, scenarios["grab-throw-recorded"]);
+  check(some(m.release.model.lastRelease)?.kind?.$ctor === "Throw", "the recording's release throws");
+  check(m.landed.model.score === 1, `and lands in the basket (score ${m.landed.model.score})`);
+});
+
+// The fixture of `steps` and the model they ended on.
+async function recording(rt, steps) {
+  const state = await rt.get("/state");
+  check(state.frame === steps.at(-1).frame, `the log reaches the state shown (frame ${state.frame})`);
+  return { fixture: encode(steps), model: JSON.stringify(state.model) };
+}
+
+async function replays(what, { fixture, model }) {
+  let first;
+  for (const n of [1, 2]) {
+    await run(`replay ${what} (${n})`, async (rt) => {
+      await playFixture(rt, fixture);
+      const replayed = JSON.stringify((await rt.get("/state")).model);
+      check(replayed === model, `${fixture.steps.length} steps replay to the recorded model`);
+      if (first !== undefined) check(replayed === first, "the same as the first replay");
+      first = replayed;
+    });
+  }
+}
+
+let scripted;
+await run(
+  "record a scripted run under --emulate-xr",
+  async (rt) => {
+    const from = (await rt.get("/state")).frame + 1;
+    await play(rt, scenarios["grab-throw"]);
+    scripted = await recording(rt, (await readLog(rt, from)).steps);
+    check(JSON.parse(scripted.model).score === 1, "it scored");
+  },
+  ["--headless", "--emulate-xr"],
+);
+if (scripted) await replays("the scripted run", scripted);
+
+// A live session, recorded as a worn one is: the wall clock runs, the
+// emulator's hand follows the mouse and Enter squeezes.
+let live;
+await run(
+  "record a live emulated session",
+  async (rt) => {
+    await rt.post("/time", { type: "resume" });
+    let stop;
+    const stopped = new Promise((done) => (stop = done));
+    const recorded = recordLive(rt, { resetKey: "1", stopped });
+    for (let i = 0; i < 90; i++) {
+      await rt.post("/input", { type: "mouse_move", x: 400 + 3 * i, y: 300 - i });
+      if (i === 30 || i === 60) await rt.post("/input", { type: "key", key: "enter", down: i === 30 });
+      await sleep(16);
+    }
+    await rt.post("/time", { type: "cancel" });
+    stop();
+    live = await recording(rt, await recorded);
+    check(live.fixture.t0 > 0, `the live clock had run (t0 ${live.fixture.t0})`);
+    const squeeze = decode(live.fixture).steps.map((s) => s.xr.right.squeeze);
+    check(squeeze.includes(1) && squeeze.at(-1) === 0, "Enter squeezed and let go");
+  },
+  ["--headless", "--emulate-xr"],
+);
+if (live) await replays("the live session", live);
 
 if (failures.length) {
   console.error(`\n${failures.length} failure(s)`);

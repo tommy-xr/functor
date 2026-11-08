@@ -11,10 +11,19 @@
 //
 //   { frames: 30, right: { to: [0.2, 1.0, -0.55], squeeze: 0 } }
 //
+// A scenario may instead name a recorded `fixture` (`e2e/xr-fixture.mjs`
+// format; a path from the repo root): its steps replace `station`/`steps`,
+// and its `marks` name steps the same way.
+//
+//   { fixture: "e2e/fixtures/vr-lab/grab-throw.xr.json", spectator: { ... } }
+//
 // One step = one injected sample + one pinned `/time` advance, waiting for the
 // frame to land before the next sample (a sample is level state, not a queue).
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { BIN, ROOT, portIsBound, sleep } from "./mcp-rpc.mjs";
+import { decode } from "./xr-fixture.mjs";
 
 export const DT = 1 / 60;
 const HEAD = [0, 1.6, 0];
@@ -75,9 +84,9 @@ export async function launch(project, port, extra = []) {
 }
 
 /** Advance one pinned step and wait for it; returns `/state`. */
-export async function advance(rt) {
+export async function advance(rt, dts = DT) {
   const before = (await rt.get("/state")).frame;
-  await rt.post("/time", { type: "advance", dts: DT });
+  await rt.post("/time", { type: "advance", dts });
   const deadline = Date.now() + 15000;
   for (;;) {
     const state = await rt.get("/state");
@@ -119,6 +128,7 @@ const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
  * after every step (await it to capture a frame); returns the marks' states.
  */
 export async function play(rt, scenario, onStep = async () => {}) {
+  if (scenario.fixture) return playFixture(rt, scenario.fixture, onStep);
   if (scenario.station !== undefined) await tap(rt, String(scenario.station));
   const hands = {
     left: { at: REST.left, squeeze: 0 },
@@ -145,6 +155,28 @@ export async function play(rt, scenario, onStep = async () => {}) {
       if (mark) marks[mark] = state;
       await onStep({ step, mark, state, hands });
     }
+  }
+  return marks;
+}
+
+/** Load a fixture: a path from the repo root, or the parsed object. */
+export const loadFixture = (fixture) =>
+  typeof fixture === "string" ? JSON.parse(readFileSync(resolve(ROOT, fixture), "utf8")) : fixture;
+
+/** Replay a recorded fixture step by step; `play`'s callback and result. */
+export async function playFixture(rt, fixture, onStep = async () => {}) {
+  const { dt, t0, marks: named, steps } = decode(loadFixture(fixture));
+  const markAt = new Map(Object.entries(named).map(([name, i]) => [i, name]));
+  await rt.post("/time", { type: "set", tts: t0 });
+  const marks = {};
+  for (const [i, s] of steps.entries()) {
+    for (const key of s.down) await rt.post("/input", { type: "key", key, down: true });
+    for (const key of s.up) await rt.post("/input", { type: "key", key, down: false });
+    await rt.post("/input", s.xr ? { type: "xr", ...s.xr } : { type: "xr_clear" });
+    const state = await advance(rt, dt);
+    const mark = markAt.get(i);
+    if (mark) marks[mark] = state;
+    await onStep({ step: i + 1, mark, state });
   }
   return marks;
 }

@@ -39,6 +39,26 @@ and checks `/state`; `e2e/xr-demo.mjs` plays one in a hidden window, films it
 from the scenario's spectator view (`POST /camera`) and writes a GIF/MP4. A
 new station adds scenarios there, not a new driver.
 
+### Recordings
+
+A real session records to an XR fixture (format in `e2e/xr-fixture.mjs`):
+each fixed step's XR sample and key edges, read from the runtime's input log
+(`GET /input-log`). Wearing the headset, with `functor -d examples/vr-lab run
+vr` running:
+
+```sh
+npm run record:vr-lab -- /tmp/throws.xr.json     # Ctrl-C to stop (or --seconds 20)
+```
+
+It resets station 1 first, so the fixture replays from a fresh launch. A
+fixture plays anywhere a scenario does: `npm run demo:vr-lab --
+/tmp/throws.xr.json out.gif --mp4 out.mp4` films it on desktop, and a
+scenario entry `{ fixture: "<path>" }` runs it under `e2e/vr-lab.mjs`
+(`grab-throw-recorded` is the checked-in one, re-recorded with `npm run
+record:vr-lab -- e2e/fixtures/vr-lab/grab-throw.xr.json --scenario
+grab-throw`). Replay is on desktop: the headset reads its own tracking, so it
+rejects injected XR samples.
+
 ## 1. Grab table
 
 A ball on a table, a wall against the table's left end, and a basket on the
