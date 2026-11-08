@@ -51,7 +51,8 @@ pub(crate) struct DepthReadback<M> {
     depth_texture_loc: UniformLocation,
     depth_layer_loc: UniformLocation,
     pending: Option<(glow::Fence, M)>,
-    last_start: Option<u64>,
+    /// The frame of the last pass asked; only a frame's first pass starts.
+    last_pass: Option<u64>,
 }
 
 impl<M> DepthReadback<M> {
@@ -99,7 +100,7 @@ impl<M> DepthReadback<M> {
                 depth_layer_loc: program.get_uniform_location(gl, "depthLayer"),
                 program,
                 pending: None,
-                last_start: None,
+                last_pass: None,
             }
         }
     }
@@ -117,10 +118,13 @@ impl<M> DepthReadback<M> {
         }
     }
 
-    /// Whether `frame` may start a readback: a readback frame, not already
-    /// read (a stereo pair's second eye), and none in flight.
-    pub(crate) fn can_start(&self, frame: u64) -> bool {
-        frame % READBACK_EVERY == 0 && self.last_start != Some(frame) && self.pending.is_none()
+    /// Whether this pass may start a readback: the first pass of a readback
+    /// frame (the left eye of a stereo pair), with none in flight. Call once
+    /// per pass.
+    pub(crate) fn can_start(&mut self, frame: u64) -> bool {
+        let first_pass = self.last_pass != Some(frame);
+        self.last_pass = Some(frame);
+        first_pass && frame % READBACK_EVERY == 0 && self.pending.is_none()
     }
 
     /// Pack `view`'s layer and start copying it into the pixel-pack buffer;
@@ -130,7 +134,6 @@ impl<M> DepthReadback<M> {
         &mut self,
         gl: &glow::Context,
         quad: &mut dyn crate::geometry::Geometry,
-        frame: u64,
         view: EnvironmentDepthView,
         meta: M,
     ) {
@@ -168,7 +171,6 @@ impl<M> DepthReadback<M> {
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
             fence
         };
-        self.last_start = Some(frame);
         self.pending = Some((fence, meta));
     }
 

@@ -1008,8 +1008,10 @@ impl SceneContext {
         let readback =
             readback.get_or_insert_with(|| crate::depth_readback::DepthReadback::new(gl, shader_version));
         let frame = self.current_frame.get();
-        if let Some(view) = view.filter(|_| readback.can_start(frame)) {
-            readback.start(gl, &mut **self.quad.borrow_mut(), frame, view, view);
+        // Asked every pass, so a stereo pair's second eye never starts one.
+        let can_start = readback.can_start(frame);
+        if let Some(view) = view.filter(|_| can_start) {
+            readback.start(gl, &mut **self.quad.borrow_mut(), view, view);
         }
         // Inline: read now. Threaded: only once the GPU is done, so the
         // render thread never waits.
@@ -1024,6 +1026,10 @@ impl SceneContext {
     pub fn reset_fused_room(&self, gl: &glow::Context) {
         if let Some(room) = self.fused_room.borrow_mut().take() {
             room.delete(gl);
+        }
+        // Its pending pixels were read in the old frame.
+        if let Some(readback) = self.depth_readback.borrow_mut().take() {
+            readback.delete(gl);
         }
     }
 

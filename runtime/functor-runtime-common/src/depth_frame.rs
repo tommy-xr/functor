@@ -79,9 +79,11 @@ pub fn decode(body: &[u8]) -> Result<(DepthFrameHeader, &[u8]), String> {
         .and_then(|b| b.try_into().ok())
         .ok_or("depth frame: shorter than its 4-byte header length")?;
     let header_len = u32::from_be_bytes(len_bytes) as usize;
-    let json = body
-        .get(4..4 + header_len)
+    let header_end = 4usize
+        .checked_add(header_len)
+        .filter(|end| *end <= body.len())
         .ok_or_else(|| format!("depth frame: header length {header_len} overruns the body"))?;
+    let json = &body[4..header_end];
     let header: DepthFrameHeader =
         serde_json::from_slice(json).map_err(|e| format!("depth frame: bad header: {e}"))?;
     if header.schema != SCHEMA {
@@ -93,7 +95,7 @@ pub fn decode(body: &[u8]) -> Result<(DepthFrameHeader, &[u8]), String> {
             header.encoding, header.rows
         ));
     }
-    let payload = &body[4 + header_len..];
+    let payload = &body[header_end..];
     let expected = header.width as u64 * header.height as u64 * 4;
     if header.payload_len != expected || payload.len() as u64 != expected {
         return Err(format!(
