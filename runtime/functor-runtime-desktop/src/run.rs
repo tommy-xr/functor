@@ -1087,6 +1087,28 @@ const DESKTOP_READS_FILES: &str =
 /// `CaptureError`) for `POST /capture` — a framebuffer readback in the windowed
 /// loop, or `Unavailable` in headless.
 #[allow(clippy::too_many_arguments)]
+/// Point the detached debug camera where `POST /camera` asks, or reattach it.
+fn apply_camera_command(
+    camera: &mut DebugCamera,
+    frame: &Frame,
+    command: functor_runtime_common::debug_protocol::CameraCommand,
+) -> Result<String, String> {
+    use functor_runtime_common::debug_protocol::CameraCommand;
+    match command {
+        CameraCommand::Set { eye, target, fov } => {
+            if camera.detach_at(frame, eye, target, fov) {
+                Ok("detached".to_string())
+            } else {
+                Err("invalid debug view (a pure 2D frame, eye == target, or a bad fov)".to_string())
+            }
+        }
+        CameraCommand::Attach => {
+            camera.reattach();
+            Ok("attached".to_string())
+        }
+    }
+}
+
 fn service_debug_request(
     req: debug_server::DebugRequest,
     sim: &mut SimDriver,
@@ -1304,6 +1326,13 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::ProjectFileReply(_, resp) => {
             let _ = resp.send(Err(DESKTOP_READS_FILES.to_string()));
+        }
+        // The windowed loop answers this itself (it owns the debug camera).
+        debug_server::DebugRequest::Camera(_, resp) => {
+            let _ = resp.send(Err(
+                "no rendered view to point a debug camera at; run with --hidden instead of --headless"
+                    .to_string(),
+            ));
         }
         debug_server::DebugRequest::DisplayRefreshRate(_, resp) => {
             let _ = resp.send(Err(
@@ -3929,6 +3958,19 @@ Escape again to quit"
             if let Some(rx) = &debug_requests {
                 while let Ok(req) = rx.try_recv() {
                     debug_active = true;
+                    // `POST /camera`: shell state, like the timeline's Debug
+                    // camera, but without capturing the cursor.
+                    let req = match req {
+                        debug_server::DebugRequest::Camera(command, resp) => {
+                            let _ = resp.send(apply_camera_command(
+                                &mut detached_camera,
+                                &frame,
+                                command,
+                            ));
+                            continue;
+                        }
+                        req => req,
+                    };
                     let fixed_sample = clock.is_fixed_time() && input_script.is_none();
                     let state_input = if fixed_sample {
                         fixed_input_snapshot.clone()

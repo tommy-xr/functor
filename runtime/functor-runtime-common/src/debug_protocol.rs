@@ -186,7 +186,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 31 adds `http` to `GET /state` (`{pending, completed, failed}`: the
 /// shell's `Effect.httpGet`/`httpPost` requests, [`crate::net::HttpStats`]).
 /// Additive — a pre-v31 runtime omits it, which deserializes as zeros.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 31;
+///
+/// 32 adds `POST /camera` ([`CameraCommand`]): detach the desktop shell's
+/// debug camera at a given eye/target (`set`), or reattach it (`attach`), so
+/// a driver can capture a spectator view of an XR session. A pre-v32 runtime
+/// answers 404.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 32;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -311,6 +316,11 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/sync-assets",
         description: "finish an asset sync from a JSON array of current project-relative paths, removing uploads absent from the manifest",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/camera",
+        description: "debug view — {\"type\":\"set\",\"eye\":[0,2,-3],\"target\":[0,1,0],\"fov\":60} detaches the shell's debug camera at that view (fov in degrees, default the authored camera's); {\"type\":\"attach\"} returns to the authored camera. Shell-only: the model, input log and replay never see it. 400 without a rendered view (--headless, the headset)",
     },
     DebugRoute {
         method: "POST",
@@ -804,6 +814,23 @@ pub struct RewindCommand {
     pub frame: u64,
 }
 
+/// A debug-view command sent through `POST /camera`.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CameraCommand {
+    /// Detach the debug camera looking from `eye` at `target` (world space,
+    /// up +Y), with this vertical field of view in degrees (default: the
+    /// authored camera's).
+    Set {
+        eye: [f32; 3],
+        target: [f32; 3],
+        #[serde(default)]
+        fov: Option<f32>,
+    },
+    /// Reattach to the authored camera.
+    Attach,
+}
+
 /// A display refresh-rate request sent through `POST /display-refresh-rate`.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub struct DisplayRefreshRateCommand {
@@ -1207,6 +1234,9 @@ pub enum DebugRequest {
     ReloadAsset(ProjectAsset, Sender<Result<String, String>>),
     SyncAssets(ProjectAssetPaths, Sender<Result<String, String>>),
     Rewind(u64, Sender<Result<String, String>>),
+    /// Detach or reattach the shell's debug camera. `Err` on runtimes with no
+    /// rendered view to override, or for an invalid view.
+    Camera(CameraCommand, Sender<Result<String, String>>),
     /// Request this display refresh rate in Hz. `Err` when the runtime has no
     /// controllable display or the display does not offer that rate.
     DisplayRefreshRate(f32, Sender<Result<String, String>>),
@@ -1621,6 +1651,29 @@ mod tests {
     }
 
     #[test]
+    fn camera_commands_decode_and_reject_unknown_fields() {
+        let set = |body: &str| serde_json::from_str::<CameraCommand>(body);
+        assert_eq!(
+            set(r#"{"type":"set","eye":[0,2,-3],"target":[0,1,0],"fov":60}"#).unwrap(),
+            CameraCommand::Set {
+                eye: [0.0, 2.0, -3.0],
+                target: [0.0, 1.0, 0.0],
+                fov: Some(60.0),
+            }
+        );
+        assert_eq!(
+            set(r#"{"type":"set","eye":[0,2,-3],"target":[0,1,0]}"#).unwrap(),
+            CameraCommand::Set {
+                eye: [0.0, 2.0, -3.0],
+                target: [0.0, 1.0, 0.0],
+                fov: None,
+            }
+        );
+        assert_eq!(set(r#"{"type":"attach"}"#).unwrap(), CameraCommand::Attach);
+        assert!(set(r#"{"type":"set","eye":[0,2,-3],"target":[0,1,0],"fov_deg":60}"#).is_err());
+    }
+
+    #[test]
     fn mouse_move_accepts_fractional_coordinates() {
         for (body, x, y) in [
             (r#"{"type":"mouse_move","x":10,"y":20}"#, 10, 20),
@@ -1865,6 +1918,7 @@ mod tests {
             "POST /project-files",
             "POST /sync-assets",
             "POST /rewind",
+            "POST /camera",
             "POST /display-refresh-rate",
             "GET /net/outbound",
             "POST /net/deliver",

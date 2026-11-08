@@ -443,6 +443,27 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
             respond_result(&mut stream, cors_origin, recv(resp_rx), "rewind")
         }
+        ("POST", "/camera") => {
+            let command =
+                match parse_json::<debug_protocol::CameraCommand>(&mut reader, content_length) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        respond_text(
+                            &mut stream,
+                            cors_origin,
+                            400,
+                            "Bad Request",
+                            &format!("bad camera json: {error}"),
+                        );
+                        return Some(());
+                    }
+                };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::Camera(command, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_result(&mut stream, cors_origin, recv(resp_rx), "camera")
+        }
         ("POST", "/display-refresh-rate") => {
             let command = match parse_json::<debug_protocol::DisplayRefreshRateCommand>(
                 &mut reader,
