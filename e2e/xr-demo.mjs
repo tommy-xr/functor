@@ -61,7 +61,7 @@ try {
     if (mark === "release") releaseFrame = lastFrame;
   });
 } finally {
-  rt.kill();
+  await rt.kill();
 }
 const stillFrame = releaseFrame ?? lastFrame;
 

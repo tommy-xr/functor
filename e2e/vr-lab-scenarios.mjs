@@ -4,7 +4,7 @@
 //
 // Grab table (station 1): the rig stands at world (0, 0, 4) facing +Z, so
 // rig-local x is world -x and rig-local -z is world +z. The ball rests at
-// rig (0.2, 0.96, -0.55); the wall's face is at rig x = -0.7.
+// rig (0.2, 0.96, -0.55); the wall's face is at rig x = -0.6, at the table's end.
 
 export const project = "examples/vr-lab";
 
@@ -14,6 +14,8 @@ export const BALL = [0.2, 0.96, -0.55];
 // The throw: a straight, steady sweep forward and up, released mid-sweep.
 export const THROW_V = [0, 2.0, -3.6];
 const SWEEP_FROM = [0.22, 1.2, -0.25];
+// 16 m/s: past the 12 m/s cap.
+export const FAST_V = [0, 1.0, -15.97];
 const along = (n) => SWEEP_FROM.map((v, i) => v + (THROW_V[i] * n) / 60);
 
 // From the player's right, level with the table: the hands, the wall
@@ -22,7 +24,7 @@ const side = { eye: [-2.1, 2.2, 2.7], target: [0.05, 0.85, 5.5], fov: 55 };
 
 // From above the wall, in its plane: the ball held on this side while the
 // hand goes through to the other.
-const alongWall = { eye: [0.75, 2.45, 3.75], target: [0.7, 1.05, 4.6], fov: 50 };
+const alongWall = { eye: [0.65, 2.45, 3.75], target: [0.6, 1.05, 4.6], fov: 50 };
 
 const grab = [
   { frames: 20, right: { to: [0.2, 1.05, -0.45], squeeze: 0 } },
@@ -55,9 +57,9 @@ export const scenarios = {
     steps: [
       ...grab,
       { frames: 20, right: { to: [-0.3, 1.15, -0.55] } },
-      { frames: 25, right: { to: [-0.85, 1.15, -0.55] }, mark: "pushed" },
+      { frames: 25, right: { to: [-0.72, 1.15, -0.55] }, mark: "pushed" },
       { frames: 20, right: { to: [-0.4, 1.15, -0.55] }, mark: "pulled" },
-      { frames: 20, right: { to: [-0.85, 1.15, -0.55] }, mark: "pushedAgain" },
+      { frames: 20, right: { to: [-0.72, 1.15, -0.55] }, mark: "pushedAgain" },
       { frames: 1, right: { squeeze: 0 }, mark: "release" },
       { frames: 40, right: { to: [0.0, 1.1, -0.35] }, mark: "settled" },
     ],
@@ -72,8 +74,22 @@ export const scenarios = {
     steps: [
       ...grab,
       { frames: 20, right: { to: [-0.3, 1.1, -0.55] } },
-      { frames: 30, right: { to: [-1.1, 1.1, -0.55] }, mark: "broke" },
-      { frames: 30, right: { to: [-0.55, 1.0, -0.5] }, mark: "returned" },
+      { frames: 30, right: { to: [-1.0, 1.1, -0.55] }, mark: "broke" },
+      { frames: 30, right: { to: [-0.5, 1.02, -0.55] }, mark: "returned" },
+    ],
+  },
+
+  // A swing faster than the cap: the ball leaves at the capped estimate, not
+  // the kinematic body's own speed, so the release's setVelocity is what counts.
+  "fast-throw": {
+    station: 1,
+    spectator: side,
+    steps: [
+      ...grab,
+      { frames: 20, right: { to: [0.22, 1.1, -0.1] } },
+      { frames: 4, right: { to: [0.22, 1.1 + (FAST_V[1] * 4) / 60, -0.1 + (FAST_V[2] * 4) / 60] } },
+      { frames: 1, right: { to: [0.22, 1.1 + (FAST_V[1] * 5) / 60, -0.1 + (FAST_V[2] * 5) / 60], squeeze: 0 }, mark: "release" },
+      { frames: 1, right: { to: [0.22, 1.2, -0.6] }, mark: "after1" },
     ],
   },
 

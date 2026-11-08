@@ -35,7 +35,13 @@ export async function launch(project, port, extra = []) {
   const rt = {
     proc,
     log: () => log,
-    kill: () => proc.kill("SIGKILL"),
+    // Resolves once the process is gone, so the port is free for the next.
+    kill: () =>
+      new Promise((done) => {
+        if (proc.exitCode !== null || proc.signalCode !== null) return done();
+        proc.once("exit", done);
+        proc.kill("SIGKILL");
+      }),
     async get(path) {
       const res = await fetch(`${base}${path}`);
       if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);

@@ -49,15 +49,15 @@ expect (
 )
 
 // --- the grab table ---
-// Ahead of the feet: a counter-height table with the ball on it, a wall just
-// past its left end (the player's left is world +X here) to push the ball
+// Ahead of the feet: a counter-height table with the ball on it, a wall
+// against its left end (the player's left is world +X here) to push the ball
 // into, and a basket on the floor a throw away.
 
 let ballRadius = 0.06
 let tableTop = 0.9
 let table: Box = { center: Quat.v3(0.0, tableTop / 2.0, 4.6), size: Quat.v3(1.2, tableTop, 0.6) }
 let ballSpawn = Quat.v3(-0.2, tableTop + ballRadius, 4.55)
-let wall: Box = { center: Quat.v3(0.75, 1.0, 4.6), size: Quat.v3(0.1, 2.0, 1.6) }
+let wall: Box = { center: Quat.v3(0.65, 1.0, 4.6), size: Quat.v3(0.1, 2.0, 1.6) }
 
 // The basket: an open box, its inside `basketInner` wide and `basketDepth` deep.
 let basketAt = Quat.v3(-0.2, 0.0, 7.1)

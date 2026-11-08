@@ -54,6 +54,8 @@ type Model = {
 }
 
 let zero = Hold.zero
+// Slower than this, a release is a drop.
+let dropSpeed = 0.05
 let ballTag = (gen: float) => Physics.tag($"ball-{gen}")
 
 /// Jump to a station and reset it: no holds, no history, a fresh ball, and
@@ -134,7 +136,7 @@ let held = (m: Model, st: Stations.Station, outcome: Hold.Outcome): (Model, Opti
   match outcome with
   | Hold.Holding(h) => ({ m with held: Option.Some(h) }, Option.None)
   | Hold.Released(at, v) =>
-    let release = { kind: if Quat.length(v) > 0.0 then Throw else Drop, at: Stations.toWorld(st, at), velocity: Stations.dirToWorld(st, v) } in
+    let release = { kind: if Quat.length(v) > dropSpeed then Throw else Drop, at: Stations.toWorld(st, at), velocity: Stations.dirToWorld(st, v) } in
     ({ m with held: Option.None, ballAt: release.at, lastRelease: Option.Some(release) }, Option.Some(release.velocity))
   | Hold.Broke(at) =>
     let side = m.held |> Option.map((h) => h.side) |> Option.defaultValue(Hold.Right) in
@@ -231,8 +233,7 @@ let physics = (m: Model) =>
 // --- the pure step, with no world ---
 
 let noWorld = (from: Input.point3, to: Input.point3): Hold.Hit => { hit: false, distance: 0.0, normal: zero }
-let grabTableAt = Stations.grabTable
-let ballRig = Stations.toRig(grabTableAt, Stations.ballSpawn)
+let ballRig = Stations.toRig(Stations.grabTable, Stations.ballSpawn)
 
 let hand = (p: Input.point3, squeeze: float): Input.controller => {
   active: true, grip: Option.Some({ position: p, orientation: Quat.identity }), aim: Option.None,
@@ -243,7 +244,7 @@ let away: Input.controller = { hand(zero, 0.0) with active: false, grip: Option.
 let withRight = (m: Model, c: Input.controller): Model =>
   { m with xr: Option.Some({ head: Option.None, left: away, right: c }) }
 let run = (m: Model, c: Input.controller, t: float) =>
-  let (next, kick) = step(withRight(m, c), grabTableAt, noWorld, (m.ballPos, zero), t) in
+  let (next, kick) = step(withRight(m, c), Stations.grabTable, noWorld, (m.ballPos, zero), t) in
   next
 
 // Reach the ball open, squeeze: it is held.
@@ -262,7 +263,7 @@ expect (
 expect (
   let swung = List.range(6.0) |> List.fold((m, i) =>
     run(m, hand(Quat.add(ballRig, Quat.v3(0.0, 0.0, -0.05 * (i + 1.0))), 1.0), (i + 2.0) / 60.0), grabbed) in
-  let (thrown, kick) = step(withRight(swung, hand(Quat.add(ballRig, Quat.v3(0.0, 0.0, -0.35)), 0.0)), grabTableAt, noWorld, (swung.ballPos, zero), 8.0 / 60.0) in
+  let (thrown, kick) = step(withRight(swung, hand(Quat.add(ballRig, Quat.v3(0.0, 0.0, -0.35)), 0.0)), Stations.grabTable, noWorld, (swung.ballPos, zero), 8.0 / 60.0) in
   match kick with
   | Option.Some(v) => Math.abs(v.z - 3.0) < 0.001 && Option.isNone(thrown.held)
   | Option.None => false
@@ -294,7 +295,7 @@ let lab =
   ])
 
 let board = (score: float) =>
-  Digits.number(score, Color.rgb(1.0, 0.75, 0.2), Color.rgb(0.12, 0.09, 0.05))
+  Digits.number(score, Color.rgb(1.0, 0.75, 0.2), Color.rgb(0.05, 0.04, 0.03))
     |> Scene.scale(0.09)
     |> Scene.rotateY(180deg)
     |> Scene.translate(Quat.toVec3(Stations.boardAt))

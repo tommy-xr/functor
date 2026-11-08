@@ -7,7 +7,8 @@
 //
 //   1. A steady sweep, released mid-swing, launches the ball at the sweep's
 //      velocity (within 5% and 5 degrees), still holding its speed a step
-//      later, and it lands in the basket.
+//      later, and it lands in the basket. A swing past the speed cap leaves
+//      at the cap, so the release's velocity command is what sets it.
 //   2. A hand pushed through the wall leaves the ball at the wall; the ball
 //      follows it back out; let go there, the ball drops outside the wall.
 //   3. Dragged farther, the grip breaks: dropped in place, no velocity, and the
@@ -22,10 +23,11 @@
 //   node e2e/vr-lab.mjs
 import { check, failures } from "./mcp-rpc.mjs";
 import { advance, dirToWorld, launch, play, tap } from "./xr-scenario.mjs";
-import { BALL, THROW_V, project, scenarios } from "./vr-lab-scenarios.mjs";
+import { BALL, FAST_V, THROW_V, project, scenarios } from "./vr-lab-scenarios.mjs";
 
-const PORT = 8193;
-const WALL_FACE = 0.7; // world x
+const PORT = 8293;
+const WALL_FACE = 0.6; // world x, at the table's end
+const MAX_SPEED = 12;
 const RADIUS = 0.06;
 
 const len = (v) => Math.hypot(...v);
@@ -38,14 +40,15 @@ const fmt = (v) => `[${v.map((x) => x.toFixed(3)).join(", ")}]`;
 
 async function run(name, body) {
   console.log(`\n▸ ${name}`);
-  const rt = await launch(project, PORT, ["--headless"]);
+  let rt;
   try {
+    rt = await launch(project, PORT, ["--headless"]);
     await body(rt);
   } catch (e) {
     failures.push(`${name}: ${e}`);
-    console.error(e, `\n--- runtime log ---\n${rt.log().slice(-3000)}`);
+    console.error(e, `\n--- runtime log ---\n${rt?.log().slice(-3000) ?? ""}`);
   } finally {
-    rt.kill();
+    await rt?.kill();
   }
 }
 
@@ -74,11 +77,23 @@ await run("grab and throw", async (rt) => {
   throwEnd = m.landed.model;
 });
 
+await run("fast throw", async (rt) => {
+  const m = await play(rt, scenarios["fast-throw"]);
+  const release = some(m.release.model.lastRelease);
+  const want = dirToWorld(FAST_V).map((v) => (v * MAX_SPEED) / len(FAST_V));
+  const v0 = release ? xyz(release.velocity) : [0, 0, 0];
+  check(len(sub(v0, want)) < 0.01 * MAX_SPEED, `a 16 m/s swing estimates the 12 m/s cap: ${fmt(v0)}`);
+  // The kinematic ball was moving at 16 m/s; only the release's velocity
+  // command brings it to 12.
+  const v1 = xyz(m.after1.model.ballVel);
+  check(Math.abs(len(v1) - MAX_SPEED) / MAX_SPEED < 0.05 && angleDeg(v1, want) < 5, `the ball leaves at it: |v| ${len(v1).toFixed(3)} (${angleDeg(v1, want).toFixed(1)}°)`);
+});
+
 await run("wall push", async (rt) => {
   const m = await play(rt, scenarios["wall-push"]);
   const pushed = m.pushed.model;
   const accepted = some(pushed.held)?.accepted;
-  check(accepted !== undefined, "still held with the hand 15 cm inside the wall");
+  check(accepted !== undefined, "still held with the hand pushed through the wall");
   const ballX = pushed.ballPos.x;
   check(ballX < WALL_FACE - RADIUS && ballX > WALL_FACE - RADIUS - 0.02, `the ball stops at the wall (x ${ballX.toFixed(4)})`);
   const pulled = some(m.pulled.model.held);
@@ -88,7 +103,8 @@ await run("wall push", async (rt) => {
   check(release?.kind?.$ctor === "Drop", `let go inside the wall: a drop (${release?.kind?.$ctor})`);
   check(release && release.at.x < WALL_FACE - RADIUS, `released outside the wall (x ${release?.at.x.toFixed(4)})`);
   const settled = m.settled.model.ballPos;
-  check(settled.x < WALL_FACE - RADIUS + 0.005, `and stays outside it (x ${settled.x.toFixed(4)}, y ${settled.y.toFixed(3)})`);
+  check(settled.x < WALL_FACE - RADIUS + 0.005, `and stays outside it (x ${settled.x.toFixed(4)})`);
+  check(Math.abs(settled.y - BALL[1]) < 0.005, `resting on the table (y ${settled.y.toFixed(4)})`);
 });
 
 await run("break grip", async (rt) => {

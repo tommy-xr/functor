@@ -41,7 +41,7 @@ new station adds scenarios there, not a new driver.
 
 ## 1. Grab table
 
-A ball on a table, a wall just past the table's left end, and a basket on the
+A ball on a table, a wall against the table's left end, and a basket on the
 floor a throw away, with a scoreboard behind it.
 
 - **Grab.** Either hand, within 12 cm of the ball's surface (16 cm to stay
