@@ -187,7 +187,7 @@ let heldBy = (side: Hold.Side, p: Prop): bool =>
 /// The prop a hand holds, if any.
 let propIn = (m: Model, side: Hold.Side): Option.t<Prop> => m.props |> List.find((p) => heldBy(side, p))
 
-/// A prop by kind (every kind is always in `props`).
+/// A prop by kind (spawned at rest if this station has none).
 let propOf = (m: Model, k: Props.Kind): Prop =>
   m.props |> List.find((p) => p.kind == k) |> Option.defaultValue(spawned(k))
 
@@ -239,7 +239,8 @@ let reaching = (m: Model, side: Hold.Side, slots: List<Slots.Placed>, stowed: Li
         |> List.filter((p) => not (stowed |> List.any((s) => s.prop == p.kind))
              && (Option.isNone(p.slot) || p.slot == inSlot))
         |> List.map((p) => (p.kind, Props.gap(p.kind, g.position, poseOf(p))))
-        |> List.filter((kg) => let (k, gap) = kg in Hold.hovering(Props.reach(k), h.hover == Option.Some(k), gap))
+        // A required grip's zone is exact: no hysteresis past it.
+        |> List.filter((kg) => let (k, gap) = kg in Hold.hovering(Props.reach(k), h.hover == Option.Some(k) && not Props.gripRequired(k), gap))
         |> List.sortBy((kg) => let (_, gap) = kg in gap)
         |> List.head
 
@@ -254,12 +255,13 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
     m.props
       |> List.find((p) => p.kind == k)
       |> Option.map((p) =>
+        let required = if Props.gripRequired(k) then Props.grip(k) else Option.None in
         let taken =
           (match p.held with
            | Option.Some(h) => Hold.handOff(side, g, h)
-           | Option.None => Hold.grab(side, g, p.pose, if Option.isSome(p.slot) || Props.gripRequired(k) then Option.None else Props.grip(k))) in
+           | Option.None => Hold.grab(side, g, p.pose, if Option.isSome(p.slot) || Option.isSome(required) then Option.None else Props.grip(k))) in
         let held =
-          (match (if Props.gripRequired(k) then Props.grip(k) else Option.None) with
+          (match required with
            | Option.Some(a) => Hold.settleInto(a, taken)
            | Option.None => taken) in
         withHand(withProp({ p with held: Option.Some(held), slot: Option.None, scored: false }, m), side, { handOf(m, side) with hover: Option.None }))
@@ -766,15 +768,16 @@ let lab =
     box(Stations.armoryBench, Color.rgb(0.4, 0.42, 0.46)),
     box(Stations.armoryWall, Color.rgb(0.62, 0.64, 0.68)),
     box(Stations.backstop, Color.rgb(0.42, 0.33, 0.25)),
-    Scene.group(Stations.targetsAt |> List.map((c) => target |> Scene.atPose(atRange(c)))),
+    Scene.group(Stations.targetsAt |> List.map((nc) => let (_, c) = nc in target |> Scene.atPose(atRange(c)))),
     box(Stations.atArmory(Quat.add(Stations.rangeBoardAt, Quat.v3(0.0, 0.0, -0.01)), Quat.v3(0.6, 0.45, 0.02)), Color.rgb(0.05, 0.05, 0.07)),
   ])
 
-let board = (score: float) =>
+/// A score at `at` (world), facing a station turned `yaw`.
+let board = (score: float, at: Input.point3, yaw: float) =>
   Digits.number(score, Color.rgb(1.0, 0.75, 0.2), Color.rgb(0.05, 0.04, 0.03))
     |> Scene.scale(0.09)
-    |> Scene.rotateY(180deg)
-    |> Scene.translate(Quat.toVec3(Stations.boardAt))
+    |> Scene.rotateY(Angle.radians(yaw + Math.pi))
+    |> Scene.translate(Quat.toVec3(at))
 
 // Held, drawn at the pose it is swept at; slotted, at its slot; free, where
 // the world has it.
@@ -900,23 +903,23 @@ let shotsScene = (m: Model, st: Stations.Station, t: float): Scene.t =>
       |> Option.defaultValue([]) in
     let trail = last |> Option.filter((s) => t - s.t < tracerSeconds) |> Option.map((s) =>
       let fade = 1.0 - (t - s.t) / tracerSeconds in
+      // From the muzzle as drawn (kicked), to where the shot struck.
+      let from = propOf(m, Props.Pistol).held |> Option.map((h) => (Gun.boreOf(Gun.kicked(m.gun.kick, h.accepted))).muzzle)
+        |> Option.defaultValue(s.from) in
       let end = Gun.endOf(s) in
-      let length = Quat.length(Quat.sub(end, s.from)) in
-      let mid = Quat.lerp(s.from, end, 0.5) in
+      let length = Quat.length(Quat.sub(end, from)) in
+      let mid = Quat.lerp(from, end, 0.5) in
       let hot = Color.rgb(1.0, 0.85, 0.45) in
       [Scene.cube() |> Scene.scaleXYZ(0.012, 0.012, length) |> Scene.emissive(hot) |> Scene.opacity(0.85 * fade)
-         |> Scene.atPose(posed(st, Hold.at(mid, along(s.dir)))),
-       if t - s.t < flashSeconds then Scene.sphere() |> Scene.scale(0.035 * fade) |> Scene.emissive(hot) |> Scene.atPose(posed(st, Hold.at(s.from, Quat.identity)))
+         |> Scene.atPose(posed(st, Hold.at(mid, along(Quat.scale(1.0 / length, Quat.sub(end, from)))))),
+       if t - s.t < flashSeconds then Scene.sphere() |> Scene.scale(0.035 * fade) |> Scene.emissive(hot) |> Scene.atPose(posed(st, Hold.at(from, Quat.identity)))
        else Scene.group([])])
       |> Option.defaultValue([]) in
     Scene.group(List.flatten([
       m.gun.hits |> List.map((h) => marker |> Scene.atPose(posed(st, Hold.at(h.point, Quat.identity)))),
       lit,
       trail,
-      [Digits.number(m.score, Color.rgb(1.0, 0.75, 0.2), Color.rgb(0.05, 0.04, 0.03))
-         |> Scene.scale(0.09)
-         |> Scene.rotateY(Angle.radians(st.yaw + Math.pi))
-         |> Scene.translate(Quat.toVec3(Stations.toWorld(st, Stations.rangeBoardAt)))],
+      [board(m.score, Stations.toWorld(st, Stations.rangeBoardAt), st.yaw)],
     ]))
 
 let lights = [
@@ -945,7 +948,7 @@ let draw = (m: Model, tts) =>
     Scene.group([
       lab,
       pad(st.feet, 0.8, Color.rgb(0.2, 0.6, 0.65)),
-      board(m.score),
+      board(m.score, Stations.boardAt, Stations.grabTable.yaw),
       Scene.group(m.props |> List.map((p) => propScene(m, st, p))),
       left,
       right,

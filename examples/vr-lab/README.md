@@ -211,7 +211,9 @@ worn here too, and take the pistol.
   into the hand, and hide where the hand really took it. Taken at the grip,
   it doesn't jump: it settles into the hand from where it was, at most 2 cm
   and 8.6° a step (`Hold.settle`), so drawing it from a holster is smooth
-  too. Held, it is swept like every prop.
+  too. Held off by the level meanwhile, it waits; let go while settling, it
+  drops. Unlike other props, no hover hysteresis widens the 7 cm. Held, it is
+  swept like every prop.
 - **Bore.** Settled, the bore runs 5 cm above the fist, parallel to the grip
   pose's -Z, from the chamber 2 cm ahead of it to the muzzle 15 cm ahead.
   The sights sit on the slide 2.4 cm above the bore, parallel, so a shot

@@ -328,7 +328,7 @@ let settle = (held: Held): Held =>
 let gripOn = (held: Held): Input.pose => compose(held.accepted, inverse(held.offset))
 
 /// One step of a held prop. Tracking lost (`grip` None): it stays where it is
-/// and forgets its history. The hand `breakDistance` or `breakTurn` off its
+/// and forgets its history. Settling (`settle`), it records none. The hand `breakDistance` or `breakTurn` off its
 /// place on the blocked prop: dropped where it was, even if the hand opened.
 /// Opened: thrown with the estimated velocity and spin from where it last
 /// was held, where its body is: the release step then carries it on as the
@@ -340,8 +340,12 @@ let step = (cast: (Input.pose, Input.pose) => Option.t<Hit>, radius: float, held
     let eased = settle(held) in
     let wanted = compose(g, eased.offset) in
     let accepted = move(cast, radius, held.accepted, wanted) in
-    let history = push({ t: t, pose: accepted }, held.history) in
-    let next = { eased with accepted: accepted, history: history } in
+    let settling = Option.isSome(held.snapTo) in
+    // Settling, a prop held off by the level keeps its offset, so the grip
+    // never settles ahead of where the prop is; and settling is no throw.
+    let base = if settling && not near(accepted, wanted) then held else eased in
+    let history = if settling then [] else push({ t: t, pose: accepted }, held.history) in
+    let next = { base with accepted: accepted, history: history } in
     let off = Quat.length(Quat.sub(g.position, gripOn(next).position)) > breakDistance
       || Quat.angle(wanted.orientation, accepted.orientation) > breakTurn in
     if off then Broke(held.accepted)
@@ -418,6 +422,22 @@ expect (
            && Quat.angle(a.orientation, b.orientation) <= snapTurnStep + 0.000001))
     && Option.isNone(settled.snapTo) && near(gripOn(settled), compose(settled.accepted, neck))
     && near(settled.accepted, inverse(neck))
+)
+
+// Held off by the level as it settles, it doesn't settle ahead of itself:
+// the offset waits where the prop is; let go there, it drops.
+expect (
+  let stuck = (a: Input.pose, b: Input.pose): Option.t<Hit> => Option.Some({ fraction: 0.0, normal: Quat.v3(0.0, 1.0, 0.0) }) in
+  let item = at(Quat.v3(0.0, 0.06, 0.0), Quat.yaw(Math.pi)) in
+  let h = settleInto(neck, grab(Right, origin, item, Option.None)) in
+  let after = List.range(5.0) |> List.fold((held, i) =>
+    (match step(stuck, 0.1, held, Option.Some(origin), true, i / 60.0) with
+     | Holding(next) => next
+     | _ => held), h) in
+  near(after.offset, h.offset) && Option.isSome(after.snapTo) && near(after.accepted, item)
+    && (match step(stuck, 0.1, after, Option.Some(origin), false, 0.1) with
+        | Released(_, v, w) => near3(v, zero) && near3(w, zero)
+        | _ => false)
 )
 
 // Swing a held ball at `v` for `n` steps, then let go on the next.

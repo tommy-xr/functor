@@ -38,38 +38,37 @@ let boreOf = (pose: Input.pose): Bore =>
 /// The pistol held settled in a hand at `hand`: where it is.
 let heldAt = (hand: Input.pose): Input.pose => Hold.compose(hand, Hold.inverse(grip))
 
-let close3 = (a: Input.point3, b: Input.point3): bool => Quat.length(Quat.sub(a, b)) < 0.000001
 // Level, yawed, pitched and rolled hands: the muzzle 5 cm above the hand's
 // -Z axis and 15 cm along it, and the shot along that axis.
 expect (
   let b = boreOf(heldAt(Hold.p(0.1, 1.2, -0.3))) in
-  close3(b.muzzle, Quat.v3(0.1, 1.25, -0.45)) && close3(b.chamber, Quat.v3(0.1, 1.25, -0.32)) && close3(b.dir, Quat.v3(0.0, 0.0, -1.0))
+  Hold.near3(b.muzzle, Quat.v3(0.1, 1.25, -0.45)) && Hold.near3(b.chamber, Quat.v3(0.1, 1.25, -0.32)) && Hold.near3(b.dir, Quat.v3(0.0, 0.0, -1.0))
 )
 expect (
   // A quarter turn left: the barrel points along -X.
   let b = boreOf(heldAt(Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(Math.pi / 2.0)))) in
-  close3(b.muzzle, Quat.v3(-0.05, 1.25, -0.3)) && close3(b.dir, Quat.v3(-1.0, 0.0, 0.0))
+  Hold.near3(b.muzzle, Quat.v3(-0.05, 1.25, -0.3)) && Hold.near3(b.dir, Quat.v3(-1.0, 0.0, 0.0))
 )
 expect (
   // Tipped 30 degrees up.
   let a = Math.pi / 6.0 in
   let b = boreOf(heldAt(Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), a)))) in
-  close3(b.dir, Quat.v3(0.0, Math.sin(a), 0.0 - Math.cos(a)))
-    && close3(b.muzzle, Quat.v3(0.0, 1.0 + 0.05 * Math.cos(a) + 0.15 * Math.sin(a), 0.05 * Math.sin(a) - 0.15 * Math.cos(a)))
+  Hold.near3(b.dir, Quat.v3(0.0, Math.sin(a), 0.0 - Math.cos(a)))
+    && Hold.near3(b.muzzle, Quat.v3(0.0, 1.0 + 0.05 * Math.cos(a) + 0.15 * Math.sin(a), 0.05 * Math.sin(a) - 0.15 * Math.cos(a)))
 )
 expect (
   // Rolled a quarter turn clockwise (about -Z): the bore is beside the hand,
   // on its right, still parallel to its -Z.
   let b = boreOf(heldAt(Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(0.0, 0.0, -1.0), Math.pi / 2.0)))) in
-  close3(b.muzzle, Quat.v3(0.05, 1.0, -0.15)) && close3(b.dir, Quat.v3(0.0, 0.0, -1.0))
+  Hold.near3(b.muzzle, Quat.v3(0.05, 1.0, -0.15)) && Hold.near3(b.dir, Quat.v3(0.0, 0.0, -1.0))
 )
 expect (
   // Yawed, pitched and rolled at once: the muzzle is the hand's (0, 5, -15) cm.
   let q = Quat.mul(Quat.yaw(0.6), Quat.mul(Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), -0.3), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 1.1))) in
   let hand = Hold.at(Quat.v3(0.2, 1.3, -0.4), q) in
   let b = boreOf(heldAt(hand)) in
-  close3(b.muzzle, Quat.add(hand.position, Quat.rotate(q, Quat.v3(0.0, 0.05, -0.15))))
-    && close3(b.dir, Quat.rotate(q, Quat.v3(0.0, 0.0, -1.0)))
+  Hold.near3(b.muzzle, Quat.add(hand.position, Quat.rotate(q, Quat.v3(0.0, 0.05, -0.15))))
+    && Hold.near3(b.dir, Quat.rotate(q, Quat.v3(0.0, 0.0, -1.0)))
 )
 
 // --- the trigger ---

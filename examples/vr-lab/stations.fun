@@ -139,10 +139,12 @@ let armoryWall = atArmory(toRig(grabTable, wall.center), wall.size)
 
 let targetFace = 0.0 - 5.5
 let targetSize = 0.3
-/// Each target's centre (rig-local): left, middle (higher), right.
-let targetsAt = [Quat.v3(-0.7, 1.15, targetFace - 0.02), Quat.v3(0.0, 1.45, targetFace - 0.02), Quat.v3(0.7, 1.15, targetFace - 0.02)]
+/// Each target's name and centre (rig-local): left, middle (higher), right.
+let targetsAt: List<(string, Input.point3)> =
+  [Quat.v3(-0.7, 1.15, targetFace - 0.02), Quat.v3(0.0, 1.45, targetFace - 0.02), Quat.v3(0.7, 1.15, targetFace - 0.02)]
+    |> List.indexedMap((i, c) => ($"target-{i}", c))
 let targets: List<(string, Box)> =
-  targetsAt |> List.indexedMap((i, c) => ($"target-{i}", atArmory(c, Quat.v3(targetSize, targetSize, 0.04))))
+  targetsAt |> List.map((nc) => let (n, c) = nc in (n, atArmory(c, Quat.v3(targetSize, targetSize, 0.04))))
 let backstop = atArmory(Quat.v3(0.0, 1.25, -5.65), Quat.v3(4.0, 2.5, 0.1))
 // The armory's scoreboard: on the backstop, above the targets.
 let rangeBoardAt = Quat.v3(0.0, 2.05, -5.57)
@@ -151,8 +153,7 @@ let isTarget = (name: string): bool => targets |> List.any((t) => let (n, _) = t
 
 /// A target's centre (rig-local), by name.
 let targetCentre = (name: string): Option.t<Input.point3> =>
-  targetsAt |> List.indexedMap((i, c) => ($"target-{i}", c)) |> List.find((nc) => let (n, _) = nc in n == name)
-    |> Option.map((nc) => let (_, c) = nc in c)
+  targetsAt |> List.find((nc) => let (n, _) = nc in n == name) |> Option.map((nc) => let (_, c) = nc in c)
 
 expect isTarget("target-1") && not isTarget("backstop")
 // The bench stands where the table does at the grab table, seen from the feet.

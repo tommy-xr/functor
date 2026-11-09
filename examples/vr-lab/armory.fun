@@ -10,7 +10,7 @@ let moved = (p: Input.pose, x: float, y: float, z: float): Input.pose => Hold.at
 
 /// The right hand at `pose`, squeezing `squeeze`, its trigger at `trigger`.
 let hand = (pose: Input.pose, squeeze: float, trigger: float): Input.controller =>
-  { Game.hand(pose.position, squeeze) with grip: Option.Some(pose), trigger: trigger }
+  { Game.turnedHand(pose.position, pose.orientation, squeeze) with trigger: trigger }
 
 /// Every model a script of right hands passes through in `world`, the start first.
 let playIn = (world: Game.World, m0: Game.Model, script: List<Input.controller>): List<Game.Model> =>
@@ -148,7 +148,7 @@ expect (
 // Into the right holster, then drawn with the trigger held: it comes out
 // of where it sat without a jump, and doesn't fire until the trigger is let
 // out.
-let holster = Hold.at(Quat.add(Hips.rootOf(Hips.headAt(0.0, 0.0)), Slots.rightHolster.offset.position), Quat.identity)
+let holster = Hold.at(Inventory.rightHolster, Quat.identity)
 let stowed = play(List.flatten([take, times(10.0, hand(holster, 1.0, 0.0)), [hand(holster, 0.0, 0.0)]]))
 expect pistol(last(stowed)).slot == Option.Some(Slots.rightHolster.id)
 expect (

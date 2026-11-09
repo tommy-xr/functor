@@ -22,7 +22,7 @@
 //   node e2e/vr-lab-armory.mjs
 import { check, failures } from "./mcp-rpc.mjs";
 import { add, play, qconj, qmul, qrot, session, sub } from "./xr-scenario.mjs";
-import { ARMORY_WALL_X, PISTOL_HALF, TARGETS, TARGET_SIZE, muzzleOf, project, scenarios } from "./vr-lab-scenarios.mjs";
+import { ARMORY_WALL_X, GRIP_IN_PISTOL, PISTOL_HALF, TARGETS, TARGET_SIZE, muzzleOf, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8298;
 const SNAP_STEP = 0.02;
@@ -44,10 +44,9 @@ const poseOf = (m) => {
   const pose = some(p.held)?.accepted ?? p.pose;
   return { position: xyz(pose.position), orientation: quat(pose.orientation) };
 };
-// The shot from a pistol at `pose`: its grip is 4.75 cm behind and 2.5 mm
-// below its centre (`Gun.grip`).
+// The shot from a pistol at `pose`, from where its grip puts the hand.
 const boreOf = (pose) => {
-  const hand = add(pose.position, qrot(pose.orientation, [0, -0.0025, 0.0475]));
+  const hand = add(pose.position, qrot(pose.orientation, GRIP_IN_PISTOL));
   return muzzleOf(hand, pose.orientation);
 };
 const lastShot = (m) => some(m.gun.last);

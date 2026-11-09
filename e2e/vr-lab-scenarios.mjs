@@ -262,7 +262,9 @@ const inventoryScenarios = {
 export const armory = { feet: [4, 0, 0], yaw: Math.PI / 2 };
 export const PISTOL = [0.15, 0.9675, -0.5];
 // The resting pistol's grip, where a level hand takes it.
-export const PISTOL_GRIP = add(PISTOL, [0, -0.0025, 0.0475]);
+// The grip in the pistol's frame (`Gun.grip`): where the hand holds it.
+export const GRIP_IN_PISTOL = [0, -0.0025, 0.0475];
+export const PISTOL_GRIP = add(PISTOL, GRIP_IN_PISTOL);
 export const BORE = { up: 0.05, ahead: 0.15, chamber: 0.02 };
 export const PISTOL_HALF = [0.0175, 0.0675, 0.1025];
 export const TARGETS = [[-0.7, 1.15], [0, 1.45], [0.7, 1.15]].map(([x, y]) => [x, y, -5.5]);
