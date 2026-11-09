@@ -298,7 +298,7 @@ const CLEAR = [-0.33, 1.2, -0.5];
 const ARMORY_RH = slotAt("rightHolster");
 
 // Behind the player's right shoulder: the hand and pistol, the shot down range.
-const behindGun = { eye: [2.85, 1.85, 0.75], target: [7.0, 1.2, -0.2], fov: 42 };
+const behindGun = { eye: [2.8, 1.9, 1.25], target: [7.0, 1.2, -0.35], fov: 40 };
 // Above and behind, looking at the wall at the bench's left end.
 const atArmoryWall = { eye: [3.35, 2.25, 0.85], target: [4.45, 1.15, -0.45], fov: 42 };
 // From the player's right, at the hip.

@@ -904,7 +904,7 @@ let shotsScene = (m: Model, st: Stations.Station, t: float): Scene.t =>
       let length = Quat.length(Quat.sub(end, s.from)) in
       let mid = Quat.lerp(s.from, end, 0.5) in
       let hot = Color.rgb(1.0, 0.85, 0.45) in
-      [Scene.cube() |> Scene.scaleXYZ(0.006, 0.006, length) |> Scene.emissive(hot) |> Scene.opacity(0.85 * fade)
+      [Scene.cube() |> Scene.scaleXYZ(0.012, 0.012, length) |> Scene.emissive(hot) |> Scene.opacity(0.85 * fade)
          |> Scene.atPose(posed(st, Hold.at(mid, along(s.dir)))),
        if t - s.t < flashSeconds then Scene.sphere() |> Scene.scale(0.035 * fade) |> Scene.emissive(hot) |> Scene.atPose(posed(st, Hold.at(s.from, Quat.identity)))
        else Scene.group([])])
