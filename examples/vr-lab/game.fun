@@ -255,6 +255,11 @@ let ejectMag = (m: Model, world: World, k: Props.Kind): Model =>
 let unspent = (m: Model): float =>
   (m.props |> List.map((p) => if isRound(p.kind) then 1.0 else Ammo.roundsIn(p.mag)) |> List.sum) + Ammo.count(m.gun.ammo) + Ammo.count(m.rifle.ammo)
 
+let isMag = (k: Props.Kind): bool =>
+  match k with
+  | Props.Mag(_, _) => true
+  | _ => false
+
 let isRound = (k: Props.Kind): bool =>
   match k with
   | Props.Round(_, _) => true
@@ -375,6 +380,8 @@ let reaching = (m: Model, side: Hold.Side, slots: List<Slots.Placed>, stowed: Li
       m.props
         |> List.filter((p) => not (stowed |> List.any((s) => s.prop == p.kind))
              && (Option.isNone(p.slot) || p.slot == inSlot) && Option.isNone(p.support) && Option.isNone(p.latch)
+             // Out of reach of its bounds: not worth its exact gap.
+             && (foregripOnly(p) || Quat.length(Quat.sub(g.position, poseOf(p).position)) - Props.radius(p.kind) <= Props.reach(p.kind) + Hold.reachHysteresis)
              // A foregrip the primary hand's axis would break off at once isn't taken.
              && (not foregripOnly(p) || (p.held |> Option.bind((h) => gripOf(m.xr, h.side)) |> Option.map((pg) => Longarm.holds(Longarm.alongOf(pg, g.position))) |> Option.defaultValue(false))))
         |> List.map((p) =>
@@ -466,9 +473,10 @@ let slideAt = (m: Model, side: Hold.Side): Option.t<Props.Kind> =>
   match gripOf(m.xr, side) with
   | Option.None => Option.None
   | Option.Some(g) =>
+    // (Near the gun first: the cheap test, so a hand elsewhere costs little.)
     propIn(m, other(side))
-      |> Option.filter((p) => Option.isSome(Props.weapon(p.kind)) && Option.isNone(gunOf(m, p.kind).slide.hand)
-           && Option.isNone(inHand(m, side)))
+      |> Option.filter((p) => Option.isSome(Props.weapon(p.kind)) && Quat.length(Quat.sub(g.position, poseOf(p).position)) <= 0.3)
+      |> Option.filter((p) => Option.isNone(gunOf(m, p.kind).slide.hand) && Option.isNone(inHand(m, side)))
       |> Option.filter((p) =>
            let w = weaponOf(p.kind) in
            let at = Quat.add(w.rack.at, Quat.v3(0.0, 0.0, Gun.slideBack(w, gunOf(m, p.kind)))) in
@@ -479,9 +487,12 @@ let slideAt = (m: Model, side: Hold.Side): Option.t<Props.Kind> =>
 /// Free props newly in the basket score.
 let scoring = (m: Model, st: Stations.Station): Model =>
   let landed = (p: Prop) => Option.isNone(p.held) && Option.isNone(p.slot) && not p.scored && Stations.inBasket(Stations.toWorld(st, p.pose.position)) in
-  { m with
-      score: m.score + (m.props |> List.filter(landed) |> List.length),
-      props: m.props |> List.map((p) => if landed(p) then { p with scored: true } else p) }
+  let scored = m.props |> List.filter(landed) |> List.map((p) => p.kind) in
+  if List.isEmpty(scored) then m
+  else
+    { m with
+        score: m.score + List.length(scored),
+        props: m.props |> List.map((p) => if scored |> List.any((k) => k == p.kind) then { p with scored: true } else p) }
 
 // --- body slots ---
 
@@ -626,6 +637,9 @@ let supporting = (m: Model): (Model, List<Props.Kind>, List<(Hold.Side, Pulses.E
 /// is pulled out, staying in the hand where it is. Let go while latched, it
 /// falls out of the mouth. The model, the magazines let go, and the pulses.
 let seating = (m: Model, st: Stations.Station, world: World): (Model, List<Release>, List<(Hold.Side, Pulses.Event)>) =>
+  // Most steps no hand holds a magazine.
+  if not (m.props |> List.any((p) => Option.isSome(p.held) && isMag(p.kind))) then (m, [], [])
+  else
   m.props |> List.fold((acc, p: Prop) =>
     let (next, out, felt) = acc in
     match (match p.kind with | Props.Mag(fits, _) => p.held |> Option.map((h) => (h, fits)) | _ => Option.None) with
@@ -708,6 +722,9 @@ let capLoose = (m: Model): Model =>
 /// slide release does the same with no hand on it. The model, the rounds
 /// thrown out, and the pulses.
 let racking = (prev: Model, m: Model, st: Stations.Station, world: World): (Model, List<Release>, List<(Hold.Side, Pulses.Event)>) =>
+  // Most steps no slide is held or released.
+  if Option.isNone(m.gun.slide.hand) && Option.isNone(m.rifle.slide.hand) && List.isEmpty(prev.slideRelease) then (m, [], [])
+  else
   [Props.Pistol, Props.Rifle] |> List.fold((acc, k) =>
     let (next, out, felt) = acc in
     let g = gunOf(next, k) in
@@ -1229,6 +1246,16 @@ let ammoScene = (shown: (Props.Kind, float, bool, bool, float)): Scene.t =>
 
 /// A magazine prop with its count on its back (toward the shooter as it
 /// drops out, and toward the player in its cradle). `(kind, look, rounds)`.
+/// A gun's look, its slide (or handle) and bolt drawn back. `(kind, look,
+/// back, bolt)`.
+let gunScene = (shown: (Props.Kind, Props.Look, float, float)): Scene.t =>
+  let (k, look, back, bolt) = shown in
+  if k == Props.Rifle then Longarm.scene(Props.paint(look), back, bolt) else Gun.scene(Props.paint(look), back)
+
+/// A loose round's look. `(kind, look)`.
+let roundScene = (shown: (Ammo.Kind, Props.Look)): Scene.t =>
+  let (cal, look) = shown in Props.scene(Props.Round(cal, 0.0), look)
+
 let magScene = (shown: (Ammo.Kind, Props.Look, float)): Scene.t =>
   let (fits, look, rounds) = shown in
   Scene.group([
@@ -1263,16 +1290,15 @@ let propScene = (m: Model, st: Stations.Station, p: Prop, t: float) =>
       let w = weaponOf(p.kind) in
       let back = Gun.slideBack(w, g) in
       // The pistol's readout rides its slide; the rifle's, its receiver.
-      let (look3, readoutBack) =
-        if p.kind == Props.Rifle then (Longarm.scene(Props.paint(look), back, Longarm.boltBack(g)), 0.0)
-        else (Gun.scene(Props.paint(look), back), back) in
+      let (bolt, readoutBack) = if p.kind == Props.Rifle then (Longarm.boltBack(g), 0.0) else (back, back) in
       Scene.group(List.flatten([
-        [look3, Scene.memo($"ammo-{Props.name(p.kind)}", (p.kind, rounds, g.ammo.chambered, dry, readoutBack), ammoScene)],
+        [Scene.memo($"gun-{Props.name(p.kind)}", (p.kind, look, back, bolt), gunScene), Scene.memo($"ammo-{Props.name(p.kind)}", (p.kind, rounds, g.ammo.chambered, dry, readoutBack), ammoScene)],
         if p.kind == Props.Rifle then [Longarm.selector(m.rifle.mode)] else [],
       ]))
     | Option.None =>
       (match p.kind with
        | Props.Mag(fits, id) => Scene.memo($"mag-{id}", (fits, look, Ammo.roundsIn(p.mag)), magScene)
+       | Props.Round(cal, id) => Scene.memo($"round-{id}", (cal, look), roundScene)
        | _ => Props.scene(p.kind, look)) in
   shown |> Scene.atPose(pose)
 
