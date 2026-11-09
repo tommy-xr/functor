@@ -29,17 +29,18 @@ let grip: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 /// barrel is out of reach, so it is never taken by the muzzle end.
 let gripZone = 0.07
 
-/// How a magazine is guided into a well (`Seating`). It latches when its
-/// centre is within `entry` of where it sits at the well's mouth and its axis
-/// (local +Y) is within `alignDot` of the well's; keyed, its back (+Z) also
-/// within `keyDot` of the well's (-1: any roll). Latched, it holds while the
-/// hand keeps it within `exit` of the well's axis (below the mouth, of the
-/// mouth) and its axis within `unalignDot`.
-type Guide = { entry: float, exit: float, alignDot: float, unalignDot: float, keyDot: float }
+/// How a magazine (or shell) is guided into a well (`Seating`). It latches
+/// when its centre is within `entry` of where it sits at the well's mouth and
+/// its axis (local +Y) is within `alignDot` of the well's; keyed, its back
+/// (+Z) also within `keyDot` of the well's (-1: any roll). Latched, it holds
+/// while the hand keeps it within `exit` of the well's axis (below the mouth,
+/// of the mouth), its axis within `unalignDot` and its back within `unkeyDot`.
+type Guide = { entry: float, exit: float, alignDot: float, unalignDot: float, keyDot: float, unkeyDot: float }
 
-/// The guide both wells use: a 4 cm catch, 7 cm to pull out of; about 32°
-/// off the axis to latch, 46° to lose it; keyed (not turned back to front).
-let guide: Guide = { entry: 0.04, exit: 0.07, alignDot: 0.85, unalignDot: 0.7, keyDot: 0.0 }
+/// The guide both magazine wells use: a 4 cm catch, 7 cm to pull out of;
+/// about 32° off the axis to latch, 46° to lose it; keyed (not turned back to
+/// front), any turn about its axis once latched.
+let guide: Guide = { entry: 0.04, exit: 0.07, alignDot: 0.85, unalignDot: 0.7, keyDot: 0.0, unkeyDot: -1.0 }
 
 /// A weapon's magazine well, in its frame: the magazine kind it takes, where
 /// a seated one's centre sits, raked back `rake` (radians about +X), and how
@@ -47,13 +48,14 @@ let guide: Guide = { entry: 0.04, exit: 0.07, alignDot: 0.85, unalignDot: 0.7, k
 /// mouth, where an inserted one starts. And how it guides one in.
 type Well = { kind: Ammo.Kind, at: Input.point3, rake: float, drop: float, guide: Guide }
 
-/// The slide (or charging handle) a hand racks, in its weapon's frame: the
-/// zone a hand takes it in (`at`, within `radius`), how far back it goes
-/// (`travel`, along +Z), where it and the bolt rest while locked back
+/// The slide (or charging handle, or pump) a hand racks, in its weapon's
+/// frame: the zone a hand takes it in (`at`, within `radius`), how far back
+/// it goes (`travel`, along +Z), where it and the bolt rest while locked back
 /// (`lockBack`, `boltLock`: the pistol's slide is its bolt and stays back;
 /// the rifle's handle goes home, its bolt doesn't), and the port a
-/// thrown-out round leaves from.
-type Rack = { at: Input.point3, radius: float, travel: float, lockBack: float, boltLock: float, port: Input.point3 }
+/// thrown-out round leaves from. A `pump` is worked by the support hand on
+/// the fore-end (not taken in a zone) and stays where it is let go.
+type Rack = { at: Input.point3, radius: float, travel: float, lockBack: float, boltLock: float, port: Input.point3, pump: bool }
 
 /// Where its ammo readout sits, in its frame, readable from behind (+Z),
 /// tipped `tilt` (radians about +X) toward the eye, each digit `size` wide.
@@ -62,14 +64,17 @@ type Readout = { at: Input.point3, tilt: float, size: float }
 /// A weapon, in its own frame (centred on its collider): the authored grip
 /// (the trigger hand's pose), the chamber and the muzzle (the bore runs
 /// along the frame's -Z between them), whether a selector switches it to
-/// full-auto, its magazine well, its readout and its slide.
-type Weapon = { grip: Input.pose, chamber: Input.point3, muzzle: Input.point3, selector: bool, well: Well, readout: Readout, rack: Rack }
+/// full-auto, its magazine well, its readout and its slide; how many
+/// projectiles a shot casts (`pellets`, the rest `spread` radians round the
+/// first), and its recoil's size (1: the pistol's).
+type Weapon = { grip: Input.pose, chamber: Input.point3, muzzle: Input.point3, selector: bool, well: Well, readout: Readout, rack: Rack, pellets: float, spread: float, recoil: float }
 
 /// A weapon whose bore runs `bore` above the grip's fist, parallel to its
-/// -Z, from `chamberAhead` to `muzzleAhead` ahead of it.
+/// -Z, from `chamberAhead` to `muzzleAhead` ahead of it: one bullet a shot.
 let weaponAt = (g: Input.pose, bore: float, chamberAhead: float, muzzleAhead: float, selector: bool, well: Well, readout: Readout, rack: Rack): Weapon =>
   let along = (ahead: float) => Quat.add(g.position, Quat.rotate(g.orientation, Quat.v3(0.0, bore, 0.0 - ahead))) in
-  { grip: g, chamber: along(chamberAhead), muzzle: along(muzzleAhead), selector: selector, well: well, readout: readout, rack: rack }
+  { grip: g, chamber: along(chamberAhead), muzzle: along(muzzleAhead), selector: selector, well: well, readout: readout, rack: rack,
+    pellets: 1.0, spread: 0.0, recoil: 1.0 }
 
 // The handle: its centre in the hand's frame, raked back 12 degrees.
 let handleAt = Quat.v3(0.0, 0.0 - 0.015, 0.02)
@@ -84,7 +89,7 @@ let pistol = weaponAt(grip, bore, chamberAhead, muzzleAhead, false,
   { kind: Ammo.PistolMag, at: Quat.sub(handleAt, center), rake: handleRake, drop: 0.12, guide: guide },
   { at: Quat.sub(Quat.v3(0.0, bore, 0.056), center), tilt: 0.0, size: 0.0045 },
   { at: Quat.sub(Quat.v3(0.0, bore, 0.04), center), radius: 0.035, travel: slideTravel, lockBack: 0.7 * slideTravel, boltLock: 0.7 * slideTravel,
-    port: Quat.sub(Quat.v3(0.03, bore, 0.0 - 0.01), center) })
+    port: Quat.sub(Quat.v3(0.03, bore, 0.0 - 0.01), center), pump: false })
 
 /// A seated magazine's pose in its weapon's frame.
 let seatOf = (w: Weapon): Input.pose => Hold.at(w.well.at, Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), w.well.rake))
@@ -101,11 +106,14 @@ let dropOf = (w: Weapon): Input.pose => wellAt(w, 0.0 - w.well.drop)
 // --- magazines ---
 
 /// A magazine's bounds (its collider as a prop): the pistol's, a body
-/// inside the handle and a wider base plate; the rifle's, a box.
+/// inside the handle and a wider base plate; the rifle's, a box. A shell (a
+/// 12 gauge, 20 mm by 70) goes in by itself, lying along its +Z: its brass
+/// head back.
 let magSize = (k: Ammo.Kind): Input.point3 =>
   match k with
   | Ammo.PistolMag => Quat.v3(0.032, 0.1, 0.047)
   | Ammo.RifleMag => Quat.v3(0.025, 0.09, 0.05)
+  | Ammo.Shell => Quat.v3(0.02, 0.02, 0.07)
 
 /// How far a magazine's back is from its centre (where its count goes,
 /// facing back at the shooter).
@@ -113,6 +121,7 @@ let magFace = (k: Ammo.Kind): float =>
   match k with
   | Ammo.PistolMag => 0.016
   | Ammo.RifleMag => 0.025
+  | Ammo.Shell => 0.035
 
 /// A magazine in its own frame (centred on its bounds), `paint` colouring
 /// its body: the pistol's base plate tan, so a seated one shows under the
@@ -126,6 +135,17 @@ let magazine = (k: Ammo.Kind, paint: (float, float, float, Scene.t) => Scene.t):
       Scene.cube() |> Scene.scaleXYZ(e.x, 0.008, e.z) |> Scene.translate(Vec3.make(0.0, 0.004 - e.y / 2.0, 0.0)) |> paint(0.75, 0.6, 0.3),
     ])
   | Ammo.RifleMag => Scene.cube() |> Scene.scaleXYZ(e.x, e.y, e.z) |> paint(0.16, 0.16, 0.18)
+  | Ammo.Shell => shell(paint, false)
+
+/// A shell in its own frame: a red hull, its brass head at the back (+Z;
+/// drawn, local -Z). Spent (a fired hull), its hull dull and open.
+let shell = (paint: (float, float, float, Scene.t) => Scene.t, spent: bool): Scene.t =>
+  let e = magSize(Ammo.Shell) in
+  let (r, g, b) = if spent then (0.35, 0.14, 0.12) else (0.8, 0.12, 0.1) in
+  Scene.group([
+    Scene.cube() |> Scene.scaleXYZ(0.9 * e.x, 0.9 * e.y, 0.8 * e.z) |> Scene.translate(Vec3.make(0.0, 0.0, 0.1 * e.z)) |> paint(r, g, b),
+    Scene.cube() |> Scene.scaleXYZ(e.x, e.y, 0.2 * e.z) |> Scene.translate(Vec3.make(0.0, 0.0, 0.0 - 0.4 * e.z)) |> paint(0.85, 0.65, 0.25),
+  ])
 
 /// A magazine scene placed in its weapon's well, drawn with the weapon.
 let seated = (w: Weapon, mag: Scene.t): Scene.t =>
@@ -272,6 +292,19 @@ let rest = (r: Rack, locked: bool): float => if locked then r.lockBack else 0.0
 let take = (r: Rack, locked: bool, side: Hold.Side, z: float): Slide =>
   { hand: Option.Some(side), from: z - rest(r, locked), pull: rest(r, locked), back: false }
 
+/// A hand at `z` takes a pump where it was let go, mid-stroke or not.
+let takePump = (s: Slide, side: Hold.Side, z: float): Slide => { s with hand: Option.Some(side), from: z - s.pull }
+
+/// A pump let go: it stays where it is.
+let letGoPump = (s: Slide): Slide => { s with hand: Option.None }
+
+/// Whether a slide is closed, so the gun can fire: home (or locked back,
+/// which `Ammo` keeps from chambering). A pump closes once it is home from
+/// any stroke, and within `homeAt` of it, so a hand back where it took the
+/// fore-end needn't find the exact spot.
+let inBattery = (r: Rack, s: Slide): bool =>
+  if r.pump then not s.back && s.pull <= homeAt * r.travel else s.pull <= 0.0
+
 /// One step of a held slide, its hand at `z` (None: let go, lost, or off the
 /// rail): the slide, and its strokes.
 let pullTo = (r: Rack, s: Slide, z: Option.t<float>): (Slide, List<Stroke>) =>
@@ -308,15 +341,38 @@ expect (let (s, _) = pullTo(pistol.rack, take(pistol.rack, false, Hold.Left, 0.0
 expect (let s = take(pistol.rack, true, Hold.Left, 0.5) in s.pull == pistol.rack.lockBack && s.from == 0.5 - pistol.rack.lockBack)
 expect strokes(pistol.rack, true, [0.0, 0.006]) == [Back, Home] && strokes(pistol.rack, true, [0.0]) == []
 
-/// How far a weapon's slide (or handle) is drawn back.
-let slideBack = (w: Weapon, g: State): float => if Option.isSome(g.slide.hand) then g.slide.pull else rest(w.rack, g.ammo.locked)
+/// How far a weapon's slide (or handle, or pump) is drawn back: where the
+/// hand has it, or a pump where it was let go; else where it rests.
+let slideBack = (w: Weapon, g: State): float =>
+  if Option.isSome(g.slide.hand) || w.rack.pump then g.slide.pull else rest(w.rack, g.ammo.locked)
 
-/// How far its bolt is drawn back: with the handle while it is racked, else
-/// locked back or home.
+/// How far its bolt is drawn back: with the handle (or pump) while it is
+/// racked, else locked back or home.
 let boltBack = (w: Weapon, g: State): float =>
-  if Option.isSome(g.slide.hand) then g.slide.pull else if g.ammo.locked then w.rack.boltLock else 0.0
+  if Option.isSome(g.slide.hand) || w.rack.pump then g.slide.pull else if g.ammo.locked then w.rack.boltLock else 0.0
 
 // --- the shot ---
+
+/// The golden angle: each shot's pellet pattern turns this much from the
+/// last, so the pattern varies from shot to shot, the same on every run.
+let patternTurn = Math.pi * (3.0 - Math.sqrt(5.0))
+
+/// The ways a shot's pellets leave a weapon at `pose`, the `n`th shot it
+/// has fired: along the bore, and the other `pellets - 1` evenly round it,
+/// `spread` off it, the ring turned `patternTurn` a shot. One pellet: the
+/// bore's way.
+let pelletDirs = (w: Weapon, pose: Input.pose, n: float): List<Input.point3> =>
+  let ring = w.pellets - 1.0 in
+  List.range(w.pellets) |> List.map((i) =>
+    let local =
+      if i == 0.0 then Quat.v3(0.0, 0.0, 0.0 - 1.0)
+      else
+        let a = n * patternTurn + 2.0 * Math.pi * (i - 1.0) / ring in
+        Quat.v3(Math.sin(w.spread) * Math.cos(a), Math.sin(w.spread) * Math.sin(a), 0.0 - Math.cos(w.spread)) in
+    Quat.rotate(pose.orientation, local))
+
+// The pistol: one pellet, along the bore.
+expect (let p = heldAt(pistol, Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(0.4))) in pelletDirs(pistol, p, 3.0) == [(boreOf(pistol, p)).dir])
 
 /// How far a shot reaches.
 let range = 30.0
@@ -393,23 +449,23 @@ let step = (g: State, holder: Option.t<Hold.Side>, tracked: bool, value: float, 
 // --- ammunition: `Ammo`'s, at these two ---
 
 /// Whether a pulled trigger has a round to fire: one chambered, the slide
-/// home (not held back by a racking hand).
-let canFire = (g: State): bool => g.ammo.chambered && g.slide.pull <= 0.0
+/// closed (not held back by a racking hand; a pump home).
+let canFire = (w: Weapon, g: State): bool => g.ammo.chambered && inBattery(w.rack, g.slide)
 
-/// After a shot: the round spent, the next fed from the magazine.
+/// After a shot: the round spent, the next fed from the magazine (a pump's
+/// hull left in the chamber).
 let onFired = (g: State): State => let (a, _) = Ammo.fire(g.ammo) in { g with ammo: a }
 
-/// The weapon after firing `s`: kicked, counted, the hit recorded.
-let fire = (g: State, s: Shot): State =>
-  let hit = s.impact |> Option.filter((i) => i.target) in
-  let hits = match hit with
-    | Option.Some(i) => g.hits |> List.append([i])
-    | Option.None => g.hits in
+/// The weapon after firing `s`, its pellets striking `struck`: kicked,
+/// counted, the target hits recorded (the last two shots' at least).
+let fire = (w: Weapon, g: State, s: Shot, struck: List<Impact>): State =>
+  let hits = g.hits |> List.append(struck |> List.filter((i) => i.target)) in
+  let cap = Math.max(hitCap, 2.0 * w.pellets) in
   { onFired(g) with
       kick: 1.0,
       fired: g.fired + 1.0,
       last: Option.Some(s),
-      hits: List.drop(Math.max(0.0, List.length(hits) - hitCap), hits) }
+      hits: List.drop(Math.max(0.0, List.length(hits) - cap), hits) }
 
 /// The weapon after a refused pull: a click, and the trigger disarmed until
 /// it is let out, so full-auto doesn't click on at its rate.
@@ -429,10 +485,10 @@ expect (select(pistol, idle)).mode == Semi
 // Loaded 12+1: each shot spends the chambered round and feeds the next; 13
 // shots, then nothing to fire.
 let shot0 = { t: 0.0, from: Hold.zero, dir: Hold.zero, impact: Option.None }
-expect Ammo.count((stocked(pistol)).ammo) == 13.0 && canFire(stocked(pistol))
+expect Ammo.count((stocked(pistol)).ammo) == 13.0 && canFire(pistol, stocked(pistol))
 expect (
-  let after = List.range(13.0) |> List.fold((g, _) => fire(g, shot0), stocked(pistol)) in
-  after.fired == 13.0 && not canFire(after) && Ammo.count(after.ammo) == 0.0 && Option.isSome(after.ammo.mag)
+  let after = List.range(13.0) |> List.fold((g, _) => fire(pistol, g, shot0, []), stocked(pistol)) in
+  after.fired == 13.0 && not canFire(pistol, after) && Ammo.count(after.ammo) == 0.0 && Option.isSome(after.ammo.mag)
 )
 // A dry pull is no shot: counted apart, the trigger disarmed.
 expect (
@@ -474,11 +530,11 @@ expect (
 )
 
 /// Where a weapon is drawn: `pose` kicked up about its grip and back by
-/// `kick`, easing out.
+/// `kick` (scaled by its `recoil`), easing out.
 let kicked = (w: Weapon, kick: float, pose: Input.pose): Input.pose =>
   if kick <= 0.0 then pose
   else
-    let k = kick * kick in
+    let k = w.recoil * kick * kick in
     let hand = Hold.compose(pose, w.grip) in
     let jolt = Hold.at(Quat.v3(0.0, 0.0, recoilBack * k), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), recoilPitch * k)) in
     Hold.compose(Hold.compose(hand, jolt), Hold.inverse(w.grip))

@@ -29,7 +29,11 @@ let spares: List<Props.Kind> =
 
 /// The props a station spawns.
 let props = (s: Station): List<Props.Kind> =>
-  if s.id == armory.id then List.append(spares, [Props.Pistol, Props.Rifle]) else [Props.Ball, Props.Stick, Props.Brick, Props.Bottle]
+  if s.id == armory.id then List.append(spares, [Props.Pistol, Props.Rifle, Props.Shotgun]) else [Props.Ball, Props.Stick, Props.Brick, Props.Bottle]
+
+/// The armory's box of shotgun shells: how many it starts with. A hand
+/// squeezing in it takes one out, a prop (`Game`).
+let shellsInBox = 12.0
 
 let find = (id: float): Station =>
   all |> List.find((s) => s.id == id) |> Option.defaultValue(grabTable)
@@ -91,10 +95,13 @@ let spawn = (k: Props.Kind): Input.pose =>
   | Props.Pistol => on(0.15, -0.5, Quat.identity)
   // In its rack on the bench, level, pointing down range.
   | Props.Rifle => rifleRack
+  | Props.Shotgun => shotgunRack
   // The spares stand in a row on the bench's left, their counts to the player.
   | Props.Mag(_, id) => on(-0.51 + 0.09 * id, -0.5, Quat.identity)
-  // A loose round is placed where its rack threw it out (`Game`).
+  // A loose round (or hull) is placed where its rack threw it out, or a
+  // shell where the box gave it (`Game`).
   | Props.Round(_, _) => on(0.0, -0.5, Quat.identity)
+  | Props.Hull(_) => on(0.0, -0.5, Quat.identity)
 
 /// The spares' cradles, where they stand.
 let cradles: List<Slots.Placed> =
@@ -103,10 +110,12 @@ let cradles: List<Slots.Placed> =
     | Props.Mag(fits, id) => [{ slot: Slots.cradle(id, fits), pose: spawn(k) }]
     | _ => [])
 
-/// The slot a prop starts in: the rifle in its rack, a spare in its cradle.
+/// The slot a prop starts in: the rifle and the shotgun in their racks, a
+/// spare in its cradle.
 let startSlot = (k: Props.Kind): Option.t<float> =>
   match k with
   | Props.Rifle => Option.Some(Slots.rack.id)
+  | Props.Shotgun => Option.Some(Slots.shotgunRack.id)
   | Props.Mag(fits, id) => if spares |> List.any((s) => s == k) then Option.Some((Slots.cradle(id, fits)).id) else Option.None
   | _ => Option.None
 
@@ -180,12 +189,26 @@ let rangeBoardAt = Quat.v3(0.0, 2.05, -5.57)
 /// The racked rifle's pose (rig-local): on the bench's right, its pistol
 /// grip 11 cm above the bench, a hand's reach ahead.
 let rifleRack: Input.pose = Hold.p(0.55, 1.05, -0.62)
-/// The rack's two cradles (drawn only, not solid), under the stock's front
-/// and the handguard, from the bench up to the rifle.
+/// The racked shotgun's, between the rifle and the pistol: its fist 6 cm
+/// above the bench (its pistol grip clear of it).
+let shotgunRack: Input.pose = Hold.p(0.35, 1.01, -0.62)
+/// The racks' cradles (drawn only, not solid), from the bench up to each gun:
+/// under the rifle's stock front and handguard, and under the shotgun's stock
+/// and receiver.
 let rackPosts: List<Box> =
-  [0.0 - 0.26, 0.16] |> List.map((dz) =>
-    let top = rifleRack.position.y - (Longarm.size).y / 2.0 in
-    atArmory(Quat.v3(rifleRack.position.x, (tableTop + top) / 2.0, rifleRack.position.z + dz), Quat.v3(0.06, top - tableTop, 0.03)))
+  let posts = (at: Input.pose, size: Input.point3, dzs: List<float>) =>
+    dzs |> List.map((dz) =>
+      let top = at.position.y - size.y / 2.0 in
+      atArmory(Quat.v3(at.position.x, (tableTop + top) / 2.0, at.position.z + dz), Quat.v3(0.06, top - tableTop, 0.03))) in
+  List.append(posts(rifleRack, Longarm.size, [0.0 - 0.26, 0.16]), posts(shotgunRack, Pump.size, [0.0 - 0.08, 0.27]))
+
+/// The shell box on the bench's front, left of the pistol: its centre
+/// (rig-local), its size, and where a hand reaches into it (its top, within
+/// `shellBoxReach`).
+let shellBoxAt = Quat.v3(-0.04, tableTop + 0.025, -0.42)
+let shellBoxSize = Quat.v3(0.12, 0.05, 0.07)
+let shellBoxTop = Quat.add(shellBoxAt, Quat.v3(0.0, 0.025, 0.0))
+let shellBoxReach = 0.07
 
 let isTarget = (name: string): bool => targets |> List.any((t) => let (n, _) = t in n == name)
 

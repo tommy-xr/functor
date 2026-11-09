@@ -42,17 +42,25 @@ let weapon: Gun.Weapon = Gun.weaponAt(grip, bore, chamberAhead, muzzleAhead, tru
   { kind: Ammo.RifleMag, at: Quat.sub(Quat.v3(0.0, 0.0, 0.0 - 0.09), center), rake: 0.0, drop: 0.1, guide: Gun.guide },
   { at: Quat.sub(Quat.v3(0.0, 0.0865, 0.0 - 0.07), center), tilt: 0.0 - Math.pi / 6.0, size: 0.005 },
   { at: Quat.sub(handleAt, center), radius: 0.04, travel: handleTravel, lockBack: 0.0, boltLock: 0.7 * handleTravel,
-    port: Quat.sub(Quat.v3(0.04, 0.06, 0.0 - 0.03), center) })
+    port: Quat.sub(Quat.v3(0.04, 0.06, 0.0 - 0.03), center), pump: false })
 
 expect Gun.clearBelow(weapon, size)
 
 // --- the foregrip ---
 
+/// A two-handed weapon's support line: through the primary fist (at the
+/// authored `grip`) parallel to the bore, from `near` to `far` ahead of it
+/// (the rifle's foregrip, or a pump's fore-end home), and how far that slides
+/// back (`travel`: a pump's; 0 for a fixed foregrip).
+type Fore = { grip: Input.pose, near: float, far: float, travel: float }
+
+let fore: Fore = { grip: grip, near: foreNear, far: foreFar, travel: 0.0 }
+
 /// How near the foregrip line a hand must be to take it: off it by at most
 /// this, between its ends.
 let foreZone = 0.06
 /// A support hand this far off the primary hand's axis breaks off, or past
-/// either end of the foregrip by `foreSlack`.
+/// either end of the foregrip by `foreSlack` (a pump's, anywhere it slides).
 let breakOff = 0.12
 let foreSlack = 0.08
 
@@ -64,27 +72,28 @@ let alongOf = (fist: Input.pose, q: Input.point3): Along =>
   let local = Hold.localPoint(fist, q) in
   { along: 0.0 - local.z, off: Math.sqrt(local.x * local.x + local.y * local.y) }
 
-/// From a point to the foregrip of a rifle at `pose`: 0 on its line.
-let foreGap = (pose: Input.pose, q: Input.point3): float =>
-  let a = alongOf(Hold.compose(pose, grip), q) in
-  let past = Math.max(0.0, Math.max(foreNear - a.along, a.along - foreFar)) in
+/// From a point to the foregrip of a weapon at `pose`, slid back `pull`: 0
+/// on its line.
+let foreGap = (f: Fore, pull: float, pose: Input.pose, q: Input.point3): float =>
+  let a = alongOf(Hold.compose(pose, f.grip), q) in
+  let past = Math.max(0.0, Math.max(f.near - pull - a.along, a.along - (f.far - pull))) in
   Math.sqrt(a.off * a.off + past * past)
 
 /// Whether a support hand at `a` (seen from the primary hand) still holds.
-let holds = (a: Along): bool =>
-  a.off <= breakOff && a.along >= foreNear - foreSlack && a.along <= foreFar + foreSlack
+let holds = (f: Fore, a: Along): bool =>
+  a.off <= breakOff && a.along >= f.near - f.travel - foreSlack && a.along <= f.far + foreSlack
 
 let level = Hold.at(Quat.v3(0.2, 1.1, -0.3), Quat.identity)
-expect foreGap(Gun.heldAt(weapon, level), Quat.v3(0.2, 1.1, -0.55)) < 0.0001
-expect Math.abs(foreGap(Gun.heldAt(weapon, level), Quat.v3(0.2, 1.15, -0.5)) - 0.05) < 0.0001
+expect foreGap(fore, 0.0, Gun.heldAt(weapon, level), Quat.v3(0.2, 1.1, -0.55)) < 0.0001
+expect Math.abs(foreGap(fore, 0.0, Gun.heldAt(weapon, level), Quat.v3(0.2, 1.15, -0.5)) - 0.05) < 0.0001
 // Past the near end by 4 cm, on the line: 4 cm away.
-expect Math.abs(foreGap(Gun.heldAt(weapon, level), Quat.v3(0.2, 1.1, -0.4)) - 0.04) < 0.0001
+expect Math.abs(foreGap(fore, 0.0, Gun.heldAt(weapon, level), Quat.v3(0.2, 1.1, -0.4)) - 0.04) < 0.0001
 // It slides freely along the foregrip, and a little past its ends; off the
 // axis by 11 cm it still holds, by 15 cm it breaks; and past an end by more
 // than `foreSlack`.
-expect [foreNear, 0.25, foreFar, foreNear - 0.07, foreFar + 0.07] |> List.all((d) => holds(alongOf(level, Quat.v3(0.2, 1.1, -0.3 - d))))
-expect holds(alongOf(level, Quat.v3(0.31, 1.1, -0.55))) && not holds(alongOf(level, Quat.v3(0.35, 1.1, -0.55)))
-expect not holds(alongOf(level, Quat.v3(0.2, 1.1, -0.3 - foreNear + 0.09))) && not holds(alongOf(level, Quat.v3(0.2, 1.1, -0.3 - foreFar - 0.09)))
+expect [foreNear, 0.25, foreFar, foreNear - 0.07, foreFar + 0.07] |> List.all((d) => holds(fore, alongOf(level, Quat.v3(0.2, 1.1, -0.3 - d))))
+expect holds(fore, alongOf(level, Quat.v3(0.31, 1.1, -0.55))) && not holds(fore, alongOf(level, Quat.v3(0.35, 1.1, -0.55)))
+expect not holds(fore, alongOf(level, Quat.v3(0.2, 1.1, -0.3 - foreNear + 0.09))) && not holds(fore, alongOf(level, Quat.v3(0.2, 1.1, -0.3 - foreFar - 0.09)))
 
 // --- the two-hand aim ---
 
@@ -163,15 +172,15 @@ let support = (side: Hold.Side, primary: Input.pose, at: Input.point3): Support 
 /// What a support step did: still on the foregrip, let go, or broken off.
 type Grasp = | Supporting(support: Support) | LetGo | Broke
 
-/// One step of a support hand at `at` (None: untracked): too far off the
-/// primary hand's axis or past the foregrip's ends, it breaks off (even if it
-/// opened); opened or lost, it lets go; else it aims the rifle, the ease
-/// turning out by at most `Hold.snapTurnStep`.
-let grasp = (s: Support, primary: Input.pose, at: Option.t<Input.point3>, squeezed: bool): Grasp =>
+/// One step of a support hand at `at` (None: untracked) on foregrip `f`:
+/// too far off the primary hand's axis or past the foregrip's ends, it
+/// breaks off (even if it opened); opened or lost, it lets go; else it aims
+/// the weapon, the ease turning out by at most `Hold.snapTurnStep`.
+let grasp = (f: Fore, s: Support, primary: Input.pose, at: Option.t<Input.point3>, squeezed: bool): Grasp =>
   match at with
   | Option.None => LetGo
   | Option.Some(q) =>
-    if not holds(alongOf(primary, q)) then Broke
+    if not holds(f, alongOf(primary, q)) then Broke
     else if not squeezed then LetGo
     else
       let left = Quat.angle(s.ease, Quat.identity) in
@@ -200,7 +209,7 @@ expect (
   let s0 = support(Hold.Left, level, hand) in
   let steps = List.range(6.0) |> List.fold((acc, i) =>
     let s = List.last(acc) |> Option.defaultValue(s0) in
-    acc |> List.append([grasp(s, level, Option.Some(hand), true) |> grasped |> Option.defaultValue(s)]), [s0]) in
+    acc |> List.append([grasp(fore, s, level, Option.Some(hand), true) |> grasped |> Option.defaultValue(s)]), [s0]) in
   let aims = steps |> List.map((s) => s.aim) in
   Quat.angle(s0.aim, level.orientation) < 0.0001
     && (List.zip(List.drop(1.0, aims), aims) |> List.all((ab) => let (a, b) = ab in Quat.angle(a, b) <= Hold.snapTurnStep + 0.000001))
@@ -210,9 +219,9 @@ expect (
 expect (
   let s = support(Hold.Left, level, ahead(level, 0.25)) in
   let off = Quat.add(ahead(level, 0.25), Quat.v3(-0.15, 0.0, 0.0)) in
-  grasp(s, level, Option.Some(ahead(level, 0.25)), false) == LetGo
-    && grasp(s, level, Option.Some(off), true) == Broke && grasp(s, level, Option.Some(off), false) == Broke
-    && grasp(s, level, Option.None, true) == LetGo
+  grasp(fore, s, level, Option.Some(ahead(level, 0.25)), false) == LetGo
+    && grasp(fore, s, level, Option.Some(off), true) == Broke && grasp(fore, s, level, Option.Some(off), false) == Broke
+    && grasp(fore, s, level, Option.None, true) == LetGo
 )
 // Let go after aiming 20 degrees left: alone, the primary keeps the rifle
 // exactly where the aim had it, then it settles back.
@@ -228,23 +237,24 @@ expect (
   let primary = Hold.at(Quat.v3(0.1, 1.3, -0.3), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 0.6)) in
   let hand = Quat.add(primary.position, Quat.v3(-0.08, 0.05, -0.28)) in
   let s = { support(Hold.Left, primary, hand) with ease: Quat.identity } in
-  let aimed = (grasp(s, primary, Option.Some(hand), true) |> grasped |> Option.defaultValue(s)) in
+  let aimed = (grasp(fore, s, primary, Option.Some(hand), true) |> grasped |> Option.defaultValue(s)) in
   let rifle = Gun.heldAt(weapon, steer(primary, aimed)) in
   let b = Gun.boreOf(weapon, rifle) in
   Hold.near3(b.dir, unit(Quat.sub(hand, primary.position)))
-    && Hold.near3((Hold.compose(rifle, grip)).position, primary.position) && foreGap(rifle, hand) < 0.0001
+    && Hold.near3((Hold.compose(rifle, grip)).position, primary.position) && foreGap(fore, 0.0, rifle, hand) < 0.0001
 )
 
 // --- what the support hand is drawn at ---
 
-/// Where the support hand at `hand` is drawn on a rifle accepted at
-/// `accepted` and wanted at `wanted`: carried with the rifle where the level
-/// stopped it short, its fist on the foregrip line, between its ends.
-let supportOn = (accepted: Input.pose, wanted: Input.pose, hand: Input.pose): Input.pose =>
+/// Where the support hand at `hand` is drawn on foregrip `f` (slid back
+/// `pull`) of a weapon accepted at `accepted` and wanted at `wanted`: carried
+/// with it where the level stopped it short, its fist on the foregrip line,
+/// between its ends.
+let supportOn = (f: Fore, pull: float, accepted: Input.pose, wanted: Input.pose, hand: Input.pose): Input.pose =>
   let moved = Hold.compose(accepted, Hold.relative(wanted, hand)) in
   let local = (Hold.relative(accepted, moved)).position in
-  let z = Math.clamp(grip.position.z - foreFar, grip.position.z - foreNear, local.z) in
-  Hold.at(Quat.add(accepted.position, Quat.rotate(accepted.orientation, Quat.v3(grip.position.x, grip.position.y, z))), moved.orientation)
+  let z = Math.clamp(f.grip.position.z - f.far + pull, f.grip.position.z - f.near + pull, local.z) in
+  Hold.at(Quat.add(accepted.position, Quat.rotate(accepted.orientation, Quat.v3(f.grip.position.x, f.grip.position.y, z))), moved.orientation)
 
 // Unblocked, a hand on the line is drawn where it is; stopped 10 cm short,
 // it is drawn 10 cm back with the rifle; past the end, at the end.
@@ -252,9 +262,9 @@ expect (
   let rifle = Gun.heldAt(weapon, level) in
   let hand = Hold.at(ahead(level, 0.3), Quat.yaw(0.3)) in
   let back = Hold.at(Quat.add(rifle.position, Quat.v3(0.0, 0.0, 0.1)), rifle.orientation) in
-  Hold.near(supportOn(rifle, rifle, hand), hand)
-    && Hold.near(supportOn(back, rifle, hand), Hold.at(Quat.add(hand.position, Quat.v3(0.0, 0.0, 0.1)), hand.orientation))
-    && Hold.near3((supportOn(rifle, rifle, Hold.at(ahead(level, 0.6), Quat.identity))).position, ahead(level, foreFar))
+  Hold.near(supportOn(fore, 0.0, rifle, rifle, hand), hand)
+    && Hold.near(supportOn(fore, 0.0, back, rifle, hand), Hold.at(Quat.add(hand.position, Quat.v3(0.0, 0.0, 0.1)), hand.orientation))
+    && Hold.near3((supportOn(fore, 0.0, rifle, rifle, Hold.at(ahead(level, 0.6), Quat.identity))).position, ahead(level, foreFar))
 )
 
 // --- the look ---

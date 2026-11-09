@@ -5,10 +5,12 @@
 
 /// A magazine is a prop of its own once out of a weapon: its kind, and an id
 /// telling it from the station's other magazines. A round thrown out of a
-/// chamber by a rack is one too, loose: the magazine kind it is for, its id.
-type Kind = | Ball | Stick | Brick | Bottle | Pistol | Rifle | Mag(fits: Ammo.Kind, id: float) | Round(cal: Ammo.Kind, id: float)
+/// chamber by a rack is one too, loose: the magazine kind it is for, its id
+/// (a shotgun shell's `Ammo.Shell`, out of the box or pumped out live). A
+/// fired shell's hull, pumped out, is litter: no round.
+type Kind = | Ball | Stick | Brick | Bottle | Pistol | Rifle | Shotgun | Mag(fits: Ammo.Kind, id: float) | Round(cal: Ammo.Kind, id: float) | Hull(id: float)
 
-let all = [Ball, Stick, Brick, Bottle, Pistol, Rifle]
+let all = [Ball, Stick, Brick, Bottle, Pistol, Rifle, Shotgun]
 
 let name = (k: Kind): string =>
   match k with
@@ -18,8 +20,10 @@ let name = (k: Kind): string =>
   | Bottle => "bottle"
   | Pistol => "pistol"
   | Rifle => "rifle"
+  | Shotgun => "shotgun"
   | Mag(_, id) => $"mag-{id}"
   | Round(_, id) => $"round-{id}"
+  | Hull(id) => $"hull-{id}"
 
 let ballRadius = 0.06
 let stickLength = 0.7
@@ -40,14 +44,18 @@ let extent = (k: Kind): Input.point3 =>
   | Bottle => Quat.v3(2.0 * bottleRadius, bodyHeight + neckLength, 2.0 * bottleRadius)
   | Pistol => Gun.size
   | Rifle => Longarm.size
+  | Shotgun => Pump.size
   | Mag(fits, _) => Gun.magSize(fits)
   | Round(cal, _) => roundSize(cal)
+  | Hull(_) => roundSize(Ammo.Shell)
 
-/// A cartridge's bounds, long along Z: 9 mm by 29, or 57 for the rifle's.
+/// A cartridge's bounds, long along Z: 9 mm by 29, or 57 for the rifle's; a
+/// shotgun shell's (`Gun.magSize`).
 let roundSize = (cal: Ammo.Kind): Input.point3 =>
   match cal with
   | Ammo.PistolMag => Quat.v3(0.0095, 0.0095, 0.029)
   | Ammo.RifleMag => Quat.v3(0.0095, 0.0095, 0.057)
+  | Ammo.Shell => Gun.magSize(Ammo.Shell)
 
 let shape = (k: Kind) =>
   match k with
@@ -69,6 +77,7 @@ let gap = (k: Kind, q: Input.point3, pose: Input.pose): float =>
   | Ball => Quat.length(local) - ballRadius
   | Pistol => Quat.length(Quat.sub(local, Gun.grip.position))
   | Rifle => Quat.length(Quat.sub(local, Longarm.grip.position))
+  | Shotgun => Quat.length(Quat.sub(local, Pump.grip.position))
   | _ =>
     let e = extent(k) in
     let out = (v: float, size: float) => Math.max(0.0, Math.abs(v) - size / 2.0) in
@@ -85,6 +94,7 @@ let reach = (k: Kind): float =>
   match k with
   | Pistol => Gun.gripZone
   | Rifle => Longarm.gripZone
+  | Shotgun => Pump.gripZone
   | _ => Hold.reach
 
 // A hand on the pistol's grip reaches it; one at the muzzle, touching it,
@@ -107,17 +117,35 @@ let grip = (k: Kind): Option.t<Input.pose> =>
   | Bottle => Option.Some(Hold.at(Quat.v3(0.0, neckAt, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0)))
   | Pistol => Option.Some(Gun.grip)
   | Rifle => Option.Some(Longarm.grip)
+  | Shotgun => Option.Some(Pump.grip)
   | _ => Option.None
 
 /// Whether the prop is only ever held at its grip: taken anywhere in reach of
 /// it (`reach`), it settles into it (`Hold.settleInto`) rather than snapping.
-let gripRequired = (k: Kind): bool => k == Pistol || k == Rifle
+let gripRequired = (k: Kind): bool => k == Pistol || k == Rifle || k == Shotgun
 
 /// The weapon a prop is, if it is one.
 let weapon = (k: Kind): Option.t<Gun.Weapon> =>
   match k with
   | Pistol => Option.Some(Gun.pistol)
   | Rifle => Option.Some(Longarm.weapon)
+  | Shotgun => Option.Some(Pump.weapon)
+  | _ => Option.None
+
+/// A two-handed weapon's support line (the rifle's foregrip, the shotgun's
+/// fore-end), if it has one.
+let fore = (k: Kind): Option.t<Longarm.Fore> =>
+  match k with
+  | Rifle => Option.Some(Longarm.fore)
+  | Shotgun => Option.Some(Pump.fore)
+  | _ => Option.None
+
+/// What a prop loads into a weapon's well, if anything: a magazine, its kind;
+/// a live shell, a shell.
+let loads = (k: Kind): Option.t<Ammo.Kind> =>
+  match k with
+  | Mag(fits, _) => Option.Some(fits)
+  | Round(cal, _) => if cal == Ammo.Shell then Option.Some(cal) else Option.None
   | _ => Option.None
 
 // A hand pointing up, gripping the neck: snapped, the bottle stands upright
@@ -141,8 +169,10 @@ let dynamics = (k: Kind, body: Physics.body): Physics.body =>
     | Bottle => (0.5, 0.25, 0.5)
     | Pistol => (0.7, 0.1, 0.8)
     | Rifle => (0.7, 0.1, 0.8)
+    | Shotgun => (0.7, 0.1, 0.8)
     | Mag(_, _) => (0.7, 0.1, 0.8)
-    | Round(_, _) => (0.5, 0.3, 0.6) in
+    | Round(_, _) => (0.5, 0.3, 0.6)
+    | Hull(_) => (0.5, 0.3, 0.6) in
   body
     |> Physics.friction(friction)
     |> Physics.restitution(restitution)
@@ -194,8 +224,12 @@ let scene = (k: Kind, look: Look): Scene.t =>
     ])
   | Pistol => Gun.scene(paint(look), 0.0)
   | Rifle => Longarm.scene(paint(look), 0.0, 0.0)
+  | Shotgun => Pump.scene(paint(look), 0.0)
   | Mag(fits, _) => Gun.magazine(fits, paint(look))
-  | Round(_, _) =>
+  | Hull(_) => Gun.shell(paint(look), true)
+  | Round(cal, _) =>
+    if cal == Ammo.Shell then Gun.shell(paint(look), false)
+    else
     // A brass case, its bullet at the front (-Z drawn: the pose's +Z).
     Scene.group([
       Scene.cube() |> Scene.scaleXYZ(e.x, e.y, 0.7 * e.z) |> Scene.translate(Vec3.make(0.0, 0.0, 0.15 * e.z)) |> paint(look, 0.85, 0.65, 0.25),

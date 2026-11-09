@@ -45,9 +45,9 @@ let pull = hand(onGrip, 1.0, 1.0)
 let ease = hand(onGrip, 1.0, 0.0)
 
 expect Game.isHeld(last(play(take)), Props.Pistol)
-// The pistol, the rifle and four spare magazines are at the armory, and the
-// holsters are worn.
-expect List.length(start.props) == 6.0 && Stations.worn(Stations.armory)
+// The pistol, the rifle, the shotgun and four spare magazines are at the
+// armory, and the holsters are worn.
+expect List.length(start.props) == 7.0 && Stations.worn(Stations.armory)
 
 // --- the trigger ---
 
@@ -390,8 +390,9 @@ expect (
 let initialRounds = Game.unspent(start)
 /// Every model keeps the station's rounds: unspent plus both guns' shots,
 /// plus the loose rounds taken away.
-let conserved = (ms: List<Game.Model>): bool => ms |> List.all((m) => Game.unspent(m) + m.gun.fired + m.rifle.fired + m.lost == initialRounds)
-expect initialRounds == 13.0 + 31.0 + 2.0 * 12.0 + 2.0 * 30.0
+let conserved = (ms: List<Game.Model>): bool => ms |> List.all((m) => Game.unspent(m) + m.gun.fired + m.rifle.fired + m.shotgun.fired + m.lost == initialRounds)
+// The guns, the spares, and the shell box (the shotgun starts unloaded).
+expect initialRounds == 13.0 + 31.0 + 2.0 * 12.0 + 2.0 * 30.0 + Stations.shellsInBox
 
 /// `n` pulls of the pistol's trigger, each let out.
 let pulls = (n: float) => List.range(n) |> List.concatMap((_) => [pull, ease])
@@ -431,13 +432,13 @@ let ejected = sampled(fired3, [], Game.away, stickDown(ease))
 expect (
   let mag = dropped(ejected) in
   mag.mag == Option.Some({ kind: Ammo.PistolMag, rounds: 9.0, capacity: 12.0 }) && Option.isNone(ejected.gun.ammo.mag) && ejected.gun.ammo.chambered
-    && List.length(ejected.props) == 7.0 && Option.isNone(mag.held) && Option.isNone(mag.slot)
+    && List.length(ejected.props) == 8.0 && Option.isNone(mag.held) && Option.isNone(mag.slot)
     && mag.at.position.y < (Game.poseOf(pistol(ejected))).position.y - 0.1 && conserved([fired3, ejected])
 )
 // M drops it too; the other hand's stick doesn't, nor M with no gun held.
 expect Option.isNone((sampled(fired3, [Key.M], Game.away, ease)).gun.ammo.mag)
 expect Option.isSome((sampled(fired3, [], stickDown(Game.away), ease)).gun.ammo.mag)
-expect List.length((sampled(start, [Key.M], Game.away, Game.away)).props) == 6.0
+expect List.length((sampled(start, [Key.M], Game.away, Game.away)).props) == 7.0
 // Its way out blocked by the level (the pistol resting on the bench): it
 // stays in, and nothing drops.
 expect (
@@ -446,7 +447,7 @@ expect (
     | Props.Mag(_, _) => Option.Some({ fraction: 0.0, normal: Quat.v3(0.0, 1.0, 0.0) })
     | _ => Option.None } in
   let m = sampledIn(floored, fired3, [], Game.away, stickDown(ease)) in
-  Option.isSome(m.gun.ammo.mag) && List.length(m.props) == 6.0 && m.nextMag == fired3.nextMag && conserved([m])
+  Option.isSome(m.gun.ammo.mag) && List.length(m.props) == 7.0 && m.nextMag == fired3.nextMag && conserved([m])
 )
 // The rifle's, by M, held in two hands: 30 rounds out, one chambered.
 expect (
@@ -536,7 +537,7 @@ expect (
 )
 // The magazine released: it drops; still locked.
 let releasedMag = sampled(lockedOpen, [], Game.away, stickDown(upHold))
-expect Option.isNone(releasedMag.gun.ammo.mag) && releasedMag.gun.ammo.locked && List.length(releasedMag.props) == 7.0
+expect Option.isNone(releasedMag.gun.ammo.mag) && releasedMag.gun.ammo.locked && List.length(releasedMag.props) == 8.0
 // A spare out of its cradle, in the left hand.
 let tookSpare = playBoth(Game.noWorld, releasedMag, [(lefty(spareAt, 0.0), upHold), (lefty(spareAt, 1.0), upHold)])
 expect (Game.propOf(last(tookSpare), spare).held |> Option.map((h) => h.side == Hold.Left) |> Option.defaultValue(false))
