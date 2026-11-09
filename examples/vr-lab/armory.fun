@@ -995,6 +995,15 @@ let ghostOf = (m: Game.Model, side: Hold.Side): bool =>
 let trackedOf = (m: Game.Model, side: Hold.Side): Input.pose => Game.gripOf(m.xr, side) |> Option.defaultValue(Hold.origin)
 let asTracked = (m: Game.Model): Game.Model => { m with handView: Game.Tracked }
 
+// The pistol pushed through the stand-in wall with the hand: the hand drawn
+// on its grip at the wall, ghosted; in `Tracked`, where it is. The other
+// hand, holding nothing, where it is.
+expect (
+  let m = last(playBoth(walled, start, List.flatten([take, through]) |> List.map((c) => (lefty(onGrip, 0.0), c)))) in
+  (pistol(m).held |> Option.map((h) => Hold.near(drawnOf(m, Hold.Right), Hold.compose(h.accepted, Gun.grip))) |> Option.defaultValue(false))
+    && ghostOf(m, Hold.Right) && Hold.near(drawnOf(asTracked(m), Hold.Right), trackedOf(m, Hold.Right))
+    && Hold.near(drawnOf(m, Hold.Left), trackedOf(m, Hold.Left))
+)
 // Both hands pushed on through the stand-in wall: the right drawn on the
 // rifle's grip and the left on its foregrip, where the wall stopped it, each
 // ghosted; in `Tracked`, where they are, no ghost.

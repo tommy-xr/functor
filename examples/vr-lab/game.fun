@@ -1242,11 +1242,6 @@ expect (
 
 // --- drawing ---
 
-/// Where a holding hand is drawn in `Accepted`: at the grip its prop's
-/// accepted pose implies. Steering always uses the tracked pose.
-let drawnGrip = (grip: Input.pose, held: Option.t<Hold.Held>): Input.pose =>
-  held |> Option.map(Hold.gripOn) |> Option.defaultValue(grip)
-
 /// Where hold `h` wants its gun `p`: at the primary hand (aimed by the
 /// support, if any), or, that hand lost, where it was accepted.
 let wantedOf = (m: Model, p: Prop, h: Hold.Held): Input.pose =>
@@ -1254,36 +1249,31 @@ let wantedOf = (m: Model, p: Prop, h: Hold.Held): Input.pose =>
     |> Option.map((primary) => Hold.compose(p.support |> Option.map((s) => Longarm.steer(primary, s)) |> Option.defaultValue(primary), h.offset))
     |> Option.defaultValue(h.accepted)
 
-/// Where a hand is drawn: tracked, or (`Accepted`) on what it holds
-/// (`drawnGrip`), and on what it holds of a gun as the hold accepted it: a
+/// Where a hand is drawn: tracked, or (`Accepted`) on what it holds as the
+/// hold accepted it. A holding hand at the grip its prop's pose implies; a
 /// rifle's (or shotgun's) support hand on the foregrip (the fore-end, where
-/// the pump has it); a racking hand on the slide (or charging handle), where
-/// the slide has it.
+/// the pump has it); a hand racking a slide (or charging handle) on it,
+/// where the slide has it. Steering always uses the tracked pose.
 let drawnHand = (m: Model, side: Hold.Side, g: Input.pose): Input.pose =>
   if m.handView == Tracked then g
   else
-  let onFore =
-    m.props |> List.find((p) => supportOf(p) == Option.Some(side)) |> Option.bind((p) =>
-      p.held |> Option.map((h) => Longarm.supportOn(foreOf(p.kind), pumpOf(m, p.kind), h.accepted, wantedOf(m, p, h), g))) in
-  match onFore with
-  | Option.Some(on) => on
+  // The prop the hand holds or supports, in one pass (a hand does one or the other).
+  match m.props |> List.find((p) => heldBy(side, p) || supportOf(p) == Option.Some(side)) with
+  | Option.Some(p) =>
+    (match p.held with
+     | Option.Some(h) =>
+       if h.side == side then Hold.gripOn(h)
+       else Longarm.supportOn(foreOf(p.kind), pumpOf(m, p.kind), h.accepted, wantedOf(m, p, h), g)
+     | Option.None => g)
   | Option.None =>
     // (The pump's hand is the support: on the fore-end, above.)
-    let onRack =
-      [Props.Pistol, Props.Rifle] |> List.find((k) => (gunOf(m, k)).slide.hand == Option.Some(side)) |> Option.bind((k) =>
-        let p = propOf(m, k) in
-        p.held |> Option.map((h) => Gun.rackOn(weaponOf(k), (gunOf(m, k)).slide, h.accepted, wantedOf(m, p, h), g))) in
-    (match onRack with
-     | Option.Some(on) => on
-     | Option.None => drawnGrip(g, heldIn(m, side)))
+    let racked = if m.gun.slide.hand == Option.Some(side) then Option.Some(Props.Pistol)
+      else if m.rifle.slide.hand == Option.Some(side) then Option.Some(Props.Rifle) else Option.None in
+    racked |> Option.bind((k) =>
+      let p = propOf(m, k) in
+      p.held |> Option.map((h) => Gun.rackOn(weaponOf(k), (gunOf(m, k)).slide, h.accepted, wantedOf(m, p, h), g)))
+      |> Option.defaultValue(g)
 
-// A held ball pushed 10 cm into a wall: drawn at the wall; holding nothing,
-// where it is.
-expect (
-  let blocked = { side: Hold.Right, offset: Hold.origin, accepted: Hold.p(-0.55, 1.0, -0.5), history: [], snapTo: Option.None } in
-  let tracked = Hold.p(-0.65, 1.0, -0.5) in
-  Hold.near(drawnGrip(tracked, Option.Some(blocked)), blocked.accepted) && Hold.near(drawnGrip(tracked, Option.None), tracked)
-)
 /// A sampled input with only keys pressed and XR, for checks.
 let snapshotOf = (pressed: List<Key.t>, xr: Option.t<Input.xr>): Input.snapshot =>
   { heldKeys: [], pressedKeys: pressed, releasedKeys: [],
