@@ -4620,6 +4620,7 @@ fn register_effects(reg: &mut crate::host_registry::Registry) {
         },
     );
     // A controller pulse; out-of-range values are teaching errors, not clamps.
+    // The cap keeps a typo (`Time.hours`) from buzzing until the session ends.
     reg.fn3(
         "Effect.haptic",
         "Effect.haptic(hand, amplitude, duration)",
@@ -4629,9 +4630,10 @@ fn register_effects(reg: &mut crate::host_registry::Registry) {
                     "Effect.haptic: amplitude must be 0..1, got {amplitude}"
                 ));
             }
-            if !(duration.0 >= 0.0 && (duration.0 as f32).is_finite()) {
+            if !(0.0..=crate::haptics::MAX_SECONDS).contains(&duration.0) {
                 return Err(format!(
-                    "Effect.haptic: the duration must be finite and not negative, got {}s",
+                    "Effect.haptic: the duration must be 0..{}s, got {}s",
+                    crate::haptics::MAX_SECONDS,
                     duration.0
                 ));
             }
@@ -7087,9 +7089,9 @@ fn drain_mode(
     // `Some` = pre-step drain: hold queries here instead of performing.
     // `None` = post-step drain: answer queries now.
     mut defer_queries: Option<&mut Vec<EffectTree>>,
-    // When true (a dry-run forward-step, docs/time-travel.md T6b), the SIX
+    // When true (a dry-run forward-step, docs/time-travel.md T6b), the
     // outbound arms (physics command, timeline control, net send, http, audio,
-    // audioThen) still LOG and `continue` but skip their `push_*`/`queue_*`/
+    // audioThen, preload, haptic) still LOG and `continue` but skip their `push_*`/`queue_*`/
     // `register_*` side effect — the model still evolves (runner reads proceed),
     // but nothing escapes to the live world / global queues. Always `false` on
     // the live path.
@@ -18084,8 +18086,9 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         assert!(
             fails("Effect.haptic(Xr.Left, -0.1, Time.millis(10.0))").contains("amplitude must be 0..1")
         );
-        assert!(fails("Effect.haptic(Xr.Left, 0.5, Time.millis(-10.0))").contains("must be finite and not negative"));
-        assert!(fails("Effect.haptic(Xr.Left, 0.5, Time.hours(1e36))").contains("must be finite"));
+        assert!(fails("Effect.haptic(Xr.Left, 0.5, Time.millis(-10.0))").contains("must be 0..5s"));
+        assert!(fails("Effect.haptic(Xr.Left, 0.5, Time.seconds(5.5))").contains("must be 0..5s"));
+        assert!(fails("Effect.haptic(Xr.Left, 0.5, Time.hours(1e36))").contains("must be 0..5s"));
         assert!(fails("Effect.haptic(Xr.Left, 0.5, 0.1)").contains("expected a Duration"));
     }
 

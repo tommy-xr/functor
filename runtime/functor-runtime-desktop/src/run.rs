@@ -1044,8 +1044,7 @@ fn deliver_net_ws(
 /// Count a snapshot's controller pulses: desktop has no actuator, so each is
 /// `sent` (`GET /state.haptics`).
 fn record_haptics(snapshot: &SimSnapshot) {
-    let frame = functor_runtime_common::haptics::state_frame(snapshot.scene_frame);
-    functor_runtime_common::haptics::record(&snapshot.haptics, frame, |_| true);
+    functor_runtime_common::haptics::record(&snapshot.haptics, snapshot.state_frame(), |_| true);
 }
 
 /// Perform the HTTP + WebSocket commands this frame's tick queued. HTTP requests

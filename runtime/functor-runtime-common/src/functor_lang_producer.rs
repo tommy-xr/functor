@@ -1039,7 +1039,7 @@ pub struct FrameCtx<'a> {
     /// that ADDS the sub later — hot reload — still gets the current state).
     pub delivered_asset_progress: &'a mut Option<AssetProgress>,
     /// Suppress OUTBOUND effects (physics command / timeline / send / http /
-    /// audio) during a dry-run forward-step (docs/time-travel.md T6b): they
+    /// audio / haptic) during a dry-run forward-step (docs/time-travel.md T6b): they
     /// still log and the model still evolves, but nothing escapes to the live
     /// world or the global queues. Always `false` on the live frame body.
     pub suppress_outbound: bool,
@@ -2251,7 +2251,7 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         // A dry-run forward-step (docs/time-travel.md T6b) must not open/close
         // live sockets: connection reconcile is purely OUTBOUND (it feeds
         // nothing back into the model), so suppress it wholesale — the same
-        // rule as the six drain arms, keeping the global queues untouched.
+        // rule as the drain's outbound arms, keeping the global queues untouched.
         if self.suppress_outbound {
             return;
         }

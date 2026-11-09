@@ -659,8 +659,9 @@ impl XrActions {
     /// Vibrate one controller (`Effect.haptic`); false if the runtime refused.
     fn pulse(&self, session: &xr::Session<xr::OpenGlEs>, pulse: &HapticPulse) -> bool {
         // 0 s asks for the runtime's shortest pulse.
-        let duration = if pulse.seconds > 0.0 {
-            xr::Duration::from_nanos((f64::from(pulse.seconds) * 1e9) as i64)
+        let nanos = (f64::from(pulse.seconds) * 1e9) as i64;
+        let duration = if nanos > 0 {
+            xr::Duration::from_nanos(nanos)
         } else {
             xr::Duration::MIN_HAPTIC
         };
@@ -1669,6 +1670,8 @@ pub fn android_main(app: AndroidApp) {
     };
     let mut session_running = false;
     let mut session_focused = false;
+    // The next snapshot's pulses predate a session stop.
+    let mut haptics_stale = false;
     // The first valid center-eye pose becomes the tracking origin for the
     // authored `Frame.camera`. It survives source reload and session doze so
     // model-driven locomotion and physical room-scale motion remain additive.
@@ -1751,6 +1754,12 @@ pub fn android_main(app: AndroidApp) {
                     }
                     match e.state() {
                         xr::SessionState::READY => {
+                            // Pulses from debug-driven ticks while it dozed.
+                            functor_runtime_common::haptics::record(
+                                &functor_runtime_common::haptics::take(),
+                                0,
+                                |_| false,
+                            );
                             session
                                 .begin(xr::ViewConfigurationType::PRIMARY_STEREO)
                                 .expect("session begin");
@@ -1759,8 +1768,12 @@ pub fn android_main(app: AndroidApp) {
                             last_frame_at = None;
                         }
                         xr::SessionState::STOPPING => {
-                            // No buzz outlives the session, nor fires on resume.
+                            // No buzz outlives the session, nor fires on
+                            // resume: the first snapshot after it (which may
+                            // carry a frame in flight at the stop) drops its
+                            // pulses, and so does anything queued now.
                             xr_actions.stop_haptics(&session);
+                            haptics_stale = true;
                             functor_runtime_common::haptics::record(
                                 &functor_runtime_common::haptics::take(),
                                 0,
@@ -2039,11 +2052,10 @@ pub fn android_main(app: AndroidApp) {
             record.set_sim(fresh.sim_ns, &fresh.stages);
             // Actuate the frame's pulses once, as its snapshot arrives; an
             // unfocused session can't vibrate, so they count as dropped.
-            functor_runtime_common::haptics::record(
-                &fresh.haptics,
-                functor_runtime_common::haptics::state_frame(fresh.scene_frame),
-                |pulse| session_focused && xr_actions.pulse(&session, pulse),
-            );
+            let live = !std::mem::take(&mut haptics_stale);
+            functor_runtime_common::haptics::record(&fresh.haptics, fresh.state_frame(), |pulse| {
+                live && session_focused && xr_actions.pulse(&session, pulse)
+            });
             let foveation = fresh.settings.as_ref().and_then(|settings| settings.xr.foveation);
             if foveation_available && foveation != applied_foveation {
                 apply_foveation(&instance, &session, &eyes, foveation);

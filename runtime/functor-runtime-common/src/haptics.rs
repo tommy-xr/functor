@@ -12,6 +12,9 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+/// The longest pulse `Effect.haptic` accepts, in seconds.
+pub const MAX_SECONDS: f64 = 5.0;
+
 /// Which controller vibrates (`Xr.Left` / `Xr.Right`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -108,9 +111,9 @@ pub struct HapticRecord {
 }
 
 /// Pulses since launch (`GET /state.haptics`): `sent` were handed to the
-/// controller (counted without one on desktop, web and headless), `dropped`
-/// lost their frame's arbitration or were refused (no focused headset
-/// session). `recent` keeps the last few sent, oldest first.
+/// controller (counted without one on desktop and headless), `dropped` lost
+/// their frame's arbitration or were refused (an unfocused headset session,
+/// or one that stopped before they played). `recent` keeps the last few sent, oldest first.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct HapticCounts {
@@ -157,11 +160,6 @@ pub fn record(taken: &HapticFrame, frame: u64, mut perform: impl FnMut(&HapticPu
 /// The counts so far (see [`HapticCounts`]).
 pub fn counts() -> HapticCounts {
     COUNTS.lock().unwrap_or_else(|e| e.into_inner()).clone()
-}
-
-/// `GET /state`'s `frame` for a snapshot's recorded scene frame.
-pub fn state_frame(scene_frame: Option<u64>) -> u64 {
-    scene_frame.map_or(0, |f| f + 1)
 }
 
 /// Serializes tests that touch the process-global queue.

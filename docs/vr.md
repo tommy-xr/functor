@@ -702,7 +702,7 @@ collision pipeline and the bake provenance check.
 ### Controller haptics
 
 `Effect.haptic(Xr.Left, 0.6, 30ms)` vibrates one controller once: amplitude
-`0..1`, a non-negative duration (`0ms` = the runtime's shortest pulse). Out of
+`0..1`, a duration up to 5 s (`0ms` = the runtime's shortest pulse). Out of
 range is a teaching error. Return it from `tick`/`sampledInput`/`update` like
 any effect; nothing comes back.
 
@@ -714,8 +714,11 @@ any effect; nothing comes back.
   `/user/hand/{left,right}/output/haptic` for Touch and the simple controller,
   driven by `xrApplyHapticFeedback` (`frequency` unspecified) as each
   snapshot lands, so pipelined mode works. An unfocused session drops the
-  pulse; `STOPPING` stops both controllers and drops anything queued.
-- **Desktop, web, headless:** no actuator; each pulse counts as `sent`.
+  pulse; `STOPPING` stops both controllers and drops anything queued,
+  including the first snapshot after the session resumes (it may carry a
+  frame in flight at the stop).
+- **Desktop, headless:** no actuator; each pulse counts as `sent`. Web ignores
+  pulses (it serves no `/state`).
 - **Replay:** pulses are logged intents (`xr.haptic`). A fork or ghost runs
   with outbound suppressed, and a seek, rewind or hot reload re-runs no
   effects, so none buzzes or counts. Replaying a fixture through `/input` is a

@@ -334,9 +334,9 @@ export type Hand = "left" | "right";
 
 /**
  * Pulses since launch (`GET /state.haptics`): `sent` were handed to the
- * controller (counted without one on desktop, web and headless), `dropped`
- * lost their frame's arbitration or were refused (no focused headset
- * session). `recent` keeps the last few sent, oldest first.
+ * controller (counted without one on desktop and headless), `dropped` lost
+ * their frame's arbitration or were refused (an unfocused headset session,
+ * or one that stopped before they played). `recent` keeps the last few sent, oldest first.
  */
 export type HapticCounts = { sent: number, dropped: number, recent: Array<HapticRecord>, };
 
