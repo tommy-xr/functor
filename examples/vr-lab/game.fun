@@ -167,9 +167,12 @@ let withProp = (p: Prop, m: Model): Model =>
 let heldBy = (side: Hold.Side, p: Prop): bool =>
   p.held |> Option.map((h) => h.side == side) |> Option.defaultValue(false)
 
+/// The prop a hand holds, if any.
+let propIn = (m: Model, side: Hold.Side): Option.t<Prop> => m.props |> List.find((p) => heldBy(side, p))
+
 /// What a hand holds, if anything.
 let heldIn = (m: Model, side: Hold.Side): Option.t<Hold.Held> =>
-  m.props |> List.find((p) => heldBy(side, p)) |> Option.bind((p) => p.held)
+  propIn(m, side) |> Option.bind((p) => p.held)
 
 /// Where a prop is now: held, where it was accepted; free, as read back.
 let poseOf = (p: Prop): Input.pose => p.held |> Option.map((h) => h.accepted) |> Option.defaultValue(p.pose)
@@ -289,28 +292,27 @@ let wear = (m: Model, dt: float): Model =>
 /// opening in one slot: the nearer its centre wins, the right on a tie
 /// (`Hold.pick`); the other's prop is let go as usual.
 let stowing = (prev: Model, m: Model, slots: List<Slots.Placed>): List<Stow> =>
-  let claim = (side: Hold.Side) =>
+  // A hand's claim: what it would store where, as a reacher at its gap to the slot's centre.
+  let claim = (side: Hold.Side): List<(Hold.Reacher, Stow)> =>
     let h = handOf(m, side) in
-    if not (handOf(prev, side).tracked && h.tracked && not h.squeezed) then Option.None
+    if not (handOf(prev, side).tracked && h.tracked && not h.squeezed) then []
     else
-      m.props |> List.find((p) => heldBy(side, p)) |> Option.bind((p) =>
-        gripOf(m.xr, side) |> Option.bind((g) =>
+      let found =
+        propIn(m, side) |> Option.bind((p) => gripOf(m.xr, side) |> Option.bind((g) =>
           Slots.target(slots, g.position)
             |> Option.filter((t) => Slots.fits(p.kind, t.slot) && not occupied(m, t.slot.id))
             |> Option.map((t) => (Hold.reacher(side, true, true, Slots.distance(t, g.position)), { prop: p.kind, slot: t.slot.id })))) in
-  let l = claim(Hold.Left) in
-  let r = claim(Hold.Right) in
-  let slotOf = (c) => c |> Option.map((rs) => let (_, s) = rs in s.slot) in
-  let contested = Option.isSome(l) && slotOf(l) == slotOf(r) in
-  let reacherOf = (side: Hold.Side, c) =>
-    c |> Option.map((rs) => let (who, _) = rs in who) |> Option.defaultValue(Hold.reacher(side, false, false, 0.0)) in
-  let winner = Hold.pick(reacherOf(Hold.Left, l), reacherOf(Hold.Right, r)) in
-  [(Hold.Left, l), (Hold.Right, r)]
-    |> List.concatMap((sc) =>
-      let (side, c) = sc in
-      match c with
-      | Option.Some(rs) => if not contested || winner == Option.Some(side) then (let (_, s) = rs in [s]) else []
-      | Option.None => [])
+      match found with
+      | Option.Some(c) => [c]
+      | Option.None => [] in
+  let stows = (cs: List<(Hold.Reacher, Stow)>) => cs |> List.map((c) => let (_, s) = c in s) in
+  match List.append(claim(Hold.Right), claim(Hold.Left)) with
+  | [l, r] =>
+    let (lr, ls) = l in
+    let (rr, rs) = r in
+    if ls.slot != rs.slot then [ls, rs]
+    else if Hold.pick(lr, rr) == Option.Some(Hold.Left) then [ls] else [rs]
+  | claims => stows(claims)
 
 /// One fixed step, given the world (`cast`) and the props as read back
 /// (`read`): the next model, and the props let go (their velocity and spin
@@ -596,7 +598,7 @@ let offered = (m: Model, s: Slots.Placed): List<Props.Kind> =>
     let offer =
       gripOf(m.xr, side)
         |> Option.filter((g) => Slots.target([s], g.position) |> Option.isSome)
-        |> Option.bind((g) => m.props |> List.find((p) => heldBy(side, p)))
+        |> Option.bind((g) => propIn(m, side))
         |> Option.map((p) => p.kind) in
     match offer with
     | Option.Some(k) => [k]
@@ -632,7 +634,7 @@ let bodyScene = (m: Model, st: Stations.Station): Scene.t =>
     Scene.group([
       Scene.group(slots |> List.map((s) =>
         Slots.scene(s.slot, Slots.look(s.slot, occupied(m, s.slot.id), offered(m, s))) |> Scene.atPose(posed(st, s.pose)))),
-      belt |> Scene.atPose(posed(st, { position: m.hips.root, orientation: Quat.yaw(m.hips.yaw) })),
+      belt |> Scene.atPose(posed(st, Hips.frame(m.hips))),
       spine(m.hips.root) |> Scene.atPose(posed(st, { position: m.hips.root, orientation: Quat.identity })),
       gaze |> Scene.atPose(posed(st, { position: Quat.add(head.position, up), orientation: Quat.yaw(Hips.headingOr(m.hips.yaw, head.orientation)) })),
     ])

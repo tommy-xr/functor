@@ -2,18 +2,20 @@
 // alone. Rig-local (+X right, +Y up, -Z forward); yaw is radians about +Y,
 // 0 = facing -Z, as `Quat.yaw` turns it.
 //
-// The heading follows the head with examples/fullbody's lag (`slewYaw` and
-// `nextYaw` are copied from its body.fun, unchanged): a glance inside the
-// deadzone barely moves it, a real turn drags it along. `pin` freezes it,
-// within the twist limit, while a hand reaches for something on the body.
+// The heading follows the head with examples/fullbody's lag (`slewYaw` is
+// copied from its body.fun unchanged; `nextYaw` adds the pin and reads a
+// heading that survives a rolled head): a glance inside the deadzone barely
+// moves it, a real turn drags it along. `pin` freezes it while a hand
+// reaches for something on the body, for at most `pinHold`.
 
-type State = { head: Option.t<Input.pose>, yaw: float, root: Input.point3, pinned: bool }
+/// `pinnedFor`: how long a hand has been near a slot (0 when none is).
+type State = { head: Option.t<Input.pose>, yaw: float, root: Input.point3, pinned: bool, pinnedFor: float }
 
 /// One fixed step's input: the tracked head (None while lost), and whether a
 /// hand is reaching for a slot.
 type Sample = { head: Option.t<Input.pose>, pin: bool }
 
-let init: State = { head: Option.None, yaw: 0.0, root: Quat.v3(0.0, 0.0, 0.0), pinned: false }
+let init: State = { head: Option.None, yaw: 0.0, root: Quat.v3(0.0, 0.0, 0.0), pinned: false, pinnedFor: 0.0 }
 
 let degrees = (d: float): float => d * Math.pi / 180.0
 
@@ -24,6 +26,9 @@ let settleRate = degrees(20.0)
 let maxTwist = degrees(70.0)
 // How fast the hips catch up, in radians per second.
 let turnRate = degrees(150.0)
+// A pin lasts this long: a reach is shorter, and a hand resting by a holster
+// (arms hanging) must not hold the hips back for good.
+let pinHold = 1.5
 // A head that moves this far in one step was recentred, not turned.
 let recenterJump = 0.25
 let recenterTurn = degrees(45.0)
@@ -44,7 +49,8 @@ let facing = (q: Input.quaternion): Option.t<float> =>
   let u = Quat.rotate(t, Quat.v3(0.0, 1.0, 0.0)) in
   let hx = f.x * u.y - u.x * f.y in
   let hz = f.z * u.y - u.z * f.y in
-  if hx * hx + hz * hz < 0.000001 then Option.None else Option.Some(Quat.heading(t))
+  // `Quat.heading(t)`, with its degenerate case caught.
+  if hx * hx + hz * hz < 0.000001 then Option.None else Option.Some(Math.atan2(hx, hz))
 
 let headingOr = (fallback: float, q: Input.quaternion): float => facing(q) |> Option.defaultValue(fallback)
 
@@ -66,9 +72,9 @@ let slewYaw = (yaw: float, heading: float, dt: float): float =>
 
 /// The hips' heading for a new head sample. The first one sets it; a head
 /// that jumps (a recentre moves the whole tracking space) turns the hips by
-/// the same amount, keeping the twist; otherwise they lag (`slewYaw`). A head
-/// with no heading keeps the last.
-let nextYaw = (s: State, head: Input.pose, fresh: bool, dt: float): float =>
+/// the same amount, keeping the twist; pinned, they hold; otherwise they lag
+/// (`slewYaw`). A head with no heading keeps the last.
+let nextYaw = (s: State, head: Input.pose, fresh: bool, pinned: bool, dt: float): float =>
   let heading = headingOr(s.yaw, head.orientation) in
   match s.head with
   | Option.None => heading
@@ -76,26 +82,26 @@ let nextYaw = (s: State, head: Input.pose, fresh: bool, dt: float): float =>
     let turned = Quat.wrap(heading - headingOr(heading, p.orientation)) in
     let jumped = fresh && (Quat.length(Quat.sub(head.position, p.position)) > recenterJump
       || Math.abs(turned) > recenterTurn) in
-    if jumped then Quat.wrap(s.yaw + turned) else slewYaw(s.yaw, heading, dt)
+    if jumped then Quat.wrap(s.yaw + turned)
+    else if pinned then s.yaw
+    else slewYaw(s.yaw, heading, dt)
 
-/// Advance the frame by one fixed step. Pinned, the heading slews for no
-/// time: it holds, except that it still never trails the head by more than
-/// `maxTwist`. A lost head keeps the last frame.
+/// Advance the frame by one fixed step. Pinned (a hand near a slot, for up
+/// to `pinHold`), the heading holds, past the twist limit too; unpinned, the
+/// limit catches it up at once. A lost head holds the whole frame.
 let step = (s: State, x: Sample, dt: float): State =>
-  let head = match x.head with | Option.Some(h) => Option.Some(h) | Option.None => s.head in
-  match head with
-  | Option.None => { s with pinned: x.pin }
-  | Option.Some(h) =>
-    { head: Option.Some(h),
-      yaw: nextYaw(s, h, Option.isSome(x.head), if x.pin then 0.0 else dt),
-      root: rootOf(h),
-      pinned: x.pin }
+  let pinned = x.pin && s.pinnedFor < pinHold in
+  let next = { s with pinned: pinned, pinnedFor: if x.pin then s.pinnedFor + dt else 0.0 } in
+  match x.head with
+  | Option.None => next
+  | Option.Some(h) => { next with head: Option.Some(h), yaw: nextYaw(s, h, true, pinned, dt), root: rootOf(h) }
+
+/// The hips' own pose (rig-local): at the root, turned by the yaw.
+let frame = (s: State): Input.pose => Hold.at(s.root, Quat.yaw(s.yaw))
 
 /// A pose in the hips' frame, rig-local; None before the first head.
 let place = (s: State, local: Input.pose): Option.t<Input.pose> =>
-  s.head |> Option.map((h) =>
-    let turn = Quat.yaw(s.yaw) in
-    { position: Quat.add(s.root, Quat.rotate(turn, local.position)), orientation: Quat.mul(turn, local.orientation) })
+  s.head |> Option.map((h) => Hold.compose(frame(s), local))
 
 /// How far the head is turned from the hips.
 let twist = (s: State): float =>
@@ -171,11 +177,19 @@ expect (
   (states |> List.all((s) => s.yaw == 0.0)) && final(states).pinned
     && near(degreesOf(unpinned.yaw), 2.5, 0.0001) && not unpinned.pinned
 )
-// Pinned, the twist limit still holds: a head turned on past it drags the
-// hips at the limit, so unpinning never snaps them.
+// Pinned, they hold past the twist limit too; let go, the limit catches
+// them up at once.
 expect (
   let s = final(trace(init, [looking(0.0), pinnedAt(30.0), pinnedAt(60.0), pinnedAt(90.0)])) in
-  near(degreesOf(s.yaw), 20.0, 0.0001)
+  s.yaw == 0.0 && near(degreesOf(step(s, looking(90.0), dt).yaw), 20.0, 0.0001)
+)
+// A hand left by a slot (arms hanging by the holsters) pins for `pinHold`
+// only: then the hips follow the head round again.
+expect (
+  let states = trace(init, List.flatten([[looking(0.0), pinnedAt(30.0), pinnedAt(60.0)], repeat(240.0, pinnedAt(90.0))])) in
+  let at = (i: float) => List.nth(i, states) |> Option.defaultValue(init) in
+  at(90.0).pinned && at(90.0).yaw == 0.0 && not at(93.0).pinned
+    && near(degreesOf(final(states).yaw), 90.0, 0.0001) && not final(states).pinned
 )
 
 // --- what a worn slot sees ---
@@ -210,9 +224,9 @@ expect (
   let at = (yaw: float) => slotAt({ (step(init, looking(180.0), dt)) with yaw: yaw }) in
   Hold.near3(at(Math.pi), at(0.0 - Math.pi))
 )
-// A lost head keeps the last frame.
+// A lost head holds the frame, even while the hips are still catching up.
 expect (
-  let s = step(init, looking(40.0), dt) in
-  let lost = step(s, { head: Option.None, pin: false }, dt) in
-  near(lost.yaw, s.yaw, 0.000000001) && lost.root == s.root
+  let s = final(trace(init, [looking(0.0), looking(40.0)])) in
+  let lost = final(trace(s, repeat(10.0, { head: Option.None, pin: false }))) in
+  degreesOf(s.yaw) < 30.0 && lost.yaw == s.yaw && lost.root == s.root
 )

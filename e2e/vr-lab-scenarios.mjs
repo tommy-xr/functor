@@ -119,7 +119,6 @@ const atWall = [-0.545, 1.15, -0.55];
 // inferred under the neck at 0.62 of its height, and the slots sit at their
 // authored offsets from it (`Slots`), turned with the hips' yaw.
 
-export const inventory = { feet: [0, 0, -4], yaw: Math.PI };
 export const NECK = { at: [0, 1.49, 0.09], eye: [0, 0.11, -0.09] };
 export const ROOT = [0, 1.49 * 0.62, 0.09];
 export const SLOT = {

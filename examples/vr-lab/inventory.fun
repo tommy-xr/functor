@@ -195,6 +195,17 @@ expect (
   (List.range(20.0) |> List.all((i) => let h = nth(i + 2.0, ms).hips in h.pinned && h.yaw == 0.0))
     && not last(ms).hips.pinned && last(ms).hips.yaw > 0.0
 )
+// Arms hanging by the holsters pin the hips only for `Hips.pinHold` at a
+// time (again as the holsters come back round them): turned a quarter turn,
+// they come round with the body.
+expect (
+  let hanging = (turn: float) => { turn: turn, l: openAt(Quat.v3(-0.25, 0.78, 0.08)), r: openAt(Quat.v3(0.25, 0.78, 0.08)) } in
+  let m = last(play(start, List.flatten([
+    List.range(30.0) |> List.map((i) => hanging(3.0 * (i + 1.0))),
+    List.range(330.0) |> List.map((i) => hanging(90.0)),
+  ]))) in
+  Math.abs(m.hips.yaw - Math.pi / 2.0) < 0.001 && not m.hips.pinned
+)
 // Stored, the brick rides the hips round as the body turns.
 expect (
   let ms = play(start, List.flatten([

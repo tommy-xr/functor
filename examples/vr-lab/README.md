@@ -130,13 +130,15 @@ belt in front (the ball). The stick fits none.
 - **The hips.** The slots hang off a frame `{root, yaw}` that is inferred
   from the head alone (no tracked pelvis): the neck pivots 11 cm below and
   9 cm behind the eyes, and the pelvis is under it at 0.62 of its height.
-  Its heading lags the head's as examples/fullbody's hips do (copied from
-  its `body.fun`): within 25° it drifts after it at 20°/s, past that it
+  Its heading lags the head's as examples/fullbody's hips do (its
+  `slewYaw`, copied): within 25° it drifts after it at 20°/s, past that it
   chases at 150°/s, and it never trails by more than 70°. Pitch doesn't
-  tilt it; a head with no heading (rolled onto its side) keeps the last.
+  tilt it; a head with no heading (rolled onto its side) keeps the last,
+  and a lost head holds the whole frame.
 - **Pin.** While either hand is within 10 cm of a slot's reach the heading
-  holds still (it still never trails past 70°), so the slot doesn't swim
-  away as the hand arrives.
+  holds still, so the slot doesn't swim away as the hand arrives; for
+  1.5 s at most, so arms hanging by the holsters don't hold it back for
+  good. Let go past the 70° twist limit, it catches up to the limit at once.
 - **Slots.** Each is plain data (`slots.fun`): an offset in the hips' frame,
   an 8 cm reach round its centre, the kinds it takes, room for one. Drawn as
   a ring: steel (holsters) or amber (pouch) idle, green when a hand holding

@@ -6,13 +6,11 @@
 /// its centre a hand must be to use it, and what it takes (one at a time).
 type Slot = { id: float, name: string, offset: Input.pose, radius: float, fits: List<Props.Kind> }
 
-let at = (x: float, y: float, z: float): Input.pose => { position: Quat.v3(x, y, z), orientation: Quat.identity }
-
 // The holsters hang at the sides of the thighs, just below the pelvis; the
 // pouch sits on the belt in front.
-let leftHolster: Slot = { id: 1.0, name: "left holster", offset: at(-0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle] }
-let rightHolster: Slot = { id: 2.0, name: "right holster", offset: at(0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle] }
-let pouch: Slot = { id: 3.0, name: "pouch", offset: at(0.0, 0.0, -0.15), radius: 0.08, fits: [Props.Ball] }
+let leftHolster: Slot = { id: 1.0, name: "left holster", offset: Hold.p(-0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle] }
+let rightHolster: Slot = { id: 2.0, name: "right holster", offset: Hold.p(0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle] }
+let pouch: Slot = { id: 3.0, name: "pouch", offset: Hold.p(0.0, 0.0, -0.15), radius: 0.08, fits: [Props.Ball] }
 
 let all = [leftHolster, rightHolster, pouch]
 
@@ -52,16 +50,18 @@ let pins = (slots: List<Placed>, q: Input.point3): bool =>
 /// won't (it doesn't fit, or the slot is full).
 type Look = | Idle | Ready | Refused
 
-/// A slot's look, for the props the hands in it hold (a holding hand only).
+/// A slot's look, for the props the holding hands in it offer: ready if it
+/// would take one of them.
 let look = (s: Slot, occupied: bool, offered: List<Props.Kind>): Look =>
-  match List.head(offered) with
-  | Option.None => Idle
-  | Option.Some(k) => if fits(k, s) && not occupied then Ready else Refused
+  if List.isEmpty(offered) then Idle
+  else if not occupied && (offered |> List.any((k) => fits(k, s))) then Ready
+  else Refused
 
 expect look(leftHolster, false, []) == Idle
 expect look(leftHolster, false, [Props.Brick]) == Ready
 expect look(leftHolster, true, [Props.Brick]) == Refused
 expect look(pouch, false, [Props.Stick]) == Refused
+expect look(leftHolster, false, [Props.Stick, Props.Brick]) == Ready
 
 // The slots ride the hips: placed at the authored offset from the root,
 // turned with them.

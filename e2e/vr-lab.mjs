@@ -446,14 +446,11 @@ await run("station reset", async (rt) => {
 
 // --- inventory (station 2): rig-local is the world moved to its feet ---
 
-const yawQ = (rad) => [0, Math.sin(rad / 2), 0, Math.cos(rad / 2)];
+const deg = (rad) => (rad * 180) / Math.PI;
 const slotOf = (m, kind) => some(prop(m, kind).slot);
 // Where the model's hips put a slot (rig-local).
-const slotPose = (m, name) => ({
-  position: add(xyz(m.hips.root), qrot(yawQ(m.hips.yaw), SLOT[name].offset)),
-  orientation: yawQ(m.hips.yaw),
-});
-const deg = (rad) => (rad * 180) / Math.PI;
+const hipsPose = (m) => ({ position: xyz(m.hips.root), orientation: yaw(deg(m.hips.yaw)) });
+const slotPose = (m, name) => compose(hipsPose(m), { position: SLOT[name].offset, orientation: [0, 0, 0, 1] });
 const fmtDeg = (rad) => `${deg(rad).toFixed(2)}°`;
 
 let stowEnd;
@@ -479,7 +476,7 @@ await run("inventory: stow and turn", async (rt) => {
   const round = len(sub(poseOf(turned, "Brick").position, slotAt("rightHolster", 90)));
   check(round < 0.001, `a quarter turn round the pelvis (${(round * 1000).toFixed(2)} mm from where the turned holster is)`);
   // From the right shoulder, which turns with the torso: 18 cm out, 14 cm under the neck.
-  const shoulder = (x) => add(NECK.at, qrot(yawQ(x.hips.yaw), [0.18, -0.14, 0]));
+  const shoulder = (x) => add(NECK.at, qrot(yaw(deg(x.hips.yaw)), [0.18, -0.14, 0]));
   const reach = [stored, turned].map((x) => len(sub(poseOf(x, "Brick").position, shoulder(x))));
   check(Math.abs(reach[0] - reach[1]) < 0.001 && reach[1] < 0.6, `and stays in reach: ${reach.map((r) => (r * 100).toFixed(1)).join(" → ")} cm from the right shoulder`);
   stowEnd = JSON.stringify(turned);
