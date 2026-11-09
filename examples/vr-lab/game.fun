@@ -9,7 +9,11 @@
 // it, aimed with a second hand on its foregrip, semi or full-auto (A/X while
 // holding it, or F). Both are loaded (12+1, 30+1; `Ammo`) with a readout on
 // each; the thumbstick pushed down on a gun's hand (or M) drops its magazine,
-// a prop like any other, and spare magazines stand on the bench.
+// a prop like any other, and spare magazines stand on the bench. A magazine
+// brought to a well's mouth lined up latches and is guided in along the well
+// (`Seating`); the other hand racks the slide or charging handle to chamber
+// (a chambered round flies out loose). The last shot locks the slide back;
+// a rack (or A/X on the pistol's hand) releases it.
 //
 //   functor -d examples/vr-lab run vr
 //   functor -d examples/vr-lab run native        # the station, no hands
@@ -38,7 +42,8 @@ let config =
 
 let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> Xr.foveation(Xr.Off))
 
-type ReleaseKind = | Throw | Drop | Break
+// `Eject`: a loose round thrown out of a chamber (no hand let it go).
+type ReleaseKind = | Throw | Drop | Break | Eject
 
 /// The last time a hand let go of a prop (world space; `spin` is an axis ×
 /// rad/s).
@@ -67,7 +72,10 @@ type Prop = {
   // Landed in the basket since it was last taken.
   scored: bool,
   // A magazine's rounds (none for the other props).
-  mag: Option.t<Ammo.Mag>
+  mag: Option.t<Ammo.Mag>,
+  // A held magazine caught in a well and guided along it: it has no body
+  // (it is part of its gun), and the hand drives only its depth.
+  latch: Option.t<Seating.Latch>
 }
 
 // Prop poses and velocities are rig-local.
@@ -102,8 +110,14 @@ type Model = {
   // and the guns whose release was pressed this step.
   stick: (bool, bool),
   releasing: List<Props.Kind>,
-  // The next ejected magazine's id.
-  nextMag: float
+  // The guns whose slide release (A/X on the pistol's trigger hand) was
+  // pressed this step.
+  slideRelease: List<Props.Kind>,
+  // The next ejected magazine's and loose round's ids.
+  nextMag: float,
+  nextRound: float,
+  // Loose rounds taken out of the world past `looseCap` (oldest first).
+  lost: float
 }
 
 let zero = Hold.zero
@@ -118,11 +132,12 @@ let spawned = (k: Props.Kind): Prop =>
     at: Stations.spawn(k), pose: Stations.spawn(k), velocity: zero, scored: false,
     mag: match k with
       | Props.Mag(fits, _) => Option.Some(Ammo.full(fits))
-      | _ => Option.None }
+      | _ => Option.None,
+    latch: Option.None }
 
 /// Jump to a station and reset it: no holds, empty slots, fresh props, the
-/// guns loaded and the spares full (until magazines go back in, the reload),
-/// and hands that must open before they grab again.
+/// guns loaded and the spares full, no loose rounds, and hands that must open
+/// before they grab again.
 let reset = (m: Model, id: float): Model =>
   { m with
       station: id,
@@ -140,14 +155,17 @@ let reset = (m: Model, id: float): Model =>
       gun: Gun.stocked(Gun.pistol),
       rifle: Gun.stocked(Longarm.weapon),
       releasing: [],
-      nextMag: List.length(Stations.spares) + 1.0 }
+      slideRelease: [],
+      nextMag: List.length(Stations.spares) + 1.0,
+      nextRound: 1.0,
+      lost: 0.0 }
 
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
     handView: Tracked, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
     feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon), buttonA: (false, false),
-    stick: (false, false), releasing: [], nextMag: 1.0
+    stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
   }, 1.0)
 
 // --- input ---
@@ -193,9 +211,12 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
     if not any then []
     else [Props.Pistol, Props.Rifle] |> List.filter((k) =>
       (releaseKey && Option.isSome(triggerHand(m, k))) || pressedOn(k, Hold.Left, downLeft, stickLeft) || pressedOn(k, Hold.Right, downRight, stickRight)) in
+  // The pistol's slide release: A/X on its trigger hand (on the rifle's,
+  // A/X is the selector).
+  let slideRelease = if pressedOn(Props.Pistol, Hold.Left, aLeft, wasLeft) || pressedOn(Props.Pistol, Hold.Right, aRight, wasRight) then [Props.Pistol] else [] in
   let next = { m with xr: s.xr, cycle: cycle, thumbstick: thumbstick, handView: if flip then flipped(m.handView) else m.handView,
                buttonA: (aLeft, aRight), rifle: if select then Gun.select(Longarm.weapon, m.rifle) else m.rifle,
-               stick: (downLeft, downRight), releasing: releasing } in
+               stick: (downLeft, downRight), releasing: releasing, slideRelease: slideRelease } in
   match chosen with
   | Option.Some(id) => reset(next, id)
   | Option.None => if cycle && not m.cycle then reset(next, Stations.after(m.station)) else next
@@ -223,11 +244,17 @@ let ejectMag = (m: Model, world: World, k: Props.Kind): Model =>
       let dropped = { spawned(kind) with at: at, pose: at, mag: Option.Some(mag) } in
       { withGun(m, k, { g with ammo: ammo }) with props: m.props |> List.append([dropped]), nextMag: m.nextMag + 1.0 }
 
-/// The station's unspent rounds: in every magazine (free, held, slotted or
-/// in a well) and chamber. With the shots fired (`Gun.State.fired`), always
+/// The station's unspent rounds: in every magazine (free, held, slotted,
+/// latched or in a well) and chamber, and loose in the world. With the shots
+/// fired (`Gun.State.fired`) and the loose rounds taken away (`lost`), always
 /// what the station was reset with.
 let unspent = (m: Model): float =>
-  (m.props |> List.map((p) => Ammo.roundsIn(p.mag)) |> List.sum) + Ammo.count(m.gun.ammo) + Ammo.count(m.rifle.ammo)
+  (m.props |> List.map((p) => if isRound(p.kind) then 1.0 else Ammo.roundsIn(p.mag)) |> List.sum) + Ammo.count(m.gun.ammo) + Ammo.count(m.rifle.ammo)
+
+let isRound = (k: Props.Kind): bool =>
+  match k with
+  | Props.Round(_, _) => true
+  | _ => false
 
 // --- the step ---
 
@@ -300,11 +327,12 @@ let steeredGrip = (m: Model, side: Hold.Side): Option.t<Input.pose> =>
 type Stow = { prop: Props.Kind, slot: float }
 
 /// Step every held prop with its hand: the model, and what was let go. A
-/// prop let go into the slot `stowed` names goes in it instead.
+/// prop let go into the slot `stowed` names goes in it instead. A latched
+/// magazine is `seating`'s.
 let holdAll = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input.pose) => Option.t<Hold.Hit>, slots: List<Slots.Placed>, stowed: List<Stow>, t: float): (Model, List<Release>) =>
   m.props |> List.fold((acc, p) =>
     let (next, released) = acc in
-    match p.held with
+    match (if Option.isSome(p.latch) then Option.None else p.held) with
     | Option.None => acc
     | Option.Some(h) =>
       let letGo = (pose: Input.pose, kind: ReleaseKind, v: Input.point3, w: Input.point3) =>
@@ -337,12 +365,12 @@ let reaching = (m: Model, side: Hold.Side, slots: List<Slots.Placed>, stowed: Li
   match gripOf(m.xr, side) with
   | Option.None => Option.None
   | Option.Some(g) =>
-    if Option.isSome(inHand(m, side)) then Option.None
+    if Option.isSome(inHand(m, side)) || onSlideOf(m, side) then Option.None
     else
       let inSlot = Slots.target(slots, g.position) |> Option.map((t) => t.slot.id) in
       m.props
         |> List.filter((p) => not (stowed |> List.any((s) => s.prop == p.kind))
-             && (Option.isNone(p.slot) || p.slot == inSlot) && Option.isNone(p.support)
+             && (Option.isNone(p.slot) || p.slot == inSlot) && Option.isNone(p.support) && Option.isNone(p.latch)
              // A foregrip the primary hand's axis would break off at once isn't taken.
              && (not foregripOnly(p) || (p.held |> Option.bind((h) => gripOf(m.xr, h.side)) |> Option.map((pg) => Longarm.holds(Longarm.alongOf(pg, g.position))) |> Option.defaultValue(false))))
         |> List.map((p) =>
@@ -392,21 +420,57 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
       |> Option.defaultValue(m)
 
 /// Hands hover what they reach, and a fresh squeeze takes it; both hands
-/// pressing on one prop, the nearer (`Hold.pick`).
+/// pressing on one prop, the nearer (`Hold.pick`). A hand at the slide of a
+/// gun the other hand holds takes the slide instead (`racking` steps it).
 let grabbing = (m: Model, edges: (bool, bool), slots: List<Slots.Placed>, stowed: List<Stow>): Model =>
   let (leftEdge, rightEdge) = edges in
-  let l = reaching(m, Hold.Left, slots, stowed) in
-  let r = reaching(m, Hold.Right, slots, stowed) in
+  let (sl, sr) = (slideAt(m, Hold.Left), slideAt(m, Hold.Right)) in
+  let l = if Option.isSome(sl) then Option.None else reaching(m, Hold.Left, slots, stowed) in
+  let r = if Option.isSome(sr) then Option.None else reaching(m, Hold.Right, slots, stowed) in
   let kindOf = (o: Option.t<(Props.Kind, float)>) => o |> Option.map((kg) => let (k, _) = kg in k) in
   let gapOf = (o: Option.t<(Props.Kind, float)>) => o |> Option.map((kg) => let (_, gap) = kg in gap) |> Option.defaultValue(0.0) in
   let contested = leftEdge && rightEdge && Option.isSome(l) && kindOf(l) == kindOf(r) in
   let nearer = Hold.pick(Hold.reacher(Hold.Left, true, true, gapOf(l)), Hold.reacher(Hold.Right, true, true, gapOf(r))) in
-  let apply = (acc: Model, side: Hold.Side, edge: bool, o: Option.t<(Props.Kind, float)>) =>
-    match kindOf(o) with
-    | Option.Some(k) => if edge && (not contested || nearer == Option.Some(side)) then take(acc, side, k) else acc
-    | Option.None => acc in
+  let apply = (acc: Model, side: Hold.Side, edge: bool, o: Option.t<(Props.Kind, float)>, slid: Option.t<Props.Kind>) =>
+    match (if edge then slid else Option.None) with
+    | Option.Some(k) => withGun(acc, k, { gunOf(acc, k) with slide: { Gun.home with hand: Option.Some(side) } })
+    | Option.None =>
+      (match kindOf(o) with
+       | Option.Some(k) => if edge && (not contested || nearer == Option.Some(side)) then take(acc, side, k) else acc
+       | Option.None => acc) in
   let hovered = { m with left: { m.left with hover: kindOf(l) }, right: { m.right with hover: kindOf(r) } } in
-  apply(apply(hovered, Hold.Right, rightEdge, r), Hold.Left, leftEdge, l)
+  apply(apply(hovered, Hold.Right, rightEdge, r, sr), Hold.Left, leftEdge, l, sl)
+
+// --- the slide ---
+
+/// Whether a hand is on a gun's slide.
+let onSlideOf = (m: Model, side: Hold.Side): bool =>
+  m.gun.slide.hand == Option.Some(side) || m.rifle.slide.hand == Option.Some(side)
+
+/// A point seen from a gun's slide: along its bore (+Z, the weapon's frame),
+/// and how far off the line the slide runs along.
+let onSlide = (w: Gun.Weapon, gun: Input.pose, q: Input.point3): (float, float) =>
+  let local = (Hold.relative(gun, Hold.at(q, Quat.identity))).position in
+  (local.z, Math.sqrt((local.x - w.rack.at.x) * (local.x - w.rack.at.x) + (local.y - w.rack.at.y) * (local.y - w.rack.at.y)))
+
+/// A hand off the slide's line by more than this lets go of it.
+let slideBreak = 0.08
+
+/// The gun whose slide a hand that holds nothing is at: one the other hand
+/// holds, its slide resting, the hand within its zone (where it rests).
+let slideAt = (m: Model, side: Hold.Side): Option.t<Props.Kind> =>
+  match gripOf(m.xr, side) with
+  | Option.None => Option.None
+  | Option.Some(g) =>
+    propIn(m, other(side))
+      |> Option.filter((p) => Option.isSome(Props.weapon(p.kind)) && Option.isNone(gunOf(m, p.kind).slide.hand)
+           && Option.isNone(inHand(m, side)))
+      |> Option.filter((p) =>
+           let w = weaponOf(p.kind) in
+           let at = Quat.add(w.rack.at, Quat.v3(0.0, 0.0, Gun.slideBack(w, gunOf(m, p.kind)))) in
+           let local = (Hold.relative(poseOf(p), Hold.at(g.position, Quat.identity))).position in
+           Quat.length(Quat.sub(local, at)) <= w.rack.radius)
+      |> Option.map((p) => p.kind)
 
 /// Free props newly in the basket score.
 let scoring = (m: Model, st: Stations.Station): Model =>
@@ -458,7 +522,8 @@ let stowing = (prev: Model, m: Model, slots: List<Slots.Placed>): List<Stow> =>
     else
       let found =
         // A rifle still in its other hand isn't put away: it is handed on.
-        propIn(m, side) |> Option.filter((p) => p.support |> Option.map((s) => not handOf(m, s.side).squeezed) |> Option.defaultValue(true))
+        // Nor is a magazine latched in a well: it falls out (`seating`).
+        propIn(m, side) |> Option.filter((p) => Option.isNone(p.latch) && (p.support |> Option.map((s) => not handOf(m, s.side).squeezed) |> Option.defaultValue(true)))
           |> Option.bind((p) => gripOf(m.xr, side) |> Option.bind((g) =>
           Slots.target(slots, g.position)
             |> Option.filter((t) => opens(m, p.kind, t))
@@ -550,13 +615,142 @@ let supporting = (m: Model): (Model, List<Props.Kind>, List<(Hold.Side, Pulses.E
         |> Option.defaultValue(acc),
     (m, [], []))
 
+/// Each held magazine this step, after the holds (so a gun's motion carries
+/// one latched to it): one lined up at a well's mouth latches (a pulse);
+/// latched, it is guided along the well at the hand's depth (`Seating`),
+/// seats (into the gun, `Ammo.insert`: pulses in its hand and the gun's), or
+/// is pulled out, staying in the hand where it is. Let go while latched, it
+/// falls out of the mouth. The model, the magazines let go, and the pulses.
+let seating = (m: Model, st: Stations.Station, world: World): (Model, List<Release>, List<(Hold.Side, Pulses.Event)>) =>
+  m.props |> List.fold((acc, p: Prop) =>
+    let (next, out, felt) = acc in
+    match (match p.kind with | Props.Mag(fits, _) => p.held |> Option.map((h) => (h, fits)) | _ => Option.None) with
+    | Option.None => acc
+    | Option.Some(hf) =>
+      let (h, fits) = hf in
+      let side = h.side in
+      (match p.latch with
+       | Option.Some(l) =>
+         let w = weaponOf(l.gun) in
+         let gp = propOf(next, l.gun) in
+         let gun = poseOf(gp) in
+         let here = Seating.poseOf(w, gun, l) in
+         let still = (n: Model) => withProp({ p with held: Option.Some({ h with accepted: here }) }, n) in
+         (match gripOf(next.xr, side) with
+          // Lost: it stays in the well where it is.
+          | Option.None => (still(next), out, felt)
+          | Option.Some(grip) =>
+            if not handOf(next, side).squeezed then
+              // Let go: out of the mouth, clear of the gun (short of the level).
+              let (at, _) = Hold.clampTo((a, b) => world.sweep(p.kind, a, b), Props.radius(p.kind), here, Hold.compose(gun, Gun.dropOf(w))) in
+              (withProp({ p with held: Option.None, latch: Option.None, at: at, pose: at }, next),
+               out |> List.append([{ prop: p.kind, kind: Drop, at: Stations.toWorld(st, at.position), velocity: zero, spin: zero }]), felt)
+            else
+              (match Seating.step(w, gun, l, Hold.compose(grip, h.offset)) with
+               | Seating.Guiding(l2) => (withProp({ p with latch: Option.Some(l2), held: Option.Some({ h with accepted: Seating.poseOf(w, gun, l2) }) }, next), out, felt)
+               // Pulled out: it stays where it is, easing back to where the hand held it.
+               | Seating.Leaves =>
+                 (withProp({ p with latch: Option.None, held: Option.Some({ Hold.handOff(side, grip, { h with accepted: here, history: [] }) with snapTo: Option.Some(h.offset) }) }, next), out, felt)
+               | Seating.Seats =>
+                 let g = gunOf(next, l.gun) in
+                 let (ammo, refused) = Ammo.insert(p.mag |> Option.defaultValue(Ammo.full(fits)), g.ammo) in
+                 if Option.isSome(refused) then (still(next), out, felt)
+                 else
+                   let holder = gp.held |> Option.map((gh) => gh.side) |> Option.filter((s) => s != side) in
+                   ({ withGun(next, l.gun, { g with ammo: ammo }) with props: next.props |> List.filter((q) => q.kind != p.kind) }, out,
+                    List.flatten([felt, [(side, Pulses.Seat)], holder |> Option.map((s) => [(s, Pulses.Seat)]) |> Option.defaultValue([])]))))
+       | Option.None =>
+         // Only the gun whose well takes this kind is checked.
+         let k = if fits == Gun.pistol.well.kind then Props.Pistol else Props.Rifle in
+         (match next.props |> List.find((q) => q.kind == k) with
+          | Option.Some(gp) =>
+            let w = weaponOf(k) in
+            // (Not while it eases back into the hand from being pulled out.)
+            if Option.isNone(h.snapTo) && Seating.latches(w, poseOf(gp), gunOf(next, k).ammo, fits, h.accepted) then
+              (withProp({ p with latch: Option.Some(Seating.latch(k, w, poseOf(gp), h.accepted)) }, next), out, felt |> List.append([(side, Pulses.Latch)]))
+            else acc
+          | Option.None => acc)),
+    (m, [], []))
+
+/// A loose round thrown out of gun `k` at `gun` (moving at `v`) by its
+/// slide: out of the port to the right, up and back, spinning; short of the
+/// level if the port is in it. The model, and its release.
+let ejectRound = (m: Model, st: Stations.Station, world: World, k: Props.Kind, gun: Input.pose, v: Input.point3): (Model, Release) =>
+  let w = weaponOf(k) in
+  let kind = Props.Round(w.well.kind, m.nextRound) in
+  let (at, _) = Hold.clampTo((a, b) => world.sweep(kind, a, b), Props.radius(kind), Hold.compose(gun, Hold.at(w.chamber, Quat.identity)), Hold.compose(gun, Hold.at(w.rack.port, Quat.identity))) in
+  let out = Quat.add(v, Quat.rotate(gun.orientation, Quat.v3(1.2, 1.4, 0.4))) in
+  ({ m with props: m.props |> List.append([{ spawned(kind) with at: at, pose: at }]), nextRound: m.nextRound + 1.0 },
+   { prop: kind, kind: Eject, at: Stations.toWorld(st, at.position), velocity: Stations.dirToWorld(st, out),
+     spin: Stations.dirToWorld(st, Quat.rotate(gun.orientation, Quat.v3(0.0, 15.0, 0.0))) })
+
+/// At most this many loose rounds lie about; past it, the oldest not in a
+/// hand is taken away (counted `lost`).
+let looseCap = 6.0
+
+let capLoose = (m: Model): Model =>
+  let loose = m.props |> List.filter((p) => isRound(p.kind)) in
+  let extra = List.length(loose) - looseCap in
+  if extra <= 0.0 then m
+  else
+    let gone = loose |> List.filter((p) => Option.isNone(p.held)) |> List.take(extra) |> List.map((p) => p.kind) in
+    { m with props: m.props |> List.filter((p) => not (gone |> List.any((k) => k == p.kind))), lost: m.lost + List.length(gone) }
+
+/// Each gun's slide this step, after the holds: a hand that took it (a grab
+/// pulse) pulls it along the bore while the other hand holds the gun, the
+/// hand squeezed and on its line. Back (a pulse): a chambered round thrown
+/// out loose. Home from there (a pulse, in the gun's hand too): it feeds,
+/// releasing the lock or locking on an empty magazine. A locked pistol's
+/// slide release does the same with no hand on it. The model, the rounds
+/// thrown out, and the pulses.
+let racking = (prev: Model, m: Model, st: Stations.Station, world: World): (Model, List<Release>, List<(Hold.Side, Pulses.Event)>) =>
+  [Props.Pistol, Props.Rifle] |> List.fold((acc, k) =>
+    let (next, out, felt) = acc in
+    let g = gunOf(next, k) in
+    let w = weaponOf(k) in
+    let holder = propOf(next, k).held |> Option.map((h) => h.side) in
+    let homeFelt = (side: Option.t<Hold.Side>) => side |> Option.map((s) => [(s, Pulses.SlideHome)]) |> Option.defaultValue([]) in
+    match g.slide.hand with
+    | Option.None =>
+      if g.ammo.locked && (prev.slideRelease |> List.any((r) => r == k)) then
+        (withGun(next, k, { g with ammo: Ammo.close(g.ammo) }), out, felt |> List.append(homeFelt(holder)))
+      else acc
+    | Option.Some(side) =>
+      let p = propOf(next, k) in
+      let gun = poseOf(p) in
+      let z =
+        if holder != Option.Some(other(side)) || not handOf(next, side).squeezed then Option.None
+        else gripOf(next.xr, side) |> Option.bind((q) =>
+          let (along, off) = onSlide(w, gun, q.position) in
+          if off > slideBreak then Option.None else Option.Some(along)) in
+      // Taken this step: from where the hand is on it now.
+      let taken = gunOf(prev, k).slide.hand != Option.Some(side) in
+      let start = if taken then z |> Option.map((at) => Gun.take(w.rack, g.ammo.locked, side, at)) |> Option.defaultValue(g.slide) else g.slide in
+      let (slide, strokes) = Gun.pullTo(w.rack, start, z) in
+      let v = p.held |> Option.map((h) => Hold.velocity(h.history)) |> Option.defaultValue(zero) in
+      strokes |> List.fold((acc2, s) =>
+        let (n, o, f) = acc2 in
+        let a = gunOf(n, k) in
+        match s with
+        | Gun.Back =>
+          let (ammo, loose) = Ammo.extract(a.ammo) in
+          let shut = withGun(n, k, { a with ammo: ammo }) in
+          if loose > 0.0 then
+            let (thrown, r) = ejectRound(shut, st, world, k, gun, v) in
+            (thrown, o |> List.append([r]), f |> List.append([(side, Pulses.SlideBack)]))
+          else (shut, o, f |> List.append([(side, Pulses.SlideBack)]))
+        | Gun.Home =>
+          (withGun(n, k, { a with ammo: Ammo.close(a.ammo) }), o, List.flatten([f, [(side, Pulses.SlideHome)], homeFelt(holder)])),
+        (withGun(next, k, { g with slide: slide }), out, if taken then felt |> List.append([(side, Pulses.Grab)]) else felt)),
+    (m, [], []))
+
 /// One fixed step, given the world and the props as read back (`read`): the
 /// next model (with the step's `pulses`), and the props let go (their
 /// velocity and spin to give the world).
 let step = (m: Model, st: Stations.Station, world: World, read: (Prop) => Prop, t: float, dt: float): (Model, List<Release>) =>
   let (left, leftEdge) = Hold.stepHand(m.left, Option.isSome(gripOf(m.xr, Hold.Left)), squeezeOf(m.xr, Hold.Left)) in
   let (right, rightEdge) = Hold.stepHand(m.right, Option.isSome(gripOf(m.xr, Hold.Right)), squeezeOf(m.xr, Hold.Right)) in
-  let observed = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false, releasing: [] } in
+  let observed = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false, releasing: [], slideRelease: [] } in
   // The magazines released this step drop first, from where their guns are.
   let seen = m.releasing |> List.fold((acc, k) => ejectMag(acc, world, k), observed) in
   let live = if Stations.worn(st) then wear(seen, dt) else seen in
@@ -575,11 +769,18 @@ let step = (m: Model, st: Stations.Station, world: World, read: (Prop) => Prop, 
   let (moved, released) = holdAll(grabbing(supported, (leftEdge, rightEdge), slots, stowed), st, world.sweep, slots, stowed, t) in
   let held = { moved with props: moved.props |> List.map((p) =>
     if alone |> List.any((k) => k == p.kind) then { p with held: p.held |> Option.map((h) => Hold.settleInto(Longarm.grip, h)) } else p) } in
-  // Then the guns, from the poses their holds just accepted.
-  let (pistolShot, pistolFired) = shooting(scoring(held, st), world, Props.Pistol, t, dt) in
+  // Then the magazines at the wells and the slides, from the poses the holds
+  // just accepted.
+  let (seated, fell, seatFelt) = seating(held, st, world) in
+  let (racked, thrown, rackFelt) = racking(m, seated, st, world) in
+  // Then the guns.
+  let (pistolShot, pistolFired) = shooting(scoring(racked, st), world, Props.Pistol, t, dt) in
   let (shot, rifleFired) = shooting(pistolShot, world, Props.Rifle, t, dt) in
-  let (next, pulses) = feel(m, shot, released, slots, List.flatten([pistolFired, rifleFired, steadied]), t) in
-  ({ next with lastRelease: if List.isEmpty(released) then m.lastRelease else List.last(released), pulses: pulses }, released)
+  let capped = if List.isEmpty(thrown) then shot else capLoose(shot) in
+  let letGo = released |> List.append(fell) in
+  let (next, pulses) = feel(m, capped, letGo, slots, List.flatten([pistolFired, rifleFired, steadied, seatFelt, rackFelt]), t) in
+  ({ next with lastRelease: if List.isEmpty(letGo) then m.lastRelease else List.last(letGo), pulses: pulses },
+   letGo |> List.append(thrown |> List.filter((r) => capped.props |> List.any((p) => p.kind == r.prop))))
 
 // --- haptics ---
 
@@ -611,7 +812,9 @@ let holdEvents = (m: Model, next: Model, released: List<Release>, side: Hold.Sid
        | Option.None => []
        | Option.Some(k) =>
          let p = propOf(next, k) in
-         if Option.isSome(p.slot) then [Pulses.Stow]
+         // Seated in a well: gone into the gun (`seating`'s pulse).
+         if not (next.props |> List.any((q) => q.kind == k)) then []
+         else if Option.isSome(p.slot) then [Pulses.Stow]
          else if heldBy(other(side), p) then []
          else if released |> List.any((r) => r.prop == k && r.kind == Break) then [Pulses.Break]
          else [Pulses.Release])
@@ -633,8 +836,9 @@ let feelHand = (m: Model, next: Model, released: List<Release>, slots: List<Slot
     Pulses.step(h, held, kept && h.blocked, if kept then h.slot else Option.None, false, t)
   | Option.Some(tracked) =>
     let g = steeredGrip(next, side) |> Option.defaultValue(tracked) in
+    // A latched magazine is off the hand by design: never blocked.
     let blockedNow =
-      holding |> Option.bind((p) => p.held) |> Option.map((on) => Pulses.blocked(h.blocked, g, Hold.gripOn(on)))
+      holding |> Option.filter((p) => Option.isNone(p.latch)) |> Option.bind((p) => p.held) |> Option.map((on) => Pulses.blocked(h.blocked, g, Hold.gripOn(on)))
         |> Option.defaultValue(false) in
     let slot = if List.isEmpty(slots) || Option.isNone(holding) then Option.None else Slots.target(slots, g.position) in
     let takes = slot |> Option.bind((s) => holding |> Option.map((p) => opens(next, p.kind, s))) |> Option.defaultValue(false) in
@@ -697,8 +901,8 @@ let worldOf = (st: Stations.Station, gen: float): World => {
 let tick = (m: Model, dt: float, tts: float) =>
   let st = Stations.find(m.station) in
   let read = (p: Prop): Prop =>
-    // A slotted prop has no body to read.
-    if m.fresh || Option.isSome(p.slot) then p
+    // A slotted prop, or a latched magazine, has no body to read.
+    if m.fresh || Option.isSome(p.slot) || Option.isSome(p.latch) then p
     else
       match Physics.pose(tagOf(m.gen, p.kind)) with
       | Option.Some(q) =>
@@ -727,7 +931,7 @@ let physics = (m: Model) =>
     match p.held with
     | Option.Some(h) => Physics.kinematic(tag, shape) |> Physics.atPose(posed(st, h.accepted))
     | Option.None => Physics.dynamic(tag, shape) |> Physics.atPose(posed(st, p.at)) |> Props.dynamics(p.kind) in
-  Physics.scene(Vec3.make(0.0, -9.81, 0.0), Stations.solids |> List.map(solid) |> List.append(m.props |> List.filter((p) => Option.isNone(p.slot)) |> List.map(body)))
+  Physics.scene(Vec3.make(0.0, -9.81, 0.0), Stations.solids |> List.map(solid) |> List.append(m.props |> List.filter((p) => Option.isNone(p.slot) && Option.isNone(p.latch)) |> List.map(body)))
 
 // --- the pure step, with no world ---
 
@@ -1000,14 +1204,14 @@ let readoutGlyphs = (shown: (float, bool, bool)): Scene.t =>
   ]) |> Scene.translate(Vec3.make(-1.35, 0.0, 0.0))
 
 /// What a gun's ammo adds to it, in its frame: the readout where its weapon
-/// puts it, and the seated magazine, if any. `(kind, rounds or -1,
-/// chambered, dry)`.
-let ammoScene = (shown: (Props.Kind, float, bool, bool)): Scene.t =>
-  let (k, rounds, chambered, dry) = shown in
+/// puts it (`back` behind, on a slide drawn back), and the seated magazine,
+/// if any. `(kind, rounds or -1, chambered, dry, back)`.
+let ammoScene = (shown: (Props.Kind, float, bool, bool, float)): Scene.t =>
+  let (k, rounds, chambered, dry, back) = shown in
   let w = weaponOf(k) in
   Scene.group([
     readoutGlyphs((rounds, chambered, dry))
-      |> Scene.scale(w.readout.size) |> Scene.rotateX(Angle.radians(w.readout.tilt)) |> Scene.translate(Quat.toVec3(w.readout.at))
+      |> Scene.scale(w.readout.size) |> Scene.rotateX(Angle.radians(w.readout.tilt)) |> Scene.translate(Quat.toVec3(Quat.add(w.readout.at, Quat.v3(0.0, 0.0, back))))
       |> Scene.rotateY(180deg),
     if rounds < 0.0 then Scene.group([]) else Gun.seated(w, Gun.magazine(w.well.kind, litPaint)),
   ])
@@ -1045,8 +1249,14 @@ let propScene = (m: Model, st: Stations.Station, p: Prop, t: float) =>
       let g = gunOf(m, p.kind) in
       let rounds = g.ammo.mag |> Option.map((mg) => mg.rounds) |> Option.defaultValue(-1.0) in
       let dry = t >= g.dryAt && t - g.dryAt < drySeconds in
+      let w = weaponOf(p.kind) in
+      let back = Gun.slideBack(w, g) in
+      // The pistol's readout rides its slide; the rifle's, its receiver.
+      let (look3, readoutBack) =
+        if p.kind == Props.Rifle then (Longarm.scene(Props.paint(look), back, Longarm.boltBack(g)), 0.0)
+        else (Gun.scene(Props.paint(look), back), back) in
       Scene.group(List.flatten([
-        [Props.scene(p.kind, look), Scene.memo($"ammo-{Props.name(p.kind)}", (p.kind, rounds, g.ammo.chambered, dry), ammoScene)],
+        [look3, Scene.memo($"ammo-{Props.name(p.kind)}", (p.kind, rounds, g.ammo.chambered, dry, readoutBack), ammoScene)],
         if p.kind == Props.Rifle then [Longarm.selector(m.rifle.mode)] else [],
       ]))
     | Option.None =>

@@ -22,18 +22,32 @@ type Event =
   // Its gun's trigger was pulled but nothing fired (the muzzle against the
   // level, or nothing chambered).
   | Click
+  // The magazine it holds caught in a well's mouth.
+  | Latch
+  // The magazine went home in the well (the hand that pushed it, and the
+  // gun's).
+  | Seat
+  // The slide (or charging handle) it pulls reached the back.
+  | SlideBack
+  // The slide went home (the racking hand's, and the gun's).
+  | SlideHome
 
 /// One buzz: how hard (0..1) and how long.
 type Pulse = { amplitude: float, seconds: float }
 
 /// Each event's buzz, weakest to strongest: hover and release light (a
-/// refused trigger's click lighter still, and shortest), a grab firmer, slots
-/// firmer still and longer, a stop sharp, a shot sharper, a break the
-/// strongest and longest.
+/// refused trigger's click lighter still, and shortest; a magazine's latch
+/// between them), a grab firmer, the slide's strokes and slots firmer still
+/// and longer, a seat a firm click, a stop sharp, a shot sharper, a break
+/// the strongest and longest.
 let pulse = (e: Event): Pulse =>
   match e with
   | Ready => { amplitude: 0.15, seconds: 0.015 }
+  | Latch => { amplitude: 0.2, seconds: 0.012 }
   | Click => { amplitude: 0.25, seconds: 0.01 }
+  | SlideBack => { amplitude: 0.5, seconds: 0.025 }
+  | SlideHome => { amplitude: 0.65, seconds: 0.03 }
+  | Seat => { amplitude: 0.8, seconds: 0.025 }
   | Release => { amplitude: 0.3, seconds: 0.02 }
   | Grab => { amplitude: 0.45, seconds: 0.03 }
   | Unstow => { amplitude: 0.55, seconds: 0.04 }
@@ -42,7 +56,7 @@ let pulse = (e: Event): Pulse =>
   | Fire => { amplitude: 0.95, seconds: 0.035 }
   | Break => { amplitude: 1.0, seconds: 0.08 }
 
-let all = [Ready, Click, Release, Grab, Unstow, Stow, Blocked, Fire, Break]
+let all = [Ready, Latch, Click, Release, Grab, SlideBack, Unstow, SlideHome, Stow, Seat, Blocked, Fire, Break]
 
 // Every event is told apart by its amplitude alone.
 expect all |> List.all((a) => all |> List.all((b) => a == b || (pulse(a)).amplitude != (pulse(b)).amplitude))

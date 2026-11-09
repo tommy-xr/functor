@@ -4,8 +4,9 @@
 // drawn and declared, a prop's local +Y is its pose's +Y.
 
 /// A magazine is a prop of its own once out of a weapon: its kind, and an id
-/// telling it from the station's other magazines.
-type Kind = | Ball | Stick | Brick | Bottle | Pistol | Rifle | Mag(fits: Ammo.Kind, id: float)
+/// telling it from the station's other magazines. A round thrown out of a
+/// chamber by a rack is one too, loose: the magazine kind it is for, its id.
+type Kind = | Ball | Stick | Brick | Bottle | Pistol | Rifle | Mag(fits: Ammo.Kind, id: float) | Round(cal: Ammo.Kind, id: float)
 
 let all = [Ball, Stick, Brick, Bottle, Pistol, Rifle]
 
@@ -18,6 +19,7 @@ let name = (k: Kind): string =>
   | Pistol => "pistol"
   | Rifle => "rifle"
   | Mag(_, id) => $"mag-{id}"
+  | Round(_, id) => $"round-{id}"
 
 let ballRadius = 0.06
 let stickLength = 0.7
@@ -39,6 +41,13 @@ let extent = (k: Kind): Input.point3 =>
   | Pistol => Gun.size
   | Rifle => Longarm.size
   | Mag(fits, _) => Gun.magSize(fits)
+  | Round(cal, _) => roundSize(cal)
+
+/// A cartridge's bounds, long along Z: 9 mm by 29, or 57 for the rifle's.
+let roundSize = (cal: Ammo.Kind): Input.point3 =>
+  match cal with
+  | Ammo.PistolMag => Quat.v3(0.0095, 0.0095, 0.029)
+  | Ammo.RifleMag => Quat.v3(0.0095, 0.0095, 0.057)
 
 let shape = (k: Kind) =>
   match k with
@@ -132,7 +141,8 @@ let dynamics = (k: Kind, body: Physics.body): Physics.body =>
     | Bottle => (0.5, 0.25, 0.5)
     | Pistol => (0.7, 0.1, 0.8)
     | Rifle => (0.7, 0.1, 0.8)
-    | Mag(_, _) => (0.7, 0.1, 0.8) in
+    | Mag(_, _) => (0.7, 0.1, 0.8)
+    | Round(_, _) => (0.5, 0.3, 0.6) in
   body
     |> Physics.friction(friction)
     |> Physics.restitution(restitution)
@@ -182,6 +192,12 @@ let scene = (k: Kind, look: Look): Scene.t =>
       cylinder(neckRadius, neckLength, base + bodyHeight + neckLength / 2.0) |> paint(look, 0.2, 0.62, 0.35),
       cylinder(neckRadius * 1.25, 0.012, base + bodyHeight + neckLength - 0.006) |> Scene.lit(Color.rgb(0.85, 0.8, 0.35)),
     ])
-  | Pistol => Gun.scene(paint(look))
-  | Rifle => Longarm.scene(paint(look))
+  | Pistol => Gun.scene(paint(look), 0.0)
+  | Rifle => Longarm.scene(paint(look), 0.0, 0.0)
   | Mag(fits, _) => Gun.magazine(fits, paint(look))
+  | Round(_, _) =>
+    // A brass case, its bullet at the front (-Z drawn: the pose's +Z).
+    Scene.group([
+      Scene.cube() |> Scene.scaleXYZ(e.x, e.y, 0.7 * e.z) |> Scene.translate(Vec3.make(0.0, 0.0, 0.15 * e.z)) |> paint(look, 0.85, 0.65, 0.25),
+      Scene.cube() |> Scene.scaleXYZ(0.8 * e.x, 0.8 * e.y, 0.3 * e.z) |> Scene.translate(Vec3.make(0.0, 0.0, 0.0 - 0.35 * e.z)) |> paint(look, 0.7, 0.4, 0.25),
+    ])
