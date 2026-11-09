@@ -23,7 +23,7 @@ let worn = (s: Station): bool => s.id == inventory.id || s.id == armory.id
 
 /// The props a station spawns.
 let props = (s: Station): List<Props.Kind> =>
-  if s.id == armory.id then [Props.Pistol] else [Props.Ball, Props.Stick, Props.Brick, Props.Bottle]
+  if s.id == armory.id then [Props.Pistol, Props.Rifle] else [Props.Ball, Props.Stick, Props.Brick, Props.Bottle]
 
 let find = (id: float): Station =>
   all |> List.find((s) => s.id == id) |> Option.defaultValue(grabTable)
@@ -83,6 +83,8 @@ let spawn = (k: Props.Kind): Input.pose =>
   | Props.Bottle => on(0.62, -0.8, Quat.identity)
   // On the armory's bench, upright, pointing down range.
   | Props.Pistol => on(0.15, -0.5, Quat.identity)
+  // In its rack on the bench, level, pointing down range.
+  | Props.Rifle => rifleRack
 
 // The basket: an open box, its inside `basketInner` wide and `basketDepth` deep.
 let basketAt = Quat.v3(-0.2, 0.0, 7.1)
@@ -148,6 +150,16 @@ let targets: List<(string, Box)> =
 let backstop = atArmory(Quat.v3(0.0, 1.25, -5.65), Quat.v3(4.0, 2.5, 0.1))
 // The armory's scoreboard: on the backstop, above the targets.
 let rangeBoardAt = Quat.v3(0.0, 2.05, -5.57)
+
+/// The racked rifle's pose (rig-local): on the bench's right, its pistol
+/// grip 11 cm above the bench, a hand's reach ahead.
+let rifleRack: Input.pose = Hold.p(0.55, 1.05, -0.62)
+/// The rack's two cradles (drawn only, not solid), under the stock's front
+/// and the handguard, from the bench up to the rifle.
+let rackPosts: List<Box> =
+  [0.0 - 0.26, 0.16] |> List.map((dz) =>
+    let top = rifleRack.position.y - (Longarm.size).y / 2.0 in
+    atArmory(Quat.v3(rifleRack.position.x, (tableTop + top) / 2.0, rifleRack.position.z + dz), Quat.v3(0.06, top - tableTop, 0.03)))
 
 let isTarget = (name: string): bool => targets |> List.any((t) => let (n, _) = t in n == name)
 

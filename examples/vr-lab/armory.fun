@@ -38,8 +38,8 @@ let pull = hand(onGrip, 1.0, 1.0)
 let ease = hand(onGrip, 1.0, 0.0)
 
 expect Game.isHeld(last(play(take)), Props.Pistol)
-// Only the pistol is at the armory, and the holsters are worn.
-expect List.length(start.props) == 1.0 && Stations.worn(Stations.armory)
+// The pistol and the rifle are at the armory, and the holsters are worn.
+expect List.length(start.props) == 2.0 && Stations.worn(Stations.armory)
 
 // --- the trigger ---
 
@@ -69,7 +69,7 @@ let wallAt = (k: Props.Kind, from: Input.pose, to: Input.pose): Option.t<Hold.Hi
   if d >= 0.0 || to.position.x > face then Option.None
   else Option.Some({ fraction: Math.max(0.0, (face - from.position.x) / d), normal: Quat.v3(1.0, 0.0, 0.0) })
 let struck = (tag: string, target: bool) =>
-  (from: Input.point3, dir: Input.point3) => Option.Some({ point: Quat.add(from, Quat.scale(5.0, dir)), tag: tag, target: target })
+  (k: Props.Kind, from: Input.point3, dir: Input.point3) => Option.Some({ point: Quat.add(from, Quat.scale(5.0, dir)), tag: tag, target: target })
 let walled = { Game.noWorld with sweep: wallAt, ray: struck("backstop", false) }
 
 // Pushed through the wall with the hand, and fired: the shot leaves from the
@@ -78,8 +78,8 @@ let through = List.range(10.0) |> List.map((i) => hand(moved(onGrip, 0.0 - 0.05 
 let shotThrough = last(playIn(walled, start, List.flatten([take, through, [hand(moved(onGrip, -0.5, 0.0, 0.0), 1.0, 1.0)]])))
 expect (
   shotThrough.gun.last |> Option.bind((s) => pistol(shotThrough).held |> Option.map((h) =>
-    let accepted = Gun.boreOf(h.accepted) in
-    let tracked = Gun.boreOf(Gun.heldAt(moved(onGrip, -0.5, 0.0, 0.0))) in
+    let accepted = Gun.boreOf(Gun.pistol, h.accepted) in
+    let tracked = Gun.boreOf(Gun.pistol, Gun.heldAt(Gun.pistol, moved(onGrip, -0.5, 0.0, 0.0))) in
     Hold.near3(s.from, accepted.muzzle) && Hold.near3(s.dir, accepted.dir)
       && Quat.length(Quat.sub(s.from, tracked.muzzle)) > 0.04 && h.accepted.position.x > -0.31))
     |> Option.defaultValue(false)
@@ -101,7 +101,7 @@ expect (
 expect (
   let m = last(playIn({ Game.noWorld with ray: struck("target-1", true) }, start, List.flatten([take, [pull]]))) in
   m.score == 1.0 && List.length(m.gun.hits) == 1.0
-    && (m.gun.hits |> List.all((h) => h.tag == "target-1" && Hold.near3(h.point, Quat.add((Gun.boreOf(Gun.heldAt(onGrip))).muzzle, Quat.v3(0.0, 0.0, -5.0)))))
+    && (m.gun.hits |> List.all((h) => h.tag == "target-1" && Hold.near3(h.point, Quat.add((Gun.boreOf(Gun.pistol, Gun.heldAt(Gun.pistol, onGrip))).muzzle, Quat.v3(0.0, 0.0, -5.0)))))
 )
 expect (let m = last(playIn(walled, start, List.flatten([take, [pull]]))) in m.score == 0.0 && m.gun.hits == [] && m.gun.fired == 1.0)
 // The muzzle against the level: refused, a click and no shot. Let out and
@@ -135,11 +135,11 @@ expect (
   let turned = Hold.at(Quat.add(onGrip.position, Quat.v3(0.02, 0.01, 0.03)), Quat.yaw(0.8)) in
   let ms = play(List.flatten([[hand(turned, 0.0, 0.0), hand(turned, 1.0, 0.0)], times(12.0, hand(turned, 1.0, 0.0))])) in
   smooth(ms)
-    && (pistol(last(ms)).held |> Option.map((h) => Option.isNone(h.snapTo) && Hold.near(h.accepted, Gun.heldAt(turned))) |> Option.defaultValue(false))
+    && (pistol(last(ms)).held |> Option.map((h) => Option.isNone(h.snapTo) && Hold.near(h.accepted, Gun.heldAt(Gun.pistol, turned))) |> Option.defaultValue(false))
 )
 // Not by the barrel: a hand at the muzzle takes nothing.
 expect (
-  let muzzle = Hold.at((Gun.boreOf(pistolAt)).muzzle, Quat.identity) in
+  let muzzle = Hold.at((Gun.boreOf(Gun.pistol, pistolAt)).muzzle, Quat.identity) in
   not Game.isHeld(last(play([hand(muzzle, 0.0, 0.0), hand(muzzle, 1.0, 0.0)])), Props.Pistol)
 )
 

@@ -1,6 +1,8 @@
-// Gun: the pistol's working parts, pure and rig-local (`Hold`'s frame): its
-// shape and authored grip, the trigger, the bore a shot leaves along, the
-// shot, and the recoil kick. The world reaches in only through the shot's
+// Gun: what every weapon shares, pure and rig-local (`Hold`'s frame): the
+// trigger and its fire modes, the bore a shot leaves along, the shot, the
+// muzzle check and the recoil kick; and the pistol's shape and authored grip.
+// A weapon is data (`Weapon`): its grip, bore and whether it has a selector
+// (the rifle's is in `Rifle`). The world reaches in only through the shot's
 // ray and the muzzle check (`Game.World`).
 
 // --- the pistol ---
@@ -26,89 +28,122 @@ let grip: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 /// barrel is out of reach, so it is never taken by the muzzle end.
 let gripZone = 0.07
 
-/// A shot's line from a pistol at `pose`: the chamber, the muzzle, and the
+/// A weapon, in its own frame (centred on its collider): the authored grip
+/// (the trigger hand's pose), the chamber and the muzzle (the bore runs
+/// along the frame's -Z between them), and whether a selector switches it to
+/// full-auto.
+type Weapon = { grip: Input.pose, chamber: Input.point3, muzzle: Input.point3, selector: bool }
+
+/// A weapon whose bore runs `bore` above the grip's fist, parallel to its
+/// -Z, from `chamberAhead` to `muzzleAhead` ahead of it.
+let weaponAt = (g: Input.pose, bore: float, chamberAhead: float, muzzleAhead: float, selector: bool): Weapon =>
+  let along = (ahead: float) => Quat.add(g.position, Quat.rotate(g.orientation, Quat.v3(0.0, bore, 0.0 - ahead))) in
+  { grip: g, chamber: along(chamberAhead), muzzle: along(muzzleAhead), selector: selector }
+
+let pistol = weaponAt(grip, bore, chamberAhead, muzzleAhead, false)
+
+/// A shot's line from a weapon at `pose`: the chamber, the muzzle, and the
 /// barrel's way (unit).
 type Bore = { chamber: Input.point3, muzzle: Input.point3, dir: Input.point3 }
 
-let boreOf = (pose: Input.pose): Bore =>
-  let hand = Hold.compose(pose, grip) in
-  let along = (ahead: float) => Quat.add(hand.position, Quat.rotate(hand.orientation, Quat.v3(0.0, bore, 0.0 - ahead))) in
-  { chamber: along(chamberAhead), muzzle: along(muzzleAhead), dir: Quat.rotate(hand.orientation, Quat.v3(0.0, 0.0, 0.0 - 1.0)) }
+let boreOf = (w: Weapon, pose: Input.pose): Bore =>
+  let at = (p: Input.point3) => Quat.add(pose.position, Quat.rotate(pose.orientation, p)) in
+  { chamber: at(w.chamber), muzzle: at(w.muzzle), dir: Quat.rotate(pose.orientation, Quat.v3(0.0, 0.0, 0.0 - 1.0)) }
 
-/// The pistol held settled in a hand at `hand`: where it is.
-let heldAt = (hand: Input.pose): Input.pose => Hold.compose(hand, Hold.inverse(grip))
+/// A weapon held settled in a hand at `hand`: where it is.
+let heldAt = (w: Weapon, hand: Input.pose): Input.pose => Hold.compose(hand, Hold.inverse(w.grip))
 
 // Level, yawed, pitched and rolled hands: the muzzle 5 cm above the hand's
 // -Z axis and 15 cm along it, and the shot along that axis.
 expect (
-  let b = boreOf(heldAt(Hold.p(0.1, 1.2, -0.3))) in
+  let b = boreOf(pistol, heldAt(pistol, Hold.p(0.1, 1.2, -0.3))) in
   Hold.near3(b.muzzle, Quat.v3(0.1, 1.25, -0.45)) && Hold.near3(b.chamber, Quat.v3(0.1, 1.25, -0.32)) && Hold.near3(b.dir, Quat.v3(0.0, 0.0, -1.0))
 )
 expect (
   // A quarter turn left: the barrel points along -X.
-  let b = boreOf(heldAt(Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(Math.pi / 2.0)))) in
+  let b = boreOf(pistol, heldAt(pistol, Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(Math.pi / 2.0)))) in
   Hold.near3(b.muzzle, Quat.v3(-0.05, 1.25, -0.3)) && Hold.near3(b.dir, Quat.v3(-1.0, 0.0, 0.0))
 )
 expect (
   // Tipped 30 degrees up.
   let a = Math.pi / 6.0 in
-  let b = boreOf(heldAt(Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), a)))) in
+  let b = boreOf(pistol, heldAt(pistol, Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), a)))) in
   Hold.near3(b.dir, Quat.v3(0.0, Math.sin(a), 0.0 - Math.cos(a)))
     && Hold.near3(b.muzzle, Quat.v3(0.0, 1.0 + 0.05 * Math.cos(a) + 0.15 * Math.sin(a), 0.05 * Math.sin(a) - 0.15 * Math.cos(a)))
 )
 expect (
   // Rolled a quarter turn clockwise (about -Z): the bore is beside the hand,
   // on its right, still parallel to its -Z.
-  let b = boreOf(heldAt(Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(0.0, 0.0, -1.0), Math.pi / 2.0)))) in
+  let b = boreOf(pistol, heldAt(pistol, Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(0.0, 0.0, -1.0), Math.pi / 2.0)))) in
   Hold.near3(b.muzzle, Quat.v3(0.05, 1.0, -0.15)) && Hold.near3(b.dir, Quat.v3(0.0, 0.0, -1.0))
 )
 expect (
   // Yawed, pitched and rolled at once: the muzzle is the hand's (0, 5, -15) cm.
   let q = Quat.mul(Quat.yaw(0.6), Quat.mul(Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), -0.3), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 1.1))) in
   let hand = Hold.at(Quat.v3(0.2, 1.3, -0.4), q) in
-  let b = boreOf(heldAt(hand)) in
+  let b = boreOf(pistol, heldAt(pistol, hand)) in
   Hold.near3(b.muzzle, Quat.add(hand.position, Quat.rotate(q, Quat.v3(0.0, 0.05, -0.15))))
     && Hold.near3(b.dir, Quat.rotate(q, Quat.v3(0.0, 0.0, -1.0)))
 )
 
 // --- the trigger ---
-// Analog, with hysteresis: a pull to `fireAt` fires once; it must fall back
-// to `rearmAt` before the next counts. Semi-automatic: one shot per pull.
+// Analog, with hysteresis: a pull to `fireAt` fires; it must fall back to
+// `rearmAt` before the next pull counts. Semi-automatic, one shot per pull;
+// full-auto, one on the pull and one every `stepsPerShot` steps it is held.
 
 let fireAt = 0.8
 let rearmAt = 0.3
+/// Full-auto's rate: 10 rounds a second at the 60 Hz fixed step, counted in
+/// steps so it is the same on every run.
+let stepsPerShot = 6.0
+
+type Mode = | Semi | Auto
 
 /// `pulled`: past `fireAt` and not yet back to `rearmAt`. `armed`: seen at or
-/// under `rearmAt` since the pistol was taken or its hand was last tracked,
-/// so a trigger already held then never fires.
-type Trigger = { pulled: bool, armed: bool }
+/// under `rearmAt` since the weapon was taken or its hand was last tracked,
+/// so a trigger already held then never fires. `since`: steps held since the
+/// last shot.
+type Trigger = { pulled: bool, armed: bool, since: float }
 
-let disarmed: Trigger = { pulled: false, armed: false }
+let disarmed: Trigger = { pulled: false, armed: false, since: 0.0 }
 
 /// The trigger at `value`: its new state, and whether this step fires.
-let pull = (t: Trigger, value: float): (Trigger, bool) =>
+let pull = (mode: Mode, t: Trigger, value: float): (Trigger, bool) =>
   let pulled = if t.pulled then value > rearmAt else value >= fireAt in
-  ({ pulled: pulled, armed: t.armed || value <= rearmAt }, t.armed && pulled && not t.pulled)
+  let edge = t.armed && pulled && not t.pulled in
+  let again = mode == Auto && t.armed && pulled && t.pulled && t.since + 1.0 >= stepsPerShot in
+  let fires = edge || again in
+  ({ pulled: pulled, armed: t.armed || value <= rearmAt, since: if fires then 0.0 else t.since + 1.0 }, fires)
 
 /// Pull through `values` from `t`: how many shots.
-let shotsFrom = (t: Trigger, values: List<float>): float =>
+let shotsFrom = (mode: Mode, t: Trigger, values: List<float>): float =>
   let (_, n) = values |> List.fold((acc, v) =>
     let (s, k) = acc in
-    let (next, fires) = pull(s, v) in
+    let (next, fires) = pull(mode, s, v) in
     (next, if fires then k + 1.0 else k), (t, 0.0)) in
   n
 
-let ready = { pulled: false, armed: true }
-expect shotsFrom(ready, [0.79, 0.5, 0.79]) == 0.0
-expect shotsFrom(ready, [0.8]) == 1.0
+let ready = { pulled: false, armed: true, since: 0.0 }
+let held = (n: float): List<float> => List.range(n) |> List.map((_) => 1.0)
+expect shotsFrom(Semi, ready, [0.79, 0.5, 0.79]) == 0.0
+expect shotsFrom(Semi, ready, [0.8]) == 1.0
 // Held, or wavering above `rearmAt`, it is one shot; released to it, two.
-expect shotsFrom(ready, List.range(30.0) |> List.map((_) => 1.0)) == 1.0
-expect shotsFrom(ready, [0.9, 0.31, 0.9, 0.5, 1.0]) == 1.0
-expect shotsFrom(ready, [0.9, 0.3, 0.9]) == 2.0
+expect shotsFrom(Semi, ready, held(30.0)) == 1.0
+expect shotsFrom(Semi, ready, [0.9, 0.31, 0.9, 0.5, 1.0]) == 1.0
+expect shotsFrom(Semi, ready, [0.9, 0.3, 0.9]) == 2.0
 // Taken already pulled: no shot until it is let out and pulled again.
-expect shotsFrom(disarmed, [1.0, 1.0, 1.0]) == 0.0
-expect shotsFrom(disarmed, [1.0, 0.5, 0.9]) == 0.0
-expect shotsFrom(disarmed, [1.0, 0.2, 0.9]) == 1.0
+expect shotsFrom(Semi, disarmed, [1.0, 1.0, 1.0]) == 0.0
+expect shotsFrom(Semi, disarmed, [1.0, 0.5, 0.9]) == 0.0
+expect shotsFrom(Semi, disarmed, [1.0, 0.2, 0.9]) == 1.0
+// Full-auto: pulled, then held N more steps, fires floor(N / stepsPerShot) + 1.
+expect [0.0, 1.0, 5.0, 6.0, 11.0, 12.0, 29.0, 30.0, 59.0] |> List.all((n) =>
+  shotsFrom(Auto, ready, held(n + 1.0)) == Math.floor(n / stepsPerShot) + 1.0)
+// Held between the thresholds it keeps cycling; let out and pulled again, the
+// count starts over from the new pull.
+expect shotsFrom(Auto, ready, [1.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]) == 2.0
+expect shotsFrom(Auto, ready, List.flatten([held(4.0), [0.2], held(1.0)])) == 2.0
+// Taken already pulled, full-auto fires nothing either until it is let out.
+expect shotsFrom(Auto, disarmed, held(30.0)) == 0.0
 
 // --- the shot ---
 
@@ -135,7 +170,7 @@ let endOf = (s: Shot): Input.point3 =>
 /// muzzle. Anything fixed on it (the barrel poked into a wall) refuses the shot.
 let checked = (b: Bore): (Input.point3, Input.point3) => (b.chamber, Quat.add(b.muzzle, Quat.scale(clearance, b.dir)))
 
-// --- the pistol's state ---
+// --- a weapon's state ---
 
 // The recoil kick: 1 as it fires, falling to 0 over `recoilSeconds`. Drawing
 // only (`kicked`): the body, the muzzle check and the next shot all use the
@@ -145,12 +180,13 @@ let recoilPitch = 8.0 * Math.pi / 180.0
 let recoilBack = 0.02
 let hitCap = 12.0
 
-/// The pistol: the hand that held it last step, its trigger, the kick, shots
-/// fired and refused, the last shot, and the target hits, newest last (at
-/// most `hitCap`).
+/// A weapon: the hand on its trigger last step, the trigger, the fire mode,
+/// the kick, shots fired and refused, the last shot, and the target hits,
+/// newest last (at most `hitCap`).
 type State = {
   holder: Option.t<Hold.Side>,
   trigger: Trigger,
+  mode: Mode,
   kick: float,
   fired: float,
   refused: float,
@@ -158,18 +194,18 @@ type State = {
   hits: List<Impact>
 }
 
-let idle: State = { holder: Option.None, trigger: disarmed, kick: 0.0, fired: 0.0, refused: 0.0, last: Option.None, hits: [] }
+let idle: State = { holder: Option.None, trigger: disarmed, mode: Semi, kick: 0.0, fired: 0.0, refused: 0.0, last: Option.None, hits: [] }
 
-/// One step of the pistol held by `holder` (None: nobody), with that hand's
-/// trigger at `value`: the new state, and whether the trigger fired. A new
-/// holder, or an untracked one, starts disarmed, so a trigger held as the
-/// pistol is taken (off the bench, out of a holster or from the other hand)
-/// or as tracking comes back fires nothing until it is let out.
+/// One step of a weapon whose trigger `holder` has (None: nobody), at
+/// `value`: the new state, and whether the trigger fired. A new holder, or
+/// an untracked one, starts disarmed, so a trigger held as the weapon is
+/// taken (off the bench, out of a holster or rack, from the other hand) or as
+/// tracking comes back fires nothing until it is let out.
 let step = (g: State, holder: Option.t<Hold.Side>, tracked: bool, value: float, dt: float): (State, bool) =>
   let kick = Math.max(0.0, g.kick - dt / recoilSeconds) in
   if Option.isNone(holder) || not tracked then ({ g with holder: holder, trigger: disarmed, kick: kick }, false)
   else
-    let (trigger, fires) = pull(if holder == g.holder then g.trigger else disarmed, value) in
+    let (trigger, fires) = pull(g.mode, if holder == g.holder then g.trigger else disarmed, value) in
     ({ g with holder: holder, trigger: trigger, kick: kick }, fires)
 
 // --- ammunition: infinite here; a magazine plugs in at these two ---
@@ -180,7 +216,7 @@ let canFire = (g: State): bool => true
 /// After a shot: the round spent.
 let onFired = (g: State): State => g
 
-/// The pistol after firing `s`: kicked, counted, the hit recorded.
+/// The weapon after firing `s`: kicked, counted, the hit recorded.
 let fire = (g: State, s: Shot): State =>
   let hit = s.impact |> Option.filter((i) => i.target) in
   let hits = match hit with
@@ -192,8 +228,16 @@ let fire = (g: State, s: Shot): State =>
       last: Option.Some(s),
       hits: List.drop(Math.max(0.0, List.length(hits) - hitCap), hits) }
 
-/// The pistol after a refused pull: a click.
-let refuse = (g: State): State => { g with refused: g.refused + 1.0 }
+/// The weapon after a refused pull: a click, and the trigger disarmed until
+/// it is let out, so full-auto doesn't click on at its rate.
+let refuse = (g: State): State => { g with refused: g.refused + 1.0, trigger: { g.trigger with armed: false } }
+
+/// The selector switched: semi to full-auto and back, on a weapon that has one.
+let select = (w: Weapon, g: State): State =>
+  if not w.selector then g
+  else { g with mode: match g.mode with | Semi => Auto | Auto => Semi }
+
+expect (select(pistol, idle)).mode == Semi
 
 let dt = 1.0 / 60.0
 let run = (g: State, holder: Option.t<Hold.Side>, tracked: bool, values: List<float>): (State, float) =>
@@ -228,23 +272,23 @@ expect (
   later.kick == 0.0 && mid.kick > 0.0 && mid.kick < 1.0
 )
 
-/// Where the pistol is drawn: `pose` kicked up about the grip and back by
+/// Where a weapon is drawn: `pose` kicked up about its grip and back by
 /// `kick`, easing out.
-let kicked = (kick: float, pose: Input.pose): Input.pose =>
+let kicked = (w: Weapon, kick: float, pose: Input.pose): Input.pose =>
   if kick <= 0.0 then pose
   else
     let k = kick * kick in
-    let hand = Hold.compose(pose, grip) in
+    let hand = Hold.compose(pose, w.grip) in
     let jolt = Hold.at(Quat.v3(0.0, 0.0, recoilBack * k), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), recoilPitch * k)) in
-    Hold.compose(Hold.compose(hand, jolt), Hold.inverse(grip))
+    Hold.compose(Hold.compose(hand, jolt), Hold.inverse(w.grip))
 
-expect (let p = Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(0.4)) in Hold.near(kicked(0.0, p), p))
+expect (let p = Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(0.4)) in Hold.near(kicked(pistol, 0.0, p), p))
 // Fully kicked, the muzzle is up and back of where it aims; the bore it
 // fires along is the accepted pose's.
 expect (
-  let p = heldAt(Hold.p(0.0, 1.2, -0.3)) in
-  let up = boreOf(kicked(1.0, p)) in
-  up.dir.y > 0.13 && up.muzzle.z > (boreOf(p)).muzzle.z
+  let p = heldAt(pistol, Hold.p(0.0, 1.2, -0.3)) in
+  let up = boreOf(pistol, kicked(pistol, 1.0, p)) in
+  up.dir.y > 0.13 && up.muzzle.z > (boreOf(pistol, p)).muzzle.z
 )
 
 // --- the look ---

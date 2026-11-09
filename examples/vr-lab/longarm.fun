@@ -1,0 +1,278 @@
+// Longarm: the two-handed rifle, pure and rig-local (`Hold`'s frame). Its
+// shape, its two grips and the two-hand aim. One hand holds it at the pistol
+// grip (the trigger) rigidly, like the pistol. A second on the foregrip aims
+// it: the barrel from the primary fist toward the support fist, rolled as the
+// primary hand is (`aimAt`). The trigger, shot and recoil are `Gun`'s.
+
+// --- the rifle ---
+// Laid out in the primary hand's frame when held (-Z forward, +Y up), like
+// the pistol: the bore 6 cm above the fist, the stock's back 28 cm behind it,
+// the muzzle 56 cm ahead. The support fist rides a line through the primary
+// fist parallel to the bore (a vertical foregrip under the handguard), from
+// `foreNear` to `foreFar` ahead of it, so the barrel points from one fist to
+// the other.
+
+let bore = 0.06
+let chamberAhead = 0.04
+let muzzleAhead = 0.56
+let stockBack = 0.28
+let foreNear = 0.14
+let foreFar = 0.4
+
+// The collider's bounds there: 5 cm wide, from 2 cm below the fist to 10 cm
+// above it, from the stock's back to the muzzle.
+let size = Quat.v3(0.05, 0.12, stockBack + muzzleAhead)
+let center = Quat.v3(0.0, 0.04, (stockBack - muzzleAhead) / 2.0)
+
+/// The primary hand's pose in the rifle's frame (centred on its collider):
+/// the authored pistol grip. Like the pistol's, only taken there.
+let grip: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
+let gripZone = 0.07
+
+let weapon: Gun.Weapon = Gun.weaponAt(grip, bore, chamberAhead, muzzleAhead, true)
+
+// --- the foregrip ---
+
+/// How near the foregrip line a hand must be to take it: off it by at most
+/// this, between its ends.
+let foreZone = 0.06
+/// A support hand this far off the primary hand's axis breaks off, or past
+/// either end of the foregrip by `foreSlack`.
+let breakOff = 0.12
+let foreSlack = 0.08
+
+/// A point seen from a primary fist at `fist`: how far ahead along its -Z,
+/// and how far off that axis.
+type Along = { along: float, off: float }
+
+let alongOf = (fist: Input.pose, q: Input.point3): Along =>
+  let local = Quat.rotate(Quat.conj(fist.orientation), Quat.sub(q, fist.position)) in
+  { along: 0.0 - local.z, off: Math.sqrt(local.x * local.x + local.y * local.y) }
+
+/// From a point to the foregrip of a rifle at `pose`: 0 on its line.
+let foreGap = (pose: Input.pose, q: Input.point3): float =>
+  let a = alongOf(Hold.compose(pose, grip), q) in
+  let past = Math.max(0.0, Math.max(foreNear - a.along, a.along - foreFar)) in
+  Math.sqrt(a.off * a.off + past * past)
+
+/// Whether a support hand at `a` (seen from the primary hand) still holds.
+let holds = (a: Along): bool =>
+  a.off <= breakOff && a.along >= foreNear - foreSlack && a.along <= foreFar + foreSlack
+
+let level = Hold.at(Quat.v3(0.2, 1.1, -0.3), Quat.identity)
+expect foreGap(Gun.heldAt(weapon, level), Quat.v3(0.2, 1.1, -0.55)) < 0.0001
+expect Math.abs(foreGap(Gun.heldAt(weapon, level), Quat.v3(0.2, 1.15, -0.5)) - 0.05) < 0.0001
+// Past the near end by 4 cm, on the line: 4 cm away.
+expect Math.abs(foreGap(Gun.heldAt(weapon, level), Quat.v3(0.2, 1.1, -0.4)) - 0.04) < 0.0001
+// It slides freely along the foregrip, and a little past its ends; off the
+// axis by 11 cm it still holds, by 15 cm it breaks; and past an end by more
+// than `foreSlack`.
+expect [foreNear, 0.25, foreFar, foreNear - 0.07, foreFar + 0.07] |> List.all((d) => holds(alongOf(level, Quat.v3(0.2, 1.1, -0.3 - d))))
+expect holds(alongOf(level, Quat.v3(0.31, 1.1, -0.55))) && not holds(alongOf(level, Quat.v3(0.35, 1.1, -0.55)))
+expect not holds(alongOf(level, Quat.v3(0.2, 1.1, -0.3 - foreNear + 0.09))) && not holds(alongOf(level, Quat.v3(0.2, 1.1, -0.3 - foreFar - 0.09)))
+
+// --- the two-hand aim ---
+
+/// The primary hand turned so its -Z points from its fist at the support
+/// fist `at`: forward along `at` - fist, up the primary hand's up made
+/// perpendicular to it, so the roll is the primary hand's. (Its up along the
+/// barrel: its back instead.)
+let aimAt = (primary: Input.pose, at: Input.point3): Input.quaternion =>
+  let toward = Quat.sub(at, primary.position) in
+  let ahead = Quat.scale(1.0 / Quat.length(toward), toward) in
+  let perpendicular = (v: Input.point3) => Quat.sub(v, Quat.scale(Quat.dot(v, ahead), ahead)) in
+  let up = perpendicular(Quat.rotate(primary.orientation, Quat.v3(0.0, 1.0, 0.0))) in
+  let upright = if Quat.length(up) > 0.001 then up else perpendicular(Quat.rotate(primary.orientation, Quat.v3(0.0, 0.0, 1.0))) in
+  let y = Quat.scale(1.0 / Quat.length(upright), upright) in
+  let z = Quat.scale(0.0 - 1.0, ahead) in
+  Quat.fromBasis(Quat.cross(y, z), y, z)
+
+let fwd = (q: Input.quaternion) => Quat.rotate(q, Quat.v3(0.0, 0.0, -1.0))
+let upOf = (q: Input.quaternion) => Quat.rotate(q, Quat.v3(0.0, 1.0, 0.0))
+let unit = (v: Input.point3) => Quat.scale(1.0 / Quat.length(v), v)
+// Hands turned every way, the support ahead of the primary along its -Z:
+// the aim is the primary hand's own turn.
+let turns = [
+  Quat.identity, Quat.yaw(0.8), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.5),
+  Quat.axisAngle(Quat.v3(0.0, 0.0, -1.0), 1.2), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 2.8),
+  Quat.mul(Quat.yaw(-2.0), Quat.mul(Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), -0.7), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 0.9))),
+]
+expect turns |> List.all((q) =>
+  let p = Hold.at(Quat.v3(0.1, 1.2, -0.3), q) in
+  Quat.angle(aimAt(p, Quat.add(p.position, Quat.scale(0.3, fwd(q)))), q) < 0.0001)
+// The support moved off that line: forward follows support - primary, the
+// up stays perpendicular to it and in the plane of the primary hand's up
+// (the roll is the primary hand's), and the basis is orthonormal.
+expect turns |> List.all((q) =>
+  let p = Hold.at(Quat.v3(0.1, 1.2, -0.3), q) in
+  let s = Quat.add(p.position, Quat.rotate(q, Quat.v3(0.06, -0.04, -0.28))) in
+  let a = aimAt(p, s) in
+  let f = fwd(a) in
+  let u = upOf(a) in
+  let x = Quat.rotate(a, Quat.v3(1.0, 0.0, 0.0)) in
+  let primaryUp = upOf(q) in
+  Hold.near3(f, unit(Quat.sub(s, p.position)))
+    && Math.abs(Quat.dot(u, f)) < 0.0001 && Math.abs(Quat.dot(x, f)) < 0.0001 && Math.abs(Quat.dot(x, u)) < 0.0001
+    && Math.abs(Quat.length(u) - 1.0) < 0.0001
+    && Math.abs(Quat.dot(x, primaryUp)) < 0.0001 && Quat.dot(u, primaryUp) > 0.0)
+// Rolled a quarter turn, aimed 20 degrees left by the support: still rolled
+// a quarter turn about the new forward.
+expect (
+  let rolled = Quat.axisAngle(Quat.v3(0.0, 0.0, -1.0), Math.pi / 2.0) in
+  let p = Hold.at(Quat.v3(0.0, 1.2, 0.0), rolled) in
+  let left = Quat.yaw(20.0 * Math.pi / 180.0) in
+  let a = aimAt(p, Quat.add(p.position, Quat.scale(0.3, fwd(left)))) in
+  Quat.angle(a, Quat.mul(left, rolled)) < 0.0001
+)
+// The primary hand's up along the barrel (pointing straight down): its back
+// stands in, and the aim is still a rotation.
+expect (
+  let down = Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.0 - Math.pi / 2.0) in
+  let p = Hold.at(Quat.v3(0.0, 1.2, 0.0), Quat.identity) in
+  let a = aimAt(p, Quat.add(p.position, Quat.scale(0.3, fwd(down)))) in
+  Hold.near3(fwd(a), Quat.v3(0.0, -1.0, 0.0)) && Math.abs(Quat.length(upOf(a)) - 1.0) < 0.0001
+)
+
+// --- the support hand ---
+
+/// A hand on the foregrip: which, the turn still easing out (`ease`, so
+/// taking the foregrip doesn't jump the barrel to it), and this step's aim
+/// (the primary hand's turn, aimed at the support).
+type Support = { side: Hold.Side, ease: Input.quaternion, aim: Input.quaternion }
+
+/// A support hand at `at` takes the foregrip of a rifle the primary hand at
+/// `primary` holds: aimed exactly as it was, the rest easing out.
+let support = (side: Hold.Side, primary: Input.pose, at: Input.point3): Support =>
+  { side: side, ease: Quat.mul(primary.orientation, Quat.conj(aimAt(primary, at))), aim: primary.orientation }
+
+/// What a support step did: still on the foregrip, let go, or broken off.
+type Grasp = | Supporting(support: Support) | LetGo | Broke
+
+/// One step of a support hand at `at` (None: untracked): too far off the
+/// primary hand's axis or past the foregrip's ends, it breaks off (even if it
+/// opened); opened or lost, it lets go; else it aims the rifle, the ease
+/// turning out by at most `Hold.snapTurnStep`.
+let grasp = (s: Support, primary: Input.pose, at: Option.t<Input.point3>, squeezed: bool): Grasp =>
+  match at with
+  | Option.None => LetGo
+  | Option.Some(q) =>
+    if not holds(alongOf(primary, q)) then Broke
+    else if not squeezed then LetGo
+    else
+      let left = Quat.angle(s.ease, Quat.identity) in
+      let ease = if left <= Hold.snapTurnStep then Quat.identity else Quat.slerp(s.ease, Quat.identity, Hold.snapTurnStep / left) in
+      Supporting({ s with ease: ease, aim: Quat.mul(ease, aimAt(primary, q)) })
+
+/// The primary grip a two-hand hold steers the rifle by: the primary fist,
+/// turned to the aim.
+let steer = (primary: Input.pose, s: Support): Input.pose => Hold.at(primary.position, s.aim)
+
+/// The primary hand's hold once its support lets go: the rifle kept where
+/// the aim had it, relative to the hand (then eased back into the grip).
+let alone = (held: Hold.Held, s: Support, primary: Input.pose): Hold.Held =>
+  { held with offset: Hold.compose(Hold.at(Hold.zero, Quat.mul(Quat.conj(primary.orientation), s.aim)), held.offset), snapTo: Option.None }
+
+let ahead = (p: Input.pose, d: float) => Quat.add(p.position, Quat.scale(d, fwd(p.orientation)))
+let grasped = (g: Grasp): Option.t<Support> =>
+  match g with
+  | Supporting(s) => Option.Some(s)
+  | _ => Option.None
+
+// Taken off the primary's axis: the aim doesn't move on the grab, and eases
+// to aim at the support, at most `Hold.snapTurnStep` a step.
+expect (
+  let hand = Quat.add(ahead(level, 0.25), Quat.v3(0.05, 0.0, 0.0)) in
+  let s0 = support(Hold.Left, level, hand) in
+  let steps = List.range(6.0) |> List.fold((acc, i) =>
+    let s = List.last(acc) |> Option.defaultValue(s0) in
+    acc |> List.append([grasp(s, level, Option.Some(hand), true) |> grasped |> Option.defaultValue(s)]), [s0]) in
+  let aims = steps |> List.map((s) => s.aim) in
+  Quat.angle(s0.aim, level.orientation) < 0.0001
+    && (List.zip(List.drop(1.0, aims), aims) |> List.all((ab) => let (a, b) = ab in Quat.angle(a, b) <= Hold.snapTurnStep + 0.000001))
+    && (List.last(aims) |> Option.map((a) => Hold.near3(fwd(a), unit(Quat.sub(hand, level.position)))) |> Option.defaultValue(false))
+)
+// Opened, it lets go; dragged 15 cm off the axis, it breaks off, opened or not.
+expect (
+  let s = support(Hold.Left, level, ahead(level, 0.25)) in
+  let off = Quat.add(ahead(level, 0.25), Quat.v3(-0.15, 0.0, 0.0)) in
+  grasp(s, level, Option.Some(ahead(level, 0.25)), false) == LetGo
+    && grasp(s, level, Option.Some(off), true) == Broke && grasp(s, level, Option.Some(off), false) == Broke
+    && grasp(s, level, Option.None, true) == LetGo
+)
+// Let go after aiming 20 degrees left: alone, the primary keeps the rifle
+// exactly where the aim had it, then it settles back.
+expect (
+  let left = Quat.yaw(20.0 * Math.pi / 180.0) in
+  let s = { support(Hold.Left, level, ahead(level, 0.25)) with ease: Quat.identity, aim: left } in
+  let held = Hold.grab(Hold.Right, level, Gun.heldAt(weapon, level), Option.None) in
+  Hold.near(Hold.compose(level, (alone(held, s, level)).offset), Hold.compose(steer(level, s), held.offset))
+)
+// The rifle steered by the aim: its barrel along support - primary, the
+// primary fist on its grip, the support fist on its foregrip line.
+expect (
+  let primary = Hold.at(Quat.v3(0.1, 1.3, -0.3), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 0.6)) in
+  let hand = Quat.add(primary.position, Quat.v3(-0.08, 0.05, -0.28)) in
+  let s = { support(Hold.Left, primary, hand) with ease: Quat.identity } in
+  let aimed = (grasp(s, primary, Option.Some(hand), true) |> grasped |> Option.defaultValue(s)) in
+  let rifle = Gun.heldAt(weapon, steer(primary, aimed)) in
+  let b = Gun.boreOf(weapon, rifle) in
+  Hold.near3(b.dir, unit(Quat.sub(hand, primary.position)))
+    && Hold.near3((Hold.compose(rifle, grip)).position, primary.position) && foreGap(rifle, hand) < 0.0001
+)
+
+// --- what the support hand is drawn at ---
+
+/// Where the support hand at `hand` is drawn on a rifle accepted at
+/// `accepted` and wanted at `wanted`: carried with the rifle where the level
+/// stopped it short, its fist on the foregrip line, between its ends.
+let supportOn = (accepted: Input.pose, wanted: Input.pose, hand: Input.pose): Input.pose =>
+  let moved = Hold.compose(accepted, Hold.relative(wanted, hand)) in
+  let local = (Hold.relative(accepted, moved)).position in
+  let z = Math.clamp(grip.position.z - foreFar, grip.position.z - foreNear, local.z) in
+  Hold.at(Quat.add(accepted.position, Quat.rotate(accepted.orientation, Quat.v3(grip.position.x, grip.position.y, z))), moved.orientation)
+
+// Unblocked, a hand on the line is drawn where it is; stopped 10 cm short,
+// it is drawn 10 cm back with the rifle; past the end, at the end.
+expect (
+  let rifle = Gun.heldAt(weapon, level) in
+  let hand = Hold.at(ahead(level, 0.3), Quat.yaw(0.3)) in
+  let back = Hold.at(Quat.add(rifle.position, Quat.v3(0.0, 0.0, 0.1)), rifle.orientation) in
+  Hold.near(supportOn(rifle, rifle, hand), hand)
+    && Hold.near(supportOn(back, rifle, hand), Hold.at(Quat.add(hand.position, Quat.v3(0.0, 0.0, 0.1)), hand.orientation))
+    && Hold.near3((supportOn(rifle, rifle, Hold.at(ahead(level, 0.6), Quat.identity))).position, ahead(level, foreFar))
+)
+
+// --- the look ---
+
+let part = (sx: float, sy: float, sz: float, x: float, y: float, z: float) =>
+  Scene.cube() |> Scene.scaleXYZ(sx, sy, sz) |> Scene.translate(Vec3.make(x - center.x, y - center.y, z - center.z))
+
+/// The rifle in its own frame, from parts placed in the primary hand's (-Z
+/// the barrel's way; turned a half turn at the end, as drawn its local +Z
+/// is): stock, receiver, pistol grip, trigger, magazine, the handguard with
+/// the foregrip rail under it (lighter: where the support hand goes), barrel
+/// and sights. `paint` colours the furniture.
+let scene = (paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
+  let dark = Color.rgb(0.08, 0.08, 0.09) in
+  let metal = Color.rgb(0.16, 0.16, 0.18) in
+  Scene.group([
+    part(0.04, 0.08, 0.2, 0.0, 0.04, 0.18) |> paint(0.36, 0.32, 0.22),
+    part(0.045, 0.05, 0.22, 0.0, 0.06, 0.0 - 0.03) |> Scene.lit(metal),
+    Scene.cube() |> Scene.scaleXYZ(0.03, 0.09, 0.04) |> Scene.rotateX(Angle.radians(0.0 - 0.25))
+      |> Scene.translate(Vec3.make(0.0 - center.x, 0.0 - center.y, 0.012 - center.z)) |> paint(0.36, 0.32, 0.22),
+    part(0.008, 0.006, 0.05, 0.0, 0.016, 0.0 - 0.045) |> Scene.lit(dark),
+    part(0.006, 0.02, 0.006, 0.0, 0.026, 0.0 - 0.035) |> Scene.lit(dark),
+    part(0.025, 0.09, 0.05, 0.0, 0.0, 0.0 - 0.09) |> Scene.lit(metal),
+    part(0.045, 0.05, foreFar - foreNear, 0.0, bore, 0.0 - (foreNear + foreFar) / 2.0) |> paint(0.36, 0.32, 0.22),
+    part(0.03, 0.03, foreFar - foreNear, 0.0, 0.02, 0.0 - (foreNear + foreFar) / 2.0) |> paint(0.6, 0.55, 0.42),
+    part(0.016, 0.016, muzzleAhead - foreFar, 0.0, bore, 0.0 - (foreFar + muzzleAhead) / 2.0) |> Scene.lit(dark),
+    part(0.005, 0.03, 0.008, 0.0, bore + 0.025, 0.0 - 0.5) |> Scene.emissive(Color.rgb(1.0, 0.55, 0.1)),
+    part(0.02, 0.02, 0.01, 0.0, bore + 0.035, 0.06) |> Scene.lit(dark),
+  ]) |> Scene.rotateY(180deg)
+
+/// The selector's light on the receiver's left: green on semi, red on full-auto.
+let selector = (mode: Gun.Mode): Scene.t =>
+  let c = match mode with
+    | Gun.Semi => Color.rgb(0.3, 1.0, 0.4)
+    | Gun.Auto => Color.rgb(1.0, 0.25, 0.15) in
+  part(0.006, 0.014, 0.02, 0.0 - 0.025, 0.06, 0.03) |> Scene.emissive(c) |> Scene.rotateY(180deg)
