@@ -77,9 +77,10 @@ type Model = {
   score: float,
   // The body frame the slots ride, where they are worn.
   hips: Hips.State,
-  // Each hand's haptic edges and last pulse.
+  // Each hand's haptic edges and last pulse, and this step's pulses.
   feltLeft: Pulses.Hand,
-  feltRight: Pulses.Hand
+  feltRight: Pulses.Hand,
+  pulses: List<(Hold.Side, Pulses.Event)>
 }
 
 let zero = Hold.zero
@@ -105,13 +106,14 @@ let reset = (m: Model, id: float): Model =>
       score: 0.0,
       hips: Hips.init,
       feltLeft: Pulses.idle,
-      feltRight: Pulses.idle }
+      feltRight: Pulses.idle,
+      pulses: [] }
 
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
     handView: Tracked, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
-    feltLeft: Pulses.idle, feltRight: Pulses.idle
+    feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: []
   }, 1.0)
 
 // --- input ---
@@ -322,8 +324,8 @@ let stowing = (prev: Model, m: Model, slots: List<Slots.Placed>): List<Stow> =>
   | claims => stows(claims)
 
 /// One fixed step, given the world (`cast`) and the props as read back
-/// (`read`): the next model, and the props let go (their velocity and spin
-/// to give the world).
+/// (`read`): the next model (with the step's `pulses`), and the props let go
+/// (their velocity and spin to give the world).
 let step = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input.pose) => Option.t<Hold.Hit>, read: (Prop) => Prop, t: float, dt: float): (Model, List<Release>) =>
   let (left, leftEdge) = Hold.stepHand(m.left, Option.isSome(gripOf(m.xr, Hold.Left)), squeezeOf(m.xr, Hold.Left)) in
   let (right, rightEdge) = Hold.stepHand(m.right, Option.isSome(gripOf(m.xr, Hold.Right)), squeezeOf(m.xr, Hold.Right)) in
@@ -339,8 +341,8 @@ let step = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input
   // hand holding a prop is squeezing, so it has no fresh press for another
   // until it opens and lets go.)
   let (held, released) = holdAll(grabbing(live, (leftEdge, rightEdge), slots, stowed), st, cast, slots, stowed, t) in
-  let next = scoring(held, st) in
-  ({ next with lastRelease: if List.isEmpty(released) then m.lastRelease else List.last(released) }, released)
+  let (next, pulses) = feel(m, scoring(held, st), released, slots, t) in
+  ({ next with lastRelease: if List.isEmpty(released) then m.lastRelease else List.last(released), pulses: pulses }, released)
 
 // --- haptics ---
 
@@ -349,37 +351,23 @@ let feltOf = (m: Model, side: Hold.Side): Pulses.Hand =>
   | Hold.Left => m.feltLeft
   | Hold.Right => m.feltRight
 
-let withFelt = (m: Model, side: Hold.Side, h: Pulses.Hand): Model =>
-  match side with
-  | Hold.Left => { m with feltLeft: h }
-  | Hold.Right => { m with feltRight: h }
-
 let other = (side: Hold.Side): Hold.Side =>
   match side with
   | Hold.Left => Hold.Right
   | Hold.Right => Hold.Left
 
-/// The slot a hand is in, and whether it would take the hand's prop if the
-/// hand opened now (`stowing`'s test).
-let slotIn = (m: Model, side: Hold.Side, slots: List<Slots.Placed>): (Option.t<float>, bool) =>
-  match gripOf(m.xr, side) |> Option.bind((g) => Slots.target(slots, g.position)) with
-  | Option.None => (Option.None, false)
-  | Option.Some(t) =>
-    (Option.Some(t.slot.id),
-     propIn(m, side) |> Option.map((p) => Slots.fits(p.kind, t.slot) && not occupied(m, t.slot.id)) |> Option.defaultValue(false))
-
-/// What a hand's hold did across a step (`m` before, `next` after): it took a
-/// prop (out of a slot or not), or put its prop away, lost it, or let it go.
-/// A prop handed to the other hand is that hand's grab.
-let holdEvents = (m: Model, next: Model, released: List<Release>, side: Hold.Side): List<Pulses.Event> =>
-  let before = propIn(m, side) |> Option.map((p) => p.kind) in
-  let after = propIn(next, side) |> Option.map((p) => p.kind) in
-  if before == after then []
+/// What a hand's hold did across a step (`m` before; `after`, what it holds
+/// in `next`): it took a prop (out of a slot or not), or put its prop away,
+/// lost it, or let it go. A prop handed to the other hand is that hand's grab.
+let holdEvents = (m: Model, next: Model, released: List<Release>, side: Hold.Side, after: Option.t<Prop>): List<Pulses.Event> =>
+  let was = propIn(m, side) |> Option.map((p) => p.kind) in
+  let now = after |> Option.map((p) => p.kind) in
+  if was == now then []
   else
-    match after with
+    match now with
     | Option.Some(k) => if Option.isSome(propOf(m, k).slot) then [Pulses.Unstow] else [Pulses.Grab]
     | Option.None =>
-      (match before with
+      (match was with
        | Option.None => []
        | Option.Some(k) =>
          let p = propOf(next, k) in
@@ -388,20 +376,35 @@ let holdEvents = (m: Model, next: Model, released: List<Release>, side: Hold.Sid
          else if released |> List.any((r) => r.prop == k && r.kind == Break) then [Pulses.Break]
          else [Pulses.Release])
 
-/// Each hand's pulses for a step: the model with their edges, and the
+/// One hand's pulses for a step, and its new edges: blocked (its prop held
+/// off by the level), and the slot it holds its prop in, which takes the
+/// prop if it is empty and fits it (`stowing`'s test; only checked on
+/// entering one). An empty hand is in no slot, as far as pulses go.
+let feelHand = (m: Model, next: Model, released: List<Release>, slots: List<Slots.Placed>, side: Hold.Side, t: float): (Pulses.Hand, List<Pulses.Event>) =>
+  let h = feltOf(m, side) in
+  let grip = gripOf(next.xr, side) in
+  let holding = propIn(next, side) in
+  let blockedNow =
+    holding |> Option.bind((p) => p.held) |> Option.bind((held) =>
+      grip |> Option.map((g) => Pulses.blocked(h.blocked, g, Hold.gripOn(held))))
+      |> Option.defaultValue(false) in
+  let slot =
+    if List.isEmpty(slots) || Option.isNone(holding) then Option.None
+    else grip |> Option.bind((g) => Slots.target(slots, g.position)) in
+  let slotNow = slot |> Option.map((s) => s.slot.id) in
+  let takes =
+    slotNow != h.slot
+      && (slot |> Option.bind((s) => holding |> Option.map((p) => Slots.fits(p.kind, s.slot) && not occupied(next, s.slot.id)))
+            |> Option.defaultValue(false)) in
+  Pulses.step(h, holdEvents(m, next, released, side, holding), blockedNow, slotNow, takes, t)
+
+/// Both hands' pulses for a step: the model with their edges, and the
 /// (hand, event) pairs to buzz.
 let feel = (m: Model, next: Model, released: List<Release>, slots: List<Slots.Placed>, t: float): (Model, List<(Hold.Side, Pulses.Event)>) =>
-  [Hold.Left, Hold.Right] |> List.fold((acc, side) =>
-    let (model, fired) = acc in
-    let h = feltOf(m, side) in
-    let blockedNow =
-      heldIn(next, side)
-        |> Option.bind((held) => gripOf(next.xr, side) |> Option.map((g) => Pulses.blocked(h.blocked, g, Hold.gripOn(held))))
-        |> Option.defaultValue(false) in
-    let (slot, takes) = slotIn(next, side, slots) in
-    let (felt, events) = Pulses.step(h, holdEvents(m, next, released, side), blockedNow, slot, takes, t) in
-    (withFelt(model, side, felt), List.append(fired, events |> List.map((e) => (side, e))))
-  , (next, []))
+  let (left, l) = feelHand(m, next, released, slots, Hold.Left, t) in
+  let (right, r) = feelHand(m, next, released, slots, Hold.Right, t) in
+  ({ next with feltLeft: left, feltRight: right },
+   List.append(l |> List.map((e) => (Hold.Left, e)), r |> List.map((e) => (Hold.Right, e))))
 
 /// A rig-local pose in the world, as it is drawn (`Scene.atPose`), swept and
 /// declared (`Physics.atPose`).
@@ -440,14 +443,13 @@ let tick = (m: Model, dt: float, tts: float) =>
         let v = Physics.linearVelocity(tagOf(m.gen, p.kind)) in
         { p with pose: unposed(st, q), velocity: Stations.dirToRig(st, Quat.v3(v.x, v.y, v.z)) }
       | Option.None => p in
-  let (stepped, released) = step(m, st, castOf(st), read, tts, dt) in
-  let (next, pulses) = feel(m, stepped, released, if Stations.worn(st) then Slots.placed(stepped.hips) else [], tts) in
+  let (next, released) = step(m, st, castOf(st), read, tts, dt) in
   // Declared dynamic and given their velocities in the same frame: both land
   // on the next step, so none spends a step at rest.
   let throws = released |> List.concatMap((r) =>
     [Physics.setVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.velocity)),
      Physics.setAngularVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.spin))]) in
-  let buzzes = pulses |> List.map((se) => let (side, e) = se in Pulses.effect(side, e)) in
+  let buzzes = next.pulses |> List.map((se) => let (side, e) = se in Pulses.effect(side, e)) in
   (next, Effect.batch(List.append(throws, buzzes)))
 
 let solid = (named: (string, Stations.Box)) =>
@@ -534,8 +536,8 @@ expect (
 )
 // Pulses: the grab buzzes the right hand once; opening it, a release.
 let feltRun = (m: Model, c: Input.controller, t: float) =>
-  let (next, released) = step(withHands(m, away, c), Stations.grabTable, noWorld, (p) => p, t, 1.0 / 60.0) in
-  feel(withHands(m, away, c), next, released, [], t)
+  let (next, _) = step(withHands(m, away, c), Stations.grabTable, noWorld, (p) => p, t, 1.0 / 60.0) in
+  (next, next.pulses)
 expect (
   let (reached, none) = feltRun(init, hand(rest(Props.Ball), 0.0), 0.0) in
   let (took, grab) = feltRun(reached, hand(rest(Props.Ball), 1.0), 1.0 / 60.0) in
@@ -550,11 +552,9 @@ expect (
   let table = (k: Props.Kind, from: Input.pose, to: Input.pose) =>
     if to.position.y < from.position.y then Option.Some({ fraction: 0.0, normal: Quat.v3(0.0, 1.0, 0.0) }) else Option.None in
   let into = withHands(took, away, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, -0.05, 0.0)), 1.0)) in
-  let (pressed, r1) = step(into, Stations.grabTable, table, (p) => p, 2.0 / 60.0, 1.0 / 60.0) in
-  let (felt, first) = feel(into, pressed, r1, [], 2.0 / 60.0) in
-  let (still, r2) = step(felt, Stations.grabTable, table, (p) => p, 3.0 / 60.0, 1.0 / 60.0) in
-  let (_, second) = feel(felt, still, r2, [], 3.0 / 60.0) in
-  first == [(Hold.Right, Pulses.Blocked)] && second == []
+  let (pressed, _) = step(into, Stations.grabTable, table, (p) => p, 2.0 / 60.0, 1.0 / 60.0) in
+  let (still, _) = step(pressed, Stations.grabTable, table, (p) => p, 3.0 / 60.0, 1.0 / 60.0) in
+  pressed.pulses == [(Hold.Right, Pulses.Blocked)] && still.pulses == []
 )
 
 // Resetting the station drops the hold, respawns the props, and the

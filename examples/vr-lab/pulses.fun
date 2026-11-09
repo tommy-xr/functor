@@ -67,16 +67,18 @@ expect not blocked(false, Hold.p(0.0, 0.0, 0.0), Hold.p(0.015, 0.0, 0.0))
 expect blocked(true, Hold.p(0.0, 0.0, 0.0), Hold.p(0.015, 0.0, 0.0))
 expect not blocked(true, Hold.p(0.0, 0.0, 0.0), Hold.p(0.009, 0.0, 0.0))
 
-/// Step a hand's edges: whether its prop is blocked now, the slot it is in
-/// now, and whether that slot would take its prop. Its events are `held` (a
+/// Step a hand's edges: whether its prop is blocked now, the slot it holds
+/// it in now, and whether that slot would take it. Its events are `held` (a
 /// grab, release, … from comparing holds), then the edges that rose: a stop,
-/// or entering a slot ready for its prop (not one it was already in, so a
-/// prop just taken out doesn't buzz again).
+/// or carrying it into a slot ready for it (not on the step it was taken,
+/// so a prop taken out of a slot doesn't buzz ready too).
 let step = (h: Hand, held: List<Event>, blockedNow: bool, slotNow: Option.t<float>, takes: bool, t: float): (Hand, List<Event>) =>
+  if List.isEmpty(held) && blockedNow == h.blocked && slotNow == h.slot then (h, [])
+  else
   let rising =
     List.append(
       if blockedNow && not h.blocked then [Blocked] else [],
-      if takes && Option.isSome(slotNow) && slotNow != h.slot then [Ready] else []) in
+      if takes && List.isEmpty(held) && Option.isSome(slotNow) && slotNow != h.slot then [Ready] else []) in
   let events = List.append(held, rising) in
   let last = events |> List.last |> Option.map((e) => { event: e, at: t }) in
   ({ blocked: blockedNow, slot: slotNow, last: if Option.isSome(last) then last else h.last }, events)
@@ -94,8 +96,7 @@ expect (
   let (h2, e2) = step(h1, [], false, Option.Some(2.0), true, 0.1) in
   let (_, e3) = step(h2, [], false, Option.Some(1.0), true, 0.2) in
   let (_, refused) = step(idle, [], false, Option.Some(2.0), false, 0.0) in
-  let (inside, _) = step(idle, [], false, Option.Some(2.0), false, 0.0) in
-  let (_, takenOut) = step(inside, [Unstow], false, Option.Some(2.0), true, 0.1) in
+  let (_, takenOut) = step(idle, [Unstow], false, Option.Some(2.0), true, 0.1) in
   e1 == [Ready] && e2 == [] && e3 == [Ready] && refused == [] && takenOut == [Unstow]
 )
 
