@@ -140,7 +140,11 @@ impl CameraImage<'_> {
             })
         };
         let c = self.calibration;
-        Some(yuv420_888_to_i420(c.width, c.height, [plane(0)?, plane(1)?, plane(2)?]))
+        Some(yuv420_888_to_i420(
+            c.width,
+            c.height,
+            [plane(0)?, plane(1)?, plane(2)?],
+        ))
     }
 }
 
@@ -168,12 +172,16 @@ unsafe fn entry(
     min: u32,
 ) -> Option<ffi::ACameraMetadata_const_entry> {
     let mut entry = std::mem::zeroed::<ffi::ACameraMetadata_const_entry>();
-    (ffi::ACameraMetadata_getConstEntry(metadata, tag, &mut entry) == ffi::camera_status_t::ACAMERA_OK
+    (ffi::ACameraMetadata_getConstEntry(metadata, tag, &mut entry)
+        == ffi::camera_status_t::ACAMERA_OK
         && entry.count >= min)
         .then_some(entry)
 }
 
-unsafe fn floats<const N: usize>(metadata: *const ffi::ACameraMetadata, tag: u32) -> Option<[f32; N]> {
+unsafe fn floats<const N: usize>(
+    metadata: *const ffi::ACameraMetadata,
+    tag: u32,
+) -> Option<[f32; N]> {
     let e = entry(metadata, tag, N as u32)?;
     Some(std::array::from_fn(|i| *e.data.f.add(i)))
 }
@@ -184,7 +192,10 @@ unsafe fn find_left(
     manager: *mut ffi::ACameraManager,
 ) -> Result<(std::ffi::CString, *mut ffi::ACameraMetadata), String> {
     let mut list = ptr::null_mut();
-    check("list cameras", ffi::ACameraManager_getCameraIdList(manager, &mut list))?;
+    check(
+        "list cameras",
+        ffi::ACameraManager_getCameraIdList(manager, &mut list),
+    )?;
     let ids: Vec<std::ffi::CString> = (0..(*list).numCameras as usize)
         .map(|i| CStr::from_ptr(*(*list).cameraIds.add(i)).to_owned())
         .collect();
@@ -226,18 +237,25 @@ unsafe fn output_size(metadata: *const ffi::ACameraMetadata) -> Option<(i32, i32
         .or_else(|| sizes.iter().copied().max_by_key(|(w, h)| w * h))
 }
 
-unsafe fn calibration(metadata: *const ffi::ACameraMetadata, size: (i32, i32)) -> Result<Calibration, String> {
+unsafe fn calibration(
+    metadata: *const ffi::ACameraMetadata,
+    size: (i32, i32),
+) -> Result<Calibration, String> {
     use ffi::acamera_metadata_tag as tag;
     let missing = |what| format!("the left camera reports no {what}");
     let k: [f32; 5] = floats(metadata, tag::ACAMERA_LENS_INTRINSIC_CALIBRATION.0)
         .ok_or_else(|| missing("LENS_INTRINSIC_CALIBRATION"))?;
     // [x, y, z, w]: sensor (head) → camera.
-    let q: [f32; 4] =
-        floats(metadata, tag::ACAMERA_LENS_POSE_ROTATION.0).ok_or_else(|| missing("LENS_POSE_ROTATION"))?;
+    let q: [f32; 4] = floats(metadata, tag::ACAMERA_LENS_POSE_ROTATION.0)
+        .ok_or_else(|| missing("LENS_POSE_ROTATION"))?;
     let t: [f32; 3] = floats(metadata, tag::ACAMERA_LENS_POSE_TRANSLATION.0)
         .ok_or_else(|| missing("LENS_POSE_TRANSLATION"))?;
-    let array = entry(metadata, tag::ACAMERA_SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE.0, 4)
-        .ok_or_else(|| missing("SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE"))?;
+    let array = entry(
+        metadata,
+        tag::ACAMERA_SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE.0,
+        4,
+    )
+    .ok_or_else(|| missing("SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE"))?;
     // [left, top, width, height].
     let array = std::slice::from_raw_parts(array.data.i32_, 4);
     let distortion = floats::<5>(metadata, tag::ACAMERA_LENS_DISTORTION.0)
@@ -299,9 +317,17 @@ unsafe fn open() -> Result<Open, String> {
             .and_then(|size| calibration(metadata, size));
         ffi::ACameraMetadata_free(metadata);
         open.calibration = calibrated?;
-        let (w, h) = (open.calibration.width as i32, open.calibration.height as i32);
-        if ffi::AImageReader_new(w, h, ffi::AIMAGE_FORMATS::AIMAGE_FORMAT_YUV_420_888.0 as i32, 3, &mut open.reader)
-            != ffi::media_status_t::AMEDIA_OK
+        let (w, h) = (
+            open.calibration.width as i32,
+            open.calibration.height as i32,
+        );
+        if ffi::AImageReader_new(
+            w,
+            h,
+            ffi::AIMAGE_FORMATS::AIMAGE_FORMAT_YUV_420_888.0 as i32,
+            3,
+            &mut open.reader,
+        ) != ffi::media_status_t::AMEDIA_OK
         {
             return Err(format!("AImageReader_new {w}x{h} failed"));
         }
@@ -316,11 +342,25 @@ unsafe fn open() -> Result<Open, String> {
         };
         check(
             "open the passthrough camera",
-            ffi::ACameraManager_openCamera(open.manager, id.as_ptr(), &mut device_callbacks, &mut open.device),
+            ffi::ACameraManager_openCamera(
+                open.manager,
+                id.as_ptr(),
+                &mut device_callbacks,
+                &mut open.device,
+            ),
         )?;
-        check("output container", ffi::ACaptureSessionOutputContainer_create(&mut open.container))?;
-        check("session output", ffi::ACaptureSessionOutput_create(window, &mut open.output))?;
-        check("add output", ffi::ACaptureSessionOutputContainer_add(open.container, open.output))?;
+        check(
+            "output container",
+            ffi::ACaptureSessionOutputContainer_create(&mut open.container),
+        )?;
+        check(
+            "session output",
+            ffi::ACaptureSessionOutput_create(window, &mut open.output),
+        )?;
+        check(
+            "add output",
+            ffi::ACaptureSessionOutputContainer_add(open.container, open.output),
+        )?;
         let session_callbacks = ffi::ACameraCaptureSession_stateCallbacks {
             context: ptr::null_mut(),
             onClosed: Some(on_session_state),
@@ -329,7 +369,12 @@ unsafe fn open() -> Result<Open, String> {
         };
         check(
             "capture session",
-            ffi::ACameraDevice_createCaptureSession(open.device, open.container, &session_callbacks, &mut open.session),
+            ffi::ACameraDevice_createCaptureSession(
+                open.device,
+                open.container,
+                &session_callbacks,
+                &mut open.session,
+            ),
         )?;
         check(
             "capture request",
@@ -339,8 +384,14 @@ unsafe fn open() -> Result<Open, String> {
                 &mut open.request,
             ),
         )?;
-        check("output target", ffi::ACameraOutputTarget_create(window, &mut open.target))?;
-        check("add target", ffi::ACaptureRequest_addTarget(open.request, open.target))?;
+        check(
+            "output target",
+            ffi::ACameraOutputTarget_create(window, &mut open.target),
+        )?;
+        check(
+            "add target",
+            ffi::ACaptureRequest_addTarget(open.request, open.target),
+        )?;
         check(
             "repeating request",
             ffi::ACameraCaptureSession_setRepeatingRequest(
