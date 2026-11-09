@@ -1288,6 +1288,7 @@ const shotgunScenarios = {
       ...Array.from({ length: SHOTGUN.tube + 1 }, (_, i) => [...pulls(1, `fired${i + 1}`), ...sgPump(`pumped${i + 1}`, SG_AIM, TARGETS[1])]).flat(),
       { frames: 1, right: { trigger: 1 }, mark: "dry" },
       { frames: 6, right: { trigger: 0 }, mark: "after" },
+      { frames: 120, right: {}, mark: "rested" },
     ],
   },
 
