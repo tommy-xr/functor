@@ -9,10 +9,11 @@
 // places but wears no slots.
 //
 // From `GET /frames`: `step` (one fixed step's producer work: sampledInput,
-// tick, physics) and `draw` (once a frame), min / median / p95 / max. At
-// 120 Hz a frame runs a 60 Hz step every other frame, so the worst frame
-// costs a step plus a draw: set against the 8.33 ms Quest frame at the
-// sweep_bench convention of ×4 for desktop → Quest.
+// tick, physics) and `draw` (once a frame), min / median / p95 / max. The
+// summary compares the MIN column: wall-clock medians swing with DVFS and
+// load from run to run. At 120 Hz a frame runs a 60 Hz step every other
+// frame, so the worst frame costs a step plus a draw: set against the
+// 8.33 ms Quest frame at the sweep_bench convention of ×4 for desktop → Quest.
 //
 //   npm run bench:vr-lab        # a release build; a debug one is many times slower
 import { sleep } from "./mcp-rpc.mjs";
@@ -20,7 +21,7 @@ import { DT, launch, play } from "./xr-scenario.mjs";
 import { project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8294;
-const BURST = 300;
+const BURST = 1200;
 const BUDGET_US = 1e6 / 120;
 const QUEST = 4;
 
@@ -67,8 +68,8 @@ for (const [name, scenario] of runs) {
 }
 const [inv, base] = results;
 const pct = (us) => `${((100 * us) / BUDGET_US).toFixed(1)}%`;
-const step = inv.step.med - base.step.med;
-const draw = inv.draw.med - base.draw.med;
-console.log(`\nslots + hips, desktop medians: +${step.toFixed(0)} µs a step, +${draw.toFixed(0)} µs a draw`);
-const worst = (r) => r.step.med + r.draw.med;
+const step = inv.step.min - base.step.min;
+const draw = inv.draw.min - base.draw.min;
+console.log(`\nslots + hips, desktop mins: +${step.toFixed(0)} µs a step, +${draw.toFixed(0)} µs a draw`);
+const worst = (r) => r.step.min + r.draw.min;
 console.log(`Quest (×${QUEST}), a frame with a step: inventory ${(worst(inv) * QUEST).toFixed(0)} µs (${pct(worst(inv) * QUEST)} of ${BUDGET_US.toFixed(0)}), grab table ${(worst(base) * QUEST).toFixed(0)} µs (${pct(worst(base) * QUEST)}); the slots' share ${pct((step + draw) * QUEST)}`);
