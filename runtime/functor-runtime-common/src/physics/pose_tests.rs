@@ -2,28 +2,27 @@
 //! (`PhysicsCommand::SetAngularVelocity`): a held prop's lifecycle.
 
 use super::{
-    Body, Command, PhysicsCommand, PhysicsScene, Shape, Simulatable, Timeline, TimelineLog, World, FIXED_DT,
+    Body, Command, PhysicsCommand, PhysicsScene, RigidPose, Shape, Simulatable, Timeline, TimelineLog, World,
+    FIXED_DT,
 };
 use crate::MappedTrackingPose;
 
-type Pose = ([f32; 3], [f32; 4]);
-
 /// A pose as `Scene.atPose` takes it, placed as `Physics.atPose` places it.
-fn pose(at: [f32; 3], forward: [f32; 3], up: [f32; 3]) -> Pose {
+fn pose(at: [f32; 3], forward: [f32; 3], up: [f32; 3]) -> RigidPose {
     MappedTrackingPose { position: at, forward, up }
         .to_position_rotation()
         .unwrap()
 }
 
 /// Yawed `deg` about +Y at `at`: forward swings from +Z toward +X.
-fn yawed(at: [f32; 3], deg: f32) -> Pose {
+fn yawed(at: [f32; 3], deg: f32) -> RigidPose {
     let (s, c) = deg.to_radians().sin_cos();
     pose(at, [s, 0.0, c], [0.0, 1.0, 0.0])
 }
 
 const STICK: Shape = Shape::Cuboid { extents: [0.04, 0.04, 0.7] };
 
-fn stick(kinematic: bool, (p, q): Pose) -> Body {
+fn stick(kinematic: bool, (p, q): RigidPose) -> Body {
     let body = if kinematic {
         Body::kinematic("stick".to_string(), STICK)
     } else {

@@ -366,7 +366,7 @@ that pose back, and be thrown spinning:
   the model (where it was let go), never one read back each frame.
 - **`Physics.pose(tag)`** reads the live stepped pose as an
   `Option.t<Camera3D.mappedPose>` (`impure[physics]`), `None` for a tag not
-  in the world: `Scene.atPose(Physics.pose(t))` draws a body where it is, and
+  in the world: drawing `Scene.atPose` at its `Some` pose puts a visual where the body is, and
   `pose(t)` after `atPose(p)` is `p` within float error.
 - **`Physics.setAngularVelocity(tag, w)`** is a command like `setVelocity`
   (world-space axis × rad/s), applied after reconcile. Spin has no

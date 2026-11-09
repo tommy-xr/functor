@@ -955,7 +955,8 @@ impl World {
 
     /// Live angular velocity of a declared body, world-space axis × rad/s
     /// (zero for a fused one).
-    pub fn body_angular_velocity(&self, tag: &str) -> Option<[f32; 3]> {
+    #[cfg(test)]
+    pub(crate) fn body_angular_velocity(&self, tag: &str) -> Option<[f32; 3]> {
         let Some(rb) = self.tags.get(tag) else {
             return self.fused_part(tag).map(|_| [0.0; 3]);
         };
