@@ -8,7 +8,8 @@
 // `to` (rig-local metres: +X right, +Y up from the floor, -Z forward), with
 // its squeeze held at `squeeze`. `turn` (a quaternion, `[x, y, z, w]`) turns
 // its grip the same way, the shorter way round, from where it was to that.
-// `active: false` loses the hand's tracking.
+// `active: false` loses the hand's tracking. A segment's `tap` key is
+// pressed on its first step and released after it.
 // A segment's `mark` names its last step, so a check can find it.
 //
 //   { frames: 30, right: { to: [0.2, 1.0, -0.55], squeeze: 0 } }
@@ -171,8 +172,11 @@ export async function play(rt, scenario, onStep = async () => {}) {
             : hands[side].orientation,
         };
       }
+      const tapped = i === 0 && seg.tap;
+      if (tapped) await rt.post("/input", { type: "key", key: seg.tap, down: true });
       await rt.post("/input", sample(hands));
       const state = await advance(rt);
+      if (tapped) await rt.post("/input", { type: "key", key: seg.tap, down: false });
       step++;
       const mark = i === seg.frames - 1 ? seg.mark : undefined;
       if (mark) marks[mark] = state;

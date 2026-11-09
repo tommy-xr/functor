@@ -18,17 +18,19 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | `1`-`9` | jump to that station and reset it |
 | B / Y / menu | next station (reset) |
 | grip (squeeze) | grab what's in reach; open to let go |
+| `H` / thumbstick click | draw a holding hand where it is tracked, or where its blocked prop implies |
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
-`hover`), the ball (`held`, `ballPos`, `ballVel`), the stick (`stick`,
-`stickPose`), the last releases (`lastRelease`, `lastStickRelease`) and the score. The headset requests 120 Hz with foveation off, floor-locked.
+`hover`), `handView`, the props (`held`, and `pose`/`velocity` read back from
+the world, rig-local), the last release (`lastRelease`) and the score. The
+headset requests 120 Hz with foveation off, floor-locked.
 
 | Module | What it is |
 | --- | --- |
 | `game.fun` | the MVU glue: station selector, the grab table's step, physics, drawing |
 | `stations.fun` | where each station stands and what it's built from; rig ↔ world |
-| `hold.fun` | one hand grabbing, holding and releasing an item; the throw estimate |
-| `stick.fun` | a long prop held rigidly, stopped where it turns into the level; its throw and spin |
+| `hold.fun` | one hand grabbing, holding and releasing a prop (any pose); the swept move; the throw and spin estimate |
+| `props.fun` | the props: shape, collider, reach, authored grip, material, look |
 | `digits.fun` | seven-segment numbers (the headset doesn't draw `ui`) |
 | `quat.fun` | plain-data vectors and quaternions |
 
@@ -63,47 +65,54 @@ samples (`POST /input`), but fixture playback there is untested.
 
 ## 1. Grab table
 
-A ball and a stick on a table, a wall against the table's left end, and a
-basket on the floor a throw away, with a scoreboard behind it.
+A table with four props on it — a ball, a stick (a 70 cm box with a grip
+band), a brick (resting turned) and a bottle (a box collider round a
+cylinder and a neck) — a wall against the table's left end, and a basket on
+the floor a throw away, with a scoreboard behind it. Every prop takes the
+same path:
 
-- **Grab.** Either hand, within 12 cm of the ball's surface (16 cm to stay
-  hovered: the ball glows). The squeeze has hysteresis (0.6 press, 0.4
-  release) and only a fresh press grabs: a hand that was squeezing when
-  tracking dropped, when the grip broke or when the station reset must open
-  first. Both hands pressing at once: the nearer wins.
-- **Hold.** The ball keeps its collider. Each step it sweeps from where it is
-  toward the hand (`Physics.sweep` against fixed bodies only, so never
-  itself), stops just short of what it hits and slides along it, and is
-  declared kinematic there. Pushed into the
-  wall it stays at the wall; pulled back, it follows the hand out.
-- **Break.** More than 25 cm between the hand and the ball: it drops where it
-  stopped, with no velocity.
-- **Throw.** The velocity is the least-squares slope of the ball's accepted
-  positions over the last 60 ms (rig-local, so a moving rig adds nothing),
-  capped at 12 m/s. Released, the ball is declared dynamic and given that
-  velocity in the same frame. (Not a declared `Physics.velocity`: that
-  follows the divergence rule, applying only when the declaration changes.)
-- **Tracking loss.** A held ball freezes and forgets its history; opening the
-  hand when it comes back drops the ball rather than throwing it.
-- **Reset** bumps the ball's and the stick's tags, so the old bodies go and
-  new ones spawn at rest.
-- **Stick.** A 70 cm box with a grip band at its near end. A fresh squeeze
-  within 12 cm of it takes it, held where it was grabbed. Each step it is
-  swept from where it is to where the hand holds it, turning on the way
-  (`Physics.sweep`, at the pose it is drawn at), and stops 4 mm short of what
-  it hits: turn the wrist toward the wall and the far end stops at the wall,
-  even though the hand and the stick's centre barely move; turn back and it
-  follows again. Held, it is a kinematic body at the accepted pose
-  (`Physics.atPose`), so swept across the table it shoves the ball off.
-  Let go, it turns dynamic where it last was held and is given the throw's
-  velocity (as the ball's, of its centre) and spin: the least-squares rate of
-  its accepted orientations turning over the same 60 ms window, capped at
-  30 rad/s. Free, it is drawn and grabbed where the world has it
-  (`Physics.pose`). Held more than a quarter turn (or 25 cm) off the hand,
-  it drops where it stopped, with no velocity.
+- **Grab.** Either hand, within 12 cm of a prop's surface (16 cm to stay
+  hovered: it glows); the nearest prop in reach. The squeeze has hysteresis
+  (0.6 press, 0.4 release) and only a fresh press grabs: a hand that was
+  squeezing when tracking dropped, when the grip broke or when the station
+  reset must open first. Both hands pressing on one prop at once: the
+  nearer wins.
+- **Regrab.** The grab reads the prop's pose from the world (`Physics.pose`)
+  and keeps the hand's offset to it, position and turn: it stays exactly
+  where it was, held at the point and angle it was taken. A prop with an
+  authored grip (the bottle's neck) snaps to it instead when the hand is
+  within 5 cm of it.
+- **Hand-off.** A fresh squeeze of the other hand on a held prop takes it
+  where it is (no snap), so the pose doesn't jump.
+- **Hold.** Each step the prop sweeps from where it is toward where the hand
+  holds it, turning on the way (`Physics.sweep` against fixed bodies only, so
+  never itself, at the pose it is drawn at), stops 4 mm short of what it hits
+  and slides along it, and is declared kinematic there (`Physics.atPose`), so
+  it shoves what it sweeps through. Pushed into the wall or the table it
+  stays there; pulled back, it follows the hand out.
+- **Break.** The hand 25 cm off where it holds the blocked prop, or turned a
+  quarter turn past it: it drops where it was, with no velocity.
+- **Throw.** Released, the prop turns dynamic where it was last held (where
+  its body is) and is given, in the same frame, the least-squares slope of
+  its accepted positions over the last 60 ms (rig-local, so a moving rig
+  adds nothing; capped at 12 m/s) and of its orientations (capped at
+  30 rad/s). (Not a declared `Physics.velocity`: that follows the divergence
+  rule, applying only when the declaration changes.)
+- **Tracking loss.** A held prop freezes and forgets its history; opening the
+  hand when it comes back drops it rather than throwing it.
+- **Reset** bumps the props' tags, so the old bodies go and new ones spawn at
+  rest.
+- **Hand presentation.** `handView` (`H` or a thumbstick click) draws a
+  holding hand where it is tracked (`Tracked`, the default) or at the grip
+  its prop's accepted pose implies (`Accepted`: a hand pushed through the
+  wall is drawn at the wall). Then a translucent ghost shows the tracked hand
+  when they are over 2 cm or 10° apart. Only drawing changes: the tracked
+  pose always drives the hold.
 
-Worn checks still open: held-ball judder at 120 Hz (the hold updates at the
-60 Hz fixed step), how throws feel, whether the stick stopping at the wall
+Worn checks still open: held-prop judder at 120 Hz (the hold updates at the
+60 Hz fixed step), how throws feel, whether a prop stopping at the wall
 (and the hand turning on past it) reads right, whether a flicked stick spins
 as the wrist did (the 60 ms window's feel) and shoving with a held stick
-feels solid, and the sweeps' cost on the headset (`npm run bench:quest`).
+feels solid, which hand view feels better when blocked (and the ghost's
+2 cm threshold), whether regrabs and hand-offs feel natural, the neck's snap
+radius, and the sweeps' cost on the headset (`npm run bench:quest`).
