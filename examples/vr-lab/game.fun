@@ -188,8 +188,8 @@ let holdAll = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, In
 
 /// The prop a hand that holds nothing reaches, and its gap: the nearest in
 /// reach (the one it already hovers reaches a little further), held by the
-/// other hand or free, but not one let go this step.
-let reaching = (m: Model, side: Hold.Side, released: List<Release>): Option.t<(Props.Kind, float)> =>
+/// other hand or free.
+let reaching = (m: Model, side: Hold.Side): Option.t<(Props.Kind, float)> =>
   let h = handOf(m, side) in
   match gripOf(m.xr, side) with
   | Option.None => Option.None
@@ -197,7 +197,6 @@ let reaching = (m: Model, side: Hold.Side, released: List<Release>): Option.t<(P
     if Option.isSome(heldIn(m, side)) then Option.None
     else
       m.props
-        |> List.filter((p) => not (released |> List.any((r) => r.prop == p.kind)))
         |> List.map((p) => (p.kind, Props.gap(p.kind, g.position, poseOf(p))))
         |> List.filter((kg) => let (k, gap) = kg in Hold.hovering(h.hover == Option.Some(k), gap))
         |> List.sortBy((kg) => let (_, gap) = kg in gap)
@@ -205,7 +204,7 @@ let reaching = (m: Model, side: Hold.Side, released: List<Release>): Option.t<(P
 
 /// A hand takes a prop: from the other hand where it is, or free where the
 /// world has it (snapping to an authored grip in reach of it).
-let take = (m: Model, side: Hold.Side, k: Props.Kind, t: float): Model =>
+let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
   match gripOf(m.xr, side) with
   | Option.None => m
   | Option.Some(g) =>
@@ -215,32 +214,26 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind, t: float): Model =>
         let held =
           (match p.held with
            | Option.Some(h) => Hold.handOff(side, g, h)
-           | Option.None => Hold.grab(side, g, p.pose, Props.grip(k), t)) in
+           | Option.None => Hold.grab(side, g, p.pose, Props.grip(k))) in
         withHand(withProp({ p with held: Option.Some(held), scored: false }, m), side, { handOf(m, side) with hover: Option.None }))
       |> Option.defaultValue(m)
 
-/// Hands hover what they reach, and a fresh squeeze takes it; both hands on
-/// one prop, the nearer.
-let grabbing = (m: Model, edges: (bool, bool), released: List<Release>, t: float): Model =>
+/// Hands hover what they reach, and a fresh squeeze takes it; both hands
+/// pressing on one prop, the nearer (`Hold.pick`).
+let grabbing = (m: Model, edges: (bool, bool)): Model =>
   let (leftEdge, rightEdge) = edges in
-  let l = reaching(m, Hold.Left, released) in
-  let r = reaching(m, Hold.Right, released) in
+  let l = reaching(m, Hold.Left) in
+  let r = reaching(m, Hold.Right) in
   let kindOf = (o: Option.t<(Props.Kind, float)>) => o |> Option.map((kg) => let (k, _) = kg in k) in
-  let hovered = { m with left: { m.left with hover: kindOf(l) }, right: { m.right with hover: kindOf(r) } } in
-  let claim = (side: Hold.Side, edge: bool, o: Option.t<(Props.Kind, float)>) =>
-    match o with
-    | Option.Some(kg) => let (_, gap) = kg in Hold.reacher(side, edge, true, gap)
-    | Option.None => Hold.reacher(side, false, false, 0.0) in
-  let lc = claim(Hold.Left, leftEdge, l) in
-  let rc = claim(Hold.Right, rightEdge, r) in
-  // Both on the same prop: only `Hold.pick`'s hand takes it.
-  let takes = (side: Hold.Side, c: Hold.Reacher, other: Hold.Reacher) =>
-    c.edge && c.hover && (not (other.edge && other.hover && kindOf(l) == kindOf(r)) || Hold.pick(lc, rc) == Option.Some(side)) in
-  let apply = (acc: Model, side: Hold.Side, c: Hold.Reacher, other: Hold.Reacher, o: Option.t<(Props.Kind, float)>) =>
+  let gapOf = (o: Option.t<(Props.Kind, float)>) => o |> Option.map((kg) => let (_, gap) = kg in gap) |> Option.defaultValue(0.0) in
+  let contested = leftEdge && rightEdge && Option.isSome(l) && kindOf(l) == kindOf(r) in
+  let nearer = Hold.pick(Hold.reacher(Hold.Left, true, true, gapOf(l)), Hold.reacher(Hold.Right, true, true, gapOf(r))) in
+  let apply = (acc: Model, side: Hold.Side, edge: bool, o: Option.t<(Props.Kind, float)>) =>
     match kindOf(o) with
-    | Option.Some(k) => if takes(side, c, other) then take(acc, side, k, t) else acc
+    | Option.Some(k) => if edge && (not contested || nearer == Option.Some(side)) then take(acc, side, k) else acc
     | Option.None => acc in
-  apply(apply(hovered, Hold.Right, rc, lc, r), Hold.Left, lc, rc, l)
+  let hovered = { m with left: { m.left with hover: kindOf(l) }, right: { m.right with hover: kindOf(r) } } in
+  apply(apply(hovered, Hold.Right, rightEdge, r), Hold.Left, leftEdge, l)
 
 /// Free props newly in the basket score.
 let scoring = (m: Model, st: Stations.Station): Model =>
@@ -256,10 +249,12 @@ let step = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input
   let (left, leftEdge) = Hold.stepHand(m.left, Option.isSome(gripOf(m.xr, Hold.Left)), squeezeOf(m.xr, Hold.Left)) in
   let (right, rightEdge) = Hold.stepHand(m.right, Option.isSome(gripOf(m.xr, Hold.Right)), squeezeOf(m.xr, Hold.Right)) in
   let live = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false } in
-  // (A hand holding a prop is squeezing, so it has no fresh press for
-  // another until it opens and lets go.)
-  let (held, released) = holdAll(live, st, cast, t) in
-  let next = grabbing(scoring(held, st), (leftEdge, rightEdge), released, t) in
+  // Grabs first, so a hand taking a prop its other hand lets go of in the
+  // same step catches it, and a new hold's first step seeds its history. (A
+  // hand holding a prop is squeezing, so it has no fresh press for another
+  // until it opens and lets go.)
+  let (held, released) = holdAll(grabbing(live, (leftEdge, rightEdge)), st, cast, t) in
+  let next = scoring(held, st) in
   ({ next with lastRelease: if List.isEmpty(released) then m.lastRelease else List.last(released) }, released)
 
 /// A rig-local pose in the world, as it is drawn (`Scene.atPose`), swept and
@@ -420,6 +415,15 @@ expect (
   let h = heldIn(given, Hold.Left) in
   (h |> Option.map((a) => Hold.near(a.accepted, spawn)) |> Option.defaultValue(false)) && Option.isNone(heldIn(given, Hold.Right))
     && (heldIn(moved, Hold.Left) |> Option.map((b) => Hold.near3(b.accepted.position, Quat.add(spawn.position, Quat.v3(0.0, 0.1, 0.0)))) |> Option.defaultValue(false))
+)
+// Handed over in the step the right hand opens: the left catches it, and
+// nothing is let go.
+expect (
+  let lefty = Quat.add(rest(Props.Brick), Quat.v3(-0.06, 0.0, -0.05)) in
+  let offered = both(tookBrick, hand(lefty, 0.0), turnedHand(brickCorner, wrist, 1.0), 2.0 / 60.0) in
+  let caught = both(offered, hand(lefty, 1.0), turnedHand(brickCorner, wrist, 0.0), 3.0 / 60.0) in
+  (heldIn(caught, Hold.Left) |> Option.map((h) => Hold.near(h.accepted, Stations.spawn(Props.Brick))) |> Option.defaultValue(false))
+    && Option.isNone(caught.lastRelease)
 )
 // The bottle taken 2 cm off its neck by a hand pointing up: it snaps, so the
 // neck is in the hand. Taken by its base, it doesn't.

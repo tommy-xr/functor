@@ -38,8 +38,10 @@ let releaseAt = 0.4
 // Reach is measured from the grip to the prop's surface.
 let reach = 0.12
 let reachHysteresis = 0.04
-// A hand this near a prop's authored grip snaps to it.
+// A hand this near a prop's authored grip, pointing within this of the way
+// it does, snaps to it.
 let snapRadius = 0.05
+let snapTurn = Math.pi / 4.0
 // The hand this far off where it holds the prop (blocked by a wall) lets
 // go; or turned this far: past a quarter turn the shorter way round from the
 // stuck pose would swing back through the wall.
@@ -158,7 +160,7 @@ expect near(compose(inverse(tilted), tilted), origin) && near(compose(tilted, in
 /// A sample of something's rate of change: a point, and when.
 type Timed = { t: float, p: Input.point3 }
 
-/// Add a sample, starting over after a jump or a snap; at most `historyCap`.
+/// Add a sample, starting over after a jump or a sharp turn; at most `historyCap`.
 let push = (s: Sample, history: List<Sample>): List<Sample> =>
   match List.last(history) with
   | Option.Some(prev) =>
@@ -217,7 +219,7 @@ expect (
 )
 // Too fast is capped, keeping the direction.
 expect (let v = velocity(steady(Quat.v3(0.0, 0.0, -20.0), 6.0)) in Math.abs(Quat.length(v) - maxSpeed) < 0.0001 && v.z < 0.0)
-// A jump or a snap starts the history over: one sample estimates nothing.
+// A jump or a sharp turn starts the history over: one sample estimates nothing.
 expect (
   let h = steady(Quat.v3(0.0, 1.0, 0.0), 5.0) |> push(sampleAt(Quat.v3(18.0, 0.0, 0.0), 6.0 / 60.0)) in
   List.length(h) == 1.0 && near3(velocity(h), zero)
@@ -276,16 +278,22 @@ expect near(move(ballCast, 0.06, p(0.936, 0.0, 0.0), p(0.5, 0.0, 0.0)), p(0.5, 0
 
 // --- grab, hold, release ---
 
+/// Whether a hand snaps to an authored grip placed at `at`: within
+/// `snapRadius` of it, pointing within `snapTurn` of the way it does.
+let snaps = (hand: Input.pose, at: Input.pose): bool =>
+  let ahead = (q: Input.quaternion) => Quat.rotate(q, Quat.v3(0.0, 0.0, -1.0)) in
+  Quat.length(Quat.sub(hand.position, at.position)) <= snapRadius
+    && Quat.dot(ahead(hand.orientation), ahead(at.orientation)) >= Math.cos(snapTurn)
+
 /// Take a prop at `item` in `grip`: held exactly where it is, unless the hand
-/// is within `snapRadius` of the prop's authored grip (the hand's pose in the
-/// prop's frame), which it then snaps to.
-let grab = (side: Side, grip: Input.pose, item: Input.pose, authored: Option.t<Input.pose>, t: float): Held =>
-  let snapped =
-    authored |> Option.filter((a) => Quat.length(Quat.sub(grip.position, compose(item, a).position)) <= snapRadius) in
+/// `snaps` to the prop's authored grip (the hand's pose in the prop's frame).
+/// Its history starts with the first held step, so a snap is no throw.
+let grab = (side: Side, grip: Input.pose, item: Input.pose, authored: Option.t<Input.pose>): Held =>
+  let snapped = authored |> Option.filter((a) => snaps(grip, compose(item, a))) in
   { side: side,
     offset: snapped |> Option.map(inverse) |> Option.defaultValue(relative(grip, item)),
     accepted: item,
-    history: [{ t: t, pose: item }] }
+    history: [] }
 
 /// The other hand takes a held prop where it is (no snap), keeping its history.
 let handOff = (side: Side, grip: Input.pose, held: Held): Held =>
@@ -317,45 +325,64 @@ let step = (cast: (Input.pose, Input.pose) => Option.t<Hit>, radius: float, held
 // Taken anywhere, turned any way: the prop stays exactly where it was, and
 // the hand held still holds it there.
 expect (
-  let h = grab(Right, elsewhere, tilted, Option.None, 0.0) in
+  let h = grab(Right, elsewhere, tilted, Option.None) in
   near(compose(elsewhere, h.offset), tilted)
     && (match step(open3, 0.1, h, Option.Some(elsewhere), true, 1.0 / 60.0) with
         | Holding(next) => near(next.accepted, tilted)
         | _ => false)
 )
 // An authored grip snaps within `snapRadius` of it, and only there.
+// Rolled about the way it points, it still snaps; pointing the other way, not.
+let neck = at(Quat.v3(0.0, 0.1, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0))
+let toNeck = (dy: float, q: Input.quaternion) => at(Quat.v3(0.02, 0.1 + dy, 0.0), q)
+let rolled = Quat.mul(neck.orientation, Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 2.0))
 expect (
-  let neck = at(Quat.v3(0.0, 0.1, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0)) in
-  let hand = (dy: float) => at(Quat.v3(0.02, 0.1 + dy, 0.0), Quat.yaw(0.3)) in
-  near(grab(Right, hand(0.0), origin, Option.Some(neck), 0.0).offset, inverse(neck))
-    && near(grab(Right, hand(snapRadius - 0.025), origin, Option.Some(neck), 0.0).offset, inverse(neck))
-    && near(grab(Right, hand(snapRadius), origin, Option.Some(neck), 0.0).offset, relative(hand(snapRadius), origin))
+  near(grab(Right, toNeck(0.0, rolled), origin, Option.Some(neck)).offset, inverse(neck))
+    && near(grab(Right, toNeck(snapRadius - 0.025, rolled), origin, Option.Some(neck)).offset, inverse(neck))
+    && near(grab(Right, toNeck(snapRadius, rolled), origin, Option.Some(neck)).offset, relative(toNeck(snapRadius, rolled), origin))
+)
+expect (
+  let tipped = (a: float) => Quat.mul(Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), a), neck.orientation) in
+  let down = toNeck(0.0, Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.0 - Math.pi / 2.0)) in
+  near(grab(Right, toNeck(0.0, tipped(0.7)), origin, Option.Some(neck)).offset, inverse(neck))
+    && near(grab(Right, toNeck(0.0, tipped(0.9)), origin, Option.Some(neck)).offset, relative(toNeck(0.0, tipped(0.9)), origin))
+    && near(grab(Right, down, origin, Option.Some(neck)).offset, relative(down, origin))
+)
+// Snapped by a still hand and let go at once: dropped, not thrown.
+expect (
+  let hand = toNeck(0.02, rolled) in
+  let h = grab(Right, hand, origin, Option.Some(neck)) in
+  match step(open3, 0.1, h, Option.Some(hand), true, 1.0 / 60.0) with
+  | Holding(snapped) =>
+    near(gripOn(snapped), hand)
+      && (match step(open3, 0.1, snapped, Option.Some(hand), false, 2.0 / 60.0) with
+          | Released(_, v, w) => near3(v, zero) && near3(w, zero)
+          | _ => false)
+  | _ => false
 )
 // Handed to the other hand mid-hold, it stays where it was, history and all,
 // and follows the new hand.
 expect (
-  let h = grab(Right, elsewhere, tilted, Option.None, 0.0) in
+  let h = grab(Right, elsewhere, tilted, Option.None) in
   let lefty = at(Quat.v3(0.3, 2.1, 2.9), Quat.yaw(1.4)) in
   let given = handOff(Left, lefty, h) in
-  given.side == Left && near(compose(lefty, given.offset), tilted) && List.length(given.history) == 1.0
+  given.side == Left && near(compose(lefty, given.offset), tilted) && given.history == h.history
     && near(gripOn(given), lefty)
     && (match step(open3, 0.1, given, Option.Some(at(Quat.add(lefty.position, Quat.v3(0.0, 0.1, 0.0)), lefty.orientation)), true, 1.0 / 60.0) with
         | Holding(next) => near3(next.accepted.position, Quat.add(tilted.position, Quat.v3(0.0, 0.1, 0.0)))
         | _ => false)
 )
 
-let pose = (q: Input.point3): Input.pose => at(q, Quat.identity)
-
 // Swing a held ball at `v` for `n` steps, then let go on the next.
 let swing = (cast, v: Input.point3, n: float, squeezed: bool, grip: Option.t<Input.pose>) =>
-  let held = grab(Right, origin, p(0.0, 0.0, -0.05), Option.None, 0.0) in
+  let held = grab(Right, origin, p(0.0, 0.0, -0.05), Option.None) in
   let moved = List.range(n) |> List.fold((h, i) => (
-    match step(cast, 0.06, h, Option.Some(pose(Quat.scale((i + 1.0) / 60.0, v))), true, (i + 1.0) / 60.0) with
+    match step(cast, 0.06, h, Option.Some(at(Quat.scale((i + 1.0) / 60.0, v), Quat.identity)), true, (i + 1.0) / 60.0) with
     | Holding(next) => next
     | _ => h), held) in
   step(cast, 0.06, moved, grip, squeezed, (n + 1.0) / 60.0)
 
-let throwAt = (v: Input.point3) => Option.Some(pose(Quat.scale(11.0 / 60.0, v)))
+let throwAt = (v: Input.point3) => Option.Some(at(Quat.scale(11.0 / 60.0, v), Quat.identity))
 
 // A swing releases at the hand's velocity, from where it was last held.
 expect (
@@ -381,7 +408,7 @@ expect (
 // A hand pushed through a wall leaves the ball at the wall, and breaks its
 // grip once it is farther than `breakDistance` beyond.
 expect (
-  let held = grab(Right, p(0.9, 0.0, 0.0), p(0.9, 0.0, 0.0), Option.None, 0.0) in
+  let held = grab(Right, p(0.9, 0.0, 0.0), p(0.9, 0.0, 0.0), Option.None) in
   match step(ballCast, 0.06, held, Option.Some(p(1.1, 0.0, 0.0)), true, 1.0 / 60.0) with
   | Holding(h) =>
     near3(h.accepted.position, Quat.v3(0.94 - skin, 0.0, 0.0))
@@ -393,7 +420,7 @@ expect (
 // Opening the hand on the same step it passes `breakDistance` is a break,
 // not a throw.
 expect (
-  let held = grab(Right, p(0.9, 0.0, 0.0), p(0.9, 0.0, 0.0), Option.None, 0.0) in
+  let held = grab(Right, p(0.9, 0.0, 0.0), p(0.9, 0.0, 0.0), Option.None) in
   match step(ballCast, 0.06, held, Option.Some(p(1.3, 0.0, 0.0)), false, 1.0 / 60.0) with
   | Broke(_) => true
   | _ => false
@@ -426,7 +453,7 @@ let turned = (held: Held, turns: List<float>): List<Held> =>
     (match step(stickCast, stickLength / 2.0, h, gripAt(a), true, 0.0) with
      | Holding(next) => hs |> List.append([next])
      | _ => hs), [])
-let start = grab(Right, pose(hand), rack, Option.None, 0.0)
+let start = grab(Right, at(hand, Quat.identity), rack, Option.None)
 // Turning the wrist left a quarter turn, then back.
 let turnedIn = turned(start, List.range(31.0) |> List.map((i) => i * Math.pi / 60.0))
 let back = turned(List.last(turnedIn) |> Option.defaultValue(start), List.range(31.0) |> List.map((i) => (30.0 - i) * Math.pi / 60.0))
@@ -436,7 +463,7 @@ expect turnedIn |> List.all((h) => farX(h.accepted) >= wallX - 0.0001)
 // ...and ends up stopped against it.
 expect (List.last(turnedIn) |> Option.map((h) => farX(h.accepted) - wallX < 0.01) |> Option.defaultValue(false))
 // Turned back, it follows the hand again.
-expect (List.last(back) |> Option.map((h) => near(h.accepted, compose(pose(hand), h.offset))) |> Option.defaultValue(false))
+expect (List.last(back) |> Option.map((h) => near(h.accepted, compose(at(hand, Quat.identity), h.offset))) |> Option.defaultValue(false))
 // Stopped by the wall, the hand turned on but still on the grip: still held.
 expect List.length(turnedIn) == 31.0
 // Turned on past a quarter turn beyond where it stopped: it drops.

@@ -48,9 +48,11 @@
 //   node e2e/vr-lab.mjs
 import { check, failures, sleep } from "./mcp-rpc.mjs";
 import { decode, encode, readLog, recordLive } from "./xr-fixture.mjs";
-import { advance, dirToWorld, launch, play, playFixture, rigToWorld, tap } from "./xr-scenario.mjs";
 import {
-  BALL, BOTTLE, FAST_V, FLICK_W, STICK, TABLE, THROW_V, WALL_RIG_X, pitch, project, qconj, qmul, qrot, scenarios, yaw,
+  add, advance, cross, dirToWorld, launch, play, playFixture, qconj, qmul, qrot, rigToWorld, sub, tap,
+} from "./xr-scenario.mjs";
+import {
+  BALL, BOTTLE, FAST_V, FLICK_W, STICK, TABLE, THROW_V, WALL_RIG_X, pitch, project, scenarios, yaw,
 } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8293;
@@ -63,15 +65,12 @@ const BRICK_SIZE = [0.1, 0.065, 0.21];
 const NECK_GRIP = { position: [0, BOTTLE.neck, 0], orientation: pitch(90) };
 
 const len = (v) => Math.hypot(...v);
-const add = (a, b) => a.map((x, i) => x + b[i]);
-const sub = (a, b) => a.map((x, i) => x - b[i]);
 const xyz = (p) => [p.x, p.y, p.z];
 const angleDeg = (a, b) =>
   (Math.acos(Math.min(1, a.reduce((s, x, i) => s + x * b[i], 0) / (len(a) * len(b)))) * 180) / Math.PI;
 const some = (opt) => (opt?.$ctor === "Option.Some" ? opt.args[0] : undefined);
 const fmt = (v) => `[${v.map((x) => x.toFixed(3)).join(", ")}]`;
 const quat = (q) => [q.x, q.y, q.z, q.w];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 // The turn from `a` to `b`, in degrees (atan2, not acos of a dot product:
 // exact near zero for read-back f32 poses).
 const turnDeg = (a, b) => {

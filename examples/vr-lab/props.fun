@@ -76,7 +76,7 @@ expect (
   match grip(Bottle) with
   | Option.Some(g) =>
     let fist = Hold.at(Quat.v3(0.3, 1.2, -0.5), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0)) in
-    let held = Hold.grab(Hold.Right, fist, Hold.at(Quat.add(fist.position, Quat.v3(0.0, 0.01 - neckAt, 0.02)), Quat.identity), grip(Bottle), 0.0) in
+    let held = Hold.grab(Hold.Right, fist, Hold.at(Quat.add(fist.position, Quat.v3(0.0, 0.01 - neckAt, 0.02)), Quat.identity), grip(Bottle)) in
     Hold.near(Hold.compose(fist, held.offset), Hold.at(Quat.add(fist.position, Quat.v3(0.0, 0.0 - neckAt, 0.0)), Quat.identity))
   | Option.None => false
 )

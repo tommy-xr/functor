@@ -9,6 +9,8 @@
 // The stick lies on the table at rig (-0.3, 0.9175, -0.6) along rig -Z, 0.7 m
 // long and 3.5 cm thick.
 
+import { add, qconj, qmul, qrot, sub } from "./xr-scenario.mjs";
+
 export const project = "examples/vr-lab";
 // Tapped before an attached recording (`npm run record:vr-lab`): station 1, reset.
 export const resetKey = "1";
@@ -26,24 +28,6 @@ const LIFTED = [-0.3, 1.2, -0.3];
 export const pitch = (deg) => [Math.sin((deg * Math.PI) / 360), 0, 0, Math.cos((deg * Math.PI) / 360)];
 // A roll about -Z, the way the hand points (clockwise, for positive degrees).
 export const roll = (deg) => [0, 0, -Math.sin((deg * Math.PI) / 360), Math.cos((deg * Math.PI) / 360)];
-
-// Quaternions as [x, y, z, w]: the Hamilton product (`b` first, then `a`),
-// the inverse of a unit one, and a rotated vector.
-export const qmul = ([ax, ay, az, aw], [bx, by, bz, bw]) => [
-  aw * bx + ax * bw + ay * bz - az * by,
-  aw * by - ax * bz + ay * bw + az * bx,
-  aw * bz + ax * by - ay * bx + az * bw,
-  aw * bw - ax * bx - ay * by - az * bz,
-];
-export const qconj = ([x, y, z, w]) => [-x, -y, -z, w];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-export const qrot = ([x, y, z, w], v) => {
-  const t = cross([x, y, z], v).map((c) => 2 * c);
-  const u = cross([x, y, z], t);
-  return v.map((c, i) => c + w * t[i] + u[i]);
-};
-const add = (a, b) => a.map((v, i) => v + b[i]);
-const sub = (a, b) => a.map((v, i) => v - b[i]);
 
 // The table (rig-local): its top, and its extent across and ahead.
 export const TABLE = { top: 0.9, x: [-0.6, 0.85], z: [-0.9, -0.3] };
