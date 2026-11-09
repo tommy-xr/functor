@@ -759,6 +759,9 @@ struct DebugLoopState {
     /// tracking, or `should_render == false`).
     rendered_frames: u64,
     input: InputSnapshot,
+    /// `POST /input` `xr`: replaces live tracking in every fixed step's
+    /// `sampledInput` until `xr_clear`. Rendering still follows the headset.
+    xr_override: Option<XrInputSnapshot>,
     // Debug requests may arrive while paused or between device fixed steps.
     input_edges: functor_runtime_common::InputEdges,
     last_frame: Option<Arc<Frame>>,
@@ -1095,15 +1098,15 @@ fn service_debug_request(
                     sim.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
-                // Rejected rather than honored: this runtime resamples the XR
-                // domain from live OpenXR tracking every frame, so an injected
-                // sample would be silently overwritten before any `sampledInput`
-                // saw it. Injection is the DESKTOP substitute for this device.
-                InputCommand::Xr(_) | InputCommand::XrClear => Err(
-                    "xr injection is unsupported on the device runtime (it samples live \
-tracking); use the desktop runtime's --headless/--debug-port path"
-                        .to_string(),
-                ),
+                // Applied over the live sample just before the fixed steps.
+                InputCommand::Xr(sample) => {
+                    debug.xr_override = Some(*sample);
+                    Ok(())
+                }
+                InputCommand::XrClear => {
+                    debug.xr_override = None;
+                    Ok(())
+                }
                 // Same story for the gamepad domain: the device runtime does
                 // not sample pads (Quest controllers ARE the xr domain), so
                 // honoring an injection here would invent a device the shell
@@ -1923,6 +1926,9 @@ pub fn android_main(app: AndroidApp) {
         while let Ok(result) = http_rx.try_recv() {
             functor_runtime_common::net::note_inbound_delivered();
             sim.post(move |g| functor_runtime_common::net::http_client::deliver(g, result));
+        }
+        if let Some(sample) = &debug.xr_override {
+            debug.input.xr = Some(sample.clone());
         }
         for sub_frame in &sub_frames {
             if caps.samples_input || sim.is_threaded() {
