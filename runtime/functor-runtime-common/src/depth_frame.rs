@@ -5,7 +5,12 @@
 //! `payload_len` bytes of RGBA8 whose RGB carry 24-bit window depth, most
 //! significant byte first, rows bottom-up — the readback's bytes as-is.
 
+use cgmath::{Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
+
+use crate::depth_readback::READBACK_SIZE;
+use crate::environment_depth::EnvironmentDepthView;
+use crate::sensor_stream::FrameIds;
 
 pub const SCHEMA: &str = "functor.depth-frame/1";
 pub const CONTENT_TYPE: &str = "application/vnd.functor.depth-frame";
@@ -71,19 +76,25 @@ pub fn encode(header: &DepthFrameHeader, payload: &[u8]) -> Vec<u8> {
     body
 }
 
-/// Split a request body into its header and payload, rejecting any other
-/// schema, encoding or row order, and any length that does not add up.
-pub fn decode(body: &[u8]) -> Result<(DepthFrameHeader, &[u8]), String> {
+/// Split a sensor frame body (`what`: "depth frame", "camera frame") into
+/// its JSON header and payload.
+pub(crate) fn split<'a>(body: &'a [u8], what: &str) -> Result<(&'a [u8], &'a [u8]), String> {
     let len_bytes: [u8; 4] = body
         .get(..4)
         .and_then(|b| b.try_into().ok())
-        .ok_or("depth frame: shorter than its 4-byte header length")?;
+        .ok_or_else(|| format!("{what}: shorter than its 4-byte header length"))?;
     let header_len = u32::from_be_bytes(len_bytes) as usize;
     let header_end = 4usize
         .checked_add(header_len)
         .filter(|end| *end <= body.len())
-        .ok_or_else(|| format!("depth frame: header length {header_len} overruns the body"))?;
-    let json = &body[4..header_end];
+        .ok_or_else(|| format!("{what}: header length {header_len} overruns the body"))?;
+    Ok((&body[4..header_end], &body[header_end..]))
+}
+
+/// Split a request body into its header and payload, rejecting any other
+/// schema, encoding or row order, and any length that does not add up.
+pub fn decode(body: &[u8]) -> Result<(DepthFrameHeader, &[u8]), String> {
+    let (json, payload) = split(body, "depth frame")?;
     let header: DepthFrameHeader =
         serde_json::from_slice(json).map_err(|e| format!("depth frame: bad header: {e}"))?;
     if header.schema != SCHEMA {
@@ -95,7 +106,6 @@ pub fn decode(body: &[u8]) -> Result<(DepthFrameHeader, &[u8]), String> {
             header.encoding, header.rows
         ));
     }
-    let payload = &body[header_end..];
     let expected = header.width as u64 * header.height as u64 * 4;
     if header.payload_len != expected || payload.len() as u64 != expected {
         return Err(format!(
@@ -107,6 +117,65 @@ pub fn decode(body: &[u8]) -> Result<(DepthFrameHeader, &[u8]), String> {
         ));
     }
     Ok((header, payload))
+}
+
+/// The header of a readback of `view`, taken at `steady_ns` as frame `ids`.
+pub(crate) fn header(
+    view: &EnvironmentDepthView,
+    space_epoch: u64,
+    steady_ns: i64,
+    ids: FrameIds,
+) -> DepthFrameHeader {
+    let (near, far) = near_far(&view.projection);
+    let (source, clock, display_ns) = match view.display_ns {
+        Some(ns) => (DepthFrameSource::Device, "xr", ns),
+        None => (DepthFrameSource::Emulated, "steady", steady_ns),
+    };
+    DepthFrameHeader {
+        schema: SCHEMA.to_string(),
+        stream: ids.stream,
+        seq: ids.seq,
+        source,
+        // The first pass of a frame reads back: the left eye in stereo.
+        eye: "left".to_string(),
+        width: READBACK_SIZE,
+        height: READBACK_SIZE,
+        encoding: ENCODING.to_string(),
+        rows: ROWS.to_string(),
+        camera_to_world: columns(view.view.invert().unwrap_or(Matrix4::identity())),
+        projection: columns(view.projection),
+        view_projection: columns(view.view_projection),
+        near,
+        far,
+        // Shells render (and so read back) only while tracking is valid.
+        tracking: true,
+        space_epoch,
+        time: DepthFrameTime {
+            clock: clock.to_string(),
+            display_ns,
+            acquire_ns: None,
+            sensor_ns: None,
+        },
+        payload_len: (READBACK_SIZE * READBACK_SIZE * 4) as u64,
+    }
+}
+
+/// A projection's near and far planes (`None`: infinite), perspective or
+/// orthographic, GL conventions.
+fn near_far(projection: &Matrix4<f32>) -> (f32, Option<f32>) {
+    let (a, b) = (projection.z.z, projection.w.z);
+    let (near, far) = if projection.z.w == 0.0 {
+        ((b + 1.0) / a, (b - 1.0) / a)
+    } else {
+        (b / (a - 1.0), b / (a + 1.0))
+    };
+    (near, (far.is_finite() && far > 0.0).then_some(far))
+}
+
+/// `m`'s 16 floats, column-major.
+pub(crate) fn columns(m: Matrix4<f32>) -> [f32; 16] {
+    let m: &[f32; 16] = m.as_ref();
+    *m
 }
 
 #[cfg(test)]
@@ -203,5 +272,20 @@ mod tests {
         body.extend_from_slice(&json);
         body.extend_from_slice(payload);
         body
+    }
+
+    #[test]
+    fn near_and_far_come_from_the_projection() {
+        let finite = cgmath::perspective(cgmath::Deg(90.0), 1.0, 0.1, 20.0);
+        let (near, far) = near_far(&finite);
+        assert!((near - 0.1).abs() < 1e-5 && (far.unwrap() - 20.0).abs() < 1e-2);
+        let mut camera = crate::Camera::default();
+        camera.near = 0.25;
+        camera.far = f32::INFINITY;
+        let infinite = camera.projection_matrix_from_fov_angles(-0.7, 0.7, -0.7, 0.7);
+        assert_eq!(near_far(&infinite), (0.25, None));
+        let ortho = cgmath::ortho(-1.0, 1.0, -1.0, 1.0, 0.5, 8.0);
+        let (near, far) = near_far(&ortho);
+        assert!((near - 0.5).abs() < 1e-5 && (far.unwrap() - 8.0).abs() < 1e-4);
     }
 }

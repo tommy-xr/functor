@@ -3414,7 +3414,7 @@ Xr.streamDepth({options}))\n"
         let (_, contract) = contract_of(&[("game.fun", &game)]).expect("loads");
         assert_eq!(
             contract.settings.unwrap().xr.stream_depth,
-            Some(crate::runtime_settings::DepthStreamSettings {
+            Some(crate::runtime_settings::SensorStreamSettings {
                 url: "http://127.0.0.1:9000/frames".to_string(),
                 hz: 15.0,
             })

@@ -9,7 +9,7 @@
 use super::*;
 
 use crate::runtime_settings::{
-    DepthStreamSettings, ExternalPrefix, FoveationLevel, GameConfig, GameSettings, XrConfig,
+    SensorStreamSettings, ExternalPrefix, FoveationLevel, GameConfig, GameSettings, XrConfig,
     XrSettings,
 };
 
@@ -24,7 +24,7 @@ struct XrKnobs {
     msaa: Option<u32>,
     foveation: Option<FoveationLevel>,
     passthrough_enabled: Option<bool>,
-    stream_depth: Option<DepthStreamSettings>,
+    stream_depth: Option<SensorStreamSettings>,
 }
 
 struct FunctorLangXr(XrKnobs);
@@ -102,7 +102,7 @@ impl crate::host_registry::FromArg for FoveationLevel {
 }
 
 /// `Xr.streamDepth`'s `{url, hz}`.
-struct StreamOptionsArg(DepthStreamSettings);
+struct StreamOptionsArg(SensorStreamSettings);
 
 impl crate::host_registry::FromArg for StreamOptionsArg {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
@@ -117,10 +117,10 @@ impl crate::host_registry::FromArg for StreamOptionsArg {
         if !(hz.is_finite() && *hz > 0.0) {
             return fail(format!("{path}: hz must be a positive number, got {hz}"));
         }
-        if let Err(e) = crate::depth_stream::Destination::parse(url) {
+        if let Err(e) = crate::sensor_stream::Destination::parse(url) {
             return fail(format!("{path}: {e}"));
         }
-        Ok(StreamOptionsArg(DepthStreamSettings {
+        Ok(StreamOptionsArg(SensorStreamSettings {
             url: url.to_string(),
             hz: *hz as f32,
         }))

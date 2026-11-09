@@ -91,7 +91,7 @@ export type CullCounts = { tested: number, culled: number, };
 /**
  * Where and how often `Xr.streamDepth` sends depth frames.
  */
-export type DepthStreamSettings = { url: string, 
+export type SensorStreamSettings = { url: string, 
 /**
  * Frames a second, at most the readback rate.
  */
@@ -101,7 +101,7 @@ hz: number, };
  * `GET /state.xr.stream`: the `Xr.streamDepth` stream, present while
  * `settings` asks for one.
  */
-export type DepthStreamState = { url: string, hz: number, 
+export type SensorStreamState = { url: string, hz: number, 
 /**
  * Frames the server answered 2xx.
  */
@@ -948,9 +948,9 @@ passthrough?: boolean,
 /**
  * `Xr.streamDepth({url, hz})`: POST the environment depth to `url`.
  */
-stream_depth?: DepthStreamSettings, };
+stream_depth?: SensorStreamSettings, };
 
 /**
  * `GET /state.xr`: headset scene state, omitted while it has nothing to say.
  */
-export type XrState = { depth: EnvironmentDepthState, mesh: FusedMeshState, stream?: DepthStreamState, };
+export type XrState = { depth: EnvironmentDepthState, mesh: FusedMeshState, stream?: SensorStreamState, };

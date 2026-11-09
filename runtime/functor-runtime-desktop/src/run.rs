@@ -783,7 +783,7 @@ pub struct Args {
 
     /// Let `Xr.streamDepth` upload depth frames to this origin
     /// (`http://host[:port]`) besides loopback. Repeatable.
-    #[arg(long, value_parser = functor_runtime_common::depth_stream::parse_origin)]
+    #[arg(long, value_parser = functor_runtime_common::sensor_stream::parse_origin)]
     allow_sensor_upload: Vec<String>,
 
     /// Drive the game deterministically from a scripted input file instead of

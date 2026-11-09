@@ -100,13 +100,13 @@ pub struct XrSettings {
     /// `Xr.streamDepth({url, hz})`: POST the environment depth to `url`.
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_depth: Option<DepthStreamSettings>,
+    pub stream_depth: Option<SensorStreamSettings>,
 }
 
 /// Where and how often `Xr.streamDepth` sends depth frames.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct DepthStreamSettings {
+pub struct SensorStreamSettings {
     pub url: String,
     /// Frames a second, at most the readback rate.
     pub hz: f32,
@@ -250,7 +250,7 @@ impl FusedMeshState {
 /// `settings` asks for one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct DepthStreamState {
+pub struct SensorStreamState {
     pub url: String,
     pub hz: f32,
     /// Frames the server answered 2xx.
@@ -273,7 +273,7 @@ pub struct XrState {
     pub mesh: FusedMeshState,
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream: Option<DepthStreamState>,
+    pub stream: Option<SensorStreamState>,
 }
 
 impl XrState {
@@ -284,7 +284,7 @@ impl XrState {
         config: Option<GameConfig>,
         (width, height, frames): (u32, u32, u64),
         mesh: FusedMeshState,
-        stream: Option<DepthStreamState>,
+        stream: Option<SensorStreamState>,
     ) -> Option<Self> {
         scene_requested(config).then_some(XrState {
             depth: EnvironmentDepthState {
@@ -366,11 +366,11 @@ mod tests {
                 colliders: 3,
                 floor_m: Some(0.0),
             },
-            stream: Some(DepthStreamState {
+            stream: Some(SensorStreamState {
                 url: "http://127.0.0.1:9000/frames".to_string(),
                 hz: 15.0,
                 sent: 4,
-                ..DepthStreamState::default()
+                ..SensorStreamState::default()
             }),
         };
         assert_eq!(

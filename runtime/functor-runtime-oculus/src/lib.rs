@@ -1630,7 +1630,7 @@ pub fn android_main(app: AndroidApp) {
             .split(',')
             .filter(|origin| !origin.trim().is_empty())
             .filter_map(|origin| {
-                functor_runtime_common::depth_stream::parse_origin(origin.trim())
+                functor_runtime_common::sensor_stream::parse_origin(origin.trim())
                     .map_err(|e| log::warn!("debug.functor.allow_sensor_upload: {e}"))
                     .ok()
             })

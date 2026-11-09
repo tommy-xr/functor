@@ -185,8 +185,8 @@ pub struct SceneContext {
     depth_readback: RefCell<Option<crate::depth_readback::DepthReadback<DepthCapture>>>,
     // `Xr.streamDepth`'s stream of those readbacks, the origins the operator
     // allows it besides loopback, and the world frame's epoch.
-    depth_stream: RefCell<Option<crate::depth_stream::DepthStreamer>>,
-    depth_sender: RefCell<Option<crate::depth_stream::DepthSender>>,
+    depth_stream: RefCell<Option<crate::sensor_stream::SensorStreamer>>,
+    depth_sender: RefCell<Option<crate::sensor_stream::SensorSender>>,
     sensor_upload_origins: RefCell<Vec<String>>,
     space_epoch: Cell<u64>,
     // The room fused from that depth while `Xr.scene` is on, and whether it
@@ -203,7 +203,7 @@ pub(crate) struct DepthCapture {
     view: crate::environment_depth::EnvironmentDepthView,
     space_epoch: u64,
     fuse: bool,
-    stream: Option<crate::depth_stream::StreamCapture>,
+    stream: Option<crate::sensor_stream::StreamCapture>,
 }
 
 /// One in-flight `Effect.preload` target: the handle being driven plus every
@@ -1055,7 +1055,15 @@ impl SceneContext {
                     Some(_) => rgba.clone(),
                     None => std::mem::take(&mut rgba),
                 };
-                stream.send(pixels, &capture.view, capture.space_epoch, stream_capture);
+                stream.send(stream_capture, pixels, |ids| {
+                    let header = crate::depth_frame::header(
+                        &capture.view,
+                        capture.space_epoch,
+                        stream_capture.steady_ns,
+                        ids,
+                    );
+                    serde_json::to_vec(&header).expect("a depth frame header serializes")
+                });
             }
             if let Some(room) = room {
                 room.fuse(rgba, capture.view.view_projection);
@@ -1071,34 +1079,29 @@ impl SceneContext {
     /// paused, scrubbing or replaying.
     pub fn set_depth_stream(
         &self,
-        settings: Option<&crate::runtime_settings::DepthStreamSettings>,
+        settings: Option<&crate::runtime_settings::SensorStreamSettings>,
         live: bool,
     ) {
-        let mut slot = self.depth_stream.borrow_mut();
-        let Some(settings) = settings else {
-            *slot = None;
-            return;
-        };
-        if slot.as_ref().is_none_or(|stream| stream.settings() != settings) {
-            let mut sender = self.depth_sender.borrow_mut();
-            *slot = Some(crate::depth_stream::DepthStreamer::new(
-                settings.clone(),
-                &self.sensor_upload_origins.borrow(),
-                sender.get_or_insert_with(crate::depth_stream::DepthSender::new),
-            ));
-        }
-        slot.as_mut().expect("set above").set_live(live);
+        crate::sensor_stream::follow(
+            &mut self.depth_stream.borrow_mut(),
+            &mut self.depth_sender.borrow_mut(),
+            "Xr.streamDepth",
+            crate::depth_frame::CONTENT_TYPE,
+            settings,
+            &self.sensor_upload_origins.borrow(),
+            live,
+        );
     }
 
-    /// The origins besides loopback `Xr.streamDepth` may upload to
-    /// (`--allow-sensor-upload`), in [`crate::depth_stream::parse_origin`]'s
-    /// form. Set before the first stream.
+    /// The origins besides loopback `Xr.streamDepth` and `Xr.streamCamera`
+    /// may upload to (`--allow-sensor-upload`), in
+    /// [`crate::sensor_stream::parse_origin`]'s form. Set before the first stream.
     pub fn set_sensor_upload_origins(&self, origins: Vec<String>) {
         *self.sensor_upload_origins.borrow_mut() = origins;
     }
 
     /// `GET /state.xr.stream`: present while `settings` asks for a stream.
-    pub fn depth_stream_state(&self) -> Option<crate::runtime_settings::DepthStreamState> {
+    pub fn depth_stream_state(&self) -> Option<crate::runtime_settings::SensorStreamState> {
         self.depth_stream.borrow().as_ref().map(|stream| stream.state())
     }
 

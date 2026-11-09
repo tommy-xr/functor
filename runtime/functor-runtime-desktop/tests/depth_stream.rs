@@ -27,7 +27,7 @@ use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::depth_frame::{decode, DepthFrameHeader, DepthFrameSource};
 use functor_runtime_common::environment_depth::EnvironmentDepthSource;
 use functor_runtime_common::math::Angle;
-use functor_runtime_common::runtime_settings::DepthStreamSettings;
+use functor_runtime_common::runtime_settings::SensorStreamSettings;
 use functor_runtime_common::shadow::ShadowMap;
 use functor_runtime_common::{
     render_frame, Camera, DebugRenderMode, Frame, FrameTime, Scene3D, SceneContext, SceneObject,
@@ -288,7 +288,7 @@ struct Harness {
     asset_cache: Arc<AssetCache>,
     scene_context: SceneContext,
     shadow_map: ShadowMap,
-    last_state: Mutex<Option<functor_runtime_common::runtime_settings::DepthStreamState>>,
+    last_state: Mutex<Option<functor_runtime_common::runtime_settings::SensorStreamState>>,
     _window: glfw::PWindow,
     _glfw: glfw::Glfw,
 }
@@ -366,7 +366,7 @@ impl Harness {
     }
 
     fn stream_at(&self, server: &Server, hz: f32, live: bool) {
-        let settings = DepthStreamSettings {
+        let settings = SensorStreamSettings {
             url: server.url.clone(),
             hz,
         };
@@ -379,7 +379,7 @@ impl Harness {
         self.scene_context.set_depth_stream(None, false);
     }
 
-    fn state(&self) -> functor_runtime_common::runtime_settings::DepthStreamState {
+    fn state(&self) -> functor_runtime_common::runtime_settings::SensorStreamState {
         self.scene_context.depth_stream_state().expect("streaming")
     }
 

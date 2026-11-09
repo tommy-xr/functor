@@ -14,7 +14,7 @@
 
 use functor_runtime_common::environment_depth::EnvironmentDepthView;
 use functor_runtime_common::runtime_settings::{
-    scene_requested, DepthStreamState, EnvironmentDepthMode, EnvironmentDepthState,
+    scene_requested, SensorStreamState, EnvironmentDepthMode, EnvironmentDepthState,
     FusedMeshState, GameConfig, XrState,
 };
 use functor_runtime_common::{Camera, TrackingPose};
@@ -365,7 +365,7 @@ stand-in room"
         &self,
         config: Option<GameConfig>,
         mesh: FusedMeshState,
-        stream: Option<DepthStreamState>,
+        stream: Option<SensorStreamState>,
     ) -> Option<XrState> {
         if !scene_requested(config) {
             return None;
