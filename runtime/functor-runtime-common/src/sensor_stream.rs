@@ -249,6 +249,11 @@ impl SensorStreamer {
         (shared.generation == *generation).then_some((shared, wake, destination, *generation))
     }
 
+    /// Whether frames can go anywhere: the destination was not refused.
+    pub(crate) fn accepts_frames(&self) -> bool {
+        self.sink.is_some()
+    }
+
     pub(crate) fn settings(&self) -> &SensorStreamSettings {
         &self.settings
     }

@@ -203,26 +203,30 @@ pub struct YuvPlane<'a> {
 }
 
 /// A `YUV_420_888` image (planes Y, U, V, any strides — planar or
-/// semi-planar) → I420.
-pub fn yuv420_888_to_i420(width: u32, height: u32, planes: [YuvPlane; 3]) -> Vec<u8> {
+/// semi-planar) → I420; `None` if a plane is shorter than its strides say.
+pub fn yuv420_888_to_i420(width: u32, height: u32, planes: [YuvPlane; 3]) -> Option<Vec<u8>> {
     let (w, h) = (width as usize, height as usize);
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let mut out = Vec::with_capacity(i420_len(width, height) as usize);
     for (plane, (pw, ph)) in planes.iter().zip([(w, h), (cw, ch), (cw, ch)]) {
         for y in 0..ph {
-            let row = &plane.data[y * plane.row_stride..];
+            let row = plane.data.get(y * plane.row_stride..)?;
             match plane.pixel_stride {
-                1 => out.extend_from_slice(&row[..pw]),
-                stride => out.extend((0..pw).map(|x| row[x * stride])),
+                1 => out.extend_from_slice(row.get(..pw)?),
+                stride => {
+                    row.get((pw - 1) * stride)?;
+                    out.extend((0..pw).map(|x| row[x * stride]));
+                }
             }
         }
     }
-    out
+    Some(out)
 }
 
-/// `[fx, fy, cx, cy]` calibrated on a `sensor` (width, height) array, for an
-/// `output` image the camera crops from its centre to the output's aspect
-/// and scales. Pixel centres at integers on both sides.
+/// Android `LENS_INTRINSIC_CALIBRATION` `[fx, fy, cx, cy]`, on a `sensor`
+/// (width, height) array with pixel edges at integers, for an `output` image
+/// the camera crops from the sensor's centre to its aspect and scales — as
+/// [`Intrinsics`], pixel centres at integers.
 pub fn rescale_intrinsics(
     calibration: [f32; 4],
     sensor: (u32, u32),
@@ -238,8 +242,8 @@ pub fn rescale_intrinsics(
     Intrinsics {
         fx: fx * k,
         fy: fy * k,
-        cx: (cx + 0.5 - x0) * k - 0.5,
-        cy: (cy + 0.5 - y0) * k - 0.5,
+        cx: (cx - x0) * k - 0.5,
+        cy: (cy - y0) * k - 0.5,
     }
 }
 
@@ -378,64 +382,66 @@ mod tests {
         // it (U plane = UVUV…, V plane = the same bytes shifted by one).
         let y = [1, 2, 3, 4, 0, 0, 5, 6, 7, 8, 0, 0];
         let uv = [10, 20, 11, 21];
+        let plane = |data, row_stride, pixel_stride| YuvPlane {
+            data,
+            row_stride,
+            pixel_stride,
+        };
         let yuv = yuv420_888_to_i420(
             4,
             2,
+            [plane(&y, 6, 1), plane(&uv, 4, 2), plane(&uv[1..], 4, 2)],
+        );
+        assert_eq!(yuv.unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 20, 21]);
+        // A plane shorter than its strides say converts to nothing.
+        let short = yuv420_888_to_i420(
+            4,
+            2,
             [
-                YuvPlane {
-                    data: &y,
-                    row_stride: 6,
-                    pixel_stride: 1,
-                },
-                YuvPlane {
-                    data: &uv,
-                    row_stride: 4,
-                    pixel_stride: 2,
-                },
-                YuvPlane {
-                    data: &uv[1..],
-                    row_stride: 4,
-                    pixel_stride: 2,
-                },
+                plane(&y[..9], 6, 1),
+                plane(&uv, 4, 2),
+                plane(&uv[1..], 4, 2),
             ],
         );
-        assert_eq!(yuv, [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 20, 21]);
+        assert_eq!(short, None);
     }
 
     #[test]
     fn intrinsics_follow_the_centre_crop_and_scale() {
-        // A square 1728 sensor streamed at 1280x960: the centre 1728x1296,
-        // scaled by 1280/1728.
-        let k = rescale_intrinsics([1172.5, 1172.5, 863.5, 863.5], (1728, 1728), (1280, 960));
-        let scale = 1280.0 / 1728.0;
-        assert!((k.fx - 1172.5 * scale).abs() < 1e-3);
-        // The sensor's centre stays the image's centre.
+        // A square 1728 sensor (edges at integers: its centre is 864)
+        // streamed at 1280x960: the centre 1728x1296, scaled by 1280/1728.
+        let k = rescale_intrinsics([1172.5, 1172.5, 864.0, 864.0], (1728, 1728), (1280, 960));
+        assert!((k.fx - 1172.5 * 1280.0 / 1728.0).abs() < 1e-3);
+        // The sensor's centre stays the image's centre, now between pixels
+        // 639 and 640 (centres at integers).
         assert!(
             (k.cx - 639.5).abs() < 1e-3 && (k.cy - 479.5).abs() < 1e-3,
             "{k:?}"
         );
-        // The same size is the identity.
+        // At the same size only the pixel convention moves.
         let same = rescale_intrinsics([500.0, 501.0, 300.0, 200.0], (640, 480), (640, 480));
-        assert_eq!(
-            same,
-            Intrinsics {
-                fx: 500.0,
-                fy: 501.0,
-                cx: 300.0,
-                cy: 200.0
-            }
-        );
+        let expected = Intrinsics {
+            fx: 500.0,
+            fy: 501.0,
+            cx: 299.5,
+            cy: 199.5,
+        };
+        assert_eq!(same, expected);
     }
 
     #[test]
     fn a_lens_pose_places_the_camera_on_the_head() {
-        // A Quest 3 left camera: about 169° about x (y down, z forward,
+        // Published Quest 3 left-camera values (illustrative; the device
+        // check confirms them): about 169° about x (y down, z forward,
         // pitched down), 3 cm left, 2 cm down, 6 cm forward of the head.
         let t = [-0.0323, -0.0175, -0.0632];
         let to_head = lens_to_head([-0.9953, 0.0027, -0.0041, 0.0970], t);
         let forward = to_head * Vector4::new(0.0, 0.0, 1.0, 0.0);
         // OpenXR VIEW looks down -z: the camera looks forward and a little down.
-        assert!(forward.z < -0.97 && forward.y < -0.1 && forward.y > -0.25, "{forward:?}");
+        assert!(
+            forward.z < -0.97 && forward.y < -0.1 && forward.y > -0.25,
+            "{forward:?}"
+        );
         let down = to_head * Vector4::new(0.0, 1.0, 0.0, 0.0);
         assert!(down.y < -0.97, "{down:?}");
         assert_eq!(to_head.w.truncate(), t.into());

@@ -524,7 +524,7 @@ fn camera_frame_header(
             .invert()?;
         Some(head_to_world * calibration.camera_to_head)
     });
-    let columns = |m: Matrix4<f32>| -> [f32; 16] { *AsRef::<[f32; 16]>::as_ref(&m) };
+    let columns = functor_runtime_common::depth_frame::columns;
     Some(camera_frame::CameraFrameHeader {
         schema: camera_frame::SCHEMA.to_string(),
         stream: String::new(),
@@ -2221,7 +2221,7 @@ pub fn android_main(app: AndroidApp) {
                 }),
             !clock.is_pinned() && feed_wanted,
         );
-        let camera_wanted = feed_wanted && scene_context.camera_stream_state().is_some();
+        let camera_wanted = feed_wanted && scene_context.camera_stream_accepts_frames();
         if camera_wanted && !available.khr_convert_timespec_time {
             debug.camera_error = Some(
                 "Xr.streamCamera: the runtime lacks XR_KHR_convert_timespec_time, so camera \
@@ -2247,7 +2247,7 @@ images cannot be posed"
                         sensor_ns,
                     )
                 });
-                if let Some((header, payload)) = header.zip(image.to_i420()) {
+                if let Some((header, payload)) = header.zip(image.i420()) {
                     scene_context.send_camera_frame(capture, header, payload);
                 }
             }

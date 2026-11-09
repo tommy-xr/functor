@@ -10,6 +10,8 @@
 
 use std::ffi::{c_void, CStr};
 use std::ptr;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use cgmath::Matrix4;
 use functor_runtime_common::camera_frame::{
@@ -27,6 +29,12 @@ const META_CAMERA_SOURCE: u32 = 0x8000_4d00;
 const META_CAMERA_POSITION: u32 = 0x8000_4d01;
 /// The size to stream, when the camera offers it.
 const PREFERRED_SIZE: (i32, i32) = (1280, 960);
+/// How long a failed or lost camera waits before opening again.
+const RETRY: Duration = Duration::from_secs(2);
+
+/// What the device callbacks (on a camera thread) report: the camera was
+/// lost. At most one camera is open, so one slot serves.
+static LOST: Mutex<Option<String>> = Mutex::new(None);
 
 /// What the camera's static characteristics say about its images.
 #[derive(Clone, Copy, Debug)]
@@ -37,6 +45,9 @@ pub struct Calibration {
     pub distortion: Option<[f32; 5]>,
     /// OpenCV camera → head (OpenXR VIEW).
     pub camera_to_head: Matrix4<f32>,
+    /// Timestamps count `CLOCK_BOOTTIME` (`TIMESTAMP_SOURCE` REALTIME), not
+    /// `CLOCK_MONOTONIC`.
+    pub boottime: bool,
 }
 
 struct Open {
@@ -57,7 +68,8 @@ pub struct PassthroughCamera {
     open: Option<Open>,
     /// Why the camera is not open, while wanted.
     error: Option<String>,
-    wanted: bool,
+    /// When a failed or lost camera may open again.
+    retry_at: Option<Instant>,
 }
 
 /// One image held until dropped.
@@ -67,29 +79,50 @@ pub struct CameraImage<'a> {
 }
 
 impl PassthroughCamera {
-    /// Open the camera while `wanted`, close it otherwise. A failed open is
-    /// retried only after `wanted` goes false and back.
+    /// Open the camera while `wanted`, close it otherwise. Opening blocks
+    /// (stream configuration); a failed or lost camera retries every
+    /// [`RETRY`].
     pub fn update(&mut self, wanted: bool) {
-        if wanted && !self.wanted {
+        let lost = LOST.lock().expect("camera status").take();
+        if let Some(lost) = lost.filter(|_| self.open.is_some()) {
+            log::warn!("Xr.streamCamera: {lost}");
+            self.close();
+            self.fail(lost);
+        }
+        if !wanted {
+            self.close();
+            self.error = None;
+            self.retry_at = None;
+            return;
+        }
+        if self.open.is_none() && self.retry_at.is_none_or(|at| Instant::now() >= at) {
             match unsafe { open() } {
                 Ok(open) => {
                     log::info!("passthrough camera open: {:?}", open.calibration);
                     self.open = Some(open);
                     self.error = None;
+                    self.retry_at = None;
                 }
                 Err(e) => {
-                    log::warn!("Xr.streamCamera: {e}");
-                    self.error = Some(e);
+                    if self.error.as_ref() != Some(&e) {
+                        log::warn!("Xr.streamCamera: {e}");
+                    }
+                    self.fail(e);
                 }
             }
         }
-        if !wanted {
-            if let Some(open) = self.open.take() {
-                unsafe { close(open) };
-            }
-            self.error = None;
+    }
+
+    fn fail(&mut self, error: String) {
+        self.error = Some(error);
+        self.retry_at = Some(Instant::now() + RETRY);
+    }
+
+    fn close(&mut self) {
+        if let Some(open) = self.open.take() {
+            unsafe { close(open) };
         }
-        self.wanted = wanted;
+        LOST.lock().expect("camera status").take();
     }
 
     pub fn error(&self) -> Option<String> {
@@ -119,11 +152,25 @@ impl CameraImage<'_> {
     pub fn sensor_ns(&self) -> Option<i64> {
         let mut ns = 0;
         let status = unsafe { ffi::AImage_getTimestamp(self.image, &mut ns) };
-        (status == ffi::media_status_t::AMEDIA_OK).then_some(ns)
+        if status != ffi::media_status_t::AMEDIA_OK {
+            return None;
+        }
+        let now = |clock| unsafe {
+            let mut t = std::mem::zeroed::<libc::timespec>();
+            libc::clock_gettime(clock, &mut t);
+            t.tv_sec * 1_000_000_000 + t.tv_nsec
+        };
+        // Boot time runs ahead of monotonic time by the time spent asleep.
+        Some(match self.calibration.boottime {
+            true => ns - (now(libc::CLOCK_BOOTTIME) - now(libc::CLOCK_MONOTONIC)),
+            false => ns,
+        })
     }
 
-    /// The image as I420; `None` if a plane cannot be read.
-    pub fn to_i420(&self) -> Option<Vec<u8>> {
+    /// The image's planes copied out (so the image can be released), and a
+    /// conversion to I420 to run off the render thread; `None` if a plane
+    /// cannot be read.
+    pub fn i420(&self) -> Option<impl FnOnce() -> Vec<u8> + Send + 'static> {
         let plane = |index| unsafe {
             let (mut data, mut len, mut row, mut pixel) = (ptr::null_mut(), 0, 0, 0);
             let ok = ffi::AImage_getPlaneData(self.image, index, &mut data, &mut len)
@@ -133,18 +180,24 @@ impl CameraImage<'_> {
                 && ffi::AImage_getPlanePixelStride(self.image, index, &mut pixel)
                     == ffi::media_status_t::AMEDIA_OK
                 && !data.is_null();
-            ok.then(|| YuvPlane {
-                data: std::slice::from_raw_parts(data, len as usize),
-                row_stride: row as usize,
-                pixel_stride: pixel as usize,
+            ok.then(|| {
+                let data = std::slice::from_raw_parts(data, len as usize).to_vec();
+                (data, row as usize, pixel as usize)
             })
         };
-        let c = self.calibration;
-        Some(yuv420_888_to_i420(
-            c.width,
-            c.height,
-            [plane(0)?, plane(1)?, plane(2)?],
-        ))
+        let planes = [plane(0)?, plane(1)?, plane(2)?];
+        let (width, height) = (self.calibration.width, self.calibration.height);
+        Some(move || {
+            let planes = planes
+                .each_ref()
+                .map(|(data, row_stride, pixel_stride)| YuvPlane {
+                    data,
+                    row_stride: *row_stride,
+                    pixel_stride: *pixel_stride,
+                });
+            // A short plane sends nothing rather than panicking.
+            yuv420_888_to_i420(width, height, planes).unwrap_or_default()
+        })
     }
 }
 
@@ -165,15 +218,18 @@ horizonos.permission.HEADSET_CAMERA`, then restart"
     }
 }
 
-/// A characteristics entry, if present with `count` at least `min`.
+/// A characteristics entry of type `kind` (`ACAMERA_TYPE_*`), if present
+/// with `count` at least `min`.
 unsafe fn entry(
     metadata: *const ffi::ACameraMetadata,
     tag: u32,
+    kind: u32,
     min: u32,
 ) -> Option<ffi::ACameraMetadata_const_entry> {
     let mut entry = std::mem::zeroed::<ffi::ACameraMetadata_const_entry>();
     (ffi::ACameraMetadata_getConstEntry(metadata, tag, &mut entry)
         == ffi::camera_status_t::ACAMERA_OK
+        && entry.type_ as u32 == kind
         && entry.count >= min)
         .then_some(entry)
 }
@@ -182,8 +238,20 @@ unsafe fn floats<const N: usize>(
     metadata: *const ffi::ACameraMetadata,
     tag: u32,
 ) -> Option<[f32; N]> {
-    let e = entry(metadata, tag, N as u32)?;
+    let e = entry(metadata, tag, ffi::ACAMERA_TYPE_FLOAT, N as u32)?;
     Some(std::array::from_fn(|i| *e.data.f.add(i)))
+}
+
+unsafe fn ints<const N: usize>(
+    metadata: *const ffi::ACameraMetadata,
+    tag: u32,
+) -> Option<[i32; N]> {
+    let e = entry(metadata, tag, ffi::ACAMERA_TYPE_INT32, N as u32)?;
+    Some(std::array::from_fn(|i| *e.data.i32_.add(i)))
+}
+
+unsafe fn byte(metadata: *const ffi::ACameraMetadata, tag: u32) -> Option<u8> {
+    entry(metadata, tag, ffi::ACAMERA_TYPE_BYTE, 1).map(|e| *e.data.u8_)
 }
 
 /// The id of the left passthrough camera and its characteristics (the
@@ -207,13 +275,17 @@ unsafe fn find_left(
         {
             continue;
         }
-        let byte = |tag| entry(metadata, tag, 1).map(|e| *e.data.u8_);
-        if byte(META_CAMERA_SOURCE) == Some(0) && byte(META_CAMERA_POSITION) == Some(0) {
+        if byte(metadata, META_CAMERA_SOURCE) == Some(0)
+            && byte(metadata, META_CAMERA_POSITION) == Some(0)
+        {
             return Ok((id.clone(), metadata));
         }
         ffi::ACameraMetadata_free(metadata);
     }
-    Err(format!("no left passthrough camera among {ids:?}"))
+    Err(format!(
+        "no left passthrough camera among {ids:?} — is horizonos.permission.HEADSET_CAMERA \
+granted?"
+    ))
 }
 
 /// The YUV output size: [`PREFERRED_SIZE`] if offered, else the largest.
@@ -221,6 +293,7 @@ unsafe fn output_size(metadata: *const ffi::ACameraMetadata) -> Option<(i32, i32
     let e = entry(
         metadata,
         ffi::acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS.0,
+        ffi::ACAMERA_TYPE_INT32,
         4,
     )?;
     // [format, width, height, is_input] quadruples.
@@ -250,44 +323,69 @@ unsafe fn calibration(
         .ok_or_else(|| missing("LENS_POSE_ROTATION"))?;
     let t: [f32; 3] = floats(metadata, tag::ACAMERA_LENS_POSE_TRANSLATION.0)
         .ok_or_else(|| missing("LENS_POSE_TRANSLATION"))?;
-    let array = entry(
+    // [left, top, width, height] on the pixel array: the intrinsics are on
+    // the pre-correction array, processed images cover the active one.
+    let pre: [i32; 4] = ints(
         metadata,
         tag::ACAMERA_SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE.0,
-        4,
     )
     .ok_or_else(|| missing("SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE"))?;
-    // [left, top, width, height].
-    let array = std::slice::from_raw_parts(array.data.i32_, 4);
+    let active: [i32; 4] = ints(metadata, tag::ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE.0)
+        .ok_or_else(|| missing("SENSOR_INFO_ACTIVE_ARRAY_SIZE"))?;
+    let (dx, dy) = ((active[0] - pre[0]) as f32, (active[1] - pre[1]) as f32);
     let distortion = floats::<5>(metadata, tag::ACAMERA_LENS_DISTORTION.0)
         .filter(|d| d.iter().any(|c| *c != 0.0));
     let (width, height) = (size.0 as u32, size.1 as u32);
+    // The lens pose is taken as head-relative; the reference says what the
+    // device means (0 primary camera, 1 gyroscope, 2 undefined).
+    log::info!(
+        "passthrough camera LENS_POSE_REFERENCE {:?}",
+        byte(metadata, tag::ACAMERA_LENS_POSE_REFERENCE.0)
+    );
     Ok(Calibration {
         width,
         height,
         intrinsics: rescale_intrinsics(
-            [k[0], k[1], k[2], k[3]],
-            (array[2] as u32, array[3] as u32),
+            [k[0], k[1], k[2] - dx, k[3] - dy],
+            (active[2] as u32, active[3] as u32),
             (width, height),
         ),
         distortion,
         camera_to_head: lens_to_head(q, t),
+        boottime: byte(metadata, tag::ACAMERA_SENSOR_INFO_TIMESTAMP_SOURCE.0)
+            == Some(ffi::acamera_metadata_enum_acamera_sensor_info_timestamp_source::ACAMERA_SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME.0 as u8),
     })
 }
 
 unsafe extern "C" fn on_disconnected(_: *mut c_void, _: *mut ffi::ACameraDevice) {
-    log::warn!("passthrough camera disconnected");
+    *LOST.lock().expect("camera status") = Some("the passthrough camera disconnected".into());
 }
 
 unsafe extern "C" fn on_error(_: *mut c_void, _: *mut ffi::ACameraDevice, error: i32) {
-    log::warn!("passthrough camera error {error}");
+    *LOST.lock().expect("camera status") = Some(format!("passthrough camera error {error}"));
 }
 
 unsafe extern "C" fn on_session_state(_: *mut c_void, _: *mut ffi::ACameraCaptureSession) {}
 
 /// Open the left camera into an image reader, repeating a preview request.
 unsafe fn open() -> Result<Open, String> {
+    let manager = ffi::ACameraManager_create();
+    let found = find_left(manager).and_then(|(id, metadata)| {
+        let calibrated = output_size(metadata)
+            .ok_or_else(|| "the left camera offers no YUV_420_888 output".to_string())
+            .and_then(|size| calibration(metadata, size));
+        ffi::ACameraMetadata_free(metadata);
+        Ok((id, calibrated?))
+    });
+    let (id, calibration) = match found {
+        Ok(found) => found,
+        Err(e) => {
+            ffi::ACameraManager_delete(manager);
+            return Err(e);
+        }
+    };
     let mut open = Open {
-        manager: ffi::ACameraManager_create(),
+        manager,
         device: ptr::null_mut(),
         reader: ptr::null_mut(),
         container: ptr::null_mut(),
@@ -295,28 +393,10 @@ unsafe fn open() -> Result<Open, String> {
         target: ptr::null_mut(),
         request: ptr::null_mut(),
         session: ptr::null_mut(),
-        calibration: Calibration {
-            width: 0,
-            height: 0,
-            intrinsics: Intrinsics {
-                fx: 0.0,
-                fy: 0.0,
-                cx: 0.0,
-                cy: 0.0,
-            },
-            distortion: None,
-            camera_to_head: Matrix4::from_scale(1.0),
-        },
+        calibration,
     };
     // On any failure, `close` frees what was made.
     let result = (|| {
-        let (id, metadata) = find_left(open.manager)?;
-        let size = output_size(metadata);
-        let calibrated = size
-            .ok_or_else(|| "the left camera offers no YUV_420_888 output".to_string())
-            .and_then(|size| calibration(metadata, size));
-        ffi::ACameraMetadata_free(metadata);
-        open.calibration = calibrated?;
         let (w, h) = (
             open.calibration.width as i32,
             open.calibration.height as i32,
