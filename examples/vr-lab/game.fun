@@ -14,7 +14,7 @@
 // (`Seating`); the other hand racks the slide or charging handle to chamber
 // (a chambered round flies out loose). The last shot locks the slide back;
 // a rack (or A/X on the pistol's hand) releases it. And a pump shotgun
-// (`Shotgun`) racked beside the rifle, held like it: the hand on its fore-end
+// (`Pump`) racked beside the rifle, held like it: the hand on its fore-end
 // pumps it (one shot a stroke, a spread of pellets), and its tube is loaded a
 // shell at a time from the box on the bench, through the port under it.
 //

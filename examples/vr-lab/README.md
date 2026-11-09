@@ -19,6 +19,7 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | B / Y / menu | next station (reset) |
 | grip (squeeze) | grab what's in reach; open to let go |
 | trigger | fire the held gun (station 3) |
+| grip on the shotgun's fore-end | hold it; draw it back and home to pump |
 | A / X (holding the rifle's grip), `F` | the rifle's selector: semi / full-auto |
 | A / X (holding the pistol) | its slide release, when locked back |
 | thumbstick down (on a gun's trigger hand), `M` | drop the gun's magazine |

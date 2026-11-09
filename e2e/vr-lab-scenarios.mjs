@@ -1346,7 +1346,7 @@ const shotgunScenarios = {
       { frames: 15, left: {} },
       ...sgRaise.map((seg, i) => (i === 0 ? { ...seg, spectator: behindRifle } : seg)),
       { frames: 1, right: { trigger: 1 }, spectator: atMiddleTarget },
-      { frames: 50, right: { trigger: 0 } },
+      { frames: 50, right: { trigger: 0 }, mark: "spread" },
       { frames: 10, left: {}, spectator: atPumpAimed },
       ...sgPump(undefined, SG_AIM, TARGETS[1], 12),
       { frames: 20, left: {} },
