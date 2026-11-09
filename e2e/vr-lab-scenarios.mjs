@@ -676,8 +676,9 @@ const rifleScenarios = {
 // (`Gun.dropOf`): for a level pistol, 13.24 cm below the hand and 4.5 cm
 // behind it. The pouch is on the belt (`slotAt("pouch")`).
 
-export const PISTOL_ROUNDS = 13;
-export const RIFLE_ROUNDS = 31;
+export const CAPACITY = { pistol: 12, rifle: 30 };
+export const PISTOL_ROUNDS = CAPACITY.pistol + 1;
+export const RIFLE_ROUNDS = CAPACITY.rifle + 1;
 export const SPARES = { pistol: 2, rifle: 2 };
 // Fire `n` pulls of the right trigger, each let out over 4 steps; the last
 // pull marked `mark`.
@@ -689,6 +690,8 @@ const pulls = (n, mark) =>
 // Over the bench, level: the magazine drops onto it below the hand.
 export const OVER_BENCH = [0.0, 1.2, -0.6];
 export const MAG_DROP = add(OVER_BENCH, [0, -0.1324, 0.045]);
+// Lower, the magazine would drop into the bench.
+const LOW_OVER_BENCH = [0.0, 1.0, -0.6];
 // Where the dropped magazine comes to rest (on its base, the bench top 0.9),
 // and where a hand takes it: by its top, clear of its count.
 const MAG_REST = [MAG_DROP[0], 0.95, MAG_DROP[2]];
@@ -711,6 +714,42 @@ const atLeftHand = { eye: [4.95, 1.35, -0.45], target: [4.4, 1.12, -0.2], fov: 3
 // Close behind the raised rifle's receiver: its readout, the targets beyond.
 const atReceiver = { eye: [4.0, 1.5, 0.32], target: [4.45, 1.36, 0.18], fov: 28 };
 
+// Shared runs. The pistol aimed at the right target, settled `settle` steps.
+const aimPistol = (settle) => [
+  { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
+  { frames: settle, right: {}, mark: "aimed" },
+];
+// Level over the bench, the thumbstick pushed down: the magazine drops.
+const dropOverBench = (fall) => [
+  { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] }, spectator: atSpares },
+  { frames: 5, right: {}, mark: "overBench" },
+  { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
+  { frames: fall, right: { stick: [0, 0] }, mark: "landed" },
+];
+// The right hand aside; the left takes the dropped magazine by its top,
+// puts it in the pouch and takes it back.
+const pouchTheMag = [
+  { frames: 20, right: { to: [0.25, 1.2, -0.3] }, spectator: atSpares },
+  { frames: 20, left: { to: add(MAG_TOP, [0, 0.1, 0]) } },
+  { frames: 10, left: { to: MAG_TOP }, mark: "reachedMag" },
+  { frames: 4, left: { squeeze: 1 }, mark: "tookMag" },
+  { frames: 20, left: { to: add(MAG_REST, [0, 0.2, 0.15]) }, mark: "lifted" },
+  { frames: 30, left: { to: POUCH }, mark: "atPouch", spectator: atPouch },
+  { frames: 1, left: { squeeze: 0 }, mark: "pouched" },
+  { frames: 20, left: {} },
+  { frames: 4, left: { squeeze: 1 }, mark: "retrieved" },
+];
+// The rifle in two hands, raised, aimed at the middle target, switched to full-auto.
+const autoRifle = (view = {}) => [
+  { ...takeRifle[0], ...(view.take ? { spectator: view.take } : {}) },
+  ...takeRifle.slice(1),
+  raise(),
+  { frames: 20, left: { to: at(TARGETS[1]) }, ...(view.aim ? { spectator: view.aim } : {}) },
+  { frames: 10, left: {}, mark: "aimed" },
+  { frames: 1, right: { primary: true }, mark: "auto" },
+  { frames: 3, right: { primary: false } },
+];
+
 const ammoScenarios = {
   // Aimed at the right target: thirteen pulls, thirteen hits; the fourteenth
   // clicks dry.
@@ -720,8 +759,7 @@ const ammoScenarios = {
     spectator: behindGun,
     steps: [
       ...takePistol,
-      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
-      { frames: 6, right: {}, mark: "aimed" },
+      ...aimPistol(6),
       ...pulls(PISTOL_ROUNDS, "lastShot"),
       { frames: 1, right: { trigger: 1 }, mark: "dry" },
       { frames: 6, right: { trigger: 0 }, mark: "after" },
@@ -735,12 +773,7 @@ const ammoScenarios = {
     neck: NECK,
     spectator: behindRifle,
     steps: [
-      ...takeRifle,
-      raise(),
-      { frames: 20, left: { to: at(TARGETS[1]) } },
-      { frames: 10, left: {}, mark: "aimed" },
-      { frames: 1, right: { primary: true }, mark: "auto" },
-      { frames: 3, right: { primary: false } },
+      ...autoRifle(),
       { frames: 200, right: { trigger: 1 }, mark: "held" },
       { frames: 6, right: { trigger: 0 } },
       { frames: 1, right: { trigger: 1 }, mark: "dryAgain" },
@@ -757,25 +790,17 @@ const ammoScenarios = {
     spectator: atSpares,
     steps: [
       ...takePistol,
-      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
-      { frames: 4, right: {} },
+      ...aimPistol(4),
       ...pulls(3, "fired3"),
-      { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] } },
-      { frames: 5, right: {}, mark: "overBench" },
-      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
-      { frames: 40, right: { stick: [0, 0] }, mark: "landed" },
-      { frames: 20, right: { to: [0.25, 1.2, -0.3] } },
-      { frames: 20, left: { to: add(MAG_TOP, [0, 0.1, 0]) } },
-      { frames: 10, left: { to: MAG_TOP }, mark: "reachedMag" },
-      { frames: 4, left: { squeeze: 1 }, mark: "tookMag" },
-      { frames: 20, left: { to: add(MAG_REST, [0, 0.2, 0.15]) }, mark: "lifted" },
-      { frames: 30, left: { to: POUCH }, mark: "atPouch", spectator: atPouch },
-      { frames: 1, left: { squeeze: 0 }, mark: "pouched" },
-      { frames: 15, left: {} },
-      { frames: 4, left: { squeeze: 1 }, mark: "retrieved" },
+      // Low over the bench, the magazine has no room to drop: it stays in.
+      { frames: 25, right: { to: LOW_OVER_BENCH, turn: [0, 0, 0, 1] } },
+      { frames: 5, right: {} },
+      { frames: 1, right: { stick: [0, -1] }, mark: "lowPush" },
+      { frames: 5, right: { stick: [0, 0] } },
+      ...dropOverBench(40),
+      ...pouchTheMag,
       { frames: 30, left: { to: [-0.15, 1.15, -0.35] }, mark: "out" },
-      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT }, spectator: behindGun },
-      { frames: 4, right: {} },
+      ...aimPistol(4).map((seg) => ({ ...seg, spectator: behindGun })),
       { frames: 1, right: { trigger: 1 }, mark: "lastRound" },
       { frames: 4, right: { trigger: 0 } },
       { frames: 1, right: { trigger: 1 }, mark: "dry" },
@@ -794,27 +819,15 @@ const ammoScenarios = {
     spectator: behindGun,
     steps: [
       ...takePistol,
-      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
-      { frames: 10, right: {}, spectator: atSlide },
+      ...aimPistol(10).map((seg, i) => (i === 1 ? { ...seg, spectator: atSlide } : seg)),
       ...pulls(4).map((seg) => (seg.frames === 4 ? { ...seg, frames: 12 } : seg)),
-      { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] }, spectator: atSpares },
-      { frames: 8, right: {} },
-      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
-      { frames: 30, right: { stick: [0, 0] } },
+      ...dropOverBench(30),
       { frames: 1, right: { trigger: 1 }, spectator: atBenchSlide },
       { frames: 14, right: { trigger: 0 } },
       { frames: 1, right: { trigger: 1 }, mark: "dry" },
       { frames: 14, right: { trigger: 0 } },
-      { frames: 20, right: { to: [0.25, 1.2, -0.3] }, spectator: atSpares },
-      { frames: 20, left: { to: add(MAG_TOP, [0, 0.1, 0]) } },
-      { frames: 10, left: { to: MAG_TOP } },
-      { frames: 4, left: { squeeze: 1 } },
-      { frames: 20, left: { to: add(MAG_REST, [0, 0.2, 0.15]) } },
-      { frames: 30, left: { to: POUCH }, spectator: atPouch },
-      { frames: 1, left: { squeeze: 0 }, mark: "pouched" },
-      { frames: 20, left: {} },
-      { frames: 4, left: { squeeze: 1 } },
-      { frames: 30, left: { to: [-0.2, 1.15, -0.4] }, mark: "retrieved", spectator: atLeftHand },
+      ...pouchTheMag,
+      { frames: 30, left: { to: [-0.2, 1.15, -0.4] }, spectator: atLeftHand },
       { frames: 20, left: {} },
       { frames: 20, left: { to: [-0.3, 1.03, -0.55] }, spectator: atSpares },
       { frames: 1, left: { squeeze: 0 } },
@@ -823,13 +836,7 @@ const ammoScenarios = {
       { frames: 25, right: { to: ARMORY_RH } },
       { frames: 1, right: { squeeze: 0 } },
       { frames: 10, right: {} },
-      { ...takeRifle[0], spectator: behindRifle },
-      ...takeRifle.slice(1),
-      raise(),
-      { frames: 20, left: { to: at(TARGETS[1]) }, spectator: atReceiver },
-      { frames: 10, left: {} },
-      { frames: 1, right: { primary: true } },
-      { frames: 3, right: { primary: false } },
+      ...autoRifle({ take: behindRifle, aim: atReceiver }),
       { frames: 120, right: { trigger: 1 } },
       { frames: 80, right: { trigger: 1 }, spectator: behindRifle, mark: "emptied" },
       { frames: 10, right: { trigger: 0 }, spectator: atReceiver },

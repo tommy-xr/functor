@@ -9,7 +9,8 @@
 //      the fourteenth clicks dry (a click pulse, no shot, no hit), leaving 0+0.
 //   2. Rifle, full-auto, the trigger held 200 steps: exactly 31 shots, then a
 //      dry click; let out and pulled again, another.
-//   3. Magazine: three shots, then the thumbstick drops the magazine; it
+//   3. Magazine: three shots; low over the bench the release does nothing
+//      (no room to drop); higher, the thumbstick drops the magazine; it
 //      lands on the bench with its 9 rounds, the left hand takes it, pouches
 //      it and takes it back, still 9. With it out, the chambered round fires
 //      once; then dry.
@@ -22,12 +23,12 @@
 //   node e2e/vr-lab-ammo.mjs
 import { check, failures } from "./mcp-rpc.mjs";
 import { fmt, len, play, record, session, some, sub, xyz } from "./xr-scenario.mjs";
-import { MAG_DROP, PISTOL_ROUNDS, RIFLE_ROUNDS, SPARES, project, scenarios } from "./vr-lab-scenarios.mjs";
+import { CAPACITY, MAG_DROP, PISTOL_ROUNDS, RIFLE_ROUNDS, SLOT, SPARES, TABLE, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8296;
-const POUCH_ID = 3;
-const BENCH_TOP = 0.9;
-const RESET_ROUNDS = PISTOL_ROUNDS + RIFLE_ROUNDS + SPARES.pistol * 12 + SPARES.rifle * 30;
+// The armory bench is the grab table's.
+const BENCH_TOP = TABLE.top;
+const RESET_ROUNDS = PISTOL_ROUNDS + RIFLE_ROUNDS + SPARES.pistol * CAPACITY.pistol + SPARES.rifle * CAPACITY.rifle;
 
 const run = (name, body) => session(name, project, PORT, body);
 
@@ -79,6 +80,8 @@ let magEnd;
 await run("magazine: drop, pouch, retrieve", async (rt) => {
   const { steps, marks, index } = await record(rt, scenarios["ammo-mag"]);
   check(marks.fired3.model.gun.fired === 3, `three shots (${marks.fired3.model.gun.fired})`);
+  const low = marks.lowPush.model;
+  check(some(low.gun.ammo.mag) && mags(low).length === mags(marks.fired3.model).length, "low over the bench, no room to drop: the magazine stays in");
   const ejected = marks.ejected.model;
   const [mag] = mags(ejected).filter((p) => p.kind.args[1] > SPARES.pistol + SPARES.rifle);
   check(mag && mag.kind.args[0].$ctor === "Ammo.PistolMag" && roundsIn(mag.mag) === 9, `a pistol magazine drops out with 9 (${JSON.stringify(mag?.kind)}, ${roundsIn(mag?.mag)})`);
@@ -90,7 +93,7 @@ await run("magazine: drop, pouch, retrieve", async (rt) => {
   const y = landed.pose.position.y;
   check(!some(landed.held) && y > BENCH_TOP && y < BENCH_TOP + 0.06, `it falls onto the bench (centre at y ${y.toFixed(4)})`);
   check(some(magIn(marks.tookMag.model).held)?.side.$ctor === "Hold.Left", "the left hand takes it");
-  check(some(magIn(marks.pouched.model).slot) === POUCH_ID, `opened at the belt: in the pouch (${JSON.stringify(magIn(marks.pouched.model).slot)})`);
+  check(some(magIn(marks.pouched.model).slot) === SLOT.pouch.id, `opened at the belt: in the pouch (${JSON.stringify(magIn(marks.pouched.model).slot)})`);
   const back = magIn(marks.retrieved.model);
   check(some(back.held)?.side.$ctor === "Hold.Left" && !some(back.slot), "squeezed there: back in the hand");
   const nine = steps.slice(index("ejected")).every((s) => roundsIn(magIn(s.state.model)?.mag) === 9);

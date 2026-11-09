@@ -92,7 +92,7 @@ let spawn = (k: Props.Kind): Input.pose =>
   // In its rack on the bench, level, pointing down range.
   | Props.Rifle => rifleRack
   // The spares stand in a row on the bench's left, their counts to the player.
-  | Props.Mag(_, id) => on(-0.51 + 0.09 * id, -0.42, Quat.identity)
+  | Props.Mag(_, id) => on(-0.51 + 0.09 * id, -0.5, Quat.identity)
 
 /// The spares' cradles, where they stand.
 let cradles: List<Slots.Placed> =
@@ -103,8 +103,10 @@ let cradles: List<Slots.Placed> =
 
 /// The slot a prop starts in: the rifle in its rack, a spare in its cradle.
 let startSlot = (k: Props.Kind): Option.t<float> =>
-  if k == Props.Rifle then Option.Some(Slots.rack.id)
-  else cradles |> List.find((c) => Slots.fits(k, c.slot) && Hold.near(c.pose, spawn(k))) |> Option.map((c) => c.slot.id)
+  match k with
+  | Props.Rifle => Option.Some(Slots.rack.id)
+  | Props.Mag(fits, id) => if spares |> List.any((s) => s == k) then Option.Some((Slots.cradle(id, fits)).id) else Option.None
+  | _ => Option.None
 
 expect startSlot(Props.Mag(Ammo.RifleMag, 4.0)) == Option.Some(Slots.rack.id + 4.0) && startSlot(Props.Mag(Ammo.RifleMag, 9.0)) == Option.None
 

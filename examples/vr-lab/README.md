@@ -329,7 +329,8 @@ chamber, plus the shots fired, are what the station was reset with.
   the eye.
 - **Magazine release.** The thumbstick pushed down on a gun's trigger hand
   (a fresh push past -0.7, released past -0.3), or `M`: the magazine drops out
-  below the well (`Gun.dropOf`, clear of the gun's collider) as a free prop
+  below the well (`Gun.dropOf`, clear of the gun's collider; if the level is
+  in the way, e.g. the gun held low over the bench, it stays in) as a free prop
   with its rounds, its count on its back. It is held, thrown, and put in the
   pouch like any prop; the chambered round stays in the gun and fires.
 - **Spares.** Two pistol and two rifle magazines, full, stand in cradles on

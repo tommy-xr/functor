@@ -415,10 +415,11 @@ expect (
 )
 
 /// A step through `sampledInput` (keys pressed, the two hands), then the step.
-let sampled = (m: Game.Model, keys: List<Key.t>, l: Input.controller, r: Input.controller): Game.Model =>
+let sampledIn = (world: Game.World, m: Game.Model, keys: List<Key.t>, l: Input.controller, r: Input.controller): Game.Model =>
   let xr = { head: Option.Some(Hips.headAt(0.0, 0.0)), left: l, right: r } in
-  let (next, _) = Game.step(Game.sampledInput(m, Game.snapshotOf(keys, Option.Some(xr))), Stations.armory, Game.noWorld, (p) => p, 0.0, dt) in
+  let (next, _) = Game.step(Game.sampledInput(m, Game.snapshotOf(keys, Option.Some(xr))), Stations.armory, world, (p) => p, 0.0, dt) in
   next
+let sampled = (m: Game.Model, keys: List<Key.t>, l: Input.controller, r: Input.controller): Game.Model => sampledIn(Game.noWorld, m, keys, l, r)
 let stickDown = (c: Input.controller): Input.controller => { c with thumbstick: { x: 0.0, y: -1.0 } }
 let dropped = (m: Game.Model) => Game.propOf(m, Props.Mag(Ammo.PistolMag, List.length(Stations.spares) + 1.0))
 
@@ -436,6 +437,22 @@ expect (
 expect Option.isNone((sampled(fired3, [Key.M], Game.away, ease)).gun.ammo.mag)
 expect Option.isSome((sampled(fired3, [], stickDown(Game.away), ease)).gun.ammo.mag)
 expect List.length((sampled(start, [Key.M], Game.away, Game.away)).props) == 6.0
+// Its way out blocked by the level (the pistol resting on the bench): it
+// stays in, and nothing drops.
+expect (
+  let floored = { Game.noWorld with sweep: (k: Props.Kind, a: Input.pose, b: Input.pose) =>
+    match k with
+    | Props.Mag(_, _) => Option.Some({ fraction: 0.0, normal: Quat.v3(0.0, 1.0, 0.0) })
+    | _ => Option.None } in
+  let m = sampledIn(floored, fired3, [], Game.away, stickDown(ease)) in
+  Option.isSome(m.gun.ammo.mag) && List.length(m.props) == 6.0 && m.nextMag == fired3.nextMag && conserved([m])
+)
+// The rifle's, by M, held in two hands: 30 rounds out, one chambered.
+expect (
+  let m = sampled(ready, [Key.M], fore25, still) in
+  let mag = Game.propOf(m, Props.Mag(Ammo.RifleMag, List.length(Stations.spares) + 1.0)) in
+  Ammo.roundsIn(mag.mag) == 30.0 && Option.isNone(m.rifle.ammo.mag) && m.rifle.ammo.chambered && conserved([m])
+)
 // With the magazine out, the chambered round still fires once; then dry.
 expect (
   let ms = playIn(Game.noWorld, ejected, pulls(2.0)) in

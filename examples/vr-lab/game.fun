@@ -98,8 +98,10 @@ type Model = {
   rifle: Gun.State,
   // Each hand's A/X level (left, right), for its press edges.
   buttonA: (bool, bool),
-  // Each hand's thumbstick held down (the magazine release), for its edges.
+  // Each hand's thumbstick held down (the magazine release), for its edges,
+  // and the guns whose release was pressed this step.
   stick: (bool, bool),
+  releasing: List<Props.Kind>,
   // The next ejected magazine's id.
   nextMag: float
 }
@@ -137,14 +139,15 @@ let reset = (m: Model, id: float): Model =>
       pulses: [],
       gun: Gun.stocked(Gun.pistol),
       rifle: Gun.stocked(Longarm.weapon),
+      releasing: [],
       nextMag: List.length(Stations.spares) + 1.0 }
 
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
     handView: Tracked, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
-    feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.idle, rifle: Gun.idle, buttonA: (false, false),
-    stick: (false, false), nextMag: 1.0
+    feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon), buttonA: (false, false),
+    stick: (false, false), releasing: [], nextMag: 1.0
   }, 1.0)
 
 // --- input ---
@@ -171,27 +174,28 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
       |> Option.map((kv) => let (_, id) = kv in id) in
   let cycle = buttons(s.xr, (c) => c.secondaryPressed || c.menuPressed) in
   let thumbstick = buttons(s.xr, (c) => c.thumbstickPressed) in
-  let flip = (s.pressedKeys |> List.any((p) => p == Key.H)) || (thumbstick && not m.thumbstick) in
-  // The selector: a fresh A/X press on the hand at the rifle's trigger, or F.
-  let a = (side: Hold.Side) => controller(s.xr, side) |> Option.map((c) => c.primaryPressed) |> Option.defaultValue(false) in
+  let key = (k: Key.t) => s.pressedKeys |> List.any((p) => p == k) in
+  let flip = key(Key.H) || (thumbstick && not m.thumbstick) in
+  // A fresh press (`now`, not `was`) on the hand at gun `k`'s trigger.
+  let pressedOn = (k: Props.Kind, side: Hold.Side, now: bool, was: bool) => now && not was && triggerHand(m, k) == Option.Some(side) in
+  let level = (side: Hold.Side, of: (Input.controller) => bool) => controller(s.xr, side) |> Option.map(of) |> Option.defaultValue(false) in
+  // The selector: A/X on the hand at the rifle's trigger, or F.
+  let (aLeft, aRight) = (level(Hold.Left, (c) => c.primaryPressed), level(Hold.Right, (c) => c.primaryPressed)) in
   let (wasLeft, wasRight) = m.buttonA in
-  let pressedOn = (side: Hold.Side, was: bool) => a(side) && not was && triggerHand(m, Props.Rifle) == Option.Some(side) in
-  let select = (s.pressedKeys |> List.any((p) => p == Key.F)) || pressedOn(Hold.Left, wasLeft) || pressedOn(Hold.Right, wasRight) in
-  // The magazine release: a fresh thumbstick push down on the hand at a
-  // gun's trigger, or M for every gun held.
+  let select = key(Key.F) || pressedOn(Props.Rifle, Hold.Left, aLeft, wasLeft) || pressedOn(Props.Rifle, Hold.Right, aRight, wasRight) in
+  // The magazine release: the thumbstick pushed down on the hand at a gun's
+  // trigger, or M for every gun held. The step drops the magazines.
   let (stickLeft, stickRight) = m.stick in
-  let down = (side: Hold.Side, was: bool) => controller(s.xr, side) |> Option.map((c) => stickDown(was, c.thumbstick.y)) |> Option.defaultValue(false) in
-  let (downLeft, downRight) = (down(Hold.Left, stickLeft), down(Hold.Right, stickRight)) in
-  let released = (k: Props.Kind) =>
-    match triggerHand(m, k) with
-    | Option.Some(side) =>
-      (s.pressedKeys |> List.any((p) => p == Key.M))
-        || (match side with | Hold.Left => downLeft && not stickLeft | Hold.Right => downRight && not stickRight)
-    | Option.None => false in
-  let next = [Props.Pistol, Props.Rifle] |> List.fold((acc, k) => if released(k) then ejectMag(acc, k) else acc,
-    { m with xr: s.xr, cycle: cycle, thumbstick: thumbstick, handView: if flip then flipped(m.handView) else m.handView,
-             buttonA: (a(Hold.Left), a(Hold.Right)), rifle: if select then Gun.select(Longarm.weapon, m.rifle) else m.rifle,
-             stick: (downLeft, downRight) }) in
+  let (downLeft, downRight) = (level(Hold.Left, (c) => stickDown(stickLeft, c.thumbstick.y)), level(Hold.Right, (c) => stickDown(stickRight, c.thumbstick.y))) in
+  let releaseKey = key(Key.M) in
+  let any = releaseKey || (downLeft && not stickLeft) || (downRight && not stickRight) in
+  let releasing =
+    if not any then []
+    else [Props.Pistol, Props.Rifle] |> List.filter((k) =>
+      (releaseKey && Option.isSome(triggerHand(m, k))) || pressedOn(k, Hold.Left, downLeft, stickLeft) || pressedOn(k, Hold.Right, downRight, stickRight)) in
+  let next = { m with xr: s.xr, cycle: cycle, thumbstick: thumbstick, handView: if flip then flipped(m.handView) else m.handView,
+               buttonA: (aLeft, aRight), rifle: if select then Gun.select(Longarm.weapon, m.rifle) else m.rifle,
+               stick: (downLeft, downRight), releasing: releasing } in
   match chosen with
   | Option.Some(id) => reset(next, id)
   | Option.None => if cycle && not m.cycle then reset(next, Stations.after(m.station)) else next
@@ -203,16 +207,21 @@ expect stickDown(false, -0.7) && not stickDown(false, -0.6) && stickDown(true, -
 
 /// A gun's magazine dropped out: a new magazine prop with its rounds, free
 /// below the well (`Gun.dropOf`), the chambered round left in the gun. A gun
-/// with none, unchanged.
-let ejectMag = (m: Model, k: Props.Kind): Model =>
+/// with none, unchanged; so is one whose magazine would drop into the level
+/// on its way out (the gun resting on the bench): it stays in.
+let ejectMag = (m: Model, world: World, k: Props.Kind): Model =>
   let g = gunOf(m, k) in
   let (ammo, out) = Ammo.eject(g.ammo) in
   match out with
   | Option.None => m
   | Option.Some(mag) =>
-    let at = Hold.compose(poseOf(propOf(m, k)), Gun.dropOf(weaponOf(k))) in
-    let dropped = { spawned(Props.Mag(mag.kind, m.nextMag)) with at: at, pose: at, mag: Option.Some(mag) } in
-    { withGun(m, k, { g with ammo: ammo }) with props: m.props |> List.append([dropped]), nextMag: m.nextMag + 1.0 }
+    let gun = poseOf(propOf(m, k)) in
+    let kind = Props.Mag(mag.kind, m.nextMag) in
+    let at = Hold.compose(gun, Gun.dropOf(weaponOf(k))) in
+    if Option.isSome(world.sweep(kind, Hold.compose(gun, Gun.seatOf(weaponOf(k))), at)) then m
+    else
+      let dropped = { spawned(kind) with at: at, pose: at, mag: Option.Some(mag) } in
+      { withGun(m, k, { g with ammo: ammo }) with props: m.props |> List.append([dropped]), nextMag: m.nextMag + 1.0 }
 
 /// The station's unspent rounds: in every magazine (free, held, slotted or
 /// in a well) and chamber. With the shots fired (`Gun.State.fired`), always
@@ -547,7 +556,9 @@ let supporting = (m: Model): (Model, List<Props.Kind>, List<(Hold.Side, Pulses.E
 let step = (m: Model, st: Stations.Station, world: World, read: (Prop) => Prop, t: float, dt: float): (Model, List<Release>) =>
   let (left, leftEdge) = Hold.stepHand(m.left, Option.isSome(gripOf(m.xr, Hold.Left)), squeezeOf(m.xr, Hold.Left)) in
   let (right, rightEdge) = Hold.stepHand(m.right, Option.isSome(gripOf(m.xr, Hold.Right)), squeezeOf(m.xr, Hold.Right)) in
-  let seen = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false } in
+  let observed = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false, releasing: [] } in
+  // The magazines released this step drop first, from where their guns are.
+  let seen = m.releasing |> List.fold((acc, k) => ejectMag(acc, world, k), observed) in
   let live = if Stations.worn(st) then wear(seen, dt) else seen in
   let slots = (if Stations.worn(st) then Slots.placed(live.hips) else []) |> List.append(racks(st)) in
   // The rifles' support hands first: they aim (or let go of) what the holds

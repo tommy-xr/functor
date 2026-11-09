@@ -50,9 +50,13 @@ let weaponAt = (g: Input.pose, bore: float, chamberAhead: float, muzzleAhead: fl
   let along = (ahead: float) => Quat.add(g.position, Quat.rotate(g.orientation, Quat.v3(0.0, bore, 0.0 - ahead))) in
   { grip: g, chamber: along(chamberAhead), muzzle: along(muzzleAhead), selector: selector, well: well, readout: readout }
 
+// The handle: its centre in the hand's frame, raked back 12 degrees.
+let handleAt = Quat.v3(0.0, 0.0 - 0.015, 0.02)
+let handleRake = 0.0 - 0.21
+
 // The magazine in the handle, raked with it; its readout on the slide's back face.
 let pistol = weaponAt(grip, bore, chamberAhead, muzzleAhead, false,
-  { kind: Ammo.PistolMag, at: Quat.sub(Quat.v3(0.0, 0.0 - 0.015, 0.02), center), rake: 0.0 - 0.21, drop: 0.12 },
+  { kind: Ammo.PistolMag, at: Quat.sub(handleAt, center), rake: handleRake, drop: 0.12 },
   { at: Quat.sub(Quat.v3(0.0, bore, 0.056), center), tilt: 0.0, size: 0.0045 })
 
 /// A seated magazine's pose in its weapon's frame.
@@ -251,7 +255,7 @@ type State = {
   trigger: Trigger,
   mode: Mode,
   kick: float,
-  ammo: Ammo.Gun,
+  ammo: Ammo.State,
   fired: float,
   refused: float,
   dry: float,
@@ -396,8 +400,8 @@ let scene = (paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
     // The slide, from the muzzle to its back, round the bore.
     part(0.03, 0.04, 0.205, 0.0, bore, 0.0 - 0.0475) |> paint(0.2, 0.21, 0.24),
     // The handle, raked back 12 degrees below the slide.
-    Scene.cube() |> Scene.scaleXYZ(0.03, 0.1, 0.045) |> Scene.rotateX(Angle.radians(0.0 - 0.21))
-      |> Scene.translate(Vec3.make(0.0 - center.x, 0.0 - 0.015 - center.y, 0.02 - center.z)) |> paint(0.3, 0.22, 0.16),
+    Scene.cube() |> Scene.scaleXYZ(0.03, 0.1, 0.045) |> Scene.rotateX(Angle.radians(handleRake))
+      |> Scene.translate(Quat.toVec3(Quat.sub(handleAt, center))) |> paint(0.3, 0.22, 0.16),
     // The trigger guard and the trigger.
     part(0.008, 0.006, 0.045, 0.0, 0.0 - 0.002, 0.0 - 0.028) |> Scene.lit(dark),
     part(0.006, 0.022, 0.006, 0.0, 0.012, 0.0 - 0.016) |> Scene.lit(dark),
