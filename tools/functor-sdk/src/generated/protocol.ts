@@ -543,6 +543,42 @@ export type PassthroughState = { mode: PassthroughMode,
 warning?: string, };
 
 /**
+ * How the last pushed reload settled.
+ */
+export type ReloadOutcome = { 
+/**
+ * False when the reload was rejected (the old program keeps running) or
+ * superseded by a newer push.
+ */
+ok: boolean, 
+/**
+ * From the push reaching the shell to its answer.
+ */
+ms: number, 
+/**
+ * `/state.rendered_frames` when it settled.
+ */
+rendered_frame: number, };
+
+/**
+ * What the indicator draws.
+ */
+export type ReloadShown = "loading" | "ok" | "failed";
+
+/**
+ * `/state.reload`.
+ */
+export type ReloadState = { 
+/**
+ * A pushed reload has not answered yet.
+ */
+in_progress: boolean, 
+/**
+ * What the indicator draws now; omitted when hidden.
+ */
+shown?: ReloadShown, last?: ReloadOutcome, };
+
+/**
  * Snapshot returned by `GET /state`.
  *
  * `viewport`, `input`, and `model` retain the desktop wire shape. `views` is
@@ -607,7 +643,13 @@ pending_net: number,
  * that never falls is a request that never answers. `default` because
  * a pre-v31 runtime omits it.
  */
-http: HttpStats, viewport: RuntimeViewport, views: Array<RuntimeView>, 
+http: HttpStats, 
+/**
+ * Pushed hot reloads (v32): one in flight, what the shell's indicator
+ * draws, and how the last settled. `default` because a pre-v32 runtime
+ * omits it.
+ */
+reload: ReloadState, viewport: RuntimeViewport, views: Array<RuntimeView>, 
 /**
  * The structured JSON view of the model
  * ([`crate::protocol::GameProducer::state_json`]) — the default thing to

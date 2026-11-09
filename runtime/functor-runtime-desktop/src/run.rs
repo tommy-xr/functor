@@ -26,6 +26,7 @@ use glow::*;
 
 use crate::game::Game;
 use functor_runtime_common::frame_telemetry::{us, FrameRecord, FrameTelemetry};
+use functor_runtime_common::reload_indicator::{ReloadIndicator, ReloadIndicatorPainter};
 use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use crate::{
     asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
@@ -1161,6 +1162,8 @@ fn service_debug_request(
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
     // `/frames`, `/spikes`, `/state.frame_stats`.
     telemetry: &FrameTelemetry,
+    // Pushed reloads, for the indicator and `/state.reload`.
+    reload: &mut ReloadIndicator,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
 ) -> bool {
     let mut sampled_input_changed = false;
@@ -1195,6 +1198,7 @@ fn service_debug_request(
             let depth_stream = scene_context.depth_stream_state();
             let cull = counters.frame_cull();
             let cells = counters.frame_cells();
+            let reload = reload.state(Instant::now());
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
                     // Recorded steps (what `/rewind` takes) where the game
@@ -1206,6 +1210,7 @@ fn service_debug_request(
                     model_revision: g.model_revision(),
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
+                    reload,
                     viewport: debug_server::RuntimeViewport::new(width, height),
                     views: vec![debug_server::RuntimeView::new("main", width, height)],
                     model: g.state_json(),
@@ -1260,12 +1265,14 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::ReloadSource(source, resp) => {
             // A heavy reload answers when it lands off the frame thread.
+            let resp = reload.track(resp, Instant::now());
             sim.post(move |g| {
                 let result = g.reload_source(&source);
                 functor_runtime_common::protocol::answer_reload(g, result, resp);
             });
         }
         debug_server::DebugRequest::ReloadProject(files, role, resp) => {
+            let resp = reload.track(resp, Instant::now());
             sim.post(move |g| {
                 let result = functor_runtime_common::protocol::reload_with_role(
                     g,
@@ -1590,6 +1597,7 @@ fn run_headless(
 
     // Spikes are judged against a 60 Hz frame unless `--display-hz` says otherwise.
     let mut telemetry = FrameTelemetry::new(display_hz.unwrap_or(60.0));
+    let mut reload = ReloadIndicator::default();
     loop {
         let iteration_started = Instant::now();
         let elapsed = start_time.elapsed().as_secs_f32();
@@ -1742,6 +1750,7 @@ fn run_headless(
                     &sim_thread,
                     None,
                     &telemetry,
+                    &mut reload,
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
@@ -1750,6 +1759,7 @@ fn run_headless(
                 );
             }
         }
+        reload.poll(Instant::now(), 0);
 
         // Cap the loop near 60 Hz so it doesn't busy-spin a core.
         std::thread::sleep(std::time::Duration::from_millis(16));
@@ -2297,6 +2307,9 @@ Escape releases while captured"
         // `/frames` and `/spikes`; spikes are judged against a 60 Hz frame
         // unless `--display-hz` says otherwise.
         let mut telemetry = FrameTelemetry::new(args.display_hz.unwrap_or(60.0));
+        let mut reload = ReloadIndicator::default();
+        // Built on the first reload's frame.
+        let mut reload_painter: Option<ReloadIndicatorPainter> = None;
         let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
 
         while !window.should_close() {
@@ -3946,6 +3959,24 @@ Escape again to quit"
                 None => {}
             }
 
+            // The hot-reload indicator, over everything (and in captures).
+            if let Some((shown, spin)) = reload.look(Instant::now()) {
+                let painter =
+                    reload_painter.get_or_insert_with(|| ReloadIndicatorPainter::new(&gl, shader_version));
+                let transform = functor_runtime_common::reload_indicator::corner_transform(
+                    fb_width as u32,
+                    fb_height as u32,
+                    spin,
+                );
+                painter.draw(
+                    &gl,
+                    transform,
+                    shown,
+                    (fb_width as u32, fb_height as u32),
+                    scene_context.output_srgb_encode(),
+                );
+            }
+
             if let Some(capture_path) = &args.capture_frame {
                 // Shoot at an exact deterministic sim frame (--capture-at-frame,
                 // for scripted runs) or after --capture-time wall-clock seconds
@@ -4046,6 +4077,7 @@ Escape again to quit"
                         &sim_thread,
                         stage_timings,
                         &telemetry,
+                        &mut reload,
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
                             functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
@@ -4073,6 +4105,7 @@ Escape again to quit"
                     }
                 }
             }
+            reload.poll(Instant::now(), rendered_frames);
 
             // Time the buffer swap separately: it blocks on vsync, so
             // FrameStats.swap_us captures presentation/vsync cost, not GL work.

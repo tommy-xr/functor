@@ -200,7 +200,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 34 adds the optional `haptics` field on `GET /state` (`{sent, dropped,
 /// recent}`: `Effect.haptic` pulses since launch, `recent` the last 8 sent
 /// with their `hand`, `amplitude`, `seconds` and `frame`).
-pub const DEBUG_PROTOCOL_VERSION: u32 = 34;
+///
+/// 35 adds `reload` to `GET /state` (`{in_progress, shown?, last?}`: pushed
+/// hot reloads and the shell's indicator,
+/// [`crate::reload_indicator::ReloadState`]). Additive — a pre-v35 runtime
+/// omits it, which deserializes as idle.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 35;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -470,6 +475,11 @@ pub struct RuntimeState {
     /// a pre-v31 runtime omits it.
     #[serde(default)]
     pub http: crate::net::HttpStats,
+    /// Pushed hot reloads (v32): one in flight, what the shell's indicator
+    /// draws, and how the last settled. `default` because a pre-v32 runtime
+    /// omits it.
+    #[serde(default)]
+    pub reload: crate::reload_indicator::ReloadState,
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
     /// The structured JSON view of the model
@@ -1469,6 +1479,7 @@ mod tests {
             model_revision: 17,
             pending_net: 2,
             http: Default::default(),
+            reload: Default::default(),
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: json!({ "label": "hello" }),
@@ -1582,6 +1593,7 @@ mod tests {
                 "model_revision": 17,
                 "pending_net": 2,
                 "http": { "pending": 0, "completed": 0, "failed": 0 },
+                "reload": { "in_progress": false },
                 "viewport": { "width": 1920, "height": 1080 },
                 "views": [{
                     "name": "main",
