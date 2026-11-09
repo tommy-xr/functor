@@ -110,6 +110,10 @@ full, proven sequence. The short path is:
    On the headset `Effect.httpGet`/`httpPost` speak plain `http://` only
    (`https://` fails as `Net.Failure`); `/state`'s `http` counts requests
    pending, completed, and failed.
+   `functor build vr` and `run vr` warn, with file and line, at each built-in
+   the headset can't perform: `Sub.connect`/`Sub.listen` (fail as
+   `Net.Error`) and audio (`Effect.play*`, `AudioScene.create`: silent).
+   `build wasm`/`run wasm` do the same for the browser.
 3. If Meta Home remains visible, recreate `adb forward` (and any `reverse`), send `prox_close`, and
    restart NativeActivity with `am start -S`. Wait for `/state`'s
    `rendered_frames` to advance; server readiness alone does not mean XR is

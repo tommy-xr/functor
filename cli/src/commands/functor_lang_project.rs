@@ -2719,6 +2719,22 @@ Content-Length: {}\r\nConnection: close\r\n\r\n",
 /// The 1-based `line`th line of `src`, without its newline — `None` when the
 /// line is out of range (a defensive fail-soft: the caret is a nicety, never a
 /// hard dependency of surfacing the diagnostic).
+/// Warn at each built-in the game uses that `environment`'s shell cannot
+/// perform ([`util::shell_support`]).
+pub fn warn_unsupported(project: &functor_lang::project::Project, environment: &Environment) {
+    for finding in util::shell_support::check(project, environment) {
+        let (file, line, col) = project.sources.resolve(finding.span.start);
+        emit(Event::Diagnostic {
+            severity: Severity::Warning,
+            file: Some(file.path.display().to_string()),
+            line: Some(line),
+            col: Some(col),
+            message: finding.message,
+            source_line: nth_line(&file.src, line),
+        });
+    }
+}
+
 fn nth_line(src: &str, line: usize) -> Option<String> {
     line.checked_sub(1)
         .and_then(|idx| src.lines().nth(idx))

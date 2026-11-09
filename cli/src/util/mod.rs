@@ -1,4 +1,5 @@
 pub mod asset_verify;
+pub mod shell_support;
 mod shell_command;
 // The wasm dev server `include_bytes!`s the web bundle, so it (and its bundle
 // dependency) only exist under the `web` feature. The static `build wasm`

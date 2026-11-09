@@ -566,6 +566,7 @@ async fn run(args: &Args) -> io::Result<()> {
             &args.command,
             Command::Run { environment: Some(Environment::Vr), .. }
                 | Command::Develop { environment: Some(Environment::Vr), .. }
+                | Command::Build { environment: Some(Environment::Vr) }
         ) && config.has_entry("vr");
         let requested = args
             .entry
@@ -695,6 +696,10 @@ async fn run(args: &Args) -> io::Result<()> {
                     if named {
                         role.check_contract(&loaded)?;
                     }
+                    // The role `run <environment>` would launch.
+                    if let Some(environment) = environment.as_ref().filter(|_| role.role == project.role) {
+                        commands::functor_lang_project::warn_unsupported(&loaded, environment);
+                    }
                 }
                 match environment {
                     Some(Environment::Wasm) => project.export_wasm(&working_directory_str),
@@ -702,7 +707,8 @@ async fn run(args: &Args) -> io::Result<()> {
                 }
             }
             Command::Run { environment, .. } => {
-                project.build(&working_directory_str, false)?;
+                let loaded = project.build(&working_directory_str, false)?;
+                commands::functor_lang_project::warn_unsupported(&loaded, &Environment::default(environment));
                 project
                     .run(
                         &working_directory_str,
@@ -713,7 +719,8 @@ async fn run(args: &Args) -> io::Result<()> {
                     .await
             }
             Command::Develop { environment, .. } => {
-                project.build(&working_directory_str, false)?;
+                let loaded = project.build(&working_directory_str, false)?;
+                commands::functor_lang_project::warn_unsupported(&loaded, &Environment::default(environment));
                 project
                     .run(
                         &working_directory_str,
