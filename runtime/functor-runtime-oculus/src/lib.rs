@@ -2050,8 +2050,8 @@ pub fn android_main(app: AndroidApp) {
             });
             renderer.render(&scene_context, &frame);
         }
-        // No audio/HTTP hosts on device yet: their commands were drained into
-        // the snapshot and are dropped with it, so the queues don't grow.
+        // No audio host on device yet: its commands were drained into the
+        // snapshot and are dropped with it, so the queue doesn't grow.
         // Preloads and physics terrain requests are driven above through the
         // shared asset cache.
 
