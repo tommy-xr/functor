@@ -458,3 +458,18 @@ expect (
     && Option.isNone((dropped(last(retrieved))).slot)
     && (pouched |> List.all(nine)) && (retrieved |> List.all(nine)) && conserved(List.append(pouched, retrieved))
 )
+// A spare taken out of its cradle (an unstow), and put back: in its cradle,
+// bodiless, still full. A pistol magazine doesn't go in a rifle cradle.
+expect (
+  let spare = Props.Mag(Ammo.PistolMag, 1.0) in
+  let at = (Stations.spawn(spare)).position in
+  let rifleCradle = (Stations.spawn(Props.Mag(Ammo.RifleMag, 3.0))).position in
+  let taken = playBoth(Game.noWorld, start, [(Game.hand(at, 0.0), Game.away), (Game.hand(at, 1.0), Game.away)]) in
+  let back = playBoth(Game.noWorld, last(taken), [(Game.hand(at, 0.0), Game.away)]) in
+  let moved = playBoth(Game.noWorld, last(taken), [(Game.hand(rifleCradle, 1.0), Game.away), (Game.hand(rifleCradle, 0.0), Game.away)]) in
+  (start.props |> List.all((p) => Option.isNone(p.mag) || Option.isSome(p.slot)))
+    && (Game.propOf(last(taken), spare).held |> Option.map((h) => h.side == Hold.Left) |> Option.defaultValue(false))
+    && countOf(Hold.Left, Pulses.Unstow, taken) == 1.0
+    && Game.propOf(last(back), spare).slot == Option.Some(Slots.rack.id + 1.0) && Ammo.roundsIn(Game.propOf(last(back), spare).mag) == 12.0
+    && Option.isNone(Game.propOf(last(moved), spare).slot) && not Game.isHeld(last(moved), spare)
+)

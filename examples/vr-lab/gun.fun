@@ -71,8 +71,8 @@ let magSize = (k: Ammo.Kind): Input.point3 =>
   | Ammo.PistolMag => Quat.v3(0.032, 0.1, 0.047)
   | Ammo.RifleMag => Quat.v3(0.025, 0.09, 0.05)
 
-/// How far a magazine's front and back are from its centre (where its count
-/// goes, facing the way its weapon does and back at the shooter).
+/// How far a magazine's back is from its centre (where its count goes,
+/// facing back at the shooter).
 let magFace = (k: Ammo.Kind): float =>
   match k with
   | Ammo.PistolMag => 0.016

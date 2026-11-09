@@ -21,9 +21,11 @@ let all = [grabTable, inventory, armory]
 /// Whether the body slots are worn there.
 let worn = (s: Station): bool => s.id == inventory.id || s.id == armory.id
 
-/// The armory's spare magazines, two of each kind, full.
+/// The armory's spare magazines, two of each kind, full, each in its cradle
+/// on the bench (`Slots.cradle`).
 let spares: List<Props.Kind> =
   [Props.Mag(Ammo.PistolMag, 1.0), Props.Mag(Ammo.PistolMag, 2.0), Props.Mag(Ammo.RifleMag, 3.0), Props.Mag(Ammo.RifleMag, 4.0)]
+
 
 /// The props a station spawns.
 let props = (s: Station): List<Props.Kind> =>
@@ -91,6 +93,20 @@ let spawn = (k: Props.Kind): Input.pose =>
   | Props.Rifle => rifleRack
   // The spares stand in a row on the bench's left, their counts to the player.
   | Props.Mag(_, id) => on(-0.51 + 0.09 * id, -0.42, Quat.identity)
+
+/// The spares' cradles, where they stand.
+let cradles: List<Slots.Placed> =
+  spares |> List.concatMap((k) =>
+    match k with
+    | Props.Mag(fits, id) => [{ slot: Slots.cradle(id, fits), pose: spawn(k) }]
+    | _ => [])
+
+/// The slot a prop starts in: the rifle in its rack, a spare in its cradle.
+let startSlot = (k: Props.Kind): Option.t<float> =>
+  if k == Props.Rifle then Option.Some(Slots.rack.id)
+  else cradles |> List.find((c) => Slots.fits(k, c.slot) && Hold.near(c.pose, spawn(k))) |> Option.map((c) => c.slot.id)
+
+expect startSlot(Props.Mag(Ammo.RifleMag, 4.0)) == Option.Some(Slots.rack.id + 4.0) && startSlot(Props.Mag(Ammo.RifleMag, 9.0)) == Option.None
 
 // The basket: an open box, its inside `basketInner` wide and `basketDepth` deep.
 let basketAt = Quat.v3(-0.2, 0.0, 7.1)

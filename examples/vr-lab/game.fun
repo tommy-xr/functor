@@ -110,9 +110,9 @@ let dropSpeed = 0.05
 let releaseKind = (v: Input.point3): ReleaseKind => if Quat.length(v) > dropSpeed then Throw else Drop
 let tagOf = (gen: float, k: Props.Kind) => Physics.tag($"{Props.name(k)}-{gen}")
 
-// The rifle starts in its rack.
+// The rifle starts in its rack, the spare magazines in their cradles.
 let spawned = (k: Props.Kind): Prop =>
-  { kind: k, held: Option.None, support: Option.None, fore: false, slot: if k == Props.Rifle then Option.Some(Slots.rack.id) else Option.None,
+  { kind: k, held: Option.None, support: Option.None, fore: false, slot: Stations.startSlot(k),
     at: Stations.spawn(k), pose: Stations.spawn(k), velocity: zero, scored: false,
     mag: match k with
       | Props.Mag(fits, _) => Option.Some(Ammo.full(fits))
@@ -401,7 +401,7 @@ let grabbing = (m: Model, edges: (bool, bool), slots: List<Slots.Placed>, stowed
 
 /// Free props newly in the basket score.
 let scoring = (m: Model, st: Stations.Station): Model =>
-  let landed = (p: Prop) => Option.isNone(p.held) && not p.scored && Stations.inBasket(Stations.toWorld(st, p.pose.position)) in
+  let landed = (p: Prop) => Option.isNone(p.held) && Option.isNone(p.slot) && not p.scored && Stations.inBasket(Stations.toWorld(st, p.pose.position)) in
   { m with
       score: m.score + (m.props |> List.filter(landed) |> List.length),
       props: m.props |> List.map((p) => if landed(p) then { p with scored: true } else p) }
@@ -412,9 +412,9 @@ let scoring = (m: Model, st: Stations.Station): Model =>
 let slotPose = (slots: List<Slots.Placed>, id: float, fallback: Input.pose): Input.pose =>
   slots |> List.find((s) => s.slot.id == id) |> Option.map((s) => s.pose) |> Option.defaultValue(fallback)
 
-/// The rifle rack, where the armory has it.
+/// The rifle rack and the magazine cradles, where the armory has them.
 let racks = (st: Stations.Station): List<Slots.Placed> =>
-  if st.id == Stations.armory.id then [{ slot: Slots.rack, pose: Stations.rifleRack }] else []
+  if st.id == Stations.armory.id then [{ slot: Slots.rack, pose: Stations.rifleRack }, ..Stations.cradles] else []
 
 let occupied = (m: Model, id: float): bool => m.props |> List.any((p) => p.slot == Option.Some(id))
 
@@ -686,7 +686,8 @@ let worldOf = (st: Stations.Station, gen: float): World => {
 let tick = (m: Model, dt: float, tts: float) =>
   let st = Stations.find(m.station) in
   let read = (p: Prop): Prop =>
-    if m.fresh then p
+    // A slotted prop has no body to read.
+    if m.fresh || Option.isSome(p.slot) then p
     else
       match Physics.pose(tagOf(m.gen, p.kind)) with
       | Option.Some(q) =>
@@ -987,28 +988,28 @@ let readoutGlyphs = (shown: (float, bool, bool)): Scene.t =>
     Digits.digit(if chambered then 1.0 else 0.0, on, readoutOff) |> Scene.translate(Vec3.make(3.5, 0.0, 0.0)),
   ]) |> Scene.translate(Vec3.make(-1.35, 0.0, 0.0))
 
-/// A gun's readout, where its weapon puts it (drawn with the gun).
-let readoutScene = (w: Gun.Weapon, g: Gun.State, key: string, t: float): Scene.t =>
-  let rounds = g.ammo.mag |> Option.map((mg) => mg.rounds) |> Option.defaultValue(-1.0) in
-  let dry = t >= g.dryAt && t - g.dryAt < drySeconds in
-  Scene.memo(key, (rounds, g.ammo.chambered, dry), readoutGlyphs)
-    |> Scene.scale(w.readout.size) |> Scene.rotateX(Angle.radians(w.readout.tilt)) |> Scene.translate(Quat.toVec3(w.readout.at))
-    |> Scene.rotateY(180deg)
+/// What a gun's ammo adds to it, in its frame: the readout where its weapon
+/// puts it, and the seated magazine, if any. `(kind, rounds or -1,
+/// chambered, dry)`.
+let ammoScene = (shown: (Props.Kind, float, bool, bool)): Scene.t =>
+  let (k, rounds, chambered, dry) = shown in
+  let w = weaponOf(k) in
+  Scene.group([
+    readoutGlyphs((rounds, chambered, dry))
+      |> Scene.scale(w.readout.size) |> Scene.rotateX(Angle.radians(w.readout.tilt)) |> Scene.translate(Quat.toVec3(w.readout.at))
+      |> Scene.rotateY(180deg),
+    if rounds < 0.0 then Scene.group([]) else Gun.seated(w, Gun.magazine(w.well.kind, litPaint)),
+  ])
 
-let magLabel = (rounds: float): Scene.t => Digits.number(rounds, readoutOn, readoutOff)
-
-/// A free magazine's count, on its front and back.
-let labelled = (k: Props.Kind, mag: Option.t<Ammo.Mag>, s: Scene.t): Scene.t =>
-  match k with
-  | Props.Mag(fits, id) =>
-    let label = Scene.memo($"mag-{id}", Ammo.roundsIn(mag), magLabel) |> Scene.scale(0.009) in
-    let z = Gun.magFace(fits) + 0.0007 in
-    Scene.group([
-      s,
-      label |> Scene.translate(Vec3.make(0.0, 0.005, z)),
-      label |> Scene.rotateY(180deg) |> Scene.translate(Vec3.make(0.0, 0.005, 0.0 - z)),
-    ])
-  | _ => s
+/// A magazine prop with its count on its back (toward the shooter as it
+/// drops out, and toward the player in its cradle). `(kind, look, rounds)`.
+let magScene = (shown: (Ammo.Kind, Props.Look, float)): Scene.t =>
+  let (fits, look, rounds) = shown in
+  Scene.group([
+    Props.scene(Props.Mag(fits, 0.0), look),
+    Digits.number(rounds, readoutOn, readoutOff) |> Scene.scale(0.009) |> Scene.rotateY(180deg)
+      |> Scene.translate(Vec3.make(0.0, 0.005, 0.0 - Gun.magFace(fits) - 0.0007)),
+  ])
 
 let litPaint = (r: float, g: float, b: float, s: Scene.t): Scene.t => s |> Scene.lit(Color.rgb(r, g, b))
 
@@ -1029,14 +1030,18 @@ let propScene = (m: Model, st: Stations.Station, p: Prop, t: float) =>
       else Physics.pose(tagOf(m.gen, p.kind)) |> Option.defaultValue(posed(st, p.at)) in
   let shown =
     match Props.weapon(p.kind) with
-    | Option.Some(w) =>
+    | Option.Some(_) =>
       let g = gunOf(m, p.kind) in
+      let rounds = g.ammo.mag |> Option.map((mg) => mg.rounds) |> Option.defaultValue(-1.0) in
+      let dry = t >= g.dryAt && t - g.dryAt < drySeconds in
       Scene.group(List.flatten([
-        [Props.scene(p.kind, look), readoutScene(w, g, $"readout-{Props.name(p.kind)}", t)],
-        g.ammo.mag |> Option.map((mg) => [Gun.seated(w, Gun.magazine(mg.kind, litPaint))]) |> Option.defaultValue([]),
+        [Props.scene(p.kind, look), Scene.memo($"ammo-{Props.name(p.kind)}", (p.kind, rounds, g.ammo.chambered, dry), ammoScene)],
         if p.kind == Props.Rifle then [Longarm.selector(m.rifle.mode)] else [],
       ]))
-    | Option.None => labelled(p.kind, p.mag, Props.scene(p.kind, look)) in
+    | Option.None =>
+      (match p.kind with
+       | Props.Mag(fits, id) => Scene.memo($"mag-{id}", (fits, look, Ammo.roundsIn(p.mag)), magScene)
+       | _ => Props.scene(p.kind, look)) in
   shown |> Scene.atPose(pose)
 
 /// What the holding hands in a slot offer it.
@@ -1173,11 +1178,17 @@ let shotsScene = (m: Model, st: Stations.Station, t: float): Scene.t =>
       [board(m.score, Stations.toWorld(st, Stations.rangeBoardAt), st.yaw)],
     ]))
 
-/// The rifle rack's look when a hand holding the rifle is in it.
+/// The rack or cradle a holding hand is in, lit by what it holds.
 let rackScene = (m: Model, st: Stations.Station): Scene.t =>
-  Scene.group(racks(st) |> List.concatMap((s) =>
-    let look = slotLook(m, s) in
-    if look == Slots.Idle then [] else [slotScene(m, st, s, look)]))
+  let rs = racks(st) in
+  let near = [Hold.Left, Hold.Right] |> List.concatMap((side) =>
+    match propIn(m, side) |> Option.bind((_) => gripOf(m.xr, side)) |> Option.bind((g) => Slots.target(rs, g.position)) with
+    | Option.Some(s) => [s]
+    | Option.None => []) in
+  let shown = match near with
+    | [a, b] => if a.slot.id == b.slot.id then [a] else near
+    | _ => near in
+  Scene.group(shown |> List.map((s) => slotScene(m, st, s, slotLook(m, s))))
 
 let lights = [
   Light.ambient(Color.rgb(0.38, 0.38, 0.44)),

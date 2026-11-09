@@ -32,7 +32,14 @@ let fits = (k: Props.Kind, s: Slot): bool =>
 expect fits(Props.Brick, leftHolster) && fits(Props.Bottle, rightHolster) && fits(Props.Ball, pouch) && fits(Props.Pistol, rightHolster)
 expect not fits(Props.Ball, leftHolster) && not fits(Props.Brick, pouch)
 expect all |> List.all((s) => not fits(Props.Stick, s) && not fits(Props.Rifle, s))
+/// A spare magazine's cradle on the armory bench (`Game` places it where the
+/// spare `id` stands): a hand within `radius` of its centre uses it; it
+/// takes a magazine of that kind. Like the rack, what it holds has no body.
+let cradle = (id: float, kind: Ammo.Kind): Slot =>
+  { id: rack.id + id, name: "magazine cradle", offset: Hold.origin, radius: 0.07, fits: [], mags: [kind] }
+
 expect fits(Props.Rifle, rack) && not fits(Props.Pistol, rack)
+expect fits(Props.Mag(Ammo.RifleMag, 9.0), cradle(3.0, Ammo.RifleMag)) && not fits(Props.Mag(Ammo.PistolMag, 1.0), cradle(3.0, Ammo.RifleMag))
 expect fits(Props.Mag(Ammo.PistolMag, 1.0), pouch) && fits(Props.Mag(Ammo.RifleMag, 7.0), pouch)
 expect not fits(Props.Mag(Ammo.PistolMag, 1.0), rightHolster) && not fits(Props.Mag(Ammo.RifleMag, 1.0), rack)
 

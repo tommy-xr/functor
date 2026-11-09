@@ -330,10 +330,12 @@ chamber, plus the shots fired, are what the station was reset with.
 - **Magazine release.** The thumbstick pushed down on a gun's trigger hand
   (a fresh push past -0.7, released past -0.3), or `M`: the magazine drops out
   below the well (`Gun.dropOf`, clear of the gun's collider) as a free prop
-  with its rounds, its count on both broad sides. It is held, thrown, and put
-  in the pouch like any prop; the chambered round stays in the gun and fires.
-- **Spares.** Two pistol and two rifle magazines, full, stand on the bench's
-  left.
+  with its rounds, its count on its back. It is held, thrown, and put in the
+  pouch like any prop; the chambered round stays in the gun and fires.
+- **Spares.** Two pistol and two rifle magazines, full, stand in cradles on
+  the bench's left (`Slots.cradle`: like the rifle rack, a slot whose prop has
+  no body, so resting spares cost no physics). A cradle takes back any
+  magazine of its kind.
 - **Reload.** Not yet: a magazine doesn't go back in a gun, and nothing
   racks. `Ammo.insert` (refused for another kind or an occupied well) and
   `Ammo.rack` (chambers from the magazine; a round already chambered comes out
