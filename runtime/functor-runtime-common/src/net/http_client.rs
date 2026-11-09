@@ -154,6 +154,18 @@ impl Conn {
     }
 }
 
+/// The final (non-1xx) response head.
+struct Head {
+    status: u16,
+    /// Where the body starts in [`Conn::buf`].
+    end: usize,
+    length: Option<usize>,
+    chunked: bool,
+}
+
+/// Headers [`request`] writes itself; a caller's copy would contradict them.
+const OWN_HEADERS: [&str; 4] = ["host", "content-length", "connection", "transfer-encoding"];
+
 /// Send one request and read its response within `timeout`, connecting
 /// within `connect_timeout`. Any status is a response; only transport and
 /// protocol failures are errors.
@@ -165,6 +177,46 @@ pub fn request(
     connect_timeout: Duration,
     timeout: Duration,
 ) -> Result<Response, String> {
+    let (mut conn, head) = send(method, destination, headers, body, connect_timeout, timeout)?;
+    let body = if head.status == 204 || head.status == 304 {
+        Vec::new()
+    } else if head.chunked {
+        read_chunked(&mut conn, head.end)?
+    } else if let Some(length) = head.length {
+        if length > MAX_RESPONSE {
+            return Err(format!("response over {MAX_RESPONSE} bytes"));
+        }
+        conn.fill_to(head.end + length)?;
+        conn.buf[head.end..head.end + length].to_vec()
+    } else {
+        while conn.fill()? {}
+        conn.buf[head.end..].to_vec()
+    };
+    Ok(Response { status: head.status, body })
+}
+
+/// [`request`], answered by the status alone: the body is never read, so a
+/// server that keeps the connection open after its head still answers.
+pub fn request_status(
+    method: &str,
+    destination: &Destination,
+    headers: &[(String, String)],
+    body: &[u8],
+    connect_timeout: Duration,
+    timeout: Duration,
+) -> Result<u16, String> {
+    send(method, destination, headers, body, connect_timeout, timeout).map(|(_, head)| head.status)
+}
+
+/// Write the request and read through the final response head.
+fn send(
+    method: &str,
+    destination: &Destination,
+    headers: &[(String, String)],
+    body: &[u8],
+    connect_timeout: Duration,
+    timeout: Duration,
+) -> Result<(Conn, Head), String> {
     let deadline = Instant::now() + timeout;
     let remaining = || {
         deadline
@@ -177,7 +229,11 @@ pub fn request(
         destination.path, destination.authority
     );
     for (name, value) in headers {
-        if name.is_empty() || name.contains(|c| bad(c) || c == ':') || value.contains(|c: char| c.is_control()) {
+        if name.is_empty()
+            || name.contains(|c| bad(c) || c == ':')
+            || value.contains(|c: char| c.is_control())
+            || OWN_HEADERS.iter().any(|own| name.eq_ignore_ascii_case(own))
+        {
             return Err(format!("bad header {name:?}"));
         }
         head.push_str(&format!("{name}: {value}\r\n"));
@@ -217,7 +273,7 @@ pub fn request(
     };
     // Skip interim 1xx responses to the final head.
     let mut start = 0;
-    let (status, head_end, length, chunked) = loop {
+    let head = loop {
         let end = conn.find(start, b"\r\n\r\n")?;
         let text = String::from_utf8_lossy(&conn.buf[start..end]).into_owned();
         let mut lines = text.split("\r\n");
@@ -243,27 +299,13 @@ pub fn request(
                 chunked = value.to_ascii_lowercase().ends_with("chunked");
             }
         }
-        break (status, start, length, chunked);
+        break Head { status, end: start, length, chunked };
     };
-
-    let body = if method == "HEAD" || status == 204 || status == 304 {
-        Vec::new()
-    } else if chunked {
-        read_chunked(&mut conn, head_end)?
-    } else if let Some(length) = length {
-        if length > MAX_RESPONSE {
-            return Err(format!("response over {MAX_RESPONSE} bytes"));
-        }
-        conn.fill_to(head_end + length)?;
-        conn.buf[head_end..head_end + length].to_vec()
-    } else {
-        while conn.fill()? {}
-        conn.buf[head_end..].to_vec()
-    };
-    Ok(Response { status, body })
+    Ok((conn, head))
 }
 
-/// Decode a chunked body starting at `pos`; trailers are ignored.
+/// Decode a chunked body starting at `pos`, through the blank line after
+/// its trailers (which are ignored). Bad framing or an early close fails.
 fn read_chunked(conn: &mut Conn, mut pos: usize) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     loop {
@@ -273,14 +315,26 @@ fn read_chunked(conn: &mut Conn, mut pos: usize) -> Result<Vec<u8>, String> {
         let size = usize::from_str_radix(size, 16).map_err(|_| format!("bad chunk size {size:?}"))?;
         pos = line_end + 2;
         if size == 0 {
-            return Ok(body);
+            break;
         }
-        if body.len() + size > MAX_RESPONSE {
+        // `body.len() <= MAX_RESPONSE` holds, so neither side overflows.
+        if size > MAX_RESPONSE - body.len() {
             return Err(format!("response over {MAX_RESPONSE} bytes"));
         }
-        conn.fill_to(pos + size + 2)?;
-        body.extend_from_slice(&conn.buf[pos..pos + size]);
-        pos += size + 2;
+        let end = pos + size;
+        conn.fill_to(end + 2)?;
+        if &conn.buf[end..end + 2] != b"\r\n" {
+            return Err("bad chunk framing".to_string());
+        }
+        body.extend_from_slice(&conn.buf[pos..end]);
+        pos = end + 2;
+    }
+    loop {
+        let line_end = conn.find(pos, b"\r\n")?;
+        if line_end == pos {
+            return Ok(body);
+        }
+        pos = line_end + 2;
     }
 }
 
@@ -338,6 +392,7 @@ const WORKERS: usize = 4;
 /// threads end when this is dropped.
 pub struct HttpWorkers {
     jobs: mpsc::Sender<NetCommand>,
+    results: mpsc::Sender<NetInbound>,
 }
 
 impl HttpWorkers {
@@ -356,13 +411,16 @@ impl HttpWorkers {
                 })
                 .expect("spawn an HTTP worker");
         }
-        HttpWorkers { jobs }
+        HttpWorkers { jobs, results }
     }
 
     pub fn submit(&self, cmd: NetCommand) {
         super::note_http_issued();
-        // The workers hold the queue for as long as this sender lives.
-        let _ = self.jobs.send(cmd);
+        // Every worker gone: answer now rather than leave the tagger pending.
+        if let Err(mpsc::SendError(NetCommand::HttpRequest { token, .. })) = self.jobs.send(cmd) {
+            let message = "HTTP workers stopped".to_string();
+            super::send_inbound(&self.results, NetInbound::HttpError { token, message });
+        }
     }
 }
 
@@ -485,6 +543,56 @@ pub(crate) mod tests {
             post(port, b""),
             NetInbound::HttpResponse { token: 3, status: 404, body: b"no such scan".to_vec() }
         );
+    }
+
+    /// Chunked framing a server got wrong fails instead of passing as a
+    /// body: a size past the cap (`usize::MAX` must not overflow), a chunk
+    /// missing its CRLF, and a close before the terminating blank line.
+    #[test]
+    fn bad_chunked_framing_fails() {
+        for (reply, reason) in [
+            ("1\r\na\r\nffffffffffffffff\r\n", "response over"),
+            ("1\r\naXX0\r\n\r\n", "bad chunk framing"),
+            ("1\r\na\r\n0\r\n", "connection closed"),
+        ] {
+            let port = serve_once(move |_, _| {
+                format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{reply}").into_bytes()
+            });
+            match post(port, b"") {
+                NetInbound::HttpError { message, .. } => assert!(message.contains(reason), "{reply:?}: {message}"),
+                other => panic!("{reply:?}: expected an error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn headers_the_client_writes_are_refused() {
+        let d = Destination::parse("http://127.0.0.1:1/").unwrap();
+        for name in ["Host", "content-length", "Connection", "Transfer-Encoding", "X\r\nY"] {
+            let headers = [(name.to_string(), "1".to_string())];
+            let err = request("GET", &d, &headers, b"", Duration::from_secs(1), Duration::from_secs(1)).unwrap_err();
+            assert!(err.starts_with("bad header"), "{name}: {err}");
+        }
+    }
+
+    /// A status-only request answers from the head, even when the server
+    /// never ends the body.
+    #[test]
+    fn a_status_only_request_does_not_wait_for_the_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut chunk = [0u8; 4096];
+            let _ = stream.read(&mut chunk).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\n\r\nstill sending").unwrap();
+            // Hold the connection open past the client's deadline.
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let d = Destination::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let status = request_status("POST", &d, &[], b"x", Duration::from_secs(1), Duration::from_secs(2));
+        assert_eq!(status, Ok(200));
+        drop(server);
     }
 
     #[test]

@@ -124,6 +124,11 @@ pub fn warn_once(what: &str, message: &str) {
     }
 }
 
+/// Held by tests that move the process-wide inbound gauge, so one asserting
+/// exact values never sees another's count.
+#[cfg(test)]
+pub(crate) static INBOUND_GAUGE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod inbound_gauge_tests {
     use super::*;
@@ -134,6 +139,7 @@ mod inbound_gauge_tests {
     /// read as "never quiescent" forever.
     #[test]
     fn the_inbound_gauge_counts_up_and_saturates_down() {
+        let _gauge = INBOUND_GAUGE_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let base = inbound_pending();
         note_inbound_queued();
         note_inbound_queued();

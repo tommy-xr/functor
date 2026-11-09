@@ -2282,7 +2282,6 @@ pub fn android_main(app: AndroidApp) {
     log::info!("functor oculus runtime exiting");
 }
 
-/// An Android system property, e.g. `debug.functor.pipelined`.
 /// Connections (`Sub.connect`/`Sub.listen`) have no transport on Quest yet:
 /// each opening fails into the game's decoder as `Net.Error`, rather than
 /// leaving the subscription connecting forever.
@@ -2295,6 +2294,7 @@ fn refuse_connection(sim: &mut SimDriver, cmd: functor_runtime_common::net::Conn
     }
 }
 
+/// An Android system property, e.g. `debug.functor.pipelined`.
 fn system_property(name: &str) -> Option<String> {
     let name = std::ffi::CString::new(name).ok()?;
     let mut value = [0 as libc::c_char; libc::PROP_VALUE_MAX as usize];

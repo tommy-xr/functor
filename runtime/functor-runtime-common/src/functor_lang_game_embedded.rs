@@ -1561,8 +1561,8 @@ AudioScene.empty), got {}",
     }
 
     fn net_drain_commands(&self) -> String {
-        // HttpRequest commands (Effect.httpGet/httpPost); the shell performs
-        // them (or drains-and-drops when it has no HTTP host yet).
+        // HttpRequest commands (Effect.httpGet/httpPost), which the shell
+        // performs.
         crate::net::drain_commands_json()
     }
     fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
@@ -3026,6 +3026,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// to completed.
     #[test]
     fn http_workers_deliver_responses_to_the_tagger() {
+        let _gauge = crate::net::INBOUND_GAUGE_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let token = request(&mut game, 0);

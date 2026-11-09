@@ -46,10 +46,11 @@ allowed by default — the operator allows another origin with `--allow-sensor-u
     })
 }
 
-/// POST one body within [`REQUEST_TIMEOUT`]; any 2xx is success.
+/// POST one body within [`REQUEST_TIMEOUT`]; any 2xx is success. The
+/// response body is never read.
 fn post(destination: &Destination, body: &[u8]) -> Result<(), String> {
     let headers = [("Content-Type".to_string(), depth_frame::CONTENT_TYPE.to_string())];
-    match http_client::request("POST", destination, &headers, body, CONNECT_TIMEOUT, REQUEST_TIMEOUT)?.status {
+    match http_client::request_status("POST", destination, &headers, body, CONNECT_TIMEOUT, REQUEST_TIMEOUT)? {
         code if (200..300).contains(&code) => Ok(()),
         code => Err(format!("HTTP {code}")),
     }
