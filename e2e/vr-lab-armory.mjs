@@ -14,6 +14,8 @@
 //      trigger only clicks: no shot. The hand is drawn (`/scene`) on the
 //      pistol's grip at the wall, its ghost at the tracked hand. Drawn back
 //      clear, it fires, from the muzzle of the pose the hold accepted.
+//   2b. Clear of the wall, the left hand racks the slide 4 cm past its
+//      travel: drawn on the slide at its end, its ghost at the tracked hand.
 //   3. Holstered at the right thigh and drawn with the trigger already held:
 //      it never jumps (at most a 2 cm, 8.6° settling step each step), and
 //      fires nothing until the trigger is let out and pulled.
@@ -23,7 +25,7 @@
 //   node e2e/vr-lab-armory.mjs
 import { check, failures } from "./mcp-rpc.mjs";
 import { add, fmt, len, placedAt, play, qrot, quat, record, rigToWorld, session, some, sub, turnOf, xyz } from "./xr-scenario.mjs";
-import { ARMORY_WALL_X, GRIP_IN_PISTOL, PISTOL_HALF, TARGETS, TARGET_SIZE, armory, muzzleOf, project, scenarios } from "./vr-lab-scenarios.mjs";
+import { ARMORY_WALL_X, GRIP_IN_PISTOL, PISTOL_HALF, SLIDE, TARGETS, TARGET_SIZE, armory, muzzleOf, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8298;
 const SNAP_STEP = 0.02;
@@ -107,6 +109,22 @@ await run("barrel into the wall", async (rt) => {
   // From the accepted pose, not the tracked hand's (they agree once clear).
   const want = boreOf(poseOf(fired)).from;
   check(shot && len(sub(xyz(shot.from), want)) < 0.0001, `from the accepted pose's muzzle (${fmt(want)})`);
+});
+
+await run("racking hand drawn on the slide", async (rt) => {
+  const { marks, scenes, at } = await record(rt, scenarios["hand-view-guns"], { scenes: true });
+  const m = marks.rackHeld.model;
+  check(some(m.gun.slide.hand)?.$ctor === "Hold.Left" && m.gun.slide.pull === SLIDE.travel, `the left hand on the slide, back its full travel (${m.gun.slide.pull})`);
+  // `/scene`: 4 the left hand, 6 its ghost.
+  const kids = scenes.rackHeld.scene.obj.Group;
+  const toWorld = (p) => rigToWorld(p, armory.feet, armory.yaw);
+  const pose = poseOf(m);
+  const end = toWorld(add(pose.position, qrot(pose.orientation, add(SLIDE.at, [0, 0, SLIDE.travel]))));
+  const hand = toWorld(at("rackHeld").left.at);
+  const drawn = placedAt(kids[4]);
+  const ghost = placedAt(kids[6]);
+  check(drawn && len(sub(drawn, end)) < 1e-4, `drawn at the slide's end (${drawn && (len(sub(drawn, end)) * 1000).toFixed(3)} mm), ${(len(sub(end, hand)) * 100).toFixed(1)} cm short of the tracked hand`);
+  check(ghost && len(sub(ghost, hand)) < 1e-4, `its ghost at the tracked hand (${ghost && (len(sub(ghost, hand)) * 1000).toFixed(3)} mm)`);
 });
 
 await run("holster and draw", async (rt) => {

@@ -1357,6 +1357,51 @@ const shotgunScenarios = {
   },
 };
 
+// --- Hands drawn on what they hold (station 3) ---
+// A point in the frame of the pistol held by a hand at `at` turned `q`
+// (`Gun`'s, centred on its collider), and its slide `back` behind home.
+const onPistol = (at, q, local) => add(at, qrot(q, add(PISTOL_FROM_GRIP, local)));
+export const slideOn = (at, q, back) => onPistol(at, q, add(SLIDE.at, [0, 0, back]));
+// Close on the pistol held clear of the wall, from behind its slide.
+const atClearSlide = { eye: [4.05, 1.5, 0.25], target: [4.5, 1.18, -0.3], fov: 32 };
+
+const handViewScenarios = {
+  // The pistol pushed into the wall: the hand drawn on its grip at the wall,
+  // its ghost through it. Clear of it, the left hand racks the slide 4 cm
+  // past its travel: drawn at the slide's end, its ghost behind. Holstered;
+  // the rifle taken in two hands and pushed into the wall: both hands drawn
+  // on its grips, their ghosts through it.
+  "hand-view-guns": {
+    station: 3,
+    neck: NECK,
+    spectator: atArmoryWall,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: WALL_NEAR, turn: LEFT } },
+      { frames: 25, right: { to: THROUGH }, mark: "pistolPushed" },
+      { frames: 30, right: {}, mark: "pistolHeld" },
+      { frames: 20, right: { to: CLEAR }, spectator: atClearSlide },
+      { frames: 20, left: { to: add(slideOn(CLEAR, LEFT, 0), [0, 0.06, 0.06]), turn: LEFT } },
+      { frames: 10, left: { to: slideOn(CLEAR, LEFT, 0) } },
+      { frames: 4, left: { squeeze: 1 }, mark: "onSlide" },
+      { frames: 12, left: { to: slideOn(CLEAR, LEFT, SLIDE.travel + 0.04) }, mark: "pastTravel" },
+      { frames: 30, left: {}, mark: "rackHeld" },
+      { frames: 12, left: { to: slideOn(CLEAR, LEFT, 0) } },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 20, left: { to: LEFT_OUT, turn: ID } },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID }, spectator: atArmoryWall },
+      { frames: 25, right: { to: ARMORY_RH } },
+      { frames: 1, right: { squeeze: 0 }, mark: "holstered" },
+      ...takeRifle,
+      { ...raise(), spectator: besideRifleWall },
+      { frames: 30, ...bothTo(RIFLE_WALL.near) },
+      { frames: 25, ...bothTo(RIFLE_WALL.through), mark: "riflePushed" },
+      { frames: 40, right: {}, mark: "rifleHeld" },
+      { frames: 20, ...bothTo(RIFLE_WALL.clear) },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -1609,4 +1654,5 @@ export const scenarios = {
   ...ammoScenarios,
   ...reloadScenarios,
   ...shotgunScenarios,
+  ...handViewScenarios,
 };
