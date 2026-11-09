@@ -323,9 +323,10 @@ toward your face, or aiming with a rotated grip, are inexpressible there and can
 only be driven this way. `held_keys` and `mouse` stay live alongside it.
 
 On Quest the sample replaces live tracking and controllers in what the game
-samples, while the headset still renders from its own eye poses — so a headless
-device run (`prox_close`) can drive grabs and triggers. `xr_clear` returns to
-live tracking.
+samples (and in `/state`'s `input`), while the headset still renders from its
+own eye poses — so a headless device run (`prox_close`) can drive grabs and
+triggers. The shell steps the game only while head tracking is valid, so the
+headset must see its surroundings. `xr_clear` returns to live tracking.
 
 `{"type":"touch"}` is EVENTED, like `key`, not whole-sample like `xr`: each
 command is one contact transition (phases `begin`/`move`/`end`/`cancel`, `id`

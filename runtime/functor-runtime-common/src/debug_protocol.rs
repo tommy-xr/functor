@@ -734,7 +734,8 @@ pub enum InputCommand {
     /// commands, and would otherwise inflate every one of them.
     Xr(Box<XrInputSnapshot>),
     /// Drop an injected sample, restoring whatever the runtime would sample on
-    /// its own — the `--emulate-xr` rig, or no `xr` domain at all.
+    /// its own — the `--emulate-xr` rig, live tracking on Quest, or no `xr`
+    /// domain at all.
     ///
     /// The release half of `Xr`'s held-key contract. Without it injection is a
     /// one-way door: the first `xr` command would disable the emulator and make

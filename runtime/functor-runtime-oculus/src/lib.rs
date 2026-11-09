@@ -779,6 +779,13 @@ struct DebugLoopState {
     pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
 }
 
+/// What the game samples: an injected `xr` sample wins over live tracking.
+fn apply_xr_override(input: &mut InputSnapshot, sample: Option<&XrInputSnapshot>) {
+    if let Some(sample) = sample {
+        input.xr = Some(sample.clone());
+    }
+}
+
 /// Ask the runtime for `hz`, which must be one of the display's offered rates.
 /// The switch is asynchronous: `current` only moves when the runtime confirms
 /// it with DisplayRefreshRateChangedFB.
@@ -937,6 +944,7 @@ fn service_debug_request(
                 })
                 .collect();
             let mut input = debug.input.clone();
+            apply_xr_override(&mut input, debug.xr_override.as_ref());
             debug.input_edges.apply_to(&mut input);
             let (frame, rendered_frames, tts, pending_steps) = (
                 debug.frame_count,
@@ -1107,8 +1115,7 @@ fn service_debug_request(
                     debug.xr_override = None;
                     Ok(())
                 }
-                // Same story for the gamepad domain: the device runtime does
-                // not sample pads (Quest controllers ARE the xr domain), so
+                // Rejected: the device runtime does not sample pads (Quest controllers ARE the xr domain), so
                 // honoring an injection here would invent a device the shell
                 // can never refresh or clear on its own.
                 InputCommand::Gamepad(_) | InputCommand::GamepadClear => Err(
@@ -1927,9 +1934,7 @@ pub fn android_main(app: AndroidApp) {
             functor_runtime_common::net::note_inbound_delivered();
             sim.post(move |g| functor_runtime_common::net::http_client::deliver(g, result));
         }
-        if let Some(sample) = &debug.xr_override {
-            debug.input.xr = Some(sample.clone());
-        }
+        apply_xr_override(&mut debug.input, debug.xr_override.as_ref());
         for sub_frame in &sub_frames {
             if caps.samples_input || sim.is_threaded() {
                 debug.input_edges.apply_to(&mut debug.input);
