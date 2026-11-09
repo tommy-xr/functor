@@ -14,9 +14,10 @@
 // the shotgun in two hands, aimed (loaded, a shell lying on the bench).
 //
 // A shot is one step, so a burst can't time it: the shotgun's seven shots
-// are played a step at a time instead, and each firing step (eight pellet
-// rays) is set against the pump steps around it in the same run. The extra
-// is added to the aimed shotgun's burst minimum for its worst frame.
+// are played a step at a time instead (a spinning worker thread keeps the
+// clock up between them), and each firing step (eight pellet rays) is set
+// against the pump steps around it in the same run. The extra is added to
+// the aimed shotgun's burst minimum for its worst frame.
 //
 // From `GET /frames`: `step` (one fixed step's producer work: sampledInput,
 // tick, physics) and `draw` (once a frame), min / median / p95 / max. The
@@ -26,6 +27,7 @@
 // 8.33 ms Quest frame at the sweep_bench convention of ×4 for desktop → Quest.
 //
 //   npm run bench:vr-lab        # a release build; a debug one is many times slower
+import { Worker } from "node:worker_threads";
 import { sleep } from "./mcp-rpc.mjs";
 import { DT, launch, play } from "./xr-scenario.mjs";
 import { project, scenarios } from "./vr-lab-scenarios.mjs";
@@ -57,6 +59,7 @@ async function measure(scenario) {
 // steps that fired the shotgun and of the others since `from` (a mark).
 async function measureShots(scenario, from) {
   const rt = await launch(project, PORT, ["--headless"]);
+  const spin = new Worker("for (;;) {}", { eval: true });
   try {
     const fired = new Set();
     let start;
@@ -70,6 +73,7 @@ async function measureShots(scenario, from) {
     const stepOf = (f) => f.sim_us - f.draw_us;
     return { fire: frames.filter((f) => fired.has(f.frame)).map(stepOf), other: frames.filter((f) => !fired.has(f.frame)).map(stepOf) };
   } finally {
+    await spin.terminate();
     await rt.kill();
   }
 }
@@ -125,11 +129,11 @@ versus("magazine latched", seating);
 versus("six loose rounds", strewn);
 versus("shotgun aimed", sg);
 const shots = await measureShots(loop, "aimed");
-const [fire, other] = [stats(shots.fire), stats(shots.other)];
+const [firing, other] = [stats(shots.fire), stats(shots.other)];
 console.log(`\nshotgun, stepped one at a time from the aim: ${shots.fire.length} firing steps, ${shots.other.length} others, µs`);
 console.log(`  ${"".padEnd(5)} ${["min", "med", "p95", "max"].map((h) => h.padStart(7)).join(" ")}`);
-console.log(row("fire", fire));
+console.log(row("fire", firing));
 console.log(row("other", other));
-const extra = fire.med - other.med;
+const extra = firing.min - other.min;
 const fireFrame = (sg.step.min + extra + sg.draw.min) * QUEST;
-console.log(`a shot's step: +${extra.toFixed(0)} µs (medians); its frame, Quest (×${QUEST}) ${fireFrame.toFixed(0)} µs (${pct(fireFrame)} of ${BUDGET_US.toFixed(0)})`);
+console.log(`a shot's step: +${extra.toFixed(0)} µs (mins); its frame, Quest (×${QUEST}) ${fireFrame.toFixed(0)} µs (${pct(fireFrame)} of ${BUDGET_US.toFixed(0)})`);

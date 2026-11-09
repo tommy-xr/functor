@@ -633,10 +633,14 @@ let shooting = (m: Model, world: World, k: Props.Kind, t: float, dt: float): (Mo
   match m.props |> List.find((q) => q.kind == k) with
   | Option.None => (m, [])
   | Option.Some(p) =>
+  let g0 = gunOf(m, k) in
+  // Nobody on it, its kick spent: nothing changes (most steps, most guns).
+  if Option.isNone(p.held) && Option.isNone(g0.holder) && g0.kick <= 0.0 && g0.trigger == Gun.disarmed then (m, [])
+  else
   let holder = triggerHand(m, k) in
   let tracked = holder |> Option.map((s) => Option.isSome(gripOf(m.xr, s))) |> Option.defaultValue(false) in
   let value = holder |> Option.map((s) => triggerOf(m.xr, s)) |> Option.defaultValue(0.0) in
-  let (g, pulled) = Gun.step(gunOf(m, k), holder, tracked, value, dt) in
+  let (g, pulled) = Gun.step(g0, holder, tracked, value, dt) in
   match (if pulled then p.held else Option.None) with
   | Option.None => (withGun(m, k, g), [])
   | Option.Some(h) =>
@@ -1530,6 +1534,9 @@ let shotsScene = (m: Model, st: Stations.Station, t: float): Scene.t =>
     // Each gun's hit markers, lit target, tracer and flash.
     let gunScene = (k: Props.Kind): List<Scene.t> =>
       let g = gunOf(m, k) in
+      // A gun that hasn't fired leaves nothing.
+      if Option.isNone(g.last) then []
+      else
       let last = g.last |> Option.filter((s) => t - s.t >= 0.0 && t - s.t < hitGlowSeconds) in
       let lit = last |> Option.bind((s) => s.impact) |> Option.filter((i) => i.target)
         |> Option.bind((i) => Stations.targetCentre(i.tag))
