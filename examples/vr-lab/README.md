@@ -352,7 +352,7 @@ loose rounds taken away (`lost`), are what the station was reset with.
   no body, so resting spares cost no physics). A cradle takes back any
   magazine of its kind.
 - **Seating** (`seating.fun`, each well's `Gun.guide`). A held magazine of
-  the well's kind, the well empty, latches when its centre is within 4 cm of
+  the well's kind, the well empty (and no other magazine latched to it), latches when its centre is within 4 cm of
   where it sits at the mouth (where an ejected one drops out) and its axis is
   within ~32° of the well's (dot ≥ 0.85), not turned back to front (keyed):
   a latch pulse. Upside down, the wrong kind, or tipped: nothing. Latched,
@@ -363,7 +363,8 @@ loose rounds taken away (`lost`), are what the station was reset with.
   `Ammo.insert`, a seat pulse in both hands, and it is the gun's. Pulled
   7 cm off the axis (or that far below the mouth), or tipped past ~46°
   (dot 0.7), it leaves where it is, back in the hand, easing to where the
-  hand held it (and can't latch again until it has). Let go while latched,
+  hand held it, with no body until it has (it may still be inside the gun),
+  and it can't latch again until then. Let go while latched,
   it falls out of the mouth. The gun can be held, or anywhere a mouth is
   reachable: lying on its side on the bench, or the rifle in its rack. The
   pistol standing upright on the bench has its mouth against the bench top,
@@ -377,12 +378,15 @@ loose rounds taken away (`lost`), are what the station was reset with.
   pulse in both hands) and feeds (`Ammo.close`). Short of 80%, nothing
   happens. A locked pistol slide is taken where it rests, so a nudge past
   80% and letting go releases it; the rifle's handle is pulled all the way.
-  A slide held back is out of battery: its trigger clicks.
+  A slide held back is out of battery: its trigger clicks. The racking
+  hand losing tracking keeps the slide where it is.
 - **Loose rounds.** A round thrown out is a small dynamic prop (a 9 mm × 29
   or 57 mm cartridge), out of the port to the right, up and back (about
   1.9 m/s, with the gun's own velocity), spinning. It can be picked up and
   thrown; nothing takes it yet. At most 6 lie about: past that the oldest
-  not in a hand is taken away and counted `lost`.
+  not in a hand is taken away and counted `lost`. One come to rest on the
+  level (the bench, the floor) lies there bodiless, costing no physics,
+  until a hand takes it; a round resting on a prop keeps its body.
 
 `GET /state` shows each gun's `ammo` and `slide`, each magazine prop's `mag`
 and `latch`, and `lost`. `npm run test:vr-lab` runs `e2e/vr-lab-ammo.mjs` and

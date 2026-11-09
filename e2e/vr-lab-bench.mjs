@@ -8,7 +8,9 @@
 // same on the grab table, which has the same props in the same rig-local
 // places but wears no slots; then the armory, the pistol held aimed down
 // range (its trigger read each step), the slots worn; then the rifle there in
-// two hands, aimed by the support (one more held prop: one more sweep a step).
+// two hands, aimed by the support (one more held prop: one more sweep a step);
+// then a magazine latched half way into the pistol's well (the guided seat),
+// and the pistol held with six loose rounds lying at rest (the cap).
 //
 // From `GET /frames`: `step` (one fixed step's producer work: sampledInput,
 // tick, physics) and `draw` (once a frame), min / median / p95 / max. The
