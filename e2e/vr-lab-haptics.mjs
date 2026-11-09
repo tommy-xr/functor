@@ -193,8 +193,8 @@ await run("reload: the pistol's full loop", async (rt) => {
   // hands); the slide taken, back, home (both hands); 12 shots and dry.
   expectPulses(got, [
     "right grab", ...Array(13).fill("right fire"), "right click",
-    "left unstow", "left latch", "right seat", "left seat",
-    "left grab", "left slideBack", "right slideHome", "left slideHome",
+    "left unstow", "left latch", "left seat", "right seat",
+    "left grab", "left slideBack", "left slideHome", "right slideHome",
     ...Array(12).fill("right fire"), "right click",
   ]);
   const at = (event) => got.pulses.find((p) => p.event === event)?.frame;
@@ -206,14 +206,14 @@ await run("reload: the pistol's full loop", async (rt) => {
 await run("reload: partial and full racks", async (rt) => {
   const got = await pulsesOf(rt, scenarios["reload-rack"]);
   // The partial pull: only its grab. The full one: back, home.
-  expectPulses(got, ["right grab", "left grab", "left grab", "left slideBack", "right slideHome", "left slideHome"]);
+  expectPulses(got, ["right grab", "left grab", "left grab", "left slideBack", "left slideHome", "right slideHome"]);
 });
 
 await run("reload: the rifle", async (rt) => {
   const got = await pulsesOf(rt, scenarios["reload-rifle"]);
   expectPulses(got, [
-    "right unstow", "left unstow", "left latch", "right seat", "left seat",
-    "left grab", "left slideBack", "right slideHome", "left slideHome", "right fire",
+    "right unstow", "left unstow", "left latch", "left seat", "right seat",
+    "left grab", "left slideBack", "left slideHome", "right slideHome", "right fire",
   ]);
 });
 
