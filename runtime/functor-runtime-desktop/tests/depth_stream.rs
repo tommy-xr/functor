@@ -186,7 +186,9 @@ fn nothing_uploads_unless_live(harness: &Harness) {
     let first = decode(&server.bodies()[0]).unwrap().0;
     let resumed = decode(&server.bodies()[before]).unwrap().0;
     assert_ne!(first.stream, resumed.stream);
-    assert_eq!(resumed.seq, 0);
+    // Seq restarts at 0; a frame replaced before the sender woke is a drop.
+    let dropped = harness.last_state.lock().unwrap().as_ref().unwrap().dropped;
+    assert!(resumed.seq <= dropped, "resumed at seq {}, {dropped} dropped", resumed.seq);
 }
 
 fn a_silent_server_times_out(harness: &Harness) {
