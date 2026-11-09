@@ -12,18 +12,23 @@ let moved = (p: Input.pose, x: float, y: float, z: float): Input.pose => Hold.at
 let hand = (pose: Input.pose, squeeze: float, trigger: float): Input.controller =>
   { Game.turnedHand(pose.position, pose.orientation, squeeze) with trigger: trigger }
 
-/// Every model a script of right hands passes through in `world`, the start first.
-let playIn = (world: Game.World, m0: Game.Model, script: List<Input.controller>): List<Game.Model> =>
+/// Every model a script of (left, right) hands passes through in `world`,
+/// the start first.
+let playBoth = (world: Game.World, m0: Game.Model, script: List<(Input.controller, Input.controller)>): List<Game.Model> =>
   script
-    |> List.fold((acc, c) =>
+    |> List.fold((acc, lr) =>
          match acc with
          | [m, ..rest] =>
-           let xr = { head: Option.Some(Hips.headAt(0.0, 0.0)), left: Game.away, right: c } in
+           let (l, r) = lr in
+           let xr = { head: Option.Some(Hips.headAt(0.0, 0.0)), left: l, right: r } in
            let (next, _) = Game.step({ m with xr: Option.Some(xr) }, Stations.armory, world, (p) => p, List.length(acc) * dt, dt) in
            [next, m, ..rest]
          | [] => [],
        [m0])
     |> List.reverse
+/// The same, the left hand away.
+let playIn = (world: Game.World, m0: Game.Model, script: List<Input.controller>): List<Game.Model> =>
+  playBoth(world, m0, script |> List.map((c) => (Game.away, c)))
 let play = (script: List<Input.controller>) => playIn(Game.noWorld, start, script)
 
 let last = (ms: List<Game.Model>): Game.Model => List.last(ms) |> Option.defaultValue(start)
@@ -158,3 +163,193 @@ expect (
     && (last(playIn(Game.noWorld, last(drawn), [hand(holster, 1.0, 0.0), hand(holster, 1.0, 1.0)]))).gun.fired == 1.0
 )
 
+
+// --- the rifle ---
+
+let rifleAt = Stations.spawn(Props.Rifle)
+let rifle = (m: Game.Model) => Game.propOf(m, Props.Rifle)
+let rifleAccepted = (m: Game.Model): Input.pose => Game.poseOf(rifle(m))
+// The right fist on the racked rifle's pistol grip, and a point `d` ahead of
+// a fist along its foregrip line, off it by (x, y).
+let onStock = Hold.compose(rifleAt, Longarm.grip)
+let foreOf = (fist: Input.pose, d: float, x: float, y: float): Input.pose => Hold.compose(fist, Hold.at(Quat.v3(x, y, 0.0 - d), Quat.identity))
+let both = (n: float, l: Input.controller, r: Input.controller) => List.range(n) |> List.map((_) => (l, r))
+let grabbed = (p: Input.pose) => hand(p, 1.0, 0.0)
+let still = grabbed(onStock)
+let fore25 = grabbed(foreOf(onStock, 0.25, 0.0, 0.0))
+let countOf = (side: Hold.Side, e: Pulses.Event, ms: List<Game.Model>): float =>
+  pulsesOf(ms) |> List.filter((se) => se == (side, e)) |> List.length
+let play2 = (m0: Game.Model, script: List<(Input.controller, Input.controller)>) => playBoth(Game.noWorld, m0, script)
+let supportSide = (m: Game.Model) => Game.supportOf(rifle(m))
+
+// Out of the rack by the pistol grip (an unstow), then the left hand on the foregrip 25 cm ahead.
+let twoHanded = play2(start, List.flatten([
+  [(Game.away, hand(onStock, 0.0, 0.0))], both(4.0, Game.away, still),
+  [(hand(foreOf(onStock, 0.25, 0.0, 0.0), 0.0, 0.0), still)], both(3.0, fore25, still),
+]))
+let ready = last(twoHanded)
+
+expect (
+  Game.isHeld(ready, Props.Rifle) && supportSide(ready) == Option.Some(Hold.Left) && not rifle(ready).fore
+    && Option.isNone(rifle(ready).slot) && Hold.near(rifleAccepted(ready), rifleAt)
+    && countOf(Hold.Right, Pulses.Unstow, twoHanded) == 1.0 && countOf(Hold.Left, Pulses.Grab, twoHanded) == 1.0
+)
+// The left hand alone can't take it from the rack by the foregrip, nor a hand
+// at its muzzle.
+expect (
+  let at = (p: Input.pose) => last(play2(start, [(hand(p, 0.0, 0.0), Game.away), (grabbed(p), Game.away)])) in
+  not Game.isHeld(at(foreOf(onStock, 0.25, 0.0, 0.0)), Props.Rifle) && not Game.isHeld(at(foreOf(onStock, 0.55, 0.0, 0.0)), Props.Rifle)
+)
+
+// Aimed by the support hand alone, the right hand still: the barrel along
+// support - primary, level (the right hand's roll), the right fist on the
+// grip, and a shot leaves the accepted rifle's muzzle that way.
+let aimedBy = (dx: float, dy: float) =>
+  let aim = grabbed(foreOf(onStock, 0.25, dx, dy)) in
+  play2(ready, List.flatten([both(8.0, aim, still), [(aim, hand(onStock, 1.0, 1.0))]]))
+expect [(0.05, 0.0), (0.0 - 0.04, 0.03), (0.02, 0.0 - 0.05)] |> List.all((d) =>
+  let (dx, dy) = d in
+  let m = last(aimedBy(dx, dy)) in
+  let q = (rifleAccepted(m)).orientation in
+  let b = Gun.boreOf(Longarm.weapon, rifleAccepted(m)) in
+  let want = Longarm.unit(Quat.sub((foreOf(onStock, 0.25, dx, dy)).position, onStock.position)) in
+  Hold.near3(b.dir, want) && Math.abs((Quat.rotate(q, Quat.v3(1.0, 0.0, 0.0))).y) < 0.0001 && (Quat.rotate(q, Quat.v3(0.0, 1.0, 0.0))).y > 0.0
+    && Hold.near3((Hold.compose(rifleAccepted(m), Longarm.grip)).position, onStock.position)
+    && (m.rifle.last |> Option.map((s) => Hold.near3(s.from, b.muzzle) && Hold.near3(s.dir, want)) |> Option.defaultValue(false))
+    && m.rifle.fired == 1.0)
+// Rolled 30 degrees, the rifle has the right hand's roll whichever way the
+// support aims it.
+expect (
+  let rolled = Hold.at(onStock.position, Quat.axisAngle(Quat.v3(0.0, 0.0, -1.0), Math.pi / 6.0)) in
+  let m = last(play2(ready, both(10.0, grabbed(foreOf(rolled, 0.25, 0.05, 0.0)), grabbed(rolled)))) in
+  Quat.angle((rifleAccepted(m)).orientation, Longarm.aimAt(rolled, (foreOf(rolled, 0.25, 0.05, 0.0)).position)) < 0.0001
+)
+// The support hand slides along the foregrip: the aim doesn't change.
+expect (
+  let ms = play2(ready, List.range(20.0) |> List.map((i) => (grabbed(foreOf(onStock, 0.16 + 0.011 * i, 0.0, 0.0)), still))) in
+  supportSide(last(ms)) == Option.Some(Hold.Left) && (ms |> List.all((m) => Quat.angle((rifleAccepted(m)).orientation, onStock.orientation) < 0.0001))
+)
+
+// Dragged 15 cm off the axis, 1 cm a step: past 12 cm it breaks off, a break
+// pulse in the left hand (disarmed until it opens). The rifle doesn't move on
+// that step, then settles back into the right hand.
+let dragged = play2(ready, List.flatten([
+  List.range(15.0) |> List.map((i) => (grabbed(foreOf(onStock, 0.25, 0.01 * (i + 1.0), 0.0)), still)),
+  both(10.0, grabbed(foreOf(onStock, 0.25, 0.15, 0.0)), still)]))
+let brokeAt = dragged |> List.indexedMap((i, m) => (i, m)) |> List.find((im) => let (_, m) = im in Option.isNone(supportSide(m)))
+  |> Option.map((im) => let (i, _) = im in i) |> Option.defaultValue(0.0)
+expect (
+  let at = (i: float) => rifleAccepted(List.nth(i, dragged) |> Option.defaultValue(start)) in
+  brokeAt == 13.0 && countOf(Hold.Left, Pulses.Break, dragged) == 1.0 && Game.isHeld(last(dragged), Props.Rifle)
+    && Hold.near(at(brokeAt), at(brokeAt - 1.0))
+    && Quat.angle((at(brokeAt - 1.0)).orientation, onStock.orientation) > 0.18
+    && Hold.near(rifleAccepted(last(dragged)), rifleAt)
+    && not (last(dragged)).left.armed
+)
+// Past the foregrip's far end, it breaks off too.
+expect (
+  let ms = play2(ready, List.range(20.0) |> List.map((i) => (grabbed(foreOf(onStock, 0.25 + 0.015 * (i + 1.0), 0.0, 0.0)), still))) in
+  Option.isNone(supportSide(last(ms))) && countOf(Hold.Left, Pulses.Break, ms) == 1.0
+)
+// Opened, the support lets go: a release pulse, the rifle where the aim had
+// it on that step, then back in the right hand.
+expect (
+  let aimed = last(aimedBy(0.05, 0.0)) in
+  let ms = play2(aimed, List.flatten([[(hand(foreOf(onStock, 0.25, 0.05, 0.0), 0.0, 0.0), still)], both(8.0, Game.away, still)])) in
+  let first = List.nth(1.0, ms) |> Option.defaultValue(start) in
+  Option.isNone(supportSide(first)) && countOf(Hold.Left, Pulses.Release, ms) == 1.0
+    && Hold.near(rifleAccepted(first), rifleAccepted(aimed)) && Hold.near(rifleAccepted(last(ms)), rifleAt)
+)
+
+// The right hand opening while the left supports: the left holds it by the
+// foregrip where it is, its trigger dead. The right squeezing its grip again
+// takes it back, the left still on the foregrip, and the trigger is the
+// right's again (once let out).
+let handedOver = play2(ready, List.flatten([
+  [(fore25, hand(onStock, 0.0, 0.0))],
+  both(3.0, { fore25 with trigger: 1.0 }, hand(onStock, 0.0, 1.0)),
+  [(fore25, hand(onStock, 0.0, 0.0))],
+]))
+let takenBack = play2(last(handedOver), List.flatten([both(4.0, fore25, still), [(fore25, hand(onStock, 1.0, 1.0))]]))
+expect (
+  let m = last(handedOver) in
+  (rifle(m).held |> Option.map((h) => h.side == Hold.Left) |> Option.defaultValue(false)) && rifle(m).fore && Option.isNone(supportSide(m))
+    && (handedOver |> List.all((n) => Hold.near(rifleAccepted(n), rifleAt))) && m.rifle.fired == 0.0
+    // Silent, but for the rack ready to take it from the hand that now holds it.
+    && Option.isNone(rifle(m).slot) && pulsesOf(List.drop(1.0, handedOver)) == [(Hold.Left, Pulses.Ready)]
+)
+expect (
+  let m = last(takenBack) in
+  (rifle(m).held |> Option.map((h) => h.side == Hold.Right) |> Option.defaultValue(false)) && not rifle(m).fore && supportSide(m) == Option.Some(Hold.Left)
+    && (takenBack |> List.all((n) => Hold.near(rifleAccepted(n), rifleAt))) && m.rifle.fired == 1.0
+    && countOf(Hold.Right, Pulses.Grab, takenBack) == 1.0 && countOf(Hold.Left, Pulses.Grab, takenBack) == 0.0
+)
+// Held by the foregrip, the left hand moves it, rigidly.
+expect (
+  let m = last(play2(last(handedOver), both(3.0, grabbed(foreOf(onStock, 0.25, 0.0, 0.1)), Game.away))) in
+  Hold.near3((rifleAccepted(m)).position, Quat.add(rifleAt.position, Quat.v3(0.0, 0.1, 0.0)))
+)
+
+// --- firing the rifle ---
+
+let auto = (m: Game.Model): Game.Model => { m with rifle: Gun.select(Longarm.weapon, m.rifle) }
+/// The right trigger held `n` steps, two hands on the rifle.
+let holding = (m0: Game.Model, n: float) => play2(m0, both(n, fore25, hand(onStock, 1.0, 1.0)))
+// Semi: one shot however long the trigger is held. Full-auto: the pull and
+// one every `Gun.stepsPerShot` steps after it, so 30 steps held fire 5.
+expect (last(holding(ready, 30.0))).rifle.fired == 1.0
+expect [1.0, 6.0, 7.0, 30.0, 31.0] |> List.all((n) => (last(holding(auto(ready), n))).rifle.fired == Math.floor((n - 1.0) / Gun.stepsPerShot) + 1.0)
+// Each shot buzzes both hands on it.
+expect (let ms = holding(auto(ready), 13.0) in countOf(Hold.Right, Pulses.Fire, ms) == 3.0 && countOf(Hold.Left, Pulses.Fire, ms) == 3.0)
+// The muzzle against the level: refused, one click in the trigger hand (not
+// one at full-auto's rate), no shot; let out and pulled clear, it fires.
+expect (
+  let ms = playBoth({ Game.noWorld with blocked: (a: Input.point3, b: Input.point3) => true }, auto(ready), both(20.0, fore25, hand(onStock, 1.0, 1.0))) in
+  let m = last(ms) in
+  m.rifle.fired == 0.0 && m.rifle.refused == 1.0 && countOf(Hold.Right, Pulses.Click, ms) == 1.0 && countOf(Hold.Left, Pulses.Click, ms) == 0.0
+    && (last(play2(m, [(fore25, still), (fore25, hand(onStock, 1.0, 1.0))]))).rifle.fired == 1.0
+)
+// Pushed through a stand-in wall with both hands, the shot leaves the muzzle
+// of the pose the wall stopped the rifle at, the support still on it.
+expect (
+  let pushed = (dx: float) => Hold.at(Quat.add(onStock.position, Quat.v3(dx, 0.0, 0.0)), onStock.orientation) in
+  let rifleWall = { walled with sweep: (k: Props.Kind, from: Input.pose, to: Input.pose) => if k == Props.Rifle then wallAt(k, from, to) else Option.None } in
+  let path = List.range(20.0) |> List.map((i) => (grabbed(foreOf(pushed(0.0 - 0.05 * (i + 1.0)), 0.25, 0.0, 0.0)), grabbed(pushed(0.0 - 0.05 * (i + 1.0))))) in
+  let m = last(playBoth(rifleWall, ready, List.flatten([path, [(grabbed(foreOf(pushed(-1.0), 0.25, 0.0, 0.0)), hand(pushed(-1.0), 1.0, 1.0))]]))) in
+  let accepted = rifleAccepted(m) in
+  supportSide(m) == Option.Some(Hold.Left) && accepted.position.x > -0.31
+    && (m.rifle.last |> Option.map((s) => Hold.near3(s.from, (Gun.boreOf(Longarm.weapon, accepted)).muzzle)) |> Option.defaultValue(false))
+)
+
+// The selector: A on the right hand holding the rifle switches it, once a
+// press; the support hand's doesn't; F does, held or not.
+expect (
+  let snap = (pressed: List<Key.t>, l: Input.controller, r: Input.controller): Input.snapshot =>
+    { heldKeys: [], pressedKeys: pressed, releasedKeys: [],
+      mouse: { x: 0.0, y: 0.0, surfaceWidth: 1.0, surfaceHeight: 1.0,
+               buttons: { left: false, right: false, middle: false },
+               pressed: { left: false, right: false, middle: false },
+               released: { left: false, right: false, middle: false } },
+      xr: Option.Some({ head: Option.None, left: l, right: r }), gamepad: Option.None, touch: Option.None } in
+  let a = { still with primaryPressed: true } in
+  let pressed = Game.sampledInput(Game.sampledInput(ready, snap([], fore25, still)), snap([], fore25, a)) in
+  let kept = Game.sampledInput(pressed, snap([], fore25, a)) in
+  let byLeft = Game.sampledInput(Game.sampledInput(ready, snap([], fore25, still)), snap([], { fore25 with primaryPressed: true }, still)) in
+  ready.rifle.mode == Gun.Semi && pressed.rifle.mode == Gun.Auto && kept.rifle.mode == Gun.Auto && byLeft.rifle.mode == Gun.Semi
+    && (Game.sampledInput(start, snap([Key.F], Game.away, Game.away))).rifle.mode == Gun.Auto
+    && (Game.sampledInput(pressed, snap([Key.F], fore25, still))).rifle.mode == Gun.Semi
+)
+
+// --- the rack ---
+
+// Let go in the rack by the hand holding it alone, it goes back in the rack.
+expect (
+  let m = last(play2(ready, [(hand(foreOf(onStock, 0.25, 0.0, 0.0), 0.0, 0.0), still), (Game.away, still), (Game.away, hand(onStock, 0.0, 0.0))])) in
+  rifle(m).slot == Option.Some(Slots.rack.id) && not Game.isHeld(m, Props.Rifle) && Hold.near(rifle(m).pose, rifleAt)
+)
+// It doesn't go in a thigh holster: opened there, it drops.
+expect (
+  let holster = Hold.at(Inventory.rightHolster, Quat.identity) in
+  let m = last(play2(ready, List.flatten([[(Game.away, still)], both(10.0, Game.away, grabbed(holster)), [(Game.away, hand(holster, 0.0, 0.0))]]))) in
+  Option.isNone(rifle(m).slot) && not Game.isHeld(m, Props.Rifle)
+)
