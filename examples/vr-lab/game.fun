@@ -1584,18 +1584,19 @@ let camera = (m: Model, st: Stations.Station) =>
     Camera3D.firstPerson(Quat.toVec3(Quat.add(st.feet, Quat.v3(0.0, 1.6, 0.0))), Angle.radians(st.yaw), -24deg, 70deg)
       |> Camera3D.clip(0.05, 60.0)
 
-/// The armory's shell box, with its count on its front: lit while an empty
-/// hand is in it to take one.
+/// The armory's shell box in its own frame, its count on the front (toward
+/// the player): lit while an empty hand is in it to take one. `(shells,
+/// reached)`.
 let shellBoxScene = (shown: (float, bool)): Scene.t =>
   let (n, reached) = shown in
   let e = Stations.shellBoxSize in
-  let card = Color.rgb(0.55, 0.42, 0.2) in
+  let box = Scene.cube() |> Scene.scaleXYZ(e.x, e.y, e.z) in
   Scene.group([
-    Scene.cube() |> Scene.scaleXYZ(e.x, e.y, e.z) |> (if reached then Scene.emissive(Color.rgb(0.8, 0.65, 0.35)) else Scene.lit(card)),
+    if reached then box |> Scene.emissive(Color.rgb(0.8, 0.65, 0.35)) else box |> Scene.lit(Color.rgb(0.55, 0.42, 0.2)),
     // The shells' brass heads, standing in it.
     Scene.cube() |> Scene.scaleXYZ(0.9 * e.x, 0.004, 0.8 * e.z) |> Scene.translate(Vec3.make(0.0, e.y / 2.0, 0.0)) |> Scene.lit(if n > 0.0 then Color.rgb(0.85, 0.65, 0.25) else Color.rgb(0.1, 0.08, 0.05)),
-    Digits.number(n, readoutOn, readoutOff) |> Scene.scale(0.012) |> Scene.translate(Vec3.make(0.0, 0.0, e.z / 2.0 + 0.001)),
-  ]) |> Scene.translate(Quat.toVec3(Stations.shellBoxAt))
+    Digits.number(n, readoutOn, readoutOff) |> Scene.scale(0.012) |> Scene.rotateY(180deg) |> Scene.translate(Vec3.make(0.0, 0.0, 0.0 - e.z / 2.0 - 0.001)),
+  ])
 
 /// The shell box where the armory has it.
 let boxScene = (m: Model, st: Stations.Station): Scene.t =>
@@ -1603,7 +1604,7 @@ let boxScene = (m: Model, st: Stations.Station): Scene.t =>
   else
     let reached = [Hold.Left, Hold.Right] |> List.any((side) =>
       Option.isNone(inHand(m, side)) && (gripOf(m.xr, side) |> Option.map((g) => Quat.length(Quat.sub(g.position, Stations.shellBoxTop)) <= Stations.shellBoxReach) |> Option.defaultValue(false))) in
-    Scene.memo("shell-box", (m.shellBox, reached), shellBoxScene) |> Scene.atPose(posed(st, Hold.origin))
+    Scene.memo("shell-box", (m.shellBox, reached), shellBoxScene) |> Scene.atPose(posed(st, Hold.at(Stations.shellBoxAt, Quat.identity)))
 
 // Children 3 (the props, in `Stations.props` order) to 7 are what the e2e
 // checks read from `/scene`: the left and right hands, then their ghosts. 8

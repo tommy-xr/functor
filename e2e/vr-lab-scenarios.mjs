@@ -1197,7 +1197,7 @@ const reloadScenarios = {
 
 export const SHOTGUN = {
   rack: [0.35, 1.01, -0.62], grip: [0, -0.0475, 0.16], fore: 0.3, travel: 0.09, port: { at: [0, 0.045, -0.12], drop: 0.06 },
-  box: [-0.04, 0.95, -0.42], tube: 6, pellets: 8, spread: (1.2 * Math.PI) / 180, turn: Math.PI * (3 - Math.sqrt(5)),
+  box: [0.0, 0.95, -0.7], tube: 6, pellets: 8, spread: (1.2 * Math.PI) / 180, turn: Math.PI * (3 - Math.sqrt(5)),
 };
 const SHOTGUN_GRIP = add(SHOTGUN.rack, SHOTGUN.grip);
 // Held level for loading; raised to aim.
@@ -1284,9 +1284,9 @@ const shotgunScenarios = {
       // The eighth: to the mouth and held there (never latching), then set down.
       ...sgLoad(undefined).slice(0, 5),
       { frames: 10, left: {}, mark: "refused" },
-      { frames: 20, left: { to: [0.0, 0.93, -0.6] } },
+      { frames: 20, left: { to: [-0.1, 0.93, -0.82] } },
       { frames: 1, left: { squeeze: 0 }, mark: "setDown" },
-      { frames: 15, left: { to: [0.0, 1.05, -0.6] } },
+      { frames: 15, left: { to: [-0.1, 1.05, -0.82] } },
       ...takeFore,
       ...sgRaise,
       ...Array.from({ length: SHOTGUN.tube + 1 }, (_, i) => [...sgShot(`fired${i + 1}`), ...sgPump(`pumped${i + 1}`, SG_AIM, TARGETS[1])]).flat(),

@@ -202,10 +202,10 @@ let rackPosts: List<Box> =
       atArmory(Quat.v3(at.position.x, (tableTop + top) / 2.0, at.position.z + dz), Quat.v3(0.06, top - tableTop, 0.03))) in
   List.append(posts(rifleRack, Longarm.size, [0.0 - 0.26, 0.16]), posts(shotgunRack, Pump.size, [0.0 - 0.08, 0.27]))
 
-/// The shell box on the bench's front, left of the pistol: its centre
+/// The shell box at the back of the bench, behind and left of the pistol: its centre
 /// (rig-local), its size, and where a hand reaches into it (its top, within
 /// `shellBoxReach`).
-let shellBoxAt = Quat.v3(-0.04, tableTop + 0.025, -0.42)
+let shellBoxAt = Quat.v3(0.0, tableTop + 0.025, -0.7)
 let shellBoxSize = Quat.v3(0.12, 0.05, 0.07)
 let shellBoxTop = Quat.add(shellBoxAt, Quat.v3(0.0, 0.025, 0.0))
 let shellBoxReach = 0.07

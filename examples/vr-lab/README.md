@@ -354,7 +354,7 @@ The rifle's hold (`Longarm`), with a pump (`pump.fun`, `Pump.weapon`).
   guided 6 cm up into it at the hand's depth; home, it is in the tube (a
   load pulse in both hands). Reversed, tipped, or the tube full: it never
   latches. Pulled 5 cm off the port's axis, or tipped 46°, it comes out.
-- **Shells.** A squeeze in the box on the bench (front, left of the pistol;
+- **Shells.** A squeeze in the box on the bench (at the back, left of the pistol;
   lit while an empty hand is in it) takes a shell out, held as the hand
   points (down range, as the port takes it), until the box is empty (12). A
   shell pumped out live lies about as a loose round does, and loads again.
