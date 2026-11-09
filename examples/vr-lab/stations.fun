@@ -89,8 +89,8 @@ let spawn = (k: Props.Kind): Input.pose =>
   | Props.Pistol => on(0.15, -0.5, Quat.identity)
   // In its rack on the bench, level, pointing down range.
   | Props.Rifle => rifleRack
-  // The spares stand in a row on the bench's left, a side to the player.
-  | Props.Mag(_, id) => on(-0.51 + 0.09 * id, -0.42, Quat.yaw(Math.pi / 2.0))
+  // The spares stand in a row on the bench's left, their counts to the player.
+  | Props.Mag(_, id) => on(-0.51 + 0.09 * id, -0.42, Quat.identity)
 
 // The basket: an open box, its inside `basketInner` wide and `basketDepth` deep.
 let basketAt = Quat.v3(-0.2, 0.0, 7.1)

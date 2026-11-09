@@ -997,16 +997,16 @@ let readoutScene = (w: Gun.Weapon, g: Gun.State, key: string, t: float): Scene.t
 
 let magLabel = (rounds: float): Scene.t => Digits.number(rounds, readoutOn, readoutOff)
 
-/// A free magazine's count, on both broad sides.
+/// A free magazine's count, on its front and back.
 let labelled = (k: Props.Kind, mag: Option.t<Ammo.Mag>, s: Scene.t): Scene.t =>
   match k with
   | Props.Mag(fits, id) =>
-    let label = Scene.memo($"mag-{id}", Ammo.roundsIn(mag), magLabel) |> Scene.scale(0.01) in
-    let x = Gun.magFace(fits) + 0.0007 in
+    let label = Scene.memo($"mag-{id}", Ammo.roundsIn(mag), magLabel) |> Scene.scale(0.009) in
+    let z = Gun.magFace(fits) + 0.0007 in
     Scene.group([
       s,
-      label |> Scene.rotateY(90deg) |> Scene.translate(Vec3.make(x, 0.005, 0.0)),
-      label |> Scene.rotateY(-90deg) |> Scene.translate(Vec3.make(0.0 - x, 0.005, 0.0)),
+      label |> Scene.translate(Vec3.make(0.0, 0.005, z)),
+      label |> Scene.rotateY(180deg) |> Scene.translate(Vec3.make(0.0, 0.005, 0.0 - z)),
     ])
   | _ => s
 

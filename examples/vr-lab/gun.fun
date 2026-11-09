@@ -71,11 +71,12 @@ let magSize = (k: Ammo.Kind): Input.point3 =>
   | Ammo.PistolMag => Quat.v3(0.032, 0.1, 0.047)
   | Ammo.RifleMag => Quat.v3(0.025, 0.09, 0.05)
 
-/// How far a magazine's broad side is from its centre (where its count goes).
+/// How far a magazine's front and back are from its centre (where its count
+/// goes, facing the way its weapon does and back at the shooter).
 let magFace = (k: Ammo.Kind): float =>
   match k with
-  | Ammo.PistolMag => 0.013
-  | Ammo.RifleMag => 0.0125
+  | Ammo.PistolMag => 0.016
+  | Ammo.RifleMag => 0.025
 
 /// A magazine in its own frame (centred on its bounds), `paint` colouring
 /// its body: the pistol's base plate tan, so a seated one shows under the
@@ -85,7 +86,7 @@ let magazine = (k: Ammo.Kind, paint: (float, float, float, Scene.t) => Scene.t):
   match k with
   | Ammo.PistolMag =>
     Scene.group([
-      Scene.cube() |> Scene.scaleXYZ(2.0 * magFace(k), e.y - 0.008, 0.032) |> Scene.translate(Vec3.make(0.0, 0.004, 0.0)) |> paint(0.12, 0.12, 0.13),
+      Scene.cube() |> Scene.scaleXYZ(0.026, e.y - 0.008, 2.0 * magFace(k)) |> Scene.translate(Vec3.make(0.0, 0.004, 0.0)) |> paint(0.12, 0.12, 0.13),
       Scene.cube() |> Scene.scaleXYZ(e.x, 0.008, e.z) |> Scene.translate(Vec3.make(0.0, 0.004 - e.y / 2.0, 0.0)) |> paint(0.75, 0.6, 0.3),
     ])
   | Ammo.RifleMag => Scene.cube() |> Scene.scaleXYZ(e.x, e.y, e.z) |> paint(0.16, 0.16, 0.18)
