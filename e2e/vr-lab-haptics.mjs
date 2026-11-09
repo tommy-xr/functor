@@ -26,7 +26,11 @@
 //   8. Ammunition: ammo-pistol, a fire for each of 13 rounds, then the dry
 //      pull's click; ammo-rifle, every full-auto shot in both hands, then a
 //      click in the trigger hand alone for each dry pull.
-//   9. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
+//   9. Reloading: reload-pistol, the spare's unstow, its latch, the seat in
+//      both hands, the slide's grab, back and home (home in both hands);
+//      reload-rack, a partial pull only its grab; reload-rifle, the same at
+//      the rifle's well and charging handle.
+//  10. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
 //      pulse. A fixture replayed through `/input` is a live run: the recorded
 //      grab-throw pulses exactly the live run's events.
 //
@@ -39,7 +43,10 @@ import { project, scenarios } from "./vr-lab-scenarios.mjs";
 const PORT = 8297;
 
 // Each event's amplitude, as `Pulses.pulse` has it.
-const PULSE = { ready: 0.15, click: 0.25, release: 0.3, grab: 0.45, unstow: 0.55, stow: 0.7, blocked: 0.85, fire: 0.95, break: 1.0 };
+const PULSE = {
+  ready: 0.15, latch: 0.2, click: 0.25, release: 0.3, grab: 0.45, slideBack: 0.5, unstow: 0.55, slideHome: 0.65,
+  stow: 0.7, seat: 0.8, blocked: 0.85, fire: 0.95, break: 1.0,
+};
 const EVENT = new Map(Object.entries(PULSE).map(([name, a]) => [a, name]));
 
 const run = (name, body) => session(name, project, PORT, body);
@@ -178,6 +185,36 @@ await run("rifle: hand-off", async (rt) => {
   // Handed on: silent. Retaken: the right's grab. The support opening: its release.
   expectPulses(got, ["right unstow", "left grab", "right grab", "left release"]);
   check(got.pulses[2]?.frame === got.marks.retaken.frame && got.pulses[3]?.frame === got.marks.supportOpened.frame, "on the retake and the support's opening");
+});
+
+await run("reload: the pistol's full loop", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["reload-pistol"]);
+  // Emptied and dry; the spare out of its cradle; latched, seated (both
+  // hands); the slide taken, back, home (both hands); 12 shots and dry.
+  expectPulses(got, [
+    "right grab", ...Array(13).fill("right fire"), "right click",
+    "left unstow", "left latch", "right seat", "left seat",
+    "left grab", "left slideBack", "right slideHome", "left slideHome",
+    ...Array(12).fill("right fire"), "right click",
+  ]);
+  const at = (event) => got.pulses.find((p) => p.event === event)?.frame;
+  check(at("latch") > got.marks.misaligned.frame && at("latch") <= got.marks.aligned.frame, `the latch as it lines up (frame ${at("latch")})`);
+  check(at("seat") <= got.marks.seated.frame && at("seat") > got.marks.latchedHeld.frame, `the seat as it goes home (frame ${at("seat")})`);
+  check(at("slideBack") <= got.marks.pulled.frame && at("slideHome") === got.marks.racked.frame, `back as it is pulled, home as it is let go (frames ${at("slideBack")}, ${at("slideHome")})`);
+});
+
+await run("reload: partial and full racks", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["reload-rack"]);
+  // The partial pull: only its grab. The full one: back, home.
+  expectPulses(got, ["right grab", "left grab", "left grab", "left slideBack", "right slideHome", "left slideHome"]);
+});
+
+await run("reload: the rifle", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["reload-rifle"]);
+  expectPulses(got, [
+    "right unstow", "left unstow", "left latch", "right seat", "left seat",
+    "left grab", "left slideBack", "right slideHome", "left slideHome", "right fire",
+  ]);
 });
 
 await run("recorded fixture", async (rt) => {

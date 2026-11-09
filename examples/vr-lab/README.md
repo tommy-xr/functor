@@ -20,6 +20,7 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | grip (squeeze) | grab what's in reach; open to let go |
 | trigger | fire the held gun (station 3) |
 | A / X (holding the rifle's grip), `F` | the rifle's selector: semi / full-auto |
+| A / X (holding the pistol) | its slide release, when locked back |
 | thumbstick down (on a gun's trigger hand), `M` | drop the gun's magazine |
 | `H` / thumbstick click | draw a holding hand where it is tracked, or where its blocked prop implies |
 
@@ -37,7 +38,8 @@ headset requests 120 Hz with foveation off, floor-locked.
 | `slots.fun` | the body slots: offsets, reach, what each takes, how each is drawn |
 | `inventory.fun` | the inventory station's headless checks |
 | `gun.fun` | what the guns share (trigger and fire modes, bore, shot, muzzle check, recoil, the ammo seam, magazine well, readout and look), and the pistol's shape and grip |
-| `ammo.fun` | rounds and magazines as plain data: fire, eject, insert, rack, and their conservation |
+| `ammo.fun` | rounds and magazines as plain data: fire, eject, insert, rack (extract, close), the slide lock, and their conservation |
+| `seating.fun` | a magazine guided into a well: the latch, the guided depth, the seat and the pull-out |
 | `longarm.fun` | the rifle: shape, its two grips, the two-hand aim, the support hand's slide, break and look |
 | `armory.fun` | the armory station's headless checks |
 | `pulses.fun` | each hold event's controller pulse, and the edges that fire it once |
@@ -83,11 +85,15 @@ The amplitudes and durations are one table, `Pulses.pulse`:
 | Event | When | Amplitude | Duration |
 | --- | --- | --- | --- |
 | ready | entering an empty slot that takes the held prop | 0.15 | 15 ms |
+| latch | a held magazine catching in a well's mouth | 0.2 | 12 ms |
 | click | a trigger pull refused (the muzzle against the level) or dry (nothing chambered) | 0.25 | 10 ms |
 | release | letting go (thrown or dropped) | 0.3 | 20 ms |
-| grab | taking a prop, free or from the other hand | 0.45 | 30 ms |
+| grab | taking a prop, free or from the other hand (or a gun's slide) | 0.45 | 30 ms |
+| slide back | the slide or charging handle pulled to the back | 0.5 | 25 ms |
 | unstow | taking a prop out of a slot | 0.55 | 40 ms |
+| slide home | the slide going home from the back (the racking hand and the gun's) | 0.65 | 30 ms |
 | stow | putting it away | 0.7 | 50 ms |
+| seat | a magazine pushed home in a well (its hand and the gun's) | 0.8 | 25 ms |
 | blocked | the first step a held prop stops against the level (once per push) | 0.85 | 20 ms |
 | fire | a shot (every hand on the gun) | 0.95 | 35 ms |
 | break | the grip breaking (or the rifle's support) | 1.0 | 80 ms |
@@ -312,17 +318,25 @@ the settle back to one hand after a support lets go.
 ### Ammunition
 
 Rounds are plain data (`ammo.fun`): a magazine is `{kind, rounds, capacity}`,
-a gun's ammo `{well, mag, chambered}`. Nothing makes or loses a round: at
-every step, the rounds in every magazine (free, held, pouched, in a well) and
-chamber, plus the shots fired, are what the station was reset with.
+a gun's ammo `{well, mag, chambered, locked}`. Nothing makes or loses a
+round: at every step, the rounds in every magazine (free, held, pouched,
+latched, in a well), chamber and loose round, plus the shots fired and the
+loose rounds taken away (`lost`), are what the station was reset with.
 
 - **Loaded.** The pistol starts 12+1, the rifle 30+1 (`Ammo.capacity`).
 - **Fire.** A shot needs a chambered round (`Gun.canFire`); it spends it and
   feeds the next from the magazine (`Ammo.fire`, via `Gun.onFired`). Nothing
   chambered, the pull clicks dry: a click pulse, no shot, the trigger
   disarmed (so full-auto stops exactly at empty, one click a pull), and the
-  readout flashes red for 0.3 s. The last round leaves the chamber empty: no
-  slide lock.
+  readout flashes red for 0.3 s.
+- **Slide lock.** A slide (or bolt) that closes on an empty magazine, after
+  the last shot or a rack, locks back (`Ammo.close`): the pistol's slide
+  stays 70% back, its barrel showing; the rifle's bolt shows back in the
+  port (its charging handle goes home). With no magazine in, it closes on an
+  empty chamber. Locked, a pull clicks dry; a magazine put in doesn't
+  chamber; a rack, or A / X on the pistol's hand (its slide release; the
+  rifle has none: on its hand A / X is the selector), releases it and
+  chambers.
 - **Readout.** Each gun shows its magazine's rounds + the chambered round on
   its back (`12+1`; `--+1` with the magazine out): the pistol on the slide's
   back face, the rifle on the receiver ahead of the rear sight, tipped toward
@@ -337,15 +351,47 @@ chamber, plus the shots fired, are what the station was reset with.
   the bench's left (`Slots.cradle`: like the rifle rack, a slot whose prop has
   no body, so resting spares cost no physics). A cradle takes back any
   magazine of its kind.
-- **Reload.** Not yet: a magazine doesn't go back in a gun, and nothing
-  racks. `Ammo.insert` (refused for another kind or an occupied well) and
-  `Ammo.rack` (chambers from the magazine; a round already chambered comes out
-  loose) are the pure halves, checked headlessly. Until then, resetting the
-  station (`3`, or the cycle button) refills everything.
+- **Seating** (`seating.fun`, each well's `Gun.guide`). A held magazine of
+  the well's kind, the well empty, latches when its centre is within 4 cm of
+  where it sits at the mouth (where an ejected one drops out) and its axis is
+  within ~32° of the well's (dot ≥ 0.85), not turned back to front (keyed):
+  a latch pulse. Upside down, the wrong kind, or tipped: nothing. Latched,
+  it has no body (it is part of the gun: the gun's hand carries it, and
+  nothing sweeps it against the gun) and sits on the well's axis, turned as
+  the well is, easing there from where it was (2 cm, 8.6° a step at most),
+  at the depth the hand pushes it to. Pushed home (within 4 mm) it seats:
+  `Ammo.insert`, a seat pulse in both hands, and it is the gun's. Pulled
+  7 cm off the axis (or that far below the mouth), or tipped past ~46°
+  (dot 0.7), it leaves where it is, back in the hand, easing to where the
+  hand held it (and can't latch again until it has). Let go while latched,
+  it falls out of the mouth. The gun can be held, or anywhere a mouth is
+  reachable: lying on its side on the bench, or the rifle in its rack. The
+  pistol standing upright on the bench has its mouth against the bench top,
+  so nothing reaches it there.
+- **Rack.** The other hand squeezed at a held gun's slide (the pistol's rear
+  serrations, 3.5 cm zone) or the rifle's charging handle (the receiver's
+  top rear, 4 cm) takes it (a grab pulse) and draws it back along the bore,
+  clamped to its travel (4 cm, 7 cm); 8 cm off its line, the hand lets go.
+  Past 80% of the travel: back (a pulse), a chambered round thrown out
+  (`Ammo.extract`). Then let go, or returned under 20%, it goes home (a
+  pulse in both hands) and feeds (`Ammo.close`). Short of 80%, nothing
+  happens. A locked pistol slide is taken where it rests, so a nudge past
+  80% and letting go releases it; the rifle's handle is pulled all the way.
+  A slide held back is out of battery: its trigger clicks.
+- **Loose rounds.** A round thrown out is a small dynamic prop (a 9 mm × 29
+  or 57 mm cartridge), out of the port to the right, up and back (about
+  1.9 m/s, with the gun's own velocity), spinning. It can be picked up and
+  thrown; nothing takes it yet. At most 6 lie about: past that the oldest
+  not in a hand is taken away and counted `lost`.
 
-`GET /state` shows each gun's `ammo` and each magazine prop's `mag`.
-`npm run test:vr-lab` runs `e2e/vr-lab-ammo.mjs`.
+`GET /state` shows each gun's `ammo` and `slide`, each magazine prop's `mag`
+and `latch`, and `lost`. `npm run test:vr-lab` runs `e2e/vr-lab-ammo.mjs` and
+`e2e/vr-lab-reload.mjs`.
 
 Worn checks still open: reaching the thumbstick down on the trigger hand
 without shifting the grip, the readouts' legibility at arm's length, whether
 the dry click reads as a dry pull, and finding the pouch with a magazine.
+Reloading: whether the 4 cm / 0.85 latch is too sticky or too strict, the
+seat depth's feel and its click, the slide's and charging handle's stroke
+and 80% threshold, whether a locked slide reads at a glance, and reloading
+without looking.

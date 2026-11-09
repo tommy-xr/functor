@@ -846,6 +846,326 @@ const ammoScenarios = {
   },
 };
 
+// --- Armory: reloading (station 3) ---
+// A magazine brought to a well's mouth (where an ejected one drops out),
+// lined up within ~32° (`Gun.guide`), latches, and is guided up the well's
+// axis at the depth the hand pushes it to; home, it seats. The other hand
+// racks the slide (or the rifle's charging handle) back along the bore past
+// 80% of its travel, then lets go: it chambers. The last shot locks the
+// pistol's slide (and the rifle's bolt) back on the empty magazine.
+//
+// The pistol held level at RELOAD_HAND: its centre is the hand plus
+// PISTOL_FROM_GRIP; its well WELL from that centre, raked back 12°
+// (`Gun.pistol.well`); its slide taken at SLIDE (`Gun.pistol.rack`). A
+// magazine is taken by its base, 4 cm below its centre, so the hand
+// pushing it sits that far down the well's axis from it.
+
+export const RELOAD_HAND = [0.05, 1.15, -0.4];
+const PISTOL_FROM_GRIP = [0, 0.0025, -0.0475];
+export const WELL = { at: [0, -0.0175, 0.0675], rake: (-0.21 * 180) / Math.PI, drop: 0.12, entry: 0.04, exit: 0.07 };
+export const SLIDE = { at: [0, 0.0475, 0.0875], travel: 0.04, lockBack: 0.028 };
+const MAG_BASE = 0.04;
+export const LOOSE_CAP = 6;
+const RELOAD_PISTOL = add(RELOAD_HAND, PISTOL_FROM_GRIP);
+export const WELL_TURN = pitch(WELL.rake);
+// A point `d` along the held pistol's well (0 seated, -drop the mouth).
+export const wellPoint = (d) => add(RELOAD_PISTOL, add(WELL.at, qrot(WELL_TURN, [0, d, 0])));
+// Where the hand holding a magazine by its base is, the magazine `d` along
+// the well turned `q` (by default, lined up with it).
+const magHand = (d, q = WELL_TURN) => add(wellPoint(d), qrot(q, [0, -MAG_BASE, 0]));
+const tipped = (deg) => qmul(WELL_TURN, pitch(deg));
+// The pistol's slide, `back` behind home.
+const slideAt = (back) => add(RELOAD_PISTOL, add(SLIDE.at, [0, 0, back]));
+// The spares on the bench: by their base.
+export const SPARE = { pistol: [-0.42, 0.95, -0.5], rifle: [-0.24, 0.945, -0.5] };
+const spareBase = (at, half) => add(at, [0, -half, 0]);
+
+// The rifle held one-handed, level, at RIFLE_HAND: its centre the hand plus
+// RIFLE_FROM_GRIP; its well RIFLE_WELL from that (no rake), its mouth 10 cm
+// down; its charging handle at CHARGING (`Longarm.weapon.rack`).
+const RIFLE_HAND = [0.15, 1.15, -0.35];
+const RIFLE_FROM_GRIP = [0, 0.0275, -0.14];
+const RIFLE_CENTRE = add(RIFLE_HAND, RIFLE_FROM_GRIP);
+export const RIFLE_WELL = { at: [0, -0.0275, 0.05], drop: 0.1 };
+export const CHARGING = { at: [0, 0.0625, 0.215], travel: 0.07 };
+const RIFLE_BASE = 0.035;
+const rifleWell = (d) => add(RIFLE_CENTRE, add(RIFLE_WELL.at, [0, d, 0]));
+const rifleMagHand = (d) => add(rifleWell(d), [0, -RIFLE_BASE, 0]);
+const handleAt = (back) => add(RIFLE_CENTRE, add(CHARGING.at, [0, 0, back]));
+
+// Close on the well, from ahead and left of the gun, a little low: the
+// magazine's approach and seat. (Armory rig (x, y, z) is world (4 - z, y, x).)
+const atWell = { eye: [4.72, 1.08, -0.32], target: [4.36, 1.06, 0.04], fov: 30 };
+// Close on the slide from the left, a little above.
+const atSlideSide = { eye: [4.48, 1.33, -0.38], target: [4.38, 1.19, 0.05], fov: 30 };
+// Above and left of the rifle's well and handle.
+const atRifleWell = { eye: [4.75, 1.22, -0.3], target: [4.38, 1.1, 0.12], fov: 34 };
+const atRifleHandle = { eye: [4.55, 1.45, -0.25], target: [4.3, 1.22, 0.15], fov: 32 };
+// Over the bench from the left: the round thrown out to the right.
+const atPort = { eye: [4.55, 1.5, -0.45], target: [4.35, 1.05, 0.25], fov: 44 };
+
+// The pistol taken, held at RELOAD_HAND.
+const pistolUp = [
+  ...takePistol,
+  { frames: 25, right: { to: RELOAD_HAND } },
+  { frames: 6, right: {}, mark: "up" },
+];
+// The left hand takes a spare by its base out of its cradle.
+const takeSpare = (at, half) => [
+  { frames: 20, left: { to: add(spareBase(at, half), [0, 0.1, 0.1]) } },
+  { frames: 10, left: { to: spareBase(at, half) } },
+  { frames: 4, left: { squeeze: 1 }, mark: "tookSpare" },
+  { frames: 20, left: { to: add(spareBase(at, half), [0, 0.15, 0.05]) } },
+];
+// To the mouth tipped 45° (no latch), held; turned lined up there (it
+// latches), held; pushed home along the axis, past it by 1 cm (it seats).
+const insert = [
+  { frames: 25, left: { to: magHand(-WELL.drop - 0.05, tipped(45)), turn: tipped(45) } },
+  { frames: 10, left: { to: magHand(-WELL.drop, tipped(45)) } },
+  { frames: 10, left: {}, mark: "misaligned" },
+  { frames: 10, left: { to: magHand(-WELL.drop), turn: WELL_TURN }, mark: "aligned" },
+  { frames: 6, left: {}, mark: "latchedHeld" },
+  { frames: 20, left: { to: magHand(0.01) }, mark: "seated" },
+];
+// The left hand off the seated magazine, to the slide where it rests (`rest`
+// back), takes it, pulls it `to` back, lets go.
+const rack = (rest, to, view) => [
+  { frames: 1, left: { squeeze: 0 }, mark: "letGo" },
+  { frames: 15, left: { to: add(magHand(0), [-0.06, 0.0, 0.03]), turn: [0, 0, 0, 1] }, ...(view ? { spectator: view } : {}) },
+  { frames: 15, left: { to: slideAt(rest) } },
+  { frames: 4, left: { squeeze: 1 }, mark: "onSlide" },
+  { frames: 8, left: { to: slideAt(to) }, mark: "pulled" },
+  { frames: 1, left: { squeeze: 0 }, mark: "racked" },
+  { frames: 15, left: { to: add(slideAt(to), [-0.1, 0.05, 0.1]) } },
+];
+
+const reloadScenarios = {
+  // The pistol emptied (12+1) and dry: locked back. The magazine dropped; a
+  // spare from its cradle brought up tipped (refused), lined up (latched),
+  // pushed home (seated, 12+0, still locked). The slide, nudged back from
+  // locked and let go: home, chambered (11+1). Then 12 shots at the right
+  // target, and the 13th pull dry: locked back again.
+  "reload-pistol": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...pistolUp,
+      ...pulls(PISTOL_ROUNDS),
+      { frames: 1, right: { trigger: 1 }, mark: "dryLocked" },
+      { frames: 6, right: { trigger: 0 } },
+      { frames: 1, right: { stick: [0, -1] }, mark: "ejected", spectator: atWell },
+      { frames: 30, right: { stick: [0, 0] }, mark: "fell" },
+      ...takeSpare(SPARE.pistol, MAG_BASE),
+      ...insert,
+      ...rack(SLIDE.lockBack, SLIDE.travel, atSlideSide),
+      { frames: 15, left: { to: LEFT_OUT } },
+      ...aimPistol(6).map((seg, i) => (i === 0 ? { ...seg, spectator: behindGun } : seg)),
+      ...pulls(CAPACITY.pistol, "fired12"),
+      { frames: 1, right: { trigger: 1 }, mark: "dryAgain" },
+      { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // A spare upside down at the mouth, pushed up the well: never latches.
+  "reload-reversed": {
+    station: 3,
+    neck: NECK,
+    spectator: atWell,
+    steps: [
+      ...pistolUp,
+      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
+      { frames: 30, right: { stick: [0, 0] } },
+      ...takeSpare(SPARE.pistol, MAG_BASE),
+      { frames: 30, left: { to: magHand(-WELL.drop, tipped(180)), turn: tipped(180) }, mark: "atMouth" },
+      { frames: 20, left: { to: magHand(0.01, tipped(180)) }, mark: "pushed" },
+      { frames: 20, left: { to: magHand(-WELL.drop - 0.1, tipped(180)) }, mark: "out" },
+    ],
+  },
+
+  // A rifle magazine lined up at the pistol's mouth, pushed: never latches.
+  "reload-wrong": {
+    station: 3,
+    neck: NECK,
+    spectator: atWell,
+    steps: [
+      ...pistolUp,
+      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
+      { frames: 30, right: { stick: [0, 0] } },
+      ...takeSpare(SPARE.rifle, RIFLE_BASE),
+      { frames: 30, left: { to: add(wellPoint(-WELL.drop), qrot(WELL_TURN, [0, -RIFLE_BASE, 0])), turn: WELL_TURN }, mark: "atMouth" },
+      { frames: 20, left: { to: add(wellPoint(0.01), qrot(WELL_TURN, [0, -RIFLE_BASE, 0])) }, mark: "pushed" },
+    ],
+  },
+
+  // Latched, pushed half way in, then pulled out sideways (off the axis,
+  // 1 cm a step): it stays latched to 7 cm, then leaves into the hand where
+  // it is, easing back to how the hand holds it.
+  "reload-cancel": {
+    station: 3,
+    neck: NECK,
+    spectator: atWell,
+    steps: [
+      ...pistolUp,
+      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
+      { frames: 30, right: { stick: [0, 0] } },
+      ...takeSpare(SPARE.pistol, MAG_BASE),
+      { frames: 25, left: { to: magHand(-WELL.drop - 0.03), turn: WELL_TURN } },
+      { frames: 10, left: { to: magHand(-WELL.drop) }, mark: "latched" },
+      { frames: 10, left: { to: magHand(-WELL.drop / 2) }, mark: "halfIn" },
+      { frames: 12, left: { to: add(magHand(-WELL.drop / 2), qrot(WELL_TURN, [-0.12, 0, 0])) }, mark: "pulledOut" },
+      { frames: 15, left: {}, mark: "settled" },
+    ],
+  },
+
+  // Loaded (12+1): the slide pulled 70% of the way and let go: nothing.
+  // Then all the way: the chambered round thrown out loose (a prop that
+  // falls), the next chambered (11+1).
+  "reload-rack": {
+    station: 3,
+    neck: NECK,
+    spectator: atPort,
+    steps: [
+      ...pistolUp,
+      { frames: 20, left: { to: add(slideAt(0), [-0.05, 0.05, 0.05]) } },
+      { frames: 10, left: { to: slideAt(0) } },
+      { frames: 4, left: { squeeze: 1 }, mark: "onSlide" },
+      { frames: 8, left: { to: slideAt(0.7 * SLIDE.travel) }, mark: "partial" },
+      { frames: 1, left: { squeeze: 0 }, mark: "partialLetGo" },
+      { frames: 10, left: { to: slideAt(0) } },
+      { frames: 4, left: { squeeze: 1 } },
+      { frames: 8, left: { to: slideAt(SLIDE.travel) }, mark: "back" },
+      { frames: 1, left: { squeeze: 0 }, mark: "racked" },
+      { frames: 60, left: { to: LEFT_OUT }, mark: "landed" },
+    ],
+  },
+
+  // Loaded: the slide racked eight times, back then home in the hand, and
+  // let go: eight rounds thrown out, the oldest two taken away past the cap
+  // of six; the six come to rest.
+  "reload-rounds": {
+    station: 3,
+    neck: NECK,
+    spectator: atPort,
+    steps: [
+      ...pistolUp,
+      { frames: 20, left: { to: add(slideAt(0), [-0.05, 0.05, 0.05]) } },
+      { frames: 10, left: { to: slideAt(0) } },
+      { frames: 4, left: { squeeze: 1 } },
+      ...Array.from({ length: 8 }, () => [
+        { frames: 6, left: { to: slideAt(SLIDE.travel) } },
+        { frames: 6, left: { to: slideAt(0) } },
+      ]).flat(),
+      { frames: 1, left: { squeeze: 0 }, mark: "done" },
+      { frames: 90, left: { to: LEFT_OUT }, mark: "rest" },
+    ],
+  },
+
+  // The demo, close on the well and the slide: the pistol emptied (locked
+  // back), its magazine dropped; a spare brought up upside down (refused),
+  // turned the right way but tipped 45° (refused), lined up (latched),
+  // pushed home; the slide racked from locked; three shots; racked again
+  // with a round chambered (thrown out loose); holstered. Then the rifle:
+  // its magazine dropped, a spare seated, the charging handle racked (its
+  // chambered round thrown out), a shot.
+  "reload-tour": {
+    station: 3,
+    neck: NECK,
+    spectator: atSlideSide,
+    steps: [
+      ...pistolUp,
+      ...pulls(PISTOL_ROUNDS).map((seg) => (seg.frames === 4 ? { ...seg, frames: 6 } : seg)),
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 20, right: { trigger: 0 }, mark: "lockedBack" },
+      { frames: 1, right: { stick: [0, -1] }, spectator: atWell },
+      { frames: 30, right: { stick: [0, 0] } },
+      ...takeSpare(SPARE.pistol, MAG_BASE).map((seg, i) => (i === 0 ? { ...seg, spectator: atSpares } : seg)),
+      { frames: 30, left: { to: magHand(-WELL.drop, tipped(180)), turn: tipped(180) }, spectator: atWell },
+      { frames: 20, left: { to: magHand(-WELL.drop + 0.04, tipped(180)) }, mark: "reversed" },
+      { frames: 20, left: { to: magHand(-WELL.drop - 0.06, tipped(180)) } },
+      { frames: 30, left: { to: magHand(-WELL.drop - 0.05, tipped(45)), turn: tipped(45) } },
+      { frames: 15, left: { to: magHand(-WELL.drop, tipped(45)) } },
+      { frames: 15, left: {}, mark: "tipped" },
+      { frames: 15, left: { to: magHand(-WELL.drop), turn: WELL_TURN } },
+      { frames: 15, left: {}, mark: "latched" },
+      { frames: 30, left: { to: magHand(0.01) }, mark: "seated" },
+      { frames: 10, left: {} },
+      ...rack(SLIDE.lockBack, SLIDE.travel, atSlideSide).map((seg) => (seg.frames === 8 ? { ...seg, frames: 12 } : seg)),
+      { frames: 15, left: { to: LEFT_OUT } },
+      ...aimPistol(6).map((seg, i) => (i === 0 ? { ...seg, spectator: behindGun } : seg)),
+      ...pulls(3).map((seg) => (seg.frames === 4 ? { ...seg, frames: 10 } : seg)),
+      { frames: 25, right: { to: RELOAD_HAND, turn: [0, 0, 0, 1] }, spectator: atPort },
+      { frames: 20, left: { to: add(slideAt(0), [-0.05, 0.05, 0.05]) } },
+      { frames: 10, left: { to: slideAt(0) } },
+      { frames: 4, left: { squeeze: 1 } },
+      { frames: 12, left: { to: slideAt(SLIDE.travel) }, mark: "thrown" },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 50, left: { to: LEFT_OUT } },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1] }, spectator: atArmoryHip },
+      { frames: 25, right: { to: ARMORY_RH } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 10, right: {} },
+      { frames: 20, right: { to: [0.5, 1.15, -0.35] }, spectator: atRifleWell },
+      { frames: 15, right: { to: RIFLE_GRIP } },
+      { frames: 6, right: { squeeze: 1 } },
+      { frames: 30, right: { to: RIFLE_HAND } },
+      { frames: 6, right: {} },
+      { frames: 1, right: { stick: [0, -1] } },
+      { frames: 30, right: { stick: [0, 0] } },
+      ...takeSpare(SPARE.rifle, RIFLE_BASE),
+      { frames: 25, left: { to: rifleMagHand(-RIFLE_WELL.drop - 0.04) } },
+      { frames: 15, left: { to: rifleMagHand(-RIFLE_WELL.drop) } },
+      { frames: 30, left: { to: rifleMagHand(0.01) }, mark: "rifleSeated" },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 15, left: { to: add(rifleMagHand(0), [-0.08, 0.05, 0]) }, spectator: atRifleHandle },
+      { frames: 20, left: { to: handleAt(0) } },
+      { frames: 4, left: { squeeze: 1 } },
+      { frames: 15, left: { to: handleAt(CHARGING.travel) }, mark: "charged" },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 40, left: { to: LEFT_OUT } },
+      { frames: 20, right: { to: AIM_HAND, turn: AIM_RIGHT }, spectator: behindRifle },
+      { frames: 6, right: {} },
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 20, right: { trigger: 0 } },
+    ],
+  },
+
+  // The rifle off its rack in the right hand alone: the thumbstick drops its
+  // magazine (one chambered); a rifle spare pushed into its well (seated);
+  // the charging handle pulled all the way back and let go: the chambered
+  // round thrown out, the next chambered (29+1). Then it fires.
+  "reload-rifle": {
+    station: 3,
+    neck: NECK,
+    spectator: atRifleWell,
+    steps: [
+      { frames: 15, left: { to: LEFT_OUT } },
+      { frames: 20, right: { to: [0.5, 1.15, -0.35] } },
+      { frames: 15, right: { to: RIFLE_GRIP } },
+      { frames: 6, right: { squeeze: 1 }, mark: "tookRifle" },
+      { frames: 30, right: { to: RIFLE_HAND } },
+      { frames: 6, right: {} },
+      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
+      { frames: 30, right: { stick: [0, 0] } },
+      ...takeSpare(SPARE.rifle, RIFLE_BASE),
+      { frames: 25, left: { to: rifleMagHand(-RIFLE_WELL.drop - 0.04) } },
+      { frames: 10, left: { to: rifleMagHand(-RIFLE_WELL.drop) }, mark: "aligned" },
+      { frames: 20, left: { to: rifleMagHand(0.01) }, mark: "seated" },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 15, left: { to: add(rifleMagHand(0), [-0.08, 0.05, 0]) }, spectator: atRifleHandle },
+      { frames: 20, left: { to: handleAt(0) } },
+      { frames: 4, left: { squeeze: 1 }, mark: "onHandle" },
+      { frames: 10, left: { to: handleAt(CHARGING.travel) }, mark: "pulled" },
+      { frames: 1, left: { squeeze: 0 }, mark: "racked" },
+      { frames: 20, left: { to: LEFT_OUT } },
+      { frames: 20, right: { to: AIM_HAND, turn: AIM_RIGHT }, spectator: behindRifle },
+      { frames: 6, right: {} },
+      { frames: 1, right: { trigger: 1 }, mark: "fired" },
+      { frames: 6, right: { trigger: 0 } },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -1095,4 +1415,5 @@ export const scenarios = {
   ...armoryScenarios,
   ...rifleScenarios,
   ...ammoScenarios,
+  ...reloadScenarios,
 };
