@@ -38,9 +38,12 @@ const poseOf = (m) => {
   const pose = some(p.held)?.accepted ?? p.pose;
   return { position: xyz(pose.position), orientation: quat(pose.orientation) };
 };
+// A point in the frame of a pistol at `pose`; rig-local to world.
+const inPistol = (pose, local) => add(pose.position, qrot(pose.orientation, local));
+const toWorld = (p) => rigToWorld(p, armory.feet, armory.yaw);
 // The shot from a pistol at `pose`, from where its grip puts the hand.
 const boreOf = (pose) => {
-  const hand = add(pose.position, qrot(pose.orientation, GRIP_IN_PISTOL));
+  const hand = inPistol(pose, GRIP_IN_PISTOL);
   return muzzleOf(hand, pose.orientation);
 };
 const lastShot = (m) => some(m.gun.last);
@@ -92,8 +95,7 @@ await run("barrel into the wall", async (rt) => {
   // on the grip where the wall stopped the pistol; the ghost at the hand.
   check(pushed.handView.$ctor === "Accepted", "the hands drawn Accepted by default");
   const kids = scenes.pushed.scene.obj.Group;
-  const toWorld = (p) => rigToWorld(p, armory.feet, armory.yaw);
-  const grip = toWorld(add(pose.position, qrot(pose.orientation, GRIP_IN_PISTOL)));
+  const grip = toWorld(inPistol(pose, GRIP_IN_PISTOL));
   const drawn = placedAt(kids[5]);
   const ghost = placedAt(kids[7]);
   const hand = toWorld(at("pushed").right.at);
@@ -117,9 +119,8 @@ await run("racking hand drawn on the slide", async (rt) => {
   check(some(m.gun.slide.hand)?.$ctor === "Hold.Left" && m.gun.slide.pull === SLIDE.travel, `the left hand on the slide, back its full travel (${m.gun.slide.pull})`);
   // `/scene`: 4 the left hand, 6 its ghost.
   const kids = scenes.rackHeld.scene.obj.Group;
-  const toWorld = (p) => rigToWorld(p, armory.feet, armory.yaw);
   const pose = poseOf(m);
-  const end = toWorld(add(pose.position, qrot(pose.orientation, add(SLIDE.at, [0, 0, SLIDE.travel]))));
+  const end = toWorld(inPistol(pose, add(SLIDE.at, [0, 0, SLIDE.travel])));
   const hand = toWorld(at("rackHeld").left.at);
   const drawn = placedAt(kids[4]);
   const ghost = placedAt(kids[6]);

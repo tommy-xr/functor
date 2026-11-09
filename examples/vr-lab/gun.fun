@@ -346,9 +346,9 @@ expect (let s = take(pistol.rack, true, Hold.Left, 0.5) in s.pull == pistol.rack
 expect strokes(pistol.rack, true, [0.0, 0.006]) == [Back, Home] && strokes(pistol.rack, true, [0.0]) == []
 
 /// Where the hand on slide `s` (at `hand`) is drawn on weapon `w` accepted
-/// at `accepted` and wanted at `wanted`: turned as it is, carried with the
-/// weapon where the level stopped it short, its fist on the slide's line
-/// where the slide has it (the hand's place along it, within the travel).
+/// at `accepted` and wanted at `wanted`: turned with the weapon as the level
+/// stopped it, its fist on the slide's line where the slide has it (the
+/// hand's place along it, within the travel).
 let rackOn = (w: Weapon, s: Slide, accepted: Input.pose, wanted: Input.pose, hand: Input.pose): Input.pose =>
   let turned = (Hold.compose(accepted, Hold.relative(wanted, hand))).orientation in
   Hold.at(Quat.add(accepted.position, Quat.rotate(accepted.orientation, Quat.v3(w.rack.at.x, w.rack.at.y, s.from + s.pull))), turned)

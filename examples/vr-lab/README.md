@@ -153,8 +153,9 @@ same path:
   default: a hand pushed through the wall is drawn at the wall) or where it
   is tracked (`Tracked`). In `Accepted` a gun's support hand is drawn on its
   foregrip (or fore-end), and a racking hand on the slide (or charging
-  handle) where the slide has it. A translucent ghost shows the tracked hand
-  when they are over 2 cm or 10° apart. Only drawing changes: the tracked
+  handle) where the slide has it, so a hand off that line is drawn on it. A
+  translucent ghost shows the tracked hand when they are over 2 cm or 10°
+  apart. Only drawing changes: the tracked
   pose always drives the hold.
 
 Worn checks still open: held-prop judder at 120 Hz (the hold updates at the

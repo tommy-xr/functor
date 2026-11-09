@@ -1008,13 +1008,16 @@ expect (
 )
 // The pistol's slide pulled 2 cm: the racking hand drawn where it is (on the
 // slide's line, the pistol unblocked), no ghost. Pulled 4 cm past the
-// travel: drawn at the slide's end, ghosted; in `Tracked`, where it is.
+// travel: drawn at the slide's end, ghosted, and still there with the
+// pistol's hand lost; in `Tracked`, where it is.
 expect (
   let rack = (back: float) => playBoth(Game.noWorld, last(racked), [(lefty(onSlideUp(0.0), 0.0), upHold), (lefty(onSlideUp(0.0), 1.0), upHold), (lefty(onSlideUp(back), 1.0), upHold)]) in
   let part = last(rack(0.02)) in
   let past = last(rack(Gun.slideTravel + 0.04)) in
+  let lost = last(playBoth(Game.noWorld, past, [(lefty(onSlideUp(Gun.slideTravel + 0.04), 1.0), Game.away)])) in
   part.gun.slide.hand == Option.Some(Hold.Left) && Hold.near(drawnOf(part, Hold.Left), onSlideUp(0.02)) && not ghostOf(part, Hold.Left)
     && Hold.near(drawnOf(past, Hold.Left), onSlideUp(Gun.slideTravel)) && ghostOf(past, Hold.Left)
+    && lost.gun.slide.hand == Option.Some(Hold.Left) && Hold.near(drawnOf(lost, Hold.Left), onSlideUp(Gun.slideTravel))
     && Hold.near(drawnOf(asTracked(past), Hold.Left), trackedOf(past, Hold.Left))
 )
 // The fore-end pulled 5 cm past the pump's travel: the support drawn where
