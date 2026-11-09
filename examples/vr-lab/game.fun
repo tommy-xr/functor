@@ -907,7 +907,7 @@ let step = (m: Model, st: Stations.Station, world: World, read: (Prop) => Prop, 
   let (seated, fell, seatFelt) = seating(held, st, world) in
   let (slid, racked, rackFelt) = racking(m, seated, st, world) in
   let (pumped, pumpedOut, pumpFelt) = pumping(slid, st, world) in
-  let thrown = List.append(racked, pumpedOut) in
+  let thrown = racked |> List.append(pumpedOut) in
   // Then the guns.
   let (pistolShot, pistolFired) = shooting(scoring(pumped, st), world, Props.Pistol, t, dt) in
   let (rifleShot, rifleFired) = shooting(pistolShot, world, Props.Rifle, t, dt) in

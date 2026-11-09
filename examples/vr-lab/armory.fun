@@ -741,3 +741,221 @@ expect (
     && countOf(Hold.Left, Pulses.SlideHome, lost) == 0.0
     && (last(home)).gun.ammo.chambered && Option.isNone((last(home)).gun.slide.hand)
 )
+
+// --- the shotgun ---
+
+let shotgunAt = Stations.spawn(Props.Shotgun)
+let shotgun = (m: Game.Model) => Game.propOf(m, Props.Shotgun)
+// The right fist on the racked shotgun's pistol grip; the left hand `d` ahead
+// of it along the bore (on the fore-end, 28-42 cm ahead with the pump home).
+let onPump = Hold.compose(shotgunAt, Pump.grip)
+let sgStill = grabbed(onPump)
+let sgPull = hand(onPump, 1.0, 1.0)
+let foreAt = (d: float, squeeze: float): Input.controller => lefty(foreOf(onPump, d, 0.0, 0.0), squeeze)
+/// The shell box's top, a hand pointing down range; the loading port `d`
+/// along its axis (0 seated, the mouth `drop` below).
+let boxHand = Hold.at(Stations.shellBoxTop, Quat.identity)
+let port = (d: float): Input.pose => Hold.compose(shotgunAt, Gun.wellAt(Pump.weapon, d))
+let portMouth = port(0.0 - Pump.weapon.well.drop)
+/// A shell out of the box, turned `turn` in the hand, to the port's mouth,
+/// pushed up it past home and held there `hold` steps, the hand opened.
+let loadShell = (turn: Input.quaternion, hold: float) =>
+  let at = (p: Input.pose) => Hold.compose(p, Hold.at(Hold.zero, turn)) in
+  List.flatten([
+    [(lefty(at(boxHand), 0.0), sgStill), (lefty(at(boxHand), 1.0), sgStill), (lefty(at(portMouth), 1.0), sgStill)],
+    List.range(8.0 + hold) |> List.map((i) => (lefty(at(port(Pump.weapon.well.drop * (Math.min(8.0, i + 1.0) / 7.0 - 1.0))), 1.0), sgStill)),
+    [(lefty(at(port(0.0)), 0.0), sgStill)],
+  ])
+let straight = loadShell(Quat.identity, 0.0)
+/// A shell lying at `at` taken by the left hand where it is, turned as the
+/// port takes it, and pushed into the port.
+let loadShellFrom = (at: Input.pose) =>
+  let hand = Hold.at(at.position, Quat.identity) in
+  List.flatten([
+    [(lefty(hand, 0.0), sgStill), (lefty(hand, 1.0), sgStill)],
+    List.drop(2.0, straight),
+  ])
+/// The left hand takes the fore-end 30 cm ahead (the pump home), then draws
+/// it `back` along the bore over 6 steps and returns it over 6.
+let pumpBy = (back: float) => List.flatten([
+  [(foreAt(0.3, 0.0), sgStill), (foreAt(0.3, 1.0), sgStill)],
+  List.range(6.0) |> List.map((i) => (foreAt(0.3 - back * (i + 1.0) / 6.0, 1.0), sgStill)),
+  List.range(6.0) |> List.map((i) => (foreAt(0.3 - back * (5.0 - i) / 6.0, 1.0), sgStill)),
+])
+/// A stroke of a fore-end already held: back the whole travel and home.
+let stroke = List.flatten([
+  List.range(6.0) |> List.map((i) => (foreAt(0.3 - Pump.pumpTravel * (i + 1.0) / 6.0, 1.0), sgStill)),
+  List.range(6.0) |> List.map((i) => (foreAt(0.3 - Pump.pumpTravel * (5.0 - i) / 6.0, 1.0), sgStill)),
+])
+/// A pull of the right trigger with the left on the fore-end, let out.
+let sgShot = [(foreAt(0.3, 1.0), sgPull), (foreAt(0.3, 1.0), sgStill)]
+let tubeOf = (m: Game.Model): float => Ammo.roundsIn(m.shotgun.ammo.mag)
+
+// Out of its rack by the pistol grip (an unstow): empty, 0+0.
+let tookShotgun = play2(start, List.flatten([[(Game.away, hand(onPump, 0.0, 0.0))], both(4.0, Game.away, sgStill)]))
+let sgHeld = last(tookShotgun)
+expect (
+  Game.isHeld(sgHeld, Props.Shotgun) && Option.isNone(shotgun(sgHeld).slot) && Hold.near(Game.poseOf(shotgun(sgHeld)), shotgunAt)
+    && Ammo.count(sgHeld.shotgun.ammo) == 0.0 && sgHeld.shellBox == Stations.shellsInBox && countOf(Hold.Right, Pulses.Unstow, tookShotgun) == 1.0
+)
+// Empty, its trigger clicks dry.
+expect (let ms = play2(sgHeld, [(Game.away, sgPull)]) in last(ms).shotgun.dry == 1.0 && countOf(Hold.Right, Pulses.Click, ms) == 1.0)
+
+// --- loading the tube ---
+
+// A shell out of the box (a grab: the box 11), to the port's mouth lined up
+// (a latch), pushed up it: in the tube (a load pulse in each hand), gone from
+// the hand.
+let oneIn = play2(sgHeld, straight)
+expect (
+  let m = last(oneIn) in
+  tubeOf(m) == 1.0 && m.shellBox == Stations.shellsInBox - 1.0 && not (m.props |> List.any((p) => Game.isRound(p.kind)))
+    && countOf(Hold.Left, Pulses.Grab, oneIn) == 1.0 && countOf(Hold.Left, Pulses.Latch, oneIn) == 1.0
+    && countOf(Hold.Left, Pulses.Load, oneIn) == 1.0 && countOf(Hold.Right, Pulses.Load, oneIn) == 1.0
+    && Option.isNone(Game.inHand(m, Hold.Left)) && conserved(oneIn)
+)
+// Guided up the port's axis: on it, the shell lying along the bore.
+expect (
+  let latched = oneIn |> List.filter((m) => m.props |> List.any((p) => Option.isSome(p.latch))) in
+  List.length(latched) > 4.0 && (latched |> List.all((m) => m.props |> List.all((p) =>
+    Option.isNone(p.latch) || (Seating.placeOf(Pump.weapon, shotgunAt, (Game.poseOf(p)).position)).off < 0.0001)))
+)
+// Six go in; the seventh is refused (the tube full): it never latches, and
+// stays in the hand.
+let sixIn = play2(sgHeld, List.range(6.0) |> List.concatMap((_) => straight))
+let seventh = play2(last(sixIn), List.take(List.length(straight) - 1.0, straight))
+expect tubeOf(last(sixIn)) == 6.0 && (last(sixIn)).shellBox == Stations.shellsInBox - 6.0 && countOf(Hold.Left, Pulses.Load, sixIn) == 6.0 && conserved(sixIn)
+expect (
+  let m = last(seventh) in
+  tubeOf(m) == 6.0 && (seventh |> List.all((n) => n.props |> List.all((p) => Option.isNone(p.latch)))) && countOf(Hold.Left, Pulses.Latch, seventh) == 0.0
+    && (Game.inHand(m, Hold.Left) |> Option.map((k) => Game.isRound(k)) |> Option.defaultValue(false)) && conserved(seventh)
+)
+// Reversed (its head forward), or tipped 45° off the bore: never latches.
+expect [Quat.yaw(Math.pi), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 4.0)] |> List.all((q) =>
+  let ms = play2(sgHeld, loadShell(q, 0.0)) in
+  tubeOf(last(ms)) == 0.0 && countOf(Hold.Left, Pulses.Latch, ms) == 0.0 && (ms |> List.all((n) => n.props |> List.all((p) => Option.isNone(p.latch)))))
+// Turned about its own axis it still latches (a shell has no up), eases
+// round onto the port's turn, and goes in.
+expect (
+  let ms = play2(sgHeld, loadShell(Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 2.0), 8.0)) in
+  countOf(Hold.Left, Pulses.Latch, ms) == 1.0 && tubeOf(last(ms)) == 1.0
+)
+
+// --- the pump ---
+
+let loaded6 = last(sixIn)
+// The fore-end taken (a grab), drawn all the way back (a pulse) and home (a
+// pulse in each hand): a shell fed from the tube, 5+1. Drawn back only 6 cm
+// (67%) and home: nothing.
+let pumped = play2(loaded6, pumpBy(Pump.pumpTravel))
+let partialPump = play2(loaded6, pumpBy(0.06))
+expect (
+  let m = last(pumped) in
+  Game.supportOf(shotgun(m)) == Option.Some(Hold.Left) && tubeOf(m) == 5.0 && m.shotgun.ammo.chambered
+    && countOf(Hold.Left, Pulses.Grab, pumped) == 1.0 && countOf(Hold.Left, Pulses.SlideBack, pumped) == 1.0
+    && countOf(Hold.Left, Pulses.SlideHome, pumped) == 1.0 && countOf(Hold.Right, Pulses.SlideHome, pumped) == 1.0
+    && List.isEmpty(m.props |> List.filter((p) => Game.isLoose(p.kind))) && conserved(pumped)
+)
+expect (
+  let m = last(partialPump) in
+  tubeOf(m) == 6.0 && not m.shotgun.ammo.chambered && countOf(Hold.Left, Pulses.SlideBack, partialPump) == 0.0
+    && countOf(Hold.Left, Pulses.SlideHome, partialPump) == 0.0
+)
+// The fore-end rides the pump: the aim doesn't move as it slides, and the
+// pump follows the hand along the bore (clamped to its travel).
+expect (
+  (pumped |> List.all((m) => Hold.near(Game.poseOf(shotgun(m)), shotgunAt)))
+    && (List.nth(8.0, pumped) |> Option.map((m) => Math.abs(m.shotgun.slide.pull - Pump.pumpTravel) < 0.0001) |> Option.defaultValue(false))
+)
+// The hand's tracking lost with the pump back: the support lets go and the
+// pump stays back, nothing fed; the hand back (open, then squeezed where the
+// fore-end is): it takes it there, and home it feeds.
+let backThenLost = play2(loaded6, List.flatten([List.take(8.0, pumpBy(Pump.pumpTravel)), both(4.0, Game.away, sgStill)]))
+let backRetaken = play2(last(backThenLost), List.flatten([
+  [(foreAt(0.3 - Pump.pumpTravel, 0.0), sgStill), (foreAt(0.3 - Pump.pumpTravel, 1.0), sgStill)],
+  List.range(6.0) |> List.map((i) => (foreAt(0.3 - Pump.pumpTravel * (5.0 - i) / 6.0, 1.0), sgStill)),
+]))
+expect (
+  let lost = last(backThenLost) in
+  Option.isNone(Game.supportOf(shotgun(lost))) && Option.isNone(lost.shotgun.slide.hand) && lost.shotgun.slide.back
+    && Math.abs(lost.shotgun.slide.pull - Pump.pumpTravel) < 0.0001 && not lost.shotgun.ammo.chambered && tubeOf(lost) == 6.0
+    && countOf(Hold.Left, Pulses.SlideHome, backThenLost) == 0.0
+)
+// While the pump is back the trigger clicks dry.
+expect (last(play2(last(backThenLost), [(Game.away, sgPull)]))).shotgun.dry == 1.0
+expect (
+  let m = last(backRetaken) in
+  m.shotgun.ammo.chambered && tubeOf(m) == 5.0 && not m.shotgun.slide.back && m.shotgun.slide.pull < 0.0001
+    && countOf(Hold.Left, Pulses.SlideHome, backRetaken) == 1.0 && conserved(List.append(backThenLost, backRetaken))
+)
+
+// --- firing ---
+
+// A stand-in world whose rays strike 5 m along their way, a target.
+let onTarget = { Game.noWorld with ray: struck("target-1", true) }
+let sgPlay = (m0: Game.Model, script: List<(Input.controller, Input.controller)>) => playBoth(onTarget, m0, script)
+// One shot: eight pellets, eight hits (one along the bore, seven 1.2° round
+// it), one point, both hands' fire pulses, the hull left in the chamber. The
+// next pull without a pump is dry: one shot a stroke.
+let firedOnce = sgPlay(last(pumped), sgShot)
+let pulledAgain = sgPlay(last(firedOnce), sgShot)
+expect (
+  let m = last(firedOnce) in
+  let b = Gun.boreOf(Pump.weapon, Game.poseOf(shotgun(m))) in
+  let offBore = (h: Gun.Impact) => Math.acos(Math.clamp(-1.0, 1.0, Quat.dot(Longarm.unit(Quat.sub(h.point, b.muzzle)), b.dir))) in
+  m.shotgun.fired == 1.0 && List.length(m.shotgun.hits) == 8.0 && m.score == 1.0
+    && (List.head(m.shotgun.hits) |> Option.map((h) => offBore(h) < 0.0001) |> Option.defaultValue(false))
+    && (List.drop(1.0, m.shotgun.hits) |> List.all((h) => Math.abs(offBore(h) - Pump.weapon.spread) < 0.0001))
+    && m.shotgun.ammo.hull && not m.shotgun.ammo.chambered && tubeOf(m) == 5.0
+    && countOf(Hold.Right, Pulses.Fire, firedOnce) == 1.0 && countOf(Hold.Left, Pulses.Fire, firedOnce) == 1.0 && conserved(firedOnce)
+)
+expect (
+  let m = last(pulledAgain) in
+  m.shotgun.fired == 1.0 && m.shotgun.dry == 1.0 && countOf(Hold.Right, Pulses.Click, pulledAgain) == 1.0 && countOf(Hold.Right, Pulses.Fire, pulledAgain) == 0.0
+)
+// Pumped: the hull thrown out (litter, no round), the next fed; fired again,
+// the pattern turned (the same cone, the ring elsewhere on it), and the same
+// on every run.
+let pumpedOut = sgPlay(last(pulledAgain), stroke)
+let firedTwice = sgPlay(last(pumpedOut), sgShot)
+expect (
+  let m = last(pumpedOut) in
+  m.shotgun.ammo.chambered && not m.shotgun.ammo.hull && tubeOf(m) == 4.0
+    && (m.props |> List.filter((p) => Game.isLoose(p.kind)) |> List.map((p) => p.kind)) == [Props.Hull(7.0)] && m.lost == 0.0 && conserved(pumpedOut)
+)
+expect (
+  let m = last(firedTwice) in
+  let first = List.take(8.0, m.shotgun.hits) in
+  let second = List.drop(8.0, m.shotgun.hits) in
+  m.shotgun.fired == 2.0 && List.length(second) == 8.0
+    && (List.zip(second, first) |> List.drop(1.0) |> List.all((ab) => let (a, b) = ab in not Hold.near3(a.point, b.point)))
+    && (last(sgPlay(last(pumpedOut), sgShot))).shotgun.hits == m.shotgun.hits
+)
+// A pump with a live shell chambered throws it out loose, and it loads again.
+expect (
+  let ms = play2(last(pumped), stroke) in
+  let m = last(ms) in
+  let live = m.props |> List.filter((p) => Game.isRound(p.kind)) in
+  tubeOf(m) == 4.0 && m.shotgun.ammo.chambered && (live |> List.map((p) => p.kind)) == [Props.Round(Ammo.Shell, 7.0)] && conserved(ms)
+    && tubeOf(last(play2(m, List.flatten([[(foreAt(0.3, 0.0), sgStill)], loadShellFrom(Game.poseOf(Game.propOf(m, Props.Round(Ammo.Shell, 7.0))))])))) == 5.0
+)
+
+// The whole loop: a seventh shell in (6+1), then seven shots each pumped,
+// then the next pull dry; every step conserved.
+let sevenShots = List.flatten([
+  [(foreAt(0.3, 0.0), sgStill)], straight,
+  [(foreAt(0.3, 0.0), sgStill), (foreAt(0.3, 1.0), sgStill)],
+  List.range(7.0) |> List.concatMap((_) => List.flatten([sgShot, stroke])),
+  sgShot,
+])
+let looped = sgPlay(last(pumped), sevenShots)
+expect (
+  let m = last(looped) in
+  m.shotgun.fired == 7.0 && m.shotgun.dry == 1.0 && Ammo.count(m.shotgun.ammo) == 0.0 && m.shellBox == Stations.shellsInBox - 7.0
+    && countOf(Hold.Right, Pulses.Fire, looped) == 7.0 && conserved(List.flatten([tookShotgun, sixIn, pumped, looped]))
+)
+// Let go in its rack by the hand holding it alone, it goes back in it.
+expect (
+  let m = last(play2(last(pumped), [(foreAt(0.3, 0.0), sgStill), (Game.away, sgStill), (Game.away, hand(onPump, 0.0, 0.0))])) in
+  shotgun(m).slot == Option.Some(Slots.shotgunRack.id) && not Game.isHeld(m, Props.Shotgun)
+)
