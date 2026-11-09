@@ -702,3 +702,13 @@ expect (
   let m = last(holding(auto(ready), 200.0)) in
   m.rifle.ammo.locked && Gun.slideBack(Longarm.weapon, m.rifle) == 0.0 && Longarm.boltBack(m.rifle) > 0.04
 )
+// A loose round come to rest lies bodiless where it is; the left hand takes
+// it from there, and it is a held prop again.
+expect (
+  let round = Props.Round(Ammo.PistolMag, 1.0) in
+  let at = Hold.p(-0.2, 0.905, -0.6) in
+  let lying = Game.withProp({ Game.propOf(last(full), round) with pose: at, lying: true }, last(full)) in
+  let m = last(playBoth(Game.noWorld, lying, [(lefty(at, 0.0), upHold), (lefty(at, 1.0), upHold)])) in
+  let p = Game.propOf(m, round) in
+  not p.lying && (p.held |> Option.map((h) => h.side == Hold.Left && Hold.near(h.accepted, at)) |> Option.defaultValue(false))
+)

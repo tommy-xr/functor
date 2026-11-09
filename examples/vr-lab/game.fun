@@ -75,7 +75,10 @@ type Prop = {
   mag: Option.t<Ammo.Mag>,
   // A held magazine caught in a well and guided along it: it has no body
   // (it is part of its gun), and the hand drives only its depth.
-  latch: Option.t<Seating.Latch>
+  latch: Option.t<Seating.Latch>,
+  // A loose round come to rest: bodiless where it lies (`pose`), costing no
+  // physics or read-back, until a hand takes it.
+  lying: bool
 }
 
 // Prop poses and velocities are rig-local.
@@ -133,7 +136,8 @@ let spawned = (k: Props.Kind): Prop =>
     mag: match k with
       | Props.Mag(fits, _) => Option.Some(Ammo.full(fits))
       | _ => Option.None,
-    latch: Option.None }
+    latch: Option.None,
+    lying: false }
 
 /// Jump to a station and reset it: no holds, empty slots, fresh props, the
 /// guns loaded and the spares full, no loose rounds, and hands that must open
@@ -416,7 +420,7 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
           (match required with
            | Option.Some(a) => Hold.settleInto(a, taken)
            | Option.None => taken) in
-        taking({ p with held: Option.Some(held), support: stays, fore: false, slot: Option.None, scored: false })))
+        taking({ p with held: Option.Some(held), support: stays, fore: false, slot: Option.None, scored: false, lying: false })))
       |> Option.defaultValue(m)
 
 /// Hands hover what they reach, and a fresh squeeze takes it; both hands
@@ -708,14 +712,16 @@ let racking = (prev: Model, m: Model, st: Stations.Station, world: World): (Mode
     let (next, out, felt) = acc in
     let g = gunOf(next, k) in
     let w = weaponOf(k) in
-    let holder = propOf(next, k).held |> Option.map((h) => h.side) in
+    // Only a gun whose slide is held, or released, does anything.
+    let holder = () => propOf(next, k).held |> Option.map((h) => h.side) in
     let homeFelt = (side: Option.t<Hold.Side>) => side |> Option.map((s) => [(s, Pulses.SlideHome)]) |> Option.defaultValue([]) in
     match g.slide.hand with
     | Option.None =>
       if g.ammo.locked && (prev.slideRelease |> List.any((r) => r == k)) then
-        (withGun(next, k, { g with ammo: Ammo.close(g.ammo) }), out, felt |> List.append(homeFelt(holder)))
+        (withGun(next, k, { g with ammo: Ammo.close(g.ammo) }), out, felt |> List.append(homeFelt(holder())))
       else acc
     | Option.Some(side) =>
+      let holder = holder() in
       let p = propOf(next, k) in
       let gun = poseOf(p) in
       let z =
@@ -902,12 +908,17 @@ let tick = (m: Model, dt: float, tts: float) =>
   let st = Stations.find(m.station) in
   let read = (p: Prop): Prop =>
     // A slotted prop, or a latched magazine, has no body to read.
-    if m.fresh || Option.isSome(p.slot) || Option.isSome(p.latch) then p
+    if m.fresh || Option.isSome(p.slot) || Option.isSome(p.latch) || p.lying then p
     else
       match Physics.pose(tagOf(m.gen, p.kind)) with
       | Option.Some(q) =>
         let v = Physics.linearVelocity(tagOf(m.gen, p.kind)) in
-        { p with pose: unposed(st, q), velocity: Stations.dirToRig(st, Quat.v3(v.x, v.y, v.z)) }
+        let pose = unposed(st, q) in
+        // A free loose round still for a step (under 2 cm/s, moved under
+        // 0.2 mm) lies where it is from now.
+        let still = isRound(p.kind) && Option.isNone(p.held) && Quat.length(Quat.v3(v.x, v.y, v.z)) < 0.02
+          && Quat.length(Quat.sub(pose.position, p.pose.position)) < 0.0002 in
+        { p with pose: pose, velocity: if still then zero else Stations.dirToRig(st, Quat.v3(v.x, v.y, v.z)), lying: still }
       | Option.None => p in
   let (next, released) = step(m, st, worldOf(st, m.gen), read, tts, dt) in
   // Declared dynamic and given their velocities in the same frame: both land
@@ -931,7 +942,7 @@ let physics = (m: Model) =>
     match p.held with
     | Option.Some(h) => Physics.kinematic(tag, shape) |> Physics.atPose(posed(st, h.accepted))
     | Option.None => Physics.dynamic(tag, shape) |> Physics.atPose(posed(st, p.at)) |> Props.dynamics(p.kind) in
-  Physics.scene(Vec3.make(0.0, -9.81, 0.0), Stations.solids |> List.map(solid) |> List.append(m.props |> List.filter((p) => Option.isNone(p.slot) && Option.isNone(p.latch)) |> List.map(body)))
+  Physics.scene(Vec3.make(0.0, -9.81, 0.0), Stations.solids |> List.map(solid) |> List.append(m.props |> List.filter((p) => Option.isNone(p.slot) && Option.isNone(p.latch) && not p.lying) |> List.map(body)))
 
 // --- the pure step, with no world ---
 
@@ -1241,7 +1252,7 @@ let propScene = (m: Model, st: Stations.Station, p: Prop, t: float) =>
     // A gun is drawn kicked by its recoil; it fires from `accepted`.
     | Option.Some(h) => posed(st, Props.weapon(p.kind) |> Option.map((w) => Gun.kicked(w, (gunOf(m, p.kind)).kick, h.accepted)) |> Option.defaultValue(h.accepted))
     | Option.None =>
-      if Option.isSome(p.slot) then posed(st, p.pose)
+      if Option.isSome(p.slot) || p.lying then posed(st, p.pose)
       else Physics.pose(tagOf(m.gen, p.kind)) |> Option.defaultValue(posed(st, p.at)) in
   let shown =
     match Props.weapon(p.kind) with

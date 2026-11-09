@@ -169,7 +169,7 @@ await run("eight racks: the loose-round cap", async (rt) => {
   const ids = loose(rest).map((p) => p.kind.args[1]);
   check(ids.join() === [3, 4, 5, 6, 7, 8].join() && rest.lost === 2, `eight thrown out: the newest ${LOOSE_CAP} lie about (${ids}), the oldest 2 taken away (lost ${rest.lost})`);
   check(readout(rest.gun.ammo) === "4+1", `the pistol: ${readout(rest.gun.ammo)}`);
-  check(loose(rest).every((p) => len(xyz(p.velocity)) < 0.05), "all at rest");
+  check(loose(rest).every((p) => p.lying && len(xyz(p.velocity)) < 0.05), "all at rest, lying bodiless where they came to rest");
   conserves("cap", steps);
 });
 
