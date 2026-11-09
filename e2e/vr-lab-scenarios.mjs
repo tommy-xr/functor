@@ -695,11 +695,16 @@ const POUCH = slotAt("pouch");
 
 // (Armory rig (x, y, z) is world (4 - z, y, x).) Close behind the aimed
 // pistol's slide: its readout.
-export const atSlide = { eye: [3.95, 1.45, 0.27], target: [4.3, 1.34, 0.2], fov: 28 };
-// Above and left of the bench: the dropped magazine and the spares.
-const atSpares = { eye: [3.6, 1.8, -0.5], target: [4.5, 0.95, -0.1], fov: 45 };
-// From ahead and left, at the belt: the pouch.
-const atPouch = { eye: [4.8, 1.3, -0.6], target: [4.05, 1.0, -0.05], fov: 40 };
+const atSlide = { eye: [3.95, 1.5, 0.35], target: [4.4, 1.3, 0.2], fov: 30 };
+// The same, over the bench.
+const atBenchSlide = { eye: [4.15, 1.4, 0.15], target: [4.55, 1.22, 0.0], fov: 32 };
+// Behind and left of the bench: the dropped magazine and the spares.
+const atSpares = { eye: [3.95, 1.45, -0.6], target: [4.5, 0.95, -0.15], fov: 40 };
+// From the player's right, at the belt: the pouch.
+const atPouch = { eye: [4.2, 1.2, 0.65], target: [4.06, 0.95, -0.02], fov: 34 };
+
+// Close behind the raised rifle's receiver: its readout, the targets beyond.
+const atReceiver = { eye: [4.0, 1.5, 0.32], target: [4.45, 1.36, 0.18], fov: 28 };
 
 const ammoScenarios = {
   // Aimed at the right target: thirteen pulls, thirteen hits; the fourteenth
@@ -770,6 +775,60 @@ const ammoScenarios = {
       { frames: 4, right: { trigger: 0 } },
       { frames: 1, right: { trigger: 1 }, mark: "dry" },
       { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // The demo: the pistol counting down (12+1 to 8+1), its magazine dropped
+  // over the bench (8 on it), the chambered round fired (--+0) and a dry
+  // click (the readout red); the left hand takes the magazine, pouches it,
+  // takes it back (still 8) and sets it down; the pistol holstered. Then the
+  // rifle on full-auto to empty (30+1 to 0+0), and a dry click.
+  "ammo-tour": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT }, spectator: atSlide },
+      { frames: 10, right: {} },
+      ...pulls(4).map((seg) => (seg.frames === 4 ? { ...seg, frames: 12 } : seg)),
+      { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] }, spectator: atSpares },
+      { frames: 8, right: {} },
+      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
+      { frames: 30, right: { stick: [0, 0] } },
+      { frames: 1, right: { trigger: 1 }, spectator: atBenchSlide },
+      { frames: 14, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 }, mark: "dry" },
+      { frames: 14, right: { trigger: 0 } },
+      { frames: 20, right: { to: [0.25, 1.2, -0.3] }, spectator: atSpares },
+      { frames: 20, left: { to: add(MAG_REST, [0, 0.1, 0]) } },
+      { frames: 10, left: { to: MAG_REST } },
+      { frames: 4, left: { squeeze: 1 } },
+      { frames: 20, left: { to: add(MAG_REST, [0, 0.2, 0.15]) } },
+      { frames: 30, left: { to: POUCH }, spectator: atPouch },
+      { frames: 1, left: { squeeze: 0 }, mark: "pouched" },
+      { frames: 20, left: {} },
+      { frames: 4, left: { squeeze: 1 } },
+      { frames: 30, left: { to: [-0.2, 1.15, -0.4] }, mark: "retrieved", spectator: atSpares },
+      { frames: 20, left: { to: [-0.3, 1.0, -0.55] } },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 15, left: { to: LEFT_OUT } },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1] }, spectator: atArmoryHip },
+      { frames: 25, right: { to: ARMORY_RH } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 10, right: {} },
+      { ...takeRifle[0], spectator: behindRifle },
+      ...takeRifle.slice(1),
+      raise(),
+      { frames: 20, left: { to: at(TARGETS[1]) }, spectator: atReceiver },
+      { frames: 10, left: {} },
+      { frames: 1, right: { primary: true } },
+      { frames: 3, right: { primary: false } },
+      { frames: 120, right: { trigger: 1 } },
+      { frames: 80, right: { trigger: 1 }, spectator: behindRifle, mark: "emptied" },
+      { frames: 10, right: { trigger: 0 }, spectator: atReceiver },
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 20, right: { trigger: 0 } },
     ],
   },
 };
