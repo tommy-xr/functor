@@ -10,7 +10,13 @@ type Station = { id: float, name: string, feet: Input.point3, yaw: float }
 
 let grabTable: Station = { id: 1.0, name: "grab table", feet: Quat.v3(0.0, 0.0, 4.0), yaw: 0.0 }
 
-let all = [grabTable]
+// Facing -Z, so its rig-local frame is the world's, moved to its feet.
+let inventory: Station = { id: 2.0, name: "inventory", feet: Quat.v3(0.0, 0.0, -4.0), yaw: Math.pi }
+
+let all = [grabTable, inventory]
+
+/// Whether the body slots are worn there.
+let worn = (s: Station): bool => s.id == inventory.id
 
 let find = (id: float): Station =>
   all |> List.find((s) => s.id == id) |> Option.defaultValue(grabTable)
@@ -22,7 +28,7 @@ let after = (id: float): float =>
   | Option.Some(s) => s.id
   | Option.None => List.head(all) |> Option.map((s) => s.id) |> Option.defaultValue(id)
 
-expect after(grabTable.id) == grabTable.id
+expect after(grabTable.id) == inventory.id && after(inventory.id) == grabTable.id
 
 // --- the rig ---
 // Tracked space is +X right, -Z forward; a station faces +Z turned by its
@@ -101,7 +107,15 @@ let boardAt = Quat.add(basketAt, Quat.v3(0.0, 1.5, 0.6))
 
 let floor: Box = { center: Quat.v3(0.0, -0.05, 0.0), size: Quat.v3(30.0, 0.1, 30.0) }
 
+// --- the inventory ---
+// The same table at the same place ahead of the feet, so the props spawn on
+// it; no wall, no basket.
+
+let bench: Box = { center: toWorld(inventory, toRig(grabTable, table.center)), size: table.size }
+
+expect Hold.near3(bench.center, Quat.v3(0.125, tableTop / 2.0, -4.6))
+
 /// The lab's fixed geometry, tagged for the `physics` hook.
 let solids: List<(string, Box)> =
-  [("floor", floor), ("table", table), ("wall", wall)]
+  [("floor", floor), ("table", table), ("wall", wall), ("bench", bench)]
     |> List.append(basket |> List.indexedMap((i, b) => ($"basket-{i}", b)))

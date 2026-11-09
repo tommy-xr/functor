@@ -40,12 +40,14 @@ type Release = { prop: Props.Kind, kind: ReleaseKind, at: Input.point3, velocity
 /// held prop's accepted pose implies (a hand blocked with its prop).
 type HandView = | Tracked | Accepted
 
-/// A prop: in a hand, or free. Free, it is declared at `at` (its spawn, or
-/// where it was let go): a constant until the next grab, so the simulation
-/// owns its pose.
+/// A prop: in a hand, in a body slot, or free (neither). Free, it is declared
+/// at `at` (its spawn, or where it was let go): a constant until the next
+/// grab, so the simulation owns its pose. Slotted, it has no body: it rides
+/// the hips at its slot's pose, and shoves nothing.
 type Prop = {
   kind: Props.Kind,
   held: Option.t<Hold.Held>,
+  slot: Option.t<float>,
   at: Input.pose,
   // Read back from the world each step (one step behind).
   pose: Input.pose,
@@ -70,7 +72,9 @@ type Model = {
   // New bodies aren't in the world before this frame's physics: don't read them.
   fresh: bool,
   lastRelease: Option.t<Release>,
-  score: float
+  score: float,
+  // The body frame the slots ride, where they are worn.
+  hips: Hips.State
 }
 
 let zero = Hold.zero
@@ -80,10 +84,10 @@ let releaseKind = (v: Input.point3): ReleaseKind => if Quat.length(v) > dropSpee
 let tagOf = (gen: float, k: Props.Kind) => Physics.tag($"{Props.name(k)}-{gen}")
 
 let spawned = (k: Props.Kind): Prop =>
-  { kind: k, held: Option.None, at: Stations.spawn(k), pose: Stations.spawn(k), velocity: zero, scored: false }
+  { kind: k, held: Option.None, slot: Option.None, at: Stations.spawn(k), pose: Stations.spawn(k), velocity: zero, scored: false }
 
-/// Jump to a station and reset it: no holds, fresh props, and hands that
-/// must open before they grab again.
+/// Jump to a station and reset it: no holds, empty slots, fresh props, and
+/// hands that must open before they grab again.
 let reset = (m: Model, id: float): Model =>
   { m with
       station: id,
@@ -93,12 +97,13 @@ let reset = (m: Model, id: float): Model =>
       props: Props.all |> List.map(spawned),
       fresh: true,
       lastRelease: Option.None,
-      score: 0.0 }
+      score: 0.0,
+      hips: Hips.init }
 
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
-    handView: Tracked, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0
+    handView: Tracked, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init
   }, 1.0)
 
 // --- input ---
@@ -168,8 +173,12 @@ let heldIn = (m: Model, side: Hold.Side): Option.t<Hold.Held> =>
 /// Where a prop is now: held, where it was accepted; free, as read back.
 let poseOf = (p: Prop): Input.pose => p.held |> Option.map((h) => h.accepted) |> Option.defaultValue(p.pose)
 
-/// Step every held prop with its hand: the model, and what was let go.
-let holdAll = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input.pose) => Option.t<Hold.Hit>, t: float): (Model, List<Release>) =>
+/// A prop put away this step, and the slot it goes in.
+type Stow = { prop: Props.Kind, slot: float }
+
+/// Step every held prop with its hand: the model, and what was let go. A
+/// prop let go into the slot `stowed` names goes in it instead.
+let holdAll = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input.pose) => Option.t<Hold.Hit>, slots: List<Slots.Placed>, stowed: List<Stow>, t: float): (Model, List<Release>) =>
   m.props |> List.fold((acc, p) =>
     let (next, released) = acc in
     match p.held with
@@ -180,7 +189,10 @@ let holdAll = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, In
         (withProp({ p with held: Option.None, at: pose }, next), released |> List.append([r])) in
       (match Hold.step((a, b) => cast(p.kind, a, b), Props.radius(p.kind), h, gripOf(m.xr, h.side), handOf(m, h.side).squeezed, t) with
        | Hold.Holding(held) => (withProp({ p with held: Option.Some(held) }, next), released)
-       | Hold.Released(pose, v, w) => letGo(pose, releaseKind(v), v, w)
+       | Hold.Released(pose, v, w) =>
+         (match stowed |> List.find((s) => s.prop == p.kind) with
+          | Option.Some(s) => (withProp({ p with held: Option.None, slot: Option.Some(s.slot), pose: slotPose(slots, s.slot, pose), at: pose }, next), released)
+          | Option.None => letGo(pose, releaseKind(v), v, w))
        | Hold.Broke(pose) =>
          let (dropped, all) = letGo(pose, Break, zero, zero) in
          (withHand(dropped, h.side, Hold.disarm(handOf(dropped, h.side))), all)),
@@ -188,22 +200,27 @@ let holdAll = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, In
 
 /// The prop a hand that holds nothing reaches, and its gap: the nearest in
 /// reach (the one it already hovers reaches a little further), held by the
-/// other hand or free.
-let reaching = (m: Model, side: Hold.Side): Option.t<(Props.Kind, float)> =>
+/// other hand (unless it is being put away), free, or in the slot the hand
+/// is in.
+let reaching = (m: Model, side: Hold.Side, slots: List<Slots.Placed>, stowed: List<Stow>): Option.t<(Props.Kind, float)> =>
   let h = handOf(m, side) in
   match gripOf(m.xr, side) with
   | Option.None => Option.None
   | Option.Some(g) =>
     if Option.isSome(heldIn(m, side)) then Option.None
     else
+      let inSlot = Slots.target(slots, g.position) |> Option.map((t) => t.slot.id) in
       m.props
+        |> List.filter((p) => not (stowed |> List.any((s) => s.prop == p.kind))
+             && (Option.isNone(p.slot) || p.slot == inSlot))
         |> List.map((p) => (p.kind, Props.gap(p.kind, g.position, poseOf(p))))
         |> List.filter((kg) => let (k, gap) = kg in Hold.hovering(h.hover == Option.Some(k), gap))
         |> List.sortBy((kg) => let (_, gap) = kg in gap)
         |> List.head
 
-/// A hand takes a prop: from the other hand where it is, or free where the
-/// world has it (snapping to an authored grip in reach of it).
+/// A hand takes a prop: from the other hand where it is, free where the
+/// world has it (snapping to an authored grip in reach of it), or out of a
+/// slot exactly where it sits.
 let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
   match gripOf(m.xr, side) with
   | Option.None => m
@@ -214,16 +231,16 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
         let held =
           (match p.held with
            | Option.Some(h) => Hold.handOff(side, g, h)
-           | Option.None => Hold.grab(side, g, p.pose, Props.grip(k))) in
-        withHand(withProp({ p with held: Option.Some(held), scored: false }, m), side, { handOf(m, side) with hover: Option.None }))
+           | Option.None => Hold.grab(side, g, p.pose, if Option.isSome(p.slot) then Option.None else Props.grip(k))) in
+        withHand(withProp({ p with held: Option.Some(held), slot: Option.None, scored: false }, m), side, { handOf(m, side) with hover: Option.None }))
       |> Option.defaultValue(m)
 
 /// Hands hover what they reach, and a fresh squeeze takes it; both hands
 /// pressing on one prop, the nearer (`Hold.pick`).
-let grabbing = (m: Model, edges: (bool, bool)): Model =>
+let grabbing = (m: Model, edges: (bool, bool), slots: List<Slots.Placed>, stowed: List<Stow>): Model =>
   let (leftEdge, rightEdge) = edges in
-  let l = reaching(m, Hold.Left) in
-  let r = reaching(m, Hold.Right) in
+  let l = reaching(m, Hold.Left, slots, stowed) in
+  let r = reaching(m, Hold.Right, slots, stowed) in
   let kindOf = (o: Option.t<(Props.Kind, float)>) => o |> Option.map((kg) => let (k, _) = kg in k) in
   let gapOf = (o: Option.t<(Props.Kind, float)>) => o |> Option.map((kg) => let (_, gap) = kg in gap) |> Option.defaultValue(0.0) in
   let contested = leftEdge && rightEdge && Option.isSome(l) && kindOf(l) == kindOf(r) in
@@ -242,18 +259,76 @@ let scoring = (m: Model, st: Stations.Station): Model =>
       score: m.score + (m.props |> List.filter(landed) |> List.length),
       props: m.props |> List.map((p) => if landed(p) then { p with scored: true } else p) }
 
+// --- body slots ---
+
+/// Where a prop sits in slot `id` (rig-local), or `fallback` if no such slot.
+let slotPose = (slots: List<Slots.Placed>, id: float, fallback: Input.pose): Input.pose =>
+  slots |> List.find((s) => s.slot.id == id) |> Option.map((s) => s.pose) |> Option.defaultValue(fallback)
+
+let occupied = (m: Model, id: float): bool => m.props |> List.any((p) => p.slot == Option.Some(id))
+
+/// The hips follow the head, pinned while either hand is near a slot (where
+/// it was last step, so the slot holds still under the reaching hand), and
+/// the slotted props ride them.
+let wear = (m: Model, dt: float): Model =>
+  let before = Slots.placed(m.hips) in
+  let reachingFor = (side: Hold.Side) =>
+    gripOf(m.xr, side) |> Option.map((g) => Slots.pins(before, g.position)) |> Option.defaultValue(false) in
+  let head = m.xr |> Option.bind((x) => x.head) in
+  let hips = Hips.step(m.hips, { head: head, pin: reachingFor(Hold.Left) || reachingFor(Hold.Right) }, dt) in
+  let now = Slots.placed(hips) in
+  { m with hips: hips, props: m.props |> List.map((p: Prop) =>
+      match p.slot with
+      | Option.Some(id) => { p with pose: slotPose(now, id, p.pose) }
+      | Option.None => p) }
+
+/// What the hands put away this step. A hand stores its prop by opening in a
+/// slot that fits it and is empty, if it was tracked this step and the last
+/// (one coming back from tracking loss already open never stores). Two hands
+/// opening in one slot: the nearer its centre wins, the right on a tie
+/// (`Hold.pick`); the other's prop is let go as usual.
+let stowing = (prev: Model, m: Model, slots: List<Slots.Placed>): List<Stow> =>
+  let claim = (side: Hold.Side) =>
+    let h = handOf(m, side) in
+    if not (handOf(prev, side).tracked && h.tracked && not h.squeezed) then Option.None
+    else
+      m.props |> List.find((p) => heldBy(side, p)) |> Option.bind((p) =>
+        gripOf(m.xr, side) |> Option.bind((g) =>
+          Slots.target(slots, g.position)
+            |> Option.filter((t) => Slots.fits(p.kind, t.slot) && not occupied(m, t.slot.id))
+            |> Option.map((t) => (Hold.reacher(side, true, true, Slots.distance(t, g.position)), { prop: p.kind, slot: t.slot.id })))) in
+  let l = claim(Hold.Left) in
+  let r = claim(Hold.Right) in
+  let slotOf = (c) => c |> Option.map((rs) => let (_, s) = rs in s.slot) in
+  let contested = Option.isSome(l) && slotOf(l) == slotOf(r) in
+  let reacherOf = (side: Hold.Side, c) =>
+    c |> Option.map((rs) => let (who, _) = rs in who) |> Option.defaultValue(Hold.reacher(side, false, false, 0.0)) in
+  let winner = Hold.pick(reacherOf(Hold.Left, l), reacherOf(Hold.Right, r)) in
+  [(Hold.Left, l), (Hold.Right, r)]
+    |> List.concatMap((sc) =>
+      let (side, c) = sc in
+      match c with
+      | Option.Some(rs) => if not contested || winner == Option.Some(side) then (let (_, s) = rs in [s]) else []
+      | Option.None => [])
+
 /// One fixed step, given the world (`cast`) and the props as read back
 /// (`read`): the next model, and the props let go (their velocity and spin
 /// to give the world).
-let step = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input.pose) => Option.t<Hold.Hit>, read: (Prop) => Prop, t: float): (Model, List<Release>) =>
+let step = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input.pose) => Option.t<Hold.Hit>, read: (Prop) => Prop, t: float, dt: float): (Model, List<Release>) =>
   let (left, leftEdge) = Hold.stepHand(m.left, Option.isSome(gripOf(m.xr, Hold.Left)), squeezeOf(m.xr, Hold.Left)) in
   let (right, rightEdge) = Hold.stepHand(m.right, Option.isSome(gripOf(m.xr, Hold.Right)), squeezeOf(m.xr, Hold.Right)) in
-  let live = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false } in
-  // Grabs first, so a hand taking a prop its other hand lets go of in the
+  let seen = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false } in
+  let live = if Stations.worn(st) then wear(seen, dt) else seen in
+  let slots = if Stations.worn(st) then Slots.placed(live.hips) else [] in
+  // Each prop goes one place per step: into a slot first, else to the other
+  // hand, else it is let go. So storing is decided first, and the other hand
+  // can't take a prop being put away.
+  let stowed = stowing(m, live, slots) in
+  // Grabs next, so a hand taking a prop its other hand lets go of in the
   // same step catches it, and a new hold's first step seeds its history. (A
   // hand holding a prop is squeezing, so it has no fresh press for another
   // until it opens and lets go.)
-  let (held, released) = holdAll(grabbing(live, (leftEdge, rightEdge)), st, cast, t) in
+  let (held, released) = holdAll(grabbing(live, (leftEdge, rightEdge), slots, stowed), st, cast, slots, stowed, t) in
   let next = scoring(held, st) in
   ({ next with lastRelease: if List.isEmpty(released) then m.lastRelease else List.last(released) }, released)
 
@@ -294,7 +369,7 @@ let tick = (m: Model, dt: float, tts: float) =>
         let v = Physics.linearVelocity(tagOf(m.gen, p.kind)) in
         { p with pose: unposed(st, q), velocity: Stations.dirToRig(st, Quat.v3(v.x, v.y, v.z)) }
       | Option.None => p in
-  let (next, released) = step(m, st, castOf(st), read, tts) in
+  let (next, released) = step(m, st, castOf(st), read, tts, dt) in
   // Declared dynamic and given their velocities in the same frame: both land
   // on the next step, so none spends a step at rest.
   let throws = released |> List.concatMap((r) =>
@@ -315,7 +390,7 @@ let physics = (m: Model) =>
     match p.held with
     | Option.Some(h) => Physics.kinematic(tag, shape) |> Physics.atPose(posed(st, h.accepted))
     | Option.None => Physics.dynamic(tag, shape) |> Physics.atPose(posed(st, p.at)) |> Props.dynamics(p.kind) in
-  Physics.scene(Vec3.make(0.0, -9.81, 0.0), Stations.solids |> List.map(solid) |> List.append(m.props |> List.map(body)))
+  Physics.scene(Vec3.make(0.0, -9.81, 0.0), Stations.solids |> List.map(solid) |> List.append(m.props |> List.filter((p) => Option.isNone(p.slot)) |> List.map(body)))
 
 // --- the pure step, with no world ---
 
@@ -333,7 +408,7 @@ let away: Input.controller = { hand(zero, 0.0) with active: false, grip: Option.
 let withHands = (m: Model, l: Input.controller, r: Input.controller): Model =>
   { m with xr: Option.Some({ head: Option.None, left: l, right: r }) }
 let both = (m: Model, l: Input.controller, r: Input.controller, t: float) =>
-  let (next, _) = step(withHands(m, l, r), Stations.grabTable, noWorld, (p) => p, t) in
+  let (next, _) = step(withHands(m, l, r), Stations.grabTable, noWorld, (p) => p, t, 1.0 / 60.0) in
   next
 let run = (m: Model, c: Input.controller, t: float) => both(m, away, c, t)
 let propOf = (m: Model, k: Props.Kind): Prop =>
@@ -358,7 +433,7 @@ expect (
 expect (
   let swung = List.range(6.0) |> List.fold((m, i) =>
     run(m, turnedHand(stickHandle, Quat.yaw(0.0 - 0.1 * (i + 1.0)), 1.0), (i + 2.0) / 60.0), tookStick) in
-  let (_, thrown) = step(withHands(swung, away, turnedHand(stickHandle, Quat.yaw(0.0 - 0.7), 0.0)), Stations.grabTable, noWorld, (p) => p, 8.0 / 60.0) in
+  let (_, thrown) = step(withHands(swung, away, turnedHand(stickHandle, Quat.yaw(0.0 - 0.7), 0.0)), Stations.grabTable, noWorld, (p) => p, 8.0 / 60.0, 1.0 / 60.0) in
   match thrown with
   | [r] => r.kind == Throw && r.prop == Props.Stick && Math.abs(r.spin.y + 6.0) < 0.001
   | _ => false
@@ -379,7 +454,7 @@ expect (
 expect (
   let swung = List.range(6.0) |> List.fold((m, i) =>
     run(m, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, 0.0, -0.05 * (i + 1.0))), 1.0), (i + 2.0) / 60.0), grabbed) in
-  let (thrown, released) = step(withHands(swung, away, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, 0.0, -0.35)), 0.0)), Stations.grabTable, noWorld, (p) => p, 8.0 / 60.0) in
+  let (thrown, released) = step(withHands(swung, away, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, 0.0, -0.35)), 0.0)), Stations.grabTable, noWorld, (p) => p, 8.0 / 60.0, 1.0 / 60.0) in
   match released with
   | [r] => Math.abs(r.velocity.z - 3.0) < 0.001 && not isHeld(thrown, Props.Ball)
   | _ => false
@@ -488,6 +563,7 @@ let lab =
     pad(zero, 1.4, Color.rgb(0.3, 0.32, 0.4)),
     box(Stations.table, Color.rgb(0.55, 0.4, 0.26)),
     box(Stations.wall, Color.rgb(0.62, 0.64, 0.68)),
+    box(Stations.bench, Color.rgb(0.55, 0.4, 0.26)),
     Scene.group(Stations.basket |> List.map((b) => box(b, Color.rgb(0.95, 0.5, 0.15)))),
     box({ center: Quat.add(Stations.boardAt, Quat.v3(0.0, 0.0, 0.05)), size: Quat.v3(0.6, 0.45, 0.04) }, Color.rgb(0.05, 0.05, 0.07)),
   ])
@@ -498,7 +574,8 @@ let board = (score: float) =>
     |> Scene.rotateY(180deg)
     |> Scene.translate(Quat.toVec3(Stations.boardAt))
 
-// Held, drawn at the pose it is swept at; free, where the world has it.
+// Held, drawn at the pose it is swept at; slotted, at its slot; free, where
+// the world has it.
 let propScene = (m: Model, st: Stations.Station, p: Prop) =>
   let look =
     if Option.isSome(p.held) then Props.Taken
@@ -507,8 +584,50 @@ let propScene = (m: Model, st: Stations.Station, p: Prop) =>
   let pose =
     match p.held with
     | Option.Some(h) => posed(st, h.accepted)
-    | Option.None => Physics.pose(tagOf(m.gen, p.kind)) |> Option.defaultValue(posed(st, p.at)) in
+    | Option.None =>
+      if Option.isSome(p.slot) then posed(st, p.pose)
+      else Physics.pose(tagOf(m.gen, p.kind)) |> Option.defaultValue(posed(st, p.at)) in
   Props.scene(p.kind, look) |> Scene.atPose(pose)
+
+/// What the holding hands in a slot offer it.
+let offered = (m: Model, s: Slots.Placed): List<Props.Kind> =>
+  [Hold.Left, Hold.Right] |> List.concatMap((side) =>
+    let offer =
+      gripOf(m.xr, side)
+        |> Option.filter((g) => Slots.target([s], g.position) |> Option.isSome)
+        |> Option.bind((g) => m.props |> List.find((p) => heldBy(side, p)))
+        |> Option.map((p) => p.kind) in
+    match offer with
+    | Option.Some(k) => [k]
+    | Option.None => [])
+
+// The hips' belt, a band with a notch at the front, and the head's heading,
+// an arrow above it: what the slots follow, seen from outside.
+let belt =
+  Scene.group([
+    Scene.cylinder() |> Scene.scaleXYZ(0.36, 0.03, 0.26) |> Scene.lit(Color.rgb(0.75, 0.7, 0.55)) |> Scene.opacity(0.35),
+    Scene.cube() |> Scene.scaleXYZ(0.03, 0.04, 0.05) |> Scene.translate(Vec3.make(0.0, 0.0, 0.14)) |> Scene.emissive(Color.rgb(1.0, 0.85, 0.4)),
+  ])
+let gaze =
+  Scene.group([
+    Scene.cylinder() |> Scene.scaleXYZ(0.12, 0.015, 0.12) |> Scene.lit(Color.rgb(0.85, 0.85, 0.9)),
+    Scene.cube() |> Scene.scaleXYZ(0.025, 0.02, 0.1) |> Scene.translate(Vec3.make(0.0, 0.0, 0.08)) |> Scene.emissive(Color.rgb(0.95, 0.95, 1.0)),
+  ])
+
+/// The slots (each lit by what is offered to it), the belt and the gaze,
+/// where they are worn and the head is tracked.
+let bodyScene = (m: Model, st: Stations.Station): Scene.t =>
+  match (if Stations.worn(st) then m.hips.head else Option.None) with
+  | Option.None => Scene.group([])
+  | Option.Some(head) =>
+    let slots = Slots.placed(m.hips) in
+    let up = Quat.v3(0.0, 0.22, 0.0) in
+    Scene.group([
+      Scene.group(slots |> List.map((s) =>
+        Slots.scene(s.slot, Slots.look(s.slot, occupied(m, s.slot.id), offered(m, s))) |> Scene.atPose(posed(st, s.pose)))),
+      belt |> Scene.atPose(posed(st, { position: m.hips.root, orientation: Quat.yaw(m.hips.yaw) })),
+      gaze |> Scene.atPose(posed(st, { position: Quat.add(head.position, up), orientation: Quat.yaw(Hips.headingOr(m.hips.yaw, head.orientation)) })),
+    ])
 
 // A controller: a grip ball (where it grabs from) and a stub pointing along
 // its forward, bright while squeezed.
@@ -546,7 +665,8 @@ let camera = (m: Model, st: Stations.Station) =>
       |> Camera3D.clip(0.05, 60.0)
 
 // Children 3 (the props, in `Props.all` order) to 7 are what the e2e checks
-// read from `/scene`: the left and right hands, then their ghosts.
+// read from `/scene`: the left and right hands, then their ghosts. 8 is
+// what the body wears.
 let draw = (m: Model, tts) =>
   let st = Stations.find(m.station) in
   let (left, leftGhost) = handScene(m, st, Hold.Left, Color.rgb(0.2, 0.85, 1.0)) in
@@ -562,6 +682,7 @@ let draw = (m: Model, tts) =>
       right,
       leftGhost,
       rightGhost,
+      bodyScene(m, st),
     ]),
     lights)
     |> Frame.withClearColor(Color.rgb(0.07, 0.08, 0.11))
