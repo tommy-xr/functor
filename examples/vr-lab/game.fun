@@ -179,6 +179,10 @@ let heldBy = (side: Hold.Side, p: Prop): bool =>
 /// The prop a hand holds, if any.
 let propIn = (m: Model, side: Hold.Side): Option.t<Prop> => m.props |> List.find((p) => heldBy(side, p))
 
+/// A prop by kind (every kind is always in `props`).
+let propOf = (m: Model, k: Props.Kind): Prop =>
+  m.props |> List.find((p) => p.kind == k) |> Option.defaultValue(spawned(k))
+
 /// What a hand holds, if anything.
 let heldIn = (m: Model, side: Hold.Side): Option.t<Hold.Held> =>
   propIn(m, side) |> Option.bind((p) => p.held)
@@ -280,6 +284,9 @@ let slotPose = (slots: List<Slots.Placed>, id: float, fallback: Input.pose): Inp
 
 let occupied = (m: Model, id: float): bool => m.props |> List.any((p) => p.slot == Option.Some(id))
 
+/// Whether slot `s` takes a prop of kind `k` now: it fits, and is empty.
+let opens = (m: Model, k: Props.Kind, s: Slots.Placed): bool => Slots.fits(k, s.slot) && not occupied(m, s.slot.id)
+
 /// The hips follow the head, pinned while either hand is near a slot (where
 /// it was last step, so the slot holds still under the reaching hand), and
 /// the slotted props ride them.
@@ -309,7 +316,7 @@ let stowing = (prev: Model, m: Model, slots: List<Slots.Placed>): List<Stow> =>
       let found =
         propIn(m, side) |> Option.bind((p) => gripOf(m.xr, side) |> Option.bind((g) =>
           Slots.target(slots, g.position)
-            |> Option.filter((t) => Slots.fits(p.kind, t.slot) && not occupied(m, t.slot.id))
+            |> Option.filter((t) => opens(m, p.kind, t))
             |> Option.map((t) => (Hold.reacher(side, true, true, Slots.distance(t, g.position)), { prop: p.kind, slot: t.slot.id })))) in
       match found with
       | Option.Some(c) => [c]
@@ -377,26 +384,25 @@ let holdEvents = (m: Model, next: Model, released: List<Release>, side: Hold.Sid
          else [Pulses.Release])
 
 /// One hand's pulses for a step, and its new edges: blocked (its prop held
-/// off by the level), and the slot it holds its prop in, which takes the
-/// prop if it is empty and fits it (`stowing`'s test; only checked on
-/// entering one). An empty hand is in no slot, as far as pulses go.
+/// off by the level), and the slot it holds its prop in (an empty hand is in
+/// none, as far as pulses go), and whether that slot takes the prop.
+/// Untracked, a hold survives, and so do its edges: a hand coming back still
+/// pressed or still in the slot doesn't buzz again.
 let feelHand = (m: Model, next: Model, released: List<Release>, slots: List<Slots.Placed>, side: Hold.Side, t: float): (Pulses.Hand, List<Pulses.Event>) =>
   let h = feltOf(m, side) in
-  let grip = gripOf(next.xr, side) in
   let holding = propIn(next, side) in
-  let blockedNow =
-    holding |> Option.bind((p) => p.held) |> Option.bind((held) =>
-      grip |> Option.map((g) => Pulses.blocked(h.blocked, g, Hold.gripOn(held))))
-      |> Option.defaultValue(false) in
-  let slot =
-    if List.isEmpty(slots) || Option.isNone(holding) then Option.None
-    else grip |> Option.bind((g) => Slots.target(slots, g.position)) in
-  let slotNow = slot |> Option.map((s) => s.slot.id) in
-  let takes =
-    slotNow != h.slot
-      && (slot |> Option.bind((s) => holding |> Option.map((p) => Slots.fits(p.kind, s.slot) && not occupied(next, s.slot.id)))
-            |> Option.defaultValue(false)) in
-  Pulses.step(h, holdEvents(m, next, released, side, holding), blockedNow, slotNow, takes, t)
+  let held = holdEvents(m, next, released, side, holding) in
+  match gripOf(next.xr, side) with
+  | Option.None =>
+    let kept = Option.isSome(holding) in
+    Pulses.step(h, held, kept && h.blocked, if kept then h.slot else Option.None, false, t)
+  | Option.Some(g) =>
+    let blockedNow =
+      holding |> Option.bind((p) => p.held) |> Option.map((on) => Pulses.blocked(h.blocked, g, Hold.gripOn(on)))
+        |> Option.defaultValue(false) in
+    let slot = if List.isEmpty(slots) || Option.isNone(holding) then Option.None else Slots.target(slots, g.position) in
+    let takes = slot |> Option.bind((s) => holding |> Option.map((p) => opens(next, p.kind, s))) |> Option.defaultValue(false) in
+    Pulses.step(h, held, blockedNow, slot |> Option.map((s) => s.slot.id), takes, t)
 
 /// Both hands' pulses for a step: the model with their edges, and the
 /// (hand, event) pairs to buzz.
@@ -486,8 +492,6 @@ let both = (m: Model, l: Input.controller, r: Input.controller, t: float) =>
   let (next, _) = step(withHands(m, l, r), Stations.grabTable, noWorld, (p) => p, t, 1.0 / 60.0) in
   next
 let run = (m: Model, c: Input.controller, t: float) => both(m, away, c, t)
-let propOf = (m: Model, k: Props.Kind): Prop =>
-  m.props |> List.find((p) => p.kind == k) |> Option.defaultValue(spawned(k))
 let isHeld = (m: Model, k: Props.Kind): bool => Option.isSome(propOf(m, k).held)
 let releaseOf = (m: Model, k: Props.Kind, kind: ReleaseKind): bool =>
   m.lastRelease |> Option.map((r) => r.prop == k && r.kind == kind) |> Option.defaultValue(false)
@@ -554,7 +558,10 @@ expect (
   let into = withHands(took, away, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, -0.05, 0.0)), 1.0)) in
   let (pressed, _) = step(into, Stations.grabTable, table, (p) => p, 2.0 / 60.0, 1.0 / 60.0) in
   let (still, _) = step(pressed, Stations.grabTable, table, (p) => p, 3.0 / 60.0, 1.0 / 60.0) in
-  pressed.pulses == [(Hold.Right, Pulses.Blocked)] && still.pulses == []
+  let (lost, _) = step(withHands(still, away, away), Stations.grabTable, table, (p) => p, 4.0 / 60.0, 1.0 / 60.0) in
+  let (back, _) = step(withHands(lost, away, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, -0.05, 0.0)), 1.0)), Stations.grabTable, table, (p) => p, 5.0 / 60.0, 1.0 / 60.0) in
+  // Lost for a step and back still pressed: no second buzz.
+  pressed.pulses == [(Hold.Right, Pulses.Blocked)] && still.pulses == [] && lost.pulses == [] && back.pulses == []
 )
 
 // Resetting the station drops the hold, respawns the props, and the

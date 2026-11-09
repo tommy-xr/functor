@@ -21,7 +21,7 @@
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab-haptics.mjs
 import { check, failures } from "./mcp-rpc.mjs";
-import { advance, launch, play } from "./xr-scenario.mjs";
+import { advance, play, session } from "./xr-scenario.mjs";
 import { project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8297;
@@ -30,19 +30,7 @@ const PORT = 8297;
 const PULSE = { ready: 0.15, release: 0.3, grab: 0.45, unstow: 0.55, stow: 0.7, blocked: 0.85, break: 1.0 };
 const EVENT = new Map(Object.entries(PULSE).map(([name, a]) => [a, name]));
 
-async function run(name, body) {
-  console.log(`\n▸ ${name}`);
-  let rt;
-  try {
-    rt = await launch(project, PORT, ["--headless"]);
-    await body(rt);
-  } catch (e) {
-    failures.push(`${name}: ${e}`);
-    console.error(e, `\n--- runtime log ---\n${rt?.log().slice(-3000) ?? ""}`);
-  } finally {
-    await rt?.kill();
-  }
-}
+const run = (name, body) => session(name, project, PORT, body);
 
 // Play a scenario; each step's new pulses as `{ event, hand, frame }`, and its marks.
 async function pulsesOf(rt, scenario) {

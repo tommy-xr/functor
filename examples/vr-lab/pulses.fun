@@ -44,7 +44,7 @@ let effect = (side: Hold.Side, e: Event) =>
   let hand = (match side with | Hold.Left => Xr.Left | Hold.Right => Xr.Right) in
   Effect.haptic(hand, p.amplitude, Time.seconds(p.seconds))
 
-/// The last event a hand fired, and when (for the debug cue).
+/// The strongest event a hand last fired, and when (for the debug cue).
 type Fired = { event: Event, at: float }
 
 /// A hand's edge state: whether its prop is blocked, the slot it is in, and
@@ -57,10 +57,7 @@ let idle: Hand = { blocked: false, slot: Option.None, last: Option.None }
 /// ghost (`Hold.ghosted`: 2 cm or 10°); free again under half that, so a
 /// hand resting at the edge doesn't buzz twice.
 let blocked = (was: bool, grip: Input.pose, holds: Input.pose): bool =>
-  if was then
-    Quat.length(Quat.sub(grip.position, holds.position)) > Hold.ghostDistance / 2.0
-      || Quat.angle(grip.orientation, holds.orientation) > Hold.ghostTurn / 2.0
-  else Hold.ghosted(grip, holds)
+  Hold.ghostedBy(if was then 0.5 else 1.0, grip, holds)
 
 expect blocked(false, Hold.p(0.0, 0.0, 0.0), Hold.p(0.025, 0.0, 0.0))
 expect not blocked(false, Hold.p(0.0, 0.0, 0.0), Hold.p(0.015, 0.0, 0.0))
@@ -80,7 +77,9 @@ let step = (h: Hand, held: List<Event>, blockedNow: bool, slotNow: Option.t<floa
       if blockedNow && not h.blocked then [Blocked] else [],
       if takes && List.isEmpty(held) && Option.isSome(slotNow) && slotNow != h.slot then [Ready] else []) in
   let events = List.append(held, rising) in
-  let last = events |> List.last |> Option.map((e) => { event: e, at: t }) in
+  // The cue shows the pulse the hand felt: per hand the strongest wins.
+  let strongest = events |> List.sortBy((e) => 0.0 - (pulse(e)).amplitude) |> List.head in
+  let last = strongest |> Option.map((e) => { event: e, at: t }) in
   ({ blocked: blockedNow, slot: slotNow, last: if Option.isSome(last) then last else h.last }, events)
 
 // Pressed into the wall it buzzes once, not again while held there.
@@ -89,6 +88,8 @@ expect (
   let (h2, e2) = step(h1, [], true, Option.None, false, 0.1) in
   e1 == [Blocked] && e2 == [] && h2.last == Option.Some({ event: Blocked, at: 0.0 })
 )
+// A stop and a slot in one step: the cue is the stop's, the stronger.
+expect (let (h, _) = step(idle, [], true, Option.Some(2.0), true, 0.0) in h.last == Option.Some({ event: Blocked, at: 0.0 }))
 // Ready once on entering a slot that takes the prop, again only for another;
 // none for one that won't, or for a prop taken out where the hand already is.
 expect (
@@ -105,12 +106,6 @@ expect (
 /// How long a pulse's cue shows.
 let cueSeconds = 0.35
 
-// A dashed ring of radius 1, level, as `Slots` draws its own.
-let ring =
-  List.range(16.0) |> List.map((i) =>
-    let a = i * Math.pi / 8.0 in
-    Instance.trs(Vec3.make(Math.sin(a), 0.0, Math.cos(a)), Angle.radians(a), 0.25, 0.12, 0.12))
-
 /// A pulse made visible at the hand that felt it: a ring and a flash sized
 /// by its amplitude, shrinking away over `cueSeconds`. None once it is over.
 let cue = (h: Hand, t: float): Option.t<Scene.t> =>
@@ -122,7 +117,7 @@ let cue = (h: Hand, t: float): Option.t<Scene.t> =>
       let size = (0.04 + 0.1 * (pulse(f.event)).amplitude) * (0.6 + 0.4 * fade) in
       let glow = Color.rgb(1.0, 0.9, 0.35) in
       Option.Some(Scene.group([
-        Scene.cube() |> Scene.emissive(glow) |> Scene.instanced(ring) |> Scene.scale(size),
+        Scene.cube() |> Scene.emissive(glow) |> Scene.instanced(Slots.dashes) |> Scene.scale(size),
         Scene.sphere() |> Scene.scale(size * 0.6) |> Scene.emissive(glow) |> Scene.opacity(0.35 * fade),
       ])))
 

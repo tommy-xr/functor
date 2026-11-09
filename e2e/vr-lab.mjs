@@ -57,7 +57,7 @@
 import { check, failures, sleep } from "./mcp-rpc.mjs";
 import { decode, encode, readLog, recordLive } from "./xr-fixture.mjs";
 import {
-  add, advance, cross, dirToWorld, launch, play, playFixture, qconj, qmul, qrot, rigToWorld, sub, tap,
+  add, advance, cross, dirToWorld, play, playFixture, qconj, qmul, qrot, rigToWorld, session, sub, tap,
 } from "./xr-scenario.mjs";
 import {
   BALL, BOTTLE, FAST_V, FLICK_W, NECK, SLOT, STICK, TABLE, THROW_V, WALL_RIG_X, pitch, project, scenarios, slotAt, yaw,
@@ -160,19 +160,7 @@ const placed = (node) => {
 };
 const placedAt = (node) => placed(node)?.[3].slice(0, 3);
 
-async function run(name, body, flags = ["--headless"]) {
-  console.log(`\n▸ ${name}`);
-  let rt;
-  try {
-    rt = await launch(project, PORT, flags);
-    await body(rt);
-  } catch (e) {
-    failures.push(`${name}: ${e}`);
-    console.error(e, `\n--- runtime log ---\n${rt?.log().slice(-3000) ?? ""}`);
-  } finally {
-    await rt?.kill();
-  }
-}
+const run = (name, body, flags) => session(name, project, PORT, body, flags);
 
 let throwEnd;
 const ballEndOf = (m) => JSON.stringify([prop(m, "Ball").pose, prop(m, "Ball").velocity]);
