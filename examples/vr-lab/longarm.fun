@@ -19,10 +19,11 @@ let stockBack = 0.28
 let foreNear = 0.14
 let foreFar = 0.4
 
-// The collider's bounds there: 5 cm wide, from 2 cm below the fist to 10 cm
-// above it, from the stock's back to the muzzle.
-let size = Quat.v3(0.05, 0.12, stockBack + muzzleAhead)
-let center = Quat.v3(0.0, 0.04, (stockBack - muzzleAhead) / 2.0)
+// The collider's bounds there: 5 cm wide, from the grip's and magazine's
+// foot 4.5 cm below the fist to 10 cm above it, from the stock's back to the
+// muzzle.
+let size = Quat.v3(0.05, 0.145, stockBack + muzzleAhead)
+let center = Quat.v3(0.0, 0.0275, (stockBack - muzzleAhead) / 2.0)
 
 /// The primary hand's pose in the rifle's frame (centred on its collider):
 /// the authored pistol grip. Like the pistol's, only taken there.
@@ -46,7 +47,7 @@ let foreSlack = 0.08
 type Along = { along: float, off: float }
 
 let alongOf = (fist: Input.pose, q: Input.point3): Along =>
-  let local = Quat.rotate(Quat.conj(fist.orientation), Quat.sub(q, fist.position)) in
+  let local = (Hold.relative(fist, Hold.at(q, Quat.identity))).position in
   { along: 0.0 - local.z, off: Math.sqrt(local.x * local.x + local.y * local.y) }
 
 /// From a point to the foregrip of a rifle at `pose`: 0 on its line.

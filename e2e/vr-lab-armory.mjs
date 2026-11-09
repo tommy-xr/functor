@@ -21,22 +21,13 @@
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab-armory.mjs
 import { check, failures } from "./mcp-rpc.mjs";
-import { add, play, qconj, qmul, qrot, session, sub } from "./xr-scenario.mjs";
+import { add, fmt, len, play, qrot, quat, record, session, some, sub, turnOf, xyz } from "./xr-scenario.mjs";
 import { ARMORY_WALL_X, GRIP_IN_PISTOL, PISTOL_HALF, TARGETS, TARGET_SIZE, muzzleOf, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8298;
 const SNAP_STEP = 0.02;
 const SNAP_TURN = 0.15;
 
-const len = (v) => Math.hypot(...v);
-const xyz = (p) => [p.x, p.y, p.z];
-const quat = (q) => [q.x, q.y, q.z, q.w];
-const some = (opt) => (opt?.$ctor === "Option.Some" ? opt.args[0] : undefined);
-const fmt = (v) => `[${v.map((x) => x.toFixed(4)).join(", ")}]`;
-const turnOf = (a, b) => {
-  const [x, y, z, w] = qmul(b, qconj(a));
-  return 2 * Math.atan2(Math.hypot(x, y, z), Math.abs(w));
-};
 const pistol = (m) => m.props.find((p) => p.kind.$ctor === "Props.Pistol");
 // Where the pistol is: held, its accepted pose; else as read back.
 const poseOf = (m) => {
@@ -52,16 +43,6 @@ const boreOf = (pose) => {
 const lastShot = (m) => some(m.gun.last);
 
 const run = (name, body) => session(name, project, PORT, body);
-
-// Play a scenario, keeping every step's state and the hands injected there.
-async function record(rt, scenario) {
-  const steps = [];
-  const marks = await play(rt, scenario, async ({ state, hands }) => {
-    steps.push({ state, right: { ...hands.right } });
-  });
-  const at = (mark) => steps.find((s) => s.state.frame === marks[mark].frame);
-  return { steps, marks, at };
-}
 
 let fireEnd;
 await run("aim and fire", async (rt) => {

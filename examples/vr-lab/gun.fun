@@ -2,7 +2,7 @@
 // trigger and its fire modes, the bore a shot leaves along, the shot, the
 // muzzle check and the recoil kick; and the pistol's shape and authored grip.
 // A weapon is data (`Weapon`): its grip, bore and whether it has a selector
-// (the rifle's is in `Rifle`). The world reaches in only through the shot's
+// (the rifle's is in `Longarm`). The world reaches in only through the shot's
 // ray and the muzzle check (`Game.World`).
 
 // --- the pistol ---

@@ -34,7 +34,9 @@ let play = (script: List<Input.controller>) => playIn(Game.noWorld, start, scrip
 let last = (ms: List<Game.Model>): Game.Model => List.last(ms) |> Option.defaultValue(start)
 let times = (n: float, c: Input.controller): List<Input.controller> => List.range(n) |> List.map((i) => c)
 let pulsesOf = (ms: List<Game.Model>) => ms |> List.concatMap((m) => m.pulses)
-let count = (e: Pulses.Event, ms: List<Game.Model>): float => pulsesOf(ms) |> List.filter((se) => se == (Hold.Right, e)) |> List.length
+let count = (e: Pulses.Event, ms: List<Game.Model>): float => countOf(Hold.Right, e, ms)
+let countOf = (side: Hold.Side, e: Pulses.Event, ms: List<Game.Model>): float =>
+  pulsesOf(ms) |> List.filter((se) => se == (side, e)) |> List.length
 let pistol = (m: Game.Model) => Game.propOf(m, Props.Pistol)
 
 // Taken open-triggered, held a moment: settled in the hand.
@@ -177,8 +179,6 @@ let both = (n: float, l: Input.controller, r: Input.controller) => List.range(n)
 let grabbed = (p: Input.pose) => hand(p, 1.0, 0.0)
 let still = grabbed(onStock)
 let fore25 = grabbed(foreOf(onStock, 0.25, 0.0, 0.0))
-let countOf = (side: Hold.Side, e: Pulses.Event, ms: List<Game.Model>): float =>
-  pulsesOf(ms) |> List.filter((se) => se == (side, e)) |> List.length
 let play2 = (m0: Game.Model, script: List<(Input.controller, Input.controller)>) => playBoth(Game.noWorld, m0, script)
 let supportSide = (m: Game.Model) => Game.supportOf(rifle(m))
 
@@ -324,18 +324,17 @@ expect (
 // The selector: A on the right hand holding the rifle switches it, once a
 // press; the support hand's doesn't; F does, held or not.
 expect (
-  let snap = (pressed: List<Key.t>, l: Input.controller, r: Input.controller): Input.snapshot =>
-    { heldKeys: [], pressedKeys: pressed, releasedKeys: [],
-      mouse: { x: 0.0, y: 0.0, surfaceWidth: 1.0, surfaceHeight: 1.0,
-               buttons: { left: false, right: false, middle: false },
-               pressed: { left: false, right: false, middle: false },
-               released: { left: false, right: false, middle: false } },
-      xr: Option.Some({ head: Option.None, left: l, right: r }), gamepad: Option.None, touch: Option.None } in
+  let snap = (pressed: List<Key.t>, l: Input.controller, r: Input.controller) => Game.snapshotOf(pressed, Option.Some({ head: Option.None, left: l, right: r })) in
   let a = { still with primaryPressed: true } in
   let pressed = Game.sampledInput(Game.sampledInput(ready, snap([], fore25, still)), snap([], fore25, a)) in
   let kept = Game.sampledInput(pressed, snap([], fore25, a)) in
   let byLeft = Game.sampledInput(Game.sampledInput(ready, snap([], fore25, still)), snap([], { fore25 with primaryPressed: true }, still)) in
+  // A held as the rifle is taken (or retaken) is no press.
+  let aHeld = Game.sampledInput(start, snap([], Game.away, { hand(onStock, 0.0, 0.0) with primaryPressed: true })) in
+  let taken = last(play2(aHeld, [(Game.away, { hand(onStock, 0.0, 0.0) with primaryPressed: true }), (Game.away, { still with primaryPressed: true })])) in
+  let heldThrough = Game.sampledInput(taken, snap([], Game.away, { still with primaryPressed: true })) in
   ready.rifle.mode == Gun.Semi && pressed.rifle.mode == Gun.Auto && kept.rifle.mode == Gun.Auto && byLeft.rifle.mode == Gun.Semi
+    && Game.isHeld(taken, Props.Rifle) && heldThrough.rifle.mode == Gun.Semi
     && (Game.sampledInput(start, snap([Key.F], Game.away, Game.away))).rifle.mode == Gun.Auto
     && (Game.sampledInput(pressed, snap([Key.F], fore25, still))).rifle.mode == Gun.Semi
 )
@@ -352,4 +351,35 @@ expect (
   let holster = Hold.at(Inventory.rightHolster, Quat.identity) in
   let m = last(play2(ready, List.flatten([[(Game.away, still)], both(10.0, Game.away, grabbed(holster)), [(Game.away, hand(holster, 0.0, 0.0))]]))) in
   Option.isNone(rifle(m).slot) && not Game.isHeld(m, Props.Rifle)
+)
+// The primary hand lost, the support opening lets go: the rifle stays where
+// it was, still in the (lost) right hand.
+expect (
+  let ms = play2(ready, [(fore25, Game.away), (hand(foreOf(onStock, 0.25, 0.0, 0.0), 0.0, 0.0), Game.away)]) in
+  let m = last(ms) in
+  Option.isNone(supportSide(m)) && Game.isHeld(m, Props.Rifle) && Hold.near(rifleAccepted(m), rifleAt)
+    && countOf(Hold.Left, Pulses.Release, ms) == 1.0 && Option.isNone(Game.inHand(m, Hold.Left))
+)
+// Retaken with the wrist turned 30 degrees off the bore, the foregrip hand
+// 12.5 cm off the new primary's axis: it doesn't stay on as the support (nor
+// buzz a break); the right holds it alone.
+expect (
+  let yawed = Hold.at(onStock.position, Quat.yaw(30.0 * Math.pi / 180.0)) in
+  let ms = play2(last(handedOver), [(fore25, hand(yawed, 0.0, 0.0)), (fore25, grabbed(yawed))]) in
+  let m = last(ms) in
+  (rifle(m).held |> Option.map((h) => h.side == Hold.Right) |> Option.defaultValue(false)) && Option.isNone(supportSide(m))
+    && countOf(Hold.Left, Pulses.Break, ms) == 0.0
+)
+// Nor is the foregrip taken while the rifle is still settling into a wrist
+// turned 30 degrees: off the primary's axis, it would break off at once.
+expect (
+  let yawed = Hold.at(onStock.position, Quat.yaw(30.0 * Math.pi / 180.0)) in
+  let m = last(play2(start, [(Game.away, hand(yawed, 0.0, 0.0)), (hand(foreOf(onStock, 0.25, 0.0, 0.0), 0.0, 0.0), grabbed(yawed)), (fore25, grabbed(yawed))])) in
+  Game.isHeld(m, Props.Rifle) && Option.isNone(supportSide(m))
+)
+// Both hands opening at once in the rack: racked, one pulse each.
+expect (
+  let ms = play2(ready, [(hand(foreOf(onStock, 0.25, 0.0, 0.0), 0.0, 0.0), hand(onStock, 0.0, 0.0))]) in
+  rifle(last(ms)).slot == Option.Some(Slots.rack.id)
+    && pulsesOf(List.drop(1.0, ms)) == [(Hold.Right, Pulses.Stow), (Hold.Left, Pulses.Release)]
 )

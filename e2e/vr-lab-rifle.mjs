@@ -26,7 +26,7 @@
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab-rifle.mjs
 import { check, failures } from "./mcp-rpc.mjs";
-import { add, play, qconj, qmul, qrot, rigToWorld, session, sub } from "./xr-scenario.mjs";
+import { add, fmt, len, placedAt, play, qrot, quat, record, rigToWorld, session, some, sub, turnOf, xyz } from "./xr-scenario.mjs";
 import {
   ARMORY_WALL_X, GRIP_IN_RIFLE, armory, RIFLE, RIFLE_SWING, TARGETS, TARGET_SIZE, project, scenarios, twoHandAim,
 } from "./vr-lab-scenarios.mjs";
@@ -35,18 +35,9 @@ const PORT = 8299;
 const SNAP_STEP = 0.02;
 const SNAP_TURN = 0.15;
 
-const len = (v) => Math.hypot(...v);
 const dot = (a, b) => a.reduce((s, c, i) => s + c * b[i], 0);
-const xyz = (p) => [p.x, p.y, p.z];
-const quat = (q) => [q.x, q.y, q.z, q.w];
-const some = (opt) => (opt?.$ctor === "Option.Some" ? opt.args[0] : undefined);
-const fmt = (v) => `[${v.map((x) => x.toFixed(4)).join(", ")}]`;
 const deg = (r) => (r * 180) / Math.PI;
 const angleOf = (a, b) => Math.acos(Math.min(1, dot(a, b) / (len(a) * len(b))));
-const turnOf = (a, b) => {
-  const [x, y, z, w] = qmul(b, qconj(a));
-  return 2 * Math.atan2(Math.hypot(x, y, z), Math.abs(w));
-};
 const rifle = (m) => m.props.find((p) => p.kind.$ctor === "Props.Rifle");
 const held = (m) => some(rifle(m).held);
 const supportSide = (m) => some(rifle(m).support)?.side.$ctor;
@@ -72,38 +63,13 @@ const stepMoves = (steps, from, to) =>
 const run = (name, body) => session(name, project, PORT, body);
 
 // `/scene`'s top group: 4/5 the left and right hands, 6/7 their ghosts.
-const sceneOf = async (rt) => await rt.get("/scene");
-const IDENTITY = JSON.stringify([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
-const placed = (node) => {
-  if (!node || typeof node !== "object") return undefined;
-  if (Array.isArray(node.xform) && JSON.stringify(node.xform) !== IDENTITY) return node.xform;
-  for (const child of Object.values(node)) {
-    const found = Array.isArray(child) ? child.map(placed).find(Boolean) : placed(child);
-    if (found) return found;
-  }
-  return undefined;
-};
-const placedAt = (node) => placed(node)?.[3].slice(0, 3);
 const toWorld = (p) => rigToWorld(p, armory.feet, armory.yaw);
 // And back (the armory's rig faces world +X: rig x is world z).
 const toRig = ([x, y, z]) => [z - armory.feet[2], y, armory.feet[0] - x];
 
-// Play a scenario, keeping every step's state and injected hands (and, at
-// marks, the scene).
-async function record(rt, scenario) {
-  const steps = [];
-  const scenes = {};
-  const marks = await play(rt, scenario, async ({ state, hands, mark }) => {
-    steps.push({ state, left: { ...hands.left }, right: { ...hands.right } });
-    if (mark) scenes[mark] = await sceneOf(rt);
-  });
-  const index = (mark) => steps.findIndex((s) => s.state.frame === marks[mark].frame);
-  return { steps, marks, scenes, index, hands: (mark) => steps[index(mark)] };
-}
-
 let aimEnd;
 await run("two-hand aim", async (rt) => {
-  const { marks, hands } = await record(rt, scenarios["rifle-aim"]);
+  const { marks, at: hands } = await record(rt, scenarios["rifle-aim"]);
   const two = marks.twoHands.model;
   check(holderSide(two) === "Hold.Right" && supportSide(two) === "Hold.Left", `two hands: the right holds, the left supports (${holderSide(two)}, ${supportSide(two)})`);
   const raised = marks.raised.model;
@@ -129,7 +95,7 @@ await run("two-hand aim", async (rt) => {
 });
 
 await run("barrel into the wall, two hands", async (rt) => {
-  const { steps, marks, scenes, hands, index } = await record(rt, scenarios["rifle-wall"]);
+  const { steps, marks, scenes, at: hands, index } = await record(rt, scenarios["rifle-wall"], { scenes: true });
   const pushed = marks.pushed.model;
   const pose = poseOf(pushed);
   const face = leftmost(pose);

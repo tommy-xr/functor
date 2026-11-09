@@ -433,10 +433,10 @@ const armoryScenarios = {
 // hand is (`Longarm.aimAt`).
 
 export const RIFLE_RACK = [0.55, 1.05, -0.62];
-export const GRIP_IN_RIFLE = [0, -0.04, 0.14];
+export const GRIP_IN_RIFLE = [0, -0.0275, 0.14];
 export const RIFLE_GRIP = add(RIFLE_RACK, GRIP_IN_RIFLE);
 // Half the collider (from the rifle's centre), the bore, and the foregrip.
-export const RIFLE = { half: [0.025, 0.06, 0.42], bore: 0.06, muzzle: 0.56, foreNear: 0.14, foreFar: 0.4, breakOff: 0.12 };
+export const RIFLE = { half: [0.025, 0.0725, 0.42], bore: 0.06, muzzle: 0.56, foreNear: 0.14, foreFar: 0.4, breakOff: 0.12 };
 const ID = [0, 0, 0, 1];
 const scale = (v, k) => v.map((c) => c * k);
 const dot = (a, b) => a.reduce((s, c, i) => s + c * b[i], 0);
@@ -499,6 +499,9 @@ const DRAG = add(aheadOf(RIFLE_AIM, ID, 0.25), [0.15, 0, 0]);
 const behindRifle = { eye: [2.85, 1.9, 0.95], target: [7.0, 1.2, -0.1], fov: 40 };
 // Above the bench, side on: the support sliding and breaking off.
 const aboveRifle = { eye: [3.7, 2.2, 1.35], target: [4.35, 1.2, -0.15], fov: 40 };
+// High over the player's right shoulder, down onto the wall's top edge: the
+// rifle pointing into it, both hands on it.
+const overRifleWall = { eye: [3.75, 2.9, 0.75], target: [4.45, 1.2, -0.35], fov: 38 };
 
 const rifleScenarios = {
   // Two hands on the rifle, raised; aimed at each target by the support hand
@@ -631,12 +634,13 @@ const rifleScenarios = {
       { frames: 3, right: { primary: false } },
       { frames: 30, right: { trigger: 1 }, mark: "semi" },
       { frames: 12, right: { trigger: 0 } },
-      { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: atArmoryWall },
+      { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: overRifleWall },
       { frames: 25, ...bothTo(RIFLE_WALL.through), mark: "pushed" },
+      { frames: 10, right: {} },
       { frames: 1, right: { trigger: 1 }, mark: "clicked" },
-      { frames: 10, right: { trigger: 0 } },
+      { frames: 15, right: { trigger: 0 } },
       { frames: 1, tap: "H", right: {} },
-      { frames: 20, right: {} },
+      { frames: 40, right: {} },
       { frames: 1, tap: "H", right: {} },
       { frames: 20, ...bothTo(RIFLE_WALL.clear) },
       { frames: 1, right: { trigger: 1 } },
@@ -645,16 +649,17 @@ const rifleScenarios = {
       { frames: 15, left: { to: aheadOf(RIFLE_AIM, ID, 0.38) } },
       { frames: 20, left: { to: aheadOf(RIFLE_AIM, ID, 0.16) } },
       { frames: 10, left: { to: aheadOf(RIFLE_AIM, ID, 0.25) } },
-      { frames: 30, left: { to: DRAG }, mark: "broke" },
+      { frames: 45, left: { to: DRAG }, mark: "broke" },
+      { frames: 20, left: {} },
       { frames: 15, left: { squeeze: 0 } },
       { frames: 15, left: { to: aheadOf(RIFLE_AIM, ID, 0.25) } },
       { frames: 4, left: { squeeze: 1 } },
       { frames: 1, right: { squeeze: 0 }, mark: "handed" },
-      { frames: 15, right: { to: add(RIFLE_AIM, [0.12, -0.15, 0.1]) } },
-      { frames: 20, left: { to: add(aheadOf(RIFLE_AIM, ID, 0.25), [0, 0.06, 0]) } },
-      { frames: 15, right: { to: add(RIFLE_AIM, [0, 0.06, 0]) } },
+      { frames: 20, right: { to: add(RIFLE_AIM, [0.12, -0.15, 0.1]) } },
+      { frames: 30, left: { to: add(aheadOf(RIFLE_AIM, ID, 0.25), [0, 0.06, 0]) } },
+      { frames: 20, right: { to: add(RIFLE_AIM, [0, 0.06, 0]) } },
       { frames: 1, right: { squeeze: 1 }, mark: "retaken" },
-      { frames: 10, right: {} },
+      { frames: 20, right: {} },
       { frames: 1, left: { squeeze: 0 } },
       { frames: 15, left: { to: LEFT_OUT } },
       { frames: 30, right: { to: add(RIFLE_GRIP, [0, 0.06, 0.08]) } },

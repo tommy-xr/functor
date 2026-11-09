@@ -259,7 +259,8 @@ own grips and bore (`Longarm.weapon`).
   within 7 cm, settling in. The foregrip is a line under the handguard,
   through the primary fist parallel to the bore, 14-40 cm ahead of it: the
   other hand's squeeze within 6 cm of it, while the first holds the grip,
-  takes it as the support. A free or racked rifle is only taken by the grip.
+  takes it as the support, if the break limits below would hold it there.
+  A free or racked rifle is only taken by the grip.
 - **Two-hand aim.** The barrel points from the primary fist to the support
   fist; its up is the primary hand's up made perpendicular to that, so the
   roll is the primary hand's (`Longarm.aimAt`). The primary fist stays on the
@@ -278,8 +279,10 @@ own grips and bore (`Longarm.weapon`).
 - **Hand-off.** The primary hand opening while the support holds hands the
   rifle to it where it is: held by the foregrip, one-handed, with no trigger
   (the trigger never moves to the foregrip hand). Squeezing the pistol grip
-  again takes it back, the foregrip hand staying on as the support; the
-  trigger starts disarmed until let out.
+  again takes it back, the foregrip hand staying on as the support (if the
+  new grip's axis holds it; else it just lets go); the trigger starts
+  disarmed until let out. A support hand losing tracking lets go; a lost
+  primary hand freezes the rifle, its support able only to let go.
 - **Fire modes.** Semi, or full-auto at 10 rounds a second counted in fixed
   steps (one on the pull, one every 6 steps held: N steps held after the
   pull fire floor(N / 6) + 1). A / X on the hand at the grip, or `F`,
