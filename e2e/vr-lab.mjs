@@ -1,4 +1,4 @@
-// vr-lab E2E: the grab table driven by injected XR samples, headlessly.
+// vr-lab E2E: the stations driven by injected XR samples, headlessly.
 //
 // Plays `e2e/vr-lab-scenarios.mjs` against `examples/vr-lab` over the debug
 // server (`--headless`, pinned clock, one sample per fixed step) and checks
@@ -35,6 +35,14 @@
 //      ghost at the tracked grip only while they are over 2 cm apart. The
 //      switch never moves the ball.
 //   5. A station reset mid-hold drops the hold and respawns the ball at rest.
+//   5b. Inventory (station 2): the brick let go in the right holster goes in
+//      it, at its pose, and the head turning 90° past the deadzone drags the
+//      hips round, the brick riding the holster every step and staying in
+//      reach. A hand reaching into the holster pins the hips through a 40°
+//      glance; squeezed there, it takes the brick back exactly where it sat
+//      (1 mm, 0.5°). The stick (fitting no slot) and the bottle (let go in
+//      the full holster) are let go and fall. The stow and turn replays to
+//      an identical model.
 //   6. The same throw in two fresh runtimes ends bit-identically.
 //   7. Recorded fixtures (`e2e/xr-fixture.mjs`): the checked-in grab-throw
 //      recording lands in the basket; a scripted run recorded under
@@ -52,7 +60,7 @@ import {
   add, advance, cross, dirToWorld, launch, play, playFixture, qconj, qmul, qrot, rigToWorld, sub, tap,
 } from "./xr-scenario.mjs";
 import {
-  BALL, BOTTLE, FAST_V, FLICK_W, STICK, TABLE, THROW_V, WALL_RIG_X, pitch, project, scenarios, yaw,
+  BALL, BOTTLE, FAST_V, FLICK_W, NECK, SLOT, STICK, TABLE, THROW_V, WALL_RIG_X, pitch, project, scenarios, slotAt, yaw,
 } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8293;
@@ -434,6 +442,96 @@ await run("station reset", async (rt) => {
   check(len(sub(spawn, rigToWorld(BALL, FEET))) < 1e-3, `at rest at its spawn (${fmt(spawn)})`);
   check(len(xyz(prop(after, "Ball").velocity)) < 1e-6, "with no velocity");
   check(after.right.armed === false && after.lastRelease.$ctor === "Option.None", "the still-squeezing hand is disarmed and the history gone");
+});
+
+// --- inventory (station 2): rig-local is the world moved to its feet ---
+
+const yawQ = (rad) => [0, Math.sin(rad / 2), 0, Math.cos(rad / 2)];
+const slotOf = (m, kind) => some(prop(m, kind).slot);
+// Where the model's hips put a slot (rig-local).
+const slotPose = (m, name) => ({
+  position: add(xyz(m.hips.root), qrot(yawQ(m.hips.yaw), SLOT[name].offset)),
+  orientation: yawQ(m.hips.yaw),
+});
+const deg = (rad) => (rad * 180) / Math.PI;
+const fmtDeg = (rad) => `${deg(rad).toFixed(2)}°`;
+
+let stowEnd;
+await run("inventory: stow and turn", async (rt) => {
+  // Every step a prop is slotted, it sits exactly at its slot.
+  let worst = 0;
+  const m = await play(rt, scenarios["inventory-stow-turn"], async ({ state }) => {
+    if (slotOf(state.model, "Brick") === SLOT.rightHolster.id) {
+      worst = Math.max(worst, apart(poseOf(state.model, "Brick"), slotPose(state.model, "rightHolster"))[0]);
+    }
+  });
+  check(m.atHolster.model.station === 2 && heldOf(m.atHolster.model, "Brick") !== undefined, "at the inventory, the brick is carried to the right holster");
+  const stored = m.stored.model;
+  check(slotOf(stored, "Brick") === SLOT.rightHolster.id && heldOf(stored, "Brick") === undefined, "let go there, it goes in the holster");
+  const seat = apart(poseOf(stored, "Brick"), { position: slotAt("rightHolster"), orientation: [0, 0, 0, 1] });
+  check(within(seat, 0.1, 0.01), `at the holster's pose (${fmtApart(seat)})`);
+  check(some(stored.lastRelease) === undefined, "nothing is let go");
+  const lag = m.turning.model.hips.yaw;
+  check(deg(lag) > 30 && deg(lag) < 75, `as the head turns 90°, the hips trail it (${fmtDeg(lag)})`);
+  const turned = m.turned.model;
+  check(Math.abs(turned.hips.yaw - Math.PI / 2) < 0.01, `held there, they settle on it (${fmtDeg(turned.hips.yaw)})`);
+  check(slotOf(turned, "Brick") === SLOT.rightHolster.id && worst < 1e-6, `the brick rides the holster round (off it by at most ${worst.toExponential(1)} m)`);
+  const round = len(sub(poseOf(turned, "Brick").position, slotAt("rightHolster", 90)));
+  check(round < 0.001, `a quarter turn round the pelvis (${(round * 1000).toFixed(2)} mm from where the turned holster is)`);
+  // From the right shoulder, which turns with the torso: 18 cm out, 14 cm under the neck.
+  const shoulder = (x) => add(NECK.at, qrot(yawQ(x.hips.yaw), [0.18, -0.14, 0]));
+  const reach = [stored, turned].map((x) => len(sub(poseOf(x, "Brick").position, shoulder(x))));
+  check(Math.abs(reach[0] - reach[1]) < 0.001 && reach[1] < 0.6, `and stays in reach: ${reach.map((r) => (r * 100).toFixed(1)).join(" → ")} cm from the right shoulder`);
+  stowEnd = JSON.stringify(turned);
+});
+
+await run("inventory: reach pins the hips; retrieve", async (rt) => {
+  const yaws = [];
+  let glancing = false;
+  const m = await play(rt, scenarios["inventory-reach"], async ({ mark, state }) => {
+    if (glancing) yaws.push(state.model.hips.yaw);
+    if (mark === "inZone") glancing = true;
+    if (mark === "glanced") glancing = false;
+  });
+  const inZone = m.inZone.model;
+  check(inZone.hips.pinned, "the hand at the holster pins the hips");
+  const held = yaws.every((y) => y === inZone.hips.yaw);
+  const head = quat(some(some(m.glanced.model.xr).head).orientation);
+  check(held && yaws.length === 30, `the head glancing ${turnDeg([0, 0, 0, 1], head).toFixed(1)}° aside, the hips hold (${yaws.length} steps at ${fmtDeg(inZone.hips.yaw)})`);
+  const before = poseOf(m.beforeRetrieve.model, "Brick");
+  const still = apart(before, poseOf(inZone, "Brick"));
+  check(within(still, 0.001, 0.0001), `and the holster with them (${fmtApart(still)})`);
+  const took = m.retrieved.model;
+  check(heldOf(took, "Brick")?.side?.$ctor === "Hold.Right" && slotOf(took, "Brick") === undefined, "squeezed there, the hand takes the brick back");
+  const pop = apart(acceptedOf(took, "Brick"), before);
+  check(within(pop, 1, 0.5), `exactly where it sat (${fmtApart(pop)})`);
+  const body = apart(poseOf(m.holding.model, "Brick"), before);
+  check(within(body, 1, 0.5), `and its body appears there (${fmtApart(body)})`);
+  const lifted = m.lifted.model;
+  const follows = apart(acceptedOf(lifted, "Brick"), wanted(lifted, "right", heldOf(lifted, "Brick")));
+  check(within(follows, 1, 0.5), `lifted out, it follows the hand (${fmtApart(follows)})`);
+  check(!lifted.hips.pinned && lifted.hips.yaw < inZone.hips.yaw, `the hand gone, the hips follow the glance again (${fmtDeg(lifted.hips.yaw)})`);
+});
+
+await run("inventory: refusals", async (rt) => {
+  const m = await play(rt, scenarios["inventory-refuse"]);
+  const stick = m.stickLetGo.model;
+  const stickRelease = some(stick.lastRelease);
+  check(slotOf(stick, "Stick") === undefined && stickRelease?.prop?.$ctor === "Props.Stick", `the stick fits no slot: let go in the holster, it is let go (${stickRelease?.kind?.$ctor})`);
+  const fell = poseOf(m.stickLetGo.model, "Stick").position[1] - poseOf(m.stickDropped.model, "Stick").position[1];
+  check(fell > 0.2, `and falls (${(fell * 100).toFixed(1)} cm)`);
+  check(slotOf(m.stored.model, "Brick") === SLOT.rightHolster.id, "the brick goes in the right holster");
+  const bottle = m.bottleLetGo.model;
+  const bottleRelease = some(bottle.lastRelease);
+  check(slotOf(bottle, "Bottle") === undefined && bottleRelease?.prop?.$ctor === "Props.Bottle", `the bottle let go in the full holster is let go (${bottleRelease?.kind?.$ctor})`);
+  const dropped = m.bottleDropped.model;
+  const bottleFell = poseOf(bottle, "Bottle").position[1] - poseOf(dropped, "Bottle").position[1];
+  check(bottleFell > 0.2 && slotOf(dropped, "Brick") === SLOT.rightHolster.id, `it falls (${(bottleFell * 100).toFixed(1)} cm), and the brick stays in`);
+});
+
+await run("inventory replay", async (rt) => {
+  const m = await play(rt, scenarios["inventory-stow-turn"]);
+  check(stowEnd !== undefined && stowEnd === JSON.stringify(m.turned.model), "the same stow and turn in a fresh runtime ends on an identical model");
 });
 
 await run("replay", async (rt) => {

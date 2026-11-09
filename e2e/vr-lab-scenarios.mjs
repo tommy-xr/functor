@@ -112,6 +112,140 @@ const bottleBase = add(BOTTLE.at, [0.05, -0.1, 0]);
 const throughWall = [-0.77, 1.15, -0.55];
 const atWall = [-0.545, 1.15, -0.55];
 
+// --- Inventory (station 2) ---
+// The rig stands at world (0, 0, -4) facing -Z, so rig-local is the world
+// moved to the feet, and the same props lie on the same table ahead. The
+// head turns about a neck fixed at NECK (`Hips.eyeFromNeck`); the pelvis is
+// inferred under the neck at 0.62 of its height, and the slots sit at their
+// authored offsets from it (`Slots`), turned with the hips' yaw.
+
+export const inventory = { feet: [0, 0, -4], yaw: Math.PI };
+export const NECK = { at: [0, 1.49, 0.09], eye: [0, 0.11, -0.09] };
+export const ROOT = [0, 1.49 * 0.62, 0.09];
+export const SLOT = {
+  leftHolster: { id: 1, offset: [-0.2, -0.1, -0.02], radius: 0.08 },
+  rightHolster: { id: 2, offset: [0.2, -0.1, -0.02], radius: 0.08 },
+  pouch: { id: 3, offset: [0, 0, -0.15], radius: 0.08 },
+};
+// Where a slot is with the hips turned `deg` (left, positive) about ROOT.
+export const slotAt = (name, deg = 0) => add(ROOT, qrot(yaw(deg), SLOT[name].offset));
+const RH = slotAt("rightHolster");
+const LH = slotAt("leftHolster");
+// The left hand waits out of the way of the slots as they turn.
+const LEFT_OUT = [-0.4, 1.15, 0];
+const RIGHT_REST = [0.25, 0.95, -0.2];
+
+// From behind the player's right shoulder and above: the bench ahead, the
+// belt, the slots and the gaze arrow, and the body turning left.
+const overShoulder = { eye: [1.15, 2.1, -2.75], target: [-0.05, 0.85, -4.05], fov: 46 };
+// From the player's right, level with the hips.
+const atHip = { eye: [1.55, 1.25, -3.6], target: [0.0, 0.88, -4.05], fov: 40 };
+
+const outOfTheWay = { frames: 15, left: { to: LEFT_OUT } };
+// Take the brick from the bench by its centre and put it in the right holster.
+const stowBrick = [
+  { frames: 20, right: { to: [0.6, 1.05, -0.45] } },
+  { frames: 15, right: { to: BRICK.at }, mark: "reachedBrick" },
+  { frames: 6, right: { squeeze: 1 }, mark: "tookBrick" },
+  { frames: 30, right: { to: [0.3, 1.0, -0.1] } },
+  { frames: 25, right: { to: RH }, mark: "atHolster" },
+  { frames: 1, right: { squeeze: 0 }, mark: "stored" },
+  { frames: 20, right: { to: RIGHT_REST }, mark: "clear" },
+];
+// The head turns 90° left at 120°/s, past the deadzone, and holds: the hips
+// drag after it, then settle on it.
+const turnLeft = [
+  { frames: 45, head: { turn: yaw(90) }, mark: "turning" },
+  { frames: 120, head: {}, mark: "turned" },
+];
+// The empty right hand reaches back into the holster and, there, the head
+// glances 40° right: the hips hold. Squeezed, it takes the brick back out.
+const reachBack = [
+  { frames: 25, right: { to: RH }, mark: "inZone" },
+  { frames: 30, head: { turn: yaw(-40) }, mark: "glanced" },
+  { frames: 1, right: {}, mark: "beforeRetrieve" },
+  { frames: 1, right: { squeeze: 1 }, mark: "retrieved" },
+  { frames: 1, right: {}, mark: "afterRetrieve" },
+  { frames: 6, right: {}, mark: "holding" },
+  { frames: 30, right: { to: [0.3, 1.15, -0.3] }, mark: "lifted" },
+];
+// The stick, taken by its near end, drawn back off the bench and turned
+// tip down, held still in the left holster and let go: it fits no slot, so it
+// drops. The bottle, held still in the full right holster: refused.
+const stickIntoHolster = [
+  { frames: 20, right: { to: [-0.3, 1.05, -0.2] } },
+  { frames: 20, right: { to: HANDLE } },
+  { frames: 6, right: { squeeze: 1 }, mark: "tookStick" },
+  { frames: 10, right: { to: [-0.3, 1.1, -0.3] } },
+  { frames: 25, right: { to: [-0.3, 1.1, 0.45] } },
+  { frames: 25, right: { turn: pitch(-75) } },
+  { frames: 25, right: { to: LH } },
+  { frames: 6, right: {}, mark: "stickAtHolster" },
+  { frames: 1, right: { squeeze: 0 }, mark: "stickLetGo" },
+  { frames: 30, right: { to: RIGHT_REST, turn: [0, 0, 0, 1] }, mark: "stickDropped" },
+];
+const bottleIntoFull = [
+  { frames: 20, right: { to: [0.65, 1.0, -0.75] } },
+  { frames: 15, right: { to: add(BOTTLE.at, [0.05, -0.1, 0]) } },
+  { frames: 6, right: { squeeze: 1 }, mark: "tookBottle" },
+  { frames: 30, right: { to: [0.35, 1.0, -0.15] } },
+  { frames: 20, right: { to: RH } },
+  { frames: 6, right: {}, mark: "bottleAtHolster" },
+  { frames: 1, right: { squeeze: 0 }, mark: "bottleLetGo" },
+  { frames: 40, right: { to: RIGHT_REST }, mark: "bottleDropped" },
+];
+
+const inventoryScenarios = {
+  // Put the brick in the right holster and turn the body a quarter turn
+  // left: it rides the hips round, and the holster stays where the hand
+  // finds it.
+  "inventory-stow-turn": {
+    station: 2,
+    neck: NECK,
+    spectator: overShoulder,
+    steps: [outOfTheWay, ...stowBrick, ...turnLeft],
+  },
+
+  // Stow the brick, then reach back for it while glancing aside: the hips
+  // hold still under the reaching hand, and it comes out exactly where it sat.
+  "inventory-reach": {
+    station: 2,
+    neck: NECK,
+    spectator: atHip,
+    steps: [outOfTheWay, ...stowBrick, ...reachBack],
+  },
+
+  // Neither goes in: the stick fits no slot, and the brick fills the holster
+  // the bottle is let go in. Both drop as any let-go prop does.
+  "inventory-refuse": {
+    station: 2,
+    neck: NECK,
+    spectator: atHip,
+    steps: [outOfTheWay, ...stickIntoHolster, ...stowBrick, ...bottleIntoFull],
+  },
+
+  // The demo: stow, turn and turn back, reach back with a glance, take it
+  // out and put it back, then the stick and the bottle refused.
+  "inventory-tour": {
+    station: 2,
+    neck: NECK,
+    spectator: overShoulder,
+    steps: [
+      outOfTheWay,
+      ...stowBrick,
+      ...turnLeft,
+      { frames: 45, head: { turn: [0, 0, 0, 1] } },
+      { frames: 90, head: {}, mark: "back" },
+      ...reachBack,
+      { frames: 30, right: { to: RH } },
+      { frames: 1, right: { squeeze: 0 }, mark: "restored" },
+      { frames: 20, right: { to: RIGHT_REST } },
+      ...stickIntoHolster,
+      ...bottleIntoFull,
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -319,6 +453,8 @@ export const scenarios = {
     fixture: "e2e/fixtures/vr-lab/grab-throw.xr.json",
     spectator: side,
   },
+
+  ...inventoryScenarios,
 
   // Lose the hand mid-swing, then let go as it comes back: no throw.
   "tracking-loss": {

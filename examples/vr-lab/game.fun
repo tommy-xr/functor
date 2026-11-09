@@ -2,7 +2,8 @@
 // skill, each reset from a selector. Station 1 is the grab table: a ball, a
 // stick, a brick and a bottle. Pick any up with either hand (squeeze), push
 // it into the wall or the table (it stops there), pass it to the other hand,
-// throw it.
+// throw it. Station 2 is the inventory: the same props, and slots worn on
+// the hips (`Hips`, `Slots`) to put them away in and take them back from.
 //
 //   functor -d examples/vr-lab run vr
 //   functor -d examples/vr-lab run native        # the station, no hands
