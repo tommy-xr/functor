@@ -328,6 +328,26 @@ export type GameSettings = { xr: XrSettings, };
 export type GamepadSnapshot = { left_stick: [number, number], right_stick: [number, number], left_trigger: number, right_trigger: number, south: boolean, east: boolean, west: boolean, north: boolean, left_bumper: boolean, right_bumper: boolean, left_stick_pressed: boolean, right_stick_pressed: boolean, dpad_up: boolean, dpad_down: boolean, dpad_left: boolean, dpad_right: boolean, start: boolean, select: boolean, };
 
 /**
+ * `GET /state`'s `http`: the shell's `Effect.httpGet`/`httpPost` requests
+ * since launch. A `pending` that stays above 0 is a request that never
+ * answers.
+ */
+export type HttpStats = { 
+/**
+ * Handed to the transport; result not yet delivered to the game.
+ */
+pending: number, 
+/**
+ * Delivered with an HTTP status (any status, 404 included).
+ */
+completed: number, 
+/**
+ * Delivered as `Net.Failure`: transport errors, and requests the shell
+ * cannot perform.
+ */
+failed: number, };
+
+/**
  * An event injected by `POST /input`.
  */
 export type InputCommand = { "type": "key", key: string, down: boolean, } | { "type": "mouse_move", x: number, y: number, } | { "type": "mouse_wheel", delta: number, } | { "type": "mouse_button", button: string, down: boolean, } | { "type": "ui_event", slot: number, kind: UiEventKind, } | { "type": "webview_event", slot: number, kind: UiEventKind, } | { "type": "xr" } & XrInputSnapshot | { "type": "xr_clear" } | { "type": "gamepad" } & GamepadSnapshot | { "type": "gamepad_clear" } | { "type": "touch", phase: TouchPhase, id: number, x: number, y: number, };
@@ -527,7 +547,13 @@ model_revision: number,
  * is a lower bound on outstanding network work. `default` because a
  * pre-v10 runtime omits it.
  */
-pending_net: number, viewport: RuntimeViewport, views: Array<RuntimeView>, 
+pending_net: number, 
+/**
+ * The shell's `Effect.httpGet`/`httpPost` requests (v31): a `pending`
+ * that never falls is a request that never answers. `default` because
+ * a pre-v31 runtime omits it.
+ */
+http: HttpStats, viewport: RuntimeViewport, views: Array<RuntimeView>, 
 /**
  * The structured JSON view of the model
  * ([`crate::protocol::GameProducer::state_json`]) — the default thing to

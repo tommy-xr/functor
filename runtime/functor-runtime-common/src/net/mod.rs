@@ -12,12 +12,14 @@
 
 mod connection;
 mod embedder;
+pub mod http_client;
 mod inbox;
 mod registry;
 mod virtual_net;
 
 pub use connection::*;
 pub use embedder::*;
+pub use http_client::HttpWorkers;
 pub use inbox::*;
 pub use registry::*;
 pub use virtual_net::*;
@@ -67,6 +69,59 @@ pub fn send_inbound<T>(tx: &std::sync::mpsc::Sender<T>, event: T) {
 /// The current inbound queue depth, for `GET /state`'s `pending_net`.
 pub fn inbound_pending() -> u64 {
     INBOUND_PENDING.load(Ordering::Relaxed)
+}
+
+/// `GET /state`'s `http`: the shell's `Effect.httpGet`/`httpPost` requests
+/// since launch. A `pending` that stays above 0 is a request that never
+/// answers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct HttpStats {
+    /// Handed to the transport; result not yet delivered to the game.
+    pub pending: u64,
+    /// Delivered with an HTTP status (any status, 404 included).
+    pub completed: u64,
+    /// Delivered as `Net.Failure`: transport errors, and requests the shell
+    /// cannot perform.
+    pub failed: u64,
+}
+
+static HTTP_PENDING: AtomicU64 = AtomicU64::new(0);
+static HTTP_COMPLETED: AtomicU64 = AtomicU64::new(0);
+static HTTP_FAILED: AtomicU64 = AtomicU64::new(0);
+
+/// Shell: a request went to the transport.
+pub fn note_http_issued() {
+    HTTP_PENDING.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Shell: a request's result reached the game — a response (`ok`) or a
+/// failure.
+pub fn note_http_delivered(ok: bool) {
+    let _ = HTTP_PENDING.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| Some(n.saturating_sub(1)));
+    match ok {
+        true => HTTP_COMPLETED.fetch_add(1, Ordering::Relaxed),
+        false => HTTP_FAILED.fetch_add(1, Ordering::Relaxed),
+    };
+}
+
+pub fn http_stats() -> HttpStats {
+    HttpStats {
+        pending: HTTP_PENDING.load(Ordering::Relaxed),
+        completed: HTTP_COMPLETED.load(Ordering::Relaxed),
+        failed: HTTP_FAILED.load(Ordering::Relaxed),
+    }
+}
+
+/// Log `message` the first time `what` happens in this process: an effect a
+/// shell cannot perform fails every time, but says so once.
+pub fn warn_once(what: &str, message: &str) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.iter().any(|w| w == what) {
+        seen.push(what.to_string());
+        log::warn!("{message}");
+    }
 }
 
 #[cfg(test)]

@@ -1007,6 +1007,10 @@ fn deliver_net_ws(
 ) {
     while let Ok(result) = net_rx.try_recv() {
         functor_runtime_common::net::note_inbound_delivered();
+        functor_runtime_common::net::note_http_delivered(matches!(
+            result,
+            net_dispatch::NetResult::Response { .. }
+        ));
         match result {
             net_dispatch::NetResult::Response {
                 token,
@@ -1052,6 +1056,7 @@ fn dispatch_net_ws(
     ws_manager: &mut ws_host::WsManager,
 ) {
     for cmd in std::mem::take(&mut snapshot.net_commands) {
+        functor_runtime_common::net::note_http_issued();
         let tx = net_tx.clone();
         let client = http_client.clone();
         tokio::spawn(async move {
@@ -1167,6 +1172,7 @@ fn service_debug_request(
                     pending_steps,
                     model_revision: g.model_revision(),
                     pending_net: functor_runtime_common::net::inbound_pending(),
+                    http: functor_runtime_common::net::http_stats(),
                     viewport: debug_server::RuntimeViewport::new(width, height),
                     views: vec![debug_server::RuntimeView::new("main", width, height)],
                     model: g.state_json(),

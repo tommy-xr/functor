@@ -16,77 +16,13 @@ use cgmath::{Matrix4, SquareMatrix};
 use crate::depth_frame::{self, DepthFrameHeader, DepthFrameSource, DepthFrameTime};
 use crate::depth_readback::READBACK_SIZE;
 use crate::environment_depth::EnvironmentDepthView;
+pub use crate::net::http_client::Destination;
+use crate::net::http_client;
 use crate::runtime_settings::{DepthStreamSettings, DepthStreamState};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
-/// The whole request: connect, send, and the status line back.
+/// The whole request: connect, send, and the response back.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// An `http://host[:port][/path]` URL.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Destination {
-    /// As written in the URL, brackets kept for IPv6: the `Host` header.
-    authority: String,
-    /// Lowercase, brackets stripped: what to connect to.
-    host: String,
-    port: u16,
-    /// Path and query; `/` when absent.
-    path: String,
-}
-
-impl Destination {
-    pub fn parse(url: &str) -> Result<Destination, String> {
-        let rest = url
-            .get(..7)
-            .filter(|scheme| scheme.eq_ignore_ascii_case("http://"))
-            .map(|_| &url[7..])
-            .ok_or_else(|| format!("{url:?} must be an http:// URL"))?;
-        let rest = rest.split('#').next().unwrap_or_default();
-        let (authority, path) = match rest.find(['/', '?']) {
-            Some(i) => (&rest[..i], &rest[i..]),
-            None => (rest, ""),
-        };
-        let (host, port) = match authority.rsplit_once(':') {
-            Some((host, port)) if !port.contains(']') => (
-                host,
-                port.parse::<u16>()
-                    .map_err(|_| format!("{url:?}: bad port {port:?}"))?,
-            ),
-            _ => (authority, 80),
-        };
-        let host = host.trim_start_matches('[').trim_end_matches(']');
-        let bad = |c: char| c.is_whitespace() || c.is_control();
-        if host.is_empty() || authority.contains('@') || authority.contains(bad) || path.contains(bad) {
-            return Err(format!("{url:?} must be http://host[:port][/path]"));
-        }
-        Ok(Destination {
-            authority: authority.to_string(),
-            host: host.to_ascii_lowercase(),
-            port,
-            path: match path {
-                "" => "/".to_string(),
-                p if p.starts_with('?') => format!("/{p}"),
-                p => p.to_string(),
-            },
-        })
-    }
-
-    /// `http://host:port`, the form `--allow-sensor-upload` compares.
-    pub fn origin(&self) -> String {
-        match self.host.contains(':') {
-            true => format!("http://[{}]:{}", self.host, self.port),
-            false => format!("http://{}:{}", self.host, self.port),
-        }
-    }
-
-    fn is_loopback(&self) -> bool {
-        self.host == "localhost"
-            || self
-                .host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    }
-}
 
 /// An operator's `--allow-sensor-upload` value, normalized to
 /// [`Destination::origin`]'s form.
@@ -112,59 +48,10 @@ allowed by default — the operator allows another origin with `--allow-sensor-u
 
 /// POST one body within [`REQUEST_TIMEOUT`]; any 2xx is success.
 fn post(destination: &Destination, body: &[u8]) -> Result<(), String> {
-    use std::io::{Read, Write};
-    use std::net::ToSocketAddrs;
-    let deadline = Instant::now() + REQUEST_TIMEOUT;
-    let remaining = || {
-        deadline
-            .checked_duration_since(Instant::now())
-            .filter(|left| !left.is_zero())
-            .ok_or_else(|| format!("timed out after {REQUEST_TIMEOUT:?}"))
-    };
-    let addrs = (destination.host.as_str(), destination.port)
-        .to_socket_addrs()
-        .map_err(|e| format!("resolve {}: {e}", destination.host))?;
-    let mut last = format!("{} resolved to no address", destination.host);
-    let mut stream = None;
-    for addr in addrs {
-        match std::net::TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT.min(remaining()?)) {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(e) => last = format!("connect {addr}: {e}"),
-        }
-    }
-    let mut stream = stream.ok_or(last)?;
-    let _ = stream.set_nodelay(true);
-    let head = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        destination.path,
-        destination.authority,
-        depth_frame::CONTENT_TYPE,
-        body.len()
-    );
-    // Chunked so a server reading slowly cannot stretch past the deadline.
-    for chunk in std::iter::once(head.as_bytes()).chain(body.chunks(64 * 1024)) {
-        stream.set_write_timeout(Some(remaining()?)).map_err(|e| e.to_string())?;
-        stream.write_all(chunk).map_err(|e| e.to_string())?;
-    }
-    // "HTTP/1.1 204 No Content": a 3xx is not followed.
-    let mut status = Vec::new();
-    let mut byte = [0u8; 256];
-    while !status.contains(&b'\n') && status.len() < 1024 {
-        stream.set_read_timeout(Some(remaining()?)).map_err(|e| e.to_string())?;
-        match stream.read(&mut byte).map_err(|e| e.to_string())? {
-            0 => break,
-            n => status.extend_from_slice(&byte[..n]),
-        }
-    }
-    let status = String::from_utf8_lossy(&status);
-    let line = status.lines().next().unwrap_or_default();
-    match line.split_whitespace().nth(1).and_then(|c| c.parse::<u16>().ok()) {
-        Some(code) if (200..300).contains(&code) => Ok(()),
-        Some(code) => Err(format!("HTTP {code}")),
-        None => Err(format!("bad response {line:?}")),
+    let headers = [("Content-Type".to_string(), depth_frame::CONTENT_TYPE.to_string())];
+    match http_client::request("POST", destination, &headers, body, CONNECT_TIMEOUT, REQUEST_TIMEOUT)?.status {
+        code if (200..300).contains(&code) => Ok(()),
+        code => Err(format!("HTTP {code}")),
     }
 }
 
@@ -507,25 +394,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn destinations_parse() {
-        let d = Destination::parse("http://127.0.0.1:9000/frames?x=1#f").unwrap();
-        assert_eq!((d.host.as_str(), d.port, d.path.as_str()), ("127.0.0.1", 9000, "/frames?x=1"));
-        assert_eq!(d.origin(), "http://127.0.0.1:9000");
-        let d = Destination::parse("HTTP://LocalHost").unwrap();
-        assert_eq!((d.host.as_str(), d.port, d.path.as_str()), ("localhost", 80, "/"));
-        let d = Destination::parse("http://[::1]:8080/f").unwrap();
-        assert_eq!((d.host.as_str(), d.authority.as_str()), ("::1", "[::1]:8080"));
-        assert_eq!(d.origin(), "http://[::1]:8080");
-        for bad in [
-            "https://host/",
-            "ftp://x",
-            "http://",
-            "http://u@host/",
-            "http://h:99999/",
-            "http://evil\r\nX:1/",
-        ] {
-            assert!(Destination::parse(bad).is_err(), "{bad}");
-        }
+    fn origins_parse() {
         assert_eq!(parse_origin("http://192.168.1.5:9000").unwrap(), "http://192.168.1.5:9000");
         assert!(parse_origin("http://192.168.1.5:9000/frames").is_err());
     }
