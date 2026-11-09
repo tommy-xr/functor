@@ -81,9 +81,10 @@ same path:
   and keeps the hand's offset to it, position and turn: it stays exactly
   where it was, held at the point and angle it was taken. A prop with an
   authored grip (the bottle's neck) snaps to it instead when the hand is
-  within 5 cm of it.
+  within 5 cm of it, pointing within 45° of the way it is held there.
 - **Hand-off.** A fresh squeeze of the other hand on a held prop takes it
-  where it is (no snap), so the pose doesn't jump.
+  where it is (no snap), so the pose doesn't jump — even in the step the
+  first hand opens.
 - **Hold.** Each step the prop sweeps from where it is toward where the hand
   holds it, turning on the way (`Physics.sweep` against fixed bodies only, so
   never itself, at the pose it is drawn at), stops 4 mm short of what it hits

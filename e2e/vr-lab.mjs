@@ -350,7 +350,7 @@ await run("brick pressed onto the table's edge", async (rt) => {
     lifted ||= mark === "above";
     if (d > deepest) [deepest, deepestStep] = [d, step];
   });
-  check(deepest < 0.001, `it never overlaps the table (deepest ${(deepest * 1000).toFixed(2)} mm, step ${deepestStep})`);
+  check(deepest < 0.001, `it never overlaps the table (deepest ${(deepest * 1000).toFixed(2)} mm${deepestStep ? `, step ${deepestStep}` : ""})`);
   const pressed = heldOf(m.held.model, "Brick");
   const short = pressed && len(sub(xyz(pressed.accepted.position), wanted(m.held.model, "right", pressed).position));
   check(short > 0.05, `pressed 4 cm below the top, it is held back (${(short * 100).toFixed(1)} cm short of the hand)`);
