@@ -56,7 +56,7 @@ if (!scenario) {
 const frames = mkdtempSync(join(tmpdir(), "xr-demo-"));
 const rt = await launch(project, port, ["--hidden", "--capture-size", size]);
 let count = 0;
-let releaseFrame;
+let markFrame;
 let lastFrame;
 try {
   if (view !== "rig" && scenario.spectator) await rt.post("/camera", { type: "set", ...scenario.spectator });
@@ -64,12 +64,17 @@ try {
     if (step % every !== 0 && mark !== stillMark) return;
     lastFrame = join(frames, `f${String(count++).padStart(4, "0")}.png`);
     writeFileSync(lastFrame, await rt.capture());
-    if (mark === stillMark) releaseFrame = lastFrame;
+    if (mark === stillMark) markFrame = lastFrame;
   });
 } finally {
   await rt.kill();
 }
-const stillFrame = releaseFrame ?? lastFrame;
+// An explicitly named mark the run never reached is an error, not the last frame.
+if (still && rest.includes("--still-mark") && !markFrame) {
+  console.error(`no step is marked "${stillMark}"`);
+  process.exit(1);
+}
+const stillFrame = markFrame ?? lastFrame;
 
 const fps = String(60 / every);
 mkdirSync(dirname(resolve(out)), { recursive: true });

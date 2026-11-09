@@ -93,8 +93,9 @@ basket on the floor a throw away, with a scoreboard behind it.
   (`Physics.sweep`, at the pose it is drawn at), and stops 4 mm short of what
   it hits: turn the wrist toward the wall and the far end stops at the wall,
   even though the hand and the stick's centre barely move; turn back and it
-  follows again. It has no body and no grip break, and let go it returns to
-  its rack (grip, regrab and physical props come later).
+  follows again. It has no body; let go, or held more than a quarter turn
+  (or 25 cm) off the hand, it returns to its rack (grip, regrab and physical
+  props come later).
 
 Worn checks still open: held-ball judder at 120 Hz (the hold updates at the
 60 Hz fixed step), how throws feel, whether the stick stopping at the wall

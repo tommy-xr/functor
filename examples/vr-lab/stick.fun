@@ -8,13 +8,16 @@
 // of the way from one pose to the other at which the stick first touches
 // something (`Physics.sweep`), or none.
 //
-// Deliberately minimal: held where it was grabbed, no break, and let go it
-// goes back to its rack.
+// Deliberately minimal: held where it was grabbed, and let go (or held too
+// far off the hand) it goes back to its rack.
 
 let length = 0.7
 let thickness = 0.035
 // A blocked stick stops this far short of the hit, at its farthest point.
 let skin = 0.004
+// Held further than this off the hand, it drops: past it the shorter way
+// round from the stuck pose would swing back through the wall.
+let breakTurn = Math.pi / 2.0
 
 /// A stick in a hand: where it sits in the grip's frame, and where it
 /// actually is (the sweep can stop it short of the hand).
@@ -69,13 +72,20 @@ let move = (cast: (Input.pose, Input.pose) => Option.t<float>, from: Input.pose,
     | Option.Some(f) => interpolate(from, to, Math.max(0.0, f - skin / travel))
 
 /// One step of a held stick. Tracking lost (`grip` None): it stays where it
-/// is. Opened: let go.
+/// is. Opened, or blocked `breakTurn` or `Hold.breakDistance` off the hand:
+/// let go.
 let step = (cast: (Input.pose, Input.pose) => Option.t<float>, held: Held, grip: Option.t<Input.pose>, squeezed: bool): Outcome =>
   match grip with
   | Option.None => Holding(held)
   | Option.Some(g) =>
-    if not squeezed then Released
-    else Holding({ held with accepted: move(cast, held.accepted, compose(g, held.offset)) })
+    let wanted = compose(g, held.offset) in
+    let accepted = move(cast, held.accepted, wanted) in
+    // Where the hand would be on the stick as it is: a turn about the grip
+    // moves this not at all.
+    let gripOn = compose(accepted, relative(held.offset, { position: Hold.zero, orientation: Quat.identity })) in
+    let off = Quat.length(Quat.sub(g.position, gripOn.position)) > Hold.breakDistance
+      || Quat.angle(wanted.orientation, accepted.orientation) > breakTurn in
+    if not squeezed || off then Released else Holding({ held with accepted: accepted })
 
 // --- tests, against a wall filling x <= -0.6 ---
 
@@ -126,6 +136,15 @@ expect swing |> List.all((h) => farX(h.accepted) >= wallX - 0.0001)
 expect (List.last(swing) |> Option.map((h) => farX(h.accepted) - wallX < 0.01) |> Option.defaultValue(false))
 // Turned back, it follows the hand again.
 expect (List.last(back) |> Option.map((h) => near(h.accepted, compose(at(hand, Quat.identity), h.offset))) |> Option.defaultValue(false))
+// Stopped by the wall, the hand turned on but still on the grip: still held.
+expect List.length(swing) == 31.0
+// Turned on past a quarter turn beyond where it stopped: it drops.
+expect (
+  let stuck = List.last(swing) |> Option.defaultValue(start) in
+  match step(wallCast, stuck, gripAt(Math.pi * 0.75), true) with
+  | Released => true
+  | _ => false
+)
 // Open: let go. Lost: stays put.
 expect (match step(wallCast, start, gripAt(0.0), false) with | Released => true | _ => false)
 expect (match step(wallCast, start, Option.None, true) with | Holding(h) => near(h.accepted, rack) | _ => false)
