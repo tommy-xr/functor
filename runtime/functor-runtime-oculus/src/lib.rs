@@ -41,6 +41,7 @@ use functor_runtime_common::frame_telemetry::{us, FrameRecord, FrameTelemetry};
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::runtime_settings::FoveationLevel;
+use functor_runtime_common::haptics::{Hand, HapticPulse};
 use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use functor_runtime_common::{
     rig_reference, Frame, FrameTime, GameClock, InputSnapshot, Key, SceneContext, TrackingPose,
@@ -505,6 +506,7 @@ struct XrActions {
     secondary: xr::Action<bool>,
     thumbstick_click: xr::Action<bool>,
     menu: xr::Action<bool>,
+    haptic: xr::Action<xr::Haptic>,
     left_grip_space: xr::Space,
     right_grip_space: xr::Space,
     left_aim_space: xr::Space,
@@ -550,6 +552,9 @@ impl XrActions {
         let menu = action_set
             .create_action::<bool>("menu", "Menu button", &hands)
             .expect("create menu action");
+        let haptic = action_set
+            .create_action::<xr::Haptic>("haptic", "Haptic pulse", &hands)
+            .expect("create haptic action");
 
         let path = |value: &str| instance.string_to_path(value).expect("OpenXR input path");
         let touch_profile = path("/interaction_profiles/oculus/touch_controller");
@@ -580,6 +585,8 @@ impl XrActions {
                         path("/user/hand/right/input/thumbstick/click"),
                     ),
                     xr::Binding::new(&menu, path("/user/hand/left/input/menu/click")),
+                    xr::Binding::new(&haptic, path("/user/hand/left/output/haptic")),
+                    xr::Binding::new(&haptic, path("/user/hand/right/output/haptic")),
                 ],
             )
             .expect("suggest Touch controller bindings");
@@ -599,6 +606,8 @@ impl XrActions {
                     xr::Binding::new(&primary, path("/user/hand/right/input/select/click")),
                     xr::Binding::new(&menu, path("/user/hand/left/input/menu/click")),
                     xr::Binding::new(&menu, path("/user/hand/right/input/menu/click")),
+                    xr::Binding::new(&haptic, path("/user/hand/left/output/haptic")),
+                    xr::Binding::new(&haptic, path("/user/hand/right/output/haptic")),
                 ],
             )
             .expect("suggest simple controller bindings");
@@ -632,10 +641,43 @@ impl XrActions {
             secondary,
             thumbstick_click,
             menu,
+            haptic,
             left_grip_space,
             right_grip_space,
             left_aim_space,
             right_aim_space,
+        }
+    }
+
+    fn hand_path(&self, hand: Hand) -> xr::Path {
+        match hand {
+            Hand::Left => self.left_path,
+            Hand::Right => self.right_path,
+        }
+    }
+
+    /// Vibrate one controller (`Effect.haptic`); false if the runtime refused.
+    fn pulse(&self, session: &xr::Session<xr::OpenGlEs>, pulse: &HapticPulse) -> bool {
+        // 0 s asks for the runtime's shortest pulse.
+        let duration = if pulse.seconds > 0.0 {
+            xr::Duration::from_nanos((f64::from(pulse.seconds) * 1e9) as i64)
+        } else {
+            xr::Duration::MIN_HAPTIC
+        };
+        let vibration = xr::HapticVibration::new()
+            .amplitude(pulse.amplitude)
+            .duration(duration)
+            .frequency(xr::FREQUENCY_UNSPECIFIED);
+        self.haptic
+            .apply_feedback(session, self.hand_path(pulse.hand), &vibration)
+            .map_err(|error| log::warn!("haptic pulse refused: {error}"))
+            .is_ok()
+    }
+
+    /// Stop both controllers' vibration (the session is ending).
+    fn stop_haptics(&self, session: &xr::Session<xr::OpenGlEs>) {
+        for hand in [Hand::Left, Hand::Right] {
+            let _ = self.haptic.stop_feedback(session, self.hand_path(hand));
         }
     }
 
@@ -1005,6 +1047,7 @@ fn service_debug_request(
                     }),
                     // No audio host on device yet.
                     audio: None,
+                    haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
                 });
             });
@@ -1716,6 +1759,13 @@ pub fn android_main(app: AndroidApp) {
                             last_frame_at = None;
                         }
                         xr::SessionState::STOPPING => {
+                            // No buzz outlives the session, nor fires on resume.
+                            xr_actions.stop_haptics(&session);
+                            functor_runtime_common::haptics::record(
+                                &functor_runtime_common::haptics::take(),
+                                0,
+                                |_| false,
+                            );
                             if let Some(response) = debug.pending_capture.take() {
                                 let _ = response.send(Err(CaptureError::Unavailable(
                                     "capture cancelled because the XR session stopped".to_string(),
@@ -1987,6 +2037,13 @@ pub fn android_main(app: AndroidApp) {
             preloads.append(&mut fresh.preload_commands);
             scene_context.queue_terrain_requests(std::mem::take(&mut fresh.terrain_requests));
             record.set_sim(fresh.sim_ns, &fresh.stages);
+            // Actuate the frame's pulses once, as its snapshot arrives; an
+            // unfocused session can't vibrate, so they count as dropped.
+            functor_runtime_common::haptics::record(
+                &fresh.haptics,
+                functor_runtime_common::haptics::state_frame(fresh.scene_frame),
+                |pulse| session_focused && xr_actions.pulse(&session, pulse),
+            );
             let foveation = fresh.settings.as_ref().and_then(|settings| settings.xr.foveation);
             if foveation_available && foveation != applied_foveation {
                 apply_foveation(&instance, &session, &eyes, foveation);

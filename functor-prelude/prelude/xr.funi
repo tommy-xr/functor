@@ -29,6 +29,11 @@ type level =
 /// Where `streamDepth` sends frames, and how many a second.
 type streamOptions = { url: string, hz: float }
 
+/// A controller, for `Effect.haptic`.
+type hand =
+  | Left
+  | Right
+
 /// No options set: every knob keeps the shell's default.
 let create : () => t
 /// Request a display refresh rate in Hz; the options are last for piping.

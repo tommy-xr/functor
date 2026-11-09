@@ -3765,6 +3765,38 @@ let ui = (model) =>
         assert_eq!(n(4), "{ t: 5, n: 4 }", "still failing: the same table");
     }
 
+    /// A ghost/fork projection runs `ReplayEffects` with outbound suppressed:
+    /// the projected ticks' pulses never reach the shell.
+    #[test]
+    fn forward_step_offers_no_haptics() {
+        let _guard = crate::haptics::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::haptics::take();
+        let src = "let init = 0.0\n\
+                   let tick = (m, dt, tts) => (m + 1.0, Effect.haptic(Xr.Right, 1.0, Time.millis(50.0)))\n";
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            vec![(std::path::PathBuf::from("game.fun"), src.to_string())],
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let stepped = forward_step_scene(
+            &session,
+            &EntryNames::UNPREFIXED,
+            &Value::Number(0.0),
+            false,
+            false,
+            None,
+            0.0,
+            1.0 / 60.0,
+            3,
+            1,
+            &[],
+        );
+        assert_eq!(stepped[2].0.to_string(), "3", "the projection ticked");
+        assert!(crate::haptics::take().is_empty(), "no pulse escaped the dry run");
+    }
+
     #[test]
     fn forward_step_replays_sampled_input_before_tick() {
         let src = "let init = 0.0\n\

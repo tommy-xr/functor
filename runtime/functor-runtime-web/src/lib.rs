@@ -1746,6 +1746,12 @@ async fn run_async() -> Result<(), JsValue> {
             // Play any one-shot sounds this frame's tick queued (fetch + decode
             // the first time, then from the cache).
             dispatch_audio_commands(&**game);
+            // No actuator in a browser: count the pulses so the queue drains.
+            functor_runtime_common::haptics::record(
+                &functor_runtime_common::haptics::take(),
+                functor_runtime_common::haptics::state_frame(game.current_scene_frame()),
+                |_| true,
+            );
             dispatch_conn_commands(&mut **game, &ws_state);
 
             let mut frame: Frame = game.render_at(frame_time.clone(), alpha);

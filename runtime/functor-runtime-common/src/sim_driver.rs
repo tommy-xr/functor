@@ -77,6 +77,8 @@ pub struct SimSnapshot {
     pub ui: View,
     pub webview_html: Option<String>,
     pub audio_commands: Vec<AudioCommand>,
+    /// Controller pulses queued since the last snapshot, one per hand.
+    pub haptics: crate::haptics::HapticFrame,
     pub audio_scene: Option<AudioScene>,
     pub net_commands: Vec<NetCommand>,
     pub conn_commands: Vec<ConnCommand>,
@@ -434,6 +436,7 @@ impl SimSnapshot {
             &mut self.audio_commands,
             std::mem::take(&mut older.audio_commands),
         );
+        self.haptics.absorb(older.haptics);
         prepend(
             &mut self.net_commands,
             std::mem::take(&mut older.net_commands),
@@ -594,6 +597,7 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
             .then(|| game.webview().map(|node| node.to_html()))
             .flatten(),
         audio_commands: parse_drain(&game.audio_drain_commands(), "audio"),
+        haptics: crate::haptics::take(),
         audio_scene: audio_scene.flatten(),
         net_commands: parse_drain(&game.net_drain_commands(), "net"),
         conn_commands: if req.conn_commands {

@@ -71,6 +71,7 @@ mod fused_room;
 pub mod events;
 pub mod fog;
 pub mod gpu_counters;
+pub mod haptics;
 mod frame;
 pub mod frame_capture;
 pub mod frame_telemetry;

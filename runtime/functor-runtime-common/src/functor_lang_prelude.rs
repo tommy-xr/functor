@@ -568,6 +568,9 @@ pub enum EffectTree {
         locator: String,
         message: Value,
     },
+    /// A fire-and-forget controller pulse (`Effect.haptic`), offered to the
+    /// shell's per-hand slot ([`crate::haptics::offer`]). Tagger-less.
+    Haptic(crate::haptics::HapticPulse),
 }
 
 pub struct FunctorLangEffect(pub EffectTree);
@@ -4616,6 +4619,29 @@ fn register_effects(reg: &mut crate::host_registry::Registry) {
             })
         },
     );
+    // A controller pulse; out-of-range values are teaching errors, not clamps.
+    reg.fn3(
+        "Effect.haptic",
+        "Effect.haptic(hand, amplitude, duration)",
+        |hand: crate::haptics::Hand, amplitude: f64, duration: FunctorLangDuration| {
+            if !(0.0..=1.0).contains(&amplitude) {
+                return Err(format!(
+                    "Effect.haptic: amplitude must be 0..1, got {amplitude}"
+                ));
+            }
+            if !(duration.0 >= 0.0 && (duration.0 as f32).is_finite()) {
+                return Err(format!(
+                    "Effect.haptic: the duration must be finite and not negative, got {}s",
+                    duration.0
+                ));
+            }
+            Ok(FunctorLangEffect(EffectTree::Haptic(crate::haptics::HapticPulse {
+                hand,
+                amplitude: amplitude as f32,
+                seconds: duration.0 as f32,
+            })))
+        },
+    );
     // Play once and deliver `msg` (a message VALUE, not a tagger) when the
     // sound finishes — see EffectTree::PlayAudioThen. Any value is a valid
     // message, so there is nothing to validate.
@@ -6054,6 +6080,23 @@ impl crate::host_registry::FromArg for FunctorLangSkybox {
     }
 }
 
+impl crate::host_registry::FromArg for crate::haptics::Hand {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        match value {
+            Value::Variant { ctor, args } if args.is_empty() && ctor.as_ref() == "Xr.Left" => {
+                Ok(crate::haptics::Hand::Left)
+            }
+            Value::Variant { ctor, args } if args.is_empty() && ctor.as_ref() == "Xr.Right" => {
+                Ok(crate::haptics::Hand::Right)
+            }
+            _ => Err(RunError {
+                message: format!("{path}: expected a hand (Xr.Left, Xr.Right), got {value}"),
+                span,
+            }),
+        }
+    }
+}
+
 impl crate::host_registry::FromArg for FunctorLangDuration {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         duration_of(value, path, span).map(FunctorLangDuration)
@@ -6973,6 +7016,7 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         | EffectTree::PlayAudioThen { .. }
         | EffectTree::PreloadAsset { .. }
         | EffectTree::PreloadAssetThen { .. }
+        | EffectTree::Haptic(_)
         // A save reports nothing back; only `Persistence.load` has a tagger.
         | EffectTree::Save { .. } => false,
         EffectTree::Now { .. }
@@ -7245,6 +7289,14 @@ dropping the rest"
                     token
                 });
                 requests.issue(recorded, ordinal, Channel::Audio, token, message);
+                continue;
+            }
+            EffectTree::Haptic(pulse) => {
+                // Fire-and-forget like a one-shot: the shell actuates it.
+                if !suppress_outbound {
+                    crate::haptics::offer(pulse);
+                }
+                issue(runner, log, "xr.haptic", args_digest(&pulse));
                 continue;
             }
             EffectTree::PreloadAsset { kind, locator } => {
@@ -14399,6 +14451,7 @@ size: Vec3.make(1.0, 1.0, 1.0), force: Vec3.make(0.0, 0.0, 0.0), turbulence: 0.0
             build: None,
             xr: None,
             audio: None,
+            haptics: None,
             frame_stats: None,
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
@@ -17926,6 +17979,114 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
                 },
             ]
         );
+    }
+
+    // --- haptics: Effect.haptic ---
+
+    /// Load `src` under the engine prelude (`Xr.Left`, `ms`), or its error.
+    fn try_haptic_session(src: &str) -> Result<functor_lang::Session, String> {
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            vec![(std::path::PathBuf::from("game.fun"), src.to_string())],
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|f| f.error.message)
+    }
+
+    fn haptic_session(src: &str) -> functor_lang::Session {
+        try_haptic_session(src).unwrap_or_else(|message| panic!("session: {message}"))
+    }
+
+    fn drain_haptics(
+        session: &functor_lang::Session,
+        name: &str,
+        runner: &mut dyn EffectRunner,
+        log: &mut Vec<Entry>,
+        suppress_outbound: bool,
+    ) {
+        let effect = effect_of(&session.global(name).unwrap()).unwrap().0.clone();
+        let mut model = Value::Number(0.0);
+        let _ = drain_effects(
+            session,
+            "update",
+            &mut model,
+            effect,
+            runner,
+            log,
+            &mut Requests::default(),
+            &mut |m| panic!("unexpected report: {m}"),
+            suppress_outbound,
+        );
+    }
+
+    /// A batch of pulses becomes one logged intent each and, per hand, the
+    /// strongest pulse (ties to the longer); the rest count as superseded.
+    #[test]
+    fn haptic_effects_become_arbitrated_intents() {
+        let _guard = crate::haptics::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::haptics::take();
+        let session = haptic_session(
+            "let init = 0.0\n\
+             let buzz = Effect.batch([\n\
+               Effect.haptic(Xr.Left, 0.3, Time.millis(200.0)),\n\
+               Effect.haptic(Xr.Left, 0.8, Time.millis(10.0)),\n\
+               Effect.haptic(Xr.Left, 0.8, Time.millis(40.0)),\n\
+               Effect.haptic(Xr.Right, 0.0, Time.millis(0.0))\n\
+             ])\n",
+        );
+        let mut log = Vec::new();
+        drain_haptics(&session, "buzz", &mut FakeEffects::new(0.0, vec![]), &mut log, false);
+        assert_eq!(
+            ops(&log).into_iter().map(|op| op.0).collect::<Vec<_>>(),
+            vec!["xr.haptic"; 4]
+        );
+        let frame = crate::haptics::take();
+        let pulse = |hand, amplitude, seconds| crate::haptics::HapticPulse {
+            hand,
+            amplitude,
+            seconds,
+        };
+        assert_eq!(frame.left, Some(pulse(crate::haptics::Hand::Left, 0.8, 0.04)));
+        assert_eq!(frame.right, Some(pulse(crate::haptics::Hand::Right, 0.0, 0.0)));
+        assert_eq!(frame.superseded, 2);
+    }
+
+    /// A replayed frame matches the recorded intent and offers nothing.
+    #[test]
+    fn replayed_haptics_match_the_log_and_offer_nothing() {
+        let _guard = crate::haptics::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::haptics::take();
+        let session = haptic_session(
+            "let init = 0.0\nlet buzz = Effect.haptic(Xr.Right, 0.5, Time.millis(30.0))\n",
+        );
+        let mut live = Vec::new();
+        drain_haptics(&session, "buzz", &mut FakeEffects::new(0.0, vec![]), &mut live, false);
+        assert!(crate::haptics::take().right.is_some(), "the live drain offers it");
+
+        let mut replay = ReplayEffects::from_log(&live);
+        let mut replayed = Vec::new();
+        drain_haptics(&session, "buzz", &mut replay, &mut replayed, true);
+        assert_eq!(replay.finish(), None, "the replay lines up with the log");
+        assert_eq!(ops(&replayed), ops(&live));
+        assert!(crate::haptics::take().is_empty(), "the replay offers nothing");
+    }
+
+    /// Out-of-range arguments are teaching errors, not clamps.
+    #[test]
+    fn haptic_rejects_invalid_arguments() {
+        let fails = |call: &str| match try_haptic_session(&format!("let bad = {call}\n")) {
+            Ok(_) => panic!("{call} should fail"),
+            Err(message) => message,
+        };
+        assert!(
+            fails("Effect.haptic(Xr.Left, 1.5, Time.millis(10.0))").contains("amplitude must be 0..1, got 1.5")
+        );
+        assert!(
+            fails("Effect.haptic(Xr.Left, -0.1, Time.millis(10.0))").contains("amplitude must be 0..1")
+        );
+        assert!(fails("Effect.haptic(Xr.Left, 0.5, Time.millis(-10.0))").contains("must be finite and not negative"));
+        assert!(fails("Effect.haptic(Xr.Left, 0.5, Time.hours(1e36))").contains("must be finite"));
+        assert!(fails("Effect.haptic(Xr.Left, 0.5, 0.1)").contains("expected a Duration"));
     }
 
     /// `Effect.playThen(sound, msg)` queues a tokened one-shot with the

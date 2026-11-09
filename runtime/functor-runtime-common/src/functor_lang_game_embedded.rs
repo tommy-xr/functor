@@ -3111,6 +3111,44 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
         assert!(a.state_debug().contains("got: 1"), "{}", a.state_debug());
     }
 
+    /// The second tick pulses the left controller once.
+    const HAPTIC_GAME: &str = r#"
+let init = 0.0
+let tick = (model, dt, tts) =>
+  (model + 1.0, if model == 1.0 then Effect.haptic(Xr.Left, 0.5, 20ms) else Effect.none())
+let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+"#;
+
+    /// A live tick offers its pulse once; seek, rewind and reload restore or
+    /// rebind state without re-running effects, so they offer none.
+    #[test]
+    fn haptics_fire_live_once_and_never_on_seek_rewind_or_reload() {
+        let _guard = crate::haptics::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::haptics::take();
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), HAPTIC_GAME.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("haptic game loads");
+        for frame in 0..4 {
+            game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
+        }
+        let live = crate::haptics::take();
+        let pulse = crate::haptics::HapticPulse {
+            hand: crate::haptics::Hand::Left,
+            amplitude: 0.5,
+            seconds: 0.02,
+        };
+        assert_eq!((live.left, live.right, live.superseded), (Some(pulse), None, 0));
+
+        game.seek_scene_to(1).expect("seek");
+        game.seek_scene_to(3).expect("seek back to the newest");
+        game.rewind_scene_to(2).expect("rewind");
+        game.reload_source(&HAPTIC_GAME.replace("0.5", "0.6"))
+            .expect("edit reloads");
+        assert!(crate::haptics::take().is_empty(), "nothing re-fired");
+    }
+
     /// Design-systems D4: with a connection open, a branch commit is refused
     /// — the scene stays scrubbed and records nothing — while scrubbing and
     /// resuming at the newest frame still work.

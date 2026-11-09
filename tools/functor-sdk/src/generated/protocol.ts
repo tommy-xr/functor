@@ -328,6 +328,28 @@ export type GameSettings = { xr: XrSettings, };
 export type GamepadSnapshot = { left_stick: [number, number], right_stick: [number, number], left_trigger: number, right_trigger: number, south: boolean, east: boolean, west: boolean, north: boolean, left_bumper: boolean, right_bumper: boolean, left_stick_pressed: boolean, right_stick_pressed: boolean, dpad_up: boolean, dpad_down: boolean, dpad_left: boolean, dpad_right: boolean, start: boolean, select: boolean, };
 
 /**
+ * Which controller vibrates (`Xr.Left` / `Xr.Right`).
+ */
+export type Hand = "left" | "right";
+
+/**
+ * Pulses since launch (`GET /state.haptics`): `sent` were handed to the
+ * controller (counted without one on desktop, web and headless), `dropped`
+ * lost their frame's arbitration or were refused (no focused headset
+ * session). `recent` keeps the last few sent, oldest first.
+ */
+export type HapticCounts = { sent: number, dropped: number, recent: Array<HapticRecord>, };
+
+/**
+ * A pulse the shell took, as `GET /state` lists it.
+ */
+export type HapticRecord = { hand: Hand, amplitude: number, seconds: number, 
+/**
+ * `GET /state`'s `frame` when the shell took it.
+ */
+frame: number, };
+
+/**
  * `GET /state`'s `http`: the shell's `Effect.httpGet`/`httpPost` requests
  * since launch. A `pending` that stays above 0 is a request that never
  * answers.
@@ -679,6 +701,12 @@ xr?: XrState,
  * them, such as Quest.
  */
 audio?: AudioCounts, 
+/**
+ * Controller pulses (`Effect.haptic`) sent and dropped since launch
+ * (v34, [`crate::haptics::HapticCounts`]). Omitted by runtimes that don't
+ * count them.
+ */
+haptics?: HapticCounts, 
 /**
  * p50/p99/max per stage over the shell's frame ring (v30); `GET /frames`
  * has the frames. Omitted before the first frame.
