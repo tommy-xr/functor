@@ -1260,10 +1260,6 @@ const sgRaise = [
   { frames: 20, left: { to: sgFore(SHOTGUN.fore, SG_AIM, TARGETS[1]) } },
   { frames: 10, left: {}, mark: "aimed" },
 ];
-const sgShot = (mark) => [
-  { frames: 1, right: { trigger: 1 }, ...(mark ? { mark } : {}) },
-  { frames: 4, right: { trigger: 0 } },
-];
 
 const shotgunScenarios = {
   // Out of its rack, six shells loaded (6+0), the pump worked (5+1), a
@@ -1289,7 +1285,7 @@ const shotgunScenarios = {
       { frames: 15, left: { to: [-0.1, 1.05, -0.82] } },
       ...takeFore,
       ...sgRaise,
-      ...Array.from({ length: SHOTGUN.tube + 1 }, (_, i) => [...sgShot(`fired${i + 1}`), ...sgPump(`pumped${i + 1}`, SG_AIM, TARGETS[1])]).flat(),
+      ...Array.from({ length: SHOTGUN.tube + 1 }, (_, i) => [...pulls(1, `fired${i + 1}`), ...sgPump(`pumped${i + 1}`, SG_AIM, TARGETS[1])]).flat(),
       { frames: 1, right: { trigger: 1 }, mark: "dry" },
       { frames: 6, right: { trigger: 0 }, mark: "after" },
     ],

@@ -84,6 +84,8 @@ await run("the loop: load, pump, seven shots, dry", async (rt) => {
   check(dry.score === SHOTGUN.tube + 1, `seven shots, seven on the target (score ${dry.score})`);
   // The cap: the set-down shell and the newest hulls lie about; hulls go first.
   check(hullsOf(dry).length === 5 && shellsOf(dry).length === 1 && dry.lost === 0, `litter: ${hullsOf(dry).length} hulls and the set-down shell (lost ${dry.lost})`);
+  const resting = hullsOf(dry).filter((p) => p.lying).length;
+  check(resting >= 3, `landed hulls lie bodiless (${resting} of ${hullsOf(dry).length})`);
   conserves("loop", steps);
 
   // The pellets.

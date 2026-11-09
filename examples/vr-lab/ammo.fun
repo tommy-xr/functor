@@ -74,7 +74,7 @@ let eject = (g: State): (State, Option.t<Mag>) =>
   if g.well == Shell then (g, Option.None) else ({ g with mag: Option.None }, g.mag)
 
 /// Whether a magazine goes in: its kind fits the well, and the well is empty.
-let fits = (m: Mag, g: State): bool => m.kind == g.well && Option.isNone(g.mag)
+let fits = (m: Mag, g: State): bool => m.kind != Shell && takes(m.kind, g)
 
 /// Whether a weapon takes one of `k` now: a magazine its well fits, the well
 /// empty; a shell, its tube not full.

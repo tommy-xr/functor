@@ -32,15 +32,19 @@ let gripZone = 0.07
 /// How a magazine (or shell) is guided into a well (`Seating`). It latches
 /// when its centre is within `entry` of where it sits at the well's mouth and
 /// its axis (local +Y) is within `alignDot` of the well's; keyed, its back
-/// (+Z) also within `keyDot` of the well's (-1: any roll). Latched, it holds
+/// (+Z) also within `keyDot` of the well's (`anyTurn`: any roll). Latched, it holds
 /// while the hand keeps it within `exit` of the well's axis (below the mouth,
 /// of the mouth), its axis within `unalignDot` and its back within `unkeyDot`.
 type Guide = { entry: float, exit: float, alignDot: float, unalignDot: float, keyDot: float, unkeyDot: float }
 
+/// A guide's dot threshold that passes any turn (below -1, so a dot of
+/// exactly -1 that rounds past it still passes).
+let anyTurn = 0.0 - 2.0
+
 /// The guide both magazine wells use: a 4 cm catch, 7 cm to pull out of;
 /// about 32° off the axis to latch, 46° to lose it; keyed (not turned back to
 /// front), any turn about its axis once latched.
-let guide: Guide = { entry: 0.04, exit: 0.07, alignDot: 0.85, unalignDot: 0.7, keyDot: 0.0, unkeyDot: -1.0 }
+let guide: Guide = { entry: 0.04, exit: 0.07, alignDot: 0.85, unalignDot: 0.7, keyDot: 0.0, unkeyDot: anyTurn }
 
 /// A weapon's magazine well, in its frame: the magazine kind it takes, where
 /// a seated one's centre sits, raked back `rake` (radians about +X), and how

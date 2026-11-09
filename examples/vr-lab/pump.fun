@@ -39,7 +39,7 @@ let fore: Longarm.Fore = { grip: grip, near: foreNear, far: foreFar, travel: pum
 /// How a shell is guided into the loading port: a 3 cm catch, 5 cm to pull
 /// out of; lying along the bore, its head back, within ~32° (dot 0.85) to
 /// latch and 46° to lose it; any turn about its own axis.
-let portGuide: Gun.Guide = { entry: 0.03, exit: 0.05, alignDot: -1.0, unalignDot: -1.0, keyDot: 0.85, unkeyDot: 0.7 }
+let portGuide: Gun.Guide = { entry: 0.03, exit: 0.05, alignDot: Gun.anyTurn, unalignDot: Gun.anyTurn, keyDot: 0.85, unkeyDot: 0.7 }
 
 // The loading port: a seated shell lies in the receiver's floor, 12 cm ahead
 // of the fist; one comes in from 6 cm below, under the receiver (clear of the
