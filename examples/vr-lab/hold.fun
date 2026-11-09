@@ -110,22 +110,26 @@ expect pick(reacher(Left, true, false, 0.05), reacher(Right, false, true, 0.0)) 
 // --- the throw estimate ---
 
 /// Add a sample, starting over after a discontinuity (a jump no hand makes).
-let push = (s: Sample, history: List<Sample>): List<Sample> =>
+/// Add a sample, starting over when `jumped(prev, s)`; at most `historyCap`.
+let pushWhere = (jumped, s, history) =>
   match List.last(history) with
   | Option.Some(prev) =>
-    if Quat.length(Quat.sub(s.p, prev.p)) > jumpLimit then [s]
+    if jumped(prev, s) then [s]
     else
       let all = history |> List.append([s]) in
       List.drop(Math.max(0.0, List.length(all) - historyCap), all)
   | Option.None => [s]
 
+let push = (s: Sample, history: List<Sample>): List<Sample> =>
+  pushWhere((a: Sample, b: Sample) => Quat.length(Quat.sub(b.p, a.p)) > jumpLimit, s, history)
+
 let capped = (v: Input.point3): Input.point3 =>
   let speed = Quat.length(v) in
   if speed > maxSpeed then Quat.scale(maxSpeed / speed, v) else v
 
-/// The least-squares velocity of the samples inside the window ending at the
-/// newest, capped. Fewer than two samples estimate zero: a drop.
-let estimate = (history: List<Sample>): Input.point3 =>
+/// The least-squares rate of change of the samples inside the window ending
+/// at the newest. Fewer than two samples estimate zero.
+let slope = (history: List<Sample>): Input.point3 =>
   match List.last(history) with
   | Option.None => zero
   | Option.Some(newest) =>
@@ -137,7 +141,11 @@ let estimate = (history: List<Sample>): Input.point3 =>
       let pm = Quat.scale(1.0 / n, recent |> List.fold((a, s) => Quat.add(a, s.p), zero)) in
       let stt = recent |> List.fold((a, s) => a + (s.t - tm) * (s.t - tm), 0.0) in
       let stp = recent |> List.fold((a, s) => Quat.add(a, Quat.scale(s.t - tm, Quat.sub(s.p, pm))), zero) in
-      if stt <= 0.0 then zero else capped(Quat.scale(1.0 / stt, stp))
+      if stt <= 0.0 then zero else Quat.scale(1.0 / stt, stp)
+
+/// The throw velocity: the windowed slope of the positions, capped. One
+/// sample estimates zero: a drop.
+let estimate = (history: List<Sample>): Input.point3 => capped(slope(history))
 
 let near3 = (a: Input.point3, b: Input.point3): bool => Quat.length(Quat.sub(a, b)) < 0.0001
 let sampleAt = (v: Input.point3, t: float): Sample => { t: t, p: Quat.scale(t, v) }

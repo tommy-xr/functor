@@ -20,15 +20,15 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | grip (squeeze) | grab what's in reach; open to let go |
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
-`hover`), the ball (`held`, `ballPos`, `ballVel`), the stick (`stick`), the
-last release and the score. The headset requests 120 Hz with foveation off, floor-locked.
+`hover`), the ball (`held`, `ballPos`, `ballVel`), the stick (`stick`,
+`stickPose`), the last releases (`lastRelease`, `lastStickRelease`) and the score. The headset requests 120 Hz with foveation off, floor-locked.
 
 | Module | What it is |
 | --- | --- |
 | `game.fun` | the MVU glue: station selector, the grab table's step, physics, drawing |
 | `stations.fun` | where each station stands and what it's built from; rig ↔ world |
 | `hold.fun` | one hand grabbing, holding and releasing an item; the throw estimate |
-| `stick.fun` | a long prop held rigidly, stopped where it turns into the level |
+| `stick.fun` | a long prop held rigidly, stopped where it turns into the level; its throw and spin |
 | `digits.fun` | seven-segment numbers (the headset doesn't draw `ui`) |
 | `quat.fun` | plain-data vectors and quaternions |
 
@@ -85,19 +85,25 @@ basket on the floor a throw away, with a scoreboard behind it.
   follows the divergence rule, applying only when the declaration changes.)
 - **Tracking loss.** A held ball freezes and forgets its history; opening the
   hand when it comes back drops the ball rather than throwing it.
-- **Reset** bumps the ball's tag, so the old body goes and a new one spawns
-  at rest.
+- **Reset** bumps the ball's and the stick's tags, so the old bodies go and
+  new ones spawn at rest.
 - **Stick.** A 70 cm box with a grip band at its near end. A fresh squeeze
   within 12 cm of it takes it, held where it was grabbed. Each step it is
   swept from where it is to where the hand holds it, turning on the way
   (`Physics.sweep`, at the pose it is drawn at), and stops 4 mm short of what
   it hits: turn the wrist toward the wall and the far end stops at the wall,
   even though the hand and the stick's centre barely move; turn back and it
-  follows again. It has no body; let go, or held more than a quarter turn
-  (or 25 cm) off the hand, it returns to its rack (grip, regrab and physical
-  props come later).
+  follows again. Held, it is a kinematic body at the accepted pose
+  (`Physics.atPose`), so swept across the table it shoves the ball off.
+  Let go, it turns dynamic where it last was held and is given the throw's
+  velocity (as the ball's, of its centre) and spin: the least-squares rate of
+  its accepted orientations turning over the same 60 ms window, capped at
+  30 rad/s. Free, it is drawn and grabbed where the world has it
+  (`Physics.pose`). Held more than a quarter turn (or 25 cm) off the hand,
+  it drops where it stopped, with no velocity.
 
 Worn checks still open: held-ball judder at 120 Hz (the hold updates at the
 60 Hz fixed step), how throws feel, whether the stick stopping at the wall
-(and the hand turning on past it) reads right, and the sweeps' cost on the
-headset (`npm run bench:quest`).
+(and the hand turning on past it) reads right, whether a flicked stick spins
+as the wrist did (the 60 ms window's feel) and shoving with a held stick
+feels solid, and the sweeps' cost on the headset (`npm run bench:quest`).
