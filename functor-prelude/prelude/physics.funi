@@ -345,6 +345,48 @@ let shapeCast : (shape, Vec3.t, Vec3.t, float) => rayHit
 impure[physics]
 let shapeCastExcluding : (tag, shape, Vec3.t, Vec3.t, float) => rayHit
 
+/// Which bodies `Physics.sweep` can hit; sensors never. `Fixed` is the held
+/// prop's filter: it stops at the level, not at other props or the hand's
+/// own kinematic body. `NotKinematic` adds dynamic bodies; `All` adds
+/// kinematic ones too.
+type sweepFilter =
+  | Fixed
+  | NotKinematic
+  | All
+
+/// `Physics.sweep`'s first hit: `fraction` in [0, 1] of the way from
+/// `fromPose` to `toPose`, the contact point `x, y, z`, the hit surface's
+/// outward normal `nx, ny, nz`, and the body hit.
+type sweepHit = {
+  fraction: float,
+  x: float, y: float, z: float,
+  nx: float, ny: float, nz: float,
+  tag: tag
+}
+
+/// Sweep a box, sphere or capsule from one pose to another, turning as it
+/// moves, and get the first body it touches: `Option.None` when the way is
+/// clear.
+///
+/// The poses are `Scene.atPose`'s, so a prop drawn at a pose is swept at
+/// exactly that orientation (local `+Z` along `forward`, `+Y` along `up`).
+/// The shape moves at a steady speed and turns at a steady rate about its
+/// centre, so a long prop rotating into a wall stops there even when its
+/// centre hardly moves — where `Physics.shapeCast` would pass.
+///
+/// A shape that starts overlapping something hits it at fraction 0 when the
+/// motion presses deeper, and passes when it moves out, so a held prop
+/// pushed into a wall stays there and comes back out freely. With
+/// `fromPose == toPose` it answers whether that pose overlaps anything (a
+/// hit at fraction 0) or not. Like `Physics.cast` it answers in place from
+/// the last step.
+///
+/// ```functor
+/// let blocked = Physics.sweep(Physics.box(0.04, 0.04, 0.8), held, wanted, Physics.Fixed)
+/// ```
+impure[physics]
+let sweep : (shape, Camera3D.mappedPose, Camera3D.mappedPose, sweepFilter) => Option.t<sweepHit>
+
 /// Apply a body's live transform to a scene node.
 ///
 /// The scene is last for piping. An unknown tag is an error, except while

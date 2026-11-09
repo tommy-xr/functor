@@ -332,6 +332,15 @@ a teaching error. Rays and contacts report the body's tag.
   either neighbour). A sweep that starts overlapping something hits it at
   distance 0 unless it moves out of it. `Physics.shapeCastExcluding(tag, …)`
   ignores one body, for sweeps from a character's own position.
+- **`Physics.sweep(shape, fromPose, toPose, filter)`** sweeps a box, sphere or
+  capsule between two `Camera3D.mappedPose`s (the basis `Scene.atPose` draws
+  with), turning at a steady rate about its centre on the way: rapier's
+  nonlinear shape cast over the step. It answers `Option.t<sweepHit>`, the
+  `fraction` of the motion at the first touch plus point, normal and tag.
+  `filter` is `Fixed`, `NotKinematic` or `All` (sensors never). A start
+  overlap hits at fraction 0 only when the motion presses deeper at the
+  contact (rapier on its own lets a shape press up to its thickness in, a CCD
+  tolerance), and a motionless sweep is an overlap test.
 
 ### Characters: `Physics.character`
 

@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rapier3d::control::{CharacterLength, KinematicCharacterController};
-use rapier3d::parry::query::ShapeCastOptions;
+use rapier3d::parry::query::{NonlinearRigidMotion, ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
 use rapier3d::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -132,6 +132,32 @@ pub struct RayHit {
     /// The hit triangle's index in the `Physics.trimesh` source data; `None`
     /// for any other shape.
     pub triangle: Option<u32>,
+}
+
+/// Which bodies a [`World::sweep`] can hit. Sensors never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepFilter {
+    /// Fixed bodies only: a held prop stops at the level, not at other props.
+    Fixed,
+    /// Fixed and dynamic bodies.
+    NotKinematic,
+    All,
+}
+
+/// A rigid pose: position and unit rotation `[x, y, z, w]`.
+pub type RigidPose = ([f32; 3], [f32; 4]);
+
+/// The first hit of a [`World::sweep`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SweepHit {
+    pub tag: String,
+    /// How far along the motion, in [0, 1]: the shape touches at the pose
+    /// interpolated this far from `from` toward `to`.
+    pub fraction: f32,
+    /// The contact point, on the hit body.
+    pub position: [f32; 3],
+    /// The hit surface's outward normal.
+    pub normal: [f32; 3],
 }
 
 /// One colored wireframe segment from [`World::debug_lines`], in world space.
@@ -1036,6 +1062,59 @@ impl World {
             position: [p.x, p.y, p.z],
             normal: [n.x, n.y, n.z],
             distance: hit.time_of_impact,
+        })
+    }
+
+    /// Sweep `shape` (a box, sphere or capsule) from pose `from` to pose `to`,
+    /// rotating about its centre as it moves: the first `filter` body it
+    /// touches, or `None` if the motion is clear. Sensors are never hit.
+    ///
+    /// A shape starting in an overlap hits at fraction 0 when the motion
+    /// presses deeper into it, and passes when it moves out. With no motion
+    /// it answers whether `from` overlaps anything (fraction 0) at all.
+    /// Answers as of the last step, like [`Self::raycast`].
+    pub fn sweep(&self, shape: &Shape, from: RigidPose, to: RigidPose, filter: SweepFilter) -> Option<SweepHit> {
+        let swept = collider_of(shape)?.shape;
+        let swept = &*swept;
+        let filter = match filter {
+            SweepFilter::Fixed => QueryFilter::only_fixed(),
+            SweepFilter::NotKinematic => QueryFilter::exclude_kinematic(),
+            SweepFilter::All => QueryFilter::default(),
+        };
+        let queries = self.queries(filter.exclude_sensors(), None);
+        let start = rigid(from);
+        let motion = motion_between(start, rigid(to));
+        let still = motion.linvel.length() < STILL && motion.angvel.length() < STILL;
+        let motion = (!still).then_some(&motion);
+        let reach = reach(swept, &start, motion);
+        // Each collider in reach, a fused compound's parts one by one (its own
+        // world-space BVH culled to the reach too): the earliest hit.
+        let (collider, part, hit) = queries
+            .intersect_aabb_conservative(reach)
+            .flat_map(|(handle, co)| {
+                let parts = self.parts(handle).map(|compound| {
+                    compound.bvh().intersect_aabb(&reach).filter_map(move |i| {
+                        let (pose, part) = &compound.shapes()[i as usize];
+                        Some((handle, Some(i as usize), pair_hit(pose, &**part, swept, &start, motion)?))
+                    })
+                });
+                let whole = parts
+                    .is_none()
+                    .then(|| Some((handle, None, pair_hit(co.position(), co.shape(), swept, &start, motion)?)))
+                    .flatten();
+                parts.into_iter().flatten().chain(whole)
+            })
+            .min_by(|a, b| a.2.time_of_impact.total_cmp(&b.2.time_of_impact))?;
+        let tag = match (part, self.fused_tags(collider)) {
+            (Some(part), Some(tags)) => tags.get(part).cloned(),
+            _ => self.tag_of_collider(collider),
+        }?;
+        let (p, n) = (hit.witness1, hit.normal1);
+        Some(SweepHit {
+            tag,
+            fraction: hit.time_of_impact.clamp(0.0, 1.0),
+            position: [p.x, p.y, p.z],
+            normal: [n.x, n.y, n.z],
         })
     }
 
@@ -2330,6 +2409,82 @@ fn sweep_parts(
             Some((i, hit.transform1_by(pose)))
         })
         .min_by(|a, b| a.1.time_of_impact.total_cmp(&b.1.time_of_impact))
+}
+
+/// Translation and rotation (per sweep) below which a [`World::sweep`] is a
+/// stationary overlap test.
+const STILL: f32 = 1.0e-6;
+
+/// Inward speed at a start contact, per sweep, below which the motion slides
+/// along the surface rather than pressing into it.
+const PRESSING: f32 = 1.0e-5;
+
+fn rigid((p, q): RigidPose) -> Pose {
+    Pose::from_parts(vec3(p), Rotation::from_xyzw(q[0], q[1], q[2], q[3]).normalize())
+}
+
+/// `from` to `to` over t in [0, 1]: a constant velocity and a constant
+/// rotation about the shape's centre, the shorter way round.
+fn motion_between(from: Pose, to: Pose) -> NonlinearRigidMotion {
+    let turn = to.rotation * from.rotation.inverse();
+    let turn = if turn.w < 0.0 { -turn } else { turn };
+    NonlinearRigidMotion::new(from, Vector::ZERO, to.translation - from.translation, turn.to_scaled_axis())
+}
+
+/// `shape` at `at` overlapping `other` (at `pos`), as a fraction-0 hit — if
+/// `motion` presses it deeper there (any overlap when there is no motion).
+fn pressed(
+    pos: &Pose,
+    other: &dyn rapier3d::parry::shape::Shape,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    at: &Pose,
+    motion: Option<&NonlinearRigidMotion>,
+) -> Option<ShapeCastHit> {
+    let c = rapier3d::parry::query::contact(pos, other, at, shape, 0.0).ok()??;
+    if let Some(m) = motion {
+        // The shape's velocity at the contact, against the outward normal.
+        let v = m.linvel + m.angvel.cross(c.point2 - at.translation);
+        if v.dot(c.normal1) > -PRESSING {
+            return None;
+        }
+    }
+    Some(ShapeCastHit {
+        time_of_impact: 0.0,
+        witness1: c.point1,
+        witness2: c.point2,
+        normal1: c.normal1,
+        normal2: c.normal2,
+        status: ShapeCastStatus::PenetratingOrWithinTargetDist,
+    })
+}
+
+/// `shape`'s first hit on `other` (at `pos`) moving along `motion` over t in
+/// [0, 1], in world space: fraction 0 if it starts [`pressed`] into it.
+fn pair_hit(
+    pos: &Pose,
+    other: &dyn rapier3d::parry::shape::Shape,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    at: &Pose,
+    motion: Option<&NonlinearRigidMotion>,
+) -> Option<ShapeCastHit> {
+    pressed(pos, other, shape, at, motion).or_else(|| {
+        let still = NonlinearRigidMotion::constant_position(*pos);
+        let hit = rapier3d::parry::query::cast_shapes_nonlinear(&still, other, motion?, shape, 0.0, 1.0, false)
+            .ok()??;
+        Some(hit.transform1_by(pos))
+    })
+}
+
+/// What `shape` can touch along `motion`: its bounding sphere about its
+/// moving centre (it turns about that centre), or its AABB at `at` when still.
+fn reach(shape: &dyn rapier3d::parry::shape::Shape, at: &Pose, motion: Option<&NonlinearRigidMotion>) -> Aabb {
+    let Some(m) = motion else {
+        return shape.compute_aabb(at);
+    };
+    let s = shape.compute_local_bounding_sphere();
+    let r = Vector::splat(s.radius + s.center.length());
+    let (a, b) = (at.translation, at.translation + m.linvel);
+    Aabb::new(a.min(b) - r, a.max(b) + r)
 }
 
 /// The body's contact material, and contact begin/end reporting.

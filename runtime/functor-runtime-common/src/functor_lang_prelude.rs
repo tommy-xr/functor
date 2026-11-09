@@ -3953,6 +3953,38 @@ capsule for the moving body"
             sync_query(Some(&shape.0), origin, dir, max_dist, Some(&tag), what)
         },
     );
+    // Posed as `Scene.atPose` draws (the same basis), rotating on the way:
+    // `Some` first hit, `None` when clear.
+    reg.fn4(
+        "Physics.sweep",
+        "Physics.sweep(shape, fromPose, toPose, filter) — Camera3D.mappedPose poses; \
+filter Physics.Fixed, Physics.NotKinematic or Physics.All",
+        |shape: FunctorLangShape, from: FunctorLangMappedPose, to: FunctorLangMappedPose, filter: Value| {
+            const WHAT: &str = "Physics.sweep";
+            note_read(ReadClass::Physics);
+            swept(&shape, WHAT)?;
+            let filter = match &filter {
+                Value::Variant { ctor, args } if args.is_empty() => match ctor.as_ref() {
+                    "Physics.Fixed" => Some(physics::SweepFilter::Fixed),
+                    "Physics.NotKinematic" => Some(physics::SweepFilter::NotKinematic),
+                    "Physics.All" => Some(physics::SweepFilter::All),
+                    _ => None,
+                },
+                _ => None,
+            }
+            .ok_or_else(|| {
+                format!("{WHAT}: the filter must be Physics.Fixed, Physics.NotKinematic or Physics.All")
+            })?;
+            let pose = |p: &FunctorLangMappedPose, which: &str| {
+                p.0.to_position_rotation().ok_or_else(|| {
+                    format!("{WHAT}: {which}'s forward and up must be non-zero and not parallel")
+                })
+            };
+            let (from, to) = (pose(&from, "fromPose")?, pose(&to, "toPose")?);
+            let hit = physics::with_world(physics::active_world(), |w| w.sweep(&shape.0, from, to, filter)).flatten();
+            Ok::<_, String>(crate::input::option_value(hit.map(sweep_hit_value)))
+        },
+    );
     // Scene LAST (subject-last), so it pipes: the way Functor Lang draws a physics body —
     // `Scene.cube() |> Scene.lit(…) |> Physics.transformed(crateTag)`
     // places the visual at the body's live pose (position + rotation).
@@ -7676,6 +7708,22 @@ fn sync_query(
     ray_result_value(hit).to_functor_lang()
 }
 
+/// A `Physics.sweepHit` record.
+fn sweep_hit_value(hit: physics::SweepHit) -> Value {
+    let (p, n) = (hit.position, hit.normal);
+    let num = |name: &str, v: f32| (name.to_string(), Value::Number(v as f64));
+    Value::Record(Rc::new(vec![
+        num("fraction", hit.fraction),
+        num("x", p[0]),
+        num("y", p[1]),
+        num("z", p[2]),
+        num("nx", n[0]),
+        num("ny", n[1]),
+        num("nz", n[2]),
+        ("tag".to_string(), Value::String(Rc::from(hit.tag.as_str()))),
+    ]))
+}
+
 fn no_body(tag: &str) -> String {
     format!(
         "no body tagged \"{tag}\" in the physics world: the `physics` hook isn't \
@@ -8100,6 +8148,12 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
             (
                 "Physics.shapeCastExcluding",
                 format!("Physics.shapeCastExcluding(\"nobody\", Physics.sphere(0.5), {at})"),
+            ),
+            (
+                "Physics.sweep",
+                "let p = { position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 }, \
+                 up: { x: 0.0, y: 1.0, z: 0.0 } } in Physics.sweep(Physics.sphere(0.5), p, p, \"All\")"
+                    .to_string(),
             ),
             (
                 "Physics.transformed",
@@ -12910,6 +12964,48 @@ Physics.fusedRoom(tag) without moving or rotating it";
              Vec3.make(0.0, 3.0, 0.0), Vec3.make(0.0, 0.0, 0.0), 10.0)",
         );
         assert!(err.starts_with("Physics.shapeCast: the direction"), "{err}");
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+    }
+
+    // `Physics.sweep` answers an option of its hit record, posed as
+    // `Scene.atPose` takes a pose.
+    #[test]
+    fn sweeps_reach_functor_lang() {
+        let scene = crate::physics::PhysicsScene::create(
+            [0.0; 3],
+            vec![crate::physics::Body::fixed(
+                "wall".to_string(),
+                crate::physics::Shape::Cuboid { extents: [0.2, 4.0, 4.0] },
+            )
+            .at([1.1, 0.0, 0.0])],
+        );
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.reconcile(&scene);
+            w.step_fixed();
+        });
+        let posed = |x: f64, forward: &str| {
+            format!(
+                "{{ position: {{ x: {x:?}, y: 0.0, z: 0.0 }}, forward: {forward}, \
+                 up: {{ x: 0.0, y: 1.0, z: 0.0 }} }}"
+            )
+        };
+        let (z, x) = ("{ x: 0.0, y: 0.0, z: 1.0 }", "{ x: 1.0, y: 0.0, z: 0.0 }");
+        let sweep = |from: String, to: String| {
+            format!("let main = () => Physics.sweep(Physics.box(0.05, 0.05, 1.6), {from}, {to}, Physics.Fixed)")
+        };
+        // Turned in place, the stick's end reaches the wall.
+        let hit = eval_with_prelude(&sweep(posed(0.5, z), posed(0.5, x))).unwrap();
+        let Value::Variant { ctor, args } = &hit else { panic!("{hit}") };
+        assert_eq!(&**ctor, "Option.Some");
+        let f = num(&args[0], "fraction");
+        assert!(f > 0.3 && f < 0.5, "{f}");
+        assert!(matches!(field(&args[0], "tag"), Value::String(s) if &*s == "wall"));
+        assert!(num(&args[0], "nx") < -0.99);
+        let clear = eval_with_prelude(&sweep(posed(0.5, z), posed(0.0, z))).unwrap();
+        assert!(matches!(&clear, Value::Variant { ctor, .. } if &**ctor == "Option.None"), "{clear}");
+        let err = eval_with_prelude(&sweep(posed(0.5, z), posed(0.5, "{ x: 0.0, y: 2.0, z: 0.0 }"))).err().expect("a degenerate pose fails");
+        assert!(err.contains("toPose's forward and up"), "{err}");
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 
