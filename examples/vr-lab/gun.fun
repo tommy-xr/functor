@@ -345,6 +345,33 @@ expect (let (s, _) = pullTo(pistol.rack, take(pistol.rack, false, Hold.Left, 0.0
 expect (let s = take(pistol.rack, true, Hold.Left, 0.5) in s.pull == pistol.rack.lockBack && s.from == 0.5 - pistol.rack.lockBack)
 expect strokes(pistol.rack, true, [0.0, 0.006]) == [Back, Home] && strokes(pistol.rack, true, [0.0]) == []
 
+/// Where the hand on slide `s` (at `hand`) is drawn on weapon `w` accepted
+/// at `accepted` and wanted at `wanted`: turned as it is, carried with the
+/// weapon where the level stopped it short, its fist on the slide's line
+/// where the slide has it (the hand's place along it, within the travel).
+let rackOn = (w: Weapon, s: Slide, accepted: Input.pose, wanted: Input.pose, hand: Input.pose): Input.pose =>
+  let turned = (Hold.compose(accepted, Hold.relative(wanted, hand))).orientation in
+  Hold.at(Quat.add(accepted.position, Quat.rotate(accepted.orientation, Quat.v3(w.rack.at.x, w.rack.at.y, s.from + s.pull))), turned)
+
+// A pistol at `gp`; a hand turned on its slide's line `z` back of the zone,
+// and the slide taken there and pulled by a hand at `z`.
+let gp = Hold.at(Quat.v3(0.1, 1.2, -0.4), Quat.yaw(0.5))
+let onLine = (z: float): Input.pose =>
+  Hold.compose(gp, Hold.at(Quat.add(pistol.rack.at, Quat.v3(0.0, 0.0, z)), Quat.mul(Quat.yaw(0.3), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.2))))
+let pulledTo = (z: float): Slide =>
+  let (s, _) = pullTo(pistol.rack, take(pistol.rack, false, Hold.Left, pistol.rack.at.z), Option.Some(pistol.rack.at.z + z)) in s
+// On the line, unblocked: where the hand is. Pulled past the travel: at its
+// end (3 cm short of the hand). 3 cm off the line: on it.
+expect Hold.near(rackOn(pistol, pulledTo(0.02), gp, gp, onLine(0.02)), onLine(0.02))
+expect Hold.near(rackOn(pistol, pulledTo(0.07), gp, gp, onLine(0.07)), Hold.at((onLine(slideTravel)).position, (onLine(0.07)).orientation))
+expect Hold.near(rackOn(pistol, pulledTo(0.02), gp, gp, Hold.compose(onLine(0.02), Hold.p(0.0, 0.03, 0.0))), onLine(0.02))
+// The pistol stopped short of (and turned from) where the hand wants it:
+// the hand drawn with it, on the slide.
+expect (
+  let wanted = Hold.at(Quat.add(gp.position, Quat.v3(-0.1, 0.02, 0.0)), Quat.mul(gp.orientation, Quat.yaw(0.2))) in
+  Hold.near(rackOn(pistol, pulledTo(0.02), gp, wanted, Hold.compose(wanted, Hold.relative(gp, onLine(0.02)))), onLine(0.02))
+)
+
 /// How far a weapon's slide (or handle, or pump) is drawn back: where the
 /// hand has it, or a pump where it was let go; else where it rests.
 let slideBack = (w: Weapon, g: State): float =>

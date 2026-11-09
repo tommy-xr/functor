@@ -30,10 +30,10 @@
 //      the brick) and stops on it; lifted, it follows the hand again.
 //   4f. The bottle taken near its neck snaps the neck into the hand; taken
 //      by its base it keeps its pose.
-//   4g. With the ball blocked at the wall, H switches the drawn hand
-//      (`/scene`) from the tracked grip to the grip the ball implies, with a
-//      ghost at the tracked grip only while they are over 2 cm apart. The
-//      switch never moves the ball.
+//   4g. With the ball blocked at the wall, the drawn hand (`/scene`) is at
+//      the grip the ball implies by default, with a ghost at the tracked grip
+//      only while they are over 2 cm apart; H switches it to the tracked
+//      grip, and back. The switch never moves the ball.
 //   5. A station reset mid-hold drops the hold and respawns the ball at rest.
 //   5b. Inventory (station 2): the brick let go in the right holster goes in
 //      it, at its pose, and the head turning 90° past the deadzone drags the
@@ -392,20 +392,20 @@ await run("hand presentation at the wall", async (rt) => {
   const ghost = (mark) => placedAt(snaps[mark].kids[7]);
   const gap = (a, b) => (a && b ? len(sub(a, b)) : Infinity);
 
-  check(view("blockedTracked") === "Tracked", "Tracked by default");
-  const sep = gap(tracked("blockedTracked"), implied("blockedTracked"));
+  check(view("blockedAccepted") === "Accepted", "Accepted by default");
+  const sep = gap(tracked("blockedAccepted"), implied("blockedAccepted"));
   check(sep > 0.15, `the ball is blocked at the wall, the hand through it (${(sep * 100).toFixed(1)} cm apart)`);
-  check(gap(drawn("blockedTracked"), tracked("blockedTracked")) < 1e-4 && ghost("blockedTracked") === undefined, "Tracked: drawn at the tracked grip, no ghost");
-  check(view("blockedAccepted") === "Accepted", "H switches to Accepted");
   check(gap(drawn("blockedAccepted"), implied("blockedAccepted")) < 1e-4, `Accepted: drawn at the grip the ball implies (${fmt(drawn("blockedAccepted"))})`);
   check(gap(ghost("blockedAccepted"), tracked("blockedAccepted")) < 1e-4, "with a ghost at the tracked grip");
-  const same = JSON.stringify(heldOf(snaps.blockedAccepted.model, "Ball").accepted) === JSON.stringify(heldOf(snaps.blockedTracked.model, "Ball").accepted);
-  check(same, "switching never moves the ball");
   const near = gap(tracked("nearWall"), implied("nearWall"));
   check(near < 0.02 && ghost("nearWall") === undefined && gap(drawn("nearWall"), implied("nearWall")) < 1e-4, `${(near * 1000).toFixed(1)} mm apart: no ghost`);
   check(gap(drawn("out"), tracked("out")) < 1e-3 && ghost("out") === undefined, "out of the wall, drawn at the hand, no ghost");
   check(gap(ghost("blockedAgain"), tracked("blockedAgain")) < 1e-4, "pushed through again, the ghost is back");
-  check(view("trackedAgain") === "Tracked" && gap(drawn("trackedAgain"), tracked("trackedAgain")) < 1e-4 && ghost("trackedAgain") === undefined, "H again: Tracked, no ghost");
+  check(view("blockedTracked") === "Tracked", "H switches to Tracked");
+  check(gap(drawn("blockedTracked"), tracked("blockedTracked")) < 1e-4 && ghost("blockedTracked") === undefined, "Tracked: drawn at the tracked grip, no ghost");
+  const same = JSON.stringify(heldOf(snaps.blockedAgain.model, "Ball").accepted) === JSON.stringify(heldOf(snaps.blockedTracked.model, "Ball").accepted);
+  check(same, "switching never moves the ball");
+  check(view("acceptedAgain") === "Accepted" && gap(drawn("acceptedAgain"), implied("acceptedAgain")) < 1e-4 && gap(ghost("acceptedAgain"), tracked("acceptedAgain")) < 1e-4, "H again: Accepted, with the ghost");
 });
 
 await run("tracking loss", async (rt) => {

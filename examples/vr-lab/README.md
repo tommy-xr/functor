@@ -23,7 +23,7 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | A / X (holding the rifle's grip), `F` | the rifle's selector: semi / full-auto |
 | A / X (holding the pistol) | its slide release, when locked back |
 | thumbstick down (on a gun's trigger hand), `M` | drop the gun's magazine |
-| `H` / thumbstick click | draw a holding hand where it is tracked, or where its blocked prop implies |
+| `H` / thumbstick click | draw a holding hand where it is tracked, or (the default) where its blocked prop implies |
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
 `hover`), `handView`, the props (`held`, and `pose`/`velocity` read back from
@@ -149,9 +149,11 @@ same path:
 - **Reset** bumps the props' tags, so the old bodies go and new ones spawn at
   rest.
 - **Hand presentation.** `handView` (`H` or a thumbstick click) draws a
-  holding hand where it is tracked (`Tracked`, the default) or at the grip
-  its prop's accepted pose implies (`Accepted`: a hand pushed through the
-  wall is drawn at the wall). Then a translucent ghost shows the tracked hand
+  holding hand at the grip its prop's accepted pose implies (`Accepted`, the
+  default: a hand pushed through the wall is drawn at the wall) or where it
+  is tracked (`Tracked`). In `Accepted` a gun's support hand is drawn on its
+  foregrip (or fore-end), and a racking hand on the slide (or charging
+  handle) where the slide has it. A translucent ghost shows the tracked hand
   when they are over 2 cm or 10° apart. Only drawing changes: the tracked
   pose always drives the hold.
 
@@ -305,9 +307,9 @@ own grips and bore (`Longarm.weapon`).
 - **Rack.** On the bench's right: let go within 20 cm of where it racks (by
   the hand holding it alone), it goes back, bodiless, like a slot. The rifle
   doesn't fit the thigh holsters.
-- **Hand view.** `Accepted` draws the primary hand on the accepted grip and
-  the support on the accepted foregrip, each with a ghost at its tracked
-  pose past 2 cm or 10°. Nothing a held gun touches moves the camera.
+- **Hand view.** `Accepted` (the default) draws the primary hand on the
+  accepted grip, the support on the accepted foregrip and a racking hand on
+  the charging handle, each with a ghost at its tracked pose past 2 cm or 10°. Nothing a held gun touches moves the camera.
 
 `GET /state` shows `rifle` (as `gun`, plus `mode`) and the rifle prop's
 `support` (`side`, `ease`, `aim`) and `fore`. `npm run test:vr-lab` runs

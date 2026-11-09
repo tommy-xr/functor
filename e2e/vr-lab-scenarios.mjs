@@ -535,7 +535,7 @@ const rifleScenarios = {
   },
 
   // Both hands push the barrel into the wall: the whole rifle stops at it,
-  // the pull only clicks; H shows both hands on its grips, their ghosts
+  // the pull only clicks; both hands are drawn on its grips, their ghosts
   // through the wall. Drawn back clear, the pull fires.
   "rifle-wall": {
     station: 3,
@@ -548,9 +548,8 @@ const rifleScenarios = {
       { frames: 25, ...bothTo(RIFLE_WALL.through), mark: "pushed" },
       { frames: 1, right: { trigger: 1 }, mark: "clicked" },
       { frames: 6, right: { trigger: 0 } },
-      { frames: 1, tap: "H", right: {}, mark: "accepted" },
-      { frames: 5, right: {}, mark: "acceptedHeld" },
-      { frames: 1, tap: "H", right: {}, mark: "tracked" },
+      { frames: 6, right: {}, mark: "stillHeld" },
+      { frames: 1, right: {}, mark: "still" },
       { frames: 20, ...bothTo(RIFLE_WALL.clear), mark: "clear" },
       { frames: 1, right: { trigger: 1 }, mark: "fired" },
       { frames: 6, right: { trigger: 0 } },
@@ -640,9 +639,7 @@ const rifleScenarios = {
       { frames: 10, right: {} },
       { frames: 1, right: { trigger: 1 }, mark: "clicked" },
       { frames: 15, right: { trigger: 0 } },
-      { frames: 1, tap: "H", right: {} },
-      { frames: 40, right: {} },
-      { frames: 1, tap: "H", right: {} },
+      { frames: 42, right: {} },
       { frames: 20, ...bothTo(RIFLE_WALL.clear) },
       { frames: 1, right: { trigger: 1 } },
       { frames: 8, right: { trigger: 0 } },
@@ -1540,22 +1537,23 @@ export const scenarios = {
     ],
   },
 
-  // Push the held ball into the wall, the hand going on through it, and
-  // switch where the hand is drawn (H): tracked, through the wall; then at
-  // the ball, with a ghost where it really is. Brought back to within a
-  // centimetre of the ball the ghost goes; pushed through again it returns.
+  // Push the held ball into the wall, the hand going on through it: the
+  // hand is drawn at the ball, with a ghost where it really is. Brought back
+  // to within a centimetre of the ball the ghost goes; pushed through again
+  // it returns. H draws it where it is tracked, through the wall; H again,
+  // back at the ball.
   "hand-view": {
     station: 1,
     spectator: overWall,
     steps: [
       ...grab,
       { frames: 20, right: { to: [-0.3, 1.15, -0.55] } },
-      { frames: 30, right: { to: throughWall }, mark: "blockedTracked" },
-      { frames: 20, right: {}, tap: "h", mark: "blockedAccepted" },
+      { frames: 30, right: { to: throughWall }, mark: "blockedAccepted" },
       { frames: 20, right: { to: atWall }, mark: "nearWall" },
       { frames: 20, right: { to: [-0.4, 1.15, -0.55] }, mark: "out" },
       { frames: 25, right: { to: throughWall }, mark: "blockedAgain" },
-      { frames: 20, right: {}, tap: "h", mark: "trackedAgain" },
+      { frames: 20, right: {}, tap: "h", mark: "blockedTracked" },
+      { frames: 20, right: {}, tap: "h", mark: "acceptedAgain" },
       { frames: 1, right: { squeeze: 0 }, mark: "letGo" },
       { frames: 30, right: { to: [0.0, 1.1, -0.35] } },
     ],

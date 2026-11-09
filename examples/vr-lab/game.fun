@@ -27,8 +27,9 @@
 //   npm run demo:vr-lab -- grab-throw out.gif    # a spectator video of one
 //
 // 1-9 jump to a station and reset it (B/Y or a menu button cycles stations
-// on the headset). H or a thumbstick click switches where a holding hand is
-// drawn: where it is tracked, or where the blocked prop it holds implies.
+// on the headset). A holding hand is drawn on what it holds, where the
+// blocked prop implies; H or a thumbstick click switches it to where it is
+// tracked, and back.
 // `GET /state` shows the station, both hands, the props and the last release.
 // Each hold event buzzes its hand (`Pulses`), and a ring at the hand shows it.
 //
@@ -179,7 +180,7 @@ let reset = (m: Model, id: float): Model =>
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
-    handView: Tracked, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
+    handView: Accepted, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
     feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon),
     shotgun: emptyShotgun, shellBox: 0.0, buttonA: (false, false),
     stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
@@ -1248,17 +1249,28 @@ let drawnGrip = (view: HandView, grip: Input.pose, held: Option.t<Hold.Held>): I
   | Tracked => grip
   | Accepted => held |> Option.map(Hold.gripOn) |> Option.defaultValue(grip)
 
-/// Where a hand is drawn (`drawnGrip`); a rifle's (or shotgun's) support
-/// hand, in `Accepted`, on the foregrip (the fore-end, where the pump has
-/// it) of the gun as the hold accepted it.
+/// Where a hand is drawn (`drawnGrip`). In `Accepted`, on what it holds of
+/// a gun as the hold accepted it: a rifle's (or shotgun's) support hand on
+/// the foregrip (the fore-end, where the pump has it); a racking hand on the
+/// slide (or charging handle), where the slide has it.
 let drawnHand = (m: Model, side: Hold.Side, g: Input.pose): Input.pose =>
+  if m.handView == Tracked then g
+  else
   let onFore =
     m.props |> List.find((p) => supportOf(p) == Option.Some(side)) |> Option.bind((p) =>
       p.held |> Option.bind((h) => p.support |> Option.bind((s) => gripOf(m.xr, h.side) |> Option.map((primary) =>
         Longarm.supportOn(foreOf(p.kind), pumpOf(m, p.kind), h.accepted, Hold.compose(Longarm.steer(primary, s), h.offset), g))))) in
   match onFore with
-  | Option.Some(on) => if m.handView == Accepted then on else g
-  | Option.None => drawnGrip(m.handView, g, heldIn(m, side))
+  | Option.Some(on) => on
+  | Option.None =>
+    // (The pump's hand is the support: on the fore-end, above.)
+    let onRack =
+      [Props.Pistol, Props.Rifle] |> List.find((k) => (gunOf(m, k)).slide.hand == Option.Some(side)) |> Option.bind((k) =>
+        (propOf(m, k)).held |> Option.bind((h) => gripOf(m.xr, h.side) |> Option.map((primary) =>
+          Gun.rackOn(weaponOf(k), (gunOf(m, k)).slide, h.accepted, Hold.compose(primary, h.offset), g)))) in
+    (match onRack with
+     | Option.Some(on) => on
+     | Option.None => drawnGrip(Accepted, g, heldIn(m, side)))
 
 // A held ball pushed 10 cm into a wall: drawn tracked, or at the wall.
 expect (
@@ -1277,14 +1289,15 @@ let snapshotOf = (pressed: List<Key.t>, xr: Option.t<Input.xr>): Input.snapshot 
              released: { left: false, right: false, middle: false } },
     xr: xr, gamepad: Option.None, touch: Option.None }
 
-// H switches it, and back; so does a thumbstick click, once per press.
+// Accepted to start; H switches it, and back; so does a thumbstick click,
+// once per press.
 expect (
   let keys = snapshotOf in
   let clicked = Option.Some({ head: Option.None, left: away, right: { hand(zero, 0.0) with thumbstickPressed: true } }) in
   let once = sampledInput(init, keys([Key.H], Option.None)) in
   let held = sampledInput(sampledInput(init, keys([], clicked)), keys([], clicked)) in
-  init.handView == Tracked && once.handView == Accepted && sampledInput(once, keys([Key.H], Option.None)).handView == Tracked
-    && held.handView == Accepted
+  init.handView == Accepted && once.handView == Tracked && sampledInput(once, keys([Key.H], Option.None)).handView == Accepted
+    && held.handView == Tracked
 )
 
 let box = (b: Stations.Box, c: Color.t): Scene.t =>
