@@ -22,9 +22,10 @@ type Hand<'prop> = { tracked: bool, squeezed: bool, armed: bool, hover: Option.t
 type Sample = { t: float, pose: Input.pose }
 
 /// A prop in a hand: where it sits in the grip's frame, where it actually is
-/// (`accepted`: the sweep can stop it short of the hand), and the accepted
-/// history the throw is estimated from.
-type Held = { side: Side, offset: Input.pose, accepted: Input.pose, history: List<Sample> }
+/// (`accepted`: the sweep can stop it short of the hand), the accepted
+/// history the throw is estimated from, and the offset it is still settling
+/// into (`snapTo`: an authored grip it eases to, `settle`).
+type Held = { side: Side, offset: Input.pose, accepted: Input.pose, history: List<Sample>, snapTo: Option.t<Input.pose> }
 
 /// What a held step did: still held, let go with a velocity and a spin
 /// (axis × rad/s), or dropped where it was.
@@ -42,6 +43,10 @@ let reachHysteresis = 0.04
 // it does, snaps to it.
 let snapRadius = 0.05
 let snapTurn = Math.pi / 4.0
+// A prop settling into its grip moves at most this far and turns at most
+// this much in the hand each step: 1.2 m/s, 90 degrees in 0.17 s.
+let snapStep = 0.02
+let snapTurnStep = 0.15
 // The hand this far off where it holds the prop (blocked by a wall) lets
 // go; or turned this far: past a quarter turn the shorter way round from the
 // stuck pose would swing back through the wall.
@@ -68,11 +73,13 @@ let squeezed = (was: bool, value: float): bool =>
 expect squeezed(false, 0.6) && not squeezed(false, 0.59)
 expect squeezed(true, 0.41) && not squeezed(true, 0.4)
 
-let hovering = (was: bool, gap: float): bool =>
-  if was then gap <= reach + reachHysteresis else gap <= reach
+/// Whether a hand `gap` from a prop is in reach of it, a prop reached within
+/// `range` (`reach`, unless it is only taken at its grip).
+let hovering = (range: float, was: bool, gap: float): bool =>
+  if was then gap <= range + reachHysteresis else gap <= range
 
-expect hovering(false, 0.12) && not hovering(false, 0.13)
-expect hovering(true, 0.15) && not hovering(true, 0.17)
+expect hovering(reach, false, 0.12) && not hovering(reach, false, 0.13)
+expect hovering(reach, true, 0.15) && not hovering(reach, true, 0.17)
 
 /// Advance a hand by one sample: its new state, and whether this step is a
 /// fresh squeeze edge that may grab.
@@ -293,11 +300,29 @@ let grab = (side: Side, grip: Input.pose, item: Input.pose, authored: Option.t<I
   { side: side,
     offset: snapped |> Option.map(inverse) |> Option.defaultValue(relative(grip, item)),
     accepted: item,
-    history: [] }
+    history: [],
+    snapTo: Option.None }
 
 /// The other hand takes a held prop where it is (no snap), keeping its history.
 let handOff = (side: Side, grip: Input.pose, held: Held): Held =>
-  { held with side: side, offset: relative(grip, held.accepted) }
+  { held with side: side, offset: relative(grip, held.accepted), snapTo: Option.None }
+
+/// Ease a held prop into its authored grip (the hand's pose in the prop's
+/// frame) from wherever it was taken: a grip that is required, so it never
+/// pops into the hand.
+let settleInto = (authored: Input.pose, held: Held): Held => { held with snapTo: Option.Some(inverse(authored)) }
+
+/// One step of settling: the offset moved toward `snapTo` by at most
+/// `snapStep` and `snapTurnStep`, done once it is there.
+let settle = (held: Held): Held =>
+  match held.snapTo with
+  | Option.None => held
+  | Option.Some(target) =>
+    let steps = Math.max(
+      Quat.length(Quat.sub(target.position, held.offset.position)) / snapStep,
+      Quat.angle(held.offset.orientation, target.orientation) / snapTurnStep) in
+    if steps <= 1.0 then { held with offset: target, snapTo: Option.None }
+    else { held with offset: interpolate(held.offset, target, 1.0 / steps) }
 
 /// Where the hand is on the prop as it is: the grip the accepted pose implies.
 let gripOn = (held: Held): Input.pose => compose(held.accepted, inverse(held.offset))
@@ -312,10 +337,11 @@ let step = (cast: (Input.pose, Input.pose) => Option.t<Hit>, radius: float, held
   match grip with
   | Option.None => Holding({ held with history: [] })
   | Option.Some(g) =>
-    let wanted = compose(g, held.offset) in
+    let eased = settle(held) in
+    let wanted = compose(g, eased.offset) in
     let accepted = move(cast, radius, held.accepted, wanted) in
     let history = push({ t: t, pose: accepted }, held.history) in
-    let next = { held with accepted: accepted, history: history } in
+    let next = { eased with accepted: accepted, history: history } in
     let off = Quat.length(Quat.sub(g.position, gripOn(next).position)) > breakDistance
       || Quat.angle(wanted.orientation, accepted.orientation) > breakTurn in
     if off then Broke(held.accepted)
@@ -371,6 +397,27 @@ expect (
     && (match step(open3, 0.1, given, Option.Some(at(Quat.add(lefty.position, Quat.v3(0.0, 0.1, 0.0)), lefty.orientation)), true, 1.0 / 60.0) with
         | Holding(next) => near3(next.accepted.position, Quat.add(tilted.position, Quat.v3(0.0, 0.1, 0.0)))
         | _ => false)
+)
+
+// Taken 6 cm and a half turn off a required grip, by a hand held still: the
+// prop doesn't move on the grab, then eases into the grip, never more than
+// `snapStep` and `snapTurnStep` a step, and stays there.
+expect (
+  let item = at(Quat.v3(0.0, 0.06, 0.0), Quat.yaw(Math.pi)) in
+  let h = settleInto(neck, grab(Right, origin, item, Option.None)) in
+  let poses = List.range(30.0) |> List.fold((acc, i) =>
+    let (held, ps) = acc in
+    (match step(open3, 0.1, held, Option.Some(origin), true, i / 60.0) with
+     | Holding(next) => (next, ps |> List.append([next.accepted]))
+     | _ => acc), (h, [item])) in
+  let (settled, ps) = poses in
+  let moves = List.zip(List.drop(1.0, ps), ps) in
+  near(compose(origin, h.offset), item)
+    && (moves |> List.all((ab) => let (a, b) = ab in
+         Quat.length(Quat.sub(a.position, b.position)) <= snapStep + 0.000001
+           && Quat.angle(a.orientation, b.orientation) <= snapTurnStep + 0.000001))
+    && Option.isNone(settled.snapTo) && near(gripOn(settled), compose(settled.accepted, neck))
+    && near(settled.accepted, inverse(neck))
 )
 
 // Swing a held ball at `v` for `n` steps, then let go on the next.

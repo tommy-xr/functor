@@ -13,10 +13,17 @@ let grabTable: Station = { id: 1.0, name: "grab table", feet: Quat.v3(0.0, 0.0, 
 // Facing -Z, so its rig-local frame is the world's, moved to its feet.
 let inventory: Station = { id: 2.0, name: "inventory", feet: Quat.v3(0.0, 0.0, -4.0), yaw: Math.pi }
 
-let all = [grabTable, inventory]
+// Facing +X, beside the hub: the pistol range.
+let armory: Station = { id: 3.0, name: "armory", feet: Quat.v3(4.0, 0.0, 0.0), yaw: Math.pi / 2.0 }
+
+let all = [grabTable, inventory, armory]
 
 /// Whether the body slots are worn there.
-let worn = (s: Station): bool => s.id == inventory.id
+let worn = (s: Station): bool => s.id == inventory.id || s.id == armory.id
+
+/// The props a station spawns.
+let props = (s: Station): List<Props.Kind> =>
+  if s.id == armory.id then [Props.Pistol] else [Props.Ball, Props.Stick, Props.Brick, Props.Bottle]
 
 let find = (id: float): Station =>
   all |> List.find((s) => s.id == id) |> Option.defaultValue(grabTable)
@@ -28,7 +35,7 @@ let after = (id: float): float =>
   | Option.Some(s) => s.id
   | Option.None => List.head(all) |> Option.map((s) => s.id) |> Option.defaultValue(id)
 
-expect after(grabTable.id) == inventory.id && after(inventory.id) == grabTable.id
+expect after(grabTable.id) == inventory.id && after(inventory.id) == armory.id && after(armory.id) == grabTable.id
 
 // --- the rig ---
 // Tracked space is +X right, -Z forward; a station faces +Z turned by its
@@ -74,6 +81,8 @@ let spawn = (k: Props.Kind): Input.pose =>
   | Props.Stick => on(-0.3, -0.6, Quat.identity)
   | Props.Brick => on(0.6, -0.5, Quat.yaw(35.0 * Math.pi / 180.0))
   | Props.Bottle => on(0.62, -0.8, Quat.identity)
+  // On the armory's bench, upright, pointing down range.
+  | Props.Pistol => on(0.15, -0.5, Quat.identity)
 
 // The basket: an open box, its inside `basketInner` wide and `basketDepth` deep.
 let basketAt = Quat.v3(-0.2, 0.0, 7.1)
@@ -115,7 +124,43 @@ let bench: Box = { center: toWorld(inventory, toRig(grabTable, table.center)), s
 
 expect Hold.near3(bench.center, Quat.v3(0.125, tableTop / 2.0, -4.6))
 
+// --- the armory ---
+// The table again ahead of the feet (the bench, with the pistol on it), the
+// grab table's wall at its left end to poke the barrel into, and down range
+// three targets on a backstop, their faces 5.5 m ahead.
+
+/// A box placed rig-local at the armory: a quarter turn, so its size's x and
+/// z swap in the world.
+let atArmory = (c: Input.point3, size: Input.point3): Box =>
+  { center: toWorld(armory, c), size: Quat.v3(size.z, size.y, size.x) }
+
+let armoryBench = atArmory(toRig(grabTable, table.center), table.size)
+let armoryWall = atArmory(toRig(grabTable, wall.center), wall.size)
+
+let targetFace = 0.0 - 5.5
+let targetSize = 0.3
+/// Each target's centre (rig-local): left, middle (higher), right.
+let targetsAt = [Quat.v3(-0.7, 1.15, targetFace - 0.02), Quat.v3(0.0, 1.45, targetFace - 0.02), Quat.v3(0.7, 1.15, targetFace - 0.02)]
+let targets: List<(string, Box)> =
+  targetsAt |> List.indexedMap((i, c) => ($"target-{i}", atArmory(c, Quat.v3(targetSize, targetSize, 0.04))))
+let backstop = atArmory(Quat.v3(0.0, 1.25, -5.65), Quat.v3(4.0, 2.5, 0.1))
+// The armory's scoreboard: on the backstop, above the targets.
+let rangeBoardAt = Quat.v3(0.0, 2.05, -5.57)
+
+let isTarget = (name: string): bool => targets |> List.any((t) => let (n, _) = t in n == name)
+
+/// A target's centre (rig-local), by name.
+let targetCentre = (name: string): Option.t<Input.point3> =>
+  targetsAt |> List.indexedMap((i, c) => ($"target-{i}", c)) |> List.find((nc) => let (n, _) = nc in n == name)
+    |> Option.map((nc) => let (_, c) = nc in c)
+
+expect isTarget("target-1") && not isTarget("backstop")
+// The bench stands where the table does at the grab table, seen from the feet.
+expect Hold.near3(toRig(armory, armoryBench.center), toRig(grabTable, table.center))
+
 /// The lab's fixed geometry, tagged for the `physics` hook.
 let solids: List<(string, Box)> =
-  [("floor", floor), ("table", table), ("wall", wall), ("bench", bench)]
+  [("floor", floor), ("table", table), ("wall", wall), ("bench", bench),
+   ("armory-bench", armoryBench), ("armory-wall", armoryWall), ("backstop", backstop)]
     |> List.append(basket |> List.indexedMap((i, b) => ($"basket-{i}", b)))
+    |> List.append(targets)

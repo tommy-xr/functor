@@ -6,10 +6,10 @@
 /// its centre a hand must be to use it, and what it takes (one at a time).
 type Slot = { id: float, name: string, offset: Input.pose, radius: float, fits: List<Props.Kind> }
 
-// The holsters hang at the sides of the thighs, just below the pelvis; the
-// pouch sits on the belt in front.
-let leftHolster: Slot = { id: 1.0, name: "left holster", offset: Hold.p(-0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle] }
-let rightHolster: Slot = { id: 2.0, name: "right holster", offset: Hold.p(0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle] }
+// The holsters hang at the sides of the thighs, just below the pelvis (the
+// brick, the bottle or the pistol); the pouch sits on the belt in front.
+let leftHolster: Slot = { id: 1.0, name: "left holster", offset: Hold.p(-0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle, Props.Pistol] }
+let rightHolster: Slot = { id: 2.0, name: "right holster", offset: Hold.p(0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle, Props.Pistol] }
 let pouch: Slot = { id: 3.0, name: "pouch", offset: Hold.p(0.0, 0.0, -0.15), radius: 0.08, fits: [Props.Ball] }
 
 let all = [leftHolster, rightHolster, pouch]
@@ -20,7 +20,7 @@ let pinMargin = 0.1
 
 let fits = (k: Props.Kind, s: Slot): bool => s.fits |> List.any((f) => f == k)
 
-expect fits(Props.Brick, leftHolster) && fits(Props.Bottle, rightHolster) && fits(Props.Ball, pouch)
+expect fits(Props.Brick, leftHolster) && fits(Props.Bottle, rightHolster) && fits(Props.Ball, pouch) && fits(Props.Pistol, rightHolster)
 expect not fits(Props.Ball, leftHolster) && not fits(Props.Brick, pouch)
 expect all |> List.all((s) => not fits(Props.Stick, s))
 

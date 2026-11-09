@@ -4,6 +4,8 @@
 // it into the wall or the table (it stops there), pass it to the other hand,
 // throw it. Station 2 is the inventory: the same props, and slots worn on
 // the hips (`Hips`, `Slots`) to put them away in and take them back from.
+// Station 3 is the armory: a pistol (`Gun`) on a bench, fired at targets down
+// range, and holstered at the thigh.
 //
 //   functor -d examples/vr-lab run vr
 //   functor -d examples/vr-lab run native        # the station, no hands
@@ -80,7 +82,9 @@ type Model = {
   // Each hand's haptic edges and last pulse, and this step's pulses.
   feltLeft: Pulses.Hand,
   feltRight: Pulses.Hand,
-  pulses: List<(Hold.Side, Pulses.Event)>
+  pulses: List<(Hold.Side, Pulses.Event)>,
+  // The pistol's trigger, kick, shots and hits.
+  gun: Gun.State
 }
 
 let zero = Hold.zero
@@ -100,20 +104,21 @@ let reset = (m: Model, id: float): Model =>
       left: Hold.disarm(m.left),
       right: Hold.disarm(m.right),
       gen: m.gen + 1.0,
-      props: Props.all |> List.map(spawned),
+      props: Stations.props(Stations.find(id)) |> List.map(spawned),
       fresh: true,
       lastRelease: Option.None,
       score: 0.0,
       hips: Hips.init,
       feltLeft: Pulses.idle,
       feltRight: Pulses.idle,
-      pulses: [] }
+      pulses: [],
+      gun: Gun.idle }
 
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
     handView: Tracked, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
-    feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: []
+    feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.idle
   }, 1.0)
 
 // --- input ---
@@ -159,6 +164,9 @@ let gripOf = (xr: Option.t<Input.xr>, side: Hold.Side): Option.t<Input.pose> =>
 
 let squeezeOf = (xr: Option.t<Input.xr>, side: Hold.Side): float =>
   controller(xr, side) |> Option.map((c) => c.squeeze) |> Option.defaultValue(0.0)
+
+let triggerOf = (xr: Option.t<Input.xr>, side: Hold.Side): float =>
+  controller(xr, side) |> Option.map((c) => c.trigger) |> Option.defaultValue(0.0)
 
 let handOf = (m: Model, side: Hold.Side): Hold.Hand<Props.Kind> =>
   match side with
@@ -231,13 +239,14 @@ let reaching = (m: Model, side: Hold.Side, slots: List<Slots.Placed>, stowed: Li
         |> List.filter((p) => not (stowed |> List.any((s) => s.prop == p.kind))
              && (Option.isNone(p.slot) || p.slot == inSlot))
         |> List.map((p) => (p.kind, Props.gap(p.kind, g.position, poseOf(p))))
-        |> List.filter((kg) => let (k, gap) = kg in Hold.hovering(h.hover == Option.Some(k), gap))
+        |> List.filter((kg) => let (k, gap) = kg in Hold.hovering(Props.reach(k), h.hover == Option.Some(k), gap))
         |> List.sortBy((kg) => let (_, gap) = kg in gap)
         |> List.head
 
 /// A hand takes a prop: from the other hand where it is, free where the
 /// world has it (snapping to an authored grip in reach of it), or out of a
-/// slot exactly where it sits.
+/// slot exactly where it sits. A prop whose grip is required (the pistol)
+/// is taken where it is however it is taken, then settles into its grip.
 let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
   match gripOf(m.xr, side) with
   | Option.None => m
@@ -245,10 +254,14 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
     m.props
       |> List.find((p) => p.kind == k)
       |> Option.map((p) =>
-        let held =
+        let taken =
           (match p.held with
            | Option.Some(h) => Hold.handOff(side, g, h)
-           | Option.None => Hold.grab(side, g, p.pose, if Option.isSome(p.slot) then Option.None else Props.grip(k))) in
+           | Option.None => Hold.grab(side, g, p.pose, if Option.isSome(p.slot) || Props.gripRequired(k) then Option.None else Props.grip(k))) in
+        let held =
+          (match (if Props.gripRequired(k) then Props.grip(k) else Option.None) with
+           | Option.Some(a) => Hold.settleInto(a, taken)
+           | Option.None => taken) in
         withHand(withProp({ p with held: Option.Some(held), slot: Option.None, scored: false }, m), side, { handOf(m, side) with hover: Option.None }))
       |> Option.defaultValue(m)
 
@@ -330,10 +343,45 @@ let stowing = (prev: Model, m: Model, slots: List<Slots.Placed>): List<Stow> =>
     else if Hold.pick(lr, rr) == Option.Some(Hold.Left) then [ls] else [rs]
   | claims => stows(claims)
 
-/// One fixed step, given the world (`cast`) and the props as read back
-/// (`read`): the next model (with the step's `pulses`), and the props let go
-/// (their velocity and spin to give the world).
-let step = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input.pose) => Option.t<Hold.Hit>, read: (Prop) => Prop, t: float, dt: float): (Model, List<Release>) =>
+/// The world as the step reaches into it, rig-local: a prop's sweep between
+/// two poses (its first touch), what a shot from a point along a direction
+/// strikes within `Gun.range`, and whether a segment touches the level (the
+/// muzzle check).
+type World = {
+  sweep: (Props.Kind, Input.pose, Input.pose) => Option.t<Hold.Hit>,
+  ray: (Input.point3, Input.point3) => Option.t<Gun.Impact>,
+  blocked: (Input.point3, Input.point3) => bool
+}
+
+// --- the pistol ---
+
+/// The pistol's step: its trigger, read from the hand holding it, and the
+/// shot a pull fires: from the muzzle of the pose the hold accepted (never
+/// the tracked hand's), along its barrel, unless the muzzle check finds the
+/// level there, when it only clicks. A target hit scores. The model, and the
+/// holding hand's pulse.
+let shooting = (m: Model, world: World, t: float, dt: float): (Model, List<(Hold.Side, Pulses.Event)>) =>
+  let held = m.props |> List.find((p) => p.kind == Props.Pistol) |> Option.bind((p) => p.held) in
+  let holder = held |> Option.map((h) => h.side) in
+  let tracked = holder |> Option.map((s) => Option.isSome(gripOf(m.xr, s))) |> Option.defaultValue(false) in
+  let value = holder |> Option.map((s) => triggerOf(m.xr, s)) |> Option.defaultValue(0.0) in
+  let (g, pulled) = Gun.step(m.gun, holder, tracked, value, dt) in
+  match (if pulled then held else Option.None) with
+  | Option.None => ({ m with gun: g }, [])
+  | Option.Some(h) =>
+    let b = Gun.boreOf(h.accepted) in
+    let (from, to) = Gun.checked(b) in
+    if Gun.canFire(g) && not world.blocked(from, to) then
+      let impact = world.ray(b.muzzle, b.dir) in
+      let onTarget = impact |> Option.map((i) => i.target) |> Option.defaultValue(false) in
+      ({ m with gun: Gun.fire(g, { t: t, from: b.muzzle, dir: b.dir, impact: impact }), score: if onTarget then m.score + 1.0 else m.score },
+       [(h.side, Pulses.Fire)])
+    else ({ m with gun: Gun.refuse(g) }, [(h.side, Pulses.Click)])
+
+/// One fixed step, given the world and the props as read back (`read`): the
+/// next model (with the step's `pulses`), and the props let go (their
+/// velocity and spin to give the world).
+let step = (m: Model, st: Stations.Station, world: World, read: (Prop) => Prop, t: float, dt: float): (Model, List<Release>) =>
   let (left, leftEdge) = Hold.stepHand(m.left, Option.isSome(gripOf(m.xr, Hold.Left)), squeezeOf(m.xr, Hold.Left)) in
   let (right, rightEdge) = Hold.stepHand(m.right, Option.isSome(gripOf(m.xr, Hold.Right)), squeezeOf(m.xr, Hold.Right)) in
   let seen = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false } in
@@ -347,8 +395,10 @@ let step = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, Input
   // same step catches it, and a new hold's first step seeds its history. (A
   // hand holding a prop is squeezing, so it has no fresh press for another
   // until it opens and lets go.)
-  let (held, released) = holdAll(grabbing(live, (leftEdge, rightEdge), slots, stowed), st, cast, slots, stowed, t) in
-  let (next, pulses) = feel(m, scoring(held, st), released, slots, t) in
+  let (held, released) = holdAll(grabbing(live, (leftEdge, rightEdge), slots, stowed), st, world.sweep, slots, stowed, t) in
+  // Then the pistol, from the pose its hold just accepted.
+  let (shot, fired) = shooting(scoring(held, st), world, t, dt) in
+  let (next, pulses) = feel(m, shot, released, slots, fired, t) in
   ({ next with lastRelease: if List.isEmpty(released) then m.lastRelease else List.last(released), pulses: pulses }, released)
 
 // --- haptics ---
@@ -383,15 +433,17 @@ let holdEvents = (m: Model, next: Model, released: List<Release>, side: Hold.Sid
          else if released |> List.any((r) => r.prop == k && r.kind == Break) then [Pulses.Break]
          else [Pulses.Release])
 
-/// One hand's pulses for a step, and its new edges: blocked (its prop held
-/// off by the level), and the slot it holds its prop in (an empty hand is in
-/// none, as far as pulses go), and whether that slot takes the prop.
-/// Untracked, a hold survives, and so do its edges: a hand coming back still
-/// pressed or still in the slot doesn't buzz again.
-let feelHand = (m: Model, next: Model, released: List<Release>, slots: List<Slots.Placed>, side: Hold.Side, t: float): (Pulses.Hand, List<Pulses.Event>) =>
+/// One hand's pulses for a step (its hold's events, then its pistol's, from
+/// `fired`), and its new edges: blocked (its prop held off by the level), and
+/// the slot it holds its prop in (an empty hand is in none, as far as pulses
+/// go), and whether that slot takes the prop. Untracked, a hold survives, and
+/// so do its edges: a hand coming back still pressed or still in the slot
+/// doesn't buzz again.
+let feelHand = (m: Model, next: Model, released: List<Release>, slots: List<Slots.Placed>, fired: List<(Hold.Side, Pulses.Event)>, side: Hold.Side, t: float): (Pulses.Hand, List<Pulses.Event>) =>
   let h = feltOf(m, side) in
   let holding = propIn(next, side) in
-  let held = holdEvents(m, next, released, side, holding) in
+  let shots = fired |> List.filter((se) => let (s, _) = se in s == side) |> List.map((se) => let (_, e) = se in e) in
+  let held = List.append(shots, holdEvents(m, next, released, side, holding)) in
   match gripOf(next.xr, side) with
   | Option.None =>
     let kept = Option.isSome(holding) in
@@ -406,9 +458,9 @@ let feelHand = (m: Model, next: Model, released: List<Release>, slots: List<Slot
 
 /// Both hands' pulses for a step: the model with their edges, and the
 /// (hand, event) pairs to buzz.
-let feel = (m: Model, next: Model, released: List<Release>, slots: List<Slots.Placed>, t: float): (Model, List<(Hold.Side, Pulses.Event)>) =>
-  let (left, l) = feelHand(m, next, released, slots, Hold.Left, t) in
-  let (right, r) = feelHand(m, next, released, slots, Hold.Right, t) in
+let feel = (m: Model, next: Model, released: List<Release>, slots: List<Slots.Placed>, fired: List<(Hold.Side, Pulses.Event)>, t: float): (Model, List<(Hold.Side, Pulses.Event)>) =>
+  let (left, l) = feelHand(m, next, released, slots, fired, Hold.Left, t) in
+  let (right, r) = feelHand(m, next, released, slots, fired, Hold.Right, t) in
   ({ next with feltLeft: left, feltRight: right },
    List.append(l |> List.map((e) => (Hold.Left, e)), r |> List.map((e) => (Hold.Right, e))))
 
@@ -439,6 +491,25 @@ let castOf = (st: Stations.Station) =>
     Physics.sweep(Props.shape(k), posed(st, from), posed(st, to), Physics.SweepFixed)
       |> Option.map((h) => { fraction: h.fraction, normal: Stations.dirToRig(st, Quat.v3(h.nx, h.ny, h.nz)) })
 
+// Each fixed body's tag and name, to name what a shot struck.
+let solidTags = Stations.solids |> List.map((s) => let (name, _) = s in (Physics.tag(name), name))
+// The muzzle check sweeps a 2 mm ball along it.
+let muzzleProbe = Physics.sphere(0.002)
+
+/// The world at a station, rig-local: the props' sweeps, the shot's ray (past
+/// the pistol's own body), and the muzzle check against the level only.
+let worldOf = (st: Stations.Station, gen: float): World => {
+  sweep: castOf(st),
+  ray: (from: Input.point3, dir: Input.point3) =>
+    let hit = Physics.castExcluding(tagOf(gen, Props.Pistol), Quat.toVec3(Stations.toWorld(st, from)), Quat.toVec3(Stations.dirToWorld(st, dir)), Gun.range) in
+    if not hit.hit then Option.None
+    else
+      let name = solidTags |> List.find((tn) => let (tag, _) = tn in tag == hit.tag) |> Option.map((tn) => let (_, n) = tn in n) |> Option.defaultValue("prop") in
+      Option.Some({ point: Stations.toRig(st, Quat.v3(hit.x, hit.y, hit.z)), tag: name, target: Stations.isTarget(name) }),
+  blocked: (from: Input.point3, to: Input.point3) =>
+    Option.isSome(Physics.sweep(muzzleProbe, posed(st, Hold.at(from, Quat.identity)), posed(st, Hold.at(to, Quat.identity)), Physics.Fixed))
+}
+
 let tick = (m: Model, dt: float, tts: float) =>
   let st = Stations.find(m.station) in
   let read = (p: Prop): Prop =>
@@ -449,7 +520,7 @@ let tick = (m: Model, dt: float, tts: float) =>
         let v = Physics.linearVelocity(tagOf(m.gen, p.kind)) in
         { p with pose: unposed(st, q), velocity: Stations.dirToRig(st, Quat.v3(v.x, v.y, v.z)) }
       | Option.None => p in
-  let (next, released) = step(m, st, castOf(st), read, tts, dt) in
+  let (next, released) = step(m, st, worldOf(st, m.gen), read, tts, dt) in
   // Declared dynamic and given their velocities in the same frame: both land
   // on the next step, so none spends a step at rest.
   let throws = released |> List.concatMap((r) =>
@@ -475,7 +546,11 @@ let physics = (m: Model) =>
 
 // --- the pure step, with no world ---
 
-let noWorld = (k: Props.Kind, from: Input.pose, to: Input.pose) => Option.None
+let noWorld: World = {
+  sweep: (k: Props.Kind, from: Input.pose, to: Input.pose) => Option.None,
+  ray: (from: Input.point3, dir: Input.point3) => Option.None,
+  blocked: (from: Input.point3, to: Input.point3) => false
+}
 let rest = (k: Props.Kind) => (Stations.spawn(k)).position
 
 let hand = (p: Input.point3, squeeze: float): Input.controller => {
@@ -556,10 +631,11 @@ expect (
   let table = (k: Props.Kind, from: Input.pose, to: Input.pose) =>
     if to.position.y < from.position.y then Option.Some({ fraction: 0.0, normal: Quat.v3(0.0, 1.0, 0.0) }) else Option.None in
   let into = withHands(took, away, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, -0.05, 0.0)), 1.0)) in
-  let (pressed, _) = step(into, Stations.grabTable, table, (p) => p, 2.0 / 60.0, 1.0 / 60.0) in
-  let (still, _) = step(pressed, Stations.grabTable, table, (p) => p, 3.0 / 60.0, 1.0 / 60.0) in
-  let (lost, _) = step(withHands(still, away, away), Stations.grabTable, table, (p) => p, 4.0 / 60.0, 1.0 / 60.0) in
-  let (back, _) = step(withHands(lost, away, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, -0.05, 0.0)), 1.0)), Stations.grabTable, table, (p) => p, 5.0 / 60.0, 1.0 / 60.0) in
+  let w = { noWorld with sweep: table } in
+  let (pressed, _) = step(into, Stations.grabTable, w, (p) => p, 2.0 / 60.0, 1.0 / 60.0) in
+  let (still, _) = step(pressed, Stations.grabTable, w, (p) => p, 3.0 / 60.0, 1.0 / 60.0) in
+  let (lost, _) = step(withHands(still, away, away), Stations.grabTable, w, (p) => p, 4.0 / 60.0, 1.0 / 60.0) in
+  let (back, _) = step(withHands(lost, away, hand(Quat.add(rest(Props.Ball), Quat.v3(0.0, -0.05, 0.0)), 1.0)), Stations.grabTable, w, (p) => p, 5.0 / 60.0, 1.0 / 60.0) in
   // Lost for a step and back still pressed: no second buzz.
   pressed.pulses == [(Hold.Right, Pulses.Blocked)] && still.pulses == [] && lost.pulses == [] && back.pulses == []
 )
@@ -634,7 +710,7 @@ let drawnGrip = (view: HandView, grip: Input.pose, held: Option.t<Hold.Held>): I
 
 // A held ball pushed 10 cm into a wall: drawn tracked, or at the wall.
 expect (
-  let blocked = { side: Hold.Right, offset: Hold.origin, accepted: Hold.p(-0.55, 1.0, -0.5), history: [] } in
+  let blocked = { side: Hold.Right, offset: Hold.origin, accepted: Hold.p(-0.55, 1.0, -0.5), history: [], snapTo: Option.None } in
   let tracked = Hold.p(-0.65, 1.0, -0.5) in
   Hold.near(drawnGrip(Tracked, tracked, Option.Some(blocked)), tracked)
     && Hold.near(drawnGrip(Accepted, tracked, Option.Some(blocked)), blocked.accepted)
@@ -662,6 +738,22 @@ let box = (b: Stations.Box, c: Color.t): Scene.t =>
 let pad = (at: Input.point3, size: float, c: Color.t): Scene.t =>
   Scene.cylinder() |> Scene.scaleXYZ(size, 0.01, size) |> Scene.translate(Quat.toVec3(Quat.add(at, Quat.v3(0.0, 0.005, 0.0)))) |> Scene.lit(c)
 
+// A disc facing the player at an armory target (local -Z, `Scene.atPose`).
+let disc = (r: float, z: float, c: Color.t) =>
+  Scene.cylinder() |> Scene.scaleXYZ(2.0 * r, 0.002, 2.0 * r) |> Scene.rotateX(90deg) |> Scene.translate(Vec3.make(0.0, 0.0, z)) |> Scene.lit(c)
+
+let target =
+  let red = Color.rgb(0.85, 0.15, 0.12) in
+  Scene.group([
+    Scene.cube() |> Scene.scaleXYZ(Stations.targetSize, Stations.targetSize, 0.04) |> Scene.lit(Color.rgb(0.92, 0.9, 0.85)),
+    disc(0.12, -0.021, red),
+    disc(0.08, -0.022, Color.rgb(0.95, 0.95, 0.92)),
+    disc(0.04, -0.023, red),
+  ])
+
+/// A rig-local point at the armory, as `Scene.atPose` places a subtree.
+let atRange = (p: Input.point3) => posed(Stations.armory, Hold.at(p, Quat.identity))
+
 let lab =
   Scene.group([
     Scene.plane() |> Scene.scale(30.0) |> Scene.lit(Color.rgb(0.2, 0.21, 0.24)),
@@ -671,6 +763,11 @@ let lab =
     box(Stations.bench, Color.rgb(0.55, 0.4, 0.26)),
     Scene.group(Stations.basket |> List.map((b) => box(b, Color.rgb(0.95, 0.5, 0.15)))),
     box({ center: Quat.add(Stations.boardAt, Quat.v3(0.0, 0.0, 0.05)), size: Quat.v3(0.6, 0.45, 0.04) }, Color.rgb(0.05, 0.05, 0.07)),
+    box(Stations.armoryBench, Color.rgb(0.4, 0.42, 0.46)),
+    box(Stations.armoryWall, Color.rgb(0.62, 0.64, 0.68)),
+    box(Stations.backstop, Color.rgb(0.42, 0.33, 0.25)),
+    Scene.group(Stations.targetsAt |> List.map((c) => target |> Scene.atPose(atRange(c)))),
+    box(Stations.atArmory(Quat.add(Stations.rangeBoardAt, Quat.v3(0.0, 0.0, -0.01)), Quat.v3(0.6, 0.45, 0.02)), Color.rgb(0.05, 0.05, 0.07)),
   ])
 
 let board = (score: float) =>
@@ -688,7 +785,8 @@ let propScene = (m: Model, st: Stations.Station, p: Prop) =>
     else Props.Resting in
   let pose =
     match p.held with
-    | Option.Some(h) => posed(st, h.accepted)
+    // The pistol is drawn kicked by its recoil; it fires from `accepted`.
+    | Option.Some(h) => posed(st, if p.kind == Props.Pistol then Gun.kicked(m.gun.kick, h.accepted) else h.accepted)
     | Option.None =>
       if Option.isSome(p.slot) then posed(st, p.pose)
       else Physics.pose(tagOf(m.gen, p.kind)) |> Option.defaultValue(posed(st, p.at)) in
@@ -772,6 +870,55 @@ let cues = (m: Model, st: Stations.Station, t: float): Scene.t =>
     | Option.Some(s) => [s]
     | Option.None => []))
 
+// --- the range ---
+
+let flashSeconds = 0.05
+let tracerSeconds = 0.1
+let hitGlowSeconds = 0.3
+
+/// The rotation whose -Z is the unit `dir` (a shot's way), level when it can be.
+let along = (dir: Input.point3): Input.quaternion =>
+  let back = Quat.scale(0.0 - 1.0, dir) in
+  let side = Quat.cross(Quat.v3(0.0, 1.0, 0.0), back) in
+  let x = if Quat.length(side) < 0.001 then Quat.v3(1.0, 0.0, 0.0) else Quat.scale(1.0 / Quat.length(side), side) in
+  Quat.fromBasis(x, Quat.cross(back, x), back)
+
+expect (let d = Quat.v3(0.6, 0.0, -0.8) in Hold.near3(Quat.rotate(along(d), Quat.v3(0.0, 0.0, -1.0)), d))
+
+/// What the shots left at the armory: the hit markers, the target last hit
+/// lit for a moment, the last shot's tracer and muzzle flash fading out, and
+/// the score.
+let shotsScene = (m: Model, st: Stations.Station, t: float): Scene.t =>
+  if st.id != Stations.armory.id then Scene.group([])
+  else
+    let marker = disc(0.012, -0.026, Color.rgb(0.1, 0.1, 0.1)) in
+    let last = m.gun.last |> Option.filter((s) => t - s.t >= 0.0 && t - s.t < hitGlowSeconds) in
+    let lit = last |> Option.bind((s) => s.impact) |> Option.filter((i) => i.target)
+      |> Option.bind((i) => Stations.targetCentre(i.tag))
+      |> Option.map((c) => [Scene.cube() |> Scene.scaleXYZ(Stations.targetSize, Stations.targetSize, 0.002)
+           |> Scene.translate(Vec3.make(0.0, 0.0, -0.028)) |> Scene.emissive(Color.rgb(1.0, 0.85, 0.3)) |> Scene.opacity(0.6) |> Scene.atPose(atRange(c))])
+      |> Option.defaultValue([]) in
+    let trail = last |> Option.filter((s) => t - s.t < tracerSeconds) |> Option.map((s) =>
+      let fade = 1.0 - (t - s.t) / tracerSeconds in
+      let end = Gun.endOf(s) in
+      let length = Quat.length(Quat.sub(end, s.from)) in
+      let mid = Quat.lerp(s.from, end, 0.5) in
+      let hot = Color.rgb(1.0, 0.85, 0.45) in
+      [Scene.cube() |> Scene.scaleXYZ(0.006, 0.006, length) |> Scene.emissive(hot) |> Scene.opacity(0.85 * fade)
+         |> Scene.atPose(posed(st, Hold.at(mid, along(s.dir)))),
+       if t - s.t < flashSeconds then Scene.sphere() |> Scene.scale(0.035 * fade) |> Scene.emissive(hot) |> Scene.atPose(posed(st, Hold.at(s.from, Quat.identity)))
+       else Scene.group([])])
+      |> Option.defaultValue([]) in
+    Scene.group(List.flatten([
+      m.gun.hits |> List.map((h) => marker |> Scene.atPose(posed(st, Hold.at(h.point, Quat.identity)))),
+      lit,
+      trail,
+      [Digits.number(m.score, Color.rgb(1.0, 0.75, 0.2), Color.rgb(0.05, 0.04, 0.03))
+         |> Scene.scale(0.09)
+         |> Scene.rotateY(Angle.radians(st.yaw + Math.pi))
+         |> Scene.translate(Quat.toVec3(Stations.toWorld(st, Stations.rangeBoardAt)))],
+    ]))
+
 let lights = [
   Light.ambient(Color.rgb(0.38, 0.38, 0.44)),
   Light.directional(Vec3.make(-0.35, -1.0, 0.45), Color.rgb(1.0, 0.96, 0.9), 0.85) |> Light.castShadows,
@@ -786,9 +933,9 @@ let camera = (m: Model, st: Stations.Station) =>
     Camera3D.firstPerson(Quat.toVec3(Quat.add(st.feet, Quat.v3(0.0, 1.6, 0.0))), Angle.radians(st.yaw), -24deg, 70deg)
       |> Camera3D.clip(0.05, 60.0)
 
-// Children 3 (the props, in `Props.all` order) to 7 are what the e2e checks
-// read from `/scene`: the left and right hands, then their ghosts. 8 is
-// what the body wears; 9 the haptic cues.
+// Children 3 (the props, in `Stations.props` order) to 7 are what the e2e
+// checks read from `/scene`: the left and right hands, then their ghosts. 8
+// is what the body wears; 9 the haptic cues; 10 the range's shots.
 let draw = (m: Model, tts) =>
   let st = Stations.find(m.station) in
   let (left, leftGhost) = handScene(m, st, Hold.Left, Color.rgb(0.2, 0.85, 1.0)) in
@@ -806,6 +953,7 @@ let draw = (m: Model, tts) =>
       rightGhost,
       bodyScene(m, st),
       cues(m, st, tts),
+      shotsScene(m, st, tts),
     ]),
     lights)
     |> Frame.withClearColor(Color.rgb(0.07, 0.08, 0.11))

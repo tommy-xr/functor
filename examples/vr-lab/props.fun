@@ -3,9 +3,9 @@
 // and optionally an authored grip. Poses are rig-local (`Hold`'s frame);
 // drawn and declared, a prop's local +Y is its pose's +Y.
 
-type Kind = | Ball | Stick | Brick | Bottle
+type Kind = | Ball | Stick | Brick | Bottle | Pistol
 
-let all = [Ball, Stick, Brick, Bottle]
+let all = [Ball, Stick, Brick, Bottle, Pistol]
 
 let name = (k: Kind): string =>
   match k with
@@ -13,6 +13,7 @@ let name = (k: Kind): string =>
   | Stick => "stick"
   | Brick => "brick"
   | Bottle => "bottle"
+  | Pistol => "pistol"
 
 let ballRadius = 0.06
 let stickLength = 0.7
@@ -31,6 +32,7 @@ let extent = (k: Kind): Input.point3 =>
   | Stick => Quat.v3(stickThickness, stickThickness, stickLength)
   | Brick => Quat.v3(0.1, 0.065, 0.21)
   | Bottle => Quat.v3(2.0 * bottleRadius, bodyHeight + neckLength, 2.0 * bottleRadius)
+  | Pistol => Gun.size
 
 let shape = (k: Kind) =>
   match k with
@@ -43,11 +45,13 @@ let radius = (k: Kind): float =>
   | Ball => ballRadius
   | _ => Quat.length(extent(k)) / 2.0
 
-/// From a point to the prop's surface (0 inside a box, negative inside the ball).
+/// From a point to where a hand takes the prop: its surface (0 inside a box,
+/// negative inside the ball), or the pistol's grip.
 let gap = (k: Kind, q: Input.point3, pose: Input.pose): float =>
   let local = Quat.rotate(Quat.conj(pose.orientation), Quat.sub(q, pose.position)) in
   match k with
   | Ball => Quat.length(local) - ballRadius
+  | Pistol => Quat.length(Quat.sub(local, Gun.grip.position))
   | _ =>
     let e = extent(k) in
     let out = (v: float, size: float) => Math.max(0.0, Math.abs(v) - size / 2.0) in
@@ -59,6 +63,21 @@ expect Math.abs(gap(Stick, Quat.v3(0.0, 0.0, -0.8), Hold.p(0.0, 0.0, -0.2)) - 0.
 // Turned, measured in the prop's own frame.
 expect Math.abs(gap(Brick, Quat.v3(0.2, 0.0, 0.0), Hold.at(Hold.zero, Quat.yaw(Math.pi / 2.0))) - (0.2 - 0.105)) < 0.0001
 
+/// How near a hand must be (`gap`) to take a prop: the pistol only at its grip.
+let reach = (k: Kind): float =>
+  match k with
+  | Pistol => Gun.gripZone
+  | _ => Hold.reach
+
+// A hand on the pistol's grip reaches it; one at the muzzle, touching it,
+// doesn't (even hovering it already).
+expect (
+  let pose = Hold.at(Quat.v3(0.2, 1.0, -0.5), Quat.yaw(0.5)) in
+  let at = (p: Input.point3) => Quat.add(pose.position, Quat.rotate(pose.orientation, p)) in
+  Hold.hovering(reach(Pistol), false, gap(Pistol, at(Gun.grip.position), pose))
+    && not Hold.hovering(reach(Pistol), true, gap(Pistol, at(Quat.v3(0.0, 0.05, -0.1)), pose))
+)
+
 // The bottle's neck, half way up it: held there in a fist round it, the
 // fist's -Z (pinky to thumb) up the bottle, so the body hangs below the hand.
 let neckAt = bodyHeight + neckLength / 2.0 - extent(Bottle).y / 2.0
@@ -68,7 +87,12 @@ let neckAt = bodyHeight + neckLength / 2.0 - extent(Bottle).y / 2.0
 let grip = (k: Kind): Option.t<Input.pose> =>
   match k with
   | Bottle => Option.Some(Hold.at(Quat.v3(0.0, neckAt, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0)))
+  | Pistol => Option.Some(Gun.grip)
   | _ => Option.None
+
+/// Whether the prop is only ever held at its grip: taken anywhere in reach of
+/// it (`reach`), it settles into it (`Hold.settleInto`) rather than snapping.
+let gripRequired = (k: Kind): bool => k == Pistol
 
 // A hand pointing up, gripping the neck: snapped, the bottle stands upright
 // with its neck in the fist.
@@ -88,7 +112,8 @@ let dynamics = (k: Kind, body: Physics.body): Physics.body =>
     | Ball => (0.6, 0.45, 1.5)
     | Stick => (0.6, 0.2, 0.5)
     | Brick => (0.7, 0.1, 0.5)
-    | Bottle => (0.5, 0.25, 0.5) in
+    | Bottle => (0.5, 0.25, 0.5)
+    | Pistol => (0.7, 0.1, 0.8) in
   body
     |> Physics.friction(friction)
     |> Physics.restitution(restitution)
@@ -138,3 +163,4 @@ let scene = (k: Kind, look: Look): Scene.t =>
       cylinder(neckRadius, neckLength, base + bodyHeight + neckLength / 2.0) |> paint(look, 0.2, 0.62, 0.35),
       cylinder(neckRadius * 1.25, 0.012, base + bodyHeight + neckLength - 0.006) |> Scene.lit(Color.rgb(0.85, 0.8, 0.35)),
     ])
+  | Pistol => Gun.scene(paint(look))
