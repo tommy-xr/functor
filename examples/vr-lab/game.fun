@@ -436,9 +436,11 @@ let weaponOf = (k: Props.Kind): Gun.Weapon => Props.weapon(k) |> Option.defaultV
 /// (never the tracked hand's), along its barrel, unless the muzzle check
 /// finds the level there, when it only clicks. A target hit scores. The
 /// model, and the pulses: a click in the trigger hand, a shot in every hand
-/// on the gun.
+/// on the gun. A station without the gun skips it.
 let shooting = (m: Model, world: World, k: Props.Kind, t: float, dt: float): (Model, List<(Hold.Side, Pulses.Event)>) =>
-  let p = propOf(m, k) in
+  match m.props |> List.find((q) => q.kind == k) with
+  | Option.None => (m, [])
+  | Option.Some(p) =>
   let holder = triggerHand(m, k) in
   let tracked = holder |> Option.map((s) => Option.isSome(gripOf(m.xr, s))) |> Option.defaultValue(false) in
   let value = holder |> Option.map((s) => triggerOf(m.xr, s)) |> Option.defaultValue(0.0) in

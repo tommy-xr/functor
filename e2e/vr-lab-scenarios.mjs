@@ -499,9 +499,9 @@ const DRAG = add(aheadOf(RIFLE_AIM, ID, 0.25), [0.15, 0, 0]);
 const behindRifle = { eye: [2.85, 1.9, 0.95], target: [7.0, 1.2, -0.1], fov: 40 };
 // Above the bench, side on: the support sliding and breaking off.
 const aboveRifle = { eye: [3.7, 2.2, 1.35], target: [4.35, 1.2, -0.15], fov: 40 };
-// High over the player's right shoulder, down onto the wall's top edge: the
+// Down range of the bench, side on to the wall (edge-on, on the right): the
 // rifle pointing into it, both hands on it.
-const overRifleWall = { eye: [3.75, 2.9, 0.75], target: [4.45, 1.2, -0.35], fov: 38 };
+const besideRifleWall = { eye: [5.7, 1.55, -0.25], target: [4.45, 1.2, -0.45], fov: 40 };
 
 const rifleScenarios = {
   // Two hands on the rifle, raised; aimed at each target by the support hand
@@ -634,7 +634,7 @@ const rifleScenarios = {
       { frames: 3, right: { primary: false } },
       { frames: 30, right: { trigger: 1 }, mark: "semi" },
       { frames: 12, right: { trigger: 0 } },
-      { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: overRifleWall },
+      { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: besideRifleWall },
       { frames: 25, ...bothTo(RIFLE_WALL.through), mark: "pushed" },
       { frames: 10, right: {} },
       { frames: 1, right: { trigger: 1 }, mark: "clicked" },
