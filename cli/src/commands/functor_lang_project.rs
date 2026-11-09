@@ -618,17 +618,7 @@ paths are external — read it in a top-level value `config` doesn't use"
         };
         let diags = self.check(&project)?;
         for diag in &diags {
-            let (file, line, col) = project.sources.resolve(diag.span.start);
-            // The source is already in memory (the SourceFile) — no extra IO.
-            let source_line = nth_line(&file.src, line);
-            emit(Event::Diagnostic {
-                severity: Severity::Error,
-                file: Some(file.path.display().to_string()),
-                line: Some(line),
-                col: Some(col),
-                message: diag.message.clone(),
-                source_line,
-            });
+            emit_at(&project, diag.span.start, Severity::Error, diag.message.clone());
         }
         if !diags.is_empty() {
             return Err(Error::other(format!(
@@ -670,15 +660,7 @@ paths are external — read it in a top-level value `config` doesn't use"
             .map(|f| (f, Severity::Error))
             .chain(findings.warnings.iter().map(|f| (f, Severity::Warning)))
         {
-            let (file, line, col) = project.sources.resolve(finding.span.start);
-            emit(Event::Diagnostic {
-                severity,
-                file: Some(file.path.display().to_string()),
-                line: Some(line),
-                col: Some(col),
-                message: finding.message.clone(),
-                source_line: nth_line(&file.src, line),
-            });
+            emit_at(&project, finding.span.start, severity, finding.message.clone());
         }
         if !findings.errors.is_empty() {
             return Err(Error::other(format!(
@@ -1501,13 +1483,16 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             // The same check gate `run native` uses — structured file:line
             // diagnostics beat the device's rendered 400 body, and a broken
             // edit never mutates either source OR assets on the headset.
-            if let Err(e) = self.build(working_directory, false) {
-                emit(Event::Warning {
-                    message: format!("check failed ({e}) — the headset keeps the previous program"),
-                });
-                attempted = current;
-                observed_assets = current_assets;
-                continue;
+            match self.build(working_directory, false) {
+                Ok(loaded) => warn_unsupported(self, &loaded, &Environment::Vr),
+                Err(e) => {
+                    emit(Event::Warning {
+                        message: format!("check failed ({e}) — the headset keeps the previous program"),
+                    });
+                    attempted = current;
+                    observed_assets = current_assets;
+                    continue;
+                }
             }
             // An asset add/rename can regenerate assets.fun during `build`.
             // Sync and push the exact post-build snapshots, in that order.
@@ -2716,25 +2701,39 @@ Content-Length: {}\r\nConnection: close\r\n\r\n",
     Ok((status, body))
 }
 
-/// The 1-based `line`th line of `src`, without its newline — `None` when the
-/// line is out of range (a defensive fail-soft: the caret is a nicety, never a
-/// hard dependency of surfacing the diagnostic).
-/// Warn at each built-in the game uses that `environment`'s shell cannot
-/// perform ([`util::shell_support`]).
-pub fn warn_unsupported(project: &functor_lang::project::Project, environment: &Environment) {
-    for finding in util::shell_support::check(project, environment) {
-        let (file, line, col) = project.sources.resolve(finding.span.start);
-        emit(Event::Diagnostic {
-            severity: Severity::Warning,
-            file: Some(file.path.display().to_string()),
-            line: Some(line),
-            col: Some(col),
-            message: finding.message,
-            source_line: nth_line(&file.src, line),
-        });
+/// Warn at each built-in this role reaches that `environment`'s shell cannot
+/// perform ([`util::shell_support`]). A role whose entry points don't
+/// resolve is skipped: its build or launch reports that itself.
+pub fn warn_unsupported(
+    role: &FunctorLangProject,
+    project: &functor_lang::project::Project,
+    environment: &Environment,
+) {
+    let Ok(names) = role.entry_role().resolve(&role.entry, project) else { return };
+    let mut roots = names.hooks().to_vec();
+    roots.extend([names.init, names.config, names.loading]);
+    for finding in util::shell_support::check(project, &roots, environment) {
+        emit_at(project, finding.span.start, Severity::Warning, finding.message);
     }
 }
 
+/// Emit a diagnostic at a project-wide offset, with its source line for the
+/// caret (already in memory: no extra IO).
+fn emit_at(project: &functor_lang::project::Project, offset: usize, severity: Severity, message: String) {
+    let (file, line, col) = project.sources.resolve(offset);
+    emit(Event::Diagnostic {
+        severity,
+        file: Some(file.path.display().to_string()),
+        line: Some(line),
+        col: Some(col),
+        message,
+        source_line: nth_line(&file.src, line),
+    });
+}
+
+/// The 1-based `line`th line of `src`, without its newline — `None` when the
+/// line is out of range (a defensive fail-soft: the caret is a nicety, never a
+/// hard dependency of surfacing the diagnostic).
 fn nth_line(src: &str, line: usize) -> Option<String> {
     line.checked_sub(1)
         .and_then(|idx| src.lines().nth(idx))

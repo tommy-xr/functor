@@ -2,10 +2,11 @@
 //! warn at each one the game uses, so a gap in the headset or browser shell
 //! shows up on the dev machine instead of as a silent no-op on the device.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use functor_lang::ir::ExprKind;
 use functor_lang::project::Project;
+use functor_lang::reuse::CodeIndex;
 
 use super::asset_verify::{walk, Finding};
 use crate::Environment;
@@ -28,41 +29,25 @@ fn unsupported(environment: &Environment) -> &'static [(&'static str, &'static s
             ("AudioScene.create", NO_AUDIO),
         ],
         Environment::Wasm => &[
-            ("Sub.listen", "never opens: the browser is a client only"),
+            ("Sub.listen", "never opens on a top-level page: the browser is a client only"),
             ("Effect.playThen", "plays, but its message never arrives in the browser"),
         ],
     }
 }
 
-/// One finding per unsupported built-in the entry file reaches, at its
-/// first use. Sibling modules count only through what the entry uses, so a
-/// server role's `Sub.listen` is not charged to its client.
-pub(crate) fn check(project: &Project, environment: &Environment) -> Vec<Finding> {
+/// One finding per unsupported built-in reachable from `roots` (a role's
+/// entry points), at its first use. Code only another role reaches, such as
+/// a server's `Sub.listen` beside its client, is not charged to this one.
+pub(crate) fn check(project: &Project, roots: &[&str], environment: &Environment) -> Vec<Finding> {
     let table = unsupported(environment);
-    let defs: HashMap<&str, _> = project.module.defs.iter().map(|d| (d.name.as_str(), d)).collect();
-    let mut todo: Vec<_> = project
-        .module
-        .defs
-        .iter()
-        .filter(|d| project.sources.file_at(d.span.start).module == project.entry)
-        .collect();
-    let mut seen: HashSet<&str> = todo.iter().map(|d| d.name.as_str()).collect();
+    let index = CodeIndex::new(&project.module);
+    let reached: HashSet<String> = roots.iter().filter_map(|name| index.deps_of(name)).flatten().collect();
     // Per table row: (first use, uses).
     let mut found: Vec<Option<(functor_lang::Span, usize)>> = vec![None; table.len()];
-    while let Some(def) = todo.pop() {
+    for def in project.module.defs.iter().filter(|d| reached.contains(&d.name)) {
         walk(&def.value, &mut |expr| {
-            let path = match &expr.kind {
-                ExprKind::Global(name) => {
-                    if let Some(&next) = defs.get(name.as_str()) {
-                        if seen.insert(next.name.as_str()) {
-                            todo.push(next);
-                        }
-                    }
-                    return;
-                }
-                ExprKind::External(path) => path.join("."),
-                _ => return,
-            };
+            let ExprKind::External(path) = &expr.kind else { return };
+            let path = path.join(".");
             if let Some(i) = table.iter().position(|(name, _)| *name == path) {
                 let entry = found[i].get_or_insert((expr.span, 0));
                 if expr.span.start < entry.0.start {
@@ -102,7 +87,7 @@ mod tests {
     }
 
     fn messages(src: &str, environment: Environment) -> Vec<String> {
-        check(&project(src), &environment)
+        check(&project(src), &["a", "b", "c", "d"], &environment)
             .into_iter()
             .map(|f| f.message)
             .collect()
@@ -137,10 +122,43 @@ mod tests {
         std::fs::write(dir.join("server.fun"), "let s = Sub.listen(\"0.0.0.0:9\", (e) => e)\n").unwrap();
         let project = functor_lang::project::load(&dir.join("game.fun"))
             .unwrap_or_else(|e| panic!("load: {}", e.render()));
-        let found: Vec<String> = check(&project, &Environment::Vr).into_iter().map(|f| f.message).collect();
+        let found: Vec<String> = check(&project, &["a"], &Environment::Vr).into_iter().map(|f| f.message).collect();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].starts_with("`Sub.connect`"), "{found:?}");
+    }
+
+    /// Through the real prelude, as `build` loads it: its `.funi`
+    /// signatures, not the unresolved-name path the other tests take.
+    #[test]
+    fn prelude_linked_builtins_are_found() {
+        let dir = std::env::temp_dir().join(format!("shell-support-prelude-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.fun"), "let subscriptions = (m) => Sub.listen(\"0.0.0.0:9\", (e) => e)\n").unwrap();
+        let project = functor_lang::project::load_with_bundled_modules(
+            &dir.join("game.fun"),
+            &std::collections::HashMap::new(),
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let found = check(&project, &["subscriptions"], &Environment::Vr);
+        assert_eq!(found.len(), 1);
+    }
+
+    /// Roles sharing a file: the client's roots never reach the inline
+    /// server module's `Sub.listen`.
+    #[test]
+    fn a_same_file_role_is_not_charged() {
+        let project = project(
+            "let tick = (m) => Sub.connect(\"ws://h\", (e) => e)\n\
+             module Server {\n  let tick = (m) => Sub.listen(\"0.0.0.0:9\", (e) => e)\n}\n",
+        );
+        let client: Vec<String> = check(&project, &["tick"], &Environment::Wasm).into_iter().map(|f| f.message).collect();
+        assert!(client.is_empty(), "{client:?}");
+        let server = check(&project, &["Server.tick"], &Environment::Wasm);
+        assert_eq!(server.len(), 1);
     }
 
     #[test]
@@ -148,7 +166,7 @@ mod tests {
         let project = project(
             "let early = Sub.listen(\"0.0.0.0:9\", (e) => e)\nlet late = Sub.listen(\"0.0.0.0:8\", (e) => e)",
         );
-        let findings = check(&project, &Environment::Wasm);
+        let findings = check(&project, &["early", "late"], &Environment::Wasm);
         let (_, line, _) = project.sources.resolve(findings[0].span.start);
         assert_eq!(line, 1);
     }

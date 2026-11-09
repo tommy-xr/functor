@@ -698,7 +698,7 @@ async fn run(args: &Args) -> io::Result<()> {
                     }
                     // The role `run <environment>` would launch.
                     if let Some(environment) = environment.as_ref().filter(|_| role.role == project.role) {
-                        commands::functor_lang_project::warn_unsupported(&loaded, environment);
+                        commands::functor_lang_project::warn_unsupported(role, &loaded, environment);
                     }
                 }
                 match environment {
@@ -708,7 +708,7 @@ async fn run(args: &Args) -> io::Result<()> {
             }
             Command::Run { environment, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
-                commands::functor_lang_project::warn_unsupported(&loaded, &Environment::default(environment));
+                commands::functor_lang_project::warn_unsupported(&project, &loaded, &Environment::default(environment));
                 project
                     .run(
                         &working_directory_str,
@@ -720,7 +720,7 @@ async fn run(args: &Args) -> io::Result<()> {
             }
             Command::Develop { environment, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
-                commands::functor_lang_project::warn_unsupported(&loaded, &Environment::default(environment));
+                commands::functor_lang_project::warn_unsupported(&project, &loaded, &Environment::default(environment));
                 project
                     .run(
                         &working_directory_str,
