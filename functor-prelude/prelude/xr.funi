@@ -140,5 +140,5 @@ let streamDepth : (streamOptions, t) => t
 /// loopback only unless the operator allows another origin, and nothing
 /// streams while the clock is paused, scrubbed or replaying. `GET /state`
 /// reports it as `passthrough.camera`. Desktop streams the stand-in room as a
-/// known pinhole camera at the view; web does not stream.
+/// known pinhole camera at the view; web and Quest do not stream yet.
 let streamCamera : (streamOptions, t) => t

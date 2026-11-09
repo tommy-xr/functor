@@ -43,12 +43,17 @@ allowed by default — the operator allows another origin with `--allow-sensor-u
 /// POST one frame — a big-endian u32 header length, the header, the payload
 /// — within [`REQUEST_TIMEOUT`]; any 2xx is success. The response body is
 /// never read.
-fn post(destination: &Destination, queued: &Queued) -> Result<(), String> {
-    let mut body = Vec::with_capacity(4 + queued.header.len() + queued.payload.len());
-    body.extend_from_slice(&(queued.header.len() as u32).to_be_bytes());
-    body.extend_from_slice(&queued.header);
-    body.extend_from_slice(&queued.payload);
-    let headers = [("Content-Type".to_string(), queued.content_type.to_string())];
+fn post(
+    destination: &Destination,
+    content_type: &str,
+    header: &[u8],
+    payload: &[u8],
+) -> Result<(), String> {
+    let mut body = Vec::with_capacity(4 + header.len() + payload.len());
+    body.extend_from_slice(&(header.len() as u32).to_be_bytes());
+    body.extend_from_slice(header);
+    body.extend_from_slice(payload);
+    let headers = [("Content-Type".to_string(), content_type.to_string())];
     match http_client::request_status("POST", destination, &headers, &body, CONNECT_TIMEOUT, REQUEST_TIMEOUT)? {
         code if (200..300).contains(&code) => Ok(()),
         code => Err(format!("HTTP {code}")),
@@ -62,7 +67,9 @@ struct Queued {
     content_type: &'static str,
     /// The JSON header.
     header: Vec<u8>,
-    payload: Vec<u8>,
+    /// Builds the payload on the sender thread (a conversion stays off the
+    /// render thread).
+    payload: Box<dyn FnOnce() -> Vec<u8> + Send>,
 }
 
 /// The sender thread's state. The counters belong to the current
@@ -96,7 +103,13 @@ fn send_thread(channel: Channel) {
                 shared = wake.wait(shared).expect("sensor stream state");
             }
         };
-        let result = post(&queued.destination, &queued);
+        let payload = (queued.payload)();
+        let result = post(
+            &queued.destination,
+            queued.content_type,
+            &queued.header,
+            &payload,
+        );
         let mut shared = shared.lock().expect("sensor stream state");
         if shared.generation != queued.generation {
             continue;
@@ -117,11 +130,12 @@ fn send_thread(channel: Channel) {
 pub(crate) struct SensorSender(Channel);
 
 impl SensorSender {
-    pub(crate) fn new() -> SensorSender {
+    /// `kind` names the thread: "depth", "camera".
+    pub(crate) fn new(kind: &str) -> SensorSender {
         let channel: Channel = Default::default();
         let thread_channel = channel.clone();
         std::thread::Builder::new()
-            .name("functor-sensor-stream".to_string())
+            .name(format!("functor-{kind}-stream"))
             .spawn(move || send_thread(thread_channel))
             .expect("spawn the sensor stream thread");
         SensorSender(channel)
@@ -141,29 +155,29 @@ impl Drop for SensorSender {
 /// A frame a stream asked for ([`SensorStreamer::capture`]), carried to
 /// [`SensorStreamer::send`] with whatever produced it.
 #[derive(Clone, Copy, Debug)]
-pub struct StreamCapture {
+pub(crate) struct StreamCapture {
     /// The stream it was taken for; another stream drops it.
     stream: u64,
     /// When it was asked for, [`steady_ns`].
-    pub steady_ns: i64,
+    pub(crate) steady_ns: i64,
 }
 
 /// A frame's place in its stream, for its header.
-pub struct FrameIds {
+pub(crate) struct FrameIds {
     /// 16 hex digits, new each time the stream starts.
-    pub stream: String,
+    pub(crate) stream: String,
     /// +1 per frame queued; a gap is a dropped frame.
-    pub seq: u64,
+    pub(crate) seq: u64,
 }
 
 /// The nanoseconds since this process first asked: the `"steady"` clock.
-pub fn steady_ns() -> i64 {
+fn steady_ns() -> i64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_nanos() as i64
 }
 
 /// One `settings` stream (`knob`'s) on the render thread.
-pub struct SensorStreamer {
+pub(crate) struct SensorStreamer {
     knob: &'static str,
     content_type: &'static str,
     settings: SensorStreamSettings,
@@ -259,7 +273,7 @@ impl SensorStreamer {
     }
 
     /// A frame to take now, if streaming and one is due.
-    pub fn capture(&mut self) -> Option<StreamCapture> {
+    pub(crate) fn capture(&mut self) -> Option<StreamCapture> {
         if !self.live || self.sink.is_none() {
             return None;
         }
@@ -273,12 +287,13 @@ impl SensorStreamer {
     }
 
     /// Queue `capture`'s frame — `header` serializes its JSON header given its
-    /// ids — replacing (and counting) a frame still waiting. A capture from
-    /// before a stop or restart is dropped.
-    pub fn send(
+    /// ids; `payload` runs on the sender thread — replacing (and counting) a
+    /// frame still waiting. A capture from before a stop or restart is
+    /// dropped.
+    pub(crate) fn send(
         &mut self,
         capture: StreamCapture,
-        payload: Vec<u8>,
+        payload: impl FnOnce() -> Vec<u8> + Send + 'static,
         header: impl FnOnce(FrameIds) -> Vec<u8>,
     ) {
         if !self.live || capture.stream != self.stream {
@@ -297,7 +312,7 @@ impl SensorStreamer {
             generation,
             content_type,
             header,
-            payload,
+            payload: Box::new(payload),
         };
         if shared.latest.replace(queued).is_some() {
             shared.dropped += 1;
@@ -341,6 +356,7 @@ impl Drop for SensorStreamer {
 pub(crate) fn follow(
     slot: &mut Option<SensorStreamer>,
     sender: &mut Option<SensorSender>,
+    kind: &str,
     knob: &'static str,
     content_type: &'static str,
     settings: Option<&SensorStreamSettings>,
@@ -357,7 +373,7 @@ pub(crate) fn follow(
             content_type,
             settings.clone(),
             allowed,
-            sender.get_or_insert_with(SensorSender::new),
+            sender.get_or_insert_with(|| SensorSender::new(kind)),
         ));
     }
     slot.as_mut().expect("set above").set_live(live);
@@ -410,7 +426,7 @@ mod tests {
                 hz: 10.0,
             },
             &[],
-            &SensorSender::new(),
+            &SensorSender::new("depth"),
         );
         assert!(streamer.sink.is_none());
         assert!(streamer.state().last_error.unwrap().contains("--allow-sensor-upload"));

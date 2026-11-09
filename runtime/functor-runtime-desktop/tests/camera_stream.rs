@@ -69,7 +69,13 @@ fn frames_project_onto_the_markers(harness: &Harness) {
         .scene_context
         .set_camera_stream(Some(&settings), true);
     let start = Instant::now();
-    while server.bodies().len() < 3 {
+    let sent = || {
+        harness
+            .scene_context
+            .camera_stream_state()
+            .map_or(0, |s| s.sent)
+    };
+    while sent() < 3 {
         assert!(
             start.elapsed() < Duration::from_secs(15),
             "timed out waiting for frames"
@@ -87,9 +93,11 @@ fn frames_project_onto_the_markers(harness: &Harness) {
 
     let camera = Harness::camera();
     let mut worst = 0.0f32;
-    for (i, body) in server.bodies().iter().enumerate() {
-        let (header, yuv) = decode(body).expect("a valid camera frame");
-        assert_eq!(header.seq, i as u64);
+    let mut last_seq = None;
+    for body in server.bodies() {
+        let (header, yuv) = decode(&body).expect("a valid camera frame");
+        assert!(last_seq < Some(header.seq), "seq increments");
+        last_seq = Some(header.seq);
         check_header(&header, &camera);
         let (w, h) = (header.width as usize, header.height as usize);
         let (y_plane, chroma) = yuv.split_at(w * h);
@@ -178,13 +186,7 @@ fn matrix(columns: &[f32; 16]) -> Matrix4<f32> {
 
 fn emissive(r: f32, g: f32, b: f32, items: Vec<Scene3D>) -> Scene3D {
     Scene3D {
-        obj: SceneObject::Material(
-            MaterialDescription::Emissive {
-                color: Vector4::new(r, g, b, 1.0),
-                texture: None,
-            },
-            items,
-        ),
+        obj: SceneObject::Material(MaterialDescription::emissive(r, g, b, 1.0), items),
         xform: Matrix4::from_scale(1.0),
     }
 }

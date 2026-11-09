@@ -507,9 +507,10 @@ pub(crate) fn render_stand_in_view(
         width as f32 / height as f32,
         height as f32,
         camera,
-        None,
-        None,
-        None,
+        // Terrain LOD and culling follow this camera, not the game's.
+        Some(&[projection * camera.view_matrix()]),
+        Some(projection.y.y.abs()),
+        Some(height as f32),
         Some(projection),
         false,
         true,

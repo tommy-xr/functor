@@ -593,7 +593,7 @@ let settings = (model) =>
   `Frame.withStandInRoom`, never the game's scene — from the game's view
   (the emulated head under `--emulate-xr`) through a fixed pinhole camera:
   640×480, `fx = fy = 500`, `cx = 320`, `cy = 240`, `source: "emulated"`.
-  Web does not stream; a one-time warning says so.
+  Web and Quest do not stream yet; a one-time warning says so.
 
 The wire format, `functor.camera-frame/1`: one frame per `POST <url>`,
 `Content-Type: application/vnd.functor.camera-frame`, framed as depth frames

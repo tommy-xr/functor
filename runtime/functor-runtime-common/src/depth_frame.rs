@@ -68,7 +68,13 @@ pub struct DepthFrameHeader {
 /// The request body: header length, header, payload.
 pub fn encode(header: &DepthFrameHeader, payload: &[u8]) -> Vec<u8> {
     debug_assert_eq!(header.payload_len, payload.len() as u64);
-    let json = serde_json::to_vec(header).expect("a depth frame header serializes");
+    join(header, payload)
+}
+
+/// A sensor frame body: `header`'s JSON length (big-endian u32), the JSON,
+/// the payload — what [`split`] takes apart.
+pub(crate) fn join(header: &impl Serialize, payload: &[u8]) -> Vec<u8> {
+    let json = serde_json::to_vec(header).expect("a sensor frame header serializes");
     let mut body = Vec::with_capacity(4 + json.len() + payload.len());
     body.extend_from_slice(&(json.len() as u32).to_be_bytes());
     body.extend_from_slice(&json);

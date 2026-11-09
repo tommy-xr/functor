@@ -5,12 +5,14 @@
 //! the UTF-8 JSON header, then `payload_len` bytes of I420 — the Y plane,
 //! then U, then V at half resolution, rows top-down.
 
-use cgmath::{Matrix4, Vector4};
+use cgmath::Matrix4;
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA: &str = "functor.camera-frame/1";
 pub const CONTENT_TYPE: &str = "application/vnd.functor.camera-frame";
 pub const ENCODING: &str = "i420";
+/// The widest or tallest image `decode` accepts.
+const MAX_SIDE: u32 = 16384;
 
 /// Where a frame's image came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,17 +45,18 @@ impl Intrinsics {
     /// The GL projection whose window pixels are this camera's, for a
     /// `width`×`height` image read back bottom-up and flipped.
     pub fn gl_projection(&self, width: u32, height: u32, near: f32, far: f32) -> Matrix4<f32> {
-        let (w, h) = (width as f32, height as f32);
-        Matrix4::from_cols(
-            Vector4::new(2.0 * self.fx / w, 0.0, 0.0, 0.0),
-            Vector4::new(0.0, 2.0 * self.fy / h, 0.0, 0.0),
-            Vector4::new(
-                (w - 2.0 * self.cx - 1.0) / w,
-                (2.0 * self.cy + 1.0 - h) / h,
-                (far + near) / (near - far),
-                -1.0,
-            ),
-            Vector4::new(0.0, 0.0, 2.0 * far * near / (near - far), 0.0),
+        // The view angle to an image edge, `px` pixels in; centres sit half
+        // a pixel inside the edges.
+        let edge = |px: u32, c: f32, f: f32| ((px as f32 - c - 0.5) / f).atan();
+        let mut camera = crate::Camera::default();
+        camera.near = near;
+        camera.far = far;
+        // Image rows run down; GL's y runs up.
+        camera.projection_matrix_from_fov_angles(
+            edge(0, self.cx, self.fx),
+            edge(width, self.cx, self.fx),
+            -edge(height, self.cy, self.fy),
+            -edge(0, self.cy, self.fy),
         )
     }
 }
@@ -112,12 +115,7 @@ pub fn i420_len(width: u32, height: u32) -> u64 {
 /// The request body: header length, header, payload.
 pub fn encode(header: &CameraFrameHeader, payload: &[u8]) -> Vec<u8> {
     debug_assert_eq!(header.payload_len, payload.len() as u64);
-    let json = serde_json::to_vec(header).expect("a camera frame header serializes");
-    let mut body = Vec::with_capacity(4 + json.len() + payload.len());
-    body.extend_from_slice(&(json.len() as u32).to_be_bytes());
-    body.extend_from_slice(&json);
-    body.extend_from_slice(payload);
-    body
+    crate::depth_frame::join(header, payload)
 }
 
 /// Split a request body into its header and payload, rejecting any other
@@ -136,6 +134,12 @@ pub fn decode(body: &[u8]) -> Result<(CameraFrameHeader, &[u8]), String> {
         return Err(format!(
             "camera frame: encoding {:?}, expected {ENCODING:?}",
             header.encoding
+        ));
+    }
+    if header.width > MAX_SIDE || header.height > MAX_SIDE {
+        return Err(format!(
+            "camera frame: {}x{} is larger than {MAX_SIDE} a side",
+            header.width, header.height
         ));
     }
     let expected = i420_len(header.width, header.height);
@@ -194,6 +198,7 @@ pub fn rgba_to_i420(rgba: &[u8], width: u32, height: u32, bottom_up: bool) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cgmath::Vector4;
 
     fn header(width: u32, height: u32) -> CameraFrameHeader {
         let identity: [f32; 16] = std::array::from_fn(|i| if i % 5 == 0 { 1.0 } else { 0.0 });
@@ -263,14 +268,11 @@ mod tests {
                 as fn(&mut CameraFrameHeader),
             |h| h.encoding = "nv12".into(),
             |h| h.payload_len = 4,
+            |h| (h.width, h.height) = (u32::MAX, u32::MAX),
         ] {
             let mut h = header(2, 2);
             edit(&mut h);
-            let json = serde_json::to_vec(&h).unwrap();
-            let mut body = (json.len() as u32).to_be_bytes().to_vec();
-            body.extend_from_slice(&json);
-            body.extend_from_slice(&[0; 6]);
-            assert!(decode(&body).is_err());
+            assert!(decode(&crate::depth_frame::join(&h, &[0; 6])).is_err());
         }
     }
 

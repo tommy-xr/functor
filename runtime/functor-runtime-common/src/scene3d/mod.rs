@@ -1063,7 +1063,7 @@ impl SceneContext {
                     Some(_) => rgba.clone(),
                     None => std::mem::take(&mut rgba),
                 };
-                stream.send(stream_capture, pixels, |ids| {
+                stream.send(stream_capture, move || pixels, |ids| {
                     let header = crate::depth_frame::header(
                         &capture.view,
                         capture.space_epoch,
@@ -1093,6 +1093,7 @@ impl SceneContext {
         crate::sensor_stream::follow(
             &mut self.depth_stream.borrow_mut(),
             &mut self.depth_sender.borrow_mut(),
+            "depth",
             "Xr.streamDepth",
             crate::depth_frame::CONTENT_TYPE,
             settings,
@@ -1111,6 +1112,7 @@ impl SceneContext {
         crate::sensor_stream::follow(
             &mut self.camera_stream.borrow_mut(),
             &mut self.camera_sender.borrow_mut(),
+            "camera",
             "Xr.streamCamera",
             crate::camera_frame::CONTENT_TYPE,
             settings,
@@ -1137,31 +1139,47 @@ impl SceneContext {
         camera: &crate::Camera,
         frame_time: crate::FrameTime,
     ) {
-        let mut stream = self.camera_stream.borrow_mut();
-        let mut emulated = self.emulated_camera.borrow_mut();
-        let Some(stream) = stream.as_mut() else {
-            if let Some(emulated) = emulated.take() {
-                emulated.delete(gl);
+        // Send what finished; decide, with the cells' borrows released
+        // before the render below re-enters `self`.
+        let capture = {
+            let mut stream = self.camera_stream.borrow_mut();
+            let mut emulated = self.emulated_camera.borrow_mut();
+            let Some(stream) = stream.as_mut() else {
+                if let Some(emulated) = emulated.take() {
+                    emulated.delete(gl);
+                }
+                return;
+            };
+            if let Some(emulated) = emulated.as_mut() {
+                emulated.poll(gl, stream);
             }
-            return;
+            if emulated.as_ref().is_some_and(|e| e.busy()) {
+                return;
+            }
+            match stream.capture() {
+                Some(capture) => capture,
+                None => return,
+            }
         };
-        let space_epoch = self.space_epoch.get();
-        emulated
-            .get_or_insert_with(|| crate::camera_stream::EmulatedCamera::new(gl))
-            .update(gl, stream, camera.view_matrix(), space_epoch, |projection| {
-                crate::renderer::render_stand_in_view(
-                    gl,
-                    shader_version,
-                    asset_cache,
-                    self,
-                    frame,
-                    camera,
-                    projection,
-                    frame_time,
-                    crate::camera_stream::EMULATED_WIDTH,
-                    crate::camera_stream::EMULATED_HEIGHT,
-                )
-            });
+        let mut emulated = self
+            .emulated_camera
+            .take()
+            .unwrap_or_else(|| crate::camera_stream::EmulatedCamera::new(gl));
+        emulated.start(gl, capture, camera.view_matrix(), self.space_epoch.get(), |projection| {
+            crate::renderer::render_stand_in_view(
+                gl,
+                shader_version,
+                asset_cache,
+                self,
+                frame,
+                camera,
+                projection,
+                frame_time,
+                crate::camera_stream::EMULATED_WIDTH,
+                crate::camera_stream::EMULATED_HEIGHT,
+            )
+        });
+        *self.emulated_camera.borrow_mut() = Some(emulated);
     }
 
     /// The origins besides loopback `Xr.streamDepth` and `Xr.streamCamera`

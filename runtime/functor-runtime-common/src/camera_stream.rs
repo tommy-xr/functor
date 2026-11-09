@@ -92,36 +92,39 @@ impl EmulatedCamera {
         }
     }
 
-    /// Send the shot that finished, then, if one is due, render the next
-    /// from `view` (world → GL camera) with `render(projection)` into this
-    /// target and start reading it back. Restores the framebuffer and
-    /// viewport.
-    pub(crate) fn update(
+    pub(crate) fn busy(&self) -> bool {
+        self.pack.busy()
+    }
+
+    /// Send the shot that finished, if one has.
+    pub(crate) fn poll(&mut self, gl: &glow::Context, stream: &mut SensorStreamer) {
+        if let Some((rgba, shot)) = self.pack.poll(gl, false) {
+            let payload =
+                move || camera_frame::rgba_to_i420(&rgba, EMULATED_WIDTH, EMULATED_HEIGHT, true);
+            stream.send(shot.capture, payload, |ids| {
+                serde_json::to_vec(&header(&shot, ids)).expect("a camera frame header serializes")
+            });
+        }
+    }
+
+    /// Render `capture`'s shot from `view` (world → GL camera) with
+    /// `render(projection)` into this target and start reading it back.
+    /// Restores the framebuffer, viewport and scissor test.
+    pub(crate) fn start(
         &mut self,
         gl: &glow::Context,
-        stream: &mut SensorStreamer,
+        capture: StreamCapture,
         view: Matrix4<f32>,
         space_epoch: u64,
         render: impl FnOnce(&Matrix4<f32>),
     ) {
-        if let Some((rgba, shot)) = self.pack.poll(gl, false) {
-            let yuv = camera_frame::rgba_to_i420(&rgba, EMULATED_WIDTH, EMULATED_HEIGHT, true);
-            stream.send(shot.capture, yuv, |ids| {
-                serde_json::to_vec(&header(&shot, ids)).expect("a camera frame header serializes")
-            });
-        }
-        if self.pack.busy() {
-            return;
-        }
-        let Some(capture) = stream.capture() else {
-            return;
-        };
         let projection =
             EMULATED_INTRINSICS.gl_projection(EMULATED_WIDTH, EMULATED_HEIGHT, NEAR, FAR);
         unsafe {
             let previous = crate::renderer::ambient_framebuffer(gl);
             let mut viewport = [0; 4];
             gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
+            let scissor = gl.is_enabled(glow::SCISSOR_TEST);
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
             render(&projection);
             self.pack.start(
@@ -134,6 +137,9 @@ impl EmulatedCamera {
             );
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
             gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            if scissor {
+                gl.enable(glow::SCISSOR_TEST);
+            }
         }
     }
 }
