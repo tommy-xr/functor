@@ -59,6 +59,14 @@ let table: Box = { center: Quat.v3(0.0, tableTop / 2.0, 4.6), size: Quat.v3(1.2,
 let ballSpawn = Quat.v3(-0.2, tableTop + ballRadius, 4.55)
 let wall: Box = { center: Quat.v3(0.65, 1.0, 4.6), size: Quat.v3(0.1, 2.0, 1.6) }
 
+// The stick's rack: lying on the table between the ball and the wall,
+// pointing away from the player, its near end over the table's edge.
+// Rig-local, as `Stick` holds it.
+let stickRest: Input.pose = {
+  position: Quat.v3(-0.3, tableTop + Stick.thickness / 2.0, -0.6),
+  orientation: Quat.identity
+}
+
 // The basket: an open box, its inside `basketInner` wide and `basketDepth` deep.
 let basketAt = Quat.v3(-0.2, 0.0, 7.1)
 let basketInner = 0.6

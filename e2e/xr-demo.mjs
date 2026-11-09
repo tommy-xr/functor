@@ -15,6 +15,7 @@
 // Options:
 //   --mp4 <path>     also write an H.264 MP4
 //   --still <path>   also write one PNG: the step marked `release`, else the last
+//   --still-mark <m> the mark to take the still at instead of `release`
 //   --every <n>      keep every nth step (default 2: 30 fps of 60 Hz steps)
 //   --size <WxH>     framebuffer size (default 960x600)
 //   --view rig       film the player's own view instead of the spectator's
@@ -41,6 +42,7 @@ const port = Number(opt("--port", "8197"));
 const mp4 = opt("--mp4");
 const still = opt("--still");
 const view = opt("--view", "spectator");
+const stillMark = opt("--still-mark", "release");
 
 const { project, scenarios, defaultSpectator } = await import(pathToFileURL(resolve(scenariosPath)).href);
 const scenario = name.endsWith(".json")
@@ -59,10 +61,10 @@ let lastFrame;
 try {
   if (view !== "rig" && scenario.spectator) await rt.post("/camera", { type: "set", ...scenario.spectator });
   await play(rt, scenario, async ({ step, mark }) => {
-    if (step % every !== 0 && mark !== "release") return;
+    if (step % every !== 0 && mark !== stillMark) return;
     lastFrame = join(frames, `f${String(count++).padStart(4, "0")}.png`);
     writeFileSync(lastFrame, await rt.capture());
-    if (mark === "release") releaseFrame = lastFrame;
+    if (mark === stillMark) releaseFrame = lastFrame;
   });
 } finally {
   await rt.kill();
