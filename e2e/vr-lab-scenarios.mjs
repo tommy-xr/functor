@@ -10,7 +10,7 @@
 // long and 3.5 cm thick.
 
 import { check } from "./mcp-rpc.mjs";
-import { add, qconj, qmul, qrot, some, sub } from "./xr-scenario.mjs";
+import { add, qconj, qmul, qrot, quat, some, sub, xyz } from "./xr-scenario.mjs";
 
 export const project = "examples/vr-lab";
 // Tapped before an attached recording (`npm run record:vr-lab`): station 1, reset.
@@ -681,18 +681,22 @@ export const CAPACITY = { pistol: 12, rifle: 30 };
 export const PISTOL_ROUNDS = CAPACITY.pistol + 1;
 export const RIFLE_ROUNDS = CAPACITY.rifle + 1;
 export const SPARES = { pistol: 2, rifle: 2 };
-export const RESET_ROUNDS = PISTOL_ROUNDS + RIFLE_ROUNDS + SPARES.pistol * CAPACITY.pistol + SPARES.rifle * CAPACITY.rifle;
+// The shotgun starts unloaded; its shells are in the box on the bench.
+export const SHELL_BOX = 12;
+export const RESET_ROUNDS = PISTOL_ROUNDS + RIFLE_ROUNDS + SPARES.pistol * CAPACITY.pistol + SPARES.rifle * CAPACITY.rifle + SHELL_BOX;
 // Reading the rounds from `/state.model`: a magazine's, a gun's (its
 // magazine's and chamber's), every unspent one at the station (magazines,
-// chambers, loose rounds), and a gun's readout.
+// tube, chambers, the shell box, loose rounds and shells), and a gun's
+// readout.
 export const roundsIn = (mag) => some(mag)?.rounds ?? 0;
 export const ammoCount = (ammo) => roundsIn(ammo.mag) + (ammo.chambered ? 1 : 0);
 export const unspent = (m) =>
-  m.props.reduce((n, p) => n + (p.kind.$ctor === "Props.Round" ? 1 : roundsIn(p.mag)), 0) + ammoCount(m.gun.ammo) + ammoCount(m.rifle.ammo);
+  m.props.reduce((n, p) => n + (p.kind.$ctor === "Props.Round" ? 1 : roundsIn(p.mag)), 0) +
+  ammoCount(m.gun.ammo) + ammoCount(m.rifle.ammo) + ammoCount(m.shotgun.ammo) + m.shellBox;
 export const readout = (ammo) => `${some(ammo.mag) ? roundsIn(ammo.mag) : "--"}+${ammo.chambered ? 1 : 0}`;
 /** Check every recorded step keeps the station's rounds: unspent, plus shots fired and loose rounds taken away. */
 export function conserves(name, steps) {
-  const total = (m) => unspent(m) + m.gun.fired + m.rifle.fired + m.lost;
+  const total = (m) => unspent(m) + m.gun.fired + m.rifle.fired + m.shotgun.fired + m.lost;
   const bad = steps.find((s) => total(s.state.model) !== RESET_ROUNDS);
   check(!bad, `${name}: every step (${steps.length}) conserves ${RESET_ROUNDS} rounds${bad ? ` — frame ${bad.state.frame}: ${total(bad.state.model)}` : ""}`);
 }
@@ -1180,6 +1184,185 @@ const reloadScenarios = {
   },
 };
 
+// --- Armory: the shotgun (station 3) ---
+// A pump shotgun racked between the pistol and the rifle at SHOTGUN.rack,
+// its pistol grip's fist SHOTGUN.grip from its centre. Held like the rifle:
+// the bore 6 cm above the primary fist's -Z axis, the support fist on that
+// axis, on the fore-end 28-42 cm ahead with the pump home; it slides 9 cm
+// back with the pump. Loaded empty: shells come from the box on the bench,
+// into the loading port 12 cm ahead of the fist under the receiver (seated
+// 4.5 cm above the fist's axis, the mouth 6 cm below that). Eight pellets a
+// shot: one along the bore, seven on a 1.2° cone round it, the ring turned
+// by the golden angle a shot (`Gun.pelletDirs`).
+
+export const SHOTGUN = {
+  rack: [0.35, 1.01, -0.62], grip: [0, -0.0475, 0.16], fore: 0.3, travel: 0.09, port: { at: [0, 0.045, -0.12], drop: 0.06 },
+  box: [-0.04, 0.95, -0.42], tube: 6, pellets: 8, spread: (1.2 * Math.PI) / 180, turn: Math.PI * (3 - Math.sqrt(5)),
+};
+const SHOTGUN_GRIP = add(SHOTGUN.rack, SHOTGUN.grip);
+// Held level for loading; raised to aim.
+export const SG_HAND = [0.15, 1.15, -0.35];
+export const SG_AIM = [0.2, 1.3, -0.3];
+// A point `d` along the level shotgun's loading port (0 seated).
+const sgPort = (d) => add(SG_HAND, [0, SHOTGUN.port.at[1] + d, SHOTGUN.port.at[2]]);
+// The shells a run reads from `/state`: live ones (loose or held) and hulls.
+export const shellsOf = (m) => m.props.filter((p) => p.kind.$ctor === "Props.Round" && p.kind.args[0].$ctor === "Ammo.Shell");
+export const hullsOf = (m) => m.props.filter((p) => p.kind.$ctor === "Props.Hull");
+export const tubeOf = (m) => roundsIn(m.shotgun.ammo.mag);
+
+// (Armory rig (x, y, z) is world (4 - z, y, x).) Ahead, left and low: the
+// loading port under the receiver, and the shell box.
+const atLoadingPort = { eye: [4.95, 1.02, -0.3], target: [4.45, 1.1, 0.1], fov: 36 };
+// Left of the fore-end, a little above: the pump, level.
+const atPump = { eye: [4.6, 1.38, -0.38], target: [4.62, 1.17, 0.13], fov: 34 };
+// The same, the shotgun aimed.
+const atPumpAimed = { eye: [4.5, 1.5, -0.32], target: [4.62, 1.33, 0.18], fov: 34 };
+// Down range, close on the middle target: the pellets' marks.
+const atMiddleTarget = { eye: [8.4, 1.55, 0.55], target: [9.5, 1.45, 0.0], fov: 18 };
+
+const takeShotgun = [
+  { frames: 15, left: { to: LEFT_OUT } },
+  { frames: 20, right: { to: [0.35, 1.1, -0.3] } },
+  { frames: 15, right: { to: SHOTGUN_GRIP }, mark: "reachedShotgun" },
+  { frames: 6, right: { squeeze: 1 }, mark: "tookShotgun" },
+  { frames: 30, right: { to: SG_HAND } },
+  { frames: 6, right: {}, mark: "up" },
+];
+// A shell out of the box, brought up under the port to its mouth (it
+// latches), pushed home (into the tube), the hand opened and lowered.
+const sgLoad = (mark, view) => [
+  { frames: 20, left: { to: add(SHOTGUN.box, [0, 0.08, 0.06]), turn: [0, 0, 0, 1] }, ...(view ? { spectator: view } : {}) },
+  { frames: 10, left: { to: SHOTGUN.box } },
+  { frames: 4, left: { squeeze: 1 } },
+  { frames: 15, left: { to: sgPort(-SHOTGUN.port.drop - 0.08) } },
+  { frames: 10, left: { to: sgPort(-SHOTGUN.port.drop) } },
+  { frames: 12, left: { to: sgPort(0.01) }, ...(mark ? { mark } : {}) },
+  { frames: 1, left: { squeeze: 0 } },
+  { frames: 8, left: { to: sgPort(-SHOTGUN.port.drop - 0.06) } },
+];
+// The support fist `d` ahead of a level primary fist at `at`, or of one
+// aimed (by the support) so the shot passes through `target`.
+const sgFore = (d, at = SG_HAND, target) => (target ? supportFor(at, target, d) : aheadOf(at, ID, d));
+// The fore-end taken (the pump home), level.
+const takeFore = [
+  { frames: 15, left: { to: sgFore(SHOTGUN.fore - 0.02) } },
+  { frames: 6, left: { to: sgFore(SHOTGUN.fore) } },
+  { frames: 4, left: { squeeze: 1 }, mark: "onFore" },
+];
+// A stroke: back the whole travel and home, along the aim.
+const sgPump = (mark, at = SG_HAND, target, frames = 6) => [
+  { frames, left: { to: sgFore(SHOTGUN.fore - SHOTGUN.travel, at, target) }, ...(mark ? { mark: `${mark}Back` } : {}) },
+  { frames, left: { to: sgFore(SHOTGUN.fore, at, target) }, ...(mark ? { mark } : {}) },
+];
+// Raised, both hands, aimed at the middle target by the support hand.
+const sgRaise = [
+  { frames: 30, right: { to: SG_AIM }, left: { to: aheadOf(SG_AIM, ID, SHOTGUN.fore) } },
+  { frames: 20, left: { to: sgFore(SHOTGUN.fore, SG_AIM, TARGETS[1]) } },
+  { frames: 10, left: {}, mark: "aimed" },
+];
+const sgShot = (mark) => [
+  { frames: 1, right: { trigger: 1 }, ...(mark ? { mark } : {}) },
+  { frames: 4, right: { trigger: 0 } },
+];
+
+const shotgunScenarios = {
+  // Out of its rack, six shells loaded (6+0), the pump worked (5+1), a
+  // seventh loaded (6+1); an eighth is refused (the tube full) and set down
+  // on the bench. Raised, aimed at the middle target: seven shots, each
+  // pumped (the hull out, the next fed); the next pull clicks dry.
+  "shotgun-loop": {
+    station: 3,
+    neck: NECK,
+    spectator: atLoadingPort,
+    steps: [
+      ...takeShotgun,
+      ...Array.from({ length: SHOTGUN.tube }, (_, i) => sgLoad(`loaded${i + 1}`)).flat(),
+      ...takeFore,
+      ...sgPump("pumped"),
+      { frames: 1, left: { squeeze: 0 }, mark: "letGoFore" },
+      ...sgLoad("loaded7"),
+      // The eighth: to the mouth and held there (never latching), then set down.
+      ...sgLoad(undefined).slice(0, 5),
+      { frames: 10, left: {}, mark: "refused" },
+      { frames: 20, left: { to: [0.0, 0.93, -0.6] } },
+      { frames: 1, left: { squeeze: 0 }, mark: "setDown" },
+      { frames: 15, left: { to: [0.0, 1.05, -0.6] } },
+      ...takeFore,
+      ...sgRaise,
+      ...Array.from({ length: SHOTGUN.tube + 1 }, (_, i) => [...sgShot(`fired${i + 1}`), ...sgPump(`pumped${i + 1}`, SG_AIM, TARGETS[1])]).flat(),
+      { frames: 1, right: { trigger: 1 }, mark: "dry" },
+      { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // Two shells in; pumped (1+1); pumped again with the shell chambered: it is
+  // thrown out live, the next fed (0+1). The left hand picks it up where it
+  // came to rest, turns it to lie along the bore, and loads it (1+1).
+  "shotgun-eject": {
+    station: 3,
+    neck: NECK,
+    spectator: atLoadingPort,
+    steps: [
+      ...takeShotgun,
+      ...sgLoad("loaded1"),
+      ...sgLoad("loaded2"),
+      ...takeFore,
+      ...sgPump("pumped"),
+      ...sgPump("thrown"),
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 60, left: { to: [0.0, 1.1, -0.3] }, mark: "landed" },
+      // To where it lies, from above, taken; lifted and turned so it lies
+      // along the bore, head back, the way the port takes it.
+      { frames: 20, left: { to: (s) => add(xyz(shellsOf(s.model)[0].pose.position), [0, 0.08, 0]) } },
+      { frames: 10, left: { to: (s) => xyz(shellsOf(s.model)[0].pose.position) } },
+      { frames: 4, left: { squeeze: 1 }, mark: "pickedUp" },
+      // Straight up first, clear of the bench's edge.
+      { frames: 25, left: { to: (s) => { const [x, , z] = xyz(shellsOf(s.model)[0].pose.position); return [x, 1.0, z]; } } },
+      { frames: 25, left: { to: sgPort(-SHOTGUN.port.drop - 0.08), turn: (s) => qconj(quat(some(shellsOf(s.model)[0].held).accepted.orientation)) } },
+      { frames: 10, left: { to: sgPort(-SHOTGUN.port.drop) } },
+      { frames: 12, left: { to: sgPort(0.01) }, mark: "reloaded" },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 10, left: { to: LEFT_OUT } },
+    ],
+  },
+
+  // The demo, close on the loading port and the pump: out of its rack,
+  // three shells loaded; the fore-end taken and pumped (2+1); raised and
+  // aimed at the middle target: a shot (the pellets' marks on the target),
+  // pumped (the hull out), a second shot (the pattern turned), pumped, a
+  // third; then the next pull dry.
+  "shotgun-tour": {
+    station: 3,
+    neck: NECK,
+    spectator: atArmoryHip,
+    steps: [
+      ...takeShotgun.map((seg, i) => (i === 4 ? { ...seg, spectator: atLoadingPort } : seg)),
+      ...sgLoad("loaded1"),
+      ...sgLoad("loaded2"),
+      ...sgLoad("loaded3"),
+      ...takeFore.map((seg, i) => (i === 0 ? { ...seg, spectator: atPump } : seg)),
+      { frames: 10, left: {} },
+      ...sgPump("pumped", SG_HAND, undefined, 14),
+      { frames: 15, left: {} },
+      ...sgRaise.map((seg, i) => (i === 0 ? { ...seg, spectator: behindRifle } : seg)),
+      { frames: 1, right: { trigger: 1 }, spectator: atMiddleTarget },
+      { frames: 50, right: { trigger: 0 } },
+      { frames: 10, left: {}, spectator: atPumpAimed },
+      ...sgPump(undefined, SG_AIM, TARGETS[1], 12),
+      { frames: 20, left: {} },
+      { frames: 1, right: { trigger: 1 }, spectator: atMiddleTarget },
+      { frames: 50, right: { trigger: 0 } },
+      { frames: 10, left: {}, spectator: behindRifle },
+      ...sgPump(undefined, SG_AIM, TARGETS[1], 12),
+      { frames: 10, left: {} },
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 30, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 }, mark: "dry" },
+      { frames: 30, right: { trigger: 0 } },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -1430,4 +1613,5 @@ export const scenarios = {
   ...rifleScenarios,
   ...ammoScenarios,
   ...reloadScenarios,
+  ...shotgunScenarios,
 };

@@ -769,7 +769,7 @@ let ejectRound = (m: Model, st: Stations.Station, world: World, k: Props.Kind, s
      spin: Stations.dirToWorld(st, Quat.rotate(gun.orientation, Quat.v3(0.0, 15.0, 0.0))) })
 
 /// At most this many loose rounds (and spent hulls) lie about; past it, the
-/// oldest not in a hand is taken away (a round counted `lost`).
+/// oldest not in a hand is taken away, hulls first (a round counted `lost`).
 let looseCap = 6.0
 
 let capLoose = (m: Model): Model =>
@@ -777,7 +777,8 @@ let capLoose = (m: Model): Model =>
   let extra = List.length(loose) - looseCap in
   if extra <= 0.0 then m
   else
-    let gone = loose |> List.filter((p) => Option.isNone(p.held)) |> List.take(extra) |> List.map((p) => p.kind) in
+    let free = loose |> List.filter((p) => Option.isNone(p.held)) in
+    let gone = free |> List.filter((p) => not isRound(p.kind)) |> List.append(free |> List.filter((p) => isRound(p.kind))) |> List.take(extra) |> List.map((p) => p.kind) in
     { m with props: m.props |> List.filter((p) => not (gone |> List.any((k) => k == p.kind))), lost: m.lost + (gone |> List.filter(isRound) |> List.length) }
 
 /// Each gun's slide this step, after the holds: a hand that took it (a grab

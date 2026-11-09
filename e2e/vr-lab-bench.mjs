@@ -10,7 +10,13 @@
 // range (its trigger read each step), the slots worn; then the rifle there in
 // two hands, aimed by the support (one more held prop: one more sweep a step);
 // then a magazine latched half way into the pistol's well (the guided seat),
-// and the pistol held with six loose rounds lying at rest (the cap).
+// and the pistol held with six loose rounds lying at rest (the cap); then
+// the shotgun in two hands, aimed (loaded, a shell lying on the bench).
+//
+// A shot is one step, so a burst can't time it: the shotgun's seven shots
+// are played a step at a time instead, and each firing step (eight pellet
+// rays) is set against the pump steps around it in the same run. The extra
+// is added to the aimed shotgun's burst minimum for its worst frame.
 //
 // From `GET /frames`: `step` (one fixed step's producer work: sampledInput,
 // tick, physics) and `draw` (once a frame), min / median / p95 / max. The
@@ -47,6 +53,27 @@ async function measure(scenario) {
   }
 }
 
+// Play `scenario` a step at a time; from `/frames`, the step times of the
+// steps that fired the shotgun and of the others since `from` (a mark).
+async function measureShots(scenario, from) {
+  const rt = await launch(project, PORT, ["--headless"]);
+  try {
+    const fired = new Set();
+    let start;
+    let shots = 0;
+    await play(rt, scenario, async ({ state, mark }) => {
+      if (mark === from) start = state.frame;
+      if (start !== undefined && state.model.shotgun.fired > shots) fired.add(state.frame);
+      shots = state.model.shotgun.fired;
+    });
+    const frames = (await rt.get("/frames?last=600")).frames.filter((f) => f.steps === 1 && f.frame > start);
+    const stepOf = (f) => f.sim_us - f.draw_us;
+    return { fire: frames.filter((f) => fired.has(f.frame)).map(stepOf), other: frames.filter((f) => !fired.has(f.frame)).map(stepOf) };
+  } finally {
+    await rt.kill();
+  }
+}
+
 const stats = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
   const at = (q) => s[Math.min(s.length - 1, Math.floor(q * s.length))];
@@ -62,6 +89,8 @@ const rifle = scenarios["rifle-aim"];
 const twoHands = { ...rifle, steps: rifle.steps.slice(0, rifle.steps.findIndex((s) => s.mark === "aimedRight") + 1) };
 const cancel = scenarios["reload-cancel"];
 const latched = { ...cancel, steps: cancel.steps.slice(0, cancel.steps.findIndex((s) => s.mark === "halfIn") + 1) };
+const loop = scenarios["shotgun-loop"];
+const sgAimed = { ...loop, steps: loop.steps.slice(0, loop.steps.findIndex((s) => s.mark === "aimed") + 1) };
 const runs = [
   ["inventory (station 2): brick slotted, hand in the holster", held],
   ["grab table (station 1): the same hands", { ...held, station: 1 }],
@@ -69,6 +98,7 @@ const runs = [
   ["armory (station 3): the rifle in two hands, aimed", twoHands],
   ["armory (station 3): a magazine latched half way into the pistol's well", latched],
   ["armory (station 3): the pistol held, six loose rounds at rest", scenarios["reload-rounds"]],
+  ["armory (station 3): the shotgun in two hands, aimed", sgAimed],
 ];
 const results = [];
 for (const [name, scenario] of runs) {
@@ -80,7 +110,7 @@ for (const [name, scenario] of runs) {
   console.log(row("step", r.step));
   console.log(row("draw", r.draw));
 }
-const [inv, base, armory, rifled, seating, strewn] = results;
+const [inv, base, armory, rifled, seating, strewn, sg] = results;
 const pct = (us) => `${((100 * us) / BUDGET_US).toFixed(1)}%`;
 const step = inv.step.min - base.step.min;
 const draw = inv.draw.min - base.draw.min;
@@ -93,3 +123,13 @@ const versus = (name, r) =>
   console.log(`${name}, desktop mins: step ${r.step.min.toFixed(0)} µs, draw ${r.draw.min.toFixed(0)} µs; Quest (×${QUEST}) ${(worst(r) * QUEST).toFixed(0)} µs (${pct(worst(r) * QUEST)} of ${BUDGET_US.toFixed(0)}); over the pistol aimed +${(r.step.min - armory.step.min).toFixed(0)} µs a step, +${(r.draw.min - armory.draw.min).toFixed(0)} µs a draw`);
 versus("magazine latched", seating);
 versus("six loose rounds", strewn);
+versus("shotgun aimed", sg);
+const shots = await measureShots(loop, "aimed");
+const [fire, other] = [stats(shots.fire), stats(shots.other)];
+console.log(`\nshotgun, stepped one at a time from the aim: ${shots.fire.length} firing steps, ${shots.other.length} others, µs`);
+console.log(`  ${"".padEnd(5)} ${["min", "med", "p95", "max"].map((h) => h.padStart(7)).join(" ")}`);
+console.log(row("fire", fire));
+console.log(row("other", other));
+const extra = fire.med - other.med;
+const fireFrame = (sg.step.min + extra + sg.draw.min) * QUEST;
+console.log(`a shot's step: +${extra.toFixed(0)} µs (medians); its frame, Quest (×${QUEST}) ${fireFrame.toFixed(0)} µs (${pct(fireFrame)} of ${BUDGET_US.toFixed(0)})`);

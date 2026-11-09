@@ -953,6 +953,15 @@ expect (
   let m = last(looped) in
   m.shotgun.fired == 7.0 && m.shotgun.dry == 1.0 && Ammo.count(m.shotgun.ammo) == 0.0 && m.shellBox == Stations.shellsInBox - 7.0
     && countOf(Hold.Right, Pulses.Fire, looped) == 7.0 && conserved(List.flatten([tookShotgun, sixIn, pumped, looped]))
+    // Seven hulls thrown out, six lie about (litter: none lost).
+    && List.length(m.props |> List.filter((p) => Game.isLoose(p.kind))) == Game.looseCap && m.lost == 0.0
+)
+// Past the cap, hulls go before live rounds: a live shell lying and seven
+// hulls thrown out after it, the shell stays.
+expect (
+  let shell = { Game.spawned(Props.Round(Ammo.Shell, 99.0)) with at: Hold.p(0.0, 0.91, -0.6), pose: Hold.p(0.0, 0.91, -0.6), lying: true } in
+  let m = last(sgPlay({ last(pumped) with props: (last(pumped)).props |> List.append([shell]) }, sevenShots)) in
+  (m.props |> List.any((p) => p.kind == Props.Round(Ammo.Shell, 99.0))) && m.lost == 0.0
 )
 // Let go in its rack by the hand holding it alone, it goes back in it.
 expect (

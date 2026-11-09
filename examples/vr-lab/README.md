@@ -41,6 +41,7 @@ headset requests 120 Hz with foveation off, floor-locked.
 | `ammo.fun` | rounds and magazines as plain data: fire, eject, insert, rack (extract, close), the slide lock, and their conservation |
 | `seating.fun` | a magazine guided into a well: the latch, the guided depth, the seat and the pull-out |
 | `longarm.fun` | the rifle: shape, its two grips, the two-hand aim, the support hand's slide, break and look |
+| `pump.fun` | the pump shotgun: shape, grips, its fore-end (the support line that slides with the pump), loading port and look |
 | `armory.fun` | the armory station's headless checks |
 | `pulses.fun` | each hold event's controller pulse, and the edges that fire it once |
 | `hold.fun` | one hand grabbing, holding and releasing a prop (any pose); the swept move; the throw and spin estimate |
@@ -85,13 +86,14 @@ The amplitudes and durations are one table, `Pulses.pulse`:
 | Event | When | Amplitude | Duration |
 | --- | --- | --- | --- |
 | ready | entering an empty slot that takes the held prop | 0.15 | 15 ms |
-| latch | a held magazine catching in a well's mouth | 0.2 | 12 ms |
+| latch | a held magazine (or shell) catching in a well's mouth (the loading port) | 0.2 | 12 ms |
 | click | a trigger pull refused (the muzzle against the level) or dry (nothing chambered) | 0.25 | 10 ms |
 | release | letting go (thrown or dropped) | 0.3 | 20 ms |
+| load | a shell pushed into the shotgun's tube (its hand and the gun's) | 0.4 | 15 ms |
 | grab | taking a prop, free or from the other hand (or a gun's slide) | 0.45 | 30 ms |
-| slide back | the slide or charging handle pulled to the back | 0.5 | 25 ms |
+| slide back | the slide, charging handle or pump pulled to the back | 0.5 | 25 ms |
 | unstow | taking a prop out of a slot | 0.55 | 40 ms |
-| slide home | the slide going home from the back (the racking hand and the gun's) | 0.65 | 30 ms |
+| slide home | the slide (or pump) going home from the back (the racking hand and the gun's) | 0.65 | 30 ms |
 | stow | putting it away | 0.7 | 50 ms |
 | seat | a magazine pushed home in a well (its hand and the gun's) | 0.8 | 25 ms |
 | blocked | the first step a held prop stops against the level (once per push) | 0.85 | 20 ms |
@@ -211,8 +213,8 @@ whether the slots can be found without looking.
 
 ## 3. Armory
 
-A bench with a pistol on it, a rifle racked beside it and four spare
-magazines, the grab table's wall at its left end, and three targets on a
+A bench with a pistol on it, a rifle and a pump shotgun racked beside it,
+four spare magazines and a box of shells, the grab table's wall at its left end, and three targets on a
 backstop 5.5 m down range, with a scoreboard. The holsters are worn here too,
 and take the pistol; the pouch takes a magazine.
 
@@ -315,6 +317,59 @@ where the slide and the 12 cm break land, whether the hand-off and retake feel
 natural, the 10 Hz auto rate, the hand-view A/B with both hands blocked, and
 the settle back to one hand after a support lets go.
 
+### The shotgun
+
+The rifle's hold (`Longarm`), with a pump (`pump.fun`, `Pump.weapon`).
+
+- **Grips.** The pistol grip (the trigger), within 7 cm, settling in. The
+  support hand takes the fore-end: the same line through the primary fist,
+  28-42 cm ahead of it with the pump home, wherever the pump has it. The
+  two-hand aim, the break (12 cm off the axis, or 8 cm past where the
+  fore-end can be), the hand-off (the fore-end hand alone holds it, no
+  trigger) and the retake are the rifle's.
+- **Pump.** The support hand on the fore-end works it: the fore-end follows
+  the hand back along the bore, clamped to its 9 cm travel (the aim doesn't
+  move: the hand slides along the line it aims by). Past 80% back: a pulse,
+  and the chambered shell is thrown out of the ejection port (live, a loose
+  shell) or its fired hull (spent). Back under 20%: home, a pulse in both
+  hands, the next shell fed from the tube. A partial stroke does nothing.
+  Let go (or broken off, or its hand's tracking lost) the pump stays where
+  it is; taken again it goes on from there. While the primary hand is lost it
+  holds still.
+- **One shot a stroke.** A shot leaves its hull in the chamber, so the next
+  pull clicks dry until the pump goes back. The pump out of battery (back,
+  or more than 20% open) clicks dry too. It never locks back.
+- **Shot.** The muzzle check as the others, then eight pellets cast from the
+  muzzle: one along the bore, seven evenly round it on a 1.2° cone (9.6 cm at
+  the targets), the ring turned by the golden angle (137.5°) each shot, so
+  the pattern varies from shot to shot and replays exactly. Each pellet that
+  strikes a target leaves a mark there; a shot with any on a target scores
+  one. The last two shots' marks stay. The recoil (visual) is 1.8× the
+  pistol's.
+- **Tube.** It starts empty and holds 6, plus one chambered (`6+1` on the
+  readout on the receiver). A shell is loaded like a magazine is seated
+  (`seating.fun`), at the loading port under the receiver, 12 cm ahead of
+  the fist: lying along the bore, head back (within ~32°; any turn about its
+  own axis), within 3 cm of the port's mouth, it latches (a pulse), and is
+  guided 6 cm up into it at the hand's depth; home, it is in the tube (a
+  load pulse in both hands). Reversed, tipped, or the tube full: it never
+  latches. Pulled 5 cm off the port's axis, or tipped 46°, it comes out.
+- **Shells.** A squeeze in the box on the bench (front, left of the pistol;
+  lit while an empty hand is in it) takes a shell out, held as the hand
+  points (down range, as the port takes it), until the box is empty (12). A
+  shell pumped out live lies about as a loose round does, and loads again.
+  Hulls lie about too and share the rounds' cap of six; past it, the oldest
+  hulls go first.
+- **Rack.** Between the pistol and the rifle; let go within 20 cm of where
+  it racks (by the hand holding it alone), it goes back, bodiless.
+
+`GET /state` shows `shotgun` (as `gun`, its `slide` the pump) and
+`shellBox`. `npm run test:vr-lab` runs `e2e/vr-lab-shotgun.mjs`.
+
+Worn checks still open: the fore-end's 28-42 cm reach, the pump's 9 cm stroke
+and its 80% / 20% thresholds, finding the loading port by feel, the 3 cm
+catch, and whether the 1.2° spread reads.
+
 ### Ammunition
 
 Rounds are plain data (`ammo.fun`): a magazine is `{kind, rounds, capacity}`,
@@ -323,7 +378,9 @@ round: at every step, the rounds in every magazine (free, held, pouched,
 latched, in a well), chamber and loose round, plus the shots fired and the
 loose rounds taken away (`lost`), are what the station was reset with.
 
-- **Loaded.** The pistol starts 12+1, the rifle 30+1 (`Ammo.capacity`).
+- **Loaded.** The pistol starts 12+1, the rifle 30+1 (`Ammo.capacity`); the
+  shotgun unloaded, its 12 shells in the box. The conservation count takes
+  in the box, the tube and loose shells too (hulls are litter, not rounds).
 - **Fire.** A shot needs a chambered round (`Gun.canFire`); it spends it and
   feeds the next from the magazine (`Ammo.fire`, via `Gun.onFired`). Nothing
   chambered, the pull clicks dry: a click pulse, no shot, the trigger
@@ -383,14 +440,15 @@ loose rounds taken away (`lost`), are what the station was reset with.
 - **Loose rounds.** A round thrown out is a small dynamic prop (a 9 mm × 29
   or 57 mm cartridge), out of the port to the right, up and back (about
   1.9 m/s, with the gun's own velocity), spinning. It can be picked up and
-  thrown; nothing takes it yet. At most 6 lie about: past that the oldest
-  not in a hand is taken away and counted `lost`. One come to rest on the
+  thrown; nothing takes it yet (but a shotgun shell, which loads). At most 6
+  lie about, hulls included: past that the oldest not in a hand is taken
+  away, hulls first, a round counted `lost`. One come to rest on the
   level (the bench, the floor) lies there bodiless, costing no physics,
   until a hand takes it; a round resting on a prop keeps its body.
 
 `GET /state` shows each gun's `ammo` and `slide`, each magazine prop's `mag`
 and `latch`, and `lost`. `npm run test:vr-lab` runs `e2e/vr-lab-ammo.mjs` and
-`e2e/vr-lab-reload.mjs`.
+`e2e/vr-lab-reload.mjs` (the shotgun's tube and pump: `e2e/vr-lab-shotgun.mjs`).
 
 Worn checks still open: reaching the thumbstick down on the trigger hand
 without shifting the grip, the readouts' legibility at arm's length, whether

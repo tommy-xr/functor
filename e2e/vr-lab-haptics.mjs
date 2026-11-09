@@ -29,7 +29,10 @@
 //   9. Reloading: reload-pistol, the spare's unstow, its latch, the seat in
 //      both hands, the slide's grab, back and home (home in both hands);
 //      reload-rack, a partial pull only its grab; reload-rifle, the same at
-//      the rifle's well and charging handle.
+//      the rifle's well and charging handle. shotgun-loop: each shell's grab
+//      (out of the box), latch and load (in both hands); the fore-end's grab,
+//      then each pump's back and home (home in both hands); the eighth shell
+//      no latch; each shot in both hands; the last pull's click.
 //  10. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
 //      pulse. A fixture replayed through `/input` is a live run: the recorded
 //      grab-throw pulses exactly the live run's events.
@@ -44,7 +47,7 @@ const PORT = 8297;
 
 // Each event's amplitude, as `Pulses.pulse` has it.
 const PULSE = {
-  ready: 0.15, latch: 0.2, click: 0.25, release: 0.3, grab: 0.45, slideBack: 0.5, unstow: 0.55, slideHome: 0.65,
+  ready: 0.15, latch: 0.2, click: 0.25, release: 0.3, load: 0.4, grab: 0.45, slideBack: 0.5, unstow: 0.55, slideHome: 0.65,
   stow: 0.7, seat: 0.8, blocked: 0.85, fire: 0.95, break: 1.0,
 };
 const EVENT = new Map(Object.entries(PULSE).map(([name, a]) => [a, name]));
@@ -215,6 +218,24 @@ await run("reload: the rifle", async (rt) => {
     "right unstow", "left unstow", "left latch", "left seat", "right seat",
     "left grab", "left slideBack", "left slideHome", "right slideHome", "right fire",
   ]);
+});
+
+await run("shotgun: the tube, the pump and the shots", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["shotgun-loop"]);
+  const shell = ["left grab", "left latch", "left load", "right load"];
+  const pump = ["left slideBack", "left slideHome", "right slideHome"];
+  expectPulses(got, [
+    "right unstow", ...Array(6).fill(shell).flat(),
+    "left grab", ...pump, "left release",
+    ...shell, "left grab", "left release",
+    "left grab", ...Array(7).fill(["left fire", "right fire", ...pump]).flat(),
+    "right click",
+  ]);
+  const first = (event) => got.pulses.find((p) => p.event === event);
+  const [back, home] = [first("slideBack"), first("slideHome")];
+  check(between(first("load"), got.marks.up.frame, got.marks.loaded1.frame), `the first load as it goes home (frame ${first("load")?.frame})`);
+  check(between(back, got.marks.loaded6.frame, got.marks.pumpedBack.frame) && between(home, got.marks.pumpedBack.frame, got.marks.pumped.frame),
+    `the pump: back as it is drawn, home as it returns (frames ${back?.frame}, ${home?.frame})`);
 });
 
 await run("recorded fixture", async (rt) => {
