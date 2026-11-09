@@ -1374,7 +1374,7 @@ hook) sees the previous step; only `draw` (and post-step `update`s) sees this
 frame's. That one step of read latency is inherent
 to read → decide → step. The world is primed from `init` before frame 1, so
 even the first frame's reads answer. A tag not in the world is
-a **spanned runtime error** (there is no Option-shaped return to match on),
+a **spanned runtime error** (only `Physics.pose` returns an `Option`),
 so only read tags your `physics` hook declares. The tag is cross-frame
 identity: same tag = same body; drop a body by not declaring it.
 Re-declaring an *unchanged* body leaves the simulation alone; *changing*
@@ -1431,6 +1431,19 @@ kinematic body and other props don't count), `Physics.SweepNotKinematic` or
 hits at fraction 0 and moving out passes; `fromPose == toPose` is an overlap
 test (fraction 0, or `None` when clear). `impure[physics]`, like
 `Physics.cast`.
+
+**A held prop that is also a body is `Physics.atPose`.** `body |>
+Physics.atPose(pose)` places a body at a `Camera3D.mappedPose` (position and
+full orientation, `Scene.atPose`'s basis); `Physics.pose(tag)` reads it back
+as `Option.t<Camera3D.mappedPose>` (`None` for a tag not in the world;
+`impure[physics]`), so `Scene.atPose` draws it where it is. Held: declare it
+`kinematic |> atPose(accepted)` each frame and it shoves what it sweeps
+through. Released: declare it `dynamic |> atPose(releasePose)` with the pose
+kept in the model (a changed pose teleports a dynamic body), and in the same
+frame return `Effect.batch([Physics.setVelocity(tag, v),
+Physics.setAngularVelocity(tag, w)])` — `w` is a world-space axis × rad/s,
+dynamic, non-upright bodies only. Spin is never declared, so it lasts until
+contacts, damping or another command change it.
 
 **Walking a level is `Physics.character`**, not a dynamic capsule:
 `Physics.character(tag, Physics.capsule(0.6, 0.3), { stepHeight: 0.35,

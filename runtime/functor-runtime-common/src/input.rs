@@ -1067,6 +1067,22 @@ pub fn mapped_pose_from_value(
     })
 }
 
+/// The plain-data `Camera3D.mappedPose` record for a pose.
+pub fn mapped_pose_value(pose: crate::MappedTrackingPose) -> functor_lang::Value {
+    let point = |p: [f32; 3]| {
+        record([
+            ("x", functor_lang::Value::Number(p[0] as f64)),
+            ("y", functor_lang::Value::Number(p[1] as f64)),
+            ("z", functor_lang::Value::Number(p[2] as f64)),
+        ])
+    };
+    record([
+        ("position", point(pose.position)),
+        ("forward", point(pose.forward)),
+        ("up", point(pose.up)),
+    ])
+}
+
 fn controller_value(controller: &XrControllerSnapshot) -> functor_lang::Value {
     record([
         ("active", functor_lang::Value::Bool(controller.active)),

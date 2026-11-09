@@ -3050,18 +3050,7 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
                 .ok_or_else(|| {
                     "Camera3D.mapTrackedPose: invalid pose or degenerate authored camera".to_string()
                 })?;
-            let point = |xyz: [f32; 3]| {
-                Value::Record(Rc::new(vec![
-                    ("x".to_string(), Value::Number(xyz[0] as f64)),
-                    ("y".to_string(), Value::Number(xyz[1] as f64)),
-                    ("z".to_string(), Value::Number(xyz[2] as f64)),
-                ]))
-            };
-            Ok(Value::Record(Rc::new(vec![
-                ("position".to_string(), point(mapped.position)),
-                ("forward".to_string(), point(mapped.forward)),
-                ("up".to_string(), point(mapped.up)),
-            ])))
+            Ok::<_, String>(crate::mapped_pose_value(mapped))
         },
     );
     // A forward-based camera that keeps roll: the mappedPose's forward is the
@@ -3428,14 +3417,7 @@ fn rotate_physics_body(
     angle: FunctorLangAngle,
     body: FunctorLangBody,
 ) -> Result<FunctorLangBody, String> {
-    if matches!(&body.0.shape, physics::Shape::Heightfield { .. }) {
-        return Err(format!(
-            "{path}: heightfield bodies cannot be rotated — terrain rendering is \
-translation-only; use Physics.at with an unrotated Scene.terrain"
-        ));
-    }
-    fused_room_stays_put(path, &body)?;
-
+    rotatable(path, &body)?;
     let angle: cgmath::Rad<f32> = angle.0.into();
     // One canonical turn keeps equivalent angles (90° and 450°) on the same
     // side of the quaternion double cover before multiplication.
@@ -3447,6 +3429,18 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
     // applies last in world space, so compose q_axis * q_current.
     let rotation = canonical_quaternion(quaternion_product(axis_rotation, body.0.rotation));
     Ok(FunctorLangBody(body.0.facing(rotation)))
+}
+
+/// Refuse to rotate a heightfield (terrain renders translation-only) or the
+/// fused room (already in world space).
+fn rotatable(path: &str, body: &FunctorLangBody) -> Result<(), String> {
+    if matches!(&body.0.shape, physics::Shape::Heightfield { .. }) {
+        return Err(format!(
+            "{path}: heightfield bodies cannot be rotated — terrain rendering is \
+translation-only; use Physics.at with an unrotated Scene.terrain"
+        ));
+    }
+    fused_room_stays_put(path, body)
 }
 
 /// Hamilton product for `[x, y, z, w]` quaternions.
@@ -3712,6 +3706,21 @@ capsule for the moving body"
             rotate_physics_body("Physics.rotateZ", [0.0, 0.0, 1.0], angle, body)
         },
     );
+    // Full orientation from a mapped pose, in `Scene.atPose`'s basis (the
+    // shared helper), so a body sits exactly where its visual draws.
+    reg.fn2(
+        "Physics.atPose",
+        "Physics.atPose(pose, body) — a Camera3D.mappedPose record (position, forward, up); \
+up must not be parallel to forward",
+        |pose: FunctorLangMappedPose, body: FunctorLangBody| {
+            const WHAT: &str = "Physics.atPose";
+            rotatable(WHAT, &body)?;
+            let (position, rotation) = pose.0.to_position_rotation().ok_or_else(|| {
+                format!("{WHAT}: forward and up must be non-zero and not parallel")
+            })?;
+            Ok(FunctorLangBody(body.0.at(position).facing(canonical_quaternion(rotation))))
+        },
+    );
     reg.fn2(
         "Physics.velocity",
         "Physics.velocity(v, body)",
@@ -3884,6 +3893,15 @@ capsule for the moving body"
             None => Err(no_body(&tag)),
         },
     );
+    // The live pose as data, in `Scene.atPose`'s basis: `None` for a tag not
+    // in the world, so a prop that may have no body yet can branch.
+    reg.fn1("Physics.pose", "Physics.pose(tag)", |tag: std::rc::Rc<str>| {
+        note_read(ReadClass::Physics);
+        let pose = physics::with_world(physics::active_world(), |w| w.body_transform(&tag)).flatten();
+        crate::input::option_value(pose.map(|(p, q)| {
+            crate::mapped_pose_value(crate::MappedTrackingPose::from_position_rotation(p, q))
+        }))
+    });
     // A world read like `Physics.position`; `false` before a character's
     // first move (and while priming).
     reg.fn1("Physics.grounded", "Physics.grounded(tag)", |tag: std::rc::Rc<str>| {
@@ -4031,6 +4049,14 @@ filter Physics.SweepFixed, Physics.SweepNotKinematic or Physics.SweepAll",
         "Physics.setVelocity",
         "Physics.setVelocity(tag, v)",
         physics_command(|tag, velocity| physics::PhysicsCommand::SetVelocity { tag, velocity }),
+    );
+    reg.fn2(
+        "Physics.setAngularVelocity",
+        "Physics.setAngularVelocity(tag, v) — world-space axis × radians per second",
+        physics_command(|tag, angular_velocity| physics::PhysicsCommand::SetAngularVelocity {
+            tag,
+            angular_velocity,
+        }),
     );
     reg.fn2(
         "Physics.teleport",
@@ -8132,6 +8158,7 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
                 "Physics.linearVelocity",
                 "Physics.linearVelocity(\"nobody\")".to_string(),
             ),
+            ("Physics.pose", "Physics.pose(\"nobody\")".to_string()),
             (
                 "Physics.grounded",
                 "Physics.grounded(\"nobody\")".to_string(),
@@ -12537,6 +12564,116 @@ Physics.box(4.0, 1.0, 2.0)) |> Physics.rotateY(1.57)"
             ),
             "Physics.rotateX: heightfield bodies cannot be rotated — terrain rendering is \
 translation-only; use Physics.at with an unrotated Scene.terrain"
+        );
+    }
+
+    /// Asymmetric poses for the `Physics.atPose` / `Physics.pose` tests:
+    /// yawed, pitched, rolled, straight up, straight down, and an arbitrary
+    /// one with a non-perpendicular `up`.
+    fn body_poses() -> Vec<([f32; 3], [f32; 3], [f32; 3])> {
+        let (s, c) = 0.5f32.sin_cos();
+        vec![
+            ([1.0, 2.0, 3.0], [0.6, 0.0, 0.8], [0.0, 1.0, 0.0]),
+            ([0.0, 1.0, 0.0], [0.0, -s, c], [0.0, c, s]),
+            ([-2.0, 0.5, 1.0], [0.0, 0.0, 1.0], [-s, c, 0.0]),
+            ([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]),
+            ([0.3, 0.2, 0.1], [0.0, -1.0, 0.0], [s, 0.0, c]),
+            ([0.0, 0.0, 0.0], [0.2, 0.3, -0.9], [0.4, 0.8, 0.3]),
+        ]
+    }
+
+    // A body placed at a pose has exactly the transform `Scene.atPose` draws
+    // there, whatever rotation was piped before it.
+    #[test]
+    fn physics_at_pose_places_a_body_where_scene_at_pose_draws() {
+        for (position, forward, up) in body_poses() {
+            let p = pose_src(position, forward, up);
+            let value = eval(&format!(
+                "let main = () => Physics.scene(Vec3.make(0.0, 0.0, 0.0), [\n\
+                   Physics.dynamic(Physics.tag(\"b\"), Physics.box(0.1, 0.2, 0.7))\n\
+                     |> Physics.rotateX(Angle.degrees(40.0)) |> Physics.atPose({p})])"
+            ));
+            let body = &physics_scene_value(&value).expect("a PhysicsScene").bodies[0];
+            let [x, y, z, w] = body.rotation;
+            let placed = Matrix4::from_translation(body.position.into())
+                * Matrix4::from(cgmath::Quaternion::new(w, x, y, z));
+            pose_assert_matrix(placed, pose_world(&p, ""));
+            assert!(w >= 0.0, "not canonical: {:?}", body.rotation);
+        }
+        for (src, needle) in [
+            (
+                "Physics.dynamic(Physics.tag(\"b\"), Physics.sphere(0.1)) |> Physics.atPose(\
+                 { position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 1.0, z: 0.0 }, \
+                 up: { x: 0.0, y: 2.0, z: 0.0 } })",
+                "Physics.atPose: forward and up must be non-zero and not parallel",
+            ),
+            (
+                "Physics.heightfield(Physics.tag(\"t\"), Terrain.heightmap(Asset.texture(\"t.png\"), \
+                 20.0, 20.0, -1.0, 4.0)) |> Physics.atPose({ position: { x: 0.0, y: 0.0, z: 0.0 }, \
+                 forward: { x: 0.0, y: 0.0, z: 1.0 }, up: { x: 0.0, y: 1.0, z: 0.0 } })",
+                "Physics.atPose: heightfield bodies cannot be rotated",
+            ),
+        ] {
+            let error = fail_message(&format!("let main = () => {src}"));
+            assert!(error.contains(needle), "`{src}`: got {error}");
+        }
+    }
+
+    // What `Physics.atPose` placed, `Physics.pose` reads back: forward and up
+    // (re-orthogonalized) within float error, roll and vertical included.
+    #[test]
+    fn physics_pose_reads_back_the_pose_a_body_was_placed_at() {
+        use cgmath::{InnerSpace, Vector3};
+        for (position, forward, up) in body_poses() {
+            crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+            let declared = eval(&format!(
+                "let main = () => Physics.scene(Vec3.make(0.0, 0.0, 0.0), [\n\
+                   Physics.dynamic(Physics.tag(\"b\"), Physics.box(0.1, 0.2, 0.7)) \
+                     |> Physics.atPose({})])",
+                pose_src(position, forward, up)
+            ));
+            let scene = physics_scene_value(&declared).expect("a PhysicsScene").clone();
+            crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+                w.reconcile(&scene);
+                w.step_fixed();
+            });
+            let read = eval("let main = () => Physics.pose(\"b\")");
+            let Value::Variant { ctor, args } = &read else {
+                panic!("expected an Option, got {}", read.kind_name());
+            };
+            assert_eq!(ctor.as_ref(), "Option.Some");
+            let vec = |name: &str| {
+                let v = field(&args[0], name);
+                Vector3::new(num(&v, "x") as f32, num(&v, "y") as f32, num(&v, "z") as f32)
+            };
+            let f = Vector3::from(forward).normalize();
+            let u = f.cross(Vector3::from(up).cross(f)).normalize();
+            let near = |a: Vector3<f32>, b: Vector3<f32>| (a - b).magnitude() < 1e-5;
+            assert!(near(vec("position"), Vector3::from(position)), "{position:?}");
+            assert!(near(vec("forward"), f), "{forward:?}: {:?}", vec("forward"));
+            assert!(near(vec("up"), u), "{up:?}: {:?}", vec("up"));
+        }
+        let missing = eval("let main = () => Physics.pose(\"nobody\")");
+        assert!(matches!(&missing, Value::Variant { ctor, .. } if ctor.as_ref() == "Option.None"));
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+    }
+
+    #[test]
+    fn physics_set_angular_velocity_is_a_world_command() {
+        let effect = eval("let main = () => Physics.setAngularVelocity(\"stick\", Vec3.make(0.0, 3.0, -1.0))");
+        let Value::HostData(data) = &effect else {
+            panic!("expected an Effect");
+        };
+        let tree = &data.as_any().downcast_ref::<FunctorLangEffect>().expect("Effect").0;
+        let EffectTree::Physics(command) = tree else {
+            panic!("expected a physics command");
+        };
+        assert_eq!(
+            *command,
+            crate::physics::PhysicsCommand::SetAngularVelocity {
+                tag: "stick".to_string(),
+                angular_velocity: [0.0, 3.0, -1.0],
+            }
         );
     }
 

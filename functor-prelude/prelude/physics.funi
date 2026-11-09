@@ -175,6 +175,24 @@ let rotateY : (Angle.t, body) => body
 /// Heightfield bodies reject rotation because terrain rendering is
 /// translation-only.
 let rotateZ : (Angle.t, body) => body
+/// Place a body at a `Camera3D.mappedPose`: its position and full
+/// orientation, in `Scene.atPose`'s basis (local `+Z` along `forward`, `+Y`
+/// along `up`), so a body sits exactly where its visual draws; the body is
+/// last for piping.
+///
+/// It replaces `Physics.at` and any rotation piped before it; a rotation
+/// piped after turns it further. Like `Physics.at` it follows the divergence
+/// rule: a dynamic body takes it as its spawn pose and moves only when the
+/// declared pose changes (a teleport), so declare a released prop at a pose
+/// kept in the model, not one read back each frame. A kinematic body
+/// declared at a new pose each frame moves there over the next step and
+/// carries that velocity, turning included, into contacts: a held prop
+/// pushes what it touches. Heightfield and fused-room bodies reject it.
+///
+/// ```functor
+/// Physics.kinematic(stickTag, stickShape) |> Physics.atPose(held)
+/// ```
+let atPose : (Camera3D.mappedPose, body) => body
 /// Set a body's initial linear velocity; the body is last for piping.
 let velocity : (Vec3.t, body) => body
 /// Set a body's mass; the body is last for piping.
@@ -305,6 +323,12 @@ let position : (tag) => position
 impure[physics]
 let linearVelocity : (tag) => velocity
 
+/// Read a body's live, stepped pose as data, in `Scene.atPose`'s basis: the
+/// read counterpart of `Physics.atPose`, so `Scene.atPose` draws it where it
+/// is. `Option.None` when no body has the tag.
+impure[physics]
+let pose : (tag) => Option.t<Camera3D.mappedPose>
+
 /// Whether a character's last move ended on walkable ground (`false` before
 /// its first move). A world read like `Physics.position`.
 impure[physics]
@@ -409,6 +433,16 @@ let applyForce : (tag, Vec3.t) => Effect.t
 /// For a character controller prefer `Physics.setVelocityXZ`: writing the
 /// vertical axis every frame fights the solver's own ground contact.
 let setVelocity : (tag, Vec3.t) => Effect.t
+
+/// Replace a body's angular velocity: the world-space axis it spins about,
+/// scaled by its rate in radians per second.
+///
+/// Applied like `Physics.setVelocity`, after reconcile, so a release can
+/// declare a held prop dynamic and give it both velocities in one frame.
+/// Spin is not part of a declaration, so the body keeps it until contacts,
+/// `Physics.angularDamping` or another command change it. Dynamic bodies
+/// only; an upright body warns and keeps its lock.
+let setAngularVelocity : (tag, Vec3.t) => Effect.t
 
 /// Replace a body's HORIZONTAL velocity, leaving the vertical axis alone.
 ///

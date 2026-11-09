@@ -69,6 +69,9 @@ pub enum PhysicsCommand {
     /// run. Composes with [`PhysicsCommand::SetVelocityXZ`] by the same
     /// last-write-wins-per-axis rule; together the two cover all three axes.
     SetVelocityY { tag: String, y: f32 },
+    /// Replace a body's angular velocity: world-space axis × radians per
+    /// second. Not a declaration field, so nothing in reconcile reverts it.
+    SetAngularVelocity { tag: String, angular_velocity: [f32; 3] },
     /// Move the live body without touching its declaration (the declared
     /// cache is unchanged, so the next frame's unchanged declaration does not
     /// snap it back).
@@ -91,6 +94,7 @@ impl PhysicsCommand {
             PhysicsCommand::SetVelocity { tag, .. } => (tag, "setVelocity"),
             PhysicsCommand::SetVelocityXZ { tag, .. } => (tag, "setVelocityXZ"),
             PhysicsCommand::SetVelocityY { tag, .. } => (tag, "setVelocityY"),
+            PhysicsCommand::SetAngularVelocity { tag, .. } => (tag, "setAngularVelocity"),
             PhysicsCommand::Teleport { tag, .. } => (tag, "teleport"),
             PhysicsCommand::Move { tag, .. } => (tag, "move"),
             PhysicsCommand::Explode(_) => ("", "explode"),
@@ -949,6 +953,16 @@ impl World {
         Some([v.x, v.y, v.z])
     }
 
+    /// Live angular velocity of a declared body, world-space axis × rad/s
+    /// (zero for a fused one).
+    pub fn body_angular_velocity(&self, tag: &str) -> Option<[f32; 3]> {
+        let Some(rb) = self.tags.get(tag) else {
+            return self.fused_part(tag).map(|_| [0.0; 3]);
+        };
+        let w = self.bodies.get(*rb)?.angvel();
+        Some([w.x, w.y, w.z])
+    }
+
     /// Whether a `Physics.character`'s last move ended on walkable ground and
     /// wasn't upward (`false` before any). `None` if `tag` isn't a character.
     pub fn grounded(&self, tag: &str) -> Option<bool> {
@@ -1309,6 +1323,16 @@ impl World {
                 ));
                 continue;
             }
+            // A locked body would turn forever at the written rate: locking
+            // stops spin accumulating, it doesn't cancel spin present.
+            if matches!(command, PhysicsCommand::SetAngularVelocity { .. })
+                && self.bodies[rb_handle].locked_axes().intersects(LockedAxes::ROTATION_LOCKED)
+            {
+                self.push_command_warning(format!(
+                    "physics {kind} on upright body \"{tag}\" has no effect"
+                ));
+                continue;
+            }
             let rb = &mut self.bodies[rb_handle];
             match &command {
                 PhysicsCommand::ApplyImpulse { impulse, .. } => {
@@ -1336,6 +1360,9 @@ impl World {
                 PhysicsCommand::SetVelocityY { y, .. } => {
                     let live = rb.linvel();
                     rb.set_linvel(vec3([live.x, *y, live.z]), true);
+                }
+                PhysicsCommand::SetAngularVelocity { angular_velocity, .. } => {
+                    rb.set_angvel(vec3(*angular_velocity), true);
                 }
                 PhysicsCommand::Teleport { position, .. } => {
                     let rotation = *rb.rotation();
@@ -3440,8 +3467,7 @@ mod tests {
         assert_eq!(w.step_frame(FIXED_DT), 1);
     }
 
-    // Angular velocity is not declarable and has no command, so these tests
-    // reach into the live body directly.
+    // These tests reach into the live body directly.
     fn spin_up(w: &mut World, tag: &str, angvel: [f32; 3]) {
         let rb = w.tags[tag];
         w.bodies[rb].set_angvel(Vector::new(angvel[0], angvel[1], angvel[2]), true);

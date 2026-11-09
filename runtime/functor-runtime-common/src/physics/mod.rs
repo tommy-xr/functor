@@ -32,6 +32,8 @@ mod character_tests;
 #[cfg(test)]
 mod forces_tests;
 #[cfg(test)]
+mod pose_tests;
+#[cfg(test)]
 mod sweep_tests;
 #[cfg(test)]
 mod goldens;
