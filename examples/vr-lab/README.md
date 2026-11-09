@@ -18,6 +18,7 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | `1`-`9` | jump to that station and reset it |
 | B / Y / menu | next station (reset) |
 | grip (squeeze) | grab what's in reach; open to let go |
+| trigger | fire the held pistol (station 3) |
 | `H` / thumbstick click | draw a holding hand where it is tracked, or where its blocked prop implies |
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
@@ -33,6 +34,8 @@ headset requests 120 Hz with foveation off, floor-locked.
 | `hips.fun` | the body frame the slots ride: root and lagging yaw from the head, pin |
 | `slots.fun` | the body slots: offsets, reach, what each takes, how each is drawn |
 | `inventory.fun` | the inventory station's headless checks |
+| `gun.fun` | the pistol: shape, authored grip, trigger, bore, shot, recoil, the ammo seam |
+| `armory.fun` | the armory station's headless checks |
 | `pulses.fun` | each hold event's controller pulse, and the edges that fire it once |
 | `hold.fun` | one hand grabbing, holding and releasing a prop (any pose); the swept move; the throw and spin estimate |
 | `props.fun` | the props: shape, collider, reach, authored grip, material, look |
@@ -76,11 +79,13 @@ The amplitudes and durations are one table, `Pulses.pulse`:
 | Event | When | Amplitude | Duration |
 | --- | --- | --- | --- |
 | ready | entering an empty slot that takes the held prop | 0.15 | 15 ms |
+| click | a trigger pull refused (the muzzle against the level) | 0.25 | 10 ms |
 | release | letting go (thrown or dropped) | 0.3 | 20 ms |
 | grab | taking a prop, free or from the other hand | 0.45 | 30 ms |
 | unstow | taking a prop out of a slot | 0.55 | 40 ms |
 | stow | putting it away | 0.7 | 50 ms |
 | blocked | the first step a held prop stops against the level (once per push) | 0.85 | 20 ms |
+| fire | a shot | 0.95 | 35 ms |
 | break | the grip breaking | 1.0 | 80 ms |
 
 A held prop is blocked once the hand is 2 cm or 10° off where it holds it, and
@@ -193,3 +198,48 @@ Worn checks still open: the slots' heights and reach for real bodies (the
 0.62 pelvis ratio, the 20 cm holster offset), the deadzone and slew when
 turning, whether the pin engages early enough and lets go cleanly, and
 whether the slots can be found without looking.
+
+## 3. Armory
+
+A bench with a pistol on it, the grab table's wall at its left end, and three
+targets on a backstop 5.5 m down range, with a scoreboard. The holsters are
+worn here too, and take the pistol.
+
+- **Grip.** The pistol is only taken at its grip: within 7 cm of where the
+  fist goes (`Gun.gripZone`). By the barrel it isn't grabbable at all;
+  snapping a barrel grab to the grip would flip and throw the gun ~15 cm
+  into the hand, and hide where the hand really took it. Taken at the grip,
+  it doesn't jump: it settles into the hand from where it was, at most 2 cm
+  and 8.6° a step (`Hold.settle`), so drawing it from a holster is smooth
+  too. Held, it is swept like every prop.
+- **Bore.** Settled, the bore runs 5 cm above the fist, parallel to the grip
+  pose's -Z, from the chamber 2 cm ahead of it to the muzzle 15 cm ahead.
+  The sights sit on the slide 2.4 cm above the bore, parallel, so a shot
+  lands that far under the sight line at any range.
+- **Trigger.** Analog with hysteresis: a pull to 0.8 fires once; it must fall
+  back to 0.3 before the next counts. Semi-automatic. A trigger held as the
+  pistol is taken (off the bench, out of a holster, from the other hand) or
+  as its hand's tracking comes back fires nothing until it is let out.
+- **Shot.** Hitscan from the muzzle along the barrel, 30 m, of the pose the
+  hold accepted (where the sweep let it be, never the tracked hand's),
+  past the pistol's own body. A target hit records the point and tag, lights
+  the target, leaves a marker and scores. A tracer shows for 0.1 s and a
+  muzzle flash for 0.05 s.
+- **Muzzle check.** Before a shot, a 2 mm ball is swept from the chamber to
+  1 cm past the muzzle against fixed bodies. Touching one (the barrel held
+  against the wall: the sweep stops the pistol 4 mm short of it) refuses the
+  shot: no bullet, a click pulse instead of the fire pulse.
+- **Recoil.** Visual only: the drawn pistol kicks up 8° and back 2 cm about
+  the grip, easing out over 0.12 s. The body, the muzzle check and the next
+  shot use the accepted pose, so it never moves the aim.
+- **Ammo.** Infinite. `Gun.canFire` and `Gun.onFired` are where a magazine
+  plugs in.
+
+`GET /state` shows `gun`: its `holder`, `trigger` (`pulled`, `armed`),
+`kick`, `fired`, `refused`, the `last` shot (`from`, `dir`, `impact`) and
+the target `hits`. `npm run test:vr-lab` runs `e2e/vr-lab-armory.mjs`.
+
+Worn checks still open: whether the pistol sits naturally in the hand (the
+barrel along the grip pose's -Z), whether shots land where the sights look,
+the trigger thresholds on a real trigger, the recoil and fire pulse's feel,
+and drawing from the thigh holster.

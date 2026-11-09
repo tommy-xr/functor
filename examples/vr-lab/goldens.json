@@ -24,5 +24,14 @@
     ],
     "inputScript": "inventory.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "vr-lab-armory-selected",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "armory.script",
+    "captureAtFrame": 30
   }
 ]

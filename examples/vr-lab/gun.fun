@@ -253,9 +253,10 @@ expect (
 let part = (sx: float, sy: float, sz: float, x: float, y: float, z: float) =>
   Scene.cube() |> Scene.scaleXYZ(sx, sy, sz) |> Scene.translate(Vec3.make(x - center.x, y - center.y, z - center.z))
 
-/// The pistol in its own frame, from parts placed in the hand's (drawn, local
-/// -Z is the barrel's way): slide and barrel, a raked handle, the trigger and
-/// its guard, and sights along the bore. `paint` colours the slide and handle.
+/// The pistol in its own frame, from parts placed in the hand's (-Z the
+/// barrel's way; turned a half turn at the end, as drawn its local +Z is):
+/// slide and barrel, a raked handle, the trigger and its guard, and sights
+/// along the bore. `paint` colours the slide and handle.
 let scene = (paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
   let dark = Color.rgb(0.08, 0.08, 0.09) in
   Scene.group([
@@ -272,4 +273,4 @@ let scene = (paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
     part(0.004, 0.008, 0.006, 0.0, bore + 0.024, 0.0 - 0.14) |> Scene.emissive(Color.rgb(1.0, 0.55, 0.1)),
     part(0.006, 0.008, 0.006, 0.0 - 0.008, bore + 0.024, 0.048) |> Scene.lit(dark),
     part(0.006, 0.008, 0.006, 0.008, bore + 0.024, 0.048) |> Scene.lit(dark),
-  ])
+  ]) |> Scene.rotateY(180deg)

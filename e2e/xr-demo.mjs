@@ -8,7 +8,8 @@
 // (`e2e/xr-fixture.mjs`, filmed from the module's `defaultSpectator`), one fixed step at a
 // time in a hidden window, points the shell's debug camera at the scenario's
 // `spectator` view (`POST /camera` — it never enters the game, so the run is
-// the same one the e2e checks), captures a frame per step, and assembles a
+// the same one the e2e checks; a segment's own `spectator` re-aims it),
+// captures a frame per step, and assembles a
 // looping GIF (and an MP4) with ffmpeg. Deterministic: the same scenario
 // renders the same frames.
 //
@@ -62,7 +63,8 @@ let markFrame;
 let lastFrame;
 try {
   if (view !== "rig" && scenario.spectator) await rt.post("/camera", { type: "set", ...scenario.spectator });
-  await play(rt, scenario, async ({ step, mark }) => {
+  await play(rt, scenario, async ({ step, mark, seg, first }) => {
+    if (view !== "rig" && first && seg?.spectator) await rt.post("/camera", { type: "set", ...seg.spectator });
     if (step % every !== 0 && mark !== stillMark) return;
     lastFrame = join(frames, `f${String(count++).padStart(4, "0")}.png`);
     writeFileSync(lastFrame, await rt.capture());
