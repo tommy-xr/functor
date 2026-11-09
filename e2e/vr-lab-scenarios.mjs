@@ -794,8 +794,8 @@ const ammoScenarios = {
     spectator: behindGun,
     steps: [
       ...takePistol,
-      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT }, spectator: atSlide },
-      { frames: 10, right: {} },
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
+      { frames: 10, right: {}, spectator: atSlide },
       ...pulls(4).map((seg) => (seg.frames === 4 ? { ...seg, frames: 12 } : seg)),
       { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] }, spectator: atSpares },
       { frames: 8, right: {} },
