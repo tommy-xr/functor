@@ -18,15 +18,20 @@ let patterns = [
   [0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0],
   [1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
   [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0],
+  // 10 is blank; 11, a dash.
+  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
 ]
 
-/// Which segments light for `n` (0-9); anything else lights none.
+let dash = 11.0
+
+/// Which segments light for `n` (0-9, `dash`); anything else lights none.
 let litFor = (n: float): List<bool> =>
   List.nth(n, patterns) |> Option.defaultValue([]) |> List.map((on) => on > 0.0)
 
 expect (litFor(8.0) |> List.filter((on) => on) |> List.length) == 7.0
 expect (litFor(1.0) |> List.filter((on) => on) |> List.length) == 2.0
-expect litFor(12.0) == []
+expect litFor(12.0) == [] && (litFor(10.0) |> List.all((on) => not on))
+expect litFor(dash) == [false, false, false, false, false, false, true]
 
 let digit = (n: float, on: Color.t, off: Color.t): Scene.t =>
   let lit = litFor(n) in

@@ -30,7 +30,13 @@ let center = Quat.v3(0.0, 0.0275, (stockBack - muzzleAhead) / 2.0)
 let grip: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 let gripZone = 0.07
 
-let weapon: Gun.Weapon = Gun.weaponAt(grip, bore, chamberAhead, muzzleAhead, true)
+// The magazine in the well ahead of the grip; the readout on the receiver's
+// top ahead of the rear sight, tipped back toward the eye.
+let weapon: Gun.Weapon = Gun.weaponAt(grip, bore, chamberAhead, muzzleAhead, true,
+  { kind: Ammo.RifleMag, at: Quat.sub(Quat.v3(0.0, 0.0, 0.0 - 0.09), center), rake: 0.0, drop: 0.1 },
+  { at: Quat.sub(Quat.v3(0.0, 0.0865, 0.0 - 0.07), center), tilt: 0.0 - Math.pi / 6.0, size: 0.005 })
+
+expect Gun.clearBelow(weapon, size)
 
 // --- the foregrip ---
 
@@ -250,9 +256,9 @@ let part = (sx: float, sy: float, sz: float, x: float, y: float, z: float) =>
 
 /// The rifle in its own frame, from parts placed in the primary hand's (-Z
 /// the barrel's way; turned a half turn at the end, as drawn its local +Z
-/// is): stock, receiver, pistol grip, trigger, magazine, the handguard with
+/// is): stock, receiver, pistol grip, trigger, the handguard with
 /// the foregrip rail under it (lighter: where the support hand goes), barrel
-/// and sights. `paint` colours the furniture.
+/// and sights (the magazine is `Gun.seated`). `paint` colours the furniture.
 let scene = (paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
   let dark = Color.rgb(0.08, 0.08, 0.09) in
   let metal = Color.rgb(0.16, 0.16, 0.18) in
@@ -263,7 +269,6 @@ let scene = (paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
       |> Scene.translate(Vec3.make(0.0 - center.x, 0.0 - center.y, 0.012 - center.z)) |> paint(0.36, 0.32, 0.22),
     part(0.008, 0.006, 0.05, 0.0, 0.016, 0.0 - 0.045) |> Scene.lit(dark),
     part(0.006, 0.02, 0.006, 0.0, 0.026, 0.0 - 0.035) |> Scene.lit(dark),
-    part(0.025, 0.09, 0.05, 0.0, 0.0, 0.0 - 0.09) |> Scene.lit(metal),
     part(0.045, 0.05, foreFar - foreNear, 0.0, bore, 0.0 - (foreNear + foreFar) / 2.0) |> paint(0.36, 0.32, 0.22),
     part(0.03, 0.03, foreFar - foreNear, 0.0, 0.02, 0.0 - (foreNear + foreFar) / 2.0) |> paint(0.6, 0.55, 0.42),
     part(0.016, 0.016, muzzleAhead - foreFar, 0.0, bore, 0.0 - (foreFar + muzzleAhead) / 2.0) |> Scene.lit(dark),

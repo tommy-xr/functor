@@ -3,7 +3,9 @@
 // and optionally an authored grip. Poses are rig-local (`Hold`'s frame);
 // drawn and declared, a prop's local +Y is its pose's +Y.
 
-type Kind = | Ball | Stick | Brick | Bottle | Pistol | Rifle
+/// A magazine is a prop of its own once out of a weapon: its kind, and an id
+/// telling it from the station's other magazines.
+type Kind = | Ball | Stick | Brick | Bottle | Pistol | Rifle | Mag(fits: Ammo.Kind, id: float)
 
 let all = [Ball, Stick, Brick, Bottle, Pistol, Rifle]
 
@@ -15,6 +17,7 @@ let name = (k: Kind): string =>
   | Bottle => "bottle"
   | Pistol => "pistol"
   | Rifle => "rifle"
+  | Mag(_, id) => $"mag-{id}"
 
 let ballRadius = 0.06
 let stickLength = 0.7
@@ -35,6 +38,7 @@ let extent = (k: Kind): Input.point3 =>
   | Bottle => Quat.v3(2.0 * bottleRadius, bodyHeight + neckLength, 2.0 * bottleRadius)
   | Pistol => Gun.size
   | Rifle => Longarm.size
+  | Mag(fits, _) => Gun.magSize(fits)
 
 let shape = (k: Kind) =>
   match k with
@@ -127,7 +131,8 @@ let dynamics = (k: Kind, body: Physics.body): Physics.body =>
     | Brick => (0.7, 0.1, 0.5)
     | Bottle => (0.5, 0.25, 0.5)
     | Pistol => (0.7, 0.1, 0.8)
-    | Rifle => (0.7, 0.1, 0.8) in
+    | Rifle => (0.7, 0.1, 0.8)
+    | Mag(_, _) => (0.7, 0.1, 0.8) in
   body
     |> Physics.friction(friction)
     |> Physics.restitution(restitution)
@@ -179,3 +184,4 @@ let scene = (k: Kind, look: Look): Scene.t =>
     ])
   | Pistol => Gun.scene(paint(look))
   | Rifle => Longarm.scene(paint(look))
+  | Mag(fits, _) => Gun.magazine(fits, paint(look))

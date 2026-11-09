@@ -3,31 +3,38 @@
 // a tracked joint, and holds one prop of the kinds it fits.
 
 /// A slot: where it sits in the hips' frame (+X right, -Z forward), how near
-/// its centre a hand must be to use it, and what it takes (one at a time).
-type Slot = { id: float, name: string, offset: Input.pose, radius: float, fits: List<Props.Kind> }
+/// its centre a hand must be to use it, and what it takes (one at a time):
+/// these props, and magazines of these kinds.
+type Slot = { id: float, name: string, offset: Input.pose, radius: float, fits: List<Props.Kind>, mags: List<Ammo.Kind> }
 
 // The holsters hang at the sides of the thighs, just below the pelvis (the
-// brick, the bottle or the pistol); the pouch sits on the belt in front.
-let leftHolster: Slot = { id: 1.0, name: "left holster", offset: Hold.p(-0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle, Props.Pistol] }
-let rightHolster: Slot = { id: 2.0, name: "right holster", offset: Hold.p(0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle, Props.Pistol] }
-let pouch: Slot = { id: 3.0, name: "pouch", offset: Hold.p(0.0, 0.0, -0.15), radius: 0.08, fits: [Props.Ball] }
+// brick, the bottle or the pistol); the pouch sits on the belt in front (the
+// ball, or a magazine).
+let leftHolster: Slot = { id: 1.0, name: "left holster", offset: Hold.p(-0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle, Props.Pistol], mags: [] }
+let rightHolster: Slot = { id: 2.0, name: "right holster", offset: Hold.p(0.2, -0.1, -0.02), radius: 0.08, fits: [Props.Brick, Props.Bottle, Props.Pistol], mags: [] }
+let pouch: Slot = { id: 3.0, name: "pouch", offset: Hold.p(0.0, 0.0, -0.15), radius: 0.08, fits: [Props.Ball], mags: [Ammo.PistolMag, Ammo.RifleMag] }
 
 let all = [leftHolster, rightHolster, pouch]
 
 /// The armory's rifle rack: not worn but fixed on the bench (`Game` places
 /// it), a hand within `radius` of the racked rifle's centre using it.
-let rack: Slot = { id: 4.0, name: "rifle rack", offset: Hold.origin, radius: 0.2, fits: [Props.Rifle] }
+let rack: Slot = { id: 4.0, name: "rifle rack", offset: Hold.origin, radius: 0.2, fits: [Props.Rifle], mags: [] }
 
 // A hand this much farther out than a slot's radius already pins the hips,
 // so the slot holds still as the hand arrives.
 let pinMargin = 0.1
 
-let fits = (k: Props.Kind, s: Slot): bool => s.fits |> List.any((f) => f == k)
+let fits = (k: Props.Kind, s: Slot): bool =>
+  match k with
+  | Props.Mag(m, _) => s.mags |> List.any((f) => f == m)
+  | _ => s.fits |> List.any((f) => f == k)
 
 expect fits(Props.Brick, leftHolster) && fits(Props.Bottle, rightHolster) && fits(Props.Ball, pouch) && fits(Props.Pistol, rightHolster)
 expect not fits(Props.Ball, leftHolster) && not fits(Props.Brick, pouch)
 expect all |> List.all((s) => not fits(Props.Stick, s) && not fits(Props.Rifle, s))
 expect fits(Props.Rifle, rack) && not fits(Props.Pistol, rack)
+expect fits(Props.Mag(Ammo.PistolMag, 1.0), pouch) && fits(Props.Mag(Ammo.RifleMag, 7.0), pouch)
+expect not fits(Props.Mag(Ammo.PistolMag, 1.0), rightHolster) && not fits(Props.Mag(Ammo.RifleMag, 1.0), rack)
 
 /// A slot placed in the hips' frame (rig-local).
 type Placed = { slot: Slot, pose: Input.pose }

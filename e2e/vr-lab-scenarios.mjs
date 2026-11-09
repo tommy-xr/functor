@@ -670,6 +670,110 @@ const rifleScenarios = {
   },
 };
 
+// --- Armory: ammunition (station 3) ---
+// The pistol starts 12+1, the rifle 30+1 (`Ammo`). The thumbstick pushed
+// down on a gun's hand (`stick: [0, -1]`) drops its magazine below the well
+// (`Gun.dropOf`): for a level pistol, 13.24 cm below the hand and 4.5 cm
+// behind it. The pouch is on the belt (`slotAt("pouch")`).
+
+export const PISTOL_ROUNDS = 13;
+export const RIFLE_ROUNDS = 31;
+export const SPARES = { pistol: 2, rifle: 2 };
+// Fire `n` pulls of the right trigger, each let out over 4 steps; the last
+// pull marked `mark`.
+const pulls = (n, mark) =>
+  Array.from({ length: n }, (_, i) => [
+    { frames: 1, right: { trigger: 1 }, ...(i === n - 1 && mark ? { mark } : {}) },
+    { frames: 4, right: { trigger: 0 } },
+  ]).flat();
+// Over the bench, level: the magazine drops onto it below the hand.
+export const OVER_BENCH = [0.0, 1.2, -0.6];
+export const MAG_DROP = add(OVER_BENCH, [0, -0.1324, 0.045]);
+// Where the dropped magazine comes to rest (on its base, the bench top 0.9).
+const MAG_REST = [MAG_DROP[0], 0.96, MAG_DROP[2]];
+const POUCH = slotAt("pouch");
+
+// (Armory rig (x, y, z) is world (4 - z, y, x).) Close behind the aimed
+// pistol's slide: its readout.
+export const atSlide = { eye: [3.95, 1.45, 0.27], target: [4.3, 1.34, 0.2], fov: 28 };
+// Above and left of the bench: the dropped magazine and the spares.
+const atSpares = { eye: [3.6, 1.8, -0.5], target: [4.5, 0.95, -0.1], fov: 45 };
+// From ahead and left, at the belt: the pouch.
+const atPouch = { eye: [4.8, 1.3, -0.6], target: [4.05, 1.0, -0.05], fov: 40 };
+
+const ammoScenarios = {
+  // Aimed at the right target: thirteen pulls, thirteen hits; the fourteenth
+  // clicks dry.
+  "ammo-pistol": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
+      { frames: 6, right: {}, mark: "aimed" },
+      ...pulls(PISTOL_ROUNDS, "lastShot"),
+      { frames: 1, right: { trigger: 1 }, mark: "dry" },
+      { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // Two hands, full-auto, the trigger held 200 steps: 31 shots, then a dry
+  // click. Let out and pulled again: another.
+  "ammo-rifle": {
+    station: 3,
+    neck: NECK,
+    spectator: behindRifle,
+    steps: [
+      ...takeRifle,
+      raise(),
+      { frames: 20, left: { to: at(TARGETS[1]) } },
+      { frames: 10, left: {}, mark: "aimed" },
+      { frames: 1, right: { primary: true }, mark: "auto" },
+      { frames: 3, right: { primary: false } },
+      { frames: 200, right: { trigger: 1 }, mark: "held" },
+      { frames: 6, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 }, mark: "dryAgain" },
+      { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // Three shots, then over the bench the thumbstick drops the magazine (9)
+  // onto it. The left hand takes it, puts it in the pouch and takes it back
+  // out. The chambered round still fires; then dry.
+  "ammo-mag": {
+    station: 3,
+    neck: NECK,
+    spectator: atSpares,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
+      { frames: 4, right: {} },
+      ...pulls(3, "fired3"),
+      { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] } },
+      { frames: 5, right: {}, mark: "overBench" },
+      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
+      { frames: 40, right: { stick: [0, 0] }, mark: "landed" },
+      { frames: 20, right: { to: [0.25, 1.2, -0.3] } },
+      { frames: 20, left: { to: add(MAG_REST, [0, 0.1, 0]) } },
+      { frames: 10, left: { to: MAG_REST }, mark: "reachedMag" },
+      { frames: 4, left: { squeeze: 1 }, mark: "tookMag" },
+      { frames: 20, left: { to: add(MAG_REST, [0, 0.2, 0.15]) }, mark: "lifted" },
+      { frames: 30, left: { to: POUCH }, mark: "atPouch", spectator: atPouch },
+      { frames: 1, left: { squeeze: 0 }, mark: "pouched" },
+      { frames: 15, left: {} },
+      { frames: 4, left: { squeeze: 1 }, mark: "retrieved" },
+      { frames: 30, left: { to: [-0.15, 1.15, -0.35] }, mark: "out" },
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT }, spectator: behindGun },
+      { frames: 4, right: {} },
+      { frames: 1, right: { trigger: 1 }, mark: "lastRound" },
+      { frames: 4, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 }, mark: "dry" },
+      { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -918,4 +1022,5 @@ export const scenarios = {
   },
   ...armoryScenarios,
   ...rifleScenarios,
+  ...ammoScenarios,
 };

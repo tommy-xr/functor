@@ -1,9 +1,10 @@
 // Gun: what every weapon shares, pure and rig-local (`Hold`'s frame): the
 // trigger and its fire modes, the bore a shot leaves along, the shot, the
-// muzzle check and the recoil kick; and the pistol's shape and authored grip.
-// A weapon is data (`Weapon`): its grip, bore and whether it has a selector
-// (the rifle's is in `Longarm`). The world reaches in only through the shot's
-// ray and the muzzle check (`Game.World`).
+// muzzle check and the recoil kick; the magazine look; and the pistol's shape
+// and authored grip. A weapon is data (`Weapon`): its grip, bore, magazine
+// well and readout, and whether it has a selector (the rifle's is in
+// `Longarm`). Its rounds are `Ammo`'s. The world reaches in only through the
+// shot's ray and the muzzle check (`Game.World`).
 
 // --- the pistol ---
 // Laid out in the hand's frame when held (the grip pose: -Z forward, +Y up):
@@ -28,19 +29,79 @@ let grip: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 /// barrel is out of reach, so it is never taken by the muzzle end.
 let gripZone = 0.07
 
+/// A weapon's magazine well, in its frame: the magazine kind it takes, where
+/// a seated one's centre sits, raked back `rake` (radians about +X), and how
+/// far down that axis an ejected one drops out (clear of the collider).
+type Well = { kind: Ammo.Kind, at: Input.point3, rake: float, drop: float }
+
+/// Where its ammo readout sits, in its frame, readable from behind (+Z),
+/// tipped `tilt` (radians about +X) toward the eye, each digit `size` wide.
+type Readout = { at: Input.point3, tilt: float, size: float }
+
 /// A weapon, in its own frame (centred on its collider): the authored grip
 /// (the trigger hand's pose), the chamber and the muzzle (the bore runs
-/// along the frame's -Z between them), and whether a selector switches it to
-/// full-auto.
-type Weapon = { grip: Input.pose, chamber: Input.point3, muzzle: Input.point3, selector: bool }
+/// along the frame's -Z between them), whether a selector switches it to
+/// full-auto, its magazine well and its readout.
+type Weapon = { grip: Input.pose, chamber: Input.point3, muzzle: Input.point3, selector: bool, well: Well, readout: Readout }
 
 /// A weapon whose bore runs `bore` above the grip's fist, parallel to its
 /// -Z, from `chamberAhead` to `muzzleAhead` ahead of it.
-let weaponAt = (g: Input.pose, bore: float, chamberAhead: float, muzzleAhead: float, selector: bool): Weapon =>
+let weaponAt = (g: Input.pose, bore: float, chamberAhead: float, muzzleAhead: float, selector: bool, well: Well, readout: Readout): Weapon =>
   let along = (ahead: float) => Quat.add(g.position, Quat.rotate(g.orientation, Quat.v3(0.0, bore, 0.0 - ahead))) in
-  { grip: g, chamber: along(chamberAhead), muzzle: along(muzzleAhead), selector: selector }
+  { grip: g, chamber: along(chamberAhead), muzzle: along(muzzleAhead), selector: selector, well: well, readout: readout }
 
-let pistol = weaponAt(grip, bore, chamberAhead, muzzleAhead, false)
+// The magazine in the handle, raked with it; its readout on the slide's back face.
+let pistol = weaponAt(grip, bore, chamberAhead, muzzleAhead, false,
+  { kind: Ammo.PistolMag, at: Quat.sub(Quat.v3(0.0, 0.0 - 0.015, 0.02), center), rake: 0.0 - 0.21, drop: 0.12 },
+  { at: Quat.sub(Quat.v3(0.0, bore, 0.056), center), tilt: 0.0, size: 0.0045 })
+
+/// A seated magazine's pose in its weapon's frame.
+let seatOf = (w: Weapon): Input.pose => Hold.at(w.well.at, Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), w.well.rake))
+
+/// Where an ejected magazine appears, in its weapon's frame: dropped down
+/// the well's axis, below the weapon's collider.
+let dropOf = (w: Weapon): Input.pose => Hold.compose(seatOf(w), Hold.p(0.0, 0.0 - w.well.drop, 0.0))
+
+// --- magazines ---
+
+/// A magazine's bounds (its collider as a prop): the pistol's, a body
+/// inside the handle and a wider base plate; the rifle's, a box.
+let magSize = (k: Ammo.Kind): Input.point3 =>
+  match k with
+  | Ammo.PistolMag => Quat.v3(0.032, 0.1, 0.047)
+  | Ammo.RifleMag => Quat.v3(0.025, 0.09, 0.05)
+
+/// How far a magazine's broad side is from its centre (where its count goes).
+let magFace = (k: Ammo.Kind): float =>
+  match k with
+  | Ammo.PistolMag => 0.013
+  | Ammo.RifleMag => 0.0125
+
+/// A magazine in its own frame (centred on its bounds), `paint` colouring
+/// its body: the pistol's base plate tan, so a seated one shows under the
+/// handle.
+let magazine = (k: Ammo.Kind, paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
+  let e = magSize(k) in
+  match k with
+  | Ammo.PistolMag =>
+    Scene.group([
+      Scene.cube() |> Scene.scaleXYZ(2.0 * magFace(k), e.y - 0.008, 0.032) |> Scene.translate(Vec3.make(0.0, 0.004, 0.0)) |> paint(0.12, 0.12, 0.13),
+      Scene.cube() |> Scene.scaleXYZ(e.x, 0.008, e.z) |> Scene.translate(Vec3.make(0.0, 0.004 - e.y / 2.0, 0.0)) |> paint(0.75, 0.6, 0.3),
+    ])
+  | Ammo.RifleMag => Scene.cube() |> Scene.scaleXYZ(e.x, e.y, e.z) |> paint(0.16, 0.16, 0.18)
+
+/// A magazine scene placed in its weapon's well, drawn with the weapon.
+let seated = (w: Weapon, mag: Scene.t): Scene.t =>
+  mag |> Scene.rotateX(Angle.radians(w.well.rake)) |> Scene.translate(Quat.toVec3(w.well.at)) |> Scene.rotateY(180deg)
+
+// Dropped, a magazine's bounds (turned with the well) are wholly below its
+// weapon's collider, so it never starts inside it.
+let clearBelow = (w: Weapon, collider: Input.point3): bool =>
+  let d = dropOf(w) in
+  let e = magSize(w.well.kind) in
+  let top = d.position.y + Math.abs(e.y / 2.0 * Math.cos(w.well.rake)) + Math.abs(e.z / 2.0 * Math.sin(w.well.rake)) in
+  top < 0.0 - collider.y / 2.0
+expect clearBelow(pistol, size)
 
 /// A shot's line from a weapon at `pose`: the chamber, the muzzle, and the
 /// barrel's way (unit).
@@ -181,20 +242,30 @@ let recoilBack = 0.02
 let hitCap = 12.0
 
 /// A weapon: the hand on its trigger last step, the trigger, the fire mode,
-/// the kick, shots fired and refused, the last shot, and the target hits,
-/// newest last (at most `hitCap`).
+/// the kick, its rounds, shots fired (each spent a round), pulls refused
+/// (the muzzle blocked) and dry (nothing chambered) and when it last was,
+/// the last shot, and the target hits, newest last (at most `hitCap`).
 type State = {
   holder: Option.t<Hold.Side>,
   trigger: Trigger,
   mode: Mode,
   kick: float,
+  ammo: Ammo.Gun,
   fired: float,
   refused: float,
+  dry: float,
+  dryAt: float,
   last: Option.t<Shot>,
   hits: List<Impact>
 }
 
-let idle: State = { holder: Option.None, trigger: disarmed, mode: Semi, kick: 0.0, fired: 0.0, refused: 0.0, last: Option.None, hits: [] }
+let idle: State = {
+  holder: Option.None, trigger: disarmed, mode: Semi, kick: 0.0, ammo: Ammo.loaded(pistol.well.kind),
+  fired: 0.0, refused: 0.0, dry: 0.0, dryAt: 0.0 - 1000.0, last: Option.None, hits: []
+}
+
+/// A weapon at rest, loaded and chambered.
+let stocked = (w: Weapon): State => { idle with ammo: Ammo.loaded(w.well.kind) }
 
 /// One step of a weapon whose trigger `holder` has (None: nobody), at
 /// `value`: the new state, and whether the trigger fired. A new holder, or
@@ -208,13 +279,13 @@ let step = (g: State, holder: Option.t<Hold.Side>, tracked: bool, value: float, 
     let (trigger, fires) = pull(g.mode, if holder == g.holder then g.trigger else disarmed, value) in
     ({ g with holder: holder, trigger: trigger, kick: kick }, fires)
 
-// --- ammunition: infinite here; a magazine plugs in at these two ---
+// --- ammunition: `Ammo`'s, at these two ---
 
-/// Whether a pulled trigger has a round to fire.
-let canFire = (g: State): bool => true
+/// Whether a pulled trigger has a round to fire: one chambered.
+let canFire = (g: State): bool => g.ammo.chambered
 
-/// After a shot: the round spent.
-let onFired = (g: State): State => g
+/// After a shot: the round spent, the next fed from the magazine.
+let onFired = (g: State): State => let (a, _) = Ammo.fire(g.ammo) in { g with ammo: a }
 
 /// The weapon after firing `s`: kicked, counted, the hit recorded.
 let fire = (g: State, s: Shot): State =>
@@ -232,12 +303,30 @@ let fire = (g: State, s: Shot): State =>
 /// it is let out, so full-auto doesn't click on at its rate.
 let refuse = (g: State): State => { g with refused: g.refused + 1.0, trigger: { g.trigger with armed: false } }
 
+/// The weapon after a dry pull at `t` (nothing chambered): a click, and the
+/// trigger disarmed like `refuse`, so full-auto stops at the last round.
+let dryPull = (g: State, t: float): State => { g with dry: g.dry + 1.0, dryAt: t, trigger: { g.trigger with armed: false } }
+
 /// The selector switched: semi to full-auto and back, on a weapon that has one.
 let select = (w: Weapon, g: State): State =>
   if not w.selector then g
   else { g with mode: match g.mode with | Semi => Auto | Auto => Semi }
 
 expect (select(pistol, idle)).mode == Semi
+
+// Loaded 12+1: each shot spends the chambered round and feeds the next; 13
+// shots, then nothing to fire.
+let shot0 = { t: 0.0, from: Hold.zero, dir: Hold.zero, impact: Option.None }
+expect Ammo.count((stocked(pistol)).ammo) == 13.0 && canFire(stocked(pistol))
+expect (
+  let after = List.range(13.0) |> List.fold((g, _) => fire(g, shot0), stocked(pistol)) in
+  after.fired == 13.0 && not canFire(after) && Ammo.count(after.ammo) == 0.0 && Option.isSome(after.ammo.mag)
+)
+// A dry pull is no shot: counted apart, the trigger disarmed.
+expect (
+  let g = dryPull({ stocked(pistol) with trigger: { pulled: true, armed: true, since: 0.0 } }, 2.0) in
+  g.dry == 1.0 && g.fired == 0.0 && g.dryAt == 2.0 && not g.trigger.armed && Ammo.count(g.ammo) == 13.0
+)
 
 let dt = 1.0 / 60.0
 let run = (g: State, holder: Option.t<Hold.Side>, tracked: bool, values: List<float>): (State, float) =>
