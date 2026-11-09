@@ -18,7 +18,12 @@
 //      one); armory-wall: grab, stop at the wall, the refused pull's click,
 //      then a fire clear of it; armory-holster: grab, ready, stow, unstow (the
 //      draw, trigger held: no fire), then a fire once let out and pulled.
-//   7. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
+//   7. rifle-auto: unstow, the foregrip's grab, then each shot in both
+//      hands (semi held: one; full-auto held 30 steps: five); rifle-wall: the
+//      stop, the refused pull's click in the trigger hand, a fire clear of
+//      it; rifle-break: the support's break; rifle-handoff: silent handed on,
+//      the retake's grab, the support's release.
+//   8. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
 //      pulse. A fixture replayed through `/input` is a live run: the recorded
 //      grab-throw pulses exactly the live run's events.
 //
@@ -131,6 +136,33 @@ await run("armory: holster and draw", async (rt) => {
   const got = await pulsesOf(rt, scenarios["armory-holster"]);
   expectPulses(got, ["right grab", "right ready", "right stow", "right unstow", "right fire"]);
   check(got.pulses[4]?.frame === got.marks.fired.frame, `no fire on the draw; one once let out and pulled (frame ${got.pulses[4]?.frame})`);
+});
+
+await run("rifle: semi and full-auto", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["rifle-auto"]);
+  // Out of the rack, the foregrip taken; every shot buzzes both hands on it.
+  const shot = ["left fire", "right fire"];
+  expectPulses(got, ["right unstow", "left grab", ...shot, ...Array(5).fill(shot).flat()]);
+  check(got.pulses[2]?.frame === got.marks.semiHeld.frame - 29, `semi: one shot, on the pull (frame ${got.pulses[2]?.frame})`);
+});
+
+await run("rifle: barrel into the wall", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["rifle-wall"]);
+  expectPulses(got, ["right unstow", "left grab", "right blocked", "right click", "left fire", "right fire"]);
+  check(got.pulses[3]?.frame === got.marks.clicked.frame, `the click on the refused pull, the trigger hand only (frame ${got.pulses[3]?.frame})`);
+});
+
+await run("rifle: support break", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["rifle-break"]);
+  expectPulses(got, ["right unstow", "left grab", "left break"]);
+  check(between(got.pulses[2], got.marks.slidBack.frame, got.marks.dragged.frame), `the break as it is dragged off (frame ${got.pulses[2]?.frame})`);
+});
+
+await run("rifle: hand-off", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["rifle-handoff"]);
+  // Handed on: silent. Retaken: the right's grab. The support opening: its release.
+  expectPulses(got, ["right unstow", "left grab", "right grab", "left release"]);
+  check(got.pulses[2]?.frame === got.marks.retaken.frame && got.pulses[3]?.frame === got.marks.supportOpened.frame, "on the retake and the support's opening");
 });
 
 await run("recorded fixture", async (rt) => {

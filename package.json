@@ -66,7 +66,7 @@
     "test:fullbody": "cargo build -p functor-cli --no-default-features && node e2e/fullbody.mjs",
     "test:sniper-scope": "cargo build -p functor-cli --no-default-features && node e2e/sniper-scope.mjs",
     "test:sniper-scope-vr": "cargo build -p functor-cli --no-default-features && node e2e/sniper-scope-vr.mjs",
-    "test:vr-lab": "cargo build -p functor-cli --no-default-features && node e2e/vr-lab.mjs && node e2e/vr-lab-haptics.mjs && node e2e/vr-lab-armory.mjs",
+    "test:vr-lab": "cargo build -p functor-cli --no-default-features && node e2e/vr-lab.mjs && node e2e/vr-lab-haptics.mjs && node e2e/vr-lab-armory.mjs && node e2e/vr-lab-rifle.mjs",
     "test:xr-fixture": "node --test e2e/xr-fixture.test.mjs",
     "test:liminal-office": "cargo build -p functor-cli --no-default-features && node e2e/liminal-office.mjs",
     "test:liminal-tower": "cargo build -p functor-cli --no-default-features && node e2e/liminal-tower.mjs",

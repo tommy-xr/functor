@@ -8,7 +8,8 @@
 // `to` (rig-local metres: +X right, +Y up from the floor, -Z forward), with
 // its squeeze held at `squeeze`. `turn` (a quaternion, `[x, y, z, w]`) turns
 // its grip the same way, the shorter way round, from where it was to that.
-// `trigger` holds its trigger there. `active: false` loses the hand's tracking. A segment's `tap` key is
+// `trigger` holds its trigger there, `primary: true` its A/X button.
+// `active: false` loses the hand's tracking. A segment's `tap` key is
 // pressed on its first step and released after it.
 // A segment's `mark` names its last step, so a check can find it; its
 // `spectator` re-aims a demo's camera from its first step (`e2e/xr-demo.mjs`).
@@ -147,6 +148,7 @@ const hand = (h) =>
         aim: { position: h.at, orientation: h.orientation ?? [0, 0, 0, 1] },
         trigger: h.trigger ?? 0,
         squeeze: h.squeeze ?? 0,
+        primary_pressed: h.primary ?? false,
       };
 
 /** The XR sample for the head's and both hands' current state. */
