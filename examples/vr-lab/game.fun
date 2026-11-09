@@ -602,8 +602,9 @@ let offered = (m: Model, s: Slots.Placed): List<Props.Kind> =>
     | Option.Some(k) => [k]
     | Option.None => [])
 
-// The hips' belt, a band with a notch at the front, and the head's heading,
-// an arrow above it: what the slots follow, seen from outside.
+// The hips' belt, a band with a notch at the front, a spine up to the neck,
+// and the head's heading, an arrow above it: what the slots follow, seen
+// from outside.
 let belt =
   Scene.group([
     Scene.cylinder() |> Scene.scaleXYZ(0.36, 0.03, 0.26) |> Scene.lit(Color.rgb(0.75, 0.7, 0.55)) |> Scene.opacity(0.35),
@@ -615,7 +616,12 @@ let gaze =
     Scene.cube() |> Scene.scaleXYZ(0.025, 0.02, 0.1) |> Scene.translate(Vec3.make(0.0, 0.0, 0.08)) |> Scene.emissive(Color.rgb(0.95, 0.95, 1.0)),
   ])
 
-/// The slots (each lit by what is offered to it), the belt and the gaze,
+let spine = (root: Input.point3) =>
+  let length = root.y / Hips.pelvisRatio - root.y in
+  Scene.cylinder() |> Scene.scaleXYZ(0.05, length, 0.05) |> Scene.translate(Vec3.make(0.0, length / 2.0, 0.0))
+    |> Scene.lit(Color.rgb(0.75, 0.7, 0.55)) |> Scene.opacity(0.3)
+
+/// The slots (each lit by what is offered to it), the belt, spine and gaze,
 /// where they are worn and the head is tracked.
 let bodyScene = (m: Model, st: Stations.Station): Scene.t =>
   match (if Stations.worn(st) then m.hips.head else Option.None) with
@@ -627,6 +633,7 @@ let bodyScene = (m: Model, st: Stations.Station): Scene.t =>
       Scene.group(slots |> List.map((s) =>
         Slots.scene(s.slot, Slots.look(s.slot, occupied(m, s.slot.id), offered(m, s))) |> Scene.atPose(posed(st, s.pose)))),
       belt |> Scene.atPose(posed(st, { position: m.hips.root, orientation: Quat.yaw(m.hips.yaw) })),
+      spine(m.hips.root) |> Scene.atPose(posed(st, { position: m.hips.root, orientation: Quat.identity })),
       gaze |> Scene.atPose(posed(st, { position: Quat.add(head.position, up), orientation: Quat.yaw(Hips.headingOr(m.hips.yaw, head.orientation)) })),
     ])
 

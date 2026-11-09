@@ -135,11 +135,11 @@ const LH = slotAt("leftHolster");
 const LEFT_OUT = [-0.4, 1.15, 0];
 const RIGHT_REST = [0.25, 0.95, -0.2];
 
-// From behind the player's right shoulder and above: the bench ahead, the
+// From behind the player's right shoulder, high: the bench ahead, the
 // belt, the slots and the gaze arrow, and the body turning left.
-const overShoulder = { eye: [1.15, 2.1, -2.75], target: [-0.05, 0.85, -4.05], fov: 46 };
-// From the player's right, level with the hips.
-const atHip = { eye: [1.55, 1.25, -3.6], target: [0.0, 0.88, -4.05], fov: 40 };
+const overShoulder = { eye: [0.9, 2.9, -2.3], target: [-0.05, 1.1, -4.05], fov: 31 };
+// From the player's right, a little above the hips.
+const atHip = { eye: [2.0, 1.45, -3.1], target: [0.0, 1.0, -4.05], fov: 36 };
 
 const outOfTheWay = { frames: 15, left: { to: LEFT_OUT } };
 // Take the brick from the bench by its centre and put it in the right holster.
@@ -237,6 +237,8 @@ const inventoryScenarios = {
       { frames: 45, head: { turn: [0, 0, 0, 1] } },
       { frames: 90, head: {}, mark: "back" },
       ...reachBack,
+      { frames: 30, head: { turn: [0, 0, 0, 1] } },
+      { frames: 90, head: {} },
       { frames: 30, right: { to: RH } },
       { frames: 1, right: { squeeze: 0 }, mark: "restored" },
       { frames: 20, right: { to: RIGHT_REST } },

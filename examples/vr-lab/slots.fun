@@ -79,16 +79,14 @@ expect placed(Hips.init) == []
 
 // --- drawing ---
 
-// A dashed ring of radius 1, level, and a ghost of the slot's reach.
-let ring =
-  Scene.group(List.range(12.0) |> List.map((i) =>
+// A dashed ring of radius 1, level: one instanced cube, its copies a
+// constant list (uploaded once).
+let dashes =
+  List.range(12.0) |> List.map((i) =>
     let a = i * Math.pi / 6.0 in
-    Scene.cube()
-      |> Scene.scaleXYZ(0.32, 0.1, 0.12)
-      |> Scene.rotateY(Angle.radians(a))
-      |> Scene.translate(Vec3.make(Math.sin(a), 0.0, Math.cos(a)))))
+    Instance.trs(Vec3.make(Math.sin(a), 0.0, Math.cos(a)), Angle.radians(a), 0.32, 0.1, 0.12))
 
-/// A slot in its own frame: a ring round its reach, the pouch's amber and
+/// A slot in its own frame: a ring round its reach and a ghost of it, the pouch's amber and
 /// the holsters' steel when idle, green when offered what it takes, red when
 /// offered what it won't.
 let scene = (s: Slot, l: Look): Scene.t =>
@@ -99,6 +97,6 @@ let scene = (s: Slot, l: Look): Scene.t =>
     | Ready => ((x: Scene.t) => x |> Scene.emissive(Color.rgb(0.35, 1.0, 0.45)), 0.25)
     | Refused => ((x: Scene.t) => x |> Scene.emissive(Color.rgb(1.0, 0.25, 0.2)), 0.25) in
   Scene.group([
-    ring |> Scene.scale(s.radius) |> paint,
+    Scene.cube() |> paint |> Scene.instanced(dashes) |> Scene.scale(s.radius),
     Scene.sphere() |> Scene.scale(s.radius) |> paint |> Scene.opacity(ghost),
   ])
