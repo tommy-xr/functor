@@ -9,7 +9,8 @@
 // The stick lies on the table at rig (-0.3, 0.9175, -0.6) along rig -Z, 0.7 m
 // long and 3.5 cm thick.
 
-import { add, qconj, qmul, qrot, sub } from "./xr-scenario.mjs";
+import { check } from "./mcp-rpc.mjs";
+import { add, qconj, qmul, qrot, some, sub } from "./xr-scenario.mjs";
 
 export const project = "examples/vr-lab";
 // Tapped before an attached recording (`npm run record:vr-lab`): station 1, reset.
@@ -680,6 +681,21 @@ export const CAPACITY = { pistol: 12, rifle: 30 };
 export const PISTOL_ROUNDS = CAPACITY.pistol + 1;
 export const RIFLE_ROUNDS = CAPACITY.rifle + 1;
 export const SPARES = { pistol: 2, rifle: 2 };
+export const RESET_ROUNDS = PISTOL_ROUNDS + RIFLE_ROUNDS + SPARES.pistol * CAPACITY.pistol + SPARES.rifle * CAPACITY.rifle;
+// Reading the rounds from `/state.model`: a magazine's, a gun's (its
+// magazine's and chamber's), every unspent one at the station (magazines,
+// chambers, loose rounds), and a gun's readout.
+export const roundsIn = (mag) => some(mag)?.rounds ?? 0;
+export const ammoCount = (ammo) => roundsIn(ammo.mag) + (ammo.chambered ? 1 : 0);
+export const unspent = (m) =>
+  m.props.reduce((n, p) => n + (p.kind.$ctor === "Props.Round" ? 1 : roundsIn(p.mag)), 0) + ammoCount(m.gun.ammo) + ammoCount(m.rifle.ammo);
+export const readout = (ammo) => `${some(ammo.mag) ? roundsIn(ammo.mag) : "--"}+${ammo.chambered ? 1 : 0}`;
+/** Check every recorded step keeps the station's rounds: unspent, plus shots fired and loose rounds taken away. */
+export function conserves(name, steps) {
+  const total = (m) => unspent(m) + m.gun.fired + m.rifle.fired + m.lost;
+  const bad = steps.find((s) => total(s.state.model) !== RESET_ROUNDS);
+  check(!bad, `${name}: every step (${steps.length}) conserves ${RESET_ROUNDS} rounds${bad ? ` — frame ${bad.state.frame}: ${total(bad.state.model)}` : ""}`);
+}
 // Fire `n` pulls of the right trigger, each let out over 4 steps; the last
 // pull marked `mark`.
 const pulls = (n, mark) =>
@@ -720,11 +736,16 @@ const aimPistol = (settle) => [
   { frames: settle, right: {}, mark: "aimed" },
 ];
 // Level over the bench, the thumbstick pushed down: the magazine drops.
+// The thumbstick pushed down on the right hand (its magazine drops), then
+// let back for `fall` steps.
+const dropMag = (fall, view) => [
+  { frames: 1, right: { stick: [0, -1] }, mark: "ejected", ...(view ? { spectator: view } : {}) },
+  { frames: fall, right: { stick: [0, 0] }, mark: "fell" },
+];
 const dropOverBench = (fall) => [
   { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] }, spectator: atSpares },
   { frames: 5, right: {}, mark: "overBench" },
-  { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
-  { frames: fall, right: { stick: [0, 0] }, mark: "landed" },
+  ...dropMag(fall).map((seg, i) => (i === 1 ? { ...seg, mark: "landed" } : seg)),
 ];
 // The right hand aside; the left takes the dropped magazine by its top,
 // puts it in the pouch and takes it back.
@@ -893,16 +914,16 @@ const rifleWell = (d) => add(RIFLE_CENTRE, add(RIFLE_WELL.at, [0, d, 0]));
 const rifleMagHand = (d) => add(rifleWell(d), [0, -RIFLE_BASE, 0]);
 const handleAt = (back) => add(RIFLE_CENTRE, add(CHARGING.at, [0, 0, back]));
 
-// Close on the well, from ahead and left of the gun, a little low: the
+// On the well from ahead and left of the gun, at its height: the
 // magazine's approach and seat. (Armory rig (x, y, z) is world (4 - z, y, x).)
-const atWell = { eye: [4.72, 1.08, -0.32], target: [4.36, 1.06, 0.04], fov: 30 };
-// Close on the slide from the left, a little above.
-const atSlideSide = { eye: [4.48, 1.33, -0.38], target: [4.38, 1.19, 0.05], fov: 30 };
+const atWell = { eye: [4.85, 1.12, -0.3], target: [4.38, 1.06, 0.05], fov: 30 };
+// On the slide from behind the left shoulder, above.
+const atSlideSide = { eye: [4.25, 1.32, -0.3], target: [4.4, 1.18, 0.05], fov: 30 };
 // Above and left of the rifle's well and handle.
 const atRifleWell = { eye: [4.75, 1.22, -0.3], target: [4.38, 1.1, 0.12], fov: 34 };
 const atRifleHandle = { eye: [4.55, 1.45, -0.25], target: [4.3, 1.22, 0.15], fov: 32 };
 // Over the bench from the left: the round thrown out to the right.
-const atPort = { eye: [4.55, 1.5, -0.45], target: [4.35, 1.05, 0.25], fov: 44 };
+const atPort = { eye: [4.25, 1.38, -0.32], target: [4.42, 1.12, 0.1], fov: 40 };
 
 // The pistol taken, held at RELOAD_HAND.
 const pistolUp = [
@@ -954,8 +975,7 @@ const reloadScenarios = {
       ...pulls(PISTOL_ROUNDS),
       { frames: 1, right: { trigger: 1 }, mark: "dryLocked" },
       { frames: 6, right: { trigger: 0 } },
-      { frames: 1, right: { stick: [0, -1] }, mark: "ejected", spectator: atWell },
-      { frames: 30, right: { stick: [0, 0] }, mark: "fell" },
+      ...dropMag(30, atWell),
       ...takeSpare(SPARE.pistol, MAG_BASE),
       ...insert,
       ...rack(SLIDE.lockBack, SLIDE.travel, atSlideSide),
@@ -974,8 +994,7 @@ const reloadScenarios = {
     spectator: atWell,
     steps: [
       ...pistolUp,
-      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
-      { frames: 30, right: { stick: [0, 0] } },
+      ...dropMag(30),
       ...takeSpare(SPARE.pistol, MAG_BASE),
       { frames: 30, left: { to: magHand(-WELL.drop, tipped(180)), turn: tipped(180) }, mark: "atMouth" },
       { frames: 20, left: { to: magHand(0.01, tipped(180)) }, mark: "pushed" },
@@ -990,8 +1009,7 @@ const reloadScenarios = {
     spectator: atWell,
     steps: [
       ...pistolUp,
-      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
-      { frames: 30, right: { stick: [0, 0] } },
+      ...dropMag(30),
       ...takeSpare(SPARE.rifle, RIFLE_BASE),
       { frames: 30, left: { to: add(wellPoint(-WELL.drop), qrot(WELL_TURN, [0, -RIFLE_BASE, 0])), turn: WELL_TURN }, mark: "atMouth" },
       { frames: 20, left: { to: add(wellPoint(0.01), qrot(WELL_TURN, [0, -RIFLE_BASE, 0])) }, mark: "pushed" },
@@ -1007,8 +1025,7 @@ const reloadScenarios = {
     spectator: atWell,
     steps: [
       ...pistolUp,
-      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
-      { frames: 30, right: { stick: [0, 0] } },
+      ...dropMag(30),
       ...takeSpare(SPARE.pistol, MAG_BASE),
       { frames: 25, left: { to: magHand(-WELL.drop - 0.03), turn: WELL_TURN } },
       { frames: 10, left: { to: magHand(-WELL.drop) }, mark: "latched" },
@@ -1077,8 +1094,7 @@ const reloadScenarios = {
       ...pulls(PISTOL_ROUNDS).map((seg) => (seg.frames === 4 ? { ...seg, frames: 6 } : seg)),
       { frames: 1, right: { trigger: 1 } },
       { frames: 20, right: { trigger: 0 }, mark: "lockedBack" },
-      { frames: 1, right: { stick: [0, -1] }, spectator: atWell },
-      { frames: 30, right: { stick: [0, 0] } },
+      ...dropMag(30, atWell),
       ...takeSpare(SPARE.pistol, MAG_BASE).map((seg, i) => (i === 0 ? { ...seg, spectator: atSpares } : seg)),
       { frames: 30, left: { to: magHand(-WELL.drop, tipped(180)), turn: tipped(180) }, spectator: atWell },
       { frames: 20, left: { to: magHand(-WELL.drop + 0.04, tipped(180)) }, mark: "reversed" },
@@ -1110,8 +1126,7 @@ const reloadScenarios = {
       { frames: 6, right: { squeeze: 1 } },
       { frames: 30, right: { to: RIFLE_HAND } },
       { frames: 6, right: {} },
-      { frames: 1, right: { stick: [0, -1] } },
-      { frames: 30, right: { stick: [0, 0] } },
+      ...dropMag(30),
       ...takeSpare(SPARE.rifle, RIFLE_BASE),
       { frames: 25, left: { to: rifleMagHand(-RIFLE_WELL.drop - 0.04) } },
       { frames: 15, left: { to: rifleMagHand(-RIFLE_WELL.drop) } },
@@ -1145,8 +1160,7 @@ const reloadScenarios = {
       { frames: 6, right: { squeeze: 1 }, mark: "tookRifle" },
       { frames: 30, right: { to: RIFLE_HAND } },
       { frames: 6, right: {} },
-      { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
-      { frames: 30, right: { stick: [0, 0] } },
+      ...dropMag(30),
       ...takeSpare(SPARE.rifle, RIFLE_BASE),
       { frames: 25, left: { to: rifleMagHand(-RIFLE_WELL.drop - 0.04) } },
       { frames: 10, left: { to: rifleMagHand(-RIFLE_WELL.drop) }, mark: "aligned" },

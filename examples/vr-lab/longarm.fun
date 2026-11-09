@@ -37,17 +37,12 @@ let handleTravel = 0.07
 
 // The magazine in the well ahead of the grip; the readout on the receiver's
 // top ahead of the rear sight, tipped back toward the eye; the charging
-// handle (home while the bolt is locked back), the port on the right.
+// handle (home while the bolt is locked back, 70% back), the port on the right.
 let weapon: Gun.Weapon = Gun.weaponAt(grip, bore, chamberAhead, muzzleAhead, true,
   { kind: Ammo.RifleMag, at: Quat.sub(Quat.v3(0.0, 0.0, 0.0 - 0.09), center), rake: 0.0, drop: 0.1, guide: Gun.guide },
   { at: Quat.sub(Quat.v3(0.0, 0.0865, 0.0 - 0.07), center), tilt: 0.0 - Math.pi / 6.0, size: 0.005 },
-  { at: Quat.sub(handleAt, center), radius: 0.04, travel: handleTravel, lockBack: 0.0,
+  { at: Quat.sub(handleAt, center), radius: 0.04, travel: handleTravel, lockBack: 0.0, boltLock: 0.7 * handleTravel,
     port: Quat.sub(Quat.v3(0.04, 0.06, 0.0 - 0.03), center) })
-
-/// How far the bolt is drawn back: with the handle while it is racked, else
-/// locked back or home.
-let boltBack = (g: Gun.State): float =>
-  if Option.isSome(g.slide.hand) then g.slide.pull else if g.ammo.locked then 0.7 * handleTravel else 0.0
 
 expect Gun.clearBelow(weapon, size)
 
@@ -66,7 +61,7 @@ let foreSlack = 0.08
 type Along = { along: float, off: float }
 
 let alongOf = (fist: Input.pose, q: Input.point3): Along =>
-  let local = (Hold.relative(fist, Hold.at(q, Quat.identity))).position in
+  let local = Hold.localPoint(fist, q) in
   { along: 0.0 - local.z, off: Math.sqrt(local.x * local.x + local.y * local.y) }
 
 /// From a point to the foregrip of a rifle at `pose`: 0 on its line.

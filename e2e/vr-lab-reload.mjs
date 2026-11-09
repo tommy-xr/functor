@@ -27,18 +27,12 @@
 //   node e2e/vr-lab-reload.mjs
 import { check, failures } from "./mcp-rpc.mjs";
 import { fmt, len, play, qconj, qmul, qrot, quat, record, session, some, sub, turnOf, xyz } from "./xr-scenario.mjs";
-import { CAPACITY, LOOSE_CAP, PISTOL_ROUNDS, RIFLE_ROUNDS, SPARES, WELL, WELL_TURN, project, scenarios, wellPoint } from "./vr-lab-scenarios.mjs";
+import { CAPACITY, LOOSE_CAP, PISTOL_ROUNDS, WELL, WELL_TURN, conserves, project, readout, roundsIn, scenarios, wellPoint } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8298;
-const RESET_ROUNDS = PISTOL_ROUNDS + RIFLE_ROUNDS + SPARES.pistol * CAPACITY.pistol + SPARES.rifle * CAPACITY.rifle;
-
 const run = (name, body) => session(name, project, PORT, body);
 
-const roundsIn = (mag) => some(mag)?.rounds ?? 0;
-const count = (ammo) => roundsIn(ammo.mag) + (ammo.chambered ? 1 : 0);
 const isRound = (p) => p.kind.$ctor === "Props.Round";
-const unspent = (m) => m.props.reduce((n, p) => n + (isRound(p) ? 1 : roundsIn(p.mag)), 0) + count(m.gun.ammo) + count(m.rifle.ammo);
-const readout = (ammo) => `${some(ammo.mag) ? roundsIn(ammo.mag) : "--"}+${ammo.chambered ? 1 : 0}`;
 const magOf = (m, id) => m.props.find((p) => p.kind.$ctor === "Props.Mag" && p.kind.args[1] === id);
 const latched = (m, id) => some(magOf(m, id)?.latch) !== undefined;
 const posOf = (p) => xyz((some(p.held)?.accepted ?? p.pose).position);
@@ -46,13 +40,6 @@ const turnOfProp = (p) => quat((some(p.held)?.accepted ?? p.pose).orientation);
 const loose = (m) => m.props.filter(isRound);
 const PISTOL_SPARE = 1;
 const RIFLE_SPARE = 3;
-
-// Every recorded step keeps the station's rounds.
-function conserves(name, steps) {
-  const total = (m) => unspent(m) + m.gun.fired + m.rifle.fired + m.lost;
-  const bad = steps.find((s) => total(s.state.model) !== RESET_ROUNDS);
-  check(!bad, `${name}: every step (${steps.length}) conserves ${RESET_ROUNDS} rounds${bad ? ` — frame ${bad.state.frame}: ${total(bad.state.model)}` : ""}`);
-}
 
 // How far a point is off the held pistol's well axis.
 const offAxis = (p) => {

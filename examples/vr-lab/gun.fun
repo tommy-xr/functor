@@ -49,10 +49,11 @@ type Well = { kind: Ammo.Kind, at: Input.point3, rake: float, drop: float, guide
 
 /// The slide (or charging handle) a hand racks, in its weapon's frame: the
 /// zone a hand takes it in (`at`, within `radius`), how far back it goes
-/// (`travel`, along +Z), where it rests while locked back (`lockBack`: the
-/// pistol's slide stays back; the rifle's handle goes home, its bolt
-/// doesn't), and the port a thrown-out round leaves from.
-type Rack = { at: Input.point3, radius: float, travel: float, lockBack: float, port: Input.point3 }
+/// (`travel`, along +Z), where it and the bolt rest while locked back
+/// (`lockBack`, `boltLock`: the pistol's slide is its bolt and stays back;
+/// the rifle's handle goes home, its bolt doesn't), and the port a
+/// thrown-out round leaves from.
+type Rack = { at: Input.point3, radius: float, travel: float, lockBack: float, boltLock: float, port: Input.point3 }
 
 /// Where its ammo readout sits, in its frame, readable from behind (+Z),
 /// tipped `tilt` (radians about +X) toward the eye, each digit `size` wide.
@@ -82,7 +83,7 @@ let slideTravel = 0.04
 let pistol = weaponAt(grip, bore, chamberAhead, muzzleAhead, false,
   { kind: Ammo.PistolMag, at: Quat.sub(handleAt, center), rake: handleRake, drop: 0.12, guide: guide },
   { at: Quat.sub(Quat.v3(0.0, bore, 0.056), center), tilt: 0.0, size: 0.0045 },
-  { at: Quat.sub(Quat.v3(0.0, bore, 0.04), center), radius: 0.035, travel: slideTravel, lockBack: 0.7 * slideTravel,
+  { at: Quat.sub(Quat.v3(0.0, bore, 0.04), center), radius: 0.035, travel: slideTravel, lockBack: 0.7 * slideTravel, boltLock: 0.7 * slideTravel,
     port: Quat.sub(Quat.v3(0.03, bore, 0.0 - 0.01), center) })
 
 /// A seated magazine's pose in its weapon's frame.
@@ -309,6 +310,11 @@ expect strokes(pistol.rack, true, [0.0, 0.006]) == [Back, Home] && strokes(pisto
 
 /// How far a weapon's slide (or handle) is drawn back.
 let slideBack = (w: Weapon, g: State): float => if Option.isSome(g.slide.hand) then g.slide.pull else rest(w.rack, g.ammo.locked)
+
+/// How far its bolt is drawn back: with the handle while it is racked, else
+/// locked back or home.
+let boltBack = (w: Weapon, g: State): float =>
+  if Option.isSome(g.slide.hand) then g.slide.pull else if g.ammo.locked then w.rack.boltLock else 0.0
 
 // --- the shot ---
 

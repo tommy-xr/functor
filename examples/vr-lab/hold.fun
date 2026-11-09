@@ -144,6 +144,9 @@ let relative = (a: Input.pose, b: Input.pose): Input.pose => {
 
 let inverse = (a: Input.pose): Input.pose => relative(a, origin)
 
+/// A point seen from `frame`.
+let localPoint = (frame: Input.pose, q: Input.point3): Input.point3 => (relative(frame, at(q, Quat.identity))).position
+
 /// Part of the way from `a` to `b` as the sweep moves: steadily, turning at
 /// a constant rate.
 let interpolate = (a: Input.pose, b: Input.pose, t: float): Input.pose => {
@@ -312,17 +315,20 @@ let handOff = (side: Side, grip: Input.pose, held: Held): Held =>
 /// pops into the hand.
 let settleInto = (authored: Input.pose, held: Held): Held => { held with snapTo: Option.Some(inverse(authored)) }
 
-/// One step of settling: the offset moved toward `snapTo` by at most
-/// `snapStep` and `snapTurnStep`, done once it is there.
+/// `from` one settling step toward `to`: moved at most `snapStep` and turned
+/// at most `snapTurnStep`; `to` itself once that reaches it.
+let stepToward = (from: Input.pose, to: Input.pose): Input.pose =>
+  let steps = Math.max(Quat.length(Quat.sub(to.position, from.position)) / snapStep, Quat.angle(from.orientation, to.orientation) / snapTurnStep) in
+  if steps <= 1.0 then to else interpolate(from, to, 1.0 / steps)
+
+/// One step of settling: the offset moved toward `snapTo` (`stepToward`),
+/// done once it is there.
 let settle = (held: Held): Held =>
   match held.snapTo with
   | Option.None => held
   | Option.Some(target) =>
-    let steps = Math.max(
-      Quat.length(Quat.sub(target.position, held.offset.position)) / snapStep,
-      Quat.angle(held.offset.orientation, target.orientation) / snapTurnStep) in
-    if steps <= 1.0 then { held with offset: target, snapTo: Option.None }
-    else { held with offset: interpolate(held.offset, target, 1.0 / steps) }
+    let offset = stepToward(held.offset, target) in
+    if offset == target then { held with offset: target, snapTo: Option.None } else { held with offset: offset }
 
 /// Where the hand is on the prop as it is: the grip the accepted pose implies.
 let gripOn = (held: Held): Input.pose => compose(held.accepted, inverse(held.offset))

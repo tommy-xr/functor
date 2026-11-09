@@ -136,7 +136,9 @@ expect (
 
 type Bench = { guns: List<State>, mags: List<Mag>, loose: float, spent: float }
 
-type Op = | Trigger(gun: float) | Eject(gun: float) | Insert(mag: float, gun: float) | Rack(gun: float)
+// `Extract` / `Close`: the slide's two strokes, as the game makes them (a
+// magazine may go in between).
+type Op = | Trigger(gun: float) | Eject(gun: float) | Insert(mag: float, gun: float) | Rack(gun: float) | Extract(gun: float) | Close(gun: float)
 
 let unspent = (b: Bench): float =>
   (b.mags |> List.map((m) => m.rounds) |> List.sum) + (b.guns |> List.map(count) |> List.sum) + b.loose
@@ -164,6 +166,10 @@ let apply = (b: Bench, op: Op): Bench =>
   | Rack(i) =>
     let (g, loose) = rack(gun(i)) in
     { b with guns: atIndex(i, (_) => g, b.guns), loose: b.loose + loose }
+  | Extract(i) =>
+    let (g, loose) = extract(gun(i)) in
+    { b with guns: atIndex(i, (_) => g, b.guns), loose: b.loose + loose }
+  | Close(i) => { b with guns: atIndex(i, close, b.guns) }
 
 let bench: Bench = {
   guns: [loaded(PistolMag), loaded(RifleMag)],
@@ -210,15 +216,17 @@ let randomOps = (n: float, seed: Random.Seed): List<Op> =>
       if kind < 0.4 then Trigger(gun)
       else if kind < 0.6 then Eject(gun)
       else if kind < 0.85 then Insert(Math.floor(pick * 4.0), gun)
-      else Rack(gun) in
+      else if kind < 0.9 then Rack(gun)
+      else if kind < 0.95 then Extract(gun)
+      else Close(gun) in
     ([op, ..out], s3), ([], seed)) in
   List.reverse(ops)
 
-// 1200 seeded ops conserve every step, and reach every path: shots, loose
+// 1200 seeded ops (the slide's strokes apart too) conserve every step, and reach every path: shots, loose
 // rounds, rounds left over.
 expect (
   let ops = randomOps(1200.0, Random.seed(10.0)) in
   let end = ops |> List.fold(apply, bench) in
   List.length(ops) == 1200.0 && conserves(bench, ops)
-    && end.spent > 40.0 && end.loose > 5.0 && unspent(end) > 0.0 && total(end) == total(bench)
+    && end.spent > 30.0 && end.loose > 5.0 && unspent(end) > 0.0 && total(end) == total(bench)
 )
