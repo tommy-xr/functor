@@ -42,6 +42,10 @@ android_logger = "0.14"
 serde_json = "1.0"
 # gettid / __system_property_get for the sim-thread opt-in and XR thread hints.
 libc = "0.2"
+# `Xr.streamCamera`: the passthrough camera through NDK Camera2 + AImageReader
+# (`media` links mediandk; `passthrough_camera.rs` links camera2ndk).
+ndk-sys = { version = "0.6", features = ["media"] }
+cgmath = "0.18"
 
 # cargo-apk packaging metadata (`cargo apk build` from this directory).
 # functor-runner-on-Quest is a tool APK, like functor-runner is a binary: the
@@ -81,6 +85,16 @@ name = "com.oculus.permission.HAND_TRACKING"
 # XR_META_environment_depth only to apps that declare it.
 [[package.metadata.android.uses_permission]]
 name = "com.oculus.permission.USE_SCENE"
+
+# The passthrough RGB cameras (`settings`' `Xr.streamCamera`), through the NDK
+# Camera2 API. A runtime permission the shell does not request yet: grant it
+# with `adb shell pm grant dev.functor.runner horizonos.permission.HEADSET_CAMERA`.
+[[package.metadata.android.uses_permission]]
+name = "horizonos.permission.HEADSET_CAMERA"
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.camera2.any"
+required = false
 
 # Sockets — even the device-loopback reload endpoint — need this; binding
 # without it is EPERM.

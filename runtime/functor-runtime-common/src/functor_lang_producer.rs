@@ -677,8 +677,6 @@ fn stream_camera_warning(config: Option<GameConfig>, settings: &GameSettings) ->
     settings.xr.stream_camera.as_ref()?;
     if cfg!(target_arch = "wasm32") {
         Some("[functor-lang] Xr.streamCamera is not supported on web; nothing streams")
-    } else if cfg!(target_os = "android") {
-        Some("[functor-lang] Xr.streamCamera is not supported on Quest yet; nothing streams")
     } else if !crate::runtime_settings::passthrough_requested(config) {
         Some(
             "[functor-lang] Xr.streamCamera streams the passthrough camera — add \

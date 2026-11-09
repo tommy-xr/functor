@@ -155,7 +155,7 @@ impl Drop for SensorSender {
 /// A frame a stream asked for ([`SensorStreamer::capture`]), carried to
 /// [`SensorStreamer::send`] with whatever produced it.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct StreamCapture {
+pub struct StreamCapture {
     /// The stream it was taken for; another stream drops it.
     stream: u64,
     /// When it was asked for, [`steady_ns`].
