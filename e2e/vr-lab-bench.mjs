@@ -128,7 +128,8 @@ const versus = (name, r) =>
 versus("magazine latched", seating);
 versus("six loose rounds", strewn);
 versus("shotgun aimed", sg);
-const shots = await measureShots(loop, "aimed");
+// Up to the last shot's pump (`/frames` keeps the last 150 or so).
+const shots = await measureShots({ ...loop, steps: loop.steps.slice(0, loop.steps.findIndex((s) => s.mark === "after") + 1) }, "aimed");
 const [firing, other] = [stats(shots.fire), stats(shots.other)];
 console.log(`\nshotgun, stepped one at a time from the aim: ${shots.fire.length} firing steps, ${shots.other.length} others, µs`);
 console.log(`  ${"".padEnd(5)} ${["min", "med", "p95", "max"].map((h) => h.padStart(7)).join(" ")}`);
