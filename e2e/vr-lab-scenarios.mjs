@@ -1361,7 +1361,7 @@ const shotgunScenarios = {
 // A point in the frame of the pistol held by a hand at `at` turned `q`
 // (`Gun`'s, centred on its collider), and its slide `back` behind home.
 const onPistol = (at, q, local) => add(at, qrot(q, add(PISTOL_FROM_GRIP, local)));
-export const slideOn = (at, q, back) => onPistol(at, q, add(SLIDE.at, [0, 0, back]));
+const slideOn = (at, q, back) => onPistol(at, q, add(SLIDE.at, [0, 0, back]));
 // Close on the pistol held clear of the wall, from behind its slide.
 const atClearSlide = { eye: [4.05, 1.5, 0.25], target: [4.5, 1.18, -0.3], fov: 32 };
 
