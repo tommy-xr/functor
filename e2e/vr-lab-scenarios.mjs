@@ -1362,40 +1362,45 @@ const shotgunScenarios = {
 // (`Gun`'s, centred on its collider), and its slide `back` behind home.
 const onPistol = (at, q, local) => add(at, qrot(q, add(PISTOL_FROM_GRIP, local)));
 const slideOn = (at, q, back) => onPistol(at, q, add(SLIDE.at, [0, 0, back]));
-// Close on the pistol held clear of the wall, from behind its slide.
-const atClearSlide = { eye: [4.05, 1.5, 0.25], target: [4.5, 1.18, -0.3], fov: 32 };
+// The hands 20 cm through the wall (the pistol's), and the rifle's 21 cm.
+const PISTOL_DEEP = [-0.65, 1.2, -0.5];
+const RIFLE_DEEP = [-0.25, 1.2, -0.45];
+// Down range, side on to the wall (edge-on, on the right): the guns in it.
+const besideWall = { eye: [5.2, 1.35, -0.3], target: [4.5, 1.2, -0.5], fov: 34 };
+// Down range of the pistol held clear of the wall: the slide racked.
+const overSlide = { eye: [5.1, 1.5, -0.3], target: [4.5, 1.22, -0.33], fov: 40 };
 
 const handViewScenarios = {
-  // The pistol pushed into the wall: the hand drawn on its grip at the wall,
-  // its ghost through it. Clear of it, the left hand racks the slide 4 cm
-  // past its travel: drawn at the slide's end, its ghost behind. Holstered;
-  // the rifle taken in two hands and pushed into the wall: both hands drawn
-  // on its grips, their ghosts through it.
+  // The pistol pushed into the wall, the hand 20 cm on: the hand drawn on
+  // its grip at the wall, its ghost through it. Clear of it, the left hand
+  // racks the slide 8 cm past its travel: drawn at the slide's end, its ghost
+  // behind. Holstered; the rifle taken in two hands and pushed into the
+  // wall: both hands drawn on its grips, their ghosts through it.
   "hand-view-guns": {
     station: 3,
     neck: NECK,
-    spectator: atArmoryWall,
+    spectator: besideWall,
     steps: [
       ...takePistol,
       { frames: 25, right: { to: WALL_NEAR, turn: LEFT } },
-      { frames: 25, right: { to: THROUGH } },
+      { frames: 30, right: { to: PISTOL_DEEP } },
       { frames: 30, right: {}, mark: "pistolHeld" },
-      { frames: 20, right: { to: CLEAR }, spectator: atClearSlide },
+      { frames: 20, right: { to: CLEAR }, spectator: overSlide },
       { frames: 20, left: { to: add(slideOn(CLEAR, LEFT, 0), [0, 0.06, 0.06]), turn: LEFT } },
       { frames: 10, left: { to: slideOn(CLEAR, LEFT, 0) } },
       { frames: 4, left: { squeeze: 1 } },
-      { frames: 12, left: { to: slideOn(CLEAR, LEFT, SLIDE.travel + 0.04) } },
+      { frames: 12, left: { to: slideOn(CLEAR, LEFT, SLIDE.travel + 0.08) } },
       { frames: 30, left: {}, mark: "rackHeld" },
       { frames: 12, left: { to: slideOn(CLEAR, LEFT, 0) } },
       { frames: 1, left: { squeeze: 0 } },
       { frames: 20, left: { to: LEFT_OUT, turn: ID } },
-      { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID }, spectator: atArmoryWall },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID }, spectator: besideRifleWall },
       { frames: 25, right: { to: ARMORY_RH } },
       { frames: 1, right: { squeeze: 0 } },
       ...takeRifle,
-      { ...raise(), spectator: besideRifleWall },
+      raise(),
       { frames: 30, ...bothTo(RIFLE_WALL.near) },
-      { frames: 25, ...bothTo(RIFLE_WALL.through) },
+      { frames: 30, ...bothTo(RIFLE_DEEP) },
       { frames: 40, right: {}, mark: "rifleHeld" },
       { frames: 20, ...bothTo(RIFLE_WALL.clear) },
     ],

@@ -14,7 +14,7 @@
 //      trigger only clicks: no shot. The hand is drawn (`/scene`) on the
 //      pistol's grip at the wall, its ghost at the tracked hand. Drawn back
 //      clear, it fires, from the muzzle of the pose the hold accepted.
-//   2b. Clear of the wall, the left hand racks the slide 4 cm past its
+//   2b. Clear of the wall, the left hand racks the slide 8 cm past its
 //      travel: drawn on the slide at its end, its ghost at the tracked hand.
 //   3. Holstered at the right thigh and drawn with the trigger already held:
 //      it never jumps (at most a 2 cm, 8.6° settling step each step), and
