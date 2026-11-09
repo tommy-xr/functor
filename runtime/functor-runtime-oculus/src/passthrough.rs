@@ -165,7 +165,11 @@ environment blend mode; passthrough frames show the stand-in room"
         } else {
             PassthroughMode::Paused
         };
-        Some(PassthroughState { mode, warning })
+        Some(PassthroughState {
+            mode,
+            warning,
+            camera: None,
+        })
     }
 
     /// End the frame: the passthrough layer (if running) under `projection`.

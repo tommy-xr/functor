@@ -627,6 +627,9 @@ its launch config)"
                     if let Some(warning) = stream_depth_warning(self.config, &settings) {
                         reporter.report_keyed("settings.streamDepth", warning.to_string());
                     }
+                    if let Some(warning) = stream_camera_warning(self.config, &settings) {
+                        reporter.report_keyed("settings.streamCamera", warning.to_string());
+                    }
                     self.settings = Some(settings)
                 }
                 None => reporter.report_keyed(
@@ -663,6 +666,21 @@ fn stream_depth_warning(config: Option<GameConfig>, settings: &GameSettings) -> 
         Some(
             "[functor-lang] Xr.streamDepth streams the environment depth — add `Xr.scene(true)` \
 to `config`; nothing streams without it",
+        )
+    } else {
+        None
+    }
+}
+
+/// Why `settings`' `Xr.streamCamera` streams nothing here, if it does not.
+fn stream_camera_warning(config: Option<GameConfig>, settings: &GameSettings) -> Option<&'static str> {
+    settings.xr.stream_camera.as_ref()?;
+    if cfg!(target_arch = "wasm32") {
+        Some("[functor-lang] Xr.streamCamera is not supported on web; nothing streams")
+    } else if !crate::runtime_settings::passthrough_requested(config) {
+        Some(
+            "[functor-lang] Xr.streamCamera streams the passthrough camera — add \
+`Xr.passthrough(true)` to `config`; nothing streams without it",
         )
     } else {
         None
@@ -3433,6 +3451,30 @@ Xr.streamDepth({{ url: \"http://h/\", hz: 5.0 }}))\n"
         );
         let err = contract_of(&[("game.fun", &config)]).err().unwrap();
         assert!(err.contains("`Xr.streamDepth`") && err.contains("settings"), "{err}");
+    }
+
+    #[test]
+    fn stream_camera_is_a_live_setting() {
+        let game = format!(
+            "{GAME}let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> \
+Xr.streamCamera({{ url: \"http://127.0.0.1:9001/camera\", hz: 5.0 }}))\n"
+        );
+        let (_, contract) = contract_of(&[("game.fun", &game)]).expect("loads");
+        let settings = contract.settings.unwrap();
+        assert_eq!(
+            settings.xr.stream_camera,
+            Some(crate::runtime_settings::SensorStreamSettings {
+                url: "http://127.0.0.1:9001/camera".to_string(),
+                hz: 5.0,
+            })
+        );
+        assert!(stream_camera_warning(None, &settings).unwrap().contains("Xr.passthrough(true)"));
+        let config = format!(
+            "{GAME}let config = Config.create() |> Config.xr(Xr.create() |> \
+Xr.streamCamera({{ url: \"http://h/\", hz: 5.0 }}))\n"
+        );
+        let err = contract_of(&[("game.fun", &config)]).err().unwrap();
+        assert!(err.contains("`Xr.streamCamera`") && err.contains("settings"), "{err}");
     }
 
     #[test]

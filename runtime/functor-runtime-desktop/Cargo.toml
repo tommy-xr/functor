@@ -83,6 +83,10 @@ name = "depth_stream"
 harness = false
 
 [[test]]
+name = "camera_stream"
+harness = false
+
+[[test]]
 name = "stereo_shadow"
 harness = false
 

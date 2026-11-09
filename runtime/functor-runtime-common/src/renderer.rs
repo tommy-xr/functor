@@ -455,6 +455,67 @@ are ignored — declare Frame.withUiTarget on the main frame",
     );
 }
 
+/// What a passthrough camera would see of `frame` on a shell without one:
+/// the stand-in room (`Frame.withStandInRoom`, over the procedural room),
+/// never the game's scene — from `camera` through `projection`, into the
+/// bound `width`×`height` framebuffer, shader-encoded to sRGB.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_stand_in_view(
+    gl: &glow::Context,
+    shader_version: &str,
+    asset_cache: Arc<AssetCache>,
+    scene_context: &SceneContext,
+    frame: &Frame,
+    camera: &Camera,
+    projection: &Matrix4<f32>,
+    frame_time: FrameTime,
+    width: u32,
+    height: u32,
+) {
+    unsafe {
+        gl.viewport(0, 0, width as i32, height as i32);
+        gl.disable(glow::SCISSOR_TEST);
+        let [r, g, b] = crate::frame::PASSTHROUGH_PLACEHOLDER;
+        gl.clear_color(r, g, b, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+    }
+    let nothing = Scene3D {
+        obj: crate::SceneObject::Group(vec![]),
+        xform: Matrix4::from_scale(1.0),
+    };
+    forward_pass(
+        gl,
+        shader_version,
+        asset_cache,
+        scene_context,
+        &nothing,
+        &frame.lights,
+        camera,
+        frame_time,
+        DebugRenderMode::Default,
+        None,
+        None,
+        None,
+        None,
+        frame.reflection_sky(),
+        true,
+        None,
+        frame.stand_in_room.as_deref(),
+        None,
+        None,
+        None,
+        width as f32 / height as f32,
+        height as f32,
+        camera,
+        None,
+        None,
+        None,
+        Some(projection),
+        false,
+        true,
+    );
+}
+
 /// Draw the frame's ordered 2D layers after its 3D pass. Sprite scenes reuse
 /// the shared quad/material/asset path, but get an orthographic camera and
 /// explicit alpha blending with no depth test. Group list order is therefore

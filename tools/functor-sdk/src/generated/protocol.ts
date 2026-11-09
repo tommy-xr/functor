@@ -89,37 +89,6 @@ export type CellsWalk = { visible: number, portals: number, cut: number, outside
 export type CullCounts = { tested: number, culled: number, };
 
 /**
- * Where and how often `Xr.streamDepth` sends depth frames.
- */
-export type SensorStreamSettings = { url: string, 
-/**
- * Frames a second, at most the readback rate.
- */
-hz: number, };
-
-/**
- * `GET /state.xr.stream`: the `Xr.streamDepth` stream, present while
- * `settings` asks for one.
- */
-export type SensorStreamState = { url: string, hz: number, 
-/**
- * Frames the server answered 2xx.
- */
-sent: number, 
-/**
- * Frames replaced by a newer one while a POST was in flight.
- */
-dropped: number, 
-/**
- * Frames that failed: a non-2xx answer, a timeout, no connection.
- */
-errors: number, 
-/**
- * The latest failure, or why nothing streams (a refused origin).
- */
-last_error?: string, };
-
-/**
  * A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
  */
 export type DisplayRefreshRate = { 
@@ -540,7 +509,12 @@ export type PassthroughState = { mode: PassthroughMode,
 /**
  * Why the feed is unavailable, when it is.
  */
-warning?: string, };
+warning?: string, 
+/**
+ * `GET /state.passthrough.camera`: the `Xr.streamCamera` stream, present
+ * while `settings` asks for one.
+ */
+camera?: SensorStreamState, };
 
 /**
  * How the last pushed reload settled.
@@ -775,6 +749,38 @@ samples?: number, };
 export type RuntimeViewport = { width: number, height: number, };
 
 /**
+ * Where and how often `Xr.streamDepth` or `Xr.streamCamera` sends frames.
+ */
+export type SensorStreamSettings = { url: string, 
+/**
+ * Frames a second, at most as many as the shell captures.
+ */
+hz: number, };
+
+/**
+ * A sensor stream's report: `GET /state.xr.stream` (`Xr.streamDepth`) or
+ * `/state.passthrough.camera` (`Xr.streamCamera`), present while `settings`
+ * asks for one.
+ */
+export type SensorStreamState = { url: string, hz: number, 
+/**
+ * Frames the server answered 2xx.
+ */
+sent: number, 
+/**
+ * Frames replaced by a newer one while a POST was in flight.
+ */
+dropped: number, 
+/**
+ * Frames that failed: a non-2xx answer, a timeout, no connection.
+ */
+errors: number, 
+/**
+ * The latest failure, or why nothing streams (a refused origin).
+ */
+last_error?: string, };
+
+/**
  * One frame's skinned-model work, summed over every pass (shadow and each
  * eye): mesh draw calls (an instanced draw counts once), and pose
  * evaluations (one per skinned model per pass).
@@ -948,7 +954,11 @@ passthrough?: boolean,
 /**
  * `Xr.streamDepth({url, hz})`: POST the environment depth to `url`.
  */
-stream_depth?: SensorStreamSettings, };
+stream_depth?: SensorStreamSettings, 
+/**
+ * `Xr.streamCamera({url, hz})`: POST the passthrough camera to `url`.
+ */
+stream_camera?: SensorStreamSettings, };
 
 /**
  * `GET /state.xr`: headset scene state, omitted while it has nothing to say.

@@ -564,6 +564,84 @@ What each field holds today:
   `Frame.camera` moving the rig) — the same events that start the fused
   room over. It stays 0 on desktop.
 
+### Camera streaming
+
+`Xr.streamCamera` sends the left passthrough camera's image to a host, for
+tools that colour or reconstruct the room beside the game:
+
+```functor
+let config = Config.create() |> Config.xr(Xr.create() |> Xr.passthrough(true))
+let settings = (model) =>
+  Settings.create()
+  |> Settings.xr(Xr.create() |> Xr.streamCamera({ url: "http://127.0.0.1:9001/camera", hz: 5.0 }))
+```
+
+- A `settings` knob; it needs `config`'s `Xr.passthrough(true)` (without it a
+  one-time warning says so): the headset delivers camera images only while
+  passthrough runs. It streams only while the feed runs, so
+  `Xr.passthroughEnabled(false)` pauses it like a paused clock, and resuming
+  starts a new stream.
+- Otherwise it behaves as depth streaming: the same bounds, timeouts,
+  suppression (pause, scrub, `--fixed-time`, `--replay`, `--input-script`)
+  and origin policy (`--allow-sensor-upload` / `debug.functor.allow_sensor_upload`
+  cover both). Camera frames have their own sender thread, so a camera POST
+  never waits behind a depth POST. `/state.passthrough.camera` reports
+  `{url, hz, sent, dropped, errors, last_error?}`.
+- A frame is large (640×480 is 460 KB, 1280×960 is 1.8 MB): keep `hz` to a
+  few a second.
+- Desktop renders the stand-in room — the procedural room plus
+  `Frame.withStandInRoom`, never the game's scene — from the game's view
+  (the emulated head under `--emulate-xr`) through a fixed pinhole camera:
+  640×480, `fx = fy = 500`, `cx = 320`, `cy = 240`, `source: "emulated"`.
+  Web does not stream; a one-time warning says so.
+
+The wire format, `functor.camera-frame/1`: one frame per `POST <url>`,
+`Content-Type: application/vnd.functor.camera-frame`, framed as depth frames
+are (a big-endian u32 header length, the JSON header, then `payload_len`
+bytes).
+
+```jsonc
+{
+  "schema": "functor.camera-frame/1",
+  "stream": "a1b2c3", "seq": 0,     // as depth frames
+  "source": "device",               // "device" (headset camera) | "emulated" (desktop stand-in room)
+  "camera": "left",                 // "left" | "right", as the wearer sees them
+  "width": 640, "height": 480,
+  "encoding": "i420",               // Y, then U, then V; rows top-down; BT.601 full range
+  "intrinsics": { "fx": 500.0, "fy": 500.0, "cx": 320.0, "cy": 240.0 }, // pixels of this image
+  "distortion": null,               // null = pinhole; else Android LENS_DISTORTION [k1, k2, k3, p1, p2]
+  "camera_to_world": [16 floats],   // camera → the depth frames' world; column-major
+  "camera_to_head": [16 floats],    // camera → head (OpenXR VIEW: x right, y up, z back)
+  "time": { "clock": "steady", "exposure_ns": 0, "sensor_ns": null },
+  "tracking": true,                 // false: no head pose at exposure; camera_to_world is the identity
+  "space_epoch": 0,                 // as depth frames
+  "payload_len": 460800
+}
+```
+
+The camera frame is OpenCV's — x right, y down, z forward — with pixel
+centres at integers and row 0 at the top. Projecting world point `p`:
+
+```
+(x, y, z) = inverse(camera_to_world) · p      // z > 0: in front
+u = fx · x / z + cx,  v = fy · y / z + cy
+Y = payload[v · width + u]
+U = payload[width · height + (v / 2) · ⌈width / 2⌉ + u / 2]
+V = payload[width · height + ⌈width / 2⌉ · ⌈height / 2⌉ + (v / 2) · ⌈width / 2⌉ + u / 2]
+```
+
+What each field holds today:
+
+- `camera` is `"left"`.
+- `time.clock` is `"xr"` for device frames: `exposure_ns` is the start of
+  the first row's exposure in OpenXR time, the clock of depth frames'
+  `display_ns`, and `sensor_ns` is the camera's own `CLOCK_MONOTONIC`
+  timestamp. Emulated frames use `"steady"`: `exposure_ns` is when the image
+  was rendered, and `sensor_ns` is `null`.
+- `camera_to_world` is the head's pose at `exposure_ns` times
+  `camera_to_head`. The emulated camera sits at the view, so its
+  `camera_to_head` only flips y and z.
+
 ### Room-bounce
 
 `examples/room-bounce` shoots bouncy balls at the real room:

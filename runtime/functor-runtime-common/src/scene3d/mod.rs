@@ -189,6 +189,11 @@ pub struct SceneContext {
     depth_sender: RefCell<Option<crate::sensor_stream::SensorSender>>,
     sensor_upload_origins: RefCell<Vec<String>>,
     space_epoch: Cell<u64>,
+    // `Xr.streamCamera`'s stream, and the stand-in room rendered as its
+    // camera where the shell has none.
+    camera_stream: RefCell<Option<crate::sensor_stream::SensorStreamer>>,
+    camera_sender: RefCell<Option<crate::sensor_stream::SensorSender>>,
+    emulated_camera: RefCell<Option<crate::camera_stream::EmulatedCamera>>,
     // The room fused from that depth while `Xr.scene` is on, and whether it
     // fuses on the render thread (`set_fusion_inline`).
     fused_room: RefCell<Option<crate::fused_room::FusedRoom>>,
@@ -925,6 +930,9 @@ impl SceneContext {
             depth_sender: RefCell::new(None),
             sensor_upload_origins: RefCell::new(Vec::new()),
             space_epoch: Cell::new(0),
+            camera_stream: RefCell::new(None),
+            camera_sender: RefCell::new(None),
+            emulated_camera: RefCell::new(None),
             fused_room: RefCell::new(None),
             // wasm has no threads.
             fusion_inline: Cell::new(cfg!(target_arch = "wasm32")),
@@ -1091,6 +1099,69 @@ impl SceneContext {
             &self.sensor_upload_origins.borrow(),
             live,
         );
+    }
+
+    /// Follow `settings`' `Xr.streamCamera` as [`Self::set_depth_stream`]
+    /// does `Xr.streamDepth`.
+    pub fn set_camera_stream(
+        &self,
+        settings: Option<&crate::runtime_settings::SensorStreamSettings>,
+        live: bool,
+    ) {
+        crate::sensor_stream::follow(
+            &mut self.camera_stream.borrow_mut(),
+            &mut self.camera_sender.borrow_mut(),
+            "Xr.streamCamera",
+            crate::camera_frame::CONTENT_TYPE,
+            settings,
+            &self.sensor_upload_origins.borrow(),
+            live,
+        );
+    }
+
+    /// `GET /state.passthrough.camera`: present while `settings` asks for a
+    /// camera stream.
+    pub fn camera_stream_state(&self) -> Option<crate::runtime_settings::SensorStreamState> {
+        self.camera_stream.borrow().as_ref().map(|stream| stream.state())
+    }
+
+    /// A shell without a passthrough camera, once per frame after its main
+    /// pass: stream `frame`'s stand-in room as seen from `camera` (the view)
+    /// through [`crate::camera_stream::EMULATED_INTRINSICS`].
+    pub fn stream_emulated_camera(
+        &self,
+        gl: &glow::Context,
+        shader_version: &str,
+        asset_cache: Arc<AssetCache>,
+        frame: &crate::Frame,
+        camera: &crate::Camera,
+        frame_time: crate::FrameTime,
+    ) {
+        let mut stream = self.camera_stream.borrow_mut();
+        let mut emulated = self.emulated_camera.borrow_mut();
+        let Some(stream) = stream.as_mut() else {
+            if let Some(emulated) = emulated.take() {
+                emulated.delete(gl);
+            }
+            return;
+        };
+        let space_epoch = self.space_epoch.get();
+        emulated
+            .get_or_insert_with(|| crate::camera_stream::EmulatedCamera::new(gl))
+            .update(gl, stream, camera.view_matrix(), space_epoch, |projection| {
+                crate::renderer::render_stand_in_view(
+                    gl,
+                    shader_version,
+                    asset_cache,
+                    self,
+                    frame,
+                    camera,
+                    projection,
+                    frame_time,
+                    crate::camera_stream::EMULATED_WIDTH,
+                    crate::camera_stream::EMULATED_HEIGHT,
+                )
+            });
     }
 
     /// The origins besides loopback `Xr.streamDepth` and `Xr.streamCamera`

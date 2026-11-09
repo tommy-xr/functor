@@ -25,6 +25,7 @@ struct XrKnobs {
     foveation: Option<FoveationLevel>,
     passthrough_enabled: Option<bool>,
     stream_depth: Option<SensorStreamSettings>,
+    stream_camera: Option<SensorStreamSettings>,
 }
 
 struct FunctorLangXr(XrKnobs);
@@ -101,7 +102,7 @@ impl crate::host_registry::FromArg for FoveationLevel {
     }
 }
 
-/// `Xr.streamDepth`'s `{url, hz}`.
+/// `Xr.streamDepth`'s and `Xr.streamCamera`'s `{url, hz}`.
 struct StreamOptionsArg(SensorStreamSettings);
 
 impl crate::host_registry::FromArg for StreamOptionsArg {
@@ -213,6 +214,16 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         },
     );
     reg.fn2(
+        "Xr.streamCamera",
+        "Xr.streamCamera({url, hz}, xr)",
+        |options: StreamOptionsArg, xr: FunctorLangXr| {
+            FunctorLangXr(XrKnobs {
+                stream_camera: Some(options.0),
+                ..xr.0
+            })
+        },
+    );
+    reg.fn2(
         "Xr.foveation",
         "Xr.foveation(level, xr)",
         |level: FoveationLevel, xr: FunctorLangXr| {
@@ -319,6 +330,8 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 Some("Xr.passthroughEnabled")
             } else if xr.0.stream_depth.is_some() {
                 Some("Xr.streamDepth")
+            } else if xr.0.stream_camera.is_some() {
+                Some("Xr.streamCamera")
             } else {
                 None
             };
@@ -389,6 +402,7 @@ in `let config = Config.create() |> Config.xr(…)`, then pause or resume the fe
                 foveation: xr.0.foveation,
                 passthrough: xr.0.passthrough_enabled,
                 stream_depth: xr.0.stream_depth,
+                stream_camera: xr.0.stream_camera,
             };
             Ok(FunctorLangSettings(settings))
         },

@@ -3,8 +3,8 @@
 //!
 //! Each knob belongs to one bucket, by when the shell can honour it:
 //! `refreshRate`, `passthrough`, `scene`, `floorLocked` and `msaa` are read
-//! once at load, so they go in `config`; `foveation`, `passthroughEnabled` and
-//! `streamDepth` apply live, so they go in `settings`. A knob in the wrong bucket is a teaching
+//! once at load, so they go in `config`; `foveation`, `passthroughEnabled`,
+//! `streamDepth` and `streamCamera` apply live, so they go in `settings`. A knob in the wrong bucket is a teaching
 //! error naming the right one. Shells without a headset ignore these options
 //! (except where a knob says otherwise); desktop still reports them in
 //! `GET /state`.
@@ -27,7 +27,7 @@ type level =
   | Medium
   | High
 
-/// Where `streamDepth` sends frames, and how many a second.
+/// Where `streamDepth` or `streamCamera` sends frames, and how many a second.
 type streamOptions = { url: string, hz: float }
 
 /// A controller, for `Effect.haptic`.
@@ -129,3 +129,16 @@ let foveation : (level, t) => t
 /// reaches the model: `GET /state` reports the stream as `xr.stream`.
 /// Desktop streams the stand-in room's depth; web does not stream.
 let streamDepth : (streamOptions, t) => t
+/// POST the left passthrough camera's image to `url`, `hz` frames a second,
+/// one `functor.camera-frame/1` per request (see `docs/vr.md`, "Camera
+/// streaming"); the options are last for piping.
+///
+/// A `settings` knob; it needs `config`'s `Xr.passthrough(true)`, and
+/// streams only while the feed runs (`Xr.passthroughEnabled`). Otherwise it
+/// behaves as `streamDepth`: a new `url` or `hz` starts a new stream, a frame
+/// waiting behind a POST in flight is replaced and counted as dropped,
+/// loopback only unless the operator allows another origin, and nothing
+/// streams while the clock is paused, scrubbed or replaying. `GET /state`
+/// reports it as `passthrough.camera`. Desktop streams the stand-in room as a
+/// known pinhole camera at the view; web does not stream.
+let streamCamera : (streamOptions, t) => t

@@ -1196,6 +1196,7 @@ fn service_debug_request(
             let stand_in_depth = scene_context.stand_in_depth_stats();
             let fused_room = scene_context.fused_room_state();
             let depth_stream = scene_context.depth_stream_state();
+            let camera_stream = scene_context.camera_stream_state();
             let cull = counters.frame_cull();
             let cells = counters.frame_cells();
             let reload = reload.state(Instant::now());
@@ -1225,6 +1226,7 @@ fn service_debug_request(
                     passthrough: functor_runtime_common::runtime_settings::PassthroughState::emulated(
                         g.config(),
                         g.settings().as_ref(),
+                        camera_stream,
                     ),
                     battery: None,
                     skinned,
@@ -3214,6 +3216,26 @@ Escape again to quit"
                     }),
                 !clock.is_pinned() && !args.replay && input_script.is_none(),
             );
+            // `Xr.streamCamera` (with `Xr.passthrough`) likewise, and only
+            // while the feed runs.
+            scene_context.set_camera_stream(
+                snapshot
+                    .settings
+                    .as_ref()
+                    .and_then(|settings| settings.xr.stream_camera.as_ref())
+                    .filter(|_| {
+                        functor_runtime_common::runtime_settings::passthrough_requested(
+                            snapshot.config,
+                        )
+                    }),
+                !clock.is_pinned()
+                    && !args.replay
+                    && input_script.is_none()
+                    && functor_runtime_common::runtime_settings::passthrough_wanted(
+                        snapshot.config,
+                        snapshot.settings.as_ref(),
+                    ),
+            );
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.
@@ -3641,6 +3663,16 @@ Escape again to quit"
                     diagnostics.render_mode,
                 );
             }
+            // The stand-in room as `Xr.streamCamera`'s camera, at the game's
+            // view (not a detached debug camera).
+            scene_context.stream_emulated_camera(
+                &gl,
+                shader_version,
+                asset_cache.clone(),
+                &frame,
+                &authored_view_camera,
+                frame_time.clone(),
+            );
             if !args.stereo_sbs && !debug_lines.is_empty() {
                 functor_runtime_common::render_debug_lines(
                     &gl,
