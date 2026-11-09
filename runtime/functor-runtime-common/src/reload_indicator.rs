@@ -11,6 +11,9 @@ use cgmath::{Matrix4, Quaternion, Rad, SquareMatrix};
 use glow::HasContext;
 use serde::{Deserialize, Serialize};
 
+use crate::color_space::{OutputAlpha, OutputEncodeUniform};
+use crate::shader::{Shader, ShaderType};
+use crate::shader_program::{ShaderProgram, UniformLocation};
 use crate::TrackingPose;
 
 /// How long the outcome shows after a reload settles.
@@ -97,18 +100,22 @@ impl ReloadIndicator {
     pub fn poll(&mut self, now: Instant, rendered_frames: u64) {
         let mut last = self.last;
         self.in_flight.retain(|push| {
-            let result = match push.answer.try_recv() {
-                Ok(result) => result,
+            let answer = match push.answer.try_recv() {
+                Ok(result) => Some(result),
                 Err(TryRecvError::Empty) => return true,
-                Err(TryRecvError::Disconnected) => Err("the reload was dropped unanswered".to_string()),
+                // Unanswered: a failure, and `reply` drops too, so the pusher
+                // sees a runtime fault (500), not a rejected program.
+                Err(TryRecvError::Disconnected) => None,
             };
             let outcome = ReloadOutcome {
-                ok: result.is_ok(),
+                ok: matches!(answer, Some(Ok(_))),
                 ms: (now - push.started).as_secs_f64() * 1000.0,
                 rendered_frame: rendered_frames,
             };
             last = Some((outcome, now));
-            let _ = push.reply.send(result);
+            if let Some(result) = answer {
+                let _ = push.reply.send(result);
+            }
             false
         });
         self.last = last;
@@ -182,9 +189,9 @@ pub fn head_locked_transform(fov: [f32; 4], eye_in_head: TrackingPose, spin: f32
         .projection_matrix_from_fov_angles(left, right, down, up);
     let [x, y, z, w] = eye_in_head.orientation;
     let eye = Matrix4::from_translation(eye_in_head.position.into()) * Matrix4::from(Quaternion::new(w, x, y, z));
-    let head_from_eye = eye.invert().unwrap_or(Matrix4::identity());
+    let eye_from_head = eye.invert().unwrap_or(Matrix4::identity());
     projection
-        * head_from_eye
+        * eye_from_head
         * Matrix4::from_translation(cgmath::vec3(-0.15, -0.12, -0.6))
         * Matrix4::from_scale(0.05)
         * Matrix4::from_angle_y(Rad(spin))
@@ -192,75 +199,64 @@ pub fn head_locked_transform(fov: [f32; 4], eye_in_head: TrackingPose, spin: f32
 
 /// The indicator's GL program and mark mesh, built once per context.
 pub struct ReloadIndicatorPainter {
-    program: glow::Program,
+    program: ShaderProgram,
+    transform: UniformLocation,
+    color: UniformLocation,
+    output: OutputEncodeUniform,
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     vertices: i32,
 }
 
+const VERTEX_SHADER: &str = r#"
+    layout(location = 0) in vec2 a_pos;
+    uniform mat4 u_transform;
+    void main() { gl_Position = u_transform * vec4(a_pos, 0.0, 1.0); }
+"#;
+
+const FRAGMENT_SHADER: &str = r#"
+    uniform vec3 u_color;
+    out vec4 frag_color;
+    void main() { frag_color = functorOutput(vec4(u_color, 1.0)); }
+"#;
+
 impl ReloadIndicatorPainter {
     pub fn new(gl: &glow::Context, shader_version: &str) -> Self {
-        let vertex = format!(
-            "{shader_version}\n\
-             layout(location = 0) in vec2 a_pos;\n\
-             uniform mat4 u_transform;\n\
-             void main() {{ gl_Position = u_transform * vec4(a_pos, 0.0, 1.0); }}"
-        );
-        let fragment = format!(
-            "{shader_version}\n\
-             precision mediump float;\n\
-             {encode}\n\
-             uniform vec3 u_color;\n\
-             out vec4 frag_color;\n\
-             void main() {{ frag_color = functorOutput(vec4(u_color, 1.0)); }}",
-            encode = crate::color_space::OUTPUT_ENCODE_GLSL,
-        );
+        let vertex = Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER, shader_version);
+        let fragment = Shader::build(gl, ShaderType::Fragment, FRAGMENT_SHADER, shader_version);
+        let program = ShaderProgram::link(gl, &vertex, &fragment);
         let vertices = mark_vertices();
+        let counters = crate::gpu_counters::gpu_counters();
         unsafe {
-            let program = gl.create_program().expect("create reload indicator program");
-            let mut shaders = Vec::new();
-            for (kind, source) in [(glow::VERTEX_SHADER, vertex), (glow::FRAGMENT_SHADER, fragment)] {
-                let shader = gl.create_shader(kind).expect("create reload indicator shader");
-                gl.shader_source(shader, &source);
-                gl.compile_shader(shader);
-                assert!(
-                    gl.get_shader_compile_status(shader),
-                    "reload indicator shader failed to compile: {}",
-                    gl.get_shader_info_log(shader)
-                );
-                gl.attach_shader(program, shader);
-                shaders.push(shader);
-            }
-            gl.link_program(program);
-            assert!(
-                gl.get_program_link_status(program),
-                "reload indicator program failed to link: {}",
-                gl.get_program_info_log(program)
-            );
-            for shader in shaders {
-                gl.detach_shader(program, shader);
-                gl.delete_shader(shader);
-            }
             let vao = gl.create_vertex_array().expect("create reload indicator vao");
+            counters.vao_created();
             gl.bind_vertex_array(Some(vao));
             let vbo = gl.create_buffer().expect("create reload indicator vbo");
+            counters.buffer_created();
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-            let bytes = core::slice::from_raw_parts(
-                vertices.as_ptr() as *const u8,
-                std::mem::size_of_val(vertices.as_slice()),
-            );
+            let bytes = crate::terrain_renderer::slice_bytes(&vertices);
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+            counters.uploaded(bytes.len());
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
-            ReloadIndicatorPainter { program, vao, vbo, vertices: (vertices.len() / 2) as i32 }
+            ReloadIndicatorPainter {
+                transform: program.get_uniform_location(gl, "u_transform"),
+                color: program.get_uniform_location(gl, "u_color"),
+                output: OutputEncodeUniform::get(&program, gl),
+                program,
+                vao,
+                vbo,
+                vertices: (vertices.len() / 2) as i32,
+            }
         }
     }
 
     /// Draw the mark over the bound framebuffer, unoccluded, in `shown`'s
     /// color. `transform` maps it to clip space ([`corner_transform`],
-    /// [`head_locked_transform`]); `viewport` is the target's size.
+    /// [`head_locked_transform`]); `viewport` is the target's size. Restores
+    /// the capabilities it toggles, but leaves the viewport set.
     pub fn draw(
         &self,
         gl: &glow::Context,
@@ -270,42 +266,38 @@ impl ReloadIndicatorPainter {
         // The shell's `SceneContext::output_srgb_encode()`.
         output_srgb_encode: bool,
     ) {
-        let color = crate::color_space::srgb_to_linear3(shown.color());
-        let transform = cgmath::conv::array4x4(transform);
+        let [r, g, b] = crate::color_space::srgb_to_linear3(shown.color());
+        let caps = [glow::CULL_FACE, glow::DEPTH_TEST, glow::SCISSOR_TEST, glow::BLEND];
         unsafe {
-            let cull = gl.is_enabled(glow::CULL_FACE);
-            gl.disable(glow::CULL_FACE);
-            gl.disable(glow::DEPTH_TEST);
-            gl.disable(glow::SCISSOR_TEST);
-            gl.disable(glow::BLEND);
+            let was = caps.map(|cap| gl.is_enabled(cap));
+            for cap in caps {
+                gl.disable(cap);
+            }
             gl.viewport(0, 0, viewport.0 as i32, viewport.1 as i32);
-            gl.use_program(Some(self.program));
-            gl.uniform_matrix_4_f32_slice(
-                gl.get_uniform_location(self.program, "u_transform").as_ref(),
-                false,
-                transform.as_flattened(),
-            );
-            gl.uniform_3_f32_slice(gl.get_uniform_location(self.program, "u_color").as_ref(), &color);
-            gl.uniform_1_i32(
-                gl.get_uniform_location(self.program, "uOutputFlags").as_ref(),
-                crate::color_space::output_flags(output_srgb_encode, crate::color_space::OutputAlpha::Opaque),
-            );
+            self.program.use_program(gl);
+            self.program.set_uniform_matrix4(gl, &self.transform, &transform);
+            self.program.set_uniform_vec3(gl, &self.color, &cgmath::vec3(r, g, b));
+            self.output.set(&self.program, gl, output_srgb_encode, OutputAlpha::Opaque);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, self.vertices);
             gl.bind_vertex_array(None);
             gl.use_program(None);
-            gl.enable(glow::DEPTH_TEST);
-            if cull {
-                gl.enable(glow::CULL_FACE);
+            for (cap, on) in caps.into_iter().zip(was) {
+                if on {
+                    gl.enable(cap);
+                }
             }
         }
     }
 
     pub fn delete(self, gl: &glow::Context) {
+        let counters = crate::gpu_counters::gpu_counters();
         unsafe {
             gl.delete_buffer(self.vbo);
+            counters.buffer_deleted();
             gl.delete_vertex_array(self.vao);
-            gl.delete_program(self.program);
+            counters.vao_deleted();
+            gl.delete_program(self.program.program_id);
         }
     }
 }
@@ -357,10 +349,11 @@ mod tests {
         assert_eq!(pusher.try_recv().unwrap(), Err("type error".to_string()));
         assert_eq!(indicator.look(t0), Some((ReloadShown::Failed, 0.0)));
 
-        let (reply, _pusher) = mpsc::channel();
+        let (reply, pusher) = mpsc::channel();
         drop(indicator.track(reply, t0));
         indicator.poll(t0, 0);
         assert_eq!(indicator.state(t0).shown, Some(ReloadShown::Failed));
+        assert_eq!(pusher.try_recv(), Err(TryRecvError::Disconnected), "a fault, not a rejection");
     }
 
     #[test]

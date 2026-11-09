@@ -646,8 +646,9 @@ pending_net: number,
 http: HttpStats, 
 /**
  * Pushed hot reloads (v32): one in flight, what the shell's indicator
- * draws, and how the last settled. `default` because a pre-v32 runtime
- * omits it.
+ * draws, and how the last settled. The indicator shows in `/capture`
+ * for [`crate::reload_indicator::HOLD`] after a push answers. `default`
+ * because a pre-v32 runtime omits it.
  */
 reload: ReloadState, viewport: RuntimeViewport, views: Array<RuntimeView>, 
 /**
