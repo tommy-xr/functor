@@ -202,6 +202,13 @@ fn a_start_overlap_holds_against_pressing_and_lets_go_moving_out() {
         .expect("pressing in");
     assert_eq!((hit.fraction, hit.tag.as_str()), (0.0, "wall"));
     assert!(hit.normal[0] < -0.99, "{hit:?}");
+    // Flush on the face and turning either way: one edge presses in.
+    for turn in [0.01f32, -0.01] {
+        let (s, c) = (turn / 2.0).sin_cos();
+        let to = ([0.91, 0.0, 0.0], [0.0, s, 0.0, c]);
+        let hit = w.sweep(&block, upright([0.91, 0.0, 0.0]), to, SweepFilter::Fixed);
+        assert_eq!(hit.map(|h| h.fraction), Some(0.0), "turning {turn}");
+    }
     // A stick turned into the wall: turning further presses, turning back frees it.
     let stick = cuboid(0.05, 0.05, 1.6);
     let into = pose([0.5, 0.0, 0.0], [0.8, 0.0, 0.6], Y);

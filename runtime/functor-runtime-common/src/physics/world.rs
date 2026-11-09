@@ -1087,28 +1087,31 @@ impl World {
         let still = motion.linvel.length() < STILL && motion.angvel.length() < STILL;
         let motion = (!still).then_some(&motion);
         let reach = reach(swept, &start, motion);
-        // Each collider in reach, a fused compound's parts one by one (its own
-        // world-space BVH culled to the reach too): the earliest hit.
-        let (collider, part, hit) = queries
-            .intersect_aabb_conservative(reach)
-            .flat_map(|(handle, co)| {
-                let parts = self.parts(handle).map(|compound| {
-                    compound.bvh().intersect_aabb(&reach).filter_map(move |i| {
+        // Pair by pair rather than rapier's pipeline `cast_shape_nonlinear`:
+        // the start-overlap rule needs each pair's contact, and a fused
+        // compound's parts are culled to the reach (a 30 m floor part's
+        // bounding sphere otherwise reaches every sweep).
+        let mut best: Option<(ColliderHandle, Option<usize>, ShapeCastHit)> = None;
+        let mut keep = |candidate: (ColliderHandle, Option<usize>, Option<ShapeCastHit>)| {
+            let (collider, part, Some(hit)) = candidate else { return };
+            if best.as_ref().is_none_or(|b| hit.time_of_impact < b.2.time_of_impact) {
+                best = Some((collider, part, hit));
+            }
+        };
+        for (handle, co) in queries.intersect_aabb_conservative(reach) {
+            match self.parts(handle) {
+                // Fused parts are in world space (the compound sits at the origin).
+                Some(compound) => {
+                    for i in compound.bvh().intersect_aabb(&reach) {
                         let (pose, part) = &compound.shapes()[i as usize];
-                        Some((handle, Some(i as usize), pair_hit(pose, &**part, swept, &start, motion)?))
-                    })
-                });
-                let whole = parts
-                    .is_none()
-                    .then(|| Some((handle, None, pair_hit(co.position(), co.shape(), swept, &start, motion)?)))
-                    .flatten();
-                parts.into_iter().flatten().chain(whole)
-            })
-            .min_by(|a, b| a.2.time_of_impact.total_cmp(&b.2.time_of_impact))?;
-        let tag = match (part, self.fused_tags(collider)) {
-            (Some(part), Some(tags)) => tags.get(part).cloned(),
-            _ => self.tag_of_collider(collider),
-        }?;
+                        keep((handle, Some(i as usize), pair_hit(pose, &**part, swept, &start, motion)));
+                    }
+                }
+                None => keep((handle, None, pair_hit(co.position(), co.shape(), swept, &start, motion))),
+            }
+        }
+        let (collider, part, hit) = best?;
+        let tag = self.hit_tag(collider, part)?;
         let (p, n) = (hit.witness1, hit.normal1);
         Some(SweepHit {
             tag,
@@ -1657,11 +1660,15 @@ impl World {
             .into_iter()
             .flatten()
             .min_by(|a, b| toi(&a.2).total_cmp(&toi(&b.2)))?;
-        let tag = match (self.fused_tags(collider), part) {
+        Some((self.hit_tag(collider, part)?, collider, hit))
+    }
+
+    /// The tag of a query's hit: its part's, on a fused compound.
+    fn hit_tag(&self, collider: ColliderHandle, part: Option<usize>) -> Option<String> {
+        match (self.fused_tags(collider), part) {
             (Some(tags), Some(part)) => tags.get(part).cloned(),
             _ => self.tag_of_collider(collider),
-        }?;
-        Some((tag, collider, hit))
+        }
     }
 
     /// The compound part that is body `tag`, if `tag` is fused.
@@ -2175,22 +2182,7 @@ fn keep_live(prev: &Body, next: &Body, mut pose: Pose, live: Pose) -> Pose {
 }
 
 fn pose_of(body: &Body) -> Pose {
-    // Normalize the declared quaternion: `from_xyzw` doesn't, and a degenerate
-    // rotation (all zeros, or junk off the future JSON boundary) would
-    // NaN-poison the solver — which `snapshot` can't even flag (serde_json
-    // writes non-finite floats as `null`, so the failure surfaces at `restore`,
-    // far from the cause).
-    let q = Rotation::from_xyzw(
-        body.rotation[0],
-        body.rotation[1],
-        body.rotation[2],
-        body.rotation[3],
-    );
-    let rotation = if q.length_squared().is_finite() && q.length_squared() > f32::EPSILON {
-        q.normalize()
-    } else {
-        Rotation::IDENTITY
-    };
+    let rotation = unit_rotation(body.rotation);
     Pose::from_parts(vec3(body.position), rotation)
 }
 
@@ -2415,12 +2407,28 @@ fn sweep_parts(
 /// stationary overlap test.
 const STILL: f32 = 1.0e-6;
 
-/// Inward speed at a start contact, per sweep, below which the motion slides
-/// along the surface rather than pressing into it.
+/// How far (at the shape's farthest point) a start overlap is probed along the
+/// motion, and how much deeper it must get there to count as pressing rather
+/// than sliding along the surface.
+const PROBE: f32 = 1.0e-3;
 const PRESSING: f32 = 1.0e-5;
 
+/// Normalize a quaternion `[x, y, z, w]`: `from_xyzw` doesn't, and a
+/// degenerate rotation (all zeros, or junk off the JSON boundary) would
+/// NaN-poison the solver — which `snapshot` can't even flag (serde_json writes
+/// non-finite floats as `null`, so the failure surfaces at `restore`, far from
+/// the cause). Identity instead.
+fn unit_rotation(q: [f32; 4]) -> Rotation {
+    let q = Rotation::from_xyzw(q[0], q[1], q[2], q[3]);
+    if q.length_squared().is_finite() && q.length_squared() > f32::EPSILON {
+        q.normalize()
+    } else {
+        Rotation::IDENTITY
+    }
+}
+
 fn rigid((p, q): RigidPose) -> Pose {
-    Pose::from_parts(vec3(p), Rotation::from_xyzw(q[0], q[1], q[2], q[3]).normalize())
+    Pose::from_parts(vec3(p), unit_rotation(q))
 }
 
 /// `from` to `to` over t in [0, 1]: a constant velocity and a constant
@@ -2432,7 +2440,7 @@ fn motion_between(from: Pose, to: Pose) -> NonlinearRigidMotion {
 }
 
 /// `shape` at `at` overlapping `other` (at `pos`), as a fraction-0 hit — if
-/// `motion` presses it deeper there (any overlap when there is no motion).
+/// `motion` presses it deeper (any overlap when there is no motion).
 fn pressed(
     pos: &Pose,
     other: &dyn rapier3d::parry::shape::Shape,
@@ -2440,11 +2448,14 @@ fn pressed(
     at: &Pose,
     motion: Option<&NonlinearRigidMotion>,
 ) -> Option<ShapeCastHit> {
-    let c = rapier3d::parry::query::contact(pos, other, at, shape, 0.0).ok()??;
+    let contact = |at: &Pose| rapier3d::parry::query::contact(pos, other, at, shape, 0.0).ok().flatten();
+    let c = contact(at)?;
     if let Some(m) = motion {
-        // The shape's velocity at the contact, against the outward normal.
-        let v = m.linvel + m.angvel.cross(c.point2 - at.translation);
-        if v.dot(c.normal1) > -PRESSING {
+        // Deeper a little way on? (One witness can't tell: a box flush on a
+        // face that turns presses in at one edge and lifts at the other.)
+        let travel = m.linvel.length() + m.angvel.length() * shape.compute_local_bounding_sphere().radius;
+        let probe = m.position_at_time((PROBE / travel).min(1.0));
+        if !contact(&probe).is_some_and(|d| d.dist < c.dist - PRESSING) {
             return None;
         }
     }
@@ -4280,6 +4291,30 @@ mod tests {
         }
         let hit = memo.raycast_excluding([2.0, 5.0, -20.0], [0.0, -1.0, 0.0], 20.0, Some("s0167"));
         assert_eq!(hit.unwrap().tag, "under");
+    }
+
+    #[test]
+    fn sweeps_on_fused_bodies_answer_as_unfused_ones() {
+        let (flat, memo) = (queried(false), queried(true));
+        assert_eq!(fused_bodies(&memo), 301);
+        let stick = Shape::Cuboid { extents: [0.1, 0.1, 1.2] };
+        let posed = |x: f32, y: f32, pitch: f32| ([x, y, -20.0], [(pitch / 2.0).sin(), 0.0, 0.0, (pitch / 2.0).cos()]);
+        for x in [2.0, 2.4, 2.55, 3.1] {
+            // Falling and turning onto the tiles; tipping in place onto them;
+            // already in them, at rest. (A stick spans tiles, so a tie may pick
+            // either neighbour: compare where it stops, not the tag.)
+            let cases = [
+                (posed(x, 3.0, 0.0), posed(x, -1.0, 1.2)),
+                (posed(x, 0.6, 0.0), posed(x, 0.6, 0.5)),
+                (posed(x, 0.52, 0.0), posed(x, 0.52, 0.0)),
+            ];
+            for (from, to) in cases {
+                // `All`: the unfused tiles are kinematic.
+                let sweep = |w: &World| w.sweep(&stick, from, to, SweepFilter::All).map(|h| h.fraction);
+                assert!(sweep(&memo).is_some(), "sweep at {x} hits");
+                assert_eq!(sweep(&flat), sweep(&memo), "sweep at {x}");
+            }
+        }
     }
 
     #[test]

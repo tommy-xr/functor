@@ -8149,6 +8149,9 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
                 "Physics.shapeCastExcluding",
                 format!("Physics.shapeCastExcluding(\"nobody\", Physics.sphere(0.5), {at})"),
             ),
+            // The filter is a string here: these samples run without the
+            // `.funi`, so `Physics.All` doesn't resolve. The read is noted
+            // before the filter is checked.
             (
                 "Physics.sweep",
                 "let p = { position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 }, \
