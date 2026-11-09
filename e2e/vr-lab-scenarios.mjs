@@ -83,6 +83,9 @@ export const defaultSpectator = side;
 // From above the wall, in its plane: the ball held on this side while the
 // hand goes through to the other.
 const alongWall = { eye: [0.65, 2.45, 3.75], target: [0.6, 1.05, 4.6], fov: 50 };
+// Straight down over the wall: the held ball on this side, the hand (and its
+// ghost) through on the other.
+const overWall = { eye: [0.64, 8.0, 4.45], target: [0.64, 1.15, 4.55], fov: 8 };
 
 // Above and behind the player's left shoulder: the stick turning into the wall.
 const overStick = { eye: [0.2, 3.1, 3.75], target: [0.3, 1.1, 4.6], fov: 45 };
@@ -101,6 +104,8 @@ const grab = [
 const atEdge = { eye: [-1.25, 1.15, 3.7], target: [-0.35, 0.93, 4.33], fov: 38 };
 // From the player's right and above: the brick and bottle end of the table.
 const rightEnd = { eye: [-1.5, 1.75, 3.45], target: [-0.45, 1.0, 4.55], fov: 44 };
+// Close on the bottle, from the player's right.
+const atBottle = { eye: [-1.35, 1.45, 4.05], target: [-0.55, 1.15, 4.7], fov: 34 };
 
 // The brick, taken near a top corner with the wrist turned, lifted and turned
 // again, handed to the left hand (held at its centre), put down, then taken
@@ -120,7 +125,7 @@ const neckGrip = add(BOTTLE.at, [0.02, BOTTLE.neck, 0.008]);
 const bottleBase = add(BOTTLE.at, [0.05, -0.1, 0]);
 
 // The ball pushed into the wall (rig x -0.6) with the hand through it.
-const throughWall = [-0.75, 1.15, -0.55];
+const throughWall = [-0.77, 1.15, -0.55];
 const atWall = [-0.545, 1.15, -0.55];
 
 export const scenarios = {
@@ -247,7 +252,7 @@ export const scenarios = {
       { frames: 30, left: { to: brickDown } },
       { frames: 6, left: {}, mark: "lowered" },
       { frames: 1, left: { squeeze: 0 }, mark: "putDown" },
-      { frames: 60, left: { to: [-0.25, 0.95, -0.2] }, mark: "settled" },
+      { frames: 60, left: { to: [-0.25, 0.95, -0.1] }, mark: "settled" },
       { frames: 25, right: { to: [0.45, 1.05, -0.4], turn: qmul(yaw(70), pitch(15)) } },
       { frames: 15, right: { to: [0.45, 0.955, -0.43] }, mark: "reachedAgain" },
       { frames: 6, right: { squeeze: 1 }, mark: "tookAgain" },
@@ -278,7 +283,7 @@ export const scenarios = {
   // A hand pointing up takes the bottle 2 cm off its neck: it snaps there.
   "bottle-neck": {
     station: 1,
-    spectator: rightEnd,
+    spectator: atBottle,
     steps: [
       { frames: 20, right: { to: [0.6, 1.25, -0.6], turn: pitch(90) } },
       { frames: 20, right: { to: neckGrip }, mark: "atNeck" },
@@ -309,7 +314,7 @@ export const scenarios = {
   // centimetre of the ball the ghost goes; pushed through again it returns.
   "hand-view": {
     station: 1,
-    spectator: alongWall,
+    spectator: overWall,
     steps: [
       ...grab,
       { frames: 20, right: { to: [-0.3, 1.15, -0.55] } },

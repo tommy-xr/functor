@@ -30,7 +30,8 @@ import { decode } from "./xr-fixture.mjs";
 
 export const DT = 1 / 60;
 const HEAD = [0, 1.6, 0];
-const REST = { left: [-0.25, 0.95, -0.2], right: [0.25, 0.95, -0.2] };
+// At the player's sides, clear of the props on the table.
+const REST = { left: [-0.25, 0.95, -0.1], right: [0.25, 0.95, -0.2] };
 
 /** A client for the debug server on `port` (a desktop runtime, or a headset's over `adb forward`). */
 export function attach(port) {

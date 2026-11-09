@@ -525,7 +525,7 @@ let handScene = (m: Model, st: Stations.Station, side: Hold.Side, c: Color.t): (
     let h = handOf(m, side) in
     let drawn = drawnGrip(m.handView, g, heldIn(m, side)) in
     (handModel(h.squeezed, c) |> Scene.atPose(posed(st, drawn)),
-     if Hold.ghosted(g, drawn) then handModel(false, c) |> Scene.atPose(posed(st, g)) |> Scene.opacity(0.3) else Scene.group([]))
+     if Hold.ghosted(g, drawn) then handModel(false, c) |> Scene.atPose(posed(st, g)) |> Scene.opacity(0.4) else Scene.group([]))
 
 let lights = [
   Light.ambient(Color.rgb(0.38, 0.38, 0.44)),
