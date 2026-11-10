@@ -178,7 +178,7 @@ let thumbOf = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
 // The thumbs `Hand`'s presets pose, placed at load: a thumb's chain costs
 // about 85 µs a redraw, and the thumb only ever takes these (any other is
 // placed as drawn).
-let thumbPresets = [Hand.flat.thumb, Hand.fist.thumb, Hand.power.thumb, Hand.pinch.thumb, Hand.palmOpen.thumb, (Hand.empty(0.0, 0.0)).thumb]
+let thumbPresets = [(Hand.empty(0.0, 0.0)).thumb, Hand.power.thumb, Hand.pinch.thumb, Hand.palmOpen.thumb, Hand.flat.thumb, Hand.fist.thumb]
 let presetThumbs = (side: Hold.Side) => thumbPresets |> List.map((t) => (t, thumbOf(side, t)))
 let leftThumbs = presetThumbs(Hold.Left)
 let rightThumbs = presetThumbs(Hold.Right)
@@ -189,27 +189,31 @@ let thumbAt = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
   | Option.Some(tp) => let (_, ps) = tp in ps
   | Option.None => thumbOf(side, t)
 
-/// Each hand's finger placements at every level: per level, the four
-/// fingers' four joints.
+/// Each hand's finger placements at every level: per finger, per level, its
+/// four joints.
 let fingerTable = (side: Hold.Side): List<List<List<(string, Input.pose)>>> =>
-  List.range(Hand.drawLevels + 1.0) |> List.map((k) =>
-    let posed = Hand.local(side, Hand.curled(k / Hand.drawLevels)) in
-    fingerJoints |> List.map((js) => placements(side, posed, js)))
-let leftFingers = fingerTable(Hold.Left)
-let rightFingers = fingerTable(Hold.Right)
+  let posed = List.range(Hand.drawLevels + 1.0) |> List.map((k) => Hand.local(side, Hand.curled(k / Hand.drawLevels))) in
+  fingerJoints |> List.map((js) => posed |> List.map((p) => placements(side, p, js)))
+let quad = (xs: List<List<List<(string, Input.pose)>>>) =>
+  let at = (i: float) => List.nth(i, xs) |> Option.defaultValue([]) in
+  (at(0.0), at(1.0), at(2.0), at(3.0))
+let leftFingers = quad(fingerTable(Hold.Left))
+let rightFingers = quad(fingerTable(Hold.Right))
 
 /// A hand's placements: the thumb posed `t`, the fingers at `levels`.
 let drawn = (side: Hold.Side, t: Hand.Thumb, levels: (float, float, float, float)): List<(string, Input.pose)> =>
   let (li, lm, lr, ll) = levels in
   let table = if side == Hold.Left then leftFingers else rightFingers in
-  let pick = (finger: float, k: float) =>
-    List.nth(k, table) |> Option.bind((parts) => List.nth(finger, parts)) |> Option.defaultValue([]) in
-  List.flatten([if side == Hold.Left then leftWrist else rightWrist, thumbAt(side, t), pick(0.0, li), pick(1.0, lm), pick(2.0, lr), pick(3.0, ll)])
+  let (ti, tm, tr, tl) = table in
+  let pick = (finger: List<List<(string, Input.pose)>>, k: float) => List.nth(k, finger) |> Option.defaultValue([]) in
+  List.flatten([if side == Hold.Left then leftWrist else rightWrist, thumbAt(side, t), pick(ti, li), pick(tm, lm), pick(tr, lr), pick(tl, ll)])
 
 /// The skinned glove, in its grip's frame (as `Scene.atPose` places it).
 let scene = (side: Hold.Side, t: Hand.Thumb, levels: (float, float, float, float)): Scene.t =>
-  Scene.model(if side == Hold.Left then Assets.handLeft else Assets.handRight)
-    |> Scene.animate(Anim.rest() |> Anim.place(drawn(side, t, levels)))
+  (if side == Hold.Left then leftModel else rightModel) |> Scene.animate(Anim.place(drawn(side, t, levels), rest))
+let leftModel = Scene.model(Assets.handLeft)
+let rightModel = Scene.model(Assets.handRight)
+let rest = Anim.rest()
 
 // --- checks ---
 
