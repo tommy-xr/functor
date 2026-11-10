@@ -4548,26 +4548,21 @@ impl crate::host_registry::FromArg for FunctorLangPlacement {
         let Value::Tuple(items) = value else {
             return Err(usage());
         };
-        let [Value::String(joint), Value::Record(pose)] = items.as_slice() else {
+        let [Value::String(joint), pose] = items.as_slice() else {
             return Err(usage());
         };
-        let field = |name: &str| pose.iter().find(|(n, _)| n == name).map(|(_, v)| v);
-        let (Some(Value::Record(position)), Some(orientation)) =
-            (field("position"), field("orientation"))
-        else {
-            return Err(usage());
-        };
-        let component = |name| finite_record_number(position, name, "point3", path, span);
-        let position = [component("x")?, component("y")?, component("z")?];
-        let rotation = FunctorLangQuaternion::from_arg(orientation, path, span)?.0;
-        let length2: f64 = rotation.iter().map(|c| f64::from(*c).powi(2)).sum();
+        let pose = crate::tracking_pose_from_value(pose).map_err(|e| RunError {
+            message: format!("{path}: {e}"),
+            span,
+        })?;
+        let length2: f64 = pose.orientation.iter().map(|c| f64::from(*c).powi(2)).sum();
         if joint.is_empty() || !(length2 > 0.0) {
             return Err(usage());
         }
         Ok(FunctorLangPlacement(crate::anim::Placement {
             joint: joint.to_string(),
-            position,
-            rotation,
+            position: pose.position,
+            rotation: pose.orientation,
         }))
     }
 }

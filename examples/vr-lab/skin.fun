@@ -11,9 +11,9 @@
 
 /// The skinned joints, as indices into `Hand.names`: the wrist, the thumb's
 /// three bones and each finger's four. The palm and the tips carry no skin.
-let skinned = [1.0, 2.0, 3.0, 4.0, 6.0, 7.0, 8.0, 9.0, 11.0, 12.0, 13.0, 14.0, 16.0, 17.0, 18.0, 19.0, 21.0, 22.0, 23.0, 24.0]
 let thumbJoints = [2.0, 3.0, 4.0]
 let fingerJoints = [6.0, 11.0, 16.0, 21.0] |> List.map((first) => [first, first + 1.0, first + 2.0, first + 3.0])
+let skinned = List.flatten([[Hand.wrist], thumbJoints, List.flatten(fingerJoints)])
 
 /// A model's joints, in `Hand.names` order without the palm.
 let jointNames = (j: Assets.HandLeftJoints): List<string> => [
@@ -144,10 +144,11 @@ let placed = (posed: Hand.Posed, j: float, c: Input.quaternion): (string, Input.
   let p = Hand.jointOf(posed, j) in
   (nameOf(j), Hold.compose(toModel, Hold.at(p.position, Quat.mul(p.orientation, c))))
 
+let leftCorrected = skinned |> List.zip(leftCorrections)
+let rightCorrected = skinned |> List.zip(rightCorrections)
 let correctionOf = (side: Hold.Side, j: float): Input.quaternion =>
-  let cs = if side == Hold.Left then leftCorrections else rightCorrections in
-  List.range(List.length(skinned)) |> List.find((i) => List.nth(i, skinned) == Option.Some(j))
-    |> Option.bind((i) => List.nth(i, cs)) |> Option.defaultValue(Quat.identity)
+  (if side == Hold.Left then leftCorrected else rightCorrected) |> List.find((jc) => let (k, _) = jc in k == j)
+    |> Option.map((jc) => let (_, c) = jc in c) |> Option.defaultValue(Quat.identity)
 
 /// The placements of joints `js` of a hand posed `posed`.
 let placements = (side: Hold.Side, posed: Hand.Posed, js: List<float>): List<(string, Input.pose)> =>
@@ -159,31 +160,26 @@ let pose = (side: Hold.Side, f: Hand.FingerPose): List<(string, Input.pose)> =>
   placements(side, Hand.local(side, f), skinned)
 
 // --- drawing ---
-// As the capsule glove is: the wrist fixed, the thumb posed as given (three
-// joints from its chain), and each finger at its drawn level, read from a
-// table built at load.
+// As the capsule glove is: the wrist fixed, the thumb posed as given, and
+// each finger at its drawn level, read from a table built at load.
 
 let wristOf = (side: Hold.Side) => placements(side, Hand.local(side, Hand.flat), [Hand.wrist])
 let leftWrist = wristOf(Hold.Left)
 let rightWrist = wristOf(Hold.Right)
 
-/// The thumb's placements, curled and opposed by `t`: only its chain.
+/// The thumb's placements, curled and opposed by `t`, by FK.
 let thumbOf = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
-  let inGrip = Hand.thumbChain(t) |> List.map((jr) => let (p, _) = jr in Hold.compose(Hand.wristOnGrip, p)) in
-  let mirrored = if side == Hold.Left then inGrip |> List.map(Hand.mirror) else inGrip in
-  thumbJoints |> List.indexedMap((i, j) =>
-    let p = List.nth(i, mirrored) |> Option.defaultValue(Hold.origin) in
-    (nameOf(j), Hold.compose(toModel, Hold.at(p.position, Quat.mul(p.orientation, correctionOf(side, j))))))
+  placements(side, Hand.local(side, { Hand.flat with thumb: t }), thumbJoints)
 
-// The thumbs `Hand`'s presets pose, placed at load: a thumb's chain costs
-// about 85 µs a redraw, and the thumb only ever takes these (any other is
-// placed as drawn).
-let thumbPresets = [(Hand.empty(0.0, 0.0)).thumb, Hand.power.thumb, Hand.pinch.thumb, Hand.palmOpen.thumb, Hand.flat.thumb, Hand.fist.thumb]
+// The thumbs the game poses (an empty hand's, then `Props.fingers`'
+// presets'), placed at load: placing one costs about 85 µs a redraw. Any
+// other thumb is placed as drawn.
+let thumbPresets = [(Hand.empty(0.0, 0.0)).thumb, Hand.power.thumb, Hand.pinch.thumb, Hand.palmOpen.thumb]
 let presetThumbs = (side: Hold.Side) => thumbPresets |> List.map((t) => (t, thumbOf(side, t)))
 let leftThumbs = presetThumbs(Hold.Left)
 let rightThumbs = presetThumbs(Hold.Right)
 
-/// The thumb's placements, curled and opposed by `t`.
+/// The thumb's placements, curled and opposed by `t`: a preset's from load.
 let thumbAt = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
   match (if side == Hold.Left then leftThumbs else rightThumbs) |> List.find((tp) => let (u, _) = tp in u == t) with
   | Option.Some(tp) => let (_, ps) = tp in ps

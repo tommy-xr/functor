@@ -194,4 +194,4 @@ const regrip = moving.draw.med - held2.draw.med;
 const regripFrame = (sg.step.min + sg.draw.min + regrip / 2) * QUEST;
 console.log(`both hands' fingers redrawn: +${regrip.toFixed(0)} µs a draw (medians); one hand's under the aimed shotgun, Quest (×${QUEST}) ${regripFrame.toFixed(0)} µs (${pct(regripFrame)} of ${BUDGET_US.toFixed(0)})`);
 const bothFrame = (sg.step.min + sg.draw.min + regrip) * QUEST;
-console.log(`both hands' under the aimed shotgun, Quest (×${QUEST}) ${bothFrame.toFixed(0)} µs (${pct(bothFrame)} of ${BUDGET_US.toFixed(0)})`);
+console.log(`both hands' fingers redrawn under the aimed shotgun, Quest (×${QUEST}) ${bothFrame.toFixed(0)} µs (${pct(bothFrame)} of ${BUDGET_US.toFixed(0)})`);

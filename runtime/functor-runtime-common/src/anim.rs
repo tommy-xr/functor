@@ -505,11 +505,41 @@ fn rotation_of(transform: Matrix4<f32>) -> Option<Quaternion<f32>> {
     Some(Quaternion::from(Matrix3::from_cols(x, y, x.cross(y))).normalize())
 }
 
+/// `slot`'s settled parent's inverse and the local rotation that gives it the
+/// model-space `rotation` (normalized in f64, so a huge-but-finite one cannot
+/// overflow). `None` for a zero/non-finite quaternion (the prelude rejects
+/// one at the call) or a singular parent.
+fn local_rotation(
+    skeleton: &Skeleton,
+    pose: &WeightedPose,
+    slot: usize,
+    rotation: [f32; 4],
+) -> Option<(Matrix4<f32>, Quaternion<f32>)> {
+    let [x, y, z, w] = rotation.map(f64::from);
+    let length = (x * x + y * y + z * z + w * w).sqrt();
+    if !length.is_finite() || length <= 0.0 {
+        return None;
+    }
+    let target = Quaternion::new(
+        (w / length) as f32,
+        (x / length) as f32,
+        (y / length) as f32,
+        (z / length) as f32,
+    );
+    let parent_inverse = match skeleton.slot_parent(slot) {
+        Some(parent) => resolved_absolute(skeleton, pose, parent).transform.invert()?,
+        None => Matrix4::one(),
+    };
+    // Local = parent⁻¹ · target, through the rotation MATRIX: it is quadratic
+    // in the quaternion, so `q` and `-q` give the same local bit for bit.
+    let local = rotation_of(parent_inverse * Matrix4::from(target))?;
+    Some((parent_inverse, local))
+}
+
 /// Set `slot`'s model-space rotation over the settled parent, keeping its
 /// local translation and scale. Exact under rotated or uniformly scaled
 /// ancestors; otherwise the joint's X axis and XY plane match (a mirrored
-/// ancestor flips Z). A zero/non-finite quaternion is ignored (the prelude
-/// rejects one at the call).
+/// ancestor flips Z).
 fn apply_orient(
     skeleton: &Skeleton,
     pose: &mut WeightedPose,
@@ -520,28 +550,7 @@ fn apply_orient(
     if !(weight > 0.0) {
         return;
     }
-    // Normalize in f64 so a huge-but-finite quaternion cannot overflow.
-    let [x, y, z, w] = rotation.map(f64::from);
-    let length = (x * x + y * y + z * z + w * w).sqrt();
-    if !length.is_finite() || length <= 0.0 {
-        return;
-    }
-    let target = Quaternion::new(
-        (w / length) as f32,
-        (x / length) as f32,
-        (y / length) as f32,
-        (z / length) as f32,
-    );
-    let parent_inverse = match skeleton.slot_parent(slot) {
-        Some(parent) => match resolved_absolute(skeleton, pose, parent).transform.invert() {
-            Some(inverse) => inverse,
-            None => return,
-        },
-        None => Matrix4::one(),
-    };
-    // Local = parent⁻¹ · target, through the rotation MATRIX: it is quadratic
-    // in the quaternion, so `q` and `-q` give the same local bit for bit.
-    let Some(local) = rotation_of(parent_inverse * Matrix4::from(target)) else {
+    let Some((_, local)) = local_rotation(skeleton, pose, slot, rotation) else {
         return;
     };
     let mut joint = resolved_joint_pose(skeleton, pose, slot);
@@ -555,34 +564,16 @@ fn apply_orient(
 
 /// Set `slot`'s model-space position and rotation over the settled parent,
 /// keeping its local scale. The position is exact under any invertible
-/// ancestor; the rotation as `apply_orient`'s. A zero/non-finite quaternion
-/// is ignored (the prelude rejects one at the call).
+/// ancestor; the rotation as `apply_orient`'s.
 fn apply_place(skeleton: &Skeleton, pose: &mut WeightedPose, slot: usize, placement: &Placement) {
-    let [x, y, z, w] = placement.rotation.map(f64::from);
-    let length = (x * x + y * y + z * z + w * w).sqrt();
-    if !length.is_finite() || length <= 0.0 {
-        return;
-    }
-    let target = Quaternion::new(
-        (w / length) as f32,
-        (x / length) as f32,
-        (y / length) as f32,
-        (z / length) as f32,
-    );
-    let parent_inverse = match skeleton.slot_parent(slot) {
-        Some(parent) => match resolved_absolute(skeleton, pose, parent).transform.invert() {
-            Some(inverse) => inverse,
-            None => return,
-        },
-        None => Matrix4::one(),
-    };
-    let Some(rotation) = rotation_of(parent_inverse * Matrix4::from(target)) else {
+    let Some((parent_inverse, local)) = local_rotation(skeleton, pose, slot, placement.rotation)
+    else {
         return;
     };
     let position = Vector3::from(placement.position).extend(1.0);
     let mut joint = resolved_joint_pose(skeleton, pose, slot);
     joint.translation = (parent_inverse * position).truncate();
-    joint.rotation = rotation;
+    joint.rotation = local;
     pose.joints[slot] = Some((joint, 1.0));
 }
 
@@ -2465,8 +2456,8 @@ mod tests {
     fn place_eval_bench() {
         let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 26]);
         builder.add_joint(0, 0, "root".to_string(), None, Matrix4::identity());
-        for j in 1..26 {
-            builder.add_joint(j, j as usize, format!("j{j}"), Some(0), Matrix4::identity());
+        for j in 1..26i32 {
+            builder.add_joint(j as usize, j, format!("j{j}"), Some(0), Matrix4::identity());
         }
         let model = Model {
             meshes: vec![],
