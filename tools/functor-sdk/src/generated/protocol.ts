@@ -647,7 +647,8 @@ http: HttpStats,
 /**
  * Pushed hot reloads (v32): one in flight, what the shell's indicator
  * draws, and how the last settled. The indicator shows in `/capture`
- * for [`crate::reload_indicator::HOLD`] after a push answers. `default`
+ * for [`crate::reload_indicator::HOLD`] after a push answers, then fades
+ * for [`crate::reload_indicator::FADE`]. `default`
  * because a pre-v32 runtime omits it.
  */
 reload: ReloadState, viewport: RuntimeViewport, views: Array<RuntimeView>, 

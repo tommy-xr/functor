@@ -2266,9 +2266,8 @@ pub fn android_main(app: AndroidApp) {
                     }
                     painter.draw(
                         &gl,
-                        functor_runtime_common::reload_indicator::head_locked_transform(fov, eye_in_head, look.spin),
-                        look.shown,
-                        look.alpha,
+                        functor_runtime_common::reload_indicator::head_locked_transform(fov, eye_in_head, &look),
+                        &look,
                         (eye.width, eye.height),
                         scene_context.output_srgb_encode(),
                     );

@@ -3,7 +3,7 @@
 //! else; at half alpha it blends half-way.
 //!
 //! `RELOAD_INDICATOR_OUT=<dir>` also writes the whole animation as PNG frames
-//! (30 fps; `ok-NNN.png`, `failed-NNN.png`): a 1.2 s reload stepped through
+//! (30 fps; `ok-NNN.png`, `failed-NNN.png`): a 0.9 s reload stepped through
 //! the real state machine and painter.
 //!
 //! Self-skipping like `srgb_clear` (needs a GL display; GLFW on the main
@@ -15,7 +15,7 @@
 
 use cgmath::vec4;
 use functor_runtime_common::reload_indicator::{
-    corner_transform, ReloadIndicator, ReloadIndicatorPainter, ReloadShown, FADE, HOLD,
+    corner_transform, ReloadIndicator, ReloadIndicatorPainter, ReloadLook, ReloadShown, FADE, HOLD,
 };
 use glow::HasContext;
 
@@ -34,13 +34,14 @@ fn main() {
     }
 }
 
-/// A pushed reload answered after 1.2 s, frame by frame until it has faded.
+/// A pushed reload answered after 0.9 s, frame by frame until it has faded.
 fn write_animation(gl: &glow::Context, dir: &str) {
     use std::time::{Duration, Instant};
     const SIZE: (u32, u32) = (960, 540);
     framebuffer(gl, SIZE.0, SIZE.1);
     let painter = ReloadIndicatorPainter::new(gl, "#version 330 core");
-    let answered = Duration::from_millis(1200);
+    // The pulse then peaks as the mark faces the viewer.
+    let answered = Duration::from_millis(900);
     let frames = ((answered + HOLD + FADE).as_secs_f32() * 30.0) as u32 + 6;
     for (name, result) in [("ok", Ok("reloaded".to_string())), ("failed", Err("type error".to_string()))] {
         let t0 = Instant::now();
@@ -61,23 +62,12 @@ fn write_animation(gl: &glow::Context, dir: &str) {
                 gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
             }
             if let Some(look) = indicator.look(now) {
-                let transform = corner_transform(SIZE.0, SIZE.1, look.spin);
-                painter.draw(gl, transform, look.shown, look.alpha, SIZE, true);
+                painter.draw(gl, corner_transform(SIZE.0, SIZE.1, &look), &look, SIZE, true);
             }
-            let mut pixels = vec![0u8; (SIZE.0 * SIZE.1 * 4) as usize];
-            unsafe {
-                gl.read_pixels(
-                    0,
-                    0,
-                    SIZE.0 as i32,
-                    SIZE.1 as i32,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelPackData::Slice(Some(&mut pixels)),
-                );
+            let png = unsafe {
+                functor_runtime_common::frame_capture::encode_bound_framebuffer_png(gl, SIZE.0, SIZE.1)
             }
-            let png = functor_runtime_common::frame_capture::encode_bottom_up_rgba_png(SIZE.0, SIZE.1, &pixels)
-                .expect("encode png");
+            .expect("read frame");
             std::fs::write(format!("{dir}/{name}-{frame:03}.png"), png).expect("write frame");
         }
     }
@@ -88,7 +78,8 @@ fn write_animation(gl: &glow::Context, dir: &str) {
 fn the_mark_draws_lower_left_in_each_states_color(gl: &glow::Context) {
     framebuffer(gl, SIZE, SIZE);
     let painter = ReloadIndicatorPainter::new(gl, "#version 330 core");
-    let transform = corner_transform(SIZE, SIZE, 0.0);
+    let still = |shown, alpha| ReloadLook { shown, spin: 0.0, alpha, pulse: 0.0 };
+    let transform = corner_transform(SIZE, SIZE, &still(ReloadShown::Loading, 1.0));
     // A stem point of the SVG mark (x 440, y 600 of 1024), in mark units.
     let stem = pixel_of(transform, (440.0 - 558.5) / 658.0, (508.0 - 600.0) / 658.0);
     for shown in [ReloadShown::Loading, ReloadShown::Ok, ReloadShown::Failed] {
@@ -99,7 +90,7 @@ fn the_mark_draws_lower_left_in_each_states_color(gl: &glow::Context) {
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
         // `encode` on a plain RGBA8 target: bytes are the authored sRGB.
-        painter.draw(gl, transform, shown, 1.0, (SIZE, SIZE), true);
+        painter.draw(gl, transform, &still(shown, 1.0), (SIZE, SIZE), true);
         let pixels = read(gl);
         let at = |(x, y): (u32, u32)| {
             let i = ((y * SIZE + x) * 4) as usize;
@@ -125,7 +116,7 @@ fn the_mark_draws_lower_left_in_each_states_color(gl: &glow::Context) {
     unsafe {
         gl.clear(glow::COLOR_BUFFER_BIT);
     }
-    painter.draw(gl, transform, ReloadShown::Ok, 0.5, (SIZE, SIZE), true);
+    painter.draw(gl, transform, &still(ReloadShown::Ok, 0.5), (SIZE, SIZE), true);
     let pixels = read(gl);
     let i = ((stem.1 * SIZE + stem.0) * 4) as usize;
     let want = ReloadShown::Ok.color().map(|c| (c * 127.5).round() as u8);

@@ -1,8 +1,8 @@
 //! The shell's hot-reload indicator: a small Functor mark in a corner of the
 //! view that fades in and spins while a pushed reload (`/reload-source`,
 //! `/reload-project`) is in flight, then shows the outcome for [`HOLD`] —
-//! still spinning in cyan (swapped in), or red and swinging to rest (rejected)
-//! — and fades out over [`FADE`]. Shell-owned: it never reaches the game's
+//! still spinning in cyan (swapped in), or red and swinging to rest (rejected),
+//! with a brief pulse as it settles — and fades out over [`FADE`]. Shell-owned: it never reaches the game's
 //! model, frames, or history, and draws over the finished frame.
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -22,6 +22,9 @@ pub const HOLD: Duration = Duration::from_millis(500);
 
 /// The fade in when a reload starts, and out after [`HOLD`].
 pub const FADE: Duration = Duration::from_millis(200);
+
+/// The brighten-and-swell as a reload settles, within [`HOLD`].
+pub const PULSE: Duration = Duration::from_millis(200);
 
 /// Turns per second.
 const SPIN_HZ: f32 = 1.0;
@@ -91,6 +94,21 @@ pub struct ReloadLook {
     pub spin: f32,
     /// Opacity, `0..=1`.
     pub alpha: f32,
+    /// The settle pulse, `0..=1`: 0 at rest, 1 at its peak.
+    pub pulse: f32,
+}
+
+impl ReloadLook {
+    /// The mark's own turn and pulse swell (15% at the peak).
+    fn local(&self) -> Matrix4<f32> {
+        Matrix4::from_scale(1.0 + 0.15 * self.pulse) * Matrix4::from_angle_y(Rad(self.spin))
+    }
+
+    /// Authored sRGB: the state's color, brightened half-way to white at the
+    /// pulse's peak.
+    pub fn color(&self) -> [f32; 3] {
+        self.shown.color().map(|c| c + (1.0 - c) * 0.5 * self.pulse)
+    }
 }
 
 /// Pushed reloads in flight and the last outcome.
@@ -100,8 +118,7 @@ pub struct ReloadIndicator {
     last: Option<(ReloadOutcome, Instant)>,
     /// When the current showing began fading in.
     fade_in_from: Option<Instant>,
-    /// The first push: the spin runs from here and never restarts, so a push
-    /// during a fade-out doesn't jump the angle.
+    /// When the spin was (or would have been) face-on.
     spin_from: Option<Instant>,
 }
 
@@ -109,10 +126,13 @@ impl ReloadIndicator {
     /// Track a push answered on `reply`: the producer answers on the returned
     /// sender instead, and [`Self::poll`] forwards it.
     pub fn track(&mut self, reply: Sender<Reply>, now: Instant) -> Sender<Reply> {
-        // Fade in from however visible it is now.
-        let alpha = self.look(now).map_or(0.0, |look| look.alpha);
-        self.fade_in_from = Some(now - FADE.mul_f32(alpha));
-        self.spin_from.get_or_insert(now);
+        // Carry on from however visible and turned it is now.
+        let (alpha, turns) = self
+            .look(now)
+            .map_or((0.0, 0.0), |look| (look.alpha, look.spin / std::f32::consts::TAU));
+        let before = |d: Duration| now.checked_sub(d).unwrap_or(now);
+        self.fade_in_from = Some(before(FADE.mul_f32(alpha)));
+        self.spin_from = Some(before(Duration::from_secs_f32(turns / SPIN_HZ)));
         let (tx, answer) = mpsc::channel();
         self.in_flight.push(InFlight { started: now, answer, reply });
         tx
@@ -150,7 +170,7 @@ impl ReloadIndicator {
         let spin_from = self.spin_from?;
         let turns_at = |t: Instant| t.saturating_duration_since(spin_from).as_secs_f32() * SPIN_HZ;
         let fade_in = ramp(now.saturating_duration_since(self.fade_in_from?));
-        let (shown, turns, alpha) = if self.in_flight.is_empty() {
+        let (shown, turns, alpha, pulse) = if self.in_flight.is_empty() {
             let (outcome, at) = self.last?;
             let since = now.saturating_duration_since(at);
             let left = (HOLD + FADE).checked_sub(since)?;
@@ -158,17 +178,20 @@ impl ReloadIndicator {
                 return None;
             }
             let alpha = fade_in.min(ramp(left));
+            // Up and back down, eased at both ends and the peak.
+            let through = (since.as_secs_f32() / PULSE.as_secs_f32()).min(1.0);
+            let pulse = (through * std::f32::consts::PI).sin().powi(2);
             if outcome.ok {
-                (ReloadShown::Ok, turns_at(now), alpha)
+                (ReloadShown::Ok, turns_at(now), alpha, pulse)
             } else {
                 // Swing the short way round to rest facing the viewer.
                 let stopped = turns_at(at);
-                (ReloadShown::Failed, stopped + (stopped.round() - stopped) * ramp(since), alpha)
+                (ReloadShown::Failed, stopped + (stopped.round() - stopped) * ramp(since), alpha, pulse)
             }
         } else {
-            (ReloadShown::Loading, turns_at(now), fade_in)
+            (ReloadShown::Loading, turns_at(now), fade_in, 0.0)
         };
-        Some(ReloadLook { shown, spin: turns.rem_euclid(1.0) * std::f32::consts::TAU, alpha })
+        Some(ReloadLook { shown, spin: turns.rem_euclid(1.0) * std::f32::consts::TAU, alpha, pulse })
     }
 
     pub fn state(&self, now: Instant) -> ReloadState {
@@ -207,7 +230,7 @@ fn mark_vertices() -> Vec<f32> {
 
 /// Lower-left corner of a `width`×`height` framebuffer: 8% of the shorter
 /// side tall, half that from the edges.
-pub fn corner_transform(width: u32, height: u32, spin: f32) -> Matrix4<f32> {
+pub fn corner_transform(width: u32, height: u32, look: &ReloadLook) -> Matrix4<f32> {
     let (w, h) = (width.max(1) as f32, height.max(1) as f32);
     let size = 0.08 * w.min(h);
     // Half its height plus a half-height margin.
@@ -215,14 +238,14 @@ pub fn corner_transform(width: u32, height: u32, spin: f32) -> Matrix4<f32> {
     // Flattened (z scale 0): the spin only narrows the mark, like a coin.
     Matrix4::from_translation(cgmath::vec3(2.0 * center / w - 1.0, 2.0 * center / h - 1.0, 0.0))
         * Matrix4::from_nonuniform_scale(2.0 * size / w, 2.0 * size / h, 0.0)
-        * Matrix4::from_angle_y(Rad(spin))
+        * look.local()
 }
 
 /// Head-locked for one eye: 5 cm tall, 60 cm ahead, low and to the left of
 /// the head's gaze. `fov` is the eye's `[left, right, down, up]` angles in
 /// radians; `eye_in_head` its pose relative to the head center, so both eyes
 /// agree on where the mark is (correct stereo depth).
-pub fn head_locked_transform(fov: [f32; 4], eye_in_head: TrackingPose, spin: f32) -> Matrix4<f32> {
+pub fn head_locked_transform(fov: [f32; 4], eye_in_head: TrackingPose, look: &ReloadLook) -> Matrix4<f32> {
     // Its own near plane: the game camera's may sit beyond 60 cm.
     let [left, right, down, up] = fov;
     let projection = crate::Camera { near: 0.05, far: 10.0, ..Default::default() }
@@ -234,7 +257,7 @@ pub fn head_locked_transform(fov: [f32; 4], eye_in_head: TrackingPose, spin: f32
         * eye_from_head
         * Matrix4::from_translation(cgmath::vec3(-0.15, -0.12, -0.6))
         * Matrix4::from_scale(0.05)
-        * Matrix4::from_angle_y(Rad(spin))
+        * look.local()
 }
 
 /// The indicator's GL program and mark mesh, built once per context.
@@ -293,8 +316,8 @@ impl ReloadIndicatorPainter {
         }
     }
 
-    /// Draw the mark over the bound framebuffer, unoccluded, in `shown`'s
-    /// color at `alpha`. `transform` maps it to clip space
+    /// Draw the mark over the bound framebuffer, unoccluded, in `look`'s
+    /// color and opacity. `transform` maps it to clip space
     /// ([`corner_transform`], [`head_locked_transform`]); `viewport` is the
     /// target's size. Restores the capabilities it toggles, but leaves the
     /// viewport and blend function set.
@@ -302,13 +325,12 @@ impl ReloadIndicatorPainter {
         &self,
         gl: &glow::Context,
         transform: Matrix4<f32>,
-        shown: ReloadShown,
-        alpha: f32,
+        look: &ReloadLook,
         viewport: (u32, u32),
         // The shell's `SceneContext::output_srgb_encode()`.
         output_srgb_encode: bool,
     ) {
-        let [r, g, b] = crate::color_space::srgb_to_linear3(shown.color());
+        let [r, g, b] = crate::color_space::srgb_to_linear3(look.color());
         let caps = [glow::CULL_FACE, glow::DEPTH_TEST, glow::SCISSOR_TEST, glow::BLEND];
         unsafe {
             let was = caps.map(|cap| gl.is_enabled(cap));
@@ -328,7 +350,7 @@ impl ReloadIndicatorPainter {
             gl.viewport(0, 0, viewport.0 as i32, viewport.1 as i32);
             self.program.use_program(gl);
             self.program.set_uniform_matrix4(gl, &self.transform, &transform);
-            self.program.set_uniform_vec4(gl, &self.color, &cgmath::vec4(r, g, b, alpha));
+            self.program.set_uniform_vec4(gl, &self.color, &cgmath::vec4(r, g, b, look.alpha));
             self.output.set(&self.program, gl, output_srgb_encode, OutputAlpha::Blend);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, self.vertices);
@@ -359,6 +381,8 @@ impl ReloadIndicatorPainter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const STILL: ReloadLook = ReloadLook { shown: ReloadShown::Loading, spin: 0.0, alpha: 1.0, pulse: 0.0 };
 
     fn answered(indicator: &mut ReloadIndicator, now: Instant, result: Reply) -> Receiver<Reply> {
         let (reply, pusher) = mpsc::channel();
@@ -392,9 +416,17 @@ mod tests {
         let last = state.last.unwrap();
         assert!(last.ok && last.rendered_frame == 12 && (last.ms - 400.0).abs() < 1.0);
 
+        // It pulses as it settles: brighter and 15% larger at the peak.
+        assert_eq!(indicator.look(settled).unwrap().pulse, 0.0);
+        let peak = indicator.look(settled + PULSE / 2).unwrap();
+        assert!((peak.pulse - 1.0).abs() < 1e-4, "{peak:?}");
+        assert!(peak.color().iter().zip(ReloadShown::Ok.color()).all(|(lit, base)| *lit > base));
+        let top = |look: &ReloadLook| (corner_transform(100, 100, look) * cgmath::vec4(0.0, 0.5, 0.0, 1.0)).y;
+        let rest = ReloadLook { pulse: 0.0, ..peak };
+        assert!(((top(&peak) - top(&rest)) / (top(&rest) + 0.84) - 0.15).abs() < 1e-3);
         // Success keeps turning at full strength through the hold...
         let held = indicator.look(settled + HOLD).unwrap();
-        assert_eq!((held.shown, held.alpha), (ReloadShown::Ok, 1.0));
+        assert_eq!((held.shown, held.alpha, held.pulse < 1e-6), (ReloadShown::Ok, 1.0, true));
         assert!((held.spin - 0.9 * std::f32::consts::TAU).abs() < 1e-3, "{held:?}");
         // ...then fades out.
         let fading_out = indicator.look(settled + HOLD + FADE / 2).unwrap();
@@ -430,6 +462,22 @@ mod tests {
     }
 
     #[test]
+    fn a_push_over_a_resting_failure_spins_on_from_face_on() {
+        let t0 = Instant::now();
+        let mut indicator = ReloadIndicator::default();
+        let (reply, _first) = mpsc::channel();
+        let producer = indicator.track(reply, t0);
+        let rejected = t0 + Duration::from_millis(1200);
+        producer.send(Err("type error".to_string())).unwrap();
+        indicator.poll(rejected, 0);
+        let again = rejected + Duration::from_millis(300);
+        let (reply, _pusher) = mpsc::channel();
+        let _producer = indicator.track(reply, again);
+        let look = indicator.look(again).unwrap();
+        assert!(look.spin.abs() < 1e-3 && look.alpha == 1.0, "{look:?}");
+    }
+
+    #[test]
     fn a_rejected_or_dropped_reload_shows_red() {
         let t0 = Instant::now();
         let mut indicator = ReloadIndicator::default();
@@ -437,7 +485,8 @@ mod tests {
         indicator.poll(t0, 0);
         assert_eq!(pusher.try_recv().unwrap(), Err("type error".to_string()));
         let look = indicator.look(t0 + FADE).unwrap();
-        assert_eq!(look, ReloadLook { shown: ReloadShown::Failed, spin: 0.0, alpha: 1.0 });
+        assert_eq!(look.shown, ReloadShown::Failed);
+        assert!(look.spin == 0.0 && look.alpha == 1.0 && look.pulse.abs() < 1e-6, "{look:?}");
 
         // Rejected 0.4 of a turn in: it swings back to face the viewer.
         let (reply, _pusher) = mpsc::channel();
@@ -477,7 +526,7 @@ mod tests {
 
     #[test]
     fn the_corner_mark_sits_lower_left() {
-        let t = corner_transform(800, 600, 0.0);
+        let t = corner_transform(800, 600, &STILL);
         let center = t * cgmath::vec4(0.0, 0.0, 0.0, 1.0);
         // 8% of 600 = 48 px tall, centered 48 px in from each edge.
         assert!((center.x - (2.0 * 48.0 / 800.0 - 1.0)).abs() < 1e-5);
@@ -488,7 +537,7 @@ mod tests {
     fn head_locked_mark_is_ahead_and_lower_left_for_both_eyes() {
         for x in [-0.032, 0.032] {
             let eye = TrackingPose::new([x, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
-            let clip = head_locked_transform([-0.8, 0.8, -0.8, 0.8], eye, 0.0) * cgmath::vec4(0.0, 0.0, 0.0, 1.0);
+            let clip = head_locked_transform([-0.8, 0.8, -0.8, 0.8], eye, &STILL) * cgmath::vec4(0.0, 0.0, 0.0, 1.0);
             let ndc = clip.truncate() / clip.w;
             assert!(clip.w > 0.0, "in front of the eye");
             assert!(ndc.x < 0.0 && ndc.y < 0.0 && ndc.x > -1.0 && ndc.y > -1.0, "lower-left, in view: {ndc:?}");

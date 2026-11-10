@@ -3967,13 +3967,12 @@ Escape again to quit"
                 let transform = functor_runtime_common::reload_indicator::corner_transform(
                     fb_width as u32,
                     fb_height as u32,
-                    look.spin,
+                    &look,
                 );
                 painter.draw(
                     &gl,
                     transform,
-                    look.shown,
-                    look.alpha,
+                    &look,
                     (fb_width as u32, fb_height as u32),
                     scene_context.output_srgb_encode(),
                 );
