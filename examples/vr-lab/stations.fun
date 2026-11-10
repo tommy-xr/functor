@@ -51,15 +51,33 @@ expect after(grabTable.id) == inventory.id && after(inventory.id) == armory.id &
 // Tracked space is +X right, -Z forward; a station faces +Z turned by its
 // yaw, so rig-local is the world turned a half turn more about +Y.
 
-let turn = (s: Station) => Quat.yaw(s.yaw + Math.pi)
+let turnAt = (yaw: float) => Quat.yaw(yaw + Math.pi)
+// Each station's turn, computed once: the transforms below run many times a step.
+let grabTableTurn = turnAt(grabTable.yaw)
+let inventoryTurn = turnAt(inventory.yaw)
+let armoryTurn = turnAt(armory.yaw)
+let turn = (s: Station) =>
+  if s.yaw == grabTable.yaw then grabTableTurn
+  else if s.yaw == inventory.yaw then inventoryTurn
+  else if s.yaw == armory.yaw then armoryTurn
+  else turnAt(s.yaw)
 let toWorld = (s: Station, p: Input.point3): Input.point3 => Quat.add(s.feet, Quat.rotate(turn(s), p))
 let toRig = (s: Station, p: Input.point3): Input.point3 => Quat.rotate(Quat.conj(turn(s)), Quat.sub(p, s.feet))
 let dirToWorld = (s: Station, v: Input.point3): Input.point3 => Quat.rotate(turn(s), v)
 let dirToRig = (s: Station, v: Input.point3): Input.point3 => Quat.rotate(Quat.conj(turn(s)), v)
 
 /// The authored rig camera: level, at the feet, as `Xr.floorLocked` wants.
-let rig = (s: Station) =>
+let rigAt = (s: Station) =>
   Camera3D.firstPerson(Quat.toVec3(s.feet), Angle.radians(s.yaw), 0rad, 90deg) |> Camera3D.clip(0.05, 60.0)
+// Each station's rig, built once.
+let grabTableRig = rigAt(grabTable)
+let inventoryRig = rigAt(inventory)
+let armoryRig = rigAt(armory)
+let rig = (s: Station) =>
+  if s == grabTable then grabTableRig
+  else if s == inventory then inventoryRig
+  else if s == armory then armoryRig
+  else rigAt(s)
 
 // The engine maps a tracked pose the same way.
 expect (
