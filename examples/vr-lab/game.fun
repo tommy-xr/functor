@@ -222,7 +222,7 @@ let otherGlove = (g: Glove): Glove =>
 let sampledInput = (m: Model, s: Input.snapshot): Model =>
   let chosen =
     stationKeys
-      |> List.find((kv) => let (k, id) = kv in exists(id) && (s.pressedKeys |> List.any((p) => p == k)))
+      |> List.find((kv) => let (k, id) = kv in (s.pressedKeys |> List.any((p) => p == k)) && exists(id))
       |> Option.map((kv) => let (_, id) = kv in id) in
   let cycle = buttons(s.xr, (c) => c.secondaryPressed || c.menuPressed) in
   let thumbstick = buttons(s.xr, (c) => c.thumbstickPressed) in
@@ -423,14 +423,14 @@ let holdAll = (m: Model, st: Stations.Station, cast: (Props.Kind, Input.pose, In
         (withProp({ p with held: Option.None, support: Option.None, fore: false, at: pose }, next), released |> List.append([r])) in
       // A supported rifle's primary hand opening hands it to the foregrip
       // hand, where it is.
-      let handedOn = p.support |> Option.bind((s) => gripOf(m.xr, s.side) |> Option.map((g) => Hold.handOff(s.side, g, h))) in
+      let handedOn = () => p.support |> Option.bind((s) => gripOf(m.xr, s.side) |> Option.map((g) => Hold.handOff(s.side, g, h))) in
       (match Hold.step((a, b) => cast(p.kind, a, b), Props.radius(p.kind), h, steeredGrip(m, h.side), handOf(m, h.side).squeezed, t) with
        | Hold.Holding(held) => (withProp({ p with held: Option.Some(held) }, next), released)
        | Hold.Released(pose, v, w) =>
          (match stowed |> List.find((s) => s.prop == p.kind) with
           | Option.Some(s) => (withProp({ p with held: Option.None, support: Option.None, fore: false, slot: Option.Some(s.slot), pose: slotPose(slots, s.slot, pose), at: pose }, next), released)
           | Option.None =>
-            (match handedOn with
+            (match handedOn() with
              | Option.Some(fore) => (withProp({ p with held: Option.Some(fore), support: Option.None, fore: true }, next), released)
              | Option.None => letGo(pose, releaseKind(v), v, w)))
        | Hold.Broke(pose) =>
@@ -733,16 +733,17 @@ let supporting = (m: Model): (Model, List<Props.Kind>, List<(Hold.Side, Pulses.E
       let primary = gripOf(m.xr, h.side) in
       let at = gripOf(m.xr, s.side) |> Option.map((q) => q.position) in
       let squeezed = handOf(m, s.side).squeezed in
-      let single = { p with held: Option.Some(primary |> Option.map((g) => Longarm.alone(h, s, g)) |> Option.defaultValue(h)), support: Option.None } in
+      // (A function: only a let-go or break needs it.)
+      let single = () => { p with held: Option.Some(primary |> Option.map((g) => Longarm.alone(h, s, g)) |> Option.defaultValue(h)), support: Option.None } in
       let grasp =
         match primary with
         | Option.Some(g) => Longarm.grasp(foreOf(p.kind), s, g, at, squeezed)
         | Option.None => if Option.isSome(at) && squeezed then Longarm.Supporting(s) else Longarm.LetGo in
       (match grasp with
        | Longarm.Supporting(s2) => (withProp({ p with support: Option.Some(s2) }, next), alone, felt)
-       | Longarm.LetGo => (withProp(single, next), alone |> List.append([p.kind]), felt |> List.append([(s.side, Pulses.Release)]))
+       | Longarm.LetGo => (withProp(single(), next), alone |> List.append([p.kind]), felt |> List.append([(s.side, Pulses.Release)]))
        | Longarm.Broke =>
-         (withHand(withProp(single, next), s.side, Hold.disarm(handOf(next, s.side))), alone |> List.append([p.kind]), felt |> List.append([(s.side, Pulses.Break)]))))
+         (withHand(withProp(single(), next), s.side, Hold.disarm(handOf(next, s.side))), alone |> List.append([p.kind]), felt |> List.append([(s.side, Pulses.Break)]))))
         |> Option.defaultValue(acc),
     (m, [], []))
 
@@ -879,7 +880,8 @@ let racking = (prev: Model, m: Model, st: Stations.Station, world: World): (Mode
       let taken = gunOf(prev, k).slide.hand != Option.Some(side) in
       let start = if taken then z |> Option.map((at) => Gun.take(w.rack, g.ammo.locked, side, at)) |> Option.defaultValue(g.slide) else g.slide in
       let (slide, strokes) = Gun.pullTo(w.rack, start, z) in
-      let v = p.held |> Option.map((h) => Hold.velocity(h.history)) |> Option.defaultValue(zero) in
+      // Only a stroke throws a round out at the gun's velocity.
+      let v = if List.isEmpty(strokes) then zero else p.held |> Option.map((h) => Hold.velocity(h.history)) |> Option.defaultValue(zero) in
       stroked((withGun(next, k, { g with slide: slide }), out, if taken then felt |> List.append([(side, Pulses.Grab)]) else felt),
         st, world, k, side, holder, gun, v, strokes),
     (m, [], []))
@@ -933,7 +935,7 @@ let pumping = (m: Model, st: Stations.Station, world: World): (Model, List<Relea
       let (z, _) = onSlide(w, gun, q.position) in
       let start = if g.slide.hand == Option.Some(side) then g.slide else Gun.takePump(g.slide, side, z) in
       let (slide, strokes) = Gun.pullTo(w.rack, start, Option.Some(z)) in
-      stroked((withGun(m, k, { g with slide: slide }), [], []), st, world, k, side, Option.Some(h.side), gun, Hold.velocity(h.history), strokes))
+      stroked((withGun(m, k, { g with slide: slide }), [], []), st, world, k, side, Option.Some(h.side), gun, if List.isEmpty(strokes) then zero else Hold.velocity(h.history), strokes))
 
 /// One fixed step, given the world and the props as read back (`read`): the
 /// next model (with the step's `pulses`), and the props let go (their
@@ -1099,9 +1101,10 @@ let tick = (m: Model, dt: float, tts: float) =>
   let read = (p: Prop): Prop =>
     if m.fresh || bodiless(p) then p
     else
-      match Physics.pose(tagOf(m.gen, p.kind)) with
+      let tag = tagOf(m.gen, p.kind) in
+      match Physics.pose(tag) with
       | Option.Some(q) =>
-        let v = Physics.linearVelocity(tagOf(m.gen, p.kind)) in
+        let v = Physics.linearVelocity(tag) in
         let pose = unposed(st, q) in
         // A free loose round still for a step (under 2 cm/s, moved under
         // 0.2 mm) on the level (3 mm above it) lies where it is from now:
@@ -1531,7 +1534,8 @@ let offered = (m: Model, s: Slots.Placed): List<Props.Kind> =>
   [Hold.Left, Hold.Right] |> List.concatMap((side) =>
     let offer =
       gripOf(m.xr, side)
-        |> Option.filter((g) => Slots.target([s], g.position) |> Option.isSome)
+        // (In the slot: `Slots.target([s], …)`, without its sort.)
+        |> Option.filter((g) => Slots.distance(s, g.position) <= s.slot.radius)
         |> Option.bind((g) => propIn(m, side))
         |> Option.map((p) => p.kind) in
     match offer with
