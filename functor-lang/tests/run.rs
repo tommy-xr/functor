@@ -482,9 +482,8 @@ fn error_infinite_recursion_is_a_clean_error() {
 /// `src` loaded with the stdlib (`Result`, `Option`) and run: `main`'s
 /// result, or the runtime error's message.
 fn run_with_stdlib(src: &str) -> Result<String, String> {
-    let sources = vec![(Path::new("main.fun").to_path_buf(), src.to_string())];
-    let project = functor_lang::project::load_sources_with_prelude(sources, &[])
-        .unwrap_or_else(|e| panic!("source should load: {}", e.render()));
+    let project = functor_lang::project::load_single_source("main", src)
+        .unwrap_or_else(|e| panic!("source should load: {}", e.message));
     match functor_lang::run(&project.module, Tracing::Off) {
         Ok(record) => match record.outcome {
             RunOutcome::Main(value) => Ok(value.to_string()),
@@ -500,28 +499,27 @@ fn run_with_stdlib(src: &str) -> Result<String, String> {
 /// is charged overflows it and aborts the test binary.
 #[test]
 fn recursion_through_callbacks_is_a_clean_error() {
-    for (via, def) in [
-        ("List.map", "let down = (n) => List.map((x) => down(x + 1.0), [n])"),
-        ("List.fold", "let down = (n) => List.fold((a, x) => a + down(x + 1.0), 0.0, [n])"),
-        ("List.filter", "let down = (n) => List.filter((x) => down(x + 1.0) == [], [n])"),
-        ("List.sortBy", "let down = (n) => List.sortBy((x) => down(x + 1.0), [n])"),
+    let one = "let main = () => down(0.0)";
+    let two = "let main = () => down(0.0, 0.0)";
+    for (via, def, main) in [
+        ("List.map", "let down = (n) => List.map((x) => down(x + 1.0), [n])", one),
+        ("List.fold", "let down = (n) => List.fold((a, x) => a + down(x + 1.0), 0.0, [n])", one),
+        ("List.filter", "let down = (n) => List.filter((x) => down(x + 1.0) == [], [n])", one),
+        ("List.sortBy", "let down = (n) => List.sortBy((x) => down(x + 1.0), [n])", one),
         (
             "List.tryMapAccum",
             "let down = (n) => List.tryMapAccum((s, x) => Result.Ok((s, down(x + 1.0))), 0.0, [n])",
+            one,
         ),
-        ("Loop.until", "let down = (n) => Loop.until((s) => s > 0.0, (s) => down(n + 1.0), 0.0)"),
+        ("Loop.until", "let down = (n) => Loop.until((s) => s > 0.0, (s) => down(n + 1.0), 0.0)", one),
         (
             "Map.fold",
             "let down = (n) => Map.fold((a, k, v) => a + down(v + 1.0), 0.0, Map.fromList([(0.0, n)]))",
+            one,
         ),
-        ("a partial", "let down = (k, n) => 1.0 + down(k)(n + 1.0)"),
-        ("over-application", "let down = (n) => (m) => 1.0 + down(n + 1.0, m)"),
+        ("a partial", "let down = (k, n) => 1.0 + down(k)(n + 1.0)", two),
+        ("over-application", "let down = (n) => (m) => 1.0 + down(n + 1.0, m)", two),
     ] {
-        let main = if via == "a partial" || via == "over-application" {
-            "let main = () => down(0.0, 0.0)"
-        } else {
-            "let main = () => down(0.0)"
-        };
         let message = run_with_stdlib(&format!("{def}\n{main}"))
             .expect_err(&format!("recursion through {via} should hit the cap"));
         assert!(message.contains("depth cap"), "{via}: {message}");

@@ -63,7 +63,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Measured 2026-11 (Apple Silicon): 1.0–1.4 KiB of stack per charged level
 /// in dev builds and ≤ 2 KiB in release, so 256 levels need ≤ 0.5 MiB. That
 /// relies on the workspace building this crate at opt-level 1 in dev:
-/// unoptimized frames are ~10x larger and would overflow 2 MiB first.
+/// unoptimized frames are ~10x larger and would overflow 2 MiB first. Every
+/// Cargo workspace that builds this crate needs that profile override.
 const MAX_EVAL_DEPTH: usize = 256;
 
 /// Eval levels a builtin call is charged. Its frames (the dispatch, and the
@@ -2553,6 +2554,8 @@ definition (a top-level initializer may only use globals defined above it)",
         result
     }
 
+    /// Out of line, so its locals never join [`Self::call`]'s recursive frame.
+    #[inline(never)]
     fn run_builtin(&mut self, b: Builtin, args: Vec<Value>, span: Span) -> Result<Value, RunError> {
         let err = |message: String| Err(RunError { message, span });
         match b {
@@ -4425,7 +4428,7 @@ pub(crate) fn ctor_arity_message(
 
 /// A builtin's argument count — currying needs each builtin's arity to decide
 /// partial vs saturated vs over-application. Must stay in sync with
-/// [`Interp::call_builtin`] (and [`crate::types::builtin_signature`]).
+/// [`Interp::run_builtin`] (and [`crate::types::builtin_signature`]).
 pub fn builtin_arity(b: Builtin) -> usize {
     match b {
         Builtin::ListFold

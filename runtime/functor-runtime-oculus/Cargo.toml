@@ -108,3 +108,8 @@ categories = [
     "com.oculus.intent.category.VR",
     "android.intent.category.LAUNCHER",
 ]
+
+# Same as the root workspace: the interpreter's depth cap assumes optimized
+# frames, so debug APKs build functor-lang at opt-level 1.
+[profile.dev.package.functor-lang]
+opt-level = 1

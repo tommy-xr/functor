@@ -23,7 +23,7 @@ let filter : (('a) => bool, List<'a>) => List<'a>
 
 /// Reduce left-to-right from an initial accumulator, calling `fn(acc, element)`.
 /// This is the iteration primitive to reach for when `map` and `filter` do not
-/// fit — a recursive walk hits the interpreter's recursion cap around 40–60
+/// fit — a recursive walk hits the interpreter's recursion cap around 80–120
 /// elements, while `fold` has no such limit.
 let fold : (('b, 'a) => 'b, 'b, List<'a>) => 'b
 
