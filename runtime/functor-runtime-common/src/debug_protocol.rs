@@ -191,7 +191,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// debug camera at a given eye/target (`set`), or reattach it (`attach`), so
 /// a driver can capture a spectator view of an XR session. A pre-v32 runtime
 /// answers 404.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 32;
+///
+/// 33 adds `GET /input-log?from=N` ([`InputLog`]): the sampled input each
+/// retained recorded step consumed, numbered as `GET /state`'s `frame`, so a
+/// driver can record a live session (a worn headset's) as replayable input.
+/// A pre-v33 runtime answers 404.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 33;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -321,6 +326,11 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/camera",
         description: "debug view — {\"type\":\"set\",\"eye\":[0,2,-3],\"target\":[0,1,0],\"fov\":60} detaches the shell's debug camera at that view (fov in degrees, default the authored camera's); {\"type\":\"attach\"} returns to the authored camera. Shell-only: the model, input log and replay never see it. 400 without a rendered view (--headless, the headset)",
+    },
+    DebugRoute {
+        method: "GET",
+        path: "/input-log",
+        description: "recorded sampled input — ?from=N returns {generation, oldest, newest, steps: [{frame, tts, dts, input}]}: each retained step from state frame N on (default: all), `input` the sampled snapshot it consumed (null for a game without sampledInput); frames as GET /state numbers them",
     },
     DebugRoute {
         method: "POST",
@@ -831,6 +841,36 @@ pub enum CameraCommand {
     Attach,
 }
 
+/// `GET /input-log`: the recorder's retained steps, numbered as `GET /state`
+/// numbers `frame` (step `N` produced the state reported as frame `N`).
+/// Retention is bounded (the time-travel window), so a recording client polls
+/// with `from` = the last step it holds + 1 and treats `oldest > from` as lost
+/// steps.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct InputLog {
+    /// Bumps when recorded history may be replaced (a rewind, a reload that
+    /// resets it, a project load): steps from before a change don't continue.
+    pub generation: u64,
+    /// Oldest and newest retained steps; 0 and 0 when none are.
+    pub oldest: u64,
+    pub newest: u64,
+    pub steps: Vec<InputLogStep>,
+}
+
+/// One recorded step of [`InputLog`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct InputLogStep {
+    pub frame: u64,
+    /// The game clock after the step, and the step's delta (seconds).
+    pub tts: f32,
+    pub dts: f32,
+    /// The sampled snapshot `sampledInput` received; `None` for a game that
+    /// doesn't define it.
+    pub input: Option<InputSnapshot>,
+}
+
 /// A display refresh-rate request sent through `POST /display-refresh-rate`.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub struct DisplayRefreshRateCommand {
@@ -1205,6 +1245,8 @@ pub enum DebugRequest {
     /// `GET /frames`: the newest `last` frames (all when `None`).
     Frames(Option<usize>, Sender<crate::frame_telemetry::FramesReport>),
     Spikes(Sender<crate::frame_telemetry::SpikesReport>),
+    /// `GET /input-log`: retained steps from this state frame on.
+    InputLog(u64, Sender<InputLog>),
     Input(InputCommand, Sender<Result<(), String>>),
     /// `Err` is a conflict the operator must resolve — today, a `/time` command
     /// under an unconditional `--fixed-time` pin, which the clock cannot honor.
@@ -1905,6 +1947,7 @@ mod tests {
             "GET /state",
             "GET /frames",
             "GET /spikes",
+            "GET /input-log",
             "GET /scene",
             "GET /trace",
             "GET /project",

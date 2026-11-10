@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use ts_rs::{Config, TypeVisitor, TS};
 
-use crate::debug_protocol::{InputCommand, RuntimeState};
+use crate::debug_protocol::{InputCommand, InputLog, RuntimeState};
 use crate::frame_telemetry::{FramesReport, SpikesReport};
 use crate::Camera;
 
@@ -60,6 +60,7 @@ fn render() -> String {
     decls.visit::<InputCommand>();
     decls.visit::<FramesReport>();
     decls.visit::<SpikesReport>();
+    decls.visit::<InputLog>();
     decls.visit::<Camera>();
     let body: Vec<String> = decls.out.into_values().collect();
     format!("{HEADER}\n{}\n", body.join("\n\n"))

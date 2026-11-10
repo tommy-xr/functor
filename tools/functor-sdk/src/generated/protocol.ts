@@ -353,6 +353,38 @@ failed: number, };
 export type InputCommand = { "type": "key", key: string, down: boolean, } | { "type": "mouse_move", x: number, y: number, } | { "type": "mouse_wheel", delta: number, } | { "type": "mouse_button", button: string, down: boolean, } | { "type": "ui_event", slot: number, kind: UiEventKind, } | { "type": "webview_event", slot: number, kind: UiEventKind, } | { "type": "xr" } & XrInputSnapshot | { "type": "xr_clear" } | { "type": "gamepad" } & GamepadSnapshot | { "type": "gamepad_clear" } | { "type": "touch", phase: TouchPhase, id: number, x: number, y: number, };
 
 /**
+ * `GET /input-log`: the recorder's retained steps, numbered as `GET /state`
+ * numbers `frame` (step `N` produced the state reported as frame `N`).
+ * Retention is bounded (the time-travel window), so a recording client polls
+ * with `from` = the last step it holds + 1 and treats `oldest > from` as lost
+ * steps.
+ */
+export type InputLog = { 
+/**
+ * Bumps when recorded history may be replaced (a rewind, a reload that
+ * resets it, a project load): steps from before a change don't continue.
+ */
+generation: number, 
+/**
+ * Oldest and newest retained steps; 0 and 0 when none are.
+ */
+oldest: number, newest: number, steps: Array<InputLogStep>, };
+
+/**
+ * One recorded step of [`InputLog`].
+ */
+export type InputLogStep = { frame: number, 
+/**
+ * The game clock after the step, and the step's delta (seconds).
+ */
+tts: number, dts: number, 
+/**
+ * The sampled snapshot `sampledInput` received; `None` for a game that
+ * doesn't define it.
+ */
+input: InputSnapshot | null, };
+
+/**
  * Runtime-owned input sampled for one fixed simulation step.
  *
  * Keyboard and mouse retain their event entry points, while this plain-data

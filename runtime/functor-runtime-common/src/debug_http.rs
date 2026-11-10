@@ -297,7 +297,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
         }
         ("GET", "/frames") => {
-            let last = match parse_last_query(query) {
+            let last = match query_number(query, "last") {
                 Ok(last) => last,
                 Err(error) => {
                     respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
@@ -306,6 +306,20 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             };
             let (resp_tx, resp_rx) = mpsc::channel();
             if tx.send(DebugRequest::Frames(last, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_report(&mut stream, cors_origin, recv(resp_rx));
+        }
+        ("GET", "/input-log") => {
+            let from = match query_number(query, "from") {
+                Ok(from) => from.unwrap_or(0),
+                Err(error) => {
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
+                    return Some(());
+                }
+            };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::InputLog(from, resp_tx)).is_err() {
                 return runtime_gone(&mut stream, cors_origin);
             }
             respond_report(&mut stream, cors_origin, recv(resp_rx));
@@ -818,12 +832,13 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
     Some(())
 }
 
-/// `last=N` from a `GET /frames` query (`None` when absent).
-fn parse_last_query(query: &str) -> Result<Option<usize>, String> {
+/// `key=N` from a query (`None` when absent): `GET /frames`' `last`,
+/// `GET /input-log`'s `from`.
+fn query_number<T: std::str::FromStr>(query: &str, key: &str) -> Result<Option<T>, String> {
     query
         .split('&')
-        .find_map(|pair| pair.strip_prefix("last="))
-        .map(|n| n.parse().map_err(|_| format!("last must be a whole number, got {n:?}")))
+        .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+        .map(|n| n.parse().map_err(|_| format!("{key} must be a whole number, got {n:?}")))
         .transpose()
 }
 
@@ -1045,8 +1060,15 @@ mod tests {
         assert_eq!(body["frames"][0]["frame"], 3);
         assert_eq!(body["frames"].as_array().unwrap().len(), 2);
 
-        assert_eq!(parse_last_query(""), Ok(None));
-        assert!(parse_last_query("last=many").is_err());
+        assert_eq!(query_number::<usize>("", "last"), Ok(None));
+        assert!(query_number::<usize>("last=many", "last").is_err());
+    }
+
+    #[test]
+    fn input_log_parses_from() {
+        assert_eq!(query_number::<u64>("x=1&from=42", "from"), Ok(Some(42)));
+        assert_eq!(query_number::<u64>("fromage=1", "from"), Ok(None));
+        assert!(query_number::<u64>("from=-1", "from").is_err());
     }
 
     #[test]

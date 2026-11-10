@@ -1568,6 +1568,14 @@ impl Game for FunctorLangGame {
         self.recorder.scene_frame_range()
     }
 
+    fn recorded_inputs_at(&self, rendered_frame: u64) -> Vec<functor_runtime_common::RecordedInput> {
+        self.recorder.inputs_at(rendered_frame)
+    }
+
+    fn recorded_frame_time_at(&self, rendered_frame: u64) -> Option<FrameTime> {
+        self.recorder.frame_time_at(rendered_frame)
+    }
+
     /// The recording generation, which bumps whenever existing recorded frames
     /// may have been REPLACED (a destructive rewind, a reload that resets the
     /// rings). Without this the trait's default `0` made the preview cache's

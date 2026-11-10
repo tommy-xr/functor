@@ -225,6 +225,41 @@ pub fn rewind_to_state_frame<G: GameProducer + ?Sized>(
     })
 }
 
+/// `GET /input-log?from=N`: the retained recorded steps from state frame `N`
+/// on, numbered as [`GameProducer::state_frame`] (recorded frame `r` produced
+/// state frame `r + 1`), each with the sampled snapshot it consumed.
+pub fn input_log<G: GameProducer + ?Sized>(game: &G, from: u64) -> crate::debug_protocol::InputLog {
+    use crate::debug_protocol::{InputLog, InputLogStep};
+    let generation = game.scene_timeline_generation();
+    let Some((lo, hi)) = game.scene_frame_range() else {
+        return InputLog { generation, ..InputLog::default() };
+    };
+    let steps = (from.max(lo + 1)..=hi + 1)
+        .filter_map(|frame| {
+            let time = game.recorded_frame_time_at(frame - 1)?;
+            let input = game
+                .recorded_inputs_at(frame - 1)
+                .into_iter()
+                .find_map(|input| match input {
+                    crate::RecordedInput::Snapshot(snapshot) => Some(*snapshot),
+                    _ => None,
+                });
+            Some(InputLogStep {
+                frame,
+                tts: time.tts,
+                dts: time.dts,
+                input,
+            })
+        })
+        .collect();
+    InputLog {
+        generation,
+        oldest: lo + 1,
+        newest: hi + 1,
+        steps,
+    }
+}
+
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
 /// this module's boundary doc (drains return JSON arrays, pushes take the
@@ -376,6 +411,13 @@ pub trait GameProducer {
     /// raw shell events that may have been discarded while paused.
     fn recorded_inputs_at(&self, _rendered_frame: u64) -> Vec<crate::RecordedInput> {
         Vec::new()
+    }
+
+    /// The clock one recorded rendered frame ran at (its `tts` after the
+    /// step and its `dts`). `None` outside the recorded window, or for
+    /// producers that don't record a model history.
+    fn recorded_frame_time_at(&self, _rendered_frame: u64) -> Option<crate::FrameTime> {
+        None
     }
 
     /// Revision of the authoritative recording generation. It changes when a
