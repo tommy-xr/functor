@@ -883,17 +883,19 @@ let ordered = 4px < 16px            // …and >, <=, >=, ==, != (all derived)
   `let Foo` may coexist, but constructors share the value namespace with
   `let`s), record fields (literal and update), lambda params, pattern
   variables within one pattern.
-- Recursion depth is capped (128 eval levels); deep iteration belongs in the
+- Recursion depth is capped (256 eval levels); deep iteration belongs in the
   iterative `List.*` builtins (`List.fold`/`map`/`filter`/`any`/`all`/`length`/…)
   and, for loops that aren't over a list (graph walks, queues), `Loop.until`;
   they loop in the interpreter and consume no evaluation depth. A hand-rolled
-  recursive walk trips the cap somewhere between **n≈40 and n≈60** — each
+  recursive walk trips the cap somewhere between **n≈80 and n≈120** — each
   user-level call burns several eval levels, and the exact limit depends on
-  shape. Bisected: a bare tail call (`countdown(n - 1.0)`) reaches 62, while
+  shape. Bisected: a bare tail call (`countdown(n - 1.0)`) reaches 126, while
   wrapping the call in an operator (`1.0 + countdown(n - 1.0)`, or a
   `match`-based `h + sumList(t)` list walk) costs an extra level per call and
-  fails at 42. Budget for the conservative number. The depth error names the
-  cap value (128) and points at `List.fold`.
+  fails at 85. Recursion through a builtin's callback (a tree walked with
+  `List.map`) also charges the builtin, so it reaches about half that. Budget
+  for the conservative number. The depth error names the cap value (256) and
+  points at `List.fold`.
 
 ## Standard library (available everywhere, no host needed)
 
@@ -976,7 +978,7 @@ let message = (result: Result.t<float, string>) =>
   answers `Option.t`, never a sentinel and never an error on an empty list. So
   `xs |> List.maximum |> Option.defaultValue(0.0)` is the one-liner when you
   want a fallback.
-- **Recursion is capped (128 eval levels)** — see "Semantics rules" above. Deep
+- **Recursion is capped (256 eval levels)** — see "Semantics rules" above. Deep
   iteration belongs in the iterative `List.*` builtins, which loop in the
   interpreter and consume no evaluation depth.
 

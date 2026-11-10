@@ -474,7 +474,7 @@ fn error_infinite_recursion_is_a_clean_error() {
     // The improved cap error names the numeric cap and points at the
     // iterative builtins (List.fold), which don't consume evaluation depth.
     assert!(
-        message.contains("128") && message.contains("List.fold"),
+        message.contains("256") && message.contains("List.fold"),
         "got: {message}"
     );
 }
@@ -1419,7 +1419,7 @@ fn text_case_contains_replace_trim() {
 
 /// Like the existing list builtins, the additions LOOP in Rust — a game can
 /// index or sort a thousand-element list without touching the eval-depth cap
-/// that a hand-rolled recursion hits around n≈60.
+/// that a hand-rolled recursion hits around n≈120.
 #[test]
 fn added_list_builtins_do_not_consume_eval_depth() {
     assert_eq!(
@@ -1496,7 +1496,7 @@ fn list_any_all_predicates() {
 }
 
 // The builtins loop in Rust, so folding/iterating a large list never trips
-// the eval-depth cap that a hand-rolled recursion hits around n≈60.
+// the eval-depth cap that a hand-rolled recursion hits around n≈120.
 #[test]
 fn list_builtins_do_not_consume_eval_depth() {
     assert_eq!(

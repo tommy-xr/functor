@@ -2,7 +2,7 @@
 //! fixed point.
 //!
 //! Functor Lang has no loop statement, and a recursive walk hits the
-//! interpreter's recursion cap after a few dozen calls. `Loop.until` runs in
+//! interpreter's recursion cap after about a hundred calls. `Loop.until` runs in
 //! the interpreter instead, so it uses no recursion depth; each step counts
 //! against the step budget like any call.
 
