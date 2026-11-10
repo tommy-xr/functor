@@ -18,7 +18,8 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | `1`-`9` | jump to that station and reset it |
 | B / Y / menu | next station (reset) |
 | grip (squeeze) | grab what's in reach; open to let go |
-| trigger | fire the held pistol (station 3) |
+| trigger | fire the held gun (station 3) |
+| A / X (holding the rifle's grip), `F` | the rifle's selector: semi / full-auto |
 | `H` / thumbstick click | draw a holding hand where it is tracked, or where its blocked prop implies |
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
@@ -34,7 +35,8 @@ headset requests 120 Hz with foveation off, floor-locked.
 | `hips.fun` | the body frame the slots ride: root and lagging yaw from the head, pin |
 | `slots.fun` | the body slots: offsets, reach, what each takes, how each is drawn |
 | `inventory.fun` | the inventory station's headless checks |
-| `gun.fun` | the pistol: shape, authored grip, trigger, bore, shot, recoil, the ammo seam |
+| `gun.fun` | what the guns share (trigger and fire modes, bore, shot, muzzle check, recoil, the ammo seam), and the pistol's shape and grip |
+| `longarm.fun` | the rifle: shape, its two grips, the two-hand aim, the support hand's slide, break and look |
 | `armory.fun` | the armory station's headless checks |
 | `pulses.fun` | each hold event's controller pulse, and the edges that fire it once |
 | `hold.fun` | one hand grabbing, holding and releasing a prop (any pose); the swept move; the throw and spin estimate |
@@ -85,8 +87,8 @@ The amplitudes and durations are one table, `Pulses.pulse`:
 | unstow | taking a prop out of a slot | 0.55 | 40 ms |
 | stow | putting it away | 0.7 | 50 ms |
 | blocked | the first step a held prop stops against the level (once per push) | 0.85 | 20 ms |
-| fire | a shot | 0.95 | 35 ms |
-| break | the grip breaking | 1.0 | 80 ms |
+| fire | a shot (every hand on the gun) | 0.95 | 35 ms |
+| break | the grip breaking (or the rifle's support) | 1.0 | 80 ms |
 
 A held prop is blocked once the hand is 2 cm or 10° off where it holds it, and
 free again under half that, so a hand resting at the edge doesn't buzz twice.
@@ -201,9 +203,11 @@ whether the slots can be found without looking.
 
 ## 3. Armory
 
-A bench with a pistol on it, the grab table's wall at its left end, and three
-targets on a backstop 5.5 m down range, with a scoreboard. The holsters are
-worn here too, and take the pistol.
+A bench with a pistol on it and a rifle racked beside it, the grab table's
+wall at its left end, and three targets on a backstop 5.5 m down range, with
+a scoreboard. The holsters are worn here too, and take the pistol.
+
+### The pistol
 
 - **Grip.** The pistol is only taken at its grip: within 7 cm of where the
   fist goes (`Gun.gripZone`). By the barrel it isn't grabbable at all;
@@ -245,3 +249,59 @@ Worn checks still open: whether the pistol sits naturally in the hand (the
 barrel along the grip pose's -Z), whether shots land where the sights look,
 the trigger thresholds on a real trigger, the recoil and fire pulse's feel,
 and drawing from the thigh holster.
+
+### The rifle
+
+The same trigger, shot, muzzle check, recoil and ammo seam (`Gun`), with its
+own grips and bore (`Longarm.weapon`).
+
+- **Two grips.** The pistol grip (the trigger) is taken like the pistol's:
+  within 7 cm, settling in. The foregrip is a line under the handguard,
+  through the primary fist parallel to the bore, 14-40 cm ahead of it: the
+  other hand's squeeze within 6 cm of it, while the first holds the grip,
+  takes it as the support, if the break limits below would hold it there.
+  A free or racked rifle is only taken by the grip.
+- **Two-hand aim.** The barrel points from the primary fist to the support
+  fist; its up is the primary hand's up made perpendicular to that, so the
+  roll is the primary hand's (`Longarm.aimAt`). The primary fist stays on the
+  grip. Taking the foregrip off that line doesn't jump the barrel: the
+  difference eases out at 8.6° a step. Then the whole rifle is swept once a
+  step to that pose, like any held prop (`Physics.sweep`, rotation-aware), and
+  both grips and the muzzle come from the pose it accepts. Tracking only
+  steers; the accepted pose never feeds back.
+- **Slide and break.** Along the foregrip the support slides freely. Past
+  12 cm off the primary hand's axis, or 8 cm past either end of the foregrip,
+  it breaks off: a break pulse, and the hand must open before it takes the
+  foregrip again. Opened, it lets go with a release pulse. Either way the
+  rifle stays where the aim had it on that step, then eases back into the
+  primary hand (2 cm, 8.6° a step at most).
+- **One hand.** Rigid in the primary hand, like the pistol: no droop or lag.
+- **Hand-off.** The primary hand opening while the support holds hands the
+  rifle to it where it is: held by the foregrip, one-handed, with no trigger
+  (the trigger never moves to the foregrip hand). Squeezing the pistol grip
+  again takes it back, the foregrip hand staying on as the support (if the
+  new grip's axis holds it; else it just lets go); the trigger starts
+  disarmed until let out. A support hand losing tracking lets go; a lost
+  primary hand freezes the rifle, its support able only to let go.
+- **Fire modes.** Semi, or full-auto at 10 rounds a second counted in fixed
+  steps (one on the pull, one every 6 steps held: N steps held after the
+  pull fire floor(N / 6) + 1). A / X on the hand at the grip, or `F`,
+  switches; the light on the receiver's left is green on semi, red on
+  full-auto. A refused shot disarms the trigger, so a blocked barrel clicks
+  once a pull, not at the rate. Each shot buzzes both hands on the rifle;
+  a click, only the trigger hand.
+- **Rack.** On the bench's right: let go within 20 cm of where it racks (by
+  the hand holding it alone), it goes back, bodiless, like a slot. The rifle
+  doesn't fit the thigh holsters.
+- **Hand view.** `Accepted` draws the primary hand on the accepted grip and
+  the support on the accepted foregrip, each with a ghost at its tracked
+  pose past 2 cm or 10°. Nothing a held gun touches moves the camera.
+
+`GET /state` shows `rifle` (as `gun`, plus `mode`) and the rifle prop's
+`support` (`side`, `ease`, `aim`) and `fore`. `npm run test:vr-lab` runs
+`e2e/vr-lab-rifle.mjs`.
+
+Worn checks still open: two-hand grip comfort and stock-less aim stability,
+where the slide and the 12 cm break land, whether the hand-off and retake feel
+natural, the 10 Hz auto rate, the hand-view A/B with both hands blocked, and
+the settle back to one hand after a support lets go.

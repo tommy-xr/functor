@@ -8,7 +8,8 @@
 // `to` (rig-local metres: +X right, +Y up from the floor, -Z forward), with
 // its squeeze held at `squeeze`. `turn` (a quaternion, `[x, y, z, w]`) turns
 // its grip the same way, the shorter way round, from where it was to that.
-// `trigger` holds its trigger there. `active: false` loses the hand's tracking. A segment's `tap` key is
+// `trigger` holds its trigger there, `primary: true` its A/X button.
+// `active: false` loses the hand's tracking. A segment's `tap` key is
 // pressed on its first step and released after it.
 // A segment's `mark` names its last step, so a check can find it; its
 // `spectator` re-aims a demo's camera from its first step (`e2e/xr-demo.mjs`).
@@ -147,6 +148,7 @@ const hand = (h) =>
         aim: { position: h.at, orientation: h.orientation ?? [0, 0, 0, 1] },
         trigger: h.trigger ?? 0,
         squeeze: h.squeeze ?? 0,
+        primary_pressed: h.primary ?? false,
       };
 
 /** The XR sample for the head's and both hands' current state. */
@@ -173,6 +175,19 @@ export const qrot = ([x, y, z, w], v) => {
   const t = cross([x, y, z], v).map((c) => 2 * c);
   const u = cross([x, y, z], t);
   return v.map((c, i) => c + w * t[i] + u[i]);
+};
+
+// Reading `/state`: a vector's length, a point3 / quaternion record as an
+// array, an `Option.Some`'s value, a vector printed, and the angle (radians)
+// of the turn between two quaternions.
+export const len = (v) => Math.hypot(...v);
+export const xyz = (p) => [p.x, p.y, p.z];
+export const quat = (q) => [q.x, q.y, q.z, q.w];
+export const some = (opt) => (opt?.$ctor === "Option.Some" ? opt.args[0] : undefined);
+export const fmt = (v) => `[${v.map((x) => x.toFixed(4)).join(", ")}]`;
+export const turnOf = (a, b) => {
+  const [x, y, z, w] = qmul(b, qconj(a));
+  return 2 * Math.atan2(Math.hypot(x, y, z), Math.abs(w));
 };
 
 const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
@@ -233,6 +248,36 @@ export async function play(rt, scenario, onStep = async () => {}) {
   }
   return marks;
 }
+
+/**
+ * Play `scenario`, keeping every step's state and the hands injected there
+ * (and, with `scenes`, `/scene` at each mark). `index(mark)` is a mark's
+ * step, `at(mark)` its record.
+ */
+export async function record(rt, scenario, { scenes: keepScenes = false } = {}) {
+  const steps = [];
+  const scenes = {};
+  const marks = await play(rt, scenario, async ({ state, hands, mark }) => {
+    steps.push({ state, left: { ...hands.left }, right: { ...hands.right } });
+    if (keepScenes && mark) scenes[mark] = await rt.get("/scene");
+  });
+  const index = (mark) => steps.findIndex((s) => s.state.frame === marks[mark].frame);
+  return { steps, marks, scenes, index, at: (mark) => steps[index(mark)] };
+}
+
+// `/scene`: the first placed (non-identity) transform under a node
+// (`Scene.atPose`'s), and its translation.
+const IDENTITY = JSON.stringify([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
+export const placed = (node) => {
+  if (!node || typeof node !== "object") return undefined;
+  if (Array.isArray(node.xform) && JSON.stringify(node.xform) !== IDENTITY) return node.xform;
+  for (const child of Object.values(node)) {
+    const found = Array.isArray(child) ? child.map(placed).find(Boolean) : placed(child);
+    if (found) return found;
+  }
+  return undefined;
+};
+export const placedAt = (node) => placed(node)?.[3].slice(0, 3);
 
 /** Load a fixture: a path from the repo root, or the parsed object. */
 export const loadFixture = (fixture) =>

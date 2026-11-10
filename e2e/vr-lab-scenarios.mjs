@@ -424,6 +424,252 @@ const armoryScenarios = {
   },
 };
 
+// --- Armory: the rifle (station 3) ---
+// Racked level on the bench's right, pointing down range: its centre at
+// RIFLE_RACK, the pistol grip's fist GRIP_IN_RIFLE from it (`Longarm.grip`).
+// Held, the bore runs 6 cm above the primary fist's -Z axis, the muzzle 56 cm
+// along it; the support fist rides that axis 14-40 cm ahead, and the barrel
+// points from the primary fist to the support fist, rolled as the primary
+// hand is (`Longarm.aimAt`).
+
+export const RIFLE_RACK = [0.55, 1.05, -0.62];
+export const GRIP_IN_RIFLE = [0, -0.0275, 0.14];
+export const RIFLE_GRIP = add(RIFLE_RACK, GRIP_IN_RIFLE);
+// Half the collider (from the rifle's centre), the bore, and the foregrip.
+export const RIFLE = { half: [0.025, 0.0725, 0.42], bore: 0.06, muzzle: 0.56, foreNear: 0.14, foreFar: 0.4, breakOff: 0.12 };
+const ID = [0, 0, 0, 1];
+const scale = (v, k) => v.map((c) => c * k);
+const dot = (a, b) => a.reduce((s, c, i) => s + c * b[i], 0);
+const unit = (v) => scale(v, 1 / Math.hypot(...v));
+// A point `d` along a fist's -Z, the fist at `at` turned `q`.
+export const aheadOf = (at, q, d) => add(at, qrot(q, [0, 0, -d]));
+// The rifle aimed by a primary hand at `at` turned `q` and the support fist
+// at `s`: its barrel's way, its up, and its muzzle.
+export function twoHandAim(at, q, s) {
+  const dir = unit(sub(s, at));
+  const hint = qrot(q, [0, 1, 0]);
+  const up = unit(sub(hint, scale(dir, dot(hint, dir))));
+  return { dir, up, muzzle: add(at, add(scale(dir, RIFLE.muzzle), scale(up, RIFLE.bore))) };
+}
+// Where the support fist goes, `d` ahead of a level primary hand at `at`, so
+// the shot passes through `point`.
+export function supportFor(at, point, d) {
+  let dir = unit(sub(point, at));
+  for (let i = 0; i < 8; i++) {
+    const up = unit(sub([0, 1, 0], scale(dir, dir[1])));
+    dir = unit(sub(point, add(at, scale(up, RIFLE.bore))));
+  }
+  return add(at, scale(dir, d));
+}
+
+// Off the rack: the right hand on the pistol grip, then the left on the
+// foregrip 25 cm ahead (by way of above the rifle, clear of the pistol).
+const takeRifle = [
+  { frames: 15, left: { to: [0.3, 1.25, -0.3] } },
+  { frames: 20, right: { to: [0.5, 1.15, -0.35] } },
+  { frames: 15, right: { to: RIFLE_GRIP }, mark: "reachedRifle" },
+  { frames: 6, right: { squeeze: 1 }, mark: "tookRifle" },
+  { frames: 15, left: { to: aheadOf(RIFLE_GRIP, ID, 0.25) }, mark: "reachedFore" },
+  { frames: 6, left: { squeeze: 1 }, mark: "twoHands" },
+];
+// Raised to the shoulder, both hands together: the aim doesn't change.
+export const RIFLE_AIM = [0.2, 1.3, -0.3];
+const raise = (to = RIFLE_AIM, frames = 30) => ({ frames, right: { to }, left: { to: aheadOf(to, ID, 0.25) }, mark: "raised" });
+const at = (target) => supportFor(RIFLE_AIM, target, 0.25);
+// Aim with the left hand only, settle, pull once.
+const shootAt = (target, name) => [
+  { frames: 20, left: { to: at(target) } },
+  { frames: 10, left: {}, mark: `aimed${name}` },
+  { frames: 1, right: { trigger: 1 }, mark: `fired${name}` },
+  { frames: 6, right: { trigger: 0 } },
+];
+// Pointing left at the wall (rig x -0.6), both hands: near it, pushed on
+// through, and drawn back clear.
+const LEFTWARD = yaw(90);
+export const RIFLE_WALL = { near: [0.1, 1.2, -0.45], through: [-0.1, 1.2, -0.45], clear: [0.0, 1.2, -0.45] };
+const bothTo = (to, q = LEFTWARD) => ({ right: { to, turn: q }, left: { to: aheadOf(to, q, 0.25) } });
+// Swung into the wall by the support hand alone: the primary fist 30 cm off
+// the wall, the support 18 cm ahead of it, turned 35° left about it.
+export const RIFLE_SWING = { at: [-0.3, 1.2, -0.5], d: 0.18, deg: 35 };
+const swungTo = (deg) => add(RIFLE_SWING.at, qrot(yaw(deg), [0, 0, -RIFLE_SWING.d]));
+// Dragged 15 cm off the axis to the right, from the raised aim.
+const DRAG = add(aheadOf(RIFLE_AIM, ID, 0.25), [0.15, 0, 0]);
+
+// Behind the player's left shoulder: both hands on the rifle, the shot down range.
+const behindRifle = { eye: [2.85, 1.9, 0.95], target: [7.0, 1.2, -0.1], fov: 40 };
+// Above the bench, side on: the support sliding and breaking off.
+const aboveRifle = { eye: [3.7, 2.2, 1.35], target: [4.35, 1.2, -0.15], fov: 40 };
+// Down range of the bench, side on to the wall (edge-on, on the right): the
+// rifle pointing into it, both hands on it.
+const besideRifleWall = { eye: [5.7, 1.55, -0.25], target: [4.45, 1.2, -0.45], fov: 40 };
+
+const rifleScenarios = {
+  // Two hands on the rifle, raised; aimed at each target by the support hand
+  // alone, one pull each: three hits.
+  "rifle-aim": {
+    station: 3,
+    neck: NECK,
+    spectator: behindRifle,
+    steps: [...takeRifle, raise(), ...shootAt(TARGETS[2], "Right"), ...shootAt(TARGETS[1], "Middle"), ...shootAt(TARGETS[0], "Left")],
+  },
+
+  // Semi with the trigger held 30 steps: one shot. A on the right hand
+  // switches to full-auto: held 30 steps, 5.
+  "rifle-auto": {
+    station: 3,
+    neck: NECK,
+    spectator: behindRifle,
+    steps: [
+      ...takeRifle,
+      raise(),
+      { frames: 20, left: { to: at(add(TARGETS[1], [0, -0.1, 0])) } },
+      { frames: 10, left: {}, mark: "aimed" },
+      { frames: 30, right: { trigger: 1 }, mark: "semiHeld" },
+      { frames: 6, right: { trigger: 0 }, mark: "semiDone" },
+      { frames: 1, right: { primary: true }, mark: "selected" },
+      { frames: 3, right: { primary: false } },
+      { frames: 30, right: { trigger: 1 }, mark: "autoHeld" },
+      { frames: 6, right: { trigger: 0 }, mark: "autoDone" },
+    ],
+  },
+
+  // Both hands push the barrel into the wall: the whole rifle stops at it,
+  // the pull only clicks; H shows both hands on its grips, their ghosts
+  // through the wall. Drawn back clear, the pull fires.
+  "rifle-wall": {
+    station: 3,
+    neck: NECK,
+    spectator: atArmoryWall,
+    steps: [
+      ...takeRifle,
+      raise(),
+      { frames: 30, ...bothTo(RIFLE_WALL.near), mark: "near" },
+      { frames: 25, ...bothTo(RIFLE_WALL.through), mark: "pushed" },
+      { frames: 1, right: { trigger: 1 }, mark: "clicked" },
+      { frames: 6, right: { trigger: 0 } },
+      { frames: 1, tap: "H", right: {}, mark: "accepted" },
+      { frames: 5, right: {}, mark: "acceptedHeld" },
+      { frames: 1, tap: "H", right: {}, mark: "tracked" },
+      { frames: 20, ...bothTo(RIFLE_WALL.clear), mark: "clear" },
+      { frames: 1, right: { trigger: 1 }, mark: "fired" },
+      { frames: 6, right: { trigger: 0 } },
+    ],
+  },
+
+  // The primary hand held still by the wall, the support swings the barrel
+  // left into it: it stops there, turned short of the support.
+  "rifle-swing": {
+    station: 3,
+    neck: NECK,
+    spectator: atArmoryWall,
+    steps: [
+      ...takeRifle,
+      raise(),
+      { frames: 30, right: { to: RIFLE_SWING.at }, left: { to: swungTo(0) }, mark: "ready" },
+      ...Array.from({ length: 35 }, (_, i) => ({ frames: 1, left: { to: swungTo(i + 1) }, ...(i === 34 ? { mark: "swung" } : {}) })),
+      { frames: 10, left: {}, mark: "held" },
+      ...Array.from({ length: 35 }, (_, i) => ({ frames: 1, left: { to: swungTo(34 - i) } })),
+      { frames: 5, left: {}, mark: "back" },
+    ],
+  },
+
+  // Slid along the foregrip and back: still two hands, the aim unchanged.
+  // Dragged 15 cm off the axis: it breaks off at 12 cm, back to one hand.
+  "rifle-break": {
+    station: 3,
+    neck: NECK,
+    spectator: aboveRifle,
+    steps: [
+      ...takeRifle,
+      raise(),
+      { frames: 15, left: { to: aheadOf(RIFLE_AIM, ID, 0.38) }, mark: "slidFar" },
+      { frames: 20, left: { to: aheadOf(RIFLE_AIM, ID, 0.16) }, mark: "slidNear" },
+      { frames: 10, left: { to: aheadOf(RIFLE_AIM, ID, 0.25) }, mark: "slidBack" },
+      { frames: 30, left: { to: DRAG }, mark: "dragged" },
+      { frames: 20, left: {}, mark: "after" },
+      { frames: 4, left: { squeeze: 0 } },
+    ],
+  },
+
+  // The right hand lets go while the left holds the foregrip: the left keeps
+  // the rifle where it is and carries it. The right takes its grip again:
+  // two hands. Then the left lets go: one hand. No pop at any of them.
+  "rifle-handoff": {
+    station: 3,
+    neck: NECK,
+    spectator: behindRifle,
+    steps: [
+      ...takeRifle,
+      raise(),
+      { frames: 1, right: { squeeze: 0 }, mark: "handed" },
+      { frames: 15, right: { to: add(RIFLE_AIM, [0.12, -0.15, 0.1]) } },
+      { frames: 20, left: { to: add(aheadOf(RIFLE_AIM, ID, 0.25), [0, 0.06, 0]) }, mark: "carried" },
+      { frames: 15, right: { to: add(RIFLE_AIM, [0, 0.06, 0]) } },
+      { frames: 1, right: { squeeze: 1 }, mark: "retaken" },
+      { frames: 15, right: {}, mark: "twoAgain" },
+      { frames: 1, left: { squeeze: 0 }, mark: "supportOpened" },
+      { frames: 15, left: { to: LEFT_OUT }, mark: "oneHand" },
+    ],
+  },
+
+  // The demo: take the rifle in two hands, aim it with the support hand at
+  // each target, a full-auto burst and a held semi pull, the barrel into the
+  // wall, the support slid and broken off, the hand-off both ways, racked.
+  "rifle-tour": {
+    station: 3,
+    neck: NECK,
+    spectator: aboveRifle,
+    steps: [
+      ...takeRifle,
+      { ...raise(), spectator: behindRifle },
+      ...shootAt(TARGETS[2], "Right"),
+      ...shootAt(TARGETS[0], "Left"),
+      { frames: 20, left: { to: at(TARGETS[1]) } },
+      { frames: 8, left: {} },
+      { frames: 1, right: { primary: true }, mark: "auto" },
+      { frames: 3, right: { primary: false } },
+      { frames: 30, right: { trigger: 1 }, mark: "burst" },
+      { frames: 12, right: { trigger: 0 } },
+      { frames: 1, right: { primary: true } },
+      { frames: 3, right: { primary: false } },
+      { frames: 30, right: { trigger: 1 }, mark: "semi" },
+      { frames: 12, right: { trigger: 0 } },
+      { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: besideRifleWall },
+      { frames: 25, ...bothTo(RIFLE_WALL.through), mark: "pushed" },
+      { frames: 10, right: {} },
+      { frames: 1, right: { trigger: 1 }, mark: "clicked" },
+      { frames: 15, right: { trigger: 0 } },
+      { frames: 1, tap: "H", right: {} },
+      { frames: 40, right: {} },
+      { frames: 1, tap: "H", right: {} },
+      { frames: 20, ...bothTo(RIFLE_WALL.clear) },
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 8, right: { trigger: 0 } },
+      { frames: 30, ...bothTo(RIFLE_AIM, ID), spectator: aboveRifle },
+      { frames: 15, left: { to: aheadOf(RIFLE_AIM, ID, 0.38) } },
+      { frames: 20, left: { to: aheadOf(RIFLE_AIM, ID, 0.16) } },
+      { frames: 10, left: { to: aheadOf(RIFLE_AIM, ID, 0.25) } },
+      { frames: 45, left: { to: DRAG }, mark: "broke" },
+      { frames: 20, left: {} },
+      { frames: 15, left: { squeeze: 0 } },
+      { frames: 15, left: { to: aheadOf(RIFLE_AIM, ID, 0.25) } },
+      { frames: 4, left: { squeeze: 1 } },
+      { frames: 1, right: { squeeze: 0 }, mark: "handed" },
+      { frames: 20, right: { to: add(RIFLE_AIM, [0.12, -0.15, 0.1]) } },
+      { frames: 30, left: { to: add(aheadOf(RIFLE_AIM, ID, 0.25), [0, 0.06, 0]) } },
+      { frames: 20, right: { to: add(RIFLE_AIM, [0, 0.06, 0]) } },
+      { frames: 1, right: { squeeze: 1 }, mark: "retaken" },
+      { frames: 20, right: {} },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 15, left: { to: LEFT_OUT } },
+      { frames: 30, right: { to: add(RIFLE_GRIP, [0, 0.06, 0.08]) } },
+      { frames: 15, right: { to: RIFLE_GRIP } },
+      { frames: 1, right: { squeeze: 0 }, mark: "racked" },
+      { frames: 20, right: { to: [0.35, 1.1, -0.2] } },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -671,4 +917,5 @@ export const scenarios = {
     ],
   },
   ...armoryScenarios,
+  ...rifleScenarios,
 };

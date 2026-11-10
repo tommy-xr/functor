@@ -14,6 +14,10 @@ let pouch: Slot = { id: 3.0, name: "pouch", offset: Hold.p(0.0, 0.0, -0.15), rad
 
 let all = [leftHolster, rightHolster, pouch]
 
+/// The armory's rifle rack: not worn but fixed on the bench (`Game` places
+/// it), a hand within `radius` of the racked rifle's centre using it.
+let rack: Slot = { id: 4.0, name: "rifle rack", offset: Hold.origin, radius: 0.2, fits: [Props.Rifle] }
+
 // A hand this much farther out than a slot's radius already pins the hips,
 // so the slot holds still as the hand arrives.
 let pinMargin = 0.1
@@ -22,7 +26,8 @@ let fits = (k: Props.Kind, s: Slot): bool => s.fits |> List.any((f) => f == k)
 
 expect fits(Props.Brick, leftHolster) && fits(Props.Bottle, rightHolster) && fits(Props.Ball, pouch) && fits(Props.Pistol, rightHolster)
 expect not fits(Props.Ball, leftHolster) && not fits(Props.Brick, pouch)
-expect all |> List.all((s) => not fits(Props.Stick, s))
+expect all |> List.all((s) => not fits(Props.Stick, s) && not fits(Props.Rifle, s))
+expect fits(Props.Rifle, rack) && not fits(Props.Pistol, rack)
 
 /// A slot placed in the hips' frame (rig-local).
 type Placed = { slot: Slot, pose: Input.pose }
