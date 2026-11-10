@@ -1407,6 +1407,57 @@ const handViewScenarios = {
   },
 };
 
+// --- Hands (station 1, and the armory's pistol) ---
+// Both hands up in front of the player, palms down (each turned a quarter
+// turn about the way it points) and a little yawed in, 14 cm apart.
+export const HANDS = {
+  right: { at: [0.07, 1.3, -0.32], turn: qmul(yaw(15), roll(-90)) },
+  left: { at: [-0.07, 1.3, -0.32], turn: qmul(yaw(-15), roll(90)) },
+};
+// The player's right, level with the hands: their curl in profile.
+const atHands = { eye: [-0.55, 1.42, 4.62], target: [0.0, 1.3, 4.36], fov: 30 };
+// Both hands' `field` (squeeze or trigger) stepped from `from` to `to` over
+// `n` steps; `mark` names the last.
+const both = (field, from, to, n = 12, mark) =>
+  Array.from({ length: n }, (_, i) => {
+    const v = from + ((to - from) * (i + 1)) / n;
+    return { frames: 1, right: { [field]: v }, left: { [field]: v }, ...(mark && i === n - 1 ? { mark } : {}) };
+  });
+
+const handScenarios = {
+  // Both hands raised, open; squeezed (the middle, ring and little fingers
+  // close round the handle); let open and the trigger pulled (the index
+  // closes); let out.
+  "hand-curl": {
+    station: 1,
+    spectator: atHands,
+    steps: [
+      { frames: 20, right: { to: HANDS.right.at, turn: HANDS.right.turn }, left: { to: HANDS.left.at, turn: HANDS.left.turn } },
+      { frames: 4, right: {}, left: {}, mark: "open" },
+      ...both("squeeze", 0, 1, 12, "squeezed"),
+      ...both("squeeze", 1, 0, 12),
+      ...both("trigger", 0, 1, 12, "pulled"),
+      ...both("trigger", 1, 0, 12, "released"),
+    ],
+  },
+
+  // The pistol taken and aimed low, the trigger let in by steps: the index
+  // follows it.
+  "pistol-trigger": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_MISS } },
+      { frames: 6, right: {}, mark: "trigger0" },
+      { frames: 3, right: { trigger: 0.5 }, mark: "trigger50" },
+      { frames: 3, right: { trigger: 1 }, mark: "trigger100" },
+      { frames: 3, right: { trigger: 0 }, mark: "triggerOut" },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -1660,4 +1711,5 @@ export const scenarios = {
   ...reloadScenarios,
   ...shotgunScenarios,
   ...handViewScenarios,
+  ...handScenarios,
 };
