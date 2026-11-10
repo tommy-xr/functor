@@ -10,8 +10,8 @@
 //! replayed by another launch needs the same arguments to play back the same.
 //!
 //! Desktop only for now: the web and Quest shells have nowhere to take them
-//! from, and the CLI reads `config` before the game is launched, so all three
-//! see an empty map.
+//! from, so the map is empty there (the CLI warns). `config` can't read them:
+//! it is read before the game is launched.
 
 /// The launch arguments by key. A key given twice keeps its last value; with
 /// none given, the map is empty.

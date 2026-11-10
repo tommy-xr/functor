@@ -501,13 +501,22 @@ impl FunctorLangProject {
             .filter(|sig| sig.reads.contains(&functor_lang::reads::ReadClass::File))
             .map(|sig| sig.name.as_str())
             .collect();
-        // The names `expr` uses, and its first file read if any.
+        // The names `expr` uses, and its first read of what isn't there yet
+        // (a file, the launch args), with why not.
         let scan = |expr: &functor_lang::ir::Expr, pending: &mut Vec<String>| {
             let mut reads = None;
             crate::util::asset_verify::walk(expr, &mut |expr| match &expr.kind {
                 ExprKind::Global(name) => pending.push(name.clone()),
-                ExprKind::External(path) if file_readers.contains(path.join(".").as_str()) => {
-                    reads.get_or_insert((path.join("."), expr.span));
+                ExprKind::External(path) => {
+                    let api = path.join(".");
+                    let why = if file_readers.contains(api.as_str()) {
+                        ("files", "it's read first, to learn which paths are external")
+                    } else if api == "Launch.args" {
+                        ("launch args", "it's read before the game is launched")
+                    } else {
+                        return;
+                    };
+                    reads.get_or_insert((api, why, expr.span));
                 }
                 _ => {}
             });
@@ -532,12 +541,12 @@ impl FunctorLangProject {
                     }
                 }
             };
-            if let Some((api, span)) = scan(expr, &mut pending) {
+            if let Some((api, (what, why), span)) = scan(expr, &mut pending) {
                 return Err(Error::other(project.sources.render(
                     span.start,
                     &format!(
-                        "`config` can't read files ({api}): it's read first, to learn which \
-paths are external — read it in a top-level value `config` doesn't use"
+                        "`config` can't read {what} ({api}): {why} — read it in a top-level \
+value `config` doesn't use"
                     ),
                 )));
             }
@@ -3693,6 +3702,17 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         .to_string();
         assert!(
             err.contains("`config` can't read files (File.bytes)"),
+            "{err}"
+        );
+        // Nor the launch args: the runtime would read a different `config`.
+        let err = build(
+            "let config = Config.create() |> Config.external(Launch.args() |> Map.get(\"data\") \
+|> Option.defaultValue(\"a/\"), Source.mount(\"ss2\"))\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("`config` can't read launch args (Launch.args)"),
             "{err}"
         );
         let err =

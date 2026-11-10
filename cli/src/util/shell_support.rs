@@ -15,6 +15,7 @@ use crate::Environment;
 fn unsupported(environment: &Environment) -> &'static [(&'static str, &'static str)] {
     const NO_CONNECTIONS: &str = "fails as `Net.Error`: Quest has no connection transport yet";
     const NO_AUDIO: &str = "is silent: Quest has no audio host yet";
+    const NO_ARGS: &str = "is always empty: this shell takes no --arg";
     match environment {
         Environment::Native => &[],
         Environment::Vr => &[
@@ -27,10 +28,12 @@ fn unsupported(environment: &Environment) -> &'static [(&'static str, &'static s
                 "is silent and its message never arrives: Quest has no audio host yet",
             ),
             ("AudioScene.create", NO_AUDIO),
+            ("Launch.args", NO_ARGS),
         ],
         Environment::Wasm => &[
             ("Sub.listen", "never opens on a top-level page: the browser is a client only"),
             ("Effect.playThen", "plays, but its message never arrives in the browser"),
+            ("Launch.args", NO_ARGS),
         ],
     }
 }
