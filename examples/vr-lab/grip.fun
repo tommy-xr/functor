@@ -20,13 +20,14 @@ type Solid = { at: Input.pose, form: Form }
 
 let solid = (at: Input.pose, form: Form): Solid => { at: at, form: form }
 
-// The distance outside a box (or cylinder), from how far a point is past
-// each face pair (negative: inside them).
+// The signed distance to a box from how far a point is past each face pair
+// (negative: inside them).
 let past = (x: float, y: float, z: float): float =>
   Quat.length(Quat.v3(Math.max(x, 0.0), Math.max(y, 0.0), Math.max(z, 0.0))) + Math.min(Math.max(x, Math.max(y, z)), 0.0)
 
 /// The signed distance from `q` to a solid: negative inside.
 let sdf = (s: Solid, q: Input.point3): float =>
+  // `Hold.localPoint` without its pose: this is the fit's innermost call.
   let p = Quat.rotate(Quat.conj(s.at.orientation), Quat.sub(q, s.at.position)) in
   match s.form with
   | Box(h) => past(Math.abs(p.x) - h.x, Math.abs(p.y) - h.y, Math.abs(p.z) - h.z)
@@ -73,7 +74,7 @@ expect (
 // --- a capsule's gap ---
 
 // The least of a convex `f` on 0..1: golden-section, its bracket 0.3% of the
-// way after 12 steps (a 4 cm bone's least to 0.12 mm).
+// way after 12 steps (a 4 cm bone's least to 0.12 mm); exact at the ends.
 let golden = 0.381966
 let goldenSteps = 12.0
 let least = (f: (float) => float): float =>
@@ -82,7 +83,7 @@ let least = (f: (float) => float): float =>
     if fc < fd then let c2 = lo + golden * (d - lo) in (lo, d, c2, f(c2), c, fc)
     else let d2 = hi - golden * (hi - c) in (c, hi, d, fd, d2, f(d2)),
     (0.0, 1.0, golden, f(golden), 1.0 - golden, f(1.0 - golden))) in
-  Math.min(fc, fd)
+  Math.min(Math.min(fc, fd), Math.min(f(0.0), f(1.0)))
 
 let toSegment = (a: Input.point3, b: Input.point3, q: Input.point3): float =>
   let ab = Quat.sub(b, a) in
@@ -175,34 +176,46 @@ expect (
 let contactGap = 0.001
 /// A capsule this near (or in) is touching, for the counts.
 let touchGap = 0.002
-// A closing joint steps 1/16 of its flexion (a fingertip ~6 mm: never past a
-// capsule's thickness), then bisects the step that touched 8 times.
+// A closing joint steps by its digit's clearance over `sweep` (no point of a
+// capsule's axis moves further than that a unit of curl: a finger's tip
+// 0.24 m, the thumb's 0.11), so it never steps past a contact; at most 1/16,
+// at least 1/256 (1 mm). Then it bisects the step that touched 8 times.
+let sweep = 0.25
 let marchStep = 1.0 / 16.0
+let minStep = 1.0 / 256.0
+let reach = contactGap + sweep * marchStep
 let bisections = 8.0
 
 /// A digit closed: its joints' curls (proximal first), and whether it started
-/// in what it holds (`buried`: left where it started).
+/// in what it holds (`buried`: left straight).
 type Closed = { curls: List<float>, buried: bool }
 
-/// Close a digit from `start` on `solids` (`opposition`: the thumb's turn).
+/// Close a straight digit on `solids` (`opposition`: the thumb's turn).
 /// Every joint closes together until a capsule comes within `contactGap`;
 /// that joint and every one before it stops, the joints past it close on,
-/// until each has touched or reached a full curl. A capsule already inside
-/// at `start` buries the digit.
-let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, start: float): Closed =>
-  let gapsFrom = (j: float, c: List<float>): List<float> =>
-    segmentsOf(side, d, c, opposition) |> List.indexedMap((i, s) => let (a, b, r) = s in if i < j then 1.0 else gapUnder(touchGap, solids, a, b, r)) in
-  // The farthest capsule from joint `j` on within `contactGap`, if any.
-  let touching = (j: float, c: List<float>): Option.t<float> =>
-    gapsFrom(j, c) |> List.indexedMap((i, g) => if g <= contactGap then i else 0.0 - 1.0) |> List.maximum |> Option.filter((i) => i >= 0.0) in
+/// until each has touched or reached a full curl. A phalanx already inside
+/// buries the digit. (The thumb's metacarpal is the thenar, part of the
+/// palm: inside, it only stops the thumb's first joint.)
+let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float): Closed =>
+  // The gaps (up to `limit`) of the capsules joint `j` on moves; 1 m before it.
+  let gapsFrom = (limit: float, j: float, c: List<float>): List<float> =>
+    segmentsOf(side, d, c, opposition) |> List.indexedMap((i, s) => let (a, b, r) = s in if i < j then 1.0 else gapUnder(limit, solids, a, b, r)) in
+  // The farthest capsule within `contactGap`, if any.
+  let within = (gaps: List<float>): Option.t<float> =>
+    gaps |> List.indexedMap((i, g) => if g <= contactGap then i else 0.0 - 1.0) |> List.maximum |> Option.filter((i) => i >= 0.0) in
+  let touching = (j: float, c: List<float>): Option.t<float> => within(gapsFrom(touchGap, j, c)) in
   // Joint `j` and past it at `s`.
   let from = (j: float, s: float, c: List<float>): List<float> => c |> List.indexedMap((i, x) => if i >= j then s else x) in
-  let march = (j: float, c: List<float>) =>
-    Loop.until((st) => let (s, hit) = st in Option.isSome(hit) || s >= 1.0,
-      (st) => let (s, _) = st in
-        let s2 = Math.min(1.0, s + marchStep) in
-        (s2, touching(j, from(j, s2, c)) |> Option.map((_) => (s, s2))),
-      (List.nth(j, c) |> Option.defaultValue(0.0), Option.None)) in
+  let nearest = (gaps: List<float>) => List.minimum(gaps) |> Option.defaultValue(reach) in
+  // The step that touched, if any: `(before, after)`.
+  let march = (j: float, c: List<float>): Option.t<(float, float)> =>
+    let (_, _, hit) = Loop.until((st) => let (s, _, hit) = st in Option.isSome(hit) || s >= 1.0,
+      (st) => let (s, g, _) = st in
+        let s2 = Math.min(1.0, s + Math.clamp(minStep, marchStep, (g - contactGap) / sweep)) in
+        let gaps = gapsFrom(reach, j, from(j, s2, c)) in
+        (s2, nearest(gaps), within(gaps) |> Option.map((_) => (s, s2))),
+      (List.nth(j, c) |> Option.defaultValue(0.0), nearest(gapsFrom(reach, j, c)), Option.None)) in
+    hit in
   // One phase: the joints from `j` on close together until a capsule
   // touches; the next phase starts past it (past the last, done).
   let phase = (st: (float, List<float>)): (float, List<float>) =>
@@ -210,8 +223,7 @@ let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, 
     match touching(j, c) with
     | Option.Some(i) => (i + 1.0, c)
     | Option.None =>
-      let (_, hit) = march(j, c) in
-      (match hit with
+      (match march(j, c) with
        | Option.None => (3.0, from(j, 1.0, c))
        | Option.Some(bracket) =>
          let (lo, hi) = List.range(bisections) |> List.fold((b, _) =>
@@ -219,8 +231,8 @@ let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, 
            let mid = (lo + hi) / 2.0 in
            if Option.isSome(touching(j, from(j, mid, c))) then (lo, mid) else (mid, hi), bracket) in
          (1.0 + (touching(j, from(j, hi, c)) |> Option.defaultValue(2.0)), from(j, lo, c))) in
-  let c0 = [start, start, start] in
-  if gapsFrom(0.0, c0) |> List.any((g) => g < 0.0) then { curls: c0, buried: true }
+  let c0 = [0.0, 0.0, 0.0] in
+  if gapsFrom(touchGap, if d == 0.0 then 1.0 else 0.0, c0) |> List.any((g) => g < 0.0) then { curls: c0, buried: true }
   else
     let (_, curls) = Loop.until((st) => let (j, _) = st in j > 2.0, phase, (0.0, c0)) in
     { curls: curls, buried: false }
@@ -228,18 +240,19 @@ let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, 
 // The thumb's turns tried: at rest to opposed.
 let oppositions = [0.0, 0.25, 0.5, 0.75, 1.0]
 
-/// The thumb closed at its best turn: the one whose tip (its pad) comes
-/// nearest, then the one touching with the most of its capsules. Buried at
-/// every turn: at rest, buried.
+/// The thumb closed at its best turn: the one whose tip (its pad) ends
+/// nearest the item (either side of it), the thenar's depth in it counted
+/// ten times; then the one touching with the most capsules. Buried at every
+/// turn: at rest, buried.
 let closeThumb = (solids: List<Solid>, side: Hold.Side): (Closed, float) =>
   let tried = oppositions |> List.map((o) =>
-    let cl = close(solids, side, 0.0, o, 0.0) in
+    let cl = close(solids, side, 0.0, o) in
     let gaps = segmentsOf(side, 0.0, cl.curls, o) |> List.map((s) => let (a, b, r) = s in gapOf(solids, a, b, r)) in
+    let at = (i: float) => List.nth(i, gaps) |> Option.defaultValue(1.0) in
     let touches = gaps |> List.filter((g) => g <= touchGap) |> List.length in
-    (cl, o, (List.last(gaps) |> Option.defaultValue(1.0)) - 0.0001 * touches)) |> List.filter((t) => let (cl, _, _) = t in not cl.buried) in
-  match tried |> List.sortBy((t) => let (_, _, score) = t in score) with
-  | [best, ..rest] => let (cl, o, _) = best in (cl, o)
-  | [] => ({ curls: [0.0, 0.0, 0.0], buried: true }, 0.0)
+    (cl, o, Math.abs(at(2.0)) + 10.0 * Math.max(0.0, 0.0 - at(0.0)) - 0.0001 * touches)) |> List.filter((t) => let (cl, _, _) = t in not cl.buried) in
+  tried |> List.sortBy((t) => let (_, _, score) = t in score) |> List.head
+    |> Option.map((t) => let (cl, o, _) = t in (cl, o)) |> Option.defaultValue(({ curls: [0.0, 0.0, 0.0], buried: true }, 0.0))
 
 // --- the palm ---
 
@@ -268,8 +281,9 @@ let pushRange = 0.1
 let palmPush = (solids: List<Solid>, side: Hold.Side): Option.t<float> =>
   let n = palmNormal(side) in
   let gapAt = (d: float) => palmGap(solids |> List.map((s) => shift(Quat.scale(0.0 - d, n), s)), side) - contactGap in
-  let d = List.range(24.0) |> List.fold((d, _) => if Math.abs(d) > pushRange then d else d + gapAt(d), 0.0) in
-  if Math.abs(d) <= pushRange && Math.abs(gapAt(d)) < 0.0002 then Option.Some(d) else Option.None
+  let (d, g, _) = Loop.until((st) => let (d, g, k) = st in Math.abs(g) < 0.0002 || Math.abs(d) > pushRange || k >= 24.0,
+    (st) => let (d, g, k) = st in (d + g, gapAt(d + g), k + 1.0), (0.0, gapAt(0.0), 0.0)) in
+  if Math.abs(d) <= pushRange && Math.abs(g) < 0.0002 then Option.Some(d) else Option.None
 
 // --- a fit ---
 
@@ -283,7 +297,7 @@ type Fitted = { pose: Hand.FingerPose, curls: List<List<float>>, buried: List<bo
 /// straight, the thumb at its best turn.
 let fit = (side: Hold.Side, solids: List<Solid>): Fitted =>
   let (thumb, opposition) = closeThumb(solids, side) in
-  let closed = [thumb, ..([1.0, 2.0, 3.0, 4.0] |> List.map((d) => close(solids, side, d, 0.0, 0.0)))] in
+  let closed = [thumb, ..([1.0, 2.0, 3.0, 4.0] |> List.map((d) => close(solids, side, d, 0.0)))] in
   let first = (i: float) => List.nth(i, closed) |> Option.bind((c) => List.head(c.curls)) |> Option.defaultValue(0.0) in
   { pose: { thumb: { curl: first(0.0), opposition: opposition }, index: first(1.0), middle: first(2.0), ring: first(3.0), little: first(4.0) },
     curls: closed |> List.map((c) => c.curls),
@@ -473,7 +487,7 @@ let bar =
 // on the rod its first bone does, and the joints past it close on, its tip
 // further than one uniform curl could.
 let curlsOn = (solids: List<Solid>) =>
-  let cl = close(solids, Hold.Right, 1.0, 0.0, 0.0) in
+  let cl = close(solids, Hold.Right, 1.0, 0.0) in
   let gaps = segmentsOf(Hold.Right, 1.0, cl.curls, 0.0) |> List.map((s) => let (a, b, r) = s in gapOf(solids, a, b, r)) in
   let ok = not cl.buried && (gaps |> List.all((g) => g >= 0.0)) && (gaps |> List.any((g) => g <= contactGap + 0.0002)) in
   (ok, cl.curls)
@@ -483,12 +497,21 @@ expect (
   let k = (c: List<float>, i: float) => List.nth(i, c) |> Option.defaultValue(0.0) in
   onHandle && onBar && k(h, 0.0) == k(h, 2.0) && k(h, 0.0) > 0.5 && k(b, 0.0) < k(b, 1.0) && k(b, 1.0) <= k(b, 2.0)
 )
+// A grazing touch between two of a fixed step's samples still stops it: a
+// 1 mm bead just off the index's sweep.
+expect (
+  let mcp = Hand.jointOf(Hand.local(Hold.Right, Hand.flat), 7.0) in
+  let bead = [solid(Hold.compose(mcp, Hold.p(0.0, 0.0 - 0.0184486122, 0.0 - 0.0812138931)), Sphere(0.001))] in
+  let cl = close(bead, Hold.Right, 1.0, 0.0) in
+  let gaps = segmentsOf(Hold.Right, 1.0, cl.curls, 0.0) |> List.map((s) => let (a, b, r) = s in gapOf(bead, a, b, r)) in
+  cl.curls != [1.0, 1.0, 1.0] && (gaps |> List.all((g) => g >= 0.0)) && (gaps |> List.any((g) => g <= contactGap + 0.0002))
+)
 // A capsule starting inside buries its digit, which stays straight: a ball
 // round the index's middle joint.
 expect (
   let (a, _, _) = List.nth(1.0, segmentsOf(Hold.Right, 1.0, [0.0, 0.0, 0.0], 0.0)) |> Option.defaultValue((Hold.zero, Hold.zero, 0.0)) in
-  let cl = close([solid(Hold.at(a, Quat.identity), Sphere(0.01))], Hold.Right, 1.0, 0.0, 0.0) in
-  cl.buried && cl.curls == [0.0, 0.0, 0.0] && not (close(handle, Hold.Right, 1.0, 0.0, 0.0)).buried
+  let cl = close([solid(Hold.at(a, Quat.identity), Sphere(0.01))], Hold.Right, 1.0, 0.0) in
+  cl.buried && cl.curls == [0.0, 0.0, 0.0] && not (close(handle, Hold.Right, 1.0, 0.0)).buried
 )
 // On the handle: every finger closes round it, the thumb opposed, the palm
 // on it; the same every time; and the left hand's fit on the mirrored
@@ -503,8 +526,7 @@ expect (
   let mirrored = (s: Solid) => { s with at: Hand.mirror(s.at) } in
   let solids = [solid(Hold.at(Quat.v3(0.0 - 0.01, 0.0, 0.01), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.0 - 0.25)), Box(Quat.v3(0.015, 0.045, 0.02)))] in
   let (r, l) = (fit(Hold.Right, solids), fit(Hold.Left, solids |> List.map(mirrored))) in
-  let close6 = (a: float, b: float) => Math.abs(a - b) < 0.000001 in
-  (List.zip(List.flatten(l.curls), List.flatten(r.curls)) |> List.all((ab) => let (a, b) = ab in close6(a, b)))
+  (List.zip(List.flatten(l.curls), List.flatten(r.curls)) |> List.all((ab) => let (a, b) = ab in near(a, b)))
     && r.pose.thumb.opposition == l.pose.thumb.opposition && r.buried == l.buried && r.push == l.push
 )
 // The palm push: a palm 1 cm short of a box comes 9 mm in; one 1 cm in
@@ -520,3 +542,10 @@ expect (
 )
 
 
+// The thenar inside a held ball or stick doesn't bury the thumb: it stops
+// only its first joint.
+expect (
+  items |> List.filter((it) => it.name == "ball" || it.name == "stick (band)") |> List.all((it) =>
+    let f = fit(Hold.Right, held(Hold.Right, it)) in
+    List.head(f.buried) == Option.Some(false) && (List.head(f.curls) |> Option.bind(List.last) |> Option.defaultValue(0.0)) > 0.0)
+)
