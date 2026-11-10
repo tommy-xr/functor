@@ -344,16 +344,19 @@ let leftLevels = levelPoses(Hold.Left)
 let rightLevels = levelPoses(Hold.Right)
 let levelsOf = (side: Hold.Side): List<Posed> => if side == Hold.Left then leftLevels else rightLevels
 
-/// Per level, each finger's proximal bone at that curl (`proximal`), and its
-/// distal two's capsules at that tip in the frame they hang from (`distal`).
-let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<Seg>>>) =>
+/// Per level, each finger's proximal bone at that curl (`proximal`), its
+/// distal two's capsules at that tip in the frame they hang from (`distal`),
+/// and the whole finger bent evenly to it (`even`: curl and tip alike, as
+/// most poses bend a finger, drawn without composing).
+let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<Seg>>>, List<List<Part>>) =>
   let posed = levelsOf(side) in
   (posed |> List.map((p) => fingerFirsts |> List.map((first) =>
      { part: partOf(p, [proximalCap(first)]), frame: hangFrom(p, first) })),
    posed |> List.map((p) => fingerFirsts |> List.zip(distalCaps) |> List.map((fc) =>
      let (first, caps) = fc in
      let at = hangFrom(p, first) in
-     caps |> List.map((cap) => let s = segOf(p, cap) in { s with a: Hold.localPoint(at, s.a), b: Hold.localPoint(at, s.b) }))))
+     caps |> List.map((cap) => let s = segOf(p, cap) in { s with a: Hold.localPoint(at, s.a), b: Hold.localPoint(at, s.b) }))),
+   posed |> List.map((p) => fingerFirsts |> List.zip(distalCaps) |> List.map((fc) => let (first, caps) = fc in partOf(p, [proximalCap(first), ..caps]))))
 let leftTables = fingerTables(Hold.Left)
 let rightTables = fingerTables(Hold.Right)
 
@@ -363,23 +366,29 @@ expect levels(power) == [(45.0, 45.0), (48.0, 48.0), (46.0, 46.0), (38.0, 38.0)]
 /// A table's entry at level `k` for finger `finger` (0 the index).
 let cell = (table: List<List<'a>>, k: float, finger: float): Option.t<'a> => List.nth(k, table) |> Option.bind((fingers) => List.nth(finger, fingers))
 
-/// Each finger at its levels (`levels`): its proximal bone at its curl's,
-/// and its distal two at its tip's, as drawn (hung from the proximal).
-let fingersDrawn = (side: Hold.Side, at: List<(float, float)>): List<(Proximal, List<Seg>)> =>
-  let (proximal, distal) = if side == Hold.Left then leftTables else rightTables in
-  at |> List.indexedMap((finger, lv) =>
-    let (lc, lt) = lv in
-    cell(proximal, lc, finger) |> Option.bind((p) => cell(distal, lt, finger) |> Option.map((segs) =>
-      let f = p.frame in
-      let place = (q: Input.point3) => drawn(Quat.add(f.position, Quat.rotate(f.orientation, q))) in
-      [(p, segs |> List.map((s) => { s with a: place(s.a), b: place(s.b) }))])) |> Option.defaultValue([])) |> List.flatten
+/// A finger (0 the index) at its levels (`lv`, its curl's and tip's): its
+/// proximal bone at its curl's, and its distal two at its tip's, as drawn
+/// (hung from the proximal).
+let composed = (side: Hold.Side, finger: float, lv: (float, float)): Option.t<(Proximal, List<Seg>)> =>
+  let (proximal, distal, _) = if side == Hold.Left then leftTables else rightTables in
+  let (lc, lt) = lv in
+  cell(proximal, lc, finger) |> Option.bind((p) => cell(distal, lt, finger) |> Option.map((segs) =>
+    let f = p.frame in
+    let place = (q: Input.point3) => drawn(Quat.add(f.position, Quat.rotate(f.orientation, q))) in
+    (p, segs |> List.map((s) => { s with a: place(s.a), b: place(s.b) }))))
 
-/// The fingers' part, painted `c`, at their levels (`levels`).
+/// The fingers' part, painted `c`, at their levels (`levels`): a finger bent
+/// evenly from `even`, any other `composed`.
 let fingersAt = (c: Color.t, side: Hold.Side, at: List<(float, float)>): Scene.t =>
-  let parts = fingersDrawn(side, at) |> List.map((pd) =>
-    let (p, segs) = pd in
-    { caps: p.part.caps |> List.append(segs |> List.map((s) => capAt(s.b, s.radius))),
-      cylinders: p.part.cylinders |> List.append(segs |> List.map(cylinderOf)) }) in
+  let (_, _, even) = if side == Hold.Left then leftTables else rightTables in
+  let none: Part = { caps: [], cylinders: [] } in
+  let parts = at |> List.indexedMap((finger, lv) =>
+    let (lc, lt) = lv in
+    if lc == lt then cell(even, lc, finger) |> Option.defaultValue(none)
+    else composed(side, finger, lv) |> Option.map((pd) =>
+      let (p, segs) = pd in
+      { caps: p.part.caps |> List.append(segs |> List.map((s) => capAt(s.b, s.radius))),
+        cylinders: p.part.cylinders |> List.append(segs |> List.map(cylinderOf)) }) |> Option.defaultValue(none)) in
   partScene(c, { caps: parts |> List.concatMap((p) => p.caps), cylinders: parts |> List.concatMap((p) => p.cylinders) })
 
 // --- checks ---
@@ -427,7 +436,7 @@ expect (
   [Hold.Left, Hold.Right] |> List.all((side) => [power, uneven, onTrigger(0.3), fist, flat] |> List.all((f) =>
     let p = local(side, atLevels(f)) in
     let want = List.flatten(distalCaps) |> List.map((cap) => let s = segOf(p, cap) in (drawn(s.a), drawn(s.b))) in
-    let got = fingersDrawn(side, levels(f)) |> List.concatMap((pd) => let (_, segs) = pd in segs) |> List.map((s) => (s.a, s.b)) in
+    let got = levels(f) |> List.indexedMap((finger, lv) => composed(side, finger, lv)) |> List.concatMap((o) => o |> Option.map((pd) => let (_, segs) = pd in segs) |> Option.defaultValue([])) |> List.map((s) => (s.a, s.b)) in
     List.length(got) == 8.0 && (List.zip(want, got) |> List.all((gw) => let (g, w) = gw in let (ga, gb) = g in let (wa, wb) = w in Hold.near3(ga, wa) && Hold.near3(gb, wb)))))
 )
 

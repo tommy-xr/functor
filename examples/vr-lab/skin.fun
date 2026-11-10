@@ -191,9 +191,10 @@ let thumbAt = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
 /// and the frame (in the model's space) its distal two hang from.
 type Proximal = { joints: List<(string, Input.pose)>, frame: Input.pose }
 
-/// Per level, each finger's proximal placements at that curl, and its distal
-/// two's at that tip, in the frame they hang from (correction included).
-let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<(string, Input.pose)>>>) =>
+/// Per level, each finger's proximal placements at that curl, its distal
+/// two's at that tip in the frame they hang from (correction included), and
+/// all four bent evenly to it (`Hand.fingerTables`' `even`).
+let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<(string, Input.pose)>>>, List<List<List<(string, Input.pose)>>>) =>
   let posed = Hand.levelsOf(side) in
   (posed |> List.map((p) => Hand.fingerFirsts |> List.map((first) =>
      { joints: placements(side, p, [first, first + 1.0]), frame: Hold.compose(toModel, Hand.hangFrom(p, first)) })),
@@ -201,17 +202,19 @@ let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<(str
      let at = Hand.hangFrom(p, first) in
      [first + 2.0, first + 3.0] |> List.map((j) =>
        let q = Hold.relative(at, Hand.jointOf(p, j)) in
-       (nameOf(j), Hold.at(q.position, Quat.mul(q.orientation, correctionOf(side, j))))))))
+       (nameOf(j), Hold.at(q.position, Quat.mul(q.orientation, correctionOf(side, j))))))),
+   posed |> List.map((p) => fingerJoints |> List.map((js) => placements(side, p, js))))
 let leftTables = fingerTables(Hold.Left)
 let rightTables = fingerTables(Hold.Right)
 
 /// A hand's placements: the thumb posed `t`, the fingers at `levels`
 /// (`Hand.levels`).
 let drawn = (side: Hold.Side, t: Hand.Thumb, levels: List<(float, float)>): List<(string, Input.pose)> =>
-  let (proximal, distal) = if side == Hold.Left then leftTables else rightTables in
+  let (proximal, distal, even) = if side == Hold.Left then leftTables else rightTables in
   let fingers = levels |> List.indexedMap((finger, lv) =>
     let (lc, lt) = lv in
-    Hand.cell(proximal, lc, finger) |> Option.bind((p) => Hand.cell(distal, lt, finger) |> Option.map((js) =>
+    if lc == lt then Hand.cell(even, lc, finger) |> Option.defaultValue([])
+    else Hand.cell(proximal, lc, finger) |> Option.bind((p) => Hand.cell(distal, lt, finger) |> Option.map((js) =>
       p.joints |> List.append(js |> List.map((nq) => let (n, q) = nq in (n, Hold.compose(p.frame, q)))))) |> Option.defaultValue([])) in
   List.flatten([if side == Hold.Left then leftWrist else rightWrist, thumbAt(side, t), ..fingers])
 
