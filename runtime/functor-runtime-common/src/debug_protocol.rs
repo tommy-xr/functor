@@ -475,11 +475,11 @@ pub struct RuntimeState {
     /// a pre-v31 runtime omits it.
     #[serde(default)]
     pub http: crate::net::HttpStats,
-    /// Pushed hot reloads (v32): one in flight, what the shell's indicator
+    /// Pushed hot reloads (v35): one in flight, what the shell's indicator
     /// draws, and how the last settled. The indicator shows in `/capture`
     /// for [`crate::reload_indicator::HOLD`] after a push answers, then fades
     /// for [`crate::reload_indicator::FADE`]. `default`
-    /// because a pre-v32 runtime omits it.
+    /// because a pre-v35 runtime omits it.
     #[serde(default)]
     pub reload: crate::reload_indicator::ReloadState,
     pub viewport: RuntimeViewport,
