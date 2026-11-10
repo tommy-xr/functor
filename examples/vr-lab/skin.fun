@@ -175,6 +175,20 @@ let thumbOf = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
     let p = List.nth(i, mirrored) |> Option.defaultValue(Hold.origin) in
     (nameOf(j), Hold.compose(toModel, Hold.at(p.position, Quat.mul(p.orientation, correctionOf(side, j))))))
 
+// The thumbs `Hand`'s presets pose, placed at load: a thumb's chain costs
+// about 85 µs a redraw, and the thumb only ever takes these (any other is
+// placed as drawn).
+let thumbPresets = [Hand.flat.thumb, Hand.fist.thumb, Hand.power.thumb, Hand.pinch.thumb, Hand.palmOpen.thumb, (Hand.empty(0.0, 0.0)).thumb]
+let presetThumbs = (side: Hold.Side) => thumbPresets |> List.map((t) => (t, thumbOf(side, t)))
+let leftThumbs = presetThumbs(Hold.Left)
+let rightThumbs = presetThumbs(Hold.Right)
+
+/// The thumb's placements, curled and opposed by `t`.
+let thumbAt = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
+  match (if side == Hold.Left then leftThumbs else rightThumbs) |> List.find((tp) => let (u, _) = tp in u == t) with
+  | Option.Some(tp) => let (_, ps) = tp in ps
+  | Option.None => thumbOf(side, t)
+
 /// Each hand's finger placements at every level: per level, the four
 /// fingers' four joints.
 let fingerTable = (side: Hold.Side): List<List<List<(string, Input.pose)>>> =>
@@ -190,7 +204,7 @@ let drawn = (side: Hold.Side, t: Hand.Thumb, levels: (float, float, float, float
   let table = if side == Hold.Left then leftFingers else rightFingers in
   let pick = (finger: float, k: float) =>
     List.nth(k, table) |> Option.bind((parts) => List.nth(finger, parts)) |> Option.defaultValue([]) in
-  List.flatten([if side == Hold.Left then leftWrist else rightWrist, thumbOf(side, t), pick(0.0, li), pick(1.0, lm), pick(2.0, lr), pick(3.0, ll)])
+  List.flatten([if side == Hold.Left then leftWrist else rightWrist, thumbAt(side, t), pick(0.0, li), pick(1.0, lm), pick(2.0, lr), pick(3.0, ll)])
 
 /// The skinned glove, in its grip's frame (as `Scene.atPose` places it).
 let scene = (side: Hold.Side, t: Hand.Thumb, levels: (float, float, float, float)): Scene.t =>
