@@ -479,6 +479,115 @@ fn error_infinite_recursion_is_a_clean_error() {
     );
 }
 
+/// `src` loaded with the stdlib (`Result`, `Option`) and run: `main`'s
+/// result, or the runtime error's message.
+fn run_with_stdlib(src: &str) -> Result<String, String> {
+    let sources = vec![(Path::new("main.fun").to_path_buf(), src.to_string())];
+    let project = functor_lang::project::load_sources_with_prelude(sources, &[])
+        .unwrap_or_else(|e| panic!("source should load: {}", e.render()));
+    match functor_lang::run(&project.module, Tracing::Off) {
+        Ok(record) => match record.outcome {
+            RunOutcome::Main(value) => Ok(value.to_string()),
+            RunOutcome::Bindings(_) => panic!("expected a main result"),
+        },
+        Err(failure) => Err(failure.error.message),
+    }
+}
+
+/// Unbounded recursion that re-enters through a builtin's callback (or a
+/// curried call) stops at the depth cap, like plain recursion. Runs on the
+/// default 2 MiB test stack: a path whose native frames outgrow the depth it
+/// is charged overflows it and aborts the test binary.
+#[test]
+fn recursion_through_callbacks_is_a_clean_error() {
+    for (via, def) in [
+        ("List.map", "let down = (n) => List.map((x) => down(x + 1.0), [n])"),
+        ("List.fold", "let down = (n) => List.fold((a, x) => a + down(x + 1.0), 0.0, [n])"),
+        ("List.filter", "let down = (n) => List.filter((x) => down(x + 1.0) == [], [n])"),
+        ("List.sortBy", "let down = (n) => List.sortBy((x) => down(x + 1.0), [n])"),
+        (
+            "List.tryMapAccum",
+            "let down = (n) => List.tryMapAccum((s, x) => Result.Ok((s, down(x + 1.0))), 0.0, [n])",
+        ),
+        ("Loop.until", "let down = (n) => Loop.until((s) => s > 0.0, (s) => down(n + 1.0), 0.0)"),
+        (
+            "Map.fold",
+            "let down = (n) => Map.fold((a, k, v) => a + down(v + 1.0), 0.0, Map.fromList([(0.0, n)]))",
+        ),
+        ("a partial", "let down = (k, n) => 1.0 + down(k)(n + 1.0)"),
+        ("over-application", "let down = (n) => (m) => 1.0 + down(n + 1.0, m)"),
+    ] {
+        let main = if via == "a partial" || via == "over-application" {
+            "let main = () => down(0.0, 0.0)"
+        } else {
+            "let main = () => down(0.0)"
+        };
+        let message = run_with_stdlib(&format!("{def}\n{main}"))
+            .expect_err(&format!("recursion through {via} should hit the cap"));
+        assert!(message.contains("depth cap"), "{via}: {message}");
+    }
+}
+
+/// Legitimate recursive data walked through callbacks fits the cap: a JSON
+/// shaped decoder (five fields a level, children via `List.tryMapAccum`)
+/// reads a tree ten levels deep.
+#[test]
+fn recursive_decoder_reads_a_deep_tree() {
+    let src = r#"
+type json = | JNumber(value: float) | JArray(items: List<json>) | JObject(fields: Map<string, json>)
+type decoder<'a> = { read: (json) => Result.t<'a, string> }
+let number: decoder<float> =
+  { read: (j) => match j with | JNumber(n) => Result.Ok(n) | _ => Result.Error("number") }
+let lazy = (make: () => decoder<'a>): decoder<'a> => { read: (j) => let d = make() in d.read(j) }
+let map5 = (f, a: decoder<'a>, b: decoder<'b>, c: decoder<'c>, d: decoder<'d>, e: decoder<'e>) =>
+  { read: (j) =>
+      match a.read(j) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(x) => match b.read(j) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(y) => match c.read(j) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(z) => match d.read(j) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(w) => match e.read(j) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(v) => Result.Ok(f(x, y, z, w, v)) }
+let field = (name: string, d: decoder<'a>): decoder<'a> =>
+  { read: (j) =>
+      match j with
+      | JObject(fields) =>
+        (match Map.get(name, fields) with
+         | Option.Some(inner) => d.read(inner)
+         | Option.None => Result.Error("missing"))
+        |> Result.mapError((e) => Text.join(".", [name, e]))
+      | _ => Result.Error("object") }
+let list = (d: decoder<'a>): decoder<List<'a>> =>
+  { read: (j) =>
+      match j with
+      | JArray(items) =>
+        items
+          |> List.tryMapAccum((i, item) =>
+            match d.read(item) with
+            | Result.Ok(a) => Result.Ok((i + 1.0, a))
+            | Result.Error(e) => Result.Error(e), 0.0)
+          |> Result.map((done) => match done with | (count, values) => values)
+      | _ => Result.Error("array") }
+type tree = { a: float, b: float, c: float, d: float, kids: List<tree> }
+let tree = map5((a, b, c, d, kids): tree => { a: a, b: b, c: c, d: d, kids: kids },
+  field("a", number), field("b", number), field("c", number), field("d", number),
+  field("kids", list(lazy(() => tree))))
+let depth = (t: tree): float =>
+  1.0 + (t.kids |> List.map(depth) |> List.fold((most, d) => Math.max(most, d), 0.0))
+let node = (kids: List<json>): json =>
+  JObject(Map.fromList([("a", JNumber(1.0)), ("b", JNumber(2.0)), ("c", JNumber(3.0)),
+    ("d", JNumber(4.0)), ("kids", JArray(kids))]))
+let main = () =>
+  List.range(9.0) |> List.fold((inner, i) => node([inner]), node([]))
+    |> tree.read |> Result.map(depth)
+"#;
+    assert_eq!(run_with_stdlib(src), Ok("Result.Ok(10)".to_string()));
+}
+
 // The parser builds left-assoc chains iteratively and eval walks the lhs
 // spine iteratively, so flat straight-line arithmetic never hits the depth
 // cap regardless of length.
