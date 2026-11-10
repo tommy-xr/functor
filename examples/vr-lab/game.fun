@@ -27,11 +27,12 @@
 //   npm run demo:vr-lab -- grab-throw out.gif    # a spectator video of one
 //
 // 1-9 jump to a station and reset it (B/Y or a menu button cycles stations
-// on the headset). A hand is a capsule glove (`Hand`), its fingers curled by
-// the controller's grip and trigger, or round what it holds
-// (`Props.fingers`). A holding hand is drawn on what it holds, where the
-// blocked prop implies; H or a thumbstick click switches it to where it is
-// tracked, and back.
+// on the headset). A hand is a skinned glove (`Skin`) on a capsule glove's
+// joints (`Hand`), its fingers curled by the controller's grip and trigger,
+// or round what it holds (`Props.fingers`); G or a thumbstick pushed up
+// draws the capsules instead, and back. A holding hand is drawn on what it
+// holds, where the blocked prop implies; H or a thumbstick click switches it
+// to where it is tracked, and back.
 // `GET /state` shows the station, both hands, the props and the last release.
 // Each hold event buzzes its hand (`Pulses`), and a ring at the hand shows it.
 //

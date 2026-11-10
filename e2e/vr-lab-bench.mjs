@@ -33,12 +33,16 @@
 // 8.33 ms Quest frame at the sweep_bench convention of ×4 for desktop → Quest.
 //
 //   npm run bench:vr-lab        # a release build; a debug one is many times slower
+//   npm run bench:vr-lab -- --capsule   # the capsule glove (G first) instead of the skinned
 import { Worker } from "node:worker_threads";
 import { sleep } from "./mcp-rpc.mjs";
 import { launch, play } from "./xr-scenario.mjs";
 import { project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8294;
+// Each scenario with the capsule glove: G pressed before it starts.
+const CAPSULE = process.argv.includes("--capsule");
+const glove = (s) => (CAPSULE ? { ...s, steps: [{ frames: 1, tap: "G" }, ...s.steps] } : s);
 const BURST = 1200;
 const BUDGET_US = 1e6 / 120;
 const QUEST = 4;
@@ -46,7 +50,7 @@ const QUEST = 4;
 async function measure(scenario) {
   const rt = await launch(project, PORT, ["--headless"]);
   try {
-    await play(rt, scenario);
+    await play(rt, glove(scenario));
     const from = (await rt.get("/state")).frame;
     await rt.post("/time", { type: "advance", dts: rt.dt, frames: BURST });
     while ((await rt.get("/state")).frame < from + BURST) await sleep(50);
@@ -67,7 +71,7 @@ async function stepwise(scenario, onStep) {
   const rt = await launch(project, PORT, ["--headless"]);
   const spin = new Worker("for (;;) {}", { eval: true });
   try {
-    await play(rt, scenario, onStep);
+    await play(rt, glove(scenario), onStep);
     return (await rt.get("/frames?last=600")).frames.filter((f) => f.steps === 1);
   } finally {
     await spin.terminate();
@@ -189,3 +193,5 @@ console.log(row("curl", moving.draw));
 const regrip = moving.draw.med - held2.draw.med;
 const regripFrame = (sg.step.min + sg.draw.min + regrip / 2) * QUEST;
 console.log(`both hands' fingers redrawn: +${regrip.toFixed(0)} µs a draw (medians); one hand's under the aimed shotgun, Quest (×${QUEST}) ${regripFrame.toFixed(0)} µs (${pct(regripFrame)} of ${BUDGET_US.toFixed(0)})`);
+const bothFrame = (sg.step.min + sg.draw.min + regrip) * QUEST;
+console.log(`both hands' under the aimed shotgun, Quest (×${QUEST}) ${bothFrame.toFixed(0)} µs (${pct(bothFrame)} of ${BUDGET_US.toFixed(0)})`);

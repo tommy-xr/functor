@@ -2456,4 +2456,35 @@ mod tests {
         let micros = start.elapsed().as_secs_f64() * 1e6 / iterations as f64;
         println!("80-joint 2-clip blend: {micros:.2} µs/eval (sink {sink})");
     }
+
+    /// A WebXR hand's rig (25 joints off a root) with 20 placed, as the
+    /// vr-lab skinned glove draws it.
+    /// `cargo test --release -p functor_runtime_common place_eval_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn place_eval_bench() {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 26]);
+        builder.add_joint(0, 0, "root".to_string(), None, Matrix4::identity());
+        for j in 1..26 {
+            builder.add_joint(j, j as usize, format!("j{j}"), Some(0), Matrix4::identity());
+        }
+        let model = Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        };
+        let q = wrist_target();
+        let joints: Vec<_> = (1..21).map(|j| (format!("j{j}"), vec3(j as f32, 0.0, 0.0), q)).collect();
+        let named: Vec<_> = joints.iter().map(|(n, p, q)| (n.as_str(), *p, *q)).collect();
+        let expr = place(&named, AnimExpr::Rest);
+        let iterations = 20_000;
+        let start = std::time::Instant::now();
+        let mut sink = 0.0;
+        for _ in 0..iterations {
+            let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+            sink += transforms[20].w.x;
+        }
+        let micros = start.elapsed().as_secs_f64() * 1e6 / iterations as f64;
+        println!("26-joint hand rig, 20 placed: {micros:.2} µs/eval (sink {sink})");
+    }
 }

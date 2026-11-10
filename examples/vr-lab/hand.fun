@@ -8,9 +8,9 @@
 // Joint frames follow OpenXR: each joint sits at the base of its bone, -Z
 // along the bone toward the fingertip, +Y out of the back of the hand (the
 // nail side), +X = Y × Z (a tip's frame is its distal bone's). So hand
-// tracking and the WebXR `generic-hand` model map onto these with no
-// retargeting. The right hand is authored; the left is its mirror across the
-// root's YZ plane.
+// tracking maps onto these directly, and the WebXR `generic-hand` model
+// (`Skin`) with a few degrees' correction per joint. The right hand is
+// authored; the left is its mirror across the root's YZ plane.
 //
 // Poses are in the hand's root frame: the controller's grip (+X right, +Y
 // up, -Z forward), so `pose(side, grip, f)` places a hand on a tracked
