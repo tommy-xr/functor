@@ -10,7 +10,8 @@
 //!   | Result.Error(_) => 0.0
 //! ```
 
-/// A JSON value. An object's fields are in no particular order.
+/// A JSON value. An object's fields are sorted by name; a repeated name
+/// keeps its last value.
 type t =
   | Null
   | Bool(value: bool)

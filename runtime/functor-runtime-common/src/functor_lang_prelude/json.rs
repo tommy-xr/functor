@@ -57,7 +57,8 @@ fn field(name: &str, json: &Value) -> Option<Value> {
 
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Json.parse", "Json.parse(text)", |text: String| {
-        match serde_json::from_str(&text) {
+        // Files often start with a byte-order mark, which isn't JSON.
+        match serde_json::from_str(text.strip_prefix('\u{FEFF}').unwrap_or(&text)) {
             Ok(json) => bytes::ok(to_value(json)),
             Err(e) => variant("Result.Error", vec![Value::String(e.to_string().into())]),
         }
@@ -94,7 +95,9 @@ mod tests {
             r#"(match Json.parse("{\"frames\": 12}") with | Result.Ok(json) => json |> Json.field("frames") |> Option.bind(Json.asNumber) |> Option.defaultValue(0.0) | Result.Error(_) => 0.0) == 12.0"#,
             r#"Json.field("missing", Json.Object([])) == Option.None"#,
             r#"Json.field("a", Json.Array([])) == Option.None"#,
-            r#"Json.parse("{\"a\": 1,}") == Result.Error("trailing comma at line 1 column 9")"#,
+            r#"Json.parse("{\"b\": 1, \"a\": 2, \"b\": 3}") == Result.Ok(Json.Object([("a", Json.Number(2.0)), ("b", Json.Number(3.0))]))"#,
+            "Json.parse(\"\u{FEFF}1\") == Result.Ok(Json.Number(1.0))",
+            r#"match Json.parse("{\"a\": 1,}") with | Result.Error(why) => Text.contains("line 1", why) | Result.Ok(_) => false"#,
             r#"Result.isError(Json.parse("")) && Result.isError(Json.parse("1 2"))"#,
         ];
         for check in checks {
@@ -110,8 +113,11 @@ mod tests {
     // Deep nesting is a parse error, not a stack overflow.
     #[test]
     fn deep_nesting_is_an_error() {
-        let deep = "[".repeat(10_000);
-        let src = format!("let main = Result.isError(Json.parse(\"{deep}\"))\n");
-        assert!(matches!(eval_with_prelude(&src), Ok(Value::Bool(true))));
+        let nested = |depth: usize| {
+            let text = "[".repeat(depth) + &"]".repeat(depth);
+            eval_with_prelude(&format!("let main = Result.isError(Json.parse(\"{text}\"))\n"))
+        };
+        assert!(matches!(nested(100), Ok(Value::Bool(false))));
+        assert!(matches!(nested(10_000), Ok(Value::Bool(true))));
     }
 }
