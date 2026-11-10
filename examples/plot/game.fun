@@ -16,13 +16,14 @@ let init = {}
 let tick = (m, dts, tts) => m
 
 let draw = (m, tts) =>
+  let path = spiral(3.0, tts) in
   Frame.create(
     Camera3D.lookAt(Vec3.make(3.5, 3.0, 5.0), Vec3.make(-0.8, 1.0, 0.0)),
     Scene.group([
       axis(Vec3.make(2.0, 0.0, 0.0), Color.rgb(0.9, 0.2, 0.2)),
       axis(Vec3.make(0.0, 2.0, 0.0), Color.rgb(0.2, 0.9, 0.2)),
       axis(Vec3.make(0.0, 0.0, 2.0), Color.rgb(0.2, 0.4, 0.9)),
-      Plot.polyline(0.03, Color.rgb(0.25, 0.85, 0.9), spiral(3.0, tts)),
-      Plot.points(0.06, Color.rgb(1.0, 0.8, 0.3), spiral(3.0, tts))
+      Plot.polyline(0.03, Color.rgb(0.25, 0.85, 0.9), path),
+      Plot.points(0.06, Color.rgb(1.0, 0.8, 0.3), path)
         |> Scene.translate(Vec3.make(-2.5, 0.0, 0.0)),
     ]))

@@ -1,7 +1,8 @@
 // Plot — points and lines in world space, for trails, paths and point clouds.
 // Each call is one `Scene.instanced` node (a camera-facing square per point,
-// a stretched box per segment), unlit in one color, so thousands stay cheap.
-// Sizes are world units, like everything else in the scene.
+// a stretched box per segment), unlit in one color and casting no shadow, so
+// thousands stay cheap to draw. Building the list is the cost: wrap a plot
+// that rarely changes in `Scene.memo`. Sizes are world units.
 //
 //   Plot.polyline(0.01, Color.rgb(0.25, 0.85, 0.9), cameraPath)
 //   Plot.points(0.02, Color.rgb(1.0, 1.0, 1.0), cloud)
@@ -28,6 +29,7 @@ let segments = (width: float, color: Color.t, pairs: List<(Vec3.t, Vec3.t)>): Sc
   Scene.cube()
   |> Scene.emissive(color)
   |> Scene.instanced(pairs |> List.map((ends) => segment(width, ends)))
+  |> Scene.castShadows(false)
 
 // `segments` joining each point to the next.
 let polyline = (width: float, color: Color.t, path: List<Vec3.t>): Scene.t =>

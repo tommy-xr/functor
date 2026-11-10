@@ -10763,9 +10763,6 @@ Vec3.make(x, y, z)"
         );
     }
 
-    /// The SAME Functor Lang list converts once: both nodes share one
-    /// instance `Arc` (the renderer's upload-once identity). An equal but
-    /// separately built list gets its own `Arc` yet compares equal.
     /// `Plot`: a segment's box runs end to end, `width` across; a polyline
     /// joins neighbours; a point is a `size` square where it was put.
     #[test]
@@ -10811,6 +10808,9 @@ let main = (Plot.segments(0.1, white, [(a, b)]), Plot.polyline(0.1, white, [a, b
         ]);
     }
 
+    /// The SAME Functor Lang list converts once: both nodes share one
+    /// instance `Arc` (the renderer's upload-once identity). An equal but
+    /// separately built list gets its own `Arc` yet compares equal.
     #[test]
     fn instanced_lists_convert_once_per_list_identity() {
         let source = "
