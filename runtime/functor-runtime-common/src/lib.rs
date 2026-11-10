@@ -64,6 +64,7 @@ pub mod debug_protocol;
 pub mod device_files;
 pub mod depth_frame;
 mod depth_readback;
+pub mod depth_stream;
 pub mod environment_depth;
 pub mod fused_mesh;
 mod fused_room;

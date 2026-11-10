@@ -2,8 +2,8 @@
 //!
 //! Each knob belongs to one bucket, by when the shell can honour it:
 //! `refreshRate`, `passthrough`, `scene`, `floorLocked` and `msaa` are read
-//! once at load, so they go in `config`; `foveation` and `passthroughEnabled` apply
-//! live, so they go in `settings`. A knob in the wrong bucket is a teaching
+//! once at load, so they go in `config`; `foveation`, `passthroughEnabled` and
+//! `streamDepth` apply live, so they go in `settings`. A knob in the wrong bucket is a teaching
 //! error naming the right one. Shells without a headset ignore these options
 //! (except where a knob says otherwise); desktop still reports them in
 //! `GET /state`.
@@ -25,6 +25,9 @@ type level =
   | Low
   | Medium
   | High
+
+/// Where `streamDepth` sends frames, and how many a second.
+type streamOptions = { url: string, hz: float }
 
 /// No options set: every knob keeps the shell's default.
 let create : () => t
@@ -104,3 +107,19 @@ let passthroughEnabled : (bool, t) => t
 /// headset uses its default: `High`, lowered dynamically while the GPU has
 /// headroom. An explicit level is fixed — the runtime does not scale it.
 let foveation : (level, t) => t
+/// POST the environment depth to `url`, `hz` frames a second, one
+/// `functor.depth-frame/1` per request (see `docs/vr.md`, "Depth
+/// streaming"); the options are last for piping.
+///
+/// A `settings` knob; it needs `config`'s `Xr.scene(true)`. Omitting it stops
+/// the stream, and a new `url` or `hz` starts a new one. `url` is
+/// `http://host[:port][/path]` and `hz` must be positive; the shell reads
+/// depth back at most every 4th frame (30 a second at 120 Hz), so a higher
+/// `hz` streams at that rate. A frame that arrives while the previous POST is
+/// in flight replaces the waiting one, which counts as dropped; failures are
+/// never retried. Frames go to loopback only, unless the operator allows
+/// another origin (`--allow-sensor-upload ORIGIN` on desktop). Nothing
+/// streams while the clock is paused, scrubbed or replaying, and nothing
+/// reaches the model: `GET /state` reports the stream as `xr.stream`.
+/// Desktop streams the stand-in room's depth; web does not stream.
+let streamDepth : (streamOptions, t) => t

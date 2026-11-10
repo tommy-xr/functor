@@ -604,7 +604,7 @@ its launch config)"
             );
         }
         // Keep the live value until the next evaluation; drop it with the hook.
-        self.settings = settings.and(self.settings).or(settings);
+        self.settings = settings.map(|fresh| self.settings.take().unwrap_or(fresh));
     }
 
     /// Re-evaluate `settings(model)` (the shell applies it on change). A
@@ -623,7 +623,12 @@ its launch config)"
             // Its own dedupe channel, so a persistent error here and one in
             // `draw` don't alternate and re-print every frame.
             Ok(value) => match settings_of(&value) {
-                Some(settings) => self.settings = Some(settings),
+                Some(settings) => {
+                    if let Some(warning) = stream_depth_warning(self.config, &settings) {
+                        reporter.report_keyed("settings.streamDepth", warning.to_string());
+                    }
+                    self.settings = Some(settings)
+                }
                 None => reporter.report_keyed(
                     "settings",
                     format!(
@@ -645,7 +650,22 @@ its launch config)"
     }
 
     pub fn settings(&self) -> Option<GameSettings> {
-        self.settings
+        self.settings.clone()
+    }
+}
+
+/// Why `settings`' `Xr.streamDepth` streams nothing here, if it does not.
+fn stream_depth_warning(config: Option<GameConfig>, settings: &GameSettings) -> Option<&'static str> {
+    settings.xr.stream_depth.as_ref()?;
+    if cfg!(target_arch = "wasm32") {
+        Some("[functor-lang] Xr.streamDepth is not supported on web; nothing streams")
+    } else if !crate::runtime_settings::scene_requested(config) {
+        Some(
+            "[functor-lang] Xr.streamDepth streams the environment depth — add `Xr.scene(true)` \
+to `config`; nothing streams without it",
+        )
+    } else {
+        None
     }
 }
 
@@ -3375,11 +3395,44 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         );
         let (_, contract) = contract_of(&[("game.fun", &game)]).expect("loads");
         assert!(contract.config.unwrap().xr.passthrough);
-        assert_eq!(contract.settings.unwrap().xr.passthrough, Some(false));
+        assert_eq!(contract.settings.as_ref().unwrap().xr.passthrough, Some(false));
         assert!(!crate::runtime_settings::passthrough_wanted(
             contract.config,
-            contract.settings
+            contract.settings.as_ref()
         ));
+    }
+
+    #[test]
+    fn stream_depth_is_a_live_setting() {
+        let settings = |options: &str| {
+            format!(
+                "{GAME}let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> \
+Xr.streamDepth({options}))\n"
+            )
+        };
+        let game = settings("{ url: \"http://127.0.0.1:9000/frames\", hz: 15.0 }");
+        let (_, contract) = contract_of(&[("game.fun", &game)]).expect("loads");
+        assert_eq!(
+            contract.settings.unwrap().xr.stream_depth,
+            Some(crate::runtime_settings::DepthStreamSettings {
+                url: "http://127.0.0.1:9000/frames".to_string(),
+                hz: 15.0,
+            })
+        );
+        let err = contract_of(&[("game.fun", &settings("{ url: \"http://h/\", hz: 0.0 }"))])
+            .err()
+            .unwrap();
+        assert!(err.contains("hz must be a positive number"), "{err}");
+        let err = contract_of(&[("game.fun", &settings("{ url: \"https://h/\", hz: 5.0 }"))])
+            .err()
+            .unwrap();
+        assert!(err.contains("http:// URL"), "{err}");
+        let config = format!(
+            "{GAME}let config = Config.create() |> Config.xr(Xr.create() |> \
+Xr.streamDepth({{ url: \"http://h/\", hz: 5.0 }}))\n"
+        );
+        let err = contract_of(&[("game.fun", &config)]).err().unwrap();
+        assert!(err.contains("`Xr.streamDepth`") && err.contains("settings"), "{err}");
     }
 
     #[test]
@@ -3463,7 +3516,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         let session = Session::load(&project.module, &mut FunctorHost).unwrap_or_else(|f| panic!("{}", f.error.message));
         let names = EntryNames::UNPREFIXED;
         let contract = validate_contract("game.fun", &session, &names).expect("valid");
-        let mut options = ShellOptions::new(contract.config, contract.settings);
+        let mut options = ShellOptions::new(contract.config, contract.settings.clone());
         let mut reporter = Reporter::new(
             SpanSource::Single {
                 src: String::new(),
@@ -3482,7 +3535,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         assert_eq!(EMITTED.with(|e| e.borrow().len()), 1);
 
         // An unchanged reload is silent; a changed config warns and is kept.
-        options.reload(contract.config, contract.settings, &mut reporter);
+        options.reload(contract.config, contract.settings.clone(), &mut reporter);
         assert_eq!(EMITTED.with(|e| e.borrow().len()), 1);
         let edited = GameConfig {
             xr: XrConfig {
@@ -3494,7 +3547,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             },
             ..GameConfig::default()
         };
-        options.reload(Some(edited), contract.settings, &mut reporter);
+        options.reload(Some(edited), contract.settings.clone(), &mut reporter);
         assert!(EMITTED.with(|e| e.borrow()[1].contains("restart to apply")));
         assert_eq!(options.config(), contract.config);
         // Removing the hook drops the settings.

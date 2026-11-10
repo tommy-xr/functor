@@ -1402,7 +1402,7 @@ mod tests {
             settings: Some(crate::runtime_settings::GameSettings {
                 xr: crate::runtime_settings::XrSettings {
                     foveation: Some(crate::runtime_settings::FoveationLevel::Medium),
-                    passthrough: None,
+                    ..Default::default()
                 },
             }),
             terrain: crate::gpu_counters::TerrainDraws {
@@ -1458,6 +1458,7 @@ mod tests {
                     colliders: 2,
                     floor_m: None,
                 },
+                stream: None,
             }),
             audio: Some(crate::audio::AudioCounts {
                 played: 2,

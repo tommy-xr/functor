@@ -457,6 +457,99 @@ let physics = (model) =>
   furniture, the side the headset never saw) passes through it.
   Rays hit both sides.
 
+### Depth streaming
+
+`Xr.streamDepth` sends the environment depth to a host, for tools that run
+beside the game (a room scanner fusing a mesh on the desktop):
+
+```functor
+let config = Config.create() |> Config.xr(Xr.create() |> Xr.scene(true))
+let settings = (model) =>
+  Settings.create()
+  |> Settings.xr(Xr.create() |> Xr.streamDepth({ url: "http://127.0.0.1:9000/frames", hz: 15.0 }))
+```
+
+- A `settings` knob; it needs `config`'s `Xr.scene(true)` (without it a
+  one-time warning says so). Omitting it stops the stream; a new `url` or
+  `hz` starts a new one (a new `stream` id, `seq` from 0).
+- Frames come from the same readback as the fused room, whether or not the
+  room is drawn: at most every 4th frame (30 a second at 120 Hz), so `hz`
+  above that streams at that rate. Each readback carries the pose it was
+  taken with; pixels never pair with a newer pose.
+- Bounded: one readback pending, one POST in flight, one frame waiting. A
+  newer frame replaces the waiting one and counts as `dropped`. A request
+  times out after 3 s (1 s to connect), is never retried, and redirects are
+  not followed. One sender thread POSTs for every stream, so a new `url` or
+  `hz` never adds a second request in flight.
+- Nothing enters the model or the time-travel journal. `/state.xr.stream`
+  reports `{url, hz, sent, dropped, errors, last_error?}`.
+- Uploads stop while the clock is paused, scrubbed or pinned
+  (`--fixed-time`), and on desktop under `--replay` or `--input-script`.
+  Resuming starts a new stream.
+- Only `http://` URLs. Loopback (`127.0.0.0/8`, `::1`, `localhost`) is
+  allowed; any other origin needs the operator: `--allow-sensor-upload
+  http://host:port` (repeatable) on desktop, `adb shell setprop
+  debug.functor.allow_sensor_upload http://host:port` (comma-separated)
+  plus a restart on Quest. A refused origin streams nothing and reports why
+  in `last_error`. On Quest, `adb reverse tcp:9000 tcp:9000` makes the
+  host's port 9000 the headset's loopback.
+- Desktop streams the stand-in room's depth through the same path, with
+  `source: "emulated"`. Web does not stream; a one-time warning says so.
+
+The wire format, `functor.depth-frame/1`: one frame per `POST <url>`,
+`Content-Type: application/vnd.functor.depth-frame`. Any 2xx is accepted;
+anything else counts as an error.
+
+| Bytes | Content |
+|---|---|
+| 4 | `N`: header length, big-endian u32 |
+| N | header, UTF-8 JSON |
+| `payload_len` | depth payload |
+
+```jsonc
+{
+  "schema": "functor.depth-frame/1",
+  "stream": "a1b2c3",            // new id each time a stream starts
+  "seq": 0,                       // per stream, +1 per sent frame; gaps = dropped frames
+  "source": "device",             // "device" (headset) | "emulated" (desktop stand-in room)
+  "eye": "left",
+  "width": 320, "height": 320,
+  "encoding": "rgba8-depth24",    // RGB = 24-bit window depth, MSB first; A = 255
+  "rows": "bottom-up",            // row 0 is the bottom of the image
+  "camera_to_world": [16 floats], // depth camera pose; column-major; metres, right-handed, Y-up
+  "projection": [16 floats],      // clip from camera, column-major
+  "view_projection": [16 floats], // clip from world = projection · inverse(camera_to_world)
+  "near": 0.1, "far": null,       // null = infinite far plane
+  "tracking": true,               // false: pose not valid this frame
+  "space_epoch": 0,               // +1 whenever the world frame changes (recentre)
+  "time": { "clock": "xr", "display_ns": 0, "acquire_ns": null, "sensor_ns": null },
+  "payload_len": 409600
+}
+```
+
+Decoding pixel `(x, y)`, `y` counted from the bottom row:
+
+```
+d     = (R << 16 | G << 8 | B) / 16777215        // window depth in [0, 1]
+d == 1                                            // no surface: skip
+ndc   = ((x + 0.5) / width * 2 - 1, (y + 0.5) / height * 2 - 1, 2d - 1, 1)
+world = inverse(view_projection) · ndc;  world /= world.w
+```
+
+What each field holds today:
+
+- `stream` is 16 hex digits.
+- `eye` is `"left"`: only a frame's first pass reads back — the left eye in
+  stereo, the only view on mono desktop.
+- `time.clock` is `"xr"` for device frames (`display_ns` is the OpenXR
+  display time the image was acquired for) and `"steady"` for emulated ones
+  (the sender's monotonic clock). `acquire_ns` and `sensor_ns` are `null`.
+- `tracking` is `true`: shells render, and so read back, only while
+  tracking is valid.
+- `space_epoch` counts the times the rig's world frame moved (a recentre, or
+  `Frame.camera` moving the rig) — the same events that start the fused
+  room over. It stays 0 on desktop.
+
 ### Room-bounce
 
 `examples/room-bounce` shoots bouncy balls at the real room:

@@ -89,6 +89,37 @@ export type CellsWalk = { visible: number, portals: number, cut: number, outside
 export type CullCounts = { tested: number, culled: number, };
 
 /**
+ * Where and how often `Xr.streamDepth` sends depth frames.
+ */
+export type DepthStreamSettings = { url: string, 
+/**
+ * Frames a second, at most the readback rate.
+ */
+hz: number, };
+
+/**
+ * `GET /state.xr.stream`: the `Xr.streamDepth` stream, present while
+ * `settings` asks for one.
+ */
+export type DepthStreamState = { url: string, hz: number, 
+/**
+ * Frames the server answered 2xx.
+ */
+sent: number, 
+/**
+ * Frames replaced by a newer one while a POST was in flight.
+ */
+dropped: number, 
+/**
+ * Frames that failed: a non-2xx answer, a timeout, no connection.
+ */
+errors: number, 
+/**
+ * The latest failure, or why nothing streams (a refused origin).
+ */
+last_error?: string, };
+
+/**
  * A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
  */
 export type DisplayRefreshRate = { 
@@ -783,9 +814,13 @@ foveation?: FoveationLevel,
  * `Xr.passthroughEnabled(on)`: run or pause the camera feed `config`
  * prepared. `None` = on whenever `config` requested passthrough.
  */
-passthrough?: boolean, };
+passthrough?: boolean, 
+/**
+ * `Xr.streamDepth({url, hz})`: POST the environment depth to `url`.
+ */
+stream_depth?: DepthStreamSettings, };
 
 /**
  * `GET /state.xr`: headset scene state, omitted while it has nothing to say.
  */
-export type XrState = { depth: EnvironmentDepthState, mesh: FusedMeshState, };
+export type XrState = { depth: EnvironmentDepthState, mesh: FusedMeshState, stream?: DepthStreamState, };
