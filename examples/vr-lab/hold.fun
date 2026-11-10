@@ -498,9 +498,10 @@ expect (match flick(50.0, 8.0) with | Released(_, _, w) => Math.abs(w.x - maxSpi
 /// Far enough off the real hand to show it: 2 cm, or 10 degrees.
 let ghostDistance = 0.02
 let ghostTurn = 10.0 * Math.pi / 180.0
-let ghosted = (tracked: Input.pose, drawn: Input.pose): bool =>
-  Quat.length(Quat.sub(tracked.position, drawn.position)) > ghostDistance
-    || Quat.angle(tracked.orientation, drawn.orientation) > ghostTurn
+let ghostedBy = (scale: float, tracked: Input.pose, drawn: Input.pose): bool =>
+  Quat.length(Quat.sub(tracked.position, drawn.position)) > scale * ghostDistance
+    || Quat.angle(tracked.orientation, drawn.orientation) > scale * ghostTurn
+let ghosted = (tracked: Input.pose, drawn: Input.pose): bool => ghostedBy(1.0, tracked, drawn)
 
 expect not ghosted(p(0.0, 0.0, 0.0), p(0.019, 0.0, 0.0)) && ghosted(p(0.0, 0.0, 0.0), p(0.0, 0.021, 0.0))
 expect not ghosted(origin, at(zero, Quat.yaw(0.17))) && ghosted(origin, at(zero, Quat.yaw(0.18)))

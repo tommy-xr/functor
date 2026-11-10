@@ -22,7 +22,8 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
 `hover`), `handView`, the props (`held`, and `pose`/`velocity` read back from
-the world, rig-local), the last release (`lastRelease`) and the score. The
+the world, rig-local), the last release (`lastRelease`), the score, and each hand's pulse edges
+(`feltLeft`/`feltRight`); `haptics` counts the pulses sent. The
 headset requests 120 Hz with foveation off, floor-locked.
 
 | Module | What it is |
@@ -32,6 +33,7 @@ headset requests 120 Hz with foveation off, floor-locked.
 | `hips.fun` | the body frame the slots ride: root and lagging yaw from the head, pin |
 | `slots.fun` | the body slots: offsets, reach, what each takes, how each is drawn |
 | `inventory.fun` | the inventory station's headless checks |
+| `pulses.fun` | each hold event's controller pulse, and the edges that fire it once |
 | `hold.fun` | one hand grabbing, holding and releasing a prop (any pose); the swept move; the throw and spin estimate |
 | `props.fun` | the props: shape, collider, reach, authored grip, material, look |
 | `digits.fun` | seven-segment numbers (the headset doesn't draw `ui`) |
@@ -65,6 +67,28 @@ scenario entry `{ fixture: "<path>" }` runs it under `e2e/vr-lab.mjs`
 record:vr-lab -- e2e/fixtures/vr-lab/grab-throw.xr.json --scenario
 grab-throw`). Replay is on desktop. The headset also accepts injected XR
 samples (`POST /input`), but fixture playback there is untested.
+
+## Haptics
+
+Each hold event buzzes the hand that felt it (`Effect.haptic`, from `tick`).
+The amplitudes and durations are one table, `Pulses.pulse`:
+
+| Event | When | Amplitude | Duration |
+| --- | --- | --- | --- |
+| ready | entering an empty slot that takes the held prop | 0.15 | 15 ms |
+| release | letting go (thrown or dropped) | 0.3 | 20 ms |
+| grab | taking a prop, free or from the other hand | 0.45 | 30 ms |
+| unstow | taking a prop out of a slot | 0.55 | 40 ms |
+| stow | putting it away | 0.7 | 50 ms |
+| blocked | the first step a held prop stops against the level (once per push) | 0.85 | 20 ms |
+| break | the grip breaking | 1.0 | 80 ms |
+
+A held prop is blocked once the hand is 2 cm or 10° off where it holds it, and
+free again under half that, so a hand resting at the edge doesn't buzz twice.
+Each pulse also draws a brief ring at the hand, sized by its amplitude, so a
+video (or a desktop run) shows what the hand felt. `npm run test:vr-lab`
+checks each event's pulse in `GET /state.haptics`
+(`e2e/vr-lab-haptics.mjs`).
 
 ## 1. Grab table
 

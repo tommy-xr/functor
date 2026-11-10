@@ -30,7 +30,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { BIN, ROOT, portIsBound, sleep } from "./mcp-rpc.mjs";
+import { BIN, ROOT, failures, portIsBound, sleep } from "./mcp-rpc.mjs";
 import { decode } from "./xr-fixture.mjs";
 
 export const DT = 1 / 60;
@@ -97,6 +97,24 @@ export async function launch(project, port, extra = []) {
   }
   await rt.post("/time", { type: "set", tts: 0.0 });
   return rt;
+}
+
+/**
+ * Run `body` against a fresh runtime on `project`: a throw is recorded in
+ * `failures` with the runtime's log, and the runtime is always stopped.
+ */
+export async function session(name, project, port, body, flags = ["--headless"]) {
+  console.log(`\n▸ ${name}`);
+  let rt;
+  try {
+    rt = await launch(project, port, flags);
+    await body(rt);
+  } catch (e) {
+    failures.push(`${name}: ${e}`);
+    console.error(e, `\n--- runtime log ---\n${rt?.log().slice(-3000) ?? ""}`);
+  } finally {
+    await rt?.kill();
+  }
 }
 
 /** Advance one pinned step and wait for it; returns `/state`. */

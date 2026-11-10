@@ -71,6 +71,10 @@ const alongWall = { eye: [0.65, 2.45, 3.75], target: [0.6, 1.05, 4.6], fov: 50 }
 // ghost) through on the other.
 const overWall = { eye: [0.64, 8.0, 4.45], target: [0.64, 1.15, 4.55], fov: 8 };
 
+// High above the player, looking down the table to the wall: the hand on
+// either side of it.
+const aboveWall = { eye: [0.65, 3.6, 3.95], target: [0.4, 1.0, 4.55], fov: 44 };
+
 // Above and behind the player's left shoulder: the stick turning into the wall.
 const overStick = { eye: [0.2, 3.1, 3.75], target: [0.3, 1.1, 4.6], fov: 45 };
 
@@ -456,6 +460,29 @@ export const scenarios = {
   },
 
   ...inventoryScenarios,
+
+  // The haptics demo at the grab table: grab, a stop at the wall, the grip
+  // broken by dragging on, then the ball taken again and thrown. Each pulse
+  // draws a ring at the hand (`Pulses.cue`).
+  "haptics-table": {
+    station: 1,
+    spectator: aboveWall,
+    steps: [
+      ...grab,
+      { frames: 20, right: { to: [-0.3, 1.15, -0.55] } },
+      { frames: 25, right: { to: [-0.72, 1.15, -0.55] }, mark: "blocked" },
+      { frames: 10, right: {} },
+      { frames: 20, right: { to: [-1.0, 1.1, -0.55] }, mark: "broke" },
+      { frames: 6, right: { squeeze: 0 } },
+      { frames: 25, right: { to: [-0.45, 1.05, -0.55] } },
+      { frames: 15, right: { to: [-0.536, 0.96, -0.55] } },
+      { frames: 6, right: { squeeze: 1 }, mark: "regrabbed" },
+      { frames: 30, right: { to: SWEEP_FROM } },
+      { frames: 6, right: { to: along(6) } },
+      { frames: 1, right: { to: along(7), squeeze: 0 }, mark: "release" },
+      { frames: 50, right: { to: [0.25, 1.2, -0.45] } },
+    ],
+  },
 
   // Lose the hand mid-swing, then let go as it comes back: no throw.
   "tracking-loss": {

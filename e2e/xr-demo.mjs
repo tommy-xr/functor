@@ -16,6 +16,7 @@
 //   --mp4 <path>     also write an H.264 MP4
 //   --still <path>   also write one PNG: the step marked `release`, else the last
 //   --still-mark <m> the mark to take the still at instead of `release`
+//   --state <path>   also write the final `GET /state` as JSON
 //   --every <n>      keep every nth step (default 2: 30 fps of 60 Hz steps)
 //   --size <WxH>     framebuffer size (default 960x600)
 //   --view rig       film the player's own view instead of the spectator's
@@ -43,6 +44,7 @@ const mp4 = opt("--mp4");
 const still = opt("--still");
 const view = opt("--view", "spectator");
 const stillMark = opt("--still-mark", "release");
+const statePath = opt("--state");
 
 const { project, scenarios, defaultSpectator } = await import(pathToFileURL(resolve(scenariosPath)).href);
 const scenario = name.endsWith(".json")
@@ -66,6 +68,7 @@ try {
     writeFileSync(lastFrame, await rt.capture());
     if (mark === stillMark) markFrame = lastFrame;
   });
+  if (statePath) writeFileSync(statePath, JSON.stringify(await rt.get("/state"), null, 2));
 } finally {
   await rt.kill();
 }
