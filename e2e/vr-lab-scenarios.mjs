@@ -1414,8 +1414,8 @@ export const HANDS = {
   right: { at: [0.07, 1.3, -0.32], turn: qmul(yaw(15), roll(-90)) },
   left: { at: [-0.07, 1.3, -0.32], turn: qmul(yaw(-15), roll(90)) },
 };
-// The player's right, level with the hands: their curl in profile.
-const atHands = { eye: [-0.55, 1.42, 4.62], target: [0.0, 1.3, 4.36], fov: 30 };
+// Ahead of the player, to the right and above: both hands' curl.
+const atHands = { eye: [-0.42, 1.55, 4.88], target: [0.0, 1.29, 4.36], fov: 22 };
 // Both hands' `field` (squeeze or trigger) stepped from `from` to `to` over
 // `n` steps; `mark` names the last.
 const both = (field, from, to, n = 12, mark) =>
@@ -1462,11 +1462,11 @@ const handScenarios = {
 // Station 1 (world = (-x, y, 4 - z)): close on the ball, from the player's
 // right; on the stick, from the left; the bottle, `atBottle`.
 const atBall = { eye: [-0.72, 1.32, 4.08], target: [-0.2, 1.05, 4.5], fov: 34 };
-const atStick = { eye: [0.8, 1.42, 4.02], target: [0.3, 1.02, 4.38], fov: 36 };
+const atStick = { eye: [-0.3, 1.5, 3.85], target: [0.3, 1.02, 4.38], fov: 36 };
 // The armory (world = (4 - z, y, x)): the pistol hand from its right, behind;
 // the shell box from the left; the rifle in two hands from its right.
 const atPistolHand = { eye: [4.05, 1.48, 0.62], target: [4.38, 1.28, 0.2], fov: 34 };
-const atShellBox = { eye: [4.35, 1.38, -0.35], target: [4.62, 1.1, 0.0], fov: 36 };
+const atShellBox = { eye: [4.2, 1.45, -0.5], target: [4.62, 1.12, 0.0], fov: 44 };
 const atRifleHands = { eye: [4.3, 1.5, 0.75], target: [4.45, 1.28, 0.18], fov: 40 };
 // The ball's right side, the palm on it; the stick's axis under its grip
 // band, the hand pointing down along it; the upright bottle's neck.
@@ -1520,8 +1520,8 @@ const tourScenarios = {
       { frames: 1, right: { to: RIGHT_REST }, tap: "3", spectator: atPistolHand },
       ...takePistol,
       { frames: 25, right: { to: AIM_HAND, turn: AIM_MIDDLE } },
-      { frames: 20, right: { trigger: 0.4 } },
-      { frames: 1, right: { trigger: 1 }, mark: "pistol" },
+      { frames: 20, right: { trigger: 0.4 }, mark: "pistol" },
+      { frames: 1, right: { trigger: 1 } },
       { frames: 15, right: {} },
       { frames: 10, right: { trigger: 0 } },
       { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID } },
@@ -1548,7 +1548,7 @@ const tourScenarios = {
       ...takeRifle,
       raise(),
       hold(20, "rifle"),
-      { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: besideRifleWall },
+      { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: besideWall },
       { frames: 30, ...bothTo(RIFLE_DEEP) },
       hold(40, "release"),
       { frames: 20, ...bothTo(RIFLE_WALL.clear) },
