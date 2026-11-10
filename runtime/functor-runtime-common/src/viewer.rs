@@ -230,30 +230,60 @@ impl DebugCamera {
             return true;
         }
 
-        let offset = Vector3::from(frame.camera.target) - Vector3::from(frame.camera.eye);
+        self.detach_3d(frame.camera.clone())
+    }
+
+    /// Detach a 3D or mixed frame's view at a chosen eye and target (up +Y),
+    /// keeping the authored clip planes; `fov_degrees` defaults to the
+    /// authored field of view. Returns false for a pure 2D frame or an
+    /// invalid view, leaving the controller attached.
+    pub fn detach_at(
+        &mut self,
+        frame: &Frame,
+        eye: [f32; 3],
+        target: [f32; 3],
+        fov_degrees: Option<f32>,
+    ) -> bool {
+        if frame.is_pure_2d() {
+            self.reattach();
+            return false;
+        }
+        let mut camera = frame.camera.clone();
+        camera.eye = eye;
+        camera.target = target;
+        camera.up = [0.0, 1.0, 0.0];
+        camera.ortho_half_height = None;
+        if let Some(degrees) = fov_degrees {
+            camera.fov_radians = degrees.to_radians();
+        }
+        self.detach_3d(camera)
+    }
+
+    fn detach_3d(&mut self, camera: Camera) -> bool {
+        let offset = Vector3::from(camera.target) - Vector3::from(camera.eye);
         let distance = offset.magnitude();
-        let up = Vector3::from(frame.camera.up);
+        let up = Vector3::from(camera.up);
         if !distance.is_finite()
             || distance < Self::MIN_DISTANCE
-            || !frame.camera.eye.into_iter().all(f32::is_finite)
-            || !frame.camera.target.into_iter().all(f32::is_finite)
-            || !frame.camera.up.into_iter().all(f32::is_finite)
+            || !camera.eye.into_iter().all(f32::is_finite)
+            || !camera.target.into_iter().all(f32::is_finite)
+            || !camera.up.into_iter().all(f32::is_finite)
             || up.magnitude2() <= f32::EPSILON
             || offset.cross(up).magnitude2() <= f32::EPSILON
-            || !frame.camera.fov_radians.is_finite()
-            || frame.camera.fov_radians <= 0.0
-            || frame.camera.fov_radians >= std::f32::consts::PI
-            || !frame.camera.near.is_finite()
-            || !frame.camera.far.is_finite()
-            || frame.camera.near <= 0.0
-            || frame.camera.near >= frame.camera.far
-            || !valid_ortho(&frame.camera)
+            || !camera.fov_radians.is_finite()
+            || camera.fov_radians <= 0.0
+            || camera.fov_radians >= std::f32::consts::PI
+            || !camera.near.is_finite()
+            || !camera.far.is_finite()
+            || camera.near <= 0.0
+            || camera.near >= camera.far
+            || !valid_ortho(&camera)
         {
             self.reattach();
             return false;
         }
         self.focal_distance = distance;
-        self.view = Some(DebugView::Fps(frame.camera.clone()));
+        self.view = Some(DebugView::Fps(camera));
         true
     }
 
@@ -685,6 +715,31 @@ mod tests {
 
         debug.reattach();
         assert_eq!(debug.camera(&moved_authored).eye, moved_authored.eye);
+    }
+
+    #[test]
+    fn detach_at_sets_the_view_and_keeps_the_authored_clip_planes() {
+        let frame = frame_3d();
+        let mut debug = DebugCamera::default();
+        assert!(debug.detach_at(&frame, [3.0, 2.0, 1.0], [0.0, 1.0, 0.0], Some(40.0)));
+        let view = debug.camera(&frame.camera);
+        assert_eq!(view.eye, [3.0, 2.0, 1.0]);
+        assert_eq!(view.target, [0.0, 1.0, 0.0]);
+        assert_eq!(view.up, [0.0, 1.0, 0.0]);
+        assert!((view.fov_radians - 40.0_f32.to_radians()).abs() < 1e-6);
+        assert_eq!((view.near, view.far), (frame.camera.near, frame.camera.far));
+
+        assert!(debug.detach_at(&frame, [3.0, 2.0, 1.0], [0.0, 1.0, 0.0], None));
+        assert_eq!(debug.camera(&frame.camera).fov_radians, frame.camera.fov_radians);
+
+        // Degenerate views and 2D frames refuse, leaving the camera attached.
+        assert!(!debug.detach_at(&frame, [1.0, 1.0, 1.0], [1.0, 1.0, 1.0], None));
+        assert!(!debug.is_detached());
+        assert!(!debug.detach_at(&frame, [0.0, 5.0, 0.0], [0.0, 0.0, 0.0], None));
+        assert!(!debug.detach_at(&frame, [0.0, 1.0, 0.0], [0.0, 1.0, 1.0], Some(200.0)));
+        assert!(debug.detach(&frame_2d()));
+        assert!(!debug.detach_at(&frame_2d(), [0.0, 1.0, 0.0], [0.0, 1.0, 1.0], None));
+        assert!(!debug.is_detached());
     }
 
     #[test]

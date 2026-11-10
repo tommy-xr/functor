@@ -129,6 +129,7 @@ screenshot run has no reason to grab your mouse.
 | `GET /project-files` | files the game asked for that the device lacks: `{session, requests: [{path, have}]}`, `have` = the version it holds; 409 on desktop (protocol v24) |
 | `POST /project-files` | answer one request: big-endian u32 header length, JSON header `{session, path, status: "bytes"\|"current"\|"missing", version?, message?}`, then the bytes; 409 for another session or an unrequested path (protocol v24) |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
+| `POST /camera` | point the shell's debug camera at `{"type":"set","eye":[x,y,z],"target":[x,y,z],"fov":60}` (fov optional), or return to the authored camera with `{"type":"attach"}` — see below (protocol v32) |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` — the state `GET /state` reported as frame 42 — and branch from there (pin the clock first) |
 | `POST /display-refresh-rate` | request a headset display rate, `{"hz":90}`; it must be one of `display_refresh_rate.available`, and `current` moves once the runtime confirms the switch. 400 on desktop (protocol v15) |
 | `GET /net/outbound` | **embedder transport only** — take-and-consume the game's queued `ConnCommand`s (see below) |
@@ -615,6 +616,34 @@ effect. To start pinned *and* step, launch WITHOUT `--fixed-time` and
 While the clock is pinned (either way), **user keyboard/mouse input from the window is
 ignored**, but injected `/input` still applies — so an external driver has deterministic
 control.
+
+### `POST /camera` — a spectator view (protocol v32)
+
+`set` detaches the desktop shell's debug camera (the timeline's **Debug camera**)
+at a world-space eye and target, up +Y, keeping the authored clip planes; `fov`
+is the vertical field of view in degrees and defaults to the authored one.
+`attach` returns to the authored view. It is shell state only: the game's
+`draw`, model, recorded input and replay never see it, so a stepped scenario
+captures the same simulation from any angle. Unlike the timeline control it
+works under `--hidden` and `--emulate-xr` (the request itself never captures
+the cursor), and the view ignores an injected or emulated XR head, which is
+what makes it a spectator for an XR session: inject poses, step, and
+`/capture` the hands from the side. While detached the shell renders as the
+timeline's Debug camera does: its diagnostics settings replace a
+`--debug-render` launch mode, and they decide whether the game UI shows.
+Requests that arrive after a `/camera` are serviced on the next frame, so a
+`/capture` sent next always shows the new view.
+
+```sh
+curl -s -X POST $H/camera -d '{"type":"set","eye":[2.0,1.8,-1.0],"target":[0.0,1.0,0.6],"fov":55}'
+curl -s -X POST $H/capture -o spectator.png
+curl -s -X POST $H/camera -d '{"type":"attach"}'
+```
+
+An invalid view (eye equal to target, looking straight up or down, a field of
+view outside 0–180°) is a 400 and shows the authored view again. So is
+`--headless` (nothing is rendered) and the headset, whose view follows the
+wearer.
 
 ### `POST /reload-source` — network hot-reload (Functor Lang)
 

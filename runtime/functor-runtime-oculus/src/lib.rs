@@ -1228,6 +1228,11 @@ desktop runtime's --headless/--debug-port path"
                 removed.len()
             )));
         }
+        DebugRequest::Camera(_, response) => {
+            let _ = response.send(Err(
+                "the headset's view follows the wearer; POST /camera is desktop-only".to_string(),
+            ));
+        }
         DebugRequest::DisplayRefreshRate(hz, response) => {
             let _ = response.send(match debug.display_refresh_rate.as_mut() {
                 Some(display) => request_display_refresh_rate(session, display, hz),
