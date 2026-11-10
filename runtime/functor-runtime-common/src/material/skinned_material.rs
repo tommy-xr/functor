@@ -25,6 +25,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 2) in vec3 inNormal;
         layout (location = 4) in vec4 inJointIndices;
         layout (location = 5) in vec4 inWeights;
+        layout (location = 6) in vec4 inColor;
 
         uniform mat4 jointTransforms[MAX_JOINTS];
         uniform mat4 world;
@@ -39,8 +40,10 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         out vec2 texCoord;
         out vec3 worldNormal;
         out vec3 worldPos;
+        out vec4 vertexColor;
 
         void main() {
+            vertexColor = inColor;
 
             // Compute the skinning matrix
             mat4 skinMatrix =
@@ -69,6 +72,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec2 texCoord;
         in vec3 worldNormal;
         in highp vec3 worldPos; // full precision for the light loop (see lighting_glsl)
+        in vec4 vertexColor;
 
         uniform sampler2D texture1;
 
@@ -78,7 +82,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
             vec3 specularLight;
             accumulateLights(n, worldPos, diffuseLight, specularLight);
 
-            vec4 albedo = texture(texture1, texCoord);
+            vec4 albedo = texture(texture1, texCoord) * vertexColor;
             fragColor = functorOutput(
                 vec4(applyFog(albedo.rgb * diffuseLight + specularLight, worldPos), albedo.a));
         }

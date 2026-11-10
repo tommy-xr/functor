@@ -10,6 +10,7 @@ pub enum BuiltInVertexChannel {
     Tangent,
     JointIndices,
     JointWeights,
+    Color,
     // Not bound to any channel used for internal shaders.
     // May be an attribute used for custom shaders
     Custom,

@@ -7,6 +7,9 @@
 //! paths, skinned and rigid, nested selections, and an unknown name. Skinned
 //! draw counts drop with the selection while pose evaluations don't.
 //!
+//! Also glTF `COLOR_0`: a red-vertex model renders like one whose material
+//! is red, on every path, lit and unlit.
+//!
 //! Self-skipping like `stereo_shadow` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
 //!
@@ -91,6 +94,31 @@ fn main() {
                 "test {kind}_{path}_hidden_part_draws_in_no_pass ... ok ({} -> {} skinned draws)",
                 whole_work.draws, selected_work.draws
             );
+
+            // An unlit frame draws a skinned model black whatever its colour.
+            for lit in [true, false].into_iter().filter(|lit| *lit || !skinned) {
+                let frame = |file: String| {
+                    let mut frame = scene_frame(model(&file, &[]), instanced);
+                    if !lit {
+                        frame.lights.clear();
+                    }
+                    frame
+                };
+                let (vertex, factor) = (format!("{kind}_vertex.glb"), format!("{kind}_factor.glb"));
+                harness.warm(&frame(vertex.clone()));
+                harness.warm(&frame(factor.clone()));
+                let (vertex, _) = harness.render(&frame(vertex));
+                let (factor, _) = harness.render(&frame(factor));
+                let (white, _) = harness.render(&frame(body.to_string()));
+                // Constant colours can interpolate one step apart.
+                let worst = vertex.iter().zip(&factor).map(|(a, b)| a.abs_diff(*b)).max();
+                assert!(worst <= Some(1), "{kind}/{path}/lit={lit}: COLOR_0 is {worst:?} off");
+                assert!(vertex != white, "{kind}/{path}/lit={lit}: COLOR_0 never showed");
+                if let (Some(dir), true) = (&out, lit) {
+                    harness.save(&vertex, &format!("{dir}/{kind}-{path}-vertex-colour.png"));
+                }
+            }
+            println!("test {kind}_{path}_vertex_colour_tints_like_base_colour ... ok");
         }
     }
 }
@@ -249,6 +277,16 @@ impl Harness {
             ("rigid_body.glb", false, false),
         ] {
             asset_cache.replace_uploaded(file, fixture(with_hat, skinned));
+        }
+        let red = [1.0, 0.0, 0.0, 1.0];
+        for (kind, skinned) in [("skinned", true), ("rigid", false)] {
+            let body = || TestNode::named("Body").boxes(&[([-0.3, 0.0, -0.2], [0.3, 1.0, 0.2])]);
+            asset_cache
+                .replace_uploaded(&format!("{kind}_vertex.glb"), glb(&[body().color(red)], skinned));
+            asset_cache.replace_uploaded(
+                &format!("{kind}_factor.glb"),
+                glb(&[body().base_color(red)], skinned),
+            );
         }
 
         let shadow_map = ShadowMap::new(&gl, 512);

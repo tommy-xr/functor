@@ -7,6 +7,10 @@ pub struct TestNode {
     pub mesh_name: Option<String>,
     /// One box primitive per `(min, max)`.
     pub boxes: Vec<([f32; 3], [f32; 3])>,
+    /// `COLOR_0` (linear RGBA) on every vertex.
+    pub color: Option<[f32; 4]>,
+    /// The material's `baseColorFactor` (linear RGBA).
+    pub base_color: Option<[f32; 4]>,
 }
 
 impl TestNode {
@@ -22,7 +26,21 @@ impl TestNode {
             name: None,
             mesh_name: None,
             boxes: vec![([-0.5; 3], [0.5; 3])],
+            color: None,
+            base_color: None,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn color(mut self, color: [f32; 4]) -> TestNode {
+        self.color = Some(color);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn base_color(mut self, color: [f32; 4]) -> TestNode {
+        self.base_color = Some(color);
+        self
     }
 
     #[allow(dead_code)]
@@ -69,6 +87,7 @@ pub fn glb(nodes: &[TestNode], skinned: bool) -> Vec<u8> {
     };
 
     let mut meshes = Vec::new();
+    let mut materials = Vec::new();
     for node in nodes {
         let mut primitives = Vec::new();
         for (min, max) in &node.boxes {
@@ -93,8 +112,26 @@ pub fn glb(nodes: &[TestNode], skinned: bool) -> Vec<u8> {
             } else {
                 String::new()
             };
+            let color = match node.color {
+                Some(color) => {
+                    let colors: Vec<f32> = (0..count).flat_map(|_| color).collect();
+                    let colors = push(&floats(&colors), count, "VEC4", 5126, String::new());
+                    format!(r#","COLOR_0":{colors}"#)
+                }
+                None => String::new(),
+            };
+            let material = match node.base_color {
+                Some(c) => {
+                    materials.push(format!(
+                        r#"{{"pbrMetallicRoughness":{{"baseColorFactor":[{},{},{},{}]}}}}"#,
+                        c[0], c[1], c[2], c[3]
+                    ));
+                    format!(r#","material":{}"#, materials.len() - 1)
+                }
+                None => String::new(),
+            };
             primitives.push(format!(
-                r#"{{"attributes":{{"POSITION":{position},"NORMAL":{normal}{skin}}},"indices":{index}}}"#
+                r#"{{"attributes":{{"POSITION":{position},"NORMAL":{normal}{skin}{color}}},"indices":{index}{material}}}"#
             ));
         }
         meshes.push(format!(
@@ -124,9 +161,14 @@ pub fn glb(nodes: &[TestNode], skinned: bool) -> Vec<u8> {
         roots.push(joint);
         skins = format!(r#","skins":[{{"joints":[{joint}],"inverseBindMatrices":{ibm}}}]"#);
     }
+    let materials = if materials.is_empty() {
+        String::new()
+    } else {
+        format!(r#","materials":[{}]"#, materials.join(","))
+    };
 
     let json = format!(
-        r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":{roots:?}}}],"nodes":[{}],"meshes":[{}]{skins},"accessors":[{}],"bufferViews":[{}],"buffers":[{{"byteLength":{}}}]}}"#,
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":{roots:?}}}],"nodes":[{}],"meshes":[{}]{skins}{materials},"accessors":[{}],"bufferViews":[{}],"buffers":[{{"byteLength":{}}}]}}"#,
         node_json.join(","),
         meshes.join(","),
         accessors.join(","),

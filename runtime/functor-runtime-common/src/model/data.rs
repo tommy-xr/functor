@@ -189,6 +189,7 @@ impl ModelData {
                     tangent: vec4(1.0, 0.0, 0.0, 1.0),
                     joint_indices: vec4(j[0], j[1], j[2], j[3]),
                     weights: vec4(w[0], w[1], w[2], w[3]),
+                    color: vec4(1.0, 1.0, 1.0, 1.0),
                 }
             })
             .collect();

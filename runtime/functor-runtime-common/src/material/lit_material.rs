@@ -52,6 +52,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 1) in vec2 inTex;
         layout (location = 2) in vec3 inNormal;
         layout (location = 3) in vec4 inTangent;
+        layout (location = 6) in vec4 inColor; // white unless a model's mesh has colours
 
         uniform mat4 world;
         // transpose(inverse(mat3(world))) — normals are covectors, so a
@@ -66,8 +67,10 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         out vec3 worldTangent;
         out vec3 worldBitangent;
         out vec3 worldPos;
+        out vec4 vertexColor;
 
         void main() {
+            vertexColor = inColor;
             texCoord = inTex;
             // Unit length here, at the vertex stage's highp: a small world scale
             // (Solid.toScene's 0.001) grows the normal ~1000x, and its squared
@@ -94,6 +97,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec3 worldTangent;
         in vec3 worldBitangent;
         in highp vec3 worldPos; // full precision for the light loop (see lighting_glsl)
+        in vec4 vertexColor;
 
         uniform vec4 baseColor;
         uniform sampler2D texture1;
@@ -130,6 +134,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     : texture(texture1, texCoord);
                 albedo = texel * baseColor;
             }
+            albedo *= vertexColor;
             fragColor = functorOutput(
                 vec4(applyFog(albedo.rgb * diffuseLight + specularLight * specularScale, worldPos), albedo.a));
         }
@@ -241,6 +246,7 @@ impl Material for LitMaterial {
                     // Normal map on texture unit 2 (0 = albedo, 1 = shadow map);
                     // the caller binds the texture when `use_normal_map`.
                     p.set_uniform_1i(ctx.gl, &uniforms.normal_map_loc, 2);
+                    crate::render::pin_white_vertex_color(ctx.gl);
                     uniforms.lighting.set_pass(p, ctx, view_matrix);
                     uniforms.fog.set(p, ctx.gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
                 }
