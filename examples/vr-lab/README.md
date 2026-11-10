@@ -20,6 +20,7 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | grip (squeeze) | grab what's in reach; open to let go |
 | trigger | fire the held gun (station 3) |
 | A / X (holding the rifle's grip), `F` | the rifle's selector: semi / full-auto |
+| thumbstick down (on a gun's trigger hand), `M` | drop the gun's magazine |
 | `H` / thumbstick click | draw a holding hand where it is tracked, or where its blocked prop implies |
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
@@ -35,7 +36,8 @@ headset requests 120 Hz with foveation off, floor-locked.
 | `hips.fun` | the body frame the slots ride: root and lagging yaw from the head, pin |
 | `slots.fun` | the body slots: offsets, reach, what each takes, how each is drawn |
 | `inventory.fun` | the inventory station's headless checks |
-| `gun.fun` | what the guns share (trigger and fire modes, bore, shot, muzzle check, recoil, the ammo seam), and the pistol's shape and grip |
+| `gun.fun` | what the guns share (trigger and fire modes, bore, shot, muzzle check, recoil, the ammo seam, magazine well, readout and look), and the pistol's shape and grip |
+| `ammo.fun` | rounds and magazines as plain data: fire, eject, insert, rack, and their conservation |
 | `longarm.fun` | the rifle: shape, its two grips, the two-hand aim, the support hand's slide, break and look |
 | `armory.fun` | the armory station's headless checks |
 | `pulses.fun` | each hold event's controller pulse, and the edges that fire it once |
@@ -81,7 +83,7 @@ The amplitudes and durations are one table, `Pulses.pulse`:
 | Event | When | Amplitude | Duration |
 | --- | --- | --- | --- |
 | ready | entering an empty slot that takes the held prop | 0.15 | 15 ms |
-| click | a trigger pull refused (the muzzle against the level) | 0.25 | 10 ms |
+| click | a trigger pull refused (the muzzle against the level) or dry (nothing chambered) | 0.25 | 10 ms |
 | release | letting go (thrown or dropped) | 0.3 | 20 ms |
 | grab | taking a prop, free or from the other hand | 0.45 | 30 ms |
 | unstow | taking a prop out of a slot | 0.55 | 40 ms |
@@ -203,9 +205,10 @@ whether the slots can be found without looking.
 
 ## 3. Armory
 
-A bench with a pistol on it and a rifle racked beside it, the grab table's
-wall at its left end, and three targets on a backstop 5.5 m down range, with
-a scoreboard. The holsters are worn here too, and take the pistol.
+A bench with a pistol on it, a rifle racked beside it and four spare
+magazines, the grab table's wall at its left end, and three targets on a
+backstop 5.5 m down range, with a scoreboard. The holsters are worn here too,
+and take the pistol; the pouch takes a magazine.
 
 ### The pistol
 
@@ -238,12 +241,12 @@ a scoreboard. The holsters are worn here too, and take the pistol.
 - **Recoil.** Visual only: the drawn pistol kicks up 8° and back 2 cm about
   the grip, easing out over 0.12 s. The body, the muzzle check and the next
   shot use the accepted pose, so it never moves the aim.
-- **Ammo.** Infinite. `Gun.canFire` and `Gun.onFired` are where a magazine
-  plugs in.
+- **Ammo.** Finite: see [Ammunition](#ammunition).
 
 `GET /state` shows `gun`: its `holder`, `trigger` (`pulled`, `armed`),
-`kick`, `fired`, `refused`, the `last` shot (`from`, `dir`, `impact`) and
-the target `hits`. `npm run test:vr-lab` runs `e2e/vr-lab-armory.mjs`.
+`kick`, `ammo`, `fired`, `refused`, `dry`, the `last` shot (`from`, `dir`,
+`impact`) and the target `hits`. `npm run test:vr-lab` runs
+`e2e/vr-lab-armory.mjs`.
 
 Worn checks still open: whether the pistol sits naturally in the hand (the
 barrel along the grip pose's -Z), whether shots land where the sights look,
@@ -305,3 +308,44 @@ Worn checks still open: two-hand grip comfort and stock-less aim stability,
 where the slide and the 12 cm break land, whether the hand-off and retake feel
 natural, the 10 Hz auto rate, the hand-view A/B with both hands blocked, and
 the settle back to one hand after a support lets go.
+
+### Ammunition
+
+Rounds are plain data (`ammo.fun`): a magazine is `{kind, rounds, capacity}`,
+a gun's ammo `{well, mag, chambered}`. Nothing makes or loses a round: at
+every step, the rounds in every magazine (free, held, pouched, in a well) and
+chamber, plus the shots fired, are what the station was reset with.
+
+- **Loaded.** The pistol starts 12+1, the rifle 30+1 (`Ammo.capacity`).
+- **Fire.** A shot needs a chambered round (`Gun.canFire`); it spends it and
+  feeds the next from the magazine (`Ammo.fire`, via `Gun.onFired`). Nothing
+  chambered, the pull clicks dry: a click pulse, no shot, the trigger
+  disarmed (so full-auto stops exactly at empty, one click a pull), and the
+  readout flashes red for 0.3 s. The last round leaves the chamber empty: no
+  slide lock.
+- **Readout.** Each gun shows its magazine's rounds + the chambered round on
+  its back (`12+1`; `--+1` with the magazine out): the pistol on the slide's
+  back face, the rifle on the receiver ahead of the rear sight, tipped toward
+  the eye.
+- **Magazine release.** The thumbstick pushed down on a gun's trigger hand
+  (a fresh push past -0.7, released past -0.3), or `M`: the magazine drops out
+  below the well (`Gun.dropOf`, clear of the gun's collider; if the level is
+  in the way, e.g. the gun held low over the bench, it stays in) as a free prop
+  with its rounds, its count on its back. It is held, thrown, and put in the
+  pouch like any prop; the chambered round stays in the gun and fires.
+- **Spares.** Two pistol and two rifle magazines, full, stand in cradles on
+  the bench's left (`Slots.cradle`: like the rifle rack, a slot whose prop has
+  no body, so resting spares cost no physics). A cradle takes back any
+  magazine of its kind.
+- **Reload.** Not yet: a magazine doesn't go back in a gun, and nothing
+  racks. `Ammo.insert` (refused for another kind or an occupied well) and
+  `Ammo.rack` (chambers from the magazine; a round already chambered comes out
+  loose) are the pure halves, checked headlessly. Until then, resetting the
+  station (`3`, or the cycle button) refills everything.
+
+`GET /state` shows each gun's `ammo` and each magazine prop's `mag`.
+`npm run test:vr-lab` runs `e2e/vr-lab-ammo.mjs`.
+
+Worn checks still open: reaching the thumbstick down on the trigger hand
+without shifting the grip, the readouts' legibility at arm's length, whether
+the dry click reads as a dry pull, and finding the pouch with a magazine.

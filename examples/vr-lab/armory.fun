@@ -45,8 +45,9 @@ let pull = hand(onGrip, 1.0, 1.0)
 let ease = hand(onGrip, 1.0, 0.0)
 
 expect Game.isHeld(last(play(take)), Props.Pistol)
-// The pistol and the rifle are at the armory, and the holsters are worn.
-expect List.length(start.props) == 2.0 && Stations.worn(Stations.armory)
+// The pistol, the rifle and four spare magazines are at the armory, and the
+// holsters are worn.
+expect List.length(start.props) == 6.0 && Stations.worn(Stations.armory)
 
 // --- the trigger ---
 
@@ -382,4 +383,110 @@ expect (
   let ms = play2(ready, [(hand(foreOf(onStock, 0.25, 0.0, 0.0), 0.0, 0.0), hand(onStock, 0.0, 0.0))]) in
   rifle(last(ms)).slot == Option.Some(Slots.rack.id)
     && pulsesOf(List.drop(1.0, ms)) == [(Hold.Right, Pulses.Stow), (Hold.Left, Pulses.Release)]
+)
+
+// --- ammunition ---
+
+let initialRounds = Game.unspent(start)
+/// Every model keeps the station's rounds: unspent plus both guns' shots.
+let conserved = (ms: List<Game.Model>): bool => ms |> List.all((m) => Game.unspent(m) + m.gun.fired + m.rifle.fired == initialRounds)
+expect initialRounds == 13.0 + 31.0 + 2.0 * 12.0 + 2.0 * 30.0
+
+/// `n` pulls of the pistol's trigger, each let out.
+let pulls = (n: float) => List.range(n) |> List.concatMap((_) => [pull, ease])
+
+// Loaded 12+1: thirteen pulls fire thirteen; the fourteenth clicks dry (a
+// click pulse, no shot, no kick), leaving 0+0.
+let emptied = play(List.flatten([take, pulls(14.0)]))
+expect (
+  let m = last(emptied) in
+  m.gun.fired == 13.0 && m.gun.dry == 1.0 && count(Pulses.Fire, emptied) == 13.0 && count(Pulses.Click, emptied) == 1.0
+    && Ammo.roundsIn(m.gun.ammo.mag) == 0.0 && Option.isSome(m.gun.ammo.mag) && not m.gun.ammo.chambered && m.gun.kick < 1.0
+    && conserved(emptied)
+)
+// Full-auto on a full magazine: exactly 31 shots, then it stops with one
+// dry click (not one at its rate); let out and pulled again, another.
+expect (
+  let ms = holding(auto(ready), 200.0) in
+  let m = last(ms) in
+  m.rifle.fired == 31.0 && m.rifle.dry == 1.0 && countOf(Hold.Right, Pulses.Fire, ms) == 31.0 && countOf(Hold.Right, Pulses.Click, ms) == 1.0
+    && Ammo.count(m.rifle.ammo) == 0.0 && conserved(ms)
+    && (last(play2(m, [(fore25, still), (fore25, hand(onStock, 1.0, 1.0))]))).rifle.dry == 2.0
+)
+
+/// A step through `sampledInput` (keys pressed, the two hands), then the step.
+let sampledIn = (world: Game.World, m: Game.Model, keys: List<Key.t>, l: Input.controller, r: Input.controller): Game.Model =>
+  let xr = { head: Option.Some(Hips.headAt(0.0, 0.0)), left: l, right: r } in
+  let (next, _) = Game.step(Game.sampledInput(m, Game.snapshotOf(keys, Option.Some(xr))), Stations.armory, world, (p) => p, 0.0, dt) in
+  next
+let sampled = (m: Game.Model, keys: List<Key.t>, l: Input.controller, r: Input.controller): Game.Model => sampledIn(Game.noWorld, m, keys, l, r)
+let stickDown = (c: Input.controller): Input.controller => { c with thumbstick: { x: 0.0, y: -1.0 } }
+let dropped = (m: Game.Model) => Game.propOf(m, Props.Mag(Ammo.PistolMag, List.length(Stations.spares) + 1.0))
+
+// Three shots, then the thumbstick down on the pistol's hand: its magazine
+// (9) drops out below it as a new prop; the chambered round stays.
+let fired3 = last(play(List.flatten([take, pulls(3.0)])))
+let ejected = sampled(fired3, [], Game.away, stickDown(ease))
+expect (
+  let mag = dropped(ejected) in
+  mag.mag == Option.Some({ kind: Ammo.PistolMag, rounds: 9.0, capacity: 12.0 }) && Option.isNone(ejected.gun.ammo.mag) && ejected.gun.ammo.chambered
+    && List.length(ejected.props) == 7.0 && Option.isNone(mag.held) && Option.isNone(mag.slot)
+    && mag.at.position.y < (Game.poseOf(pistol(ejected))).position.y - 0.1 && conserved([fired3, ejected])
+)
+// M drops it too; the other hand's stick doesn't, nor M with no gun held.
+expect Option.isNone((sampled(fired3, [Key.M], Game.away, ease)).gun.ammo.mag)
+expect Option.isSome((sampled(fired3, [], stickDown(Game.away), ease)).gun.ammo.mag)
+expect List.length((sampled(start, [Key.M], Game.away, Game.away)).props) == 6.0
+// Its way out blocked by the level (the pistol resting on the bench): it
+// stays in, and nothing drops.
+expect (
+  let floored = { Game.noWorld with sweep: (k: Props.Kind, a: Input.pose, b: Input.pose) =>
+    match k with
+    | Props.Mag(_, _) => Option.Some({ fraction: 0.0, normal: Quat.v3(0.0, 1.0, 0.0) })
+    | _ => Option.None } in
+  let m = sampledIn(floored, fired3, [], Game.away, stickDown(ease)) in
+  Option.isSome(m.gun.ammo.mag) && List.length(m.props) == 6.0 && m.nextMag == fired3.nextMag && conserved([m])
+)
+// The rifle's, by M, held in two hands: 30 rounds out, one chambered.
+expect (
+  let m = sampled(ready, [Key.M], fore25, still) in
+  let mag = Game.propOf(m, Props.Mag(Ammo.RifleMag, List.length(Stations.spares) + 1.0)) in
+  Ammo.roundsIn(mag.mag) == 30.0 && Option.isNone(m.rifle.ammo.mag) && m.rifle.ammo.chambered && conserved([m])
+)
+// With the magazine out, the chambered round still fires once; then dry.
+expect (
+  let ms = playIn(Game.noWorld, ejected, pulls(2.0)) in
+  (last(ms)).gun.fired == 4.0 && (last(ms)).gun.dry == 1.0 && conserved(ms)
+)
+// The left hand takes the dropped magazine, puts it in the pouch and takes it
+// back out: the same 9 rounds throughout.
+let magAt = (dropped(ejected)).pose.position
+let pouched = playBoth(Game.noWorld, ejected, List.flatten([
+  [(Game.hand(magAt, 0.0), ease), (Game.hand(magAt, 1.0), ease)],
+  both(10.0, Game.hand(Inventory.pouch, 1.0), ease),
+  [(Game.hand(Inventory.pouch, 0.0), ease)],
+]))
+let retrieved = playBoth(Game.noWorld, last(pouched), [(Game.hand(Inventory.pouch, 0.0), ease), (Game.hand(Inventory.pouch, 1.0), ease)])
+expect (
+  let nine = (m: Game.Model) => Ammo.roundsIn((dropped(m)).mag) == 9.0 in
+  (List.nth(2.0, pouched) |> Option.map((m) => Option.isSome((dropped(m)).held)) |> Option.defaultValue(false))
+    && (dropped(last(pouched))).slot == Option.Some(Slots.pouch.id)
+    && ((dropped(last(retrieved))).held |> Option.map((h) => h.side == Hold.Left) |> Option.defaultValue(false))
+    && Option.isNone((dropped(last(retrieved))).slot)
+    && (pouched |> List.all(nine)) && (retrieved |> List.all(nine)) && conserved(List.append(pouched, retrieved))
+)
+// A spare taken out of its cradle (an unstow), and put back: in its cradle,
+// bodiless, still full. A pistol magazine doesn't go in a rifle cradle.
+expect (
+  let spare = Props.Mag(Ammo.PistolMag, 1.0) in
+  let at = (Stations.spawn(spare)).position in
+  let rifleCradle = (Stations.spawn(Props.Mag(Ammo.RifleMag, 3.0))).position in
+  let taken = playBoth(Game.noWorld, start, [(Game.hand(at, 0.0), Game.away), (Game.hand(at, 1.0), Game.away)]) in
+  let back = playBoth(Game.noWorld, last(taken), [(Game.hand(at, 0.0), Game.away)]) in
+  let moved = playBoth(Game.noWorld, last(taken), [(Game.hand(rifleCradle, 1.0), Game.away), (Game.hand(rifleCradle, 0.0), Game.away)]) in
+  (start.props |> List.all((p) => Option.isNone(p.mag) || Option.isSome(p.slot)))
+    && (Game.propOf(last(taken), spare).held |> Option.map((h) => h.side == Hold.Left) |> Option.defaultValue(false))
+    && countOf(Hold.Left, Pulses.Unstow, taken) == 1.0
+    && Game.propOf(last(back), spare).slot == Option.Some(Slots.rack.id + 1.0) && Ammo.roundsIn(Game.propOf(last(back), spare).mag) == 12.0
+    && Option.isNone(Game.propOf(last(moved), spare).slot) && not Game.isHeld(last(moved), spare)
 )

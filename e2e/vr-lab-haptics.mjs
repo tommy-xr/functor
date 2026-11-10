@@ -23,7 +23,10 @@
 //      stop, the refused pull's click in the trigger hand, a fire clear of
 //      it; rifle-break: the support's break; rifle-handoff: silent handed on,
 //      the retake's grab, the support's release.
-//   8. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
+//   8. Ammunition: ammo-pistol, a fire for each of 13 rounds, then the dry
+//      pull's click; ammo-rifle, every full-auto shot in both hands, then a
+//      click in the trigger hand alone for each dry pull.
+//   9. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
 //      pulse. A fixture replayed through `/input` is a live run: the recorded
 //      grab-throw pulses exactly the live run's events.
 //
@@ -144,6 +147,18 @@ await run("rifle: semi and full-auto", async (rt) => {
   const shot = ["left fire", "right fire"];
   expectPulses(got, ["right unstow", "left grab", ...shot, ...Array(5).fill(shot).flat()]);
   check(got.pulses[2]?.frame === got.marks.semiHeld.frame - 29, `semi: one shot, on the pull (frame ${got.pulses[2]?.frame})`);
+});
+
+await run("ammo: the pistol emptied, then dry", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["ammo-pistol"]);
+  expectPulses(got, ["right grab", ...Array(13).fill("right fire"), "right click"]);
+  check(got.pulses.at(-1)?.frame === got.marks.dry.frame, `the click on the dry pull (frame ${got.pulses.at(-1)?.frame})`);
+});
+
+await run("ammo: the rifle on full-auto to empty", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["ammo-rifle"]);
+  expectPulses(got, ["right unstow", "left grab", ...Array(31).fill(["left fire", "right fire"]).flat(), "right click", "right click"]);
+  check(got.pulses.at(-1)?.frame === got.marks.dryAgain.frame, `the second click on the next pull (frame ${got.pulses.at(-1)?.frame})`);
 });
 
 await run("rifle: barrel into the wall", async (rt) => {

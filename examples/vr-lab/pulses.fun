@@ -19,7 +19,8 @@ type Event =
   | Break
   // Its pistol fired.
   | Fire
-  // Its pistol's trigger was pulled but the shot refused (the muzzle against the level).
+  // Its gun's trigger was pulled but nothing fired (the muzzle against the
+  // level, or nothing chambered).
   | Click
 
 /// One buzz: how hard (0..1) and how long.

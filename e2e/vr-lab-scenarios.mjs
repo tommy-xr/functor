@@ -670,6 +670,182 @@ const rifleScenarios = {
   },
 };
 
+// --- Armory: ammunition (station 3) ---
+// The pistol starts 12+1, the rifle 30+1 (`Ammo`). The thumbstick pushed
+// down on a gun's hand (`stick: [0, -1]`) drops its magazine below the well
+// (`Gun.dropOf`): for a level pistol, 13.24 cm below the hand and 4.5 cm
+// behind it. The pouch is on the belt (`slotAt("pouch")`).
+
+export const CAPACITY = { pistol: 12, rifle: 30 };
+export const PISTOL_ROUNDS = CAPACITY.pistol + 1;
+export const RIFLE_ROUNDS = CAPACITY.rifle + 1;
+export const SPARES = { pistol: 2, rifle: 2 };
+// Fire `n` pulls of the right trigger, each let out over 4 steps; the last
+// pull marked `mark`.
+const pulls = (n, mark) =>
+  Array.from({ length: n }, (_, i) => [
+    { frames: 1, right: { trigger: 1 }, ...(i === n - 1 && mark ? { mark } : {}) },
+    { frames: 4, right: { trigger: 0 } },
+  ]).flat();
+// Over the bench, level: the magazine drops onto it below the hand.
+export const OVER_BENCH = [0.0, 1.2, -0.6];
+export const MAG_DROP = add(OVER_BENCH, [0, -0.1324, 0.045]);
+// Lower, the magazine would drop into the bench.
+const LOW_OVER_BENCH = [0.0, 1.0, -0.6];
+// Where the dropped magazine comes to rest (on its base, the bench top 0.9),
+// and where a hand takes it: by its top, clear of its count.
+const MAG_REST = [MAG_DROP[0], 0.95, MAG_DROP[2]];
+const MAG_TOP = add(MAG_REST, [0, 0.065, 0]);
+const POUCH = slotAt("pouch");
+
+// (Armory rig (x, y, z) is world (4 - z, y, x).) Close behind the aimed
+// pistol's slide: its readout.
+const atSlide = { eye: [3.95, 1.5, 0.35], target: [4.4, 1.3, 0.2], fov: 30 };
+// The same, over the bench.
+const atBenchSlide = { eye: [4.15, 1.4, 0.15], target: [4.55, 1.22, 0.0], fov: 32 };
+// Behind and left of the bench: the dropped magazine and the spares.
+const atSpares = { eye: [3.95, 1.45, -0.6], target: [4.5, 0.95, -0.15], fov: 40 };
+// From ahead and right, at the belt: the pouch (a controller's body runs
+// back from its grip, so a camera behind a hand sees the controller).
+const atPouch = { eye: [4.65, 1.2, 0.35], target: [4.06, 0.95, 0.0], fov: 34 };
+// From ahead and left, at the left hand held out.
+const atLeftHand = { eye: [4.95, 1.35, -0.45], target: [4.4, 1.12, -0.2], fov: 34 };
+
+// Close behind the raised rifle's receiver: its readout, the targets beyond.
+const atReceiver = { eye: [4.0, 1.5, 0.32], target: [4.45, 1.36, 0.18], fov: 28 };
+
+// Shared runs. The pistol aimed at the right target, settled `settle` steps.
+const aimPistol = (settle) => [
+  { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
+  { frames: settle, right: {}, mark: "aimed" },
+];
+// Level over the bench, the thumbstick pushed down: the magazine drops.
+const dropOverBench = (fall) => [
+  { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] }, spectator: atSpares },
+  { frames: 5, right: {}, mark: "overBench" },
+  { frames: 1, right: { stick: [0, -1] }, mark: "ejected" },
+  { frames: fall, right: { stick: [0, 0] }, mark: "landed" },
+];
+// The right hand aside; the left takes the dropped magazine by its top,
+// puts it in the pouch and takes it back.
+const pouchTheMag = [
+  { frames: 20, right: { to: [0.25, 1.2, -0.3] }, spectator: atSpares },
+  { frames: 20, left: { to: add(MAG_TOP, [0, 0.1, 0]) } },
+  { frames: 10, left: { to: MAG_TOP }, mark: "reachedMag" },
+  { frames: 4, left: { squeeze: 1 }, mark: "tookMag" },
+  { frames: 20, left: { to: add(MAG_REST, [0, 0.2, 0.15]) }, mark: "lifted" },
+  { frames: 30, left: { to: POUCH }, mark: "atPouch", spectator: atPouch },
+  { frames: 1, left: { squeeze: 0 }, mark: "pouched" },
+  { frames: 20, left: {} },
+  { frames: 4, left: { squeeze: 1 }, mark: "retrieved" },
+];
+// The rifle in two hands, raised, aimed at the middle target, switched to full-auto.
+const autoRifle = (view = {}) => [
+  { ...takeRifle[0], ...(view.take ? { spectator: view.take } : {}) },
+  ...takeRifle.slice(1),
+  raise(),
+  { frames: 20, left: { to: at(TARGETS[1]) }, ...(view.aim ? { spectator: view.aim } : {}) },
+  { frames: 10, left: {}, mark: "aimed" },
+  { frames: 1, right: { primary: true }, mark: "auto" },
+  { frames: 3, right: { primary: false } },
+];
+
+const ammoScenarios = {
+  // Aimed at the right target: thirteen pulls, thirteen hits; the fourteenth
+  // clicks dry.
+  "ammo-pistol": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...takePistol,
+      ...aimPistol(6),
+      ...pulls(PISTOL_ROUNDS, "lastShot"),
+      { frames: 1, right: { trigger: 1 }, mark: "dry" },
+      { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // Two hands, full-auto, the trigger held 200 steps: 31 shots, then a dry
+  // click. Let out and pulled again: another.
+  "ammo-rifle": {
+    station: 3,
+    neck: NECK,
+    spectator: behindRifle,
+    steps: [
+      ...autoRifle(),
+      { frames: 200, right: { trigger: 1 }, mark: "held" },
+      { frames: 6, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 }, mark: "dryAgain" },
+      { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // Three shots, then over the bench the thumbstick drops the magazine (9)
+  // onto it. The left hand takes it, puts it in the pouch and takes it back
+  // out. The chambered round still fires; then dry.
+  "ammo-mag": {
+    station: 3,
+    neck: NECK,
+    spectator: atSpares,
+    steps: [
+      ...takePistol,
+      ...aimPistol(4),
+      ...pulls(3, "fired3"),
+      // Low over the bench, the magazine has no room to drop: it stays in.
+      { frames: 25, right: { to: LOW_OVER_BENCH, turn: [0, 0, 0, 1] } },
+      { frames: 5, right: {} },
+      { frames: 1, right: { stick: [0, -1] }, mark: "lowPush" },
+      { frames: 5, right: { stick: [0, 0] } },
+      ...dropOverBench(40),
+      ...pouchTheMag,
+      { frames: 30, left: { to: [-0.15, 1.15, -0.35] }, mark: "out" },
+      ...aimPistol(4).map((seg) => ({ ...seg, spectator: behindGun })),
+      { frames: 1, right: { trigger: 1 }, mark: "lastRound" },
+      { frames: 4, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 }, mark: "dry" },
+      { frames: 6, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // The demo: the pistol counting down (12+1 to 8+1), its magazine dropped
+  // over the bench (8 on it), the chambered round fired (--+0) and a dry
+  // click (the readout red); the left hand takes the magazine, pouches it,
+  // takes it back (still 8) and sets it down; the pistol holstered. Then the
+  // rifle on full-auto to empty (30+1 to 0+0), and a dry click.
+  "ammo-tour": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...takePistol,
+      ...aimPistol(10).map((seg, i) => (i === 1 ? { ...seg, spectator: atSlide } : seg)),
+      ...pulls(4).map((seg) => (seg.frames === 4 ? { ...seg, frames: 12 } : seg)),
+      ...dropOverBench(30),
+      { frames: 1, right: { trigger: 1 }, spectator: atBenchSlide },
+      { frames: 14, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 }, mark: "dry" },
+      { frames: 14, right: { trigger: 0 } },
+      ...pouchTheMag,
+      { frames: 30, left: { to: [-0.2, 1.15, -0.4] }, spectator: atLeftHand },
+      { frames: 20, left: {} },
+      { frames: 20, left: { to: [-0.3, 1.03, -0.55] }, spectator: atSpares },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 15, left: { to: LEFT_OUT } },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1] }, spectator: atArmoryHip },
+      { frames: 25, right: { to: ARMORY_RH } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 10, right: {} },
+      ...autoRifle({ take: behindRifle, aim: atReceiver }),
+      { frames: 120, right: { trigger: 1 } },
+      { frames: 80, right: { trigger: 1 }, spectator: behindRifle, mark: "emptied" },
+      { frames: 10, right: { trigger: 0 }, spectator: atReceiver },
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 20, right: { trigger: 0 } },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -918,4 +1094,5 @@ export const scenarios = {
   },
   ...armoryScenarios,
   ...rifleScenarios,
+  ...ammoScenarios,
 };
