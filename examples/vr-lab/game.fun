@@ -1517,11 +1517,12 @@ let bodyScene = (m: Model, st: Stations.Station): Scene.t =>
 let leftGlove = Color.rgb(0.2, 0.85, 1.0)
 let rightGlove = Color.rgb(1.0, 0.3, 0.7)
 
+/// A hand's glove colour.
 let gloveColor = (side: Hold.Side): Color.t => if side == Hold.Left then leftGlove else rightGlove
 
-// A hand's glove's two parts, in its grip's frame (`Scene.memo`'s builders:
-// each rebuilt only when what it shows changes): the palm and thumb, and
-// the fingers at their drawn levels.
+/// A hand's glove's two parts, in its grip's frame (`Scene.memo`'s builders:
+/// each rebuilt only when what it shows changes): the palm and thumb, and
+/// the fingers at their drawn levels.
 let palmOf = (shown: (Hold.Side, Hand.Thumb)): Scene.t =>
   let (side, thumb) = shown in
   Hand.palmAndThumb(gloveColor(side), side, thumb)

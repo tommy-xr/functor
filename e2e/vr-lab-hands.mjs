@@ -11,7 +11,7 @@
 //   1. Both hands turned palms down: every cap and cylinder sits, turned and
 //      sized, where forward kinematics puts it for the injected grips (the
 //      skeleton below, computed independently of the game; the fingers at
-//      their drawn 1/32 curl levels), within 0.1 mm, open, squeezed, the
+//      their drawn 1/64 curl levels), within 0.1 mm, open, squeezed, the
 //      trigger pulled and let out.
 //   2. The squeeze curls the middle, ring and little fingers and not the
 //      index; the trigger curls the index and nothing else.
@@ -101,8 +101,8 @@ const ORDER = [...PALM, ...CAPSULES.flatMap((_, i) => (PALM.includes(i) ? [] : [
 const CAPS = [...PALM.filter((i) => STARTS.includes(CAPSULES[i][0])).map((i) => ["start", i]), ...ORDER.map((i) => ["end", i])];
 const caps = (ends) => CAPS.map(([end, i]) => ends[i][end === "start" ? 0 : 1]);
 const capOf = (end, i) => CAPS.findIndex(([e, j]) => e === end && j === i);
-// The fingers are drawn curled to the nearest 1/32 (`Hand.levels`).
-const drawnPose = (pose) => ({ ...pose, curls: pose.curls.map((c) => Math.round(Math.min(1, Math.max(0, c)) * 32) / 32) });
+// The fingers are drawn curled to the nearest 1/64 (`Hand.levels`).
+const drawnPose = (pose) => ({ ...pose, curls: pose.curls.map((c) => Math.round(Math.min(1, Math.max(0, c)) * 64) / 64) });
 
 // --- reading the glove from `/scene` ---
 const IDENTITY = JSON.stringify([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);

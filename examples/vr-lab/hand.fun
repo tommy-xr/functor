@@ -245,7 +245,7 @@ let ends = (posed: Posed, c: Capsule): (Input.point3, Input.point3) =>
 // --- drawing the glove ---
 // The glove is drawn in two parts, each one instanced draw of its capsules'
 // caps and one of their cylinders: the palm and thumb, posed as given; and
-// the four fingers, each curled to the nearest 1/32 (`drawLevels`) and read
+// the four fingers, each curled to the nearest 1/64 (`drawLevels`) and read
 // from a table built at load, so a finger moving every step (a trigger
 // pulled) costs no forward kinematics. Each is a subtree for `Scene.atPose`
 // at the grip (whose local +Z is the grip's -Z, and +X the grip's -X).
@@ -287,11 +287,12 @@ let fingerCaps = [6.0, 11.0, 16.0, 21.0] |> List.map((first) => capsules |> List
 let palmAndThumb = (c: Color.t, side: Hold.Side, t: Thumb): Scene.t =>
   partScene(c, partOf(local(side, { flat with thumb: t }), capsules |> List.filter(inPalm)))
 
-let drawLevels = 32.0
+// A level's step moves a straight finger's tip about 3 mm.
+let drawLevels = 64.0
 let level = (curl: float): float => Math.round(Math.clamp01(curl) * drawLevels)
 
 /// The fingers' curl levels as drawn (index, middle, ring, little), each
-/// curl to the nearest 1/32.
+/// curl to the nearest 1/64.
 let levels = (f: FingerPose): (float, float, float, float) => (level(f.index), level(f.middle), level(f.ring), level(f.little))
 
 /// Each hand's finger parts at every level: per level, the four fingers' parts.
@@ -302,7 +303,7 @@ let fingerTable = (side: Hold.Side): List<List<Part>> =>
 let leftFingers = fingerTable(Hold.Left)
 let rightFingers = fingerTable(Hold.Right)
 
-expect levels(power) == (22.0, 24.0, 23.0, 19.0) && levels(fist) == (32.0, 32.0, 32.0, 32.0) && levels({ flat with index: 0.0 - 1.0 }) == (0.0, 0.0, 0.0, 0.0)
+expect levels(power) == (45.0, 48.0, 46.0, 38.0) && levels(fist) == (64.0, 64.0, 64.0, 64.0) && levels({ flat with index: 0.0 - 1.0 }) == (0.0, 0.0, 0.0, 0.0)
 
 /// The fingers' part, painted `c`, each finger at its level (`levels`).
 let fingersAt = (c: Color.t, side: Hold.Side, at: (float, float, float, float)): Scene.t =>
