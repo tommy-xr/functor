@@ -1,0 +1,35 @@
+//! JSON text as a value: parse it, then `match` on it or read what you
+//! expect with `field` and the `as*` readers.
+//!
+//! ```
+//! // 12.0 for `{"frames": 12}`; 0.0 for anything else.
+//! let frames = (text) =>
+//!   match Json.parse(text) with
+//!   | Result.Ok(json) =>
+//!     json |> Json.field("frames") |> Option.bind(Json.asNumber) |> Option.defaultValue(0.0)
+//!   | Result.Error(_) => 0.0
+//! ```
+
+/// A JSON value. An object's fields are in no particular order.
+type t =
+  | Null
+  | Bool(value: bool)
+  | Number(value: float)
+  | String(value: string)
+  | Array(items: List<t>)
+  | Object(fields: List<(string, t)>)
+
+/// The value `text` holds, or why it isn't JSON (`expected value at line 1
+/// column 1`).
+let parse : (string) => Result.t<t, string>
+/// The field `name` of an object; `Option.None` if it has none or `json`
+/// isn't an object. The JSON is last, for piping.
+let field : (string, t) => Option.t<t>
+/// The number, if `json` is one.
+let asNumber : (t) => Option.t<float>
+/// The text, if `json` is a string.
+let asString : (t) => Option.t<string>
+/// The bool, if `json` is one.
+let asBool : (t) => Option.t<bool>
+/// The items, if `json` is an array.
+let asList : (t) => Option.t<List<t>>

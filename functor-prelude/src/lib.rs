@@ -101,6 +101,7 @@ pub fn modules() -> Vec<(String, String)> {
         module("Typeface", include_str!("../prelude/typeface.funi")),
         module("Bytes", include_str!("../prelude/bytes.funi")),
         module("Binary", include_str!("../prelude/binary.funi")),
+        module("Json", include_str!("../prelude/json.funi")),
         module("File", include_str!("../prelude/file.funi")),
         module("Job", include_str!("../prelude/job.funi")),
         module("Path", include_str!("../prelude/path.funi")),

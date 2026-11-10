@@ -681,3 +681,19 @@ fn redeclaring_a_prelude_suffix_is_an_error() {
         "{diags:?}"
     );
 }
+
+/// `Json.t` is an ordinary variant: a `match` on it checks, and a wrong
+/// payload type is a check error.
+#[test]
+fn json_values_typecheck() {
+    let diags = check(
+        "let frames = (text: string): float =>\n\
+           match Json.parse(text) with\n\
+           | Result.Ok(json) =>\n\
+             json |> Json.field(\"frames\") |> Option.bind(Json.asNumber) |> Option.defaultValue(0.0)\n\
+           | Result.Error(_) => 0.0",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+    let diags = check("let a : Json.t = Json.Number(\"1\")");
+    assert!(!diags.is_empty(), "Json.Number(string) must be a check error");
+}

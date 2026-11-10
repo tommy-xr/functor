@@ -219,6 +219,7 @@ pub mod nav;
 pub mod lightmap;
 pub mod mesh;
 pub mod model;
+mod json;
 pub mod path;
 pub mod solid;
 mod sprite;
@@ -1864,6 +1865,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         bytes::register(&mut reg);
         job::register(&mut reg);
         path::register(&mut reg);
+        json::register(&mut reg);
         mesh::register(&mut reg);
         cells::register(&mut reg);
         nav::register(&mut reg);
@@ -7981,7 +7983,7 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
     /// Evaluate a `main` under the prelude WITH the engine's `.funi`
     /// interfaces linked, so unit suffixes and their operators resolve —
     /// `eval` above lowers one bare source, where no `unit` is declared.
-    fn eval_with_prelude(src: &str) -> Result<Value, String> {
+    pub(super) fn eval_with_prelude(src: &str) -> Result<Value, String> {
         eval_with_prelude_impl(src, true)
     }
 
