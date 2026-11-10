@@ -93,9 +93,10 @@ export async function launch(project, port, extra = []) {
   };
   try {
     const deadline = Date.now() + 60000;
+    let frame = 0;
     for (;;) {
       try {
-        if ((await rt.get("/state")).frame > 0) break;
+        if ((frame = (await rt.get("/state")).frame) > 0) break;
       } catch {
         // not listening yet
       }
@@ -103,7 +104,9 @@ export async function launch(project, port, extra = []) {
       if (Date.now() > deadline) throw new Error(`runtime never reported a frame:\n${log}`);
       await sleep(100);
     }
-    rt.dt = (await rt.get("/input-log?from=0")).steps[0].dts;
+    const [live] = (await rt.get(`/input-log?from=${frame}`)).steps;
+    if (!live) throw new Error(`no step ${frame} in the input log to read the fixed step from`);
+    rt.dt = live.dts;
     await rt.post("/time", { type: "set", tts: 0.0 });
   } catch (e) {
     await rt.kill();

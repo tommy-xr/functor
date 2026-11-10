@@ -3,7 +3,7 @@
 //!
 //! The effect drain offers each pulse here; the shell takes them once per
 //! frame: with the snapshot ([`crate::sim_driver::SimSnapshot`]) on desktop
-//! and Quest, through [`take_unactuated`] on web. Between two
+//! and Quest, discarding them on web (no controller). Between two
 //! takes a hand keeps one pulse: the strongest, ties going to the longer, and
 //! the rest count as dropped. A dry run (fork, ghost) offers nothing, and a
 //! seek or rewind restores frames without re-running their effects, so
@@ -159,12 +159,6 @@ pub fn record(taken: &HapticFrame, frame: u64, mut perform: impl FnMut(&HapticPu
     }
 }
 
-/// Take the frame's pulses and count each as `sent`, for a shell with no
-/// actuator that takes no snapshot (web); `frame` is `GET /state`'s `frame`.
-pub fn take_unactuated(frame: u64) {
-    record(&take(), frame, |_| true);
-}
-
 /// The counts so far (see [`HapticCounts`]).
 pub fn counts() -> HapticCounts {
     COUNTS.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -211,18 +205,15 @@ mod tests {
     }
 
     #[test]
-    fn take_unactuated_drains_the_queue_and_counts_it_sent() {
+    fn take_drains_the_queue() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = take();
-        let before = counts();
         offer(pulse(Hand::Right, 0.6, 0.03));
         offer(pulse(Hand::Right, 0.2, 0.03));
-        take_unactuated(4);
-        assert!(take().is_empty(), "drained");
-        let after = counts();
-        assert_eq!(after.sent, before.sent + 1);
-        assert_eq!(after.dropped, before.dropped + 1, "the superseded one");
-        assert_eq!(after.recent.last().map(|r| r.frame), Some(4));
+        let taken = take();
+        assert_eq!(taken.right, Some(pulse(Hand::Right, 0.6, 0.03)));
+        assert_eq!(taken.superseded, 1);
+        assert!(take().is_empty(), "nothing left for the next frame");
     }
 
     #[test]

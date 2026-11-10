@@ -27,7 +27,8 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { launch, play } from "./xr-scenario.mjs";
+import { decode } from "./xr-fixture.mjs";
+import { launch, loadFixture, play } from "./xr-scenario.mjs";
 
 const [scenariosPath, name, out, ...rest] = process.argv.slice(2);
 if (!out) {
@@ -58,7 +59,9 @@ if (!scenario) {
 
 const frames = mkdtempSync(join(tmpdir(), "xr-demo-"));
 const rt = await launch(project, port, ["--hidden", "--capture-size", size]);
-const fps = String(1 / rt.dt / every);
+// A fixture steps at its recorded rate, a scripted scenario at the runtime's.
+const dt = scenario.fixture ? decode(loadFixture(scenario.fixture)).dt : rt.dt;
+const fps = String(Math.round(1 / dt) / every);
 let count = 0;
 let markFrame;
 let lastFrame;
