@@ -23,28 +23,15 @@
 //   node e2e/vr-lab-ammo.mjs
 import { check, failures } from "./mcp-rpc.mjs";
 import { fmt, len, play, record, session, some, sub, xyz } from "./xr-scenario.mjs";
-import { CAPACITY, MAG_DROP, PISTOL_ROUNDS, RIFLE_ROUNDS, SLOT, SPARES, TABLE, project, scenarios } from "./vr-lab-scenarios.mjs";
+import { MAG_DROP, RESET_ROUNDS, RIFLE_ROUNDS, SLOT, SPARES, TABLE, conserves, project, readout, roundsIn, scenarios, unspent } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8296;
 // The armory bench is the grab table's.
 const BENCH_TOP = TABLE.top;
-const RESET_ROUNDS = PISTOL_ROUNDS + RIFLE_ROUNDS + SPARES.pistol * CAPACITY.pistol + SPARES.rifle * CAPACITY.rifle;
-
 const run = (name, body) => session(name, project, PORT, body);
 
-const roundsIn = (mag) => some(mag)?.rounds ?? 0;
-const count = (ammo) => roundsIn(ammo.mag) + (ammo.chambered ? 1 : 0);
 const mags = (m) => m.props.filter((p) => p.kind.$ctor === "Props.Mag");
-const unspent = (m) => mags(m).reduce((n, p) => n + roundsIn(p.mag), 0) + count(m.gun.ammo) + count(m.rifle.ammo);
-const readout = (ammo) => `${some(ammo.mag) ? roundsIn(ammo.mag) : "--"}+${ammo.chambered ? 1 : 0}`;
 const pulsed = (m, event) => JSON.stringify(m.pulses).includes(`"Pulses.${event}"`);
-
-// Every recorded step keeps the station's rounds.
-function conserves(name, steps) {
-  const bad = steps.find((s) => unspent(s.state.model) + s.state.model.gun.fired + s.state.model.rifle.fired !== RESET_ROUNDS);
-  const m = bad?.state.model;
-  check(!bad, `${name}: every step (${steps.length}) conserves ${RESET_ROUNDS} rounds${bad ? ` — frame ${bad.state.frame}: ${unspent(m)} unspent + ${m.gun.fired + m.rifle.fired} fired` : ""}`);
-}
 
 await run("pistol: emptied, then dry", async (rt) => {
   const { steps, marks } = await record(rt, scenarios["ammo-pistol"]);

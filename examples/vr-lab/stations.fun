@@ -93,6 +93,8 @@ let spawn = (k: Props.Kind): Input.pose =>
   | Props.Rifle => rifleRack
   // The spares stand in a row on the bench's left, their counts to the player.
   | Props.Mag(_, id) => on(-0.51 + 0.09 * id, -0.5, Quat.identity)
+  // A loose round is placed where its rack threw it out (`Game`).
+  | Props.Round(_, _) => on(0.0, -0.5, Quat.identity)
 
 /// The spares' cradles, where they stand.
 let cradles: List<Slots.Placed> =

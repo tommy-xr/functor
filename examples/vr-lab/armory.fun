@@ -388,8 +388,9 @@ expect (
 // --- ammunition ---
 
 let initialRounds = Game.unspent(start)
-/// Every model keeps the station's rounds: unspent plus both guns' shots.
-let conserved = (ms: List<Game.Model>): bool => ms |> List.all((m) => Game.unspent(m) + m.gun.fired + m.rifle.fired == initialRounds)
+/// Every model keeps the station's rounds: unspent plus both guns' shots,
+/// plus the loose rounds taken away.
+let conserved = (ms: List<Game.Model>): bool => ms |> List.all((m) => Game.unspent(m) + m.gun.fired + m.rifle.fired + m.lost == initialRounds)
 expect initialRounds == 13.0 + 31.0 + 2.0 * 12.0 + 2.0 * 30.0
 
 /// `n` pulls of the pistol's trigger, each let out.
@@ -489,4 +490,253 @@ expect (
     && countOf(Hold.Left, Pulses.Unstow, taken) == 1.0
     && Game.propOf(last(back), spare).slot == Option.Some(Slots.rack.id + 1.0) && Ammo.roundsIn(Game.propOf(last(back), spare).mag) == 12.0
     && Option.isNone(Game.propOf(last(moved), spare).slot) && not Game.isHeld(last(moved), spare)
+)
+
+// --- reloading: the well, the slide, the lock ---
+
+// The pistol taken and raised 30 cm (clear of the bench), held level.
+let up = moved(onGrip, 0.0, 0.3, 0.0)
+let upHold = hand(up, 1.0, 0.0)
+let upPull = hand(up, 1.0, 1.0)
+let gunUp = Gun.heldAt(Gun.pistol, up)
+/// A pose `d` along the raised pistol's well (0 seated), and its mouth.
+let wellUp = (d: float): Input.pose => Seating.along(Gun.pistol, gunUp, d)
+let mouthUp = wellUp(0.0 - Gun.pistol.well.drop)
+/// `n` steps pushing up the well from its mouth, past home.
+let pushUp = (well: (float) => Input.pose, drop: float, other: Input.controller) =>
+  List.range(12.0) |> List.map((i) => (lefty(well(drop * ((i + 1.0) / 10.0 - 1.0)), 1.0), other))
+/// The left hand at `p` (a magazine taken by its centre is where the hand is, turned with it).
+let lefty = (p: Input.pose, squeeze: float): Input.controller => Game.turnedHand(p.position, p.orientation, squeeze)
+let turnedBy = (p: Input.pose, axis: Input.point3, deg: float): Input.pose => Hold.compose(p, Hold.at(Hold.zero, Quat.axisAngle(axis, Hips.degrees(deg))))
+let xAxis = Quat.v3(1.0, 0.0, 0.0)
+let upPulls = (n: float) => List.range(n) |> List.concatMap((_) => [(Game.away, upPull), (Game.away, upHold)])
+let latchOf = (m: Game.Model, k: Props.Kind) => Game.propOf(m, k).latch
+let present = (m: Game.Model, k: Props.Kind): bool => m.props |> List.any((p) => p.kind == k)
+let spare = Props.Mag(Ammo.PistolMag, 1.0)
+let spareAt = Stations.spawn(spare)
+let rounds = (m: Game.Model): List<Game.Prop> => m.props |> List.filter((p) => Game.isRound(p.kind))
+/// The left hand on the raised pistol's slide, `back` behind home.
+let onSlideUp = (back: float): Input.pose => Hold.compose(gunUp, Hold.at(Quat.add(Gun.pistol.rack.at, Quat.v3(0.0, 0.0, back)), Quat.identity))
+/// Take the slide where it rests (`rest` back), pull it `to` back, let go.
+let rackUp = (rest: float, to: float) => List.flatten([
+  [(lefty(onSlideUp(rest), 0.0), upHold), (lefty(onSlideUp(rest), 1.0), upHold)],
+  List.range(4.0) |> List.map((i) => (lefty(onSlideUp(rest + (to - rest) * (i + 1.0) / 4.0), 1.0), upHold)),
+  [(lefty(onSlideUp(to), 0.0), upHold)],
+])
+
+// Emptied: 13 shots, then a dry pull. The slide locked back on the empty
+// magazine, on the last shot, drawn back (`lockBack`).
+let emptiedUp = playBoth(Game.noWorld, start, List.flatten([take |> List.map((c) => (Game.away, c)), both(6.0, Game.away, upHold), upPulls(14.0)]))
+let lockedOpen = last(emptiedUp)
+expect (
+  lockedOpen.gun.fired == 13.0 && lockedOpen.gun.dry == 1.0 && lockedOpen.gun.ammo.locked
+    && Ammo.roundsIn(lockedOpen.gun.ammo.mag) == 0.0 && Option.isSome(lockedOpen.gun.ammo.mag)
+    && Gun.slideBack(Gun.pistol, lockedOpen.gun) == Gun.pistol.rack.lockBack && conserved(emptiedUp)
+    && (emptiedUp |> List.all((m) => not m.gun.ammo.locked || m.gun.fired == 13.0))
+)
+// The magazine released: it drops; still locked.
+let releasedMag = sampled(lockedOpen, [], Game.away, stickDown(upHold))
+expect Option.isNone(releasedMag.gun.ammo.mag) && releasedMag.gun.ammo.locked && List.length(releasedMag.props) == 7.0
+// A spare out of its cradle, in the left hand.
+let tookSpare = playBoth(Game.noWorld, releasedMag, [(lefty(spareAt, 0.0), upHold), (lefty(spareAt, 1.0), upHold)])
+expect (Game.propOf(last(tookSpare), spare).held |> Option.map((h) => h.side == Hold.Left) |> Option.defaultValue(false))
+
+// Brought to the mouth tipped 45° (dot 0.71): no latch. Lined up there: it
+// latches (a pulse). Pushed up the well over 10 steps: it seats (a pulse in
+// each hand), the magazine in the gun (12), still locked, nothing chambered.
+let misaligned = playBoth(Game.noWorld, last(tookSpare), both(10.0, lefty(turnedBy(mouthUp, xAxis, 45.0), 1.0), upHold))
+let aligned = playBoth(Game.noWorld, last(misaligned), [(lefty(mouthUp, 1.0), upHold)])
+let pushed = playBoth(Game.noWorld, last(aligned), pushUp(wellUp, Gun.pistol.well.drop, upHold))
+expect (misaligned |> List.all((m) => Option.isNone(latchOf(m, spare)))) && countOf(Hold.Left, Pulses.Latch, misaligned) == 0.0
+expect Option.isSome(latchOf(last(aligned), spare)) && countOf(Hold.Left, Pulses.Latch, aligned) == 1.0
+expect (
+  let m = last(pushed) in
+  not present(m, spare) && Ammo.roundsIn(m.gun.ammo.mag) == 12.0 && m.gun.ammo.locked && not m.gun.ammo.chambered
+    && countOf(Hold.Left, Pulses.Seat, pushed) == 1.0 && countOf(Hold.Right, Pulses.Seat, pushed) == 1.0
+    && countOf(Hold.Left, Pulses.Release, pushed) == 0.0 && countOf(Hold.Left, Pulses.Stow, pushed) == 0.0
+    && Option.isNone(Game.inHand(m, Hold.Left)) && conserved(List.flatten([tookSpare, misaligned, aligned, pushed]))
+)
+// Guided at the depth the hand pushes it to, on the axis, turned as the well is.
+expect (
+  let poses = List.append(pushed |> List.filter((m) => present(m, spare)), aligned) |> List.map((m) => Game.poseOf(Game.propOf(m, spare))) in
+  (List.zip(List.drop(1.0, poses), poses) |> List.all((ab) => let (a, b) = ab in Quat.length(Quat.sub(a.position, b.position)) <= Gun.pistol.well.drop / 10.0 + 0.000001))
+    && (List.nth(4.0, pushed) |> Option.map((m) => Hold.near(Game.poseOf(Game.propOf(m, spare)), wellUp(Gun.pistol.well.drop * (0.4 - 1.0)))) |> Option.defaultValue(false))
+)
+// A dry pull with the slide locked: a click, no shot.
+expect (let ms = playBoth(Game.noWorld, last(pushed), [(Game.away, upHold), (Game.away, upPull)]) in last(ms).gun.dry == 2.0 && last(ms).gun.fired == 13.0 && countOf(Hold.Right, Pulses.Click, ms) == 1.0)
+
+// Racked from locked: the left takes the slide where it rests back (a grab),
+// nudges it to the back (a pulse; nothing chambered, nothing thrown out),
+// lets go: home (a pulse in each hand), the lock released, chambered (11+1).
+let racked = playBoth(Game.noWorld, last(pushed), List.append([(Game.away, upHold)], rackUp(Gun.pistol.rack.lockBack, Gun.slideTravel)))
+expect (
+  let m = last(racked) in
+  not m.gun.ammo.locked && m.gun.ammo.chambered && Ammo.roundsIn(m.gun.ammo.mag) == 11.0 && List.isEmpty(rounds(m))
+    && countOf(Hold.Left, Pulses.Grab, racked) == 1.0 && countOf(Hold.Left, Pulses.SlideBack, racked) == 1.0
+    && countOf(Hold.Left, Pulses.SlideHome, racked) == 1.0 && countOf(Hold.Right, Pulses.SlideHome, racked) == 1.0
+    && Option.isNone(m.gun.slide.hand) && Gun.slideBack(Gun.pistol, m.gun) == 0.0 && conserved(racked)
+)
+// Then 12 shots, and the 13th pull dry: locked back again.
+expect (
+  let ms = playBoth(Game.noWorld, last(racked), upPulls(13.0)) in
+  last(ms).gun.fired == 25.0 && last(ms).gun.ammo.locked && last(ms).gun.dry == 2.0 && conserved(ms)
+)
+// The slide release (A on the pistol's hand) does what the rack does.
+expect (
+  let m = sampled(last(pushed), [], Game.away, { upHold with primaryPressed: true }) in
+  not m.gun.ammo.locked && m.gun.ammo.chambered && Ammo.roundsIn(m.gun.ammo.mag) == 11.0 && m.pulses == [(Hold.Right, Pulses.SlideHome)]
+)
+// Pulled 70% of the way and let go: nothing. All the way with a round
+// chambered: it is thrown out loose (a prop), and the next chambered.
+let partial = playBoth(Game.noWorld, last(racked), rackUp(0.0, 0.7 * Gun.slideTravel))
+let full = playBoth(Game.noWorld, last(racked), rackUp(0.0, Gun.slideTravel))
+expect (
+  let m = last(partial) in
+  m.gun.ammo == (last(racked)).gun.ammo && List.isEmpty(rounds(m)) && countOf(Hold.Left, Pulses.SlideBack, partial) == 0.0
+    && countOf(Hold.Left, Pulses.SlideHome, partial) == 0.0
+)
+expect (
+  let m = last(full) in
+  m.gun.ammo.chambered && Ammo.roundsIn(m.gun.ammo.mag) == 10.0 && List.length(rounds(m)) == 1.0
+    && (rounds(m) |> List.all((p) => p.kind == Props.Round(Ammo.PistolMag, 1.0) && Option.isNone(p.held)))
+    && conserved(full)
+)
+// The round leaves the port with a way out (right, up, back) to fly: an
+// `Eject`, not a hand's release.
+expect (
+  let before = List.nth(4.0, full) |> Option.defaultValue(start) in
+  let (_, out) = Game.step({ before with xr: Option.Some({ head: Option.Some(Hips.headAt(0.0, 0.0)), left: lefty(onSlideUp(Gun.slideTravel), 1.0), right: upHold }) }, Stations.armory, Game.noWorld, (p) => p, 0.0, dt) in
+  match out with
+  | [r] => r.kind == Game.Eject && r.prop == Props.Round(Ammo.PistolMag, 1.0) && Quat.length(r.velocity) > 1.5
+  | _ => false
+)
+// Racked eight times (back, then home in the hand): eight thrown out, the
+// oldest two taken away past the cap of six, counted lost.
+expect (
+  let stroke = [(lefty(onSlideUp(Gun.slideTravel), 1.0), upHold), (lefty(onSlideUp(0.0), 1.0), upHold)] in
+  let ms = playBoth(Game.noWorld, last(racked), List.flatten([
+    [(lefty(onSlideUp(0.0), 0.0), upHold), (lefty(onSlideUp(0.0), 1.0), upHold)], List.range(8.0) |> List.concatMap((_) => stroke)])) in
+  let m = last(ms) in
+  List.length(rounds(m)) == Game.looseCap && m.lost == 2.0 && Ammo.roundsIn(m.gun.ammo.mag) == 3.0
+    && (rounds(m) |> List.map((p) => p.kind)) == (List.range(6.0) |> List.map((i) => Props.Round(Ammo.PistolMag, i + 3.0)))
+    && conserved(ms)
+)
+
+// Reversed (upside down) at the mouth, and pushed up the well: never
+// latches. A rifle magazine lined up at the pistol's mouth: never either.
+expect (
+  let flipped = (p: Input.pose) => turnedBy(p, xAxis, 180.0) in
+  let ms = playBoth(Game.noWorld, last(tookSpare), List.append(both(10.0, lefty(flipped(mouthUp), 1.0), upHold),
+    pushUp((d) => flipped(wellUp(d)), Gun.pistol.well.drop, upHold))) in
+  (ms |> List.all((m) => Option.isNone(latchOf(m, spare)))) && countOf(Hold.Left, Pulses.Latch, ms) == 0.0 && present(last(ms), spare)
+)
+expect (
+  let rifleSpare = Props.Mag(Ammo.RifleMag, 3.0) in
+  let at = Stations.spawn(rifleSpare) in
+  let ms = playBoth(Game.noWorld, releasedMag, List.flatten([[(lefty(at, 0.0), upHold), (lefty(at, 1.0), upHold)],
+    both(10.0, lefty(mouthUp, 1.0), upHold), pushUp(wellUp, Gun.pistol.well.drop, upHold)])) in
+  (Game.propOf(last(ms), rifleSpare).held |> Option.isSome) && (ms |> List.all((m) => Option.isNone(latchOf(m, rifleSpare)))) && Option.isNone((last(ms)).gun.ammo.mag)
+)
+
+// Pulled out half way in: it stays latched to 7 cm off the axis, then
+// leaves where it is (no jump), back in the hand, easing to where the hand
+// holds it (a settling step a step at most); the gun stays empty.
+let halfIn = playBoth(Game.noWorld, last(aligned), List.range(5.0) |> List.map((i) => (lefty(wellUp(0.0 - Gun.pistol.well.drop + 0.012 * (i + 1.0)), 1.0), upHold)))
+let pullHand = (i: float) => Hold.compose(wellUp(0.0 - Gun.pistol.well.drop + 0.06), Hold.p(0.01 * i, 0.0, 0.0))
+let pulledOut = playBoth(Game.noWorld, last(halfIn), List.range(12.0) |> List.map((i) => (lefty(pullHand(i + 1.0), 1.0), upHold)))
+let leftAt = pulledOut |> List.indexedMap((i, m) => (i, m)) |> List.find((im) => let (_, m) = im in Option.isNone(latchOf(m, spare)))
+  |> Option.map((im) => let (i, _) = im in i) |> Option.defaultValue(0.0)
+expect (
+  let magAt = (i: float) => Game.poseOf(Game.propOf(List.nth(i, pulledOut) |> Option.defaultValue(start), spare)) in
+  leftAt == 8.0 && Hold.near(magAt(leftAt), magAt(leftAt - 1.0))
+    && (List.range(4.0) |> List.all((i) => Quat.length(Quat.sub((magAt(leftAt + i + 1.0)).position, (magAt(leftAt + i)).position)) <= Hold.snapStep + 0.01 + 0.000001))
+    && Hold.near(magAt(12.0), pullHand(12.0)) && Option.isNone((last(pulledOut)).gun.ammo.mag)
+    && (Game.propOf(last(pulledOut), spare).held |> Option.map((h) => h.side == Hold.Left) |> Option.defaultValue(false))
+)
+// Let go latched, it falls out of the mouth, free and clear of the gun.
+expect (
+  let m = last(playBoth(Game.noWorld, last(halfIn), [(lefty(wellUp(-0.06), 0.0), upHold)])) in
+  let p = Game.propOf(m, spare) in
+  Option.isNone(p.held) && Option.isNone(p.latch) && Hold.near(p.at, mouthUp) && Option.isNone(m.gun.ammo.mag)
+)
+
+// The bench: the pistol lying on its right side, nobody holding it, its
+// well empty. A spare pushed into it there seats (a pulse in that hand only).
+expect (
+  let lying = Hold.at(Quat.add(pistolAt.position, Quat.v3(0.0, 0.02 - 0.05, 0.0)), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 0.0 - Math.pi / 2.0)) in
+  let onBench = { Game.withProp({ pistol(start) with pose: lying, at: lying }, start) with gun: { start.gun with ammo: { start.gun.ammo with mag: Option.None } } } in
+  let well = (d: float) => Hold.compose(lying, Gun.wellAt(Gun.pistol, d)) in
+  let ms = playBoth(Game.noWorld, onBench, List.flatten([[(lefty(spareAt, 0.0), Game.away), (lefty(spareAt, 1.0), Game.away)],
+    [(lefty(well(0.0 - Gun.pistol.well.drop), 1.0), Game.away)], pushUp(well, Gun.pistol.well.drop, Game.away)])) in
+  let m = last(ms) in
+  not present(m, spare) && Ammo.roundsIn(m.gun.ammo.mag) == 12.0 && m.gun.ammo.chambered
+    && countOf(Hold.Left, Pulses.Seat, ms) == 1.0 && countOf(Hold.Right, Pulses.Seat, ms) == 0.0
+)
+
+// The rifle, one-handed off the rack: M drops its magazine (one chambered);
+// a rifle spare pushed into its well seats; the charging handle pulled all
+// the way back throws the chambered round out, and home it chambers from
+// the new magazine (29+1).
+expect (
+  let rifleSpare = Props.Mag(Ammo.RifleMag, 3.0) in
+  let held = last(play2(start, List.flatten([[(Game.away, hand(onStock, 0.0, 0.0))], both(4.0, Game.away, still)]))) in
+  let out = sampled(held, [Key.M], Game.away, still) in
+  let at = Stations.spawn(rifleSpare) in
+  let well = (d: float) => Hold.compose(rifleAt, Gun.wellAt(Longarm.weapon, d)) in
+  let handle = (back: float) => Hold.compose(rifleAt, Hold.at(Quat.add(Longarm.weapon.rack.at, Quat.v3(0.0, 0.0, back)), Quat.identity)) in
+  let ms = play2(out, List.flatten([
+    [(lefty(at, 0.0), still), (lefty(at, 1.0), still), (lefty(well(0.0 - Longarm.weapon.well.drop), 1.0), still)],
+    pushUp(well, Longarm.weapon.well.drop, still),
+    [(lefty(handle(0.0), 0.0), still), (lefty(handle(0.0), 1.0), still)],
+    List.range(6.0) |> List.map((i) => (lefty(handle(Longarm.handleTravel * (i + 1.0) / 6.0), 1.0), still)),
+    [(lefty(handle(Longarm.handleTravel), 0.0), still)]])) in
+  let m = last(ms) in
+  Option.isNone(out.rifle.ammo.mag) && out.rifle.ammo.chambered
+    && not present(m, rifleSpare) && Ammo.roundsIn(m.rifle.ammo.mag) == 29.0 && m.rifle.ammo.chambered && not m.rifle.ammo.locked
+    && (rounds(m) |> List.map((p) => p.kind)) == [Props.Round(Ammo.RifleMag, 1.0)]
+    && countOf(Hold.Left, Pulses.SlideBack, ms) == 1.0 && countOf(Hold.Right, Pulses.SlideHome, ms) == 1.0
+    && conserved(List.append([out], ms))
+)
+// Fired empty, the rifle's bolt locks back (drawn back), its handle home.
+expect (
+  let m = last(holding(auto(ready), 200.0)) in
+  m.rifle.ammo.locked && Gun.slideBack(Longarm.weapon, m.rifle) == 0.0 && Gun.boltBack(Longarm.weapon, m.rifle) > 0.04
+)
+// A loose round come to rest lies bodiless where it is; the left hand takes
+// it from there, and it is a held prop again.
+expect (
+  let round = Props.Round(Ammo.PistolMag, 1.0) in
+  let at = Hold.p(-0.2, 0.905, -0.6) in
+  let lying = Game.withProp({ Game.propOf(last(full), round) with pose: at, lying: true }, last(full)) in
+  let m = last(playBoth(Game.noWorld, lying, [(lefty(at, 0.0), upHold), (lefty(at, 1.0), upHold)])) in
+  let p = Game.propOf(m, round) in
+  not p.lying && (p.held |> Option.map((h) => h.side == Hold.Left && Hold.near(h.accepted, at)) |> Option.defaultValue(false))
+)
+// Pulled out of the well, it has no body until it has eased back into the
+// hand (it may still be inside the gun).
+expect Game.bodiless(Game.propOf(List.nth(leftAt, pulledOut) |> Option.defaultValue(start), spare))
+  && not Game.bodiless(Game.propOf(last(pulledOut), spare))
+// One well, one magazine: the pistol on the bench, the left hand's spare
+// latched in it, the right hand's at its mouth too doesn't latch.
+expect (
+  let lying = Hold.at(Quat.add(pistolAt.position, Quat.v3(0.0, 0.02 - 0.05, 0.0)), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 0.0 - Math.pi / 2.0)) in
+  let onBench = { Game.withProp({ pistol(start) with pose: lying, at: lying }, start) with gun: { start.gun with ammo: { start.gun.ammo with mag: Option.None } } } in
+  let mouth = Hold.compose(lying, Gun.dropOf(Gun.pistol)) in
+  let other = Props.Mag(Ammo.PistolMag, 2.0) in
+  let otherAt = Stations.spawn(other) in
+  let ms = playBoth(Game.noWorld, onBench, [
+    (lefty(spareAt, 0.0), lefty(otherAt, 0.0)), (lefty(spareAt, 1.0), lefty(otherAt, 1.0)),
+    (lefty(mouth, 1.0), lefty(otherAt, 1.0)), (lefty(mouth, 1.0), lefty(mouth, 1.0)), (lefty(mouth, 1.0), lefty(mouth, 1.0))]) in
+  Option.isSome(latchOf(last(ms), spare)) && (ms |> List.all((m) => Option.isNone(latchOf(m, other))))
+)
+// The racking hand's tracking lost mid-stroke: the slide stays back, still
+// held, nothing fed; back, let go, it goes home and feeds.
+expect (
+  let grab = [(lefty(onSlideUp(0.0), 0.0), upHold), (lefty(onSlideUp(0.0), 1.0), upHold), (lefty(onSlideUp(Gun.slideTravel), 1.0), upHold)] in
+  let back = playBoth(Game.noWorld, last(racked), grab) in
+  let lost = playBoth(Game.noWorld, last(back), both(4.0, Game.away, upHold)) in
+  let home = playBoth(Game.noWorld, last(lost), [(lefty(onSlideUp(Gun.slideTravel), 0.0), upHold)]) in
+  (lost |> List.all((m) => m.gun.slide.hand == Option.Some(Hold.Left) && m.gun.slide.back && not m.gun.ammo.chambered))
+    && countOf(Hold.Left, Pulses.SlideHome, lost) == 0.0
+    && (last(home)).gun.ammo.chambered && Option.isNone((last(home)).gun.slide.hand)
 )

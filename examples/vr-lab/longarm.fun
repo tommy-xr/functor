@@ -30,11 +30,19 @@ let center = Quat.v3(0.0, 0.0275, (stockBack - muzzleAhead) / 2.0)
 let grip: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 let gripZone = 0.07
 
+// The charging handle: a T at the receiver's top rear, under the rear
+// sight, pulled straight back `handleTravel`.
+let handleAt = Quat.v3(0.0, 0.09, 0.075)
+let handleTravel = 0.07
+
 // The magazine in the well ahead of the grip; the readout on the receiver's
-// top ahead of the rear sight, tipped back toward the eye.
+// top ahead of the rear sight, tipped back toward the eye; the charging
+// handle (home while the bolt is locked back, 70% back), the port on the right.
 let weapon: Gun.Weapon = Gun.weaponAt(grip, bore, chamberAhead, muzzleAhead, true,
-  { kind: Ammo.RifleMag, at: Quat.sub(Quat.v3(0.0, 0.0, 0.0 - 0.09), center), rake: 0.0, drop: 0.1 },
-  { at: Quat.sub(Quat.v3(0.0, 0.0865, 0.0 - 0.07), center), tilt: 0.0 - Math.pi / 6.0, size: 0.005 })
+  { kind: Ammo.RifleMag, at: Quat.sub(Quat.v3(0.0, 0.0, 0.0 - 0.09), center), rake: 0.0, drop: 0.1, guide: Gun.guide },
+  { at: Quat.sub(Quat.v3(0.0, 0.0865, 0.0 - 0.07), center), tilt: 0.0 - Math.pi / 6.0, size: 0.005 },
+  { at: Quat.sub(handleAt, center), radius: 0.04, travel: handleTravel, lockBack: 0.0, boltLock: 0.7 * handleTravel,
+    port: Quat.sub(Quat.v3(0.04, 0.06, 0.0 - 0.03), center) })
 
 expect Gun.clearBelow(weapon, size)
 
@@ -53,7 +61,7 @@ let foreSlack = 0.08
 type Along = { along: float, off: float }
 
 let alongOf = (fist: Input.pose, q: Input.point3): Along =>
-  let local = (Hold.relative(fist, Hold.at(q, Quat.identity))).position in
+  let local = Hold.localPoint(fist, q) in
   { along: 0.0 - local.z, off: Math.sqrt(local.x * local.x + local.y * local.y) }
 
 /// From a point to the foregrip of a rifle at `pose`: 0 on its line.
@@ -258,8 +266,10 @@ let part = (sx: float, sy: float, sz: float, x: float, y: float, z: float) =>
 /// the barrel's way; turned a half turn at the end, as drawn its local +Z
 /// is): stock, receiver, pistol grip, trigger, the handguard with
 /// the foregrip rail under it (lighter: where the support hand goes), barrel
-/// and sights (the magazine is `Gun.seated`). `paint` colours the furniture.
-let scene = (paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
+/// and sights (the magazine is `Gun.seated`); the charging handle `handle`
+/// back and the bolt in the port on the right `bolt` back. `paint` colours
+/// the furniture.
+let scene = (paint: (float, float, float, Scene.t) => Scene.t, handle: float, bolt: float): Scene.t =>
   let dark = Color.rgb(0.08, 0.08, 0.09) in
   let metal = Color.rgb(0.16, 0.16, 0.18) in
   Scene.group([
@@ -274,6 +284,9 @@ let scene = (paint: (float, float, float, Scene.t) => Scene.t): Scene.t =>
     part(0.016, 0.016, muzzleAhead - foreFar, 0.0, bore, 0.0 - (foreFar + muzzleAhead) / 2.0) |> Scene.lit(dark),
     part(0.005, 0.03, 0.008, 0.0, bore + 0.025, 0.0 - 0.5) |> Scene.emissive(Color.rgb(1.0, 0.55, 0.1)),
     part(0.02, 0.02, 0.01, 0.0, bore + 0.035, 0.06) |> Scene.lit(dark),
+    // The charging handle's T, and the bolt (bright steel) in the port.
+    part(0.045, 0.008, 0.014, handleAt.x, handleAt.y, handleAt.z + handle) |> Scene.lit(dark),
+    part(0.004, 0.016, 0.05, 0.0235, 0.06, 0.0 - 0.03 + bolt) |> Scene.lit(Color.rgb(0.62, 0.62, 0.66)),
   ]) |> Scene.rotateY(180deg)
 
 /// The selector's light on the receiver's left: green on semi, red on full-auto.
