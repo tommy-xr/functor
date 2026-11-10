@@ -10,8 +10,9 @@
 //      primary (within 0.5°), from the accepted rifle's muzzle, and hits its
 //      target within 1 cm of where that aim puts it at 5.5 m.
 //   2. Barrel into the wall, two hands: the whole rifle stops at it, its
-//      grips rigid on it, the pull refused; drawn (H) both hands sit on the
-//      accepted grips, ghosts where they are tracked; the camera never moves.
+//      grips rigid on it, the pull refused; drawn (by default) both hands sit
+//      on the accepted grips, ghosts where they are tracked; the camera never
+//      moves.
 //      Drawn back clear, it fires.
 //   3. Rotation only: the primary hand still, the support swings the barrel
 //      into the wall; the swept turn stops it short of the support.
@@ -108,10 +109,10 @@ await run("barrel into the wall, two hands", async (rt) => {
   check(len(sub(grip, h.right.at)) > 0.05, `the accepted grip ${(len(sub(grip, h.right.at)) * 100).toFixed(1)} cm short of the tracked hand`);
   const clicked = marks.clicked.model;
   check(clicked.rifle.fired === 0 && clicked.rifle.refused === 1 && !shot(clicked), `the pull is refused (fired ${clicked.rifle.fired}, refused ${clicked.rifle.refused})`);
-  // H: both hands drawn on the accepted rifle, ghosts at the tracked hands.
-  const kids = scenes.acceptedHeld.scene.obj.Group;
-  const acc = marks.acceptedHeld.model;
-  check(acc.handView.$ctor === "Accepted", "H: Accepted");
+  // Both hands drawn on the accepted rifle (the default), ghosts at the tracked hands.
+  const kids = scenes.stillHeld.scene.obj.Group;
+  const acc = marks.stillHeld.model;
+  check(acc.handView.$ctor === "Accepted", "Accepted by default");
   const drawnRight = placedAt(kids[5]);
   const drawnLeft = placedAt(kids[4]);
   const accPose = poseOf(acc);
@@ -123,16 +124,16 @@ await run("barrel into the wall, two hands", async (rt) => {
   const along = rel && dot(rel, qrot(accPose.orientation, [0, 0, -1]));
   const offLine = rel && len(sub(rel, qrot(accPose.orientation, [0, 0, -along])));
   check(rel && offLine < 1e-4 && along >= RIFLE.foreNear - 1e-6 && along <= RIFLE.foreFar + 1e-6, `the left hand drawn on the foregrip (${along?.toFixed(3)} m ahead, ${offLine?.toExponential(1)} off it)`);
-  const ha = hands("acceptedHeld");
+  const ha = hands("stillHeld");
   const ghostR = placedAt(kids[7]);
   const ghostL = placedAt(kids[6]);
   check(ghostR && len(sub(ghostR, toWorld(ha.right.at))) < 1e-4 && ghostL && len(sub(ghostL, toWorld(ha.left.at))) < 1e-4, "ghosts at both tracked hands");
   // Held there, the hands still, it stays at the wall: the hold's slide along
   // the contact normal trembles it a little (`Hold.move`), never turns it.
-  const pressed = stepMoves(steps, index("pushed"), index("tracked"));
+  const pressed = stepMoves(steps, index("pushed"), index("still"));
   const tremble = pressed.reduce((w, s) => [Math.max(w[0], s.moved), Math.max(w[1], s.turned)], [0, 0]);
   check(tremble[0] < 0.003 && tremble[1] < 1e-4, `pressed there, it holds (worst step ${(tremble[0] * 1000).toFixed(2)} mm, ${deg(tremble[1]).toFixed(4)}°)`);
-  const cams = ["near", "pushed", "acceptedHeld", "fired"].map((k) => JSON.stringify(scenes[k].camera));
+  const cams = ["near", "pushed", "stillHeld", "fired"].map((k) => JSON.stringify(scenes[k].camera));
   check(cams.every((c) => c === cams[0]), `the camera never moves (${cams[0]})`);
   const fired = marks.fired.model;
   const s = shot(fired);

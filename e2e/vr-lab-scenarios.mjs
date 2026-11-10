@@ -535,7 +535,7 @@ const rifleScenarios = {
   },
 
   // Both hands push the barrel into the wall: the whole rifle stops at it,
-  // the pull only clicks; H shows both hands on its grips, their ghosts
+  // the pull only clicks; both hands are drawn on its grips, their ghosts
   // through the wall. Drawn back clear, the pull fires.
   "rifle-wall": {
     station: 3,
@@ -548,9 +548,8 @@ const rifleScenarios = {
       { frames: 25, ...bothTo(RIFLE_WALL.through), mark: "pushed" },
       { frames: 1, right: { trigger: 1 }, mark: "clicked" },
       { frames: 6, right: { trigger: 0 } },
-      { frames: 1, tap: "H", right: {}, mark: "accepted" },
-      { frames: 5, right: {}, mark: "acceptedHeld" },
-      { frames: 1, tap: "H", right: {}, mark: "tracked" },
+      { frames: 6, right: {}, mark: "stillHeld" },
+      { frames: 1, right: {}, mark: "still" },
       { frames: 20, ...bothTo(RIFLE_WALL.clear), mark: "clear" },
       { frames: 1, right: { trigger: 1 }, mark: "fired" },
       { frames: 6, right: { trigger: 0 } },
@@ -640,9 +639,7 @@ const rifleScenarios = {
       { frames: 10, right: {} },
       { frames: 1, right: { trigger: 1 }, mark: "clicked" },
       { frames: 15, right: { trigger: 0 } },
-      { frames: 1, tap: "H", right: {} },
-      { frames: 40, right: {} },
-      { frames: 1, tap: "H", right: {} },
+      { frames: 42, right: {} },
       { frames: 20, ...bothTo(RIFLE_WALL.clear) },
       { frames: 1, right: { trigger: 1 } },
       { frames: 8, right: { trigger: 0 } },
@@ -1360,6 +1357,56 @@ const shotgunScenarios = {
   },
 };
 
+// --- Hands drawn on what they hold (station 3) ---
+// A point in the frame of the pistol held by a hand at `at` turned `q`
+// (`Gun`'s, centred on its collider), and its slide `back` behind home.
+const onPistol = (at, q, local) => add(at, qrot(q, add(PISTOL_FROM_GRIP, local)));
+const slideOn = (at, q, back) => onPistol(at, q, add(SLIDE.at, [0, 0, back]));
+// The hands 20 cm through the wall (the pistol's), and the rifle's 21 cm.
+const PISTOL_DEEP = [-0.65, 1.2, -0.5];
+const RIFLE_DEEP = [-0.25, 1.2, -0.45];
+// Down range, side on to the wall (edge-on, on the right): the guns in it.
+const besideWall = { eye: [5.2, 1.35, -0.3], target: [4.5, 1.2, -0.5], fov: 34 };
+// Down range of the pistol held clear of the wall: the slide racked.
+const overSlide = { eye: [5.1, 1.5, -0.3], target: [4.5, 1.22, -0.33], fov: 40 };
+
+const handViewScenarios = {
+  // The pistol pushed into the wall, the hand 20 cm on: the hand drawn on
+  // its grip at the wall, its ghost through it. Clear of it, the left hand
+  // racks the slide 8 cm past its travel: drawn at the slide's end, its ghost
+  // behind. Holstered; the rifle taken in two hands and pushed into the
+  // wall: both hands drawn on its grips, their ghosts through it.
+  "hand-view-guns": {
+    station: 3,
+    neck: NECK,
+    spectator: besideWall,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: WALL_NEAR, turn: LEFT } },
+      { frames: 30, right: { to: PISTOL_DEEP } },
+      { frames: 30, right: {}, mark: "pistolHeld" },
+      { frames: 20, right: { to: CLEAR }, spectator: overSlide },
+      { frames: 20, left: { to: add(slideOn(CLEAR, LEFT, 0), [0, 0.06, 0.06]), turn: LEFT } },
+      { frames: 10, left: { to: slideOn(CLEAR, LEFT, 0) } },
+      { frames: 4, left: { squeeze: 1 } },
+      { frames: 12, left: { to: slideOn(CLEAR, LEFT, SLIDE.travel + 0.08) } },
+      { frames: 30, left: {}, mark: "rackHeld" },
+      { frames: 12, left: { to: slideOn(CLEAR, LEFT, 0) } },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 20, left: { to: LEFT_OUT, turn: ID } },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID }, spectator: besideRifleWall },
+      { frames: 25, right: { to: ARMORY_RH } },
+      { frames: 1, right: { squeeze: 0 } },
+      ...takeRifle,
+      raise(),
+      { frames: 30, ...bothTo(RIFLE_WALL.near) },
+      { frames: 30, ...bothTo(RIFLE_DEEP) },
+      { frames: 40, right: {}, mark: "rifleHeld" },
+      { frames: 20, ...bothTo(RIFLE_WALL.clear) },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -1540,22 +1587,23 @@ export const scenarios = {
     ],
   },
 
-  // Push the held ball into the wall, the hand going on through it, and
-  // switch where the hand is drawn (H): tracked, through the wall; then at
-  // the ball, with a ghost where it really is. Brought back to within a
-  // centimetre of the ball the ghost goes; pushed through again it returns.
+  // Push the held ball into the wall, the hand going on through it: the
+  // hand is drawn at the ball, with a ghost where it really is. Brought back
+  // to within a centimetre of the ball the ghost goes; pushed through again
+  // it returns. H draws it where it is tracked, through the wall; H again,
+  // back at the ball.
   "hand-view": {
     station: 1,
     spectator: overWall,
     steps: [
       ...grab,
       { frames: 20, right: { to: [-0.3, 1.15, -0.55] } },
-      { frames: 30, right: { to: throughWall }, mark: "blockedTracked" },
-      { frames: 20, right: {}, tap: "h", mark: "blockedAccepted" },
+      { frames: 30, right: { to: throughWall }, mark: "blockedAccepted" },
       { frames: 20, right: { to: atWall }, mark: "nearWall" },
       { frames: 20, right: { to: [-0.4, 1.15, -0.55] }, mark: "out" },
       { frames: 25, right: { to: throughWall }, mark: "blockedAgain" },
-      { frames: 20, right: {}, tap: "h", mark: "trackedAgain" },
+      { frames: 20, right: {}, tap: "h", mark: "blockedTracked" },
+      { frames: 20, right: {}, tap: "h", mark: "acceptedAgain" },
       { frames: 1, right: { squeeze: 0 }, mark: "letGo" },
       { frames: 30, right: { to: [0.0, 1.1, -0.35] } },
     ],
@@ -1611,4 +1659,5 @@ export const scenarios = {
   ...ammoScenarios,
   ...reloadScenarios,
   ...shotgunScenarios,
+  ...handViewScenarios,
 };

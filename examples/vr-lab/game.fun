@@ -27,8 +27,9 @@
 //   npm run demo:vr-lab -- grab-throw out.gif    # a spectator video of one
 //
 // 1-9 jump to a station and reset it (B/Y or a menu button cycles stations
-// on the headset). H or a thumbstick click switches where a holding hand is
-// drawn: where it is tracked, or where the blocked prop it holds implies.
+// on the headset). A holding hand is drawn on what it holds, where the
+// blocked prop implies; H or a thumbstick click switches it to where it is
+// tracked, and back.
 // `GET /state` shows the station, both hands, the props and the last release.
 // Each hold event buzzes its hand (`Pulses`), and a ring at the hand shows it.
 //
@@ -179,7 +180,7 @@ let reset = (m: Model, id: float): Model =>
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
-    handView: Tracked, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
+    handView: Accepted, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
     feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon),
     shotgun: emptyShotgun, shellBox: 0.0, buttonA: (false, false),
     stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
@@ -1241,33 +1242,38 @@ expect (
 
 // --- drawing ---
 
-/// Where a hand is drawn: tracked, or (`Accepted`, holding) at the grip its
-/// prop's accepted pose implies. Steering always uses the tracked pose.
-let drawnGrip = (view: HandView, grip: Input.pose, held: Option.t<Hold.Held>): Input.pose =>
-  match view with
-  | Tracked => grip
-  | Accepted => held |> Option.map(Hold.gripOn) |> Option.defaultValue(grip)
+/// Where hold `h` wants its gun `p`: at the primary hand (aimed by the
+/// support, if any), or, that hand lost, where it was accepted.
+let wantedOf = (m: Model, p: Prop, h: Hold.Held): Input.pose =>
+  gripOf(m.xr, h.side)
+    |> Option.map((primary) => Hold.compose(p.support |> Option.map((s) => Longarm.steer(primary, s)) |> Option.defaultValue(primary), h.offset))
+    |> Option.defaultValue(h.accepted)
 
-/// Where a hand is drawn (`drawnGrip`); a rifle's (or shotgun's) support
-/// hand, in `Accepted`, on the foregrip (the fore-end, where the pump has
-/// it) of the gun as the hold accepted it.
+/// Where a hand is drawn: tracked, or (`Accepted`) on what it holds as the
+/// hold accepted it. A holding hand at the grip its prop's pose implies; a
+/// rifle's (or shotgun's) support hand on the foregrip (the fore-end, where
+/// the pump has it); a hand racking a slide (or charging handle) on it,
+/// where the slide has it. Steering always uses the tracked pose.
 let drawnHand = (m: Model, side: Hold.Side, g: Input.pose): Input.pose =>
-  let onFore =
-    m.props |> List.find((p) => supportOf(p) == Option.Some(side)) |> Option.bind((p) =>
-      p.held |> Option.bind((h) => p.support |> Option.bind((s) => gripOf(m.xr, h.side) |> Option.map((primary) =>
-        Longarm.supportOn(foreOf(p.kind), pumpOf(m, p.kind), h.accepted, Hold.compose(Longarm.steer(primary, s), h.offset), g))))) in
-  match onFore with
-  | Option.Some(on) => if m.handView == Accepted then on else g
-  | Option.None => drawnGrip(m.handView, g, heldIn(m, side))
+  if m.handView == Tracked then g
+  else
+  // The prop the hand holds or supports, in one pass (a hand does one or the other).
+  match m.props |> List.find((p) => heldBy(side, p) || supportOf(p) == Option.Some(side)) with
+  | Option.Some(p) =>
+    (match p.held with
+     | Option.Some(h) =>
+       if h.side == side then Hold.gripOn(h)
+       else Longarm.supportOn(foreOf(p.kind), pumpOf(m, p.kind), h.accepted, wantedOf(m, p, h), g)
+     | Option.None => g)
+  | Option.None =>
+    // (The pump's hand is the support: on the fore-end, above.)
+    let racked = if m.gun.slide.hand == Option.Some(side) then Option.Some(Props.Pistol)
+      else if m.rifle.slide.hand == Option.Some(side) then Option.Some(Props.Rifle) else Option.None in
+    racked |> Option.bind((k) =>
+      let p = propOf(m, k) in
+      p.held |> Option.map((h) => Gun.rackOn(weaponOf(k), (gunOf(m, k)).slide, h.accepted, wantedOf(m, p, h), g)))
+      |> Option.defaultValue(g)
 
-// A held ball pushed 10 cm into a wall: drawn tracked, or at the wall.
-expect (
-  let blocked = { side: Hold.Right, offset: Hold.origin, accepted: Hold.p(-0.55, 1.0, -0.5), history: [], snapTo: Option.None } in
-  let tracked = Hold.p(-0.65, 1.0, -0.5) in
-  Hold.near(drawnGrip(Tracked, tracked, Option.Some(blocked)), tracked)
-    && Hold.near(drawnGrip(Accepted, tracked, Option.Some(blocked)), blocked.accepted)
-    && Hold.near(drawnGrip(Accepted, tracked, Option.None), tracked)
-)
 /// A sampled input with only keys pressed and XR, for checks.
 let snapshotOf = (pressed: List<Key.t>, xr: Option.t<Input.xr>): Input.snapshot =>
   { heldKeys: [], pressedKeys: pressed, releasedKeys: [],
@@ -1277,14 +1283,15 @@ let snapshotOf = (pressed: List<Key.t>, xr: Option.t<Input.xr>): Input.snapshot 
              released: { left: false, right: false, middle: false } },
     xr: xr, gamepad: Option.None, touch: Option.None }
 
-// H switches it, and back; so does a thumbstick click, once per press.
+// Accepted to start; H switches it, and back; so does a thumbstick click,
+// once per press.
 expect (
   let keys = snapshotOf in
   let clicked = Option.Some({ head: Option.None, left: away, right: { hand(zero, 0.0) with thumbstickPressed: true } }) in
   let once = sampledInput(init, keys([Key.H], Option.None)) in
   let held = sampledInput(sampledInput(init, keys([], clicked)), keys([], clicked)) in
-  init.handView == Tracked && once.handView == Accepted && sampledInput(once, keys([Key.H], Option.None)).handView == Tracked
-    && held.handView == Accepted
+  init.handView == Accepted && once.handView == Tracked && sampledInput(once, keys([Key.H], Option.None)).handView == Accepted
+    && held.handView == Tracked
 )
 
 let box = (b: Stations.Box, c: Color.t): Scene.t =>
@@ -1491,7 +1498,7 @@ let handModel = (squeezed: bool, c: Color.t) =>
     Scene.cube() |> Scene.scaleXYZ(0.012, 0.012, 0.06) |> Scene.translate(Vec3.make(0.0, 0.0, 0.03)) |> Scene.lit(Color.rgb(0.9, 0.9, 0.95)),
   ])
 
-/// A hand where `drawnGrip` puts it, and (drawn elsewhere by over
+/// A hand where `drawnHand` puts it, and (drawn elsewhere by over
 /// `Hold.ghostDistance`) a translucent ghost where it really is.
 let handScene = (m: Model, st: Stations.Station, side: Hold.Side, c: Color.t): (Scene.t, Scene.t) =>
   match gripOf(m.xr, side) with
