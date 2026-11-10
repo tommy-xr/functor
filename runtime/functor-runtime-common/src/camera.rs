@@ -223,6 +223,15 @@ impl MappedTrackingPose {
             b.position.extend(1.0),
         ))
     }
+
+    /// [`Self::to_matrix`]'s transform as a position and a unit rotation
+    /// `[x, y, z, w]` — how `Physics.sweep` places a shape where
+    /// `Scene.atPose` draws it.
+    pub fn to_position_rotation(&self) -> Option<([f32; 3], [f32; 4])> {
+        let b = pose_basis(self.position, self.forward, self.up)?;
+        let q = Quaternion::from(cgmath::Matrix3::from_cols(b.left, b.up, b.forward)).normalize();
+        Some((b.position.into(), [q.v.x, q.v.y, q.v.z, q.s]))
+    }
 }
 
 /// Smallest `|up × forward|` (unit vectors: the sine of their angle, here

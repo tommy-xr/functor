@@ -1419,6 +1419,19 @@ sides. A small, fast body can also pass through a face in a single step.
 `Physics.shapeCast(shape, origin, dir, maxDist)` sweeps a box, sphere or
 capsule into the same `rayHit` record (two-sided, like rays).
 
+**A held prop that turns is `Physics.sweep`.** `Physics.sweep(shape,
+fromPose, toPose, filter)` moves a box, sphere or capsule from one
+`Camera3D.mappedPose` to another (the poses `Scene.atPose` draws, same basis),
+turning about its centre on the way, so a rifle swung into a wall stops even
+when its centre barely moves. It returns `Option.t<Physics.sweepHit>`
+(`fraction` in [0, 1], `x, y, z`, `nx, ny, nz`, `tag`); `Option.None` is
+clear. `filter` is `Physics.SweepFixed` (the held-prop case: the hand's own
+kinematic body and other props don't count), `Physics.SweepNotKinematic` or
+`Physics.SweepAll`; sensors never count. Starting in an overlap, pressing deeper
+hits at fraction 0 and moving out passes; `fromPose == toPose` is an overlap
+test (fraction 0, or `None` when clear). `impure[physics]`, like
+`Physics.cast`.
+
 **Walking a level is `Physics.character`**, not a dynamic capsule:
 `Physics.character(tag, Physics.capsule(0.6, 0.3), { stepHeight: 0.35,
 maxSlope: 45deg, snap: 0.3, offset: 0.02 }) |> Physics.at(spawn)` declares a

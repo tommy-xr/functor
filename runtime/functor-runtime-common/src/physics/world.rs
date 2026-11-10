@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rapier3d::control::{CharacterLength, KinematicCharacterController};
-use rapier3d::parry::query::ShapeCastOptions;
+use rapier3d::parry::query::{NonlinearRigidMotion, ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
 use rapier3d::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -132,6 +132,32 @@ pub struct RayHit {
     /// The hit triangle's index in the `Physics.trimesh` source data; `None`
     /// for any other shape.
     pub triangle: Option<u32>,
+}
+
+/// Which bodies a [`World::sweep`] can hit. Sensors never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepFilter {
+    /// Fixed bodies only: a held prop stops at the level, not at other props.
+    Fixed,
+    /// Fixed and dynamic bodies.
+    NotKinematic,
+    All,
+}
+
+/// A rigid pose: position and unit rotation `[x, y, z, w]`.
+pub type RigidPose = ([f32; 3], [f32; 4]);
+
+/// The first hit of a [`World::sweep`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SweepHit {
+    pub tag: String,
+    /// How far along the motion, in [0, 1]: the shape touches at the pose
+    /// interpolated this far from `from` toward `to`.
+    pub fraction: f32,
+    /// The contact point, on the hit body.
+    pub position: [f32; 3],
+    /// The hit surface's outward normal.
+    pub normal: [f32; 3],
 }
 
 /// One colored wireframe segment from [`World::debug_lines`], in world space.
@@ -1039,6 +1065,62 @@ impl World {
         })
     }
 
+    /// Sweep `shape` (a box, sphere or capsule) from pose `from` to pose `to`,
+    /// rotating about its centre as it moves: the first `filter` body it
+    /// touches, or `None` if the motion is clear. Sensors are never hit.
+    ///
+    /// A shape starting in an overlap hits at fraction 0 when the motion
+    /// presses deeper into it, and passes when it moves out. With no motion
+    /// it answers whether `from` overlaps anything (fraction 0) at all.
+    /// Answers as of the last step, like [`Self::raycast`].
+    pub fn sweep(&self, shape: &Shape, from: RigidPose, to: RigidPose, filter: SweepFilter) -> Option<SweepHit> {
+        let swept = collider_of(shape)?.shape;
+        let swept = &*swept;
+        let filter = match filter {
+            SweepFilter::Fixed => QueryFilter::only_fixed(),
+            SweepFilter::NotKinematic => QueryFilter::exclude_kinematic(),
+            SweepFilter::All => QueryFilter::default(),
+        };
+        let queries = self.queries(filter.exclude_sensors(), None);
+        let start = rigid(from);
+        let motion = motion_between(start, rigid(to));
+        let still = motion.linvel.length() < STILL && motion.angvel.length() < STILL;
+        let motion = (!still).then_some(&motion);
+        let reach = reach(swept, &start, motion);
+        // Pair by pair rather than rapier's pipeline `cast_shape_nonlinear`:
+        // the start-overlap rule needs each pair's contact, and a fused
+        // compound's parts are culled to the reach (a 30 m floor part's
+        // bounding sphere otherwise reaches every sweep).
+        let mut best: Option<(ColliderHandle, Option<usize>, ShapeCastHit)> = None;
+        let mut keep = |candidate: (ColliderHandle, Option<usize>, Option<ShapeCastHit>)| {
+            let (collider, part, Some(hit)) = candidate else { return };
+            if best.as_ref().is_none_or(|b| hit.time_of_impact < b.2.time_of_impact) {
+                best = Some((collider, part, hit));
+            }
+        };
+        for (handle, co) in queries.intersect_aabb_conservative(reach) {
+            match self.parts(handle) {
+                // Fused parts are in world space (the compound sits at the origin).
+                Some(compound) => {
+                    for i in compound.bvh().intersect_aabb(&reach) {
+                        let (pose, part) = &compound.shapes()[i as usize];
+                        keep((handle, Some(i as usize), pair_hit(pose, &**part, swept, &start, motion)));
+                    }
+                }
+                None => keep((handle, None, pair_hit(co.position(), co.shape(), swept, &start, motion))),
+            }
+        }
+        let (collider, part, hit) = best?;
+        let tag = self.hit_tag(collider, part)?;
+        let (p, n) = (hit.witness1, hit.normal1);
+        Some(SweepHit {
+            tag,
+            fraction: hit.time_of_impact.clamp(0.0, 1.0),
+            position: [p.x, p.y, p.z],
+            normal: [n.x, n.y, n.z],
+        })
+    }
+
     /// Scene queries as of the last step, ignoring `exclude`'s whole rigid
     /// body: a self-probe starting inside a character's capsule would
     /// otherwise hit it at distance 0. A tag not in the world excludes
@@ -1578,11 +1660,15 @@ impl World {
             .into_iter()
             .flatten()
             .min_by(|a, b| toi(&a.2).total_cmp(&toi(&b.2)))?;
-        let tag = match (self.fused_tags(collider), part) {
+        Some((self.hit_tag(collider, part)?, collider, hit))
+    }
+
+    /// The tag of a query's hit: its part's, on a fused compound.
+    fn hit_tag(&self, collider: ColliderHandle, part: Option<usize>) -> Option<String> {
+        match (self.fused_tags(collider), part) {
             (Some(tags), Some(part)) => tags.get(part).cloned(),
             _ => self.tag_of_collider(collider),
-        }?;
-        Some((tag, collider, hit))
+        }
     }
 
     /// The compound part that is body `tag`, if `tag` is fused.
@@ -2096,22 +2182,7 @@ fn keep_live(prev: &Body, next: &Body, mut pose: Pose, live: Pose) -> Pose {
 }
 
 fn pose_of(body: &Body) -> Pose {
-    // Normalize the declared quaternion: `from_xyzw` doesn't, and a degenerate
-    // rotation (all zeros, or junk off the future JSON boundary) would
-    // NaN-poison the solver — which `snapshot` can't even flag (serde_json
-    // writes non-finite floats as `null`, so the failure surfaces at `restore`,
-    // far from the cause).
-    let q = Rotation::from_xyzw(
-        body.rotation[0],
-        body.rotation[1],
-        body.rotation[2],
-        body.rotation[3],
-    );
-    let rotation = if q.length_squared().is_finite() && q.length_squared() > f32::EPSILON {
-        q.normalize()
-    } else {
-        Rotation::IDENTITY
-    };
+    let rotation = unit_rotation(body.rotation);
     Pose::from_parts(vec3(body.position), rotation)
 }
 
@@ -2330,6 +2401,202 @@ fn sweep_parts(
             Some((i, hit.transform1_by(pose)))
         })
         .min_by(|a, b| a.1.time_of_impact.total_cmp(&b.1.time_of_impact))
+}
+
+/// Translation and rotation (per sweep) below which a [`World::sweep`] is a
+/// stationary overlap test.
+const STILL: f32 = 1.0e-6;
+
+/// How far (at the shape's farthest point) a start overlap is probed along the
+/// motion, and how much deeper it must get there to count as pressing rather
+/// than sliding along the surface.
+const PROBE: f32 = 1.0e-3;
+const PRESSING: f32 = 1.0e-5;
+
+/// Normalize a quaternion `[x, y, z, w]`: `from_xyzw` doesn't, and a
+/// degenerate rotation (all zeros, or junk off the JSON boundary) would
+/// NaN-poison the solver — which `snapshot` can't even flag (serde_json writes
+/// non-finite floats as `null`, so the failure surfaces at `restore`, far from
+/// the cause). Identity instead.
+fn unit_rotation(q: [f32; 4]) -> Rotation {
+    let q = Rotation::from_xyzw(q[0], q[1], q[2], q[3]);
+    if q.length_squared().is_finite() && q.length_squared() > f32::EPSILON {
+        q.normalize()
+    } else {
+        Rotation::IDENTITY
+    }
+}
+
+fn rigid((p, q): RigidPose) -> Pose {
+    Pose::from_parts(vec3(p), unit_rotation(q))
+}
+
+/// `from` to `to` over t in [0, 1]: a constant velocity and a constant
+/// rotation about the shape's centre, the shorter way round.
+fn motion_between(from: Pose, to: Pose) -> NonlinearRigidMotion {
+    let turn = to.rotation * from.rotation.inverse();
+    let turn = if turn.w < 0.0 { -turn } else { turn };
+    NonlinearRigidMotion::new(from, Vector::ZERO, to.translation - from.translation, turn.to_scaled_axis())
+}
+
+/// `shape` at `at` overlapping `other` (at `pos`), as a fraction-0 hit — if
+/// `motion` presses it deeper (any overlap when there is no motion).
+fn pressed(
+    pos: &Pose,
+    other: &dyn rapier3d::parry::shape::Shape,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    at: &Pose,
+    motion: Option<&NonlinearRigidMotion>,
+) -> Option<ShapeCastHit> {
+    let contact = |at: &Pose| overlap(pos, other, shape, at);
+    let c = contact(at)?;
+    if let Some(m) = motion {
+        // Deeper a little way on? (One witness can't tell: a box flush on a
+        // face that turns presses in at one edge and lifts at the other.)
+        let travel = m.linvel.length() + m.angvel.length() * shape.compute_local_bounding_sphere().radius;
+        let probe = m.position_at_time((PROBE / travel).min(1.0));
+        if !contact(&probe).is_some_and(|d| d.dist < c.dist - PRESSING) {
+            return None;
+        }
+    }
+    Some(contact_hit(c, 0.0, ShapeCastStatus::PenetratingOrWithinTargetDist))
+}
+
+/// `shape`'s first hit on `other` (at `pos`) moving along `motion` over t in
+/// [0, 1], in world space: fraction 0 if it starts [`pressed`] into it.
+fn pair_hit(
+    pos: &Pose,
+    other: &dyn rapier3d::parry::shape::Shape,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    at: &Pose,
+    motion: Option<&NonlinearRigidMotion>,
+) -> Option<ShapeCastHit> {
+    pressed(pos, other, shape, at, motion).or_else(|| {
+        let motion = motion?;
+        let still = NonlinearRigidMotion::constant_position(*pos);
+        match rapier3d::parry::query::cast_shapes_nonlinear(&still, other, motion, shape, 0.0, 1.0, false) {
+            Ok(hit) => Some(hit?.transform1_by(pos)),
+            // A heightfield or a halfspace (the fused room's floor).
+            Err(_) => segmented_hit(pos, other, shape, motion),
+        }
+    })
+}
+
+/// The farthest a [`segmented_hit`] segment lets the shape stray from its
+/// path, the most segments one sweep takes (a longer shape turning further
+/// strays more), and the halvings that place a hit inside a segment.
+const SEGMENT_TOL: f32 = 5.0e-3;
+const MAX_SEGMENTS: f32 = 256.0;
+const BISECTIONS: u32 = 16;
+
+/// [`pair_hit`] where parry has no turning cast (a heightfield, a halfspace):
+/// `k` linear casts along the motion, each holding its start rotation, with
+/// `k` such that a segment turns the shape's farthest point at most
+/// [`SEGMENT_TOL`] (one exact linear cast when it doesn't turn). An overlap
+/// at a segment's end that its cast missed was turned into. Starting in an
+/// overlap that isn't [`pressed`], a cast would hit a heightfield's inner
+/// triangle edges, so segments then also split the travel, and a hit is the
+/// contact getting deeper than at its segment's start. Either is halved
+/// down to when it began.
+fn segmented_hit(
+    pos: &Pose,
+    other: &dyn rapier3d::parry::shape::Shape,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    motion: &NonlinearRigidMotion,
+) -> Option<ShapeCastHit> {
+    use rapier3d::parry::query::cast_shapes;
+    let radius = shape.compute_local_bounding_sphere().radius;
+    // Every turned pose is inside the ball about the moving centre: if that
+    // ball neither starts touching nor hits, nor does the shape (the room's
+    // unbounded floor is a candidate for every sweep in the room).
+    let ball = rapier3d::parry::shape::Ball::new(radius);
+    let centre = Pose::from_translation(motion.start.translation);
+    let ball_cast = cast_shapes(pos, Vector::ZERO, other, &centre, motion.linvel, &ball, cast_options(1.0, 0.0));
+    if !matches!(ball_cast, Ok(Some(_))) && overlap(pos, other, &ball, &centre).is_none() {
+        return None;
+    }
+    let depth = |t: f32| overlap(pos, other, shape, &motion.position_at_time(t)).map(|c| c.dist);
+    let mut start_depth = depth(0.0);
+    let travel = motion.angvel.length() * radius + start_depth.map_or(0.0, |_| motion.linvel.length());
+    let k = (travel / SEGMENT_TOL).ceil().clamp(1.0, MAX_SEGMENTS) as u32;
+    let (mut t0, mut start) = (0.0, motion.position_at_time(0.0));
+    for i in 1..=k {
+        let t1 = i as f32 / k as f32;
+        let end = motion.position_at_time(t1);
+        if start_depth.is_none() {
+            let vel = end.translation - start.translation;
+            if let Ok(Some(hit)) = cast_shapes(pos, Vector::ZERO, other, &start, vel, shape, cast_options(1.0, 0.0)) {
+                let time_of_impact = t0 + hit.time_of_impact * (t1 - t0);
+                return Some(ShapeCastHit { time_of_impact, ..hit.transform1_by(pos) });
+            }
+        }
+        let limit = start_depth.map_or(f32::INFINITY, |d| d - PRESSING);
+        let hits = |t: f32| depth(t).is_some_and(|d| d < limit);
+        let end_depth = depth(t1);
+        if end_depth.is_some_and(|d| d < limit) {
+            let (mut clear, mut touching) = (t0, t1);
+            for _ in 0..BISECTIONS {
+                let mid = 0.5 * (clear + touching);
+                if hits(mid) {
+                    touching = mid;
+                } else {
+                    clear = mid;
+                }
+            }
+            let c = overlap(pos, other, shape, &motion.position_at_time(touching))?;
+            return Some(contact_hit(c, clear, ShapeCastStatus::Converged));
+        }
+        (t0, start, start_depth) = (t1, end, end_depth);
+    }
+    None
+}
+
+/// A contact as a cast's hit at `time_of_impact`.
+fn contact_hit(c: rapier3d::parry::query::Contact, time_of_impact: f32, status: ShapeCastStatus) -> ShapeCastHit {
+    ShapeCastHit {
+        time_of_impact,
+        witness1: c.point1,
+        witness2: c.point2,
+        normal1: c.normal1,
+        normal2: c.normal2,
+        status,
+    }
+}
+
+/// `shape` at `at` touching `other` (at `pos`): the contact, in world space.
+/// Parry has no heightfield contact, so a heightfield answers with its
+/// deepest triangle under the shape.
+fn overlap(
+    pos: &Pose,
+    other: &dyn rapier3d::parry::shape::Shape,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    at: &Pose,
+) -> Option<rapier3d::parry::query::Contact> {
+    use rapier3d::parry::query::contact;
+    if let Ok(c) = contact(pos, other, at, shape, 0.0) {
+        return c;
+    }
+    let field = other.as_heightfield()?;
+    let mut deepest: Option<rapier3d::parry::query::Contact> = None;
+    field.map_elements_in_local_aabb(&shape.compute_aabb(&pos.inv_mul(at)), &mut |_, triangle| {
+        let c = contact(pos, triangle, at, shape, 0.0).ok().flatten();
+        if let Some(c) = c.filter(|c| deepest.is_none_or(|d| c.dist < d.dist)) {
+            deepest = Some(c);
+        }
+    });
+    deepest
+}
+
+/// What `shape` can touch along `motion`: its bounding sphere about its
+/// moving centre (it turns about that centre), or its AABB at `at` when still.
+fn reach(shape: &dyn rapier3d::parry::shape::Shape, at: &Pose, motion: Option<&NonlinearRigidMotion>) -> Aabb {
+    let Some(m) = motion else {
+        return shape.compute_aabb(at);
+    };
+    let s = shape.compute_local_bounding_sphere();
+    let r = Vector::splat(s.radius + s.center.length());
+    let (a, b) = (at.translation, at.translation + m.linvel);
+    Aabb::new(a.min(b) - r, a.max(b) + r)
 }
 
 /// The body's contact material, and contact begin/end reporting.
@@ -4128,6 +4395,30 @@ mod tests {
     }
 
     #[test]
+    fn sweeps_on_fused_bodies_answer_as_unfused_ones() {
+        let (flat, memo) = (queried(false), queried(true));
+        assert_eq!(fused_bodies(&memo), 301);
+        let stick = Shape::Cuboid { extents: [0.1, 0.1, 1.2] };
+        let posed = |x: f32, y: f32, pitch: f32| ([x, y, -20.0], [(pitch / 2.0).sin(), 0.0, 0.0, (pitch / 2.0).cos()]);
+        for x in [2.0, 2.4, 2.55, 3.1] {
+            // Falling and turning onto the tiles; tipping in place onto them;
+            // already in them, at rest. (A stick spans tiles, so a tie may pick
+            // either neighbour: compare where it stops, not the tag.)
+            let cases = [
+                (posed(x, 3.0, 0.0), posed(x, -1.0, 1.2)),
+                (posed(x, 0.6, 0.0), posed(x, 0.6, 0.5)),
+                (posed(x, 0.52, 0.0), posed(x, 0.52, 0.0)),
+            ];
+            for (from, to) in cases {
+                // `All`: the unfused tiles are kinematic.
+                let sweep = |w: &World| w.sweep(&stick, from, to, SweepFilter::All).map(|h| h.fraction);
+                assert!(sweep(&memo).is_some(), "sweep at {x} hits");
+                assert_eq!(sweep(&flat), sweep(&memo), "sweep at {x}");
+            }
+        }
+    }
+
+    #[test]
     fn a_sensor_reports_each_fused_body_it_passes() {
         let run = |fused: bool| {
             let mut tiles = floor_tiles(90);
@@ -4800,6 +5091,34 @@ mod fused_room_tests {
             w.step_fixed();
             each(w);
         }
+    }
+
+    /// The floor is a halfspace, which parry can't cast along a turn.
+    #[test]
+    fn sweeps_land_on_the_fused_room_floor_and_turn_into_it() {
+        let room = Arc::new(stand_in_room());
+        let mut w = world_with(vec![room_body(&room)]);
+        let floor = w.fused_room_colliders().unwrap().1.expect("the floor was seen");
+        run(&mut w, 1, |_| {});
+        let level = [0.0, 0.0, 0.0, 1.0];
+        let ball = Shape::Sphere { radius: 0.1 };
+        let hit = w
+            .sweep(&ball, ([-1.0, 1.0, 0.5], level), ([-1.0, -1.0, 0.5], level), SweepFilter::Fixed)
+            .expect("the ball lands");
+        assert_eq!(hit.tag, "room");
+        assert!((hit.fraction - (0.9 - floor) / 2.0).abs() < 1.0e-3, "{hit:?} floor {floor}");
+        assert!(hit.normal[1] > 0.99, "{hit:?}");
+        // A level stick tipping its far end (+z) down onto the floor, in place.
+        let stick = Shape::Cuboid { extents: [0.05, 0.05, 1.6] };
+        let centre = [-1.0, 0.5, 0.5];
+        let (s, c) = std::f32::consts::FRAC_PI_4.sin_cos();
+        let hit = w
+            .sweep(&stick, (centre, level), (centre, [s, 0.0, 0.0, c]), SweepFilter::Fixed)
+            .expect("the far end swings into the floor");
+        let theta = hit.fraction * std::f32::consts::FRAC_PI_2;
+        let low = 0.5 - 0.8 * theta.sin() - 0.025 * theta.cos();
+        assert!((low - floor).abs() < 6.0e-3, "fraction {} reaches y {low}, floor {floor}", hit.fraction);
+        assert!(hit.normal[1] > 0.99, "{hit:?}");
     }
 
     #[test]

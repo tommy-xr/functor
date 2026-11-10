@@ -32,6 +32,8 @@ mod character_tests;
 #[cfg(test)]
 mod forces_tests;
 #[cfg(test)]
+mod sweep_tests;
+#[cfg(test)]
 mod goldens;
 
 // `driver::SteppedPhysics` is the production drive: the recorded wrapper the
