@@ -101,7 +101,13 @@ full, proven sequence. The short path is:
    `config`'s `Config.external` prefixes (this machine's mounts), are fetched from this
    machine when the game asks for them; the game reloads once they arrive, and
    the headset keeps them for later sessions.
-3. If Meta Home remains visible, recreate `adb forward`, send `prox_close`, and
+   A role can list host ports to `adb reverse` before the push —
+   `"entries": { "vr": { "file": "scanner.fun", "reverse": [9000] } }` — so
+   the game's `http://127.0.0.1:9000` reaches this machine on the headset as
+   it does on desktop. Ports are 1–65535, without duplicates or 8123; other
+   shells ignore the field. Like the forward, adb drops the rule on
+   disconnect; re-running `run vr` recreates both.
+3. If Meta Home remains visible, recreate `adb forward` (and any `reverse`), send `prox_close`, and
    restart NativeActivity with `am start -S`. Wait for `/state`'s
    `rendered_frames` to advance; server readiness alone does not mean XR is
    rendering.
@@ -491,8 +497,9 @@ let settings = (model) =>
   http://host:port` (repeatable) on desktop, `adb shell setprop
   debug.functor.allow_sensor_upload http://host:port` (comma-separated)
   plus a restart on Quest. A refused origin streams nothing and reports why
-  in `last_error`. On Quest, `adb reverse tcp:9000 tcp:9000` makes the
-  host's port 9000 the headset's loopback.
+  in `last_error`. On Quest, the role's `"reverse": [9000]` in
+  functor.json makes `run vr` bridge the host's port 9000 to the headset's
+  loopback (see the device-day checklist).
 - Desktop streams the stand-in room's depth through the same path, with
   `source: "emulated"`. Web does not stream; a one-time warning says so.
 

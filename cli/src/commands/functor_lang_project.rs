@@ -56,6 +56,10 @@ pub struct FunctorLangProject {
     /// The role's name in `entries` (`server`), or empty for a project with a
     /// single `entry` — config errors name the role.
     pub role: String,
+    /// Host ports `run vr` bridges with `adb reverse tcp:P tcp:P`, so the
+    /// headset's `http://127.0.0.1:P` reaches this machine. Declared per role
+    /// as `{ "file": "game.fun", "reverse": [9000] }`; other shells ignore it.
+    pub reverse: Vec<u16>,
     /// Whether physical relative mouse input is captured and routed to the game.
     pub mouse_capture: bool,
     /// Whether the shell exposes an absolute pointer to the game.
@@ -187,12 +191,13 @@ because capture is now the default",
         // capture unless the manifest explicitly asks for the contradictory
         // combination above.
         let mouse_capture = requested_mouse_capture.unwrap_or(cursor != CursorPolicy::Visible);
-        let project = |role: &str, entry: String, prefix: String, module: String| {
+        let project = |role: &str, entry: String, prefix: String, module: String, reverse| {
             FunctorLangProject {
                 entry,
                 prefix,
                 module,
                 role: role.to_string(),
+                reverse,
                 mouse_capture,
                 cursor,
                 mounts: Vec::new(),
@@ -207,7 +212,13 @@ because capture is now the default",
 { \"file\": …, \"module\": … }) — e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"}",
             )),
             FunctorLangEntries::Single(entry) => match requested {
-                None => Ok(project("", entry.clone(), String::new(), String::new())),
+                None => Ok(project(
+                    "",
+                    entry.clone(),
+                    String::new(),
+                    String::new(),
+                    Vec::new(),
+                )),
                 Some(name) => Err(Error::other(format!(
                     "--entry {name}: this project has a single `entry` — `--entry` picks from \
 an `entries` map in functor.json"
@@ -221,8 +232,9 @@ an `entries` map in functor.json"
                         .join(", ")
                 };
                 let pick = |name: &str, value: &serde_json::Value| {
-                    pick_entry(name, value)
-                        .map(|(entry, prefix, module)| project(name, entry, prefix, module))
+                    pick_entry(name, value).map(|(entry, prefix, module, reverse)| {
+                        project(name, entry, prefix, module, reverse)
+                    })
                 };
                 match requested {
                     Some(name) => match map.iter().find(|(k, _)| k == name) {
@@ -284,21 +296,25 @@ name → .fun path (e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"
 /// "game.fun", "prefix": "server" }`, which resolves them through the prefix
 /// as camelCase (`serverInit`/`serverTick`/…). The two name bindings
 /// differently, so a role declares at most one. Malformed shapes get teaching
-/// errors naming the exact fix. Returns the `(entry, prefix, module)` triple;
+/// errors naming the exact fix. The object form may also list `reverse`
+/// ports (see [`reverse_ports`]). Returns `(entry, prefix, module, reverse)`;
 /// the caller folds in the project-wide settings.
-fn pick_entry(name: &str, value: &serde_json::Value) -> Result<(String, String, String), Error> {
+fn pick_entry(
+    name: &str,
+    value: &serde_json::Value,
+) -> Result<(String, String, String, Vec<u16>), Error> {
     match value {
         serde_json::Value::String(entry) if !entry.is_empty() => {
-            Ok((entry.clone(), String::new(), String::new()))
+            Ok((entry.clone(), String::new(), String::new(), Vec::new()))
         }
         serde_json::Value::Object(map) => {
             if let Some(unknown) = map
                 .keys()
-                .find(|k| !matches!(k.as_str(), "file" | "prefix" | "module"))
+                .find(|k| !matches!(k.as_str(), "file" | "prefix" | "module" | "reverse"))
             {
                 return Err(Error::other(format!(
                     "functor.json entry `{name}`: unknown key \"{unknown}\" — the object form \
-takes \"file\" and one of \"module\" / \"prefix\""
+takes \"file\", one of \"module\" / \"prefix\", and optionally \"reverse\""
                 )));
             }
             let entry = match map.get("file") {
@@ -360,7 +376,8 @@ module holding this role's entry bindings (e.g. \"Server\" resolves Server.init/
 module name (it is the block's own name: `module {module} {{ … }}`)"
                 )));
             }
-            Ok((entry, prefix, module))
+            let reverse = reverse_ports(name, map.get("reverse"))?;
+            Ok((entry, prefix, module, reverse))
         }
         _ => Err(Error::other(format!(
             "functor.json entry `{name}` must be a path to a .fun file, or \
@@ -368,6 +385,45 @@ module name (it is the block's own name: `module {module} {{ … }}`)"
             capitalized(name)
         ))),
     }
+}
+
+/// A role's `reverse` list: distinct TCP ports (1–65535) that `run vr`
+/// `adb reverse`s, so a game's `http://127.0.0.1:9000` on the headset reaches
+/// a server on this machine, as it does on desktop.
+fn reverse_ports(name: &str, value: Option<&serde_json::Value>) -> Result<Vec<u16>, Error> {
+    let shape = || {
+        Error::other(format!(
+            "functor.json entry `{name}`: \"reverse\" must be a list of TCP ports \
+(1–65535), e.g. [9000]"
+        ))
+    };
+    let items = match value {
+        None | Some(serde_json::Value::Null) => return Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => items,
+        Some(_) => return Err(shape()),
+    };
+    let mut ports = Vec::new();
+    for item in items {
+        let port = item
+            .as_u64()
+            .and_then(|p| u16::try_from(p).ok())
+            .filter(|&p| p != 0)
+            .ok_or_else(shape)?;
+        if ports.contains(&port) {
+            return Err(Error::other(format!(
+                "functor.json entry `{name}`: \"reverse\" lists port {port} twice"
+            )));
+        }
+        // `run vr` forwards this port to the headset; reversing it too loops.
+        if port == VR_PORT {
+            return Err(Error::other(format!(
+                "functor.json entry `{name}`: \"reverse\" can't list {VR_PORT} — \
+`run vr` already uses it for the headset's debug endpoint"
+            )));
+        }
+        ports.push(port);
+    }
+    Ok(ports)
 }
 
 /// A role name spelled as an inline module name (`server` → `Server`) — used
@@ -1264,6 +1320,24 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         adb_run(&serial, &["shell", "am", "start", "-n", VR_COMPONENT]).await?;
         let forward = format!("tcp:{VR_PORT}");
         adb_run(&serial, &["forward", &forward, &forward]).await?;
+        // Declared host ports: the game's loopback URLs reach this machine.
+        // Like the forward, adb drops these when the device disconnects.
+        for port in &self.reverse {
+            let tcp = format!("tcp:{port}");
+            adb_run(&serial, &["reverse", &tcp, &tcp])
+                .await
+                .map_err(|e| {
+                    Error::other(format!(
+                        "{e} — functor.json `reverse` lists {port}: is the headset still \
+connected (`adb devices`) and the port free on it? (`adb reverse --list` shows existing rules)"
+                    ))
+                })?;
+            emit(Event::Info {
+                message: format!(
+                    "adb reverse {tcp}: headset 127.0.0.1:{port} → this machine's port {port}"
+                ),
+            });
+        }
         spawn_logcat(&serial);
         let addr = format!("127.0.0.1:{VR_PORT}");
 
@@ -3105,6 +3179,59 @@ mod tests {
             mouse_capture: Ok(None),
             cursor: None,
         }
+    }
+
+    #[test]
+    fn reverse_ports_are_read_per_role() {
+        let config = named_json(&[
+            (
+                "vr",
+                serde_json::json!({ "file": "vr.fun", "reverse": [9000, 9001] }),
+            ),
+            ("client", serde_json::json!({ "file": "client.fun" })),
+        ]);
+        assert_eq!(config.select(Some("vr")).unwrap().reverse, [9000, 9001]);
+        // Absent (object or string form, or a single `entry`) = none.
+        assert!(config.select(Some("client")).unwrap().reverse.is_empty());
+        assert!(named(&[("client", "c.fun")])
+            .select(None)
+            .unwrap()
+            .reverse
+            .is_empty());
+        assert!(single("game.fun").select(None).unwrap().reverse.is_empty());
+    }
+
+    #[test]
+    fn invalid_reverse_ports_are_refused() {
+        for bad in [
+            serde_json::json!([0]),
+            serde_json::json!([65536]),
+            serde_json::json!([-1]),
+            serde_json::json!(["9000"]),
+            serde_json::json!(9000),
+        ] {
+            let config = named_json(&[(
+                "vr",
+                serde_json::json!({ "file": "vr.fun", "reverse": bad }),
+            )]);
+            let err = config.select(Some("vr")).unwrap_err();
+            assert!(
+                err.to_string().contains("list of TCP ports (1–65535)"),
+                "{bad}: {err}"
+            );
+        }
+        let config = named_json(&[(
+            "vr",
+            serde_json::json!({ "file": "vr.fun", "reverse": [9000, 9000] }),
+        )]);
+        let err = config.select(Some("vr")).unwrap_err();
+        assert!(err.to_string().contains("port 9000 twice"), "{err}");
+        let config = named_json(&[(
+            "vr",
+            serde_json::json!({ "file": "vr.fun", "reverse": [8123] }),
+        )]);
+        let err = config.select(Some("vr")).unwrap_err();
+        assert!(err.to_string().contains("can't list 8123"), "{err}");
     }
 
     #[test]
