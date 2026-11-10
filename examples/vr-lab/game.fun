@@ -59,6 +59,11 @@ type Release = { prop: Props.Kind, kind: ReleaseKind, at: Input.point3, velocity
 /// held prop's accepted pose implies (a hand blocked with its prop).
 type HandView = | Tracked | Accepted
 
+/// How a hand is drawn: the capsule glove (`Hand`), or the skinned one
+/// (`Skin`) posed by the same joints. The capsules are the hand's fit data
+/// either way.
+type Glove = | Capsule | Skinned
+
 /// A prop: in a hand, in a body slot, or free (neither). Free, it is declared
 /// at `at` (its spawn, or where it was let go): a constant until the next
 /// grab, so the simulation owns its pose. Slotted, it has no body: it rides
@@ -97,6 +102,9 @@ type Model = {
   cycle: bool,
   thumbstick: bool,
   handView: HandView,
+  // The glove drawn, and either thumbstick's level pushed up (for its edge).
+  glove: Glove,
+  stickUp: bool,
   // Bumped on reset: fresh tags respawn the props at rest.
   gen: float,
   props: List<Prop>,
@@ -182,7 +190,7 @@ let reset = (m: Model, id: float): Model =>
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
-    handView: Accepted, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
+    handView: Accepted, glove: Skinned, stickUp: false, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
     feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon),
     shotgun: emptyShotgun, shellBox: 0.0, buttonA: (false, false),
     stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
@@ -205,6 +213,11 @@ let flipped = (v: HandView): HandView =>
   | Tracked => Accepted
   | Accepted => Tracked
 
+let otherGlove = (g: Glove): Glove =>
+  match g with
+  | Capsule => Skinned
+  | Skinned => Capsule
+
 let sampledInput = (m: Model, s: Input.snapshot): Model =>
   let chosen =
     stationKeys
@@ -214,6 +227,9 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
   let thumbstick = buttons(s.xr, (c) => c.thumbstickPressed) in
   let key = (k: Key.t) => s.pressedKeys |> List.any((p) => p == k) in
   let flip = key(Key.H) || (thumbstick && not m.thumbstick) in
+  // G, or either thumbstick pushed up, switches the glove.
+  let up = buttons(s.xr, (c) => stickUp(m.stickUp, c.thumbstick.y)) in
+  let swap = key(Key.G) || (up && not m.stickUp) in
   // A fresh press (`now`, not `was`) on the hand at gun `k`'s trigger.
   let pressedOn = (k: Props.Kind, side: Hold.Side, now: bool, was: bool) => now && not was && triggerHand(m, k) == Option.Some(side) in
   let level = (side: Hold.Side, of: (Input.controller) => bool) => controller(s.xr, side) |> Option.map(of) |> Option.defaultValue(false) in
@@ -235,6 +251,7 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
   // A/X is the selector).
   let slideRelease = if pressedOn(Props.Pistol, Hold.Left, aLeft, wasLeft) || pressedOn(Props.Pistol, Hold.Right, aRight, wasRight) then [Props.Pistol] else [] in
   let next = { m with xr: s.xr, cycle: cycle, thumbstick: thumbstick, handView: if flip then flipped(m.handView) else m.handView,
+               glove: if swap then otherGlove(m.glove) else m.glove, stickUp: up,
                buttonA: (aLeft, aRight), rifle: if select then Gun.select(Longarm.weapon, m.rifle) else m.rifle,
                stick: (downLeft, downRight), releasing: releasing, slideRelease: slideRelease } in
   match chosen with
@@ -245,6 +262,9 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
 let stickDown = (was: bool, y: float): bool => if was then y < 0.0 - 0.3 else y <= 0.0 - 0.7
 
 expect stickDown(false, -0.7) && not stickDown(false, -0.6) && stickDown(true, -0.4) && not stickDown(true, -0.3)
+
+/// A thumbstick held up: `stickDown` mirrored.
+let stickUp = (was: bool, y: float): bool => stickDown(was, 0.0 - y)
 
 /// A gun's magazine dropped out: a new magazine prop with its rounds, free
 /// below the well (`Gun.dropOf`), the chambered round left in the gun. A gun
@@ -1319,6 +1339,16 @@ expect (
   init.handView == Accepted && once.handView == Tracked && sampledInput(once, keys([Key.H], Option.None)).handView == Accepted
     && held.handView == Tracked
 )
+// Skinned to start; G switches the glove, and back; so does either
+// thumbstick pushed up, once per push; it leaves the hand view alone.
+expect (
+  let keys = snapshotOf in
+  let pushed = Option.Some({ head: Option.None, left: { hand(zero, 0.0) with thumbstick: { x: 0.0, y: 0.9 } }, right: away }) in
+  let once = sampledInput(init, keys([Key.G], Option.None)) in
+  let held = sampledInput(sampledInput(init, keys([], pushed)), keys([], pushed)) in
+  init.glove == Skinned && once.glove == Capsule && sampledInput(once, keys([Key.G], Option.None)).glove == Skinned
+    && held.glove == Capsule && held.handView == init.handView
+)
 
 let box = (b: Stations.Box, c: Color.t): Scene.t =>
   Scene.cube() |> Scene.scaleXYZ(b.size.x, b.size.y, b.size.z) |> Scene.translate(Quat.toVec3(b.center)) |> Scene.lit(c)
@@ -1530,6 +1560,12 @@ let fingersOf = (shown: (Hold.Side, (float, float, float, float))): Scene.t =>
   let (side, levels) = shown in
   Hand.fingersAt(gloveColor(side), side, levels)
 
+/// The skinned glove (`Scene.memo`'s builder): the thumb and the fingers'
+/// drawn levels.
+let skinOf = (shown: (Hold.Side, Hand.Thumb, (float, float, float, float))): Scene.t =>
+  let (side, thumb, levels) = shown in
+  Skin.scene(side, thumb, levels)
+
 /// A hand's glove where `drawnAt` puts it, and (drawn elsewhere by over
 /// `Hold.ghostDistance`) a translucent ghost, the same glove, where it really
 /// is.
@@ -1541,10 +1577,12 @@ let handScene = (m: Model, st: Stations.Station, side: Hold.Side): (Scene.t, Sce
     let drawn = drawnAt(m, on, g) in
     let fingers = fingersOn(m, side, on) in
     let key = if side == Hold.Left then "glove-left" else "glove-right" in
-    let glove = Scene.group([
-      Scene.memo($"{key}-palm", (side, fingers.thumb), palmOf),
-      Scene.memo($"{key}-fingers", (side, Hand.levels(fingers)), fingersOf),
-    ]) in
+    let glove = match m.glove with
+      | Capsule => Scene.group([
+          Scene.memo($"{key}-palm", (side, fingers.thumb), palmOf),
+          Scene.memo($"{key}-fingers", (side, Hand.levels(fingers)), fingersOf),
+        ])
+      | Skinned => Scene.memo($"{key}-skin", (side, fingers.thumb, Hand.levels(fingers)), skinOf) in
     (glove |> Scene.atPose(posed(st, drawn)),
      if Hold.ghosted(g, drawn) then glove |> Scene.atPose(posed(st, g)) |> Scene.opacity(0.4) else Scene.group([]))
 
