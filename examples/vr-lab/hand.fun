@@ -336,10 +336,17 @@ let levels = (f: FingerPose): List<(float, float)> =>
 /// and the frame its distal two hang from (`hangFrom`).
 type Proximal = { seg: Seg, part: Part, frame: Input.pose }
 
+/// Each hand curled to every level (`curled(k / drawLevels)`): what the
+/// drawing tables (here and `Skin`'s) are read from.
+let levelPoses = (side: Hold.Side): List<Posed> => List.range(drawLevels + 1.0) |> List.map((k) => local(side, curled(k / drawLevels)))
+let leftLevels = levelPoses(Hold.Left)
+let rightLevels = levelPoses(Hold.Right)
+let levelsOf = (side: Hold.Side): List<Posed> => if side == Hold.Left then leftLevels else rightLevels
+
 /// Per level, each finger's proximal bone at that curl (`proximal`), and its
 /// distal two's capsules at that tip in the frame they hang from (`distal`).
 let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<Seg>>>) =>
-  let posed = List.range(drawLevels + 1.0) |> List.map((k) => local(side, curled(k / drawLevels))) in
+  let posed = levelsOf(side) in
   (posed |> List.map((p) => fingerFirsts |> List.map((first) =>
      let cap = proximalCap(first) in
      let s = segOf(p, cap) in
@@ -347,8 +354,7 @@ let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<Seg>
    posed |> List.map((p) => fingerFirsts |> List.zip(distalCaps) |> List.map((fc) =>
      let (first, caps) = fc in
      let at = hangFrom(p, first) in
-     let into = (q: Input.point3) => Quat.rotate(Quat.conj(at.orientation), Quat.sub(q, at.position)) in
-     caps |> List.map((cap) => let s = segOf(p, cap) in { s with a: into(s.a), b: into(s.b) }))))
+     caps |> List.map((cap) => let s = segOf(p, cap) in { s with a: Hold.localPoint(at, s.a), b: Hold.localPoint(at, s.b) }))))
 let leftTables = fingerTables(Hold.Left)
 let rightTables = fingerTables(Hold.Right)
 
@@ -421,7 +427,7 @@ expect (
 expect (
   [Hold.Left, Hold.Right] |> List.all((side) => [power, uneven, onTrigger(0.3), fist, flat] |> List.all((f) =>
     let p = local(side, atLevels(f)) in
-    let want = fingerFirsts |> List.concatMap((first) => [proximalCap(first), ..(capsules |> List.filter((c) => c.joint > first + 1.0 && c.joint < first + 4.0))])
+    let want = fingerFirsts |> List.zip(distalCaps) |> List.concatMap((fc) => let (first, caps) = fc in [proximalCap(first), ..caps])
       |> List.map((cap) => let s = segOf(p, cap) in (drawn(s.a), drawn(s.b))) in
     let got = fingersDrawn(side, levels(f)) |> List.concatMap((pd) => let (pr, segs) = pd in [pr.seg, ..segs]) |> List.map((s) => (s.a, s.b)) in
     List.length(got) == 12.0 && (List.zip(want, got) |> List.all((gw) => let (g, w) = gw in let (ga, gb) = g in let (wa, wb) = w in Hold.near3(ga, wa) && Hold.near3(gb, wb)))))

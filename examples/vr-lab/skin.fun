@@ -12,7 +12,7 @@
 /// The skinned joints, as indices into `Hand.names`: the wrist, the thumb's
 /// three bones and each finger's four. The palm and the tips carry no skin.
 let thumbJoints = [2.0, 3.0, 4.0]
-let fingerJoints = [6.0, 11.0, 16.0, 21.0] |> List.map((first) => [first, first + 1.0, first + 2.0, first + 3.0])
+let fingerJoints = Hand.fingerFirsts |> List.map((first) => [first, first + 1.0, first + 2.0, first + 3.0])
 let skinned = List.flatten([[Hand.wrist], thumbJoints, List.flatten(fingerJoints)])
 
 /// A model's joints, in `Hand.names` order without the palm.
@@ -194,7 +194,7 @@ type Proximal = { joints: List<(string, Input.pose)>, frame: Input.pose }
 /// Per level, each finger's proximal placements at that curl, and its distal
 /// two's at that tip, in the frame they hang from (correction included).
 let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<(string, Input.pose)>>>) =>
-  let posed = List.range(Hand.drawLevels + 1.0) |> List.map((k) => Hand.local(side, Hand.curled(k / Hand.drawLevels))) in
+  let posed = Hand.levelsOf(side) in
   (posed |> List.map((p) => Hand.fingerFirsts |> List.map((first) =>
      { joints: placements(side, p, [first, first + 1.0]), frame: Hold.compose(toModel, Hand.hangFrom(p, first)) })),
    posed |> List.map((p) => Hand.fingerFirsts |> List.map((first) =>
