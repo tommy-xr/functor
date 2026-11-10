@@ -42,13 +42,6 @@ fn payload<'a>(ctor: &str, json: &'a Value) -> Option<&'a Value> {
     }
 }
 
-fn option(value: Option<Value>) -> Value {
-    match value {
-        Some(value) => variant("Option.Some", vec![value]),
-        None => variant("Option.None", vec![]),
-    }
-}
-
 fn field(name: &str, json: &Value) -> Option<Value> {
     let Value::List(fields) = payload("Json.Object", json)? else {
         return None;
@@ -65,12 +58,12 @@ fn field(name: &str, json: &Value) -> Option<Value> {
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Json.parse", "Json.parse(text)", |text: String| {
         match serde_json::from_str(&text) {
-            Ok(json) => variant("Result.Ok", vec![to_value(json)]),
+            Ok(json) => bytes::ok(to_value(json)),
             Err(e) => variant("Result.Error", vec![Value::String(e.to_string().into())]),
         }
     });
     reg.fn2("Json.field", "Json.field(name, json)", |name: String, json: Value| {
-        option(field(&name, &json))
+        crate::input::option_value(field(&name, &json))
     });
     for (path, sig, ctor) in [
         ("Json.asNumber", "Json.asNumber(json)", "Json.Number"),
@@ -78,7 +71,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         ("Json.asBool", "Json.asBool(json)", "Json.Bool"),
         ("Json.asList", "Json.asList(json)", "Json.Array"),
     ] {
-        reg.fn1(path, sig, move |json: Value| option(payload(ctor, &json).cloned()));
+        reg.fn1(path, sig, move |json: Value| crate::input::option_value(payload(ctor, &json).cloned()));
     }
 }
 
