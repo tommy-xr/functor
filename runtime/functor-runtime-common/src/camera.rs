@@ -232,6 +232,18 @@ impl MappedTrackingPose {
         let q = Quaternion::from(cgmath::Matrix3::from_cols(b.left, b.up, b.forward)).normalize();
         Some((b.position.into(), [q.v.x, q.v.y, q.v.z, q.s]))
     }
+
+    /// The inverse of [`Self::to_position_rotation`]: the pose whose local
+    /// `+Z` and `+Y` the rotation `[x, y, z, w]` carries onto `forward` and
+    /// `up` — how `Physics.pose` reads a body back.
+    pub fn from_position_rotation(position: [f32; 3], [x, y, z, w]: [f32; 4]) -> MappedTrackingPose {
+        let q = Quaternion::new(w, x, y, z).normalize();
+        MappedTrackingPose {
+            position,
+            forward: q.rotate_vector(Vector3::unit_z()).into(),
+            up: q.rotate_vector(Vector3::unit_y()).into(),
+        }
+    }
 }
 
 /// Smallest `|up × forward|` (unit vectors: the sine of their angle, here
@@ -1412,6 +1424,30 @@ mod tests {
             assert_eq!(camera.eye, position);
             assert_eq!(camera.target, target);
             assert_eq!(camera.up, up);
+        }
+    }
+
+    // A pose turned into a rotation and back keeps its forward and up,
+    // rolled and straight up/down included.
+    #[test]
+    fn position_rotation_round_trips() {
+        let (s, c) = 0.6f32.sin_cos();
+        for (forward, up) in [
+            ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+            ([0.6, 0.0, 0.8], [0.0, 1.0, 0.0]),
+            ([0.0, -s, c], [0.0, c, s]),
+            ([0.0, 0.0, 1.0], [-s, c, 0.0]),
+            ([0.0, 1.0, 0.0], [0.0, 0.0, -1.0]),
+            ([0.0, -1.0, 0.0], [s, 0.0, c]),
+            ([-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+        ] {
+            let pose = MappedTrackingPose { position: [1.0, 2.0, 3.0], forward, up };
+            let (p, q) = pose.to_position_rotation().unwrap();
+            let back = MappedTrackingPose::from_position_rotation(p, q);
+            let near = |a: [f32; 3], b: Vector3<f32>| (Vector3::from(a) - b.normalize()).magnitude() < 1e-5;
+            assert_eq!(back.position, pose.position);
+            assert!(near(back.forward, Vector3::from(forward)), "{forward:?}: {:?}", back.forward);
+            assert!(near(back.up, Vector3::from(up)), "{up:?}: {:?}", back.up);
         }
     }
 }

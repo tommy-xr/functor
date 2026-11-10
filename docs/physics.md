@@ -187,7 +187,8 @@ accumulator is short of a full step does not step at all, and the command lands
 on the following one.
 
 Read semantics worth knowing: physics reads of a missing tag are **loud
-spanned errors** — games read only tags their `physics` hook declares. (An
+spanned errors** — games read only tags their `physics` hook declares
+(`Physics.pose` alone answers `Option.None`). (An
 Option-shaped variant return is possible now that Functor Lang has `match`; loud
 remains the default because a missing declared body is a bug, not a case.)
 
@@ -345,6 +346,37 @@ a teaching error. Rays and contacts report the body's tag.
   so there the motion is a chain of linear casts, each holding its start
   rotation: a turn is followed to within 5 mm (at most 256 steps, so coarser
   for a long prop turning far), not exactly.
+
+### Held props: full poses and spin
+
+A body can sit at the same `Camera3D.mappedPose` its visual draws at, read
+that pose back, and be thrown spinning:
+
+- **`body |> Physics.atPose(pose)`** sets position and full orientation in
+  `Scene.atPose`'s basis (the shared `MappedTrackingPose` helper; local `+Z`
+  along `forward`, `+Y` along `up`). It replaces `Physics.at` and any rotation
+  piped before it. The declared quaternion is canonical (`w ≥ 0`); a
+  kinematic target is flipped onto the live pose's hemisphere, so a held prop
+  turning past 180° takes the short arc.
+- **Divergence, as for `Physics.at`:** a dynamic body takes the pose as its
+  spawn pose and is teleported only when the declared pose changes; a
+  kinematic body redeclared at a new pose each frame gets it as its
+  next-step target, so it shoves what it sweeps through with its linear and
+  angular velocity. A released prop is therefore declared at a pose kept in
+  the model (where it was let go), never one read back each frame.
+- **`Physics.pose(tag)`** reads the live stepped pose as an
+  `Option.t<Camera3D.mappedPose>` (`impure[physics]`), `None` for a tag not
+  in the world: drawing `Scene.atPose` at its `Some` pose puts a visual where the body is, and
+  `pose(t)` after `atPose(p)` is `p` within float error.
+- **`Physics.setAngularVelocity(tag, w)`** is a command like `setVelocity`
+  (world-space axis × rad/s), applied after reconcile. Spin has no
+  declaration field, so nothing in reconcile reverts it; a structural rebuild
+  keeps it. Dynamic bodies only: an upright one warns rather than turn
+  forever.
+
+A release is one frame: declare the held prop `dynamic |> atPose(released)`
+and return `Effect.batch([setVelocity(t, v), setAngularVelocity(t, w)])`.
+Without the commands the body keeps the kinematic velocities it had.
 
 ### Characters: `Physics.character`
 
