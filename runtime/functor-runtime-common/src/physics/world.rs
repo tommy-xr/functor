@@ -2459,14 +2459,7 @@ fn pressed(
             return None;
         }
     }
-    Some(ShapeCastHit {
-        time_of_impact: 0.0,
-        witness1: c.point1,
-        witness2: c.point2,
-        normal1: c.normal1,
-        normal2: c.normal2,
-        status: ShapeCastStatus::PenetratingOrWithinTargetDist,
-    })
+    Some(contact_hit(c, 0.0, ShapeCastStatus::PenetratingOrWithinTargetDist))
 }
 
 /// `shape`'s first hit on `other` (at `pos`) moving along `motion` over t in
@@ -2489,17 +2482,21 @@ fn pair_hit(
     })
 }
 
-/// The farthest a [`segmented_hit`] segment's held rotation lets the shape
-/// stray from its turning path, and the halvings that place a hit a turn
-/// swung in.
+/// The farthest a [`segmented_hit`] segment lets the shape stray from its
+/// path, the most segments one sweep takes (a longer shape turning further
+/// strays more), and the halvings that place a hit inside a segment.
 const SEGMENT_TOL: f32 = 5.0e-3;
+const MAX_SEGMENTS: f32 = 256.0;
 const BISECTIONS: u32 = 16;
 
 /// [`pair_hit`] where parry has no turning cast (a heightfield, a halfspace):
 /// `k` linear casts along the motion, each holding its start rotation, with
 /// `k` such that a segment turns the shape's farthest point at most
 /// [`SEGMENT_TOL`] (one exact linear cast when it doesn't turn). An overlap
-/// at a segment's end that its cast missed was turned into, and is halved
+/// at a segment's end that its cast missed was turned into. Starting in an
+/// overlap that isn't [`pressed`], a cast would hit a heightfield's inner
+/// triangle edges, so segments then also split the travel, and a hit is the
+/// contact getting deeper than at its segment's start. Either is halved
 /// down to when it began.
 fn segmented_hit(
     pos: &Pose,
@@ -2507,66 +2504,63 @@ fn segmented_hit(
     shape: &dyn rapier3d::parry::shape::Shape,
     motion: &NonlinearRigidMotion,
 ) -> Option<ShapeCastHit> {
+    use rapier3d::parry::query::cast_shapes;
     let radius = shape.compute_local_bounding_sphere().radius;
-    let k = ((motion.angvel.length() * radius / SEGMENT_TOL).ceil() as u32).max(1);
-    let options = ShapeCastOptions {
-        max_time_of_impact: 1.0,
-        stop_at_penetration: false,
-        ..Default::default()
-    };
-    let overlaps = |t: f32| overlap(pos, other, shape, &motion.position_at_time(t)).is_some();
+    // Every turned pose is inside the ball about the moving centre: if that
+    // ball neither starts touching nor hits, nor does the shape (the room's
+    // unbounded floor is a candidate for every sweep in the room).
+    let ball = rapier3d::parry::shape::Ball::new(radius);
+    let centre = Pose::from_translation(motion.start.translation);
+    let ball_cast = cast_shapes(pos, Vector::ZERO, other, &centre, motion.linvel, &ball, cast_options(1.0, 0.0));
+    if !matches!(ball_cast, Ok(Some(_))) && overlap(pos, other, &ball, &centre).is_none() {
+        return None;
+    }
+    let depth = |t: f32| overlap(pos, other, shape, &motion.position_at_time(t)).map(|c| c.dist);
+    let mut start_depth = depth(0.0);
+    let travel = motion.angvel.length() * radius + start_depth.map_or(0.0, |_| motion.linvel.length());
+    let k = (travel / SEGMENT_TOL).ceil().clamp(1.0, MAX_SEGMENTS) as u32;
     let (mut t0, mut start) = (0.0, motion.position_at_time(0.0));
-    let mut inside = overlaps(0.0);
     for i in 1..=k {
         let t1 = i as f32 / k as f32;
         let end = motion.position_at_time(t1);
-        if inside {
-            // A cast from inside a heightfield hits its triangles' inner
-            // edges, so an overlap only hits once it presses deeper (the
-            // first segment's start was `pair_hit`'s own check).
-            let on = NonlinearRigidMotion::new(start, Vector::ZERO, motion.linvel, motion.angvel);
-            if let Some(hit) = (i > 1).then(|| pressed(pos, other, shape, &start, Some(&on))).flatten() {
-                return Some(ShapeCastHit { time_of_impact: t0, ..hit });
-            }
-        } else {
-            let cast = rapier3d::parry::query::cast_shapes(
-                pos,
-                Vector::ZERO,
-                other,
-                &start,
-                end.translation - start.translation,
-                shape,
-                options,
-            );
-            if let Ok(Some(hit)) = cast {
+        if start_depth.is_none() {
+            let vel = end.translation - start.translation;
+            if let Ok(Some(hit)) = cast_shapes(pos, Vector::ZERO, other, &start, vel, shape, cast_options(1.0, 0.0)) {
                 let time_of_impact = t0 + hit.time_of_impact * (t1 - t0);
                 return Some(ShapeCastHit { time_of_impact, ..hit.transform1_by(pos) });
             }
         }
-        let was_inside = std::mem::replace(&mut inside, overlaps(t1));
-        if inside && !was_inside {
+        let limit = start_depth.map_or(f32::INFINITY, |d| d - PRESSING);
+        let hits = |t: f32| depth(t).is_some_and(|d| d < limit);
+        let end_depth = depth(t1);
+        if end_depth.is_some_and(|d| d < limit) {
             let (mut clear, mut touching) = (t0, t1);
             for _ in 0..BISECTIONS {
                 let mid = 0.5 * (clear + touching);
-                if overlaps(mid) {
+                if hits(mid) {
                     touching = mid;
                 } else {
                     clear = mid;
                 }
             }
             let c = overlap(pos, other, shape, &motion.position_at_time(touching))?;
-            return Some(ShapeCastHit {
-                time_of_impact: clear,
-                witness1: c.point1,
-                witness2: c.point2,
-                normal1: c.normal1,
-                normal2: c.normal2,
-                status: ShapeCastStatus::Converged,
-            });
+            return Some(contact_hit(c, clear, ShapeCastStatus::Converged));
         }
-        (t0, start) = (t1, end);
+        (t0, start, start_depth) = (t1, end, end_depth);
     }
     None
+}
+
+/// A contact as a cast's hit at `time_of_impact`.
+fn contact_hit(c: rapier3d::parry::query::Contact, time_of_impact: f32, status: ShapeCastStatus) -> ShapeCastHit {
+    ShapeCastHit {
+        time_of_impact,
+        witness1: c.point1,
+        witness2: c.point2,
+        normal1: c.normal1,
+        normal2: c.normal2,
+        status,
+    }
 }
 
 /// `shape` at `at` touching `other` (at `pos`): the contact, in world space.

@@ -382,7 +382,8 @@ type sweepHit = {
 /// the last step.
 ///
 /// Against a heightfield or the fused room's floor the turn is followed in
-/// linear steps that each hold their rotation, to within 5 mm.
+/// linear steps that each hold their rotation, to within 5 mm (at most 256
+/// steps, so coarser for a long prop turning far).
 ///
 /// ```functor
 /// let blocked = Physics.sweep(Physics.box(0.04, 0.04, 0.8), held, wanted, Physics.SweepFixed)

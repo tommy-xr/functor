@@ -343,7 +343,8 @@ a teaching error. Rays and contacts report the body's tag.
   thickness in, a CCD tolerance), and a motionless sweep is an overlap test.
   Rapier has no turning cast against a heightfield or the fused room's floor,
   so there the motion is a chain of linear casts, each holding its start
-  rotation: a turn is followed to within 5 mm, not exactly.
+  rotation: a turn is followed to within 5 mm (at most 256 steps, so coarser
+  for a long prop turning far), not exactly.
 
 ### Characters: `Physics.character`
 

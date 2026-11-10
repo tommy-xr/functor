@@ -94,6 +94,7 @@ fn main() {
         ("into the wall", &boxes, [0.565, 1.2, 4.4], [0.585, 1.2, 4.4], z, z),
         ("turning in place", &boxes, [0.35, 1.2, 4.4], [0.35, 1.2, 4.4], z, [1.0, 0.0, 0.2]),
         ("terrain: clear", &terrain, [0.0, 1.2, 0.0], [0.02, 1.2, 0.0], z, z),
+        ("terrain: turn, clear", &terrain, [0.0, 1.2, 0.0], [0.0, 1.2, 0.0], z, [0.0, -1.0, 0.2]),
         ("terrain: turning", &terrain, [0.0, 0.2, 0.0], [0.0, 0.2, 0.0], z, [0.0, -1.0, 0.2]),
     ];
     println!("sweep_bench: one call, a 0.6 m stick, vr-lab-sized world ({CALLS} calls x {BATCHES} batches)\n");

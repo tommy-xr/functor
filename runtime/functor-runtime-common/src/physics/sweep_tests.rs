@@ -296,13 +296,11 @@ fn a_fused_wall_reports_its_own_tag() {
     );
 }
 
-/// 20 m of terrain about the origin: flat at y = 0, or rising 0.1 m per m
-/// along +x.
-fn terrain(ramp: bool) -> Body {
+/// 20 m of terrain about the origin, 0 to 2 m high: 33 columns of samples
+/// along x (0.625 m apart, column 16 at x = 0), each from `column`.
+fn terrain(column: fn(u32) -> u16) -> Body {
     let (width, height) = (33u32, 33u32);
-    let samples = (0..width * height)
-        .map(|i| if ramp { ((i % width) * 65535 / (width - 1)) as u16 } else { 0 })
-        .collect();
+    let samples = (0..width * height).map(|i| column(i % width)).collect();
     let geometry = crate::terrain::TerrainGeometry {
         source: crate::terrain::TerrainSource {
             locator: "test.png".to_string(),
@@ -330,7 +328,7 @@ fn terrain(ramp: bool) -> Body {
 
 #[test]
 fn a_sweep_lands_on_a_heightfield_and_turns_into_it() {
-    let w = stepped(vec![terrain(false)]);
+    let w = stepped(vec![terrain(|_| 0)]);
     let ball = Shape::Sphere { radius: 0.1 };
     let hit = w
         .sweep(
@@ -363,7 +361,7 @@ fn a_sweep_lands_on_a_heightfield_and_turns_into_it() {
 
 #[test]
 fn a_start_overlap_with_terrain_holds_against_pressing() {
-    let w = stepped(vec![terrain(false)]);
+    let w = stepped(vec![terrain(|_| 0)]);
     let block = cuboid(0.2, 0.2, 0.2);
     // 2 cm into the ground.
     let inside = [1.0, 0.08, 1.0];
@@ -380,11 +378,20 @@ fn a_start_overlap_with_terrain_holds_against_pressing() {
     assert_eq!(fraction(w.sweep(&block, upright(inside), upright(inside), SweepFilter::Fixed)), 0.0);
     let clear = upright([1.0, 0.5, 1.0]);
     assert_eq!(w.sweep(&block, clear, clear, SweepFilter::Fixed), None);
+    // Sliding along embedded, into a hill that rises from x = 3.75: it hits
+    // as its leading face (0.1 m ahead) reaches the foot (once the slope is
+    // deeper in it than the ground: a few cm on).
+    let w = stepped(vec![terrain(|c| (c.saturating_sub(22) * 6000) as u16)]);
+    let hit = w
+        .sweep(&block, upright(inside), upright([5.0, 0.08, 1.0]), SweepFilter::Fixed)
+        .expect("the hill");
+    assert_eq!(hit.tag, "terrain");
+    assert!(near(1.0 + 4.0 * hit.fraction + 0.1, 3.75, 3.0e-2), "{hit:?}");
 }
 
 #[test]
 fn an_unrotated_sweep_onto_terrain_matches_shape_cast() {
-    let w = stepped(vec![terrain(true)]);
+    let w = stepped(vec![terrain(|c| (c * 65535 / 32) as u16)]);
     let shapes = [
         Shape::Sphere { radius: 0.1 },
         cuboid(0.2, 0.3, 0.4),
