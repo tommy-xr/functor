@@ -48,6 +48,22 @@ let nlerp = (a: Input.quaternion, b: Input.quaternion, t: float): Input.quaterni
   let n = Math.sqrt(x * x + y * y + z * z + w * w) in
   { x: x / n, y: y / n, z: z / n, w: w / n }
 
+let dot4 = (a: Input.quaternion, b: Input.quaternion): float => a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+
+// The angle (radians, 0 to pi) of the turn from `a` to `b`.
+let angle = (a: Input.quaternion, b: Input.quaternion): float =>
+  2.0 * Math.acos(Math.min(1.0, Math.abs(dot4(a, b))))
+
+// Constant-rate interpolation, the shorter way round: the turn
+// `Physics.sweep` makes between two poses.
+let slerp = (a: Input.quaternion, b: Input.quaternion, t: float): Input.quaternion =>
+  let half = angle(a, b) / 2.0 in
+  if half < 0.0001 then nlerp(a, b, t)
+  else
+    let wa = Math.sin((1.0 - t) * half) / Math.sin(half) in
+    let wb = (if dot4(a, b) < 0.0 then 0.0 - 1.0 else 1.0) * Math.sin(t * half) / Math.sin(half) in
+    { x: wa * a.x + wb * b.x, y: wa * a.y + wb * b.y, z: wa * a.z + wb * b.z, w: wa * a.w + wb * b.w }
+
 // The heading (radians about +Y, 0 = facing +Z) of a frame whose forward is
 // +Z. Exact for any pitch without roll, so looking straight down still has
 // one: `forward.xz * up.y - up.xz * forward.y` is the unpitched forward.
@@ -66,3 +82,7 @@ expect near(heading(mul(yaw(0.0 - 2.0), axisAngle(v3(1.0, 0.0, 0.0), 1.4))), 0.0
 expect near(heading(mul(yaw(2.5), axisAngle(v3(1.0, 0.0, 0.0), 0.0 - 1.5))), 2.5)
 expect near(wrap(3.0 * Math.pi / 2.0), 0.0 - Math.pi / 2.0)
 expect (let p = rotate(yaw(Math.pi / 2.0), v3(0.0, 0.0, 1.0)) in near(p.x, 1.0) && near(p.z, 0.0))
+expect near(angle(yaw(0.3), yaw(1.5)), 1.2)
+expect near(heading(slerp(yaw(0.2), yaw(1.4), 0.25)), 0.5)
+// The shorter way: from just short of a half turn to just past it.
+expect near(Math.abs(heading(slerp(yaw(3.0), yaw(0.0 - 3.0), 0.5))), Math.pi)

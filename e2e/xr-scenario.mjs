@@ -6,7 +6,9 @@
 // and a list of segments. Each segment runs `frames` fixed steps; a hand named
 // in it moves in a straight line from where the previous segment left it to
 // `to` (rig-local metres: +X right, +Y up from the floor, -Z forward), with
-// its squeeze held at `squeeze`. `active: false` loses the hand's tracking.
+// its squeeze held at `squeeze`. `turn` (a quaternion, `[x, y, z, w]`) turns
+// its grip the same way, the shorter way round, from where it was to that.
+// `active: false` loses the hand's tracking.
 // A segment's `mark` names its last step, so a check can find it.
 //
 //   { frames: 30, right: { to: [0.2, 1.0, -0.55], squeeze: 0 } }
@@ -130,6 +132,17 @@ export const sample = (hands) => ({
 
 const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
 
+/** Constant-rate quaternion interpolation (`[x, y, z, w]`), the shorter way. */
+export function slerp(a, b, t) {
+  const d = a.reduce((s, v, i) => s + v * b[i], 0);
+  const sign = d < 0 ? -1 : 1;
+  const half = Math.acos(Math.min(1, Math.abs(d)));
+  if (half < 1e-4) return a.map((v, i) => v + (sign * b[i] - v) * t);
+  const wa = Math.sin((1 - t) * half) / Math.sin(half);
+  const wb = (sign * Math.sin(t * half)) / Math.sin(half);
+  return a.map((v, i) => wa * v + wb * b[i]);
+}
+
 /**
  * Play `scenario` step by step. `onStep({ step, mark, state, hands })` runs
  * after every step (await it to capture a frame); returns the marks' states.
@@ -144,7 +157,7 @@ export async function play(rt, scenario, onStep = async () => {}) {
   const marks = {};
   let step = 0;
   for (const seg of scenario.steps) {
-    const from = { left: hands.left.at, right: hands.right.at };
+    const from = { left: { ...hands.left }, right: { ...hands.right } };
     for (let i = 0; i < seg.frames; i++) {
       for (const side of ["left", "right"]) {
         const spec = seg[side];
@@ -152,7 +165,10 @@ export async function play(rt, scenario, onStep = async () => {}) {
         hands[side] = {
           ...hands[side],
           ...spec,
-          at: spec.to ? lerp(from[side], spec.to, (i + 1) / seg.frames) : hands[side].at,
+          at: spec.to ? lerp(from[side].at, spec.to, (i + 1) / seg.frames) : hands[side].at,
+          orientation: spec.turn
+            ? slerp(from[side].orientation ?? [0, 0, 0, 1], spec.turn, (i + 1) / seg.frames)
+            : hands[side].orientation,
         };
       }
       await rt.post("/input", sample(hands));

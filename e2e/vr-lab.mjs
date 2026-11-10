@@ -14,6 +14,9 @@
 //   3. Dragged farther, the grip breaks: dropped in place, no velocity, and the
 //      still-squeezing hand can't take it back.
 //   4. Losing the hand mid-swing and opening it on return never throws.
+//   4b. The stick, its hand held still and the wrist turned a quarter turn
+//      into the wall, never passes the wall plane at any step and stops at
+//      it; turned back, it follows the hand; let go, it returns to its rack.
 //   5. A station reset mid-hold drops the hold and respawns the ball at rest.
 //   6. The same throw in two fresh runtimes ends bit-identically.
 //   7. Recorded fixtures (`e2e/xr-fixture.mjs`): the checked-in grab-throw
@@ -29,7 +32,7 @@
 import { check, failures, sleep } from "./mcp-rpc.mjs";
 import { decode, encode, readLog, recordLive } from "./xr-fixture.mjs";
 import { advance, dirToWorld, launch, play, playFixture, tap } from "./xr-scenario.mjs";
-import { BALL, FAST_V, THROW_V, project, scenarios } from "./vr-lab-scenarios.mjs";
+import { BALL, FAST_V, STICK, THROW_V, WALL_RIG_X, project, scenarios, yaw } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8293;
 const WALL_FACE = 0.6; // world x, at the table's end
@@ -43,6 +46,26 @@ const angleDeg = (a, b) =>
   (Math.acos(Math.min(1, a.reduce((s, x, i) => s + x * b[i], 0) / (len(a) * len(b)))) * 180) / Math.PI;
 const some = (opt) => (opt?.$ctor === "Option.Some" ? opt.args[0] : undefined);
 const fmt = (v) => `[${v.map((x) => x.toFixed(3)).join(", ")}]`;
+const quat = (q) => [q.x, q.y, q.z, q.w];
+// v' = v + 2w(q × v) + 2 q × (q × v)
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const rotate = ([x, y, z, w], v) => {
+  const t = cross([x, y, z], v).map((c) => 2 * c);
+  const u = cross([x, y, z], t);
+  return v.map((c, i) => c + w * t[i] + u[i]);
+};
+const turnDeg = (a, b) =>
+  (2 * Math.acos(Math.min(1, Math.abs(a.reduce((s, v, i) => s + v * b[i], 0)))) * 180) / Math.PI;
+// A posed stick's eight corners (rig-local): its length along its -Z.
+const corners = (pose) => {
+  const [h, l] = [STICK.thickness / 2, STICK.length / 2];
+  const out = [];
+  for (const x of [-h, h]) for (const y of [-h, h]) for (const z of [-l, l]) {
+    out.push(rotate(quat(pose.orientation), [x, y, z]).map((c, i) => c + xyz(pose.position)[i]));
+  }
+  return out;
+};
+const leftmost = (pose) => Math.min(...corners(pose).map((c) => c[0]));
 
 async function run(name, body, flags = ["--headless"]) {
   console.log(`\n▸ ${name}`);
@@ -122,6 +145,31 @@ await run("break grip", async (rt) => {
   check(release && release.at.x < WALL_FACE - RADIUS, `where the wall stopped it (x ${release?.at.x.toFixed(4)})`);
   check(some(broke.held) === undefined && broke.right.armed === false, "the hand is disarmed");
   check(some(m.returned.model.held) === undefined, "still squeezing, back at the ball, it doesn't regrab");
+});
+
+await run("stick against the wall", async (rt) => {
+  let deepest = Infinity;
+  let deepestStep;
+  const m = await play(rt, scenarios["stick-wall"], async ({ step, state }) => {
+    const stick = some(state.model.stick);
+    if (stick && leftmost(stick.accepted) < deepest) [deepest, deepestStep] = [leftmost(stick.accepted), step];
+  });
+  const took = some(m.tookStick.model.stick);
+  check(took?.side?.$ctor === "Hold.Right" && some(m.tookStick.model.held) === undefined, "squeezed at its near end, the stick is held (not the ball)");
+  check(deepest >= WALL_RIG_X - 0.002, `it never passes the wall plane (deepest rig x ${deepest.toFixed(4)}, step ${deepestStep})`);
+  const pressed = some(m.pressed.model.stick);
+  const far = pressed && leftmost(pressed.accepted);
+  check(far !== undefined && far < WALL_RIG_X + 0.01, `turned a quarter turn, it stops at the wall (rig x ${far?.toFixed(4)})`);
+  const lag = pressed && turnDeg(quat(pressed.accepted.orientation), yaw(90));
+  check(lag > 45, `well short of the hand's turn (${lag?.toFixed(1)}° behind)`);
+  const back = some(m.turnedBack.model.stick);
+  const home = [-0.3, 1.2 - 0.0325, -0.6];
+  const off = back && len(sub(xyz(back.accepted.position), home));
+  const turn = back && turnDeg(quat(back.accepted.orientation), [0, 0, 0, 1]);
+  check(off < 1e-3 && turn < 0.1, `turned back, it follows the hand (${off?.toFixed(5)} m, ${turn?.toFixed(3)}°)`);
+  check(some(m.letGo.model.stick) === undefined, "let go, it returns to its rack");
+  const ball = xyz(m.letGo.model.ballPos);
+  check(len(sub(ball, [-BALL[0], BALL[1], 4 - BALL[2]])) < 0.005, `the ball sat still throughout (${fmt(ball)})`);
 });
 
 await run("tracking loss", async (rt) => {

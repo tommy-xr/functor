@@ -6,6 +6,8 @@
 // Grab table (station 1): the rig stands at world (0, 0, 4) facing +Z, so
 // rig-local x is world -x and rig-local -z is world +z. The ball rests at
 // rig (0.2, 0.96, -0.55); the wall's face is at rig x = -0.6, at the table's end.
+// The stick lies on the table at rig (-0.3, 0.9175, -0.6) along rig -Z, 0.7 m
+// long and 3.5 cm thick.
 
 export const project = "examples/vr-lab";
 // Tapped before an attached recording (`npm run record:vr-lab`): station 1, reset.
@@ -13,6 +15,13 @@ export const resetKey = "1";
 
 export const grabTable = { feet: [0, 0, 4], yaw: 0 };
 export const BALL = [0.2, 0.96, -0.55];
+export const STICK = { length: 0.7, thickness: 0.035 };
+export const WALL_RIG_X = -0.6;
+// A turn of the wrist about +Y (left, toward the wall, for positive degrees).
+export const yaw = (deg) => [0, Math.sin((deg * Math.PI) / 360), 0, Math.cos((deg * Math.PI) / 360)];
+// Where the stick's near end is held: 5 cm in from the end, just above it.
+const HANDLE = [-0.3, 0.95, -0.3];
+const LIFTED = [-0.3, 1.2, -0.3];
 
 // The throw: a straight, steady sweep forward and up, released mid-sweep.
 export const THROW_V = [0, 2.0, -3.6];
@@ -30,6 +39,9 @@ export const defaultSpectator = side;
 // From above the wall, in its plane: the ball held on this side while the
 // hand goes through to the other.
 const alongWall = { eye: [0.65, 2.45, 3.75], target: [0.6, 1.05, 4.6], fov: 50 };
+
+// Above and behind the player's left shoulder: the stick turning into the wall.
+const overStick = { eye: [0.2, 3.1, 3.75], target: [0.3, 1.1, 4.6], fov: 45 };
 
 const grab = [
   { frames: 20, right: { to: [0.2, 1.05, -0.45], squeeze: 0 } },
@@ -95,6 +107,25 @@ export const scenarios = {
       { frames: 4, right: { to: [0.22, 1.1 + (FAST_V[1] * 4) / 60, -0.1 + (FAST_V[2] * 4) / 60] } },
       { frames: 1, right: { to: [0.22, 1.1 + (FAST_V[1] * 5) / 60, -0.1 + (FAST_V[2] * 5) / 60], squeeze: 0 }, mark: "release" },
       { frames: 1, right: { to: [0.22, 1.2, -0.6] }, mark: "after1" },
+    ],
+  },
+
+  // Take the stick by its near end and, the hand held still, turn the wrist a
+  // quarter turn toward the wall: the far end stops at the wall. Turned back,
+  // it follows the hand again; let go, it returns to its rack.
+  "stick-wall": {
+    station: 1,
+    spectator: overStick,
+    steps: [
+      { frames: 20, right: { to: [-0.3, 1.05, -0.2], squeeze: 0 } },
+      { frames: 20, right: { to: HANDLE }, mark: "reachedStick" },
+      { frames: 6, right: { squeeze: 1 }, mark: "tookStick" },
+      { frames: 30, right: { to: LIFTED }, mark: "lifted" },
+      { frames: 45, right: { turn: yaw(90) }, mark: "turned" },
+      { frames: 15, right: {}, mark: "pressed" },
+      { frames: 45, right: { turn: yaw(0) }, mark: "turnedBack" },
+      { frames: 6, right: { squeeze: 0 }, mark: "letGo" },
+      { frames: 20, right: { to: [0.25, 1.0, -0.2] } },
     ],
   },
 

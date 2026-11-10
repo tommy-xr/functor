@@ -1,7 +1,7 @@
 // examples/vr-lab — a VR interaction sandbox: a hub with one station per
 // skill, each reset from a selector. Station 1 is the grab table: pick the
 // ball up with either hand (squeeze), push it into the wall (it stops there),
-// throw it into the basket.
+// throw it into the basket; or take the stick and turn it into the wall.
 //
 //   functor -d examples/vr-lab run vr
 //   functor -d examples/vr-lab run native        # the station, no hands
@@ -19,6 +19,9 @@
 // toward the hand and stops at whatever it hits (`Hold.sweep`), and is
 // declared kinematic there. Released, it turns dynamic and is given the
 // velocity estimated from those accepted positions, in the same frame.
+//
+// The stick has no body: held, it is swept between poses as it turns
+// (`Physics.sweep`, at the poses it is drawn at) and stops at the level.
 
 let config =
   Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(120.0) |> Xr.floorLocked(true))
@@ -43,6 +46,8 @@ type Model = {
   // the simulation owns its pose.
   ballAt: Input.point3,
   held: Option.t<Hold.Held>,
+  // In a hand, or on its rack.
+  stick: Option.t<Stick.Held>,
   // A new ball isn't in the world before this frame's physics: don't read it.
   fresh: bool,
   // Read back from the world each step (one step behind).
@@ -68,6 +73,7 @@ let reset = (m: Model, id: float): Model =>
       ballGen: m.ballGen + 1.0,
       ballAt: Stations.ballSpawn,
       held: Option.None,
+      stick: Option.None,
       fresh: true,
       ballPos: Stations.ballSpawn,
       ballVel: zero,
@@ -78,7 +84,7 @@ let reset = (m: Model, id: float): Model =>
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false,
-    ballGen: 0.0, ballAt: Stations.ballSpawn, held: Option.None, fresh: true,
+    ballGen: 0.0, ballAt: Stations.ballSpawn, held: Option.None, stick: Option.None, fresh: true,
     ballPos: Stations.ballSpawn, ballVel: zero, lastRelease: Option.None, score: 0.0, scored: false
   }, 1.0)
 
@@ -172,26 +178,64 @@ let free = (m: Model, st: Stations.Station, edges: (bool, bool), t: float): Mode
      | Option.None => next)
   | Option.None => next
 
-/// One fixed step, given the world as `cast` (rig-local sweeps) and the ball
-/// as read back (world): the next model, and a velocity to set on the ball.
-let step = (m: Model, st: Stations.Station, cast: (Input.point3, Input.point3) => Hold.Hit, live: (Input.point3, Input.point3), t: float): (Model, Option.t<Input.point3>) =>
+/// The stick: held, it follows its hand; on the rack, a fresh squeeze in
+/// reach of it takes it (the right hand first), unless that squeeze just
+/// took the ball.
+let stickStep = (m: Model, cast: (Input.pose, Input.pose) => Option.t<float>, edges: (bool, bool)): Model =>
+  match m.stick with
+  | Option.Some(s) =>
+    (match Stick.step(cast, s, gripOf(m.xr, s.side), handOf(m, s.side).squeezed) with
+     | Stick.Holding(h) => { m with stick: Option.Some(h) }
+     | Stick.Released => { m with stick: Option.None })
+  | Option.None =>
+    let (leftEdge, rightEdge) = edges in
+    let take = (side: Hold.Side, edge: bool): Option.t<Stick.Held> =>
+      if not edge || (m.held |> Option.map((h) => h.side == side) |> Option.defaultValue(false)) then Option.None
+      else
+        gripOf(m.xr, side)
+          |> Option.filter((g) => Stick.gap(g.position, Stations.stickRest) <= Hold.reach)
+          |> Option.map((g) => Stick.grab(side, g, Stations.stickRest)) in
+    match take(Hold.Right, rightEdge) with
+    | Option.Some(h) => { m with stick: Option.Some(h) }
+    | Option.None => { m with stick: take(Hold.Left, leftEdge) }
+
+/// The world one fixed step sees: rig-local sweeps of the ball between two
+/// points and of the stick between two poses.
+type World = { ball: (Input.point3, Input.point3) => Hold.Hit, stick: (Input.pose, Input.pose) => Option.t<float> }
+
+/// One fixed step, given the world and the ball as read back (world): the
+/// next model, and a velocity to set on the ball.
+let step = (m: Model, st: Stations.Station, world: World, live: (Input.point3, Input.point3), t: float): (Model, Option.t<Input.point3>) =>
   let (pos, vel) = live in
   let (left, leftEdge) = Hold.stepHand(m.left, Option.isSome(gripOf(m.xr, Hold.Left)), squeezeOf(m.xr, Hold.Left)) in
   let (right, rightEdge) = Hold.stepHand(m.right, Option.isSome(gripOf(m.xr, Hold.Right)), squeezeOf(m.xr, Hold.Right)) in
   let next = { m with left: left, right: right, ballPos: pos, ballVel: vel, fresh: false } in
-  match m.held with
-  | Option.Some(h) => held(next, st, Hold.step(cast, h, gripOf(m.xr, h.side), handOf(next, h.side), t))
-  | Option.None => (free(next, st, (leftEdge, rightEdge), t), Option.None)
+  // (A hand holding either item is squeezing, so it has no fresh press for
+  // the other until it opens and lets go.)
+  let (ball, kick) =
+    match m.held with
+    | Option.Some(h) => held(next, st, Hold.step(world.ball, h, gripOf(m.xr, h.side), handOf(next, h.side), t))
+    | Option.None => (free(next, st, (leftEdge, rightEdge), t), Option.None) in
+  (stickStep(ball, world.stick, (leftEdge, rightEdge)), kick)
 
-/// The world behind `Hold.sweep`: the ball's sphere swept between two
-/// rig-local points, ignoring the ball itself.
-let worldCast = (st: Stations.Station, tag: Physics.tag) => (from: Input.point3, to: Input.point3): Hold.Hit =>
-  let a = Stations.toWorld(st, from) in
-  let d = Quat.sub(Stations.toWorld(st, to), a) in
-  let len = Quat.length(d) in
-  let hit =
-    Physics.shapeCastExcluding(tag, Physics.sphere(Stations.ballRadius), Quat.toVec3(a), Quat.toVec3(Quat.scale(1.0 / len, d)), len) in
-  { hit: hit.hit, distance: hit.distance, normal: Stations.dirToRig(st, Quat.v3(hit.nx, hit.ny, hit.nz)) }
+/// A rig-local pose in the world, as it is drawn (`Scene.atPose`) and swept.
+let posed = (st: Stations.Station, p: Input.pose) => Camera3D.mapTrackedPose(Stations.rig(st), p)
+
+let stickShape = Physics.box(Stick.thickness, Stick.thickness, Stick.length)
+
+/// The world behind `Hold.sweep` and `Stick.move`, swept against the fixed
+/// level only: a held item is kinematic or bodiless, so it never hits itself
+/// (or the other one).
+let worldOf = (st: Stations.Station): World => {
+  ball: (from: Input.point3, to: Input.point3) =>
+    let at = (p: Input.point3) => posed(st, { position: p, orientation: Quat.identity }) in
+    (match Physics.sweep(Physics.sphere(Stations.ballRadius), at(from), at(to), Physics.SweepFixed) with
+     | Option.Some(h) =>
+       { hit: true, distance: h.fraction * Quat.length(Quat.sub(to, from)), normal: Stations.dirToRig(st, Quat.v3(h.nx, h.ny, h.nz)) }
+     | Option.None => { hit: false, distance: 0.0, normal: zero }),
+  stick: (from: Input.pose, to: Input.pose) =>
+    Physics.sweep(stickShape, posed(st, from), posed(st, to), Physics.SweepFixed) |> Option.map((h) => h.fraction)
+}
 
 let tick = (m: Model, dt: float, tts: float) =>
   let st = Stations.find(m.station) in
@@ -202,7 +246,7 @@ let tick = (m: Model, dt: float, tts: float) =>
       let p = Physics.position(tag) in
       let v = Physics.linearVelocity(tag) in
       (Quat.v3(p.x, p.y, p.z), Quat.v3(v.x, v.y, v.z)) in
-  let (next, kick) = step(m, st, worldCast(st, tag), live, tts) in
+  let (next, kick) = step(m, st, worldOf(st), live, tts) in
   // Declared dynamic and given its velocity in the same frame: both land on
   // the next step, so the ball never spends a step at rest.
   (next, kick |> Option.map((v) => Physics.setVelocity(tag, Quat.toVec3(v))) |> Option.defaultWith(() => Effect.none()))
@@ -232,7 +276,10 @@ let physics = (m: Model) =>
 
 // --- the pure step, with no world ---
 
-let noWorld = (from: Input.point3, to: Input.point3): Hold.Hit => { hit: false, distance: 0.0, normal: zero }
+let noWorld: World = {
+  ball: (from: Input.point3, to: Input.point3) => { hit: false, distance: 0.0, normal: zero },
+  stick: (from: Input.pose, to: Input.pose) => Option.None
+}
 let ballRig = Stations.toRig(Stations.grabTable, Stations.ballSpawn)
 
 let hand = (p: Input.point3, squeeze: float): Input.controller => {
@@ -250,6 +297,12 @@ let run = (m: Model, c: Input.controller, t: float) =>
 // Reach the ball open, squeeze: it is held.
 let grabbed = run(run(init, hand(ballRig, 0.0), 0.0), hand(ballRig, 1.0), 1.0 / 60.0)
 expect Option.isSome(grabbed.held) && not grabbed.right.hover
+// The stick, reached by its near end: squeezed, it is held and the ball isn't.
+let stickHandle = Quat.add(Stations.stickRest.position, Quat.v3(0.0, 0.03, 0.3))
+let tookStick = run(run(init, hand(stickHandle, 0.0), 0.0), hand(stickHandle, 1.0), 1.0 / 60.0)
+expect Option.isSome(tookStick.stick) && Option.isNone(tookStick.held)
+// Opened, it goes back to its rack.
+expect Option.isNone(run(tookStick, hand(stickHandle, 0.0), 2.0 / 60.0).stick)
 // Squeezing out of reach grabs nothing.
 expect Option.isNone(run(run(init, hand(Quat.add(ballRig, Quat.v3(0.0, 0.3, 0.0)), 0.0), 0.0), hand(Quat.add(ballRig, Quat.v3(0.0, 0.3, 0.0)), 1.0), 1.0 / 60.0).held)
 // Hover has hysteresis: 14 cm off the surface hovers only if it already did.
@@ -302,6 +355,19 @@ let board = (score: float) =>
 
 let hovered = (m: Model) => m.left.hover || m.right.hover
 
+// A plain box with a grip band at its near end, drawn at the pose it is
+// swept at.
+let stickScene = (m: Model, st: Stations.Station) =>
+  let pose = m.stick |> Option.map((s) => s.accepted) |> Option.defaultValue(Stations.stickRest) in
+  let wood = if Option.isSome(m.stick) then Color.rgb(0.35, 0.8, 0.75) else Color.rgb(0.25, 0.6, 0.58) in
+  Scene.group([
+    Scene.cube() |> Scene.scaleXYZ(Stick.thickness, Stick.thickness, Stick.length) |> Scene.lit(wood),
+    Scene.cube()
+      |> Scene.scaleXYZ(Stick.thickness * 1.3, Stick.thickness * 1.3, 0.12)
+      |> Scene.translate(Vec3.make(0.0, 0.0, 0.07 - Stick.length / 2.0))
+      |> Scene.lit(Color.rgb(0.12, 0.12, 0.14)),
+  ]) |> Scene.atPose(posed(st, pose))
+
 let ballScene = (m: Model) =>
   let shape = Scene.sphere() |> Scene.scale(Stations.ballRadius) in
   let look =
@@ -346,6 +412,7 @@ let draw = (m: Model, tts) =>
       pad(st.feet, 0.8, Color.rgb(0.2, 0.6, 0.65)),
       board(m.score),
       ballScene(m),
+      stickScene(m, st),
       handScene(st, gripOf(m.xr, Hold.Left), m.left, Color.rgb(0.2, 0.85, 1.0)),
       handScene(st, gripOf(m.xr, Hold.Right), m.right, Color.rgb(1.0, 0.3, 0.7)),
     ]),

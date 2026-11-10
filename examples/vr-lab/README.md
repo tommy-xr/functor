@@ -20,14 +20,15 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 | grip (squeeze) | grab what's in reach; open to let go |
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
-`hover`), the ball (`held`, `ballPos`, `ballVel`), the last release and the
-score. The headset requests 120 Hz with foveation off, floor-locked.
+`hover`), the ball (`held`, `ballPos`, `ballVel`), the stick (`stick`), the
+last release and the score. The headset requests 120 Hz with foveation off, floor-locked.
 
 | Module | What it is |
 | --- | --- |
 | `game.fun` | the MVU glue: station selector, the grab table's step, physics, drawing |
 | `stations.fun` | where each station stands and what it's built from; rig ↔ world |
 | `hold.fun` | one hand grabbing, holding and releasing an item; the throw estimate |
+| `stick.fun` | a long prop held rigidly, stopped where it turns into the level |
 | `digits.fun` | seven-segment numbers (the headset doesn't draw `ui`) |
 | `quat.fun` | plain-data vectors and quaternions |
 
@@ -62,8 +63,8 @@ samples (`POST /input`), but fixture playback there is untested.
 
 ## 1. Grab table
 
-A ball on a table, a wall against the table's left end, and a basket on the
-floor a throw away, with a scoreboard behind it.
+A ball and a stick on a table, a wall against the table's left end, and a
+basket on the floor a throw away, with a scoreboard behind it.
 
 - **Grab.** Either hand, within 12 cm of the ball's surface (16 cm to stay
   hovered: the ball glows). The squeeze has hysteresis (0.6 press, 0.4
@@ -71,8 +72,9 @@ floor a throw away, with a scoreboard behind it.
   tracking dropped, when the grip broke or when the station reset must open
   first. Both hands pressing at once: the nearer wins.
 - **Hold.** The ball keeps its collider. Each step it sweeps from where it is
-  toward the hand (`Physics.shapeCastExcluding`), stops just short of what it
-  hits and slides along it, and is declared kinematic there. Pushed into the
+  toward the hand (`Physics.sweep` against fixed bodies only, so never
+  itself), stops just short of what it hits and slides along it, and is
+  declared kinematic there. Pushed into the
   wall it stays at the wall; pulled back, it follows the hand out.
 - **Break.** More than 25 cm between the hand and the ball: it drops where it
   stopped, with no velocity.
@@ -85,6 +87,17 @@ floor a throw away, with a scoreboard behind it.
   hand when it comes back drops the ball rather than throwing it.
 - **Reset** bumps the ball's tag, so the old body goes and a new one spawns
   at rest.
+- **Stick.** A 70 cm box with a grip band at its near end. A fresh squeeze
+  within 12 cm of it takes it, held where it was grabbed. Each step it is
+  swept from where it is to where the hand holds it, turning on the way
+  (`Physics.sweep`, at the pose it is drawn at), and stops 4 mm short of what
+  it hits: turn the wrist toward the wall and the far end stops at the wall,
+  even though the hand and the stick's centre barely move; turn back and it
+  follows again. It has no body; let go, or held more than a quarter turn
+  (or 25 cm) off the hand, it returns to its rack (grip, regrab and physical
+  props come later).
 
 Worn checks still open: held-ball judder at 120 Hz (the hold updates at the
-60 Hz fixed step), and how throws feel.
+60 Hz fixed step), how throws feel, whether the stick stopping at the wall
+(and the hand turning on past it) reads right, and the sweeps' cost on the
+headset (`npm run bench:quest`).
