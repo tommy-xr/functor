@@ -49,7 +49,7 @@ fn write_animation(gl: &glow::Context, dir: &str) {
         let (reply, _pusher) = std::sync::mpsc::channel();
         let mut producer = Some((indicator.track(reply, t0), result));
         for frame in 0..frames {
-            let now = t0 + Duration::from_secs_f32(frame as f32 / 30.0);
+            let now = t0 + Duration::from_nanos(frame as u64 * 1_000_000_000 / 30);
             if now - t0 >= answered {
                 if let Some((producer, result)) = producer.take() {
                     producer.send(result).unwrap();

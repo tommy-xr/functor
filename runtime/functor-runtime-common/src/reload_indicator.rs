@@ -120,6 +120,9 @@ pub struct ReloadIndicator {
     fade_in_from: Option<Instant>,
     /// When the spin was (or would have been) face-on.
     spin_from: Option<Instant>,
+    /// The pulse runs from here, on through a retry: when the last push in
+    /// flight settled, or when the mark has faded in if that is later.
+    pulse_from: Option<Instant>,
 }
 
 impl ReloadIndicator {
@@ -142,6 +145,7 @@ impl ReloadIndicator {
     /// once per shell loop, before reading [`Self::state`].
     pub fn poll(&mut self, now: Instant, rendered_frames: u64) {
         let mut last = self.last;
+        let mut settled = false;
         self.in_flight.retain(|push| {
             let answer = match push.answer.try_recv() {
                 Ok(result) => Some(result),
@@ -156,11 +160,16 @@ impl ReloadIndicator {
                 rendered_frame: rendered_frames,
             };
             last = Some((outcome, now));
+            settled = true;
             if let Some(result) = answer {
                 let _ = push.reply.send(result);
             }
             false
         });
+        if settled && self.in_flight.is_empty() {
+            // Not before it has faded in: a quick reload still pulses in view.
+            self.pulse_from = Some(self.fade_in_from.map_or(now, |from| now.max(from + FADE)));
+        }
         self.last = last;
     }
 
@@ -170,7 +179,12 @@ impl ReloadIndicator {
         let spin_from = self.spin_from?;
         let turns_at = |t: Instant| t.saturating_duration_since(spin_from).as_secs_f32() * SPIN_HZ;
         let fade_in = ramp(now.saturating_duration_since(self.fade_in_from?));
-        let (shown, turns, alpha, pulse) = if self.in_flight.is_empty() {
+        // Up and back down, eased at both ends and the peak.
+        let pulse = self.pulse_from.map_or(0.0, |from| {
+            let through = now.saturating_duration_since(from).as_secs_f32() / PULSE.as_secs_f32();
+            (through.min(1.0) * std::f32::consts::PI).sin().powi(2)
+        });
+        let (shown, turns, alpha) = if self.in_flight.is_empty() {
             let (outcome, at) = self.last?;
             let since = now.saturating_duration_since(at);
             let left = (HOLD + FADE).checked_sub(since)?;
@@ -178,18 +192,15 @@ impl ReloadIndicator {
                 return None;
             }
             let alpha = fade_in.min(ramp(left));
-            // Up and back down, eased at both ends and the peak.
-            let through = (since.as_secs_f32() / PULSE.as_secs_f32()).min(1.0);
-            let pulse = (through * std::f32::consts::PI).sin().powi(2);
             if outcome.ok {
-                (ReloadShown::Ok, turns_at(now), alpha, pulse)
+                (ReloadShown::Ok, turns_at(now), alpha)
             } else {
                 // Swing the short way round to rest facing the viewer.
                 let stopped = turns_at(at);
-                (ReloadShown::Failed, stopped + (stopped.round() - stopped) * ramp(since), alpha, pulse)
+                (ReloadShown::Failed, stopped + (stopped.round() - stopped) * ramp(since), alpha)
             }
         } else {
-            (ReloadShown::Loading, turns_at(now), fade_in, 0.0)
+            (ReloadShown::Loading, turns_at(now), fade_in)
         };
         Some(ReloadLook { shown, spin: turns.rem_euclid(1.0) * std::f32::consts::TAU, alpha, pulse })
     }
@@ -442,7 +453,11 @@ mod tests {
         let _pusher = answered(&mut indicator, t0, Ok("reloaded".to_string()));
         indicator.poll(t0, 0);
         assert_eq!(indicator.look(t0).unwrap().alpha, 0.0);
-        assert!((indicator.look(t0 + FADE / 4).unwrap().alpha - 0.25).abs() < 1e-4);
+        let fading_in = indicator.look(t0 + FADE / 4).unwrap();
+        assert!((fading_in.alpha - 0.25).abs() < 1e-4 && fading_in.pulse == 0.0, "{fading_in:?}");
+        // The pulse waits for the fade.
+        let peak = indicator.look(t0 + FADE + PULSE / 2).unwrap();
+        assert!(peak.alpha == 1.0 && (peak.pulse - 1.0).abs() < 1e-4, "{peak:?}");
     }
 
     #[test]
@@ -478,13 +493,27 @@ mod tests {
     }
 
     #[test]
+    fn a_push_mid_pulse_lets_the_pulse_finish() {
+        let t0 = Instant::now();
+        let mut indicator = ReloadIndicator::default();
+        let _first = answered(&mut indicator, t0, Ok("reloaded".to_string()));
+        indicator.poll(t0, 0);
+        let peak = t0 + FADE + PULSE / 2;
+        let (reply, _pusher) = mpsc::channel();
+        let _producer = indicator.track(reply, peak);
+        let look = indicator.look(peak).unwrap();
+        assert!(look.shown == ReloadShown::Loading && (look.pulse - 1.0).abs() < 1e-4, "{look:?}");
+        assert!(indicator.look(t0 + FADE + PULSE).unwrap().pulse < 1e-6);
+    }
+
+    #[test]
     fn a_rejected_or_dropped_reload_shows_red() {
         let t0 = Instant::now();
         let mut indicator = ReloadIndicator::default();
         let pusher = answered(&mut indicator, t0, Err("type error".to_string()));
         indicator.poll(t0, 0);
         assert_eq!(pusher.try_recv().unwrap(), Err("type error".to_string()));
-        let look = indicator.look(t0 + FADE).unwrap();
+        let look = indicator.look(t0 + FADE + PULSE).unwrap();
         assert_eq!(look.shown, ReloadShown::Failed);
         assert!(look.spin == 0.0 && look.alpha == 1.0 && look.pulse.abs() < 1e-6, "{look:?}");
 
