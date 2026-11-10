@@ -509,7 +509,7 @@ let worldOf = (st: Stations.Station, gen: float): World => {
       let name = solidTags |> List.find((tn) => let (tag, _) = tn in tag == hit.tag) |> Option.map((tn) => let (_, n) = tn in n) |> Option.defaultValue("prop") in
       Option.Some({ point: Stations.toRig(st, Quat.v3(hit.x, hit.y, hit.z)), tag: name, target: Stations.isTarget(name) }),
   blocked: (from: Input.point3, to: Input.point3) =>
-    Option.isSome(Physics.sweep(muzzleProbe, posed(st, Hold.at(from, Quat.identity)), posed(st, Hold.at(to, Quat.identity)), Physics.Fixed))
+    Option.isSome(Physics.sweep(muzzleProbe, posed(st, Hold.at(from, Quat.identity)), posed(st, Hold.at(to, Quat.identity)), Physics.SweepFixed))
 }
 
 let tick = (m: Model, dt: float, tts: float) =>
