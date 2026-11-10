@@ -682,18 +682,15 @@ fn redeclaring_a_prelude_suffix_is_an_error() {
     );
 }
 
-/// `Json.t` is an ordinary variant: a `match` on it checks, and a wrong
-/// payload type is a check error.
+/// `JsonDecode` decoders are typed by what they read.
 #[test]
-fn json_values_typecheck() {
+fn json_decoders_typecheck() {
     let diags = check(
-        "let frames = (text: string): float =>\n\
-           match Json.parse(text) with\n\
-           | Result.Ok(json) =>\n\
-             json |> Json.field(\"frames\") |> Option.bind(Json.asNumber) |> Option.defaultValue(0.0)\n\
-           | Result.Error(_) => 0.0",
+        "let frames : JsonDecode.t<float> = JsonDecode.field(\"frames\", JsonDecode.number)\n\
+         let read = (text: string): Result.t<float, Json.error> => JsonDecode.parse(frames, text)\n\
+         let write : string = JsonEncode.run(JsonEncode.list(JsonEncode.number, [1.0]))",
     );
     assert!(diags.is_empty(), "{diags:?}");
-    let diags = check("let a : Json.t = Json.Number(\"1\")");
-    assert!(!diags.is_empty(), "Json.Number(string) must be a check error");
+    let diags = check("let frames : JsonDecode.t<string> = JsonDecode.field(\"frames\", JsonDecode.number)");
+    assert!(!diags.is_empty(), "a number decoder is not a string decoder");
 }

@@ -41,6 +41,18 @@ pub fn bundled_modules() -> Vec<BundledModule> {
         include_str!("../stdlib/codec.fun"),
     ));
     bundled.push(BundledModule::implementation(
+        "JsonDecode",
+        include_str!("../stdlib/json_decode.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "JsonEncode",
+        include_str!("../stdlib/json_encode.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "JsonCodec",
+        include_str!("../stdlib/json_codec.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
         "Connector",
         include_str!("../stdlib/connector.fun"),
     ));

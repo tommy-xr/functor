@@ -1,36 +1,32 @@
-//! JSON text as a value: parse it, then `match` on it or read what you
-//! expect with `field` and the `as*` readers.
+//! JSON text as a value. Read one with `JsonDecode` (decoders as values,
+//! like `Decode` for bytes), write one with `JsonEncode`, or describe both
+//! at once with `JsonCodec`.
 //!
 //! ```
-//! // 12.0 for `{"frames": 12}`; 0.0 for anything else.
-//! let frames = (text) =>
-//!   match Json.parse(text) with
-//!   | Result.Ok(json) =>
-//!     json |> Json.field("frames") |> Option.bind(Json.asNumber) |> Option.defaultValue(0.0)
-//!   | Result.Error(_) => 0.0
+//! type status = { stream: string, frames: float }
+//! let status = JsonDecode.map2((stream, frames): status => { stream: stream, frames: frames },
+//!   JsonDecode.field("stream", JsonDecode.string), JsonDecode.field("frames", JsonDecode.number))
+//! let read = (text: string) => JsonDecode.parse(status, text)
 //! ```
 
-/// A JSON value. An object's fields are sorted by name; a repeated name
-/// keeps its last value.
+/// A JSON value.
 type t =
   | Null
   | Bool(value: bool)
   | Number(value: float)
   | String(value: string)
   | Array(items: List<t>)
-  | Object(fields: List<(string, t)>)
+  | Object(fields: Map<string, t>)
+
+/// Why reading JSON failed: where (a path of fields and list indices, as in
+/// `Binary.error`) and what went wrong. Text that isn't JSON fails with an
+/// empty path.
+type error = { path: List<Binary.segment>, message: string }
 
 /// The value `text` holds, or why it isn't JSON (`expected value at line 1
-/// column 1`).
+/// column 1`). A repeated object key keeps its last value; nesting deeper
+/// than 128 is an error.
 let parse : (string) => Result.t<t, string>
-/// The field `name` of an object; `Option.None` if it has none or `json`
-/// isn't an object. The JSON is last, for piping.
-let field : (string, t) => Option.t<t>
-/// The number, if `json` is one.
-let asNumber : (t) => Option.t<float>
-/// The text, if `json` is a string.
-let asString : (t) => Option.t<string>
-/// The bool, if `json` is one.
-let asBool : (t) => Option.t<bool>
-/// The items, if `json` is an array.
-let asList : (t) => Option.t<List<t>>
+/// `json` as compact text, object keys sorted. A whole number prints without
+/// a fraction; a number JSON can't hold (NaN, an infinity) is an error.
+let stringify : (t) => string
