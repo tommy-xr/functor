@@ -181,6 +181,10 @@ pub struct SceneContext {
     // the stand-in room's rendered depth (`crate::environment_depth`).
     environment_depth_source: Cell<crate::environment_depth::EnvironmentDepthSource>,
     pub(crate) stand_in_depth: RefCell<Option<crate::environment_depth::StandInDepth>>,
+    // That depth read back to the CPU, carrying the view each readback read.
+    depth_readback: RefCell<
+        Option<crate::depth_readback::DepthReadback<crate::environment_depth::EnvironmentDepthView>>,
+    >,
     // The room fused from that depth while `Xr.scene` is on, and whether it
     // fuses on the render thread (`set_fusion_inline`).
     fused_room: RefCell<Option<crate::fused_room::FusedRoom>>,
@@ -903,6 +907,7 @@ impl SceneContext {
             passthrough_composited: Cell::new(false),
             environment_depth_source: Cell::new(Default::default()),
             stand_in_depth: RefCell::new(None),
+            depth_readback: RefCell::new(None),
             fused_room: RefCell::new(None),
             // wasm has no threads.
             fusion_inline: Cell::new(cfg!(target_arch = "wasm32")),
@@ -971,37 +976,49 @@ impl SceneContext {
             .map(|room| room.room_meshes())
     }
 
-    /// Feed this main pass's environment depth to the fused room: created on
-    /// the first frame that draws it (`requested`) or a `Physics.fusedRoom`
-    /// body wants it, fused every few frames
-    /// from then on while `Xr.scene` is on, dropped when it goes off.
-    pub(crate) fn fuse_environment_depth(
+    /// Read this main pass's environment depth back every few frames for
+    /// the fused room: created on the first frame that draws it
+    /// (`requested`) or a `Physics.fusedRoom` body wants it, fused from then
+    /// on while `Xr.scene` is on, dropped (with the readback) when it goes off.
+    pub(crate) fn read_back_environment_depth(
         &self,
         gl: &glow::Context,
         shader_version: &str,
         view: Option<crate::environment_depth::EnvironmentDepthView>,
         requested: bool,
     ) {
-        let mut slot = self.fused_room.borrow_mut();
+        let mut room = self.fused_room.borrow_mut();
+        let mut readback = self.depth_readback.borrow_mut();
         if self.environment_depth_source() == crate::environment_depth::EnvironmentDepthSource::None
         {
-            if let Some(room) = slot.take() {
+            if let Some(room) = room.take() {
                 room.delete(gl);
+            }
+            if let Some(readback) = readback.take() {
+                readback.delete(gl);
             }
             return;
         }
-        if slot.is_none() && !requested && !self.fused_room_wanted.get() {
-            return;
+        if room.is_none() && (requested || self.fused_room_wanted.get()) {
+            *room = Some(crate::fused_room::FusedRoom::new(self.fusion_inline.get()));
         }
-        slot.get_or_insert_with(|| {
-            crate::fused_room::FusedRoom::new(gl, shader_version, self.fusion_inline.get())
-        })
-        .update(
-            gl,
-            &mut **self.quad.borrow_mut(),
-            self.current_frame.get(),
-            view,
-        );
+        let Some(room) = room.as_mut() else {
+            return;
+        };
+        let readback =
+            readback.get_or_insert_with(|| crate::depth_readback::DepthReadback::new(gl, shader_version));
+        let frame = self.current_frame.get();
+        // Asked every pass, so a stereo pair's second eye never starts one.
+        let can_start = readback.can_start(frame);
+        if let Some(view) = view.filter(|_| can_start) {
+            readback.start(gl, &mut **self.quad.borrow_mut(), view, view);
+        }
+        // Inline: read now. Threaded: only once the GPU is done, so the
+        // render thread never waits.
+        if let Some((rgba, view)) = readback.poll(gl, self.fusion_inline.get()) {
+            room.fuse(rgba, view.view_projection);
+        }
+        room.drain();
     }
 
     /// Forget the fused room — for a shell whose depth-to-world mapping just
@@ -1009,6 +1026,10 @@ impl SceneContext {
     pub fn reset_fused_room(&self, gl: &glow::Context) {
         if let Some(room) = self.fused_room.borrow_mut().take() {
             room.delete(gl);
+        }
+        // Its pending pixels were read in the old frame.
+        if let Some(readback) = self.depth_readback.borrow_mut().take() {
+            readback.delete(gl);
         }
     }
 

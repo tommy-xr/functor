@@ -356,11 +356,12 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame_time.clone(),
         scene_context,
         frame,
-        main_projection * camera.view_matrix(),
+        camera.view_matrix(),
+        main_projection,
         viewport,
     );
-    // Fold it into the fused room every few frames (`Frame.withFusedRoom`).
-    scene_context.fuse_environment_depth(
+    // Read it back every few frames for the fused room (`Frame.withFusedRoom`).
+    scene_context.read_back_environment_depth(
         gl,
         shader_version,
         environment_depth,

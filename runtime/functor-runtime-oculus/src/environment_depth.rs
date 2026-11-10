@@ -50,6 +50,8 @@ struct Running {
 /// One frame's depth image, ready to place per eye.
 pub struct DepthImage {
     texture: glow::Texture,
+    /// The display time it was acquired for.
+    display_time: xr::Time,
     near: f32,
     far: f32,
     views: [(xr::Posef, xr::Fovf); 2],
@@ -77,10 +79,14 @@ impl DepthImage {
             fov.angle_down,
             fov.angle_up,
         );
+        let view = depth_camera.view_matrix();
         EnvironmentDepthView {
             texture: self.texture,
             layer: eye as i32,
-            view_projection: projection * depth_camera.view_matrix(),
+            view_projection: projection * view,
+            view,
+            projection,
+            display_ns: Some(self.display_time.as_nanos()),
         }
     }
 }
@@ -337,6 +343,7 @@ impl EnvironmentDepth {
         self.current = true;
         Some(DepthImage {
             texture,
+            display_time: time,
             near: image.near_z,
             far: image.far_z,
             views: image.views.map(|v| (v.pose, v.fov)),
