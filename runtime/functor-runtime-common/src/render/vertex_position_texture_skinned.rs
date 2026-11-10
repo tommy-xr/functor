@@ -24,7 +24,8 @@ pub struct VertexPositionTextureSkinned {
 pub const VERTEX_COLOR_LOCATION: u32 = 6;
 
 /// Pin the colour attribute's generic value to white, which a mesh without
-/// a colour array reads in the shaders shared with models.
+/// a colour array reads in the shaders shared with models. Per draw: a draw
+/// with the array enabled may leave the generic value unspecified.
 pub(crate) fn pin_white_vertex_color(gl: &glow::Context) {
     use glow::HasContext;
     unsafe { gl.vertex_attrib_4_f32(VERTEX_COLOR_LOCATION, 1.0, 1.0, 1.0, 1.0) };

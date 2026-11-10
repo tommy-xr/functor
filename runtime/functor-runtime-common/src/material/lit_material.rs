@@ -246,7 +246,6 @@ impl Material for LitMaterial {
                     // Normal map on texture unit 2 (0 = albedo, 1 = shadow map);
                     // the caller binds the texture when `use_normal_map`.
                     p.set_uniform_1i(ctx.gl, &uniforms.normal_map_loc, 2);
-                    crate::render::pin_white_vertex_color(ctx.gl);
                     uniforms.lighting.set_pass(p, ctx, view_matrix);
                     uniforms.fog.set(p, ctx.gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
                 }
@@ -277,6 +276,7 @@ impl Material for LitMaterial {
                 LightingUniforms::bind_shadow_map(ctx);
                 // Per draw: a translucent subtree switches the alpha mode.
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
+                crate::render::pin_white_vertex_color(ctx.gl);
             }
         }
 
