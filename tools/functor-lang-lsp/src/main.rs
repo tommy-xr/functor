@@ -1319,15 +1319,16 @@ fn local_range(file: &functor_lang::project::SourceFile, span: functor_lang::Spa
 }
 
 /// The project entry for `path`: walk up for a `functor.json` and join its
-/// `entry`. `None` when there's no `functor.json` above `path` — the caller
-/// then treats the file as a standalone single-file program. Reads at most
-/// one `functor.json` per ancestor — cheap, and the tree is shallow.
+/// `entry` (or, with named `entries`, the CLI's default role's file: `client`,
+/// else the sole entry). `None` when there's no `functor.json` above `path` —
+/// the caller then treats the file as a standalone single-file program. Reads
+/// at most one `functor.json` per ancestor — cheap, and the tree is shallow.
 fn discover_entry(path: &Path) -> Option<PathBuf> {
     let mut dir = path.parent();
     while let Some(d) = dir {
         if let Ok(text) = std::fs::read_to_string(d.join("functor.json")) {
             if let Ok(config) = serde_json::from_str::<Value>(&text) {
-                if let Some(entry) = config["entry"].as_str() {
+                if let Some(entry) = config["entry"].as_str().or_else(|| default_role_file(&config["entries"])) {
                     return Some(d.join(entry));
                 }
             }
@@ -1335,6 +1336,29 @@ fn discover_entry(path: &Path) -> Option<PathBuf> {
         dir = d.parent();
     }
     None
+}
+
+/// The file of `entries`' default role: `client`, else the only role. A role
+/// is a file name or `{ "file": … }`.
+fn default_role_file(entries: &Value) -> Option<&str> {
+    let roles = entries.as_object()?;
+    let role = roles.get("client").or_else(|| if roles.len() == 1 { roles.values().next() } else { None })?;
+    role.as_str().or_else(|| role["file"].as_str())
+}
+
+#[cfg(test)]
+mod default_role_file_tests {
+    use super::*;
+
+    #[test]
+    fn picks_client_then_the_sole_role() {
+        let file = |v: Value| default_role_file(&v).map(str::to_owned);
+        assert_eq!(file(json!({ "client": "game.fun", "gallery": "gallery.fun" })), Some("game.fun".into()));
+        assert_eq!(file(json!({ "client": { "file": "game.fun", "module": "Client" } })), Some("game.fun".into()));
+        assert_eq!(file(json!({ "server": "server.fun" })), Some("server.fun".into()));
+        assert_eq!(file(json!({ "a": "a.fun", "b": "b.fun" })), None);
+        assert_eq!(file(Value::Null), None);
+    }
 }
 
 /// A `file:` URI → filesystem path (percent-decoded). `None` for other
