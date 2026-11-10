@@ -1441,6 +1441,25 @@ const handScenarios = {
     ],
   },
 
+  // Both hands raised, open; squeezed with the trigger pulled (a fist); the
+  // squeeze let open (the index alone closed). Then G: the capsule glove;
+  // and G again: the skinned one.
+  "skin-curl": {
+    station: 1,
+    spectator: atHands,
+    steps: [
+      { frames: 20, right: { to: HANDS.right.at, turn: HANDS.right.turn }, left: { to: HANDS.left.at, turn: HANDS.left.turn } },
+      { frames: 4, right: {}, left: {}, mark: "open" },
+      ...Array.from({ length: 12 }, (_, i) => {
+        const v = (i + 1) / 12;
+        return { frames: 1, right: { squeeze: v, trigger: v }, left: { squeeze: v, trigger: v }, ...(i === 11 ? { mark: "fist" } : {}) };
+      }),
+      ...both("squeeze", 1, 0, 12, "trigger"),
+      { frames: 1, right: {}, left: {}, tap: "G", mark: "capsule" },
+      { frames: 1, right: {}, left: {}, tap: "G", mark: "skinned" },
+    ],
+  },
+
   // The pistol taken and aimed low, the trigger let in by steps: the index
   // follows it.
   "pistol-trigger": {
@@ -1553,6 +1572,48 @@ const tourScenarios = {
       hold(40, "release"),
       { frames: 20, ...bothTo(RIFLE_WALL.clear) },
       hold(10),
+    ],
+  },
+
+  // The skinned glove (the default) and the capsule glove, G switching
+  // between them: both hands open, closed and the trigger pulled; then the
+  // pistol held and fired, and the rifle in two hands.
+  "skin-tour": {
+    station: 1,
+    neck: NECK,
+    spectator: atHands,
+    steps: [
+      { frames: 20, right: { to: HANDS.right.at, turn: HANDS.right.turn }, left: { to: HANDS.left.at, turn: HANDS.left.turn } },
+      hold(15, "open"),
+      ...both("squeeze", 0, 1, 16, "squeezed"),
+      hold(10),
+      ...both("squeeze", 1, 0, 16),
+      ...both("trigger", 0, 1, 16, "pulled"),
+      hold(10),
+      ...both("trigger", 1, 0, 16),
+      { ...hold(15, "openCapsule"), tap: "G" },
+      ...both("squeeze", 0, 1, 16, "squeezedCapsule"),
+      hold(10),
+      ...both("squeeze", 1, 0, 16),
+      { ...hold(10), tap: "G" },
+      { frames: 1, right: { to: RIGHT_REST }, tap: "3", spectator: atPistolHand },
+      ...takePistol,
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_MIDDLE } },
+      { frames: 20, right: { trigger: 0.4 }, mark: "pistol" },
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 15, right: {} },
+      { frames: 10, right: { trigger: 0 } },
+      { ...hold(20, "pistolCapsule"), tap: "G" },
+      { ...hold(15), tap: "G" },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID } },
+      { frames: 25, right: { to: ARMORY_RH } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 15, right: { to: [0.45, 1.15, -0.3] }, spectator: atRifleHands },
+      ...takeRifle,
+      raise(),
+      hold(20, "rifle"),
+      { ...hold(20, "rifleCapsule"), tap: "G" },
+      { ...hold(20), tap: "G" },
     ],
   },
 };
