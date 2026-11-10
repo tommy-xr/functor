@@ -229,12 +229,12 @@ let stickShape = Physics.box(Stick.thickness, Stick.thickness, Stick.length)
 let worldOf = (st: Stations.Station): World => {
   ball: (from: Input.point3, to: Input.point3) =>
     let at = (p: Input.point3) => posed(st, { position: p, orientation: Quat.identity }) in
-    (match Physics.sweep(Physics.sphere(Stations.ballRadius), at(from), at(to), Physics.Fixed) with
+    (match Physics.sweep(Physics.sphere(Stations.ballRadius), at(from), at(to), Physics.SweepFixed) with
      | Option.Some(h) =>
        { hit: true, distance: h.fraction * Quat.length(Quat.sub(to, from)), normal: Stations.dirToRig(st, Quat.v3(h.nx, h.ny, h.nz)) }
      | Option.None => { hit: false, distance: 0.0, normal: zero }),
   stick: (from: Input.pose, to: Input.pose) =>
-    Physics.sweep(stickShape, posed(st, from), posed(st, to), Physics.Fixed) |> Option.map((h) => h.fraction)
+    Physics.sweep(stickShape, posed(st, from), posed(st, to), Physics.SweepFixed) |> Option.map((h) => h.fraction)
 }
 
 let tick = (m: Model, dt: float, tts: float) =>
