@@ -251,6 +251,179 @@ const inventoryScenarios = {
   },
 };
 
+// --- Armory (station 3) ---
+// The rig stands at world (4, 0, 0) facing +X. Rig-local, the bench is the
+// grab table's (top 0.9), the pistol stands on it upright at PISTOL facing
+// down range (-Z), the wall's face is at x = -0.6 (z -1.4 to 0.2), and the
+// targets' faces are at z = -5.5. Held, the pistol settles so the hand is at
+// its grip: the bore runs 5 cm above the hand's -Z axis, the muzzle 15 cm
+// along it (`Gun`).
+
+export const armory = { feet: [4, 0, 0], yaw: Math.PI / 2 };
+export const PISTOL = [0.15, 0.9675, -0.5];
+// The resting pistol's grip, where a level hand takes it.
+// The grip in the pistol's frame (`Gun.grip`): where the hand holds it.
+export const GRIP_IN_PISTOL = [0, -0.0025, 0.0475];
+export const PISTOL_GRIP = add(PISTOL, GRIP_IN_PISTOL);
+export const BORE = { up: 0.05, ahead: 0.15, chamber: 0.02 };
+export const PISTOL_HALF = [0.0175, 0.0675, 0.1025];
+export const TARGETS = [[-0.7, 1.15], [0, 1.45], [0.7, 1.15]].map(([x, y]) => [x, y, -5.5]);
+export const TARGET_SIZE = 0.3;
+export const ARMORY_WALL_X = -0.6;
+
+// The muzzle and the shot's way for a hand at `at` turned `q`.
+export const muzzleOf = (at, q) => ({ from: add(at, qrot(q, [0, BORE.up, -BORE.ahead])), dir: qrot(q, [0, 0, -1]) });
+// A hand at `at` turned (yaw, then pitch, no roll) so its shot passes through `point`.
+export function aimAt(at, point) {
+  let q = [0, 0, 0, 1];
+  for (let i = 0; i < 8; i++) {
+    const d = sub(point, muzzleOf(at, q).from);
+    const n = Math.hypot(...d);
+    const pitchDeg = (Math.asin(d[1] / n) * 180) / Math.PI;
+    const yawDeg = (Math.atan2(-d[0], -d[2]) * 180) / Math.PI;
+    q = qmul(yaw(yawDeg), pitch(pitchDeg));
+  }
+  return q;
+}
+
+const AIM_HAND = [0.2, 1.3, -0.35];
+// At the right target, 6 cm off its centre; low between the targets, at the backstop.
+const AIM_RIGHT = aimAt(AIM_HAND, add(TARGETS[2], [-0.06, 0.04, 0]));
+const AIM_MIDDLE = aimAt(AIM_HAND, add(TARGETS[1], [0.03, -0.05, 0]));
+const AIM_LEFT = aimAt(AIM_HAND, add(TARGETS[0], [0.05, 0.02, 0]));
+const AIM_MISS = aimAt(AIM_HAND, [0.35, 0.7, -5.6]);
+// Pointing left at the wall, level: through it, and back clear of it.
+const LEFT = yaw(90);
+const WALL_NEAR = [-0.25, 1.2, -0.5];
+const THROUGH = [-0.55, 1.2, -0.5];
+const CLEAR = [-0.33, 1.2, -0.5];
+const ARMORY_RH = slotAt("rightHolster");
+
+// Behind the player's right shoulder: the hand and pistol, the shot down range.
+const behindGun = { eye: [2.8, 1.9, 1.25], target: [7.0, 1.2, -0.35], fov: 40 };
+// Above and behind, looking at the wall at the bench's left end.
+const atArmoryWall = { eye: [3.35, 2.25, 0.85], target: [4.45, 1.15, -0.45], fov: 42 };
+// From the player's right, at the hip.
+const atArmoryHip = { eye: [4.1, 1.45, 2.15], target: [4.0, 1.0, 0.05], fov: 40 };
+// Down range from beside the targets: the hits.
+const atTargets = { eye: [8.0, 1.6, 1.3], target: [9.5, 1.25, 0.0], fov: 32 };
+
+const takePistol = [
+  { frames: 15, left: { to: LEFT_OUT } },
+  { frames: 20, right: { to: [0.15, 1.05, -0.3] } },
+  { frames: 15, right: { to: PISTOL_GRIP }, mark: "reachedPistol" },
+  { frames: 6, right: { squeeze: 1 }, mark: "tookPistol" },
+];
+const fireAt = (turn, name) => [
+  { frames: 25, right: { to: AIM_HAND, turn } },
+  { frames: 6, right: {}, mark: `aimed${name}` },
+  { frames: 1, right: { trigger: 1 }, mark: `fired${name}` },
+  { frames: 6, right: {} },
+  { frames: 4, right: { trigger: 0 } },
+];
+
+const armoryScenarios = {
+  // Take the pistol off the bench, aim at the right target and pull: one hit
+  // there. Hold the trigger down: still one shot. Let it out, aim low between
+  // the targets and pull: a shot into the backstop, no hit.
+  "armory-fire": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
+      { frames: 6, right: {}, mark: "aimed" },
+      { frames: 1, right: { trigger: 1 }, mark: "fired" },
+      { frames: 30, right: {}, mark: "held" },
+      { frames: 4, right: { trigger: 0 }, mark: "letOut" },
+      { frames: 20, right: { turn: AIM_MISS } },
+      { frames: 1, right: { trigger: 1 }, mark: "missed" },
+      { frames: 4, right: { trigger: 0 }, mark: "after" },
+    ],
+  },
+
+  // Point the pistol at the wall and push the hand on through it: the pistol
+  // stops at the wall, and the trigger only clicks. Drawn back clear of it,
+  // the trigger fires (into the wall).
+  "armory-wall": {
+    station: 3,
+    neck: NECK,
+    spectator: atArmoryWall,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: WALL_NEAR, turn: LEFT } },
+      { frames: 25, right: { to: THROUGH }, mark: "pushed" },
+      { frames: 1, right: { trigger: 1 }, mark: "clicked" },
+      { frames: 6, right: { trigger: 0 } },
+      { frames: 20, right: { to: CLEAR }, mark: "clear" },
+      { frames: 1, right: { trigger: 1 }, mark: "fired" },
+      { frames: 6, right: { trigger: 0 } },
+    ],
+  },
+
+  // Holster the pistol at the right thigh; reach back with the trigger
+  // already held and draw it: no jump, no shot until the trigger is let out
+  // and pulled again.
+  "armory-holster": {
+    station: 3,
+    neck: NECK,
+    spectator: atArmoryHip,
+    steps: [
+      ...takePistol,
+      { frames: 30, right: { to: [0.3, 1.0, -0.1] } },
+      { frames: 25, right: { to: ARMORY_RH }, mark: "atHolster" },
+      { frames: 1, right: { squeeze: 0 }, mark: "holstered" },
+      { frames: 15, right: { to: add(ARMORY_RH, [0.06, 0.12, -0.08]) } },
+      { frames: 4, right: { trigger: 1 } },
+      { frames: 15, right: { to: ARMORY_RH }, mark: "reachedHolster" },
+      { frames: 1, right: { squeeze: 1 }, mark: "drawn" },
+      { frames: 20, right: {}, mark: "drawnHeld" },
+      { frames: 30, right: { to: AIM_HAND, turn: AIM_MIDDLE }, mark: "out" },
+      { frames: 4, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 }, mark: "fired" },
+      { frames: 6, right: { trigger: 0 } },
+    ],
+  },
+
+  // The demo: take the pistol, hit each target with a tracer, hold the
+  // trigger down (one shot), push the barrel into the wall (refused), fire
+  // clear of it, then holster and draw it with the trigger held.
+  "armory-tour": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...takePistol,
+      ...fireAt(AIM_RIGHT, "Right"),
+      ...fireAt(AIM_MIDDLE, "Middle"),
+      { frames: 20, right: { turn: AIM_LEFT }, spectator: behindGun },
+      { frames: 1, right: { trigger: 1 }, mark: "release" },
+      { frames: 45, right: {}, mark: "held" },
+      { frames: 4, right: { trigger: 0 } },
+      { frames: 20, right: {}, spectator: atTargets },
+      { frames: 30, right: { to: WALL_NEAR, turn: LEFT }, spectator: atArmoryWall },
+      { frames: 25, right: { to: THROUGH }, mark: "pushed" },
+      { frames: 1, right: { trigger: 1 }, mark: "clicked" },
+      { frames: 15, right: { trigger: 0 } },
+      { frames: 20, right: { to: CLEAR } },
+      { frames: 1, right: { trigger: 1 }, mark: "fired" },
+      { frames: 10, right: { trigger: 0 } },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: [0, 0, 0, 1] }, spectator: atArmoryHip },
+      { frames: 25, right: { to: ARMORY_RH }, mark: "atHolster" },
+      { frames: 1, right: { squeeze: 0 }, mark: "holstered" },
+      { frames: 20, right: { to: add(ARMORY_RH, [0.06, 0.12, -0.08]), trigger: 1 } },
+      { frames: 15, right: { to: ARMORY_RH } },
+      { frames: 1, right: { squeeze: 1 }, mark: "drawn" },
+      { frames: 20, right: {} },
+      { frames: 30, right: { to: AIM_HAND, turn: AIM_MIDDLE }, spectator: behindGun },
+      { frames: 6, right: { trigger: 0 } },
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 20, right: { trigger: 0 } },
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -497,4 +670,5 @@ export const scenarios = {
       { frames: 40, right: { to: [0.25, 1.1, -0.35] }, mark: "settled" },
     ],
   },
+  ...armoryScenarios,
 };

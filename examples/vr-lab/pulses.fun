@@ -17,24 +17,31 @@ type Event =
   | Blocked
   // It went too far past its blocked prop and lost it.
   | Break
+  // Its pistol fired.
+  | Fire
+  // Its pistol's trigger was pulled but the shot refused (the muzzle against the level).
+  | Click
 
 /// One buzz: how hard (0..1) and how long.
 type Pulse = { amplitude: float, seconds: float }
 
-/// Each event's buzz, weakest to strongest: hover and release light, a
-/// grab firmer, slots firmer still and longer, a stop sharp, a break the
+/// Each event's buzz, weakest to strongest: hover and release light (a
+/// refused trigger's click lighter still, and shortest), a grab firmer, slots
+/// firmer still and longer, a stop sharp, a shot sharper, a break the
 /// strongest and longest.
 let pulse = (e: Event): Pulse =>
   match e with
   | Ready => { amplitude: 0.15, seconds: 0.015 }
+  | Click => { amplitude: 0.25, seconds: 0.01 }
   | Release => { amplitude: 0.3, seconds: 0.02 }
   | Grab => { amplitude: 0.45, seconds: 0.03 }
   | Unstow => { amplitude: 0.55, seconds: 0.04 }
   | Stow => { amplitude: 0.7, seconds: 0.05 }
   | Blocked => { amplitude: 0.85, seconds: 0.02 }
+  | Fire => { amplitude: 0.95, seconds: 0.035 }
   | Break => { amplitude: 1.0, seconds: 0.08 }
 
-let all = [Ready, Release, Grab, Unstow, Stow, Blocked, Break]
+let all = [Ready, Click, Release, Grab, Unstow, Stow, Blocked, Fire, Break]
 
 // Every event is told apart by its amplitude alone.
 expect all |> List.all((a) => all |> List.all((b) => a == b || (pulse(a)).amplitude != (pulse(b)).amplitude))

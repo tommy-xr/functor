@@ -46,7 +46,7 @@ let conserved = (m: Game.Model): bool =>
   let slotted = m.props |> List.filter((p) => Option.isSome(p.slot)) |> List.length in
   let free = m.props |> List.filter((p) => Option.isNone(p.held) && Option.isNone(p.slot)) |> List.length in
   let once = (n: float) => n <= 1.0 in
-  held + slotted + free == List.length(Props.all) && List.length(m.props) == List.length(Props.all)
+  held + slotted + free == List.length(start.props) && List.length(m.props) == List.length(start.props)
     && (Slots.all |> List.all((s) => once(m.props |> List.filter((p) => p.slot == Option.Some(s.id)) |> List.length)))
     && once(m.props |> List.filter((p) => holder(m, p.kind) == Option.Some(Hold.Left)) |> List.length)
     && once(m.props |> List.filter((p) => holder(m, p.kind) == Option.Some(Hold.Right)) |> List.length)

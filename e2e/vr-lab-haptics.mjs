@@ -14,7 +14,11 @@
 //      (no second ready while it is already in the slot).
 //   5. inventory-refuse: neither the stick (fits no slot) nor the bottle (the
 //      holster is full) is ready or stowed; both release.
-//   6. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
+//   6. armory-fire: grab, then one fire per pull (the trigger held down is
+//      one); armory-wall: grab, stop at the wall, the refused pull's click,
+//      then a fire clear of it; armory-holster: grab, ready, stow, unstow (the
+//      draw, trigger held: no fire), then a fire once let out and pulled.
+//   7. Replay: `POST /rewind` and a hot reload (`POST /reload-project`) add no
 //      pulse. A fixture replayed through `/input` is a live run: the recorded
 //      grab-throw pulses exactly the live run's events.
 //
@@ -27,7 +31,7 @@ import { project, scenarios } from "./vr-lab-scenarios.mjs";
 const PORT = 8297;
 
 // Each event's amplitude, as `Pulses.pulse` has it.
-const PULSE = { ready: 0.15, release: 0.3, grab: 0.45, unstow: 0.55, stow: 0.7, blocked: 0.85, break: 1.0 };
+const PULSE = { ready: 0.15, click: 0.25, release: 0.3, grab: 0.45, unstow: 0.55, stow: 0.7, blocked: 0.85, fire: 0.95, break: 1.0 };
 const EVENT = new Map(Object.entries(PULSE).map(([name, a]) => [a, name]));
 
 const run = (name, body) => session(name, project, PORT, body);
@@ -107,6 +111,26 @@ await run("inventory: refusals", async (rt) => {
     "right grab", "right ready", "right stow", // the brick
     "right grab", "right release", // the bottle: the holster is full
   ]);
+});
+
+await run("armory: fire", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["armory-fire"]);
+  expectPulses(got, ["right grab", "right fire", "right fire"]);
+  check(got.pulses[1]?.frame === got.marks.fired.frame, `the fire on the pull's step (frame ${got.pulses[1]?.frame})`);
+  check(got.pulses[2]?.frame === got.marks.missed.frame, `none while held; the next on the next pull (frame ${got.pulses[2]?.frame})`);
+});
+
+await run("armory: barrel into the wall", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["armory-wall"]);
+  expectPulses(got, ["right grab", "right blocked", "right click", "right fire"]);
+  check(got.pulses[2]?.frame === got.marks.clicked.frame, `the click on the refused pull (frame ${got.pulses[2]?.frame})`);
+  check(got.pulses[3]?.frame === got.marks.fired.frame, `the fire clear of it (frame ${got.pulses[3]?.frame})`);
+});
+
+await run("armory: holster and draw", async (rt) => {
+  const got = await pulsesOf(rt, scenarios["armory-holster"]);
+  expectPulses(got, ["right grab", "right ready", "right stow", "right unstow", "right fire"]);
+  check(got.pulses[4]?.frame === got.marks.fired.frame, `no fire on the draw; one once let out and pulled (frame ${got.pulses[4]?.frame})`);
 });
 
 await run("recorded fixture", async (rt) => {

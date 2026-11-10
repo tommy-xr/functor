@@ -6,7 +6,8 @@
 // CPU never idles between them: spaced-out steps measure DVFS, not work. The
 // shell runs a burst several steps per frame and draws once a frame. Then the
 // same on the grab table, which has the same props in the same rig-local
-// places but wears no slots.
+// places but wears no slots; then the armory, the pistol held aimed down
+// range (its trigger read each step), the slots worn.
 //
 // From `GET /frames`: `step` (one fixed step's producer work: sampledInput,
 // tick, physics) and `draw` (once a frame), min / median / p95 / max. The
@@ -52,9 +53,12 @@ const row = (name, s) => `  ${name.padEnd(5)} ${[s.min, s.med, s.p95, s.max].map
 
 const reach = scenarios["inventory-reach"];
 const held = { ...reach, steps: reach.steps.slice(0, reach.steps.findIndex((s) => s.mark === "inZone") + 1) };
+const fire = scenarios["armory-fire"];
+const aimed = { ...fire, steps: fire.steps.slice(0, fire.steps.findIndex((s) => s.mark === "aimed") + 1) };
 const runs = [
   ["inventory (station 2): brick slotted, hand in the holster", held],
   ["grab table (station 1): the same hands", { ...held, station: 1 }],
+  ["armory (station 3): the pistol held aimed", aimed],
 ];
 const results = [];
 for (const [name, scenario] of runs) {
@@ -66,10 +70,11 @@ for (const [name, scenario] of runs) {
   console.log(row("step", r.step));
   console.log(row("draw", r.draw));
 }
-const [inv, base] = results;
+const [inv, base, armory] = results;
 const pct = (us) => `${((100 * us) / BUDGET_US).toFixed(1)}%`;
 const step = inv.step.min - base.step.min;
 const draw = inv.draw.min - base.draw.min;
 console.log(`\nslots + hips, desktop mins: +${step.toFixed(0)} µs a step, +${draw.toFixed(0)} µs a draw`);
 const worst = (r) => r.step.min + r.draw.min;
 console.log(`Quest (×${QUEST}), a frame with a step: inventory ${(worst(inv) * QUEST).toFixed(0)} µs (${pct(worst(inv) * QUEST)} of ${BUDGET_US.toFixed(0)}), grab table ${(worst(base) * QUEST).toFixed(0)} µs (${pct(worst(base) * QUEST)}); the slots' share ${pct((step + draw) * QUEST)}`);
+console.log(`armory, desktop mins: step ${armory.step.min.toFixed(0)} µs, draw ${armory.draw.min.toFixed(0)} µs; Quest (×${QUEST}) ${(worst(armory) * QUEST).toFixed(0)} µs (${pct(worst(armory) * QUEST)} of ${BUDGET_US.toFixed(0)})`);
