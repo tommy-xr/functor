@@ -1409,13 +1409,13 @@ const handViewScenarios = {
 
 // --- Hands (station 1, and the armory's pistol) ---
 // Both hands up in front of the player, palms down (each turned a quarter
-// turn about the way it points) and a little yawed in, 14 cm apart.
+// turn about the way it points) and a little yawed in, 20 cm apart.
 export const HANDS = {
-  right: { at: [0.07, 1.3, -0.32], turn: qmul(yaw(15), roll(-90)) },
-  left: { at: [-0.07, 1.3, -0.32], turn: qmul(yaw(-15), roll(90)) },
+  right: { at: [0.1, 1.3, -0.32], turn: qmul(yaw(10), roll(-90)) },
+  left: { at: [-0.1, 1.3, -0.32], turn: qmul(yaw(-10), roll(90)) },
 };
 // Ahead of the player, to the right and above: both hands' curl.
-const atHands = { eye: [-0.42, 1.55, 4.88], target: [0.0, 1.29, 4.36], fov: 22 };
+const atHands = { eye: [-0.42, 1.55, 4.88], target: [0.0, 1.29, 4.36], fov: 27 };
 // Both hands' `field` (squeeze or trigger) stepped from `from` to `to` over
 // `n` steps; `mark` names the last.
 const both = (field, from, to, n = 12, mark) =>
