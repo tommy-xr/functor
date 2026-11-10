@@ -314,20 +314,33 @@ let isLoose = (k: Props.Kind): bool =>
 
 // --- the step ---
 
+// The hand readers below match rather than chain `Option` helpers: they
+// run dozens of times a step.
+let controllerIn = (x: Input.xr, side: Hold.Side): Input.controller =>
+  match side with
+  | Hold.Left => x.left
+  | Hold.Right => x.right
+
 let controller = (xr: Option.t<Input.xr>, side: Hold.Side): Option.t<Input.controller> =>
-  xr |> Option.map((x) => match side with | Hold.Left => x.left | Hold.Right => x.right)
+  match xr with
+  | Option.Some(x) => Option.Some(controllerIn(x, side))
+  | Option.None => Option.None
 
 /// A hand's grip, rig-local, while it is tracked.
 let gripOf = (xr: Option.t<Input.xr>, side: Hold.Side): Option.t<Input.pose> =>
-  match controller(xr, side) with
-  | Option.Some(c) => if c.active then c.grip else Option.None
+  match xr with
+  | Option.Some(x) => let c = controllerIn(x, side) in if c.active then c.grip else Option.None
   | Option.None => Option.None
 
 let squeezeOf = (xr: Option.t<Input.xr>, side: Hold.Side): float =>
-  controller(xr, side) |> Option.map((c) => c.squeeze) |> Option.defaultValue(0.0)
+  match xr with
+  | Option.Some(x) => (controllerIn(x, side)).squeeze
+  | Option.None => 0.0
 
 let triggerOf = (xr: Option.t<Input.xr>, side: Hold.Side): float =>
-  controller(xr, side) |> Option.map((c) => c.trigger) |> Option.defaultValue(0.0)
+  match xr with
+  | Option.Some(x) => (controllerIn(x, side)).trigger
+  | Option.None => 0.0
 
 let handOf = (m: Model, side: Hold.Side): Hold.Hand<Props.Kind> =>
   match side with
@@ -343,7 +356,9 @@ let withProp = (p: Prop, m: Model): Model =>
   { m with props: m.props |> List.map((q) => if q.kind == p.kind then p else q) }
 
 let heldBy = (side: Hold.Side, p: Prop): bool =>
-  p.held |> Option.map((h) => h.side == side) |> Option.defaultValue(false)
+  match p.held with
+  | Option.Some(h) => h.side == side
+  | Option.None => false
 
 /// The prop a hand holds, if any.
 let propIn = (m: Model, side: Hold.Side): Option.t<Prop> => m.props |> List.find((p) => heldBy(side, p))
@@ -357,15 +372,27 @@ let heldIn = (m: Model, side: Hold.Side): Option.t<Hold.Held> =>
   propIn(m, side) |> Option.bind((p) => p.held)
 
 /// Where a prop is now: held, where it was accepted; free, as read back.
-let poseOf = (p: Prop): Input.pose => p.held |> Option.map((h) => h.accepted) |> Option.defaultValue(p.pose)
+let poseOf = (p: Prop): Input.pose =>
+  match p.held with
+  | Option.Some(h) => h.accepted
+  | Option.None => p.pose
 
-let supportOf = (p: Prop): Option.t<Hold.Side> => p.support |> Option.map((s) => s.side)
+let supportOf = (p: Prop): Option.t<Hold.Side> =>
+  match p.support with
+  | Option.Some(s) => Option.Some(s.side)
+  | Option.None => Option.None
+
+/// Whether `side` supports `p` (`supportOf(p) == Option.Some(side)`).
+let supportedBy = (side: Hold.Side, p: Prop): bool =>
+  match p.support with
+  | Option.Some(s) => s.side == side
+  | Option.None => false
 
 /// What a hand is on: the prop it holds, or the rifle whose foregrip it supports.
 let inHand = (m: Model, side: Hold.Side): Option.t<Props.Kind> =>
   match propIn(m, side) with
   | Option.Some(p) => Option.Some(p.kind)
-  | Option.None => m.props |> List.find((p) => supportOf(p) == Option.Some(side)) |> Option.map((p) => p.kind)
+  | Option.None => m.props |> List.find((p) => supportedBy(side, p)) |> Option.map((p) => p.kind)
 
 /// The hand on a weapon's trigger: its holder, unless that holds the rifle by
 /// the foregrip.
@@ -588,18 +615,18 @@ let opens = (m: Model, k: Props.Kind, s: Slots.Placed): bool => Slots.fits(k, s.
 
 /// The hips follow the head, pinned while either hand is near a slot (where
 /// it was last step, so the slot holds still under the reaching hand), and
-/// the slotted props ride them.
-let wear = (m: Model, dt: float): Model =>
+/// the slotted props ride them. The model, and the slots where they are now.
+let wear = (m: Model, dt: float): (Model, List<Slots.Placed>) =>
   let before = Slots.placed(m.hips) in
   let reachingFor = (side: Hold.Side) =>
     gripOf(m.xr, side) |> Option.map((g) => Slots.pins(before, g.position)) |> Option.defaultValue(false) in
   let head = m.xr |> Option.bind((x) => x.head) in
   let hips = Hips.step(m.hips, { head: head, pin: reachingFor(Hold.Left) || reachingFor(Hold.Right) }, dt) in
   let now = Slots.placed(hips) in
-  { m with hips: hips, props: m.props |> List.map((p: Prop) =>
+  ({ m with hips: hips, props: m.props |> List.map((p: Prop) =>
       match p.slot with
       | Option.Some(id) => { p with pose: slotPose(now, id, p.pose) }
-      | Option.None => p) }
+      | Option.None => p) }, now)
 
 /// What the hands put away this step. A hand stores its prop by opening in a
 /// slot (or the rifle rack) that fits it and is empty, if it was tracked this step and the last
@@ -917,8 +944,8 @@ let step = (m: Model, st: Stations.Station, world: World, read: (Prop) => Prop, 
   let observed = { m with left: left, right: right, props: m.props |> List.map(read), fresh: false, releasing: [], slideRelease: [] } in
   // The magazines released this step drop first, from where their guns are.
   let seen = m.releasing |> List.fold((acc, k) => ejectMag(acc, world, k), observed) in
-  let live = if Stations.worn(st) then wear(seen, dt) else seen in
-  let slots = (if Stations.worn(st) then Slots.placed(live.hips) else []) |> List.append(racks(st)) in
+  let (live, worn) = if Stations.worn(st) then wear(seen, dt) else (seen, []) in
+  let slots = worn |> List.append(racks(st)) in
   // The rifles' support hands first: they aim (or let go of) what the holds
   // then move, and a rifle one has let go of can be put away.
   let (supported, alone, steadied) = supporting(live) in
@@ -972,7 +999,7 @@ let other = (side: Hold.Side): Hold.Side =>
 let holdEvents = (m: Model, next: Model, released: List<Release>, side: Hold.Side): List<Pulses.Event> =>
   let was = inHand(m, side) in
   let now = inHand(next, side) in
-  if was == now || (m.props |> List.any((p) => supportOf(p) == Option.Some(side))) then []
+  if was == now || (m.props |> List.any((p) => supportedBy(side, p))) then []
   else
     match now with
     | Option.Some(k) => if Option.isSome(propOf(m, k).slot) then [Pulses.Unstow] else [Pulses.Grab]
@@ -1097,6 +1124,9 @@ let solid = (named: (string, Stations.Box)) =>
   let (name, b) = named in
   Physics.fixed(Physics.tag(name), Physics.box(b.size.x, b.size.y, b.size.z)) |> Physics.at(Quat.toVec3(b.center))
 
+// The level's fixed bodies, built once.
+let solids = Stations.solids |> List.map(solid)
+
 // Held: kinematic at the accepted pose. Free: dynamic, declared where it was
 // let go (a constant until the next grab, so the simulation owns the pose).
 let physics = (m: Model) =>
@@ -1106,7 +1136,7 @@ let physics = (m: Model) =>
     match p.held with
     | Option.Some(h) => Physics.kinematic(tag, shape) |> Physics.atPose(posed(st, h.accepted))
     | Option.None => Physics.dynamic(tag, shape) |> Physics.atPose(posed(st, p.at)) |> Props.dynamics(p.kind) in
-  Physics.scene(Vec3.make(0.0, -9.81, 0.0), Stations.solids |> List.map(solid) |> List.append(m.props |> List.filter((p) => not bodiless(p)) |> List.map(body)))
+  Physics.scene(Vec3.make(0.0, -9.81, 0.0), solids |> List.append(m.props |> List.filter((p) => not bodiless(p)) |> List.map(body)))
 
 // --- the pure step, with no world ---
 
@@ -1279,7 +1309,7 @@ type On = | OnHeld(prop: Prop, held: Hold.Held) | OnFore(prop: Prop, held: Hold.
 
 let onOf = (m: Model, side: Hold.Side): On =>
   // The prop the hand holds or supports, in one pass (a hand does one or the other).
-  match m.props |> List.find((p) => heldBy(side, p) || supportOf(p) == Option.Some(side)) with
+  match m.props |> List.find((p) => heldBy(side, p) || supportedBy(side, p)) with
   | Option.Some(p) =>
     (match p.held with
      | Option.Some(h) => if h.side == side then OnHeld(p, h) else OnFore(p, h)
@@ -1391,8 +1421,10 @@ let lab =
   ])
 
 /// A score at `at` (world), facing a station turned `yaw`.
+let scoreDigits = (score: float): Scene.t => Digits.number(score, Color.rgb(1.0, 0.75, 0.2), Color.rgb(0.05, 0.04, 0.03))
 let board = (score: float, at: Input.point3, yaw: float) =>
-  Digits.number(score, Color.rgb(1.0, 0.75, 0.2), Color.rgb(0.05, 0.04, 0.03))
+  // Every board shows the score: one memo serves them all.
+  Scene.memo("score", score, scoreDigits)
     |> Scene.scale(0.09)
     |> Scene.rotateY(Angle.radians(yaw + Math.pi))
     |> Scene.translate(Quat.toVec3(at))

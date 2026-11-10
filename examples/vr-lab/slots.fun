@@ -52,9 +52,12 @@ type Placed = { slot: Slot, pose: Input.pose }
 
 /// Every slot where the hips put it; none before the hips have a head.
 let placed = (h: Hips.State): List<Placed> =>
-  all |> List.concatMap((s) => match Hips.place(h, s.offset) with
-    | Option.Some(p) => [{ slot: s, pose: p }]
-    | Option.None => [])
+  match h.head with
+  | Option.None => []
+  | Option.Some(_) =>
+    // `Hips.place`'s frame, turned once for every slot.
+    let frame = Hips.frame(h) in
+    all |> List.map((s) => { slot: s, pose: Hold.compose(frame, s.offset) })
 
 let distance = (p: Placed, q: Input.point3): float => Quat.length(Quat.sub(q, p.pose.position))
 
