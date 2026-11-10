@@ -295,3 +295,118 @@ fn a_fused_wall_reports_its_own_tag() {
         "near"
     );
 }
+
+/// 20 m of terrain about the origin: flat at y = 0, or rising 0.1 m per m
+/// along +x.
+fn terrain(ramp: bool) -> Body {
+    let (width, height) = (33u32, 33u32);
+    let samples = (0..width * height)
+        .map(|i| if ramp { ((i % width) * 65535 / (width - 1)) as u16 } else { 0 })
+        .collect();
+    let geometry = crate::terrain::TerrainGeometry {
+        source: crate::terrain::TerrainSource {
+            locator: "test.png".to_string(),
+            while_pending: Vec::new(),
+        },
+        width: 20.0,
+        depth: 20.0,
+        min_height: 0.0,
+        max_height: 2.0,
+    };
+    let data = crate::asset::pipelines::HeightmapData {
+        samples,
+        width,
+        height,
+        revision: 1,
+    };
+    Body::fixed(
+        "terrain".to_string(),
+        Shape::Heightfield {
+            geometry,
+            data: Some(std::sync::Arc::new(data)),
+        },
+    )
+}
+
+#[test]
+fn a_sweep_lands_on_a_heightfield_and_turns_into_it() {
+    let w = stepped(vec![terrain(false)]);
+    let ball = Shape::Sphere { radius: 0.1 };
+    let hit = w
+        .sweep(
+            &ball,
+            upright([1.0, 2.0, 1.0]),
+            upright([1.0, -1.0, 1.0]),
+            SweepFilter::Fixed,
+        )
+        .expect("the ball lands");
+    assert_eq!(hit.tag, "terrain");
+    assert!(near(hit.fraction, 1.9 / 3.0, 1.0e-3), "{hit:?}");
+    assert!(hit.normal[1] > 0.99, "{hit:?}");
+    // A level stick tipping its far end down onto the ground, in place.
+    let stick = cuboid(0.05, 0.05, 1.6);
+    let centre = [1.0, 0.5, 1.0];
+    let hit = w
+        .sweep(
+            &stick,
+            pose(centre, Z, Y),
+            pose(centre, [0.0, -1.0, 0.0], Z),
+            SweepFilter::Fixed,
+        )
+        .expect("the far end swings into the ground");
+    // Its lowest corner at the hit: 0.5 - 0.8 sin θ - 0.025 cos θ.
+    let theta = hit.fraction * std::f32::consts::FRAC_PI_2;
+    let low = 0.5 - 0.8 * theta.sin() - 0.025 * theta.cos();
+    assert!(near(low, 0.0, 6.0e-3), "fraction {} reaches y {low}", hit.fraction);
+    assert!(hit.normal[1] > 0.99, "{hit:?}");
+}
+
+#[test]
+fn a_start_overlap_with_terrain_holds_against_pressing() {
+    let w = stepped(vec![terrain(false)]);
+    let block = cuboid(0.2, 0.2, 0.2);
+    // 2 cm into the ground.
+    let inside = [1.0, 0.08, 1.0];
+    let out = w.sweep(&block, upright(inside), upright([1.0, 0.5, 1.0]), SweepFilter::Fixed);
+    assert_eq!(out, None);
+    let along = w.sweep(&block, upright(inside), upright([1.3, 0.08, 1.0]), SweepFilter::Fixed);
+    assert_eq!(along, None, "sliding along the ground doesn't press into it");
+    let hit = w
+        .sweep(&block, upright(inside), upright([1.0, 0.0, 1.0]), SweepFilter::Fixed)
+        .expect("pressing in");
+    assert_eq!((hit.fraction, hit.tag.as_str()), (0.0, "terrain"));
+    assert!(hit.normal[1] > 0.99, "{hit:?}");
+    // Still: an overlap test.
+    assert_eq!(fraction(w.sweep(&block, upright(inside), upright(inside), SweepFilter::Fixed)), 0.0);
+    let clear = upright([1.0, 0.5, 1.0]);
+    assert_eq!(w.sweep(&block, clear, clear, SweepFilter::Fixed), None);
+}
+
+#[test]
+fn an_unrotated_sweep_onto_terrain_matches_shape_cast() {
+    let w = stepped(vec![terrain(true)]);
+    let shapes = [
+        Shape::Sphere { radius: 0.1 },
+        cuboid(0.2, 0.3, 0.4),
+        Shape::Capsule {
+            half_height: 0.2,
+            radius: 0.05,
+        },
+    ];
+    let start = [1.0, 2.0, 1.0];
+    for shape in shapes {
+        for d in [[0.0f32, -3.0, 0.0], [2.0, -3.0, 1.0], [-1.5, -2.5, 0.5]] {
+            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let to = [start[0] + d[0], start[1] + d[1], start[2] + d[2]];
+            let linear = w.shape_cast(&shape, start, d, len, None).expect("linear hit");
+            let swept = w
+                .sweep(&shape, upright(start), upright(to), SweepFilter::All)
+                .expect("swept hit");
+            assert_eq!(swept.tag, linear.tag);
+            assert!(
+                near(swept.fraction * len, linear.distance, 2.0e-3),
+                "{shape:?} {d:?}: {swept:?} vs {linear:?}"
+            );
+        }
+    }
+}

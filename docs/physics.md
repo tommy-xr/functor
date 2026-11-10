@@ -341,6 +341,9 @@ a teaching error. Rays and contacts report the body's tag.
   overlap hits at fraction 0 only when the motion presses deeper at the
   contact (rapier on its own lets a shape press up to its thickness in, a CCD
   tolerance), and a motionless sweep is an overlap test.
+  Rapier has no turning cast against a heightfield or the fused room's floor,
+  so there the motion is a chain of linear casts, each holding its start
+  rotation: a turn is followed to within 5 mm, not exactly.
 
 ### Characters: `Physics.character`
 

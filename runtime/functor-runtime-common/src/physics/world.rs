@@ -2448,7 +2448,7 @@ fn pressed(
     at: &Pose,
     motion: Option<&NonlinearRigidMotion>,
 ) -> Option<ShapeCastHit> {
-    let contact = |at: &Pose| rapier3d::parry::query::contact(pos, other, at, shape, 0.0).ok().flatten();
+    let contact = |at: &Pose| overlap(pos, other, shape, at);
     let c = contact(at)?;
     if let Some(m) = motion {
         // Deeper a little way on? (One witness can't tell: a box flush on a
@@ -2479,11 +2479,118 @@ fn pair_hit(
     motion: Option<&NonlinearRigidMotion>,
 ) -> Option<ShapeCastHit> {
     pressed(pos, other, shape, at, motion).or_else(|| {
+        let motion = motion?;
         let still = NonlinearRigidMotion::constant_position(*pos);
-        let hit = rapier3d::parry::query::cast_shapes_nonlinear(&still, other, motion?, shape, 0.0, 1.0, false)
-            .ok()??;
-        Some(hit.transform1_by(pos))
+        match rapier3d::parry::query::cast_shapes_nonlinear(&still, other, motion, shape, 0.0, 1.0, false) {
+            Ok(hit) => Some(hit?.transform1_by(pos)),
+            // A heightfield or a halfspace (the fused room's floor).
+            Err(_) => segmented_hit(pos, other, shape, motion),
+        }
     })
+}
+
+/// The farthest a [`segmented_hit`] segment's held rotation lets the shape
+/// stray from its turning path, and the halvings that place a hit a turn
+/// swung in.
+const SEGMENT_TOL: f32 = 5.0e-3;
+const BISECTIONS: u32 = 16;
+
+/// [`pair_hit`] where parry has no turning cast (a heightfield, a halfspace):
+/// `k` linear casts along the motion, each holding its start rotation, with
+/// `k` such that a segment turns the shape's farthest point at most
+/// [`SEGMENT_TOL`] (one exact linear cast when it doesn't turn). An overlap
+/// at a segment's end that its cast missed was turned into, and is halved
+/// down to when it began.
+fn segmented_hit(
+    pos: &Pose,
+    other: &dyn rapier3d::parry::shape::Shape,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    motion: &NonlinearRigidMotion,
+) -> Option<ShapeCastHit> {
+    let radius = shape.compute_local_bounding_sphere().radius;
+    let k = ((motion.angvel.length() * radius / SEGMENT_TOL).ceil() as u32).max(1);
+    let options = ShapeCastOptions {
+        max_time_of_impact: 1.0,
+        stop_at_penetration: false,
+        ..Default::default()
+    };
+    let overlaps = |t: f32| overlap(pos, other, shape, &motion.position_at_time(t)).is_some();
+    let (mut t0, mut start) = (0.0, motion.position_at_time(0.0));
+    let mut inside = overlaps(0.0);
+    for i in 1..=k {
+        let t1 = i as f32 / k as f32;
+        let end = motion.position_at_time(t1);
+        if inside {
+            // A cast from inside a heightfield hits its triangles' inner
+            // edges, so an overlap only hits once it presses deeper (the
+            // first segment's start was `pair_hit`'s own check).
+            let on = NonlinearRigidMotion::new(start, Vector::ZERO, motion.linvel, motion.angvel);
+            if let Some(hit) = (i > 1).then(|| pressed(pos, other, shape, &start, Some(&on))).flatten() {
+                return Some(ShapeCastHit { time_of_impact: t0, ..hit });
+            }
+        } else {
+            let cast = rapier3d::parry::query::cast_shapes(
+                pos,
+                Vector::ZERO,
+                other,
+                &start,
+                end.translation - start.translation,
+                shape,
+                options,
+            );
+            if let Ok(Some(hit)) = cast {
+                let time_of_impact = t0 + hit.time_of_impact * (t1 - t0);
+                return Some(ShapeCastHit { time_of_impact, ..hit.transform1_by(pos) });
+            }
+        }
+        let was_inside = std::mem::replace(&mut inside, overlaps(t1));
+        if inside && !was_inside {
+            let (mut clear, mut touching) = (t0, t1);
+            for _ in 0..BISECTIONS {
+                let mid = 0.5 * (clear + touching);
+                if overlaps(mid) {
+                    touching = mid;
+                } else {
+                    clear = mid;
+                }
+            }
+            let c = overlap(pos, other, shape, &motion.position_at_time(touching))?;
+            return Some(ShapeCastHit {
+                time_of_impact: clear,
+                witness1: c.point1,
+                witness2: c.point2,
+                normal1: c.normal1,
+                normal2: c.normal2,
+                status: ShapeCastStatus::Converged,
+            });
+        }
+        (t0, start) = (t1, end);
+    }
+    None
+}
+
+/// `shape` at `at` touching `other` (at `pos`): the contact, in world space.
+/// Parry has no heightfield contact, so a heightfield answers with its
+/// deepest triangle under the shape.
+fn overlap(
+    pos: &Pose,
+    other: &dyn rapier3d::parry::shape::Shape,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    at: &Pose,
+) -> Option<rapier3d::parry::query::Contact> {
+    use rapier3d::parry::query::contact;
+    if let Ok(c) = contact(pos, other, at, shape, 0.0) {
+        return c;
+    }
+    let field = other.as_heightfield()?;
+    let mut deepest: Option<rapier3d::parry::query::Contact> = None;
+    field.map_elements_in_local_aabb(&shape.compute_aabb(&pos.inv_mul(at)), &mut |_, triangle| {
+        let c = contact(pos, triangle, at, shape, 0.0).ok().flatten();
+        if let Some(c) = c.filter(|c| deepest.is_none_or(|d| c.dist < d.dist)) {
+            deepest = Some(c);
+        }
+    });
+    deepest
 }
 
 /// What `shape` can touch along `motion`: its bounding sphere about its
@@ -4990,6 +5097,34 @@ mod fused_room_tests {
             w.step_fixed();
             each(w);
         }
+    }
+
+    /// The floor is a halfspace, which parry can't cast along a turn.
+    #[test]
+    fn sweeps_land_on_the_fused_room_floor_and_turn_into_it() {
+        let room = Arc::new(stand_in_room());
+        let mut w = world_with(vec![room_body(&room)]);
+        let floor = w.fused_room_colliders().unwrap().1.expect("the floor was seen");
+        run(&mut w, 1, |_| {});
+        let level = [0.0, 0.0, 0.0, 1.0];
+        let ball = Shape::Sphere { radius: 0.1 };
+        let hit = w
+            .sweep(&ball, ([-1.0, 1.0, 0.5], level), ([-1.0, -1.0, 0.5], level), SweepFilter::Fixed)
+            .expect("the ball lands");
+        assert_eq!(hit.tag, "room");
+        assert!((hit.fraction - (0.9 - floor) / 2.0).abs() < 1.0e-3, "{hit:?} floor {floor}");
+        assert!(hit.normal[1] > 0.99, "{hit:?}");
+        // A level stick tipping its far end (+z) down onto the floor, in place.
+        let stick = Shape::Cuboid { extents: [0.05, 0.05, 1.6] };
+        let centre = [-1.0, 0.5, 0.5];
+        let (s, c) = std::f32::consts::FRAC_PI_4.sin_cos();
+        let hit = w
+            .sweep(&stick, (centre, level), (centre, [s, 0.0, 0.0, c]), SweepFilter::Fixed)
+            .expect("the far end swings into the floor");
+        let theta = hit.fraction * std::f32::consts::FRAC_PI_2;
+        let low = 0.5 - 0.8 * theta.sin() - 0.025 * theta.cos();
+        assert!((low - floor).abs() < 6.0e-3, "fraction {} reaches y {low}, floor {floor}", hit.fraction);
+        assert!(hit.normal[1] > 0.99, "{hit:?}");
     }
 
     #[test]

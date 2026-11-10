@@ -3,7 +3,9 @@
 //!
 //! The world is a floor, a table, a wall and a basket (fixed boxes, fused as
 //! the runtime fuses them). Each case sweeps a held stick one 60 Hz step's
-//! worth of hand motion: clear, into the wall, and turning in place into it.
+//! worth of hand motion: clear, into the wall, and turning in place into it;
+//! then clear and turning down into flat terrain (the segmented path: parry
+//! has no turning cast against a heightfield).
 //! Reports the min and median per call over batches. Timings are desktop;
 //! the Quest estimate is ×4.
 //!
@@ -12,7 +14,11 @@
 //! ```
 
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::Instant;
+
+use functor_runtime_common::asset::pipelines::HeightmapData;
+use functor_runtime_common::terrain::{TerrainGeometry, TerrainSource};
 
 use functor_runtime_common::physics::{Body, PhysicsScene, Shape, SweepFilter, World, FIXED_DT};
 use functor_runtime_common::MappedTrackingPose;
@@ -57,22 +63,42 @@ fn main() {
     for i in 0..5 {
         bodies.push(cuboid(&format!("basket-{i}"), [-0.2 + 0.3 * i as f32, 0.17, 7.1], [0.03, 0.35, 0.6]));
     }
-    let mut w = World::new([0.0, -9.81, 0.0]);
-    w.reconcile(&PhysicsScene::create([0.0, -9.81, 0.0], bodies));
-    w.step_frame(FIXED_DT);
+    let world = |bodies: Vec<Body>| {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        w.reconcile(&PhysicsScene::create([0.0, -9.81, 0.0], bodies));
+        w.step_frame(FIXED_DT);
+        w
+    };
+    let boxes = world(bodies);
+    // Terrain has no turning cast, so its sweeps take the segmented path.
+    let terrain = world(vec![Body::fixed(
+        "terrain".to_string(),
+        Shape::Heightfield {
+            geometry: TerrainGeometry {
+                source: TerrainSource { locator: "flat.png".to_string(), while_pending: Vec::new() },
+                width: 30.0,
+                depth: 30.0,
+                min_height: 0.0,
+                max_height: 1.0,
+            },
+            data: Some(Arc::new(HeightmapData::flat())),
+        },
+    )]);
 
     let stick = Shape::Cuboid { extents: [0.04, 0.04, 0.6] };
     // One step of a 1.2 m/s hand: 2 cm. The stick lies along +Z unless it
     // turns, so the linear cast sweeps the same shape.
     let z = [0.0, 0.0, 1.0];
     let cases = [
-        ("clear", [0.0, 1.2, 4.4], [0.02, 1.2, 4.4], z, z),
-        ("into the wall", [0.565, 1.2, 4.4], [0.585, 1.2, 4.4], z, z),
-        ("turning in place", [0.35, 1.2, 4.4], [0.35, 1.2, 4.4], z, [1.0, 0.0, 0.2]),
+        ("clear", &boxes, [0.0, 1.2, 4.4], [0.02, 1.2, 4.4], z, z),
+        ("into the wall", &boxes, [0.565, 1.2, 4.4], [0.585, 1.2, 4.4], z, z),
+        ("turning in place", &boxes, [0.35, 1.2, 4.4], [0.35, 1.2, 4.4], z, [1.0, 0.0, 0.2]),
+        ("terrain: clear", &terrain, [0.0, 1.2, 0.0], [0.02, 1.2, 0.0], z, z),
+        ("terrain: turning", &terrain, [0.0, 0.2, 0.0], [0.0, 0.2, 0.0], z, [0.0, -1.0, 0.2]),
     ];
     println!("sweep_bench: one call, a 0.6 m stick, vr-lab-sized world ({CALLS} calls x {BATCHES} batches)\n");
     println!("  {:<18} {:>10} {:>10} {:>10} {:>10}  hits", "case", "sweep min", "med", "cast min", "med");
-    for (name, a, b, fa, fb) in cases {
+    for (name, w, a, b, fa, fb) in cases {
         let (from, to) = (pose(a, fa), pose(b, fb));
         let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
