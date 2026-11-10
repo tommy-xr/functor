@@ -28,6 +28,10 @@
 //      the capsules and back, in `/state` and `/scene`.
 //   6. A held pistol's skinned index follows its trigger, placed as FK puts
 //      the preset; the skinned ghost is the drawn hand's, translucent.
+//   7. The pistol's hooked index (its tip bent further than its knuckle):
+//      every capsule (placed, turned, sized) and every skinned joint (placed,
+//      turned within its correction's bound) where FK puts the preset's
+//      curl and tip, at each pull.
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab-hands.mjs
@@ -54,12 +58,22 @@ const FINGERS = [
 const THUMB = { base: [-0.022, -0.01, -0.02], bones: [0.046, 0.032, 0.029], rest: [0.7, 0.3, 1.0], opposed: [0.3, 1.3, 1.6], flex: [0.2, 0.9, 1.2] };
 const FIST = [deg(80), deg(100), deg(65)];
 const WRIST = { position: [0.031, -0.015, 0.062], orientation: qmul(axisAngle([1, 0, 0], 0.2), axisAngle([0, 0, 1], -Math.PI / 2)) };
-// The empty hand's finger pose (`Hand.empty`).
+// A finger pose: the thumb's curl (its CMC and MCP), tip (its IP) and
+// opposition; each finger's curl (its MCP) and tip (its PIP and DIP).
+// `uniform`: one curl a finger, the tip with it.
+const uniform = (c) => ({ curl: c, tip: c });
+// The empty hand's (`Hand.empty`).
 const POWER = { middle: 0.75, ring: 0.72, little: 0.6 };
 const mix = (a, b, t) => a + (b - a) * Math.min(1, Math.max(0, t));
 const empty = (trigger, squeeze) => ({
-  thumb: { curl: 0.5, opposition: 0.25 },
-  curls: [mix(0.15, 0.55, trigger), mix(0.15, POWER.middle, squeeze), mix(0.15, POWER.ring, squeeze), mix(0.15, POWER.little, squeeze)],
+  thumb: { curl: 0.5, tip: 0.5, opposition: 0.25 },
+  fingers: [mix(0.15, 0.55, trigger), mix(0.15, POWER.middle, squeeze), mix(0.15, POWER.ring, squeeze), mix(0.15, POWER.little, squeeze)].map(uniform),
+});
+// The pistol grip's (`Hand.onTrigger`): wrapped, the index hooked on the
+// trigger, its tip bent further than its knuckle.
+const onTrigger = (t) => ({
+  thumb: { curl: 0.75, tip: 0.75, opposition: 1 },
+  fingers: [{ curl: mix(0.25, 0.55, t), tip: mix(0.4, 0.75, t) }, ...[0.75, 0.72, 0.6].map(uniform)],
 });
 
 // Each bone `[length, flexion at its base]` from `base`: the joints, then the tip.
@@ -81,9 +95,11 @@ function joints(side, pose) {
   const inWrist = [
     { position: add(FINGERS[1].base, [0, 0, -FINGERS[1].bones[0] / 2]), orientation: [0, 0, 0, 1] },
     { position: [0, 0, 0], orientation: [0, 0, 0, 1] },
-    ...chain({ position: THUMB.base, orientation: thumbQ }, THUMB.bones.map((b, i) => [b, pose.thumb.curl * THUMB.flex[i]])),
-    ...FINGERS.flatMap((f, k) =>
-      chain({ position: f.base, orientation: yawQ(f.splay) }, f.bones.map((b, i) => [b, i === 0 ? 0 : pose.curls[k] * FIST[i - 1]]))),
+    ...chain({ position: THUMB.base, orientation: thumbQ }, THUMB.bones.map((b, i) => [b, (i < 2 ? pose.thumb.curl : pose.thumb.tip) * THUMB.flex[i]])),
+    ...FINGERS.flatMap((f, k) => {
+      const { curl, tip } = pose.fingers[k];
+      return chain({ position: f.base, orientation: yawQ(f.splay) }, f.bones.map((b, i) => [b, i === 0 ? 0 : (i === 1 ? curl : tip) * FIST[i - 1]]));
+    }),
   ];
   const right = inWrist.map((j) => compose(WRIST, j));
   return side === "right" ? right : right.map(({ position: [x, y, z], orientation: [qx, qy, qz, qw] }) => ({ position: [-x, y, z], orientation: [qx, -qy, -qz, qw] }));
@@ -112,8 +128,10 @@ const ORDER = [...PALM, ...CAPSULES.flatMap((_, i) => (PALM.includes(i) ? [] : [
 const CAPS = [...PALM.filter((i) => STARTS.includes(CAPSULES[i][0])).map((i) => ["start", i]), ...ORDER.map((i) => ["end", i])];
 const caps = (ends) => CAPS.map(([end, i]) => ends[i][end === "start" ? 0 : 1]);
 const capOf = (end, i) => CAPS.findIndex(([e, j]) => e === end && j === i);
-// The fingers are drawn curled to the nearest 1/64 (`Hand.levels`).
-const drawnPose = (pose) => ({ ...pose, curls: pose.curls.map((c) => Math.round(Math.min(1, Math.max(0, c)) * 64) / 64) });
+// The fingers are drawn bent to the nearest 1/64, curl and tip
+// (`Hand.levels`).
+const level = (c) => Math.round(Math.min(1, Math.max(0, c)) * 64) / 64;
+const drawnPose = (pose) => ({ ...pose, fingers: pose.fingers.map(({ curl, tip }) => ({ curl: level(curl), tip: level(tip) })) });
 
 // --- reading the glove from `/scene` ---
 const IDENTITY = JSON.stringify([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
@@ -218,9 +236,8 @@ await run("a held pistol's index follows its trigger", async (rt) => {
   const others = ["middle", "ring", "little", "thumb"].every((f) => Math.abs(reach(g("trigger0"), f) - reach(g("trigger100"), f)) < 1e-6);
   check(others, "the other fingers stay wrapped");
   // Wrapped round the grip, the index on the trigger (`Hand.onTrigger`).
-  const pose = (t) => ({ thumb: { curl: 0.75, opposition: 1 }, curls: [mix(0.25, 0.55, t), 0.75, 0.72, 0.6] });
   const local = (mark) => g(mark).raw[0].map((i) => i.position);
-  const want = (t) => caps(capsuleEnds("right", drawnPose(pose(t)))).map(([x, y, z]) => [-x, y, -z]);
+  const want = (t) => caps(capsuleEnds("right", drawnPose(onTrigger(t)))).map(([x, y, z]) => [-x, y, -z]);
   const off = Math.max(...[["trigger0", 0], ["trigger50", 0.5], ["trigger100", 1]].flatMap(([m, t]) => local(m).map((p, i) => len(sub(p, want(t)[i])))));
   check(off < 1e-4, `posed as the pistol grip's preset at each pull, in the hand's frame (worst ${mm(off)})`);
 });
@@ -322,8 +339,7 @@ await run("a held pistol's skinned index", async (rt) => {
     return Object.fromEntries(model.value.animation.Place.joints.map((j) => [j.joint, j.position]));
   };
   // In the hand's frame (the grip's turned half round +Y), as FK puts the preset.
-  const pose = (t) => ({ thumb: { curl: 0.75, opposition: 1 }, curls: [mix(0.25, 0.55, t), 0.75, 0.72, 0.6] });
-  const want = (t) => joints("right", drawnPose(pose(t))).map(({ position: [x, y, z] }) => [-x, y, -z]);
+  const want = (t) => joints("right", drawnPose(onTrigger(t))).map(({ position: [x, y, z] }) => [-x, y, -z]);
   const off = Math.max(...[["trigger0", 0], ["trigger50", 0.5], ["trigger100", 1]].flatMap(([m, t]) =>
     SKINNED.map((j) => len(sub(local(m)[NAMES[j]], want(t)[j])))));
   check(off < 1e-4, `posed as the pistol grip's preset at each pull (worst ${mm(off)})`);
@@ -340,6 +356,52 @@ await run("the skinned ghost", async (rt) => {
     "blocked at the wall: the skinned glove's ghost, posed the same, at 0.4 opacity");
   const apart = shadow && len(sub(skin(kids[7]).joints.wrist.at, skin(kids[5]).joints.wrist.at));
   check(apart > 0.02, `drawn ${apart && (apart * 100).toFixed(1)} cm from it`);
+});
+
+// A held pistol, both gloves, in the hand's frame (the grip's turned half
+// round +Y: `Hand.partOf`'s and `Skin.toModel`'s): the preset's index has a
+// tip apart from its curl, and every capsule and skinned joint is where the
+// two-curl FK puts it.
+await run("a hooked index (tip ≠ curl): capsules and skinned at FK", async (rt) => {
+  const PULLS = [["trigger0", 0], ["trigger50", 0.5], ["trigger100", 1]];
+  const turned = ([x, y, z]) => [-x, y, -z];
+  // Skinned (the default) first, then G: the capsules.
+  const skinned = await record(rt, scenarios["pistol-trigger"], { scenes: true });
+  const capsule = await record(rt, capsules(scenarios["pistol-trigger"]), { scenes: true });
+  // Each cap's place and radius, each cylinder's place, axis and size.
+  let off = 0;
+  for (const [mark, t] of PULLS) {
+    const [spheres, cylinders] = glove(capsule.scenes[mark].scene.obj.Group[5]).raw;
+    if (spheres.length !== 24 || cylinders.length !== 19) off = Infinity;
+    const ends = capsuleEnds("right", drawnPose(onTrigger(t)));
+    const wantCaps = caps(ends).map(turned);
+    off = Math.max(off, ...spheres.map((i, k) => Math.max(len(sub(i.position, wantCaps[k])), Math.abs(i.scale[0] - CAPSULES[CAPS[k][1]][1]))));
+    off = Math.max(off, ...cylinders.map((i, k) => {
+      const [a, b] = ends[ORDER[k]].map(turned);
+      const [, radius, length] = CAPSULES[ORDER[k]];
+      const size = [2 * radius, length, 2 * radius];
+      return Math.max(len(sub(i.position, a.map((v, c) => (v + b[c]) / 2))), len(sub(qrot(i.rotation, [0, 1, 0]), unit(sub(b, a)))),
+        ...i.scale.map((s, c) => Math.abs(s - size[c])));
+    }));
+  }
+  check(off < 1e-4, `capsules: each of the 24 caps and 19 cylinders at FK's curl and tip, at each pull (worst ${mm(off)})`);
+  // Skinned: each joint placed at FK's, its -Z and +Y within its
+  // correction's bound of FK's joint.
+  let far = 0;
+  let over = -Infinity;
+  for (const [mark, t] of PULLS) {
+    const [model] = find(skinned.scenes[mark].scene.obj.Group[5], "Model");
+    const got = Object.fromEntries(model.value.animation.Place.joints.map((j) => [j.joint, j]));
+    const js = joints("right", drawnPose(onTrigger(t)));
+    for (const j of SKINNED) {
+      const g = got[NAMES[j]];
+      const { position, orientation } = js[j];
+      far = Math.max(far, len(sub(g.position, turned(position))));
+      const axes = [[0, 0, -1], [0, 1, 0]].map((v) => between(unit(qrot(g.rotation, v)), turned(qrot(orientation, v))));
+      over = Math.max(over, Math.max(...axes) - (j === 1 ? 12.5 : 6));
+    }
+  }
+  check(far < 1e-4 && over <= 0, `skinned: each of the 20 joints at FK's curl and tip, at each pull (worst ${mm(far)}), turned within its correction's bound (${(-over).toFixed(2)}° inside)`);
 });
 
 if (failures.length) {

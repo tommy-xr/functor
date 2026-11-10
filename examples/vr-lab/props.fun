@@ -185,7 +185,7 @@ let fingers = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
 
 // A gun's index follows its trigger; its other fingers, and the foregrip's,
 // wrap; a round is pinched, the ball is in an open palm.
-expect (fingers(Pistol, AtGrip, 0.0)).index < (fingers(Pistol, AtGrip, 1.0)).index
+expect (fingers(Pistol, AtGrip, 0.0)).index.curl < (fingers(Pistol, AtGrip, 1.0)).index.curl
 expect (fingers(Rifle, AtGrip, 1.0)).middle == Hand.power.middle && fingers(Rifle, AtFore, 1.0) == Hand.power
 expect fingers(Round(Ammo.PistolMag, 0.0), AtGrip, 1.0) == Hand.pinch && fingers(Ball, AtGrip, 1.0) == Hand.palmOpen
 
