@@ -31,6 +31,15 @@ the world, rig-local), the last release (`lastRelease`), the score, and each han
 (`feltLeft`/`feltRight`); `haptics` counts the pulses sent. The
 headset requests 120 Hz with foveation off, floor-locked.
 
+Hands are drawn as capsule gloves (`Hand`): OpenXR's 26 hand joints posed
+by forward kinematics from how far each finger curls, a capsule per bone.
+Empty, the grip curls the middle, ring and little fingers round the
+controller's handle and the trigger the index. Holding, each prop has a
+preset (`Props.fingers`): a power wrap for the stick, the bottle's neck, a
+magazine and a foregrip or fore-end; a gun's grip with the index on its
+trigger; a pinch for a round or shell; an open palm for the ball and brick.
+A hand's ghost is the same glove.
+
 | Module | What it is |
 | --- | --- |
 | `game.fun` | the MVU glue: station selector, the step (holds, then slots where worn), physics, drawing |
@@ -46,7 +55,8 @@ headset requests 120 Hz with foveation off, floor-locked.
 | `armory.fun` | the armory station's headless checks |
 | `pulses.fun` | each hold event's controller pulse, and the edges that fire it once |
 | `hold.fun` | one hand grabbing, holding and releasing a prop (any pose); the swept move; the throw and spin estimate |
-| `props.fun` | the props: shape, collider, reach, authored grip, material, look |
+| `hand.fun` | the hand as data: the joints, the bones, finger curls and their forward kinematics, the hand on a controller, the capsule glove and its presets |
+| `props.fun` | the props: shape, collider, reach, authored grip, the fingers on it, material, look |
 | `digits.fun` | seven-segment numbers (the headset doesn't draw `ui`) |
 | `quat.fun` | plain-data vectors and quaternions |
 

@@ -19,6 +19,12 @@
 // against the pump steps around it in the same run. The extra is added to
 // the aimed shotgun's burst minimum for its worst frame.
 //
+// A hand's glove is rebuilt only when its fingers move (`Scene.memo`), and a
+// burst holds them still. So, also a step at a time: both hands raised at
+// the grab table, held still, then their grip and trigger swept every step
+// (both gloves rebuilt each frame). The extra draw is added to the aimed
+// shotgun's worst frame too: a trigger moving under the aim.
+//
 // From `GET /frames`: `step` (one fixed step's producer work: sampledInput,
 // tick, physics) and `draw` (once a frame), min / median / p95 / max. The
 // summary compares the MIN column: wall-clock medians swing with DVFS and
@@ -72,6 +78,42 @@ async function measureShots(scenario, from) {
     const frames = (await rt.get("/frames?last=600")).frames.filter((f) => f.steps === 1 && f.frame > start);
     const stepOf = (f) => f.sim_us - f.draw_us;
     return { fire: frames.filter((f) => fired.has(f.frame)).map(stepOf), other: frames.filter((f) => !fired.has(f.frame)).map(stepOf) };
+  } finally {
+    await spin.terminate();
+    await rt.kill();
+  }
+}
+
+// Both hands raised at the grab table: `still` steps held, then `moving`
+// steps with their grip and trigger swept (a different curl every step).
+const HAND_AT = { right: [0.07, 1.3, -0.32], left: [-0.07, 1.3, -0.32] };
+const sweep = (i) => 0.5 + 0.5 * Math.sin(i * 0.37);
+const curling = {
+  station: 1,
+  steps: [
+    { frames: 20, right: { to: HAND_AT.right }, left: { to: HAND_AT.left }, mark: "placed" },
+    { frames: 60, right: {}, left: {}, mark: "still" },
+    ...Array.from({ length: 60 }, (_, i) => ({
+      frames: 1,
+      right: { squeeze: sweep(i), trigger: sweep(i + 2) },
+      left: { squeeze: sweep(i + 4), trigger: sweep(i + 6) },
+    })),
+  ],
+};
+
+// Play `curling` a step at a time; from `/frames`, the held and the moving
+// steps' step and draw times.
+async function measureCurling() {
+  const rt = await launch(project, PORT, ["--headless"]);
+  const spin = new Worker("for (;;) {}", { eval: true });
+  try {
+    const at = {};
+    await play(rt, curling, async ({ state, mark }) => {
+      if (mark) at[mark] = state.frame;
+    });
+    const frames = (await rt.get("/frames?last=600")).frames.filter((f) => f.steps === 1 && f.frame > at.placed);
+    const part = (fs) => ({ step: fs.map((f) => f.sim_us - f.draw_us), draw: fs.map((f) => f.draw_us) });
+    return { still: part(frames.filter((f) => f.frame <= at.still)), moving: part(frames.filter((f) => f.frame > at.still)) };
   } finally {
     await spin.terminate();
     await rt.kill();
@@ -138,3 +180,12 @@ console.log(row("other", other));
 const extra = firing.min - other.min;
 const fireFrame = (sg.step.min + extra + sg.draw.min) * QUEST;
 console.log(`a shot's step: +${extra.toFixed(0)} µs (mins); its frame, Quest (×${QUEST}) ${fireFrame.toFixed(0)} µs (${pct(fireFrame)} of ${BUDGET_US.toFixed(0)})`);
+const curl = await measureCurling();
+const [held2, moving] = [curl.still, curl.moving].map((c) => ({ step: stats(c.step), draw: stats(c.draw) }));
+console.log(`\nhands at the grab table, a step at a time: ${curl.still.draw.length} held, ${curl.moving.draw.length} curling every step, µs`);
+console.log(`  ${"".padEnd(5)} ${["min", "med", "p95", "max"].map((h) => h.padStart(7)).join(" ")}`);
+console.log(row("held", held2.draw));
+console.log(row("curl", moving.draw));
+const regrip = moving.draw.min - held2.draw.min;
+const regripFrame = (sg.step.min + sg.draw.min + regrip / 2) * QUEST;
+console.log(`both gloves rebuilt: +${regrip.toFixed(0)} µs a draw (mins); one rebuilt under the aimed shotgun, Quest (×${QUEST}) ${regripFrame.toFixed(0)} µs (${pct(regripFrame)} of ${BUDGET_US.toFixed(0)})`);
