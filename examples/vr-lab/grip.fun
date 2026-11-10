@@ -196,22 +196,35 @@ let reach = contactGap + sweep * marchStep
 let bisections = 8.0
 
 /// A digit closed: its rig's controls' curls, and whether it started in what
-/// it holds (`buried`: left straight).
+/// it holds (`buried`: left at its start).
 type Closed = { curls: List<float>, buried: bool }
 
-/// Close a straight digit on `solids` by `rig`'s controls (`opposition`:
-/// the thumb's turn). Every control closes together until a capsule comes
-/// within `contactGap`; its control and every one before it stops, the
-/// controls past it close on, until each has touched or reached a full curl.
-/// A phalanx already inside buries the digit. (The thumb's metacarpal is the
-/// thenar, part of the palm: inside, it only stops the thumb's first
-/// control.)
-let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, rig: List<float>): Closed =>
+/// How much deeper than it starts the thenar (the thumb's metacarpal, part of
+/// the palm) may press into what it holds before it stops the thumb's curl:
+/// flesh, 3 mm. So a thenar resting on an item lets the MCP close on.
+let thenarGive = 0.003
+
+/// Close a digit from `start` (every control's curl; 0 straight) on `solids`
+/// by `rig`'s controls (`opposition`: the thumb's turn). Every control
+/// closes together until a capsule comes within `contactGap`; its control and
+/// every one before it stops, the controls past it close on, until each has
+/// touched or reached a full curl. A phalanx already inside buries the
+/// digit. The thenar stops the thumb's first control only `thenarGive`
+/// deeper than it started.
+let closeFrom = (start: float, solids: List<Solid>, side: Hold.Side, d: float, opposition: float, rig: List<float>): Closed =>
   let ctl = (i: float) => List.nth(i, rig) |> Option.defaultValue(0.0) in
   let controls = ctl(2.0) + 1.0 in
-  // The gaps (up to `limit`) of the capsules `keep` names; 1 m the rest.
+  let c0 = List.range(controls) |> List.map((_) => start) in
+  // How far past `contactGap` the thenar's gap stops its control.
+  let give =
+    if d != 0.0 then 0.0
+    else List.head(segmentsOf(side, d, jointsOf(rig, c0), opposition)) |> Option.map((s) => let (a, b, r) = s in
+      contactGap - Math.min(contactGap, gapUnder(contactGap, solids, a, b, r)) + thenarGive) |> Option.defaultValue(0.0) in
+  let off = (i: float) => if i == 0.0 then give else 0.0 in
+  // The gaps (up to `limit`) of the capsules `keep` names, less their give;
+  // 1 m the rest.
   let gapsOf = (limit: float, keep: (float) => bool, c: List<float>): List<float> =>
-    segmentsOf(side, d, jointsOf(rig, c), opposition) |> List.indexedMap((i, s) => let (a, b, r) = s in if keep(i) then gapUnder(limit, solids, a, b, r) else 1.0) in
+    segmentsOf(side, d, jointsOf(rig, c), opposition) |> List.indexedMap((i, s) => let (a, b, r) = s in if keep(i) then gapUnder(limit - off(i), solids, a, b, r) + off(i) else 1.0) in
   // The capsules control `j` and past it move.
   let gapsFrom = (limit: float, j: float, c: List<float>): List<float> => gapsOf(limit, (i) => ctl(i) >= j, c) in
   // The control of the farthest capsule within `contactGap`, if any.
@@ -245,28 +258,41 @@ let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, 
            let mid = (lo + hi) / 2.0 in
            if Option.isSome(touching(j, from(j, mid, c))) then (lo, mid) else (mid, hi), bracket) in
          (1.0 + (touching(j, from(j, hi, c)) |> Option.defaultValue(controls - 1.0)), from(j, lo, c))) in
-  let c0 = List.range(controls) |> List.map((_) => 0.0) in
   if gapsOf(touchGap, (i) => d != 0.0 || i > 0.0, c0) |> List.any((g) => g < 0.0) then { curls: c0, buried: true }
   else
     let (_, curls) = Loop.until((st) => let (j, _) = st in j >= controls, phase, (0.0, c0)) in
     { curls: curls, buried: false }
+
+/// Close a straight digit (`closeFrom` 0).
+let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, rig: List<float>): Closed => closeFrom(0.0, solids, side, d, opposition, rig)
+
+// How far back past straight the thumb opens when straight is inside what it
+// holds at every turn: hyperextended, a third of a fist's flexion.
+let thumbOpen = 0.0 - 0.35
 
 // The thumb's turns tried: at rest to opposed.
 let oppositions = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 /// The thumb closed at its best turn: the one whose tip (its pad) ends
 /// nearest the item (either side of it), the thenar's depth in it counted
-/// ten times; then the one touching with the most capsules. Buried at every
-/// turn: at rest, buried.
+/// ten times; then the one touching with the most capsules. Straight, it is
+/// buried at every turn: it closes from open (`thumbOpen`); buried at every
+/// turn from there too, at rest, buried.
 let closeThumb = (solids: List<Solid>, side: Hold.Side): (Closed, float) =>
+  match thumbFrom(0.0, solids, side) with
+  | Option.Some(t) => t
+  | Option.None => thumbFrom(thumbOpen, solids, side) |> Option.defaultValue(({ curls: [0.0, 0.0], buried: true }, 0.0))
+
+// The thumb's best turn closed from `start`, if any isn't buried.
+let thumbFrom = (start: float, solids: List<Solid>, side: Hold.Side): Option.t<(Closed, float)> =>
   let tried = oppositions |> List.map((o) =>
-    let cl = close(solids, side, 0.0, o, thumbRig) in
+    let cl = closeFrom(start, solids, side, 0.0, o, thumbRig) in
     let gaps = segmentsOf(side, 0.0, jointsOf(thumbRig, cl.curls), o) |> List.map((s) => let (a, b, r) = s in gapOf(solids, a, b, r)) in
     let at = (i: float) => List.nth(i, gaps) |> Option.defaultValue(1.0) in
     let touches = gaps |> List.filter((g) => g <= touchGap) |> List.length in
     (cl, o, Math.abs(at(2.0)) + 10.0 * Math.max(0.0, 0.0 - at(0.0)) - 0.0001 * touches)) |> List.filter((t) => let (cl, _, _) = t in not cl.buried) in
   tried |> List.sortBy((t) => let (_, _, score) = t in score) |> List.head
-    |> Option.map((t) => let (cl, o, _) = t in (cl, o)) |> Option.defaultValue(({ curls: [0.0, 0.0], buried: true }, 0.0))
+    |> Option.map((t) => let (cl, o, _) = t in (cl, o))
 
 // --- the palm ---
 
@@ -306,11 +332,32 @@ let palmPush = (solids: List<Solid>, side: Hold.Side): Option.t<float> =>
 /// palm starts inside the item, and the palm push (`palmPush`).
 type Fitted = { pose: Hand.FingerPose, curls: List<List<float>>, buried: List<bool>, palmBuried: bool, push: Option.t<float> }
 
-/// Fit a hand to `solids` (in its root frame): each finger closed from
-/// straight, the thumb at its best turn.
-let fit = (side: Hold.Side, solids: List<Solid>): Fitted =>
+// A finger stopped this near straight was stopped by a graze: a straight
+// finger along an item's side, short of where it wraps. It closes from a
+// curl instead (a real finger is already curling as it gets there): the
+// first of `curledStarts` that doesn't start it inside.
+let stuck = 0.1
+let curledStarts = [Hand.relaxed, 0.3, 0.45]
+
+/// A finger closed from straight, or from a curl (`curledStarts`) if
+/// straight left it stuck (`stuck`).
+let closeFinger = (solids: List<Solid>, side: Hold.Side, d: float): Closed =>
+  let straight = close(solids, side, d, 0.0, fingerRig) in
+  if straight.buried || (straight.curls |> List.any((c) => c >= stuck)) then straight
+  else
+    curledStarts |> List.map((s) => closeFrom(s, solids, side, d, 0.0, fingerRig)) |> List.find((c) => not c.buried)
+      |> Option.defaultValue(straight)
+
+/// Fit a hand to `solids` (in its root frame): each finger closed
+/// (`closeFinger`), the thumb at its best turn.
+let fit = (side: Hold.Side, solids: List<Solid>): Fitted => fitOn(side, solids, Option.None)
+
+/// `fit`, the index closing on `index` alone if given (a trigger: it passes
+/// the guard and frame it would graze on the way).
+let fitOn = (side: Hold.Side, solids: List<Solid>, index: Option.t<List<Solid>>): Fitted =>
   let (thumb, opposition) = closeThumb(solids, side) in
-  let closed = [thumb, ..([1.0, 2.0, 3.0, 4.0] |> List.map((d) => close(solids, side, d, 0.0, fingerRig)))] in
+  let on = (d: float) => if d == 1.0 then index |> Option.defaultValue(solids) else solids in
+  let closed = [thumb, ..([1.0, 2.0, 3.0, 4.0] |> List.map((d) => closeFinger(on(d), side, d)))] in
   let k = (d: float, i: float) => List.nth(d, closed) |> Option.bind((c) => List.nth(i, c.curls)) |> Option.defaultValue(0.0) in
   let bend = (d: float): Hand.Bend => { curl: k(d, 0.0), tip: k(d, 1.0) } in
   { pose: { thumb: { curl: k(0.0, 0.0), tip: k(0.0, 1.0), opposition: opposition }, index: bend(1.0), middle: bend(2.0), ring: bend(3.0), little: bend(4.0) },
@@ -321,10 +368,10 @@ let fit = (side: Hold.Side, solids: List<Solid>): Fitted =>
 
 // --- measuring a grip ---
 
-/// A grip measured: each digit's nearest gap (thumb first; negative, how
-/// deep it is in), the palm's, how many capsules touch (`touchGap`), and its
-/// strain (`strain`).
-type Metrics = { digits: List<float>, palm: float, contacts: float, strain: float }
+/// A grip measured: each digit's nearest gap (thumb first, its phalanges;
+/// negative, how deep it is in), the palm's and the thenar's, how many
+/// capsules touch (`touchGap`), and its strain (`strain`).
+type Metrics = { digits: List<float>, palm: float, thenar: float, contacts: float, strain: float }
 
 /// How strained a pose is, 0 relaxed: the mean of how far each curl and tip
 /// is out of 0.15-0.85, plus the mean of how far the ring finger's curl and
@@ -342,9 +389,10 @@ let measure = (side: Hold.Side, solids: List<Solid>, f: Hand.FingerPose): Metric
   let p = Hand.local(side, f) in
   let gaps = Hand.capsules |> List.map((c) => let (a, b) = Hand.ends(p, c) in (c.joint, gapOf(solids, a, b, c.radius))) in
   let nearest = (keep: (float) => bool) => gaps |> List.filter((g) => let (j, _) = g in keep(j)) |> List.map((g) => let (_, x) = g in x) |> List.minimum |> Option.defaultValue(1.0) in
-  let digit = (d: float) => nearest((j) => j >= 5.0 * d + 2.0 && j <= 5.0 * d + 4.0) in
+  let digit = (d: float) => nearest((j) => j >= 5.0 * d + (if d == 0.0 then 3.0 else 2.0) && j <= 5.0 * d + 4.0) in
   { digits: [0.0, 1.0, 2.0, 3.0, 4.0] |> List.map(digit),
     palm: palmGap(solids, side),
+    thenar: nearest((j) => j == 2.0),
     contacts: gaps |> List.filter((g) => let (_, x) = g in x <= touchGap) |> List.length,
     strain: strain(f) }
 
@@ -359,17 +407,8 @@ let tipError = (side: Hold.Side, solids: List<Solid>, fitted: Fitted): List<floa
 
 // --- what the lab holds ---
 // Each held item and site as solids in its own frame (its collider's: a
-// prop's pose), and where the hand's root sits on it. A prop's collider is
-// one bounding box, which for a gun holds the fist, so the solids are its
-// drawn parts near a hand.
-
-/// A held item at a site: its solids, the hand's root in its frame, whether
-/// it is held anywhere (`free`: put on the palm, `palmPush`, before the fit),
-/// and its preset (`Props.fingers`).
-type Item = { name: string, solids: List<Solid>, hand: Input.pose, free: bool, preset: Hand.FingerPose }
-
-let item = (name: string, solids: List<Solid>, hand: Input.pose, free: bool, k: Props.Kind, site: Props.Site): Item =>
-  { name: name, solids: solids, hand: hand, free: free, preset: Props.fingers(k, site, 0.0) }
+// prop's pose). A prop's collider is one bounding box, which for a gun holds
+// the fist, so the solids are its drawn parts near a hand.
 
 let boxAt = (at: Input.pose, size: Input.point3): Solid => solid(at, Box(Quat.scale(0.5, size)))
 
@@ -439,51 +478,198 @@ let bottleSolids =
    cyl(n, Props.neckLength, base + Props.bodyHeight + Props.neckLength / 2.0),
    cyl(n * 1.25, 0.012, base + Props.bodyHeight + Props.neckLength - 0.006)]
 
-// The support hand on a long gun's foregrip line, half way along it, turned
-// as the gun (`Longarm.supportOn` keeps the hand's turn: an upright hand's).
-let onFore = (f: Longarm.Fore): Input.pose => Hold.compose(f.grip, Hold.p(0.0, 0.0, 0.0 - (f.near + f.far) / 2.0))
+// --- intents ---
+// What a hand does with an item at a site, and the item-space target that
+// needs. The placement solve (`proposal`) turns it into where the item sits
+// in the hand's root frame; the hand stays where it is on the controller.
 
-// Free props held at a representative place: the item's centre at the fist
-// (a stick's grip band), then put on the palm. The brick lies across the
-// palm, its top on it, the fingers over its 10 cm width.
-let brickTurn = Quat.fromBasis(Quat.v3(0.0, 0.0, 1.0), Quat.v3(1.0, 0.0, 0.0), Quat.v3(0.0, 1.0, 0.0))
-let stickHand = Hold.inverse(Hold.at(Quat.v3(0.0, Props.stickLength / 2.0 - 0.07, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0)))
+/// A grip's intent: wrap a handle (`Power`: a point on its axis, the axis's
+/// way up the fist, the handle's radius toward the palm); a pistol grip
+/// (`Pistol`: Power, and the trigger's face the index presses); a pinch
+/// between the thumb's and index's pads (`Pinch`: the point, and the way
+/// across it pad to pad); the palm on a surface (`Palm`: a point on it and
+/// its outward normal); or hand-authored, not solved (`Free`: the hand's root
+/// in the item's frame).
+type Intent =
+  | Power(at: Input.point3, axis: Input.point3, radius: float)
+  | Pistol(at: Input.point3, axis: Input.point3, radius: float, trigger: Input.point3)
+  | Pinch(at: Input.point3, across: Input.point3)
+  | Palm(at: Input.point3, normal: Input.point3)
+  | Free(hand: Input.pose)
 
-/// Every held item and site, at its current placement.
-let items: List<Item> = [
-  item("ball", [solid(Hold.origin, Sphere(Props.ballRadius))], Hold.origin, true, Props.Ball, Props.AtGrip),
-  item("brick", [boxAt(Hold.origin, Props.extent(Props.Brick))], Hold.inverse(Hold.at(Hold.zero, brickTurn)), true, Props.Brick, Props.AtGrip),
-  item("stick (band)", [boxAt(Hold.p(0.0, 0.0, Props.stickLength / 2.0 - 0.07), Quat.v3(1.3 * Props.stickThickness, 1.3 * Props.stickThickness, 0.12)), boxAt(Hold.origin, Props.extent(Props.Stick))],
-    stickHand, true, Props.Stick, Props.AtGrip),
-  item("bottle neck", bottleSolids, Props.grip(Props.Bottle) |> Option.defaultValue(Hold.origin), false, Props.Bottle, Props.AtGrip),
-  item("pistol grip", pistolSolids, Gun.grip, false, Props.Pistol, Props.AtGrip),
-  item("pistol slide", pistolSolids, Hold.at(Gun.pistol.rack.at, Quat.identity), false, Props.Pistol, Props.AtSlide),
-  item("rifle grip", rifleSolids, Longarm.grip, false, Props.Rifle, Props.AtGrip),
-  item("rifle foregrip", rifleSolids, onFore(Longarm.fore), false, Props.Rifle, Props.AtFore),
-  item("shotgun grip", shotgunSolids, Pump.grip, false, Props.Shotgun, Props.AtGrip),
-  item("shotgun fore-end", shotgunSolids, onFore(Pump.fore), false, Props.Shotgun, Props.AtFore),
-  item("pistol mag", magSolids(Ammo.PistolMag), Hold.origin, true, Props.Mag(Ammo.PistolMag, 0.0), Props.AtGrip),
-  item("rifle mag", magSolids(Ammo.RifleMag), Hold.origin, true, Props.Mag(Ammo.RifleMag, 0.0), Props.AtGrip),
-  item("shell (from the box)", magSolids(Ammo.Shell), Hold.origin, false, Props.Round(Ammo.Shell, 0.0), Props.AtGrip),
+/// One held item at one site: what it is (for its preset), its solids in its
+/// frame, the intent, the item's way the fingers point (`forward`: to the
+/// root's -Z, squared to the intent's axis), and a hand edit (`nudge`: the
+/// item moved in the hand's root frame after the solve; `Hold.origin` for
+/// none).
+type Spec = { name: string, kind: Props.Kind, site: Props.Site, solids: List<Solid>, intent: Intent, forward: Input.point3, nudge: Input.pose }
+
+let spec = (name: string, k: Props.Kind, site: Props.Site, solids: List<Solid>, intent: Intent, forward: Input.point3): Spec =>
+  { name: name, kind: k, site: site, solids: solids, intent: intent, forward: forward, nudge: Hold.origin }
+
+let up = Quat.v3(0.0, 1.0, 0.0)
+let ahead = Quat.v3(0.0, 0.0, 0.0 - 1.0)
+let raked = (rake: float): Input.point3 => Quat.rotate(Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), rake), up)
+
+// A gun's point in its trigger hand's layout frame, in its collider's.
+let gunAt = (center: Input.point3, x: float, y: float, z: float): Input.point3 => Quat.sub(Quat.v3(x, y, z), center)
+
+/// Every held item and site.
+let specs: List<Spec> = [
+  spec("ball", Props.Ball, Props.AtGrip, [solid(Hold.origin, Sphere(Props.ballRadius))], Palm(Quat.v3(0.0, Props.ballRadius, 0.0), up), ahead),
+  // On its top, across the palm, the fingers over its 10 cm width.
+  spec("brick", Props.Brick, Props.AtGrip, [boxAt(Hold.origin, Props.extent(Props.Brick))], Palm(Quat.v3(0.0, (Props.extent(Props.Brick)).y / 2.0, 0.0), up), Quat.v3(1.0, 0.0, 0.0)),
+  // The band at its near end (+Z), the stick out past the index.
+  spec("stick (band)", Props.Stick, Props.AtGrip,
+    [boxAt(Hold.p(0.0, 0.0, Props.stickLength / 2.0 - 0.07), Quat.v3(1.3 * Props.stickThickness, 1.3 * Props.stickThickness, 0.12)), boxAt(Hold.origin, Props.extent(Props.Stick))],
+    Power(Quat.v3(0.0, 0.0, Props.stickLength / 2.0 - 0.07), ahead, 0.65 * Props.stickThickness), Quat.v3(0.0, 0.0 - 1.0, 0.0)),
+  spec("bottle neck", Props.Bottle, Props.AtGrip, bottleSolids, Power(Quat.v3(0.0, Props.neckAt, 0.0), up, Props.neckRadius), ahead),
+  spec("pistol grip", Props.Pistol, Props.AtGrip, pistolSolids,
+    Pistol(Quat.sub(Gun.handleAt, Gun.center), raked(Gun.handleRake), 0.015, gunAt(Gun.center, 0.0, 0.006, 0.0 - 0.019)), ahead),
+  spec("pistol slide", Props.Pistol, Props.AtSlide, pistolSolids, Free(Hold.at(Gun.pistol.rack.at, Quat.identity)), ahead),
+  spec("rifle grip", Props.Rifle, Props.AtGrip, rifleSolids,
+    Pistol(gunAt(Longarm.center, 0.0, 0.0, 0.012), raked(0.0 - 0.25), 0.015, gunAt(Longarm.center, 0.0, 0.018, 0.0 - 0.038)), ahead),
+  // The support hands: the fore-end's axis up the fist, the palm under it.
+  spec("rifle foregrip", Props.Rifle, Props.AtFore, rifleSolids,
+    Power(gunAt(Longarm.center, 0.0, 0.02, 0.0 - (Longarm.foreNear + Longarm.foreFar) / 2.0), ahead, 0.015), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
+  spec("shotgun grip", Props.Shotgun, Props.AtGrip, shotgunSolids,
+    Pistol(gunAt(Pump.center, 0.0, 0.0, 0.012), raked(0.0 - 0.25), 0.015, gunAt(Pump.center, 0.0, 0.0, 0.0 - 0.038)), ahead),
+  spec("shotgun fore-end", Props.Shotgun, Props.AtFore, shotgunSolids,
+    Power(gunAt(Pump.center, 0.0, 0.025, 0.0 - (Pump.foreNear + Pump.foreFar) / 2.0), ahead, 0.02), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
+  spec("pistol mag", Props.Mag(Ammo.PistolMag, 0.0), Props.AtGrip, magSolids(Ammo.PistolMag), Power(Quat.v3(0.0, 0.004, 0.0), up, 0.013), ahead),
+  spec("rifle mag", Props.Mag(Ammo.RifleMag, 0.0), Props.AtGrip, magSolids(Ammo.RifleMag), Power(Hold.zero, up, 0.0125), ahead),
+  // Pinched across, its nose (-Z) along the fingers.
+  spec("shell (from the box)", Props.Round(Ammo.Shell, 0.0), Props.AtGrip, magSolids(Ammo.Shell), Pinch(Hold.zero, Quat.v3(1.0, 0.0, 0.0)), ahead),
 ]
 
-/// An item's solids in a hand's root frame (the left's mirrored), a free
-/// one put on the palm.
+// --- the placement solve ---
+// Right hand, in its root frame; the left's is its mirror (`held`).
+
+let unitOf = (v: Input.point3): Input.point3 => Quat.scale(1.0 / Quat.length(v), v)
+let squareTo = (v: Input.point3, n: Input.point3): Input.point3 => unitOf(Quat.sub(v, Quat.scale(Quat.dot(v, n), n)))
+
+/// The turn taking item direction `a` onto root direction `ra`, and `b`
+/// (squared to `a`) onto `rb` squared to `ra`.
+let alignTurn = (a: Input.point3, ra: Input.point3, b: Input.point3, rb: Input.point3): Input.quaternion =>
+  let basis = (u: Input.point3, v: Input.point3) => let x = unitOf(u) in let y = squareTo(v, x) in Quat.fromBasis(x, y, Quat.cross(x, y)) in
+  Quat.mul(basis(ra, rb), Quat.conj(basis(a, b)))
+
+/// An item turned `turn` in the root with its point `from` at `to`.
+let itemAt = (turn: Input.quaternion, from: Input.point3, to: Input.point3): Input.pose => Hold.at(Quat.sub(to, Quat.rotate(turn, from)), turn)
+
+/// Solids in their item's frame, the item at `item` in the root.
+let posedIn = (item: Input.pose, solids: List<Solid>): List<Solid> => solids |> List.map((s) => { s with at: Hold.compose(item, s.at) })
+
+/// The item moved along the palm's normal until the palm touches it
+/// (`palmPush`), if it can.
+let onPalm = (solids: List<Solid>, item: Input.pose): Input.pose =>
+  match palmPush(posedIn(item, solids), Hold.Right) with
+  | Option.Some(d) => Hold.at(Quat.sub(item.position, Quat.scale(d, palmNormal(Hold.Right))), item.orientation)
+  | Option.None => item
+
+// The pads a natural pinch brings together: the thumb's and the index's tips.
+let pinchPads = let p = Hand.local(Hold.Right, Hand.pinch) in (Hand.at(p, Hand.thumbTip), Hand.at(p, Hand.indexTip))
+// The index's knuckle (MCP), straight: it closes about its +X.
+let indexKnuckle = Hand.jointOf(flatRight, 7.0)
+
+/// Where a spec's intent puts its item in the right hand's root frame,
+/// before its nudge. Power: its axis up the fist's channel (the grip's Y
+/// through its origin), `forward` ahead, then onto the palm. Pistol: that,
+/// slid along the axis until the trigger is in the plane the index closes
+/// in. Pinch: the point between the pads. Palm: the surface on the palm.
+let proposal = (s: Spec): Input.pose =>
+  match s.intent with
+  | Power(at, axis, _) => onPalm(s.solids, itemAt(alignTurn(axis, up, s.forward, ahead), at, Hold.zero))
+  | Pistol(at, axis, _, trigger) =>
+    let item = itemAt(alignTurn(axis, up, s.forward, ahead), at, Hold.zero) in
+    let hinge = Quat.rotate(indexKnuckle.orientation, Quat.v3(1.0, 0.0, 0.0)) in
+    let off = Quat.dot(Quat.sub((Hold.compose(item, Hold.at(trigger, Quat.identity))).position, indexKnuckle.position), hinge) / Quat.dot(up, hinge) in
+    onPalm(s.solids, Hold.at(Quat.sub(item.position, Quat.scale(off, up)), item.orientation))
+  | Pinch(at, across) =>
+    let (thumb, index) = pinchPads in
+    itemAt(alignTurn(across, Quat.sub(index, thumb), s.forward, ahead), at, Quat.lerp(thumb, index, 0.5))
+  | Palm(at, normal) =>
+    let n = palmNormal(Hold.Right) in
+    onPalm(s.solids, itemAt(alignTurn(normal, Quat.scale(0.0 - 1.0, n), s.forward, ahead), at, Quat.add((palmJoint(Hold.Right)).position, Quat.scale(0.015, n))))
+  | Free(hand) => Hold.inverse(hand)
+
+/// Where a spec's item sits in the right hand's root frame: the proposal,
+/// nudged.
+let placed = (s: Spec): Input.pose => Hold.compose(s.nudge, proposal(s))
+
+/// The hand's root in the item's frame (what a prop's grip is).
+let handOn = (s: Spec): Input.pose => Hold.inverse(placed(s))
+
+/// A held item at a site, placed: its spec, solids, the hand's root in its
+/// frame, and its preset (`Props.fingers`).
+type Item = { name: string, spec: Spec, solids: List<Solid>, hand: Input.pose, preset: Hand.FingerPose }
+
+let items: List<Item> = specs |> List.map((s) => { name: s.name, spec: s, solids: s.solids, hand: handOn(s), preset: Props.fingers(s.kind, s.site, 0.0) })
+
+/// An item's solids in a hand's root frame (the left's mirrored).
 let held = (side: Hold.Side, it: Item): List<Solid> =>
-  let seen = seenFrom(it.hand, it.solids) |> List.map((s) => if side == Hold.Left then { s with at: Hand.mirror(s.at) } else s) in
-  if not it.free then seen
-  else
-    match palmPush(seen, side) with
-    | Option.Some(d) => seen |> List.map((s) => shift(Quat.scale(0.0 - d, palmNormal(side)), s))
-    | Option.None => seen
+  seenFrom(it.hand, it.solids) |> List.map((s) => if side == Hold.Left then { s with at: Hand.mirror(s.at) } else s)
 
 /// An item's preset and its fit, measured, with the fit's pose error.
 type Compared = { name: string, preset: Metrics, fitted: Fitted, fit: Metrics, error: List<float> }
 
 let compare = (side: Hold.Side, it: Item): Compared =>
   let solids = held(side, it) in
-  let f = fit(side, solids) in
+  let f = fitOn(side, solids, triggerOf(side, it)) in
   { name: it.name, preset: measure(side, solids, it.preset), fitted: f, fit: measure(side, solids, f.pose), error: tipError(side, solids, f) }
+
+/// A pistol grip's trigger, as the index closes on it: a 1 mm bead at its
+/// face, in a hand's root frame.
+let triggerOf = (side: Hold.Side, it: Item): Option.t<List<Solid>> =>
+  match it.spec.intent with
+  | Pistol(_, _, _, t) => Option.Some([solid(Hold.at(inRootOf(side, it, t), Quat.identity), Sphere(0.001))])
+  | _ => Option.None
+
+let intentName = (i: Intent): string =>
+  match i with
+  | Power(_, _, _) => "power"
+  | Pistol(_, _, _, _) => "pistol"
+  | Pinch(_, _) => "pinch"
+  | Palm(_, _) => "palm"
+  | Free(_) => "free"
+
+/// An intent's targets (its point; a pistol's trigger too) in a hand's root
+/// frame.
+let targetsOf = (side: Hold.Side, it: Item): List<Input.point3> =>
+  let points =
+    match it.spec.intent with
+    | Power(at, _, _) => [at]
+    | Pistol(at, _, _, trigger) => [at, trigger]
+    | Pinch(at, _) => [at]
+    | Palm(at, _) => [at]
+    | Free(_) => [] in
+  points |> List.map((p) => (inRootOf(side, it, p)))
+
+// An item's point in a hand's root frame (the left's mirrored).
+let inRootOf = (side: Hold.Side, it: Item, p: Input.point3): Input.point3 =>
+  let r = Hold.compose(Hold.inverse(it.hand), Hold.at(p, Quat.identity)) in
+  (if side == Hold.Left then Hand.mirror(r) else r).position
+
+/// A fit's intent checks: the palm's gap; the index pad's to the trigger
+/// (a pistol grip's; else 0); how far the pinch point is off the line
+/// between the thumb's and index's pads (a pinch's; else 0).
+type Checks = { palm: float, trigger: float, pinch: float }
+
+let padOf = (posed: Hand.Posed, j: float): (Input.point3, Input.point3, float) =>
+  let c = capOf(j) in let (a, b) = Hand.ends(posed, c) in (a, b, c.radius)
+
+let checksOf = (side: Hold.Side, it: Item, f: Fitted): Checks =>
+  let posed = Hand.local(side, f.pose) in
+  let point = (p: Input.point3) => inRootOf(side, it, p) in
+  let (_, thumb, _) = padOf(posed, 4.0) in
+  let (ia, ib, ir) = padOf(posed, 9.0) in
+  { palm: palmGap(held(side, it), side),
+    trigger: (match it.spec.intent with
+      | Pistol(_, _, _, t) => toSegment(ia, ib, point(t)) - ir
+      | _ => 0.0),
+    pinch: (match it.spec.intent with
+      | Pinch(at, _) => toSegment(thumb, ib, point(at))
+      | _ => 0.0) }
 
 // --- checks ---
 
