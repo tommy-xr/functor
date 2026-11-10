@@ -1,8 +1,9 @@
 //! The shell's hot-reload indicator: a small Functor mark in a corner of the
-//! view that spins while a pushed reload (`/reload-source`,
-//! `/reload-project`) is in flight, then holds green (swapped in) or red
-//! (rejected) for [`HOLD`]. Shell-owned: it never reaches the game's model,
-//! frames, or history, and draws over the finished frame.
+//! view that fades in and spins while a pushed reload (`/reload-source`,
+//! `/reload-project`) is in flight, then shows the outcome for [`HOLD`] —
+//! still spinning in cyan (swapped in), or red and swinging to rest (rejected)
+//! — and fades out over [`FADE`]. Shell-owned: it never reaches the game's
+//! model, frames, or history, and draws over the finished frame.
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
@@ -16,10 +17,13 @@ use crate::shader::{Shader, ShaderType};
 use crate::shader_program::{ShaderProgram, UniformLocation};
 use crate::TrackingPose;
 
-/// How long the outcome shows after a reload settles.
+/// How long the outcome shows at full strength after a reload settles.
 pub const HOLD: Duration = Duration::from_millis(500);
 
-/// Turns per second while loading.
+/// The fade in when a reload starts, and out after [`HOLD`].
+pub const FADE: Duration = Duration::from_millis(200);
+
+/// Turns per second.
 const SPIN_HZ: f32 = 1.0;
 
 type Reply = Result<String, String>;
@@ -35,11 +39,11 @@ pub enum ReloadShown {
 }
 
 impl ReloadShown {
-    /// Authored sRGB: the site's cyan mark while loading, then green or red.
+    /// Authored sRGB: the logo's cyan (`#41d8e6`, the mark on dark grounds),
+    /// or red for a rejected reload.
     pub fn color(self) -> [f32; 3] {
         match self {
-            ReloadShown::Loading => [0.255, 0.847, 0.902],
-            ReloadShown::Ok => [0.24, 0.86, 0.42],
+            ReloadShown::Loading | ReloadShown::Ok => [65.0 / 255.0, 216.0 / 255.0, 230.0 / 255.0],
             ReloadShown::Failed => [0.95, 0.25, 0.25],
         }
     }
@@ -64,7 +68,7 @@ pub struct ReloadOutcome {
 pub struct ReloadState {
     /// A pushed reload has not answered yet.
     pub in_progress: bool,
-    /// What the indicator draws now; omitted when hidden.
+    /// What the indicator draws now, fades included; omitted when hidden.
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown: Option<ReloadShown>,
@@ -79,17 +83,36 @@ struct InFlight {
     reply: Sender<Reply>,
 }
 
+/// The indicator at one instant.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReloadLook {
+    pub shown: ReloadShown,
+    /// Radians about the mark's vertical axis.
+    pub spin: f32,
+    /// Opacity, `0..=1`.
+    pub alpha: f32,
+}
+
 /// Pushed reloads in flight and the last outcome.
 #[derive(Default)]
 pub struct ReloadIndicator {
     in_flight: Vec<InFlight>,
     last: Option<(ReloadOutcome, Instant)>,
+    /// When the current showing began fading in.
+    fade_in_from: Option<Instant>,
+    /// The first push: the spin runs from here and never restarts, so a push
+    /// during a fade-out doesn't jump the angle.
+    spin_from: Option<Instant>,
 }
 
 impl ReloadIndicator {
     /// Track a push answered on `reply`: the producer answers on the returned
     /// sender instead, and [`Self::poll`] forwards it.
     pub fn track(&mut self, reply: Sender<Reply>, now: Instant) -> Sender<Reply> {
+        // Fade in from however visible it is now.
+        let alpha = self.look(now).map_or(0.0, |look| look.alpha);
+        self.fade_in_from = Some(now - FADE.mul_f32(alpha));
+        self.spin_from.get_or_insert(now);
         let (tx, answer) = mpsc::channel();
         self.in_flight.push(InFlight { started: now, answer, reply });
         tx
@@ -121,20 +144,37 @@ impl ReloadIndicator {
         self.last = last;
     }
 
-    /// What to draw at `now`, and the spin in radians.
-    pub fn look(&self, now: Instant) -> Option<(ReloadShown, f32)> {
-        if let Some(oldest) = self.in_flight.first() {
-            let turns = (now - oldest.started).as_secs_f32() * SPIN_HZ;
-            return Some((ReloadShown::Loading, turns.fract() * std::f32::consts::TAU));
-        }
-        let (outcome, at) = self.last?;
-        (now - at < HOLD).then_some((if outcome.ok { ReloadShown::Ok } else { ReloadShown::Failed }, 0.0))
+    /// What to draw at `now`; `None` when hidden.
+    pub fn look(&self, now: Instant) -> Option<ReloadLook> {
+        let ramp = |d: Duration| (d.as_secs_f32() / FADE.as_secs_f32()).min(1.0);
+        let spin_from = self.spin_from?;
+        let turns_at = |t: Instant| t.saturating_duration_since(spin_from).as_secs_f32() * SPIN_HZ;
+        let fade_in = ramp(now.saturating_duration_since(self.fade_in_from?));
+        let (shown, turns, alpha) = if self.in_flight.is_empty() {
+            let (outcome, at) = self.last?;
+            let since = now.saturating_duration_since(at);
+            let left = (HOLD + FADE).checked_sub(since)?;
+            if left.is_zero() {
+                return None;
+            }
+            let alpha = fade_in.min(ramp(left));
+            if outcome.ok {
+                (ReloadShown::Ok, turns_at(now), alpha)
+            } else {
+                // Swing the short way round to rest facing the viewer.
+                let stopped = turns_at(at);
+                (ReloadShown::Failed, stopped + (stopped.round() - stopped) * ramp(since), alpha)
+            }
+        } else {
+            (ReloadShown::Loading, turns_at(now), fade_in)
+        };
+        Some(ReloadLook { shown, spin: turns.rem_euclid(1.0) * std::f32::consts::TAU, alpha })
     }
 
     pub fn state(&self, now: Instant) -> ReloadState {
         ReloadState {
             in_progress: !self.in_flight.is_empty(),
-            shown: self.look(now).map(|(shown, _)| shown),
+            shown: self.look(now).map(|look| look.shown),
             last: self.last.map(|(outcome, _)| outcome),
         }
     }
@@ -215,9 +255,9 @@ const VERTEX_SHADER: &str = r#"
 "#;
 
 const FRAGMENT_SHADER: &str = r#"
-    uniform vec3 u_color;
+    uniform vec4 u_color;
     out vec4 frag_color;
-    void main() { frag_color = functorOutput(vec4(u_color, 1.0)); }
+    void main() { frag_color = functorOutput(u_color); }
 "#;
 
 impl ReloadIndicatorPainter {
@@ -254,14 +294,16 @@ impl ReloadIndicatorPainter {
     }
 
     /// Draw the mark over the bound framebuffer, unoccluded, in `shown`'s
-    /// color. `transform` maps it to clip space ([`corner_transform`],
-    /// [`head_locked_transform`]); `viewport` is the target's size. Restores
-    /// the capabilities it toggles, but leaves the viewport set.
+    /// color at `alpha`. `transform` maps it to clip space
+    /// ([`corner_transform`], [`head_locked_transform`]); `viewport` is the
+    /// target's size. Restores the capabilities it toggles, but leaves the
+    /// viewport and blend function set.
     pub fn draw(
         &self,
         gl: &glow::Context,
         transform: Matrix4<f32>,
         shown: ReloadShown,
+        alpha: f32,
         viewport: (u32, u32),
         // The shell's `SceneContext::output_srgb_encode()`.
         output_srgb_encode: bool,
@@ -273,11 +315,21 @@ impl ReloadIndicatorPainter {
             for cap in caps {
                 gl.disable(cap);
             }
+            // Source-over, for the target's alpha too: a faded mark over a
+            // passthrough eye buffer lets the room through by the same share.
+            gl.enable(glow::BLEND);
+            gl.blend_equation(glow::FUNC_ADD);
+            gl.blend_func_separate(
+                glow::SRC_ALPHA,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
             gl.viewport(0, 0, viewport.0 as i32, viewport.1 as i32);
             self.program.use_program(gl);
             self.program.set_uniform_matrix4(gl, &self.transform, &transform);
-            self.program.set_uniform_vec3(gl, &self.color, &cgmath::vec3(r, g, b));
-            self.output.set(&self.program, gl, output_srgb_encode, OutputAlpha::Opaque);
+            self.program.set_uniform_vec4(gl, &self.color, &cgmath::vec4(r, g, b, alpha));
+            self.output.set(&self.program, gl, output_srgb_encode, OutputAlpha::Blend);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, self.vertices);
             gl.bind_vertex_array(None);
@@ -285,6 +337,8 @@ impl ReloadIndicatorPainter {
             for (cap, on) in caps.into_iter().zip(was) {
                 if on {
                     gl.enable(cap);
+                } else {
+                    gl.disable(cap);
                 }
             }
         }
@@ -313,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn spins_while_in_flight_then_holds_the_outcome() {
+    fn fades_in_spinning_then_shows_the_outcome_and_fades_out() {
         let t0 = Instant::now();
         let mut indicator = ReloadIndicator::default();
         assert_eq!(indicator.state(t0), ReloadState::default());
@@ -321,10 +375,12 @@ mod tests {
         let (reply, pusher) = mpsc::channel();
         let producer = indicator.track(reply, t0);
         indicator.poll(t0 + Duration::from_millis(250), 10);
-        let (shown, spin) = indicator.look(t0 + Duration::from_millis(250)).unwrap();
-        assert_eq!(shown, ReloadShown::Loading);
-        assert!((spin - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "a quarter turn: {spin}");
+        let look = indicator.look(t0 + Duration::from_millis(250)).unwrap();
+        assert_eq!((look.shown, look.alpha), (ReloadShown::Loading, 1.0));
+        assert!((look.spin - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "a quarter turn: {}", look.spin);
         assert!(indicator.state(t0).in_progress);
+        let fading_in = indicator.look(t0 + FADE / 2).unwrap();
+        assert!((fading_in.alpha - 0.5).abs() < 1e-4, "{fading_in:?}");
 
         producer.send(Ok("reloaded".to_string())).unwrap();
         let settled = t0 + Duration::from_millis(400);
@@ -336,8 +392,41 @@ mod tests {
         let last = state.last.unwrap();
         assert!(last.ok && last.rendered_frame == 12 && (last.ms - 400.0).abs() < 1.0);
 
-        assert_eq!(indicator.look(settled + HOLD), None, "hidden after the hold");
-        assert!(indicator.state(settled + HOLD).last.is_some(), "the outcome stays in /state");
+        // Success keeps turning at full strength through the hold...
+        let held = indicator.look(settled + HOLD).unwrap();
+        assert_eq!((held.shown, held.alpha), (ReloadShown::Ok, 1.0));
+        assert!((held.spin - 0.9 * std::f32::consts::TAU).abs() < 1e-3, "{held:?}");
+        // ...then fades out.
+        let fading_out = indicator.look(settled + HOLD + FADE / 2).unwrap();
+        assert!((fading_out.alpha - 0.5).abs() < 1e-4, "{fading_out:?}");
+        assert_eq!(indicator.look(settled + HOLD + FADE), None, "hidden after the fade");
+        assert!(indicator.state(settled + HOLD + FADE).last.is_some(), "the outcome stays in /state");
+    }
+
+    #[test]
+    fn a_quick_reload_still_fades_in() {
+        let t0 = Instant::now();
+        let mut indicator = ReloadIndicator::default();
+        let _pusher = answered(&mut indicator, t0, Ok("reloaded".to_string()));
+        indicator.poll(t0, 0);
+        assert_eq!(indicator.look(t0).unwrap().alpha, 0.0);
+        assert!((indicator.look(t0 + FADE / 4).unwrap().alpha - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_push_during_the_fade_out_fades_back_in_from_there() {
+        let t0 = Instant::now();
+        let mut indicator = ReloadIndicator::default();
+        let _first = answered(&mut indicator, t0, Ok("reloaded".to_string()));
+        indicator.poll(t0, 0);
+        let again = t0 + HOLD + FADE / 2;
+        let before = indicator.look(again).unwrap();
+        let (reply, _pusher) = mpsc::channel();
+        let _producer = indicator.track(reply, again);
+        let after = indicator.look(again).unwrap();
+        assert_eq!(after.shown, ReloadShown::Loading);
+        assert!((after.alpha - before.alpha).abs() < 1e-4 && (after.spin - before.spin).abs() < 1e-4);
+        assert_eq!(indicator.look(again + FADE).unwrap().alpha, 1.0);
     }
 
     #[test]
@@ -347,7 +436,18 @@ mod tests {
         let pusher = answered(&mut indicator, t0, Err("type error".to_string()));
         indicator.poll(t0, 0);
         assert_eq!(pusher.try_recv().unwrap(), Err("type error".to_string()));
-        assert_eq!(indicator.look(t0), Some((ReloadShown::Failed, 0.0)));
+        let look = indicator.look(t0 + FADE).unwrap();
+        assert_eq!(look, ReloadLook { shown: ReloadShown::Failed, spin: 0.0, alpha: 1.0 });
+
+        // Rejected 0.4 of a turn in: it swings back to face the viewer.
+        let (reply, _pusher) = mpsc::channel();
+        let rejected = t0 + Duration::from_millis(1400);
+        indicator.track(reply, t0 + Duration::from_secs(1)).send(Err("type error".to_string())).unwrap();
+        indicator.poll(rejected, 0);
+        let turning = indicator.look(rejected + FADE / 2).unwrap();
+        assert!((turning.spin - 0.2 * std::f32::consts::TAU).abs() < 1e-3, "{turning:?}");
+        let resting = indicator.look(rejected + FADE).unwrap();
+        assert!(resting.spin.abs() < 1e-3 && resting.shown == ReloadShown::Failed, "{resting:?}");
 
         let (reply, pusher) = mpsc::channel();
         drop(indicator.track(reply, t0));

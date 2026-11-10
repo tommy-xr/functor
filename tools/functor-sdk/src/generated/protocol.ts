@@ -574,7 +574,7 @@ export type ReloadState = {
  */
 in_progress: boolean, 
 /**
- * What the indicator draws now; omitted when hidden.
+ * What the indicator draws now, fades included; omitted when hidden.
  */
 shown?: ReloadShown, last?: ReloadOutcome, };
 

@@ -1,6 +1,10 @@
 //! GL pin for the hot-reload indicator: the mark draws in each state's color
 //! in the lower-left corner, over (not under) existing depth, and nowhere
-//! else.
+//! else; at half alpha it blends half-way.
+//!
+//! `RELOAD_INDICATOR_OUT=<dir>` also writes the whole animation as PNG frames
+//! (30 fps; `ok-NNN.png`, `failed-NNN.png`): a 1.2 s reload stepped through
+//! the real state machine and painter.
 //!
 //! Self-skipping like `srgb_clear` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -10,7 +14,9 @@
 //! ```
 
 use cgmath::vec4;
-use functor_runtime_common::reload_indicator::{corner_transform, ReloadIndicatorPainter, ReloadShown};
+use functor_runtime_common::reload_indicator::{
+    corner_transform, ReloadIndicator, ReloadIndicatorPainter, ReloadShown, FADE, HOLD,
+};
 use glow::HasContext;
 
 const SIZE: u32 = 256;
@@ -20,13 +26,68 @@ fn main() {
         println!("reload_indicator: skipped (needs a GL display; pass `-- --ignored` to run)");
         return;
     }
-    the_mark_draws_lower_left_in_each_states_color();
+    let (gl, _window, _glfw) = gl_context();
+    the_mark_draws_lower_left_in_each_states_color(&gl);
     println!("test the_mark_draws_lower_left_in_each_states_color ... ok");
+    if let Ok(dir) = std::env::var("RELOAD_INDICATOR_OUT") {
+        write_animation(&gl, &dir);
+    }
 }
 
-fn the_mark_draws_lower_left_in_each_states_color() {
-    let (gl, _window, _glfw) = gl_context();
-    let painter = ReloadIndicatorPainter::new(&gl, "#version 330 core");
+/// A pushed reload answered after 1.2 s, frame by frame until it has faded.
+fn write_animation(gl: &glow::Context, dir: &str) {
+    use std::time::{Duration, Instant};
+    const SIZE: (u32, u32) = (960, 540);
+    framebuffer(gl, SIZE.0, SIZE.1);
+    let painter = ReloadIndicatorPainter::new(gl, "#version 330 core");
+    let answered = Duration::from_millis(1200);
+    let frames = ((answered + HOLD + FADE).as_secs_f32() * 30.0) as u32 + 6;
+    for (name, result) in [("ok", Ok("reloaded".to_string())), ("failed", Err("type error".to_string()))] {
+        let t0 = Instant::now();
+        let mut indicator = ReloadIndicator::default();
+        let (reply, _pusher) = std::sync::mpsc::channel();
+        let mut producer = Some((indicator.track(reply, t0), result));
+        for frame in 0..frames {
+            let now = t0 + Duration::from_secs_f32(frame as f32 / 30.0);
+            if now - t0 >= answered {
+                if let Some((producer, result)) = producer.take() {
+                    producer.send(result).unwrap();
+                }
+            }
+            indicator.poll(now, frame as u64);
+            unsafe {
+                // The site's background.
+                gl.clear_color(15.0 / 255.0, 12.0 / 255.0, 29.0 / 255.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            }
+            if let Some(look) = indicator.look(now) {
+                let transform = corner_transform(SIZE.0, SIZE.1, look.spin);
+                painter.draw(gl, transform, look.shown, look.alpha, SIZE, true);
+            }
+            let mut pixels = vec![0u8; (SIZE.0 * SIZE.1 * 4) as usize];
+            unsafe {
+                gl.read_pixels(
+                    0,
+                    0,
+                    SIZE.0 as i32,
+                    SIZE.1 as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelPackData::Slice(Some(&mut pixels)),
+                );
+            }
+            let png = functor_runtime_common::frame_capture::encode_bottom_up_rgba_png(SIZE.0, SIZE.1, &pixels)
+                .expect("encode png");
+            std::fs::write(format!("{dir}/{name}-{frame:03}.png"), png).expect("write frame");
+        }
+    }
+    painter.delete(gl);
+    println!("wrote {frames} frames per outcome to {dir}");
+}
+
+fn the_mark_draws_lower_left_in_each_states_color(gl: &glow::Context) {
+    framebuffer(gl, SIZE, SIZE);
+    let painter = ReloadIndicatorPainter::new(gl, "#version 330 core");
     let transform = corner_transform(SIZE, SIZE, 0.0);
     // A stem point of the SVG mark (x 440, y 600 of 1024), in mark units.
     let stem = pixel_of(transform, (440.0 - 558.5) / 658.0, (508.0 - 600.0) / 658.0);
@@ -38,8 +99,8 @@ fn the_mark_draws_lower_left_in_each_states_color() {
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
         // `encode` on a plain RGBA8 target: bytes are the authored sRGB.
-        painter.draw(&gl, transform, shown, (SIZE, SIZE), true);
-        let pixels = read(&gl);
+        painter.draw(gl, transform, shown, 1.0, (SIZE, SIZE), true);
+        let pixels = read(gl);
         let at = |(x, y): (u32, u32)| {
             let i = ((y * SIZE + x) * 4) as usize;
             [pixels[i], pixels[i + 1], pixels[i + 2]]
@@ -59,7 +120,22 @@ fn the_mark_draws_lower_left_in_each_states_color() {
             }
         }
     }
-    painter.delete(&gl);
+    // Half alpha over black: half the authored bytes, and blending is left
+    // as it was found (off).
+    unsafe {
+        gl.clear(glow::COLOR_BUFFER_BIT);
+    }
+    painter.draw(gl, transform, ReloadShown::Ok, 0.5, (SIZE, SIZE), true);
+    let pixels = read(gl);
+    let i = ((stem.1 * SIZE + stem.0) * 4) as usize;
+    let want = ReloadShown::Ok.color().map(|c| (c * 127.5).round() as u8);
+    assert!(
+        pixels[i..i + 3].iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 2),
+        "half alpha: {:?}, want {want:?}",
+        &pixels[i..i + 3]
+    );
+    assert!(!unsafe { gl.is_enabled(glow::BLEND) }, "blend left on");
+    painter.delete(gl);
 }
 
 /// Framebuffer pixel (bottom-left origin) of a mark-space point.
@@ -85,7 +161,7 @@ fn read(gl: &glow::Context) -> Vec<u8> {
     pixels
 }
 
-/// A hidden-window GL context with an RGBA8 + depth framebuffer bound.
+/// A hidden-window GL context.
 fn gl_context() -> (glow::Context, glfw::PWindow, glfw::Glfw) {
     use glfw::Context as _;
     let mut glfw = glfw::init(glfw::fail_on_errors).expect("init GLFW");
@@ -98,6 +174,11 @@ fn gl_context() -> (glow::Context, glfw::PWindow, glfw::Glfw) {
         .expect("create hidden GLFW window");
     window.make_current();
     let gl = unsafe { glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _) };
+    (gl, window, glfw)
+}
+
+/// Bind a new `width`×`height` RGBA8 + depth framebuffer.
+fn framebuffer(gl: &glow::Context, width: u32, height: u32) {
     unsafe {
         let fbo = gl.create_framebuffer().unwrap();
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
@@ -107,10 +188,9 @@ fn gl_context() -> (glow::Context, glfw::PWindow, glfw::Glfw) {
         ] {
             let rb = gl.create_renderbuffer().unwrap();
             gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
-            gl.renderbuffer_storage(glow::RENDERBUFFER, format, SIZE as i32, SIZE as i32);
+            gl.renderbuffer_storage(glow::RENDERBUFFER, format, width as i32, height as i32);
             gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, attachment, glow::RENDERBUFFER, Some(rb));
         }
         assert_eq!(gl.check_framebuffer_status(glow::FRAMEBUFFER), glow::FRAMEBUFFER_COMPLETE);
     }
-    (gl, window, glfw)
 }

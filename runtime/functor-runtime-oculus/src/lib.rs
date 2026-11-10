@@ -2256,7 +2256,7 @@ pub fn android_main(app: AndroidApp) {
             );
             // Head-locked over the game, placed from the head center so both
             // eyes agree on its depth.
-            if let (Some((shown, spin)), Some(center)) = (reload_look, tracked_center) {
+            if let (Some(look), Some(center)) = (reload_look, tracked_center) {
                 if let Some(eye_in_head) = tracking_pose_from_view(view).relative_to(center) {
                     let painter = reload_painter
                         .get_or_insert_with(|| ReloadIndicatorPainter::new(&gl, "#version 300 es"));
@@ -2266,8 +2266,9 @@ pub fn android_main(app: AndroidApp) {
                     }
                     painter.draw(
                         &gl,
-                        functor_runtime_common::reload_indicator::head_locked_transform(fov, eye_in_head, spin),
-                        shown,
+                        functor_runtime_common::reload_indicator::head_locked_transform(fov, eye_in_head, look.spin),
+                        look.shown,
+                        look.alpha,
                         (eye.width, eye.height),
                         scene_context.output_srgb_encode(),
                     );

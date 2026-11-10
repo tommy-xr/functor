@@ -3961,18 +3961,19 @@ Escape again to quit"
 
             // The hot-reload indicator, over everything (and in captures).
             // Not in side-by-side stereo, where one corner is one eye's.
-            if let Some((shown, spin)) = reload.look(Instant::now()).filter(|_| !args.stereo_sbs) {
+            if let Some(look) = reload.look(Instant::now()).filter(|_| !args.stereo_sbs) {
                 let painter =
                     reload_painter.get_or_insert_with(|| ReloadIndicatorPainter::new(&gl, shader_version));
                 let transform = functor_runtime_common::reload_indicator::corner_transform(
                     fb_width as u32,
                     fb_height as u32,
-                    spin,
+                    look.spin,
                 );
                 painter.draw(
                     &gl,
                     transform,
-                    shown,
+                    look.shown,
+                    look.alpha,
                     (fb_width as u32, fb_height as u32),
                     scene_context.output_srgb_encode(),
                 );
