@@ -178,6 +178,7 @@ fn render_frame_inner(
     debug_render_mode: DebugRenderMode,
 ) {
     scene_context.begin_frame(gl, terrain_frame_id);
+    scene_context.release_superseded(gl, &asset_cache);
 
     // The caller's render target, restored after every target pass below.
     // Captured BEFORE the ensure phase — (re)allocating buffers leaves the

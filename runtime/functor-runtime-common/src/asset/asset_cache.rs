@@ -31,6 +31,39 @@ struct ProgressState {
     loaded: HashSet<String>,
     /// Byte-load failures, keyed by path (BTreeMap for stable order).
     failed: BTreeMap<String, String>,
+    /// The resident `?v=` URL locators (see [`AssetCache::sweep_superseded`]).
+    versions: HashMap<String, Version>,
+    /// Counts versioned loads started, to order them.
+    version_starts: u64,
+    /// Counts [`AssetCache::sweep_superseded`] calls: the clock for
+    /// [`Version::requested`].
+    sweeps: u64,
+}
+
+/// One `?v=` URL locator.
+struct Version {
+    /// [`version_key`]: what its versions share.
+    key: String,
+    /// `version_starts` when its load began.
+    started: u64,
+    /// `sweeps` when it was last requested.
+    requested: u64,
+}
+
+/// How many sweeps (one per rendered view) a superseded version may go
+/// unrequested before it is released: about a second.
+const SUPERSEDED_AFTER_SWEEPS: u64 = 120;
+
+/// A URL locator without its `v` query parameter — what the versions of one
+/// URL share: `http://host/a.glb?v=7` and `…?v=8` both give
+/// `http://host/a.glb?`. `None` for a file path or a URL with no `v`.
+fn version_key(locator: &str) -> Option<String> {
+    let (base, query) = locator.split_once('?')?;
+    if !base.contains("://") {
+        return None;
+    }
+    let rest: Vec<&str> = query.split('&').filter(|p| !p.starts_with("v=")).collect();
+    (rest.len() < query.split('&').count()).then(|| format!("{base}?{}", rest.join("&")))
 }
 
 pub struct AssetCache {
@@ -135,6 +168,57 @@ impl AssetCache {
         removed
     }
 
+    /// Release superseded URL versions. A locator like
+    /// `http://host/preview.glb?v=7` names one version of a URL; once a
+    /// version started later has loaded, and an older settled one has gone
+    /// unrequested for [`SUPERSEDED_AFTER_SWEEPS`], the older one's bytes and
+    /// progress entry are dropped, so an app polling a fresh `?v=` every
+    /// second holds a couple of versions, not all of them. Returns the
+    /// released locators for the caller to drop decoded and GPU state
+    /// (`SceneContext` does). Call once per rendered view.
+    ///
+    /// Never released: a load in flight, the newest version (drawn or not, so
+    /// a preloaded one waits), and a version still being requested. A
+    /// released locator requested again simply loads again.
+    pub fn sweep_superseded(&self) -> Vec<String> {
+        let mut progress = self.progress.lock().unwrap();
+        progress.sweeps += 1;
+        if progress.versions.len() < 2 {
+            return Vec::new();
+        }
+        // The latest-started loaded version of each URL.
+        let mut newest: HashMap<&str, u64> = HashMap::new();
+        for (path, version) in &progress.versions {
+            if progress.loaded.contains(path) {
+                let started = newest.entry(&version.key).or_default();
+                *started = (*started).max(version.started);
+            }
+        }
+        let mut released: Vec<String> = progress
+            .versions
+            .iter()
+            .filter(|(path, version)| {
+                (progress.loaded.contains(*path) || progress.failed.contains_key(*path))
+                    && progress.sweeps - version.requested > SUPERSEDED_AFTER_SWEEPS
+                    && newest.get(version.key.as_str()).is_some_and(|n| *n > version.started)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        released.sort();
+        for path in &released {
+            progress.versions.remove(path);
+            progress.started.remove(path);
+            progress.loaded.remove(path);
+            progress.failed.remove(path);
+        }
+        drop(progress);
+        let mut bytes = self.bytes_cache.lock().unwrap();
+        for path in &released {
+            bytes.remove(path);
+        }
+        released
+    }
+
     /// Whether `path` was started but has not yet settled (loaded or failed)
     /// — [`resolve_while_pending`]'s liveness check. A started load must
     /// keep being polled to completion (futures advance only when polled),
@@ -152,6 +236,19 @@ impl AssetCache {
         pipeline: Arc<BuiltAssetPipeline<T>>,
         asset_path: &str,
     ) -> Arc<AssetHandle<T>> {
+        // A `?v=` URL: note the request, for `sweep_superseded`.
+        if asset_path.contains('?') {
+            let mut progress = self.progress.lock().unwrap();
+            let progress = &mut *progress;
+            if let Some(version) = progress.versions.get_mut(asset_path) {
+                version.requested = progress.sweeps;
+            } else if let Some(key) = version_key(asset_path) {
+                progress.version_starts += 1;
+                let version = Version { key, started: progress.version_starts, requested: progress.sweeps };
+                progress.versions.insert(asset_path.to_string(), version);
+            }
+        }
+
         // First - does the pipeline already have a reference to this?
         if let Some(asset) = pipeline.clone().get_opt(asset_path) {
             return asset.clone();
@@ -413,6 +510,89 @@ mod tests {
         assert_eq!((progress.loaded, progress.total), (1, 2));
 
         let _ = std::fs::remove_file(&good);
+    }
+
+    #[test]
+    fn version_key_drops_only_the_v_parameter() {
+        assert_eq!(version_key("http://h/a.glb?v=7").as_deref(), Some("http://h/a.glb?"));
+        assert_eq!(version_key("http://h/a.glb?id=3&v=7"), version_key("http://h/a.glb?v=8&id=3"));
+        assert_ne!(version_key("http://h/a.glb?id=3&v=7"), version_key("http://h/a.glb?id=4&v=7"));
+        assert_eq!(version_key("http://h/a.glb?id=3"), None);
+        assert_eq!(version_key("http://h/a.glb"), None);
+        assert_eq!(version_key("models/a.glb?v=7"), None, "not a URL");
+    }
+
+    /// A cache holding `bytes` for each URL, as a finished fetch leaves it.
+    fn fetched(urls: &[&str]) -> Arc<AssetCache> {
+        let cache = Arc::new(AssetCache::new());
+        for url in urls {
+            cache.bytes_cache.lock().unwrap().insert(url.to_string(), [1u8, 2].as_slice().into());
+        }
+        cache
+    }
+
+    /// Request `url` and sweep, as one rendered view does.
+    fn draw(cache: &Arc<AssetCache>, pipeline: &Arc<BuiltAssetPipeline<usize>>, url: &str) -> Vec<String> {
+        settle(&cache.load_asset_with_pipeline(pipeline.clone(), url));
+        let released = cache.sweep_superseded();
+        for path in &released {
+            pipeline.evict(path);
+        }
+        released
+    }
+
+    /// The leak this fixes: a new `?v=` every second, each drawn for a while.
+    #[test]
+    fn polling_a_new_version_keeps_the_cache_flat() {
+        let urls: Vec<String> = (1..=20).map(|v| format!("http://h/preview.glb?v={v}")).collect();
+        let cache = fetched(&urls.iter().map(String::as_str).collect::<Vec<_>>());
+        let pipeline = super::super::build_pipeline(Box::new(BytesLen));
+        let mut released = Vec::new();
+        for url in &urls {
+            for _ in 0..=SUPERSEDED_AFTER_SWEEPS {
+                released.extend(draw(&cache, &pipeline, url));
+            }
+            assert!(cache.loaded_paths().len() <= 20 - released.len());
+            assert!(cache.progress().total <= 2, "{:?}", cache.progress());
+        }
+        assert_eq!(released, urls[..19], "every version but the newest, oldest first");
+        assert_eq!(cache.loaded_paths(), vec![urls[19].clone()]);
+        let progress = cache.progress();
+        assert_eq!((progress.loaded, progress.total), (1, 1), "still settled");
+    }
+
+    #[test]
+    fn a_version_is_kept_while_requested_newest_or_in_flight() {
+        let (v1, v2, v3) = ("http://h/a.glb?v=1", "http://h/a.glb?v=2", "http://h/a.glb?v=3");
+        let cache = fetched(&[v1, v2]);
+        let pipeline = super::super::build_pipeline(Box::new(BytesLen));
+        // v2 is preloaded (requested once) while v1 goes on being drawn:
+        // neither goes — v1 is requested, v2 is the newest.
+        draw(&cache, &pipeline, v1);
+        settle(&cache.load_asset_with_pipeline(pipeline.clone(), v2));
+        for _ in 0..3 * SUPERSEDED_AFTER_SWEEPS {
+            assert!(draw(&cache, &pipeline, v1).is_empty());
+        }
+        // A newer version still in flight supersedes nothing.
+        pipeline.cache(
+            v3,
+            Arc::new(AssetHandle::new(std::future::pending::<Result<Arc<usize>, String>>(), Arc::new(0))),
+        );
+        cache.load_asset_with_pipeline(pipeline.clone(), v3);
+        cache.progress.lock().unwrap().started.insert(v3.to_string());
+        // The game switches to v2: v1 goes once it has gone unrequested.
+        let mut released = Vec::new();
+        for _ in 0..=SUPERSEDED_AFTER_SWEEPS {
+            released.extend(draw(&cache, &pipeline, v2));
+        }
+        assert_eq!(released, [v1]);
+        // v2 and the in-flight v3 stay, however long.
+        for _ in 0..3 * SUPERSEDED_AFTER_SWEEPS {
+            assert!(cache.sweep_superseded().is_empty());
+        }
+        assert!(cache.is_unsettled(v3));
+        // Released, v1 is no placeholder left pending, and loads again if asked.
+        assert!(!cache.is_unsettled(v1));
     }
 
     #[test]
