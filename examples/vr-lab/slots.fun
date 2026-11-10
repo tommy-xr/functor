@@ -61,10 +61,13 @@ let placed = (h: Hips.State): List<Placed> =>
 
 let distance = (p: Placed, q: Input.point3): float => Quat.length(Quat.sub(q, p.pose.position))
 
+/// Whether a hand at `q` is inside slot `p`'s radius.
+let inside = (p: Placed, q: Input.point3): bool => distance(p, q) <= p.slot.radius
+
 /// The slot a hand at `q` is in, if any: the nearest whose radius it is inside.
 let target = (slots: List<Placed>, q: Input.point3): Option.t<Placed> =>
   slots
-    |> List.filter((p) => distance(p, q) <= p.slot.radius)
+    |> List.filter((p) => inside(p, q))
     |> List.sortBy((p) => distance(p, q))
     |> List.head
 

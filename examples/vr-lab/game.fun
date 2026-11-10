@@ -322,9 +322,7 @@ let controllerIn = (x: Input.xr, side: Hold.Side): Input.controller =>
   | Hold.Right => x.right
 
 let controller = (xr: Option.t<Input.xr>, side: Hold.Side): Option.t<Input.controller> =>
-  match xr with
-  | Option.Some(x) => Option.Some(controllerIn(x, side))
-  | Option.None => Option.None
+  xr |> Option.map((x) => controllerIn(x, side))
 
 /// A hand's grip, rig-local, while it is tracked.
 let gripOf = (xr: Option.t<Input.xr>, side: Hold.Side): Option.t<Input.pose> =>
@@ -1423,10 +1421,10 @@ let lab =
     Scene.group(Stations.rackPosts |> List.map((b) => box(b, Color.rgb(0.3, 0.24, 0.17)))),
   ])
 
-/// A score at `at` (world), facing a station turned `yaw`.
 let scoreDigits = (score: float): Scene.t => Digits.number(score, Color.rgb(1.0, 0.75, 0.2), Color.rgb(0.05, 0.04, 0.03))
+/// A score at `at` (world), facing a station turned `yaw`.
 let board = (score: float, at: Input.point3, yaw: float) =>
-  // Every board shows the score: one memo serves them all.
+  // Every board shows `m.score`: one memo serves them all.
   Scene.memo("score", score, scoreDigits)
     |> Scene.scale(0.09)
     |> Scene.rotateY(Angle.radians(yaw + Math.pi))
@@ -1534,8 +1532,7 @@ let offered = (m: Model, s: Slots.Placed): List<Props.Kind> =>
   [Hold.Left, Hold.Right] |> List.concatMap((side) =>
     let offer =
       gripOf(m.xr, side)
-        // (In the slot: `Slots.target([s], …)`, without its sort.)
-        |> Option.filter((g) => Slots.distance(s, g.position) <= s.slot.radius)
+        |> Option.filter((g) => Slots.inside(s, g.position))
         |> Option.bind((g) => propIn(m, side))
         |> Option.map((p) => p.kind) in
     match offer with
