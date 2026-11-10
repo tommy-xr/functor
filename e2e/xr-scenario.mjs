@@ -11,40 +11,31 @@
 //
 //   { frames: 30, right: { to: [0.2, 1.0, -0.55], squeeze: 0 } }
 //
+// A scenario may instead name a recorded `fixture` (`e2e/xr-fixture.mjs`
+// format; a path from the repo root): its steps replace `station`/`steps`,
+// and its `marks` name steps the same way.
+//
+//   { fixture: "e2e/fixtures/vr-lab/grab-throw.xr.json", spectator: { ... } }
+//
 // One step = one injected sample + one pinned `/time` advance, waiting for the
 // frame to land before the next sample (a sample is level state, not a queue).
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { BIN, ROOT, portIsBound, sleep } from "./mcp-rpc.mjs";
+import { decode } from "./xr-fixture.mjs";
 
 export const DT = 1 / 60;
 const HEAD = [0, 1.6, 0];
 const REST = { left: [-0.25, 0.95, -0.2], right: [0.25, 0.95, -0.2] };
 
-/** Launch `functor run native` on `project` with the debug server on `port`. */
-export async function launch(project, port, extra = []) {
-  // A stale runtime on the port would answer in place of this one.
-  if (await portIsBound(port)) throw new Error(`port ${port} is taken: stop what's listening there`);
-  const proc = spawn(BIN, ["-d", project, "run", "native", "--debug-port", String(port), ...extra], {
-    cwd: ROOT,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let log = "";
-  proc.stdout.on("data", (d) => (log += d));
-  proc.stderr.on("data", (d) => (log += d));
+/** A client for the debug server on `port` (a desktop runtime, or a headset's over `adb forward`). */
+export function attach(port) {
   const base = `http://127.0.0.1:${port}`;
-  const rt = {
-    proc,
-    log: () => log,
-    // Resolves once the process is gone, so the port is free for the next.
-    kill: () =>
-      new Promise((done) => {
-        if (proc.exitCode !== null || proc.signalCode !== null) return done();
-        proc.once("exit", done);
-        proc.kill("SIGKILL");
-      }),
+  return {
     async get(path) {
       const res = await fetch(`${base}${path}`);
-      if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
+      if (!res.ok) throw new Error(`GET ${path} → ${res.status}: ${await res.text()}`);
       return res.json();
     },
     async post(path, body) {
@@ -58,6 +49,31 @@ export async function launch(project, port, extra = []) {
       if (!res.ok) throw new Error(`POST /capture → ${res.status}: ${await res.text()}`);
       return Buffer.from(await res.arrayBuffer());
     },
+  };
+}
+
+/** Launch `functor run native` on `project` with the debug server on `port`. */
+export async function launch(project, port, extra = []) {
+  // A stale runtime on the port would answer in place of this one.
+  if (await portIsBound(port)) throw new Error(`port ${port} is taken: stop what's listening there`);
+  const proc = spawn(BIN, ["-d", project, "run", "native", "--debug-port", String(port), ...extra], {
+    cwd: ROOT,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  proc.stdout.on("data", (d) => (log += d));
+  proc.stderr.on("data", (d) => (log += d));
+  const rt = {
+    ...attach(port),
+    proc,
+    log: () => log,
+    // Resolves once the process is gone, so the port is free for the next.
+    kill: () =>
+      new Promise((done) => {
+        if (proc.exitCode !== null || proc.signalCode !== null) return done();
+        proc.once("exit", done);
+        proc.kill("SIGKILL");
+      }),
   };
   const deadline = Date.now() + 60000;
   for (;;) {
@@ -75,9 +91,9 @@ export async function launch(project, port, extra = []) {
 }
 
 /** Advance one pinned step and wait for it; returns `/state`. */
-export async function advance(rt) {
+export async function advance(rt, dts = DT) {
   const before = (await rt.get("/state")).frame;
-  await rt.post("/time", { type: "advance", dts: DT });
+  await rt.post("/time", { type: "advance", dts });
   const deadline = Date.now() + 15000;
   for (;;) {
     const state = await rt.get("/state");
@@ -119,6 +135,7 @@ const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
  * after every step (await it to capture a frame); returns the marks' states.
  */
 export async function play(rt, scenario, onStep = async () => {}) {
+  if (scenario.fixture) return playFixture(rt, scenario.fixture, onStep);
   if (scenario.station !== undefined) await tap(rt, String(scenario.station));
   const hands = {
     left: { at: REST.left, squeeze: 0 },
@@ -145,6 +162,28 @@ export async function play(rt, scenario, onStep = async () => {}) {
       if (mark) marks[mark] = state;
       await onStep({ step, mark, state, hands });
     }
+  }
+  return marks;
+}
+
+/** Load a fixture: a path from the repo root, or the parsed object. */
+export const loadFixture = (fixture) =>
+  typeof fixture === "string" ? JSON.parse(readFileSync(resolve(ROOT, fixture), "utf8")) : fixture;
+
+/** Replay a recorded fixture step by step; `play`'s callback and result. */
+export async function playFixture(rt, fixture, onStep = async () => {}) {
+  const { dt, t0, marks: named, steps } = decode(loadFixture(fixture));
+  const markAt = new Map(Object.entries(named).map(([name, i]) => [i, name]));
+  await rt.post("/time", { type: "set", tts: t0 });
+  const marks = {};
+  for (const [i, s] of steps.entries()) {
+    for (const key of s.down) await rt.post("/input", { type: "key", key, down: true });
+    for (const key of s.up) await rt.post("/input", { type: "key", key, down: false });
+    await rt.post("/input", s.xr ? { type: "xr", ...s.xr } : { type: "xr_clear" });
+    const state = await advance(rt, dt);
+    const mark = markAt.get(i);
+    if (mark) marks[mark] = state;
+    await onStep({ step: i + 1, mark, state });
   }
   return marks;
 }

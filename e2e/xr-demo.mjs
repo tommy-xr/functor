@@ -2,8 +2,10 @@
 //
 //   node e2e/xr-demo.mjs <scenarios.mjs> <scenario> <out.gif> [options]
 //   npm run demo:vr-lab -- grab-throw /tmp/grab-throw.gif --mp4 /tmp/grab-throw.mp4
+//   npm run demo:vr-lab -- /tmp/throws.xr.json /tmp/throws.gif   # a recorded fixture
 //
-// Plays the named scenario (`e2e/xr-scenario.mjs` format) one fixed step at a
+// Plays the named scenario (`e2e/xr-scenario.mjs` format), or a fixture file
+// (`e2e/xr-fixture.mjs`, filmed from the module's `defaultSpectator`), one fixed step at a
 // time in a hidden window, points the shell's debug camera at the scenario's
 // `spectator` view (`POST /camera` — it never enters the game, so the run is
 // the same one the e2e checks), captures a frame per step, and assembles a
@@ -40,14 +42,16 @@ const mp4 = opt("--mp4");
 const still = opt("--still");
 const view = opt("--view", "spectator");
 
-const { project, scenarios } = await import(pathToFileURL(resolve(scenariosPath)).href);
-const scenario = scenarios[name];
+const { project, scenarios, defaultSpectator } = await import(pathToFileURL(resolve(scenariosPath)).href);
+const scenario = name.endsWith(".json")
+  ? { fixture: resolve(name), spectator: defaultSpectator }
+  : scenarios[name];
 if (!scenario) {
   console.error(`no scenario "${name}"; have: ${Object.keys(scenarios).join(", ")}`);
   process.exit(2);
 }
 
-const frames = mkdtempSync(join(tmpdir(), `xr-demo-${name}-`));
+const frames = mkdtempSync(join(tmpdir(), "xr-demo-"));
 const rt = await launch(project, port, ["--hidden", "--capture-size", size]);
 let count = 0;
 let releaseFrame;

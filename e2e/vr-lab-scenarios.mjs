@@ -1,12 +1,15 @@
 // examples/vr-lab's scripted XR scenarios: played by its e2e checks
 // (`e2e/vr-lab.mjs`) and recorded as demo videos (`npm run demo:vr-lab`).
-// A new station adds its scenarios here. Format: `e2e/xr-scenario.mjs`.
+// A new station adds its scenarios here. Format: `e2e/xr-scenario.mjs`;
+// recorded fixtures: `e2e/xr-fixture.mjs`.
 //
 // Grab table (station 1): the rig stands at world (0, 0, 4) facing +Z, so
 // rig-local x is world -x and rig-local -z is world +z. The ball rests at
 // rig (0.2, 0.96, -0.55); the wall's face is at rig x = -0.6, at the table's end.
 
 export const project = "examples/vr-lab";
+// Tapped before an attached recording (`npm run record:vr-lab`): station 1, reset.
+export const resetKey = "1";
 
 export const grabTable = { feet: [0, 0, 4], yaw: 0 };
 export const BALL = [0.2, 0.96, -0.55];
@@ -21,6 +24,8 @@ const along = (n) => SWEEP_FROM.map((v, i) => v + (THROW_V[i] * n) / 60);
 // From the player's right, level with the table: the hands, the wall
 // behind them and the basket down range all in frame.
 const side = { eye: [-2.1, 2.2, 2.7], target: [0.05, 0.85, 5.5], fov: 55 };
+// Films a recorded fixture named by path (`npm run demo:vr-lab -- rec.json …`).
+export const defaultSpectator = side;
 
 // From above the wall, in its plane: the ball held on this side while the
 // hand goes through to the other.
@@ -91,6 +96,13 @@ export const scenarios = {
       { frames: 1, right: { to: [0.22, 1.1 + (FAST_V[1] * 5) / 60, -0.1 + (FAST_V[2] * 5) / 60], squeeze: 0 }, mark: "release" },
       { frames: 1, right: { to: [0.22, 1.2, -0.6] }, mark: "after1" },
     ],
+  },
+
+  // `grab-throw` recorded under `--emulate-xr` (`npm run record:vr-lab --
+  // e2e/fixtures/vr-lab/grab-throw.xr.json --scenario grab-throw`).
+  "grab-throw-recorded": {
+    fixture: "e2e/fixtures/vr-lab/grab-throw.xr.json",
+    spectator: side,
   },
 
   // Lose the hand mid-swing, then let go as it comes back: no throw.
