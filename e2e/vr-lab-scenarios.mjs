@@ -1410,7 +1410,7 @@ const handViewScenarios = {
 // --- Hands (station 1, and the armory's pistol) ---
 // Both hands up in front of the player, palms down (each turned a quarter
 // turn about the way it points) and a little yawed in, 20 cm apart.
-export const HANDS = {
+const HANDS = {
   right: { at: [0.1, 1.3, -0.32], turn: qmul(yaw(10), roll(-90)) },
   left: { at: [-0.1, 1.3, -0.32], turn: qmul(yaw(-10), roll(90)) },
 };

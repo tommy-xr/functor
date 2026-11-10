@@ -4,11 +4,12 @@
 // Plays scenarios in `e2e/vr-lab-scenarios.mjs` against `examples/vr-lab`
 // (`--headless`, pinned clock, one sample per fixed step) and reads the
 // glove from `/scene` (children 4/5 the left and right hands, 6/7 their
-// ghosts): one instanced draw of the capsules' end spheres (two a capsule)
-// and one of their cylinders, under the hand's `Scene.atPose`.
+// ghosts): one instanced draw of the capsules' caps (each chain's first
+// start, then every end) and one of their cylinders, under the hand's
+// `Scene.atPose`.
 //
-//   1. Both hands turned palms down: every capsule's ends and every cylinder
-//      sit where forward kinematics puts them for the injected grips (the
+//   1. Both hands turned palms down: every cap and cylinder sits, turned and
+//      sized, where forward kinematics puts it for the injected grips (the
 //      skeleton below, computed independently of the game), within 0.1 mm,
 //      open, squeezed, the trigger pulled and let out.
 //   2. The squeeze curls the middle, ring and little fingers and not the
@@ -21,7 +22,7 @@
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab-hands.mjs
 import { check, failures } from "./mcp-rpc.mjs";
-import { add, len, qmul, qrot, record, rigToWorld, session, sub } from "./xr-scenario.mjs";
+import { add, compose, len, qmul, qrot, record, rigToWorld, session, sub } from "./xr-scenario.mjs";
 import { grabTable, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8300;
@@ -49,7 +50,6 @@ const empty = (trigger, squeeze) => ({
   curls: [mix(0.15, 0.55, trigger), mix(0.15, POWER.middle, squeeze), mix(0.15, POWER.ring, squeeze), mix(0.15, POWER.little, squeeze)],
 });
 
-const compose = (a, b) => ({ position: add(a.position, qrot(a.orientation, b.position)), orientation: qmul(a.orientation, b.orientation) });
 // Each bone `[length, flexion at its base]` from `base`: the joints, then the tip.
 const chain = (base, bones) => {
   const out = [];
@@ -90,6 +90,10 @@ const capsuleEnds = (side, pose) => {
   const js = joints(side, pose);
   return CAPSULES.map(([j, , length]) => [js[j].position, add(js[j].position, qrot(js[j].orientation, [0, 0, -length]))]);
 };
+// The glove's caps: each chain's first start (the metacarpals'), then every
+// capsule's end.
+const FIRSTS = CAPSULES.flatMap(([j], i) => ([2, 6, 11, 16, 21].includes(j) ? [i] : []));
+const caps = (ends) => [...FIRSTS.map((i) => ends[i][0]), ...ends.map(([, b]) => b)];
 
 // --- reading the glove from `/scene` ---
 const IDENTITY = JSON.stringify([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
@@ -104,16 +108,22 @@ function find(node, key, xforms = [], out = []) {
   }
   return out;
 }
-// A column-major 4×4 applied to a point.
-const apply = (m, [x, y, z]) => [0, 1, 2].map((r) => m[0][r] * x + m[1][r] * y + m[2][r] * z + m[3][r]);
-// A hand's glove: its sphere and cylinder instances (positions in the world).
+// A column-major 4×4 applied to a point (`w` 1) or a direction (`w` 0).
+const apply = (m, [x, y, z], w = 1) => [0, 1, 2].map((r) => m[0][r] * x + m[1][r] * y + m[2][r] * z + m[3][r] * w);
+const unit = (v) => v.map((c) => c / len(v));
+// A hand's glove: its cap and cylinder instances (positions and the
+// cylinders' axes in the world).
 function glove(node) {
   const [spheres, cylinders] = find(node, "Instanced");
   if (!spheres || !cylinders) return undefined;
-  const world = (inst, xforms) => xforms.reduceRight((p, m) => apply(m, p), inst.position);
+  const world = (p, xforms, w = 1) => xforms.reduceRight((q, m) => apply(m, q, w), p);
   return {
-    spheres: spheres.value.instances.map((i) => world(i, spheres.xforms)),
-    cylinders: cylinders.value.instances.map((i) => ({ at: world(i, cylinders.xforms), length: i.scale[1] })),
+    spheres: spheres.value.instances.map((i) => ({ at: world(i.position, spheres.xforms), radius: i.scale[0] })),
+    cylinders: cylinders.value.instances.map((i) => ({
+      at: world(i.position, cylinders.xforms),
+      axis: unit(world(qrot(i.rotation, [0, 1, 0]), cylinders.xforms, 0)),
+      size: i.scale,
+    })),
     raw: [spheres.value.instances, cylinders.value.instances],
   };
 }
@@ -121,21 +131,30 @@ function glove(node) {
 function expected(side, grip, pose, rig) {
   const toWorld = (p) => rigToWorld(add(grip.position, qrot(grip.orientation, p)), rig.feet, rig.yaw);
   const ends = capsuleEnds(side, pose);
+  const radii = [...FIRSTS.map((i) => CAPSULES[i][1]), ...CAPSULES.map(([, r]) => r)];
   return {
-    spheres: ends.flatMap(([a, b]) => [toWorld(a), toWorld(b)]),
-    cylinders: ends.map(([a, b], i) => ({ at: toWorld(a.map((v, k) => (v + b[k]) / 2)), length: CAPSULES[i][2] })),
+    spheres: caps(ends).map((p, i) => ({ at: toWorld(p), radius: radii[i] })),
+    cylinders: ends.map(([a, b], i) => ({
+      at: toWorld(a.map((v, k) => (v + b[k]) / 2)),
+      axis: unit(sub(toWorld(b), toWorld(a))),
+      size: [2 * CAPSULES[i][1], CAPSULES[i][2], 2 * CAPSULES[i][1]],
+    })),
   };
 }
+// The farthest any cap or cylinder is from where it should be: its place, its
+// axis's direction (as the distance between unit axes), and its radius and length.
 const worst = (got, want) =>
   Math.max(
-    ...got.spheres.map((p, i) => len(sub(p, want.spheres[i]))),
-    ...got.cylinders.map((c, i) => Math.max(len(sub(c.at, want.cylinders[i].at)), Math.abs(c.length - want.cylinders[i].length))),
+    ...got.spheres.map((c, i) => Math.max(len(sub(c.at, want.spheres[i].at)), Math.abs(c.radius - want.spheres[i].radius))),
+    ...got.cylinders.map((c, i) => Math.max(len(sub(c.at, want.cylinders[i].at)), len(sub(c.axis, want.cylinders[i].axis)),
+      ...c.size.map((s, k) => Math.abs(s - want.cylinders[i].size[k])))),
   );
-// Sphere indices: each capsule's [start, end]. The distal capsules end at
-// the fingertips; the middle metacarpal's ends straddle the palm joint.
-const TIP = { thumb: 5, index: 13, middle: 21, ring: 29, little: 37 };
-const palmOf = (g) => g.spheres[14].map((v, i) => (v + g.spheres[15][i]) / 2);
-const reach = (g, finger) => len(sub(g.spheres[TIP[finger]], palmOf(g)));
+// Cap indices (`caps`): five chain starts, then each capsule's end. The
+// distal capsules end at the fingertips; the middle metacarpal's two caps
+// straddle the palm joint.
+const TIP = { thumb: 7, index: 11, middle: 15, ring: 19, little: 23 };
+const palmOf = (g) => g.spheres[2].at.map((v, i) => (v + g.spheres[12].at[i]) / 2);
+const reach = (g, finger) => len(sub(g.spheres[TIP[finger]].at, palmOf(g)));
 const mm = (d) => `${(d * 1000).toFixed(3)} mm`;
 
 await run("glove at FK, squeezed and pulled", async (rt) => {
@@ -148,8 +167,8 @@ await run("glove at FK, squeezed and pulled", async (rt) => {
       const g = glove(kids(mark)[child]);
       const want = expected(side, gripOf(mark, side), empty(trigger, squeeze), grabTable);
       const off = g ? worst(g, want) : Infinity;
-      check(g && g.spheres.length === 38 && g.cylinders.length === 19 && off < 1e-4,
-        `${mark}: the ${side} glove's 19 capsules where FK puts them (worst ${mm(off)})`);
+      check(g && g.spheres.length === 24 && g.cylinders.length === 19 && off < 1e-4,
+        `${mark}: the ${side} glove's 19 capsules where FK puts them, turned and sized (worst ${mm(off)})`);
     }
   }
   for (const [side, child] of [["left", 4], ["right", 5]]) {
@@ -163,7 +182,7 @@ await run("glove at FK, squeezed and pulled", async (rt) => {
   }
   // The left glove is the right's mirror, both palms down: the thumbs inward.
   const [l, r] = [glove(kids("open")[4]), glove(kids("open")[5])];
-  const across = (g) => sub(g.spheres[TIP.thumb], palmOf(g));
+  const across = (g) => sub(g.spheres[TIP.thumb].at, palmOf(g));
   const rightDir = rigToWorld([1, 0, 0], [0, 0, 0], grabTable.yaw);
   const dotX = (v) => v.reduce((s, c, i) => s + c * rightDir[i], 0);
   check(dotX(across(r)) < 0 && dotX(across(l)) > 0, "palms down, each thumb lies toward the other hand");
@@ -181,7 +200,7 @@ await run("a held pistol's index follows its trigger", async (rt) => {
   // Wrapped round the grip, the index on the trigger (`Hand.onTrigger`).
   const pose = (t) => ({ thumb: { curl: 0.75, opposition: 1 }, curls: [mix(0.25, 0.55, t), 0.75, 0.72, 0.6] });
   const local = (mark) => g(mark).raw[0].map((i) => i.position);
-  const want = (t) => capsuleEnds("right", pose(t)).flatMap(([a, b]) => [a, b]).map(([x, y, z]) => [-x, y, -z]);
+  const want = (t) => caps(capsuleEnds("right", pose(t))).map(([x, y, z]) => [-x, y, -z]);
   const off = Math.max(...[["trigger0", 0], ["trigger50", 0.5], ["trigger100", 1]].flatMap(([m, t]) => local(m).map((p, i) => len(sub(p, want(t)[i])))));
   check(off < 1e-4, `posed as the pistol grip's preset at each pull, in the hand's frame (worst ${mm(off)})`);
 });
@@ -195,7 +214,7 @@ await run("the ghost glove", async (rt) => {
   const shadow = glove(ghost);
   check(opacity && Math.abs(opacity.value[0] - 0.4) < 1e-6, `blocked at the wall: a ghost at 0.4 opacity (${opacity?.value[0]})`);
   check(shadow && JSON.stringify(shadow.raw) === JSON.stringify(drawn.raw), "the same glove as the drawn hand, curled the same");
-  const apart = shadow && len(sub(shadow.spheres[0], drawn.spheres[0]));
+  const apart = shadow && len(sub(shadow.spheres[0].at, drawn.spheres[0].at));
   check(apart > 0.02, `drawn ${apart && (apart * 100).toFixed(1)} cm from it`);
   check(glove(kids("nearWall")[7]) === undefined && glove(kids("nearWall")[5]) !== undefined, "within 2 cm: no ghost");
 });

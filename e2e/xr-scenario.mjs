@@ -196,6 +196,9 @@ export const turnOf = (a, b) => {
 
 const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
 
+/** Pose `b` placed in pose `a`'s frame (`{ position, orientation }`). */
+export const compose = (a, b) => ({ position: add(a.position, qrot(a.orientation, b.position)), orientation: qmul(a.orientation, b.orientation) });
+
 /** Constant-rate quaternion interpolation (`[x, y, z, w]`), the shorter way. */
 export function slerp(a, b, t) {
   const d = a.reduce((s, v, i) => s + v * b[i], 0);

@@ -61,27 +61,34 @@ async function measure(scenario) {
   }
 }
 
-// Play `scenario` a step at a time; from `/frames`, the step times of the
-// steps that fired the shotgun and of the others since `from` (a mark).
-async function measureShots(scenario, from) {
+// Play `scenario` a step at a time (a spinning worker thread keeps the clock
+// up between them), calling `onStep` with each; `/frames`' one-step frames.
+async function stepwise(scenario, onStep) {
   const rt = await launch(project, PORT, ["--headless"]);
   const spin = new Worker("for (;;) {}", { eval: true });
   try {
-    const fired = new Set();
-    let start;
-    let shots = 0;
-    await play(rt, scenario, async ({ state, mark }) => {
-      if (mark === from) start = state.frame;
-      if (start !== undefined && state.model.shotgun.fired > shots) fired.add(state.frame);
-      shots = state.model.shotgun.fired;
-    });
-    const frames = (await rt.get("/frames?last=600")).frames.filter((f) => f.steps === 1 && f.frame > start);
-    const stepOf = (f) => f.sim_us - f.draw_us;
-    return { fire: frames.filter((f) => fired.has(f.frame)).map(stepOf), other: frames.filter((f) => !fired.has(f.frame)).map(stepOf) };
+    await play(rt, scenario, onStep);
+    return (await rt.get("/frames?last=600")).frames.filter((f) => f.steps === 1);
   } finally {
     await spin.terminate();
     await rt.kill();
   }
+}
+
+// The step times of the steps that fired the shotgun and of the others since
+// `from` (a mark).
+async function measureShots(scenario, from) {
+  const fired = new Set();
+  let start;
+  let shots = 0;
+  const frames = await stepwise(scenario, async ({ state, mark }) => {
+    if (mark === from) start = state.frame;
+    if (start !== undefined && state.model.shotgun.fired > shots) fired.add(state.frame);
+    shots = state.model.shotgun.fired;
+  });
+  const since = frames.filter((f) => f.frame > start);
+  const stepOf = (f) => f.sim_us - f.draw_us;
+  return { fire: since.filter((f) => fired.has(f.frame)).map(stepOf), other: since.filter((f) => !fired.has(f.frame)).map(stepOf) };
 }
 
 // Both hands raised at the grab table: `still` steps held, then `moving`
@@ -101,23 +108,15 @@ const curling = {
   ],
 };
 
-// Play `curling` a step at a time; from `/frames`, the held and the moving
-// steps' step and draw times.
+// The held and the moving steps' step and draw times, `curling` played a step
+// at a time.
 async function measureCurling() {
-  const rt = await launch(project, PORT, ["--headless"]);
-  const spin = new Worker("for (;;) {}", { eval: true });
-  try {
-    const at = {};
-    await play(rt, curling, async ({ state, mark }) => {
-      if (mark) at[mark] = state.frame;
-    });
-    const frames = (await rt.get("/frames?last=600")).frames.filter((f) => f.steps === 1 && f.frame > at.placed);
-    const part = (fs) => ({ step: fs.map((f) => f.sim_us - f.draw_us), draw: fs.map((f) => f.draw_us) });
-    return { still: part(frames.filter((f) => f.frame <= at.still)), moving: part(frames.filter((f) => f.frame > at.still)) };
-  } finally {
-    await spin.terminate();
-    await rt.kill();
-  }
+  const at = {};
+  const frames = (await stepwise(curling, async ({ state, mark }) => {
+    if (mark) at[mark] = state.frame;
+  })).filter((f) => f.frame > at.placed);
+  const part = (fs) => ({ step: fs.map((f) => f.sim_us - f.draw_us), draw: fs.map((f) => f.draw_us) });
+  return { still: part(frames.filter((f) => f.frame <= at.still)), moving: part(frames.filter((f) => f.frame > at.still)) };
 }
 
 const stats = (xs) => {

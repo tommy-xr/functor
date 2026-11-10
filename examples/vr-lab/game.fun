@@ -1287,7 +1287,7 @@ let drawnAt = (m: Model, on: On, g: Input.pose): Input.pose =>
 
 /// Where a hand is drawn (`drawnAt`, tracked at `g`).
 let drawnHand = (m: Model, side: Hold.Side, g: Input.pose): Input.pose =>
-  if m.handView == Tracked then g else drawnAt(m, onOf(m, side), g)
+  drawnAt(m, onOf(m, side), g)
 
 /// How a hand on `on` curls its fingers (`Props.fingers`): on its prop, or,
 /// empty, as its controller's trigger and grip have them.

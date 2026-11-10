@@ -110,7 +110,8 @@ let relaxed = 0.15
 let triggerRest = 0.25
 let triggerPulled = 0.55
 
-let mix = (a: float, b: float, t: float): float => a + (b - a) * Math.clamp01(t)
+// From `a` to `b` as `t` goes 0 to 1 (clamped).
+let mix = (a: float, b: float, t: float): float => Math.lerp(b, Math.clamp01(t), a)
 
 // The presets, until a grip fitter fits the fingers to what they hold.
 
@@ -163,7 +164,7 @@ let fingerChain = (f: Finger, curl: float) =>
 
 let thumbTurn = (opposition: float): Input.quaternion =>
   let t = Math.clamp01(opposition) in
-  let at = (a: float, b: float) => a + (b - a) * t in
+  let at = (a: float, b: float) => Math.lerp(b, t, a) in
   Quat.mul(Quat.yaw(at(thumbRest.yaw, thumbOpposed.yaw)),
     Quat.mul(flex(at(thumbRest.pitch, thumbOpposed.pitch)), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), at(thumbRest.roll, thumbOpposed.roll))))
 
@@ -230,6 +231,9 @@ let capsules: List<Capsule> = List.flatten([
   fingerCapsules(21.0, little, (0.0082, 0.0072, 0.0065)),
 ])
 
+/// Whether a capsule starts its chain (a metacarpal's, off the wrist).
+let starts = (c: Capsule): bool => List.nth(c.joint, parents) == Option.Some(wrist)
+
 /// A capsule's axis in `posed`'s frame: its two ends.
 let ends = (posed: Posed, c: Capsule): (Input.point3, Input.point3) =>
   let j = jointOf(posed, c.joint) in
@@ -237,16 +241,19 @@ let ends = (posed: Posed, c: Capsule): (Input.point3, Input.point3) =>
 
 /// The glove posed `posed` (in the grip's frame), painted `c`, as a subtree
 /// for `Scene.atPose` at the grip: one instanced draw of the capsules'
-/// cylinders and one of their end spheres. (`atPose`'s local +Z is the
-/// grip's -Z, and its +X the grip's -X.)
+/// cylinders and one of their caps. (`atPose`'s local +Z is the grip's -Z,
+/// and its +X the grip's -X.) A chain's radii shrink toward its tip, so a
+/// capsule's start cap lies inside the one before's end cap: only a chain's
+/// first start cap is drawn (`starts`, then every capsule's end).
 let glove = (c: Color.t, posed: Posed): Scene.t =>
   let drawn = (p: Input.point3) => Quat.v3(0.0 - p.x, p.y, 0.0 - p.z) in
-  let parts = capsules |> List.map((cap) => let (a, b) = ends(posed, cap) in (drawn(a), drawn(b), cap.radius, cap.length)) in
+  let parts = capsules |> List.map((cap) => let (a, b) = ends(posed, cap) in (drawn(a), drawn(b), cap.radius, cap.length, starts(cap))) in
   let at = (p: Input.point3) => Instance.at(Quat.toVec3(p)) in
-  let spheres = parts |> List.concatMap((s) => let (a, b, r, _) = s in [at(a) |> Instance.scale(r), at(b) |> Instance.scale(r)]) in
+  let firsts = parts |> List.filter((s) => let (_, _, _, _, first) = s in first) |> List.map((s) => let (a, _, r, _, _) = s in at(a) |> Instance.scale(r)) in
+  let spheres = firsts |> List.append(parts |> List.map((s) => let (_, b, r, _, _) = s in at(b) |> Instance.scale(r))) in
   // A unit cylinder stands along +Y: turned about X, then Z, onto the axis.
   let cylinders = parts |> List.map((s) =>
-    let (a, b, r, length) = s in
+    let (a, b, r, length, _) = s in
     let u = Quat.scale(1.0 / length, Quat.sub(b, a)) in
     at(Quat.lerp(a, b, 0.5)) |> Instance.scaleXYZ(2.0 * r, length, 2.0 * r)
       |> Instance.rotateX(Angle.radians(Math.asin(Math.clamp(0.0 - 1.0, 1.0, u.z))))
@@ -297,12 +304,11 @@ expect (
 
 // Flat, a finger runs straight from its base along its splay; the middle
 // fingertip is 18.1 cm ahead of the wrist (15.7 past its CMC).
-let near3 = (a: Input.point3, b: Input.point3): bool => dist(a, b) < 0.000001
 expect (
   let p = local(Hold.Right, flat) in
   let tipOf = (f: Finger) => Hold.compose(wristOnGrip, Hold.at(Quat.add(f.base, Quat.rotate(Quat.yaw(f.splay), Quat.v3(0.0, 0.0, 0.0 - (f.metacarpal + f.proximal + f.intermediate + f.distal)))), Quat.identity)) in
-  near3(at(p, indexTip), (tipOf(index)).position) && near3(at(p, middleTip), (tipOf(middle)).position)
-    && near3(at(p, ringTip), (tipOf(ring)).position) && near3(at(p, littleTip), (tipOf(little)).position)
+  Hold.near3(at(p, indexTip), (tipOf(index)).position) && Hold.near3(at(p, middleTip), (tipOf(middle)).position)
+    && Hold.near3(at(p, ringTip), (tipOf(ring)).position) && Hold.near3(at(p, littleTip), (tipOf(little)).position)
     && Math.abs((Hold.relative(wristOnGrip, jointOf(p, middleTip))).position.z + 0.181) < 0.0000001
 )
 // Flat, every joint of a finger points the way its splay does, nail up.
@@ -331,7 +337,7 @@ expect (
     List.zip(r.poses, l.poses) |> List.all((lr) => let (a, b) = lr in Hold.near(a, mirror(b))))
 )
 // …and on one root, the left's joints sit across the grip's YZ plane.
-expect (let (l, r) = (local(Hold.Left, pinch), local(Hold.Right, pinch)) in near3(at(l, indexTip), (mirror(jointOf(r, indexTip))).position))
+expect (let (l, r) = (local(Hold.Left, pinch), local(Hold.Right, pinch)) in Hold.near3(at(l, indexTip), (mirror(jointOf(r, indexTip))).position))
 
 // The presets curl as meant.
 // A power wrap closes round a Touch handle (up the grip's Y through its
@@ -353,7 +359,7 @@ expect (
 expect (
   let (a, b) = (local(Hold.Right, onTrigger(0.0)), local(Hold.Right, onTrigger(1.0))) in
   dist(at(b, indexTip), at(b, palm)) < dist(at(a, indexTip), at(a, palm)) - 0.01
-    && near3(at(a, middleTip), at(b, middleTip)) && near3(at(a, thumbTip), at(b, thumbTip))
+    && Hold.near3(at(a, middleTip), at(b, middleTip)) && Hold.near3(at(a, thumbTip), at(b, thumbTip))
 )
 // A pinch brings the thumb's tip to the index's: their pads touch.
 expect (let p = local(Hold.Right, pinch) in dist(at(p, thumbTip), at(p, indexTip)) < 0.01)
