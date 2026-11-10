@@ -1,6 +1,7 @@
 // Hand: an articulated hand as data. The 26 joints of OpenXR's
 // XR_EXT_hand_tracking, in its order; an average adult hand's bones; a
-// finger pose (`FingerPose`: how far each finger curls) and the forward
+// finger pose (`FingerPose`: how far each finger bends, at its knuckle and
+// past it) and the forward
 // kinematics from it; where the hand sits on a controller; and the capsules
 // it is drawn and (later) fitted with, and their drawing. Pure, so it is
 // tested below with no world.
@@ -332,9 +333,9 @@ let level = (curl: float): float => Math.round(Math.clamp01(curl) * drawLevels)
 let levels = (f: FingerPose): List<(float, float)> =>
   [f.index, f.middle, f.ring, f.little] |> List.map((b) => (level(b.curl), level(b.tip)))
 
-/// A finger's proximal bone drawn at a curl: its capsule as drawn, its part,
-/// and the frame its distal two hang from (`hangFrom`).
-type Proximal = { seg: Seg, part: Part, frame: Input.pose }
+/// A finger's proximal bone drawn at a curl: its part, and the frame its
+/// distal two hang from (`hangFrom`).
+type Proximal = { part: Part, frame: Input.pose }
 
 /// Each hand curled to every level (`curled(k / drawLevels)`): what the
 /// drawing tables (here and `Skin`'s) are read from.
@@ -348,9 +349,7 @@ let levelsOf = (side: Hold.Side): List<Posed> => if side == Hold.Left then leftL
 let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<Seg>>>) =>
   let posed = levelsOf(side) in
   (posed |> List.map((p) => fingerFirsts |> List.map((first) =>
-     let cap = proximalCap(first) in
-     let s = segOf(p, cap) in
-     { seg: { s with a: drawn(s.a), b: drawn(s.b) }, part: partOf(p, [cap]), frame: hangFrom(p, first) })),
+     { part: partOf(p, [proximalCap(first)]), frame: hangFrom(p, first) })),
    posed |> List.map((p) => fingerFirsts |> List.zip(distalCaps) |> List.map((fc) =>
      let (first, caps) = fc in
      let at = hangFrom(p, first) in
@@ -422,15 +421,14 @@ expect (
     && turnedOnly(power, { power with thumb: { power.thumb with tip: 0.2 } }, 4.0)
     && moved(power, { power with index: { curl: 0.2, tip: 0.70 } }) == [7.0, 8.0, 9.0, 10.0]
 )
-// The drawn fingers (the proximal table by curl, the distal by tip, hung
-// from it) are each capsule FK puts there at those levels, either hand.
+// The drawn fingers' distal two (the tip's table, hung from the curl's)
+// are each capsule FK puts there at those levels, either hand.
 expect (
   [Hold.Left, Hold.Right] |> List.all((side) => [power, uneven, onTrigger(0.3), fist, flat] |> List.all((f) =>
     let p = local(side, atLevels(f)) in
-    let want = fingerFirsts |> List.zip(distalCaps) |> List.concatMap((fc) => let (first, caps) = fc in [proximalCap(first), ..caps])
-      |> List.map((cap) => let s = segOf(p, cap) in (drawn(s.a), drawn(s.b))) in
-    let got = fingersDrawn(side, levels(f)) |> List.concatMap((pd) => let (pr, segs) = pd in [pr.seg, ..segs]) |> List.map((s) => (s.a, s.b)) in
-    List.length(got) == 12.0 && (List.zip(want, got) |> List.all((gw) => let (g, w) = gw in let (ga, gb) = g in let (wa, wb) = w in Hold.near3(ga, wa) && Hold.near3(gb, wb)))))
+    let want = List.flatten(distalCaps) |> List.map((cap) => let s = segOf(p, cap) in (drawn(s.a), drawn(s.b))) in
+    let got = fingersDrawn(side, levels(f)) |> List.concatMap((pd) => let (_, segs) = pd in segs) |> List.map((s) => (s.a, s.b)) in
+    List.length(got) == 8.0 && (List.zip(want, got) |> List.all((gw) => let (g, w) = gw in let (ga, gb) = g in let (wa, wb) = w in Hold.near3(ga, wa) && Hold.near3(gb, wb)))))
 )
 
 expect List.length(names) == 26.0 && List.length(parents) == 26.0

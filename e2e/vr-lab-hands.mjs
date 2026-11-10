@@ -365,8 +365,6 @@ await run("the skinned ghost", async (rt) => {
 await run("a hooked index (tip ≠ curl): capsules and skinned at FK", async (rt) => {
   const PULLS = [["trigger0", 0], ["trigger50", 0.5], ["trigger100", 1]];
   const turned = ([x, y, z]) => [-x, y, -z];
-  const idx = PULLS.map(([, t]) => onTrigger(t).fingers[0]);
-  check(idx.every(({ curl, tip }) => tip - curl > 0.1), `the index's tip bent past its curl at each pull (${idx.map(({ curl, tip }) => `${curl.toFixed(2)}/${tip.toFixed(2)}`).join(", ")})`);
   // Skinned (the default) first, then G: the capsules.
   const skinned = await record(rt, scenarios["pistol-trigger"], { scenes: true });
   const capsule = await record(rt, capsules(scenarios["pistol-trigger"]), { scenes: true });

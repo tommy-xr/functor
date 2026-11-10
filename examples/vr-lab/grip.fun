@@ -557,7 +557,7 @@ expect (
 
 
 // The thenar inside a held ball or stick doesn't bury the thumb: it stops
-// only its first joint.
+// only its curl (its CMC and MCP), and its tip closes on.
 expect (
   items |> List.filter((it) => it.name == "ball" || it.name == "stick (band)") |> List.all((it) =>
     let f = fit(Hold.Right, held(Hold.Right, it)) in
