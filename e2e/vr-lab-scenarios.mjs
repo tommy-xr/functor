@@ -109,7 +109,7 @@ const brickDown = [0.42, 1.06, -0.45];
 const edgeAbove = { at: [0.35, 1.1, -0.32], turn: roll(-30) };
 const edgeBelow = [0.35, TABLE.top - 0.04, -0.32];
 
-// The bottle: a hand pointing up, 2 cm off the neck.
+// The bottle: an upright hand, 2 cm off the neck.
 const neckGrip = add(BOTTLE.at, [0.02, BOTTLE.neck, 0.008]);
 const bottleBase = add(BOTTLE.at, [0.05, -0.1, 0]);
 
@@ -1407,6 +1407,156 @@ const handViewScenarios = {
   },
 };
 
+// --- Hands (station 1, and the armory's pistol) ---
+// Both hands up in front of the player, palms down (each turned a quarter
+// turn about the way it points) and a little yawed in, 20 cm apart.
+const HANDS = {
+  right: { at: [0.1, 1.3, -0.32], turn: qmul(yaw(10), roll(-90)) },
+  left: { at: [-0.1, 1.3, -0.32], turn: qmul(yaw(-10), roll(90)) },
+};
+// Ahead of the player, to the right and above: both hands' curl.
+const atHands = { eye: [-0.42, 1.55, 4.88], target: [0.0, 1.29, 4.36], fov: 27 };
+// Both hands' `field` (squeeze or trigger) stepped from `from` to `to` over
+// `n` steps; `mark` names the last.
+const both = (field, from, to, n = 12, mark) =>
+  Array.from({ length: n }, (_, i) => {
+    const v = from + ((to - from) * (i + 1)) / n;
+    return { frames: 1, right: { [field]: v }, left: { [field]: v }, ...(mark && i === n - 1 ? { mark } : {}) };
+  });
+
+const handScenarios = {
+  // Both hands raised, open; squeezed (the middle, ring and little fingers
+  // close round the handle); let open and the trigger pulled (the index
+  // closes); let out.
+  "hand-curl": {
+    station: 1,
+    spectator: atHands,
+    steps: [
+      { frames: 20, right: { to: HANDS.right.at, turn: HANDS.right.turn }, left: { to: HANDS.left.at, turn: HANDS.left.turn } },
+      { frames: 4, right: {}, left: {}, mark: "open" },
+      ...both("squeeze", 0, 1, 12, "squeezed"),
+      ...both("squeeze", 1, 0, 12),
+      ...both("trigger", 0, 1, 12, "pulled"),
+      ...both("trigger", 1, 0, 12, "released"),
+    ],
+  },
+
+  // The pistol taken and aimed low, the trigger let in by steps: the index
+  // follows it.
+  "pistol-trigger": {
+    station: 3,
+    neck: NECK,
+    spectator: behindGun,
+    steps: [
+      ...takePistol,
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_MISS } },
+      { frames: 6, right: {}, mark: "trigger0" },
+      { frames: 3, right: { trigger: 0.5 }, mark: "trigger50" },
+      { frames: 3, right: { trigger: 1 }, mark: "trigger100" },
+      { frames: 3, right: { trigger: 0 }, mark: "triggerOut" },
+    ],
+  },
+};
+
+// --- The hands tour (the demo) ---
+// Station 1 (world = (-x, y, 4 - z)): close on the ball, from the player's
+// right; on the stick, from the left; the bottle, `atBottle`.
+const atBall = { eye: [-0.72, 1.32, 4.08], target: [-0.2, 1.05, 4.5], fov: 34 };
+const atStick = { eye: [-0.3, 1.5, 3.85], target: [0.3, 1.02, 4.38], fov: 36 };
+// The armory (world = (4 - z, y, x)): the pistol hand from its right, behind;
+// the shell box from the left; the rifle in two hands from its right.
+const atPistolHand = { eye: [4.05, 1.48, 0.62], target: [4.38, 1.28, 0.2], fov: 34 };
+const atShellBox = { eye: [4.2, 1.45, -0.5], target: [4.62, 1.12, 0.0], fov: 44 };
+const atRifleHands = { eye: [4.3, 1.5, 0.75], target: [4.45, 1.28, 0.18], fov: 40 };
+// The ball's right side, the palm on it; the stick's axis under its grip
+// band, the hand pointing down along it; the upright bottle's neck.
+const BALL_SIDE = add(BALL, [0.045, 0.02, 0]);
+const STICK_AXIS = [-0.3, 0.9175, -0.32];
+const DOWN_ALONG = pitch(-90);
+const hold = (frames, mark) => ({ frames, right: {}, left: {}, ...(mark ? { mark } : {}) });
+
+const tourScenarios = {
+  // Both hands close up: open, squeezed shut and open again, the trigger
+  // pulled and let out. Then held props, each drawn on what it holds: the
+  // ball in an open palm, the stick and the bottle's neck wrapped. At the
+  // armory: the pistol, its index following the trigger; a shell pinched
+  // from the box; the shotgun and the rifle in two hands (the support hand
+  // wrapped round the fore-end and foregrip); the rifle pushed into the wall,
+  // the hands' ghosts at the tracked hands.
+  "hands-tour": {
+    station: 1,
+    neck: NECK,
+    spectator: atHands,
+    steps: [
+      { frames: 20, right: { to: HANDS.right.at, turn: HANDS.right.turn }, left: { to: HANDS.left.at, turn: HANDS.left.turn } },
+      hold(10, "open"),
+      ...both("squeeze", 0, 1, 20, "squeezed"),
+      hold(15),
+      ...both("squeeze", 1, 0, 20),
+      ...both("trigger", 0, 1, 20, "pulled"),
+      hold(15),
+      ...both("trigger", 1, 0, 20),
+      { frames: 25, right: { to: add(BALL_SIDE, [0.06, 0.08, 0.05]), turn: ID }, left: { to: [-0.25, 0.95, -0.1], turn: ID }, spectator: atBall },
+      { frames: 12, right: { to: BALL_SIDE } },
+      { frames: 4, right: { squeeze: 1 } },
+      { frames: 20, right: { to: add(BALL_SIDE, [0, 0.15, 0.05]) }, mark: "ball" },
+      { frames: 15, right: {} },
+      { frames: 20, right: { to: add(BALL_SIDE, [0, 0.003, 0]) } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 20, right: { to: add(STICK_AXIS, [0.05, 0.12, 0]), turn: DOWN_ALONG }, spectator: atStick },
+      { frames: 12, right: { to: STICK_AXIS } },
+      { frames: 4, right: { squeeze: 1 } },
+      { frames: 20, right: { to: add(STICK_AXIS, [0, 0.2, 0]) }, mark: "stick" },
+      { frames: 15, right: {} },
+      { frames: 20, right: { to: add(STICK_AXIS, [0, 0.003, 0]) } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 30, right: { to: [0.6, 1.25, -0.6], turn: ID }, spectator: atBottle },
+      { frames: 15, right: { to: neckGrip } },
+      { frames: 4, right: { squeeze: 1 } },
+      { frames: 20, right: { to: add(neckGrip, [-0.05, 0.12, 0.05]) }, mark: "bottle" },
+      { frames: 15, right: {} },
+      { frames: 20, right: { to: neckGrip } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 1, right: { to: RIGHT_REST }, tap: "3", spectator: atPistolHand },
+      ...takePistol,
+      { frames: 25, right: { to: AIM_HAND, turn: AIM_MIDDLE } },
+      { frames: 20, right: { trigger: 0.4 }, mark: "pistol" },
+      { frames: 1, right: { trigger: 1 } },
+      { frames: 15, right: {} },
+      { frames: 10, right: { trigger: 0 } },
+      { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID } },
+      { frames: 25, right: { to: ARMORY_RH } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 20, right: { to: RIGHT_REST }, left: { to: add(SHOTGUN.box, [0, 0.08, 0.06]), turn: ID }, spectator: atShellBox },
+      { frames: 10, left: { to: SHOTGUN.box } },
+      { frames: 4, left: { squeeze: 1 } },
+      { frames: 20, left: { to: add(SHOTGUN.box, [-0.05, 0.2, 0.15]) }, mark: "shell" },
+      { frames: 15, left: {} },
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 15, left: { to: LEFT_OUT }, spectator: atPump },
+      ...takeShotgun,
+      ...takeFore,
+      { frames: 10, left: {} },
+      ...sgPump(undefined, SG_HAND, undefined, 14),
+      hold(15, "shotgun"),
+      { frames: 1, left: { squeeze: 0 } },
+      { frames: 15, left: { to: LEFT_OUT } },
+      { frames: 30, right: { to: add(SHOTGUN_GRIP, [0, 0.06, 0.08]) } },
+      { frames: 15, right: { to: SHOTGUN_GRIP } },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 15, right: { to: [0.45, 1.15, -0.3] }, spectator: atRifleHands },
+      ...takeRifle,
+      raise(),
+      hold(20, "rifle"),
+      { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: besideWall },
+      { frames: 30, ...bothTo(RIFLE_DEEP) },
+      hold(40, "release"),
+      { frames: 20, ...bothTo(RIFLE_WALL.clear) },
+      hold(10),
+    ],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -1559,12 +1709,12 @@ export const scenarios = {
     ],
   },
 
-  // A hand pointing up takes the bottle 2 cm off its neck: it snaps there.
+  // An upright hand takes the bottle 2 cm off its neck: it snaps there.
   "bottle-neck": {
     station: 1,
     spectator: atBottle,
     steps: [
-      { frames: 20, right: { to: [0.6, 1.25, -0.6], turn: pitch(90) } },
+      { frames: 20, right: { to: [0.6, 1.25, -0.6] } },
       { frames: 20, right: { to: neckGrip }, mark: "atNeck" },
       { frames: 1, right: { squeeze: 1 }, mark: "tookNeck" },
       { frames: 30, right: { to: [0.45, 1.35, -0.55] }, mark: "liftedNeck" },
@@ -1660,4 +1810,6 @@ export const scenarios = {
   ...reloadScenarios,
   ...shotgunScenarios,
   ...handViewScenarios,
+  ...handScenarios,
+  ...tourScenarios,
 };

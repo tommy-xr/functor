@@ -57,10 +57,10 @@
 import { check, failures, sleep } from "./mcp-rpc.mjs";
 import { decode, encode, readLog, recordLive } from "./xr-fixture.mjs";
 import {
-  add, advance, cross, dirToWorld, play, playFixture, qconj, qmul, qrot, rigToWorld, session, sub, tap,
+  add, advance, compose, cross, dirToWorld, play, playFixture, qconj, qmul, qrot, rigToWorld, session, sub, tap,
 } from "./xr-scenario.mjs";
 import {
-  BALL, BOTTLE, FAST_V, FLICK_W, NECK, SLOT, STICK, TABLE, THROW_V, WALL_RIG_X, pitch, project, scenarios, slotAt, yaw,
+  BALL, BOTTLE, FAST_V, FLICK_W, NECK, SLOT, STICK, TABLE, THROW_V, WALL_RIG_X, project, scenarios, slotAt, yaw,
 } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8293;
@@ -69,8 +69,8 @@ const MAX_SPEED = 12;
 const RADIUS = 0.06;
 const FEET = [0, 0, 4];
 const BRICK_SIZE = [0.1, 0.065, 0.21];
-// The bottle's authored grip: a fist round the neck, its -Z up the bottle.
-const NECK_GRIP = { position: [0, BOTTLE.neck, 0], orientation: pitch(90) };
+// The bottle's authored grip: an upright fist round the neck.
+const NECK_GRIP = { position: [0, BOTTLE.neck, 0], orientation: [0, 0, 0, 1] };
 
 const len = (v) => Math.hypot(...v);
 const xyz = (p) => [p.x, p.y, p.z];
@@ -88,7 +88,6 @@ const turnDeg = (a, b) => {
 
 // Poses as { position: [x, y, z], orientation: [x, y, z, w] }.
 const asPose = (p) => ({ position: xyz(p.position), orientation: quat(p.orientation) });
-const compose = (a, b) => ({ position: add(a.position, qrot(a.orientation, b.position)), orientation: qmul(a.orientation, b.orientation) });
 const inverse = (a) => ({ position: qrot(qconj(a.orientation), a.position.map((c) => -c)), orientation: qconj(a.orientation) });
 // How far apart two poses are: metres and degrees.
 const apart = (a, b) => [len(sub(a.position, b.position)), turnDeg(a.orientation, b.orientation)];
