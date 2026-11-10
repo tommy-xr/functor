@@ -89,12 +89,21 @@ let toSegment = (a: Input.point3, b: Input.point3, q: Input.point3): float =>
   Quat.length(Quat.sub(q, Quat.lerp(a, b, Math.clamp01(Quat.dot(Quat.sub(q, a), ab) / Quat.dot(ab, ab)))))
 
 /// The gap from a hand capsule (its axis `a` to `b`, `radius` round) to the
-/// nearest of `solids`, 1 m when there are none. A solid whose bounding
-/// sphere can't beat the nearest so far is skipped.
-let gapOf = (solids: List<Solid>, a: Input.point3, b: Input.point3, radius: float): float =>
+/// nearest of `solids`, or `limit` if none is nearer. A solid that can't beat
+/// the nearest so far is skipped: by its bounding sphere, then by its
+/// distance from the axis's middle less half the axis (no point of the axis
+/// is further from the middle). So a small `limit` (only asking whether it
+/// touches) skips most.
+let gapUnder = (limit: float, solids: List<Solid>, a: Input.point3, b: Input.point3, radius: float): float =>
+  let mid = Quat.lerp(a, b, 0.5) in
+  let half = Quat.length(Quat.sub(b, a)) / 2.0 in
   solids |> List.fold((best, s) =>
     if toSegment(a, b, s.at.position) - bound(s.form) - radius >= best then best
-    else Math.min(best, least((t) => sdf(s, Quat.lerp(a, b, t))) - radius), 1.0)
+    else if sdf(s, mid) - half - radius >= best then best
+    else Math.min(best, least((t) => sdf(s, Quat.lerp(a, b, t))) - radius), limit)
+
+/// A capsule's gap (`gapUnder`), up to 1 m.
+let gapOf = (solids: List<Solid>, a: Input.point3, b: Input.point3, radius: float): float => gapUnder(1.0, solids, a, b, radius)
 
 /// A solid moved by `by`.
 let shift = (by: Input.point3, s: Solid): Solid => { s with at: Hold.at(Quat.add(s.at.position, by), s.at.orientation) }
@@ -182,7 +191,7 @@ type Closed = { curls: List<float>, buried: bool }
 /// at `start` buries the digit.
 let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, start: float): Closed =>
   let gapsFrom = (j: float, c: List<float>): List<float> =>
-    segmentsOf(side, d, c, opposition) |> List.indexedMap((i, s) => let (a, b, r) = s in if i < j then 1.0 else gapOf(solids, a, b, r)) in
+    segmentsOf(side, d, c, opposition) |> List.indexedMap((i, s) => let (a, b, r) = s in if i < j then 1.0 else gapUnder(touchGap, solids, a, b, r)) in
   // The farthest capsule from joint `j` on within `contactGap`, if any.
   let touching = (j: float, c: List<float>): Option.t<float> =>
     gapsFrom(j, c) |> List.indexedMap((i, g) => if g <= contactGap then i else 0.0 - 1.0) |> List.maximum |> Option.filter((i) => i >= 0.0) in
@@ -234,36 +243,33 @@ let closeThumb = (solids: List<Solid>, side: Hold.Side): (Closed, float) =>
 
 // --- the palm ---
 
-let palmJoint = (side: Hold.Side): Input.pose => Hand.jointOf(Hand.local(side, Hand.flat), Hand.palm)
+// Each hand flat, posed once: the palm doesn't move.
+let flatLeft = Hand.local(Hold.Left, Hand.flat)
+let flatRight = Hand.local(Hold.Right, Hand.flat)
+let flatOf = (side: Hold.Side): Hand.Posed => if side == Hold.Left then flatLeft else flatRight
+
+let palmJoint = (side: Hold.Side): Input.pose => Hand.jointOf(flatOf(side), Hand.palm)
 
 /// The way the palm faces: out of it, away from the back of the hand.
 let palmNormal = (side: Hold.Side): Input.point3 => Quat.rotate((palmJoint(side)).orientation, Quat.v3(0.0, 0.0 - 1.0, 0.0))
 
 /// The palm's gap: its nearest metacarpal's.
 let palmGap = (solids: List<Solid>, side: Hold.Side): float =>
-  let p = Hand.local(side, Hand.flat) in
-  palmCaps |> List.map((c) => let (a, b) = Hand.ends(p, c) in gapOf(solids, a, b, c.radius)) |> List.minimum |> Option.defaultValue(1.0)
+  palmCaps |> List.map((c) => let (a, b) = Hand.ends(flatOf(side), c) in gapOf(solids, a, b, c.radius)) |> List.minimum |> Option.defaultValue(1.0)
 
-// How far a palm push looks, either way, and its step coming in.
+// How far a palm push looks, either way.
 let pushRange = 0.1
-let pushStep = 0.005
 
 /// How far the hand would move along its palm's normal for the palm to come
 /// within `contactGap` (negative: back out of the item), if it can within
-/// `pushRange`: coming in from `pushRange` out, the first step that touches,
-/// bisected. (Not the last: a thin item passes through the palm.)
+/// `pushRange`. Sphere-traced: a gap is never more than the way to the
+/// surface along the normal, so stepping by it never overshoots (backing
+/// out of an item too), and converges on the first touch.
 let palmPush = (solids: List<Solid>, side: Hold.Side): Option.t<float> =>
   let n = palmNormal(side) in
   let gapAt = (d: float) => palmGap(solids |> List.map((s) => shift(Quat.scale(0.0 - d, n), s)), side) - contactGap in
-  let (d, touched) = Loop.until((st) => let (d, t) = st in t || d >= pushRange,
-    (st) => let (d, _) = st in (d + pushStep, gapAt(d + pushStep) <= 0.0), (0.0 - pushRange, gapAt(0.0 - pushRange) <= 0.0)) in
-  if not touched || d <= 0.0 - pushRange then Option.None
-  else
-    let (lo, _) = List.range(10.0) |> List.fold((b, _) =>
-      let (lo, hi) = b in
-      let mid = (lo + hi) / 2.0 in
-      if gapAt(mid) > 0.0 then (mid, hi) else (lo, mid), (d - pushStep, d)) in
-    Option.Some(lo)
+  let d = List.range(24.0) |> List.fold((d, _) => if Math.abs(d) > pushRange then d else d + gapAt(d), 0.0) in
+  if Math.abs(d) <= pushRange && Math.abs(gapAt(d)) < 0.0002 then Option.Some(d) else Option.None
 
 // --- a fit ---
 
