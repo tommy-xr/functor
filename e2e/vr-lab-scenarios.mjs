@@ -22,6 +22,16 @@ export const yaw = (deg) => [0, Math.sin((deg * Math.PI) / 360), 0, Math.cos((de
 // Where the stick's near end is held: 5 cm in from the end, just above it.
 const HANDLE = [-0.3, 0.95, -0.3];
 const LIFTED = [-0.3, 1.2, -0.3];
+// A turn of the wrist about +X (the tip up, for positive degrees).
+export const pitch = (deg) => [Math.sin((deg * Math.PI) / 360), 0, 0, Math.cos((deg * Math.PI) / 360)];
+
+// The stick throw: lifted, wound back tip up, then flicked tip down at 10° a
+// step while the hand moves forward, released mid-flick.
+const RAISED = [-0.1, 1.3, -0.25];
+const FLICK_DEG = -10;
+// The flick's spin, rig-local (rad/s about +X).
+export const FLICK_W = [(FLICK_DEG * 60 * Math.PI) / 180, 0, 0];
+const flickAt = (n) => RAISED.map((v, i) => v + (THROW_V[i] * n) / 60);
 
 // The throw: a straight, steady sweep forward and up, released mid-sweep.
 export const THROW_V = [0, 2.0, -3.6];
@@ -42,6 +52,10 @@ const alongWall = { eye: [0.65, 2.45, 3.75], target: [0.6, 1.05, 4.6], fov: 50 }
 
 // Above and behind the player's left shoulder: the stick turning into the wall.
 const overStick = { eye: [0.2, 3.1, 3.75], target: [0.3, 1.1, 4.6], fov: 45 };
+
+// From the player's right, side on: the stick sweeping the ball off the table,
+// then flying spinning down range.
+const besideStick = { eye: [-2.5, 1.5, 5.2], target: [0.2, 0.9, 5.5], fov: 48 };
 
 const grab = [
   { frames: 20, right: { to: [0.2, 1.05, -0.45], squeeze: 0 } },
@@ -126,6 +140,30 @@ export const scenarios = {
       { frames: 45, right: { turn: yaw(0) }, mark: "turnedBack" },
       { frames: 6, right: { squeeze: 0 }, mark: "letGo" },
       { frames: 20, right: { to: [0.25, 1.0, -0.2] } },
+    ],
+  },
+
+  // Take the stick and, held low, sweep it across the table into the ball,
+  // which it shoves away; then lift it, wind it back and flick it, letting
+  // go mid-flick: it flies on spinning at the wrist's rate.
+  "stick-throw": {
+    station: 1,
+    spectator: besideStick,
+    steps: [
+      { frames: 20, right: { to: [-0.3, 1.05, -0.2], squeeze: 0 } },
+      { frames: 20, right: { to: HANDLE }, mark: "reachedStick" },
+      { frames: 6, right: { squeeze: 1 }, mark: "tookStick" },
+      { frames: 10, right: { to: [-0.3, 0.99, -0.3] }, mark: "low" },
+      { frames: 30, right: { turn: yaw(-100) }, mark: "swept" },
+      { frames: 30, right: { to: RAISED, turn: yaw(0) }, mark: "raised" },
+      { frames: 20, right: { turn: pitch(50) }, mark: "wound" },
+      { frames: 6, right: { to: flickAt(6), turn: pitch(50 + 6 * FLICK_DEG) }, mark: "flick" },
+      { frames: 1, right: { to: flickAt(7), turn: pitch(50 + 7 * FLICK_DEG), squeeze: 0 }, mark: "release" },
+      { frames: 1, right: { to: flickAt(8) }, mark: "after1" },
+      { frames: 1, right: { to: flickAt(9) }, mark: "after2" },
+      { frames: 1, right: { to: flickAt(10) }, mark: "after3" },
+      { frames: 180, right: { to: [0.25, 1.0, -0.2], turn: [0, 0, 0, 1] }, mark: "landed" },
+      { frames: 1, right: {}, mark: "rest" },
     ],
   },
 

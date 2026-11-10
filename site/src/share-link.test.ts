@@ -106,6 +106,8 @@ const exampleNames = readdirSync(EXAMPLES, { withFileTypes: true })
 const OVER_CAP = new Set([
   // Not on the site (no Share button) and needs PNGs the site doesn't serve.
   "hoverbike",
+  // Not on the site; a multi-station sandbox distributed as a repo checkout.
+  "vr-lab",
 ]);
 // Examples past the codec's source limit: encoding refuses them outright.
 const UNSHAREABLE = new Set([

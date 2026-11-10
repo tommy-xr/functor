@@ -16,7 +16,12 @@
 //   4. Losing the hand mid-swing and opening it on return never throws.
 //   4b. The stick, its hand held still and the wrist turned a quarter turn
 //      into the wall, never passes the wall plane at any step and stops at
-//      it; turned back, it follows the hand; let go, it returns to its rack.
+//      it; turned back, it follows the hand; let go, it is free.
+//   4c. The held stick, swept across the table, shoves the ball away. Flicked
+//      and let go mid-flick, it is thrown with the wrist's spin, and measured
+//      from its read-back poses two steps later it still spins at that rate.
+//      Landed and at rest, its read-back pose is the pose it is drawn at, and
+//      the same throw in a fresh runtime ends bit-identically.
 //   5. A station reset mid-hold drops the hold and respawns the ball at rest.
 //   6. The same throw in two fresh runtimes ends bit-identically.
 //   7. Recorded fixtures (`e2e/xr-fixture.mjs`): the checked-in grab-throw
@@ -31,8 +36,8 @@
 //   node e2e/vr-lab.mjs
 import { check, failures, sleep } from "./mcp-rpc.mjs";
 import { decode, encode, readLog, recordLive } from "./xr-fixture.mjs";
-import { advance, dirToWorld, launch, play, playFixture, tap } from "./xr-scenario.mjs";
-import { BALL, FAST_V, STICK, THROW_V, WALL_RIG_X, project, scenarios, yaw } from "./vr-lab-scenarios.mjs";
+import { advance, dirToWorld, launch, play, playFixture, rigToWorld, tap } from "./xr-scenario.mjs";
+import { BALL, FAST_V, FLICK_W, STICK, THROW_V, WALL_RIG_X, project, scenarios, yaw } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8293;
 const WALL_FACE = 0.6; // world x, at the table's end
@@ -66,6 +71,21 @@ const corners = (pose) => {
   return out;
 };
 const leftmost = (pose) => Math.min(...corners(pose).map((c) => c[0]));
+const mul = ([ax, ay, az, aw], [bx, by, bz, bw]) => [
+  aw * bx + ax * bw + ay * bz - az * by,
+  aw * by - ax * bz + ay * bw + az * bx,
+  aw * bz + ax * by - ay * bx + az * bw,
+  aw * bw - ax * bx - ay * by - az * bz,
+];
+const conj = ([x, y, z, w]) => [-x, -y, -z, w];
+// A rotation's axis × angle (radians), the shorter way round.
+const log = (q) => {
+  const [x, y, z, w] = q[3] < 0 ? q.map((c) => -c) : q;
+  const n = Math.hypot(x, y, z);
+  return n < 1e-9 ? [2 * x, 2 * y, 2 * z] : [x, y, z].map((c) => (c * 2 * Math.atan2(n, w)) / n);
+};
+// The spin carrying rig-local pose `a` to `b` in one step (rad/s).
+const spinBetween = (a, b) => log(mul(quat(b.orientation), conj(quat(a.orientation)))).map((c) => c * 60);
 
 async function run(name, body, flags = ["--headless"]) {
   console.log(`\n▸ ${name}`);
@@ -163,13 +183,53 @@ await run("stick against the wall", async (rt) => {
   const lag = pressed && turnDeg(quat(pressed.accepted.orientation), yaw(90));
   check(lag > 45, `well short of the hand's turn (${lag?.toFixed(1)}° behind)`);
   const back = some(m.turnedBack.model.stick);
-  const home = [-0.3, 1.2 - 0.0325, -0.6];
+  // Where it was taken from the table, lifted with the hand.
+  const home = sub(xyz(took.accepted.position), [0, 0.95 - 1.2, 0]);
   const off = back && len(sub(xyz(back.accepted.position), home));
   const turn = back && turnDeg(quat(back.accepted.orientation), [0, 0, 0, 1]);
   check(off < 1e-3 && turn < 0.1, `turned back, it follows the hand (${off?.toFixed(5)} m, ${turn?.toFixed(3)}°)`);
-  check(some(m.letGo.model.stick) === undefined, "let go, it returns to its rack");
+  check(some(m.letGo.model.stick) === undefined, "let go, it is free");
   const ball = xyz(m.letGo.model.ballPos);
   check(len(sub(ball, [-BALL[0], BALL[1], 4 - BALL[2]])) < 0.005, `the ball sat still throughout (${fmt(ball)})`);
+});
+
+let stickEnd;
+const stickEndOf = (m) => JSON.stringify([m.rest.model.stickPose, m.rest.model.ballPos, m.rest.model.lastStickRelease]);
+await run("stick shove and throw", async (rt) => {
+  const m = await play(rt, scenarios["stick-throw"]);
+  check(some(m.tookStick.model.stick) !== undefined, "the stick is taken");
+  const ballBefore = xyz(m.low.model.ballPos);
+  const swept = m.swept.model;
+  const ballAfter = xyz(swept.ballPos);
+  check(some(swept.stick) !== undefined, "still held after the sweep");
+  // Rig +X is world -X: the sweep turns the stick's far end that way.
+  check(ballBefore[0] - ballAfter[0] > 0.1, `the held stick shoves the ball away: ${fmt(ballBefore)} → ${fmt(ballAfter)}`);
+
+  const release = some(m.release.model.lastStickRelease);
+  const want = dirToWorld(FLICK_W);
+  check(release?.kind?.$ctor === "Throw", `opening mid-flick throws it (${release?.kind?.$ctor})`);
+  const w0 = release ? xyz(release.spin) : [0, 0, 0];
+  check(len(sub(w0, want)) < 0.01 * len(want), `the estimate is the wrist's spin: ${fmt(w0)} vs ${fmt(want)}`);
+  // Read back a step behind: after2 → after3 is the second step after release.
+  const measured = spinBetween(m.after2.model.stickPose, m.after3.model.stickPose);
+  const err = Math.abs(len(measured) - len(FLICK_W)) / len(FLICK_W);
+  const dir = angleDeg(measured, FLICK_W);
+  check(err < 0.05 && dir < 5, `two steps on it spins at it: ${fmt(measured)} rad/s (${(err * 100).toFixed(1)}%, ${dir.toFixed(1)}°)`);
+
+  const [landed, rest] = [m.landed.model.stickPose, m.rest.model.stickPose];
+  const still = len(sub(xyz(landed.position), xyz(rest.position))) + turnDeg(quat(landed.orientation), quat(rest.orientation));
+  check(still < 1e-4, `it comes to rest (${still.toExponential(1)})`);
+  // Drawn: `Scene.atPose` of the world pose, columns left, up, forward
+  // (rig -Z) and position. The rig faces world +Z: a half turn about +Y.
+  const xform = (await rt.get("/scene")).scene.obj.Group[4].xform;
+  const toWorld = (v) => [-v[0], v[1], -v[2]];
+  const q = quat(rest.orientation);
+  const drawn = xform.map((c) => c.slice(0, 3));
+  const [up, forward] = [toWorld(rotate(q, [0, 1, 0])), toWorld(rotate(q, [0, 0, -1]))];
+  const read = [cross(up, forward), up, forward, rigToWorld(xyz(rest.position), [0, 0, 4])];
+  const off = Math.max(...drawn.map((c, i) => len(sub(c, read[i]))));
+  check(off < 1e-4, `at rest it is drawn at its read-back pose (${off.toExponential(1)})`);
+  stickEnd = stickEndOf(m);
 });
 
 await run("tracking loss", async (rt) => {
@@ -201,6 +261,12 @@ await run("replay", async (rt) => {
   const a = throwEnd && JSON.stringify([throwEnd.ballPos, throwEnd.ballVel]);
   const b = JSON.stringify([m.landed.model.ballPos, m.landed.model.ballVel]);
   check(a === b, `the same throw in a fresh runtime ends identically (${b})`);
+});
+
+await run("stick replay", async (rt) => {
+  const m = await play(rt, scenarios["stick-throw"]);
+  const b = stickEndOf(m);
+  check(stickEnd !== undefined && stickEnd === b, `the same stick throw in a fresh runtime ends identically (${b})`);
 });
 
 await run("recorded fixture", async (rt) => {

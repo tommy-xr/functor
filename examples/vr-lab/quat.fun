@@ -72,6 +72,33 @@ let heading = (q: Input.quaternion): float =>
   let u = rotate(q, v3(0.0, 1.0, 0.0)) in
   Math.atan2(f.x * u.y - u.x * f.y, f.z * u.y - u.z * f.y)
 
+/// The rotation vector of `q`: its axis scaled by its angle in radians, the
+/// shorter way round.
+let log = (q: Input.quaternion): Input.point3 =>
+  let s = if q.w < 0.0 then 0.0 - 1.0 else 1.0 in
+  let v = v3(s * q.x, s * q.y, s * q.z) in
+  let n = length(v) in
+  if n < 0.000001 then scale(2.0, v) else scale(2.0 * Math.atan2(n, s * q.w) / n, v)
+
+/// The rotation carrying +X, +Y, +Z onto the orthonormal `x`, `y`, `z`.
+let fromBasis = (x: Input.point3, y: Input.point3, z: Input.point3): Input.quaternion =>
+  let trace = x.x + y.y + z.z in
+  if trace > 0.0 then
+    let s = 2.0 * Math.sqrt(trace + 1.0) in
+    { x: (y.z - z.y) / s, y: (z.x - x.z) / s, z: (x.y - y.x) / s, w: 0.25 * s }
+  else if x.x > y.y && x.x > z.z then
+    let s = 2.0 * Math.sqrt(1.0 + x.x - y.y - z.z) in
+    { x: 0.25 * s, y: (y.x + x.y) / s, z: (z.x + x.z) / s, w: (y.z - z.y) / s }
+  else if y.y > z.z then
+    let s = 2.0 * Math.sqrt(1.0 + y.y - x.x - z.z) in
+    { x: (y.x + x.y) / s, y: 0.25 * s, z: (z.y + y.z) / s, w: (z.x - x.z) / s }
+  else
+    let s = 2.0 * Math.sqrt(1.0 + z.z - x.x - y.y) in
+    { x: (z.x + x.z) / s, y: (z.y + y.z) / s, z: 0.25 * s, w: (x.y - y.x) / s }
+
+let cross = (a: Input.point3, b: Input.point3): Input.point3 =>
+  v3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+
 // An angle wrapped to (-pi, pi].
 let wrap = (a: float): float => Math.mod(a + Math.pi, 2.0 * Math.pi) - Math.pi
 
@@ -86,3 +113,11 @@ expect near(angle(yaw(0.3), yaw(1.5)), 1.2)
 expect near(heading(slerp(yaw(0.2), yaw(1.4), 0.25)), 0.5)
 // The shorter way: from just short of a half turn to just past it.
 expect near(Math.abs(heading(slerp(yaw(3.0), yaw(0.0 - 3.0), 0.5))), Math.pi)
+// A turn's rotation vector is its axis times its angle, either sign of q.
+expect (let r = log(axisAngle(v3(0.0, 0.6, 0.8), 0.0 - 2.0)) in near(r.y, 0.0 - 1.2) && near(r.z, 0.0 - 1.6))
+expect (let q = axisAngle(v3(1.0, 0.0, 0.0), 0.5) in near(log({ x: 0.0 - q.x, y: 0.0 - q.y, z: 0.0 - q.z, w: 0.0 - q.w }).x, 0.5))
+// A rotation rebuilt from where it sends the axes is itself, in every branch.
+expect (
+  [yaw(0.4), yaw(3.0), axisAngle(v3(1.0, 0.0, 0.0), 2.9), axisAngle(v3(0.0, 0.0, 1.0), 3.0), mul(yaw(2.0), axisAngle(v3(1.0, 0.0, 0.0), 1.0))]
+    |> List.all((q) => angle(q, fromBasis(rotate(q, v3(1.0, 0.0, 0.0)), rotate(q, v3(0.0, 1.0, 0.0)), rotate(q, v3(0.0, 0.0, 1.0)))) < 0.0001)
+)
