@@ -1590,13 +1590,13 @@ let gloveColor = (side: Hold.Side): Color.t => if side == Hold.Left then leftGlo
 let palmOf = (shown: (Hold.Side, Hand.Thumb)): Scene.t =>
   let (side, thumb) = shown in
   Hand.palmAndThumb(gloveColor(side), side, thumb)
-let fingersOf = (shown: (Hold.Side, (float, float, float, float))): Scene.t =>
+let fingersOf = (shown: (Hold.Side, List<(float, float)>)): Scene.t =>
   let (side, levels) = shown in
   Hand.fingersAt(gloveColor(side), side, levels)
 
 /// The skinned glove (`Scene.memo`'s builder): the thumb and the fingers'
 /// drawn levels.
-let skinOf = (shown: (Hold.Side, Hand.Thumb, (float, float, float, float))): Scene.t =>
+let skinOf = (shown: (Hold.Side, Hand.Thumb, List<(float, float)>)): Scene.t =>
   let (side, thumb, levels) = shown in
   Skin.scene(side, thumb, levels)
 

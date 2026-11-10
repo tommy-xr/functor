@@ -161,7 +161,9 @@ let pose = (side: Hold.Side, f: Hand.FingerPose): List<(string, Input.pose)> =>
 
 // --- drawing ---
 // As the capsule glove is: the wrist fixed, the thumb posed as given, and
-// each finger at its drawn level, read from a table built at load.
+// each finger at its drawn levels, read from tables built at load: its
+// metacarpal and proximal joints by its curl, and its distal two by its
+// tip, in the frame they hang from (`Hand.hangFrom`), composed as drawn.
 
 let wristOf = (side: Hold.Side) => placements(side, Hand.local(side, Hand.flat), [Hand.wrist])
 let leftWrist = wristOf(Hold.Left)
@@ -185,27 +187,36 @@ let thumbAt = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
   | Option.Some(tp) => let (_, ps) = tp in ps
   | Option.None => thumbOf(side, t)
 
-/// Each hand's finger placements at every level: per finger, per level, its
-/// four joints.
-let fingerTable = (side: Hold.Side): List<List<List<(string, Input.pose)>>> =>
-  let posed = List.range(Hand.drawLevels + 1.0) |> List.map((k) => Hand.local(side, Hand.curled(k / Hand.drawLevels))) in
-  fingerJoints |> List.map((js) => posed |> List.map((p) => placements(side, p, js)))
-let quad = (xs: List<List<List<(string, Input.pose)>>>) =>
-  let at = (i: float) => List.nth(i, xs) |> Option.defaultValue([]) in
-  (at(0.0), at(1.0), at(2.0), at(3.0))
-let leftFingers = quad(fingerTable(Hold.Left))
-let rightFingers = quad(fingerTable(Hold.Right))
+/// A finger's placements by its curl: its metacarpal and proximal joints',
+/// and the frame (in the model's space) its distal two hang from.
+type Proximal = { joints: List<(string, Input.pose)>, frame: Input.pose }
 
-/// A hand's placements: the thumb posed `t`, the fingers at `levels`.
-let drawn = (side: Hold.Side, t: Hand.Thumb, levels: (float, float, float, float)): List<(string, Input.pose)> =>
-  let (li, lm, lr, ll) = levels in
-  let table = if side == Hold.Left then leftFingers else rightFingers in
-  let (ti, tm, tr, tl) = table in
-  let pick = (finger: List<List<(string, Input.pose)>>, k: float) => List.nth(k, finger) |> Option.defaultValue([]) in
-  List.flatten([if side == Hold.Left then leftWrist else rightWrist, thumbAt(side, t), pick(ti, li), pick(tm, lm), pick(tr, lr), pick(tl, ll)])
+/// Per level, each finger's proximal placements at that curl, and its distal
+/// two's at that tip, in the frame they hang from (correction included).
+let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<(string, Input.pose)>>>) =>
+  let posed = List.range(Hand.drawLevels + 1.0) |> List.map((k) => Hand.local(side, Hand.curled(k / Hand.drawLevels))) in
+  (posed |> List.map((p) => Hand.fingerFirsts |> List.map((first) =>
+     { joints: placements(side, p, [first, first + 1.0]), frame: Hold.compose(toModel, Hand.hangFrom(p, first)) })),
+   posed |> List.map((p) => Hand.fingerFirsts |> List.map((first) =>
+     let at = Hand.hangFrom(p, first) in
+     [first + 2.0, first + 3.0] |> List.map((j) =>
+       let q = Hold.relative(at, Hand.jointOf(p, j)) in
+       (nameOf(j), Hold.at(q.position, Quat.mul(q.orientation, correctionOf(side, j))))))))
+let leftTables = fingerTables(Hold.Left)
+let rightTables = fingerTables(Hold.Right)
+
+/// A hand's placements: the thumb posed `t`, the fingers at `levels`
+/// (`Hand.levels`).
+let drawn = (side: Hold.Side, t: Hand.Thumb, levels: List<(float, float)>): List<(string, Input.pose)> =>
+  let (proximal, distal) = if side == Hold.Left then leftTables else rightTables in
+  let fingers = levels |> List.indexedMap((finger, lv) =>
+    let (lc, lt) = lv in
+    Hand.cell(proximal, lc, finger) |> Option.bind((p) => Hand.cell(distal, lt, finger) |> Option.map((js) =>
+      p.joints |> List.append(js |> List.map((nq) => let (n, q) = nq in (n, Hold.compose(p.frame, q)))))) |> Option.defaultValue([])) in
+  List.flatten([if side == Hold.Left then leftWrist else rightWrist, thumbAt(side, t), ..fingers])
 
 /// The skinned glove, in its grip's frame (as `Scene.atPose` places it).
-let scene = (side: Hold.Side, t: Hand.Thumb, levels: (float, float, float, float)): Scene.t =>
+let scene = (side: Hold.Side, t: Hand.Thumb, levels: List<(float, float)>): Scene.t =>
   (if side == Hold.Left then leftModel else rightModel) |> Scene.animate(Anim.place(drawn(side, t, levels), rest))
 let leftModel = Scene.model(Assets.handLeft)
 let rightModel = Scene.model(Assets.handRight)
@@ -214,7 +225,7 @@ let rest = Anim.rest()
 // --- checks ---
 
 let sides = [Hold.Left, Hold.Right]
-let posesOf = [Hand.flat, Hand.fist, Hand.power, Hand.pinch, Hand.onTrigger(0.5), Hand.empty(0.3, 0.8)]
+let posesOf = [Hand.flat, Hand.fist, Hand.power, Hand.pinch, Hand.onTrigger(0.5), Hand.empty(0.3, 0.8), Hand.uneven]
 let poseAt = (ps: List<(string, Input.pose)>, j: float): Input.pose =>
   ps |> List.find((np) => let (n, _) = np in n == nameOf(j)) |> Option.map((np) => let (_, p) = np in p) |> Option.defaultValue(Hold.origin)
 
@@ -267,11 +278,11 @@ expect (
       ln == rn && Quat.length(Quat.sub(l.position, Quat.v3(0.0 - r.position.x, r.position.y, r.position.z))) < 0.000001))
 )
 expect ((leftCorrections |> List.zip(rightCorrections)) |> List.all((lr) => let (l, r) = lr in degrees(Quat.mul(Quat.conj(l), Hand.mirrorTurn(r))) < 5.0))
-// The drawn parts add up to `pose` at the fingers' drawn levels.
+// The drawn tables add up to `pose` at the fingers' drawn levels, each
+// finger's curl and tip apart too.
 expect (
-  sides |> List.all((side) => [Hand.power, Hand.pinch, Hand.empty(0.3, 0.8)] |> List.all((f) =>
-    let k = (c: float) => Hand.level(c) / Hand.drawLevels in
-    let at = { f with index: k(f.index), middle: k(f.middle), ring: k(f.ring), little: k(f.little) } in
+  sides |> List.all((side) => [Hand.power, Hand.pinch, Hand.empty(0.3, 0.8), Hand.onTrigger(0.7), Hand.uneven] |> List.all((f) =>
+    let at = Hand.atLevels(f) in
     (drawn(side, f.thumb, Hand.levels(f)) |> List.zip(pose(side, at))) |> List.all((ab) =>
       let (x, y) = ab in
       let (an, a) = x in

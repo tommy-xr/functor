@@ -91,27 +91,38 @@ let handleRadius = 0.017
 
 // --- the finger pose ---
 
-/// How far the thumb curls (0 straight, 1 closed) and how far it is turned
-/// across the palm (0 at rest, 1 opposed).
-type Thumb = { curl: float, opposition: float }
+/// How far a finger bends, each 0 (straight) to 1 (a fist's): `curl` at its
+/// knuckle (MCP), `tip` at its two distal joints (PIP and DIP, together).
+type Bend = { curl: float, tip: float }
 
-/// How far each finger curls, 0 (straight) to 1 (a fist). What a grip
-/// fitter outputs and the drawing reads.
-type FingerPose = { thumb: Thumb, index: float, middle: float, ring: float, little: float }
+/// How far the thumb bends, 0 straight to 1 closed (`curl` at its CMC and
+/// MCP joints, `tip` at its IP), and how far it is turned across the palm
+/// (`opposition`: 0 at rest, 1 opposed).
+type Thumb = { curl: float, tip: float, opposition: float }
+
+/// How each finger bends. What a grip fitter outputs and the drawing reads.
+type FingerPose = { thumb: Thumb, index: Bend, middle: Bend, ring: Bend, little: Bend }
+
+/// A finger bent `c` at every joint: one curl, as a fist closes.
+let uniform = (c: float): Bend => { curl: c, tip: c }
+/// The thumb bent `c` at every joint, turned `opposition`.
+let uniformThumb = (c: float, opposition: float): Thumb => { curl: c, tip: c, opposition: opposition }
 
 /// Every finger (and the thumb, curled and opposed) at `c`.
-let curled = (c: float): FingerPose => { thumb: { curl: c, opposition: c }, index: c, middle: c, ring: c, little: c }
+let curled = (c: float): FingerPose => { thumb: uniformThumb(c, c), index: uniform(c), middle: uniform(c), ring: uniform(c), little: uniform(c) }
 
 /// Straight fingers, the thumb at rest: the skeleton's bind pose.
-let flat: FingerPose = { thumb: { curl: 0.0, opposition: 0.0 }, index: 0.0, middle: 0.0, ring: 0.0, little: 0.0 }
+let flat: FingerPose = curled(0.0)
 /// A fist, the thumb across it.
-let fist: FingerPose = { thumb: { curl: 1.0, opposition: 1.0 }, index: 1.0, middle: 1.0, ring: 1.0, little: 1.0 }
+let fist: FingerPose = curled(1.0)
 
 // An open hand's curl, relaxed; and the index on a trigger, at rest and
-// pulled.
+// pulled: hooked round it, its tip bent further than its knuckle.
 let relaxed = 0.15
 let triggerRest = 0.25
 let triggerPulled = 0.55
+let hookRest = 0.4
+let hookPulled = 0.75
 
 // From `a` to `b` as `t` goes 0 to 1 (clamped).
 let mix = (a: float, b: float, t: float): float => Math.lerp(b, Math.clamp01(t), a)
@@ -121,20 +132,22 @@ let mix = (a: float, b: float, t: float): float => Math.lerp(b, Math.clamp01(t),
 /// A power wrap round a handle (stick, bottle neck, foregrip, fore-end,
 /// magazine): each finger curled as far as it goes without entering a
 /// Touch handle, the thumb opposed round its back.
-let power: FingerPose = { thumb: { curl: 0.75, opposition: 1.0 }, index: 0.70, middle: 0.75, ring: 0.72, little: 0.60 }
-/// A pistol grip: the index on the trigger (`trigger` 0..1 pulls it), the
-/// rest wrapped.
-let onTrigger = (trigger: float): FingerPose => { power with index: mix(triggerRest, triggerPulled, trigger) }
+let power: FingerPose = { thumb: uniformThumb(0.75, 1.0), index: uniform(0.70), middle: uniform(0.75), ring: uniform(0.72), little: uniform(0.60) }
+/// A pistol grip: the index hooked on the trigger (`trigger` 0..1 pulls it),
+/// the rest wrapped.
+let onTrigger = (trigger: float): FingerPose =>
+  { power with index: { curl: mix(triggerRest, triggerPulled, trigger), tip: mix(hookRest, hookPulled, trigger) } }
 /// A pinch, thumb to index (a round, a shell), the rest tucked.
-let pinch: FingerPose = { thumb: { curl: 0.5, opposition: 0.1 }, index: 0.5, middle: 0.55, ring: 0.6, little: 0.6 }
+let pinch: FingerPose = { thumb: uniformThumb(0.5, 0.1), index: uniform(0.5), middle: uniform(0.55), ring: uniform(0.6), little: uniform(0.6) }
 /// An open palm: the ball, the brick.
-let palmOpen: FingerPose = { thumb: { curl: 0.2, opposition: 0.3 }, index: 0.18, middle: 0.2, ring: 0.22, little: 0.25 }
+let palmOpen: FingerPose = { thumb: uniformThumb(0.2, 0.3), index: uniform(0.18), middle: uniform(0.2), ring: uniform(0.22), little: uniform(0.25) }
 /// An empty hand on its controller: the grip (`squeeze`) curls the middle,
 /// ring and little fingers from relaxed to wrapped round the handle, the
 /// trigger the index; the thumb rests half curled, little opposed.
 let empty = (trigger: float, squeeze: float): FingerPose =>
-  { thumb: { curl: 0.5, opposition: 0.25 }, index: mix(relaxed, triggerPulled, trigger),
-    middle: mix(relaxed, power.middle, squeeze), ring: mix(relaxed, power.ring, squeeze), little: mix(relaxed, power.little, squeeze) }
+  let wrap = (to: Bend) => uniform(mix(relaxed, to.curl, squeeze)) in
+  { thumb: uniformThumb(0.5, 0.25), index: uniform(mix(relaxed, triggerPulled, trigger)),
+    middle: wrap(power.middle), ring: wrap(power.ring), little: wrap(power.little) }
 
 // --- forward kinematics ---
 
@@ -161,9 +174,12 @@ let chain = (base: Input.pose, bones: List<(float, float)>): List<(Input.pose, I
       (base.position, base.orientation, [])) in
   List.reverse([(Hold.at(tip, last), Quat.identity), ..joints])
 
-let fingerChain = (f: Finger, curl: float) =>
+/// A finger's chain (`chain`), its MCP, PIP and DIP joints each bent its own
+/// curl (0 straight, 1 a fist's flexion).
+let fingerJoints = (f: Finger, mcp: float, pip: float, dip: float) =>
   chain(Hold.at(f.base, Quat.yaw(f.splay)),
-    [(f.metacarpal, 0.0), (f.proximal, curl * mcpFlex), (f.intermediate, curl * pipFlex), (f.distal, curl * dipFlex)])
+    [(f.metacarpal, 0.0), (f.proximal, mcp * mcpFlex), (f.intermediate, pip * pipFlex), (f.distal, dip * dipFlex)])
+let fingerChain = (f: Finger, b: Bend) => fingerJoints(f, b.curl, b.tip, b.tip)
 
 let thumbTurn = (opposition: float): Input.quaternion =>
   let t = Math.clamp01(opposition) in
@@ -171,9 +187,12 @@ let thumbTurn = (opposition: float): Input.quaternion =>
   Quat.mul(Quat.yaw(at(thumbRest.yaw, thumbOpposed.yaw)),
     Quat.mul(flex(at(thumbRest.pitch, thumbOpposed.pitch)), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), at(thumbRest.roll, thumbOpposed.roll))))
 
-let thumbChain = (t: Thumb) =>
-  chain(Hold.at(thumbBase, thumbTurn(t.opposition)),
-    [(thumbMetacarpal, t.curl * thumbCmcFlex), (thumbProximal, t.curl * thumbMcpFlex), (thumbDistal, t.curl * thumbIpFlex)])
+/// The thumb's chain turned `opposition`, its CMC, MCP and IP joints each
+/// bent its own curl.
+let thumbJoints = (opposition: float, cmc: float, mcp: float, ip: float) =>
+  chain(Hold.at(thumbBase, thumbTurn(opposition)),
+    [(thumbMetacarpal, cmc * thumbCmcFlex), (thumbProximal, mcp * thumbMcpFlex), (thumbDistal, ip * thumbIpFlex)])
+let thumbChain = (t: Thumb) => thumbJoints(t.opposition, t.curl, t.curl, t.tip)
 
 // The palm joint: half way along the middle metacarpal.
 let palmInWrist = Hold.at(Quat.add(middle.base, Quat.v3(0.0, 0.0, 0.0 - middle.metacarpal / 2.0)), Quat.identity)
@@ -208,6 +227,12 @@ let pose = (side: Hold.Side, root: Input.pose, f: FingerPose): Posed =>
   { l with poses: l.poses |> List.map((p) => Hold.compose(root, p)) }
 
 let jointOf = (posed: Posed, j: float): Input.pose => List.nth(j, posed.poses) |> Option.defaultValue(Hold.origin)
+
+/// The frame a finger's distal two bones hang from: its proximal bone's,
+/// at that bone's end (`first`: the finger's metacarpal joint). Seen from
+/// it, they move with the finger's tip alone.
+let hangFrom = (posed: Posed, first: float): Input.pose =>
+  Hold.at((jointOf(posed, first + 2.0)).position, (jointOf(posed, first + 1.0)).orientation)
 
 // --- the glove ---
 
@@ -245,31 +270,38 @@ let ends = (posed: Posed, c: Capsule): (Input.point3, Input.point3) =>
 // --- drawing the glove ---
 // The glove is drawn in two parts, each one instanced draw of its capsules'
 // caps and one of their cylinders: the palm and thumb, posed as given; and
-// the four fingers, each curled to the nearest 1/64 (`drawLevels`) and read
-// from a table built at load, so a finger moving every step (a trigger
-// pulled) costs no forward kinematics. Each is a subtree for `Scene.atPose`
-// at the grip (whose local +Z is the grip's -Z, and +X the grip's -X).
+// the four fingers, each bent to the nearest 1/64 (`drawLevels`) and read
+// from tables built at load, so a finger moving every step (a trigger
+// pulled) costs no forward kinematics. A finger's proximal bone hangs on its
+// curl alone, and its distal two, seen from the proximal's end, on its tip
+// alone: one table of each by level, composed as drawn. Each part is a
+// subtree for `Scene.atPose` at the grip (whose local +Z is the grip's -Z,
+// and +X the grip's -X).
 
 /// A part's draws: its capsules' caps and cylinders, as instances.
 type Part = { caps: List<Instance.t>, cylinders: List<Instance.t> }
+
+/// A capsule's axis (its two ends), radius and length, in some frame.
+type Seg = { a: Input.point3, b: Input.point3, radius: float, length: float }
+
+// A point in the grip's frame as drawn.
+let drawn = (p: Input.point3) => Quat.v3(0.0 - p.x, p.y, 0.0 - p.z)
+let segOf = (posed: Posed, cap: Capsule): Seg => let (a, b) = ends(posed, cap) in { a: a, b: b, radius: cap.radius, length: cap.length }
+let capAt = (p: Input.point3, r: float) => Instance.at(Quat.toVec3(p)) |> Instance.scale(r)
+// A unit cylinder stands along +Y: turned about X, then Z, onto the axis.
+let cylinderOf = (s: Seg) =>
+  let u = Quat.scale(1.0 / s.length, Quat.sub(s.b, s.a)) in
+  Instance.at(Quat.toVec3(Quat.lerp(s.a, s.b, 0.5))) |> Instance.scaleXYZ(2.0 * s.radius, s.length, 2.0 * s.radius)
+    |> Instance.rotateX(Angle.radians(Math.asin(Math.clamp(0.0 - 1.0, 1.0, u.z))))
+    |> Instance.rotateZ(Angle.radians(Math.atan2(0.0 - u.x, u.y)))
 
 /// The instances drawing `caps` posed `posed`. A chain's radii shrink toward
 /// its tip, so a capsule's start cap lies inside the one before's end cap:
 /// only a chain's first start cap is drawn (`starts`, then every end).
 let partOf = (posed: Posed, caps: List<Capsule>): Part =>
-  let drawn = (p: Input.point3) => Quat.v3(0.0 - p.x, p.y, 0.0 - p.z) in
-  let segs = caps |> List.map((cap) => let (a, b) = ends(posed, cap) in (drawn(a), drawn(b), cap.radius, cap.length, starts(cap))) in
-  let at = (p: Input.point3) => Instance.at(Quat.toVec3(p)) in
-  let firsts = segs |> List.filter((s) => let (_, _, _, _, first) = s in first) |> List.map((s) => let (a, _, r, _, _) = s in at(a) |> Instance.scale(r)) in
-  // A unit cylinder stands along +Y: turned about X, then Z, onto the axis.
-  let cylinder = (s) =>
-    let (a, b, r, length, _) = s in
-    let u = Quat.scale(1.0 / length, Quat.sub(b, a)) in
-    at(Quat.lerp(a, b, 0.5)) |> Instance.scaleXYZ(2.0 * r, length, 2.0 * r)
-      |> Instance.rotateX(Angle.radians(Math.asin(Math.clamp(0.0 - 1.0, 1.0, u.z))))
-      |> Instance.rotateZ(Angle.radians(Math.atan2(0.0 - u.x, u.y))) in
-  { caps: firsts |> List.append(segs |> List.map((s) => let (_, b, r, _, _) = s in at(b) |> Instance.scale(r))),
-    cylinders: segs |> List.map(cylinder) }
+  let segs = caps |> List.map((cap) => let s = segOf(posed, cap) in { s with a: drawn(s.a), b: drawn(s.b) }) in
+  let firsts = caps |> List.zip(segs) |> List.filter((cs) => let (cap, _) = cs in starts(cap)) |> List.map((cs) => let (_, s) = cs in capAt(s.a, s.radius)) in
+  { caps: firsts |> List.append(segs |> List.map((s) => capAt(s.b, s.radius))), cylinders: segs |> List.map(cylinderOf) }
 
 /// A part painted `c`.
 let partScene = (c: Color.t, part: Part): Scene.t =>
@@ -279,9 +311,13 @@ let partScene = (c: Color.t, part: Part): Scene.t =>
   ])
 
 // The palm and thumb's capsules (the metacarpals' and the thumb's); each
-// finger's phalanges (index, middle, ring, little).
+// finger's first joint (index, middle, ring, little), and its distal two
+// phalanges' capsules.
 let inPalm = (c: Capsule): bool => c.joint < 6.0 || starts(c)
-let fingerCaps = [6.0, 11.0, 16.0, 21.0] |> List.map((first) => capsules |> List.filter((c) => c.joint > first && c.joint < first + 4.0))
+let fingerFirsts = [6.0, 11.0, 16.0, 21.0]
+let proximalCap = (first: float): Capsule =>
+  capsules |> List.find((c) => c.joint == first + 1.0) |> Option.defaultValue({ joint: first + 1.0, radius: 0.0, length: 0.0 })
+let distalCaps = fingerFirsts |> List.map((first) => capsules |> List.filter((c) => c.joint > first + 1.0 && c.joint < first + 4.0))
 
 /// The palm and thumb's part, painted `c`, the thumb posed `t`.
 let palmAndThumb = (c: Color.t, side: Hold.Side, t: Thumb): Scene.t =>
@@ -291,34 +327,105 @@ let palmAndThumb = (c: Color.t, side: Hold.Side, t: Thumb): Scene.t =>
 let drawLevels = 64.0
 let level = (curl: float): float => Math.round(Math.clamp01(curl) * drawLevels)
 
-/// The fingers' curl levels as drawn (index, middle, ring, little), each
-/// curl to the nearest 1/64.
-let levels = (f: FingerPose): (float, float, float, float) => (level(f.index), level(f.middle), level(f.ring), level(f.little))
+/// The fingers' levels as drawn (index, middle, ring, little), each its curl
+/// and tip to the nearest 1/64.
+let levels = (f: FingerPose): List<(float, float)> =>
+  [f.index, f.middle, f.ring, f.little] |> List.map((b) => (level(b.curl), level(b.tip)))
 
-/// Each hand's finger parts at every level: per level, the four fingers' parts.
-let fingerTable = (side: Hold.Side): List<List<Part>> =>
-  List.range(drawLevels + 1.0) |> List.map((k) =>
-    let posed = local(side, curled(k / drawLevels)) in
-    fingerCaps |> List.map((caps) => partOf(posed, caps)))
-let leftFingers = fingerTable(Hold.Left)
-let rightFingers = fingerTable(Hold.Right)
+/// A finger's proximal bone drawn at a curl: its capsule as drawn, its part,
+/// and the frame its distal two hang from (`hangFrom`).
+type Proximal = { seg: Seg, part: Part, frame: Input.pose }
 
-expect levels(power) == (45.0, 48.0, 46.0, 38.0) && levels(fist) == (64.0, 64.0, 64.0, 64.0) && levels({ flat with index: 0.0 - 1.0 }) == (0.0, 0.0, 0.0, 0.0)
+/// Per level, each finger's proximal bone at that curl (`proximal`), and its
+/// distal two's capsules at that tip in the frame they hang from (`distal`).
+let fingerTables = (side: Hold.Side): (List<List<Proximal>>, List<List<List<Seg>>>) =>
+  let posed = List.range(drawLevels + 1.0) |> List.map((k) => local(side, curled(k / drawLevels))) in
+  (posed |> List.map((p) => fingerFirsts |> List.map((first) =>
+     let cap = proximalCap(first) in
+     let s = segOf(p, cap) in
+     { seg: { s with a: drawn(s.a), b: drawn(s.b) }, part: partOf(p, [cap]), frame: hangFrom(p, first) })),
+   posed |> List.map((p) => fingerFirsts |> List.zip(distalCaps) |> List.map((fc) =>
+     let (first, caps) = fc in
+     let at = hangFrom(p, first) in
+     let into = (q: Input.point3) => Quat.rotate(Quat.conj(at.orientation), Quat.sub(q, at.position)) in
+     caps |> List.map((cap) => let s = segOf(p, cap) in { s with a: into(s.a), b: into(s.b) }))))
+let leftTables = fingerTables(Hold.Left)
+let rightTables = fingerTables(Hold.Right)
 
-/// The fingers' part, painted `c`, each finger at its level (`levels`).
-let fingersAt = (c: Color.t, side: Hold.Side, at: (float, float, float, float)): Scene.t =>
-  let (li, lm, lr, ll) = at in
-  let table = if side == Hold.Left then leftFingers else rightFingers in
-  let pick = (finger: float, k: float): Part =>
-    List.nth(k, table) |> Option.bind((parts) => List.nth(finger, parts)) |> Option.defaultValue({ caps: [], cylinders: [] }) in
-  let parts = [pick(0.0, li), pick(1.0, lm), pick(2.0, lr), pick(3.0, ll)] in
+expect levels(power) == [(45.0, 45.0), (48.0, 48.0), (46.0, 46.0), (38.0, 38.0)] && levels(fist) == [(64.0, 64.0), (64.0, 64.0), (64.0, 64.0), (64.0, 64.0)]
+  && levels({ flat with index: { curl: 0.0 - 1.0, tip: 2.0 } }) == [(0.0, 64.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]
+
+/// A table's entry at level `k` for finger `finger` (0 the index).
+let cell = (table: List<List<'a>>, k: float, finger: float): Option.t<'a> => List.nth(k, table) |> Option.bind((fingers) => List.nth(finger, fingers))
+
+/// Each finger at its levels (`levels`): its proximal bone at its curl's,
+/// and its distal two at its tip's, as drawn (hung from the proximal).
+let fingersDrawn = (side: Hold.Side, at: List<(float, float)>): List<(Proximal, List<Seg>)> =>
+  let (proximal, distal) = if side == Hold.Left then leftTables else rightTables in
+  at |> List.indexedMap((finger, lv) =>
+    let (lc, lt) = lv in
+    cell(proximal, lc, finger) |> Option.bind((p) => cell(distal, lt, finger) |> Option.map((segs) =>
+      let f = p.frame in
+      let place = (q: Input.point3) => drawn(Quat.add(f.position, Quat.rotate(f.orientation, q))) in
+      [(p, segs |> List.map((s) => { s with a: place(s.a), b: place(s.b) }))])) |> Option.defaultValue([])) |> List.flatten
+
+/// The fingers' part, painted `c`, at their levels (`levels`).
+let fingersAt = (c: Color.t, side: Hold.Side, at: List<(float, float)>): Scene.t =>
+  let parts = fingersDrawn(side, at) |> List.map((pd) =>
+    let (p, segs) = pd in
+    { caps: p.part.caps |> List.append(segs |> List.map((s) => capAt(s.b, s.radius))),
+      cylinders: p.part.cylinders |> List.append(segs |> List.map(cylinderOf)) }) in
   partScene(c, { caps: parts |> List.concatMap((p) => p.caps), cylinders: parts |> List.concatMap((p) => p.cylinders) })
 
 // --- checks ---
 
 let dist = (a: Input.point3, b: Input.point3): float => Quat.length(Quat.sub(a, b))
 let at = (posed: Posed, j: float): Input.point3 => (jointOf(posed, j)).position
-let posesOf = [flat, fist, curled(0.4), power, pinch, palmOpen, onTrigger(0.5), empty(0.3, 0.8)]
+/// A pose bending every digit's curl and tip apart, for checks.
+let uneven: FingerPose = { thumb: { curl: 0.3, tip: 0.9, opposition: 0.6 }, index: { curl: 0.2, tip: 0.9 }, middle: { curl: 0.8, tip: 0.1 }, ring: { curl: 0.5, tip: 1.0 }, little: { curl: 0.0, tip: 0.6 } }
+let posesOf = [flat, fist, curled(0.4), power, pinch, palmOpen, onTrigger(0.5), empty(0.3, 0.8), uneven]
+
+/// `f` with each finger's curl and tip at its drawn level (`levels`).
+let atLevels = (f: FingerPose): FingerPose =>
+  let k = (b: Bend): Bend => { curl: level(b.curl) / drawLevels, tip: level(b.tip) / drawLevels } in
+  { f with index: k(f.index), middle: k(f.middle), ring: k(f.ring), little: k(f.little) }
+
+// One curl a digit (`uniform`, `uniformThumb`) is the hand as it was posed
+// by one curl: each finger's MCP, PIP and DIP and the thumb's CMC, MCP and
+// IP bent that times a fist's, exactly.
+expect (
+  [Hold.Left, Hold.Right] |> List.all((side) => [0.0, 0.3, 0.75, 1.0] |> List.all((c) =>
+    let p = local(side, curled(c)) in
+    let inRoot = (q: Input.pose) => let r = Hold.compose(wristOnGrip, q) in if side == Hold.Left then mirror(r) else r in
+    let joints = (bones: List<(Input.pose, Input.quaternion)>) => bones |> List.map((jr) => let (q, _) = jr in inRoot(q)) in
+    let thumb = chain(Hold.at(thumbBase, thumbTurn(c)), [(thumbMetacarpal, c * thumbCmcFlex), (thumbProximal, c * thumbMcpFlex), (thumbDistal, c * thumbIpFlex)]) in
+    let finger = (f: Finger) => chain(Hold.at(f.base, Quat.yaw(f.splay)), [(f.metacarpal, 0.0), (f.proximal, c * mcpFlex), (f.intermediate, c * pipFlex), (f.distal, c * dipFlex)]) in
+    List.drop(2.0, p.poses) == List.flatten([joints(thumb), joints(finger(index)), joints(finger(middle)), joints(finger(ring)), joints(finger(little))])))
+)
+// A tip bends only its own joints past the knuckle: an index's tip moves
+// its intermediate bone's turn (not its place) and the joints past it; the
+// thumb's, its distal's and its tip. Nothing else moves.
+expect (
+  let moved = (a: FingerPose, b: FingerPose) =>
+    let (pa, pb) = (local(Hold.Right, a), local(Hold.Right, b)) in
+    List.range(26.0) |> List.filter((j) => not (Hold.near(jointOf(pa, j), jointOf(pb, j)))) in
+  let turnedOnly = (a: FingerPose, b: FingerPose, j: float) => Hold.near3(at(local(Hold.Right, a), j), at(local(Hold.Right, b), j)) in
+  moved(power, { power with index: { curl: 0.70, tip: 0.2 } }) == [8.0, 9.0, 10.0]
+    && turnedOnly(power, { power with index: { curl: 0.70, tip: 0.2 } }, 8.0)
+    && moved(power, { power with thumb: { power.thumb with tip: 0.2 } }) == [4.0, 5.0]
+    && turnedOnly(power, { power with thumb: { power.thumb with tip: 0.2 } }, 4.0)
+    && moved(power, { power with index: { curl: 0.2, tip: 0.70 } }) == [7.0, 8.0, 9.0, 10.0]
+)
+// The drawn fingers (the proximal table by curl, the distal by tip, hung
+// from it) are each capsule FK puts there at those levels, either hand.
+expect (
+  [Hold.Left, Hold.Right] |> List.all((side) => [power, uneven, onTrigger(0.3), fist, flat] |> List.all((f) =>
+    let p = local(side, atLevels(f)) in
+    let want = fingerFirsts |> List.concatMap((first) => [proximalCap(first), ..(capsules |> List.filter((c) => c.joint > first + 1.0 && c.joint < first + 4.0))])
+      |> List.map((cap) => let s = segOf(p, cap) in (drawn(s.a), drawn(s.b))) in
+    let got = fingersDrawn(side, levels(f)) |> List.concatMap((pd) => let (pr, segs) = pd in [pr.seg, ..segs]) |> List.map((s) => (s.a, s.b)) in
+    List.length(got) == 12.0 && (List.zip(want, got) |> List.all((gw) => let (g, w) = gw in let (ga, gb) = g in let (wa, wb) = w in Hold.near3(ga, wa) && Hold.near3(gb, wb)))))
+)
 
 expect List.length(names) == 26.0 && List.length(parents) == 26.0
 expect (let p = local(Hold.Right, power) in List.length(p.poses) == 26.0 && List.length(p.rotations) == 26.0)
@@ -422,5 +529,5 @@ expect (
   let squeezed = empty(0.0, 1.0) in
   let pulled = empty(1.0, 0.0) in
   squeezed.middle == power.middle && squeezed.ring == power.ring && squeezed.little == power.little && squeezed.index == open0.index
-    && pulled.index > open0.index && pulled.middle == open0.middle && open0.thumb == { curl: 0.5, opposition: 0.25 }
+    && pulled.index.curl > open0.index.curl && pulled.middle == open0.middle && open0.thumb == { curl: 0.5, tip: 0.5, opposition: 0.25 }
 )

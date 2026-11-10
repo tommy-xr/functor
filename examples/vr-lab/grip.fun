@@ -115,10 +115,13 @@ let seenFrom = (hand: Input.pose, solids: List<Solid>): List<Solid> =>
   solids |> List.map((s) => { s with at: Hold.relative(hand, s.at) })
 
 // --- the hand's digits ---
-// A digit is the thumb (0) or a finger (1-4: index to little). Each closes
-// by three joints, each moving one capsule and every capsule past it: a
+// A digit is the thumb (0) or a finger (1-4: index to little). Each has
+// three joints, each moving one capsule and every capsule past it: a
 // finger's MCP, PIP and DIP (its proximal, intermediate and distal bones'),
-// the thumb's CMC, MCP and IP (its metacarpal, proximal and distal's).
+// the thumb's CMC, MCP and IP (its metacarpal, proximal and distal's). A
+// digit closes by controls, each driving some of its joints (a rig): its
+// pose's (`Hand.Bend`: a finger's curl the MCP, its tip the PIP and DIP; the
+// thumb's curl the CMC and MCP, its tip the IP), or one per joint.
 
 let fingers = [Hand.index, Hand.middle, Hand.ring, Hand.little]
 
@@ -130,19 +133,23 @@ let moving = (d: float): List<Hand.Capsule> => [capOf(5.0 * d + 2.0), capOf(5.0 
 /// The palm: the four metacarpals' capsules (they don't move).
 let palmCaps = [6.0, 11.0, 16.0, 21.0] |> List.map(capOf)
 
+/// A rig: which control drives each of a digit's three joints, proximal
+/// first. A finger's pose's, the thumb's, and one control per joint.
+let fingerRig = [0.0, 1.0, 1.0]
+let thumbRig = [0.0, 0.0, 1.0]
+let jointRig = [0.0, 1.0, 2.0]
+let rigOf = (d: float): List<float> => if d == 0.0 then thumbRig else fingerRig
+
+/// The joints' curls a rig's controls (`c`) give.
+let jointsOf = (rig: List<float>, c: List<float>): List<float> => rig |> List.map((i) => List.nth(i, c) |> Option.defaultValue(0.0))
+
 /// A digit's moving joints in the wrist's frame, each joint's curl
 /// (`c`: 0 straight to 1 a fist's flexion) its own; the thumb turned
 /// `opposition`. Then its tip.
 let chainOf = (d: float, c: List<float>, opposition: float): List<(Input.pose, Input.quaternion)> =>
   let k = (i: float) => List.nth(i, c) |> Option.defaultValue(0.0) in
-  if d == 0.0 then
-    Hand.chain(Hold.at(Hand.thumbBase, Hand.thumbTurn(opposition)),
-      [(Hand.thumbMetacarpal, k(0.0) * Hand.thumbCmcFlex), (Hand.thumbProximal, k(1.0) * Hand.thumbMcpFlex), (Hand.thumbDistal, k(2.0) * Hand.thumbIpFlex)])
-  else
-    let f = List.nth(d - 1.0, fingers) |> Option.defaultValue(Hand.index) in
-    Hand.chain(Hold.at(f.base, Quat.yaw(f.splay)),
-      [(f.metacarpal, 0.0), (f.proximal, k(0.0) * Hand.mcpFlex), (f.intermediate, k(1.0) * Hand.pipFlex), (f.distal, k(2.0) * Hand.dipFlex)])
-      |> List.drop(1.0)
+  if d == 0.0 then Hand.thumbJoints(opposition, k(0.0), k(1.0), k(2.0))
+  else Hand.fingerJoints(List.nth(d - 1.0, fingers) |> Option.defaultValue(Hand.index), k(0.0), k(1.0), k(2.0)) |> List.drop(1.0)
 
 // A pose in the wrist's frame, in the root's (`Hand.local`'s).
 let inRoot = (side: Hold.Side, p: Input.pose): Input.pose =>
@@ -157,13 +164,15 @@ let segmentsOf = (side: Hold.Side, d: float, c: List<float>, opposition: float):
     let r = inRoot(side, p) in
     (r.position, Quat.add(r.position, Quat.rotate(r.orientation, Quat.v3(0.0, 0.0, 0.0 - cap.length))), cap.radius))
 
-// Uniformly curled, a digit's capsules are `Hand.local`'s, either hand.
+// Driven by its pose's rig, a digit's capsules are `Hand.local`'s, either
+// hand.
 expect (
   [Hold.Left, Hold.Right] |> List.all((side) =>
-    let p = Hand.local(side, { Hand.power with index: 0.4, little: 0.9 }) in
-    [(0.0, Hand.power.thumb.curl), (1.0, 0.4), (2.0, Hand.power.middle), (4.0, 0.9)] |> List.all((dc) =>
+    let f = { Hand.power with thumb: { Hand.power.thumb with tip: 0.3 }, index: { curl: 0.4, tip: 0.8 }, little: Hand.uniform(0.9) } in
+    let p = Hand.local(side, f) in
+    [(0.0, [f.thumb.curl, f.thumb.tip]), (1.0, [0.4, 0.8]), (2.0, [f.middle.curl, f.middle.tip]), (4.0, [0.9, 0.9])] |> List.all((dc) =>
       let (d, c) = dc in
-      List.zip(moving(d), segmentsOf(side, d, [c, c, c], Hand.power.thumb.opposition)) |> List.all((sc) =>
+      List.zip(moving(d), segmentsOf(side, d, jointsOf(rigOf(d), c), f.thumb.opposition)) |> List.all((sc) =>
         let (s, cap) = sc in
         let (a, b, _) = s in
         let (ea, eb) = Hand.ends(p, cap) in
@@ -186,25 +195,30 @@ let minStep = 1.0 / 256.0
 let reach = contactGap + sweep * marchStep
 let bisections = 8.0
 
-/// A digit closed: its joints' curls (proximal first), and whether it started
-/// in what it holds (`buried`: left straight).
+/// A digit closed: its rig's controls' curls, and whether it started in what
+/// it holds (`buried`: left straight).
 type Closed = { curls: List<float>, buried: bool }
 
-/// Close a straight digit on `solids` (`opposition`: the thumb's turn).
-/// Every joint closes together until a capsule comes within `contactGap`;
-/// that joint and every one before it stops, the joints past it close on,
-/// until each has touched or reached a full curl. A phalanx already inside
-/// buries the digit. (The thumb's metacarpal is the thenar, part of the
-/// palm: inside, it only stops the thumb's first joint.)
-let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float): Closed =>
-  // The gaps (up to `limit`) of the capsules joint `j` on moves; 1 m before it.
-  let gapsFrom = (limit: float, j: float, c: List<float>): List<float> =>
-    segmentsOf(side, d, c, opposition) |> List.indexedMap((i, s) => let (a, b, r) = s in if i < j then 1.0 else gapUnder(limit, solids, a, b, r)) in
-  // The farthest capsule within `contactGap`, if any.
+/// Close a straight digit on `solids` by `rig`'s controls (`opposition`:
+/// the thumb's turn). Every control closes together until a capsule comes
+/// within `contactGap`; its control and every one before it stops, the
+/// controls past it close on, until each has touched or reached a full curl.
+/// A phalanx already inside buries the digit. (The thumb's metacarpal is the
+/// thenar, part of the palm: inside, it only stops the thumb's first
+/// control.)
+let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, rig: List<float>): Closed =>
+  let ctl = (i: float) => List.nth(i, rig) |> Option.defaultValue(0.0) in
+  let controls = ctl(2.0) + 1.0 in
+  // The gaps (up to `limit`) of the capsules `keep` names; 1 m the rest.
+  let gapsOf = (limit: float, keep: (float) => bool, c: List<float>): List<float> =>
+    segmentsOf(side, d, jointsOf(rig, c), opposition) |> List.indexedMap((i, s) => let (a, b, r) = s in if keep(i) then gapUnder(limit, solids, a, b, r) else 1.0) in
+  // The capsules control `j` and past it move.
+  let gapsFrom = (limit: float, j: float, c: List<float>): List<float> => gapsOf(limit, (i) => ctl(i) >= j, c) in
+  // The control of the farthest capsule within `contactGap`, if any.
   let within = (gaps: List<float>): Option.t<float> =>
-    gaps |> List.indexedMap((i, g) => if g <= contactGap then i else 0.0 - 1.0) |> List.maximum |> Option.filter((i) => i >= 0.0) in
+    gaps |> List.indexedMap((i, g) => if g <= contactGap then i else 0.0 - 1.0) |> List.maximum |> Option.filter((i) => i >= 0.0) |> Option.map(ctl) in
   let touching = (j: float, c: List<float>): Option.t<float> => within(gapsFrom(touchGap, j, c)) in
-  // Joint `j` and past it at `s`.
+  // Control `j` and past it at `s`.
   let from = (j: float, s: float, c: List<float>): List<float> => c |> List.indexedMap((i, x) => if i >= j then s else x) in
   let nearest = (gaps: List<float>) => List.minimum(gaps) |> Option.defaultValue(reach) in
   // The step that touched, if any: `(before, after)`.
@@ -224,17 +238,17 @@ let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float):
     | Option.Some(i) => (i + 1.0, c)
     | Option.None =>
       (match march(j, c) with
-       | Option.None => (3.0, from(j, 1.0, c))
+       | Option.None => (controls, from(j, 1.0, c))
        | Option.Some(bracket) =>
          let (lo, hi) = List.range(bisections) |> List.fold((b, _) =>
            let (lo, hi) = b in
            let mid = (lo + hi) / 2.0 in
            if Option.isSome(touching(j, from(j, mid, c))) then (lo, mid) else (mid, hi), bracket) in
-         (1.0 + (touching(j, from(j, hi, c)) |> Option.defaultValue(2.0)), from(j, lo, c))) in
-  let c0 = [0.0, 0.0, 0.0] in
-  if gapsFrom(touchGap, if d == 0.0 then 1.0 else 0.0, c0) |> List.any((g) => g < 0.0) then { curls: c0, buried: true }
+         (1.0 + (touching(j, from(j, hi, c)) |> Option.defaultValue(controls - 1.0)), from(j, lo, c))) in
+  let c0 = List.range(controls) |> List.map((_) => 0.0) in
+  if gapsOf(touchGap, (i) => d != 0.0 || i > 0.0, c0) |> List.any((g) => g < 0.0) then { curls: c0, buried: true }
   else
-    let (_, curls) = Loop.until((st) => let (j, _) = st in j > 2.0, phase, (0.0, c0)) in
+    let (_, curls) = Loop.until((st) => let (j, _) = st in j >= controls, phase, (0.0, c0)) in
     { curls: curls, buried: false }
 
 // The thumb's turns tried: at rest to opposed.
@@ -246,13 +260,13 @@ let oppositions = [0.0, 0.25, 0.5, 0.75, 1.0]
 /// turn: at rest, buried.
 let closeThumb = (solids: List<Solid>, side: Hold.Side): (Closed, float) =>
   let tried = oppositions |> List.map((o) =>
-    let cl = close(solids, side, 0.0, o) in
-    let gaps = segmentsOf(side, 0.0, cl.curls, o) |> List.map((s) => let (a, b, r) = s in gapOf(solids, a, b, r)) in
+    let cl = close(solids, side, 0.0, o, thumbRig) in
+    let gaps = segmentsOf(side, 0.0, jointsOf(thumbRig, cl.curls), o) |> List.map((s) => let (a, b, r) = s in gapOf(solids, a, b, r)) in
     let at = (i: float) => List.nth(i, gaps) |> Option.defaultValue(1.0) in
     let touches = gaps |> List.filter((g) => g <= touchGap) |> List.length in
     (cl, o, Math.abs(at(2.0)) + 10.0 * Math.max(0.0, 0.0 - at(0.0)) - 0.0001 * touches)) |> List.filter((t) => let (cl, _, _) = t in not cl.buried) in
   tried |> List.sortBy((t) => let (_, _, score) = t in score) |> List.head
-    |> Option.map((t) => let (cl, o, _) = t in (cl, o)) |> Option.defaultValue(({ curls: [0.0, 0.0, 0.0], buried: true }, 0.0))
+    |> Option.map((t) => let (cl, o, _) = t in (cl, o)) |> Option.defaultValue(({ curls: [0.0, 0.0], buried: true }, 0.0))
 
 // --- the palm ---
 
@@ -287,20 +301,20 @@ let palmPush = (solids: List<Solid>, side: Hold.Side): Option.t<float> =>
 
 // --- a fit ---
 
-/// A fit: the finger pose (a finger's curl is its first joint's: the most a
-/// uniform curl closes before it touches), each digit's per-joint curls
-/// (thumb first), which digits are buried, whether the palm starts inside
-/// the item, and the palm push (`palmPush`).
+/// A fit: the finger pose (each digit closed by its curl and tip), each
+/// digit's joints' curls (thumb first), which digits are buried, whether the
+/// palm starts inside the item, and the palm push (`palmPush`).
 type Fitted = { pose: Hand.FingerPose, curls: List<List<float>>, buried: List<bool>, palmBuried: bool, push: Option.t<float> }
 
 /// Fit a hand to `solids` (in its root frame): each finger closed from
 /// straight, the thumb at its best turn.
 let fit = (side: Hold.Side, solids: List<Solid>): Fitted =>
   let (thumb, opposition) = closeThumb(solids, side) in
-  let closed = [thumb, ..([1.0, 2.0, 3.0, 4.0] |> List.map((d) => close(solids, side, d, 0.0)))] in
-  let first = (i: float) => List.nth(i, closed) |> Option.bind((c) => List.head(c.curls)) |> Option.defaultValue(0.0) in
-  { pose: { thumb: { curl: first(0.0), opposition: opposition }, index: first(1.0), middle: first(2.0), ring: first(3.0), little: first(4.0) },
-    curls: closed |> List.map((c) => c.curls),
+  let closed = [thumb, ..([1.0, 2.0, 3.0, 4.0] |> List.map((d) => close(solids, side, d, 0.0, fingerRig)))] in
+  let k = (d: float, i: float) => List.nth(d, closed) |> Option.bind((c) => List.nth(i, c.curls)) |> Option.defaultValue(0.0) in
+  let bend = (d: float): Hand.Bend => { curl: k(d, 0.0), tip: k(d, 1.0) } in
+  { pose: { thumb: { curl: k(0.0, 0.0), tip: k(0.0, 1.0), opposition: opposition }, index: bend(1.0), middle: bend(2.0), ring: bend(3.0), little: bend(4.0) },
+    curls: closed |> List.indexedMap((d, c) => jointsOf(rigOf(d), c.curls)),
     buried: closed |> List.map((c) => c.buried),
     palmBuried: palmGap(solids, side) < 0.0,
     push: palmPush(solids, side) }
@@ -312,15 +326,16 @@ let fit = (side: Hold.Side, solids: List<Solid>): Fitted =>
 /// strain (`strain`).
 type Metrics = { digits: List<float>, palm: float, contacts: float, strain: float }
 
-/// How strained a pose is, 0 relaxed: the mean of how far each curl is out
-/// of 0.15-0.85, plus the mean of how far the ring finger's curl is more than
-/// 0.3 from the middle's and the little's (they share tendons; the index and
-/// thumb move freely).
+/// How strained a pose is, 0 relaxed: the mean of how far each curl and tip
+/// is out of 0.15-0.85, plus the mean of how far the ring finger's curl and
+/// tip are each more than 0.3 from the middle's and the little's (they share
+/// tendons; the index and thumb move freely).
 let strain = (f: Hand.FingerPose): float =>
   let out = (c: float) => Math.max(0.0, 0.15 - c) + Math.max(0.0, c - 0.85) in
-  let apart = (a: float, b: float) => Math.max(0.0, Math.abs(a - b) - 0.3) in
-  ([f.thumb.curl, f.index, f.middle, f.ring, f.little] |> List.map(out) |> List.sum) / 5.0
-    + (apart(f.ring, f.middle) + apart(f.ring, f.little)) / 2.0
+  let apart = (a: Hand.Bend, b: Hand.Bend) => Math.max(0.0, Math.abs(a.curl - b.curl) - 0.3) + Math.max(0.0, Math.abs(a.tip - b.tip) - 0.3) in
+  let bends = [f.index, f.middle, f.ring, f.little] |> List.concatMap((b) => [b.curl, b.tip]) in
+  ([f.thumb.curl, f.thumb.tip, ..bends] |> List.map(out) |> List.sum) / 10.0
+    + (apart(f.ring, f.middle) + apart(f.ring, f.little)) / 4.0
 
 /// Measure the hand posed `f` on `solids`.
 let measure = (side: Hold.Side, solids: List<Solid>, f: Hand.FingerPose): Metrics =>
@@ -333,15 +348,14 @@ let measure = (side: Hold.Side, solids: List<Solid>, f: Hand.FingerPose): Metric
     contacts: gaps |> List.filter((g) => let (_, x) = g in x <= touchGap) |> List.length,
     strain: strain(f) }
 
-/// How far each digit's tip is from where its per-joint fit puts it, posed
-/// by the fit's `FingerPose` (one curl a finger): the pose's error.
-let tipError = (side: Hold.Side, fitted: Fitted): List<float> =>
+/// How far each digit's tip is, posed by the fit, from where closing each
+/// joint on its own (`jointRig`; the thumb at the fit's turn) puts it: the
+/// pose's error.
+let tipError = (side: Hold.Side, solids: List<Solid>, fitted: Fitted): List<float> =>
   let tip = (d: float, c: List<float>, o: float) => List.last(chainOf(d, c, o)) |> Option.map((j) => let (p, _) = j in (inRoot(side, p)).position) |> Option.defaultValue(Hold.zero) in
-  let f = fitted.pose in
-  let o = f.thumb.opposition in
-  List.zip([f.thumb.curl, f.index, f.middle, f.ring, f.little], fitted.curls) |> List.indexedMap((d, cu) =>
-    let (c, u) = cu in
-    Quat.length(Quat.sub(tip(d, c, o), tip(d, [u, u, u], o))))
+  fitted.curls |> List.indexedMap((d, c) =>
+    let o = if d == 0.0 then fitted.pose.thumb.opposition else 0.0 in
+    Quat.length(Quat.sub(tip(d, c, o), tip(d, (close(solids, side, d, o, jointRig)).curls, o))))
 
 // --- what the lab holds ---
 // Each held item and site as solids in its own frame (its collider's: a
@@ -469,7 +483,7 @@ type Compared = { name: string, preset: Metrics, fitted: Fitted, fit: Metrics, e
 let compare = (side: Hold.Side, it: Item): Compared =>
   let solids = held(side, it) in
   let f = fit(side, solids) in
-  { name: it.name, preset: measure(side, solids, it.preset), fitted: f, fit: measure(side, solids, f.pose), error: tipError(side, f) }
+  { name: it.name, preset: measure(side, solids, it.preset), fitted: f, fit: measure(side, solids, f.pose), error: tipError(side, solids, f) }
 
 // --- checks ---
 
@@ -487,7 +501,7 @@ let bar =
 // on the rod its first bone does, and the joints past it close on, its tip
 // further than one uniform curl could.
 let curlsOn = (solids: List<Solid>) =>
-  let cl = close(solids, Hold.Right, 1.0, 0.0) in
+  let cl = close(solids, Hold.Right, 1.0, 0.0, jointRig) in
   let gaps = segmentsOf(Hold.Right, 1.0, cl.curls, 0.0) |> List.map((s) => let (a, b, r) = s in gapOf(solids, a, b, r)) in
   let ok = not cl.buried && (gaps |> List.all((g) => g >= 0.0)) && (gaps |> List.any((g) => g <= contactGap + 0.0002)) in
   (ok, cl.curls)
@@ -502,7 +516,7 @@ expect (
 expect (
   let mcp = Hand.jointOf(Hand.local(Hold.Right, Hand.flat), 7.0) in
   let bead = [solid(Hold.compose(mcp, Hold.p(0.0, 0.0 - 0.0184486122, 0.0 - 0.0812138931)), Sphere(0.001))] in
-  let cl = close(bead, Hold.Right, 1.0, 0.0) in
+  let cl = close(bead, Hold.Right, 1.0, 0.0, jointRig) in
   let gaps = segmentsOf(Hold.Right, 1.0, cl.curls, 0.0) |> List.map((s) => let (a, b, r) = s in gapOf(bead, a, b, r)) in
   cl.curls != [1.0, 1.0, 1.0] && (gaps |> List.all((g) => g >= 0.0)) && (gaps |> List.any((g) => g <= contactGap + 0.0002))
 )
@@ -510,8 +524,8 @@ expect (
 // round the index's middle joint.
 expect (
   let (a, _, _) = List.nth(1.0, segmentsOf(Hold.Right, 1.0, [0.0, 0.0, 0.0], 0.0)) |> Option.defaultValue((Hold.zero, Hold.zero, 0.0)) in
-  let cl = close([solid(Hold.at(a, Quat.identity), Sphere(0.01))], Hold.Right, 1.0, 0.0) in
-  cl.buried && cl.curls == [0.0, 0.0, 0.0] && not (close(handle, Hold.Right, 1.0, 0.0)).buried
+  let cl = close([solid(Hold.at(a, Quat.identity), Sphere(0.01))], Hold.Right, 1.0, 0.0, fingerRig) in
+  cl.buried && cl.curls == [0.0, 0.0] && not (close(handle, Hold.Right, 1.0, 0.0, fingerRig)).buried
 )
 // On the handle: every finger closes round it, the thumb opposed, the palm
 // on it; the same every time; and the left hand's fit on the mirrored
@@ -548,4 +562,16 @@ expect (
   items |> List.filter((it) => it.name == "ball" || it.name == "stick (band)") |> List.all((it) =>
     let f = fit(Hold.Right, held(Hold.Right, it)) in
     List.head(f.buried) == Option.Some(false) && (List.head(f.curls) |> Option.bind(List.last) |> Option.defaultValue(0.0)) > 0.0)
+)
+// A fitted finger's tip is where closing each joint on its own puts it,
+// within 2 mm, where its first bone touches first: every finger on the
+// stick and the rifle magazine, the brick's middle and ring. (The brick's
+// index wraps its DIP past the pose's PIP:DIP; elsewhere a lone DIP
+// closes on air.)
+expect (
+  let errorOn = (name: string) =>
+    items |> List.find((it) => it.name == name) |> Option.map((it) => let solids = held(Hold.Right, it) in tipError(Hold.Right, solids, fit(Hold.Right, solids)))
+      |> Option.defaultValue([]) in
+  let under = (es: List<float>, ds: List<float>) => List.length(es) == 5.0 && (ds |> List.all((d) => (List.nth(d, es) |> Option.defaultValue(1.0)) <= 0.002)) in
+  under(errorOn("stick (band)"), [1.0, 2.0, 3.0, 4.0]) && under(errorOn("rifle mag"), [1.0, 2.0, 3.0, 4.0]) && under(errorOn("brick"), [2.0, 3.0])
 )
