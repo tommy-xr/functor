@@ -18,6 +18,7 @@ pub const MAX_SECONDS: f64 = 5.0;
 /// Which controller vibrates (`Xr.Left` / `Xr.Right`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(rename = "HapticHand"))]
 #[serde(rename_all = "lowercase")]
 pub enum Hand {
     Left,

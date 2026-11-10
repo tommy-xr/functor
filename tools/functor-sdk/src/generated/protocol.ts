@@ -328,11 +328,6 @@ export type GameSettings = { xr: XrSettings, };
 export type GamepadSnapshot = { left_stick: [number, number], right_stick: [number, number], left_trigger: number, right_trigger: number, south: boolean, east: boolean, west: boolean, north: boolean, left_bumper: boolean, right_bumper: boolean, left_stick_pressed: boolean, right_stick_pressed: boolean, dpad_up: boolean, dpad_down: boolean, dpad_left: boolean, dpad_right: boolean, start: boolean, select: boolean, };
 
 /**
- * Which controller vibrates (`Xr.Left` / `Xr.Right`).
- */
-export type Hand = "left" | "right";
-
-/**
  * Pulses since launch (`GET /state.haptics`): `sent` were handed to the
  * controller (counted without one on desktop and headless), `dropped` lost
  * their frame's arbitration or were refused (an unfocused headset session,
@@ -341,9 +336,14 @@ export type Hand = "left" | "right";
 export type HapticCounts = { sent: number, dropped: number, recent: Array<HapticRecord>, };
 
 /**
+ * Which controller vibrates (`Xr.Left` / `Xr.Right`).
+ */
+export type HapticHand = "left" | "right";
+
+/**
  * A pulse the shell took, as `GET /state` lists it.
  */
-export type HapticRecord = { hand: Hand, amplitude: number, seconds: number, 
+export type HapticRecord = { hand: HapticHand, amplitude: number, seconds: number, 
 /**
  * `GET /state`'s `frame` when the shell took it.
  */
