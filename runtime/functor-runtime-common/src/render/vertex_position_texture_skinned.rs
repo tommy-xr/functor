@@ -88,3 +88,18 @@ impl Vertex for VertexPositionTextureSkinned {
         vec
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A mesh VAO's locations are attribute indices; the shaders hard-code 6.
+    #[test]
+    fn color_sits_at_its_location() {
+        let attributes = VertexPositionTextureSkinned::get_vertex_attributes();
+        assert!(matches!(
+            attributes[VERTEX_COLOR_LOCATION as usize].attribute_channel,
+            BuiltInVertexChannel::Color
+        ));
+    }
+}

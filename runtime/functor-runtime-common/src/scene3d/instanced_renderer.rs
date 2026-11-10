@@ -1141,7 +1141,8 @@ unsafe fn acquire_model_vaos(
 /// Rigid (`skinned == false`): the joint/weight channels are skipped —
 /// their locations 4/5 carry the instance TRS instead (base 4). Skinned:
 /// every mesh channel is enabled (joints/weights at 4/5 feed the palette
-/// blend) and the instance layout sits at locations 6-8.
+/// blend) and the instance layout sits at locations 6-8. Either way the
+/// vertex colour moves to `MODEL_COLOR_LOCATION`.
 ///
 /// No tint attribute either way: a bare model template has no material
 /// colors for the tint to multiply, so the STAMP ignores it — the hardware

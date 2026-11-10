@@ -7,8 +7,8 @@
 //! paths, skinned and rigid, nested selections, and an unknown name. Skinned
 //! draw counts drop with the selection while pose evaluations don't.
 //!
-//! Also glTF `COLOR_0`: a red-vertex model renders like one whose material
-//! is red, on every path, lit and unlit.
+//! Also glTF `COLOR_0`: a vertex-coloured model renders like one whose
+//! material has that colour, on every path, lit and unlit.
 //!
 //! Self-skipping like `stereo_shadow` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -278,14 +278,15 @@ impl Harness {
         ] {
             asset_cache.replace_uploaded(file, fixture(with_hat, skinned));
         }
-        let red = [1.0, 0.0, 0.0, 1.0];
+        // Mid-range, so a colour-space slip shows.
+        let tint = [1.0, 0.5, 0.2, 1.0];
         for (kind, skinned) in [("skinned", true), ("rigid", false)] {
             let body = || TestNode::named("Body").boxes(&[([-0.3, 0.0, -0.2], [0.3, 1.0, 0.2])]);
             asset_cache
-                .replace_uploaded(&format!("{kind}_vertex.glb"), glb(&[body().color(red)], skinned));
+                .replace_uploaded(&format!("{kind}_vertex.glb"), glb(&[body().color(tint)], skinned));
             asset_cache.replace_uploaded(
                 &format!("{kind}_factor.glb"),
-                glb(&[body().base_color(red)], skinned),
+                glb(&[body().base_color(tint)], skinned),
             );
         }
 
