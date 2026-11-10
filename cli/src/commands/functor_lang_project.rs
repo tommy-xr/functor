@@ -2747,7 +2747,7 @@ pub fn warn_unsupported(
     let Ok(names) = role.entry_role().resolve(&role.entry, project) else { return };
     let mut roots = names.hooks().to_vec();
     roots.extend([names.init, names.config, names.loading]);
-    for finding in util::shell_support::check(project, &roots, environment) {
+    for finding in crate::util::shell_support::check(project, &roots, environment) {
         emit_at(project, finding.span.start, Severity::Warning, finding.message);
     }
 }
