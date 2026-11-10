@@ -1,4 +1,5 @@
-//! Headset options, built once and handed to `Config.xr` or `Settings.xr`.
+//! Headset options, built once and handed to `Config.xr` or `Settings.xr`,
+//! and the controllers `Effect.haptic` vibrates (`Xr.Left`, `Xr.Right`).
 //!
 //! Each knob belongs to one bucket, by when the shell can honour it:
 //! `refreshRate`, `passthrough`, `scene`, `floorLocked` and `msaa` are read

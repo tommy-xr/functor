@@ -159,6 +159,27 @@ export async function readLog(rt, from) {
   return log;
 }
 
+/**
+ * Follow the input log from the next step on: `read()` appends the steps
+ * since the last read to `steps`. The runtime keeps only its time-travel
+ * window (900 steps), so read within that; throws on a lost step or a
+ * replaced history.
+ */
+export async function logTail(rt) {
+  const { generation } = await rt.get(`/input-log?from=${Number.MAX_SAFE_INTEGER}`);
+  let next = (await rt.get("/state")).frame + 1;
+  const steps = [];
+  return {
+    steps,
+    async read() {
+      const log = await readLog(rt, next);
+      if (log.generation !== generation) throw new Error("the runtime's history was replaced (a rewind or project load): record again");
+      steps.push(...log.steps);
+      if (log.steps.length) next = log.steps.at(-1).frame + 1;
+    },
+  };
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -178,25 +199,20 @@ export async function recordLive(rt, { resetKey, stopped }) {
     if (Date.now() > deadline) throw new Error("the restarted game never stepped: is its clock paused?");
     await sleep(50);
   }
-  const { generation } = await rt.get(`/input-log?from=${Number.MAX_SAFE_INTEGER}`);
-  let next = (await rt.get("/state")).frame + 1;
-  // Tapped after `next` was read, so the reset lands in the recording.
+  const tail = await logTail(rt);
+  // Tapped after the tail started, so the reset lands in the recording.
   await rt.post("/input", { type: "key", key: resetKey, down: true });
   await sleep(100);
   await rt.post("/input", { type: "key", key: resetKey, down: false });
   let stop = false;
   stopped.then(() => (stop = true));
-  const steps = [];
-  // The runtime keeps up to 15 s of steps; `readLog` throws if any were lost.
   for (;;) {
     const done = stop;
-    const log = await readLog(rt, next);
-    if (log.generation !== generation) throw new Error("the runtime's history was replaced (a rewind or project load): record again");
-    steps.push(...log.steps);
-    if (log.steps.length) next = log.steps.at(-1).frame + 1;
+    await tail.read();
     if (done) break;
     await Promise.race([sleep(500), stopped]);
   }
+  const { steps } = tail;
   const reset = steps.findIndex((s) => s.input?.pressed_keys.some((k) => keyName(k).toLowerCase() === resetKey.toLowerCase()));
   if (reset < 0) throw new Error(`the reset key ${resetKey} never reached the game`);
   return steps.slice(reset);

@@ -1746,6 +1746,8 @@ async fn run_async() -> Result<(), JsValue> {
             // Play any one-shot sounds this frame's tick queued (fetch + decode
             // the first time, then from the cache).
             dispatch_audio_commands(&**game);
+            // No controller to vibrate: drain this frame's `Effect.haptic` pulses.
+            functor_runtime_common::haptics::take_unactuated(game.state_frame().unwrap_or(0));
             dispatch_conn_commands(&mut **game, &ws_state);
 
             let mut frame: Frame = game.render_at(frame_time.clone(), alpha);

@@ -18,7 +18,7 @@
 //   --still <path>   also write one PNG: the step marked `release`, else the last
 //   --still-mark <m> the mark to take the still at instead of `release`
 //   --state <path>   also write the final `GET /state` as JSON
-//   --every <n>      keep every nth step (default 2: 30 fps of 60 Hz steps)
+//   --every <n>      keep every nth step (default 2: half the fixed-step rate)
 //   --size <WxH>     framebuffer size (default 960x600)
 //   --view rig       film the player's own view instead of the spectator's
 //   --port <n>       debug-server port (default 8197)
@@ -58,17 +58,19 @@ if (!scenario) {
 
 const frames = mkdtempSync(join(tmpdir(), "xr-demo-"));
 const rt = await launch(project, port, ["--hidden", "--capture-size", size]);
+const fps = String(1 / rt.dt / every);
 let count = 0;
 let markFrame;
 let lastFrame;
 try {
   if (view !== "rig" && scenario.spectator) await rt.post("/camera", { type: "set", ...scenario.spectator });
-  await play(rt, scenario, async ({ step, mark, seg, first }) => {
+  await play(rt, scenario, async ({ step, marked, seg, first }) => {
     if (view !== "rig" && first && seg?.spectator) await rt.post("/camera", { type: "set", ...seg.spectator });
-    if (step % every !== 0 && mark !== stillMark) return;
+    const isStill = marked.includes(stillMark);
+    if (step % every !== 0 && !isStill) return;
     lastFrame = join(frames, `f${String(count++).padStart(4, "0")}.png`);
     writeFileSync(lastFrame, await rt.capture());
-    if (mark === stillMark) markFrame = lastFrame;
+    if (isStill) markFrame = lastFrame;
   });
   if (statePath) writeFileSync(statePath, JSON.stringify(await rt.get("/state"), null, 2));
 } finally {
@@ -81,7 +83,6 @@ if (still && rest.includes("--still-mark") && !markFrame) {
 }
 const stillFrame = markFrame ?? lastFrame;
 
-const fps = String(60 / every);
 mkdirSync(dirname(resolve(out)), { recursive: true });
 execFileSync(
   "ffmpeg",

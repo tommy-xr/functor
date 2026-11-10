@@ -35,7 +35,7 @@
 //   npm run bench:vr-lab        # a release build; a debug one is many times slower
 import { Worker } from "node:worker_threads";
 import { sleep } from "./mcp-rpc.mjs";
-import { DT, launch, play } from "./xr-scenario.mjs";
+import { launch, play } from "./xr-scenario.mjs";
 import { project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8294;
@@ -48,7 +48,7 @@ async function measure(scenario) {
   try {
     await play(rt, scenario);
     const from = (await rt.get("/state")).frame;
-    await rt.post("/time", { type: "advance", dts: DT, frames: BURST });
+    await rt.post("/time", { type: "advance", dts: rt.dt, frames: BURST });
     while ((await rt.get("/state")).frame < from + BURST) await sleep(50);
     const frames = (await rt.get("/frames?last=600")).frames.filter((f) => f.steps > 0 && f.frame > from);
     return {
