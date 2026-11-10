@@ -196,7 +196,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// retained recorded step consumed, numbered as `GET /state`'s `frame`, so a
 /// driver can record a live session (a worn headset's) as replayable input.
 /// A pre-v33 runtime answers 404.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 33;
+///
+/// 34 adds the optional `haptics` field on `GET /state` (`{sent, dropped,
+/// recent}`: `Effect.haptic` pulses since launch, `recent` the last 8 sent
+/// with their `hand`, `amplitude`, `seconds` and `frame`).
+pub const DEBUG_PROTOCOL_VERSION: u32 = 34;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -555,6 +559,12 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<crate::audio::AudioCounts>,
+    /// Controller pulses (`Effect.haptic`) sent and dropped since launch
+    /// (v34, [`crate::haptics::HapticCounts`]). Omitted by runtimes that don't
+    /// count them.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub haptics: Option<crate::haptics::HapticCounts>,
     /// p50/p99/max per stage over the shell's frame ring (v30); `GET /frames`
     /// has the frames. Omitted before the first frame.
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -1548,6 +1558,16 @@ mod tests {
                 dropped: 1,
                 recent: vec!["door.wav".into()],
             }),
+            haptics: Some(crate::haptics::HapticCounts {
+                sent: 1,
+                dropped: 0,
+                recent: vec![crate::haptics::HapticRecord {
+                    hand: crate::haptics::Hand::Right,
+                    amplitude: 0.5,
+                    seconds: 0.25,
+                    frame: 9,
+                }],
+            }),
             frame_stats: None,
         };
 
@@ -1602,7 +1622,11 @@ mod tests {
                         "colliders": 2
                     }
                 },
-                "audio": { "played": 2, "dropped": 1, "recent": ["door.wav"] }
+                "audio": { "played": 2, "dropped": 1, "recent": ["door.wav"] },
+                "haptics": {
+                    "sent": 1, "dropped": 0,
+                    "recent": [{ "hand": "right", "amplitude": 0.5, "seconds": 0.25, "frame": 9 }]
+                }
             })
         );
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);

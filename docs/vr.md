@@ -699,6 +699,33 @@ job, so the frame keeps its 8 forward-light slots for the street. Not yet
 checked on a headset. See its README for the layout → mesh / bake / cells /
 collision pipeline and the bake provenance check.
 
+### Controller haptics
+
+`Effect.haptic(Xr.Left, 0.6, 30ms)` vibrates one controller once: amplitude
+`0..1`, a duration up to 5 s (`0ms` = the runtime's shortest pulse). Out of
+range is a teaching error. Return it from `tick`/`sampledInput`/`update` like
+any effect; nothing comes back.
+
+- **Per frame, one pulse per hand.** The strongest wins, ties to the longer;
+  the losers count as `dropped`. A frame is what the shell takes in one
+  snapshot, so two pulses a step apart can merge on a slow frame; `sent +
+  dropped` is the same either way.
+- **Quest:** a `haptic` output action on the gameplay set, bound to
+  `/user/hand/{left,right}/output/haptic` for Touch and the simple controller,
+  driven by `xrApplyHapticFeedback` (`frequency` unspecified) as each
+  snapshot lands, so pipelined mode works. An unfocused session drops the
+  pulse; `STOPPING` stops both controllers and drops anything queued,
+  including the first snapshot after the session resumes (it may carry a
+  frame in flight at the stop).
+- **Desktop, headless:** no actuator; each pulse counts as `sent`. Web ignores
+  pulses (it serves no `/state`).
+- **Replay:** pulses are logged intents (`xr.haptic`). A fork or ghost runs
+  with outbound suppressed, and a seek, rewind or hot reload re-runs no
+  effects, so none buzzes or counts. Replaying a fixture through `/input` is a
+  live run and pulses exactly as the recording did.
+- `GET /state.haptics` is `{sent, dropped, recent}`; `recent` is the last 8
+  sent, each `{hand, amplitude, seconds, frame}`.
+
 ### Pipelined sim thread and XR thread hints
 
 The APK can run the game logic on its own sim thread, like desktop

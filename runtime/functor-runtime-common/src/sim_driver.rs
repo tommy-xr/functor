@@ -77,6 +77,8 @@ pub struct SimSnapshot {
     pub ui: View,
     pub webview_html: Option<String>,
     pub audio_commands: Vec<AudioCommand>,
+    /// Controller pulses queued since the last snapshot, one per hand.
+    pub haptics: crate::haptics::HapticFrame,
     pub audio_scene: Option<AudioScene>,
     pub net_commands: Vec<NetCommand>,
     pub conn_commands: Vec<ConnCommand>,
@@ -423,6 +425,12 @@ impl Mailbox {
 }
 
 impl SimSnapshot {
+    /// `GET /state`'s `frame` for this snapshot (the producer's
+    /// `state_frame`, from its recorded scene frame).
+    pub fn state_frame(&self) -> u64 {
+        self.scene_frame.map_or(0, |f| f + 1)
+    }
+
     /// Fold an older snapshot the shell skips (leaving pipelining) in ahead
     /// of ours, so its effects are not lost.
     fn absorb_older(&mut self, mut older: SimSnapshot) {
@@ -434,6 +442,7 @@ impl SimSnapshot {
             &mut self.audio_commands,
             std::mem::take(&mut older.audio_commands),
         );
+        self.haptics.absorb(older.haptics);
         prepend(
             &mut self.net_commands,
             std::mem::take(&mut older.net_commands),
@@ -594,6 +603,7 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
             .then(|| game.webview().map(|node| node.to_html()))
             .flatten(),
         audio_commands: parse_drain(&game.audio_drain_commands(), "audio"),
+        haptics: crate::haptics::take(),
         audio_scene: audio_scene.flatten(),
         net_commands: parse_drain(&game.net_drain_commands(), "net"),
         conn_commands: if req.conn_commands {
@@ -677,6 +687,8 @@ mod tests {
 
     #[test]
     fn pipelined_draws_the_same_interpolated_poses_as_inline() {
+        // Its snapshots take the shared haptic queue.
+        let _guard = crate::haptics::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let deltas: Vec<f32> = [1.0 / 120.0, 1.0 / 90.0, 1.0 / 30.0]
             .iter()
             .flat_map(|&dt| std::iter::repeat(dt).take(12))

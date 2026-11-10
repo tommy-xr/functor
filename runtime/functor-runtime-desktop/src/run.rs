@@ -1041,6 +1041,12 @@ fn deliver_net_ws(
     }
 }
 
+/// Count a snapshot's controller pulses: desktop has no actuator, so each is
+/// `sent` (`GET /state.haptics`).
+fn record_haptics(snapshot: &SimSnapshot) {
+    functor_runtime_common::haptics::record(&snapshot.haptics, snapshot.state_frame(), |_| true);
+}
+
 /// Perform the HTTP + WebSocket commands this frame's tick queued. HTTP requests
 /// run on tokio tasks (results return via `net_tx`); WS commands go to the manager.
 ///
@@ -1228,6 +1234,7 @@ fn service_debug_request(
                         depth_stream,
                     ),
                     audio: Some(functor_runtime_common::audio::one_shot_counts()),
+                    haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
                 });
             });
@@ -1675,6 +1682,7 @@ fn run_headless(
         for cmd in &snapshot.audio_commands {
             functor_runtime_common::audio::record_one_shot(cmd, false);
         }
+        record_haptics(&snapshot);
         let sim_ns = snapshot.sim_ns;
         sim.post(move |g| g.record_stage_timing(sim_ns, 0));
         let frame = snapshot.frame;
@@ -3160,6 +3168,7 @@ Escape again to quit"
                 // (shared with the headless loop).
                 dispatch_net_ws(&mut fresh, &net_tx, &http_client, &mut ws_manager);
                 audio_commands = std::mem::take(&mut fresh.audio_commands);
+                record_haptics(&fresh);
                 let (sim_ns, wait_ns) = (fresh.sim_ns, sim.take_wait_ns());
                 stage_window.sim_ns += sim_ns;
                 stage_window.wait_ns += wait_ns;

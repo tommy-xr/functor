@@ -1823,6 +1823,16 @@ returns the room's tag, the point and a normal facing the ray. To stand a
 `Scene.translate(Vec3.make(hit.x, hit.y, hit.z))` (`standOn` in
 `examples/room-place`).
 
+**Controller haptics**: `Effect.haptic(Xr.Left, 0.6, 30ms)` vibrates one
+controller once (`Xr.hand` is `Xr.Left | Xr.Right`; amplitude `0..1`; a
+`Time.t` in `0..5s`, `0ms` = the shortest pulse; out of range is a teaching
+error). Fire-and-forget: return it from a model function (`tick`,
+`sampledInput`, `update`), never `draw`. Per frame each hand performs one, the
+strongest (ties to the longer). Quest drives the controller; desktop and
+headless only count it in `GET /state.haptics` (`{sent, dropped, recent}`);
+web ignores it.
+Fork, ghost, seek, rewind and hot reload never re-fire one.
+
 **UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
 `Ui.*` tree into a render target (declared once with
 `RenderTarget.named("id") |> RenderTarget.sized(w, h)`) before the main pass;
