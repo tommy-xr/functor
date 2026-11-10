@@ -219,15 +219,15 @@ let close = (solids: List<Solid>, side: Hold.Side, d: float, opposition: float, 
 // The thumb's turns tried: at rest to opposed.
 let oppositions = [0.0, 0.25, 0.5, 0.75, 1.0]
 
-/// The thumb closed at its best turn: the one touching with the most of its
-/// capsules, then the one whose tip comes nearest. Buried at every turn: at
-/// rest, buried.
+/// The thumb closed at its best turn: the one whose tip (its pad) comes
+/// nearest, then the one touching with the most of its capsules. Buried at
+/// every turn: at rest, buried.
 let closeThumb = (solids: List<Solid>, side: Hold.Side): (Closed, float) =>
   let tried = oppositions |> List.map((o) =>
     let cl = close(solids, side, 0.0, o, 0.0) in
     let gaps = segmentsOf(side, 0.0, cl.curls, o) |> List.map((s) => let (a, b, r) = s in gapOf(solids, a, b, r)) in
     let touches = gaps |> List.filter((g) => g <= touchGap) |> List.length in
-    (cl, o, (List.last(gaps) |> Option.defaultValue(1.0)) - touches)) |> List.filter((t) => let (cl, _, _) = t in not cl.buried) in
+    (cl, o, (List.last(gaps) |> Option.defaultValue(1.0)) - 0.0001 * touches)) |> List.filter((t) => let (cl, _, _) = t in not cl.buried) in
   match tried |> List.sortBy((t) => let (_, _, score) = t in score) with
   | [best, ..rest] => let (cl, o, _) = best in (cl, o)
   | [] => ({ curls: [0.0, 0.0, 0.0], buried: true }, 0.0)
@@ -309,7 +309,7 @@ let measure = (side: Hold.Side, solids: List<Solid>, f: Hand.FingerPose): Metric
   let nearest = (keep: (float) => bool) => gaps |> List.filter((g) => let (j, _) = g in keep(j)) |> List.map((g) => let (_, x) = g in x) |> List.minimum |> Option.defaultValue(1.0) in
   let digit = (d: float) => nearest((j) => j >= 5.0 * d + 2.0 && j <= 5.0 * d + 4.0) in
   { digits: [0.0, 1.0, 2.0, 3.0, 4.0] |> List.map(digit),
-    palm: nearest((j) => palmCaps |> List.any((c) => c.joint == j)),
+    palm: palmGap(solids, side),
     contacts: gaps |> List.filter((g) => let (_, x) = g in x <= touchGap) |> List.length,
     strain: strain(f) }
 
@@ -322,6 +322,134 @@ let tipError = (side: Hold.Side, fitted: Fitted): List<float> =>
   List.zip([f.thumb.curl, f.index, f.middle, f.ring, f.little], fitted.curls) |> List.indexedMap((d, cu) =>
     let (c, u) = cu in
     Quat.length(Quat.sub(tip(d, c, o), tip(d, [u, u, u], o))))
+
+// --- what the lab holds ---
+// Each held item and site as solids in its own frame (its collider's: a
+// prop's pose), and where the hand's root sits on it. A prop's collider is
+// one bounding box, which for a gun holds the fist, so the solids are its
+// drawn parts near a hand.
+
+/// A held item at a site: its solids, the hand's root in its frame, whether
+/// it is held anywhere (`free`: put on the palm, `palmPush`, before the fit),
+/// and its preset (`Props.fingers`).
+type Item = { name: string, solids: List<Solid>, hand: Input.pose, free: bool, preset: Hand.FingerPose }
+
+let item = (name: string, solids: List<Solid>, hand: Input.pose, free: bool, k: Props.Kind, site: Props.Site): Item =>
+  { name: name, solids: solids, hand: hand, free: free, preset: Props.fingers(k, site, 0.0) }
+
+let boxAt = (at: Input.pose, size: Input.point3): Solid => solid(at, Box(Quat.scale(0.5, size)))
+
+// A gun's part as drawn: its size and centre in the trigger hand's frame
+// (`center`: the gun's collider's centre there), turned `rake` about X.
+let part = (center: Input.point3, sx: float, sy: float, sz: float, x: float, y: float, z: float, rake: float): Solid =>
+  boxAt(Hold.at(Quat.sub(Quat.v3(x, y, z), center), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), rake)), Quat.v3(sx, sy, sz))
+
+/// A magazine's solids in its frame: the pistol's body and base plate, the
+/// rifle's box; a shell's hull and brass head (its head back, +Z).
+let magSolids = (k: Ammo.Kind): List<Solid> =>
+  let e = Gun.magSize(k) in
+  match k with
+  | Ammo.PistolMag => [boxAt(Hold.p(0.0, 0.004, 0.0), Quat.v3(0.026, e.y - 0.008, 2.0 * Gun.magFace(k))), boxAt(Hold.p(0.0, 0.004 - e.y / 2.0, 0.0), Quat.v3(e.x, 0.008, e.z))]
+  | Ammo.RifleMag => [boxAt(Hold.origin, e)]
+  | Ammo.Shell => [boxAt(Hold.p(0.0, 0.0, 0.0 - 0.1 * e.z), Quat.v3(0.9 * e.x, 0.9 * e.y, 0.8 * e.z)), boxAt(Hold.p(0.0, 0.0, 0.4 * e.z), Quat.v3(e.x, e.y, 0.2 * e.z))]
+
+/// A weapon's seated magazine, in the weapon's frame.
+let seatedIn = (w: Gun.Weapon): List<Solid> => magSolids(w.well.kind) |> List.map((s) => { s with at: Hold.compose(Gun.seatOf(w), s.at) })
+
+let pistolSolids =
+  let c = Gun.center in
+  List.append(seatedIn(Gun.pistol), [
+    part(c, 0.03, 0.04, 0.205, 0.0, Gun.bore, 0.0 - 0.0475, 0.0),
+    part(c, 0.03, 0.1, 0.045, Gun.handleAt.x, Gun.handleAt.y, Gun.handleAt.z, Gun.handleRake),
+    part(c, 0.008, 0.006, 0.045, 0.0, 0.0 - 0.002, 0.0 - 0.028, 0.0),
+    part(c, 0.006, 0.022, 0.006, 0.0, 0.012, 0.0 - 0.016, 0.0),
+  ])
+
+let rifleSolids =
+  let c = Longarm.center in
+  let mid = 0.0 - (Longarm.foreNear + Longarm.foreFar) / 2.0 in
+  let length = Longarm.foreFar - Longarm.foreNear in
+  List.append(seatedIn(Longarm.weapon), [
+    part(c, 0.04, 0.08, 0.2, 0.0, 0.04, 0.18, 0.0),
+    part(c, 0.045, 0.05, 0.22, 0.0, 0.06, 0.0 - 0.03, 0.0),
+    part(c, 0.03, 0.09, 0.04, 0.0, 0.0, 0.012, 0.0 - 0.25),
+    part(c, 0.008, 0.006, 0.05, 0.0, 0.016, 0.0 - 0.045, 0.0),
+    part(c, 0.006, 0.02, 0.006, 0.0, 0.026, 0.0 - 0.035, 0.0),
+    part(c, 0.045, 0.05, length, 0.0, Longarm.bore, mid, 0.0),
+    part(c, 0.03, 0.03, length, 0.0, 0.02, mid, 0.0),
+    part(c, 0.045, 0.008, 0.014, Longarm.handleAt.x, Longarm.handleAt.y, Longarm.handleAt.z, 0.0),
+  ])
+
+let shotgunSolids =
+  let c = Pump.center in
+  let mid = 0.0 - (Pump.foreNear + Pump.foreFar) / 2.0 in
+  [part(c, 0.04, 0.075, 0.25, 0.0, 0.045, 0.175, 0.0),
+   part(c, 0.045, 0.08, 0.22, 0.0, 0.05, 0.0 - 0.06, 0.0),
+   part(c, 0.03, 0.09, 0.04, 0.0, 0.0, 0.012, 0.0 - 0.25),
+   part(c, 0.008, 0.006, 0.05, 0.0, 0.0 - 0.002, 0.0 - 0.045, 0.0),
+   part(c, 0.006, 0.02, 0.006, 0.0, 0.008, 0.0 - 0.035, 0.0),
+   part(c, 0.018, 0.018, Pump.muzzleAhead - 0.17, 0.0, Pump.bore, 0.0 - (0.17 + Pump.muzzleAhead) / 2.0, 0.0),
+   part(c, 0.021, 0.021, 0.4, 0.0, 0.03, 0.0 - 0.37, 0.0),
+   part(c, 0.046, 0.04, Pump.foreFar - Pump.foreNear, 0.0, 0.025, mid, 0.0),
+   part(c, 0.048, 0.042, 0.006, 0.0, 0.025, mid + 0.04, 0.0),
+   part(c, 0.048, 0.042, 0.006, 0.0, 0.025, mid - 0.04, 0.0)]
+
+// The bottle: its body, shoulder, neck and lip, up its +Y.
+let bottleSolids =
+  let base = 0.0 - (Props.extent(Props.Bottle)).y / 2.0 in
+  let r = Props.bottleRadius in
+  let n = Props.neckRadius in
+  let cyl = (radius: float, h: float, y: float) => solid(Hold.p(0.0, y, 0.0), Cylinder(radius, h / 2.0)) in
+  [cyl(r, Props.bodyHeight - 0.03, base + (Props.bodyHeight - 0.03) / 2.0),
+   cyl(0.6 * r + 0.4 * n, 0.03, base + Props.bodyHeight - 0.015),
+   cyl(n, Props.neckLength, base + Props.bodyHeight + Props.neckLength / 2.0),
+   cyl(n * 1.25, 0.012, base + Props.bodyHeight + Props.neckLength - 0.006)]
+
+// The support hand on a long gun's foregrip line, half way along it, turned
+// as the gun (`Longarm.supportOn` keeps the hand's turn: an upright hand's).
+let onFore = (f: Longarm.Fore): Input.pose => Hold.compose(f.grip, Hold.p(0.0, 0.0, 0.0 - (f.near + f.far) / 2.0))
+
+// Free props held at a representative place: the item's centre at the fist
+// (a stick's grip band), then put on the palm. The brick lies across the
+// palm, its top on it, the fingers over its 10 cm width.
+let brickTurn = Quat.fromBasis(Quat.v3(0.0, 0.0, 1.0), Quat.v3(1.0, 0.0, 0.0), Quat.v3(0.0, 1.0, 0.0))
+let stickHand = Hold.inverse(Hold.at(Quat.v3(0.0, Props.stickLength / 2.0 - 0.07, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0)))
+
+/// Every held item and site, at its current placement.
+let items: List<Item> = [
+  item("ball", [solid(Hold.origin, Sphere(Props.ballRadius))], Hold.origin, true, Props.Ball, Props.AtGrip),
+  item("brick", [boxAt(Hold.origin, Props.extent(Props.Brick))], Hold.inverse(Hold.at(Hold.zero, brickTurn)), true, Props.Brick, Props.AtGrip),
+  item("stick (band)", [boxAt(Hold.p(0.0, 0.0, Props.stickLength / 2.0 - 0.07), Quat.v3(1.3 * Props.stickThickness, 1.3 * Props.stickThickness, 0.12)), boxAt(Hold.origin, Props.extent(Props.Stick))],
+    stickHand, true, Props.Stick, Props.AtGrip),
+  item("bottle neck", bottleSolids, Props.grip(Props.Bottle) |> Option.defaultValue(Hold.origin), false, Props.Bottle, Props.AtGrip),
+  item("pistol grip", pistolSolids, Gun.grip, false, Props.Pistol, Props.AtGrip),
+  item("pistol slide", pistolSolids, Hold.at(Gun.pistol.rack.at, Quat.identity), false, Props.Pistol, Props.AtSlide),
+  item("rifle grip", rifleSolids, Longarm.grip, false, Props.Rifle, Props.AtGrip),
+  item("rifle foregrip", rifleSolids, onFore(Longarm.fore), false, Props.Rifle, Props.AtFore),
+  item("shotgun grip", shotgunSolids, Pump.grip, false, Props.Shotgun, Props.AtGrip),
+  item("shotgun fore-end", shotgunSolids, onFore(Pump.fore), false, Props.Shotgun, Props.AtFore),
+  item("pistol mag", magSolids(Ammo.PistolMag), Hold.origin, true, Props.Mag(Ammo.PistolMag, 0.0), Props.AtGrip),
+  item("rifle mag", magSolids(Ammo.RifleMag), Hold.origin, true, Props.Mag(Ammo.RifleMag, 0.0), Props.AtGrip),
+  item("shell (from the box)", magSolids(Ammo.Shell), Hold.origin, false, Props.Round(Ammo.Shell, 0.0), Props.AtGrip),
+]
+
+/// An item's solids in a hand's root frame (the left's mirrored), a free
+/// one put on the palm.
+let held = (side: Hold.Side, it: Item): List<Solid> =>
+  let seen = seenFrom(it.hand, it.solids) |> List.map((s) => if side == Hold.Left then { s with at: Hand.mirror(s.at) } else s) in
+  if not it.free then seen
+  else
+    match palmPush(seen, side) with
+    | Option.Some(d) => seen |> List.map((s) => shift(Quat.scale(0.0 - d, palmNormal(side)), s))
+    | Option.None => seen
+
+/// An item's preset and its fit, measured, with the fit's pose error.
+type Compared = { name: string, preset: Metrics, fitted: Fitted, fit: Metrics, error: List<float> }
+
+let compare = (side: Hold.Side, it: Item): Compared =>
+  let solids = held(side, it) in
+  let f = fit(side, solids) in
+  { name: it.name, preset: measure(side, solids, it.preset), fitted: f, fit: measure(side, solids, f.pose), error: tipError(side, f) }
 
 // --- checks ---
 
@@ -384,4 +512,5 @@ expect (
   Math.abs(pushed(0.01) - 0.009) < 0.0005 && Math.abs(pushed(0.0 - 0.01) + 0.011) < 0.0005
     && (palmPush(handle, Hold.Right) |> Option.map((d) => Math.abs(d + 0.001) < 0.0005) |> Option.defaultValue(false))
 )
+
 
