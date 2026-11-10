@@ -1,0 +1,18 @@
+//! What the game was launched with: `--arg key=value`, as many as you like.
+//!
+//! ```
+//! // functor run native --arg server=http://192.168.4.20:9180 --arg scan=latest
+//! let server = Launch.args() |> Map.get("server") |> Option.defaultValue("http://localhost:9180")
+//! ```
+//!
+//! The arguments are fixed for the life of the process: a hot reload, a
+//! rewind and a replay in the same run all see the same ones. A recording
+//! replayed by another launch needs the same arguments to play back the same.
+//!
+//! Desktop only for now: the web and Quest shells have nowhere to take them
+//! from, and the CLI reads `config` before the game is launched, so all three
+//! see an empty map.
+
+/// The launch arguments by key. A key given twice keeps its last value; with
+/// none given, the map is empty.
+let args : () => Map<string, string>

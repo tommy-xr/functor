@@ -781,6 +781,11 @@ pub struct Args {
     #[arg(long)]
     fixed_time: Option<f32>,
 
+    /// A `key=value` the game reads with `Launch.args()`. Repeatable; a
+    /// repeated key keeps its last value.
+    #[arg(long = "arg", value_parser = functor_runtime_common::functor_lang_prelude::launch::parse_arg)]
+    launch_args: Vec<(String, String)>,
+
     /// Let `Xr.streamDepth` upload depth frames to this origin
     /// (`http://host[:port]`) besides loopback. Repeatable.
     #[arg(long, value_parser = functor_runtime_common::sensor_stream::parse_origin)]
@@ -1778,6 +1783,9 @@ fn run_headless(
 /// `functor` CLI satisfies both by calling this from its own `#[tokio::main]`
 /// main future (which `block_on` drives on the main thread).
 pub fn run(args: Args) {
+    // Before the game loads: its top level may read them.
+    functor_runtime_common::functor_lang_prelude::launch::set_args(args.launch_args.clone());
+
     // Load game
 
     let game_path = args.game_path.clone();
