@@ -37,12 +37,13 @@ let fromWell = (w: Gun.Weapon, pl: Place): float =>
   let below = Math.max(0.0, 0.0 - w.well.drop - pl.depth) in
   Math.sqrt(pl.off * pl.off + below * below)
 
-/// Whether a magazine of `kind` at `mag` latches into the well of a weapon
-/// `w` at `gun` holding `ammo`: it fits and the well is empty, its centre is
-/// within the guide's `entry` of where it sits at the mouth, lined up.
+/// Whether a magazine (or shell) of `kind` at `mag` latches into the well of
+/// a weapon `w` at `gun` holding `ammo`: it fits and the well is empty (a
+/// tube, not full), its centre is within the guide's `entry` of where it
+/// sits at the mouth, lined up.
 let latches = (w: Gun.Weapon, gun: Input.pose, ammo: Ammo.State, kind: Ammo.Kind, mag: Input.pose): bool =>
   let g = w.well.guide in
-  kind == w.well.kind && Option.isNone(ammo.mag)
+  kind == w.well.kind && Ammo.takes(kind, ammo)
     && Quat.length(Quat.sub(mag.position, (along(w, gun, 0.0 - w.well.drop)).position)) <= g.entry
     && lined(g, g.alignDot, (along(w, gun, 0.0)).orientation, mag.orientation)
 
@@ -64,12 +65,15 @@ let seatSlack = 0.004
 
 /// One step of a latched magazine, the hand holding it as if at `want` (its
 /// grip composed with the hold's offset). Off the well past the guide's
-/// `exit`, or its axis past `unalignDot`: it leaves. Else it follows the
-/// hand's depth along the axis (no deeper than seated), and seats there.
+/// `exit`, or its axis past `unalignDot` (or its back past `unkeyDot`): it
+/// leaves. Else it follows the hand's depth along the axis (no deeper than
+/// seated), and seats there.
 let step = (w: Gun.Weapon, gun: Input.pose, l: Latch, want: Input.pose): Guided =>
   let g = w.well.guide in
   let pl = placeOf(w, gun, want.position) in
-  if fromWell(w, pl) > g.exit || Quat.dot(Longarm.upOf(want.orientation), Longarm.upOf((along(w, gun, 0.0)).orientation)) < g.unalignDot then Leaves
+  let well = (along(w, gun, 0.0)).orientation in
+  if fromWell(w, pl) > g.exit || Quat.dot(Longarm.upOf(want.orientation), Longarm.upOf(well)) < g.unalignDot
+    || Quat.dot(back(want.orientation), back(well)) < g.unkeyDot then Leaves
   else
     let next = { l with depth: Math.min(0.0, pl.depth), lag: Hold.stepToward(l.lag, Hold.origin) } in
     if next.depth >= 0.0 - seatSlack && next.lag == Hold.origin then Seats else Guiding(next)

@@ -20,6 +20,9 @@ let all = [leftHolster, rightHolster, pouch]
 /// it), a hand within `radius` of the racked rifle's centre using it.
 let rack: Slot = { id: 4.0, name: "rifle rack", offset: Hold.origin, radius: 0.2, fits: [Props.Rifle], mags: [] }
 
+/// The shotgun's rack beside it, the same way (its id past the cradles').
+let shotgunRack: Slot = { id: 9.0, name: "shotgun rack", offset: Hold.origin, radius: 0.2, fits: [Props.Shotgun], mags: [] }
+
 // A hand this much farther out than a slot's radius already pins the hips,
 // so the slot holds still as the hand arrives.
 let pinMargin = 0.1
@@ -38,7 +41,8 @@ expect all |> List.all((s) => not fits(Props.Stick, s) && not fits(Props.Rifle, 
 let cradle = (id: float, kind: Ammo.Kind): Slot =>
   { id: rack.id + id, name: "magazine cradle", offset: Hold.origin, radius: 0.07, fits: [], mags: [kind] }
 
-expect fits(Props.Rifle, rack) && not fits(Props.Pistol, rack)
+expect fits(Props.Rifle, rack) && not fits(Props.Pistol, rack) && fits(Props.Shotgun, shotgunRack) && not fits(Props.Rifle, shotgunRack)
+expect all |> List.all((s) => not fits(Props.Shotgun, s) && not fits(Props.Round(Ammo.Shell, 1.0), s))
 expect fits(Props.Mag(Ammo.RifleMag, 9.0), cradle(3.0, Ammo.RifleMag)) && not fits(Props.Mag(Ammo.PistolMag, 1.0), cradle(3.0, Ammo.RifleMag))
 expect fits(Props.Mag(Ammo.PistolMag, 1.0), pouch) && fits(Props.Mag(Ammo.RifleMag, 7.0), pouch)
 expect not fits(Props.Mag(Ammo.PistolMag, 1.0), rightHolster) && not fits(Props.Mag(Ammo.RifleMag, 1.0), rack)

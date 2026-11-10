@@ -27,6 +27,8 @@ type Event =
   // The magazine went home in the well (the hand that pushed it, and the
   // gun's).
   | Seat
+  // The shell it pushed went into the shotgun's tube (its hand, and the gun's).
+  | Load
   // The slide (or charging handle) it pulls reached the back.
   | SlideBack
   // The slide went home (the racking hand's, and the gun's).
@@ -37,13 +39,14 @@ type Pulse = { amplitude: float, seconds: float }
 
 /// Each event's buzz, weakest to strongest: hover and release light (a
 /// refused trigger's click lighter still, and shortest; a magazine's latch
-/// between them), a grab firmer, the slide's strokes and slots firmer still
+/// between them; a shell into the tube a little firmer), a grab firmer, the slide's strokes and slots firmer still
 /// and longer, a seat a firm click, a stop sharp, a shot sharper, a break
 /// the strongest and longest.
 let pulse = (e: Event): Pulse =>
   match e with
   | Ready => { amplitude: 0.15, seconds: 0.015 }
   | Latch => { amplitude: 0.2, seconds: 0.012 }
+  | Load => { amplitude: 0.4, seconds: 0.015 }
   | Click => { amplitude: 0.25, seconds: 0.01 }
   | SlideBack => { amplitude: 0.5, seconds: 0.025 }
   | SlideHome => { amplitude: 0.65, seconds: 0.03 }
@@ -56,7 +59,7 @@ let pulse = (e: Event): Pulse =>
   | Fire => { amplitude: 0.95, seconds: 0.035 }
   | Break => { amplitude: 1.0, seconds: 0.08 }
 
-let all = [Ready, Latch, Click, Release, Grab, SlideBack, Unstow, SlideHome, Stow, Seat, Blocked, Fire, Break]
+let all = [Ready, Latch, Click, Release, Load, Grab, SlideBack, Unstow, SlideHome, Stow, Seat, Blocked, Fire, Break]
 
 // Every event is told apart by its amplitude alone.
 expect all |> List.all((a) => all |> List.all((b) => a == b || (pulse(a)).amplitude != (pulse(b)).amplitude))

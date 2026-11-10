@@ -14,6 +14,8 @@
 // pressed on its first step and released after it.
 // A segment's `mark` names its last step, so a check can find it; its
 // `spectator` re-aims a demo's camera from its first step (`e2e/xr-demo.mjs`).
+// A hand's field may be a function of the last `/state` (read as the segment
+// starts), for a target only the run knows: where a thrown prop came to rest.
 //
 //   { frames: 30, right: { to: [0.2, 1.0, -0.55], squeeze: 0 } }
 //
@@ -221,11 +223,14 @@ export async function play(rt, scenario, onStep = async () => {}) {
   };
   const marks = {};
   let step = 0;
+  let last = await rt.get("/state");
+  const resolve = (spec) => spec && Object.fromEntries(Object.entries(spec).map(([k, v]) => [k, typeof v === "function" ? v(last) : v]));
   for (const seg of scenario.steps) {
     const from = { head: { ...hands.head }, left: { ...hands.left }, right: { ...hands.right } };
+    const specs = { head: resolve(seg.head), left: resolve(seg.left), right: resolve(seg.right) };
     for (let i = 0; i < seg.frames; i++) {
       for (const side of ["head", "left", "right"]) {
-        const spec = seg[side];
+        const spec = specs[side];
         if (!spec) continue;
         hands[side] = {
           ...hands[side],
@@ -241,6 +246,7 @@ export async function play(rt, scenario, onStep = async () => {}) {
       if (tapped) await rt.post("/input", { type: "key", key: seg.tap, down: true });
       await rt.post("/input", sample(hands));
       const state = await advance(rt);
+      last = state;
       if (tapped) await rt.post("/input", { type: "key", key: seg.tap, down: false });
       step++;
       const mark = i === seg.frames - 1 ? seg.mark : undefined;
