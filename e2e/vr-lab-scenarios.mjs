@@ -9,6 +9,8 @@
 // The stick lies on the table at rig (-0.3, 0.9175, -0.6) along rig -Z, 0.7 m
 // long and 3.5 cm thick.
 
+import { add, qconj, qmul, qrot, sub } from "./xr-scenario.mjs";
+
 export const project = "examples/vr-lab";
 // Tapped before an attached recording (`npm run record:vr-lab`): station 1, reset.
 export const resetKey = "1";
@@ -24,6 +26,22 @@ const HANDLE = [-0.3, 0.95, -0.3];
 const LIFTED = [-0.3, 1.2, -0.3];
 // A turn of the wrist about +X (the tip up, for positive degrees).
 export const pitch = (deg) => [Math.sin((deg * Math.PI) / 360), 0, 0, Math.cos((deg * Math.PI) / 360)];
+// A roll about -Z, the way the hand points (clockwise, for positive degrees).
+export const roll = (deg) => [0, 0, -Math.sin((deg * Math.PI) / 360), Math.cos((deg * Math.PI) / 360)];
+
+// The table (rig-local): its top, and its extent across and ahead.
+export const TABLE = { top: 0.9, x: [-0.6, 0.85], z: [-0.9, -0.3] };
+// The brick rests turned 35° on the table's right; the bottle stands behind
+// it, its neck half way up its top 8 cm.
+export const BRICK = { at: [0.6, 0.9325, -0.5], turn: yaw(35), size: [0.1, 0.065, 0.21] };
+export const BOTTLE = { at: [0.62, 1.03, -0.8], neck: 0.09 };
+
+// Where a prop grabbed at its rest pose by a hand at `grip` (a point, a
+// wrist turn) is when the hand moves to `to`: the hold keeps their offset.
+const carried = (prop, grip, to) => {
+  const offset = qrot(qconj(grip.turn), sub(prop.at, grip.at));
+  return add(to.at, qrot(to.turn, offset));
+};
 
 // The stick throw: lifted, wound back tip up, then flicked tip down at 10° a
 // step while the hand moves forward, released mid-flick.
@@ -49,6 +67,9 @@ export const defaultSpectator = side;
 // From above the wall, in its plane: the ball held on this side while the
 // hand goes through to the other.
 const alongWall = { eye: [0.65, 2.45, 3.75], target: [0.6, 1.05, 4.6], fov: 50 };
+// Straight down over the wall: the held ball on this side, the hand (and its
+// ghost) through on the other.
+const overWall = { eye: [0.64, 8.0, 4.45], target: [0.64, 1.15, 4.55], fov: 8 };
 
 // Above and behind the player's left shoulder: the stick turning into the wall.
 const overStick = { eye: [0.2, 3.1, 3.75], target: [0.3, 1.1, 4.6], fov: 45 };
@@ -62,6 +83,34 @@ const grab = [
   { frames: 20, right: { to: BALL, squeeze: 0 }, mark: "reached" },
   { frames: 6, right: { squeeze: 1 }, mark: "grabbed" },
 ];
+
+// From the player's right, low and side on to the table's near edge.
+const atEdge = { eye: [-1.25, 1.15, 3.7], target: [-0.35, 0.93, 4.33], fov: 38 };
+// From the player's right and above: the brick and bottle end of the table.
+const rightEnd = { eye: [-1.5, 1.75, 3.45], target: [-0.45, 1.0, 4.55], fov: 44 };
+// Close on the bottle, from the player's right.
+const atBottle = { eye: [-1.35, 1.45, 4.05], target: [-0.55, 1.15, 4.7], fov: 34 };
+
+// The brick, taken near a top corner with the wrist turned, lifted and turned
+// again, handed to the left hand (held at its centre), put down, then taken
+// again by the right at another point.
+const brickGrip = { at: [0.585, 0.975, -0.6], turn: qmul(yaw(-50), roll(30)) };
+const brickLift = { at: [0.4, 1.2, -0.42], turn: qmul(yaw(20), pitch(-25)) };
+const brickHandOff = carried(BRICK, brickGrip, brickLift);
+const brickDown = [0.42, 1.06, -0.45];
+
+// The brick held at its centre, tipped over its long edge and lowered onto
+// the table's near edge, the hand going on 4 cm below the top; then lifted.
+const edgeAbove = { at: [0.35, 1.1, -0.32], turn: roll(-30) };
+const edgeBelow = [0.35, TABLE.top - 0.04, -0.32];
+
+// The bottle: a hand pointing up, 2 cm off the neck.
+const neckGrip = add(BOTTLE.at, [0.02, BOTTLE.neck, 0.008]);
+const bottleBase = add(BOTTLE.at, [0.05, -0.1, 0]);
+
+// The ball pushed into the wall (rig x -0.6) with the hand through it.
+const throughWall = [-0.77, 1.15, -0.55];
+const atWall = [-0.545, 1.15, -0.55];
 
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
@@ -164,6 +213,103 @@ export const scenarios = {
       { frames: 1, right: { to: flickAt(10) }, mark: "after3" },
       { frames: 180, right: { to: [0.25, 1.0, -0.2], turn: [0, 0, 0, 1] }, mark: "landed" },
       { frames: 1, right: {}, mark: "rest" },
+    ],
+  },
+
+  // Take the resting, turned brick near a corner with the wrist turned: it
+  // doesn't move. Lift it, hand it to the left hand, put it down, and take it
+  // again with the right somewhere else: it never jumps.
+  "brick-regrab": {
+    station: 1,
+    spectator: rightEnd,
+    steps: [
+      { frames: 20, right: { to: [0.62, 1.1, -0.45], turn: brickGrip.turn } },
+      { frames: 20, right: { to: brickGrip.at }, mark: "reachedBrick" },
+      { frames: 6, right: { squeeze: 1 }, mark: "tookBrick" },
+      { frames: 6, right: {}, mark: "holdingBrick" },
+      { frames: 30, right: { to: brickLift.at, turn: brickLift.turn }, mark: "lifted" },
+      { frames: 30, left: { to: brickHandOff } },
+      { frames: 1, left: {}, mark: "beforeHandOff" },
+      { frames: 1, left: { squeeze: 1 }, mark: "handedOff" },
+      { frames: 6, left: {}, right: { squeeze: 0 }, mark: "rightOpen" },
+      { frames: 20, right: { to: [0.25, 0.95, -0.2] } },
+      { frames: 30, left: { to: brickDown } },
+      { frames: 6, left: {}, mark: "lowered" },
+      { frames: 1, left: { squeeze: 0 }, mark: "putDown" },
+      { frames: 60, left: { to: [-0.25, 0.95, -0.1] }, mark: "settled" },
+      { frames: 25, right: { to: [0.45, 1.05, -0.4], turn: qmul(yaw(70), pitch(15)) } },
+      { frames: 15, right: { to: [0.45, 0.955, -0.43] }, mark: "reachedAgain" },
+      { frames: 6, right: { squeeze: 1 }, mark: "tookAgain" },
+      { frames: 6, right: {}, mark: "holdingAgain" },
+      { frames: 30, right: { to: [0.4, 1.15, -0.4] }, mark: "liftedAgain" },
+    ],
+  },
+
+  // Take the brick by its centre, tip it over its long edge and press it
+  // down onto the table's near edge, the hand going on below the top: it
+  // stops on the edge. Lifted, it follows the hand again.
+  "brick-edge": {
+    station: 1,
+    spectator: atEdge,
+    steps: [
+      { frames: 20, right: { to: [0.6, 1.05, -0.45] } },
+      { frames: 15, right: { to: BRICK.at }, mark: "reachedBrick" },
+      { frames: 6, right: { squeeze: 1 }, mark: "tookBrick" },
+      { frames: 30, right: { to: edgeAbove.at, turn: edgeAbove.turn }, mark: "above" },
+      { frames: 30, right: { to: edgeBelow }, mark: "pressed" },
+      { frames: 15, right: {}, mark: "held" },
+      { frames: 30, right: { to: edgeAbove.at }, mark: "lifted" },
+      { frames: 1, right: { squeeze: 0 }, mark: "letGo" },
+      { frames: 40, right: { to: [0.25, 0.95, -0.2], turn: [0, 0, 0, 1] } },
+    ],
+  },
+
+  // A hand pointing up takes the bottle 2 cm off its neck: it snaps there.
+  "bottle-neck": {
+    station: 1,
+    spectator: atBottle,
+    steps: [
+      { frames: 20, right: { to: [0.6, 1.25, -0.6], turn: pitch(90) } },
+      { frames: 20, right: { to: neckGrip }, mark: "atNeck" },
+      { frames: 1, right: { squeeze: 1 }, mark: "tookNeck" },
+      { frames: 30, right: { to: [0.45, 1.35, -0.55] }, mark: "liftedNeck" },
+      { frames: 30, right: { to: [0.45, 1.15, -0.55] }, mark: "lowered" },
+      { frames: 1, right: { squeeze: 0 }, mark: "letGo" },
+      { frames: 40, right: { to: [0.25, 1.05, -0.3], turn: [0, 0, 0, 1] } },
+    ],
+  },
+
+  // The bottle taken by its base, the wrist turned: it doesn't snap.
+  "bottle-base": {
+    station: 1,
+    spectator: rightEnd,
+    steps: [
+      { frames: 20, right: { to: [0.7, 1.0, -0.7], turn: yaw(60) } },
+      { frames: 15, right: { to: bottleBase }, mark: "atBase" },
+      { frames: 1, right: { squeeze: 1 }, mark: "tookBase" },
+      { frames: 6, right: {}, mark: "holdingBase" },
+      { frames: 30, right: { to: [0.55, 1.2, -0.6] }, mark: "liftedBase" },
+    ],
+  },
+
+  // Push the held ball into the wall, the hand going on through it, and
+  // switch where the hand is drawn (H): tracked, through the wall; then at
+  // the ball, with a ghost where it really is. Brought back to within a
+  // centimetre of the ball the ghost goes; pushed through again it returns.
+  "hand-view": {
+    station: 1,
+    spectator: overWall,
+    steps: [
+      ...grab,
+      { frames: 20, right: { to: [-0.3, 1.15, -0.55] } },
+      { frames: 30, right: { to: throughWall }, mark: "blockedTracked" },
+      { frames: 20, right: {}, tap: "h", mark: "blockedAccepted" },
+      { frames: 20, right: { to: atWall }, mark: "nearWall" },
+      { frames: 20, right: { to: [-0.4, 1.15, -0.55] }, mark: "out" },
+      { frames: 25, right: { to: throughWall }, mark: "blockedAgain" },
+      { frames: 20, right: {}, tap: "h", mark: "trackedAgain" },
+      { frames: 1, right: { squeeze: 0 }, mark: "letGo" },
+      { frames: 30, right: { to: [0.0, 1.1, -0.35] } },
     ],
   },
 

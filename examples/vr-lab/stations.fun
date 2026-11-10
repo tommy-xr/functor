@@ -49,23 +49,25 @@ expect (
 )
 
 // --- the grab table ---
-// Ahead of the feet: a counter-height table with the ball on it, a wall
-// against its left end (the player's left is world +X here) to push the ball
+// Ahead of the feet: a counter-height table with the props on it, a wall
+// against its left end (the player's left is world +X here) to push them
 // into, and a basket on the floor a throw away.
 
-let ballRadius = 0.06
 let tableTop = 0.9
-let table: Box = { center: Quat.v3(0.0, tableTop / 2.0, 4.6), size: Quat.v3(1.2, tableTop, 0.6) }
-let ballSpawn = Quat.v3(-0.2, tableTop + ballRadius, 4.55)
+let table: Box = { center: Quat.v3(-0.125, tableTop / 2.0, 4.6), size: Quat.v3(1.45, tableTop, 0.6) }
 let wall: Box = { center: Quat.v3(0.65, 1.0, 4.6), size: Quat.v3(0.1, 2.0, 1.6) }
 
-// The stick's rack: lying on the table between the ball and the wall,
-// pointing away from the player, its near end over the table's edge.
-// Rig-local, as `Stick` holds it.
-let stickRest: Input.pose = {
-  position: Quat.v3(-0.3, tableTop + Stick.thickness / 2.0, -0.6),
-  orientation: Quat.identity
-}
+/// Where each prop rests on the table (rig-local, as `Hold` holds it): the
+/// ball ahead, the stick between it and the wall pointing away with its near
+/// end over the table's edge, and on the right a brick, turned, and a bottle
+/// standing.
+let spawn = (k: Props.Kind): Input.pose =>
+  let on = (x: float, z: float, q: Input.quaternion) => Hold.at(Quat.v3(x, tableTop + (Props.extent(k)).y / 2.0, z), q) in
+  match k with
+  | Props.Ball => on(0.2, -0.55, Quat.identity)
+  | Props.Stick => on(-0.3, -0.6, Quat.identity)
+  | Props.Brick => on(0.6, -0.5, Quat.yaw(35.0 * Math.pi / 180.0))
+  | Props.Bottle => on(0.62, -0.8, Quat.identity)
 
 // The basket: an open box, its inside `basketInner` wide and `basketDepth` deep.
 let basketAt = Quat.v3(-0.2, 0.0, 7.1)
@@ -92,7 +94,7 @@ let inBasket = (p: Input.point3): bool =>
 
 expect inBasket(Quat.add(basketAt, Quat.v3(0.1, 0.1, -0.1)))
 expect not inBasket(Quat.add(basketAt, Quat.v3(0.4, 0.1, 0.0)))
-expect not inBasket(ballSpawn)
+expect not inBasket(toWorld(grabTable, (spawn(Props.Ball)).position))
 
 // The scoreboard hangs behind the basket, facing the player.
 let boardAt = Quat.add(basketAt, Quat.v3(0.0, 1.5, 0.6))
