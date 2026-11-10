@@ -50,8 +50,8 @@ struct Version {
     requested: u64,
 }
 
-/// How many sweeps (one per rendered view) a superseded version may go
-/// unrequested before it is released: about a second.
+/// How many sweeps (one per rendered view, so two per stereo frame) a
+/// superseded version may go unrequested before it is released.
 const SUPERSEDED_AFTER_SWEEPS: u64 = 120;
 
 /// A URL locator without its `v` query parameter — what the versions of one
@@ -59,7 +59,7 @@ const SUPERSEDED_AFTER_SWEEPS: u64 = 120;
 /// `http://host/a.glb?`. `None` for a file path or a URL with no `v`.
 fn version_key(locator: &str) -> Option<String> {
     let (base, query) = locator.split_once('?')?;
-    if !base.contains("://") {
+    if !crate::io::is_remote_path(base) {
         return None;
     }
     let rest: Vec<&str> = query.split('&').filter(|p| !p.starts_with("v=")).collect();
@@ -159,13 +159,36 @@ impl AssetCache {
             removed
         };
         for path in &removed {
-            self.bytes_cache.lock().unwrap().remove(path);
-            let mut progress = self.progress.lock().unwrap();
-            progress.started.remove(path);
-            progress.loaded.remove(path);
-            progress.failed.remove(path);
+            self.forget(path);
         }
         removed
+    }
+
+    /// Drop `path`'s bytes and its progress entry, as if never requested.
+    pub(crate) fn forget(&self, path: &str) {
+        self.uploaded_paths.lock().unwrap().remove(path);
+        self.bytes_cache.lock().unwrap().remove(path);
+        let mut progress = self.progress.lock().unwrap();
+        progress.started.remove(path);
+        progress.loaded.remove(path);
+        progress.failed.remove(path);
+    }
+
+    /// Note that `path` is in use, if it is a `?v=` URL: a load does, and so
+    /// must whatever keeps drawing a decode without asking for it again.
+    pub fn note_request(&self, path: &str) {
+        if !path.contains("v=") {
+            return;
+        }
+        let mut progress = self.progress.lock().unwrap();
+        let progress = &mut *progress;
+        if let Some(version) = progress.versions.get_mut(path) {
+            version.requested = progress.sweeps;
+        } else if let Some(key) = version_key(path) {
+            progress.version_starts += 1;
+            let version = Version { key, started: progress.version_starts, requested: progress.sweeps };
+            progress.versions.insert(path.to_string(), version);
+        }
     }
 
     /// Release superseded URL versions. A locator like
@@ -178,8 +201,11 @@ impl AssetCache {
     /// (`SceneContext` does). Call once per rendered view.
     ///
     /// Never released: a load in flight, the newest version (drawn or not, so
-    /// a preloaded one waits), and a version still being requested. A
-    /// released locator requested again simply loads again.
+    /// a preloaded one waits), and a version still being requested. "Newest"
+    /// is by when its load started, not by the value of `v`. A released
+    /// locator requested again loads again, as the newest — so alternating
+    /// between versions, or scrubbing time back to a frame that drew a
+    /// released one, refetches.
     pub fn sweep_superseded(&self) -> Vec<String> {
         let mut progress = self.progress.lock().unwrap();
         progress.sweeps += 1;
@@ -207,14 +233,10 @@ impl AssetCache {
         released.sort();
         for path in &released {
             progress.versions.remove(path);
-            progress.started.remove(path);
-            progress.loaded.remove(path);
-            progress.failed.remove(path);
         }
         drop(progress);
-        let mut bytes = self.bytes_cache.lock().unwrap();
         for path in &released {
-            bytes.remove(path);
+            self.forget(path);
         }
         released
     }
@@ -236,18 +258,7 @@ impl AssetCache {
         pipeline: Arc<BuiltAssetPipeline<T>>,
         asset_path: &str,
     ) -> Arc<AssetHandle<T>> {
-        // A `?v=` URL: note the request, for `sweep_superseded`.
-        if asset_path.contains('?') {
-            let mut progress = self.progress.lock().unwrap();
-            let progress = &mut *progress;
-            if let Some(version) = progress.versions.get_mut(asset_path) {
-                version.requested = progress.sweeps;
-            } else if let Some(key) = version_key(asset_path) {
-                progress.version_starts += 1;
-                let version = Version { key, started: progress.version_starts, requested: progress.sweeps };
-                progress.versions.insert(asset_path.to_string(), version);
-            }
-        }
+        self.note_request(asset_path);
 
         // First - does the pipeline already have a reference to this?
         if let Some(asset) = pipeline.clone().get_opt(asset_path) {
@@ -520,6 +531,7 @@ mod tests {
         assert_eq!(version_key("http://h/a.glb?id=3"), None);
         assert_eq!(version_key("http://h/a.glb"), None);
         assert_eq!(version_key("models/a.glb?v=7"), None, "not a URL");
+        assert_eq!(version_key("file://a.glb?v=7"), None, "not fetched");
     }
 
     /// A cache holding `bytes` for each URL, as a finished fetch leaves it.

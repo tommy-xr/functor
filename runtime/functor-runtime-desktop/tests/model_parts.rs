@@ -130,7 +130,8 @@ fn main() {
                 harness.asset_cache.replace_uploaded(&url, fixture(true, skinned));
                 let frame = scene_frame(model(&url, &[]), instanced);
                 harness.warm(&frame);
-                for _ in 0..70 {
+                // Over 120 views, whatever the eye count.
+                for _ in 0..130 {
                     harness.render(&frame);
                 }
                 let now = gpu_counters().live();
