@@ -1,5 +1,6 @@
-// vr-lab hands E2E: the capsule glove (`examples/vr-lab/hand.fun`) driven by
-// injected XR samples, headlessly.
+// vr-lab hands E2E: the capsule glove (`examples/vr-lab/hand.fun`) and the
+// skinned glove (`skin.fun`, the default) driven by injected XR samples,
+// headlessly.
 //
 // Plays scenarios in `e2e/vr-lab-scenarios.mjs` against `examples/vr-lab`
 // (`--headless`, pinned clock, one sample per fixed step) and reads the
@@ -19,6 +20,14 @@
 //      other fingers stay wrapped.
 //   4. The ghost: past 2 cm the same glove, translucent (0.4), at the tracked
 //      grip; within it, none.
+//   (1-4 switch to the capsule glove first, with G.)
+//   5. The skinned glove, open, a fist and the trigger alone: each of its 20
+//      skinned joints placed (`Anim.place`, read from `/scene`) where FK puts
+//      it in the world, within 1 mm, each turned within its correction's
+//      bound of FK's joint (12.5° the wrist, 6° the rest). G switches it to
+//      the capsules and back, in `/state` and `/scene`.
+//   6. A held pistol's skinned index follows its trigger, placed as FK puts
+//      the preset; the skinned ghost is the drawn hand's, translucent.
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab-hands.mjs
@@ -28,6 +37,8 @@ import { grabTable, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8300;
 const run = (name, body) => session(name, project, PORT, body);
+// A scenario with the capsule glove (G pressed before it starts).
+const capsules = (s) => ({ ...s, steps: [{ frames: 1, tap: "G" }, ...s.steps] });
 
 // --- the skeleton, as `hand.fun` states it (right hand, wrist frame) ---
 const deg = (d) => (d * Math.PI) / 180;
@@ -167,7 +178,7 @@ const reach = (g, finger) => len(sub(g.spheres[TIP[finger]].at, palmOf(g)));
 const mm = (d) => `${(d * 1000).toFixed(3)} mm`;
 
 await run("glove at FK, squeezed and pulled", async (rt) => {
-  const { scenes, at } = await record(rt, scenarios["hand-curl"], { scenes: true });
+  const { scenes, at } = await record(rt, capsules(scenarios["hand-curl"]), { scenes: true });
   const kids = (mark) => scenes[mark].scene.obj.Group;
   const gripOf = (mark, side) => ({ position: at(mark)[side].at, orientation: at(mark)[side].orientation });
   const inputs = { open: [0, 0], squeezed: [0, 1], pulled: [1, 0], released: [0, 0] };
@@ -198,7 +209,7 @@ await run("glove at FK, squeezed and pulled", async (rt) => {
 });
 
 await run("a held pistol's index follows its trigger", async (rt) => {
-  const { scenes, marks } = await record(rt, scenarios["pistol-trigger"], { scenes: true });
+  const { scenes, marks } = await record(rt, capsules(scenarios["pistol-trigger"]), { scenes: true });
   const g = (mark) => glove(scenes[mark].scene.obj.Group[5]);
   const reaches = ["trigger0", "trigger50", "trigger100", "triggerOut"].map((m) => reach(g(m), "index"));
   check(marks.trigger0.model.props.some((p) => p.kind.$ctor === "Props.Pistol" && p.held.$ctor === "Option.Some"), "the pistol in the right hand");
@@ -215,7 +226,7 @@ await run("a held pistol's index follows its trigger", async (rt) => {
 });
 
 await run("the ghost glove", async (rt) => {
-  const { scenes } = await record(rt, scenarios["hand-view"], { scenes: true });
+  const { scenes } = await record(rt, capsules(scenarios["hand-view"]), { scenes: true });
   const kids = (mark) => scenes[mark].scene.obj.Group;
   const ghost = kids("blockedAccepted")[7];
   const [opacity] = find(ghost, "Opacity");
@@ -226,6 +237,109 @@ await run("the ghost glove", async (rt) => {
   const apart = shadow && len(sub(shadow.spheres[0].at, drawn.spheres[0].at));
   check(apart > 0.02, `drawn ${apart && (apart * 100).toFixed(1)} cm from it`);
   check(glove(kids("nearWall")[7]) === undefined && glove(kids("nearWall")[5]) !== undefined, "within 2 cm: no ghost");
+});
+
+// --- the skinned glove (`skin.fun`) ---
+// Its skinned joints (indices into the 26: the wrist, the thumb's three
+// bones, each finger's four), by their WebXR names.
+const NAMES = ["palm", "wrist", "thumb-metacarpal", "thumb-phalanx-proximal", "thumb-phalanx-distal", "thumb-tip",
+  ...["index", "middle", "ring", "pinky"].flatMap((f) => ["metacarpal", "phalanx-proximal", "phalanx-intermediate", "phalanx-distal", "tip"].map((b) => `${f}-finger-${b}`))];
+const SKINNED = [1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16, 17, 18, 19, 21, 22, 23, 24];
+const between = (a, b) => (Math.acos(Math.min(1, Math.max(-1, a.reduce((s, c, i) => s + c * b[i], 0)))) * 180) / Math.PI;
+// A hand's skinned glove: its model's file and each placed joint's place and
+// -Z/+Y axes in the world.
+function skin(node) {
+  const [model] = find(node, "Model");
+  if (!model) return undefined;
+  const world = (p, w = 1) => model.xforms.reduceRight((q, m) => apply(m, q, w), p);
+  const joints = Object.fromEntries(model.value.animation.Place.joints.map((j) => [j.joint, {
+    at: world(j.position),
+    z: unit(world(qrot(j.rotation, [0, 0, -1]), 0)),
+    y: unit(world(qrot(j.rotation, [0, 1, 0]), 0)),
+  }]));
+  return { file: model.value.handle.File, joints };
+}
+// Where FK puts each skinned joint for a hand at grip `grip` (rig-local),
+// in the world: its place and -Z/+Y axes.
+function skinExpected(side, grip, pose, rig) {
+  const toWorld = (p) => rigToWorld(add(grip.position, qrot(grip.orientation, p)), rig.feet, rig.yaw);
+  const dir = (q, v) => unit(sub(toWorld(qrot(q, v)), toWorld([0, 0, 0])));
+  const js = joints(side, drawnPose(pose));
+  return Object.fromEntries(SKINNED.map((j) => {
+    const { position, orientation } = js[j];
+    return [NAMES[j], { at: toWorld(position), z: dir(orientation, [0, 0, -1]), y: dir(orientation, [0, 1, 0]) }];
+  }));
+}
+// The farthest a skinned joint is from FK's, and the largest turn (of -Z or
+// +Y) past its correction's bound (the wrist's 12.5°, the rest 6°).
+function skinOff(got, want) {
+  let far = 0;
+  let over = -Infinity;
+  for (const j of SKINNED) {
+    const [g, w] = [got.joints[NAMES[j]], want[NAMES[j]]];
+    if (!g) return { far: Infinity, over: Infinity, count: Object.keys(got.joints).length };
+    far = Math.max(far, len(sub(g.at, w.at)));
+    over = Math.max(over, Math.max(between(g.z, w.z), between(g.y, w.y)) - (j === 1 ? 12.5 : 6));
+  }
+  return { far, over, count: Object.keys(got.joints).length };
+}
+
+await run("skinned glove at FK: open, a fist, the trigger; G switches it", async (rt) => {
+  const { scenes, at, marks } = await record(rt, scenarios["skin-curl"], { scenes: true });
+  const kids = (mark) => scenes[mark].scene.obj.Group;
+  const gripOf = (mark, side) => ({ position: at(mark)[side].at, orientation: at(mark)[side].orientation });
+  const inputs = { open: [0, 0], fist: [1, 1], trigger: [1, 0] };
+  check(marks.open.model.glove.$ctor === "Skinned", "the skinned glove by default (`/state` glove: Skinned)");
+  for (const [mark, [trigger, squeeze]] of Object.entries(inputs)) {
+    for (const [side, child] of [["left", 4], ["right", 5]]) {
+      const g = skin(kids(mark)[child]);
+      const off = g ? skinOff(g, skinExpected(side, gripOf(mark, side), empty(trigger, squeeze), grabTable)) : { far: Infinity, over: Infinity, count: 0 };
+      check(g && g.file.endsWith(`generic-hand/${side}.glb`) && off.count === 20 && off.far < 0.001 && off.over <= 0,
+        `${mark}: the ${side} skinned glove's 20 joints where FK puts them (worst ${mm(off.far)}), each turned within its correction's bound (${(-off.over).toFixed(2)}° inside)`);
+    }
+  }
+  // The fist closes every finger on the palm; the trigger alone, the index.
+  const tipToPalm = (mark, side, tip) => {
+    const js = skin(kids(mark)[side === "left" ? 4 : 5]).joints;
+    return len(sub(js[`${tip}-finger-phalanx-distal`].at, js["middle-finger-metacarpal"].at));
+  };
+  for (const side of ["left", "right"]) {
+    const closer = (mark, tip) => tipToPalm("open", side, tip) - tipToPalm(mark, side, tip);
+    check(["index", "middle", "ring", "pinky"].every((f) => closer("fist", f) > 0.02), `${side}: the fist closes every finger`);
+    check(closer("trigger", "index") > 0.02 && ["middle", "ring", "pinky"].every((f) => Math.abs(closer("trigger", f)) < 1e-6), `${side}: the trigger alone closes the index`);
+  }
+  // G: the capsules (no model), in `/state` and `/scene`; G again: skinned.
+  const capsule = kids("capsule");
+  check(marks.capsule.model.glove.$ctor === "Capsule" && glove(capsule[5])?.spheres.length === 24 && !skin(capsule[5]) && !skin(capsule[4]),
+    "G: the capsule glove, in `/state` and `/scene`");
+  check(marks.skinned.model.glove.$ctor === "Skinned" && skin(kids("skinned")[5]) && !glove(kids("skinned")[5]), "G again: the skinned glove");
+});
+
+await run("a held pistol's skinned index", async (rt) => {
+  const { scenes } = await record(rt, scenarios["pistol-trigger"], { scenes: true });
+  const local = (mark) => {
+    const [model] = find(scenes[mark].scene.obj.Group[5], "Model");
+    return Object.fromEntries(model.value.animation.Place.joints.map((j) => [j.joint, j.position]));
+  };
+  // In the hand's frame (the grip's turned half round +Y), as FK puts the preset.
+  const pose = (t) => ({ thumb: { curl: 0.75, opposition: 1 }, curls: [mix(0.25, 0.55, t), 0.75, 0.72, 0.6] });
+  const want = (t) => joints("right", drawnPose(pose(t))).map(({ position: [x, y, z] }) => [-x, y, -z]);
+  const off = Math.max(...[["trigger0", 0], ["trigger50", 0.5], ["trigger100", 1]].flatMap(([m, t]) =>
+    SKINNED.map((j) => len(sub(local(m)[NAMES[j]], want(t)[j])))));
+  check(off < 1e-4, `posed as the pistol grip's preset at each pull (worst ${mm(off)})`);
+  const reach = (m) => len(sub(local(m)["index-finger-phalanx-distal"], local(m)["middle-finger-metacarpal"]));
+  check(reach("trigger50") < reach("trigger0") - 0.005 && Math.abs(reach("triggerOut") - reach("trigger0")) < 1e-6, "the index closes with the trigger and opens with it");
+});
+
+await run("the skinned ghost", async (rt) => {
+  const { scenes } = await record(rt, scenarios["hand-view"], { scenes: true });
+  const kids = scenes.blockedAccepted.scene.obj.Group;
+  const [opacity] = find(kids[7], "Opacity");
+  const [drawn, shadow] = [find(kids[5], "Model")[0], find(kids[7], "Model")[0]];
+  check(opacity && Math.abs(opacity.value[0] - 0.4) < 1e-6 && shadow && JSON.stringify(shadow.value) === JSON.stringify(drawn.value),
+    "blocked at the wall: the skinned glove's ghost, posed the same, at 0.4 opacity");
+  const apart = shadow && len(sub(skin(kids[7]).joints.wrist.at, skin(kids[5]).joints.wrist.at));
+  check(apart > 0.02, `drawn ${apart && (apart * 100).toFixed(1)} cm from it`);
 });
 
 if (failures.length) {

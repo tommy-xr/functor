@@ -94,3 +94,22 @@ let reach : (string, string, string, Vec3.t, float, t) => t
 /// }
 /// ```
 let orient : (string, Input.quaternion, float, t) => t
+
+/// Set named joints' complete model-space poses — position and rotation —
+/// after evaluating the pose below it: a rig driven straight from joint
+/// poses the game computes or tracks, such as a hand from its forward
+/// kinematics.
+///
+/// Each entry is `(joint, pose)`, `pose` an `Input.pose` in model space
+/// (before the node's `Scene` transforms). Parents apply before children, so
+/// one call can place a chain, listed in any order. Each joint keeps its
+/// scale. The position is exact under any invertible ancestor; the rotation
+/// is as `Anim.orient`'s (exact under rotated or uniformly scaled
+/// ancestors), its quaternion normalized and `q` ≡ `-q`. A zero quaternion
+/// is a teaching error. Placed joints are fully driven, exactly as with
+/// `Anim.rotate`; an enclosing mask can still exclude them. A name the model
+/// lacks warns once and is skipped.
+///
+/// WebXR's hand models hang every joint off the root, so their model-space
+/// joint poses are tracked joint poses, offset by the model's placement.
+let place : (List<(string, Input.pose)>, t) => t
