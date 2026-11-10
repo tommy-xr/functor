@@ -10780,8 +10780,13 @@ let main = (Plot.segments(0.1, white, [(a, b)]), Plot.polyline(0.1, white, [a, b
         let Value::Tuple(items) = &value else {
             panic!("expected a tuple");
         };
+        // Segments sit under their `Scene.castShadows(false)`.
         let instances = |item: &Value| match &scene_of(item).expect("a Scene").obj {
             SceneObject::Instanced { instances, .. } => instances.to_vec(),
+            SceneObject::CastShadows(false, children) => match &children[0].obj {
+                SceneObject::Instanced { instances, .. } => instances.to_vec(),
+                other => panic!("expected Instanced, got {other:?}"),
+            },
             other => panic!("expected Instanced, got {other:?}"),
         };
         let (a, b, c) = (Vector3::new(1.0, 2.0, 3.0), Vector3::new(4.0, 6.0, -9.0), Vector3::new(4.0, 7.0, -9.0));
