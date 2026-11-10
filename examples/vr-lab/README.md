@@ -33,7 +33,7 @@ the world, rig-local), the last release (`lastRelease`), the score, and each han
 headset requests 120 Hz with foveation off, floor-locked.
 
 A hand is OpenXR's 26 hand joints posed by forward kinematics from how far
-each finger curls (`Hand`), drawn as a skinned glove (`Skin`, the default) or
+each finger bends (`Hand`: its curl at the knuckle, its tip past it), drawn as a skinned glove (`Skin`, the default) or
 a capsule per bone; the capsules are the hand's fit data either way. The
 skinned glove is WebXR's `generic-hand` model with every joint placed where
 the capsules' FK puts it (`Anim.place`), turned by a per-joint correction
@@ -46,7 +46,7 @@ Empty, the grip curls the middle, ring and little fingers round the
 controller's handle and the trigger the index. Holding, each prop has a
 preset (`Props.fingers`): a power wrap for the stick, the bottle's neck, a
 magazine and a foregrip or fore-end; a gun's grip with the index on its
-trigger; a pinch for a round or shell; an open palm for the ball and brick.
+trigger, hooked (its tip bent past its knuckle); a pinch for a round or shell; an open palm for the ball and brick.
 A hand's ghost is the same glove.
 
 The skinned glove's model: [`@webxr-input-profiles/assets`](https://www.npmjs.com/package/@webxr-input-profiles/assets)
