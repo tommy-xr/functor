@@ -27,8 +27,11 @@ headset requests 120 Hz with foveation off, floor-locked.
 
 | Module | What it is |
 | --- | --- |
-| `game.fun` | the MVU glue: station selector, the grab table's step, physics, drawing |
+| `game.fun` | the MVU glue: station selector, the step (holds, then slots where worn), physics, drawing |
 | `stations.fun` | where each station stands and what it's built from; rig ↔ world |
+| `hips.fun` | the body frame the slots ride: root and lagging yaw from the head, pin |
+| `slots.fun` | the body slots: offsets, reach, what each takes, how each is drawn |
+| `inventory.fun` | the inventory station's headless checks |
 | `hold.fun` | one hand grabbing, holding and releasing a prop (any pose); the swept move; the throw and spin estimate |
 | `props.fun` | the props: shape, collider, reach, authored grip, material, look |
 | `digits.fun` | seven-segment numbers (the headset doesn't draw `ui`) |
@@ -117,3 +120,52 @@ as the wrist did (the 60 ms window's feel) and shoving with a held stick
 feels solid, which hand view feels better when blocked (and the ghost's
 2 cm threshold), whether regrabs and hand-offs feel natural, the neck's snap
 radius, and the sweeps' cost on the headset (`npm run bench:quest`).
+
+## 2. Inventory
+
+The same table and props, at a second station, and three slots worn on the
+body: a holster at each thigh (the brick or the bottle) and a pouch on the
+belt in front (the ball). The stick fits none.
+
+- **The hips.** The slots hang off a frame `{root, yaw}` that is inferred
+  from the head alone (no tracked pelvis): the neck pivots 11 cm below and
+  9 cm behind the eyes, and the pelvis is under it at 0.62 of its height.
+  Its heading lags the head's as examples/fullbody's hips do (its
+  `slewYaw`, copied): within 25° it drifts after it at 20°/s, past that it
+  chases at 150°/s, and it never trails by more than 70°. Pitch doesn't
+  tilt it; a head with no heading (rolled onto its side) keeps the last,
+  and a lost head holds the whole frame.
+- **Pin.** While either hand is within 10 cm of a slot's reach the heading
+  holds still, so the slot doesn't swim away as the hand arrives; for
+  1.5 s at most, so arms hanging by the holsters don't hold it back for
+  good. Let go past the 70° twist limit, it catches up to the limit at once.
+- **Slots.** Each is plain data (`slots.fun`): an offset in the hips' frame,
+  an 8 cm reach round its centre, the kinds it takes, room for one. Drawn as
+  a ring: steel (holsters) or amber (pouch) idle, green when a hand holding
+  something it takes is in it, red when it won't (wrong kind, or full).
+- **Deposit.** Open a hand holding a prop inside a slot that takes it and
+  is empty: the prop goes there, at the slot's pose, and rides the hips. It
+  has no body while slotted, so a worn prop shoves nothing (a kinematic one
+  would knock props off the table as you walk past), and its pose is just
+  model data.
+- **Retrieve.** Squeeze inside the slot: the hand takes it back exactly
+  where it sits (the regrab, without the neck snap), and it gets a body
+  again.
+- **One place at a time.** A prop is in a hand, in a slot or free. Each step
+  decides storing first, then hand-offs, then ordinary drops and throws: the
+  other hand can't take a prop being put away, and a prop let go in a slot
+  that won't take it (wrong kind, or full) is let go as anywhere else. Two
+  hands opening in one slot in one step: the hand nearer its centre stores,
+  the right on a tie; the other's prop is let go. A hand that only just came
+  back from tracking loss never stores (its prop drops), and a lost hand
+  keeps holding.
+- **Reset** returns every prop to the table and forgets the hips.
+
+`GET /state` shows each prop's `slot` and the `hips` (`head`, `yaw`, `root`,
+`pinned`). `npm run bench:vr-lab` times the station's logic per step
+headlessly (release build).
+
+Worn checks still open: the slots' heights and reach for real bodies (the
+0.62 pelvis ratio, the 20 cm holster offset), the deadzone and slew when
+turning, whether the pin engages early enough and lets go cleanly, and
+whether the slots can be found without looking.

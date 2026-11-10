@@ -14,6 +14,11 @@
 //
 //   { frames: 30, right: { to: [0.2, 1.0, -0.55], squeeze: 0 } }
 //
+// The head stands at `[0, 1.6, 0]` looking ahead; a segment's `head` moves
+// and turns it the same way. A scenario's `neck: { at, eye }` instead pivots
+// it: the eyes sit at `eye` in the head's frame from a neck fixed at `at`,
+// so a `head: { turn }` turns it about the neck, as a real head does.
+//
 // A scenario may instead name a recorded `fixture` (`e2e/xr-fixture.mjs`
 // format; a path from the repo root): its steps replace `station`/`steps`,
 // and its `marks` name steps the same way.
@@ -124,10 +129,10 @@ const hand = (h) =>
         squeeze: h.squeeze ?? 0,
       };
 
-/** The XR sample for both hands' current state. */
+/** The XR sample for the head's and both hands' current state. */
 export const sample = (hands) => ({
   type: "xr",
-  head: { position: HEAD },
+  head: { position: hands.head?.at ?? HEAD, orientation: hands.head?.orientation ?? [0, 0, 0, 1] },
   left: hand(hands.left),
   right: hand(hands.right),
 });
@@ -170,16 +175,19 @@ export function slerp(a, b, t) {
 export async function play(rt, scenario, onStep = async () => {}) {
   if (scenario.fixture) return playFixture(rt, scenario.fixture, onStep);
   if (scenario.station !== undefined) await tap(rt, String(scenario.station));
+  const neck = scenario.neck;
+  const headAt = (orientation) => (neck ? add(neck.at, qrot(orientation, neck.eye)) : HEAD);
   const hands = {
+    head: { at: headAt([0, 0, 0, 1]), orientation: [0, 0, 0, 1] },
     left: { at: REST.left, squeeze: 0 },
     right: { at: REST.right, squeeze: 0 },
   };
   const marks = {};
   let step = 0;
   for (const seg of scenario.steps) {
-    const from = { left: { ...hands.left }, right: { ...hands.right } };
+    const from = { head: { ...hands.head }, left: { ...hands.left }, right: { ...hands.right } };
     for (let i = 0; i < seg.frames; i++) {
-      for (const side of ["left", "right"]) {
+      for (const side of ["head", "left", "right"]) {
         const spec = seg[side];
         if (!spec) continue;
         hands[side] = {
@@ -191,6 +199,7 @@ export async function play(rt, scenario, onStep = async () => {}) {
             : hands[side].orientation,
         };
       }
+      if (neck) hands.head.at = headAt(hands.head.orientation);
       const tapped = i === 0 && seg.tap;
       if (tapped) await rt.post("/input", { type: "key", key: seg.tap, down: true });
       await rt.post("/input", sample(hands));

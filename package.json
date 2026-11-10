@@ -85,6 +85,7 @@
     "demo:time-travel": "node site/demos/time-travel.mjs",
     "demo:detached-camera": "node site/demos/detached-camera.mjs",
     "demo:vr-lab": "node e2e/xr-demo.mjs e2e/vr-lab-scenarios.mjs",
+    "bench:vr-lab": "cargo build --release -p functor-cli --no-default-features && FUNCTOR_BIN=target/release/functor node e2e/vr-lab-bench.mjs",
     "record:vr-lab": "node e2e/xr-record.mjs e2e/vr-lab-scenarios.mjs",
     "demo:instant-feedback": "node site/demos/instant-feedback.mjs",
     "demo:batteries-included": "node site/demos/batteries-included.mjs",

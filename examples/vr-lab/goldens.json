@@ -15,5 +15,14 @@
     ],
     "inputScript": "reset.script",
     "captureAtFrame": 30
+  },
+  {
+    "name": "vr-lab-inventory-selected",
+    "debugRender": null,
+    "targets": [
+      "native"
+    ],
+    "inputScript": "inventory.script",
+    "captureAtFrame": 30
   }
 ]
