@@ -109,7 +109,7 @@ const brickDown = [0.42, 1.06, -0.45];
 const edgeAbove = { at: [0.35, 1.1, -0.32], turn: roll(-30) };
 const edgeBelow = [0.35, TABLE.top - 0.04, -0.32];
 
-// The bottle: a hand pointing up, 2 cm off the neck.
+// The bottle: an upright hand, 2 cm off the neck.
 const neckGrip = add(BOTTLE.at, [0.02, BOTTLE.neck, 0.008]);
 const bottleBase = add(BOTTLE.at, [0.05, -0.1, 0]);
 
@@ -1559,12 +1559,12 @@ export const scenarios = {
     ],
   },
 
-  // A hand pointing up takes the bottle 2 cm off its neck: it snaps there.
+  // An upright hand takes the bottle 2 cm off its neck: it snaps there.
   "bottle-neck": {
     station: 1,
     spectator: atBottle,
     steps: [
-      { frames: 20, right: { to: [0.6, 1.25, -0.6], turn: pitch(90) } },
+      { frames: 20, right: { to: [0.6, 1.25, -0.6] } },
       { frames: 20, right: { to: neckGrip }, mark: "atNeck" },
       { frames: 1, right: { squeeze: 1 }, mark: "tookNeck" },
       { frames: 30, right: { to: [0.45, 1.35, -0.55] }, mark: "liftedNeck" },

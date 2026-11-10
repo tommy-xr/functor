@@ -106,15 +106,15 @@ expect (
     && not Hold.hovering(reach(Pistol), true, gap(Pistol, at(Quat.v3(0.0, 0.05, -0.1)), pose))
 )
 
-// The bottle's neck, half way up it: held there in a fist round it, the
-// fist's -Z (pinky to thumb) up the bottle, so the body hangs below the hand.
+// The bottle's neck, half way up it: held there like a handle, up the
+// grip's +Y (`Hand.wristOnGrip`), so the body hangs below an upright hand.
 let neckAt = bodyHeight + neckLength / 2.0 - extent(Bottle).y / 2.0
 
 /// The hand's pose in the prop's frame where it is meant to be held, if
 /// anywhere: a hand that grabs within `Hold.snapRadius` of it snaps there.
 let grip = (k: Kind): Option.t<Input.pose> =>
   match k with
-  | Bottle => Option.Some(Hold.at(Quat.v3(0.0, neckAt, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0)))
+  | Bottle => Option.Some(Hold.at(Quat.v3(0.0, neckAt, 0.0), Quat.identity))
   | Pistol => Option.Some(Gun.grip)
   | Rifle => Option.Some(Longarm.grip)
   | Shotgun => Option.Some(Pump.grip)
@@ -148,16 +148,46 @@ let loads = (k: Kind): Option.t<Ammo.Kind> =>
   | Round(cal, _) => if cal == Ammo.Shell then Option.Some(cal) else Option.None
   | _ => Option.None
 
-// A hand pointing up, gripping the neck: snapped, the bottle stands upright
+// An upright hand gripping the neck: snapped, the bottle stands upright
 // with its neck in the fist.
 expect (
   match grip(Bottle) with
   | Option.Some(g) =>
-    let fist = Hold.at(Quat.v3(0.3, 1.2, -0.5), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 2.0)) in
+    let fist = Hold.at(Quat.v3(0.3, 1.2, -0.5), Quat.identity) in
     let held = Hold.grab(Hold.Right, fist, Hold.at(Quat.add(fist.position, Quat.v3(0.0, 0.01 - neckAt, 0.02)), Quat.identity), grip(Bottle)) in
     Hold.near(Hold.compose(fist, held.offset), Hold.at(Quat.add(fist.position, Quat.v3(0.0, 0.0 - neckAt, 0.0)), Quat.identity))
   | Option.None => false
 )
+
+/// Where a hand is on a prop: its grip (anywhere, for a prop without one),
+/// a long gun's foregrip or fore-end, or the slide (or charging handle) it
+/// racks.
+type Site = | AtGrip | AtFore | AtSlide
+
+/// The fingers on a prop, until a grip fitter wraps them to it: the one
+/// table of presets. `trigger` is the hand's trigger, for a gun's index.
+let fingers = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
+  match site with
+  | AtFore => Hand.power
+  | AtSlide => Hand.power
+  | AtGrip =>
+    (match k with
+     | Ball => Hand.palmOpen
+     | Brick => Hand.palmOpen
+     | Stick => Hand.power
+     | Bottle => Hand.power
+     | Pistol => Hand.onTrigger(trigger)
+     | Rifle => Hand.onTrigger(trigger)
+     | Shotgun => Hand.onTrigger(trigger)
+     | Mag(_, _) => Hand.power
+     | Round(_, _) => Hand.pinch
+     | Hull(_) => Hand.pinch)
+
+// A gun's index follows its trigger; its other fingers, and the foregrip's,
+// wrap; a round is pinched, the ball is in an open palm.
+expect (fingers(Pistol, AtGrip, 0.0)).index < (fingers(Pistol, AtGrip, 1.0)).index
+expect (fingers(Rifle, AtGrip, 1.0)).middle == Hand.power.middle && fingers(Rifle, AtFore, 1.0) == Hand.power
+expect fingers(Round(Ammo.PistolMag, 0.0), AtGrip, 1.0) == Hand.pinch && fingers(Ball, AtGrip, 1.0) == Hand.palmOpen
 
 /// A free dynamic body's material.
 let dynamics = (k: Kind, body: Physics.body): Physics.body =>

@@ -127,9 +127,9 @@ let pinch: FingerPose = { thumb: { curl: 0.5, opposition: 0.1 }, index: 0.5, mid
 let palmOpen: FingerPose = { thumb: { curl: 0.2, opposition: 0.3 }, index: 0.18, middle: 0.2, ring: 0.22, little: 0.25 }
 /// An empty hand on its controller: the grip (`squeeze`) curls the middle,
 /// ring and little fingers from relaxed to wrapped round the handle, the
-/// trigger the index; the thumb rests half curled.
+/// trigger the index; the thumb rests half curled, little opposed.
 let empty = (trigger: float, squeeze: float): FingerPose =>
-  { thumb: { curl: 0.5, opposition: 0.5 }, index: mix(relaxed, triggerPulled, trigger),
+  { thumb: { curl: 0.5, opposition: 0.25 }, index: mix(relaxed, triggerPulled, trigger),
     middle: mix(relaxed, power.middle, squeeze), ring: mix(relaxed, power.ring, squeeze), little: mix(relaxed, power.little, squeeze) }
 
 // --- forward kinematics ---
@@ -215,7 +215,7 @@ type Capsule = { joint: float, radius: float, length: float }
 // The palm is the four fat metacarpals; the thenar is the thumb's.
 let fingerCapsules = (first: float, f: Finger, radii: (float, float, float)): List<Capsule> =>
   let (rp, ri, rd) = radii in
-  [{ joint: first, radius: 0.0125, length: f.metacarpal },
+  [{ joint: first, radius: 0.014, length: f.metacarpal },
    { joint: first + 1.0, radius: rp, length: f.proximal },
    { joint: first + 2.0, radius: ri, length: f.intermediate },
    { joint: first + 3.0, radius: rd, length: f.distal - rd }]
@@ -366,5 +366,5 @@ expect (
   let squeezed = empty(0.0, 1.0) in
   let pulled = empty(1.0, 0.0) in
   squeezed.middle == power.middle && squeezed.ring == power.ring && squeezed.little == power.little && squeezed.index == open0.index
-    && pulled.index > open0.index && pulled.middle == open0.middle && open0.thumb == { curl: 0.5, opposition: 0.5 }
+    && pulled.index > open0.index && pulled.middle == open0.middle && open0.thumb == { curl: 0.5, opposition: 0.25 }
 )
