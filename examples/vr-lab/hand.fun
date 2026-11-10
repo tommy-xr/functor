@@ -2,8 +2,8 @@
 // XR_EXT_hand_tracking, in its order; an average adult hand's bones; a
 // finger pose (`FingerPose`: how far each finger curls) and the forward
 // kinematics from it; where the hand sits on a controller; and the capsules
-// it is drawn and (later) fitted with. Pure, so it is tested below with no
-// world.
+// it is drawn and (later) fitted with, and their drawing. Pure, so it is
+// tested below with no world.
 //
 // Joint frames follow OpenXR: each joint sits at the base of its bone, -Z
 // along the bone toward the fingertip, +Y out of the back of the hand (the
@@ -98,6 +98,9 @@ type Thumb = { curl: float, opposition: float }
 /// How far each finger curls, 0 (straight) to 1 (a fist). What a grip
 /// fitter outputs and the drawing reads.
 type FingerPose = { thumb: Thumb, index: float, middle: float, ring: float, little: float }
+
+/// Every finger (and the thumb, curled and opposed) at `c`.
+let curled = (c: float): FingerPose => { thumb: { curl: c, opposition: c }, index: c, middle: c, ring: c, little: c }
 
 /// Straight fingers, the thumb at rest: the skeleton's bind pose.
 let flat: FingerPose = { thumb: { curl: 0.0, opposition: 0.0 }, index: 0.0, middle: 0.0, ring: 0.0, little: 0.0 }
@@ -239,35 +242,81 @@ let ends = (posed: Posed, c: Capsule): (Input.point3, Input.point3) =>
   let j = jointOf(posed, c.joint) in
   (j.position, Quat.add(j.position, Quat.rotate(j.orientation, Quat.v3(0.0, 0.0, 0.0 - c.length))))
 
-/// The glove posed `posed` (in the grip's frame), painted `c`, as a subtree
-/// for `Scene.atPose` at the grip: one instanced draw of the capsules'
-/// cylinders and one of their caps. (`atPose`'s local +Z is the grip's -Z,
-/// and its +X the grip's -X.) A chain's radii shrink toward its tip, so a
-/// capsule's start cap lies inside the one before's end cap: only a chain's
-/// first start cap is drawn (`starts`, then every capsule's end).
-let glove = (c: Color.t, posed: Posed): Scene.t =>
+// --- drawing the glove ---
+// The glove is drawn in two parts, each one instanced draw of its capsules'
+// caps and one of their cylinders: the palm and thumb, posed as given; and
+// the four fingers, each curled to the nearest 1/32 (`drawLevels`) and read
+// from a table built at load, so a finger moving every step (a trigger
+// pulled) costs no forward kinematics. Each is a subtree for `Scene.atPose`
+// at the grip (whose local +Z is the grip's -Z, and +X the grip's -X).
+
+/// A part's draws: its capsules' caps and cylinders, as instances.
+type Part = { caps: List<Instance.t>, cylinders: List<Instance.t> }
+
+/// The instances drawing `caps` posed `posed`. A chain's radii shrink toward
+/// its tip, so a capsule's start cap lies inside the one before's end cap:
+/// only a chain's first start cap is drawn (`starts`, then every end).
+let partOf = (posed: Posed, caps: List<Capsule>): Part =>
   let drawn = (p: Input.point3) => Quat.v3(0.0 - p.x, p.y, 0.0 - p.z) in
-  let parts = capsules |> List.map((cap) => let (a, b) = ends(posed, cap) in (drawn(a), drawn(b), cap.radius, cap.length, starts(cap))) in
+  let segs = caps |> List.map((cap) => let (a, b) = ends(posed, cap) in (drawn(a), drawn(b), cap.radius, cap.length, starts(cap))) in
   let at = (p: Input.point3) => Instance.at(Quat.toVec3(p)) in
-  let firsts = parts |> List.filter((s) => let (_, _, _, _, first) = s in first) |> List.map((s) => let (a, _, r, _, _) = s in at(a) |> Instance.scale(r)) in
-  let spheres = firsts |> List.append(parts |> List.map((s) => let (_, b, r, _, _) = s in at(b) |> Instance.scale(r))) in
+  let firsts = segs |> List.filter((s) => let (_, _, _, _, first) = s in first) |> List.map((s) => let (a, _, r, _, _) = s in at(a) |> Instance.scale(r)) in
   // A unit cylinder stands along +Y: turned about X, then Z, onto the axis.
-  let cylinders = parts |> List.map((s) =>
+  let cylinder = (s) =>
     let (a, b, r, length, _) = s in
     let u = Quat.scale(1.0 / length, Quat.sub(b, a)) in
     at(Quat.lerp(a, b, 0.5)) |> Instance.scaleXYZ(2.0 * r, length, 2.0 * r)
       |> Instance.rotateX(Angle.radians(Math.asin(Math.clamp(0.0 - 1.0, 1.0, u.z))))
-      |> Instance.rotateZ(Angle.radians(Math.atan2(0.0 - u.x, u.y)))) in
+      |> Instance.rotateZ(Angle.radians(Math.atan2(0.0 - u.x, u.y))) in
+  { caps: firsts |> List.append(segs |> List.map((s) => let (_, b, r, _, _) = s in at(b) |> Instance.scale(r))),
+    cylinders: segs |> List.map(cylinder) }
+
+/// A part painted `c`.
+let partScene = (c: Color.t, part: Part): Scene.t =>
   Scene.group([
-    Scene.sphere() |> Scene.lit(c) |> Scene.instanced(spheres),
-    Scene.cylinder() |> Scene.lit(c) |> Scene.instanced(cylinders),
+    Scene.sphere() |> Scene.lit(c) |> Scene.instanced(part.caps),
+    Scene.cylinder() |> Scene.lit(c) |> Scene.instanced(part.cylinders),
   ])
+
+// The palm and thumb's capsules (the metacarpals' and the thumb's); each
+// finger's phalanges (index, middle, ring, little).
+let inPalm = (c: Capsule): bool => c.joint < 6.0 || starts(c)
+let fingerCaps = [6.0, 11.0, 16.0, 21.0] |> List.map((first) => capsules |> List.filter((c) => c.joint > first && c.joint < first + 4.0))
+
+/// The palm and thumb's part, painted `c`, the thumb posed `t`.
+let palmAndThumb = (c: Color.t, side: Hold.Side, t: Thumb): Scene.t =>
+  partScene(c, partOf(local(side, { flat with thumb: t }), capsules |> List.filter(inPalm)))
+
+let drawLevels = 32.0
+let level = (curl: float): float => Math.round(Math.clamp01(curl) * drawLevels)
+
+/// The fingers' curl levels as drawn (index, middle, ring, little), each
+/// curl to the nearest 1/32.
+let levels = (f: FingerPose): (float, float, float, float) => (level(f.index), level(f.middle), level(f.ring), level(f.little))
+
+/// Each hand's finger parts at every level: per level, the four fingers' parts.
+let fingerTable = (side: Hold.Side): List<List<Part>> =>
+  List.range(drawLevels + 1.0) |> List.map((k) =>
+    let posed = local(side, curled(k / drawLevels)) in
+    fingerCaps |> List.map((caps) => partOf(posed, caps)))
+let leftFingers = fingerTable(Hold.Left)
+let rightFingers = fingerTable(Hold.Right)
+
+expect levels(power) == (22.0, 24.0, 23.0, 19.0) && levels(fist) == (32.0, 32.0, 32.0, 32.0) && levels({ flat with index: 0.0 - 1.0 }) == (0.0, 0.0, 0.0, 0.0)
+
+/// The fingers' part, painted `c`, each finger at its level (`levels`).
+let fingersAt = (c: Color.t, side: Hold.Side, at: (float, float, float, float)): Scene.t =>
+  let (li, lm, lr, ll) = at in
+  let table = if side == Hold.Left then leftFingers else rightFingers in
+  let pick = (finger: float, k: float): Part =>
+    List.nth(k, table) |> Option.bind((parts) => List.nth(finger, parts)) |> Option.defaultValue({ caps: [], cylinders: [] }) in
+  let parts = [pick(0.0, li), pick(1.0, lm), pick(2.0, lr), pick(3.0, ll)] in
+  partScene(c, { caps: parts |> List.concatMap((p) => p.caps), cylinders: parts |> List.concatMap((p) => p.cylinders) })
 
 // --- checks ---
 
 let dist = (a: Input.point3, b: Input.point3): float => Quat.length(Quat.sub(a, b))
 let at = (posed: Posed, j: float): Input.point3 => (jointOf(posed, j)).position
-let curled = (c: float): FingerPose => { thumb: { curl: c, opposition: c }, index: c, middle: c, ring: c, little: c }
 let posesOf = [flat, fist, curled(0.4), power, pinch, palmOpen, onTrigger(0.5), empty(0.3, 0.8)]
 
 expect List.length(names) == 26.0 && List.length(parents) == 26.0

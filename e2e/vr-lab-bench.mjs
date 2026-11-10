@@ -19,11 +19,11 @@
 // against the pump steps around it in the same run. The extra is added to
 // the aimed shotgun's burst minimum for its worst frame.
 //
-// A hand's glove is rebuilt only when its fingers move (`Scene.memo`), and a
+// A hand's glove is redrawn only when its fingers move (`Scene.memo`), and a
 // burst holds them still. So, also a step at a time: both hands raised at
 // the grab table, held still, then their grip and trigger swept every step
-// (both gloves rebuilt each frame). The extra draw is added to the aimed
-// shotgun's worst frame too: a trigger moving under the aim.
+// (both hands' fingers redrawn each frame). The extra draw is added to the
+// aimed shotgun's worst frame too: a trigger moving under the aim.
 //
 // From `GET /frames`: `step` (one fixed step's producer work: sampledInput,
 // tick, physics) and `draw` (once a frame), min / median / p95 / max. The
@@ -185,6 +185,7 @@ console.log(`\nhands at the grab table, a step at a time: ${curl.still.draw.leng
 console.log(`  ${"".padEnd(5)} ${["min", "med", "p95", "max"].map((h) => h.padStart(7)).join(" ")}`);
 console.log(row("held", held2.draw));
 console.log(row("curl", moving.draw));
-const regrip = moving.draw.min - held2.draw.min;
+// Medians: a moving run's fastest frame can be one whose levels didn't change.
+const regrip = moving.draw.med - held2.draw.med;
 const regripFrame = (sg.step.min + sg.draw.min + regrip / 2) * QUEST;
-console.log(`both gloves rebuilt: +${regrip.toFixed(0)} µs a draw (mins); one rebuilt under the aimed shotgun, Quest (×${QUEST}) ${regripFrame.toFixed(0)} µs (${pct(regripFrame)} of ${BUDGET_US.toFixed(0)})`);
+console.log(`both hands' fingers redrawn: +${regrip.toFixed(0)} µs a draw (medians); one hand's under the aimed shotgun, Quest (×${QUEST}) ${regripFrame.toFixed(0)} µs (${pct(regripFrame)} of ${BUDGET_US.toFixed(0)})`);

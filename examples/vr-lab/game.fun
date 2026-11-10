@@ -1517,11 +1517,17 @@ let bodyScene = (m: Model, st: Stations.Station): Scene.t =>
 let leftGlove = Color.rgb(0.2, 0.85, 1.0)
 let rightGlove = Color.rgb(1.0, 0.3, 0.7)
 
-/// A hand's glove, in its grip's frame, curled `fingers` (`Scene.memo`'s
-/// builder: rebuilt only when the fingers move).
-let gloveOf = (shown: (Hold.Side, Hand.FingerPose)): Scene.t =>
-  let (side, fingers) = shown in
-  Hand.glove(if side == Hold.Left then leftGlove else rightGlove, Hand.local(side, fingers))
+let gloveColor = (side: Hold.Side): Color.t => if side == Hold.Left then leftGlove else rightGlove
+
+// A hand's glove's two parts, in its grip's frame (`Scene.memo`'s builders:
+// each rebuilt only when what it shows changes): the palm and thumb, and
+// the fingers at their drawn levels.
+let palmOf = (shown: (Hold.Side, Hand.Thumb)): Scene.t =>
+  let (side, thumb) = shown in
+  Hand.palmAndThumb(gloveColor(side), side, thumb)
+let fingersOf = (shown: (Hold.Side, (float, float, float, float))): Scene.t =>
+  let (side, levels) = shown in
+  Hand.fingersAt(gloveColor(side), side, levels)
 
 /// A hand's glove where `drawnAt` puts it, and (drawn elsewhere by over
 /// `Hold.ghostDistance`) a translucent ghost, the same glove, where it really
@@ -1532,7 +1538,12 @@ let handScene = (m: Model, st: Stations.Station, side: Hold.Side): (Scene.t, Sce
   | Option.Some(g) =>
     let on = onOf(m, side) in
     let drawn = drawnAt(m, on, g) in
-    let glove = Scene.memo(if side == Hold.Left then "glove-left" else "glove-right", (side, fingersOn(m, side, on)), gloveOf) in
+    let fingers = fingersOn(m, side, on) in
+    let key = if side == Hold.Left then "glove-left" else "glove-right" in
+    let glove = Scene.group([
+      Scene.memo($"{key}-palm", (side, fingers.thumb), palmOf),
+      Scene.memo($"{key}-fingers", (side, Hand.levels(fingers)), fingersOf),
+    ]) in
     (glove |> Scene.atPose(posed(st, drawn)),
      if Hold.ghosted(g, drawn) then glove |> Scene.atPose(posed(st, g)) |> Scene.opacity(0.4) else Scene.group([]))
 

@@ -4,14 +4,15 @@
 // Plays scenarios in `e2e/vr-lab-scenarios.mjs` against `examples/vr-lab`
 // (`--headless`, pinned clock, one sample per fixed step) and reads the
 // glove from `/scene` (children 4/5 the left and right hands, 6/7 their
-// ghosts): one instanced draw of the capsules' caps (each chain's first
-// start, then every end) and one of their cylinders, under the hand's
-// `Scene.atPose`.
+// ghosts): two parts (the palm and thumb, then the fingers), each one
+// instanced draw of its capsules' caps and one of their cylinders, under the
+// hand's `Scene.atPose`.
 //
 //   1. Both hands turned palms down: every cap and cylinder sits, turned and
 //      sized, where forward kinematics puts it for the injected grips (the
-//      skeleton below, computed independently of the game), within 0.1 mm,
-//      open, squeezed, the trigger pulled and let out.
+//      skeleton below, computed independently of the game; the fingers at
+//      their drawn 1/32 curl levels), within 0.1 mm, open, squeezed, the
+//      trigger pulled and let out.
 //   2. The squeeze curls the middle, ring and little fingers and not the
 //      index; the trigger curls the index and nothing else.
 //   3. A held pistol's index follows its trigger (0, half, full, out); its
@@ -90,10 +91,18 @@ const capsuleEnds = (side, pose) => {
   const js = joints(side, pose);
   return CAPSULES.map(([j, , length]) => [js[j].position, add(js[j].position, qrot(js[j].orientation, [0, 0, -length]))]);
 };
-// The glove's caps: each chain's first start (the metacarpals'), then every
-// capsule's end.
-const FIRSTS = CAPSULES.flatMap(([j], i) => ([2, 6, 11, 16, 21].includes(j) ? [i] : []));
-const caps = (ends) => [...FIRSTS.map((i) => ends[i][0]), ...ends.map(([, b]) => b)];
+// The glove's two parts, in draw order: the palm and thumb (the thumb's and
+// the metacarpals' capsules), then the fingers' phalanges. Its cylinders are
+// theirs in that order; its caps each chain's first start (the
+// metacarpals'), then each capsule's end in that order.
+const STARTS = [2, 6, 11, 16, 21];
+const PALM = CAPSULES.flatMap(([j], i) => (j < 6 || STARTS.includes(j) ? [i] : []));
+const ORDER = [...PALM, ...CAPSULES.flatMap((_, i) => (PALM.includes(i) ? [] : [i]))];
+const CAPS = [...PALM.filter((i) => STARTS.includes(CAPSULES[i][0])).map((i) => ["start", i]), ...ORDER.map((i) => ["end", i])];
+const caps = (ends) => CAPS.map(([end, i]) => ends[i][end === "start" ? 0 : 1]);
+const capOf = (end, i) => CAPS.findIndex(([e, j]) => e === end && j === i);
+// The fingers are drawn curled to the nearest 1/32 (`Hand.levels`).
+const drawnPose = (pose) => ({ ...pose, curls: pose.curls.map((c) => Math.round(Math.min(1, Math.max(0, c)) * 32) / 32) });
 
 // --- reading the glove from `/scene` ---
 const IDENTITY = JSON.stringify([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
@@ -111,34 +120,35 @@ function find(node, key, xforms = [], out = []) {
 // A column-major 4×4 applied to a point (`w` 1) or a direction (`w` 0).
 const apply = (m, [x, y, z], w = 1) => [0, 1, 2].map((r) => m[0][r] * x + m[1][r] * y + m[2][r] * z + m[3][r] * w);
 const unit = (v) => v.map((c) => c / len(v));
-// A hand's glove: its cap and cylinder instances (positions and the
-// cylinders' axes in the world).
+// A hand's glove: its cap and cylinder instances, each part's in draw order
+// (positions and the cylinders' axes in the world).
 function glove(node) {
-  const [spheres, cylinders] = find(node, "Instanced");
-  if (!spheres || !cylinders) return undefined;
+  const draws = find(node, "Instanced");
+  if (draws.length === 0) return undefined;
   const world = (p, xforms, w = 1) => xforms.reduceRight((q, m) => apply(m, q, w), p);
+  const of = (geometry) =>
+    draws.filter((d) => JSON.stringify(d.value.template).includes(`"${geometry}"`)).flatMap((d) => d.value.instances.map((i) => ({ i, xforms: d.xforms })));
+  const [spheres, cylinders] = [of("Sphere"), of("Cylinder")];
   return {
-    spheres: spheres.value.instances.map((i) => ({ at: world(i.position, spheres.xforms), radius: i.scale[0] })),
-    cylinders: cylinders.value.instances.map((i) => ({
-      at: world(i.position, cylinders.xforms),
-      axis: unit(world(qrot(i.rotation, [0, 1, 0]), cylinders.xforms, 0)),
+    spheres: spheres.map(({ i, xforms }) => ({ at: world(i.position, xforms), radius: i.scale[0] })),
+    cylinders: cylinders.map(({ i, xforms }) => ({
+      at: world(i.position, xforms),
+      axis: unit(world(qrot(i.rotation, [0, 1, 0]), xforms, 0)),
       size: i.scale,
     })),
-    raw: [spheres.value.instances, cylinders.value.instances],
+    raw: [spheres.map(({ i }) => i), cylinders.map(({ i }) => i)],
   };
 }
 // Where FK puts the glove for a hand at grip `grip` (rig-local), in the world.
 function expected(side, grip, pose, rig) {
   const toWorld = (p) => rigToWorld(add(grip.position, qrot(grip.orientation, p)), rig.feet, rig.yaw);
-  const ends = capsuleEnds(side, pose);
-  const radii = [...FIRSTS.map((i) => CAPSULES[i][1]), ...CAPSULES.map(([, r]) => r)];
+  const ends = capsuleEnds(side, drawnPose(pose));
   return {
-    spheres: caps(ends).map((p, i) => ({ at: toWorld(p), radius: radii[i] })),
-    cylinders: ends.map(([a, b], i) => ({
-      at: toWorld(a.map((v, k) => (v + b[k]) / 2)),
-      axis: unit(sub(toWorld(b), toWorld(a))),
-      size: [2 * CAPSULES[i][1], CAPSULES[i][2], 2 * CAPSULES[i][1]],
-    })),
+    spheres: caps(ends).map((p, k) => ({ at: toWorld(p), radius: CAPSULES[CAPS[k][1]][1] })),
+    cylinders: ORDER.map((i) => {
+      const [a, b] = ends[i];
+      return { at: toWorld(a.map((v, k) => (v + b[k]) / 2)), axis: unit(sub(toWorld(b), toWorld(a))), size: [2 * CAPSULES[i][1], CAPSULES[i][2], 2 * CAPSULES[i][1]] };
+    }),
   };
 }
 // The farthest any cap or cylinder is from where it should be: its place, its
@@ -149,11 +159,10 @@ const worst = (got, want) =>
     ...got.cylinders.map((c, i) => Math.max(len(sub(c.at, want.cylinders[i].at)), len(sub(c.axis, want.cylinders[i].axis)),
       ...c.size.map((s, k) => Math.abs(s - want.cylinders[i].size[k])))),
   );
-// Cap indices (`caps`): five chain starts, then each capsule's end. The
-// distal capsules end at the fingertips; the middle metacarpal's two caps
-// straddle the palm joint.
-const TIP = { thumb: 7, index: 11, middle: 15, ring: 19, little: 23 };
-const palmOf = (g) => g.spheres[2].at.map((v, i) => (v + g.spheres[12].at[i]) / 2);
+// The fingertips' caps (the distal capsules' ends), and the palm joint (half
+// way between the middle metacarpal's caps).
+const TIP = { thumb: capOf("end", 2), index: capOf("end", 6), middle: capOf("end", 10), ring: capOf("end", 14), little: capOf("end", 18) };
+const palmOf = (g) => g.spheres[capOf("start", 7)].at.map((v, i) => (v + g.spheres[capOf("end", 7)].at[i]) / 2);
 const reach = (g, finger) => len(sub(g.spheres[TIP[finger]].at, palmOf(g)));
 const mm = (d) => `${(d * 1000).toFixed(3)} mm`;
 
@@ -200,7 +209,7 @@ await run("a held pistol's index follows its trigger", async (rt) => {
   // Wrapped round the grip, the index on the trigger (`Hand.onTrigger`).
   const pose = (t) => ({ thumb: { curl: 0.75, opposition: 1 }, curls: [mix(0.25, 0.55, t), 0.75, 0.72, 0.6] });
   const local = (mark) => g(mark).raw[0].map((i) => i.position);
-  const want = (t) => caps(capsuleEnds("right", pose(t))).map(([x, y, z]) => [-x, y, -z]);
+  const want = (t) => caps(capsuleEnds("right", drawnPose(pose(t)))).map(([x, y, z]) => [-x, y, -z]);
   const off = Math.max(...[["trigger0", 0], ["trigger50", 0.5], ["trigger100", 1]].flatMap(([m, t]) => local(m).map((p, i) => len(sub(p, want(t)[i])))));
   check(off < 1e-4, `posed as the pistol grip's preset at each pull, in the hand's frame (worst ${mm(off)})`);
 });
