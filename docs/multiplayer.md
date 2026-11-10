@@ -82,7 +82,10 @@ Effect.httpPost(url, body, tagger) // the response record is handed to the tagge
 Under the hood: the request gets an auto token; running the effect registers the
 tagger (keyed by token) and queues a plain-data command for the host to perform;
 when the response lands, the broker applies the tagger and delivers the message.
-`examples/netdemo` is the port.
+`examples/netdemo` is the port. Quest performs requests with a small built-in
+client: `http://` only (an `https://` URL fails as `Net.Failure`), redirects
+are not followed, and a request times out after 60 s. Connections
+(`Sub.connect`/`Sub.listen`) fail there as `Net.Error`.
 
 **Persistent connections — `Sub` (inbound/identity) + `Effect` (send)**
 (WebSockets shipped):
@@ -261,7 +264,7 @@ coordinator seek work must re-establish them over the panes.
 | Phase | Status | Scope | Targets |
 | --- | --- | --- | --- |
 | **0. Spine** | shipped | the `ConnCommand`/`NetEvent` vocabulary + `AsyncInbox` + `VirtualNet` | n/a |
-| **1. HTTP** | shipped | `Effect.httpGet` / `httpPost`, with the response tagger folded through `update` | wasm+native |
+| **1. HTTP** | shipped | `Effect.httpGet` / `httpPost`, with the response tagger folded through `update` | wasm+native+Quest (http only) |
 | **2. WebSocket** | shipped | `Sub.connect` (wasm+native), `Sub.listen` (native sockets or an embedder), and `Effect.send` / `sendMsg` | wasm+native |
 | **3. Multi-instance SDK** | shipped | multi-entry roles, the embedder seam, browser host coordinator, and MCP session groups | both |
 | **4. TCP/UDP direct** | pending | raw TCP + UDP `listen`/`connect` | native only |

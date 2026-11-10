@@ -1561,8 +1561,8 @@ AudioScene.empty), got {}",
     }
 
     fn net_drain_commands(&self) -> String {
-        // HttpRequest commands (Effect.httpGet/httpPost); the shell performs
-        // them (or drains-and-drops when it has no HTTP host yet).
+        // HttpRequest commands (Effect.httpGet/httpPost), which the shell
+        // performs.
         crate::net::drain_commands_json()
     }
     fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
@@ -3019,6 +3019,39 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
         game.net_push_http_response(kept, 200, String::new());
         let model = game.state_debug();
         assert!(model.contains("got: 1") && model.contains("last: 0"), "{model}");
+    }
+
+    /// The blocking client's workers (Quest's HTTP path) perform a request
+    /// and deliver its response to the waiting tagger, counted from pending
+    /// to completed.
+    #[test]
+    fn http_workers_deliver_responses_to_the_tagger() {
+        let _gauge = crate::net::INBOUND_GAUGE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::net::drain_commands();
+        let mut game = http_game();
+        let token = request(&mut game, 0);
+        let port = crate::net::http_client::tests::serve_once(|_, _| {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec()
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let workers = crate::net::HttpWorkers::spawn(tx);
+        let before = crate::net::http_stats();
+        workers.submit(crate::net::NetCommand::HttpRequest {
+            token: token as u64,
+            method: crate::net::HttpMethod::Get,
+            url: format!("http://127.0.0.1:{port}/a"),
+            headers: vec![],
+            body: vec![],
+        });
+        assert!(crate::net::http_stats().pending > before.pending);
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the worker answers");
+        crate::net::note_inbound_delivered();
+        assert!(matches!(&result, crate::net::NetInbound::HttpResponse { status: 200, body, .. } if body == b"ok"));
+        crate::net::http_client::deliver(&mut game, result);
+        assert!(crate::net::http_stats().completed > before.completed);
+        assert!(game.state_debug().contains("got: 1"), "{}", game.state_debug());
     }
 
     /// Two producers on one thread keep their own pending requests.

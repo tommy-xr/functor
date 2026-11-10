@@ -107,6 +107,9 @@ full, proven sequence. The short path is:
    it does on desktop. Ports are 1–65535, without duplicates or 8123; other
    shells ignore the field. Like the forward, adb drops the rule on
    disconnect; re-running `run vr` recreates both.
+   On the headset `Effect.httpGet`/`httpPost` speak plain `http://` only
+   (`https://` fails as `Net.Failure`); `/state`'s `http` counts requests
+   pending, completed, and failed.
 3. If Meta Home remains visible, recreate `adb forward` (and any `reverse`), send `prox_close`, and
    restart NativeActivity with `am start -S`. Wait for `/state`'s
    `rendered_frames` to advance; server readiness alone does not mean XR is

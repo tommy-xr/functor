@@ -182,7 +182,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// [`crate::frame_telemetry::SpikesReport`]), and the optional `frame_stats`
 /// on `GET /state` (p50/p99/max per stage over the ring). A pre-v30 runtime
 /// answers 404 and omits `frame_stats`.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 30;
+///
+/// 31 adds `http` to `GET /state` (`{pending, completed, failed}`: the
+/// shell's `Effect.httpGet`/`httpPost` requests, [`crate::net::HttpStats`]).
+/// Additive — a pre-v31 runtime omits it, which deserializes as zeros.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 31;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -437,6 +441,11 @@ pub struct RuntimeState {
     /// pre-v10 runtime omits it.
     #[serde(default)]
     pub pending_net: u64,
+    /// The shell's `Effect.httpGet`/`httpPost` requests (v31): a `pending`
+    /// that never falls is a request that never answers. `default` because
+    /// a pre-v31 runtime omits it.
+    #[serde(default)]
+    pub http: crate::net::HttpStats,
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
     /// The structured JSON view of the model
@@ -1376,6 +1385,7 @@ mod tests {
             pending_steps: 3,
             model_revision: 17,
             pending_net: 2,
+            http: Default::default(),
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: json!({ "label": "hello" }),
@@ -1478,6 +1488,7 @@ mod tests {
                 "pending_steps": 3,
                 "model_revision": 17,
                 "pending_net": 2,
+                "http": { "pending": 0, "completed": 0, "failed": 0 },
                 "viewport": { "width": 1920, "height": 1080 },
                 "views": [{
                     "name": "main",

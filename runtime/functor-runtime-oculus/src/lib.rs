@@ -968,10 +968,8 @@ fn service_debug_request(
                     tts,
                     pending_steps,
                     model_revision: g.model_revision(),
-                    // The device shell delivers inbound net events through the
-                    // same process-global gauge the desktop shell counts on; it
-                    // reads 0 until a device transport counts into it.
                     pending_net: functor_runtime_common::net::inbound_pending(),
+                    http: functor_runtime_common::net::http_stats(),
                     viewport: RuntimeViewport::new(width, height),
                     views,
                     model: g.state_json(),
@@ -1592,6 +1590,11 @@ pub fn android_main(app: AndroidApp) {
         }
     };
 
+    // `Effect.httpGet`/`httpPost`, performed off the frame thread; results
+    // come back over `http_rx`.
+    let (http_tx, http_rx) = mpsc::channel();
+    let http = functor_runtime_common::net::HttpWorkers::spawn(http_tx);
+
     let mut clock = GameClock::new(None);
     let mut last_frame_at: Option<Instant> = None;
     // The last rendered frame's predicted display time, for `/frames`'
@@ -1916,6 +1919,11 @@ pub fn android_main(app: AndroidApp) {
             &scene_context,
             shown.as_ref().is_some_and(|s| s.wants_fused_room),
         );
+        // Finished requests reach the inbox before this frame's ticks.
+        while let Ok(result) = http_rx.try_recv() {
+            functor_runtime_common::net::note_inbound_delivered();
+            sim.post(move |g| functor_runtime_common::net::http_client::deliver(g, result));
+        }
         for sub_frame in &sub_frames {
             if caps.samples_input || sim.is_threaded() {
                 debug.input_edges.apply_to(&mut debug.input);
@@ -1947,6 +1955,12 @@ pub fn android_main(app: AndroidApp) {
             ..FrameRecord::default()
         };
         if let Some(mut fresh) = fresh {
+            for cmd in std::mem::take(&mut fresh.net_commands) {
+                http.submit(cmd);
+            }
+            for cmd in std::mem::take(&mut fresh.conn_commands) {
+                refuse_connection(&mut sim, cmd);
+            }
             caps = fresh.caps;
             feedback |= !fresh.preload_commands.is_empty() || fresh.terrain_pending;
             preloads.append(&mut fresh.preload_commands);
@@ -2036,8 +2050,8 @@ pub fn android_main(app: AndroidApp) {
             });
             renderer.render(&scene_context, &frame);
         }
-        // No audio/HTTP hosts on device yet: their commands were drained into
-        // the snapshot and are dropped with it, so the queues don't grow.
+        // No audio host on device yet: its commands were drained into the
+        // snapshot and are dropped with it, so the queue doesn't grow.
         // Preloads and physics terrain requests are driven above through the
         // shared asset cache.
 
@@ -2266,6 +2280,18 @@ pub fn android_main(app: AndroidApp) {
     }
     sim.quit();
     log::info!("functor oculus runtime exiting");
+}
+
+/// Connections (`Sub.connect`/`Sub.listen`) have no transport on Quest yet:
+/// each opening fails into the game's decoder as `Net.Error`, rather than
+/// leaving the subscription connecting forever.
+fn refuse_connection(sim: &mut SimDriver, cmd: functor_runtime_common::net::ConnCommand) {
+    use functor_runtime_common::net::{warn_once, ConnCommand};
+    let message = "connections (Sub.connect/Sub.listen) are not supported on Quest yet";
+    warn_once("connections", message);
+    if let ConnCommand::Connect { key, .. } | ConnCommand::Listen { key, .. } = cmd {
+        sim.post(move |g| g.net_push_conn_error(key, 0, message.to_string()));
+    }
 }
 
 /// An Android system property, e.g. `debug.functor.pipelined`.
