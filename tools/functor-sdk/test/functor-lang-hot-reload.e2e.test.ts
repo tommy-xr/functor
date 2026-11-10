@@ -80,11 +80,15 @@ test(
         `(a reset-to-init would give ${DT * -5})`,
     );
 
-    // The reload was fast: the runner logs its re-parse+reload latency.
+    // The reload stayed interactive: the runner logs the frame-thread time
+    // of its re-link + swap (40–70 ms for this game in a local debug build).
+    // An order-of-magnitude guard, not a budget: shared CI runners have
+    // taken 100–170 ms, so the bound sits ~3x above that and ~10x above
+    // local. Finer regressions belong in a benchmark, not a wall-clock e2e.
     const line = runner.logs().find((l) => l.includes("hot-reloaded"));
     assert.ok(line, "reload log line present");
     const ms = Number(line!.match(/in ([\d.]+)ms/)?.[1]);
-    assert.ok(ms < 100, `reload should be well under 100ms, took ${ms}ms`);
+    assert.ok(ms < 500, `reload should take well under 500ms, took ${ms}ms`);
 
     // A BROKEN edit fails loud but keeps the old program running.
     writeFileSync(functorLangPath, "let broken = ((");
