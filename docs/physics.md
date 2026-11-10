@@ -337,10 +337,10 @@ a teaching error. Rays and contacts report the body's tag.
   with), turning at a steady rate about its centre on the way: rapier's
   nonlinear shape cast over the step. It answers `Option.t<sweepHit>`, the
   `fraction` of the motion at the first touch plus point, normal and tag.
-  `filter` is `Fixed`, `NotKinematic` or `All` (sensors never). A start
-  overlap hits at fraction 0 only when the motion presses deeper at the
-  contact (rapier on its own lets a shape press up to its thickness in, a CCD
-  tolerance), and a motionless sweep is an overlap test.
+  `filter` is `SweepFixed`, `SweepNotKinematic` or `SweepAll` (sensors
+  never). A start overlap hits at fraction 0 only when the motion presses
+  deeper at the contact (rapier on its own lets a shape press up to its
+  thickness in, a CCD tolerance), and a motionless sweep is an overlap test.
   Rapier has no turning cast against a heightfield or the fused room's floor,
   so there the motion is a chain of linear casts, each holding its start
   rotation: a turn is followed to within 5 mm, not exactly.

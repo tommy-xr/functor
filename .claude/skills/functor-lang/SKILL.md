@@ -1425,9 +1425,9 @@ fromPose, toPose, filter)` moves a box, sphere or capsule from one
 turning about its centre on the way, so a rifle swung into a wall stops even
 when its centre barely moves. It returns `Option.t<Physics.sweepHit>`
 (`fraction` in [0, 1], `x, y, z`, `nx, ny, nz`, `tag`); `Option.None` is
-clear. `filter` is `Physics.Fixed` (the held-prop case: the hand's own
-kinematic body and other props don't count), `Physics.NotKinematic` or
-`Physics.All`; sensors never count. Starting in an overlap, pressing deeper
+clear. `filter` is `Physics.SweepFixed` (the held-prop case: the hand's own
+kinematic body and other props don't count), `Physics.SweepNotKinematic` or
+`Physics.SweepAll`; sensors never count. Starting in an overlap, pressing deeper
 hits at fraction 0 and moving out passes; `fromPose == toPose` is an overlap
 test (fraction 0, or `None` when clear). `impure[physics]`, like
 `Physics.cast`.

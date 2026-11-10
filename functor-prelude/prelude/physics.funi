@@ -345,14 +345,14 @@ let shapeCast : (shape, Vec3.t, Vec3.t, float) => rayHit
 impure[physics]
 let shapeCastExcluding : (tag, shape, Vec3.t, Vec3.t, float) => rayHit
 
-/// Which bodies `Physics.sweep` can hit; sensors never. `Fixed` is the held
+/// Which bodies `Physics.sweep` can hit; sensors never. `SweepFixed` is the held
 /// prop's filter: it stops at the level, not at other props or the hand's
-/// own kinematic body. `NotKinematic` adds dynamic bodies; `All` adds
+/// own kinematic body. `SweepNotKinematic` adds dynamic bodies; `SweepAll` adds
 /// kinematic ones too.
 type sweepFilter =
-  | Fixed
-  | NotKinematic
-  | All
+  | SweepFixed
+  | SweepNotKinematic
+  | SweepAll
 
 /// `Physics.sweep`'s first hit: `fraction` in [0, 1] of the way from
 /// `fromPose` to `toPose`, the contact point `x, y, z`, the hit surface's
@@ -385,7 +385,7 @@ type sweepHit = {
 /// linear steps that each hold their rotation, to within 5 mm.
 ///
 /// ```functor
-/// let blocked = Physics.sweep(Physics.box(0.04, 0.04, 0.8), held, wanted, Physics.Fixed)
+/// let blocked = Physics.sweep(Physics.box(0.04, 0.04, 0.8), held, wanted, Physics.SweepFixed)
 /// ```
 impure[physics]
 let sweep : (shape, Camera3D.mappedPose, Camera3D.mappedPose, sweepFilter) => Option.t<sweepHit>

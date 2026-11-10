@@ -3958,22 +3958,22 @@ capsule for the moving body"
     reg.fn4(
         "Physics.sweep",
         "Physics.sweep(shape, fromPose, toPose, filter) — Camera3D.mappedPose poses; \
-filter Physics.Fixed, Physics.NotKinematic or Physics.All",
+filter Physics.SweepFixed, Physics.SweepNotKinematic or Physics.SweepAll",
         |shape: FunctorLangShape, from: FunctorLangMappedPose, to: FunctorLangMappedPose, filter: Value| {
             const WHAT: &str = "Physics.sweep";
             note_read(ReadClass::Physics);
             swept(&shape, WHAT)?;
             let filter = match &filter {
                 Value::Variant { ctor, args } if args.is_empty() => match ctor.as_ref() {
-                    "Physics.Fixed" => Some(physics::SweepFilter::Fixed),
-                    "Physics.NotKinematic" => Some(physics::SweepFilter::NotKinematic),
-                    "Physics.All" => Some(physics::SweepFilter::All),
+                    "Physics.SweepFixed" => Some(physics::SweepFilter::Fixed),
+                    "Physics.SweepNotKinematic" => Some(physics::SweepFilter::NotKinematic),
+                    "Physics.SweepAll" => Some(physics::SweepFilter::All),
                     _ => None,
                 },
                 _ => None,
             }
             .ok_or_else(|| {
-                format!("{WHAT}: the filter must be Physics.Fixed, Physics.NotKinematic or Physics.All")
+                format!("{WHAT}: the filter must be Physics.SweepFixed, Physics.SweepNotKinematic or Physics.SweepAll")
             })?;
             let pose = |p: &FunctorLangMappedPose, which: &str| {
                 p.0.to_position_rotation().ok_or_else(|| {
@@ -8150,12 +8150,12 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
                 format!("Physics.shapeCastExcluding(\"nobody\", Physics.sphere(0.5), {at})"),
             ),
             // The filter is a string here: these samples run without the
-            // `.funi`, so `Physics.All` doesn't resolve. The read is noted
+            // `.funi`, so `Physics.SweepAll` doesn't resolve. The read is noted
             // before the filter is checked.
             (
                 "Physics.sweep",
                 "let p = { position: { x: 0.0, y: 0.0, z: 0.0 }, forward: { x: 0.0, y: 0.0, z: 1.0 }, \
-                 up: { x: 0.0, y: 1.0, z: 0.0 } } in Physics.sweep(Physics.sphere(0.5), p, p, \"All\")"
+                 up: { x: 0.0, y: 1.0, z: 0.0 } } in Physics.sweep(Physics.sphere(0.5), p, p, \"SweepAll\")"
                     .to_string(),
             ),
             (
@@ -12995,7 +12995,7 @@ Physics.fusedRoom(tag) without moving or rotating it";
         };
         let (z, x) = ("{ x: 0.0, y: 0.0, z: 1.0 }", "{ x: 1.0, y: 0.0, z: 0.0 }");
         let sweep = |from: String, to: String| {
-            format!("let main = () => Physics.sweep(Physics.box(0.05, 0.05, 1.6), {from}, {to}, Physics.Fixed)")
+            format!("let main = () => Physics.sweep(Physics.box(0.05, 0.05, 1.6), {from}, {to}, Physics.SweepFixed)")
         };
         // Turned in place, the stick's end reaches the wall.
         let hit = eval_with_prelude(&sweep(posed(0.5, z), posed(0.5, x))).unwrap();
