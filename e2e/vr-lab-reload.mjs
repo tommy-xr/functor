@@ -29,7 +29,7 @@ import { check, failures } from "./mcp-rpc.mjs";
 import { fmt, len, play, qconj, qmul, qrot, quat, record, session, some, sub, turnOf, xyz } from "./xr-scenario.mjs";
 import { CAPACITY, LOOSE_CAP, PISTOL_ROUNDS, WELL, WELL_TURN, conserves, project, readout, roundsIn, scenarios, wellPoint } from "./vr-lab-scenarios.mjs";
 
-const PORT = 8298;
+const PORT = 8292;
 const run = (name, body) => session(name, project, PORT, body);
 
 const isRound = (p) => p.kind.$ctor === "Props.Round";

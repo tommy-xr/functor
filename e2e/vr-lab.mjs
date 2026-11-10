@@ -45,19 +45,22 @@
 //      an identical model.
 //   6. The same throw in two fresh runtimes ends bit-identically.
 //   7. Recorded fixtures (`e2e/xr-fixture.mjs`): the checked-in grab-throw
-//      recording lands in the basket; a scripted run recorded under
+//      recording lands in the basket, and `record()` keeps its steps and
+//      every mark, two on one step included; a scripted run recorded under
 //      `--emulate-xr` and a live (wall-clock) emulated session recorded over
 //      `GET /input-log` each replay in fresh runtimes to a bit-identical
-//      model, twice.
+//      model, twice; a scripted recording longer than the runtime's
+//      900-step window keeps every step.
 //
 // Run (needs the CLI; the wasm bundle is not required):
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab.mjs
 import { check, failures, sleep } from "./mcp-rpc.mjs";
-import { decode, encode, readLog, recordLive } from "./xr-fixture.mjs";
+import { decode, encode, recordLive } from "./xr-fixture.mjs";
 import {
-  add, advance, compose, cross, dirToWorld, play, playFixture, qconj, qmul, qrot, rigToWorld, session, sub, tap,
+  add, advance, compose, cross, dirToWorld, fmt, len, loadFixture, placedAt, play, playFixture, qconj, qmul, qrot, quat, record,
+  recordScripted, rigToWorld, session, some, sub, tap, turnOf, xyz,
 } from "./xr-scenario.mjs";
 import {
   BALL, BOTTLE, FAST_V, FLICK_W, NECK, SLOT, STICK, TABLE, THROW_V, WALL_RIG_X, project, scenarios, slotAt, yaw,
@@ -72,19 +75,9 @@ const BRICK_SIZE = [0.1, 0.065, 0.21];
 // The bottle's authored grip: an upright fist round the neck.
 const NECK_GRIP = { position: [0, BOTTLE.neck, 0], orientation: [0, 0, 0, 1] };
 
-const len = (v) => Math.hypot(...v);
-const xyz = (p) => [p.x, p.y, p.z];
 const angleDeg = (a, b) =>
   (Math.acos(Math.min(1, a.reduce((s, x, i) => s + x * b[i], 0) / (len(a) * len(b)))) * 180) / Math.PI;
-const some = (opt) => (opt?.$ctor === "Option.Some" ? opt.args[0] : undefined);
-const fmt = (v) => `[${v.map((x) => x.toFixed(3)).join(", ")}]`;
-const quat = (q) => [q.x, q.y, q.z, q.w];
-// The turn from `a` to `b`, in degrees (atan2, not acos of a dot product:
-// exact near zero for read-back f32 poses).
-const turnDeg = (a, b) => {
-  const [x, y, z, w] = qmul(b, qconj(a));
-  return (2 * Math.atan2(Math.hypot(x, y, z), Math.abs(w)) * 180) / Math.PI;
-};
+const turnDeg = (a, b) => (turnOf(a, b) * 180) / Math.PI;
 
 // Poses as { position: [x, y, z], orientation: [x, y, z, w] }.
 const asPose = (p) => ({ position: xyz(p.position), orientation: quat(p.orientation) });
@@ -146,18 +139,6 @@ const spinBetween = (a, b) => log(qmul(quat(b.orientation), qconj(quat(a.orienta
 // `/scene`'s top group: 3 the props (in `Props.all` order), 4/5 the left and
 // right hands, 6/7 their ghosts.
 const sceneKids = async (rt) => (await rt.get("/scene")).scene.obj.Group;
-const IDENTITY = JSON.stringify([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
-// The first placed transform under a node (`Scene.atPose`'s), if any.
-const placed = (node) => {
-  if (!node || typeof node !== "object") return undefined;
-  if (Array.isArray(node.xform) && JSON.stringify(node.xform) !== IDENTITY) return node.xform;
-  for (const child of Object.values(node)) {
-    const found = Array.isArray(child) ? child.map(placed).find(Boolean) : placed(child);
-    if (found) return found;
-  }
-  return undefined;
-};
-const placedAt = (node) => placed(node)?.[3].slice(0, 3);
 
 const run = (name, body, flags) => session(name, project, PORT, body, flags);
 
@@ -531,7 +512,12 @@ await run("stick replay", async (rt) => {
 });
 
 await run("recorded fixture", async (rt) => {
-  const m = await play(rt, scenarios["grab-throw-recorded"]);
+  // A second mark on the release step, which `record` keeps beside the first.
+  const fixture = loadFixture(scenarios["grab-throw-recorded"].fixture);
+  const twice = { ...fixture, marks: { ...fixture.marks, thrown: fixture.marks.release } };
+  const { steps, marks: m, scenes } = await record(rt, { fixture: twice }, { scenes: true });
+  check(steps.length === fixture.steps.length, `record() keeps every fixture step (${steps.length})`);
+  check(m.thrown?.frame === m.release.frame && scenes.thrown && scenes.release, "both marks on one step are kept, with their scenes");
   check(some(m.release.model.lastRelease)?.kind?.$ctor === "Throw", "the recording's release throws");
   check(m.landed.model.score === 1, `and lands in the basket (score ${m.landed.model.score})`);
 });
@@ -560,14 +546,22 @@ let scripted;
 await run(
   "record a scripted run under --emulate-xr",
   async (rt) => {
-    const from = (await rt.get("/state")).frame + 1;
-    await play(rt, scenarios["grab-throw"]);
-    scripted = await recording(rt, (await readLog(rt, from)).steps);
+    scripted = await recording(rt, (await recordScripted(rt, scenarios["grab-throw"])).steps);
     check(JSON.parse(scripted.model).score === 1, "it scored");
   },
   ["--headless", "--emulate-xr"],
 );
 if (scripted) await replays("the scripted run", scripted);
+
+// Longer than the runtime keeps: read as it plays, every step is kept.
+await run(
+  "record a scripted run past the 900-step window",
+  async (rt) => {
+    const { steps } = await recordScripted(rt, { steps: [{ frames: 1000 }] });
+    check(steps.length === 1000 && encode(steps).steps.length === 1000, `all 1000 steps recorded (${steps.length})`);
+  },
+  ["--headless", "--emulate-xr"],
+);
 
 // A live session, recorded as a worn one is: the wall clock runs, the
 // emulator's hand follows the mouse and Enter squeezes.

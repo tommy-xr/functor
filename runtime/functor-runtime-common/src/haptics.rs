@@ -2,7 +2,8 @@
 //! perform.
 //!
 //! The effect drain offers each pulse here; the shell takes them once per
-//! frame with the snapshot ([`crate::sim_driver::SimSnapshot`]). Between two
+//! frame: with the snapshot ([`crate::sim_driver::SimSnapshot`]) on desktop
+//! and Quest, discarding them on web (no controller). Between two
 //! takes a hand keeps one pulse: the strongest, ties going to the longer, and
 //! the rest count as dropped. A dry run (fork, ghost) offers nothing, and a
 //! seek or rewind restores frames without re-running their effects, so
@@ -201,6 +202,18 @@ mod tests {
         newer.absorb(older);
         assert_eq!(newer.right, Some(pulse(Hand::Right, 0.9, 0.1)));
         assert_eq!(newer.superseded, 1);
+    }
+
+    #[test]
+    fn take_drains_the_queue() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take();
+        offer(pulse(Hand::Right, 0.6, 0.03));
+        offer(pulse(Hand::Right, 0.2, 0.03));
+        let taken = take();
+        assert_eq!(taken.right, Some(pulse(Hand::Right, 0.6, 0.03)));
+        assert_eq!(taken.superseded, 1);
+        assert!(take().is_empty(), "nothing left for the next frame");
     }
 
     #[test]

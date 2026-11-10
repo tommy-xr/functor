@@ -63,10 +63,12 @@ A hand's ghost is the same glove.
 ## Scenarios and videos
 
 `e2e/vr-lab-scenarios.mjs` scripts each station as XR samples, one per fixed
-step (format in `e2e/xr-scenario.mjs`). `e2e/vr-lab.mjs` plays them headlessly
-and checks `/state`; `e2e/xr-demo.mjs` plays one in a hidden window, films it
-from the scenario's spectator view (`POST /camera`) and writes a GIF/MP4. A
-new station adds scenarios there, not a new driver.
+step (format in `e2e/xr-scenario.mjs`, the shared driver). `e2e/vr-lab.mjs`
+and the per-feature checks beside it (`vr-lab-armory.mjs`, …; `npm run
+test:vr-lab` runs them all) play them headlessly and check `/state`; `e2e/xr-demo.mjs` plays one in a
+hidden window, films it from the scenario's spectator view (`POST /camera`) and
+writes a GIF/MP4. A new station adds its scenarios there and its checks in a
+script of its own.
 
 ### Recordings
 

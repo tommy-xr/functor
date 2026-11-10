@@ -373,8 +373,8 @@ curl -s $H/state | jq -r .model
 
 `e2e/xr-pose-injection.mjs` is the same loop in JavaScript, with assertions.
 
-The device runtime rejects this command with **400**: Quest resamples the domain
-from live OpenXR tracking every frame, so an injected sample could never be seen.
+The device runtime honours it too, so the same loop drives a headset (see the
+Quest paragraph above); only `gamepad` and `touch` injection are 400 there.
 
 ### `--display-hz` — a simulated display rate
 

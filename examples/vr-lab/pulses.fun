@@ -17,7 +17,7 @@ type Event =
   | Blocked
   // It went too far past its blocked prop and lost it.
   | Break
-  // Its pistol fired.
+  // Its gun fired (the firing hand's, and a supporting hand's).
   | Fire
   // Its gun's trigger was pulled but nothing fired (the muzzle against the
   // level, or nothing chambered).
@@ -29,9 +29,9 @@ type Event =
   | Seat
   // The shell it pushed went into the shotgun's tube (its hand, and the gun's).
   | Load
-  // The slide (or charging handle) it pulls reached the back.
+  // The slide, charging handle or pump it works reached the back.
   | SlideBack
-  // The slide went home (the racking hand's, and the gun's).
+  // It went home (the racking hand's, and the gun's).
   | SlideHome
 
 /// One buzz: how hard (0..1) and how long.

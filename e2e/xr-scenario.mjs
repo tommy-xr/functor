@@ -36,9 +36,8 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { BIN, ROOT, failures, portIsBound, sleep } from "./mcp-rpc.mjs";
-import { decode } from "./xr-fixture.mjs";
+import { decode, logTail } from "./xr-fixture.mjs";
 
-export const DT = 1 / 60;
 const HEAD = [0, 1.6, 0];
 // At the player's sides, clear of the props on the table.
 const REST = { left: [-0.25, 0.95, -0.1], right: [0.25, 0.95, -0.2] };
@@ -66,7 +65,10 @@ export function attach(port) {
   };
 }
 
-/** Launch `functor run native` on `project` with the debug server on `port`. */
+/**
+ * Launch `functor run native` on `project` with the debug server on `port`.
+ * `rt.dt` is the runtime's fixed step (s), read from its first live step.
+ */
 export async function launch(project, port, extra = []) {
   // A stale runtime on the port would answer in place of this one.
   if (await portIsBound(port)) throw new Error(`port ${port} is taken: stop what's listening there`);
@@ -89,18 +91,27 @@ export async function launch(project, port, extra = []) {
         proc.kill("SIGKILL");
       }),
   };
-  const deadline = Date.now() + 60000;
-  for (;;) {
-    try {
-      if ((await rt.get("/state")).frame > 0) break;
-    } catch {
-      // not listening yet
+  try {
+    const deadline = Date.now() + 60000;
+    let frame = 0;
+    for (;;) {
+      try {
+        if ((frame = (await rt.get("/state")).frame) > 0) break;
+      } catch {
+        // not listening yet
+      }
+      if (proc.exitCode !== null) throw new Error(`runtime exited:\n${log}`);
+      if (Date.now() > deadline) throw new Error(`runtime never reported a frame:\n${log}`);
+      await sleep(100);
     }
-    if (proc.exitCode !== null) throw new Error(`runtime exited:\n${log}`);
-    if (Date.now() > deadline) throw new Error(`runtime never reported a frame:\n${log}`);
-    await sleep(100);
+    const [live] = (await rt.get(`/input-log?from=${frame}`)).steps;
+    if (!live) throw new Error(`no step ${frame} in the input log to read the fixed step from`);
+    rt.dt = live.dts;
+    await rt.post("/time", { type: "set", tts: 0.0 });
+  } catch (e) {
+    await rt.kill();
+    throw e;
   }
-  await rt.post("/time", { type: "set", tts: 0.0 });
   return rt;
 }
 
@@ -123,7 +134,7 @@ export async function session(name, project, port, body, flags = ["--headless"])
 }
 
 /** Advance one pinned step and wait for it; returns `/state`. */
-export async function advance(rt, dts = DT) {
+export async function advance(rt, dts = rt.dt) {
   const before = (await rt.get("/state")).frame;
   await rt.post("/time", { type: "advance", dts });
   const deadline = Date.now() + 15000;
@@ -211,8 +222,9 @@ export function slerp(a, b, t) {
 }
 
 /**
- * Play `scenario` step by step. `onStep({ step, mark, state, hands })` runs
- * after every step (await it to capture a frame); returns the marks' states.
+ * Play `scenario` step by step. `onStep({ step, mark, marked, state, hands })`
+ * runs after every step (await it to capture a frame); `marked` names every
+ * mark on the step, `mark` the first. Returns the marks' states.
  */
 export async function play(rt, scenario, onStep = async () => {}) {
   if (scenario.fixture) return playFixture(rt, scenario.fixture, onStep);
@@ -254,7 +266,7 @@ export async function play(rt, scenario, onStep = async () => {}) {
       step++;
       const mark = i === seg.frames - 1 ? seg.mark : undefined;
       if (mark) marks[mark] = state;
-      await onStep({ step, mark, state, hands, seg, first: i === 0 });
+      await onStep({ step, mark, marked: mark ? [mark] : [], state, hands, seg, first: i === 0 });
     }
   }
   return marks;
@@ -262,18 +274,40 @@ export async function play(rt, scenario, onStep = async () => {}) {
 
 /**
  * Play `scenario`, keeping every step's state and the hands injected there
- * (and, with `scenes`, `/scene` at each mark). `index(mark)` is a mark's
- * step, `at(mark)` its record.
+ * (a fixture's steps carry no hands; and, with `scenes`, `/scene` at each
+ * mark). `index(mark)` is a mark's step, `at(mark)` its record.
  */
 export async function record(rt, scenario, { scenes: keepScenes = false } = {}) {
   const steps = [];
   const scenes = {};
-  const marks = await play(rt, scenario, async ({ state, hands, mark }) => {
-    steps.push({ state, left: { ...hands.left }, right: { ...hands.right } });
-    if (keepScenes && mark) scenes[mark] = await rt.get("/scene");
+  const marks = await play(rt, scenario, async ({ state, hands, marked }) => {
+    steps.push(hands ? { state, left: { ...hands.left }, right: { ...hands.right } } : { state });
+    if (keepScenes && marked.length) {
+      const scene = await rt.get("/scene");
+      for (const m of marked) scenes[m] = scene;
+    }
   });
   const index = (mark) => steps.findIndex((s) => s.state.frame === marks[mark].frame);
   return { steps, marks, scenes, index, at: (mark) => steps[index(mark)] };
+}
+
+// Steps between input-log reads: a third of the runtime's 900-step window,
+// so none ages out between them.
+const LOG_EVERY = 300;
+
+/**
+ * Play `scenario` and read back the input log it made, as it goes:
+ * `{ steps, marks }`, `encode`'s arguments (`marks` as state frames).
+ */
+export async function recordScripted(rt, scenario) {
+  const tail = await logTail(rt);
+  const marks = {};
+  await play(rt, scenario, async ({ step, marked, state }) => {
+    for (const m of marked) marks[m] = state.frame;
+    if (step % LOG_EVERY === 0) await tail.read();
+  });
+  await tail.read();
+  return { steps: tail.steps, marks };
 }
 
 // `/scene`: the first placed (non-identity) transform under a node
@@ -297,7 +331,9 @@ export const loadFixture = (fixture) =>
 /** Replay a recorded fixture step by step; `play`'s callback and result. */
 export async function playFixture(rt, fixture, onStep = async () => {}) {
   const { dt, t0, marks: named, steps } = decode(loadFixture(fixture));
-  const markAt = new Map(Object.entries(named).map(([name, i]) => [i, name]));
+  // A step may carry several marks.
+  const markAt = new Map();
+  for (const [name, i] of Object.entries(named)) markAt.set(i, [...(markAt.get(i) ?? []), name]);
   await rt.post("/time", { type: "set", tts: t0 });
   const marks = {};
   for (const [i, s] of steps.entries()) {
@@ -305,9 +341,9 @@ export async function playFixture(rt, fixture, onStep = async () => {}) {
     for (const key of s.up) await rt.post("/input", { type: "key", key, down: false });
     await rt.post("/input", s.xr ? { type: "xr", ...s.xr } : { type: "xr_clear" });
     const state = await advance(rt, dt);
-    const mark = markAt.get(i);
-    if (mark) marks[mark] = state;
-    await onStep({ step: i + 1, mark, state });
+    const marked = markAt.get(i) ?? [];
+    for (const m of marked) marks[m] = state;
+    await onStep({ step: i + 1, mark: marked[0], marked, state });
   }
   return marks;
 }

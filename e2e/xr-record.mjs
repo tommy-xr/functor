@@ -21,8 +21,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { encode, readLog, recordLive } from "./xr-fixture.mjs";
-import { attach, launch, play } from "./xr-scenario.mjs";
+import { encode, recordLive } from "./xr-fixture.mjs";
+import { attach, launch, recordScripted } from "./xr-scenario.mjs";
 
 const [scenariosPath, out, ...rest] = process.argv.slice(2);
 if (!out) {
@@ -49,13 +49,8 @@ if (scenarioName) {
   if (!scenario) throw new Error(`no scenario "${scenarioName}"; have: ${Object.keys(mod.scenarios).join(", ")}`);
   const rt = await launch(mod.project, Number(opt("--port", "8198")), ["--headless", "--emulate-xr"]);
   try {
-    const from = (await rt.get("/state")).frame + 1;
-    const marks = {};
-    await play(rt, scenario, async ({ mark, state }) => {
-      if (mark) marks[mark] = state.frame;
-    });
-    const log = await readLog(rt, from);
-    write(encode(log.steps, { marks, source: { runtime: "desktop --emulate-xr", scenario: scenarioName } }));
+    const { steps, marks } = await recordScripted(rt, scenario);
+    write(encode(steps, { marks, source: { runtime: "desktop --emulate-xr", scenario: scenarioName } }));
   } finally {
     await rt.kill();
   }
