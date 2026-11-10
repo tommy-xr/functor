@@ -5,8 +5,9 @@ use functor_lang::value::MapKey;
 
 use super::*;
 
-/// serde_json's own cap, applied when writing too.
-const MAX_DEPTH: usize = 128;
+/// The arrays and objects serde_json lets nest (it rejects the 128th),
+/// applied when writing too, so what is written parses back.
+const MAX_DEPTH: usize = 127;
 
 fn variant(ctor: &str, args: Vec<Value>) -> Value {
     Value::Variant {
@@ -15,7 +16,7 @@ fn variant(ctor: &str, args: Vec<Value>) -> Value {
     }
 }
 
-/// serde_json caps nesting at [`MAX_DEPTH`], so this recursion is bounded.
+/// serde_json caps nesting, so this recursion is bounded.
 fn to_value(json: serde_json::Value) -> Value {
     use serde_json::Value as J;
     match json {
@@ -29,13 +30,12 @@ fn to_value(json: serde_json::Value) -> Value {
             variant("Json.Array", vec![Value::List(Rc::new(items))])
         }
         J::Object(fields) => {
-            let mut fields: Vec<(String, serde_json::Value)> = fields.into_iter().collect();
-            // The map's canonical key order, whatever order serde_json keeps.
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
             let fields = fields
                 .into_iter()
                 .map(|(name, value)| (MapKey::String(name.into()), to_value(value)))
                 .collect();
+            // The map's canonical key order, whatever order serde_json keeps.
+            let (fields, _) = functor_lang::value::canonicalize_map_entries(fields);
             variant("Json.Object", vec![Value::Map(functor_lang::pmap::PMap::from_sorted(fields).0)])
         }
     }
@@ -43,12 +43,13 @@ fn to_value(json: serde_json::Value) -> Value {
 
 fn from_value(json: &Value, depth: usize) -> Result<serde_json::Value, String> {
     use serde_json::Value as J;
-    if depth > MAX_DEPTH {
-        return Err(format!("Json.stringify: nested deeper than {MAX_DEPTH}"));
-    }
     let Value::Variant { ctor, args } = json else {
         return Err(format!("Json.stringify: expected a Json.t, got {}", json.kind_name()));
     };
+    // `depth` containers hold this value.
+    if depth >= MAX_DEPTH && matches!(&**ctor, "Json.Array" | "Json.Object") {
+        return Err(format!("Json.stringify: nested deeper than {MAX_DEPTH}"));
+    }
     Ok(match (&**ctor, args.as_slice()) {
         ("Json.Null", []) => J::Null,
         ("Json.Bool", [Value::Bool(b)]) => J::Bool(*b),
@@ -126,6 +127,12 @@ mod tests {
         );
         let failure = |main: &str| eval_with_prelude(&format!("let main = {main}\n")).err().unwrap_or_default();
         assert!(failure("Json.stringify(Json.Number(0.0 / 0.0))").contains("isn't a JSON number"));
+        // What nests as deep as a parse allows writes and reads back; deeper is an error.
+        let wrapped = |depth: usize| {
+            format!("Json.stringify(List.range({depth}.0) |> List.fold((json, i) => Json.Array([json]), Json.Null))")
+        };
+        check_all("", &[&format!("Result.isOk(Json.parse({}))", wrapped(127))]);
+        assert!(failure(&wrapped(128)).contains("nested deeper"));
     }
 
     // Deep nesting is a parse error, not a stack overflow.
@@ -175,11 +182,36 @@ let why = (d, text: string) => match JsonDecode.parse(d, text) with
                 r#"why(status, "[]") == "expected an object with \"stream\", got an array""#,
                 r#"why(status, "{") == "EOF while parsing an object at line 1 column 1""#,
                 r#"why(JsonDecode.index(2.0, JsonDecode.number), "[1, 2]") == "[2]: missing""#,
+                r#"why(JsonDecode.index(0.5, JsonDecode.number), "[1]") == "an index must be a whole number from 0" && why(JsonDecode.index(0.0 / 0.0, JsonDecode.number), "[1]") != "ok""#,
                 r#"JsonDecode.parse(versioned, "{\"version\":2,\"name\":\"n\"}") == Result.Ok("n") && why(versioned, "{\"version\":3}") == "unknown version""#,
                 r#"JsonDecode.parse(JsonDecode.succeed(1.0), "null") == Result.Ok(1.0) && JsonDecode.parse(JsonDecode.bool, "true") == Result.Ok(true)"#,
                 r#"JsonDecode.run(JsonDecode.value, Json.Null) == Result.Ok(Json.Null)"#,
                 r#"(JsonDecode.run(JsonDecode.list(JsonDecode.number), Json.Array(List.range(100000.0) |> List.map(Json.Number))) |> Result.map(List.length)) == Result.Ok(100000.0)"#,
             ],
+        );
+    }
+
+    /// A decoder that uses itself (`lazy`) reads a tree, five fields a level.
+    #[test]
+    fn recursive_decoders_read_trees() {
+        let prelude = r#"type tree = { name: string, a: float, b: float, c: float, kids: List<tree> }
+let tree = JsonDecode.map5((name, a, b, c, kids): tree => { name: name, a: a, b: b, c: c, kids: kids },
+  JsonDecode.field("name", JsonDecode.string), JsonDecode.field("a", JsonDecode.number),
+  JsonDecode.field("b", JsonDecode.number), JsonDecode.field("c", JsonDecode.number),
+  JsonDecode.field("kids", JsonDecode.list(JsonDecode.lazy(() => tree))))
+let depth = (t: tree): float => 1.0 + (t.kids |> List.map(depth) |> List.fold((most, d) => Math.max(most, d), 0.0))
+"#;
+        // The tree `levels` deep, as a Functor-lang string literal.
+        let nested = |levels: usize| {
+            let open = r#"{"name":"n","a":1,"b":2,"c":3,"kids":["#.repeat(levels);
+            format!("{:?}", format!("{open}{}", "]}".repeat(levels)))
+        };
+        // Deeper trees are the interpreter's limit, not the decoder's: recursion
+        // through a list built-in's callback outruns a 2 MiB test stack first.
+        let n = 6;
+        check_all(
+            prelude,
+            &[&format!("(JsonDecode.parse(tree, {}) |> Result.map(depth)) == Result.Ok({n}.0)", nested(n))],
         );
     }
 

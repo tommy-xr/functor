@@ -10,7 +10,7 @@
 //   let points = JsonDecode.parse(JsonDecode.field("points", JsonDecode.list(point)), text)
 
 // Reads a value out of JSON, or fails.
-type t<'a> = { decode: (Json.t) => Result.t<'a, Json.error> }
+type t<'a> = { read: (Json.t) => Result.t<'a, Json.error> }
 
 // Helpers for writing decoders: an error here, and an error with `segment`
 // added in front of its path.
@@ -33,80 +33,124 @@ let mismatch = (wanted: string, json: Json.t): Result.t<'a, Json.error> =>
   Result.Error(failure(Text.join("", ["expected ", wanted, ", got ", kind(json)])))
 
 // Always `value`, reading nothing.
-let succeed = (value: 'a): t<'a> => { decode: (json) => Result.Ok(value) }
+let succeed = (value: 'a): t<'a> => { read: (json) => Result.Ok(value) }
 
 // Always fails with `message`.
-let fail = (message: string): t<'a> => { decode: (json) => Result.Error(failure(message)) }
+let fail = (message: string): t<'a> => { read: (json) => Result.Error(failure(message)) }
 
 // The leaves: a JSON number, string or bool, and the JSON itself.
 let number: t<float> =
-  { decode: (json) => match json with | Json.Number(n) => Result.Ok(n) | _ => mismatch("a number", json) }
+  { read: (json) => match json with | Json.Number(n) => Result.Ok(n) | _ => mismatch("a number", json) }
 
 let string: t<string> =
-  { decode: (json) => match json with | Json.String(s) => Result.Ok(s) | _ => mismatch("a string", json) }
+  { read: (json) => match json with | Json.String(s) => Result.Ok(s) | _ => mismatch("a string", json) }
 
 let bool: t<bool> =
-  { decode: (json) => match json with | Json.Bool(b) => Result.Ok(b) | _ => mismatch("a bool", json) }
+  { read: (json) => match json with | Json.Bool(b) => Result.Ok(b) | _ => mismatch("a bool", json) }
 
-let value: t<Json.t> = { decode: (json) => Result.Ok(json) }
+let value: t<Json.t> = { read: (json) => Result.Ok(json) }
 
 // The decoded value, transformed.
-let map = (f: ('a) => 'b, d: t<'a>): t<'b> => { decode: (json) => d.decode(json) |> Result.map(f) }
+let map = (f: ('a) => 'b, d: t<'a>): t<'b> =>
+  { read: (json) => match d.read(json) with | Result.Ok(a) => Result.Ok(f(a)) | Result.Error(e) => Result.Error(e) }
 
 // Decode with `d`, then with the decoder `f` chooses from its value — for a
 // `version` or `type` field that shapes the rest. Both read the same JSON.
 let andThen = (f: ('a) => t<'b>, d: t<'a>): t<'b> =>
-  { decode: (json) =>
-      d.decode(json)
-        |> Result.bind((a) =>
-          let next = f(a) in
-          next.decode(json)) }
+  { read: (json) =>
+      match d.read(json) with
+      | Result.Ok(a) =>
+        let next = f(a) in
+        next.read(json)
+      | Result.Error(e) => Result.Error(e) }
+
+// A decoder built when first needed, so a decoder can use itself:
+// `let tree = JsonDecode.field("children", JsonDecode.list(JsonDecode.lazy(() => tree)))`.
+// Each level of such a tree nests the evaluation, so keep recursive data
+// shallow (tens of levels at most).
+let lazy = (make: () => t<'a>): t<'a> =>
+  { read: (json) =>
+      let d = make() in
+      d.read(json) }
 
 // Several decoders over the same JSON (usually `field`s of one object),
-// combined.
+// combined; the first to fail is the error. Written flat rather than through
+// `andThen`, so a wide object costs no more nesting than a narrow one.
 let map2 = (f: ('a, 'b) => 'c, a: t<'a>, b: t<'b>): t<'c> =>
-  a |> andThen((x) => b |> map((y) => f(x, y)))
+  { read: (json) =>
+      match a.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(x) => match b.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(y) => Result.Ok(f(x, y)) }
 
 let map3 = (f: ('a, 'b, 'c) => 'd, a: t<'a>, b: t<'b>, c: t<'c>): t<'d> =>
-  a |> andThen((x) => map2((y, z) => f(x, y, z), b, c))
+  { read: (json) =>
+      match a.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(x) => match b.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(y) => match c.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(z) => Result.Ok(f(x, y, z)) }
 
 let map4 = (f: ('a, 'b, 'c, 'd) => 'e, a: t<'a>, b: t<'b>, c: t<'c>, d: t<'d>): t<'e> =>
-  a |> andThen((x) => map3((y, z, w) => f(x, y, z, w), b, c, d))
+  { read: (json) =>
+      match a.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(x) => match b.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(y) => match c.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(z) => match d.read(json) with
+      | Result.Error(e) => Result.Error(e)
+      | Result.Ok(w) => Result.Ok(f(x, y, z, w)) }
 
 let map5 =
   (f: ('a, 'b, 'c, 'd, 'e) => 'f, a: t<'a>, b: t<'b>, c: t<'c>, d: t<'d>, e: t<'e>): t<'f> =>
-  a |> andThen((x) => map4((y, z, w, v) => f(x, y, z, w, v), b, c, d, e))
+  { read: (json) =>
+      match a.read(json) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(x) => match b.read(json) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(y) => match c.read(json) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(z) => match d.read(json) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(w) => match e.read(json) with
+      | Result.Error(err) => Result.Error(err)
+      | Result.Ok(v) => Result.Ok(f(x, y, z, w, v)) }
 
 // The object's field `name`, read with `d`; a failure inside names it.
 let field = (name: string, d: t<'a>): t<'a> =>
-  { decode: (json) =>
+  { read: (json) =>
       match json with
       | Json.Object(fields) =>
         (match Map.get(name, fields) with
-         | Option.Some(inner) => d.decode(inner)
+         | Option.Some(inner) => d.read(inner)
          | Option.None => Result.Error(failure("missing")))
         |> Result.mapError((e) => within(Binary.Field(name), e))
       | _ => mismatch(Text.join("", ["an object with \"", name, "\""]), json) }
 
 // `field`, but `Option.None` when the object has no such field or it is null.
 let optionalField = (name: string, d: t<'a>): t<Option.t<'a>> =>
-  { decode: (json) =>
+  { read: (json) =>
       match json with
       | Json.Object(fields) =>
         (match Map.get(name, fields) |> Option.defaultValue(Json.Null) with
          | Json.Null => Result.Ok(Option.None)
-         | inner => d.decode(inner) |> Result.map((a) => Option.Some(a)))
+         | inner => d.read(inner) |> Result.map((a) => Option.Some(a)))
         |> Result.mapError((e) => within(Binary.Field(name), e))
       | _ => mismatch(Text.join("", ["an object with \"", name, "\""]), json) }
 
 // Every item of an array, read with `d`; a failure names its index.
 let list = (d: t<'a>): t<List<'a>> =>
-  { decode: (json) =>
+  { read: (json) =>
       match json with
       | Json.Array(items) =>
         items
           |> List.tryMapAccum((i: float, item: Json.t) =>
-            match d.decode(item) with
+            match d.read(item) with
             | Result.Ok(a) => Result.Ok((i + 1.0, a))
             | Result.Error(e) => Result.Error(within(Binary.Index(i), e)), 0.0)
           |> Result.map((done) => match done with | (count, values) => values)
@@ -114,21 +158,24 @@ let list = (d: t<'a>): t<List<'a>> =>
 
 // The array's item at `i` (from 0), read with `d`.
 let index = (i: float, d: t<'a>): t<'a> =>
-  { decode: (json) =>
+  { read: (json) =>
       match json with
       | Json.Array(items) =>
-        (match List.nth(i, items) with
-         | Option.Some(inner) => d.decode(inner)
-         | Option.None => Result.Error(failure("missing")))
-        |> Result.mapError((e) => within(Binary.Index(i), e))
+        if i < 0.0 || i > 1000000000.0 || i != Math.floor(i)
+        then Result.Error(failure("an index must be a whole number from 0"))
+        else
+          (match List.nth(i, items) with
+           | Option.Some(inner) => d.read(inner)
+           | Option.None => Result.Error(failure("missing")))
+          |> Result.mapError((e) => within(Binary.Index(i), e))
       | _ => mismatch("an array", json) }
 
 // Decode a piece of JSON.
-let run = (d: t<'a>, json: Json.t): Result.t<'a, Json.error> => d.decode(json)
+let run = (d: t<'a>, json: Json.t): Result.t<'a, Json.error> => d.read(json)
 
 // Decode JSON text; text that isn't JSON fails with an empty path.
 let parse = (d: t<'a>, text: string): Result.t<'a, Json.error> =>
-  Json.parse(text) |> Result.mapError(failure) |> Result.bind((json) => d.decode(json))
+  Json.parse(text) |> Result.mapError(failure) |> Result.bind((json) => d.read(json))
 
 // The text of an error: `poses[2].x: expected a number, got a string`.
 let describe = (e: Json.error): string =>
