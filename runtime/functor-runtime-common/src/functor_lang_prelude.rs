@@ -55,6 +55,8 @@
 //!   (post-pass two-bone reach preserving the evaluated bend side)
 //! Anim.orient(joint, rotation, weight, anim)               -> Anim
 //!   (post-pass complete model-space rotation of one joint)
+//! Anim.place([(joint, pose), …], anim)                    -> Anim
+//!   (post-pass complete model-space poses of the named joints)
 //! Frame.create(camera, scene)                               -> Frame
 //! Camera2D.create(width, height)                             -> Camera2D
 //! Camera2D.at(x, y, camera) / Camera2D.zoom(k, camera)       -> Camera2D
@@ -4516,6 +4518,58 @@ joint name, a non-zero model-space Input.quaternion ({ x, y, z, w }; identity is
             }))
         },
     );
+    // A post-pass setting joints' complete model-space poses: a rig driven
+    // straight from joint poses the game computes (a hand from its FK).
+    reg.fn2(
+        "Anim.place",
+        PLACE,
+        |joints: Vec<FunctorLangPlacement>, anim: FunctorLangAnim| {
+            FunctorLangAnim(AnimExpr::Place {
+                joints: joints.into_iter().map(|p| p.0).collect(),
+                expr: Box::new(anim.0),
+            })
+        },
+    );
+}
+
+const PLACE: &str = "Anim.place([(\"jointName\", pose), …], anim) — non-empty joint \
+names, each with a model-space Input.pose ({ position: { x, y, z }, orientation: \
+{ x, y, z, w } }, the quaternion non-zero)";
+
+/// One `Anim.place` entry: a `(jointName, Input.pose)` tuple.
+struct FunctorLangPlacement(crate::anim::Placement);
+
+impl crate::host_registry::FromArg for FunctorLangPlacement {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let usage = || RunError {
+            message: format!("usage: {PLACE}"),
+            span,
+        };
+        let Value::Tuple(items) = value else {
+            return Err(usage());
+        };
+        let [Value::String(joint), Value::Record(pose)] = items.as_slice() else {
+            return Err(usage());
+        };
+        let field = |name: &str| pose.iter().find(|(n, _)| n == name).map(|(_, v)| v);
+        let (Some(Value::Record(position)), Some(orientation)) =
+            (field("position"), field("orientation"))
+        else {
+            return Err(usage());
+        };
+        let component = |name| finite_record_number(position, name, "point3", path, span);
+        let position = [component("x")?, component("y")?, component("z")?];
+        let rotation = FunctorLangQuaternion::from_arg(orientation, path, span)?.0;
+        let length2: f64 = rotation.iter().map(|c| f64::from(*c).powi(2)).sum();
+        if joint.is_empty() || !(length2 > 0.0) {
+            return Err(usage());
+        }
+        Ok(FunctorLangPlacement(crate::anim::Placement {
+            joint: joint.to_string(),
+            position,
+            rotation,
+        }))
+    }
 }
 
 /// The Effect vocabulary — fire-and-forget commands returned beside the
@@ -11994,6 +12048,40 @@ Anim.clip(\"walk\", tts)"
             duplicate_name.contains("three distinct non-empty joint names"),
             "message: {duplicate_name}"
         );
+    }
+
+    #[test]
+    fn anim_place_builds_data_and_teaches_bad_entries() {
+        let value = eval(
+            "let main = () => Anim.rest() |> Anim.place([(\"wrist\", { position: { x: 1.0, y: 2.0, z: 3.0 }, orientation: { x: 0.0, y: 0.0, z: 0.0, w: 2.0 } })])",
+        );
+        let anim = anim_of(&value, "Anim", Span::new(0, 0)).expect("an Anim");
+        assert_eq!(
+            anim,
+            &AnimExpr::Place {
+                joints: vec![crate::anim::Placement {
+                    joint: "wrist".to_string(),
+                    position: [1.0, 2.0, 3.0],
+                    rotation: [0.0, 0.0, 0.0, 2.0],
+                }],
+                expr: Box::new(AnimExpr::Rest),
+            }
+        );
+        let usage = format!("usage: {PLACE}");
+        let id = "{ x: 0.0, y: 0.0, z: 0.0, w: 1.0 }";
+        let zero = "{ x: 0.0, y: 0.0, z: 0.0, w: 0.0 }";
+        let at = "{ x: 0.0, y: 0.0, z: 0.0 }";
+        for entry in [
+            format!("(\"wrist\", {{ position: {at}, orientation: {zero} }})"),
+            format!("(\"\", {{ position: {at}, orientation: {id} }})"),
+        ] {
+            assert_eq!(
+                fail_message(&format!(
+                    "let main = () => Anim.rest() |> Anim.place([{entry}])"
+                )),
+                usage
+            );
+        }
     }
 
     #[test]

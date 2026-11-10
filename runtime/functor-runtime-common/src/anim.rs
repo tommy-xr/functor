@@ -24,6 +24,9 @@
 //!   model-space target, preserving the evaluated pose's elbow bend side.
 //! - `Orient` sets one joint's complete model-space rotation after
 //!   evaluating the expression below it (a wrist matching a controller).
+//! - `Place` sets named joints' complete model-space poses (position and
+//!   rotation) after evaluating the expression below it — a rig driven
+//!   straight from tracked or computed joint poses (a hand).
 //!
 //! Evaluation carries a per-joint influence weight so `Mask` composes
 //! through `Blend`/`Add`: a joint no input drives falls back to the bind
@@ -113,6 +116,22 @@ pub enum AnimExpr {
         weight: f32,
         expr: Box<AnimExpr>,
     },
+    /// Set each listed joint's model-space position and rotation after
+    /// evaluating `expr`, keeping its scale. Parents apply before children,
+    /// so one node can place a whole chain.
+    Place {
+        joints: Vec<Placement>,
+        expr: Box<AnimExpr>,
+    },
+}
+
+/// One joint's model-space pose, as `AnimExpr::Place` sets it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Placement {
+    pub joint: String,
+    pub position: [f32; 3],
+    /// `[x, y, z, w]`, normalized at evaluation; `q` and `-q` are the same.
+    pub rotation: [f32; 4],
 }
 
 /// A missing reference discovered during evaluation — the caller surfaces
@@ -364,6 +383,22 @@ fn eval(model: Rig, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning)) ->
             }
             inner
         }
+        AnimExpr::Place { joints, expr } => {
+            let mut inner = eval(model, expr, on_warning);
+            let mut slots: Vec<(usize, &Placement)> = Vec::with_capacity(joints.len());
+            for placement in joints {
+                match model.skeleton.slot_by_name(&placement.joint) {
+                    Some(slot) => slots.push((slot, placement)),
+                    None => on_warning(AnimWarning::MissingJoint(&placement.joint)),
+                }
+            }
+            // Slots are parents-first: a child resolves its placed parent.
+            slots.sort_by_key(|(slot, _)| *slot);
+            for (slot, placement) in slots {
+                apply_place(&model.skeleton, &mut inner, slot, placement);
+            }
+            inner
+        }
     }
 }
 
@@ -515,6 +550,39 @@ fn apply_orient(
     } else {
         joint.rotation.slerp(local, weight)
     };
+    pose.joints[slot] = Some((joint, 1.0));
+}
+
+/// Set `slot`'s model-space position and rotation over the settled parent,
+/// keeping its local scale. The position is exact under any invertible
+/// ancestor; the rotation as `apply_orient`'s. A zero/non-finite quaternion
+/// is ignored (the prelude rejects one at the call).
+fn apply_place(skeleton: &Skeleton, pose: &mut WeightedPose, slot: usize, placement: &Placement) {
+    let [x, y, z, w] = placement.rotation.map(f64::from);
+    let length = (x * x + y * y + z * z + w * w).sqrt();
+    if !length.is_finite() || length <= 0.0 {
+        return;
+    }
+    let target = Quaternion::new(
+        (w / length) as f32,
+        (x / length) as f32,
+        (y / length) as f32,
+        (z / length) as f32,
+    );
+    let parent_inverse = match skeleton.slot_parent(slot) {
+        Some(parent) => match resolved_absolute(skeleton, pose, parent).transform.invert() {
+            Some(inverse) => inverse,
+            None => return,
+        },
+        None => Matrix4::one(),
+    };
+    let Some(rotation) = rotation_of(parent_inverse * Matrix4::from(target)) else {
+        return;
+    };
+    let position = Vector3::from(placement.position).extend(1.0);
+    let mut joint = resolved_joint_pose(skeleton, pose, slot);
+    joint.translation = (parent_inverse * position).truncate();
+    joint.rotation = rotation;
     pose.joints[slot] = Some((joint, 1.0));
 }
 
@@ -2265,6 +2333,93 @@ mod tests {
         ];
         for (i, (got, want)) in fingerprints.iter().zip(expected).enumerate() {
             assert!((got - want).abs() < 1e-3, "output {i}: {got} vs {want}");
+        }
+    }
+
+    fn place(joints: &[(&str, Vector3<f32>, Quaternion<f32>)], expr: AnimExpr) -> AnimExpr {
+        AnimExpr::Place {
+            joints: joints
+                .iter()
+                .map(|(joint, p, q)| Placement {
+                    joint: joint.to_string(),
+                    position: [p.x, p.y, p.z],
+                    rotation: [q.v.x, q.v.y, q.v.z, q.s],
+                })
+                .collect(),
+            expr: Box::new(expr),
+        }
+    }
+
+    /// Placed joints off the root (a WebXR hand's rig) and in a chain land
+    /// exactly where they are put, whatever order the list names them in.
+    #[test]
+    fn place_sets_model_space_poses_parents_first() {
+        let q1 = wrist_target();
+        let q2 = Quaternion::from_axis_angle(vec3(0.0, 0.6, 0.8), Rad(1.3));
+        let (p1, p2) = (vec3(0.3, -1.2, 0.5), vec3(-2.0, 0.25, 4.0));
+        // A chain under a rotated root: `end`'s parent `lower` is placed too.
+        let model = reach_model();
+        let base = rotate("upper", [0.3, 0.7, -0.4], AnimExpr::Rest);
+        for order in [
+            [("end", p2, q2), ("lower", p1, q1)],
+            [("lower", p1, q1), ("end", p2, q2)],
+        ] {
+            let after = skinning_transforms(&model, &place(&order, base.clone()), &mut no_warning);
+            assert!((joint_translation(&after, 1) - p1).magnitude() < 1e-5);
+            assert!((joint_translation(&after, 2) - p2).magnitude() < 1e-5);
+            assert!(angle_between(joint_rotation(&after, 1), q1) < 1e-5);
+            assert!(angle_between(joint_rotation(&after, 2), q2) < 1e-5);
+        }
+        // Siblings off the root: only the placed one moves (`-q` is `q`).
+        let model = branch_model();
+        let rest = skinning_transforms(&model, &AnimExpr::Rest, &mut no_warning);
+        let after = skinning_transforms(
+            &model,
+            &place(&[("left", p1, -q1)], AnimExpr::Rest),
+            &mut no_warning,
+        );
+        assert!((joint_translation(&after, 1) - p1).magnitude() < 1e-5);
+        assert!(angle_between(joint_rotation(&after, 1), q1) < 1e-5);
+        assert_eq!(&after[..1], &rest[..1]);
+        assert_eq!(&after[2..], &rest[2..]);
+    }
+
+    /// A placed joint keeps its scale, and an unknown name warns and is
+    /// skipped while the rest still apply.
+    #[test]
+    fn place_keeps_scale_and_skips_unknown_joints() {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 2]);
+        builder.add_joint(0, 0, "root".to_string(), None, Matrix4::from_scale(2.0));
+        builder.add_joint(
+            1,
+            1,
+            "tip".to_string(),
+            Some(0),
+            Matrix4::from_nonuniform_scale(1.0, 0.5, 1.0),
+        );
+        let model = Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        };
+        let q = wrist_target();
+        let p = vec3(1.0, 2.0, 3.0);
+        let mut missing = Vec::new();
+        let after = skinning_transforms(
+            &model,
+            &place(&[("nope", p, q), ("tip", p, q)], AnimExpr::Rest),
+            &mut |warning| {
+                if let AnimWarning::MissingJoint(name) = warning {
+                    missing.push(name.to_string());
+                }
+            },
+        );
+        assert_eq!(missing, vec!["nope"]);
+        assert!((joint_translation(&after, 1) - p).magnitude() < 1e-5);
+        assert!(angle_between(joint_rotation(&after, 1), q) < 1e-5);
+        let lengths = [after[1].x, after[1].y, after[1].z].map(|axis| axis.truncate().magnitude());
+        for (length, expected) in lengths.into_iter().zip([2.0, 1.0, 2.0]) {
+            assert!((length - expected).abs() < 1e-5, "axis lengths {lengths:?}");
         }
     }
 

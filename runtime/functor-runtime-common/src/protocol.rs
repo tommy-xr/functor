@@ -97,6 +97,9 @@
 /// nested in `ModelDescription.animation`. Emitted only by that call, so
 /// frames without it keep their shape.
 ///
+/// Also: joint placement — the `AnimExpr::Place` variant (`Anim.place`),
+/// emitted only by that call.
+///
 /// Also: portal culling — the `SceneObject::Cells` variant (`Scene.cells`
 /// carries its cells and portals inline; `Scene.inCells` its cell ids).
 /// Emitted only by those two, so frames without them keep their shape.
@@ -1093,6 +1096,27 @@ mod tests {
         );
         let back: AnimExpr = serde_json::from_str(&json).expect("deserialize orient");
         assert_eq!(back, orient);
+    }
+
+    #[test]
+    fn joint_place_animation_wire_is_pinned() {
+        use crate::anim::{AnimExpr, Placement};
+
+        let place = AnimExpr::Place {
+            joints: vec![Placement {
+                joint: "wrist".to_string(),
+                position: [0.0, 1.5, -0.25],
+                rotation: [0.0, 0.5, 0.0, 0.5],
+            }],
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let json = serde_json::to_string(&place).expect("serialize place");
+        assert_eq!(
+            json,
+            r#"{"Place":{"joints":[{"joint":"wrist","position":[0.0,1.5,-0.25],"rotation":[0.0,0.5,0.0,0.5]}],"expr":"Rest"}}"#
+        );
+        let back: AnimExpr = serde_json::from_str(&json).expect("deserialize place");
+        assert_eq!(back, place);
     }
 
     // A representative draw3d output: every Shape variant, every SceneObject
