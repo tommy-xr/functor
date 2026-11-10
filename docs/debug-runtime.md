@@ -286,7 +286,7 @@ An event for a slot the current view doesn't have is dropped (with a one-line
 runtime report), and the endpoint still returns 200 — delivery, not handling,
 is what's acknowledged.
 
-#### `{"type":"xr"}` — inject tracked poses (desktop)
+#### `{"type":"xr"}` — inject tracked poses
 
 XR is **sampled**, not evented, so this command does not call an entry point: it
 sets the XR sample that every following fixed step feeds to `sampledInput`,
@@ -321,6 +321,12 @@ without it. That is the point: the mouse/keyboard emulator pins both hands to
 `z = -0.55` with identity orientations, so gestures like pulling a hand back
 toward your face, or aiming with a rotated grip, are inexpressible there and can
 only be driven this way. `held_keys` and `mouse` stay live alongside it.
+
+On Quest the sample replaces live tracking and controllers in what the game
+samples (and in `/state`'s `input`), while the headset still renders from its
+own eye poses — so a headless device run (`prox_close`) can drive grabs and
+triggers. The shell steps the game only while head tracking is valid, so the
+headset must see its surroundings. `xr_clear` returns to live tracking.
 
 `{"type":"touch"}` is EVENTED, like `key`, not whole-sample like `xr`: each
 command is one contact transition (phases `begin`/`move`/`end`/`cancel`, `id`

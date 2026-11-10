@@ -759,6 +759,9 @@ struct DebugLoopState {
     /// tracking, or `should_render == false`).
     rendered_frames: u64,
     input: InputSnapshot,
+    /// `POST /input` `xr`: replaces live tracking in every fixed step's
+    /// `sampledInput` until `xr_clear`. Rendering still follows the headset.
+    xr_override: Option<XrInputSnapshot>,
     // Debug requests may arrive while paused or between device fixed steps.
     input_edges: functor_runtime_common::InputEdges,
     last_frame: Option<Arc<Frame>>,
@@ -774,6 +777,13 @@ struct DebugLoopState {
     /// The `/load-project` waiting on a load job, and where its status
     /// arrives: answered when it lands.
     pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
+}
+
+/// What the game samples: an injected `xr` sample wins over live tracking.
+fn apply_xr_override(input: &mut InputSnapshot, sample: Option<&XrInputSnapshot>) {
+    if let Some(sample) = sample {
+        input.xr = Some(sample.clone());
+    }
 }
 
 /// Ask the runtime for `hz`, which must be one of the display's offered rates.
@@ -934,6 +944,7 @@ fn service_debug_request(
                 })
                 .collect();
             let mut input = debug.input.clone();
+            apply_xr_override(&mut input, debug.xr_override.as_ref());
             debug.input_edges.apply_to(&mut input);
             let (frame, rendered_frames, tts, pending_steps) = (
                 debug.frame_count,
@@ -1095,17 +1106,16 @@ fn service_debug_request(
                     sim.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
-                // Rejected rather than honored: this runtime resamples the XR
-                // domain from live OpenXR tracking every frame, so an injected
-                // sample would be silently overwritten before any `sampledInput`
-                // saw it. Injection is the DESKTOP substitute for this device.
-                InputCommand::Xr(_) | InputCommand::XrClear => Err(
-                    "xr injection is unsupported on the device runtime (it samples live \
-tracking); use the desktop runtime's --headless/--debug-port path"
-                        .to_string(),
-                ),
-                // Same story for the gamepad domain: the device runtime does
-                // not sample pads (Quest controllers ARE the xr domain), so
+                // Applied over the live sample just before the fixed steps.
+                InputCommand::Xr(sample) => {
+                    debug.xr_override = Some(*sample);
+                    Ok(())
+                }
+                InputCommand::XrClear => {
+                    debug.xr_override = None;
+                    Ok(())
+                }
+                // Rejected: the device runtime does not sample pads (Quest controllers ARE the xr domain), so
                 // honoring an injection here would invent a device the shell
                 // can never refresh or clear on its own.
                 InputCommand::Gamepad(_) | InputCommand::GamepadClear => Err(
@@ -1924,6 +1934,7 @@ pub fn android_main(app: AndroidApp) {
             functor_runtime_common::net::note_inbound_delivered();
             sim.post(move |g| functor_runtime_common::net::http_client::deliver(g, result));
         }
+        apply_xr_override(&mut debug.input, debug.xr_override.as_ref());
         for sub_frame in &sub_frames {
             if caps.samples_input || sim.is_threaded() {
                 debug.input_edges.apply_to(&mut debug.input);

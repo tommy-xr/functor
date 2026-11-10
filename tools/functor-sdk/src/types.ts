@@ -78,7 +78,7 @@ export type InputCommand =
  * defaults (centered sticks, released triggers/buttons). */
 export type GamepadInputSample = Partial<GamepadSnapshot>;
 
-/** An injected XR sample for `POST /input` (desktop only).
+/** An injected XR sample for `POST /input`; on Quest it replaces live tracking.
  *
  * Level state, not an edge event: it stays in force until replaced, and every
  * following fixed step feeds it to `sampledInput`. A WHOLE-sample replacement —
