@@ -37,12 +37,12 @@ struct Args {
     start_session: bool,
 
     /// Run game sessions without a GPU (`--headless` instead of `--hidden`).
-    #[arg(long)]
+    #[arg(long, requires = "start_session")]
     no_gpu: bool,
 
     /// The `functor` binary for game sessions (else `FUNCTOR_BIN`, else one
     /// next to this executable, else `functor` on PATH).
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", requires = "start_session")]
     functor: Option<PathBuf>,
 }
 
@@ -91,20 +91,24 @@ async fn print_session(
             None => break Err((1, "no project to start a session for".to_string())),
             Some(SessionStatus::Running { frame: Some(_), .. }) => break Ok(()),
             Some(SessionStatus::Starting | SessionStatus::Running { .. }) => {}
-            Some(_) => break Err((1, "the session did not start".to_string())),
+            Some(_) => break Err((1, "the session ended before answering /state".to_string())),
         }
         tokio::select! {
+            // A terminal Ctrl-C also reaches the child; report the signal, not its exit.
+            biased;
+            signal = &mut shutdown => break Err((128 + signal, format!("signal {signal}"))),
             Some(event) = events.recv() => state = step(state, event, &mut driver).await,
             _ = &mut deadline => {
                 let msg = format!("no answer from /state within {}s", START_TIMEOUT.as_secs());
                 break Err((1, msg));
             }
-            signal = &mut shutdown => break Err((128 + signal, format!("signal {signal}"))),
         }
     };
-    print!("{}", print(&state));
+    // Printed after the stop: a blocked stdout must not keep the child alive.
+    let dump = print(&state);
     let tail = driver.output_tail();
     step(state, Event::Client(ClientMsg::StopSession), &mut driver).await;
+    print!("{dump}");
     Ok(match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err((code, msg)) => {

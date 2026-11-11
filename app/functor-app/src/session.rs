@@ -16,8 +16,12 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+/// Each `/state` serializes the whole model on the game's loop, so a UI that
+/// keeps polling should weigh this against the model's size.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const POLL_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long output written just before an exit is still collected.
+const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// Output lines kept for a failure report.
 const TAIL_LINES: usize = 20;
 
@@ -159,50 +163,62 @@ async fn supervise(
     let (line_tx, mut lines) = mpsc::unbounded_channel();
     forward(child.stdout.take().unwrap(), line_tx.clone());
     forward(child.stderr.take().unwrap(), line_tx);
-    // The pipes close when the child exits, so its last lines are in the
-    // tail before the exit is reported.
-    loop {
+    let record = |line: String| {
+        if let Some(debug_url) = listening_url(&line) {
+            send(SessionEvent::Listening { debug_url });
+        }
+        let mut tail = tail.lock().unwrap();
+        if tail.len() == TAIL_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(line);
+    };
+    let mut open = true;
+    let status = loop {
         tokio::select! {
             _ = &mut stop => return kill(child).await,
-            line = lines.recv() => {
-                let Some(line) = line else { break };
-                if let Some(debug_url) = listening_url(&line) {
-                    send(SessionEvent::Listening { debug_url });
-                }
-                let mut tail = tail.lock().unwrap();
-                if tail.len() == TAIL_LINES {
-                    tail.pop_front();
-                }
-                tail.push_back(line);
-            }
+            status = child.wait() => break status,
+            line = lines.recv(), if open => match line {
+                Some(line) => record(line),
+                None => open = false,
+            },
         }
-    }
-    let status = tokio::select! {
-        _ = &mut stop => return kill(child).await,
-        status = child.wait() => status,
     };
-    let status = status.map_or_else(|e| e.to_string(), |s| s.to_string());
-    let reason = match first_error(&tail.lock().unwrap()) {
-        Some(line) => format!("{status}: {line}"),
-        None => status,
+    // Lines written just before the exit may still be in the pipes; bounded,
+    // in case something else holds them open.
+    let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+    while let Ok(Some(line)) = tokio::time::timeout_at(deadline, lines.recv()).await {
+        record(line);
+    }
+    let reason = match status {
+        Ok(status) if status.success() => status.to_string(),
+        Ok(status) => match cause(&tail.lock().unwrap()) {
+            Some(line) => format!("{status}: {line}"),
+            None => status.to_string(),
+        },
+        Err(e) => e.to_string(),
     };
     send(SessionEvent::Exited { reason });
 }
 
-/// Sends `reader`'s lines until it closes.
+/// Sends `reader`'s lines until it closes. Reads to the end whatever the
+/// bytes: a closed pipe would fail the child's next write and kill it.
 fn forward(reader: impl AsyncRead + Unpin + Send + 'static, lines: UnboundedSender<String>) {
     tokio::spawn(async move {
-        let mut reader = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            let _ = lines.send(line);
+        let mut reader = BufReader::new(reader).split(b'\n');
+        while let Ok(Some(line)) = reader.next_segment().await {
+            let line = String::from_utf8_lossy(&line);
+            let _ = lines.send(line.trim_end_matches('\r').to_string());
         }
     });
 }
 
-/// The first `error…` line, else the last line: a failed load prints its
-/// cause, then `error: cannot load …`, then `✗ failed in 1ms`.
-fn first_error(tail: &VecDeque<String>) -> Option<&str> {
-    let error = tail.iter().find(|l| l.starts_with("error"));
+/// The first `error…` or panic line, else the last line: a failed load
+/// prints its cause, then `error: cannot load …`, then `✗ failed in 1ms`.
+fn cause(tail: &VecDeque<String>) -> Option<&str> {
+    let error = tail
+        .iter()
+        .find(|l| l.starts_with("error") || l.contains("panicked at"));
     error.or(tail.back()).map(String::as_str)
 }
 
@@ -246,7 +262,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_error_prefers_the_cause() {
+    fn cause_prefers_an_error_or_panic_line() {
         let tail = |lines: &[&str]| lines.iter().map(|l| l.to_string()).collect::<VecDeque<_>>();
         let failed = tail(&[
             "▸ run examples/bad (native)",
@@ -255,11 +271,19 @@ mod tests {
             "✗ failed in 1ms",
         ]);
         assert_eq!(
-            first_error(&failed),
+            cause(&failed),
             Some("error: ./game.fun:2:1: expected an expression, found end of input")
         );
-        assert_eq!(first_error(&tail(&["a", "b"])), Some("b"));
-        assert_eq!(first_error(&tail(&[])), None);
+        let panicked = tail(&[
+            "thread 'main' panicked at src/run.rs:10:5:",
+            "note: run with `RUST_BACKTRACE=1`",
+        ]);
+        assert_eq!(
+            cause(&panicked),
+            Some("thread 'main' panicked at src/run.rs:10:5:")
+        );
+        assert_eq!(cause(&tail(&["a", "b"])), Some("b"));
+        assert_eq!(cause(&tail(&[])), None);
     }
 
     #[test]
