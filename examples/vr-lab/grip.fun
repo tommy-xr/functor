@@ -536,9 +536,10 @@ let specs: List<Spec> = [
   spec("pistol slide", Props.Pistol, Props.AtSlide, pistolSolids, Palm(Quat.add(Gun.pistol.rack.at, Quat.v3(0.0, 0.02, 0.0)), up), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
   centred(spec("rifle grip", Props.Rifle, Props.AtGrip, rifleSolids,
     Pistol(gunAt(Longarm.center, 0.0, 0.0, 0.012), raked(0.0 - 0.25), 0.015, gunAt(Longarm.center, 0.0, 0.022, 0.0 - 0.038)), ahead)),
-  // The charging handle's right wing pinched front to back, from the side.
+  // The charging handle racked overhand: the palm on its T, the fingers
+  // along the receiver's top.
   spec("rifle handle", Props.Rifle, Props.AtSlide, rifleSolids,
-    Pinch(gunAt(Longarm.center, Longarm.handleAt.x + 0.015, Longarm.handleAt.y, Longarm.handleAt.z), Quat.v3(0.0, 0.0, 1.0)), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
+    Palm(gunAt(Longarm.center, Longarm.handleAt.x, Longarm.handleAt.y + 0.004, Longarm.handleAt.z), up), ahead),
   // The support hands: the fore-end's axis up the fist, the palm under it.
   spec("rifle foregrip", Props.Rifle, Props.AtFore, rifleSolids,
     Power(gunAt(Longarm.center, 0.0, 0.02, 0.0 - (Longarm.foreNear + Longarm.foreFar) / 2.0), ahead, 0.015), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
@@ -945,9 +946,9 @@ let mixCell = (a: Cell, b: Cell, t: float): Cell =>
 
 type Slider = { name: string, slides: List<float>, rolls: List<float> }
 
-let supportRolls = [0.0 - 0.8, 0.0 - 0.4, 0.0, 0.4, 0.8]
-let rifleSlider: Slider = { name: "rifle foregrip", slides: [0.0 - 0.12, 0.0 - 0.06, 0.0, 0.06, 0.12], rolls: supportRolls }
-let shotgunSlider: Slider = { name: "shotgun fore-end", slides: [0.0 - 0.06, 0.0, 0.06], rolls: supportRolls }
+
+let rifleSlider: Slider = { name: "rifle foregrip", slides: [0.0 - 0.1, 0.0 - 0.05, 0.0, 0.05, 0.1], rolls: [0.0, 0.4, 0.8] }
+let shotgunSlider: Slider = { name: "shotgun fore-end", slides: [0.0 - 0.06, 0.0, 0.06], rolls: [0.0, 0.3, 0.6] }
 let sliders = [rifleSlider, shotgunSlider]
 
 // An item's handle: a point on its axis, and the axis.
@@ -1053,7 +1054,7 @@ let yawedOn = (it: Item, a: float): Input.pose =>
   Hold.at(Quat.sub(c, Quat.rotate(q, c)), q)
 
 let graspSets: List<Grasps> = [
-  { name: "ball", nudges: [Hold.origin, Hold.p(0.0, 0.0, 0.0 - 0.02), Hold.p(0.0, 0.0, 0.02), Hold.p(0.0, 0.015, 0.0), Hold.p(0.0, 0.0 - 0.015, 0.0)], alike: [Quat.identity], round: true, push: true },
+  { name: "ball", nudges: [Hold.origin, Hold.p(0.0, 0.0, 0.0 - 0.02), Hold.p(0.0, 0.0, 0.02), Hold.p(0.0, 0.0 - 0.015, 0.0)], alike: [Quat.identity], round: true, push: true },
   { name: "brick", nudges: [0.0, 0.25, 0.5, 0.75] |> List.map((f) => itemNamed("brick") |> Option.map((it) => yawedOn(it, f * Math.pi)) |> Option.defaultValue(Hold.origin)), alike: flips, round: false, push: true },
   { name: "stick (band)", nudges: [Hold.origin, Hold.p(0.0, 0.0 - 0.06, 0.0), Hold.p(0.0, 0.0 - 0.12, 0.0)],
     alike: [0.0, 0.5, 1.0, 1.5] |> List.map((f) => turnAbout(Quat.v3(0.0, 0.0, 1.0), f * Math.pi)), round: false, push: false },
@@ -1110,3 +1111,17 @@ let nearestGrasp = (g: Grasped, side: Hold.Side, offset: Input.pose): (float, In
 /// A prop's fitted pose at placement `i`.
 let graspPose = (k: Props.Kind, i: float): Option.t<Hand.FingerPose> =>
   graspedFor(k) |> Option.bind((g) => List.nth(i, g.cells)) |> Option.map((c) => c.pose)
+
+// --- checking the generated fits ---
+
+/// Each cell's hand on a slider's item, given its cells (their pushes).
+let tableHands = (sl: Slider, cells: List<Cell>): List<Input.pose> =>
+  itemNamed(sl.name) |> Option.map((it) => List.zip(cells, gridOf(sl)) |> List.map((gc) => let (g, c) = gc in let (s, r) = g in cellHand(it, s, r, c.push))) |> Option.defaultValue([])
+
+/// Each placement's hand on a free prop, given its cells.
+let graspHands = (g: Grasps, cells: List<Cell>): List<Input.pose> =>
+  itemNamed(g.name) |> Option.map((it) => List.zip(cells, g.nudges) |> List.map((nc) => let (n, c) = nc in pushedBy(c.push, nudgedHand(it, n)))) |> Option.defaultValue([])
+
+/// A cell's digits' nearest gaps (thumb first; negative inside), its pose at
+/// its hand on item `it`.
+let cellGaps = (it: Item, hand: Input.pose, c: Cell): List<float> => (measure(Hold.Right, seenFrom(hand, it.solids), c.pose)).digits

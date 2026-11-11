@@ -67,8 +67,10 @@ try {
   writeFileSync(join(out, "grips.json"), JSON.stringify(rows, null, 2));
   writeFileSync(join(out, "grips.md"), table(rows));
   console.log(table(rows));
+  const model = (await rt.get("/state")).model;
+  // Each table cell's digits' gaps, mm (T/I/M/R/L; negative inside).
+  for (const t of [...model.tables, ...model.grasps]) console.log(`${t.name}: ${t.gaps.map((g) => g.map(mm).join("/")).join("  ")}`);
   if (write) {
-    const model = (await rt.get("/state")).model;
     writeFileSync(join(project, "fitted.fun"), fittedModule(rows.filter((r) => !r.extra), model.tables, model.grasps));
     console.log(`wrote ${join(project, "fitted.fun")}`);
   }

@@ -16,8 +16,12 @@
 /// `extra`: one of the `views`, not a spec.
 type Row = { name: string, intent: string, compared: Grip.Compared, hand: Input.pose, checks: Grip.Checks, adopted: Hand.FingerPose, placement: Option.t<Input.pose>, extra: bool }
 
-/// A table's cells, by its site's name.
-type Table = { name: string, cells: List<Grip.Cell> }
+/// A table's cells, by its site's name, and each cell's digits' gaps.
+type Table = { name: string, cells: List<Grip.Cell>, gaps: List<List<float>> }
+
+let tableRow = (name: string, cells: List<Grip.Cell>, hands: (List<Grip.Cell>) => List<Input.pose>): Table =>
+  let gaps = Grip.itemNamed(name) |> Option.map((it) => List.zip(cells, hands(cells)) |> List.map((hc) => let (h, c) = hc in Grip.cellGaps(it, h, c))) |> Option.defaultValue([]) in
+  { name: name, cells: cells, gaps: gaps }
 
 type Model = { rows: List<Row>, tables: List<Table>, grasps: List<Table> }
 
@@ -40,12 +44,12 @@ let grasped = (i: float): ((Grip.Item) => Input.pose) => (it: Grip.Item) =>
     let h = Grip.nudgedHand(it, n) in Grip.pushedBy((Grip.cellAt(it, true, h)).push, h)) |> Option.defaultValue(it.hand)
 
 let views: List<Grip.Item> = List.flatten([
-  viewOf("rifle foregrip", "slid back 12 cm", slid(0.0 - 0.12, 0.0)),
-  viewOf("rifle foregrip", "slid on 12 cm, rolled 23 deg", slid(0.12, 0.4)),
-  viewOf("shotgun fore-end", "slid back 6 cm, rolled -46 deg", slid(0.0 - 0.06, 0.0 - 0.8)),
+  viewOf("rifle foregrip", "slid back 10 cm", slid(0.0 - 0.1, 0.0)),
+  viewOf("rifle foregrip", "slid on 10 cm, rolled 23 deg", slid(0.1, 0.4)),
+  viewOf("shotgun fore-end", "slid back 6 cm, rolled 34 deg", slid(0.0 - 0.06, 0.6)),
   viewOf("shotgun fore-end", "slid on 6 cm", slid(0.06, 0.0)),
   viewOf("ball", "2 cm toward the fingers", grasped(1.0)),
-  viewOf("ball", "1.5 cm toward the index", grasped(3.0)),
+  viewOf("ball", "1.5 cm along the knuckles", grasped(3.0)),
 ])
 
 let shown = Grip.items |> List.append(views)
@@ -53,8 +57,8 @@ let shown = Grip.items |> List.append(views)
 let tick = (m: Model, dt, tts) =>
   if List.isEmpty(m.rows) then
     { rows: shown |> List.map(rowOf),
-      tables: Grip.sliders |> List.map((sl) => { name: sl.name, cells: Grip.tableOf(sl) }),
-      grasps: Grip.graspSets |> List.map((g) => { name: g.name, cells: Grip.graspCells(g) }) }
+      tables: Grip.sliders |> List.map((sl) => tableRow(sl.name, Grip.tableOf(sl), (cs) => Grip.tableHands(sl, cs))),
+      grasps: Grip.graspSets |> List.map((g) => tableRow(g.name, Grip.graspCells(g), (cs) => Grip.graspHands(g, cs))) }
   else m
 
 // The hand's root in the world: a metre up, facing -Z.
