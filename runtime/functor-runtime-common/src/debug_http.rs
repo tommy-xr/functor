@@ -241,6 +241,14 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 ),
             }
         }
+        // SPIKE: multipart JPEG of every rendered frame on one response. The
+        // stream gets its own thread so the serial accept loop stays free.
+        ("GET", "/stream") => {
+            let tx = tx.clone();
+            let _ = std::thread::Builder::new()
+                .name("functor-debug-stream".to_string())
+                .spawn(move || stream_jpeg(stream, tx));
+        }
         ("GET", "/state") => {
             let (resp_tx, resp_rx) = mpsc::channel::<RuntimeState>();
             if tx.send(DebugRequest::State(resp_tx)).is_err() {
@@ -916,6 +924,62 @@ fn respond_report<T: serde::Serialize>(
         ),
         Err(_) => respond_text(stream, cors_origin, 500, "Internal Server Error", "telemetry failed"),
     }
+}
+
+/// Write `multipart/x-mixed-replace` JPEG parts until the client goes away.
+/// The next frame is requested before this one is encoded, so encoding
+/// overlaps the render loop's next frame. `X-Capture-Ms` is the readback's
+/// unix time in ms, for capture→display latency.
+fn stream_jpeg(mut stream: TcpStream, tx: mpsc::Sender<DebugRequest>) {
+    let _ = stream.set_nodelay(true);
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\
+                Cache-Control: no-store\r\nConnection: close\r\n\r\n";
+    if stream.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    let request = || {
+        let (resp_tx, resp_rx) = mpsc::channel();
+        tx.send(DebugRequest::CaptureRgba(resp_tx)).ok().map(|_| resp_rx)
+    };
+    let Some(mut pending) = request() else { return };
+    loop {
+        let Ok(Ok((width, height, pixels, at))) = pending.recv_timeout(CAPTURE_REPLY_TIMEOUT) else {
+            return;
+        };
+        let Some(next) = request() else { return };
+        pending = next;
+        let Ok(jpeg) = encode_bottom_up_rgba_jpeg(width, height, &pixels) else { return };
+        let captured_ms = at
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+        let part = format!(
+            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\
+             X-Capture-Ms: {captured_ms:.1}\r\n\r\n",
+            jpeg.len()
+        );
+        if stream.write_all(part.as_bytes()).is_err()
+            || stream.write_all(&jpeg).is_err()
+            || stream.write_all(b"\r\n").is_err()
+        {
+            return;
+        }
+    }
+}
+
+/// Flip GL's bottom-up RGBA to top-down RGB and encode as JPEG (quality 80).
+fn encode_bottom_up_rgba_jpeg(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let (w, h) = (width as usize, height as usize);
+    let mut rgb = Vec::with_capacity(w * h * 3);
+    for row in (0..h).rev() {
+        for px in rgba[row * w * 4..(row + 1) * w * 4].chunks_exact(4) {
+            rgb.extend_from_slice(&px[..3]);
+        }
+    }
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
+        .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 fn runtime_gone(stream: &mut TcpStream, cors_origin: Option<&str>) -> Option<()> {

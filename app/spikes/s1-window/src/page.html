@@ -34,7 +34,10 @@ setInterval(() => {
     p95: s.length ? +pct(s, 0.95).toFixed(1) : null,
     bytes: frames ? Math.round(bytes / frames) : 0,
     inputSent, inputDropped,
+    inputRttP50: rtt.length ? +pct(rtt.slice().sort((a, b) => a - b), 0.5).toFixed(1) : null,
+    inputRttMax: rtt.length ? Math.max(...rtt) : null,
   };
+  rtt = [];
   hud.textContent = JSON.stringify(stats);
   post(stats);
   lat = []; frames = 0; bytes = 0; windowStart = now;
@@ -112,7 +115,7 @@ fetch("/game/state").then((r) => r.json()).then((s) => {
   if (m && m.surface_width) surface = { w: m.surface_width, h: m.surface_height };
 });
 const queue = [];
-let sending = false, inputSent = 0, inputDropped = 0;
+let sending = false, inputSent = 0, inputDropped = 0, rtt = [];
 function send(cmd) {
   const last = queue[queue.length - 1];
   if (cmd.type === "mouse_move" && last && last.type === "mouse_move") queue[queue.length - 1] = cmd;
@@ -124,7 +127,9 @@ async function pump() {
   sending = true;
   while (queue.length) {
     const cmd = queue.shift();
+    const t0 = performance.now();
     await fetch("/game/input", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cmd) });
+    rtt.push(performance.now() - t0);
     inputSent++;
   }
   sending = false;

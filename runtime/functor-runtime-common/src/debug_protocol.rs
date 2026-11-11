@@ -1261,6 +1261,9 @@ pub fn validate_project_asset_path(path: &str) -> Result<(), String> {
 /// Request delivered from a runtime's transport thread to its frame loop.
 pub enum DebugRequest {
     Capture(Sender<Result<Vec<u8>, CaptureError>>),
+    /// SPIKE (`GET /stream`): raw bottom-up RGBA `(width, height, pixels, read_at)` of
+    /// the next rendered frame; the HTTP thread encodes it, not the render loop.
+    CaptureRgba(Sender<Result<(u32, u32, Vec<u8>, std::time::SystemTime), CaptureError>>),
     State(Sender<RuntimeState>),
     Scene(Sender<String>),
     Trace(Sender<String>),

@@ -1386,6 +1386,11 @@ desktop runtime's --headless/--debug-port path"
         // network is a real socket to a real peer, and there is no coordinator
         // on the other side of adb. Refusing keeps the protocol honest instead
         // of letting a driver drain the queue the device's own dispatcher owns.
+        DebugRequest::CaptureRgba(response) => {
+            let _ = response.send(Err(CaptureError::Unavailable(
+                "GET /stream is desktop-only (spike)".to_string(),
+            )));
+        }
         DebugRequest::NetOutbound(response) | DebugRequest::NetDeliver(_, response) => {
             let _ = response.send(Err(
                 "the embedder transport is not available on the device runtime — \

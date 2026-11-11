@@ -1171,6 +1171,12 @@ fn service_debug_request(
         debug_server::DebugRequest::Capture(resp) => {
             let _ = resp.send(capture());
         }
+        // The windowed loop answers this itself (raw readback); here = headless.
+        debug_server::DebugRequest::CaptureRgba(resp) => {
+            let _ = resp.send(Err(debug_server::CaptureError::Unavailable(
+                "no GL framebuffer in this mode".to_string(),
+            )));
+        }
         debug_server::DebugRequest::Frames(last, resp) => {
             let _ = resp.send(telemetry.frames(last));
         }
@@ -4053,6 +4059,19 @@ Escape again to quit"
                                 }
                             }
                             break;
+                        }
+                        // SPIKE `GET /stream`: raw readback only; encoding
+                        // happens on the HTTP stream thread, off this loop.
+                        debug_server::DebugRequest::CaptureRgba(resp) => {
+                            let pixels = functor_runtime_common::frame_capture::read_bound_framebuffer_rgba(
+                                &gl,
+                                fb_width as u32,
+                                fb_height as u32,
+                            )
+                            .map(|px| (fb_width as u32, fb_height as u32, px, std::time::SystemTime::now()))
+                            .map_err(debug_server::CaptureError::Failed);
+                            let _ = resp.send(pixels);
+                            continue;
                         }
                         req => req,
                     };
