@@ -47,7 +47,8 @@ Empty, the grip curls the middle, ring and little fingers round the
 controller's handle and the trigger the index. Holding, each prop takes
 its fitted pose (`Props.fingers`, generated into `fitted.fun`; see Grips):
 a gun's index hooked on its trigger and pulled in with it, a cartridge
-pinched.
+pinched, a support hand on a fore-end wrapped (its fit wants the fore-end's
+placement, which the drawn support hand doesn't take yet).
 A hand's ghost is the same glove.
 
 The skinned glove's model: [`@webxr-input-profiles/assets`](https://www.npmjs.com/package/@webxr-input-profiles/assets)

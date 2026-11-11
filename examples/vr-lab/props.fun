@@ -167,10 +167,12 @@ type Site = | AtGrip | AtFore | AtSlide
 /// The fingers on a prop: each held item's fitted pose (`Fitted`, generated
 /// from `Grip.specs`). `trigger` is the hand's trigger, pulling a gun's index
 /// in (`Hand.pullTrigger`). A cartridge (no spec) is pinched; the rifle's
-/// charging handle wrapped.
+/// charging handle wrapped. A support hand keeps the power wrap: its fit
+/// assumes the fore-end's placement (its axis up the fist), which the drawn
+/// support hand (`Longarm.supportOn`, turned as tracked) doesn't take yet.
 let fingers = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
   match site with
-  | AtFore => if k == Shotgun then Fitted.shotgunForeEnd else Fitted.rifleForegrip
+  | AtFore => Hand.power
   | AtSlide => if k == Pistol then Fitted.pistolSlide else Hand.power
   | AtGrip =>
     (match k with
@@ -204,11 +206,11 @@ let preset = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
      | Round(_, _) => Hand.pinch
      | Hull(_) => Hand.pinch)
 
-// A gun's index follows its trigger, and nothing else does; the foregrip,
-// a shell and the ball take their fits; a cartridge is pinched.
+// A gun's index follows its trigger, and nothing else does; a shell and the
+// ball take their fits; a foregrip is wrapped, a cartridge pinched.
 expect (fingers(Pistol, AtGrip, 0.0)).index.curl < (fingers(Pistol, AtGrip, 1.0)).index.curl
 expect (fingers(Rifle, AtGrip, 1.0)).middle == Fitted.rifleGrip.middle && fingers(Rifle, AtGrip, 0.0) == Fitted.rifleGrip
-  && fingers(Rifle, AtFore, 1.0) == Fitted.rifleForegrip
+  && fingers(Rifle, AtFore, 1.0) == Hand.power
 expect fingers(Round(Ammo.PistolMag, 0.0), AtGrip, 1.0) == Hand.pinch && fingers(Round(Ammo.Shell, 0.0), AtGrip, 1.0) == Fitted.shellFromTheBox
   && fingers(Ball, AtGrip, 1.0) == Fitted.ball
 expect (preset(Pistol, AtGrip, 0.0)).index.curl < (preset(Pistol, AtGrip, 1.0)).index.curl && preset(Ball, AtGrip, 1.0) == Hand.palmOpen

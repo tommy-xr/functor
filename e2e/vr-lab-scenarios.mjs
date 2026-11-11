@@ -264,8 +264,9 @@ export const armory = { feet: [4, 0, 0], yaw: Math.PI / 2 };
 // Where the hand's root sits in each gun's layout frame (`Gun.placement`,
 // `Longarm.placement`, `Pump.placement`): the handle up the fist, so the bore
 // is 12° (14°) above the hand's -Z. A scenario holding a gun scripts its
-// right hand as the gun's fist (`fists`), so the geometry below is the
-// fist's; the controller is injected at fist ∘ placement.
+// right hand as the gun's fist (`fists`; each take below switches it), so
+// the geometry below is the fist's; the controller is injected at
+// fist ∘ placement.
 const deg = (r) => (r * 180) / Math.PI;
 export const PISTOL_FIST = { position: [0, -0.020051, 0.021077], orientation: pitch(deg(-0.21)) };
 export const RIFLE_FIST = { position: [0, -0.003108, 0.012794], orientation: pitch(deg(-0.25)) };
@@ -319,7 +320,7 @@ const atArmoryHip = { eye: [4.1, 1.45, 2.15], target: [4.0, 1.0, 0.05], fov: 40 
 const atTargets = { eye: [8.0, 1.6, 1.3], target: [9.5, 1.25, 0.0], fov: 32 };
 
 const takePistol = [
-  { frames: 15, left: { to: LEFT_OUT } },
+  { frames: 15, left: { to: LEFT_OUT }, fists: { right: PISTOL_FIST } },
   { frames: 20, right: { to: [0.15, 1.05, -0.3] } },
   { frames: 15, right: { to: PISTOL_GRIP }, mark: "reachedPistol" },
   { frames: 6, right: { squeeze: 1 }, mark: "tookPistol" },
@@ -479,7 +480,7 @@ export function supportFor(at, point, d) {
 // Off the rack: the right hand on the pistol grip, then the left on the
 // foregrip 25 cm ahead (by way of above the rifle, clear of the pistol).
 const takeRifle = [
-  { frames: 15, left: { to: [0.3, 1.25, -0.3] } },
+  { frames: 15, left: { to: [0.3, 1.25, -0.3] }, fists: { right: RIFLE_FIST } },
   { frames: 20, right: { to: [0.5, 1.15, -0.35] } },
   { frames: 15, right: { to: RIFLE_GRIP }, mark: "reachedRifle" },
   { frames: 6, right: { squeeze: 1 }, mark: "tookRifle" },
@@ -1249,7 +1250,7 @@ const atPumpAimed = { eye: [4.5, 1.5, -0.32], target: [4.62, 1.33, 0.18], fov: 3
 const atMiddleTarget = { eye: [8.4, 1.55, 0.55], target: [9.5, 1.45, 0.0], fov: 18 };
 
 const takeShotgun = [
-  { frames: 15, left: { to: LEFT_OUT } },
+  { frames: 15, left: { to: LEFT_OUT }, fists: { right: SHOTGUN_FIST } },
   { frames: 20, right: { to: [0.35, 1.1, -0.3] } },
   { frames: 15, right: { to: SHOTGUN_GRIP }, mark: "reachedShotgun" },
   { frames: 6, right: { squeeze: 1 }, mark: "tookShotgun" },
@@ -1432,7 +1433,6 @@ const handViewScenarios = {
       { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID }, spectator: besideRifleWall },
       { frames: 25, right: { to: ARMORY_RH } },
       { frames: 1, right: { squeeze: 0 } },
-      { frames: 1, right: {}, fists: { right: RIFLE_FIST } },
       ...takeRifle,
       raise(),
       { frames: 30, ...bothTo(RIFLE_WALL.near) },
