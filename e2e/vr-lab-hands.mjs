@@ -102,7 +102,7 @@ const chain = (base, bones) => {
 };
 // The 26 joints in the grip's frame (OpenXR order), the left mirrored.
 function joints(side, pose) {
-  const t = Math.min(1, Math.max(0, pose.thumb.opposition));
+  const t = Math.min(1, Math.max(-1, pose.thumb.opposition));
   const [ty, tp, tr] = THUMB.rest.map((r, i) => r + (THUMB.opposed[i] - r) * t);
   const thumbQ = qmul(yawQ(ty), qmul(flex(tp), axisAngle([0, 0, 1], tr)));
   const inWrist = [

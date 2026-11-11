@@ -98,7 +98,9 @@ type Bend = { curl: float, tip: float }
 
 /// How far the thumb bends, 0 straight to 1 closed (`curl` at its CMC and
 /// MCP joints, `tip` at its IP), and how far it is turned across the palm
-/// (`opposition`: 0 at rest, 1 opposed).
+/// (`opposition`: 0 at rest, 1 opposed; below 0, to -1, abducted: swung out
+/// of the palm, back and away from the index, as round a ball or along a
+/// brick's side, where any turn across the palm puts its base in the item).
 type Thumb = { curl: float, tip: float, opposition: float }
 
 /// How each finger bends. What a grip fitter outputs and the drawing reads.
@@ -189,8 +191,9 @@ let fingerJoints = (f: Finger, mcp: float, pip: float, dip: float) =>
     [(f.metacarpal, 0.0), (f.proximal, mcp * mcpFlex), (f.intermediate, pip * pipFlex), (f.distal, dip * dipFlex)])
 let fingerChain = (f: Finger, b: Bend) => fingerJoints(f, b.curl, b.tip, b.tip)
 
+// Abducted (below 0), the turn carries on past rest the other way.
 let thumbTurn = (opposition: float): Input.quaternion =>
-  let t = Math.clamp01(opposition) in
+  let t = Math.clamp(0.0 - 1.0, 1.0, opposition) in
   let at = (a: float, b: float) => Math.lerp(b, t, a) in
   Quat.mul(Quat.yaw(at(thumbRest.yaw, thumbOpposed.yaw)),
     Quat.mul(flex(at(thumbRest.pitch, thumbOpposed.pitch)), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), at(thumbRest.roll, thumbOpposed.roll))))

@@ -523,13 +523,15 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
 
 /// The grip a free prop at `offset` (in a hand's grip frame) snaps to: its
 /// authored grip (the bottle's neck), or the nearest of its fitted
-/// placements (`Grip.nearestGrasp`) within `Grip.snapRadius`, if any.
+/// placements (`Grip.nearestGrasp`) within `Grip.snapRadius` and
+/// `Grip.snapTurn`, if any.
 let authoredOf = (k: Props.Kind, side: Hold.Side, offset: Input.pose): Option.t<Input.pose> =>
   match Props.grip(k) with
   | Option.Some(a) => Option.Some(a)
   | Option.None =>
     Grip.graspedFor(k) |> Option.map((gr) => let (_, a) = Grip.nearestGrasp(gr, side, offset) in a)
-      |> Option.filter((a) => Quat.length(Quat.sub(a.position, (Hold.inverse(offset)).position)) <= Grip.snapRadius)
+      |> Option.filter((a) => let h = Hold.inverse(offset) in
+        Quat.length(Quat.sub(a.position, h.position)) <= Grip.snapRadius && Quat.angle(a.orientation, h.orientation) <= Grip.snapTurn)
 
 /// Hands hover what they reach, and a fresh squeeze takes it; both hands
 /// pressing on one prop, the nearer (`Hold.pick`). A hand at the slide of a

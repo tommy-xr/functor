@@ -119,12 +119,15 @@ await run("barrel into the wall, two hands", async (rt) => {
   // The hand's root on the grip: the fist's placement past it.
   const gripW = toWorld(at(accPose, add(GRIP_IN_RIFLE, RIFLE_FIST.position)));
   check(drawnRight && len(sub(drawnRight, gripW)) < 1e-4, `the right hand drawn on the accepted grip (${drawnRight && (len(sub(drawnRight, gripW)) * 1000).toFixed(3)} mm)`);
-  // The left drawn on the foregrip line: along the barrel from the grip, between its ends.
+  // The left drawn at its fitted placement on the foregrip (`/state`'s
+  // `shown`): its root within 3 cm of the foregrip line, between its ends.
   const leftRig = drawnLeft && toRig(drawnLeft);
+  const shownLeft = acc.shown.find((h) => h.side.$ctor === "Hold.Left")?.at.position;
   const rel = leftRig && sub(leftRig, gripOn(accPose));
   const along = rel && dot(rel, qrot(accPose.orientation, [0, 0, -1]));
   const offLine = rel && len(sub(rel, qrot(accPose.orientation, [0, 0, -along])));
-  check(rel && offLine < 1e-4 && along >= RIFLE.foreNear - 1e-6 && along <= RIFLE.foreFar + 1e-6, `the left hand drawn on the foregrip (${along?.toFixed(3)} m ahead, ${offLine?.toExponential(1)} off it)`);
+  check(rel && shownLeft && len(sub(leftRig, [shownLeft.x, shownLeft.y, shownLeft.z])) < 1e-4 && offLine < 0.03 && along >= RIFLE.foreNear - 0.03 && along <= RIFLE.foreFar + 0.03,
+    `the left hand drawn at its fitted placement on the foregrip (${along?.toFixed(3)} m ahead, ${offLine?.toFixed(3)} m off its line)`);
   const ha = hands("stillHeld");
   const ghostR = placedAt(kids[7]);
   const ghostL = placedAt(kids[6]);
