@@ -170,6 +170,7 @@ const hand = (h) =>
         squeeze: h.squeeze ?? 0,
         thumbstick: h.stick ?? [0, 0],
         primary_pressed: h.primary ?? false,
+        secondary_pressed: h.secondary ?? false,
       };
 
 /** The XR sample for the head's and both hands' current state. */

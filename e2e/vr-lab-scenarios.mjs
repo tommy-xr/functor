@@ -550,8 +550,8 @@ const rifleScenarios = {
       { frames: 10, left: {}, mark: "aimed" },
       { frames: 30, right: { trigger: 1 }, mark: "semiHeld" },
       { frames: 6, right: { trigger: 0 }, mark: "semiDone" },
-      { frames: 1, right: { primary: true }, mark: "selected" },
-      { frames: 3, right: { primary: false } },
+      { frames: 1, right: { secondary: true }, mark: "selected" },
+      { frames: 3, right: { secondary: false } },
       { frames: 30, right: { trigger: 1 }, mark: "autoHeld" },
       { frames: 6, right: { trigger: 0 }, mark: "autoDone" },
     ],
@@ -654,12 +654,12 @@ const rifleScenarios = {
       ...shootAt(TARGETS[0], "Left"),
       { frames: 20, left: { to: at(TARGETS[1]) } },
       { frames: 8, left: {} },
-      { frames: 1, right: { primary: true }, mark: "auto" },
-      { frames: 3, right: { primary: false } },
+      { frames: 1, right: { secondary: true }, mark: "auto" },
+      { frames: 3, right: { secondary: false } },
       { frames: 30, right: { trigger: 1 }, mark: "burst" },
       { frames: 12, right: { trigger: 0 } },
-      { frames: 1, right: { primary: true } },
-      { frames: 3, right: { primary: false } },
+      { frames: 1, right: { secondary: true } },
+      { frames: 3, right: { secondary: false } },
       { frames: 30, right: { trigger: 1 }, mark: "semi" },
       { frames: 12, right: { trigger: 0 } },
       { frames: 30, ...bothTo(RIFLE_WALL.near), spectator: besideRifleWall },
@@ -697,8 +697,8 @@ const rifleScenarios = {
 };
 
 // --- Armory: ammunition (station 3) ---
-// The pistol starts 12+1, the rifle 30+1 (`Ammo`). The thumbstick pushed
-// down on a gun's hand (`stick: [0, -1]`) drops its magazine below the well
+// The pistol starts 12+1, the rifle 30+1 (`Ammo`). A/X on a gun's hand
+// (`primary: true`) drops its magazine below the well
 // (`Gun.dropOf`): for a level pistol, 13.24 cm below the hand and 4.5 cm
 // behind it. The pouch is on the belt (`slotAt("pouch")`).
 
@@ -764,12 +764,11 @@ const aimPistol = (settle) => [
   { frames: 25, right: { to: AIM_HAND, turn: AIM_RIGHT } },
   { frames: settle, right: {}, mark: "aimed" },
 ];
-// Level over the bench, the thumbstick pushed down: the magazine drops.
-// The thumbstick pushed down on the right hand (its magazine drops), then
-// let back for `fall` steps.
+// Level over the bench, A pressed on the right hand: its magazine drops,
+// then falls for `fall` steps.
 const dropMag = (fall, view) => [
-  { frames: 1, right: { stick: [0, -1] }, mark: "ejected", ...(view ? { spectator: view } : {}) },
-  { frames: fall, right: { stick: [0, 0] }, mark: "fell" },
+  { frames: 1, right: { primary: true }, mark: "ejected", ...(view ? { spectator: view } : {}) },
+  { frames: fall, right: { primary: false }, mark: "fell" },
 ];
 const dropOverBench = (fall) => [
   { frames: 25, right: { to: OVER_BENCH, turn: [0, 0, 0, 1] }, spectator: atSpares },
@@ -796,8 +795,8 @@ const autoRifle = (view = {}) => [
   raise(),
   { frames: 20, left: { to: at(TARGETS[1]) }, ...(view.aim ? { spectator: view.aim } : {}) },
   { frames: 10, left: {}, mark: "aimed" },
-  { frames: 1, right: { primary: true }, mark: "auto" },
-  { frames: 3, right: { primary: false } },
+  { frames: 1, right: { secondary: true }, mark: "auto" },
+  { frames: 3, right: { secondary: false } },
 ];
 
 const ammoScenarios = {
@@ -848,8 +847,8 @@ const ammoScenarios = {
       // Low over the bench, the magazine has no room to drop: it stays in.
       { frames: 25, right: { to: LOW_OVER_BENCH, turn: [0, 0, 0, 1] } },
       { frames: 5, right: {} },
-      { frames: 1, right: { stick: [0, -1] }, mark: "lowPush" },
-      { frames: 5, right: { stick: [0, 0] } },
+      { frames: 1, right: { primary: true }, mark: "lowPush" },
+      { frames: 5, right: { primary: false } },
       ...dropOverBench(40),
       ...pouchTheMag,
       { frames: 30, left: { to: [-0.15, 1.15, -0.35] }, mark: "out" },

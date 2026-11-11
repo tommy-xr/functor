@@ -17,13 +17,13 @@ npm run grips:vr-lab -- out/                       # the grip gallery: a contact
 | Input | Action |
 | --- | --- |
 | `1`-`9` | jump to that station and reset it |
-| B / Y / menu | next station (reset) |
+| menu | next station (reset) |
 | grip (squeeze) | grab what's in reach; open to let go |
 | trigger | fire the held gun (station 3) |
 | grip on the shotgun's fore-end | hold it; draw it back and home to pump |
-| A / X (holding the rifle's grip), `F` | the rifle's selector: semi / full-auto |
-| A / X (holding the pistol) | its slide release, when locked back |
-| thumbstick down (on a gun's trigger hand), `M` | drop the gun's magazine |
+| B / Y (holding the rifle's grip), `F` | the rifle's selector: semi / full-auto |
+| B / Y (holding the pistol) | its slide release, when locked back |
+| A / X (on a gun's trigger hand), `M` | drop the gun's magazine |
 | `H` / thumbstick click | draw a holding hand where it is tracked, or (the default) where its blocked prop implies |
 | `G` / thumbstick up (either hand) | switch the glove: skinned (the default) or capsules |
 
@@ -463,8 +463,8 @@ loose rounds taken away (`lost`), are what the station was reset with.
   its back (`12+1`; `--+1` with the magazine out): the pistol on the slide's
   back face, the rifle on the receiver ahead of the rear sight, tipped toward
   the eye.
-- **Magazine release.** The thumbstick pushed down on a gun's trigger hand
-  (a fresh push past -0.7, released past -0.3), or `M`: the magazine drops out
+- **Magazine release.** A/X on a gun's trigger hand (a fresh press), or `M`
+  (the thumbsticks are left for moving): the magazine drops out
   below the well (`Gun.dropOf`, clear of the gun's collider; if the level is
   in the way, e.g. the gun held low over the bench, it stays in) as a free prop
   with its rounds, its count on its back. It is held, thrown, and put in the

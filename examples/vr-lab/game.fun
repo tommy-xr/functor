@@ -128,9 +128,9 @@ type Model = {
   shellBox: float,
   // Each hand's A/X level (left, right), for its press edges.
   buttonA: (bool, bool),
+  buttonB: (bool, bool),
   // Each hand's thumbstick held down (the magazine release), for its edges,
   // and the guns whose release was pressed this step.
-  stick: (bool, bool),
   releasing: List<Props.Kind>,
   // The guns whose slide release (A/X on the pistol's trigger hand) was
   // pressed this step.
@@ -193,8 +193,8 @@ let init: Model =
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
     handView: Accepted, glove: Skinned, stickUp: false, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
     feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon),
-    shotgun: emptyShotgun, shellBox: 0.0, buttonA: (false, false),
-    stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
+    shotgun: emptyShotgun, shellBox: 0.0, buttonA: (false, false), buttonB: (false, false),
+    releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
   }, 1.0)
 
 // --- input ---
@@ -224,7 +224,8 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
     stationKeys
       |> List.find((kv) => let (k, id) = kv in (s.pressedKeys |> List.any((p) => p == k)) && exists(id))
       |> Option.map((kv) => let (_, id) = kv in id) in
-  let cycle = buttons(s.xr, (c) => c.secondaryPressed || c.menuPressed) in
+  // Menu (left controller) jumps to the next station; B/Y stay on the guns.
+  let cycle = buttons(s.xr, (c) => c.menuPressed) in
   let thumbstick = buttons(s.xr, (c) => c.thumbstickPressed) in
   let key = (k: Key.t) => s.pressedKeys |> List.any((p) => p == k) in
   let flip = key(Key.H) || (thumbstick && not m.thumbstick) in
@@ -234,27 +235,27 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
   // A fresh press (`now`, not `was`) on the hand at gun `k`'s trigger.
   let pressedOn = (k: Props.Kind, side: Hold.Side, now: bool, was: bool) => now && not was && triggerHand(m, k) == Option.Some(side) in
   let level = (side: Hold.Side, of: (Input.controller) => bool) => controller(s.xr, side) |> Option.map(of) |> Option.defaultValue(false) in
-  // The selector: A/X on the hand at the rifle's trigger, or F.
   let (aLeft, aRight) = (level(Hold.Left, (c) => c.primaryPressed), level(Hold.Right, (c) => c.primaryPressed)) in
   let (wasLeft, wasRight) = m.buttonA in
-  let select = key(Key.F) || pressedOn(Props.Rifle, Hold.Left, aLeft, wasLeft) || pressedOn(Props.Rifle, Hold.Right, aRight, wasRight) in
-  // The magazine release: the thumbstick pushed down on the hand at a gun's
-  // trigger, or M for every gun held. The step drops the magazines.
-  let (stickLeft, stickRight) = m.stick in
-  let (downLeft, downRight) = (level(Hold.Left, (c) => stickDown(stickLeft, c.thumbstick.y)), level(Hold.Right, (c) => stickDown(stickRight, c.thumbstick.y))) in
+  // The selector: B/Y on the hand at the rifle's trigger, or F.
+  let (bLeft, bRight) = (level(Hold.Left, (c) => c.secondaryPressed), level(Hold.Right, (c) => c.secondaryPressed)) in
+  let (wasBLeft, wasBRight) = m.buttonB in
+  let select = key(Key.F) || pressedOn(Props.Rifle, Hold.Left, bLeft, wasBLeft) || pressedOn(Props.Rifle, Hold.Right, bRight, wasBRight) in
+  // The magazine release: A/X on the hand at a gun's trigger, or M for every
+  // gun held (the thumbsticks are for moving). The step drops the magazines.
   let releaseKey = key(Key.M) in
-  let any = releaseKey || (downLeft && not stickLeft) || (downRight && not stickRight) in
+  let any = releaseKey || (aLeft && not wasLeft) || (aRight && not wasRight) in
   let releasing =
     if not any then []
     else [Props.Pistol, Props.Rifle] |> List.filter((k) =>
-      (releaseKey && Option.isSome(triggerHand(m, k))) || pressedOn(k, Hold.Left, downLeft, stickLeft) || pressedOn(k, Hold.Right, downRight, stickRight)) in
-  // The pistol's slide release: A/X on its trigger hand (on the rifle's,
-  // A/X is the selector).
-  let slideRelease = if pressedOn(Props.Pistol, Hold.Left, aLeft, wasLeft) || pressedOn(Props.Pistol, Hold.Right, aRight, wasRight) then [Props.Pistol] else [] in
+      (releaseKey && Option.isSome(triggerHand(m, k))) || pressedOn(k, Hold.Left, aLeft, wasLeft) || pressedOn(k, Hold.Right, aRight, wasRight)) in
+  // The pistol's slide release: B/Y on its trigger hand (on the rifle's,
+  // B/Y is the selector).
+  let slideRelease = if pressedOn(Props.Pistol, Hold.Left, bLeft, wasBLeft) || pressedOn(Props.Pistol, Hold.Right, bRight, wasBRight) then [Props.Pistol] else [] in
   let next = { m with xr: s.xr, cycle: cycle, thumbstick: thumbstick, handView: if flip then flipped(m.handView) else m.handView,
                glove: if swap then otherGlove(m.glove) else m.glove, stickUp: up,
-               buttonA: (aLeft, aRight), rifle: if select then Gun.select(Longarm.weapon, m.rifle) else m.rifle,
-               stick: (downLeft, downRight), releasing: releasing, slideRelease: slideRelease } in
+               buttonA: (aLeft, aRight), buttonB: (bLeft, bRight), rifle: if select then Gun.select(Longarm.weapon, m.rifle) else m.rifle,
+               releasing: releasing, slideRelease: slideRelease } in
   match chosen with
   | Option.Some(id) => reset(next, id)
   | Option.None => if cycle && not m.cycle then reset(next, Stations.after(m.station)) else next
