@@ -234,6 +234,27 @@ async function gameViewNoGpu(browser) {
     expect((await sessionInput(debugUrl)).held_keys).toEqual([]);
     await page.keyboard.up("KeyA");
 
+    // Chorded buttons each reach the session.
+    const buttons = async () => {
+      const { left, right } = (await sessionInput(debugUrl)).mouse.buttons;
+      return [left, right];
+    };
+    await view.click();
+    await page.mouse.down({ button: "left" });
+    await page.mouse.down({ button: "right" });
+    await expect.poll(buttons).toEqual([true, true]);
+    await page.mouse.up({ button: "left" });
+    await expect.poll(buttons).toEqual([false, true]);
+    await page.mouse.up({ button: "right" });
+    await expect.poll(buttons).toEqual([false, false]);
+    // Another app taking focus releases a held key.
+    await page.keyboard.down("KeyS");
+    await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual(["S"]);
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual([]);
+    await expect(banner).toHaveText("Click to play");
+    await page.keyboard.up("KeyS");
+
     // Leaving the tab releases what is held too.
     await view.click();
     await page.keyboard.down("KeyD");

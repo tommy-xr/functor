@@ -3,7 +3,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
-  type MouseEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent,
   type ReactNode,
   type RefObject,
@@ -24,7 +24,15 @@ export function GameView({ state, online, send }: { state: AppState | null; onli
     if (!state!.no_gpu && state!.session_mode === "window") {
       return <GameMessage text="Running in its own window" />;
     }
-    return <LiveGame debugUrl={status.debug_url} surface={status.surface} noGpu={state!.no_gpu} send={send} />;
+    return (
+      <LiveGame
+        debugUrl={status.debug_url}
+        surface={status.surface}
+        noGpu={state!.no_gpu}
+        online={online}
+        send={send}
+      />
+    );
   }
   if (status.kind === "starting") return <GameMessage text="Starting…" />;
   const reason = status.kind === "failed" || status.kind === "exited" ? status.reason : null;
@@ -62,11 +70,13 @@ function LiveGame({
   debugUrl,
   surface,
   noGpu,
+  online,
   send,
 }: {
   debugUrl: string;
   surface: [number, number] | null;
   noGpu: boolean;
+  online: boolean;
   send: Send;
 }) {
   const area = useRef<HTMLDivElement>(null);
@@ -103,9 +113,10 @@ function LiveGame({
   const rect = box && frame ? fitRect(box, frame, { w: frame.w / dpr, h: frame.h / dpr }) : null;
   const capture = useCapture(send, area, rect ?? (box && { x: 0, y: 0, ...box }), surface);
   const { release } = capture;
+  // Offline, input would be dropped, so the view lets go of it.
   useEffect(() => {
-    if (!visible) release();
-  }, [visible, release]);
+    if (!visible || !online) release();
+  }, [visible, online, release]);
 
   return (
     <div
@@ -114,7 +125,7 @@ function LiveGame({
       data-testid="game-view"
       tabIndex={0}
       aria-label="Game"
-      {...capture.handlers}
+      {...(online && capture.handlers)}
     >
       {noGpu && (
         <div className="game-message">
@@ -204,22 +215,41 @@ function useCapture(
   // Let go when the view goes away (tab switch, session stop).
   useEffect(() => ops.release, [ops]);
 
-  // React's wheel listener is passive; this one may cancel the page scroll.
   useEffect(() => {
     const el = area.current;
     if (!el) return;
+    // React's wheel listener is passive; this one may cancel the page scroll.
     const onWheel = (e: WheelEvent) => {
       if (!live.current.captured || !e.deltaY) return;
       e.preventDefault();
       pending.current.wheel -= Math.sign(e.deltaY);
       ops.schedule();
     };
+    // On the window, so a button let go outside the view is still released.
+    const onMouseUp = (e: MouseEvent) => {
+      const button = BUTTONS[e.button];
+      if (!button || !held.current.buttons.delete(button)) return;
+      ops.flush();
+      ops.input({ type: "mouse_button", button, down: false });
+    };
+    // Another app taking focus, or the page going away, keeps the view focused
+    // but its key-ups never arrive.
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("blur", ops.release);
+    window.addEventListener("pagehide", ops.release);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("blur", ops.release);
+      window.removeEventListener("pagehide", ops.release);
+    };
   }, [area, ops]);
 
   const handlers = {
-    onPointerDown: (e: PointerEvent<HTMLDivElement>) => {
+    // Mouse events, not pointer events: those report only the first button
+    // of a chord going down and the last coming up.
+    onMouseDown: (e: ReactMouseEvent<HTMLDivElement>) => {
       // The click that captures is not forwarded.
       if (!captured) {
         live.current.captured = true;
@@ -229,17 +259,10 @@ function useCapture(
       }
       const button = BUTTONS[e.button];
       if (!button || held.current.buttons.has(button)) return;
-      e.currentTarget.setPointerCapture(e.pointerId);
       ops.queueMove(e);
       ops.flush();
       held.current.buttons.add(button);
       ops.input({ type: "mouse_button", button, down: true });
-    },
-    onPointerUp: (e: PointerEvent<HTMLDivElement>) => {
-      const button = BUTTONS[e.button];
-      if (!button || !held.current.buttons.delete(button)) return;
-      ops.flush();
-      ops.input({ type: "mouse_button", button, down: false });
     },
     onPointerMove: (e: PointerEvent<HTMLDivElement>) => {
       if (captured) ops.queueMove(e);
@@ -268,7 +291,7 @@ function useCapture(
       ops.input({ type: "key", key, down: false });
     },
     onBlur: ops.release,
-    onContextMenu: (e: MouseEvent) => {
+    onContextMenu: (e: ReactMouseEvent) => {
       if (captured) e.preventDefault();
     },
   };
