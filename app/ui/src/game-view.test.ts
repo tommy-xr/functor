@@ -41,7 +41,8 @@ test("pointer positions map into the game's surface through the letterbox", () =
   const surface = { w: 800, h: 600 };
   assert.deepEqual(toSurface(200, 0, rect, surface), { x: 0, y: 0 });
   assert.deepEqual(toSurface(800, 450, rect, surface), { x: 400, y: 300 });
-  assert.deepEqual(toSurface(1400, 900, rect, surface), { x: 800, y: 600 });
+  // The far edge is the last pixel: the surface is 0..w-1.
+  assert.deepEqual(toSurface(1400, 900, rect, surface), { x: 799, y: 599 });
   assert.deepEqual(toSurface(500, 300, rect, surface), { x: 200, y: 200 });
 });
 
@@ -49,15 +50,15 @@ test("pointer positions in the bars clamp to the frame's edge", () => {
   const rect = { x: 200, y: 0, w: 1200, h: 900 };
   const surface = { w: 800, h: 600 };
   assert.deepEqual(toSurface(50, 450, rect, surface), { x: 0, y: 300 });
-  assert.deepEqual(toSurface(1550, -10, rect, surface), { x: 800, y: 0 });
+  assert.deepEqual(toSurface(1550, -10, rect, surface), { x: 799, y: 0 });
 });
 
 test("the stream is requested at the view's size, on loopback only", () => {
   assert.equal(
-    streamUrl("http://127.0.0.1:52011", { w: 1599.6, h: 900 }, 3),
-    "http://127.0.0.1:52011/stream?w=1600&h=900&t=3",
+    streamUrl("http://127.0.0.1:52011", { w: 1599.6, h: 900 }),
+    "http://127.0.0.1:52011/stream?w=1600&h=900",
   );
-  assert.equal(streamUrl("http://localhost:8077", { w: 0, h: 0 }, 0), "http://localhost:8077/stream?w=1&h=1&t=0");
-  assert.equal(streamUrl("http://192.168.1.5:8077", { w: 10, h: 10 }, 0), null);
-  assert.equal(streamUrl("https://127.0.0.1:8077", { w: 10, h: 10 }, 0), null);
+  assert.equal(streamUrl("http://localhost:8077", { w: 0, h: 0 }), "http://localhost:8077/stream?w=1&h=1");
+  assert.equal(streamUrl("http://192.168.1.5:8077", { w: 10, h: 10 }), null);
+  assert.equal(streamUrl("https://127.0.0.1:8077", { w: 10, h: 10 }), null);
 });

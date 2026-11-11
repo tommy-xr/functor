@@ -15,7 +15,6 @@ type Send = (msg: ClientMsg) => void;
 
 const BUTTONS: Record<number, MouseButton> = { 0: "left", 1: "middle", 2: "right" };
 const RESIZE_DEBOUNCE_MS = 200;
-const RETRY_MS = 1000;
 
 /** The Game tab: the session's state in one line, or its live frames. */
 export function GameView({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
@@ -85,11 +84,10 @@ function LiveGame({
   const request = useDebounced(box, RESIZE_DEBOUNCE_MS);
   const visible = usePageVisible();
   const [frame, setFrame] = useState<Size | null>(null);
-  const [reconnects, setReconnects] = useState(0);
   const dpr = window.devicePixelRatio || 1;
   const url =
     !noGpu && visible && request
-      ? streamUrl(debugUrl, { w: request.w * dpr, h: request.h * dpr }, reconnects)
+      ? streamUrl(debugUrl, { w: request.w * dpr, h: request.h * dpr })
       : null;
 
   // `src` is set here rather than rendered, so the old stream's request is
@@ -100,14 +98,6 @@ function LiveGame({
     el.src = url;
     return () => el.removeAttribute("src");
   }, [url]);
-
-  // A dropped stream reconnects while the session runs.
-  const [failed, setFailed] = useState<string | null>(null);
-  useEffect(() => {
-    if (!failed || failed !== url) return;
-    const t = setTimeout(() => setReconnects((n) => n + 1), RETRY_MS);
-    return () => clearTimeout(t);
-  }, [failed, url]);
 
   // The frame's own pixels in CSS pixels cap its size, so it is never scaled up.
   const rect = box && frame ? fitRect(box, frame, { w: frame.w / dpr, h: frame.h / dpr }) : null;
@@ -142,7 +132,6 @@ function LiveGame({
           const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
           setFrame((f) => (f?.w === w && f.h === h ? f : { w, h }));
         }}
-        onError={() => setFailed(url)}
       />
       <span className="game-banner" role="status">
         {capture.captured ? "Esc to release" : "Click to play"}

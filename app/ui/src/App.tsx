@@ -215,8 +215,9 @@ function Canvas({ state, online, send }: { state: AppState | null; online: boole
   const [tab, setTab] = useState(0);
   // Arrow keys move between tabs, as in the ARIA tabs pattern.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // Only from a tab: the mode picker in the same bar keeps its arrow keys.
     const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
-    if (!step) return;
+    if (!step || (e.target as HTMLElement).getAttribute("role") !== "tab") return;
     const next = (tab + step + TABS.length) % TABS.length;
     setTab(next);
     document.getElementById(`tab-${TABS[next]!.id}`)?.focus();

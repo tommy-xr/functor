@@ -40,27 +40,18 @@ export function fitRect(box: Size, frame: Size, max: Size): Rect {
   return { x: (box.w - w) / 2, y: (box.h - h) / 2, w, h };
 }
 
-/**
- * A point in the view → the game's pointer surface (`0..w`, as a window
- * cursor reports it), clamped to the frame.
- */
+/** A point in the view → the game's pointer surface (`0..w-1`), clamped to the frame. */
 export function toSurface(x: number, y: number, rect: Rect, surface: Size): { x: number; y: number } {
-  const clamp = (v: number) => Math.min(Math.max(v, 0), 1);
-  return {
-    x: Math.round(clamp((x - rect.x) / rect.w) * surface.w),
-    y: Math.round(clamp((y - rect.y) / rect.h) * surface.h),
-  };
+  const to = (v: number, size: number) => Math.min(Math.max(Math.round(v * size), 0), size - 1);
+  return { x: to((x - rect.x) / rect.w, surface.w), y: to((y - rect.y) / rect.h, surface.h) };
 }
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-/**
- * The session's `/stream` for frames that fit `size` device pixels; `n`
- * busts the cache on a reconnect. Null for a debug server off loopback.
- */
-export function streamUrl(debugUrl: string, size: Size, n: number): string | null {
+/** The session's `/stream` for frames that fit `size` device pixels; null off loopback. */
+export function streamUrl(debugUrl: string, size: Size): string | null {
   const url = new URL("/stream", debugUrl);
   if (url.protocol !== "http:" || !LOOPBACK.has(url.hostname)) return null;
-  url.search = `w=${Math.max(1, Math.round(size.w))}&h=${Math.max(1, Math.round(size.h))}&t=${n}`;
+  url.search = `w=${Math.max(1, Math.round(size.w))}&h=${Math.max(1, Math.round(size.h))}`;
   return url.href;
 }

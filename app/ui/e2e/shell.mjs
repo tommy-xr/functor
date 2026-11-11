@@ -202,6 +202,13 @@ async function gameViewNoGpu(browser) {
     await expect(view).toHaveText(/^No game running/);
     await expect(view.getByRole("button", { name: "Start" })).toBeEnabled();
     await expect(picker).toHaveValue("hidden");
+    // Arrow keys on the picker stay with it rather than switching tabs.
+    await picker.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("tab", { name: "Game" })).toHaveAttribute("aria-selected", "true");
+    await page.keyboard.press("Escape");
+    await picker.selectOption("hidden");
+    await expect.poll(() => app.state?.session_mode).toBe("hidden");
     if (!FUNCTOR) {
       // Without a session the picker only records the mode for the next start.
       await picker.selectOption("window");
@@ -364,7 +371,7 @@ async function gameViewGpu(browser) {
           const { mouse } = await sessionInput(debugUrl);
           return [mouse.x, mouse.y];
         })
-        .toEqual([Math.round(fx * sw), Math.round(fy * sh)]);
+        .toEqual([Math.min(Math.round(fx * sw), sw - 1), Math.min(Math.round(fy * sh), sh - 1)]);
     }
     // A key reaches the session.
     await page.keyboard.down("KeyW");
