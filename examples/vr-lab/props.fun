@@ -166,16 +166,14 @@ type Site = | AtGrip | AtFore | AtSlide
 
 /// The fingers on a prop: each held item's fitted pose (`Fitted`, generated
 /// from `Grip.specs`). `trigger` is the hand's trigger, pulling a gun's index
-/// in (`Hand.pullTrigger`). A cartridge (no spec) is pinched. Only the guns
-/// sit at their spec's placement; the other props are held where they were
-/// grabbed (the bottle snapped to its neck), so their fit is the spec's
-/// placement's, until a grab-time fit. A hand on a fore-end or a slide keeps
-/// the power wrap: their fits want a turn the drawn hand doesn't take (it is
-/// turned as tracked: `Longarm.supportOn`, `Gun.rackOn`).
+/// in (`Hand.pullTrigger`). A cartridge (no spec) is pinched. Each is its
+/// spec's fit at its placement; where the hand is elsewhere on the prop
+/// (slid along a fore-end, holding a free prop another way) the game looks
+/// up the fit there instead (`Grip.supportAt`, `Grip.graspPose`).
 let fingers = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
   match site with
-  | AtFore => Hand.power
-  | AtSlide => Hand.power
+  | AtFore => if k == Shotgun then Fitted.shotgunForeEnd else Fitted.rifleForegrip
+  | AtSlide => if k == Rifle then Fitted.rifleHandle else Fitted.pistolSlide
   | AtGrip =>
     (match k with
      | Ball => Fitted.ball
@@ -209,10 +207,10 @@ let preset = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
      | Hull(_) => Hand.pinch)
 
 // A gun's index follows its trigger, and nothing else does; a shell and the
-// ball take their fits; a foregrip is wrapped, a cartridge pinched.
+// ball and a foregrip take their fits, a cartridge is pinched.
 expect (fingers(Pistol, AtGrip, 0.0)).index.curl < (fingers(Pistol, AtGrip, 1.0)).index.curl
 expect (fingers(Rifle, AtGrip, 1.0)).middle == Fitted.rifleGrip.middle && fingers(Rifle, AtGrip, 0.0) == Fitted.rifleGrip
-  && fingers(Rifle, AtFore, 1.0) == Hand.power
+  && fingers(Rifle, AtFore, 1.0) == Fitted.rifleForegrip
 expect fingers(Round(Ammo.PistolMag, 0.0), AtGrip, 1.0) == Hand.pinch && fingers(Round(Ammo.Shell, 0.0), AtGrip, 1.0) == Fitted.shellFromTheBox
   && fingers(Ball, AtGrip, 1.0) == Fitted.ball
 expect (preset(Pistol, AtGrip, 0.0)).index.curl < (preset(Pistol, AtGrip, 1.0)).index.curl && preset(Ball, AtGrip, 1.0) == Hand.palmOpen

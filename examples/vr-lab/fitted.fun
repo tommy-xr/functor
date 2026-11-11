@@ -25,3 +25,13 @@ let all: List<(string, Hand.FingerPose)> = [("ball", ball), ("brick", brick), ("
 let pistolGripPlacement: Input.pose = { position: { x: 0.0, y: 0.0 - 0.020051288317431, z: 0.021076643939259 }, orientation: { x: 0.0 - 0.104807168828882, y: 0.0, z: 0.0, w: 0.994492562748497 } }
 let rifleGripPlacement: Input.pose = { position: { x: 0.0, y: 0.0 - 0.003108438599448, z: 0.012793714683981 }, orientation: { x: 0.0 - 0.124674733385228, y: 0.0, z: 0.0, w: 0.992197667229329 } }
 let shotgunGripPlacement: Input.pose = { position: { x: 0.0, y: 0.0 - 0.021436570553248, z: 0.017473655109457 }, orientation: { x: 0.0 - 0.124674733385228, y: 0.0, z: 0.0, w: 0.992197667229329 } }
+let rifleHandle: Hand.FingerPose = Hand.pinch
+
+let rifleForegripTable: List<(Hand.FingerPose, float)> = []
+let shotgunForeEndTable: List<(Hand.FingerPose, float)> = []
+let ballGrasps: List<(Hand.FingerPose, float)> = []
+let brickGrasps: List<(Hand.FingerPose, float)> = []
+let stickBandGrasps: List<(Hand.FingerPose, float)> = []
+let pistolMagGrasps: List<(Hand.FingerPose, float)> = []
+let rifleMagGrasps: List<(Hand.FingerPose, float)> = []
+let shellFromTheBoxGrasps: List<(Hand.FingerPose, float)> = []

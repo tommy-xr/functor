@@ -531,9 +531,14 @@ let specs: List<Spec> = [
   spec("bottle neck", Props.Bottle, Props.AtGrip, bottleSolids, Power(Quat.v3(0.0, Props.neckAt, 0.0), up, Props.neckRadius), ahead),
   centred(spec("pistol grip", Props.Pistol, Props.AtGrip, pistolSolids,
     Pistol(Quat.sub(Gun.handleAt, Gun.center), raked(Gun.handleRake), 0.015, gunAt(Gun.center, 0.0, 0.006, 0.0 - 0.019)), ahead)),
-  spec("pistol slide", Props.Pistol, Props.AtSlide, pistolSolids, Free(Hold.at(Gun.pistol.rack.at, Quat.identity)), ahead),
+  // Racked overhand: the palm on the slide's top at its rack zone, the
+  // fingers over it.
+  spec("pistol slide", Props.Pistol, Props.AtSlide, pistolSolids, Palm(Quat.add(Gun.pistol.rack.at, Quat.v3(0.0, 0.02, 0.0)), up), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
   centred(spec("rifle grip", Props.Rifle, Props.AtGrip, rifleSolids,
     Pistol(gunAt(Longarm.center, 0.0, 0.0, 0.012), raked(0.0 - 0.25), 0.015, gunAt(Longarm.center, 0.0, 0.022, 0.0 - 0.038)), ahead)),
+  // The charging handle's right wing pinched front to back, from the side.
+  spec("rifle handle", Props.Rifle, Props.AtSlide, rifleSolids,
+    Pinch(gunAt(Longarm.center, Longarm.handleAt.x + 0.015, Longarm.handleAt.y, Longarm.handleAt.z), Quat.v3(0.0, 0.0, 1.0)), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
   // The support hands: the fore-end's axis up the fist, the palm under it.
   spec("rifle foregrip", Props.Rifle, Props.AtFore, rifleSolids,
     Power(gunAt(Longarm.center, 0.0, 0.02, 0.0 - (Longarm.foreNear + Longarm.foreFar) / 2.0), ahead, 0.015), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
@@ -810,7 +815,7 @@ let specOk = (s: Spec): bool =>
     let grad = unitOf(Quat.v3(d(Quat.v3(1.0, 0.0, 0.0)), d(up), d(Quat.v3(0.0, 0.0, 1.0)))) in
     Math.abs(sdfOf(s.solids, at)) <= 0.001 && Quat.dot(grad, n) > 0.99
   | Free(_) => true)
-expect List.length(specs) == 13.0 && (specs |> List.all(specOk))
+expect List.length(specs) == 14.0 && (specs |> List.all(specOk))
 // Off its solids, a target fails: the bottle's neck point 2 cm out.
 expect (
   specs |> List.find((s) => s.name == "bottle neck") |> Option.map((s) =>
@@ -892,3 +897,216 @@ expect (
       Quat.length(Quat.sub(solved.position, placement.position)) < 0.0001 && Quat.angle(solved.orientation, placement.orientation) < 0.001
         && Math.abs(solved.position.x) < 0.000001) |> Option.defaultValue(false))
 )
+
+// --- the hand on what it holds, at runtime ---
+// The game draws a hand as it was fitted here, offline: a support hand on
+// its fore-end at the slide and roll it is tracked at, a racking hand on its
+// slide, a free prop at the nearest of its fitted placements. Each fit is
+// generated into `Fitted` (`npm run grips:vr-lab -- --write`), so the game
+// only looks them up: a fit costs 50-300 ms, many frames.
+
+let itemNamed = (n: string): Option.t<Item> => items |> List.find((it) => it.name == n)
+
+/// A fit at a placement: the pose the game takes (`adopted`), and how far the
+/// palm was pushed on first (`palmPush`; 0 for none).
+type Cell = { pose: Hand.FingerPose, push: float }
+
+let cellsOf = (t: List<(Hand.FingerPose, float)>): List<Cell> => t |> List.map((pd) => let (p, d) = pd in { pose: p, push: d })
+
+/// A hand's root at `hand` moved `d` along its palm's normal (its item `d`
+/// the other way, as `onPalm` moves it).
+let pushedBy = (d: float, hand: Input.pose): Input.pose => Hold.compose(hand, Hold.at(Quat.scale(d, palmNormal(Hold.Right)), Quat.identity))
+
+/// The right hand fitted with its root at `hand` in an item's frame, its palm
+/// pushed on first if `push`.
+let cellAt = (it: Item, push: bool, hand: Input.pose): Cell =>
+  let d = if push then palmPush(seenFrom(hand, it.solids), Hold.Right) |> Option.defaultValue(0.0) else 0.0 in
+  { pose: adopted(it, fitOn(Hold.Right, seenFrom(pushedBy(d, hand), it.solids), Option.None)), push: d }
+
+// A pose (an item's frame, or a hand's root's) as the left hand's: mirrored.
+let sided = (side: Hold.Side, p: Input.pose): Input.pose => if side == Hold.Left then Hand.mirror(p) else p
+
+// `a` to `b` by `t`, exactly either end.
+let mixed = (a: float, b: float, t: float): float => if t <= 0.0 then a else if t >= 1.0 then b else a + (b - a) * t
+let mixBend = (a: Hand.Bend, b: Hand.Bend, t: float): Hand.Bend => { curl: mixed(a.curl, b.curl, t), tip: mixed(a.tip, b.tip, t) }
+let mixCell = (a: Cell, b: Cell, t: float): Cell =>
+  let (p, q) = (a.pose, b.pose) in
+  { pose: { thumb: { curl: mixed(p.thumb.curl, q.thumb.curl, t), tip: mixed(p.thumb.tip, q.thumb.tip, t), opposition: mixed(p.thumb.opposition, q.thumb.opposition, t) },
+      index: mixBend(p.index, q.index, t), middle: mixBend(p.middle, q.middle, t), ring: mixBend(p.ring, q.ring, t), little: mixBend(p.little, q.little, t) },
+    push: mixed(a.push, b.push, t) }
+
+// --- support hands ---
+// A support hand slides along its fore-end and rolls about it. Its spec is
+// fitted on a grid of both (`Slider`): slides along the intent's axis from
+// the spec's placement, rolls about that axis through its point, the palm
+// pushed back on at each. The drawn hand takes its tracked slide and roll,
+// clamped to the grid; its fingers and push are blended from the four cells
+// round it. The left hand's are the right's, mirrored (the guns are).
+
+type Slider = { name: string, slides: List<float>, rolls: List<float> }
+
+let supportRolls = [0.0 - 0.8, 0.0 - 0.4, 0.0, 0.4, 0.8]
+let rifleSlider: Slider = { name: "rifle foregrip", slides: [0.0 - 0.12, 0.0 - 0.06, 0.0, 0.06, 0.12], rolls: supportRolls }
+let shotgunSlider: Slider = { name: "shotgun fore-end", slides: [0.0 - 0.06, 0.0, 0.06], rolls: supportRolls }
+let sliders = [rifleSlider, shotgunSlider]
+
+// An item's handle: a point on its axis, and the axis.
+let lineOf = (it: Item): (Input.point3, Input.point3) =>
+  match it.spec.intent with
+  | Power(at, axis, _) => (at, axis)
+  | Pistol(at, axis, _, _) => (at, axis)
+  | _ => (Hold.zero, up)
+
+/// A hand's root at `hand` (an item's frame) slid `s` along the item's
+/// handle and rolled `r` about it.
+let slidOn = (it: Item, s: float, r: float, hand: Input.pose): Input.pose =>
+  let (at, axis) = lineOf(it) in
+  let turn = Quat.axisAngle(axis, r) in
+  Hold.at(Quat.add(Quat.add(at, Quat.rotate(turn, Quat.sub(hand.position, at))), Quat.scale(s, axis)), Quat.mul(turn, hand.orientation))
+
+/// A slider's grid, slides outer: each cell's slide and roll.
+let gridOf = (sl: Slider): List<(float, float)> => sl.slides |> List.concatMap((s) => sl.rolls |> List.map((r) => (s, r)))
+
+/// Where a cell's hand is (the right's, in its item's frame).
+let cellHand = (it: Item, s: float, r: float, push: float): Input.pose => pushedBy(push, slidOn(it, s, r, it.hand))
+
+/// A slider's table: each cell of its grid fitted (generated into `Fitted`).
+let tableOf = (sl: Slider): List<Cell> =>
+  itemNamed(sl.name) |> Option.map((it) => gridOf(sl) |> List.map((sr) => let (s, r) = sr in cellAt(it, true, slidOn(it, s, r, it.hand)))) |> Option.defaultValue([])
+
+/// A support site as the game reads it: its slider, item and table.
+type Support = { slider: Slider, item: Item, cells: List<Cell> }
+
+let supportOf = (sl: Slider, t: List<(Hand.FingerPose, float)>): Option.t<Support> =>
+  itemNamed(sl.name) |> Option.map((it) => { slider: sl, item: it, cells: cellsOf(t) })
+let rifleSupport = supportOf(rifleSlider, Fitted.rifleForegripTable)
+let shotgunSupport = supportOf(shotgunSlider, Fitted.shotgunForeEndTable)
+
+/// A two-handed gun's support site.
+let supportFor = (k: Props.Kind): Option.t<Support> =>
+  if k == Props.Rifle then rifleSupport else if k == Props.Shotgun then shotgunSupport else Option.None
+
+let first = (xs: List<float>): float => List.head(xs) |> Option.defaultValue(0.0)
+let final = (xs: List<float>): float => List.last(xs) |> Option.defaultValue(0.0)
+
+// Where `x` falls in the ascending `xs` (clamped to its ends): the cells
+// either side, and how far between.
+let between = (xs: List<float>, x: float): (float, float, float) =>
+  let n = List.length(xs) in
+  let at = (i: float) => List.nth(i, xs) |> Option.defaultValue(0.0) in
+  let c = Math.clamp(first(xs), final(xs), x) in
+  let i = Math.min(Math.max(0.0, n - 2.0), xs |> List.indexedMap((k, v) => if v <= c then k else 0.0) |> List.maximum |> Option.defaultValue(0.0)) in
+  let j = Math.min(n - 1.0, i + 1.0) in
+  (i, j, if j == i then 0.0 else (c - at(i)) / (at(j) - at(i)))
+
+/// The cell a hand slid `s` and rolled `r` takes: the four round it blended.
+let cellOn = (su: Support, s: float, r: float): Cell =>
+  let (si, sj, st) = between(su.slider.slides, s) in
+  let (ri, rj, rt) = between(su.slider.rolls, r) in
+  let n = List.length(su.slider.rolls) in
+  let cell = (a: float, b: float) => List.nth(a * n + b, su.cells) |> Option.defaultValue({ pose: su.item.preset, push: 0.0 }) in
+  mixCell(mixCell(cell(si, ri), cell(si, rj), rt), mixCell(cell(sj, ri), cell(sj, rj), rt), st)
+
+/// How far a right hand's root at `rel` (its item's frame) is slid along its
+/// support's handle from the spec's placement, and rolled about it.
+let slideRoll = (su: Support, rel: Input.pose): (float, float) =>
+  let (_, axis) = lineOf(su.item) in
+  let q = Quat.mul(rel.orientation, Quat.conj(su.item.hand.orientation)) in
+  let w = if q.w < 0.0 then 0.0 - 1.0 else 1.0 in
+  (Quat.dot(Quat.sub(rel.position, su.item.hand.position), axis), 2.0 * Math.atan2(w * Quat.dot(Quat.v3(q.x, q.y, q.z), axis), w * q.w))
+
+/// Where a support hand is drawn on its gun (its root, in the gun's frame),
+/// and its fingers: tracked at `rel` there, the fore-end slid back `pull`.
+let supportAt = (su: Support, side: Hold.Side, pull: float, rel: Input.pose): (Input.pose, Hand.FingerPose) =>
+  let back = Quat.v3(0.0, 0.0, pull) in
+  let (s, r) = slideRoll(su, sided(side, Hold.at(Quat.sub(rel.position, back), rel.orientation))) in
+  let (cs, cr) = (Math.clamp(first(su.slider.slides), final(su.slider.slides), s), Math.clamp(first(su.slider.rolls), final(su.slider.rolls), r)) in
+  let c = cellOn(su, cs, cr) in
+  let at = sided(side, cellHand(su.item, cs, cr, c.push)) in
+  (Hold.at(Quat.add(at.position, back), at.orientation), c.pose)
+
+// --- racking hands ---
+
+/// Where a hand racking gun `k`'s slide (or charging handle), `pull` back,
+/// is drawn (its root, in the gun's frame): its spec's placement, moved back
+/// with it.
+let rackAt = (k: Props.Kind, side: Hold.Side, pull: float): Option.t<Input.pose> =>
+  itemNamed(if k == Props.Pistol then "pistol slide" else "rifle handle") |> Option.map((it) =>
+    let h = sided(side, it.hand) in
+    Hold.at(Quat.add(h.position, Quat.v3(0.0, 0.0, pull)), h.orientation))
+
+// --- free props ---
+// A free prop is held where it is taken, unless the hand snaps to one of
+// its fitted placements (`Hold.snaps`): its spec's, and a few nudged off it
+// (`Grasps`: moved in the hand's root frame, the palm pushed back on for a
+// palm grip). The nearest is chosen when a hand takes it, under the turns
+// its solids are alike under (any, for a ball); its fit is the hand's pose.
+
+type Grasps = { name: string, nudges: List<Input.pose>, alike: List<Input.quaternion>, round: bool, push: bool }
+
+let turnAbout = (axis: Input.point3, a: float): Input.quaternion => Quat.axisAngle(axis, a)
+let flips = [Quat.identity, turnAbout(Quat.v3(1.0, 0.0, 0.0), Math.pi), turnAbout(up, Math.pi), turnAbout(Quat.v3(0.0, 0.0, 1.0), Math.pi)]
+// The item turned `a` about the palm's normal, about its own centre.
+let yawedOn = (it: Item, a: float): Input.pose =>
+  let c = (Hold.inverse(it.hand)).position in
+  let q = turnAbout(palmNormal(Hold.Right), a) in
+  Hold.at(Quat.sub(c, Quat.rotate(q, c)), q)
+
+let graspSets: List<Grasps> = [
+  { name: "ball", nudges: [Hold.origin, Hold.p(0.0, 0.0, 0.0 - 0.02), Hold.p(0.0, 0.0, 0.02), Hold.p(0.0, 0.015, 0.0), Hold.p(0.0, 0.0 - 0.015, 0.0)], alike: [Quat.identity], round: true, push: true },
+  { name: "brick", nudges: [0.0, 0.25, 0.5, 0.75] |> List.map((f) => itemNamed("brick") |> Option.map((it) => yawedOn(it, f * Math.pi)) |> Option.defaultValue(Hold.origin)), alike: flips, round: false, push: true },
+  { name: "stick (band)", nudges: [Hold.origin, Hold.p(0.0, 0.0 - 0.06, 0.0), Hold.p(0.0, 0.0 - 0.12, 0.0)],
+    alike: [0.0, 0.5, 1.0, 1.5] |> List.map((f) => turnAbout(Quat.v3(0.0, 0.0, 1.0), f * Math.pi)), round: false, push: false },
+  { name: "pistol mag", nudges: [Hold.origin, Hold.p(0.0, 0.015, 0.0), Hold.p(0.0, 0.0 - 0.015, 0.0)], alike: [Quat.identity, turnAbout(up, Math.pi)], round: false, push: false },
+  { name: "rifle mag", nudges: [Hold.origin, Hold.p(0.0, 0.02, 0.0), Hold.p(0.0, 0.0 - 0.02, 0.0)], alike: flips, round: false, push: false },
+  { name: "shell (from the box)", nudges: [Hold.origin, Hold.p(0.0, 0.0, 0.008), Hold.p(0.0, 0.0, 0.0 - 0.008)], alike: [Quat.identity, turnAbout(Quat.v3(0.0, 0.0, 1.0), Math.pi)], round: false, push: false },
+]
+
+/// A placement's hand (its root in the item's frame), nudged, before any
+/// push.
+let nudgedHand = (it: Item, nudge: Input.pose): Input.pose => Hold.inverse(Hold.compose(nudge, Hold.inverse(it.hand)))
+
+/// A prop's placements fitted (generated into `Fitted`).
+let graspCells = (g: Grasps): List<Cell> =>
+  itemNamed(g.name) |> Option.map((it) => g.nudges |> List.map((n) => cellAt(it, g.push, nudgedHand(it, n)))) |> Option.defaultValue([])
+
+/// A free prop's placements as the game reads them: each one's hand (pushed),
+/// and its fit.
+type Grasped = { set: Grasps, item: Item, hands: List<Input.pose>, cells: List<Cell> }
+
+let graspedOf = (name: string, t: List<(Hand.FingerPose, float)>): Option.t<Grasped> =>
+  graspSets |> List.find((g) => g.name == name) |> Option.bind((g) => itemNamed(name) |> Option.map((it) =>
+    let cells = cellsOf(t) in
+    { set: g, item: it, cells: cells, hands: List.zip(cells, g.nudges) |> List.map((nc) => let (n, c) = nc in pushedBy(c.push, nudgedHand(it, n))) }))
+
+let graspedAll: List<(string, Option.t<Grasped>)> =
+  [("ball", graspedOf("ball", Fitted.ballGrasps)), ("brick", graspedOf("brick", Fitted.brickGrasps)), ("stick (band)", graspedOf("stick (band)", Fitted.stickBandGrasps)),
+   ("pistol mag", graspedOf("pistol mag", Fitted.pistolMagGrasps)), ("rifle mag", graspedOf("rifle mag", Fitted.rifleMagGrasps)),
+   ("shell (from the box)", graspedOf("shell (from the box)", Fitted.shellFromTheBoxGrasps))]
+
+/// A free prop's placements, if it has them.
+let graspedFor = (k: Props.Kind): Option.t<Grasped> =>
+  let name =
+    match k with
+    | Props.Ball => "ball"
+    | Props.Brick => "brick"
+    | Props.Stick => "stick (band)"
+    | Props.Mag(fits, _) => if fits == Ammo.RifleMag then "rifle mag" else "pistol mag"
+    | Props.Round(cal, _) => if cal == Ammo.Shell then "shell (from the box)" else ""
+    | _ => "" in
+  graspedAll |> List.find((ng) => let (n, _) = ng in n == name) |> Option.bind((ng) => let (_, g) = ng in g)
+
+/// The nearest of a prop's placements to a hand holding it at `offset` (the
+/// prop in the hand's grip frame): its index, and the hand's root in the
+/// prop's frame there.
+let nearestGrasp = (g: Grasped, side: Hold.Side, offset: Input.pose): (float, Input.pose) =>
+  let h = Hold.inverse(sided(side, offset)) in
+  let candidates = g.hands |> List.indexedMap((i, hv) =>
+    if g.set.round then [(i, Hold.at(Quat.rotate(Quat.mul(h.orientation, Quat.conj(hv.orientation)), hv.position), h.orientation))]
+    else g.set.alike |> List.map((q) => (i, Hold.compose(Hold.at(Hold.zero, q), hv)))) |> List.flatten in
+  let cost = (c: (float, Input.pose)) => let (_, p) = c in Quat.length(Quat.sub(p.position, h.position)) + 0.05 * Quat.angle(p.orientation, h.orientation) in
+  candidates |> List.sortBy(cost) |> List.head |> Option.map((c) => let (i, p) = c in (i, sided(side, p))) |> Option.defaultValue((0.0, sided(side, h)))
+
+/// A prop's fitted pose at placement `i`.
+let graspPose = (k: Props.Kind, i: float): Option.t<Hand.FingerPose> =>
+  graspedFor(k) |> Option.bind((g) => List.nth(i, g.cells)) |> Option.map((c) => c.pose)
