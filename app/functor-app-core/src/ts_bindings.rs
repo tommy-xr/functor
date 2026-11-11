@@ -37,6 +37,8 @@ impl TypeVisitor for Decls<'_> {
             T::docs().unwrap_or_default(),
             T::decl(self.cfg)
         );
+        // A repeat is fine (a self-reference); a different shape under one
+        // name would drop one.
         if let Some(seen) = self.out.insert(name.clone(), decl.clone()) {
             assert_eq!(seen, decl, "two different types export as `{name}`");
             return;

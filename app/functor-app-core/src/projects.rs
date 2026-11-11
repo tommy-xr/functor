@@ -1,6 +1,7 @@
 //! Project discovery: every directory under the repo root holding a
 //! `functor.json`, with its entries read the way the `functor` CLI reads them.
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,7 @@ pub enum Entries {
     Single { file: String },
     /// `"entries"`: named roles, sorted by name.
     Named { roles: Vec<Role> },
-    /// A manifest the CLI refuses to run.
+    /// A manifest `functor build` refuses.
     Invalid { error: String },
 }
 
@@ -46,8 +47,8 @@ pub struct Role {
     pub prefix: Option<String>,
 }
 
-/// Reads a `functor.json`. Covers the entry layout only; the CLI's deeper
-/// checks (identifier rules, `reverse` ports, input settings) stay in `functor build`.
+/// Reads a `functor.json`. Checks the entry layout only; the CLI's identifier
+/// rules, `reverse` ports and input settings are left to `functor build`.
 pub fn parse_manifest(text: &str) -> Entries {
     let invalid = |error: &str| Entries::Invalid {
         error: error.to_string(),
@@ -72,6 +73,7 @@ pub fn parse_manifest(text: &str) -> Entries {
                 .collect::<Result<Vec<_>, _>>()
             {
                 Ok(mut roles) => {
+                    // Already sorted unless serde_json's `preserve_order` gets enabled.
                     roles.sort_by(|a, b| a.name.cmp(&b.name));
                     Entries::Named { roles }
                 }
@@ -90,26 +92,41 @@ pub fn parse_manifest(text: &str) -> Entries {
 }
 
 fn role(name: &str, value: &Value) -> Result<Role, String> {
-    let text = |key: &str| {
-        value
-            .get(key)
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
+    let err = |what: &str| format!("functor.json entry `{name}`: {what}");
+    let map = match value {
+        Value::String(file) if !file.is_empty() => {
+            return Ok(Role {
+                name: name.to_string(),
+                file: file.clone(),
+                module: None,
+                prefix: None,
+            })
+        }
+        Value::Object(map) => map,
+        _ => return Err(err("must be a .fun path or { \"file\": … }")),
     };
-    let file = match value {
-        Value::String(file) if !file.is_empty() => Some(file.clone()),
-        Value::Object(_) => text("file"),
-        _ => None,
+    if let Some(key) = map
+        .keys()
+        .find(|k| !matches!(k.as_str(), "file" | "module" | "prefix" | "reverse"))
+    {
+        return Err(err(&format!("unknown key \"{key}\"")));
+    }
+    // Absent, null and "" all mean unset, as in the CLI.
+    let text = |key: &str| match map.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone()).filter(|s| !s.is_empty())),
+        Some(_) => Err(err(&format!("\"{key}\" must be a string"))),
     };
-    let file = file.ok_or_else(|| {
-        format!("functor.json entry `{name}` must be a .fun path or {{ \"file\": … }}")
-    })?;
+    let file = text("file")?.ok_or_else(|| err("the object form needs a \"file\""))?;
+    let (module, prefix) = (text("module")?, text("prefix")?);
+    if module.is_some() && prefix.is_some() {
+        return Err(err("keep one of \"module\" and \"prefix\""));
+    }
     Ok(Role {
         name: name.to_string(),
         file,
-        module: text("module"),
-        prefix: text("prefix"),
+        module,
+        prefix,
     })
 }
 
@@ -124,8 +141,11 @@ pub fn relative(root: &Path, path: &Path) -> String {
     }
 }
 
-/// Projects from `(directory, functor.json text)` pairs under `root`, sorted by path.
-pub fn projects_from_manifests(root: &Path, manifests: Vec<(PathBuf, String)>) -> Vec<Project> {
+/// Projects from `(directory, functor.json read)` pairs under `root`, sorted by path.
+pub fn projects_from_manifests(
+    root: &Path,
+    manifests: Vec<(PathBuf, io::Result<String>)>,
+) -> Vec<Project> {
     let mut projects: Vec<Project> = manifests
         .into_iter()
         .map(|(dir, text)| Project {
@@ -134,7 +154,12 @@ pub fn projects_from_manifests(root: &Path, manifests: Vec<(PathBuf, String)>) -
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             path: relative(root, &dir),
-            entries: parse_manifest(&text),
+            entries: match text {
+                Ok(text) => parse_manifest(&text),
+                Err(e) => Entries::Invalid {
+                    error: format!("cannot read functor.json: {e}"),
+                },
+            },
         })
         .collect();
     projects.sort_by(|a, b| a.path.cmp(&b.path));
@@ -164,24 +189,26 @@ pub fn repo_root(start: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-/// Every `functor.json` under `root` with its text, skipping hidden and
-/// git-ignored paths and `target`/`node_modules`/`dist` even when not ignored.
-pub fn read_manifests(root: &Path) -> Vec<(PathBuf, String)> {
+/// Every `functor.json` under `root`, skipping hidden and git-ignored paths
+/// and `target`/`node_modules`/`dist` even when not ignored.
+pub fn read_manifests(root: &Path) -> Vec<(PathBuf, io::Result<String>)> {
     ignore::WalkBuilder::new(root)
+        // Only git's ignore rules apply: no `.ignore` files, and no whitelist
+        // re-admitting a hidden or build directory.
+        .ignore(false)
         .filter_entry(|e| {
-            !matches!(
-                e.file_name().to_str(),
-                Some("target" | "node_modules" | "dist")
-            )
+            let name = e.file_name().to_string_lossy();
+            let hidden = e.depth() > 0 && name.starts_with('.');
+            !hidden && !matches!(name.as_ref(), "target" | "node_modules" | "dist")
         })
         .build()
         .flatten()
         .filter(|e| e.file_name() == "functor.json" && e.file_type().is_some_and(|t| t.is_file()))
         .filter_map(|e| {
-            let dir = e.path().parent()?.to_path_buf();
-            // Unreadable reads as empty, which reports as invalid JSON.
-            let text = std::fs::read_to_string(e.path()).unwrap_or_default();
-            Some((dir, text))
+            Some((
+                e.path().parent()?.to_path_buf(),
+                std::fs::read_to_string(e.path()),
+            ))
         })
         .collect()
 }
@@ -289,6 +316,12 @@ mod tests {
             format!(r#"{{{lang}, "entries": []}}"#),
             format!(r#"{{{lang}, "entries": {{}}}}"#),
             format!(r#"{{{lang}, "entries": {{"client": 3}}}}"#),
+            format!(
+                r#"{{{lang}, "entries": {{"s": {{"file": "g.fun", "module": "S", "prefix": "s"}}}}}}"#
+            ),
+            format!(r#"{{{lang}, "entries": {{"s": {{"file": "g.fun", "module": 3}}}}}}"#),
+            format!(r#"{{{lang}, "entries": {{"s": {{"file": "g.fun", "modul": "S"}}}}}}"#),
+            format!(r#"{{{lang}, "entries": {{"s": {{"module": "S"}}}}}}"#),
         ] {
             assert!(
                 matches!(parse_manifest(&bad), Entries::Invalid { .. }),
@@ -318,6 +351,8 @@ mod tests {
         std::fs::create_dir_all(root.join("games/a/src")).unwrap();
         std::fs::create_dir(root.join(".git")).unwrap();
         std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        // Only git's rules apply: `.ignore` files do not hide projects.
+        std::fs::write(root.join(".ignore"), "games/b/\n").unwrap();
 
         let state = discover(&root.join("games/a/src"));
         let paths: Vec<&str> = state.projects.iter().map(|p| p.path.as_str()).collect();
