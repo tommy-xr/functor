@@ -204,8 +204,6 @@ type Closed = { curls: List<float>, buried: bool }
 /// before it stops the thumb's curl: flesh, 3 mm. So a thenar resting on an
 /// item lets the MCP close on.
 let thenarGive = 0.003
-// The thenar's base: its capsule's round start, which no turn moves.
-let thenarBase = 0.014
 
 /// Close a digit from `start` (every control's curl; 0 straight) on `solids`
 /// by `rig`'s controls (`opposition`: the thumb's turn). Every control
@@ -328,8 +326,9 @@ let palmNormal = (side: Hold.Side): Input.point3 => Quat.rotate((palmJoint(side)
 /// stands 1 cm proud of them) less its give, so an item seats on the palm
 /// without sinking into the thenar.
 let palmGap = (solids: List<Solid>, side: Hold.Side): float =>
+  // The thenar's round start, which no turn moves.
   let thenar = Hand.at(flatOf(side), 2.0) in
-  let base = (solids |> List.map((s) => sdf(s, thenar)) |> List.minimum |> Option.defaultValue(1.0)) - thenarBase + thenarGive in
+  let base = (solids |> List.map((s) => sdf(s, thenar)) |> List.minimum |> Option.defaultValue(1.0)) - (capOf(2.0)).radius + thenarGive in
   palmCaps |> List.map((c) => let (a, b) = Hand.ends(flatOf(side), c) in gapOf(solids, a, b, c.radius)) |> List.append([base]) |> List.minimum |> Option.defaultValue(1.0)
 
 // How far a palm push looks, either way.
@@ -992,6 +991,9 @@ let mixCell = (a: Cell, b: Cell, t: float): Cell =>
 // clamped to the grid; its fingers and push are blended from the four cells
 // round it. The left hand's are the right's, mirrored (the guns are).
 
+// Rolled the other way (negative), or round past a half turn, the thenar
+// meets the fore-end at every turn: the grid rolls one way, and a hand rolled
+// outside it is drawn at its edge.
 type Slider = { name: string, slides: List<float>, rolls: List<float> }
 
 
@@ -1157,16 +1159,28 @@ let graspedFor = (k: Props.Kind): Option.t<Grasped> =>
     | _ => "" in
   graspedAll |> List.find((ng) => let (n, _) = ng in n == name) |> Option.bind((ng) => let (_, g) = ng in g)
 
+// Each of a prop's placements as the hand at `h` (the right's root in its
+// frame) could take it, under the turns its solids are alike under: its
+// index, and the hand's root there. Nearest first.
+let graspsNear = (g: Grasped, h: Input.pose): List<(float, Input.pose)> =>
+  let candidates = g.hands |> List.indexedMap((i, hv) =>
+    if g.set.round then [(i, Hold.at(Quat.rotate(Quat.mul(h.orientation, Quat.conj(hv.orientation)), hv.position), h.orientation))]
+    else g.set.alike |> List.map((q) => (i, Hold.compose(Hold.at(Hold.zero, q), hv)))) |> List.flatten in
+  candidates |> List.sortBy((c) => let (_, p) = c in Quat.length(Quat.sub(p.position, h.position)) + 0.05 * Quat.angle(p.orientation, h.orientation))
+
 /// The nearest of a prop's placements to a hand holding it at `offset` (the
 /// prop in the hand's grip frame): its index, and the hand's root in the
 /// prop's frame there.
 let nearestGrasp = (g: Grasped, side: Hold.Side, offset: Input.pose): (float, Input.pose) =>
   let h = Hold.inverse(sided(side, offset)) in
-  let candidates = g.hands |> List.indexedMap((i, hv) =>
-    if g.set.round then [(i, Hold.at(Quat.rotate(Quat.mul(h.orientation, Quat.conj(hv.orientation)), hv.position), h.orientation))]
-    else g.set.alike |> List.map((q) => (i, Hold.compose(Hold.at(Hold.zero, q), hv)))) |> List.flatten in
-  let cost = (c: (float, Input.pose)) => let (_, p) = c in Quat.length(Quat.sub(p.position, h.position)) + 0.05 * Quat.angle(p.orientation, h.orientation) in
-  candidates |> List.sortBy(cost) |> List.head |> Option.map((c) => let (i, p) = c in (i, sided(side, p))) |> Option.defaultValue((0.0, sided(side, h)))
+  graspsNear(g, h) |> List.head |> Option.map((c) => let (i, p) = c in (i, sided(side, p))) |> Option.defaultValue((0.0, sided(side, h)))
+
+/// The nearest placement a hand at `offset` snaps to: within `snapRadius`
+/// and `snapTurn` of it, if any (the hand's root in the prop's frame).
+let snapGrasp = (g: Grasped, side: Hold.Side, offset: Input.pose): Option.t<Input.pose> =>
+  let h = Hold.inverse(sided(side, offset)) in
+  graspsNear(g, h) |> List.find((c) => let (_, p) = c in Quat.length(Quat.sub(p.position, h.position)) <= snapRadius && Quat.angle(p.orientation, h.orientation) <= snapTurn)
+    |> Option.map((c) => let (_, p) = c in sided(side, p))
 
 /// A prop's fitted pose at placement `i`.
 let graspPose = (k: Props.Kind, i: float): Option.t<Hand.FingerPose> =>

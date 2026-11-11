@@ -44,8 +44,8 @@ let slid = (s: float, r: float): ((Grip.Item) => Input.pose) => (it: Grip.Item) 
   let h = Grip.slidOn(it, s, r, it.hand) in Grip.pushedBy((Grip.cellAt(it, true, h)).push, h)
 // A free prop's placement `i`.
 let grasped = (i: float): ((Grip.Item) => Input.pose) => (it: Grip.Item) =>
-  Grip.graspSets |> List.find((g) => g.name == it.name) |> Option.bind((g) => List.nth(i, g.nudges)) |> Option.map((n) =>
-    let h = Grip.nudgedHand(it, n) in Grip.pushedBy((Grip.cellAt(it, true, h)).push, h)) |> Option.defaultValue(it.hand)
+  Grip.graspSets |> List.find((g) => g.name == it.name) |> Option.bind((g) => List.nth(i, g.nudges) |> Option.map((n) =>
+    let h = Grip.nudgedHand(it, n) in Grip.pushedBy((Grip.cellAt(it, g.push, h)).push, h))) |> Option.defaultValue(it.hand)
 
 let views: List<View> = List.flatten([
   viewOf("rifle foregrip", "slid back 10 cm", slid(0.0 - 0.1, 0.0)),

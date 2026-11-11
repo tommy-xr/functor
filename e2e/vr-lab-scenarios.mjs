@@ -1681,12 +1681,14 @@ const takeBallAt = (centre, mark) => {
 };
 // Low on the table's right, the hand's palm side toward the camera.
 const atBallFit = { eye: [0.25, 1.2, 5.0], target: [-0.18, 1.0, 4.55], fov: 30 };
+// Left of the fore-end, above and back: the support hand on it.
+const atFore = { eye: [4.45, 1.45, -0.62], target: [4.62, 1.15, 0.13], fov: 30 };
 const fitScenarios = {
   "fits-shotgun": {
     fists: { right: SHOTGUN_FIST },
     station: 3,
     neck: NECK,
-    spectator: atPump,
+    spectator: atFore,
     steps: [
       ...takeShotgun,
       ...takeFore,

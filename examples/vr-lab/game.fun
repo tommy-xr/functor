@@ -143,7 +143,8 @@ type Model = {
   nextRound: float,
   // Loose rounds taken out of the world past `looseCap` (oldest first).
   lost: float,
-  // Each tracked hand as drawn after the last step (`shownAll`).
+  // Each tracked hand as drawn after the last step (`shownAll`), for
+  // `/state`.
   shown: List<Shown>
 }
 
@@ -523,15 +524,12 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
 
 /// The grip a free prop at `offset` (in a hand's grip frame) snaps to: its
 /// authored grip (the bottle's neck), or the nearest of its fitted
-/// placements (`Grip.nearestGrasp`) within `Grip.snapRadius` and
-/// `Grip.snapTurn`, if any.
+/// placements it snaps to (`Grip.snapGrasp`), if any.
 let authoredOf = (k: Props.Kind, side: Hold.Side, offset: Input.pose): Option.t<Input.pose> =>
   match Props.grip(k) with
   | Option.Some(a) => Option.Some(a)
   | Option.None =>
-    Grip.graspedFor(k) |> Option.map((gr) => let (_, a) = Grip.nearestGrasp(gr, side, offset) in a)
-      |> Option.filter((a) => let h = Hold.inverse(offset) in
-        Quat.length(Quat.sub(a.position, h.position)) <= Grip.snapRadius && Quat.angle(a.orientation, h.orientation) <= Grip.snapTurn)
+    Grip.graspedFor(k) |> Option.bind((gr) => Grip.snapGrasp(gr, side, offset))
 
 /// Hands hover what they reach, and a fresh squeeze takes it; both hands
 /// pressing on one prop, the nearer (`Hold.pick`). A hand at the slide of a
@@ -1662,11 +1660,7 @@ let handScene = (m: Model, st: Stations.Station, side: Hold.Side): (Scene.t, Sce
   match gripOf(m.xr, side) with
   | Option.None => (Scene.group([]), Scene.group([]))
   | Option.Some(g) =>
-    // As the last step left it (`shown`); drawn before any step, worked out.
-    let (drawn, fingers) =
-      match m.shown |> List.find((h) => h.side == side) with
-      | Option.Some(h) => (h.at, h.fingers)
-      | Option.None => shownOn(m, side, onOf(m, side), g) in
+    let (drawn, fingers) = shownOn(m, side, onOf(m, side), g) in
     let key = if side == Hold.Left then "glove-left" else "glove-right" in
     let glove = match m.glove with
       | Capsule => Scene.group([
