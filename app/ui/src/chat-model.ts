@@ -12,32 +12,34 @@ export function toolName(name: string): string {
 }
 
 /** The game tools (`functor mcp`) by bare name. */
-const GAME_TOOLS: Record<string, string> = {
-  get_state: "Read the game state",
-  get_scene: "Read the scene",
-  get_frames: "Read the frame timings",
-  get_spikes: "Read the frame spikes",
-  get_trace: "Read the frame trace",
-  capture_frame: "Captured a frame",
-  send_input: "Sent input to the game",
-  pause: "Paused the game",
-  resume: "Resumed the game",
-  step_all: "Stepped every session",
-  rewind: "Rewound the game",
-  reload_source: "Reloaded the game",
-  launch_game: "Launched the game",
-  launch_session_group: "Launched a session group",
-  connect_game: "Connected to the game",
-  list_sessions: "Listed the game sessions",
-  stop_game: "Stopped the game",
-  wire_log: "Read the network log",
-  run_game_code_unsafe: "Ran a game script",
-  init_game: "Created a game",
-  save_project: "Saved the project",
-  app_context: "Checked what you are looking at",
-  api_reference: "Read the API reference",
-  language_guide: "Read the language guide",
-};
+const GAME_TOOLS = new Map(
+  Object.entries({
+    get_state: "Read the game state",
+    get_scene: "Read the scene",
+    get_frames: "Read the frame timings",
+    get_spikes: "Read the frame spikes",
+    get_trace: "Read the frame trace",
+    capture_frame: "Captured a frame",
+    send_input: "Sent input to the game",
+    pause: "Paused the game",
+    resume: "Resumed the game",
+    step_all: "Stepped every session",
+    rewind: "Rewound the game",
+    reload_source: "Reloaded the game",
+    launch_game: "Launched the game",
+    launch_session_group: "Launched a session group",
+    connect_game: "Connected to the game",
+    list_sessions: "Listed the game sessions",
+    stop_game: "Stopped the game",
+    wire_log: "Read the network log",
+    run_game_code_unsafe: "Ran a game script",
+    init_game: "Created a game",
+    save_project: "Saved the project",
+    app_context: "Checked what you are looking at",
+    api_reference: "Read the API reference",
+    language_guide: "Read the language guide",
+  }),
+);
 
 /** The short human line for a tool call, from its name and input. */
 export function stepPhrase(name: string, input: JsonValue): Phrase {
@@ -75,7 +77,7 @@ export function stepPhrase(name: string, input: JsonValue): Phrase {
       return { text: `Stepped ${frames} frame${frames === 1 ? "" : "s"}` };
     }
   }
-  return { text: GAME_TOOLS[bare] ?? bare };
+  return { text: GAME_TOOLS.get(bare) ?? bare };
 }
 
 export function phraseText({ text, code }: Phrase): string {

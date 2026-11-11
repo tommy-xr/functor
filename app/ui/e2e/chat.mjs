@@ -7,7 +7,7 @@
 // APP_UI_SHOTS=<dir> saves the empty state and a finished conversation.
 import { mkdirSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal } from "./app.mjs";
+import { FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal } from "./app.mjs";
 
 const SHOTS = process.env.APP_UI_SHOTS;
 const PROJECT = `${ROOT}examples/counter`;
@@ -213,7 +213,7 @@ async function conversation(browser, width, height) {
   }
 }
 
-/** A failed run shows its summary's first line. */
+/** A failed run shows its summary's first line; with FUNCTOR_BIN, session changes show as lines. */
 async function failure(browser) {
   const server = await startServer(0, { dir: PROJECT, fakeAgent: FAIL });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -226,6 +226,16 @@ async function failure(browser) {
     await input.press("Enter");
     await expect(dock.getByTestId("result")).toHaveText("Failed: No game session is running.");
     await expect(dock.getByTestId("task-status")).toHaveText("Failed");
+    if (FUNCTOR) {
+      const lines = dock.locator(".conn-line");
+      await page.getByTestId("game-view").getByRole("button", { name: "Start" }).click();
+      await expect(lines).toHaveText(["Game session started"], { timeout: 60_000 });
+      await expect(dock.getByRole("listitem").filter({ hasText: "Game running" })).toHaveCount(1);
+      await page.getByRole("complementary", { name: "Explorer" }).getByRole("button", { name: "Stop" }).click();
+      await expect(lines).toHaveText(["Game session started", "Game session stopped"]);
+    } else {
+      console.log("SKIPPED: session lines — set FUNCTOR_BIN (npm run build:cli:debug)");
+    }
     expect(errors, "console errors").toEqual([]);
     console.log("ok: chat failure");
   } finally {
