@@ -1,14 +1,15 @@
 //! Tasks on disk: one JSON file per task (`tasks::to_stored`) under
-//! `<home>/projects/<project key>/tasks/<id>.json`, where home is
+//! `<home>/projects/<project key>/tasks/<id>.json`, and the project's picked
+//! agent in `<home>/projects/<project key>/harness.json`, where home is
 //! `FUNCTOR_APP_HOME` or `~/.functor/app`. Never inside the user's repo.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use functor_app_core::projects::project_dir;
 use functor_app_core::tasks::{from_stored, to_stored};
-use functor_app_core::{AppState, Task};
+use functor_app_core::{AppState, Harness, Task};
 
 /// `FUNCTOR_APP_HOME` (`env`), else `.functor/app` in `user_home`.
 pub fn home(env: Option<OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
@@ -20,6 +21,10 @@ pub fn home(env: Option<OsString>, user_home: Option<PathBuf>) -> Option<PathBuf
 /// The directory holding the tasks of the project at `dir` (absolute).
 fn tasks_dir(home: &Path, dir: &Path) -> PathBuf {
     home.join("projects").join(key(dir)).join("tasks")
+}
+
+fn harness_file(home: &Path, dir: &Path) -> PathBuf {
+    home.join("projects").join(key(dir)).join("harness.json")
 }
 
 /// A directory name for `dir`: its last component, readable, then a hash
@@ -83,6 +88,28 @@ pub fn load(home: &Path, state: &AppState) -> (Vec<Task>, u64) {
         }
     }
     (tasks, highest)
+}
+
+/// Each discovered project's picked agent; a missing or unreadable file is
+/// no pick.
+pub fn load_harnesses(home: &Path, state: &AppState) -> BTreeMap<String, Harness> {
+    let root = Path::new(&state.repo_root);
+    state
+        .projects
+        .iter()
+        .filter_map(|p| {
+            let text = std::fs::read_to_string(harness_file(home, &project_dir(root, &p.path)));
+            let harness = serde_json::from_str(&text.ok()?).ok()?;
+            Some((p.path.clone(), harness))
+        })
+        .collect()
+}
+
+/// Writes `harness` as the pick for the project at `dir`.
+pub fn save_harness(home: &Path, dir: &Path, harness: Harness) -> std::io::Result<()> {
+    let file = harness_file(home, dir);
+    std::fs::create_dir_all(file.parent().expect("under home"))?;
+    std::fs::write(file, serde_json::to_string(&harness)?)
 }
 
 /// Writes `task` for the project at `dir`, replacing its file whole.
@@ -155,6 +182,32 @@ mod tests {
         std::fs::write(tasks_dir.join("3.json"), "{ not json").unwrap();
         std::fs::write(tasks_dir.join("4.json"), to_stored(&task(1))).unwrap();
         assert_eq!(load(&home, &state), (vec![task(1), task(2)], 4));
+        assert!(!root.exists(), "wrote inside the repo");
+    }
+
+    #[test]
+    fn harness_picks_load_back_per_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        let project = |path: &str| functor_app_core::projects::Project {
+            name: path.into(),
+            path: path.into(),
+            entries: functor_app_core::projects::Entries::Single {
+                file: "game.fun".into(),
+            },
+        };
+        let state = AppState::new(&root, &root, vec![project("a"), project("b"), project("c")]);
+        let home = tmp.path().join("home");
+        save_harness(&home, &root.join("a"), Harness::Claude).unwrap();
+        save_harness(&home, &root.join("b"), Harness::Claude).unwrap();
+        save_harness(&home, &root.join("b"), Harness::Codex).unwrap();
+        // An agent this build does not know is no pick.
+        save_harness(&home, &root.join("c"), Harness::Claude).unwrap();
+        std::fs::write(harness_file(&home, &root.join("c")), "\"gpt\"").unwrap();
+        assert_eq!(
+            load_harnesses(&home, &state),
+            BTreeMap::from([("a".into(), Harness::Claude), ("b".into(), Harness::Codex)])
+        );
         assert!(!root.exists(), "wrote inside the repo");
     }
 }

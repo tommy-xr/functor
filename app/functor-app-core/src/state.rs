@@ -1,5 +1,6 @@
 //! `AppState` and the pure `update` that steps it.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,10 @@ pub struct AppState {
     pub no_gpu: bool,
     /// Every project's tasks, by id; their transcripts travel separately.
     pub tasks: Vec<Task>,
+    /// The agents this machine can run, in the order the picker lists them.
+    pub harnesses: Vec<Harness>,
+    /// Per project path, the agent last picked for its new tasks.
+    pub harness_choice: BTreeMap<String, Harness>,
     /// The next new task's id: above every id on disk, readable or not, so
     /// no new task overwrites a file the store skipped.
     #[serde(skip)]
@@ -65,6 +70,8 @@ impl AppState {
             session_mode: SessionMode::default(),
             no_gpu: false,
             tasks: Vec::new(),
+            harnesses: Vec::new(),
+            harness_choice: BTreeMap::new(),
             next_task: 1,
         }
     }
@@ -130,6 +137,8 @@ pub enum Command {
     StopRun { task: u64, run: u64 },
     /// Write `task` (with its transcript) to the store for the project at `dir`.
     SaveTask { dir: PathBuf, task: Box<Task> },
+    /// Remember `harness` as the pick for new tasks in the project at `dir`.
+    SaveHarness { dir: PathBuf, harness: Harness },
 }
 
 /// One agent run for the shell to start.
@@ -209,6 +218,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (!live && start(&mut state, &mut commands), true)
         }
         Event::Client(ClientMsg::StopSession) => (stop(&mut state, &mut commands), true),
+        Event::Client(ClientMsg::SetHarness { harness }) => {
+            (set_harness(&mut state, harness, &mut commands), true)
+        }
         Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
         // A listing for a project switched away from is dropped.
         Event::Files { path, files } => {
@@ -330,6 +342,22 @@ fn stop(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     }
     session.status = SessionStatus::Stopped;
     session.pid = None;
+    true
+}
+
+/// Records `harness` as the active project's pick; false when it already is.
+fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Command>) -> bool {
+    let Some(path) = &state.active else {
+        return false;
+    };
+    if state.harness_choice.get(path) == Some(&harness) {
+        return false;
+    }
+    commands.push(Command::SaveHarness {
+        dir: project_dir(Path::new(&state.repo_root), path),
+        harness,
+    });
+    state.harness_choice.insert(path.clone(), harness);
     true
 }
 
@@ -638,6 +666,8 @@ mod tests {
             session_mode: SessionMode::Hidden,
             no_gpu: false,
             tasks: vec![],
+            harnesses: vec![Harness::Claude],
+            harness_choice: BTreeMap::new(),
             next_task: 1,
         }
     }
@@ -1496,6 +1526,46 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["stop_session", "stop_run", "save", "broadcast"]);
+    }
+
+    #[test]
+    fn the_harness_pick_is_remembered_per_project() {
+        let pick = |harness| client(ClientMsg::SetHarness { harness });
+        let (s, commands) = update(state(), pick(Harness::Codex));
+        assert_eq!(s.harness_choice["examples/a"], Harness::Codex);
+        assert_eq!(
+            commands,
+            vec![
+                Command::SaveHarness {
+                    dir: PathBuf::from("/repo/examples/a"),
+                    harness: Harness::Codex
+                },
+                broadcast(&s)
+            ]
+        );
+        // The same pick again changes nothing; another project keeps its own.
+        let (s, commands) = update(s, pick(Harness::Codex));
+        assert_eq!(
+            commands,
+            vec![Command::Reply(ServerMsg::State { state: s.clone() })]
+        );
+        let (s, _) = update(s, switch("examples/b"));
+        let (s, _) = update(s, pick(Harness::Claude));
+        assert_eq!(
+            s.harness_choice,
+            BTreeMap::from([
+                ("examples/a".to_string(), Harness::Codex),
+                ("examples/b".to_string(), Harness::Claude)
+            ])
+        );
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"set_harness","harness":"codex"}"#).unwrap();
+        assert_eq!(
+            msg,
+            ClientMsg::SetHarness {
+                harness: Harness::Codex
+            }
+        );
     }
 
     #[test]

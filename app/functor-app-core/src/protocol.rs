@@ -44,6 +44,11 @@ pub enum ClientMsg {
     GetTranscript {
         task: u64,
     },
+    /// The agent new tasks in the active project start with; remembered
+    /// per project.
+    SetHarness {
+        harness: Harness,
+    },
 }
 
 /// Keyboard and mouse input in the debug server's `POST /input` shape.

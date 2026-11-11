@@ -221,6 +221,8 @@ mod tests {
             session_mode: SessionMode::Hidden,
             no_gpu: false,
             tasks: vec![],
+            harnesses: vec![],
+            harness_choice: Default::default(),
             next_task: 1,
         };
         assert_eq!(
@@ -250,6 +252,8 @@ projects: 3
             session_mode: SessionMode::Window,
             no_gpu: false,
             tasks: vec![],
+            harnesses: vec![],
+            harness_choice: Default::default(),
             next_task: 1,
         };
         assert_eq!(
@@ -276,6 +280,8 @@ projects: 3
                 session_mode: SessionMode::Hidden,
                 no_gpu: false,
                 tasks: vec![],
+                harnesses: vec![],
+                harness_choice: Default::default(),
                 next_task: 1,
             };
             print(&state).lines().nth(2).unwrap().to_string()
@@ -354,6 +360,8 @@ projects: 3
                 run: None,
                 transcript: transcript.clone(),
             }],
+            harnesses: vec![],
+            harness_choice: Default::default(),
             next_task: 4,
         };
         let text = print(&state);
