@@ -8,10 +8,10 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { AppState, ClientMsg, GameInput, MouseButton } from "./generated/protocol";
+import type { AppState, GameInput, MouseButton } from "./generated/protocol";
 import { fitRect, streamUrl, toSurface, wireKey, type Rect, type Size } from "./game-view";
+import type { Send } from "./socket";
 
-type Send = (msg: ClientMsg) => void;
 
 const BUTTONS: Record<number, MouseButton> = { 0: "left", 1: "middle", 2: "right" };
 const RESIZE_DEBOUNCE_MS = 200;

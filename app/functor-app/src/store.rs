@@ -18,13 +18,17 @@ pub fn home(env: Option<OsString>, user_home: Option<PathBuf>) -> Option<PathBuf
         .or_else(|| Some(user_home?.join(".functor").join("app")))
 }
 
-/// The directory holding the tasks of the project at `dir` (absolute).
+/// What the app keeps for the project at `dir` (absolute).
+fn project_home(home: &Path, dir: &Path) -> PathBuf {
+    home.join("projects").join(key(dir))
+}
+
 fn tasks_dir(home: &Path, dir: &Path) -> PathBuf {
-    home.join("projects").join(key(dir)).join("tasks")
+    project_home(home, dir).join("tasks")
 }
 
 fn harness_file(home: &Path, dir: &Path) -> PathBuf {
-    home.join("projects").join(key(dir)).join("harness.json")
+    project_home(home, dir).join("harness.json")
 }
 
 /// A directory name for `dir`: its last component, readable, then a hash
@@ -109,18 +113,22 @@ pub fn load_harnesses(home: &Path, state: &AppState) -> BTreeMap<String, Harness
 pub fn save_harness(home: &Path, dir: &Path, harness: Harness) -> std::io::Result<()> {
     let file = harness_file(home, dir);
     std::fs::create_dir_all(file.parent().expect("under home"))?;
-    std::fs::write(file, serde_json::to_string(&harness)?)
+    write_whole(&file, &serde_json::to_string(&harness)?)
+}
+
+/// Written aside then renamed, so a crash never leaves half a file.
+fn write_whole(file: &Path, text: &str) -> std::io::Result<()> {
+    let mut tmp = file.as_os_str().to_owned();
+    tmp.push(".tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(tmp, file)
 }
 
 /// Writes `task` for the project at `dir`, replacing its file whole.
 pub fn save(home: &Path, dir: &Path, task: &Task) -> std::io::Result<()> {
     let tasks = tasks_dir(home, dir);
     std::fs::create_dir_all(&tasks)?;
-    let file = tasks.join(format!("{}.json", task.id));
-    // Written aside then renamed, so a crash never leaves half a file.
-    let tmp = tasks.join(format!("{}.json.tmp", task.id));
-    std::fs::write(&tmp, to_stored(task))?;
-    std::fs::rename(tmp, file)
+    write_whole(&tasks.join(format!("{}.json", task.id)), &to_stored(task))
 }
 
 #[cfg(test)]

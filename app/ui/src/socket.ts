@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { AppState, ClientMsg, Item, ServerMsg } from "./generated/protocol";
 import { applyItem } from "./chat-model";
 
+export type Send = (msg: ClientMsg) => boolean;
+
 /** `reconnecting` only after a connection was open and dropped. */
 export type Conn = "connecting" | "open" | "reconnecting";
 
@@ -15,8 +17,8 @@ const MAX_DELAY = 5000;
 /**
  * The core's last state over `/ws`, reconnecting with backoff when the
  * socket drops, and the transcripts fetched so far. A transcript is fetched
- * once (`fetchTranscript`), then kept current by `Item`s; a reconnect drops
- * them all so each is fetched again.
+ * once per connection (`fetchTranscript`), then kept current by `Item`s; after
+ * a reconnect the old one shows until its fetch replaces it.
  */
 export function useAppSocket() {
   const [state, setState] = useState<AppState | null>(null);
@@ -25,7 +27,7 @@ export function useAppSocket() {
   const [accepted, setAccepted] = useState<Accepted | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const socket = useRef<WebSocket | null>(null);
-  // Asked for and not yet dropped; cleared with the transcripts on reconnect.
+  // Asked for on this connection.
   const requested = useRef(new Set<number>());
 
   useEffect(() => {
@@ -39,7 +41,6 @@ export function useAppSocket() {
       ws.onopen = () => {
         delay = MIN_DELAY;
         requested.current.clear();
-        setTranscripts(new Map());
         setConn("open");
       };
       ws.onmessage = (e) => {
@@ -89,7 +90,7 @@ export function useAppSocket() {
     };
   }, []);
 
-  const send = (msg: ClientMsg) => {
+  const send: Send = (msg) => {
     if (socket.current?.readyState !== WebSocket.OPEN) return false;
     socket.current.send(JSON.stringify(msg));
     return true;

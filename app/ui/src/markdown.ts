@@ -77,6 +77,8 @@ function block(t: Token, key: number): ReactNode {
       return t.tokens ? h("span", { key }, inline(t.tokens)) : decode(t.text);
     case "html":
       return h("p", { key }, t.text);
+    case "checkbox":
+      return (t as Tokens.Checkbox).checked ? "☑ " : "☐ ";
     default:
       return h("p", { key }, t.raw);
   }
@@ -108,8 +110,6 @@ function inline(tokens: Token[]): ReactNode[] {
       // Never fetched: an image would be a request the page must not make.
       case "image":
         return (t as Tokens.Image).text;
-      case "checkbox":
-        return (t as Tokens.Checkbox).checked ? "☑ " : "☐ ";
       // Raw HTML (`<img onerror=…>`) and anything unknown: its source, as text.
       default:
         return t.raw;

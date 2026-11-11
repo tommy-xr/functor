@@ -11,7 +11,7 @@ export function toolName(name: string): string {
   return name.replace(/^mcp__.+?__/, "");
 }
 
-/** The game tools (`functor mcp`) by bare name. */
+/** The game tools (`functor mcp`'s `#[tool]`s in the CLI) by bare name. */
 const GAME_TOOLS = new Map(
   Object.entries({
     get_state: "Read the game state",
@@ -26,6 +26,7 @@ const GAME_TOOLS = new Map(
     step_all: "Stepped every session",
     rewind: "Rewound the game",
     reload_source: "Reloaded the game",
+    reload_project: "Reloaded the project",
     launch_game: "Launched the game",
     launch_session_group: "Launched a session group",
     connect_game: "Connected to the game",

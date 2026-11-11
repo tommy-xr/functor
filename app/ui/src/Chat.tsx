@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { AppState, ClientMsg, Harness, Item, Task, TaskStatus, Usage } from "./generated/protocol";
+import type { AppState, Harness, Item, Task, TaskStatus, Usage } from "./generated/protocol";
 import {
   atBottom,
   clip,
@@ -24,10 +24,9 @@ import {
   type Snapshot,
 } from "./chat-model";
 import { renderMarkdown } from "./markdown";
-import type { Accepted, Conn, Notice } from "./socket";
+import type { Accepted, Conn, Notice, Send } from "./socket";
 import { Icon } from "./Icon";
 
-type Send = (msg: ClientMsg) => boolean;
 export type CanvasTab = "game" | "code" | "diff";
 
 const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
@@ -55,7 +54,7 @@ type Props = {
 };
 
 /** A line the dock shows for a connection or session change, at the conversation's length when it happened. */
-type Line = { id: number; task: number | null; at: number; text: string };
+type Line = { id: number; project: string | null; task: number | null; at: number; text: string };
 
 /** The chat dock: one task's conversation (the current task) and the composer. */
 export function ChatDock({ state, conn, send, transcripts, fetchTranscript, accepted, notice, tab, onTab }: Props) {
@@ -74,8 +73,9 @@ export function ChatDock({ state, conn, send, transcripts, fetchTranscript, acce
   }, [loaded, active]);
   const current = tasks.find((t) => t.id === selected) ?? null;
   const items = current ? transcripts.get(current.id) : undefined;
+  // Once per task per connection: `fetchTranscript` skips one already asked for.
   useEffect(() => {
-    if (current && !items && online) fetchTranscript(current.id);
+    if (current && online) fetchTranscript(current.id);
   });
 
   // Sent and not yet answered: kept in the composer until its item arrives.
@@ -91,8 +91,9 @@ export function ChatDock({ state, conn, send, transcripts, fetchTranscript, acce
     setShownNotice(null);
     // Only a new acceptance settles a send.
   }, [accepted]);
+  // A refusal while a send is pending answers it; others (a stop racing the run's end) are not news.
   useEffect(() => {
-    if (!notice) return;
+    if (!notice || !pending) return;
     setPending(null);
     setShownNotice(notice.reason);
   }, [notice]);
@@ -102,8 +103,11 @@ export function ChatDock({ state, conn, send, transcripts, fetchTranscript, acce
   }, [conn]);
 
   const lines = useConnectionLines(state, conn, current?.id ?? null, items?.length);
+  // The project's pick, while that agent is still installed.
+  const available = state?.harnesses ?? [];
+  const picked = active ? state?.harness_choice[active] : undefined;
   const harness: Harness =
-    current?.harness ?? (active ? state?.harness_choice[active] : undefined) ?? state?.harnesses[0] ?? "claude";
+    current?.harness ?? (picked && available.includes(picked) ? picked : available[0]) ?? "claude";
   const running = current?.run != null;
 
   const submit = () => {
@@ -127,7 +131,7 @@ export function ChatDock({ state, conn, send, transcripts, fetchTranscript, acce
         key={current?.id ?? "new"}
         task={current}
         items={items}
-        lines={lines.filter((l) => l.task === (current?.id ?? null))}
+        lines={lines.filter((l) => l.project === active && l.task === (current?.id ?? null))}
         onTab={onTab}
       />
       <div className="composer-wrap">
@@ -166,8 +170,10 @@ function useConnectionLines(state: AppState | null, conn: Conn, task: number | n
   const prev = useRef<Snapshot>({ conn, active: undefined, session: null });
   const ids = useRef(0);
   // While a transcript is (re)fetched its length is unknown: keep the last one.
-  const anchor = useRef({ task, at: at ?? 0 });
-  if (at !== undefined || anchor.current.task !== task) anchor.current = { task, at: at ?? 0 };
+  const project = state?.active ?? null;
+  const anchor = useRef({ project, task, at: at ?? 0 });
+  if (at !== undefined || anchor.current.task !== task) anchor.current = { project, task, at: at ?? 0 };
+  anchor.current.project = project;
   const next: Snapshot = { conn, active: state ? state.active : undefined, session: state?.session?.status ?? null };
   useEffect(() => {
     const changed = connectionLines(prev.current, next);
@@ -516,7 +522,9 @@ function Composer({
     onSubmit();
   };
   const session = state?.session?.status.kind;
-  const harnesses = state?.harnesses.length ? state.harnesses : [harness];
+  // A task's agent shows even if it is no longer installed.
+  const available = state?.harnesses ?? [];
+  const harnesses = available.includes(harness) ? available : [...available, harness];
   const project = state?.projects.find((p) => p.path === state.active);
   return (
     <div className="composer">

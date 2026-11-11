@@ -26,6 +26,7 @@ test("game tools lose their server prefix and read as short phrases", () => {
   assert.equal(phrase("mcp__mis__pause"), "Paused the game");
   assert.equal(phrase("mcp__mis__resume"), "Resumed the game");
   assert.equal(phrase("mcp__mis__reload_source"), "Reloaded the game");
+  assert.equal(phrase("mcp__mis__reload_project"), "Reloaded the project");
   assert.equal(phrase("mcp__mis__app_context"), "Checked what you are looking at");
   assert.equal(phrase("mcp__mis__step", { frames: 120 }), "Stepped 120 frames");
   assert.equal(phrase("mcp__mis__step", {}), "Stepped 1 frame");

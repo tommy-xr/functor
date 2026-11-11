@@ -7,7 +7,7 @@
 // APP_UI_SHOTS=<dir> saves the empty state and a finished conversation.
 import { mkdirSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal } from "./app.mjs";
+import { FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const SHOTS = process.env.APP_UI_SHOTS;
 const PROJECT = `${ROOT}examples/counter`;
@@ -16,18 +16,6 @@ const FAIL = `${ROOT}app/ui/e2e/fixtures/fail.jsonl`;
 const FIRST = "What frame is the game on?";
 
 requireBuilt();
-
-/** The app's last state, as its WebSocket delivered it. */
-function watchState(page) {
-  const app = { state: null };
-  page.on("websocket", (ws) =>
-    ws.on("framereceived", ({ payload }) => {
-      const msg = JSON.parse(payload);
-      if (msg.type === "state") app.state = msg.state;
-    }),
-  );
-  return app;
-}
 
 async function shot(page, name) {
   if (!SHOTS) return;

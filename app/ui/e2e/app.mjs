@@ -73,6 +73,18 @@ export function watchErrors(page) {
   return errors;
 }
 
+/** The app's last state, as its WebSocket delivered it. */
+export function watchState(page) {
+  const app = { state: null };
+  page.on("websocket", (ws) =>
+    ws.on("framereceived", ({ payload }) => {
+      const msg = JSON.parse(payload);
+      if (msg.type === "state") app.state = msg.state;
+    }),
+  );
+  return app;
+}
+
 /** Requests the page made to anything but loopback. */
 export function watchExternal(page) {
   const external = [];

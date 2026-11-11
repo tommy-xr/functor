@@ -1,11 +1,10 @@
 import { useState, type KeyboardEvent, type ReactNode } from "react";
-import type { AppState, ClientMsg, Session, SessionMode } from "./generated/protocol";
+import type { AppState, Session, SessionMode } from "./generated/protocol";
 import { ChatDock, type CanvasTab } from "./Chat";
 import { GameView } from "./GameView";
 import { Icon } from "./Icon";
-import { useAppSocket, type Conn } from "./socket";
+import { useAppSocket, type Conn, type Send } from "./socket";
 
-type Send = (msg: ClientMsg) => void;
 
 const VIEWS = ["explorer", "tasks", "devices"] as const;
 type View = (typeof VIEWS)[number];

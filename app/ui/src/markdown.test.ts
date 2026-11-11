@@ -62,6 +62,10 @@ test("entities written in the text read as their characters, as plain text", () 
   assert.equal(html("a &amp; b &lt;tag&gt; &#65;&#x42; &bogus;"), "<div><p>a &amp; b &lt;tag&gt; AB &amp;bogus;</p></div>");
 });
 
+test("task lists show their boxes as text", () => {
+  assert.equal(html("- [ ] todo\n- [x] done"), "<div><ul><li>☐ <span>todo</span></li><li>☑ <span>done</span></li></ul></div>");
+});
+
 test("a partial reply renders what has arrived", () => {
   assert.equal(html("The count is `3"), "<div><p>The count is `3</p></div>");
   assert.equal(html("```fun\nlet a"), "<div><pre><code>let a</code></pre></div>");

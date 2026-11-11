@@ -350,6 +350,10 @@ fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Comman
     let Some(path) = &state.active else {
         return false;
     };
+    if !state.harnesses.contains(&harness) {
+        let name = harness.name();
+        return reject(commands, format!("{name} is not available on this machine"));
+    }
     if state.harness_choice.get(path) == Some(&harness) {
         return false;
     }
@@ -666,7 +670,7 @@ mod tests {
             session_mode: SessionMode::Hidden,
             no_gpu: false,
             tasks: vec![],
-            harnesses: vec![Harness::Claude],
+            harnesses: vec![Harness::Claude, Harness::Codex],
             harness_choice: BTreeMap::new(),
             next_task: 1,
         }
@@ -1569,6 +1573,24 @@ mod tests {
                 ("examples/a".to_string(), Harness::Codex),
                 ("examples/b".to_string(), Harness::Claude)
             ])
+        );
+        // An agent this machine does not have is refused.
+        let only_claude = AppState {
+            harnesses: vec![Harness::Claude],
+            ..state()
+        };
+        let (next, commands) = update(only_claude.clone(), pick(Harness::Codex));
+        assert_eq!(next, only_claude);
+        assert_eq!(
+            commands,
+            vec![
+                Command::Reply(ServerMsg::Rejected {
+                    reason: "codex is not available on this machine".to_string()
+                }),
+                Command::Reply(ServerMsg::State {
+                    state: Box::new(only_claude)
+                })
+            ]
         );
         let msg: ClientMsg =
             serde_json::from_str(r#"{"type":"set_harness","harness":"codex"}"#).unwrap();

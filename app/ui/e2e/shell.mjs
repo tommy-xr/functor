@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { APP, FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal } from "./app.mjs";
+import { APP, FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 const SHOTS = process.env.APP_UI_SHOTS;
@@ -119,18 +119,6 @@ async function run(browser, width, height) {
     await page.close();
     await stopServer(server);
   }
-}
-
-/** The app's last state, as its WebSocket delivered it. */
-function watchState(page) {
-  const app = { state: null };
-  page.on("websocket", (ws) =>
-    ws.on("framereceived", ({ payload }) => {
-      const msg = JSON.parse(payload);
-      if (msg.type === "state") app.state = msg.state;
-    }),
-  );
-  return app;
 }
 
 /** The session's `/state.input`, read by the test (the page never talks to it). */
