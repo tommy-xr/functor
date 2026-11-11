@@ -234,25 +234,26 @@ expect (
   supportSide(last(ms)) == Option.Some(Hold.Left) && (ms |> List.all((m) => Quat.angle((rifleAccepted(m)).orientation, rifleAt.orientation) < 0.0001))
 )
 
-// Dragged 15 cm off the axis, 1 cm a step: past 12 cm it breaks off, a break
-// pulse in the left hand (disarmed until it opens). The rifle doesn't move on
-// that step, then settles back into the right hand.
+// Pulled 80 cm off the axis, 10 cm a step (a deliberate pull-off, not a
+// jerk): it breaks off, a break pulse in the left hand (disarmed until it
+// opens). The rifle doesn't move on that step, then settles back into the
+// right hand.
 let dragged = play2(ready, List.flatten([
-  List.range(15.0) |> List.map((i) => (grabbed(foreOf(stockFist, 0.25, 0.01 * (i + 1.0), 0.0)), still)),
-  both(10.0, grabbed(foreOf(stockFist, 0.25, 0.15, 0.0)), still)]))
+  List.range(8.0) |> List.map((i) => (grabbed(foreOf(stockFist, 0.25, 0.1 * (i + 1.0), 0.0)), still)),
+  both(10.0, grabbed(foreOf(stockFist, 0.25, 0.8, 0.0)), still)]))
 let brokeAt = dragged |> List.indexedMap((i, m) => (i, m)) |> List.find((im) => let (_, m) = im in Option.isNone(supportSide(m)))
   |> Option.map((im) => let (i, _) = im in i) |> Option.defaultValue(0.0)
 expect (
   let at = (i: float) => rifleAccepted(List.nth(i, dragged) |> Option.defaultValue(start)) in
-  brokeAt == 13.0 && countOf(Hold.Left, Pulses.Break, dragged) == 1.0 && Game.isHeld(last(dragged), Props.Rifle)
+  brokeAt > 1.0 && countOf(Hold.Left, Pulses.Break, dragged) == 1.0 && Game.isHeld(last(dragged), Props.Rifle)
     && Hold.near(at(brokeAt), at(brokeAt - 1.0))
-    && Quat.angle((at(brokeAt - 1.0)).orientation, rifleAt.orientation) > 0.18
+    && Quat.angle((at(brokeAt - 1.0)).orientation, rifleAt.orientation) > 0.05
     && Hold.near(rifleAccepted(last(dragged)), rifleAt)
     && not (last(dragged)).left.armed
 )
-// Past the foregrip's far end, it breaks off too.
+// Pushed well past the foregrip's far end, it breaks off too.
 expect (
-  let ms = play2(ready, List.range(20.0) |> List.map((i) => (grabbed(foreOf(stockFist, 0.25 + 0.015 * (i + 1.0), 0.0, 0.0)), still))) in
+  let ms = play2(ready, List.range(20.0) |> List.map((i) => (grabbed(foreOf(stockFist, 0.25 + 0.04 * (i + 1.0), 0.0, 0.0)), still))) in
   Option.isNone(supportSide(last(ms))) && countOf(Hold.Left, Pulses.Break, ms) == 1.0
 )
 // Opened, the support lets go: a release pulse, the rifle where the aim had
@@ -325,18 +326,18 @@ expect (
     && (m.rifle.last |> Option.map((s) => Hold.near3(s.from, (Gun.boreOf(Longarm.weapon, accepted)).muzzle)) |> Option.defaultValue(false))
 )
 
-// The selector: A on the right hand holding the rifle switches it, once a
+// The selector: B on the right hand holding the rifle switches it, once a
 // press; the support hand's doesn't; F does, held or not.
 expect (
   let snap = (pressed: List<Key.t>, l: Input.controller, r: Input.controller) => Game.snapshotOf(pressed, Option.Some({ head: Option.None, left: l, right: r })) in
-  let a = { still with primaryPressed: true } in
+  let a = { still with secondaryPressed: true } in
   let pressed = Game.sampledInput(Game.sampledInput(ready, snap([], fore25, still)), snap([], fore25, a)) in
   let kept = Game.sampledInput(pressed, snap([], fore25, a)) in
-  let byLeft = Game.sampledInput(Game.sampledInput(ready, snap([], fore25, still)), snap([], { fore25 with primaryPressed: true }, still)) in
-  // A held as the rifle is taken (or retaken) is no press.
-  let aHeld = Game.sampledInput(start, snap([], Game.away, { hand(onStock, 0.0, 0.0) with primaryPressed: true })) in
-  let taken = last(play2(aHeld, [(Game.away, { hand(onStock, 0.0, 0.0) with primaryPressed: true }), (Game.away, { still with primaryPressed: true })])) in
-  let heldThrough = Game.sampledInput(taken, snap([], Game.away, { still with primaryPressed: true })) in
+  let byLeft = Game.sampledInput(Game.sampledInput(ready, snap([], fore25, still)), snap([], { fore25 with secondaryPressed: true }, still)) in
+  // B held as the rifle is taken (or retaken) is no press.
+  let aHeld = Game.sampledInput(start, snap([], Game.away, { hand(onStock, 0.0, 0.0) with secondaryPressed: true })) in
+  let taken = last(play2(aHeld, [(Game.away, { hand(onStock, 0.0, 0.0) with secondaryPressed: true }), (Game.away, { still with secondaryPressed: true })])) in
+  let heldThrough = Game.sampledInput(taken, snap([], Game.away, { still with secondaryPressed: true })) in
   ready.rifle.mode == Gun.Semi && pressed.rifle.mode == Gun.Auto && kept.rifle.mode == Gun.Auto && byLeft.rifle.mode == Gun.Semi
     && Game.isHeld(taken, Props.Rifle) && heldThrough.rifle.mode == Gun.Semi
     && (Game.sampledInput(start, snap([Key.F], Game.away, Game.away))).rifle.mode == Gun.Auto
@@ -425,13 +426,13 @@ let sampledIn = (world: Game.World, m: Game.Model, keys: List<Key.t>, l: Input.c
   let (next, _) = Game.step(Game.sampledInput(m, Game.snapshotOf(keys, Option.Some(xr))), Stations.armory, world, (p) => p, 0.0, dt) in
   next
 let sampled = (m: Game.Model, keys: List<Key.t>, l: Input.controller, r: Input.controller): Game.Model => sampledIn(Game.noWorld, m, keys, l, r)
-let stickDown = (c: Input.controller): Input.controller => { c with thumbstick: { x: 0.0, y: -1.0 } }
+let pressA = (c: Input.controller): Input.controller => { c with primaryPressed: true }
 let dropped = (m: Game.Model) => Game.propOf(m, Props.Mag(Ammo.PistolMag, List.length(Stations.spares) + 1.0))
 
-// Three shots, then the thumbstick down on the pistol's hand: its magazine
+// Three shots, then A on the pistol's hand: its magazine
 // (9) drops out below it as a new prop; the chambered round stays.
 let fired3 = last(play(List.flatten([take, pulls(3.0)])))
-let ejected = sampled(fired3, [], Game.away, stickDown(ease))
+let ejected = sampled(fired3, [], Game.away, pressA(ease))
 expect (
   let mag = dropped(ejected) in
   mag.mag == Option.Some({ kind: Ammo.PistolMag, rounds: 9.0, capacity: 12.0 }) && Option.isNone(ejected.gun.ammo.mag) && ejected.gun.ammo.chambered
@@ -440,7 +441,7 @@ expect (
 )
 // M drops it too; the other hand's stick doesn't, nor M with no gun held.
 expect Option.isNone((sampled(fired3, [Key.M], Game.away, ease)).gun.ammo.mag)
-expect Option.isSome((sampled(fired3, [], stickDown(Game.away), ease)).gun.ammo.mag)
+expect Option.isSome((sampled(fired3, [], pressA(Game.away), ease)).gun.ammo.mag)
 expect List.length((sampled(start, [Key.M], Game.away, Game.away)).props) == 7.0
 // Its way out blocked by the level (the pistol resting on the bench): it
 // stays in, and nothing drops.
@@ -449,7 +450,7 @@ expect (
     match k with
     | Props.Mag(_, _) => Option.Some({ fraction: 0.0, normal: Quat.v3(0.0, 1.0, 0.0) })
     | _ => Option.None } in
-  let m = sampledIn(floored, fired3, [], Game.away, stickDown(ease)) in
+  let m = sampledIn(floored, fired3, [], Game.away, pressA(ease)) in
   Option.isSome(m.gun.ammo.mag) && List.length(m.props) == 7.0 && m.nextMag == fired3.nextMag && conserved([m])
 )
 // The rifle's, by M, held in two hands: 30 rounds out, one chambered.
@@ -539,7 +540,7 @@ expect (
     && (emptiedUp |> List.all((m) => not m.gun.ammo.locked || m.gun.fired == 13.0))
 )
 // The magazine released: it drops; still locked.
-let releasedMag = sampled(lockedOpen, [], Game.away, stickDown(upHold))
+let releasedMag = sampled(lockedOpen, [], Game.away, pressA(upHold))
 expect Option.isNone(releasedMag.gun.ammo.mag) && releasedMag.gun.ammo.locked && List.length(releasedMag.props) == 8.0
 // A spare out of its cradle, in the left hand.
 let tookSpare = playBoth(Game.noWorld, releasedMag, [(lefty(spareAt, 0.0), upHold), (lefty(spareAt, 1.0), upHold)])
@@ -585,9 +586,9 @@ expect (
   let ms = playBoth(Game.noWorld, last(racked), upPulls(13.0)) in
   last(ms).gun.fired == 25.0 && last(ms).gun.ammo.locked && last(ms).gun.dry == 2.0 && conserved(ms)
 )
-// The slide release (A on the pistol's hand) does what the rack does.
+// The slide release (B on the pistol's hand) does what the rack does.
 expect (
-  let m = sampled(last(pushed), [], Game.away, { upHold with primaryPressed: true }) in
+  let m = sampled(last(pushed), [], Game.away, { upHold with secondaryPressed: true }) in
   not m.gun.ammo.locked && m.gun.ammo.chambered && Ammo.roundsIn(m.gun.ammo.mag) == 11.0 && m.pulses == [(Hold.Right, Pulses.SlideHome)]
 )
 // Pulled 70% of the way and let go: nothing. All the way with a round

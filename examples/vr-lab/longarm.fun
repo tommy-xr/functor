@@ -30,8 +30,7 @@ let center = Quat.v3(0.0, 0.0275, (stockBack - muzzleAhead) / 2.0)
 let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 
 /// Where the primary hand's root sits in `layout`: the rifle grip spec's
-/// solved placement (`Fitted`, generated). Its grip up the fist: the muzzle
-/// 14° above the grip's -Z.
+/// solved placement (`Fitted`, generated): the bore along the hand's -Z.
 let placement: Input.pose = Fitted.rifleGripPlacement
 
 /// The primary hand's pose in the rifle's frame: its pistol grip. Like the
@@ -77,6 +76,14 @@ let foreZone = 0.06
 /// either end of the foregrip by `foreSlack` (a pump's, anywhere it slides).
 let breakOff = 0.12
 let foreSlack = 0.08
+/// Once supporting, it is forgiving (a bent wrist, a quick pull or a shot's
+/// kick keeps it): it breaks only when the support hand is further from the
+/// primary fist than the foregrip's far end by `releaseSlack`, comes within
+/// `releaseNear` of it or behind it (along the primary hand's -Z), or the aim
+/// swings past `releaseSwing` from the primary hand.
+let releaseSlack = 0.25
+let releaseNear = 0.05
+let releaseSwing = 90.0 * Math.pi / 180.0
 
 /// A point seen from a primary fist at `fist`: how far ahead along its -Z,
 /// and how far off that axis.
@@ -97,11 +104,19 @@ let foreGap = (f: Fore, pull: float, pose: Input.pose, q: Input.point3): float =
 let holds = (f: Fore, a: Along): bool =>
   a.off <= breakOff && a.along >= f.near - f.travel - foreSlack && a.along <= f.far + foreSlack
 
+/// Whether a supporting hand at `q` keeps the weapon laid out at `l` and
+/// aimed `aim` (the rules above). Ahead by `releaseNear` also keeps the aim's
+/// direction defined.
+let keeps = (f: Fore, l: Input.pose, aim: Input.quaternion, q: Input.point3): bool =>
+  Quat.length(Quat.sub(q, l.position)) <= f.far + releaseSlack
+    && (alongOf(l, q)).along >= releaseNear
+    && Quat.angle(aim, l.orientation) <= releaseSwing
+
 // The layout's fist level, and the hand that holds it there.
 let level = Hold.at(Quat.v3(0.2, 1.1, -0.3), Quat.identity)
 let levelHand = Hold.compose(level, placement)
-// Held level, the bore points 14° above the hand's -Z, the grip's rake.
-expect Hold.near3((Gun.boreOf(weapon, Gun.heldAt(weapon, Hold.origin))).dir, Quat.v3(0.0, Math.sin(0.25), 0.0 - Math.cos(0.25)))
+// Held level, the bore points along the hand's -Z.
+expect Hold.near3((Gun.boreOf(weapon, Gun.heldAt(weapon, Hold.origin))).dir, Quat.v3(0.0, 0.0, 0.0 - 1.0))
 expect foreGap(fore, 0.0, Gun.heldAt(weapon, levelHand), Quat.v3(0.2, 1.1, -0.55)) < 0.0001
 expect Math.abs(foreGap(fore, 0.0, Gun.heldAt(weapon, levelHand), Quat.v3(0.2, 1.15, -0.5)) - 0.05) < 0.0001
 // Past the near end by 4 cm, on the line: 4 cm away.
@@ -193,7 +208,7 @@ let support = (f: Fore, side: Hold.Side, primary: Input.pose, at: Input.point3):
 type Grasp = | Supporting(support: Support) | LetGo | Broke
 
 /// One step of a support hand at `at` (None: untracked) on foregrip `f`:
-/// too far off the primary hand's axis or past the foregrip's ends, it
+/// pulled off, back to the primary hand, or swung too far (`keeps`), it
 /// breaks off (even if it opened); opened or lost, it lets go; else it aims
 /// the weapon, the ease turning out by at most `Hold.snapTurnStep`.
 let grasp = (f: Fore, s: Support, primary: Input.pose, at: Option.t<Input.point3>, squeezed: bool): Grasp =>
@@ -201,7 +216,7 @@ let grasp = (f: Fore, s: Support, primary: Input.pose, at: Option.t<Input.point3
   match at with
   | Option.None => LetGo
   | Option.Some(q) =>
-    if not holds(f, alongOf(l, q)) then Broke
+    if not keeps(f, l, s.aim, q) then Broke
     else if not squeezed then LetGo
     else
       let left = Quat.angle(s.ease, Quat.identity) in
@@ -237,14 +252,23 @@ expect (
     && (List.zip(List.drop(1.0, aims), aims) |> List.all((ab) => let (a, b) = ab in Quat.angle(a, b) <= Hold.snapTurnStep + 0.000001))
     && (List.last(aims) |> Option.map((a) => Hold.near3(fwd(a), unit(Quat.sub(hand, level.position)))) |> Option.defaultValue(false))
 )
-// Opened, it lets go; dragged 15 cm off the axis, it breaks off, opened or not.
+// Opened, it lets go; jerked 15 cm off the aim it holds; dragged 65 cm off
+// it breaks off, opened or not.
 expect (
   let s = support(fore, Hold.Left, levelHand, ahead(level, 0.25)) in
-  let off = Quat.add(ahead(level, 0.25), Quat.v3(-0.15, 0.0, 0.0)) in
+  let jerk = Quat.add(ahead(level, 0.25), Quat.v3(-0.15, 0.0, 0.0)) in
+  let off = Quat.add(ahead(level, 0.25), Quat.v3(-0.65, 0.0, 0.0)) in
   grasp(fore, s, levelHand, Option.Some(ahead(level, 0.25)), false) == LetGo
+    && grasp(fore, s, levelHand, Option.Some(jerk), true) != Broke
     && grasp(fore, s, levelHand, Option.Some(off), true) == Broke && grasp(fore, s, levelHand, Option.Some(off), false) == Broke
     && grasp(fore, s, levelHand, Option.None, true) == LetGo
 )
+// Pulled back onto the primary fist (or behind it), it breaks off rather
+// than aim the barrel back at the player.
+expect grasp(fore, support(fore, Hold.Left, levelHand, ahead(level, 0.25)), levelHand, Option.Some(ahead(level, 0.0 - 0.1)), true) == Broke
+  && grasp(fore, support(fore, Hold.Left, levelHand, ahead(level, 0.25)), levelHand, Option.Some(ahead(level, 0.0)), true) == Broke
+// Overshooting the far end by 20 cm (a hard pump or a fast slide) holds.
+expect grasp(fore, support(fore, Hold.Left, levelHand, ahead(level, 0.25)), levelHand, Option.Some(ahead(level, foreFar + 0.2)), true) != Broke
 // Let go after aiming 20 degrees left: alone, the primary keeps the rifle
 // exactly where the aim had it, then it settles back.
 expect (
