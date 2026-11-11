@@ -1,0 +1,32 @@
+//! JSON text as a value. Read one with `JsonDecode` (decoders as values,
+//! like `Decode` for bytes), write one with `JsonEncode`, or describe both
+//! at once with `JsonCodec`.
+//!
+//! ```
+//! type status = { stream: string, frames: float }
+//! let status = JsonDecode.map2((stream, frames): status => { stream: stream, frames: frames },
+//!   JsonDecode.field("stream", JsonDecode.string), JsonDecode.field("frames", JsonDecode.number))
+//! let read = (text: string) => JsonDecode.parse(status, text)
+//! ```
+
+/// A JSON value.
+type t =
+  | Null
+  | Bool(value: bool)
+  | Number(value: float)
+  | String(value: string)
+  | Array(items: List<t>)
+  | Object(fields: Map<string, t>)
+
+/// Why reading JSON failed: where (a path of fields and list indices, as in
+/// `Binary.error`) and what went wrong. Text that isn't JSON fails with an
+/// empty path.
+type error = { path: List<Binary.segment>, message: string }
+
+/// The value `text` holds, or why it isn't JSON (`expected value at line 1
+/// column 1`). A repeated object key keeps its last value; nesting deeper
+/// than 128 is an error.
+let parse : (string) => Result.t<t, string>
+/// `json` as compact text, object keys sorted. A whole number prints without
+/// a fraction; a number JSON can't hold (NaN, an infinity) is an error.
+let stringify : (t) => string

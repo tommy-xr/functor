@@ -681,3 +681,16 @@ fn redeclaring_a_prelude_suffix_is_an_error() {
         "{diags:?}"
     );
 }
+
+/// `JsonDecode` decoders are typed by what they read.
+#[test]
+fn json_decoders_typecheck() {
+    let diags = check(
+        "let frames : JsonDecode.t<float> = JsonDecode.field(\"frames\", JsonDecode.number)\n\
+         let read = (text: string): Result.t<float, Json.error> => JsonDecode.parse(frames, text)\n\
+         let write : string = JsonEncode.run(JsonEncode.list(JsonEncode.number, [1.0]))",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+    let diags = check("let frames : JsonDecode.t<string> = JsonDecode.field(\"frames\", JsonDecode.number)");
+    assert!(!diags.is_empty(), "a number decoder is not a string decoder");
+}

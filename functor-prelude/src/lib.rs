@@ -41,6 +41,18 @@ pub fn bundled_modules() -> Vec<BundledModule> {
         include_str!("../stdlib/codec.fun"),
     ));
     bundled.push(BundledModule::implementation(
+        "JsonDecode",
+        include_str!("../stdlib/json_decode.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "JsonEncode",
+        include_str!("../stdlib/json_encode.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "JsonCodec",
+        include_str!("../stdlib/json_codec.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
         "Connector",
         include_str!("../stdlib/connector.fun"),
     ));
@@ -101,6 +113,7 @@ pub fn modules() -> Vec<(String, String)> {
         module("Typeface", include_str!("../prelude/typeface.funi")),
         module("Bytes", include_str!("../prelude/bytes.funi")),
         module("Binary", include_str!("../prelude/binary.funi")),
+        module("Json", include_str!("../prelude/json.funi")),
         module("File", include_str!("../prelude/file.funi")),
         module("Job", include_str!("../prelude/job.funi")),
         module("Path", include_str!("../prelude/path.funi")),
