@@ -1184,7 +1184,7 @@ mod tests {
         let user = Item::User {
             text: "  What is the count?\nAnd why?".to_string(),
         };
-        assert_eq!(t.transcript, [user.clone()]);
+        assert_eq!(t.transcript, std::slice::from_ref(&user));
         assert_eq!(
             commands,
             vec![

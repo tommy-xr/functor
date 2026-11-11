@@ -60,7 +60,7 @@ struct Ctx {
 }
 
 /// Serves until `shutdown` resolves to a signal number, then stops the
-/// session and returns 128 + it.
+/// session and every agent run and returns 128 + it.
 pub async fn serve(
     state: AppState,
     mut driver: Driver,
@@ -115,7 +115,7 @@ async fn run(
         let (events, from) = tokio::select! {
             biased;
             signal = &mut shutdown => {
-                let (_, commands) = update(state, Event::Client(ClientMsg::StopSession));
+                let (_, commands) = update(state, Event::Shutdown);
                 for command in commands {
                     driver.run(command).await;
                 }
