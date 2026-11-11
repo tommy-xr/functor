@@ -14,6 +14,9 @@ pub enum ClientMsg {
     SetActiveProject {
         path: String,
     },
+    /// Start a game session for the active project, unless one is live.
+    StartSession,
+    StopSession,
 }
 
 /// Core → UI.

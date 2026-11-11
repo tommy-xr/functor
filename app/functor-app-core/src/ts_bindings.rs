@@ -48,7 +48,8 @@ impl TypeVisitor for Decls<'_> {
 }
 
 fn render() -> String {
-    let cfg = Config::new();
+    // u64 ids and frame numbers are JSON numbers, as in the debug protocol's TS.
+    let cfg = Config::new().with_large_int("number");
     let mut decls = Decls {
         cfg: &cfg,
         out: BTreeMap::new(),

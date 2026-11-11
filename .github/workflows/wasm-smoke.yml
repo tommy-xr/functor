@@ -109,6 +109,9 @@ jobs:
       - name: Typecheck the site
         run: npm run check:site
 
+      - name: Typecheck the desktop app UI
+        run: npm run check:app-ui
+
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
@@ -184,3 +187,10 @@ jobs:
 
       - name: Run browser runtime-target tests
         run: npm run test:runtime-target
+
+      # The desktop app's UI shell served by `functor-app --headless`; the
+      # Start/Stop check runs game sessions on the CLI built above.
+      - name: Run desktop app UI browser tests
+        run: npm run test:app-ui
+        env:
+          FUNCTOR_BIN: ${{ github.workspace }}/target/debug/functor

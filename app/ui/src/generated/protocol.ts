@@ -13,17 +13,40 @@ projects: Array<Project>,
 /**
  * The active project's `path`; `None` only when there are no projects.
  */
-active: string | null, };
+active: string | null, 
+/**
+ * The active project's loadable `.fun`/`.funi` files and `functor.json`,
+ * sorted ([`crate::projects::project_files`]).
+ */
+files: Array<string>, 
+/**
+ * The repo's checkout; `None` outside git.
+ */
+git: GitInfo | null, 
+/**
+ * The active project's game session; `None` until one first starts.
+ */
+session: Session | null, };
 
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" };
 
 /**
  * What `functor.json` declares to run.
  */
 export type Entries = { "kind": "single", file: string, } | { "kind": "named", roles: Array<Role>, } | { "kind": "invalid", error: string, };
+
+export type GitInfo = { 
+/**
+ * `HEAD` when detached.
+ */
+branch: string, 
+/**
+ * Abbreviated, as `git rev-parse --short` prints it.
+ */
+commit: string, };
 
 export type Project = { 
 /**
@@ -45,3 +68,15 @@ export type Role = { name: string, file: string, module?: string, prefix?: strin
  * Core → UI.
  */
 export type ServerMsg = { "type": "state", state: AppState, };
+
+export type Session = { 
+/**
+ * Unique per start; events from an older session's child are dropped.
+ */
+id: number, 
+/**
+ * The child's process id once spawned.
+ */
+pid: number | null, status: SessionStatus, };
+
+export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "kind": "running", debug_url: string, frame: number | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };

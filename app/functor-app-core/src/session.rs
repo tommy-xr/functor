@@ -1,0 +1,97 @@
+//! The active project's game session: a `functor run native` child the shell
+//! spawns and polls over its debug server.
+
+use std::net::SocketAddr;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Session {
+    /// Unique per start; events from an older session's child are dropped.
+    pub id: u64,
+    /// The child's process id once spawned.
+    pub pid: Option<u32>,
+    pub status: SessionStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionStatus {
+    Stopped,
+    /// Spawning, or waiting for the debug server's listening line.
+    Starting,
+    /// `frame` is `/state.frame` from the last successful poll.
+    Running {
+        debug_url: String,
+        frame: Option<u64>,
+    },
+    /// The child exited on its own after it was running.
+    Exited {
+        reason: String,
+    },
+    /// It could not be spawned, or exited before its debug server listened.
+    Failed {
+        reason: String,
+    },
+}
+
+impl SessionStatus {
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Starting | Self::Running { .. })
+    }
+}
+
+/// What the shell observed about session `id`'s child.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionEvent {
+    Spawned {
+        pid: u32,
+    },
+    /// The `[debug-server] listening on …` line, as [`listening_url`] reads it.
+    Listening {
+        debug_url: String,
+    },
+    /// A `GET /state`: its `frame`, or why it failed.
+    Polled(Result<u64, String>),
+    /// The child exited; `reason` is its status and the error it printed.
+    Exited {
+        reason: String,
+    },
+    /// The child could not be spawned.
+    StartFailed {
+        reason: String,
+    },
+}
+
+/// The debug server's URL from its stderr line, with the port it really
+/// bound: `[debug-server] listening on http://127.0.0.1:52011`.
+pub fn listening_url(line: &str) -> Option<String> {
+    let addr = line
+        .strip_prefix("[debug-server] listening on http://")?
+        .trim();
+    addr.parse::<SocketAddr>().ok()?;
+    Some(format!("http://{addr}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_bound_address_from_the_listening_line() {
+        assert_eq!(
+            listening_url("[debug-server] listening on http://127.0.0.1:52011\n").as_deref(),
+            Some("http://127.0.0.1:52011")
+        );
+        for other in [
+            "[debug-server] listening on http://127.0.0.1:",
+            "[debug-server] listening on http://localhost:8077",
+            "[functor] listening on http://127.0.0.1:8077",
+            "",
+        ] {
+            assert_eq!(listening_url(other), None, "{other}");
+        }
+    }
+}
