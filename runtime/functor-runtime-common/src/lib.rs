@@ -101,6 +101,7 @@ pub mod part_eval;
 pub mod net;
 pub mod physics;
 pub mod protocol;
+pub mod reload_indicator;
 pub mod render;
 pub mod runtime_settings;
 mod render_context;

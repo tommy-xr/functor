@@ -40,6 +40,7 @@ use functor_runtime_common::environment_depth::EnvironmentDepthSource;
 use functor_runtime_common::frame_telemetry::{us, FrameRecord, FrameTelemetry};
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
+use functor_runtime_common::reload_indicator::{ReloadIndicator, ReloadIndicatorPainter};
 use functor_runtime_common::runtime_settings::FoveationLevel;
 use functor_runtime_common::haptics::{Hand, HapticPulse};
 use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
@@ -820,6 +821,8 @@ struct DebugLoopState {
     /// The `/load-project` waiting on a load job, and where its status
     /// arrives: answered when it lands.
     pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
+    /// Pushed reloads, for the head-locked indicator and `/state.reload`.
+    reload: ReloadIndicator,
 }
 
 /// What the game samples: an injected `xr` sample wins over live tracking.
@@ -1012,6 +1015,7 @@ fn service_debug_request(
             let cells = functor_runtime_common::gpu_counters::gpu_counters().frame_cells();
             let stages = debug.stages;
             let frame_stats = debug.telemetry.stats();
+            let reload = debug.reload.state(Instant::now());
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
                 let _ = response.send(RuntimeState {
@@ -1024,6 +1028,7 @@ fn service_debug_request(
                     model_revision: g.model_revision(),
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
+                    reload,
                     viewport: RuntimeViewport::new(width, height),
                     views,
                     model: g.state_json(),
@@ -1193,12 +1198,14 @@ desktop runtime's --headless/--debug-port path"
         }
         DebugRequest::ReloadSource(source, response) => {
             // A heavy reload answers when it lands off the frame thread.
+            let response = debug.reload.track(response, Instant::now());
             sim.post(move |g| {
                 let result = g.reload_source(&source);
                 functor_runtime_common::protocol::answer_reload(g, result, response);
             });
         }
         DebugRequest::ReloadProject(files, role, response) => {
+            let response = debug.reload.track(response, Instant::now());
             sim.post(move |g| {
                 let result = functor_runtime_common::protocol::reload_with_role(
                     g,
@@ -1595,6 +1602,8 @@ pub fn android_main(app: AndroidApp) {
     // `Frame.withUiTarget` passes: constructed lazily on the first frame that
     // declares one, so games without ui targets never build an egui painter.
     let mut ui_target_renderer: Option<functor_runtime_common::ui::UiTargetRenderer> = None;
+    // The hot-reload indicator, built on the first reload's frame.
+    let mut reload_painter: Option<ReloadIndicatorPainter> = None;
 
     // The real Functor Lang producer, booting the embedded scene. A broken embedded
     // scene is a build bug, not a runtime condition — fail loud.
@@ -1844,6 +1853,7 @@ pub fn android_main(app: AndroidApp) {
                 let _ = response.send(result);
             }
         }
+        debug.reload.poll(Instant::now(), debug.rendered_frames);
 
         if !session_running {
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -2192,6 +2202,7 @@ pub fn android_main(app: AndroidApp) {
             lod_projection_scale = fallback_lod_projection.y.y.abs();
         }
         terrain_frame_id = terrain_frame_id.wrapping_add(1);
+        let reload_look = debug.reload.look(Instant::now());
 
         for (index, (eye, view)) in eyes.iter_mut().zip(views.iter()).enumerate() {
             use glow::HasContext;
@@ -2243,6 +2254,25 @@ pub fn android_main(app: AndroidApp) {
                 Viewport::new(eye.width, eye.height),
                 functor_runtime_common::DebugRenderMode::Default,
             );
+            // Head-locked over the game, placed from the head center so both
+            // eyes agree on its depth.
+            if let (Some(look), Some(center)) = (reload_look, tracked_center) {
+                if let Some(eye_in_head) = tracking_pose_from_view(view).relative_to(center) {
+                    let painter = reload_painter
+                        .get_or_insert_with(|| ReloadIndicatorPainter::new(&gl, "#version 300 es"));
+                    let fov = [view.fov.angle_left, view.fov.angle_right, view.fov.angle_down, view.fov.angle_up];
+                    unsafe {
+                        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(eye.framebuffers[image_index]));
+                    }
+                    painter.draw(
+                        &gl,
+                        functor_runtime_common::reload_indicator::head_locked_transform(fov, eye_in_head, &look),
+                        &look,
+                        (eye.width, eye.height),
+                        scene_context.output_srgb_encode(),
+                    );
+                }
+            }
             if let Some(captured) = &mut captured_eyes {
                 // A render-target pass is allowed to change the ambient FBO;
                 // bind the swapchain image explicitly at the readback seam.
