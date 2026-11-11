@@ -120,8 +120,8 @@ async fn main() -> std::io::Result<ExitCode> {
         eprintln!("functor-app: no home directory; set FUNCTOR_APP_HOME");
         return Ok(ExitCode::from(2));
     };
-    let tasks = store::load(&home, &state);
-    state = update(state, Event::TasksLoaded { tasks }).0;
+    let (tasks, highest) = store::load(&home, &state);
+    state = update(state, Event::TasksLoaded { tasks, highest }).0;
     if args.print && !args.start_session {
         print!("{}", print(&state));
         return Ok(ExitCode::SUCCESS);
@@ -314,7 +314,7 @@ async fn run_task(
     state = step(state, Event::Shutdown, &mut driver).await;
     let items = transcript(&state);
     for item in &items[if args.follow { printed } else { 0 }..] {
-        println!("{}", print_item(item));
+        say(item);
     }
     Ok(match (signal, items.last()) {
         (Some(signal), _) => ExitCode::from(128 + signal),
@@ -336,9 +336,15 @@ fn print_settled(items: &[Item], from: usize) -> usize {
         })
         .count();
     for item in &items[from..from + settled] {
-        println!("{}", print_item(item));
+        say(item);
     }
     from + settled
+}
+
+/// Prints `item`, ignoring a closed stdout: the run must still be stopped.
+fn say(item: &Item) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "{}", print_item(item));
 }
 
 async fn step(state: AppState, event: Event, driver: &mut Driver) -> AppState {

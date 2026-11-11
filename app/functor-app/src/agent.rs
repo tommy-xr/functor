@@ -25,7 +25,7 @@ const LISTEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// the games it launched) before it is killed.
 const STOP_GRACE: Duration = Duration::from_secs(3);
 /// Tool-server output lines kept for a failure report.
-const TAIL_LINES: usize = 10;
+const TAIL_LINES: usize = 20;
 
 /// Told to the agent at the start of each new agent session.
 const PREAMBLE: &str = "You are working on a Functor game project: this directory. \
@@ -131,14 +131,14 @@ impl Runner {
     }
 }
 
-/// One run: the tool server, the app context, the agent; then `Ended`,
-/// unless cancelled (the core has moved on). Every path stops the server.
+/// One run, then its `Ended`, also after a panic. A cancelled run sends
+/// none (the core has moved on). Every path stops the tool server.
 async fn run_task(
     spec: RunSpec,
     functor: PathBuf,
     agents: Agents,
     events: UnboundedSender<Event>,
-    mut cancel: oneshot::Receiver<()>,
+    cancel: oneshot::Receiver<()>,
 ) {
     let send = |event| {
         let _ = events.send(Event::Run {
@@ -147,17 +147,34 @@ async fn run_task(
             event,
         });
     };
+    let run = run(&spec, &functor, &agents, &send, cancel);
+    match futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(run)).await {
+        Ok(Some(error)) => send(RunEvent::Ended { error }),
+        Ok(None) => {}
+        Err(_) => send(RunEvent::Ended {
+            error: Some("the run panicked".to_string()),
+        }),
+    }
+}
+
+/// The tool server, the app context, the agent: the run's error, or `None`
+/// if cancelled.
+async fn run(
+    spec: &RunSpec,
+    functor: &Path,
+    agents: &Agents,
+    send: &impl Fn(RunEvent),
+    mut cancel: oneshot::Receiver<()>,
+) -> Option<Option<String>> {
     let token = token();
-    // A cancel while starting drops the child, which `kill_on_drop` kills.
+    // A cancel while starting drops the child's stdin, which stops it.
     let started = tokio::select! {
-        started = ToolServer::start(&functor, spec.attach.as_deref(), &token) => started,
-        _ = &mut cancel => return,
+        started = ToolServer::start(functor, spec.attach.as_deref(), &token) => started,
+        _ = &mut cancel => return None,
     };
     let server = match started {
         Ok(server) => server,
-        Err(error) => {
-            return send(RunEvent::Ended { error: Some(error) });
-        }
+        Err(error) => return Some(Some(error)),
     };
     let context = serde_json::to_string(&spec.context).expect("the context serializes");
     let auth = format!("Bearer {token}");
@@ -185,33 +202,28 @@ async fn run_task(
         ..RunOpts::default()
     };
     let agent = agents.get(spec.harness);
-    let error = match mis_agent::check(&permissions) {
-        Err(e) => Some(e),
+    let outcome = match mis_agent::check(&permissions) {
+        Err(e) => Some(Some(e)),
         Ok(()) => {
             let (tx, mut rx) = mpsc::channel(64);
             let run = run_guarded(&*agent, uuid::Uuid::new_v4(), &prompt, opts, tx);
             let forward = async {
                 while let Some(event) = rx.recv().await {
                     if let Some(event) = mirror(event) {
-                        send(RunEvent::Agent(event));
+                        send(RunEvent::Agent(redact(event, &mcp.token)));
                     }
                 }
             };
             // Cancelling drops the run, and `mis-agent` kills the agent's
             // process tree with it.
-            let cancelled = tokio::select! {
-                _ = futures_util::future::join(run, forward) => false,
-                _ = &mut cancel => true,
-            };
-            if cancelled {
-                server.stop().await;
-                return;
+            tokio::select! {
+                _ = futures_util::future::join(run, forward) => Some(None),
+                _ = &mut cancel => None,
             }
-            None
         }
     };
     server.stop().await;
-    send(RunEvent::Ended { error });
+    outcome
 }
 
 /// The app's copy of an agent event; `None` for those a transcript does
@@ -238,8 +250,19 @@ fn token() -> String {
     format!("{a}{b}")
 }
 
-/// A `functor mcp --http 0` child. It exits when its stdin closes; dropping
-/// it unstopped kills it.
+/// `event` with every copy of `token` blanked: the agent has it in its
+/// environment and could print it into the transcript.
+fn redact(event: AgentEvent, token: &str) -> AgentEvent {
+    let json = serde_json::to_string(&event).expect("an event serializes");
+    if !json.contains(token) {
+        return event;
+    }
+    // The token is hex, so replacing it keeps the JSON valid.
+    serde_json::from_str(&json.replace(token, "[token]")).expect("still an event")
+}
+
+/// A `functor mcp --http 0` child. It stops (and stops the games it
+/// launched) when its stdin closes, so dropping it is a graceful stop.
 struct ToolServer {
     child: Child,
     stdin: ChildStdin,
@@ -259,16 +282,16 @@ impl ToolServer {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("cannot run {}: {e}", functor.display()))?;
         let stdin = child.stdin.take().expect("piped");
-        let mut lines = BufReader::new(child.stderr.take().expect("piped")).lines();
+        let (lines_tx, mut lines) = mpsc::unbounded_channel();
+        crate::session::forward(child.stderr.take().expect("piped"), lines_tx);
         let mut tail = VecDeque::new();
         let listening = tokio::time::timeout(LISTEN_TIMEOUT, async {
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Some(url) = mcp_listening_url(&line) {
-                    return Some(url);
+            while let Some(line) = lines.recv().await {
+                if let Some(base) = mcp_listening_url(&line) {
+                    return Some(base);
                 }
                 if tail.len() == TAIL_LINES {
                     tail.pop_front();
@@ -278,25 +301,30 @@ impl ToolServer {
             None
         })
         .await;
-        let url = match listening {
-            Ok(Some(url)) => url,
+        let base = match listening {
+            Ok(Some(base)) => base,
             Ok(None) => {
-                let last = tail.back().map(|l| format!(": {l}")).unwrap_or_default();
-                return Err(format!("functor mcp exited before listening{last}"));
+                let cause = crate::session::cause(&tail).map(|l| format!(": {l}"));
+                let cause = cause.unwrap_or_default();
+                return Err(format!("functor mcp exited before listening{cause}"));
             }
             Err(_) => {
+                // Nothing launched yet, so killing it leaves nothing behind.
+                let _ = child.start_kill();
                 let secs = LISTEN_TIMEOUT.as_secs();
                 return Err(format!("functor mcp did not listen within {secs}s"));
             }
         };
-        // Drained, so the server never blocks on a full pipe.
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-        let base = url.trim_end_matches("/mcp").to_string();
+        tokio::spawn(async move {
+            while let Some(line) = lines.recv().await {
+                eprintln!("[functor mcp] {line}");
+            }
+        });
         Ok(Self { child, stdin, base })
     }
 
-    /// Closes stdin, the server's signal to stop, then kills it if it has
-    /// not exited within [`STOP_GRACE`].
+    /// Closes stdin, the server's signal to stop; if it has not exited
+    /// within [`STOP_GRACE`], kills it and any games it launched.
     async fn stop(self) {
         let Self {
             mut child, stdin, ..
@@ -306,7 +334,37 @@ impl ToolServer {
             .await
             .is_err()
         {
-            let _ = child.kill().await;
+            if let Some(pid) = child.id() {
+                kill_tree(pid);
+            }
+            let _ = child.wait().await;
+        }
+    }
+}
+
+/// Kills `pid` and its descendants, found by parent pid. Best effort: a
+/// process started after the snapshot survives.
+fn kill_tree(pid: u32) {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut tree = vec![Pid::from_u32(pid)];
+    let mut i = 0;
+    while i < tree.len() {
+        let parent = tree[i];
+        let born = sys.process(parent).map_or(0, |p| p.start_time());
+        // Started after its parent: Windows keeps a dead parent's pid on its
+        // children, so an older process naming a reused pid is not one.
+        let kids = sys
+            .processes()
+            .iter()
+            .filter(|(_, p)| p.parent() == Some(parent) && p.start_time() >= born);
+        tree.extend(kids.map(|(pid, _)| *pid));
+        i += 1;
+    }
+    for pid in tree {
+        if let Some(p) = sys.process(pid) {
+            p.kill();
         }
     }
 }
@@ -422,6 +480,24 @@ mod tests {
         assert_eq!(p.folders, [root.to_string_lossy()]);
         assert!(p.mcp.is_empty() && p.commands.is_empty(), "{p:?}");
         assert_eq!(mis_agent::check(&p), Ok(()));
+    }
+
+    #[test]
+    fn an_agent_printing_its_token_has_it_blanked() {
+        let token = token();
+        let event = AgentEvent::ToolResult {
+            content: format!("MIS_MCP_TOKEN={token}\n"),
+        };
+        assert_eq!(
+            redact(event, &token),
+            AgentEvent::ToolResult {
+                content: "MIS_MCP_TOKEN=[token]\n".to_string()
+            }
+        );
+        let plain = AgentEvent::Text {
+            text: "hi".to_string(),
+        };
+        assert_eq!(redact(plain.clone(), &token), plain);
     }
 
     #[test]

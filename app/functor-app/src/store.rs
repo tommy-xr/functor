@@ -22,27 +22,35 @@ fn tasks_dir(home: &Path, dir: &Path) -> PathBuf {
     home.join("projects").join(key(dir)).join("tasks")
 }
 
-/// A directory name for `dir`: its path with every run of other characters
-/// than letters, digits, `-` and `_` turned into one `-`.
+/// A directory name for `dir`: its last component, readable, then a hash
+/// of the whole path, so `a/b` and `a-b` differ: `counter-1c9a…`.
 fn key(dir: &Path) -> String {
-    let text = dir.to_string_lossy();
-    let mut key = String::new();
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            key.push(c);
-        } else if !key.ends_with('-') {
-            key.push('-');
-        }
-    }
-    key.trim_matches('-').to_string()
+    let name: String = dir
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(40)
+        .collect();
+    // FNV-1a, 64-bit: stable across builds, unlike `DefaultHasher`.
+    let hash = dir
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+    format!("{name}-{hash:016x}")
 }
 
-/// Every discovered project's saved tasks. An unreadable file, or a second
-/// task with an id already loaded, is skipped with a message.
-pub fn load(home: &Path, state: &AppState) -> Vec<Task> {
+/// Every discovered project's saved tasks, and the highest id of any task
+/// file (read or not). An unreadable file, or a second task with an id
+/// already loaded, is skipped with a message.
+pub fn load(home: &Path, state: &AppState) -> (Vec<Task>, u64) {
     let root = Path::new(&state.repo_root);
     let mut tasks = Vec::new();
     let mut ids = HashSet::new();
+    let mut highest = 0;
     for project in &state.projects {
         let dir = tasks_dir(home, &project_dir(root, &project.path));
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -55,6 +63,8 @@ pub fn load(home: &Path, state: &AppState) -> Vec<Task> {
             .collect();
         files.sort();
         for file in files {
+            let stem = file.file_stem().and_then(|s| s.to_str());
+            highest = highest.max(stem.and_then(|s| s.parse().ok()).unwrap_or(0));
             let read = std::fs::read_to_string(&file).map_err(|e| e.to_string());
             match read.and_then(|text| from_stored(&text)) {
                 Ok(task) if !ids.insert(task.id) => {
@@ -72,7 +82,7 @@ pub fn load(home: &Path, state: &AppState) -> Vec<Task> {
             }
         }
     }
-    tasks
+    (tasks, highest)
 }
 
 /// Writes `task` for the project at `dir`, replacing its file whole.
@@ -107,12 +117,11 @@ mod tests {
 
     #[test]
     fn keys_are_one_path_component() {
-        assert_eq!(
-            key(Path::new("/src/my game/examples/hello")),
-            "src-my-game-examples-hello"
-        );
-        assert_eq!(key(Path::new(r"C:\src\x")), "C-src-x");
-        assert_eq!(key(Path::new("/a/../b.c")), "a-b-c");
+        let hello = key(Path::new("/src/my game/examples/hello world"));
+        assert!(hello.starts_with("hello-world-"), "{hello}");
+        assert_eq!(hello.len(), "hello-world-".len() + 16);
+        assert_ne!(key(Path::new("/r/a/b")), key(Path::new("/r/a-b")));
+        assert_eq!(key(Path::new("/r/a/b")), key(Path::new("/r/a/b")));
     }
 
     #[test]
@@ -145,7 +154,7 @@ mod tests {
         let tasks_dir = tasks_dir(&home, &dir);
         std::fs::write(tasks_dir.join("3.json"), "{ not json").unwrap();
         std::fs::write(tasks_dir.join("4.json"), to_stored(&task(1))).unwrap();
-        assert_eq!(load(&home, &state), [task(1), task(2)]);
+        assert_eq!(load(&home, &state), (vec![task(1), task(2)], 4));
         assert!(!root.exists(), "wrote inside the repo");
     }
 }

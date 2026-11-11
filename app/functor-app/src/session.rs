@@ -237,7 +237,10 @@ async fn supervise(
 
 /// Sends `reader`'s lines until it closes. Reads to the end whatever the
 /// bytes: a closed pipe would fail the child's next write and kill it.
-fn forward(reader: impl AsyncRead + Unpin + Send + 'static, lines: UnboundedSender<String>) {
+pub(crate) fn forward(
+    reader: impl AsyncRead + Unpin + Send + 'static,
+    lines: UnboundedSender<String>,
+) {
     tokio::spawn(async move {
         let mut reader = BufReader::new(reader).split(b'\n');
         while let Ok(Some(line)) = reader.next_segment().await {
@@ -249,7 +252,7 @@ fn forward(reader: impl AsyncRead + Unpin + Send + 'static, lines: UnboundedSend
 
 /// The first `error…` or panic line, else the last line: a failed load
 /// prints its cause, then `error: cannot load …`, then `✗ failed in 1ms`.
-fn cause(tail: &VecDeque<String>) -> Option<&str> {
+pub(crate) fn cause(tail: &VecDeque<String>) -> Option<&str> {
     let error = tail
         .iter()
         .find(|l| l.starts_with("error") || l.contains("panicked at"));

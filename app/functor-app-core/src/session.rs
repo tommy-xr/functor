@@ -121,8 +121,14 @@ pub struct Polled {
 /// The debug server's URL from its stderr line, with the port it really
 /// bound: `[debug-server] listening on http://127.0.0.1:52011`.
 pub fn listening_url(line: &str) -> Option<String> {
+    loopback_url(line, "[debug-server]")
+}
+
+/// The `http://<ip>:<port>` a `<tag> listening on http://<ip>:<port>` line names.
+pub(crate) fn loopback_url(line: &str, tag: &str) -> Option<String> {
     let addr = line
-        .strip_prefix("[debug-server] listening on http://")?
+        .strip_prefix(tag)?
+        .strip_prefix(" listening on http://")?
         .trim();
     addr.parse::<SocketAddr>().ok()?;
     Some(format!("http://{addr}"))

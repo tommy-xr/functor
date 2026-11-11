@@ -33,6 +33,10 @@ pub struct AppState {
     pub no_gpu: bool,
     /// Every project's tasks, by id; their transcripts travel separately.
     pub tasks: Vec<Task>,
+    /// The next new task's id: above every id on disk, readable or not, so
+    /// no new task overwrites a file the store skipped.
+    #[serde(skip)]
+    pub next_task: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +65,7 @@ impl AppState {
             session_mode: SessionMode::default(),
             no_gpu: false,
             tasks: Vec::new(),
+            next_task: 1,
         }
     }
 }
@@ -84,9 +89,11 @@ pub enum Event {
         run: u64,
         event: RunEvent,
     },
-    /// The saved tasks, read at startup; ids are unique.
+    /// The saved tasks, read at startup; ids are unique. `highest` is the
+    /// highest id of any task file, including ones that could not be read.
     TasksLoaded {
         tasks: Vec<Task>,
+        highest: u64,
     },
     /// The app is exiting: stop the session and every run.
     Shutdown,
@@ -236,7 +243,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Run { task, run, event } => {
             (on_run(&mut state, task, run, event, &mut commands), false)
         }
-        Event::TasksLoaded { tasks } => {
+        Event::TasksLoaded { tasks, highest } => {
             state.tasks = tasks
                 .into_iter()
                 .map(|mut t| {
@@ -247,6 +254,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 })
                 .collect();
             state.tasks.sort_by_key(|t| t.id);
+            let loaded = state.tasks.last().map_or(0, |t| t.id);
+            state.next_task = highest.max(loaded) + 1;
             (true, false)
         }
         Event::Shutdown => {
@@ -351,7 +360,8 @@ fn new_task(
     if let Err(reason) = can_run(state, &project, None, &message) {
         return reject(commands, reason);
     }
-    let id = state.tasks.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+    let id = state.next_task;
+    state.next_task += 1;
     state.tasks.push(Task {
         id,
         project,
@@ -502,8 +512,17 @@ fn on_run(
         RunEvent::Agent(event) => {
             let before = (task.session_id.clone(), task.model.clone());
             let changed = apply(task, event);
+            let summary = (task.session_id.clone(), task.model.clone()) != before;
+            // Saved as each item completes (not per streamed piece), so a
+            // crash keeps the run so far and the session to resume.
+            let settled = changed
+                .iter()
+                .any(|&i| !matches!(task.transcript[i], Item::Agent { partial: true, .. }));
+            if summary || settled {
+                commands.push(save(&root, task));
+            }
             broadcast_items(commands, task, changed);
-            (task.session_id.clone(), task.model.clone()) != before
+            summary
         }
         RunEvent::Ended { error } => {
             let changed = end_run(task, error);
@@ -619,6 +638,7 @@ mod tests {
             session_mode: SessionMode::Hidden,
             no_gpu: false,
             tasks: vec![],
+            next_task: 1,
         }
     }
 
@@ -1238,11 +1258,17 @@ mod tests {
     #[test]
     fn agent_events_stream_items_and_ended_waits_on_the_user() {
         let (s, _) = update(state(), new_task("hi"));
-        // Started changes the summary: the state is broadcast.
+        // Started changes the summary: saved (for a resume after a crash)
+        // and the state is broadcast.
         let (s, commands) = update(s, agent(1, 0, started("sess-1")));
-        assert_eq!(task(&s, 1).session_id.as_deref(), Some("sess-1"));
-        assert_eq!(commands, vec![broadcast(&s)]);
-        // A delta only sends its item.
+        let t = task(&s, 1);
+        assert_eq!(t.session_id.as_deref(), Some("sess-1"));
+        let saved = Command::SaveTask {
+            dir: PathBuf::from("/repo/examples/a"),
+            task: Box::new(t.clone()),
+        };
+        assert_eq!(commands, vec![saved, broadcast(&s)]);
+        // A delta only sends its item, unsaved.
         let delta = AgentEvent::TextDelta {
             text: "Hel".to_string(),
         };
@@ -1273,6 +1299,15 @@ mod tests {
                     task: Box::new(t.clone()),
                 },
                 broadcast(&s),
+                // Its text never got a whole `text`: it is settled as it stands.
+                Command::Broadcast(ServerMsg::Item {
+                    task: 1,
+                    index: 1,
+                    item: Item::Agent {
+                        text: "Hel".to_string(),
+                        partial: false,
+                    },
+                }),
             ]
         );
     }
@@ -1418,6 +1453,7 @@ mod tests {
             state(),
             Event::TasksLoaded {
                 tasks: vec![saved, cut],
+                highest: 3,
             },
         );
         assert_eq!(s.tasks.iter().map(|t| t.id).collect::<Vec<_>>(), [2, 4]);
@@ -1431,6 +1467,16 @@ mod tests {
         assert_eq!(task(&s, 4).status, TaskStatus::WaitingOnYou);
         let (s, _) = update(s, new_task("next"));
         assert_eq!(s.tasks.last().unwrap().id, 5);
+        // An unreadable file's id is never reused.
+        let (s, _) = update(
+            state(),
+            Event::TasksLoaded {
+                tasks: vec![],
+                highest: 7,
+            },
+        );
+        let (s, _) = update(s, new_task("next"));
+        assert_eq!(s.tasks.last().unwrap().id, 8);
     }
 
     #[test]

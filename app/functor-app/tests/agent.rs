@@ -221,11 +221,16 @@ mod stub {
 
     /// The stub in `dir` and the requests its server gets.
     pub fn functor(dir: &Path) -> (PathBuf, Receiver<Request>) {
+        with_body(dir, "exec cat >/dev/null")
+    }
+
+    /// A stub running `body` after its listening line.
+    pub fn with_body(dir: &Path, body: &str) -> (PathBuf, Receiver<Request>) {
         let (tx, requests) = std::sync::mpsc::channel();
         let port = serve(tx);
         let path = dir.join("functor");
         let script = format!(
-            "#!/bin/sh\necho '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\nexec cat >/dev/null\n"
+            "#!/bin/sh\necho '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\n{body}\n"
         );
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -356,6 +361,30 @@ fn cli_task_with_the_stub_leaves_no_children() {
     let home = tempfile::tempdir().unwrap();
     let (functor, _requests) = stub::functor(home.path());
     cli_task_leaves_no_children(&functor);
+}
+
+/// A tool server that ignores its stdin closing is killed after the grace
+/// period, with what it started (a game, say).
+#[cfg(unix)]
+#[test]
+fn a_hung_tool_server_is_killed_with_its_children() {
+    let repo = tree();
+    let home = tempfile::tempdir().unwrap();
+    let (functor, _requests) = stub::with_body(home.path(), "sleep 60 &\nwait");
+    let fixture = slow_fixture(home.path(), 500);
+    let mut app = task_command(repo.path(), home.path(), &functor, &fixture, "hi")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    run_children(app.id());
+    let all = descendants(app.id());
+    assert!(
+        all.iter()
+            .any(|p| p.argv.first().is_some_and(|a| a == "sleep")),
+        "{all:?}"
+    );
+    assert!(app.wait().unwrap().success());
+    assert_gone(&all.iter().collect::<Vec<_>>());
 }
 
 /// The same against the real `functor mcp --http`, on every OS.
@@ -516,15 +545,16 @@ async fn tasks_over_the_websocket() {
     let (state, rest) = until(&mut ws, status_is("waiting_on_you")).await;
     items.extend(rest);
     let k = |i: u64, kind: &str, flag: bool| (i, kind.to_string(), flag);
-    // (index, kind, partial or answered)
+    // (index, kind, partial or answered). The streamed pieces of a text
+    // may coalesce into its whole (the core's tests cover them), so they
+    // are left out.
+    items.retain(|(_, kind, partial)| !(kind == "agent" && *partial));
     assert_eq!(
         items,
         [
             k(0, "user", false),
             k(1, "tool", false),
             k(1, "tool", true),
-            k(2, "agent", true),
-            k(2, "agent", true),
             k(2, "agent", false),
             k(3, "usage", false),
             k(4, "finished", false),

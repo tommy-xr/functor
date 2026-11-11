@@ -2,10 +2,10 @@
 //! events map onto the task's transcript here, purely; the shell runs the
 //! agent and feeds them in.
 
-use std::net::SocketAddr;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::session::loopback_url;
 
 /// The persisted format's version; a file with any other is skipped.
 pub const STORE_VERSION: u32 = 1;
@@ -256,13 +256,9 @@ pub fn end_run(task: &mut Task, error: Option<String>) -> Vec<usize> {
         return vec![];
     };
     let items = &mut task.transcript;
-    let start = run.id as usize + 1;
-    let finished = items[start.min(items.len())..]
-        .iter()
-        .any(|i| matches!(i, Item::Finished { .. }));
-    let mut changed = vec![];
-    if !finished {
-        changed = flush_usage(items, &mut run);
+    let mut changed = settle(items, &run);
+    if run_outcome(items).is_none() {
+        changed.extend(flush_usage(items, &mut run));
         let summary = error.unwrap_or_else(|| "the agent ended without finishing".to_string());
         changed.extend(push(
             items,
@@ -281,27 +277,53 @@ pub fn stop_run(task: &mut Task) -> Vec<usize> {
     let Some(mut run) = task.run.take() else {
         return vec![];
     };
-    let mut changed = flush_usage(&mut task.transcript, &mut run);
+    let mut changed = settle(&mut task.transcript, &run);
+    changed.extend(flush_usage(&mut task.transcript, &mut run));
     changed.extend(push(&mut task.transcript, Item::Stopped));
     task.status = derive_status(task);
     changed
 }
 
-/// The status from the run and how the transcript ends.
+/// The status from the run and how the last run ended.
 pub fn derive_status(task: &Task) -> TaskStatus {
     if task.run.is_some() {
         return TaskStatus::InProgress;
     }
-    match task.transcript.last() {
+    match run_outcome(&task.transcript) {
         Some(Item::Finished { ok: false, summary }) => TaskStatus::Failed {
             summary: summary.clone(),
         },
-        Some(Item::Finished { ok: true, .. } | Item::Stopped) | None => TaskStatus::WaitingOnYou,
+        Some(_) => TaskStatus::WaitingOnYou,
+        None if task.transcript.is_empty() => TaskStatus::WaitingOnYou,
         // A run with no outcome and no run in flight: the app stopped mid-run.
-        Some(_) => TaskStatus::Failed {
+        None => TaskStatus::Failed {
             summary: Some(INTERRUPTED.to_string()),
         },
     }
+}
+
+/// The last run's `Finished` or `Stopped`: the last one after its user message.
+fn run_outcome(items: &[Item]) -> Option<&Item> {
+    items
+        .iter()
+        .rev()
+        .take_while(|i| !matches!(i, Item::User { .. }))
+        .find(|i| matches!(i, Item::Finished { .. } | Item::Stopped))
+}
+
+/// Ends any text of `run` still streaming, as no more of it will come.
+fn settle(items: &mut [Item], run: &Run) -> Vec<usize> {
+    let start = run.id as usize + 1;
+    let mut changed = vec![];
+    for (i, item) in items.iter_mut().enumerate().skip(start) {
+        if let Item::Agent { partial, .. } = item {
+            if *partial {
+                *partial = false;
+                changed.push(i);
+            }
+        }
+    }
+    changed
 }
 
 fn push(items: &mut Vec<Item>, item: Item) -> Vec<usize> {
@@ -341,13 +363,10 @@ pub fn title(message: &str) -> String {
     format!("{cut}…")
 }
 
-/// The tool server's URL from its stderr line:
-/// `[mcp] listening on http://127.0.0.1:61234/mcp`.
+/// The tool server's base URL from its stderr line:
+/// `[mcp] listening on http://127.0.0.1:61234/mcp` → `http://127.0.0.1:61234`.
 pub fn mcp_listening_url(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("[mcp] listening on http://")?.trim();
-    let addr = rest.strip_suffix("/mcp")?;
-    addr.parse::<SocketAddr>().ok()?;
-    Some(format!("http://{rest}"))
+    loopback_url(line.trim().strip_suffix("/mcp")?, "[mcp]")
 }
 
 /// A task file: the summary and its transcript, versioned.
@@ -358,9 +377,9 @@ struct StoredRef<'a> {
     transcript: &'a [Item],
 }
 
+/// Read once its `version` is checked.
 #[derive(Deserialize)]
 struct Stored {
-    version: u32,
     task: Task,
     transcript: Vec<Item>,
 }
@@ -384,7 +403,6 @@ pub fn from_stored(text: &str) -> Result<Task, String> {
         None => return Err("no format version".to_string()),
     }
     let stored: Stored = serde_json::from_value(value).map_err(|e| e.to_string())?;
-    debug_assert_eq!(stored.version, STORE_VERSION);
     Ok(Task {
         transcript: stored.transcript,
         ..stored.task
@@ -640,6 +658,29 @@ mod tests {
     }
 
     #[test]
+    fn an_ended_run_settles_its_streaming_text_and_late_events_keep_the_outcome() {
+        let mut task = running("hi");
+        let delta = AgentEvent::TextDelta {
+            text: "Hal".to_string(),
+        };
+        apply(&mut task, delta);
+        assert_eq!(stop_run(&mut task), [1, 2]);
+        assert_eq!(task.transcript[1], agent("Hal"));
+
+        // Text after the outcome, within the run, does not make it look cut off.
+        let mut task = running("hi");
+        replay(&mut task, fixture(CLAUDE_GAME_TOOL));
+        apply(
+            &mut task,
+            AgentEvent::Text {
+                text: "late".to_string(),
+            },
+        );
+        end_run(&mut task, None);
+        assert_eq!(task.status, TaskStatus::WaitingOnYou);
+    }
+
+    #[test]
     fn events_without_a_run_change_nothing() {
         let mut task = running("hi");
         end_run(&mut task, None);
@@ -672,7 +713,7 @@ mod tests {
     fn reads_the_tool_servers_url_from_its_listening_line() {
         assert_eq!(
             mcp_listening_url("[mcp] listening on http://127.0.0.1:61234/mcp\n").as_deref(),
-            Some("http://127.0.0.1:61234/mcp")
+            Some("http://127.0.0.1:61234")
         );
         for other in [
             "[mcp] listening on http://127.0.0.1:61234",
