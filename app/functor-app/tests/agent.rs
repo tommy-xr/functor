@@ -11,11 +11,13 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
+#[cfg(unix)]
 const FIXTURES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../functor-app-core/fixtures/agent"
 );
 
+#[cfg(unix)]
 fn fixture(name: &str) -> PathBuf {
     Path::new(FIXTURES).join(name)
 }
@@ -79,6 +81,7 @@ fn files(dir: &Path) -> Vec<String> {
 struct Proc {
     pid: u32,
     argv: Vec<String>,
+    #[cfg_attr(not(unix), allow(dead_code))]
     cwd: Option<PathBuf>,
 }
 
@@ -332,13 +335,15 @@ fn cli_task_leaves_no_children(functor: &Path) {
     .spawn()
     .unwrap();
     let (server, agent) = run_children(app.id());
-    let canonical = std::fs::canonicalize(repo.path().join("a")).unwrap();
+    // The agent runs in the project. (Windows does not show another
+    // process's working directory.)
+    #[cfg(unix)]
     assert_eq!(
         agent
             .cwd
             .as_ref()
             .map(|c| std::fs::canonicalize(c).unwrap()),
-        Some(canonical)
+        Some(std::fs::canonicalize(repo.path().join("a")).unwrap())
     );
     let status = app.wait().unwrap();
     assert!(status.success());
@@ -707,7 +712,7 @@ fn live_claude_reads_the_game_through_its_tools() {
         .iter()
         .filter(|i| i["kind"] == "tool" && i["name"] == "mcp__mis__get_state")
         .filter_map(|i| serde_json::from_str::<Value>(i["result"].as_str()?).ok())
-        .last()
+        .next_back()
         .expect("a get_state call with a JSON result");
     let frame = state["frame"].as_u64().expect("a frame in /state");
     let count = state["model"]["count"]
@@ -717,7 +722,7 @@ fn live_claude_reads_the_game_through_its_tools() {
         .iter()
         .filter(|i| i["kind"] == "agent")
         .filter_map(|i| i["text"].as_str())
-        .last()
+        .next_back()
         .unwrap();
     assert!(
         answer.contains(&frame.to_string()),
