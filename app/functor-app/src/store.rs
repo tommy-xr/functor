@@ -58,7 +58,11 @@ pub fn load(home: &Path, state: &AppState) -> Vec<Task> {
             let read = std::fs::read_to_string(&file).map_err(|e| e.to_string());
             match read.and_then(|text| from_stored(&text)) {
                 Ok(task) if !ids.insert(task.id) => {
-                    eprintln!("functor-app: skipping {}: task {} is loaded already", file.display(), task.id);
+                    eprintln!(
+                        "functor-app: skipping {}: task {} is loaded already",
+                        file.display(),
+                        task.id
+                    );
                 }
                 Ok(task) => tasks.push(Task {
                     project: project.path.clone(),
@@ -94,13 +98,19 @@ mod tests {
             home(Some("/env/app".into()), user()),
             Some(PathBuf::from("/env/app"))
         );
-        assert_eq!(home(Some("".into()), user()), Some(Path::new("/u/.functor/app").to_path_buf()));
+        assert_eq!(
+            home(Some("".into()), user()),
+            Some(Path::new("/u/.functor/app").to_path_buf())
+        );
         assert_eq!(home(None, None), None);
     }
 
     #[test]
     fn keys_are_one_path_component() {
-        assert_eq!(key(Path::new("/src/my game/examples/hello")), "src-my-game-examples-hello");
+        assert_eq!(
+            key(Path::new("/src/my game/examples/hello")),
+            "src-my-game-examples-hello"
+        );
         assert_eq!(key(Path::new(r"C:\src\x")), "C-src-x");
         assert_eq!(key(Path::new("/a/../b.c")), "a-b-c");
     }

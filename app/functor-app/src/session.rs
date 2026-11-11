@@ -276,7 +276,10 @@ pub async fn request(
         .ok_or_else(|| format!("not an http url: {url}"))?;
     let request = async {
         let mut stream = TcpStream::connect(addr).await?;
-        let headers: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        let headers: String = headers
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}\r\n"))
+            .collect();
         let head = format!(
             "{method} {path} HTTP/1.0\r\nHost: {addr}\r\n{headers}Content-Length: {}\r\n\r\n{body}",
             body.len()
@@ -293,7 +296,11 @@ pub async fn request(
     let text = String::from_utf8_lossy(&response);
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
     let status = head.lines().next().unwrap_or_default();
-    if !status.split(' ').nth(1).is_some_and(|code| code.starts_with('2')) {
+    if !status
+        .split(' ')
+        .nth(1)
+        .is_some_and(|code| code.starts_with('2'))
+    {
         return Err(format!("{what}: {status}: {}", body.trim()));
     }
     Ok(body.to_string())

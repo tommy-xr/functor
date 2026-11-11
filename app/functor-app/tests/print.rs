@@ -5,8 +5,10 @@ use std::process::Command;
 #[test]
 fn print_marks_the_start_project_active() {
     let hello = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/hello");
+    let home = tempfile::tempdir().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_functor-app"))
         .args(["--headless", "--print", "-d", hello])
+        .env("FUNCTOR_APP_HOME", home.path())
         .output()
         .unwrap();
     assert!(out.status.success());

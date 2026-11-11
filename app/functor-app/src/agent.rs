@@ -302,7 +302,10 @@ impl ToolServer {
             mut child, stdin, ..
         } = self;
         drop(stdin);
-        if tokio::time::timeout(STOP_GRACE, child.wait()).await.is_err() {
+        if tokio::time::timeout(STOP_GRACE, child.wait())
+            .await
+            .is_err()
+        {
             let _ = child.kill().await;
         }
     }
@@ -374,10 +377,15 @@ impl Agent for FakeAgent {
 /// reports that session, as an agent continuing it would.
 pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
     use std::io::Write;
-    let text = std::fs::read_to_string(fixture).map_err(|e| format!("{}: {e}", fixture.display()))?;
+    let text =
+        std::fs::read_to_string(fixture).map_err(|e| format!("{}: {e}", fixture.display()))?;
     let start = std::time::Instant::now();
     let mut out = std::io::stdout().lock();
-    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+    for (n, line) in text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+    {
         let bad = |e: &dyn std::fmt::Display| format!("{}:{}: {e}", fixture.display(), n + 1);
         let mut line: serde_json::Value = serde_json::from_str(line).map_err(|e| bad(&e))?;
         let at = Duration::from_millis(line["ms"].as_u64().unwrap_or(0));
@@ -386,7 +394,9 @@ pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
         if let (Some(session), "started") = (resume, event["type"].as_str().unwrap_or("")) {
             event["session"] = session.into();
         }
-        writeln!(out, "{event}").and_then(|()| out.flush()).map_err(|e| bad(&e))?;
+        writeln!(out, "{event}")
+            .and_then(|()| out.flush())
+            .map_err(|e| bad(&e))?;
     }
     Ok(())
 }
@@ -439,6 +449,9 @@ mod tests {
             let mirrored = mirror(up(json.clone())).unwrap();
             assert_eq!(serde_json::to_value(mirrored).unwrap(), json);
         }
-        assert_eq!(mirror(up(serde_json::json!({"type": "limits", "windows": []}))), None);
+        assert_eq!(
+            mirror(up(serde_json::json!({"type": "limits", "windows": []}))),
+            None
+        );
     }
 }

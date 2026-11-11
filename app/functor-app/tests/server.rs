@@ -30,6 +30,8 @@ fn serve(dir: &Path, extra: &[&str]) -> Server {
         .args(["--headless", "--port", "0", "-d"])
         .arg(dir)
         .args(extra)
+        // Never the user's saved tasks; these tests start none.
+        .env("FUNCTOR_APP_HOME", dir.join(".app-home"))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()

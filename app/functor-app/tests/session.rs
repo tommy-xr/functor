@@ -15,7 +15,9 @@ fn start_session_polls_the_game_and_leaves_no_child() {
         return;
     };
     let counter = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/counter");
+    let home = tempfile::tempdir().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_functor-app"))
+        .env("FUNCTOR_APP_HOME", home.path())
         .args([
             "--headless",
             "--print",
@@ -78,6 +80,7 @@ fn sigterm_kills_the_child() {
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let counter = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/counter");
     let app = Command::new(env!("CARGO_BIN_EXE_functor-app"))
+        .env("FUNCTOR_APP_HOME", dir.path())
         .args(["--headless", "--print", "--start-session", "-d", counter])
         .arg("--functor")
         .arg(&fake)

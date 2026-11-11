@@ -99,13 +99,15 @@ enum Cmd {
 async fn main() -> std::io::Result<ExitCode> {
     let args = Args::parse();
     if let Some(fixture) = &args.replay_events {
-        return Ok(match agent::replay(fixture, args.replay_resume.as_deref()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("functor-app: {e}");
-                ExitCode::FAILURE
-            }
-        });
+        return Ok(
+            match agent::replay(fixture, args.replay_resume.as_deref()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("functor-app: {e}");
+                    ExitCode::FAILURE
+                }
+            },
+        );
     }
     if !args.headless {
         eprintln!("functor-app: only --headless is supported yet");
@@ -114,8 +116,7 @@ async fn main() -> std::io::Result<ExitCode> {
     let start = std::fs::canonicalize(args.dir.unwrap_or_else(|| PathBuf::from(".")))?;
     let mut state = functor_app_core::discover(&start);
     state.no_gpu = args.no_gpu;
-    let Some(home) = store::home(std::env::var_os("FUNCTOR_APP_HOME"), std::env::home_dir())
-    else {
+    let Some(home) = store::home(std::env::var_os("FUNCTOR_APP_HOME"), std::env::home_dir()) else {
         eprintln!("functor-app: no home directory; set FUNCTOR_APP_HOME");
         return Ok(ExitCode::from(2));
     };
@@ -285,7 +286,12 @@ async fn run_task(
             command => driver.run(command).await,
         }
     }
-    let id = state.tasks.iter().map(|t| t.id).max().expect("the new task");
+    let id = state
+        .tasks
+        .iter()
+        .map(|t| t.id)
+        .max()
+        .expect("the new task");
     let transcript = |state: &AppState| -> Vec<Item> {
         let task = state.tasks.iter().find(|t| t.id == id).expect("the task");
         task.transcript.clone()
