@@ -164,9 +164,30 @@ expect (
 /// racks.
 type Site = | AtGrip | AtFore | AtSlide
 
-/// The fingers on a prop, until a grip fitter wraps them to it: the one
-/// table of presets. `trigger` is the hand's trigger, for a gun's index.
+/// The fingers on a prop: each held item's fitted pose (`Fitted`, generated
+/// from `Grip.specs`). `trigger` is the hand's trigger, pulling a gun's index
+/// in (`Hand.pullTrigger`). A cartridge (no spec) is pinched; the rifle's
+/// charging handle wrapped.
 let fingers = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
+  match site with
+  | AtFore => if k == Shotgun then Fitted.shotgunForeEnd else Fitted.rifleForegrip
+  | AtSlide => if k == Pistol then Fitted.pistolSlide else Hand.power
+  | AtGrip =>
+    (match k with
+     | Ball => Fitted.ball
+     | Brick => Fitted.brick
+     | Stick => Fitted.stickBand
+     | Bottle => Fitted.bottleNeck
+     | Pistol => Hand.pullTrigger(Fitted.pistolGrip, trigger)
+     | Rifle => Hand.pullTrigger(Fitted.rifleGrip, trigger)
+     | Shotgun => Hand.pullTrigger(Fitted.shotgunGrip, trigger)
+     | Mag(fits, _) => if fits == Ammo.RifleMag then Fitted.rifleMag else Fitted.pistolMag
+     | Round(cal, _) => if cal == Ammo.Shell then Fitted.shellFromTheBox else Hand.pinch
+     | Hull(_) => Fitted.shellFromTheBox)
+
+/// The presets the fits replaced, by hand: what the grip gallery compares a
+/// fit against.
+let preset = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
   match site with
   | AtFore => Hand.power
   | AtSlide => Hand.power
@@ -183,11 +204,14 @@ let fingers = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
      | Round(_, _) => Hand.pinch
      | Hull(_) => Hand.pinch)
 
-// A gun's index follows its trigger; its other fingers, and the foregrip's,
-// wrap; a round is pinched, the ball is in an open palm.
+// A gun's index follows its trigger, and nothing else does; the foregrip,
+// a shell and the ball take their fits; a cartridge is pinched.
 expect (fingers(Pistol, AtGrip, 0.0)).index.curl < (fingers(Pistol, AtGrip, 1.0)).index.curl
-expect (fingers(Rifle, AtGrip, 1.0)).middle == Hand.power.middle && fingers(Rifle, AtFore, 1.0) == Hand.power
-expect fingers(Round(Ammo.PistolMag, 0.0), AtGrip, 1.0) == Hand.pinch && fingers(Ball, AtGrip, 1.0) == Hand.palmOpen
+expect (fingers(Rifle, AtGrip, 1.0)).middle == Fitted.rifleGrip.middle && fingers(Rifle, AtGrip, 0.0) == Fitted.rifleGrip
+  && fingers(Rifle, AtFore, 1.0) == Fitted.rifleForegrip
+expect fingers(Round(Ammo.PistolMag, 0.0), AtGrip, 1.0) == Hand.pinch && fingers(Round(Ammo.Shell, 0.0), AtGrip, 1.0) == Fitted.shellFromTheBox
+  && fingers(Ball, AtGrip, 1.0) == Fitted.ball
+expect (preset(Pistol, AtGrip, 0.0)).index.curl < (preset(Pistol, AtGrip, 1.0)).index.curl && preset(Ball, AtGrip, 1.0) == Hand.palmOpen
 
 /// A free dynamic body's material.
 let dynamics = (k: Kind, body: Physics.body): Physics.body =>

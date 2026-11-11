@@ -3,11 +3,13 @@
 // (`Grip.specs`) placed by its intent and fitted, the right hand's capsules
 // on it: white free, green touching, red inside. The clock picks the item
 // (`tts` 0, 1, …); the script moves the camera. Its model is every item's
-// metrics, fitted on the first step (a hook: the game never pays for it).
+// metrics, fitted on the first step (a hook: the game never pays for it),
+// so a spec edit needs a relaunch, not a hot reload.
 
 /// One item measured at its placement: its preset and fit (`Grip.compare`),
-/// the hand's root in its frame, and the intent's own checks (`Grip.checks`).
-type Row = { name: string, intent: string, compared: Grip.Compared, hand: Input.pose, checks: Grip.Checks }
+/// the hand's root in its frame (its placement), the intent's own checks
+/// (`Grip.checksOf`), and the pose the game takes (`Grip.adopted`).
+type Row = { name: string, intent: string, compared: Grip.Compared, hand: Input.pose, checks: Grip.Checks, adopted: Hand.FingerPose }
 
 type Model = { rows: List<Row> }
 
@@ -15,7 +17,7 @@ let init: Model = { rows: [] }
 
 let rowOf = (it: Grip.Item): Row =>
   let c = Grip.compare(Hold.Right, it) in
-  { name: it.name, intent: Grip.intentName(it.spec.intent), compared: c, hand: it.hand, checks: Grip.checksOf(Hold.Right, it, c.fitted) }
+  { name: it.name, intent: Grip.intentName(it.spec.intent), compared: c, hand: it.hand, checks: Grip.checksOf(Hold.Right, it, c.fitted), adopted: Grip.adopted(it, c.fitted) }
 
 let tick = (m: Model, dt, tts) => if List.isEmpty(m.rows) then { rows: Grip.items |> List.map(rowOf) } else m
 
@@ -41,7 +43,7 @@ let dot = (p: Input.point3, c: Color.t): Scene.t => Scene.sphere() |> Scene.scal
 /// by their gaps, and the intent's target (yellow).
 let itemScene = (r: Row, it: Grip.Item): Scene.t =>
   let solids = Grip.held(Hold.Right, it) in
-  let posed = Hand.local(Hold.Right, r.compared.fitted.pose) in
+  let posed = Hand.local(Hold.Right, r.adopted) in
   let paint = (c: Hand.Capsule) =>
     let (a, b) = Hand.ends(posed, c) in
     let g = Grip.gapOf(solids, a, b, c.radius) in

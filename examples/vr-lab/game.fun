@@ -402,7 +402,7 @@ let triggerHand = (m: Model, k: Props.Kind): Option.t<Hold.Side> =>
 /// rifle's primary hand) turned to the two-hand aim.
 let steeredGrip = (m: Model, side: Hold.Side): Option.t<Input.pose> =>
   gripOf(m.xr, side) |> Option.map((g) =>
-    propIn(m, side) |> Option.bind((p) => p.support) |> Option.map((s) => Longarm.steer(g, s)) |> Option.defaultValue(g))
+    propIn(m, side) |> Option.bind((p) => p.support |> Option.map((s) => Longarm.steer(foreOf(p.kind), g, s))) |> Option.defaultValue(g))
 
 /// A prop put away this step, and the slot it goes in.
 type Stow = { prop: Props.Kind, slot: float }
@@ -456,7 +456,7 @@ let reaching = (m: Model, side: Hold.Side, slots: List<Slots.Placed>, stowed: Li
              // Out of reach of its bounds: not worth its exact gap.
              && (foregripOnly(p) || Quat.length(Quat.sub(g.position, poseOf(p).position)) - Props.radius(p.kind) <= Props.reach(p.kind) + Hold.reachHysteresis)
              // A foregrip the primary hand's axis would break off at once isn't taken.
-             && (not foregripOnly(p) || (p.held |> Option.bind((h) => gripOf(m.xr, h.side)) |> Option.map((pg) => Longarm.holds(foreOf(p.kind), Longarm.alongOf(pg, g.position))) |> Option.defaultValue(false))))
+             && (not foregripOnly(p) || (p.held |> Option.bind((h) => gripOf(m.xr, h.side)) |> Option.map((pg) => Longarm.holds(foreOf(p.kind), Longarm.alongOf(Longarm.layoutOf(foreOf(p.kind), pg), g.position))) |> Option.defaultValue(false))))
         |> List.map((p) =>
              if foregripOnly(p) then (p.kind, Longarm.foreGap(foreOf(p.kind), pumpOf(m, p.kind), poseOf(p), g.position), Longarm.foreZone)
              else (p.kind, Props.gap(p.kind, g.position, poseOf(p)), Props.reach(p.kind)))
@@ -493,11 +493,11 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
       |> Option.bind((p) =>
         if foregripOnly(p) then
           p.held |> Option.bind((h) => gripOf(m.xr, h.side)) |> Option.map((primary) =>
-            taking({ p with support: Option.Some(Longarm.support(side, primary, g.position)) }))
+            taking({ p with support: Option.Some(Longarm.support(foreOf(k), side, primary, g.position)) }))
         else Option.Some(
         // Retaken, the foregrip hand stays on as the support if the new primary's axis holds it.
-        let stays = if p.fore then p.held |> Option.bind((h) => gripOf(m.xr, h.side) |> Option.filter((q) => Longarm.holds(foreOf(k), Longarm.alongOf(g, q.position)))
-          |> Option.map((q) => Longarm.support(h.side, g, q.position))) else Option.None in
+        let stays = if p.fore then p.held |> Option.bind((h) => gripOf(m.xr, h.side) |> Option.filter((q) => Longarm.holds(foreOf(k), Longarm.alongOf(Longarm.layoutOf(foreOf(k), g), q.position)))
+          |> Option.map((q) => Longarm.support(foreOf(k), h.side, g, q.position))) else Option.None in
         let required = if Props.gripRequired(k) then Props.grip(k) else Option.None in
         let taken =
           (match p.held with
@@ -732,7 +732,7 @@ let supporting = (m: Model): (Model, List<Props.Kind>, List<(Hold.Side, Pulses.E
       let at = gripOf(m.xr, s.side) |> Option.map((q) => q.position) in
       let squeezed = handOf(m, s.side).squeezed in
       // (A function: only a let-go or break needs it.)
-      let single = () => { p with held: Option.Some(primary |> Option.map((g) => Longarm.alone(h, s, g)) |> Option.defaultValue(h)), support: Option.None } in
+      let single = () => { p with held: Option.Some(primary |> Option.map((g) => Longarm.alone(foreOf(p.kind), h, s, g)) |> Option.defaultValue(h)), support: Option.None } in
       let grasp =
         match primary with
         | Option.Some(g) => Longarm.grasp(foreOf(p.kind), s, g, at, squeezed)
@@ -1300,7 +1300,7 @@ expect (
 /// support, if any), or, that hand lost, where it was accepted.
 let wantedOf = (m: Model, p: Prop, h: Hold.Held): Input.pose =>
   gripOf(m.xr, h.side)
-    |> Option.map((primary) => Hold.compose(p.support |> Option.map((s) => Longarm.steer(primary, s)) |> Option.defaultValue(primary), h.offset))
+    |> Option.map((primary) => Hold.compose(p.support |> Option.map((s) => Longarm.steer(foreOf(p.kind), primary, s)) |> Option.defaultValue(primary), h.offset))
     |> Option.defaultValue(h.accepted)
 
 /// What a hand is on, for drawing it: the prop it holds, a gun whose
