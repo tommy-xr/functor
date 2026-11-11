@@ -1,0 +1,8 @@
+[package]
+name = "functor-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.6", features = ["derive"] }
+functor-app-core = { path = "../functor-app-core" }
