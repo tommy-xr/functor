@@ -72,6 +72,9 @@ export function stepPhrase(name: string, input: JsonValue): Phrase {
       const pattern = arg("pattern");
       return pattern ? { text: "Listed", code: firstLine(pattern, 60) } : { text: "Listed files" };
     }
+    // Claude Code loading a deferred tool's schema before its first call.
+    case "ToolSearch":
+      return { text: "Looked up tools" };
     case "step": {
       const frames = isObject(input) && typeof input.frames === "number" ? input.frames : 1;
       return { text: `Stepped ${frames} frame${frames === 1 ? "" : "s"}` };

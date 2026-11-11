@@ -44,6 +44,7 @@ test("built-in tools name their file, command or pattern", () => {
   assert.equal(phrase("Bash", { command: "cargo test -p functor-app\necho done" }), "Ran cargo test -p functor-app");
   assert.equal(phrase("Grep", { pattern: "fn tick" }), "Searched for fn tick");
   assert.equal(phrase("Glob", { pattern: "**/*.fun" }), "Listed **/*.fun");
+  assert.equal(phrase("ToolSearch", { query: "select:mcp__mis__get_state" }), "Looked up tools");
   assert.equal(phrase("Bash", { command: "x".repeat(100) }).length, "Ran ".length + 60);
 });
 
