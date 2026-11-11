@@ -10,7 +10,7 @@
 // long and 3.5 cm thick.
 
 import { readFileSync } from "node:fs";
-import { ROOT, check } from "./mcp-rpc.mjs";
+import { ROOT as REPO, check } from "./mcp-rpc.mjs";
 import { add, qconj, qmul, qrot, quat, some, sub, xyz } from "./xr-scenario.mjs";
 
 export const project = "examples/vr-lab";
@@ -269,7 +269,7 @@ export const armory = { feet: [4, 0, 0], yaw: Math.PI / 2 };
 // the geometry below is the fist's; the controller is injected at
 // fist ∘ placement.
 // Read from the generated `fitted.fun` (`let pistolGripPlacement: Input.pose = { position: { x: …`).
-const FITTED = readFileSync(`${ROOT}examples/vr-lab/fitted.fun`, "utf8");
+const FITTED = readFileSync(`${REPO}examples/vr-lab/fitted.fun`, "utf8");
 const placement = (name) => {
   const line = FITTED.split("\n").find((l) => l.startsWith(`let ${name}:`));
   const v = [...line.matchAll(/[xyzw]: (0\.0 - )?([0-9.]+)/g)].map((m) => (m[1] ? -1 : 1) * Number(m[2]));
