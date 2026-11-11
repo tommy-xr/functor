@@ -118,6 +118,8 @@ mod tests {
                 },
             ],
             active: Some("examples/hello".into()),
+            files: vec![],
+            git: None,
             session: Some(Session {
                 id: 1,
                 pid: Some(4242),
@@ -147,6 +149,8 @@ projects: 3
             repo_root: "/tmp/empty".into(),
             projects: vec![],
             active: None,
+            files: vec![],
+            git: None,
             session: None,
         };
         assert_eq!(
@@ -162,6 +166,8 @@ projects: 3
                 repo_root: "/r".into(),
                 projects: vec![],
                 active: None,
+                files: vec![],
+                git: None,
                 session: Some(Session { id: 1, pid, status }),
             };
             print(&state).lines().nth(2).unwrap().to_string()
