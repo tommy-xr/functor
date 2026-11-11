@@ -1,0 +1,25 @@
+# Spike S2 (not for merge): run an agent through mis-agent against a hidden
+# game session, with one HTTP MCP tool proxying the debug server's /state.
+[package]
+name = "s2-agent"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone: must not join the root workspace or touch its Cargo.lock.
+[workspace]
+
+[dependencies]
+mis-agent = { git = "https://github.com/tommy-xr/MakeItSo", rev = "18e9281a126d49165a9e9d0ca505daa38b420657" }
+mis-types = { git = "https://github.com/tommy-xr/MakeItSo", rev = "18e9281a126d49165a9e9d0ca505daa38b420657" }
+# Same rmcp as cli/Cargo.toml, plus the streamable-HTTP server transport.
+rmcp = { version = "=2.2.0", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
