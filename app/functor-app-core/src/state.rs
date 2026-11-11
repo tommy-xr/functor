@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::projects::{default_project, project_dir, relative, Project};
-use crate::protocol::{ClientMsg, ServerMsg};
-use crate::session::{Session, SessionEvent, SessionStatus};
+use crate::protocol::{ClientMsg, GameInput, ServerMsg};
+use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -24,6 +24,10 @@ pub struct AppState {
     pub git: Option<GitInfo>,
     /// The active project's game session; `None` until one first starts.
     pub session: Option<Session>,
+    /// Where sessions run; a change restarts a live one.
+    pub session_mode: SessionMode,
+    /// Sessions run `--headless` (`functor-app --no-gpu`), so there are no frames.
+    pub no_gpu: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +53,8 @@ impl AppState {
             files: Vec::new(),
             git: None,
             session: None,
+            session_mode: SessionMode::default(),
+            no_gpu: false,
         }
     }
 }
@@ -76,11 +82,21 @@ pub enum Command {
     /// To every connected client.
     Broadcast(ServerMsg),
     /// Spawn `functor -d <dir> run native` with a debug server on a free port.
-    StartSession { id: u64, dir: PathBuf },
+    StartSession {
+        id: u64,
+        dir: PathBuf,
+        display: Display,
+    },
     /// Kill session `id`'s child.
     StopSession { id: u64 },
     /// `GET /state` on session `id`'s debug server after the poll interval.
     PollState { id: u64, debug_url: String },
+    /// `POST /input` to session `id`'s debug server, in order.
+    Input {
+        id: u64,
+        debug_url: String,
+        input: GameInput,
+    },
     /// Read project `path`'s files in `dir`, answering with `Event::Files`.
     ListFiles { path: String, dir: PathBuf },
 }
@@ -100,14 +116,34 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 // Cleared, so the old project's files never show under the new name.
                 state.files.clear();
                 state.active = Some(path);
-                // The session follows the active project, restarting only a live one.
-                let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
-                stop(&mut state, &mut commands);
-                if live {
-                    start(&mut state, &mut commands);
-                }
+                // The session follows the active project.
+                restart_live(&mut state, &mut commands);
             }
             (switch, true)
+        }
+        Event::Client(ClientMsg::SetSessionMode { mode }) => {
+            let switch = state.session_mode != mode;
+            if switch {
+                state.session_mode = mode;
+                restart_live(&mut state, &mut commands);
+            }
+            (switch, true)
+        }
+        // Input arrives at pointer rate, so it is never answered with the state.
+        Event::Client(ClientMsg::Input { input }) => {
+            if let Some(Session {
+                id,
+                status: SessionStatus::Running { debug_url, .. },
+                ..
+            }) = &state.session
+            {
+                commands.push(Command::Input {
+                    id: *id,
+                    debug_url: debug_url.clone(),
+                    input,
+                });
+            }
+            return (state, commands);
         }
         Event::Client(ClientMsg::StartSession) => {
             let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
@@ -137,6 +173,16 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     (state, commands)
 }
 
+/// Stops the session, then starts a new one if it was live. An ended
+/// session's outcome is cleared rather than carried over.
+fn restart_live(state: &mut AppState, commands: &mut Vec<Command>) {
+    let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
+    stop(state, commands);
+    if live {
+        start(state, commands);
+    }
+}
+
 /// Starts a session for the active project; false when there is none.
 fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     let Some(path) = &state.active else {
@@ -144,7 +190,8 @@ fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     };
     let id = state.session.as_ref().map_or(1, |s| s.id + 1);
     let dir = project_dir(Path::new(&state.repo_root), path);
-    commands.push(Command::StartSession { id, dir });
+    let display = Display::new(state.session_mode, state.no_gpu);
+    commands.push(Command::StartSession { id, dir, display });
     state.session = Some(Session {
         id,
         pid: None,
@@ -190,16 +237,27 @@ fn on_session(
             session.status = SessionStatus::Running {
                 debug_url,
                 frame: None,
+                surface: None,
             };
         }
-        (SessionEvent::Polled(result), SessionStatus::Running { debug_url, frame }) => {
+        (
+            SessionEvent::Polled(result),
+            SessionStatus::Running {
+                debug_url,
+                frame,
+                surface,
+            },
+        ) => {
             // Keep polling through a failed request; the child's exit ends it.
             commands.push(Command::PollState {
                 id,
                 debug_url: debug_url.clone(),
             });
             match result {
-                Ok(polled) if *frame != Some(polled) => *frame = Some(polled),
+                Ok(polled) if (*frame, *surface) != (Some(polled.frame), polled.surface) => {
+                    *frame = Some(polled.frame);
+                    *surface = polled.surface;
+                }
                 _ => return false,
             }
         }
@@ -223,6 +281,7 @@ fn on_session(
 mod tests {
     use super::*;
     use crate::projects::Entries;
+    use crate::session::Polled;
 
     fn project(path: &str) -> Project {
         Project {
@@ -242,6 +301,8 @@ mod tests {
             files: vec!["functor.json".to_string(), "game.fun".to_string()],
             git: None,
             session: None,
+            session_mode: SessionMode::Hidden,
+            no_gpu: false,
         }
     }
 
@@ -256,6 +317,24 @@ mod tests {
         SessionStatus::Running {
             debug_url: URL.to_string(),
             frame,
+            surface: frame.map(|_| SURFACE),
+        }
+    }
+
+    const SURFACE: [u32; 2] = [800, 600];
+
+    fn polled(frame: u64) -> SessionEvent {
+        SessionEvent::Polled(Ok(Polled {
+            frame,
+            surface: Some(SURFACE),
+        }))
+    }
+
+    fn start_cmd(id: u64, project: &str, display: Display) -> Command {
+        Command::StartSession {
+            id,
+            dir: PathBuf::from(format!("/repo/{project}")),
+            display,
         }
     }
 
@@ -356,10 +435,7 @@ mod tests {
         assert_eq!(
             commands,
             vec![
-                Command::StartSession {
-                    id: 1,
-                    dir: PathBuf::from("/repo/examples/a")
-                },
+                start_cmd(1, "examples/a", Display::Hidden),
                 broadcast(&next)
             ]
         );
@@ -411,12 +487,15 @@ mod tests {
     #[test]
     fn a_poll_records_the_frame_and_polls_again() {
         let before = with_session(1, Some(9), running(None));
-        let (next, commands) = update(before, session(1, SessionEvent::Polled(Ok(12))));
+        let (next, commands) = update(before, session(1, polled(12)));
         assert_eq!(next, with_session(1, Some(9), running(Some(12))));
         assert_eq!(commands, vec![poll(1), broadcast(&next)]);
-        // The same frame, or a failed request, changes nothing but still polls.
-        for result in [Ok(12), Err("connection refused".to_string())] {
-            let (again, commands) = update(next.clone(), session(1, SessionEvent::Polled(result)));
+        // The same poll, or a failed request, changes nothing but still polls.
+        for event in [
+            polled(12),
+            SessionEvent::Polled(Err("connection refused".to_string())),
+        ] {
+            let (again, commands) = update(next.clone(), session(1, event));
             assert_eq!(again, next);
             assert_eq!(commands, vec![poll(1)]);
         }
@@ -458,7 +537,7 @@ mod tests {
             SessionEvent::Exited {
                 reason: "signal: 9".to_string(),
             },
-            SessionEvent::Polled(Ok(40)),
+            polled(40),
         ] {
             let (next, commands) = update(before.clone(), session(1, event));
             assert_eq!(next, before);
@@ -466,7 +545,7 @@ mod tests {
         }
         // Nor does a stopped session's late exit or poll do anything.
         let stopped = with_session(2, None, SessionStatus::Stopped);
-        let (next, commands) = update(stopped.clone(), session(2, SessionEvent::Polled(Ok(40))));
+        let (next, commands) = update(stopped.clone(), session(2, polled(40)));
         assert_eq!((next, commands), (stopped, vec![]));
     }
 
@@ -518,10 +597,7 @@ mod tests {
             vec![
                 list_b(),
                 Command::StopSession { id: 1 },
-                Command::StartSession {
-                    id: 2,
-                    dir: PathBuf::from("/repo/examples/b")
-                },
+                start_cmd(2, "examples/b", Display::Hidden),
                 broadcast(&next)
             ]
         );
@@ -548,6 +624,111 @@ mod tests {
     }
 
     #[test]
+    fn a_new_surface_is_recorded() {
+        let before = with_session(1, Some(9), running(Some(12)));
+        let resized = SessionEvent::Polled(Ok(Polled {
+            frame: 12,
+            surface: Some([1024, 768]),
+        }));
+        let (next, commands) = update(before, session(1, resized));
+        let Some(SessionStatus::Running { surface, .. }) = next.session.as_ref().map(|s| &s.status)
+        else {
+            panic!("{next:?}");
+        };
+        assert_eq!(*surface, Some([1024, 768]));
+        assert_eq!(commands, vec![poll(1), broadcast(&next)]);
+    }
+
+    #[test]
+    fn the_mode_and_gpu_choose_the_display() {
+        for (mode, no_gpu, display) in [
+            (SessionMode::Hidden, false, Display::Hidden),
+            (SessionMode::Window, false, Display::Window),
+            (SessionMode::Hidden, true, Display::Headless),
+            (SessionMode::Window, true, Display::Headless),
+        ] {
+            let before = AppState {
+                session_mode: mode,
+                no_gpu,
+                ..state()
+            };
+            let (_, commands) = update(before, client(ClientMsg::StartSession));
+            assert_eq!(commands[0], start_cmd(1, "examples/a", display));
+        }
+    }
+
+    #[test]
+    fn switching_mode_restarts_a_live_session_in_the_new_mode() {
+        let window = || ClientMsg::SetSessionMode {
+            mode: SessionMode::Window,
+        };
+        for status in [SessionStatus::Starting, running(Some(12))] {
+            let (next, commands) = update(with_session(1, Some(9), status), client(window()));
+            assert_eq!(next.session_mode, SessionMode::Window);
+            assert_eq!(
+                next.session,
+                Some(Session {
+                    id: 2,
+                    pid: None,
+                    status: SessionStatus::Starting
+                })
+            );
+            assert_eq!(
+                commands,
+                vec![
+                    Command::StopSession { id: 1 },
+                    start_cmd(2, "examples/a", Display::Window),
+                    broadcast(&next)
+                ]
+            );
+        }
+        // Without a live session the mode is only recorded, for the next start.
+        let (next, commands) = update(state(), client(window()));
+        assert_eq!(next.session_mode, SessionMode::Window);
+        assert_eq!(next.session, None);
+        assert_eq!(commands, vec![broadcast(&next)]);
+        // The current mode again only replies.
+        let (again, commands) = update(next.clone(), client(window()));
+        assert_eq!(again, next);
+        assert_eq!(
+            commands,
+            vec![Command::Reply(ServerMsg::State { state: next })]
+        );
+    }
+
+    #[test]
+    fn input_reaches_only_a_running_session_and_is_not_answered() {
+        let key = || GameInput::Key {
+            key: "w".to_string(),
+            down: true,
+        };
+        let input = || client(ClientMsg::Input { input: key() });
+        let before = with_session(3, Some(9), running(Some(12)));
+        let (next, commands) = update(before.clone(), input());
+        assert_eq!(next, before);
+        assert_eq!(
+            commands,
+            vec![Command::Input {
+                id: 3,
+                debug_url: URL.to_string(),
+                input: key()
+            }]
+        );
+        let failed = SessionStatus::Failed {
+            reason: "x".to_string(),
+        };
+        for before in [
+            state(),
+            with_session(3, Some(9), SessionStatus::Starting),
+            with_session(3, None, SessionStatus::Stopped),
+            with_session(3, None, failed),
+        ] {
+            let (next, commands) = update(before.clone(), input());
+            assert_eq!((next, commands), (before, vec![]));
+        }
+    }
+
+    #[test]
     fn new_activates_the_project_nearest_start() {
         let s = AppState::new(
             Path::new("/repo"),
@@ -569,6 +750,28 @@ mod tests {
         );
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"start_session"}"#).unwrap();
         assert_eq!(msg, ClientMsg::StartSession);
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"set_session_mode","mode":"window"}"#).unwrap();
+        assert_eq!(
+            msg,
+            ClientMsg::SetSessionMode {
+                mode: SessionMode::Window
+            }
+        );
+        // Input is already in `POST /input`'s shape.
+        let input = |json: &str| match serde_json::from_str(json).unwrap() {
+            ClientMsg::Input { input } => serde_json::to_value(input).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        for wire in [
+            serde_json::json!({"type": "key", "key": "w", "down": true}),
+            serde_json::json!({"type": "mouse_move", "x": 10, "y": 20}),
+            serde_json::json!({"type": "mouse_button", "button": "right", "down": false}),
+            serde_json::json!({"type": "mouse_wheel", "delta": -1}),
+        ] {
+            let msg = serde_json::json!({"type": "input", "input": wire});
+            assert_eq!(input(&msg.to_string()), wire);
+        }
         let json = serde_json::to_value(ServerMsg::State {
             state: with_session(1, Some(9), running(Some(12))),
         })

@@ -22,10 +22,13 @@ pub enum SessionStatus {
     Stopped,
     /// Spawning, or waiting for the debug server's listening line.
     Starting,
-    /// `frame` is `/state.frame` from the last successful poll.
+    /// `frame` and `surface` are from the last successful poll.
     Running {
         debug_url: String,
         frame: Option<u64>,
+        /// The game's pointer surface (`/state.input.mouse.surface_width`,
+        /// `surface_height`): the space `/input` mouse coordinates are in.
+        surface: Option<[u32; 2]>,
     },
     /// The child exited on its own after it was running.
     Exited {
@@ -35,6 +38,48 @@ pub enum SessionStatus {
     Failed {
         reason: String,
     },
+}
+
+/// Where the session's game shows; the user picks it above the game view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMode {
+    /// A hidden window whose frames the page streams.
+    #[default]
+    Hidden,
+    /// A normal, visible game window.
+    Window,
+}
+
+/// How the shell runs the child, from the mode and whether sessions get a GPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Display {
+    /// `--headless`: no window or GL, so no frames to show.
+    Headless,
+    /// `--hidden`.
+    Hidden,
+    /// A visible window.
+    Window,
+}
+
+impl Display {
+    pub fn new(mode: SessionMode, no_gpu: bool) -> Self {
+        match (mode, no_gpu) {
+            (_, true) => Self::Headless,
+            (SessionMode::Hidden, false) => Self::Hidden,
+            (SessionMode::Window, false) => Self::Window,
+        }
+    }
+
+    /// The `functor run native` flag, if any.
+    pub fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Headless => Some("--headless"),
+            Self::Hidden => Some("--hidden"),
+            Self::Window => None,
+        }
+    }
 }
 
 impl SessionStatus {
@@ -53,8 +98,8 @@ pub enum SessionEvent {
     Listening {
         debug_url: String,
     },
-    /// A `GET /state`: its `frame`, or why it failed.
-    Polled(Result<u64, String>),
+    /// A `GET /state`, or why it failed.
+    Polled(Result<Polled, String>),
     /// The child exited; `reason` is its status and the error it printed.
     Exited {
         reason: String,
@@ -63,6 +108,14 @@ pub enum SessionEvent {
     StartFailed {
         reason: String,
     },
+}
+
+/// What the core keeps from a `GET /state`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Polled {
+    pub frame: u64,
+    /// `None` while the game reports no surface (0×0).
+    pub surface: Option<[u32; 2]>,
 }
 
 /// The debug server's URL from its stderr line, with the port it really

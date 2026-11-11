@@ -395,6 +395,7 @@ dd {
 
 .tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
@@ -429,6 +430,82 @@ dd {
   padding: 24px;
   text-align: center;
   color: var(--muted);
+}
+
+/* The picker in the tab bar: the project switcher's look, at tab height. */
+.switcher-compact select {
+  min-height: 36px;
+  padding: 0 32px 0 12px;
+  border-radius: var(--radius-m);
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* Game view: frames letterboxed in one dark area, one line for any other state. */
+
+.game {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg);
+}
+
+.game-live {
+  cursor: pointer;
+}
+
+.game-captured {
+  cursor: default;
+  border-color: var(--accent-soft);
+}
+
+/* The accent border shows focus once captured; an outline would double it. */
+.game-live:focus-visible {
+  outline: none;
+}
+
+/* Placed by the page (fitRect), so the area's size never depends on the frame. */
+.game img {
+  position: absolute;
+  user-select: none;
+  pointer-events: none;
+}
+
+.game-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 48ch;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.game-message .reason {
+  font-size: 13px;
+}
+
+.game-banner {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: rgba(14, 18, 23, 0.85);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* Chat dock */

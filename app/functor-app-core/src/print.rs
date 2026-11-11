@@ -1,7 +1,7 @@
 //! The `--print` text dump of the state.
 
 use crate::projects::Entries;
-use crate::{AppState, SessionStatus};
+use crate::{AppState, Display, SessionStatus};
 
 /// One line per field, then one per project in path order, the active one
 /// marked `*`:
@@ -10,6 +10,7 @@ use crate::{AppState, SessionStatus};
 /// repo: /src/functor
 /// active: examples/hello
 /// session: running pid 4242 http://127.0.0.1:52011 frame 30
+/// mode: hidden
 /// projects: 2
 /// * examples/hello (hello): entry game.fun
 ///   examples/orbs (orbs): entries client=game.fun module=Client, server=game.fun module=Server
@@ -20,6 +21,7 @@ pub fn print(state: &AppState) -> String {
         format!("repo: {}", state.repo_root),
         format!("active: {}", active.unwrap_or("none")),
         format!("session: {}", session(state)),
+        format!("mode: {}", mode(state)),
         format!("projects: {}", state.projects.len()),
     ];
     for p in &state.projects {
@@ -54,6 +56,15 @@ pub fn print(state: &AppState) -> String {
     lines.join("\n") + "\n"
 }
 
+/// How the next (or the live) session runs: `hidden`, `window` or `headless`.
+fn mode(state: &AppState) -> &'static str {
+    match Display::new(state.session_mode, state.no_gpu) {
+        Display::Headless => "headless",
+        Display::Hidden => "hidden",
+        Display::Window => "window",
+    }
+}
+
 fn session(state: &AppState) -> String {
     let Some(session) = &state.session else {
         return "stopped".to_string();
@@ -62,7 +73,9 @@ fn session(state: &AppState) -> String {
     match &session.status {
         SessionStatus::Stopped => "stopped".to_string(),
         SessionStatus::Starting => format!("starting{pid}"),
-        SessionStatus::Running { debug_url, frame } => {
+        SessionStatus::Running {
+            debug_url, frame, ..
+        } => {
             let frame = frame.map_or("not polled".to_string(), |f| format!("frame {f}"));
             format!("running{pid} {debug_url} {frame}")
         }
@@ -75,7 +88,7 @@ fn session(state: &AppState) -> String {
 mod tests {
     use super::*;
     use crate::projects::{Project, Role};
-    use crate::Session;
+    use crate::{Session, SessionMode};
 
     #[test]
     fn prints_projects_with_the_active_one_marked() {
@@ -126,8 +139,11 @@ mod tests {
                 status: SessionStatus::Running {
                     debug_url: "http://127.0.0.1:52011".into(),
                     frame: Some(30),
+                    surface: Some([800, 600]),
                 },
             }),
+            session_mode: SessionMode::Hidden,
+            no_gpu: false,
         };
         assert_eq!(
             print(&state),
@@ -135,6 +151,7 @@ mod tests {
 repo: /src/functor
 active: examples/hello
 session: running pid 4242 http://127.0.0.1:52011 frame 30
+mode: hidden
 projects: 3
 * examples/hello (hello): entry game.fun
   examples/orbs (orbs): entries client=game.fun module=Client, server=server.fun
@@ -152,11 +169,18 @@ projects: 3
             files: vec![],
             git: None,
             session: None,
+            session_mode: SessionMode::Window,
+            no_gpu: false,
         };
         assert_eq!(
             print(&state),
-            "repo: /tmp/empty\nactive: none\nsession: stopped\nprojects: 0\n"
+            "repo: /tmp/empty\nactive: none\nsession: stopped\nmode: window\nprojects: 0\n"
         );
+        let no_gpu = AppState {
+            no_gpu: true,
+            ..state
+        };
+        assert_eq!(print(&no_gpu).lines().nth(3), Some("mode: headless"));
     }
 
     #[test]
@@ -169,6 +193,8 @@ projects: 3
                 files: vec![],
                 git: None,
                 session: Some(Session { id: 1, pid, status }),
+                session_mode: SessionMode::Hidden,
+                no_gpu: false,
             };
             print(&state).lines().nth(2).unwrap().to_string()
         };
@@ -183,7 +209,8 @@ projects: 3
                 Some(7),
                 SessionStatus::Running {
                     debug_url: "http://127.0.0.1:1".into(),
-                    frame: None
+                    frame: None,
+                    surface: None,
                 }
             ),
             "session: running pid 7 http://127.0.0.1:1 not polled"

@@ -64,6 +64,7 @@ async fn main() -> std::io::Result<ExitCode> {
     }
     let start = std::fs::canonicalize(args.dir.unwrap_or_else(|| PathBuf::from(".")))?;
     let mut state = functor_app_core::discover(&start);
+    state.no_gpu = args.no_gpu;
     if args.print && !args.start_session {
         print!("{}", print(&state));
         return Ok(ExitCode::SUCCESS);
@@ -74,7 +75,7 @@ async fn main() -> std::io::Result<ExitCode> {
         std::env::current_exe().ok(),
     );
     if args.print {
-        return print_session(state, functor, args.no_gpu).await;
+        return print_session(state, functor).await;
     }
     state.git = server::git_info(Path::new(&state.repo_root));
     let ui = match args.ui_dir {
@@ -87,22 +88,18 @@ async fn main() -> std::io::Result<ExitCode> {
     };
     let shutdown = shutdown_signal()?;
     let (tx, events) = mpsc::unbounded_channel();
-    let driver = Driver::new(functor, args.no_gpu, tx);
+    let driver = Driver::new(functor, tx);
     server::serve(state, driver, events, args.port, ui, shutdown).await
 }
 
 /// `--start-session`: start, print once polled, stop. Exits 1 if the session
 /// fails or never answers, 128 + n on signal n, after killing the child.
-async fn print_session(
-    mut state: AppState,
-    functor: PathBuf,
-    no_gpu: bool,
-) -> std::io::Result<ExitCode> {
+async fn print_session(mut state: AppState, functor: PathBuf) -> std::io::Result<ExitCode> {
     // Handlers go in before the child exists, so no signal can skip its kill.
     let shutdown = shutdown_signal()?;
     tokio::pin!(shutdown);
     let (tx, mut events) = mpsc::unbounded_channel();
-    let mut driver = Driver::new(functor, no_gpu, tx);
+    let mut driver = Driver::new(functor, tx);
     state = step(state, Event::Client(ClientMsg::StartSession), &mut driver).await;
     let deadline = tokio::time::sleep(START_TIMEOUT);
     tokio::pin!(deadline);
