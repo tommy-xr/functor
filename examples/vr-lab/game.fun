@@ -958,6 +958,20 @@ let regrip = (p: Prop): Prop =>
       |> Option.map((a) => Hold.settleInto(a, h))) in
     if Option.isSome(regripped) then { p with held: regripped } else p
 
+// A pistol held on its grip as it was before a reload moved the grip 1 cm:
+// it settles into the grip as it is now, and is left alone there; held by
+// its foregrip alone, a rifle keeps its hold.
+expect (
+  let grip = Props.grip(Props.Pistol) |> Option.defaultValue(Hold.origin) in
+  let old = Hold.compose(Hold.p(0.0, 0.01, 0.0), Hold.inverse(grip)) in
+  let held: Hold.Held = { side: Hold.Right, offset: old, accepted: old, history: [], snapTo: Option.None } in
+  let p = regrip({ spawned(Props.Pistol) with held: Option.Some(held), slot: Option.None }) in
+  let settled = List.range(4.0) |> List.fold((h, _) => Hold.settle(h), p.held |> Option.defaultValue(held)) in
+  let rifle = { spawned(Props.Rifle) with held: Option.Some(held), fore: true, slot: Option.None } in
+  Option.isNone(settled.snapTo) && Hold.near(settled.offset, Hold.inverse(grip))
+    && regrip({ p with held: Option.Some(settled) }).held == Option.Some(settled) && regrip(rifle) == rifle
+)
+
 /// One fixed step, given the world and the props as read back (`read`): the
 /// next model (with the step's `pulses`), and the props let go (their
 /// velocity and spin to give the world).

@@ -71,7 +71,7 @@ try {
   // Each table cell's digits' gaps, mm (T/I/M/R/L; negative inside).
   for (const t of [...model.tables, ...model.grasps]) console.log(`${t.name}: ${t.gaps.map((g) => g.map(mm).join("/")).join("  ")}`);
   if (write) {
-    writeFileSync(join(project, "fitted.fun"), fittedModule(rows.filter((r) => !r.extra), model.tables, model.grasps));
+    writeFileSync(join(project, "fitted.fun"), fittedModule(rows.filter((r) => !r.extra), model.tables, model.grasps, model.fingerprint));
     console.log(`wrote ${join(project, "fitted.fun")}`);
   }
 
@@ -104,7 +104,7 @@ function ident(name) {
 
 // `fitted.fun`: each spec's adopted pose, then each gun grip's placement,
 // one binding a line (the e2e reads the pistol grip's pose and the placements).
-function fittedModule(rows, tables, grasps) {
+function fittedModule(rows, tables, grasps, fingerprint) {
   // `places` decimals, trailing zeros dropped (never an exponent); negative as `0.0 - x`.
   const at = (places) => (x) => {
     const t = x.toFixed(places).replace(/0+$/, "").replace(/\.$/, ".0").replace(/^-0\.0$/, "0.0");
@@ -145,6 +145,9 @@ function fittedModule(rows, tables, grasps) {
     "",
     "// Each free prop's placements, its spec's first (`Grip.Grasps`).",
     ...grasps.flatMap(cells("Grasps")),
+    "",
+    "/// The fit's inputs these were generated from (`Grip.fingerprint`).",
+    `let fingerprint = ${m(fingerprint)}`,
     "",
   ].join("\n");
 }

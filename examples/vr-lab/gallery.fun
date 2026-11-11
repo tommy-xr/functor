@@ -23,13 +23,14 @@ let tableRow = (name: string, cells: List<Grip.Cell>, hands: (List<Grip.Cell>) =
   let gaps = Grip.itemNamed(name) |> Option.map((it) => List.zip(cells, hands(cells)) |> List.map((hc) => let (h, c) = hc in Grip.cellGaps(it, h, c))) |> Option.defaultValue([]) in
   { name: name, cells: cells, gaps: gaps }
 
-type Model = { rows: List<Row>, tables: List<Table>, grasps: List<Table> }
+/// `fingerprint`: the fit's inputs (`Grip.fingerprint`), for `--write`.
+type Model = { rows: List<Row>, tables: List<Table>, grasps: List<Table>, fingerprint: float }
 
-let init: Model = { rows: [], tables: [], grasps: [] }
+let init: Model = { rows: [], tables: [], grasps: [], fingerprint: 0.0 }
 
 let rowOf = (it: Grip.Item): Row =>
   let c = Grip.compare(Hold.Right, it) in
-  { name: it.name, intent: Grip.intentName(it.spec.intent), compared: c, hand: it.hand, checks: Grip.checksOf(Hold.Right, it, c.fitted), adopted: Grip.adopted(it, c.fitted), placement: Grip.placementOf(it),
+  { name: it.name, intent: Grip.intentName(it.spec.intent), compared: c, hand: it.hand, checks: Grip.checksOf(Hold.Right, it, c.fitted.pose), adopted: Grip.adopted(it, c.fitted), placement: Grip.placementOf(it),
     extra: not (Grip.items |> List.any((i) => i.name == it.name)) }
 
 // A spec's item with the hand elsewhere on it, named.
@@ -58,7 +59,8 @@ let tick = (m: Model, dt, tts) =>
   if List.isEmpty(m.rows) then
     { rows: shown |> List.map(rowOf),
       tables: Grip.sliders |> List.map((sl) => tableRow(sl.name, Grip.tableOf(sl), (cs) => Grip.tableHands(sl, cs))),
-      grasps: Grip.graspSets |> List.map((g) => tableRow(g.name, Grip.graspCells(g), (cs) => Grip.graspHands(g, cs))) }
+      grasps: Grip.graspSets |> List.map((g) => tableRow(g.name, Grip.graspCells(g), (cs) => Grip.graspHands(g, cs))),
+      fingerprint: Grip.fingerprint }
   else m
 
 // The hand's root in the world: a metre up, facing -Z.

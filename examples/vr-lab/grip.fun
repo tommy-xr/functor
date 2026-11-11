@@ -689,8 +689,8 @@ type Checks = { trigger: float, pinch: float }
 
 let padOf = (posed: Hand.Posed, j: float): Hand.Seg => Hand.segOf(posed, capOf(j))
 
-let checksOf = (side: Hold.Side, it: Item, f: Fitted): Checks =>
-  let posed = Hand.local(side, f.pose) in
+let checksOf = (side: Hold.Side, it: Item, f: Hand.FingerPose): Checks =>
+  let posed = Hand.local(side, f) in
   let point = (p: Input.point3) => inRootOf(side, it, p) in
   let (thumb, distal, middle) = (padOf(posed, 4.0), padOf(posed, 9.0), padOf(posed, 8.0)) in
   let off = (g: Hand.Seg, q: Input.point3) => toSegment(g.a, g.b, q) - g.radius in
@@ -827,23 +827,27 @@ expect (
 /// hooks through the blade's back edge. 5 mm.
 let triggerSink = 0.005
 
-/// Fitted at its placement, a spec holds: no digit buried or ending inside
-/// (but those `known`; a pistol grip's index `triggerSink`); the palm on it
-/// within 2 mm, and in it at most `palmIn` (Power, Pistol, Palm); the index's hook within 5 mm of the
-/// trigger (Pistol); the pinch point within `pinch` of the line between the
-/// pads, both pads touching (or within `pinch`) (Pinch); strain under 0.25;
-/// the left hand's fit the right's mirrored; and the game's pose for it
-/// (`Fitted`) current: `npm run grips:vr-lab -- --write` regenerates it.
-let fitHolds = (name: string, known: List<float>, pinch: float, palmIn: float): bool =>
-  items |> List.find((it) => it.name == name) |> Option.map((it) =>
-    let right = compare(Hold.Right, it) in
-    let (r, l, m) = (right.fitted, (compare(Hold.Left, it)).fitted, right.fit) in
-    let c = checksOf(Hold.Right, it, r) in
+/// A spec's pose as generated (`Fitted`), if it is.
+let fittedOf = (name: string): Option.t<Hand.FingerPose> =>
+  Fitted.all |> List.find((np) => let (n, _) = np in n == name) |> Option.map((np) => let (_, f) = np in f)
+
+/// At its placement, a spec's generated pose (`Fitted`) holds: no digit
+/// inside (but those `known`; a pistol grip's index `triggerSink`); the palm
+/// on it within 2 mm, and in it at most `palmIn` (Power, Pistol, Palm); the
+/// index's hook within 5 mm of the trigger (Pistol); the pinch point within
+/// `pinch` of the line between the pads, both pads touching (or within
+/// `pinch`) (Pinch); strain under 0.25. Measured, not fitted: `refits` and
+/// `fingerprint` keep it current.
+let holds = (name: string, known: List<float>, pinch: float, palmIn: float): bool =>
+  items |> List.find((it) => it.name == name) |> Option.bind((it) => fittedOf(name) |> Option.map((f) =>
+    let solids = held(Hold.Right, it) in
+    let m = measure(Hold.Right, solids, f) in
+    let c = checksOf(Hold.Right, it, f) in
     let isKnown = (d: float) => List.any((k) => k == d, known) in
     let pistol = match it.spec.intent with | Pistol(_, _, _, _) => true | _ => false in
     let inside = (d: float, g: float) => g < (if pistol && d == 1.0 then 0.0 - triggerSink else 0.0) in
-    let posed = Hand.local(Hold.Right, r.pose) in
-    let padGap = (j: float) => let g = padOf(posed, j) in gapOf(held(Hold.Right, it), g.a, g.b, g.radius) in
+    let posed = Hand.local(Hold.Right, f) in
+    let padGap = (j: float) => let g = padOf(posed, j) in gapOf(solids, g.a, g.b, g.radius) in
     let palmOn = m.palm >= 0.0 - palmIn && m.palm <= 0.002 in
     let intent =
       match it.spec.intent with
@@ -852,30 +856,42 @@ let fitHolds = (name: string, known: List<float>, pinch: float, palmIn: float): 
       | Pistol(_, _, _, _) => palmOn && c.trigger <= 0.005
       | Pinch(_, _) => c.pinch <= pinch && padGap(4.0) <= Math.max(touchGap, pinch) && padGap(9.0) <= Math.max(touchGap, pinch)
       | Free(_) => true in
-    (r.buried |> List.indexedMap((d, b) => not b || isKnown(d)) |> List.all((ok) => ok))
-      && (m.digits |> List.indexedMap((d, g) => not inside(d, g) || isKnown(d)) |> List.all((ok) => ok))
-      && intent && m.strain < 0.25
+    (m.digits |> List.indexedMap((d, g) => not inside(d, g) || isKnown(d)) |> List.all((ok) => ok))
+      && intent && m.strain < 0.25))
+    |> Option.defaultValue(false)
+
+/// Fitted again, a spec's fit is its generated pose (`adopted`; no digit
+/// buried but those `known`), and the left hand's is the right's mirrored. A
+/// full fit (50-300 ms): run for a few specs, `fingerprint` covers the rest.
+let refits = (name: string, known: List<float>): bool =>
+  items |> List.find((it) => it.name == name) |> Option.map((it) =>
+    let (r, l) = (fitOn(Hold.Right, held(Hold.Right, it), triggerOf(Hold.Right, it)), fitOn(Hold.Left, held(Hold.Left, it), triggerOf(Hold.Left, it))) in
+    (r.buried |> List.indexedMap((d, b) => not b || List.any((k) => k == d, known)) |> List.all((ok) => ok))
       && (List.zip(List.flatten(l.curls), List.flatten(r.curls)) |> List.all((ab) => let (a, b) = ab in near(a, b)))
       && r.pose.thumb.opposition == l.pose.thumb.opposition
-      && (Fitted.all |> List.find((np) => let (n, _) = np in n == name) |> Option.map((np) => let (_, f) = np in poseNear(f, adopted(it, r))) |> Option.defaultValue(false)))
+      && (fittedOf(name) |> Option.map((f) => poseNear(f, adopted(it, r))) |> Option.defaultValue(false)))
     |> Option.defaultValue(false)
-expect fitHolds("ball", [], 0.003, 0.0)
+
+expect holds("ball", [], 0.003, 0.0)
 // Missed, deferred: the brick's and shotgun grip's thumbs start inside at
 // every turn, open or straight; the shell's pinch point sits 5.5 mm off the
 // line between the pads, and its index pad 5.4 mm off it (a proximal bone
 // touches first); centred, the shotgun grip's palm sits 2.2 mm in it.
-expect fitHolds("brick", [0.0], 0.003, 0.0)
-expect fitHolds("stick (band)", [], 0.003, 0.0)
-expect fitHolds("bottle neck", [], 0.003, 0.0)
-expect fitHolds("pistol grip", [], 0.003, 0.0)
-expect fitHolds("pistol slide", [], 0.003, 0.0)
-expect fitHolds("rifle grip", [], 0.003, 0.0)
-expect fitHolds("rifle foregrip", [], 0.003, 0.0)
-expect fitHolds("shotgun grip", [0.0], 0.003, 0.0025)
-expect fitHolds("shotgun fore-end", [], 0.003, 0.0)
-expect fitHolds("pistol mag", [], 0.003, 0.0)
-expect fitHolds("rifle mag", [], 0.003, 0.0)
-expect fitHolds("shell (from the box)", [], 0.006, 0.0)
+expect holds("brick", [0.0], 0.003, 0.0)
+expect holds("stick (band)", [], 0.003, 0.0)
+expect holds("bottle neck", [], 0.003, 0.0)
+expect holds("pistol grip", [], 0.003, 0.0)
+expect holds("pistol slide", [], 0.003, 0.0)
+expect holds("rifle grip", [], 0.003, 0.0)
+expect holds("rifle handle", [], 0.003, 0.0)
+expect holds("rifle foregrip", [], 0.003, 0.0)
+expect holds("shotgun grip", [0.0], 0.003, 0.0025)
+expect holds("shotgun fore-end", [], 0.003, 0.0)
+expect holds("pistol mag", [], 0.003, 0.0)
+expect holds("rifle mag", [], 0.003, 0.0)
+expect holds("shell (from the box)", [], 0.006, 0.0)
+// Representative full fits: a palm grip and a support hand's.
+expect refits("ball", []) && refits("rifle foregrip", [])
 
 /// A gun grip spec's layout frame (in its item's), if it is one.
 let layoutOf = (s: Spec): Option.t<Input.pose> =>
@@ -1125,3 +1141,130 @@ let graspHands = (g: Grasps, cells: List<Cell>): List<Input.pose> =>
 /// A cell's digits' nearest gaps (thumb first; negative inside), its pose at
 /// its hand on item `it`.
 let cellGaps = (it: Item, hand: Input.pose, c: Cell): List<float> => (measure(Hold.Right, seenFrom(hand, it.solids), c.pose)).digits
+
+// --- staleness ---
+// What every generated fit depends on, as one number: each spec (its
+// solids, intent, way, nudge and preset), the support grids, the free
+// props' placements, the hand (its bones, capsules, presets and place on the
+// grip) and the fitter's constants. `Fitted.fingerprint` is it as
+// generated, so editing any of them fails the expect below until `--write`
+// reruns; a change to the fitter's code is caught by `refits` and the table
+// checks, which fit again.
+
+let v3s = (p: Input.point3): List<float> => [p.x, p.y, p.z]
+let quatNums = (q: Input.quaternion): List<float> => [q.x, q.y, q.z, q.w]
+let poseNums = (p: Input.pose): List<float> => List.flatten([v3s(p.position), quatNums(p.orientation)])
+let formNums = (f: Form): List<float> =>
+  match f with
+  | Box(h) => [1.0, ..v3s(h)]
+  | Sphere(r) => [2.0, r]
+  | Capsule(r, h) => [3.0, r, h]
+  | Cylinder(r, h) => [4.0, r, h]
+let intentNums = (i: Intent): List<float> =>
+  match i with
+  | Power(at, axis, r) => List.flatten([[1.0], v3s(at), v3s(axis), [r]])
+  | Pistol(at, axis, r, t) => List.flatten([[2.0], v3s(at), v3s(axis), [r], v3s(t)])
+  | Pinch(at, across) => List.flatten([[3.0], v3s(at), v3s(across)])
+  | Palm(at, n) => List.flatten([[4.0], v3s(at), v3s(n)])
+  | Free(h) => [5.0, ..poseNums(h)]
+let fingerPoseNums = (f: Hand.FingerPose): List<float> =>
+  [f.thumb.curl, f.thumb.tip, f.thumb.opposition, f.index.curl, f.index.tip, f.middle.curl, f.middle.tip, f.ring.curl, f.ring.tip, f.little.curl, f.little.tip]
+let boneNums = (f: Hand.Finger): List<float> => [f.splay, f.metacarpal, f.proximal, f.intermediate, f.distal, ..v3s(f.base)]
+let turnNums = (t: Hand.Turn): List<float> => [t.yaw, t.pitch, t.roll]
+let flag = (b: bool): float => if b then 1.0 else 0.0
+
+let fitInputs: List<float> = List.flatten([
+  specs |> List.concatMap((s) => List.flatten([s.solids |> List.concatMap((so) => List.flatten([formNums(so.form), poseNums(so.at)])), intentNums(s.intent), v3s(s.forward), poseNums(s.nudge), [flag(s.centre)]])),
+  items |> List.concatMap((it) => fingerPoseNums(it.preset)),
+  sliders |> List.concatMap((sl) => List.flatten([sl.slides, sl.rolls])),
+  graspSets |> List.concatMap((g) => List.flatten([g.nudges |> List.concatMap(poseNums), g.alike |> List.concatMap(quatNums), [flag(g.round), flag(g.push)]])),
+  [Hand.index, Hand.middle, Hand.ring, Hand.little] |> List.concatMap(boneNums),
+  Hand.capsules |> List.concatMap((c) => [c.joint, c.radius, c.length]),
+  poseNums(Hand.wristOnGrip), v3s(Hand.thumbBase), [Hand.thumbMetacarpal, Hand.thumbProximal, Hand.thumbDistal], turnNums(Hand.thumbRest), turnNums(Hand.thumbOpposed),
+  [Hand.mcpFlex, Hand.pipFlex, Hand.dipFlex, Hand.thumbCmcFlex, Hand.thumbMcpFlex, Hand.thumbIpFlex], fingerPoseNums(Hand.pinch),
+  [contactGap, touchGap, sweep, marchStep, minStep, bisections, thenarGive, stuck, thumbOpen, golden, goldenSteps, pushRange, triggerSink],
+  curledStarts, oppositions, fingerRig, thumbRig,
+])
+
+/// The fit's inputs (`fitInputs`) folded into one number, each weighted by
+/// its place.
+let fingerprint = fitInputs |> List.indexedMap((i, x) => x * (1.0 + Math.mod(i * 0.6180339887, 1.0))) |> List.sum
+
+expect Math.abs(Fitted.fingerprint - fingerprint) < 0.000001
+
+// --- the generated tables' checks ---
+
+let rifleCells = rifleSupport |> Option.map((su) => su.cells) |> Option.defaultValue([])
+let shotgunCells = shotgunSupport |> Option.map((su) => su.cells) |> Option.defaultValue([])
+
+// A cell a grid, and a placement a free prop's nudge.
+expect List.length(rifleCells) == List.length(gridOf(rifleSlider)) && List.length(shotgunCells) == List.length(gridOf(shotgunSlider))
+  && (graspedAll |> List.all((ng) => let (_, g) = ng in g |> Option.map((gr) => List.length(gr.cells) == List.length(gr.set.nudges)) |> Option.defaultValue(false)))
+
+// Every cell's pose at its hand: no digit inside (the brick's thumb, its
+// spec's known miss, aside).
+expect (
+  let clear = (it: Item, hands: List<Input.pose>, cells: List<Cell>, known: List<float>) =>
+    List.zip(cells, hands) |> List.all((hc) => let (h, c) = hc in cellGaps(it, h, c) |> List.indexedMap((d, g) => g >= 0.0 || List.any((k) => k == d, known)) |> List.all((ok) => ok)) in
+  ([(rifleSlider, rifleCells), (shotgunSlider, shotgunCells)] |> List.all((sc) => let (sl, cells) = sc in
+    itemNamed(sl.name) |> Option.map((it) => clear(it, tableHands(sl, cells), cells, [])) |> Option.defaultValue(false)))
+  && (graspedAll |> List.all((ng) => let (n, g) = ng in
+    g |> Option.map((gr) => clear(gr.item, gr.hands, gr.cells, if n == "brick" then [0.0] else [])) |> Option.defaultValue(false)))
+)
+
+// The tables are the fits: a support cell looked up (`cellOn`) is that
+// cell fitted again, on either gun.
+expect (
+  [(rifleSupport, 0.0 - 0.05, 0.4), (shotgunSupport, 0.06, 0.3)] |> List.all((t) =>
+    let (su, s, r) = t in
+    su |> Option.map((su) =>
+      let looked = cellOn(su, s, r) in
+      let direct = cellAt(su.item, true, slidOn(su.item, s, r, su.item.hand)) in
+      poseNear(looked.pose, direct.pose) && Math.abs(looked.push - direct.push) < 0.000001) |> Option.defaultValue(false))
+)
+
+// A support hand: at a cell's placement it is drawn there, fitted as the
+// cell; slid past the fore-end's end or rolled past the grid, at its edge;
+// the left hand on the mirrored gun, the right's mirrored, the same fingers.
+expect (
+  rifleSupport |> Option.map((su) =>
+    let at = (s: float, r: float) => cellHand(su.item, s, r, (cellOn(su, s, r)).push) in
+    let (drawn, f) = supportAt(su, Hold.Right, 0.0, at(0.05, 0.4)) in
+    let (past, _) = supportAt(su, Hold.Right, 0.0, slidOn(su.item, 0.3, 1.5, su.item.hand)) in
+    let (left, lf) = supportAt(su, Hold.Left, 0.0, Hand.mirror(at(0.05, 0.4))) in
+    Hold.near(drawn, at(0.05, 0.4)) && poseNear(f, (cellOn(su, 0.05, 0.4)).pose)
+      && Hold.near(past, at(0.1, 0.8)) && Hold.near(left, Hand.mirror(drawn)) && poseNear(lf, f)) |> Option.defaultValue(false)
+)
+// The shotgun's fore-end pumped back: its hand rides back with it, fitted
+// alike.
+expect (
+  shotgunSupport |> Option.map((su) =>
+    let h = cellHand(su.item, 0.0, 0.3, (cellOn(su, 0.0, 0.3)).push) in
+    let (home, f) = supportAt(su, Hold.Right, 0.0, h) in
+    let (back, g) = supportAt(su, Hold.Right, Pump.pumpTravel, Hold.at(Quat.add(h.position, Quat.v3(0.0, 0.0, Pump.pumpTravel)), h.orientation)) in
+    Hold.near3(back.position, Quat.add(home.position, Quat.v3(0.0, 0.0, Pump.pumpTravel))) && poseNear(f, g)) |> Option.defaultValue(false)
+)
+
+// Grabbed off its spec's placement (2 cm toward the fingers), the ball's
+// fit: no digit inside, each within 2 mm of it; the same fitted again;
+// and that is the placement a hand there takes, either hand, the ball turned
+// any way.
+expect (
+  graspedFor(Props.Ball) |> Option.map((g) =>
+    let (h, c) = (List.nth(1.0, g.hands) |> Option.defaultValue(Hold.origin), List.nth(1.0, g.cells) |> Option.defaultValue({ pose: Hand.flat, push: 0.0 })) in
+    let again = List.nth(1.0, graspCells(g.set)) |> Option.defaultValue({ pose: Hand.flat, push: 1.0 }) in
+    let turned = Hold.compose(Hold.inverse(h), Hold.at(Hold.zero, Quat.axisAngle(Quat.v3(0.6, 0.0, 0.8), 1.2))) in
+    let (ri, ra) = nearestGrasp(g, Hold.Right, turned) in
+    let (li, la) = nearestGrasp(g, Hold.Left, Hand.mirror(turned)) in
+    (cellGaps(g.item, h, c) |> List.all((x) => x >= 0.0 && x <= 0.002)) && poseNear(again.pose, c.pose) && Math.abs(again.push - c.push) < 0.000001
+      && ri == 1.0 && li == 1.0 && Hold.near(Hold.inverse(ra), turned) && Hold.near(la, Hand.mirror(ra))) |> Option.defaultValue(false)
+)
+// A brick taken turned a quarter about the palm's normal and flipped over
+// takes the quarter-turned placement, not the spec's.
+expect (
+  graspedFor(Props.Brick) |> Option.map((g) =>
+    let h = List.nth(2.0, g.hands) |> Option.defaultValue(Hold.origin) in
+    let flipped = Hold.compose(Hold.at(Hold.zero, Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi)), h) in
+    let (i, _) = nearestGrasp(g, Hold.Right, Hold.inverse(flipped)) in
+    i == 2.0) |> Option.defaultValue(false)
+)

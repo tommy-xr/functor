@@ -91,3 +91,4 @@ let shellFromTheBoxGrasps: List<(Hand.FingerPose, float)> = [
   ({ thumb: { curl: 0.175696, tip: 0.175696, opposition: 0.0 }, index: { curl: 0.477881, tip: 0.477881 }, middle: { curl: 1.0, tip: 1.0 }, ring: { curl: 1.0, tip: 1.0 }, little: { curl: 1.0, tip: 1.0 } }, 0.0),
   ({ thumb: { curl: 1.0, tip: 1.0, opposition: 0.0 }, index: { curl: 0.277359, tip: 0.277359 }, middle: { curl: 1.0, tip: 1.0 }, ring: { curl: 1.0, tip: 1.0 }, little: { curl: 1.0, tip: 1.0 } }, 0.0)
 ]
+let fingerprint = 0.0
