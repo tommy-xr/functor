@@ -287,7 +287,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     // A client message that changed nothing still answers with the state, so
     // the sender sees what is active.
     let msg = || ServerMsg::State {
-        state: state.clone(),
+        state: Box::new(state.clone()),
     };
     if changed {
         // Before any transcript items, so a client knows their task first.
@@ -716,7 +716,7 @@ mod tests {
 
     fn broadcast(state: &AppState) -> Command {
         Command::Broadcast(ServerMsg::State {
-            state: state.clone(),
+            state: Box::new(state.clone()),
         })
     }
 
@@ -753,7 +753,9 @@ mod tests {
         assert_eq!(next, state());
         assert_eq!(
             commands,
-            vec![Command::Reply(ServerMsg::State { state: state() })]
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(state())
+            })]
         );
     }
 
@@ -789,7 +791,9 @@ mod tests {
             assert_eq!(next, state());
             assert_eq!(
                 commands,
-                vec![Command::Reply(ServerMsg::State { state: state() })]
+                vec![Command::Reply(ServerMsg::State {
+                    state: Box::new(state())
+                })]
             );
         }
     }
@@ -826,7 +830,9 @@ mod tests {
             assert_eq!(next, before);
             assert_eq!(
                 commands,
-                vec![Command::Reply(ServerMsg::State { state: before })]
+                vec![Command::Reply(ServerMsg::State {
+                    state: Box::new(before)
+                })]
             );
         }
     }
@@ -941,7 +947,9 @@ mod tests {
         let (next, commands) = update(next.clone(), client(ClientMsg::StopSession));
         assert_eq!(
             commands,
-            vec![Command::Reply(ServerMsg::State { state: next })]
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(next)
+            })]
         );
     }
 
@@ -1058,7 +1066,9 @@ mod tests {
         assert_eq!(again, next);
         assert_eq!(
             commands,
-            vec![Command::Reply(ServerMsg::State { state: next })]
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(next)
+            })]
         );
     }
 
@@ -1139,7 +1149,7 @@ mod tests {
             assert_eq!(input(&msg.to_string()), wire);
         }
         let json = serde_json::to_value(ServerMsg::State {
-            state: with_session(1, Some(9), running(Some(12))),
+            state: Box::new(with_session(1, Some(9), running(Some(12)))),
         })
         .unwrap();
         assert_eq!(json["type"], "state");
@@ -1547,7 +1557,9 @@ mod tests {
         let (s, commands) = update(s, pick(Harness::Codex));
         assert_eq!(
             commands,
-            vec![Command::Reply(ServerMsg::State { state: s.clone() })]
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(s.clone())
+            })]
         );
         let (s, _) = update(s, switch("examples/b"));
         let (s, _) = update(s, pick(Harness::Claude));
@@ -1596,7 +1608,7 @@ mod tests {
         );
         // The state carries task summaries, not transcripts.
         let json = serde_json::to_value(ServerMsg::State {
-            state: finished_task(),
+            state: Box::new(finished_task()),
         })
         .unwrap();
         assert_eq!(

@@ -90,8 +90,9 @@ pub enum MouseButton {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    /// The whole state; the UI replaces what it holds.
-    State { state: AppState },
+    /// The whole state; the UI replaces what it holds. Boxed: it is far
+    /// larger than the other messages.
+    State { state: Box<AppState> },
     /// `task`'s whole transcript, answering `GetTranscript`.
     Transcript { task: u64, items: Vec<Item> },
     /// Item `index` of `task`'s transcript, added (at the end) or replaced:
