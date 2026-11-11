@@ -19,6 +19,14 @@ impl<T> AssetHandle<T> {
         }
     }
 
+    /// The asset, if its load has succeeded.
+    pub fn loaded(&self) -> Option<Arc<T>> {
+        match self.poll_state() {
+            AssetPollState::Loaded(asset) => Some(asset),
+            AssetPollState::Loading | AssetPollState::Failed => None,
+        }
+    }
+
     /// The pipeline's stand-in for this asset, WITHOUT polling — for callers
     /// that already called [`Self::poll_state`] this frame and must not
     /// advance the future a second time.

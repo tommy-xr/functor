@@ -10,6 +10,9 @@
 //! Also glTF `COLOR_0`: a vertex-coloured model renders like one whose
 //! material has that colour, on every path, lit and unlit.
 //!
+//! And `?v=` URL versions: drawing a new version of a URL each second holds
+//! a flat set of GPU objects, ordinary and instanced.
+//!
 //! Self-skipping like `stereo_shadow` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
 //!
@@ -119,6 +122,23 @@ fn main() {
                 }
             }
             println!("test {kind}_{path}_vertex_colour_tints_like_base_colour ... ok");
+
+            // Each version is drawn until the one before it has been released.
+            let mut live = Vec::new();
+            for version in 0..5 {
+                let url = format!("http://preview.test/{kind}-{path}.glb?v={version}");
+                harness.asset_cache.replace_uploaded(&url, fixture(true, skinned));
+                let frame = scene_frame(model(&url, &[]), instanced);
+                harness.warm(&frame);
+                // Over 120 views, whatever the eye count.
+                for _ in 0..130 {
+                    harness.render(&frame);
+                }
+                let now = gpu_counters().live();
+                live.push((now.vaos, now.buffers, now.textures));
+            }
+            assert!(live.iter().all(|counts| *counts == live[0]), "{kind}/{path}: GPU objects grew: {live:?}");
+            println!("test {kind}_{path}_url_versions_hold_flat_gpu_objects ... ok {:?}", live[0]);
         }
     }
 }

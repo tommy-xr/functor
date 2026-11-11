@@ -1088,11 +1088,11 @@ fn depth_fragment_source() -> String {
 ///
 /// Staleness: a file entry is keyed by asset locator, so an asset
 /// evict/hot-reload (a NEW Arc with new GL buffers) shows up as a
-/// vertex-buffer mismatch — drop the whole entry and rebuild. File models'
-/// VBOs are never deleted, so a handle mismatch is a reliable staleness
-/// signal (and entries stay bounded by the model files a session actually
-/// instanced). Data models do delete theirs, but their keys are never
-/// reused and are forgotten first (`forget_model`).
+/// vertex-buffer mismatch — drop the whole entry and rebuild. A deleted
+/// VBO's name can be reused, so whatever deletes a model's buffers forgets
+/// its entry first (`forget_model`): data models (whose keys are never
+/// reused) and released URL versions. Other file models' VBOs are never
+/// deleted, so for them a handle mismatch is a reliable staleness signal.
 unsafe fn acquire_model_vaos(
     gl: &glow::Context,
     cache: &mut HashMap<ModelKey, ModelInstancedState>,

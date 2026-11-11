@@ -861,6 +861,47 @@ impl SceneContext {
             .retain(|maps, _| !maps.split('\n').any(|map| map == path));
     }
 
+    /// Free what superseded `?v=` URL versions hold (see
+    /// [`AssetCache::sweep_superseded`]): their GPU objects, then every
+    /// cached decode. Runs before the view draws, so nothing drawn this frame
+    /// holds a deleted object; a released locator drawn again reloads. An
+    /// instanced VAO set built over a released placeholder's buffers is
+    /// rebuilt when its own model's buffers change, and forgotten with it.
+    pub(crate) fn release_superseded(&self, gl: &glow::Context, asset_cache: &AssetCache) {
+        // A built cubemap or terrain array never asks for its maps again:
+        // while it is cached they count as in use (and so are never released).
+        for maps in self.skyboxes.borrow().keys().chain(self.terrain_materials.borrow().keys()) {
+            maps.split('\n').for_each(|map| asset_cache.note_request(map));
+        }
+        for path in asset_cache.sweep_superseded() {
+            if let Some(model) = self.model_pipeline.get_opt(&path).and_then(|h| h.loaded()) {
+                model.delete(gl);
+            }
+            if let Some(instanced) = self.instanced.borrow_mut().as_mut() {
+                instanced.forget_model(gl, &instanced_renderer::ModelKey::File(path.clone()));
+            }
+            for pipeline in [
+                &self.texture_pipeline,
+                &self.linear_texture_pipeline,
+                &self.terrain_detail_pipeline,
+                &self.terrain_colormap_pipeline,
+                &self.terrain_normal_map_pipeline,
+                &self.terrain_splat_pipeline,
+            ] {
+                if let Some(handle) = pipeline.get_opt(&path) {
+                    // The stand-in it drew while loading is its own, too.
+                    handle.fallback().delete(gl);
+                    if let Some(texture) = handle.loaded() {
+                        texture.delete(gl);
+                    }
+                }
+            }
+            self.evict_asset(&path);
+            // The polls above may have settled another pipeline's load of it.
+            asset_cache.forget(&path);
+        }
+    }
+
     pub fn new() -> SceneContext {
         SceneContext {
             cube: RefCell::new(geometry::Cube::create()),
