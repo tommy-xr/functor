@@ -24,10 +24,14 @@ let center = Quat.v3(0.0, 0.0025, 0.0 - 0.0475)
 /// (centred on its collider).
 let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 
+/// A grip placement kept where it sits but unturned: the bore along the
+/// hand's -Z.
+let levelled = (p: Input.pose): Input.pose => { position: p.position, orientation: Quat.identity }
+
 /// Where the hand's root sits in `layout`: the pistol grip spec's solved
-/// placement (`Fitted`, generated). Its handle up the fist, so the muzzle
-/// sits 12° above the grip's -Z.
-let placement: Input.pose = Fitted.pistolGripPlacement
+/// position (`Fitted`, generated), levelled so the bore runs along the
+/// hand's -Z, the way it points (the solve's 12° rake aimed it high).
+let placement: Input.pose = levelled(Fitted.pistolGripPlacement)
 
 /// The hand's pose in the pistol's frame: its grip. A pistol is only taken
 /// there (`gripZone`), and always settles into it.
@@ -188,8 +192,8 @@ let heldAt = (w: Weapon, hand: Input.pose): Input.pose => Hold.compose(hand, Hol
 /// The pistol held with its layout's fist at `fist`.
 let byFist = (fist: Input.pose): Input.pose => heldAt(pistol, Hold.compose(fist, placement))
 
-// Held level, the shot leaves 12° above the hand's -Z (the handle's rake).
-expect Hold.near3((boreOf(pistol, heldAt(pistol, Hold.origin))).dir, Quat.v3(0.0, Math.sin(0.21), 0.0 - Math.cos(0.21)))
+// Held level, the shot leaves along the hand's -Z.
+expect Hold.near3((boreOf(pistol, heldAt(pistol, Hold.origin))).dir, Quat.v3(0.0, 0.0, 0.0 - 1.0))
 // The layout's fist level, yawed, pitched and rolled: the muzzle 5 cm above
 // its -Z axis and 15 cm along it, and the shot along that axis.
 expect (

@@ -324,10 +324,21 @@ let controllerIn = (x: Input.xr, side: Hold.Side): Input.controller =>
 let controller = (xr: Option.t<Input.xr>, side: Hold.Side): Option.t<Input.controller> =>
   xr |> Option.map((x) => controllerIn(x, side))
 
-/// A hand's grip, rig-local, while it is tracked.
+/// A hand's pose, rig-local, while it is tracked: at the grip, turned as the
+/// aim. The grip's -Z runs up the controller's handle (a Touch's sits 60°
+/// above where it points); the hand and everything it holds take -Z as the
+/// way the hand points, which is the aim's. No aim keeps the grip's turn.
 let gripOf = (xr: Option.t<Input.xr>, side: Hold.Side): Option.t<Input.pose> =>
   match xr with
-  | Option.Some(x) => let c = controllerIn(x, side) in if c.active then c.grip else Option.None
+  | Option.Some(x) =>
+    let c = controllerIn(x, side) in
+    if c.active then
+      match c.grip with
+      | Option.Some(g) => (match c.aim with
+        | Option.Some(a) => Option.Some({ position: g.position, orientation: a.orientation })
+        | Option.None => Option.Some(g))
+      | Option.None => Option.None
+    else Option.None
   | Option.None => Option.None
 
 let squeezeOf = (xr: Option.t<Input.xr>, side: Hold.Side): float =>

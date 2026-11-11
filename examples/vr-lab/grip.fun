@@ -886,7 +886,7 @@ let placementOf = (it: Item): Option.t<Input.pose> => layoutOf(it.spec) |> Optio
 // The guns' placements (`Fitted.*Placement`, generated) are the solve's,
 // within 0.1 mm and 0.001 rad, and centred.
 expect (
-  [("pistol grip", Gun.placement), ("rifle grip", Longarm.placement), ("shotgun grip", Pump.placement)] |> List.all((t) =>
+  [("pistol grip", Fitted.pistolGripPlacement), ("rifle grip", Fitted.rifleGripPlacement), ("shotgun grip", Fitted.shotgunGripPlacement)] |> List.all((t) =>
     let (name, placement) = t in
     items |> List.find((it) => it.name == name) |> Option.bind(placementOf) |> Option.map((solved) =>
       Quat.length(Quat.sub(solved.position, placement.position)) < 0.0001 && Quat.angle(solved.orientation, placement.orientation) < 0.001

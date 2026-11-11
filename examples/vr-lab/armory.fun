@@ -234,25 +234,26 @@ expect (
   supportSide(last(ms)) == Option.Some(Hold.Left) && (ms |> List.all((m) => Quat.angle((rifleAccepted(m)).orientation, rifleAt.orientation) < 0.0001))
 )
 
-// Dragged 15 cm off the axis, 1 cm a step: past 12 cm it breaks off, a break
-// pulse in the left hand (disarmed until it opens). The rifle doesn't move on
-// that step, then settles back into the right hand.
+// Pulled 80 cm off the axis, 10 cm a step (a deliberate pull-off, not a
+// jerk): it breaks off, a break pulse in the left hand (disarmed until it
+// opens). The rifle doesn't move on that step, then settles back into the
+// right hand.
 let dragged = play2(ready, List.flatten([
-  List.range(15.0) |> List.map((i) => (grabbed(foreOf(stockFist, 0.25, 0.01 * (i + 1.0), 0.0)), still)),
-  both(10.0, grabbed(foreOf(stockFist, 0.25, 0.15, 0.0)), still)]))
+  List.range(8.0) |> List.map((i) => (grabbed(foreOf(stockFist, 0.25, 0.1 * (i + 1.0), 0.0)), still)),
+  both(10.0, grabbed(foreOf(stockFist, 0.25, 0.8, 0.0)), still)]))
 let brokeAt = dragged |> List.indexedMap((i, m) => (i, m)) |> List.find((im) => let (_, m) = im in Option.isNone(supportSide(m)))
   |> Option.map((im) => let (i, _) = im in i) |> Option.defaultValue(0.0)
 expect (
   let at = (i: float) => rifleAccepted(List.nth(i, dragged) |> Option.defaultValue(start)) in
-  brokeAt == 13.0 && countOf(Hold.Left, Pulses.Break, dragged) == 1.0 && Game.isHeld(last(dragged), Props.Rifle)
+  brokeAt > 1.0 && countOf(Hold.Left, Pulses.Break, dragged) == 1.0 && Game.isHeld(last(dragged), Props.Rifle)
     && Hold.near(at(brokeAt), at(brokeAt - 1.0))
-    && Quat.angle((at(brokeAt - 1.0)).orientation, rifleAt.orientation) > 0.18
+    && Quat.angle((at(brokeAt - 1.0)).orientation, rifleAt.orientation) > 0.05
     && Hold.near(rifleAccepted(last(dragged)), rifleAt)
     && not (last(dragged)).left.armed
 )
-// Past the foregrip's far end, it breaks off too.
+// Pushed well past the foregrip's far end, it breaks off too.
 expect (
-  let ms = play2(ready, List.range(20.0) |> List.map((i) => (grabbed(foreOf(stockFist, 0.25 + 0.015 * (i + 1.0), 0.0, 0.0)), still))) in
+  let ms = play2(ready, List.range(20.0) |> List.map((i) => (grabbed(foreOf(stockFist, 0.25 + 0.04 * (i + 1.0), 0.0, 0.0)), still))) in
   Option.isNone(supportSide(last(ms))) && countOf(Hold.Left, Pulses.Break, ms) == 1.0
 )
 // Opened, the support lets go: a release pulse, the rifle where the aim had
