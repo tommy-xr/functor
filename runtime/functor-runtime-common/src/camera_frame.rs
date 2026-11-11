@@ -195,6 +195,65 @@ pub fn rgba_to_i420(rgba: &[u8], width: u32, height: u32, bottom_up: bool) -> Ve
     out
 }
 
+/// One plane of an Android `YUV_420_888` image: its bytes and strides.
+pub struct YuvPlane<'a> {
+    pub data: &'a [u8],
+    pub row_stride: usize,
+    pub pixel_stride: usize,
+}
+
+/// A `YUV_420_888` image (planes Y, U, V, any strides — planar or
+/// semi-planar) → I420; `None` if a plane is shorter than its strides say.
+pub fn yuv420_888_to_i420(width: u32, height: u32, planes: [YuvPlane; 3]) -> Option<Vec<u8>> {
+    let (w, h) = (width as usize, height as usize);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let mut out = Vec::with_capacity(i420_len(width, height) as usize);
+    for (plane, (pw, ph)) in planes.iter().zip([(w, h), (cw, ch), (cw, ch)]) {
+        for y in 0..ph {
+            let row = plane.data.get(y * plane.row_stride..)?;
+            match plane.pixel_stride {
+                1 => out.extend_from_slice(row.get(..pw)?),
+                stride => {
+                    row.get((pw - 1) * stride)?;
+                    out.extend((0..pw).map(|x| row[x * stride]));
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Android `LENS_INTRINSIC_CALIBRATION` `[fx, fy, cx, cy]`, on a `sensor`
+/// (width, height) array with pixel edges at integers, for an `output` image
+/// the camera crops from the sensor's centre to its aspect and scales — as
+/// [`Intrinsics`], pixel centres at integers.
+pub fn rescale_intrinsics(
+    calibration: [f32; 4],
+    sensor: (u32, u32),
+    output: (u32, u32),
+) -> Intrinsics {
+    let [fx, fy, cx, cy] = calibration;
+    let (sw, sh) = (sensor.0 as f32, sensor.1 as f32);
+    let (ow, oh) = (output.0 as f32, output.1 as f32);
+    let crop_w = sw.min(sh * ow / oh);
+    let crop_h = crop_w * oh / ow;
+    let (x0, y0) = ((sw - crop_w) / 2.0, (sh - crop_h) / 2.0);
+    let k = ow / crop_w;
+    Intrinsics {
+        fx: fx * k,
+        fy: fy * k,
+        cx: (cx - x0) * k - 0.5,
+        cy: (cy - y0) * k - 0.5,
+    }
+}
+
+/// Android's lens pose — `p_camera = R(q) · p_head`, `q` as `[x, y, z, w]`,
+/// the optical centre at `t` in head axes — as OpenCV camera → head.
+pub fn lens_to_head(q: [f32; 4], t: [f32; 3]) -> Matrix4<f32> {
+    let rotation = cgmath::Quaternion::new(q[3], q[0], q[1], q[2]);
+    Matrix4::from_translation(t.into()) * Matrix4::from(rotation.conjugate())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +374,76 @@ mod tests {
         assert!(yuv[4] < 128 && yuv[5] > 128, "{yuv:?}");
         // Odd sizes round the chroma planes up.
         assert_eq!(rgba_to_i420(&[0; 3 * 3 * 4], 3, 3, false).len(), 9 + 2 * 4);
+    }
+
+    #[test]
+    fn semi_planar_yuv_repacks_as_i420() {
+        // 4x2 with padded rows: Y, then interleaved chroma as NV12 delivers
+        // it (U plane = UVUV…, V plane = the same bytes shifted by one).
+        let y = [1, 2, 3, 4, 0, 0, 5, 6, 7, 8, 0, 0];
+        let uv = [10, 20, 11, 21];
+        let plane = |data, row_stride, pixel_stride| YuvPlane {
+            data,
+            row_stride,
+            pixel_stride,
+        };
+        let yuv = yuv420_888_to_i420(
+            4,
+            2,
+            [plane(&y, 6, 1), plane(&uv, 4, 2), plane(&uv[1..], 4, 2)],
+        );
+        assert_eq!(yuv.unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 20, 21]);
+        // A plane shorter than its strides say converts to nothing.
+        let short = yuv420_888_to_i420(
+            4,
+            2,
+            [
+                plane(&y[..9], 6, 1),
+                plane(&uv, 4, 2),
+                plane(&uv[1..], 4, 2),
+            ],
+        );
+        assert_eq!(short, None);
+    }
+
+    #[test]
+    fn intrinsics_follow_the_centre_crop_and_scale() {
+        // A square 1728 sensor (edges at integers: its centre is 864)
+        // streamed at 1280x960: the centre 1728x1296, scaled by 1280/1728.
+        let k = rescale_intrinsics([1172.5, 1172.5, 864.0, 864.0], (1728, 1728), (1280, 960));
+        assert!((k.fx - 1172.5 * 1280.0 / 1728.0).abs() < 1e-3);
+        // The sensor's centre stays the image's centre, now between pixels
+        // 639 and 640 (centres at integers).
+        assert!(
+            (k.cx - 639.5).abs() < 1e-3 && (k.cy - 479.5).abs() < 1e-3,
+            "{k:?}"
+        );
+        // At the same size only the pixel convention moves.
+        let same = rescale_intrinsics([500.0, 501.0, 300.0, 200.0], (640, 480), (640, 480));
+        let expected = Intrinsics {
+            fx: 500.0,
+            fy: 501.0,
+            cx: 299.5,
+            cy: 199.5,
+        };
+        assert_eq!(same, expected);
+    }
+
+    #[test]
+    fn a_lens_pose_places_the_camera_on_the_head() {
+        // Published Quest 3 left-camera values (illustrative; the device
+        // check confirms them): about 169° about x (y down, z forward,
+        // pitched down), 3 cm left, 2 cm down, 6 cm forward of the head.
+        let t = [-0.0323, -0.0175, -0.0632];
+        let to_head = lens_to_head([-0.9953, 0.0027, -0.0041, 0.0970], t);
+        let forward = to_head * Vector4::new(0.0, 0.0, 1.0, 0.0);
+        // OpenXR VIEW looks down -z: the camera looks forward and a little down.
+        assert!(
+            forward.z < -0.97 && forward.y < -0.1 && forward.y > -0.25,
+            "{forward:?}"
+        );
+        let down = to_head * Vector4::new(0.0, 1.0, 0.0, 0.0);
+        assert!(down.y < -0.97, "{down:?}");
+        assert_eq!(to_head.w.truncate(), t.into());
     }
 }

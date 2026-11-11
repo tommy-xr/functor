@@ -155,7 +155,7 @@ impl Drop for SensorSender {
 /// A frame a stream asked for ([`SensorStreamer::capture`]), carried to
 /// [`SensorStreamer::send`] with whatever produced it.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct StreamCapture {
+pub struct StreamCapture {
     /// The stream it was taken for; another stream drops it.
     stream: u64,
     /// When it was asked for, [`steady_ns`].
@@ -247,6 +247,11 @@ impl SensorStreamer {
         let (shared, wake) = &**channel;
         let shared = shared.lock().expect("sensor stream state");
         (shared.generation == *generation).then_some((shared, wake, destination, *generation))
+    }
+
+    /// Whether frames can go anywhere: the destination was not refused.
+    pub(crate) fn accepts_frames(&self) -> bool {
+        self.sink.is_some()
     }
 
     pub(crate) fn settings(&self) -> &SensorStreamSettings {

@@ -1127,6 +1127,41 @@ impl SceneContext {
         self.camera_stream.borrow().as_ref().map(|stream| stream.state())
     }
 
+    /// Whether a camera stream exists and its destination was not refused:
+    /// a shell runs its camera only then.
+    pub fn camera_stream_accepts_frames(&self) -> bool {
+        self.camera_stream
+            .borrow()
+            .as_ref()
+            .is_some_and(|stream| stream.accepts_frames())
+    }
+
+    /// A shell with a passthrough camera: a frame to send now, if the camera
+    /// stream is live and one is due.
+    pub fn camera_capture(&self) -> Option<crate::sensor_stream::StreamCapture> {
+        self.camera_stream.borrow_mut().as_mut()?.capture()
+    }
+
+    /// Queue `capture`'s device frame, its `payload` built on the sender
+    /// thread; `stream`, `seq` and `space_epoch` are filled in here.
+    pub fn send_camera_frame(
+        &self,
+        capture: crate::sensor_stream::StreamCapture,
+        mut header: crate::camera_frame::CameraFrameHeader,
+        payload: impl FnOnce() -> Vec<u8> + Send + 'static,
+    ) {
+        let mut stream = self.camera_stream.borrow_mut();
+        let Some(stream) = stream.as_mut() else {
+            return;
+        };
+        header.space_epoch = self.space_epoch.get();
+        stream.send(capture, payload, |ids| {
+            header.stream = ids.stream;
+            header.seq = ids.seq;
+            serde_json::to_vec(&header).expect("a camera frame header serializes")
+        });
+    }
+
     /// A shell without a passthrough camera, once per frame after its main
     /// pass: stream `frame`'s stand-in room as seen from `camera` (the view)
     /// through [`crate::camera_stream::EMULATED_INTRINSICS`].

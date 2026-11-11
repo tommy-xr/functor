@@ -54,6 +54,7 @@ use openxr as xr;
 mod battery;
 mod environment_depth;
 mod passthrough;
+mod passthrough_camera;
 
 /// GLES version to request. Quest 3 supports 3.2.
 /// Display refresh rate to aim for at startup, in Hz.
@@ -485,6 +486,69 @@ fn tracking_pose(pose: xr::Posef) -> TrackingPose {
     TrackingPose::new([p.x, p.y, p.z], [o.x, o.y, o.z, o.w])
 }
 
+/// The header of a camera image exposed at `sensor_ns` (`CLOCK_MONOTONIC`):
+/// the head (`view` in `stage`) located then and placed in the game world as
+/// the eyes are — `camera` composed with the rig `reference`. `None` if the
+/// time does not convert.
+fn camera_frame_header(
+    instance: &xr::Instance,
+    view: &xr::Space,
+    stage: &xr::Space,
+    camera: &functor_runtime_common::Camera,
+    reference: TrackingPose,
+    calibration: &passthrough_camera::Calibration,
+    sensor_ns: i64,
+) -> Option<functor_runtime_common::camera_frame::CameraFrameHeader> {
+    use cgmath::{Matrix4, SquareMatrix};
+    use functor_runtime_common::camera_frame::{self, CameraFrameSource, CameraFrameTime};
+    let convert = instance.exts().khr_convert_timespec_time.as_ref()?;
+    let timespec = libc::timespec {
+        tv_sec: sensor_ns.div_euclid(1_000_000_000),
+        tv_nsec: sensor_ns.rem_euclid(1_000_000_000),
+    };
+    let mut time = xr::Time::from_nanos(0);
+    let converted =
+        unsafe { (convert.convert_timespec_time_to_time)(instance.as_raw(), &timespec, &mut time) };
+    if converted != xr::sys::Result::SUCCESS {
+        return None;
+    }
+    let head = view.locate(stage, time).ok().filter(|location| {
+        location.location_flags.contains(
+            xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID,
+        )
+    });
+    let camera_to_world = head.and_then(|head| {
+        let head_to_world = camera
+            .compose_tracked_view(reference, tracking_pose(head.pose))
+            .view_matrix()
+            .invert()?;
+        Some(head_to_world * calibration.camera_to_head)
+    });
+    let columns = functor_runtime_common::depth_frame::columns;
+    Some(camera_frame::CameraFrameHeader {
+        schema: camera_frame::SCHEMA.to_string(),
+        stream: String::new(),
+        seq: 0,
+        source: CameraFrameSource::Device,
+        camera: "left".to_string(),
+        width: calibration.width,
+        height: calibration.height,
+        encoding: camera_frame::ENCODING.to_string(),
+        intrinsics: calibration.intrinsics,
+        distortion: calibration.distortion,
+        camera_to_world: columns(camera_to_world.unwrap_or(Matrix4::identity())),
+        camera_to_head: columns(calibration.camera_to_head),
+        time: CameraFrameTime {
+            clock: "xr".to_string(),
+            exposure_ns: time.as_nanos(),
+            sensor_ns: Some(sensor_ns),
+        },
+        tracking: camera_to_world.is_some(),
+        space_epoch: 0,
+        payload_len: camera_frame::i420_len(calibration.width, calibration.height),
+    })
+}
+
 fn tracking_pose_from_view(view: &xr::View) -> TrackingPose {
     tracking_pose(view.pose)
 }
@@ -823,6 +887,8 @@ struct DebugLoopState {
     pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
     /// Pushed reloads, for the head-locked indicator and `/state.reload`.
     reload: ReloadIndicator,
+    /// Why `Xr.streamCamera`'s camera is not open, while wanted.
+    camera_error: Option<String>,
 }
 
 /// What the game samples: an injected `xr` sample wins over live tracking.
@@ -1000,7 +1066,14 @@ fn service_debug_request(
             );
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
-            let passthrough = passthrough.state(debug.config);
+            // The camera's own failure explains an empty stream first.
+            let passthrough = passthrough.state(debug.config).map(|mut state| {
+                state.camera = scene_context.camera_stream_state().map(|mut camera| {
+                    camera.last_error = debug.camera_error.clone().or(camera.last_error);
+                    camera
+                });
+                state
+            });
             let battery = battery::latest();
             let xr = environment_depth.state(
                 debug.config,
@@ -1456,6 +1529,9 @@ pub fn android_main(app: AndroidApp) {
     // Scene understanding (`config`'s `Xr.scene`): likewise inert until a
     // game asks (see `environment_depth.rs`).
     extensions.meta_environment_depth = available.meta_environment_depth;
+    // `Xr.streamCamera`: camera timestamps (CLOCK_MONOTONIC) → XrTime, to
+    // locate the head when an image was exposed.
+    extensions.khr_convert_timespec_time = available.khr_convert_timespec_time;
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
@@ -1576,6 +1652,10 @@ pub fn android_main(app: AndroidApp) {
         available.fb_passthrough,
     );
     let mut environment_depth = environment_depth::EnvironmentDepth::new(&instance);
+    let mut passthrough_camera = passthrough_camera::PassthroughCamera::default();
+    let view_space = session
+        .create_reference_space(xr::ReferenceSpaceType::VIEW, xr::Posef::IDENTITY)
+        .expect("view space");
 
     log::info!(
         "swapchains ready: {}x{} per eye",
@@ -2124,6 +2204,54 @@ pub fn android_main(app: AndroidApp) {
             scene_context.reset_fused_room(&gl);
         }
         fused_room_anchor = anchor;
+        // `Xr.streamCamera` (with `Xr.passthrough`): the left camera runs
+        // while a stream asks and the feed runs; frames upload only while
+        // the clock runs too.
+        let feed_wanted = functor_runtime_common::runtime_settings::passthrough_wanted(
+            debug.config,
+            snapshot.settings.as_ref(),
+        );
+        scene_context.set_camera_stream(
+            snapshot
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.xr.stream_camera.as_ref())
+                .filter(|_| {
+                    functor_runtime_common::runtime_settings::passthrough_requested(debug.config)
+                }),
+            !clock.is_pinned() && feed_wanted,
+        );
+        let camera_wanted = feed_wanted && scene_context.camera_stream_accepts_frames();
+        if camera_wanted && !available.khr_convert_timespec_time {
+            debug.camera_error = Some(
+                "Xr.streamCamera: the runtime lacks XR_KHR_convert_timespec_time, so camera \
+images cannot be posed"
+                    .to_string(),
+            );
+        } else {
+            passthrough_camera.update(camera_wanted);
+            debug.camera_error = passthrough_camera.error();
+        }
+        if let Some(image) = passthrough_camera.acquire() {
+            if let (Some(reference), Some(capture)) =
+                (tracking_reference, scene_context.camera_capture())
+            {
+                let header = image.sensor_ns().and_then(|sensor_ns| {
+                    camera_frame_header(
+                        &instance,
+                        &view_space,
+                        &stage,
+                        &frame.camera,
+                        reference,
+                        image.calibration,
+                        sensor_ns,
+                    )
+                });
+                if let Some((header, payload)) = header.zip(image.i420()) {
+                    scene_context.send_camera_frame(capture, header, payload);
+                }
+            }
+        }
         // The time `frame` was drawn at: render-time animation samples it.
         let frame_time = snapshot.time;
         // `config`'s `Xr.msaa`, rebuilt on each load that changes it.

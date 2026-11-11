@@ -179,7 +179,7 @@ fn near_far(projection: &Matrix4<f32>) -> (f32, Option<f32>) {
 }
 
 /// `m`'s 16 floats, column-major.
-pub(crate) fn columns(m: Matrix4<f32>) -> [f32; 16] {
+pub fn columns(m: Matrix4<f32>) -> [f32; 16] {
     let m: &[f32; 16] = m.as_ref();
     *m
 }

@@ -593,7 +593,18 @@ let settings = (model) =>
   `Frame.withStandInRoom`, never the game's scene — from the game's view
   (the emulated head under `--emulate-xr`) through a fixed pinhole camera:
   640×480, `fx = fy = 500`, `cx = 320`, `cy = 240`, `source: "emulated"`.
-  Web and Quest do not stream yet; a one-time warning says so.
+  Web does not stream; a one-time warning says so.
+- Quest streams the left passthrough camera through the NDK Camera2 API,
+  picked by Meta's camera-source and position vendor tags: 1280×960 when
+  offered (else the largest YUV size), repacked from `YUV_420_888` to I420.
+  `intrinsics` are the camera's calibration rescaled to that image (a centre
+  crop of the sensor, scaled); `distortion` is its `LENS_DISTORTION` when
+  non-zero; `camera_to_head` is its lens pose. It needs the runtime's
+  `XR_KHR_convert_timespec_time` to pose images, and the
+  `horizonos.permission.HEADSET_CAMERA` permission, which the shell does not
+  request yet — grant it once per install with `adb shell pm grant
+  dev.functor.runner horizonos.permission.HEADSET_CAMERA` (or `adb install
+  -g`), then restart. Until then `last_error` says why nothing streams.
 
 The wire format, `functor.camera-frame/1`: one frame per `POST <url>`,
 `Content-Type: application/vnd.functor.camera-frame`, framed as depth frames
