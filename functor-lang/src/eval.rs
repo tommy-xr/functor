@@ -50,17 +50,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// host stack usage directly. Deep iteration belongs in the iterative builtins
 /// (`List.map`/`fold`), not user-level recursion.
 ///
-/// INVARIANT: the cap must trip *before* a default 2 MiB test-thread stack is
-/// exhausted in a debug build, so `cargo test -p mle` needs no `RUST_MIN_STACK`
-/// bump and the infinite-recursion test is a live guard on this budget
-/// (`error_infinite_recursion_is_a_clean_error` runs on the default stack; a
-/// per-frame regression shows up there as a stack overflow, not silently).
+/// Builtin calls count too ([`BUILTIN_DEPTH`]): a callback re-enters eval
+/// from inside their frames.
 ///
-/// Measured 2026-07 (debug build, Apple Silicon): the deepest recursion costs
-/// ≈11.8 KiB of stack per eval level — 128 levels need ≈1.35 MiB, leaving ~50%
-/// frame-growth headroom under 2 MiB. 200 levels had grown past the budget
-/// (≈2.2 MiB), aborting the whole test binary on a clean tree (#221).
-const MAX_EVAL_DEPTH: usize = 128;
+/// INVARIANT: the cap must trip *before* a default 2 MiB test-thread stack is
+/// exhausted in a dev build, so `cargo test -p functor-lang` needs no
+/// `RUST_MIN_STACK` bump. `error_infinite_recursion_is_a_clean_error` and
+/// `recursion_through_callbacks_is_a_clean_error` are the live guards: they
+/// run on the default stack, so a per-frame regression shows up there as a
+/// stack overflow, not silently.
+///
+/// Measured 2026-11 (Apple Silicon): 1.0–1.4 KiB of stack per charged level
+/// in dev builds and ≤ 2 KiB in release, so 256 levels need ≤ 0.5 MiB. That
+/// relies on the workspace building this crate at opt-level 1 in dev:
+/// unoptimized frames are ~10x larger and would overflow 2 MiB first. Every
+/// Cargo workspace that builds this crate needs that profile override.
+const MAX_EVAL_DEPTH: usize = 256;
+
+/// Eval levels a builtin call is charged. Its frames (the dispatch, and the
+/// `call` a callback runs through) cost about two eval levels of native
+/// stack, and a callback re-enters eval from inside them — so recursion
+/// through `List.map`/`fold`/`Loop.until`/… is bounded like direct recursion.
+const BUILTIN_DEPTH: usize = 2;
 
 /// Calls between polls of a job's stop flag ([`Session::load_cancellable`]).
 const CANCEL_POLL: u32 = 4096;
@@ -1478,7 +1489,7 @@ implementation",
             None if self.host.provides(&joined) => Ok(Value::HostFn(Rc::from(joined.as_str()))),
             // `#[cold]` helper: the message formatting must not enlarge this
             // hot frame (eval recursion sits near the stack budget at the
-            // 128-depth cap — the call_curried rule; adding the formatting
+            // depth cap — the call_curried rule; adding the formatting
             // inline here overflowed the deep-recursion test's 2MB stack in
             // debug).
             None => Err(unknown_external_error(path, joined, span)),
@@ -1580,15 +1591,7 @@ implementation",
         self.depth += 1;
         if self.depth > MAX_EVAL_DEPTH {
             self.depth -= 1;
-            return Err(RunError {
-                message: format!(
-                    "evaluation nested too deeply (exceeded the depth cap of {MAX_EVAL_DEPTH}): \
-deep recursion, or deeply nested expressions. Deep list iteration belongs in the builtin list \
-functions (List.fold/map/filter/any/all/length/…), and other loops (graph walks, queues) in \
-Loop.until; they loop in the interpreter and consume no evaluation depth."
-                ),
-                span: expr.span,
-            });
+            return Err(depth_error(expr.span));
         }
         // Coverage: one armed-check per evaluation (a `None` test when off —
         // the same hot-path cost class as the binding-site hook).
@@ -2534,12 +2537,26 @@ definition (a top-level initializer may only use globals defined above it)",
         });
     }
 
+    /// [`Self::run_builtin`], charged [`BUILTIN_DEPTH`] eval levels.
     fn call_builtin(
         &mut self,
         b: Builtin,
         args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RunError> {
+        self.depth += BUILTIN_DEPTH;
+        if self.depth > MAX_EVAL_DEPTH {
+            self.depth -= BUILTIN_DEPTH;
+            return Err(depth_error(span));
+        }
+        let result = self.run_builtin(b, args, span);
+        self.depth -= BUILTIN_DEPTH;
+        result
+    }
+
+    /// Out of line, so its locals never join [`Self::call`]'s recursive frame.
+    #[inline(never)]
+    fn run_builtin(&mut self, b: Builtin, args: Vec<Value>, span: Span) -> Result<Value, RunError> {
         let err = |message: String| Err(RunError { message, span });
         match b {
             // Subject-LAST — `List.map(fn, list)`, so `list |> List.map(fn)`
@@ -2819,7 +2836,7 @@ most 1000000 cells"
                 _ => err("List.minimum(list) expects one list".to_string()),
             },
             // The iterative list helpers a game reaches for — hand-rolling
-            // these recursively blows the eval-depth cap around n≈60, so they
+            // these recursively blows the eval-depth cap around n≈120, so they
             // loop in Rust and consume no evaluation depth (see MAX_EVAL_DEPTH).
             Builtin::ListLength => match args.as_slice() {
                 [Value::List(items)] => Ok(Value::Number(items.len() as f64)),
@@ -3871,6 +3888,22 @@ got edge0 {edge0} and edge1 {edge1}"
     }
 }
 
+/// The depth cap's error (see [`MAX_EVAL_DEPTH`]). Cold and out of line, so
+/// its formatting does not enlarge the recursive frames that check the cap.
+#[cold]
+#[inline(never)]
+fn depth_error(span: Span) -> RunError {
+    RunError {
+        message: format!(
+            "evaluation nested too deeply (exceeded the depth cap of {MAX_EVAL_DEPTH}): \
+deep recursion, or deeply nested expressions. Deep list iteration belongs in the builtin list \
+functions (List.fold/map/filter/any/all/length/…), and other loops (graph walks, queues) in \
+Loop.until; they loop in the interpreter and consume no evaluation depth."
+        ),
+        span,
+    }
+}
+
 /// `Bits.*`: unsigned 32-bit operations on numbers carried as floats.
 /// Operands are validated, never truncated: `Bits.and(1.5, x)` is an error.
 fn bits(b: Builtin, args: &[Value]) -> Result<Value, String> {
@@ -4395,7 +4428,7 @@ pub(crate) fn ctor_arity_message(
 
 /// A builtin's argument count — currying needs each builtin's arity to decide
 /// partial vs saturated vs over-application. Must stay in sync with
-/// [`Interp::call_builtin`] (and [`crate::types::builtin_signature`]).
+/// [`Interp::run_builtin`] (and [`crate::types::builtin_signature`]).
 pub fn builtin_arity(b: Builtin) -> usize {
     match b {
         Builtin::ListFold

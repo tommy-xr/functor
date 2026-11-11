@@ -47,3 +47,9 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.adler2]
 opt-level = 3
+
+# The interpreter's eval depth cap (functor-lang `MAX_EVAL_DEPTH`) is sized
+# for optimized frames: unoptimized ones are ~10x larger, so deep Functor
+# recursion would overflow a 2 MiB test or worker stack before the cap trips.
+[profile.dev.package.functor-lang]
+opt-level = 1
