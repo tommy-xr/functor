@@ -77,13 +77,15 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 1.1 | `functor-app-core` skeleton: `AppState`, `update`, protocol types + TS generation, project discovery (every `functor.json` under the repo root; active project = nearest to the start directory). `functor-app --headless --print` dumps state as text. | Unit tests on `update`; `--print` in `examples/` lists the projects. |
 | 1.2 | Session manager: start/stop the hidden child, read the bound port from its `[debug-server] listening` line, poll `/state` (frame, paused, problems), restart on project switch. | Integration test using `--headless` (no GPU), runs in CI. |
 | 1.3 | Server and UI shell: axum serves the UI and a WebSocket carrying the protocol. UI: title bar, rail (Explorer, Tasks, Devices), side pane, canvas, chat dock; MIS colour tokens lifted into one stylesheet; Functor logo; project switcher. | Playwright: page loads, rail switches panes, state arrives over the socket. Desktop and narrow widths. |
-| 1.4 | Game view: show the session's frames (per S1), forward input on focus, "Running in this window" picker, "Open in window". | Playwright against a `--fixed-time` session: the canvas shows a non-blank frame that matches a `/capture`. |
+| 1.4 | Game view: show the session's frames from `/stream` (1.4a), forward input on focus, "Running in this window" picker, "Open in window". | Playwright against a `--fixed-time` session: the canvas shows a non-blank frame that matches a `/capture`. |
+| 1.4a | `GET /stream` on the debug server (decided by S1): JPEG frames encoded off the render thread, sized to the on-screen view, sent only while a client is connected. Serve `multipart/x-mixed-replace` for `<img>` and the same framing as `application/octet-stream` for `fetch` (WKWebView's `fetch` rejects the multipart type). Pace hidden sessions by frame time instead of a fixed 16 ms sleep. Serve input on its own connection so it never queues behind a frame. | Bench in the PR: fps, read-to-drawn ms and game CPU at 1280×720 and 2560×1440 against the S1 numbers; `frame_bench` unchanged. |
+| 1.4b | Input coverage for the game view: modifier, Tab and function keys on the `/input` wire, and relative mouse (pointer lock) for free-look games. | Unit tests on key names; Playwright: pointer-locked moves reach `/state.input`. |
 | 1.5 | Transport: reuse `runtime/functor-runtime-web/scrubber.js` and `timeline-model.js` against the native session's `/time`, `/rewind`, `/input-log`. No redrawn copy. | Existing `timeline-model` tests still pass; Playwright: pause, step, rewind change `/state.frame`. |
 | 1.6 ∥ | `functor mcp --http <port>`: the same tool router over rmcp's HTTP transport with a bearer token. Add an `app_context` tool the core fills in (open view, selected file, active session). | Existing MCP tests on both transports. |
 | 1.7 | Agent runner: a task = one conversation; run through `mis-agent` with the session attached via 1.6; stream events to the UI; Stop; persist tasks and transcripts per project under `~/.functor/app/`. A `FakeAgent` that replays recorded events drives the tests. | Unit tests with `FakeAgent`; one opt-in live test. |
 | 1.8 | Chat UI: composer (D15) with context chips, steps, cards for captures and changes with "open in canvas", result pill. | Playwright with `FakeAgent`. |
 | 1.9 | Changes: per-task diff of the working tree, diff view in the canvas, Keep / Revert. | Test on a temp git repo. |
-| 1.9b | Code view with the game (D16): the Code and Diff tabs can keep the game visible, side by side or as a draggable mini view, or hidden; the choice is remembered. The game element is the same one as 1.4, moved, not a second stream. | Playwright: each mode shows a live frame beside the code; one stream open. |
+| 1.9b | Code view with the game (D16): the Code and Diff tabs can keep the game visible, side by side or as a draggable mini view, or hidden; the choice is remembered. A fourth choice puts the game in its own window. The control is a button strip in the tab bar after Game / Code / Diff. The game element is the same one as 1.4, moved, not a second stream. | Playwright: each mode shows a live frame beside the code; one stream open. |
 | 1.10 | Tasks view (D12): grouped list, task page with what the agent was given, steps, change, before/after captures. | Playwright with `FakeAgent`. |
 | 1.11 | Window and launcher: wry window around the served page; `functor app` finds and starts `functor-app`; macOS only. | `functor app --headless --print` in CI; window checked by hand once. |
 | 1.12 | Docs page for the app, and `pr-visuals` captures of the three views. | — |
@@ -139,3 +141,37 @@ the headset; focus mode; agents visible in the world.
 - Several projects in a repo → project switcher.
 - Chat history → per project.
 - Launch → `functor app`; bare `functor` unchanged.
+
+## Spike findings
+
+### S1 — window and game view (2026-11-11)
+
+Branch `spike/app-s1-window-game-view` (not for merge). `examples/hello`,
+release builds, 1280×720 unless stated; another workload was running, so read
+absolute numbers as ±10%.
+
+| Route | Where | fps | p50 ms | bytes/frame | game CPU | game fps (idle ≈ 50) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `POST /capture` polling | wry window | 37–40 | 25 | 1.1 MB PNG | 25% | 40 |
+| `POST /capture` polling, 2560×1440 | bench loop | 23 | 42 | 4.2 MB | 52% | 24 |
+| `GET /stream` JPEG prototype | wry window | 47–49 | 10 | 137 KB | 44% | 48 |
+| `GET /stream` JPEG prototype, 2560×1440 | bench loop | 33 | 44 | 488 KB | 110% | 44 |
+
+- **Verdict: build `/stream` (task 1.4a).** Polling meets the target at 720p
+  but encodes PNG on the render thread, which slows the game itself by about a
+  quarter, fails at Retina size, and makes input wait behind a capture (43 ms
+  round trip against about 20 ms with the stream).
+- The prototype's remaining cost is the JPEG encoder; at 1440p it is the
+  limit. Encoding at view size and a faster encoder are the expected fixes
+  (not measured).
+- A hidden session tops out near 50 fps on every route because hidden mode
+  sleeps a fixed 16 ms per frame.
+- wry 0.57 and tao 0.37 run alongside the hidden GLFW child without trouble;
+  plain-http loopback pages load with no extra configuration.
+- WKWebView's `fetch` rejects `multipart/x-mixed-replace`; an `<img>` shows it
+  at full rate.
+- Input forwarding through `POST /input` works for letters, digits, arrows,
+  Space, Enter and Escape and absolute mouse. Missing: modifier, Tab and
+  function keys, and relative mouse (task 1.4b).
+- Not checked: how input feels with a person at the keyboard, Retina size in
+  the window itself, scenes heavier than `hello`.

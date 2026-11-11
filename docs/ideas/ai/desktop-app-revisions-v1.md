@@ -157,7 +157,8 @@ layout. The workbench was chosen.
   container, attach and model picker on the left, mic and send on the right.
 
 - **D16 — the game stays visible while reading code.** The Code and Diff tabs
-  offer the game side by side, as a draggable mini view, or hidden.
+  offer the game side by side, as a draggable mini view, in its own window, or
+  hidden, chosen from a button strip in the tab bar.
 
 - **D17 — the game view says little.** One small context banner ("Click to
   play" / "Esc to release" / "Mirrored from headset"); timeline marks explain
