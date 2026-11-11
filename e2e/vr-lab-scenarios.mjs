@@ -261,6 +261,15 @@ const inventoryScenarios = {
 // along it (`Gun`).
 
 export const armory = { feet: [4, 0, 0], yaw: Math.PI / 2 };
+// Where the hand's root sits in each gun's layout frame (`Gun.placement`,
+// `Longarm.placement`, `Pump.placement`): the handle up the fist, so the bore
+// is 12° (14°) above the hand's -Z. A scenario holding a gun scripts its
+// right hand as the gun's fist (`fists`), so the geometry below is the
+// fist's; the controller is injected at fist ∘ placement.
+const deg = (r) => (r * 180) / Math.PI;
+export const PISTOL_FIST = { position: [0, -0.020051, 0.021077], orientation: pitch(deg(-0.21)) };
+export const RIFLE_FIST = { position: [0, -0.003108, 0.012794], orientation: pitch(deg(-0.25)) };
+export const SHOTGUN_FIST = { position: [0, -0.021437, 0.017474], orientation: pitch(deg(-0.25)) };
 export const PISTOL = [0.15, 0.9675, -0.5];
 // The resting pistol's grip, where a level hand takes it.
 // The grip in the pistol's frame (`Gun.grip`): where the hand holds it.
@@ -328,6 +337,7 @@ const armoryScenarios = {
   // there. Hold the trigger down: still one shot. Let it out, aim low between
   // the targets and pull: a shot into the backstop, no hit.
   "armory-fire": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: behindGun,
@@ -348,6 +358,7 @@ const armoryScenarios = {
   // stops at the wall, and the trigger only clicks. Drawn back clear of it,
   // the trigger fires (into the wall).
   "armory-wall": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: atArmoryWall,
@@ -367,6 +378,7 @@ const armoryScenarios = {
   // already held and draw it: no jump, no shot until the trigger is let out
   // and pulled again.
   "armory-holster": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: atArmoryHip,
@@ -391,6 +403,7 @@ const armoryScenarios = {
   // trigger down (one shot), push the barrel into the wall (refused), fire
   // clear of it, then holster and draw it with the trigger held.
   "armory-tour": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: behindGun,
@@ -508,6 +521,7 @@ const rifleScenarios = {
   // Two hands on the rifle, raised; aimed at each target by the support hand
   // alone, one pull each: three hits.
   "rifle-aim": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: behindRifle,
@@ -517,6 +531,7 @@ const rifleScenarios = {
   // Semi with the trigger held 30 steps: one shot. A on the right hand
   // switches to full-auto: held 30 steps, 5.
   "rifle-auto": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: behindRifle,
@@ -538,6 +553,7 @@ const rifleScenarios = {
   // the pull only clicks; both hands are drawn on its grips, their ghosts
   // through the wall. Drawn back clear, the pull fires.
   "rifle-wall": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: atArmoryWall,
@@ -559,6 +575,7 @@ const rifleScenarios = {
   // The primary hand held still by the wall, the support swings the barrel
   // left into it: it stops there, turned short of the support.
   "rifle-swing": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: atArmoryWall,
@@ -576,6 +593,7 @@ const rifleScenarios = {
   // Slid along the foregrip and back: still two hands, the aim unchanged.
   // Dragged 15 cm off the axis: it breaks off at 12 cm, back to one hand.
   "rifle-break": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: aboveRifle,
@@ -595,6 +613,7 @@ const rifleScenarios = {
   // the rifle where it is and carries it. The right takes its grip again:
   // two hands. Then the left lets go: one hand. No pop at any of them.
   "rifle-handoff": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: behindRifle,
@@ -616,6 +635,7 @@ const rifleScenarios = {
   // each target, a full-auto burst and a held semi pull, the barrel into the
   // wall, the support slid and broken off, the hand-off both ways, racked.
   "rifle-tour": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: aboveRifle,
@@ -776,6 +796,7 @@ const ammoScenarios = {
   // Aimed at the right target: thirteen pulls, thirteen hits; the fourteenth
   // clicks dry.
   "ammo-pistol": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: behindGun,
@@ -791,6 +812,7 @@ const ammoScenarios = {
   // Two hands, full-auto, the trigger held 200 steps: 31 shots, then a dry
   // click. Let out and pulled again: another.
   "ammo-rifle": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: behindRifle,
@@ -807,6 +829,7 @@ const ammoScenarios = {
   // onto it. The left hand takes it, puts it in the pouch and takes it back
   // out. The chambered round still fires; then dry.
   "ammo-mag": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: atSpares,
@@ -836,6 +859,7 @@ const ammoScenarios = {
   // takes it back (still 8) and sets it down; the pistol holstered. Then the
   // rifle on full-auto to empty (30+1 to 0+0), and a dry click.
   "ammo-tour": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: behindGun,
@@ -968,6 +992,7 @@ const reloadScenarios = {
   // locked and let go: home, chambered (11+1). Then 12 shots at the right
   // target, and the 13th pull dry: locked back again.
   "reload-pistol": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: behindGun,
@@ -990,6 +1015,7 @@ const reloadScenarios = {
 
   // A spare upside down at the mouth, pushed up the well: never latches.
   "reload-reversed": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: atWell,
@@ -1005,6 +1031,7 @@ const reloadScenarios = {
 
   // A rifle magazine lined up at the pistol's mouth, pushed: never latches.
   "reload-wrong": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: atWell,
@@ -1021,6 +1048,7 @@ const reloadScenarios = {
   // 1 cm a step): it stays latched to 7 cm, then leaves into the hand where
   // it is, easing back to how the hand holds it.
   "reload-cancel": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: atWell,
@@ -1040,6 +1068,7 @@ const reloadScenarios = {
   // Then all the way: the chambered round thrown out loose (a prop that
   // falls), the next chambered (11+1).
   "reload-rack": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: atPort,
@@ -1062,6 +1091,7 @@ const reloadScenarios = {
   // let go: eight rounds thrown out, the oldest two taken away past the cap
   // of six; the six come to rest.
   "reload-rounds": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: atPort,
@@ -1151,6 +1181,7 @@ const reloadScenarios = {
   // the charging handle pulled all the way back and let go: the chambered
   // round thrown out, the next chambered (29+1). Then it fires.
   "reload-rifle": {
+    fists: { right: RIFLE_FIST },
     station: 3,
     neck: NECK,
     spectator: atRifleWell,
@@ -1264,6 +1295,7 @@ const shotgunScenarios = {
   // on the bench. Raised, aimed at the middle target: seven shots, each
   // pumped (the hull out, the next fed); the next pull clicks dry.
   "shotgun-loop": {
+    fists: { right: SHOTGUN_FIST },
     station: 3,
     neck: NECK,
     spectator: atLoadingPort,
@@ -1293,6 +1325,7 @@ const shotgunScenarios = {
   // thrown out live, the next fed (0+1). The left hand picks it up where it
   // came to rest, turns it to lie along the bore, and loads it (1+1).
   "shotgun-eject": {
+    fists: { right: SHOTGUN_FIST },
     station: 3,
     neck: NECK,
     spectator: atLoadingPort,
@@ -1326,6 +1359,7 @@ const shotgunScenarios = {
   // pumped (the hull out), a second shot (the pattern turned), pumped, a
   // third; then the next pull dry.
   "shotgun-tour": {
+    fists: { right: SHOTGUN_FIST },
     station: 3,
     neck: NECK,
     spectator: atArmoryHip,
@@ -1377,6 +1411,7 @@ const handViewScenarios = {
   // behind. Holstered; the rifle taken in two hands and pushed into the
   // wall: both hands drawn on its grips, their ghosts through it.
   "hand-view-guns": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: besideWall,
@@ -1397,6 +1432,7 @@ const handViewScenarios = {
       { frames: 30, right: { to: [0.3, 1.0, -0.1], turn: ID }, spectator: besideRifleWall },
       { frames: 25, right: { to: ARMORY_RH } },
       { frames: 1, right: { squeeze: 0 } },
+      { frames: 1, right: {}, fists: { right: RIFLE_FIST } },
       ...takeRifle,
       raise(),
       { frames: 30, ...bothTo(RIFLE_WALL.near) },
@@ -1463,6 +1499,7 @@ const handScenarios = {
   // The pistol taken and aimed low, the trigger let in by steps: the index
   // follows it.
   "pistol-trigger": {
+    fists: { right: PISTOL_FIST },
     station: 3,
     neck: NECK,
     spectator: behindGun,
