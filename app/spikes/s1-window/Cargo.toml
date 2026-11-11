@@ -1,0 +1,12 @@
+[package]
+name = "s1-window"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone: not a member of the root workspace.
+[workspace]
+
+[dependencies]
+wry = "0.57.2"
+tao = "0.37.2"

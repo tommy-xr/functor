@@ -1,0 +1,187 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>S1 game view</title>
+<style>
+  body { margin: 0; background: #111; color: #ccc; font: 12px monospace; }
+  canvas { display: block; width: 1280px; height: 720px; outline: none; }
+  #hud { padding: 4px 8px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="720" tabindex="0"></canvas>
+<div id="hud">starting…</div>
+<script>
+// Mode comes from ?mode= (the server substitutes the default).
+const params = new URLSearchParams(location.search);
+const MODE = params.get("mode") || "__MODE__";
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+
+// ---- stats: per-frame latency samples, flushed every 2 s to /stats
+let lat = [], frames = 0, bytes = 0, windowStart = performance.now();
+const post = (body) => fetch("/stats", { method: "POST", body: JSON.stringify(body) });
+function pct(sorted, p) { return sorted[Math.round((sorted.length - 1) * p)]; }
+setInterval(() => {
+  const now = performance.now();
+  const s = lat.slice().sort((a, b) => a - b);
+  const stats = {
+    mode: MODE,
+    fps: +(frames / ((now - windowStart) / 1000)).toFixed(1),
+    p50: s.length ? +pct(s, 0.5).toFixed(1) : null,
+    p95: s.length ? +pct(s, 0.95).toFixed(1) : null,
+    bytes: frames ? Math.round(bytes / frames) : 0,
+    inputSent, inputDropped,
+  };
+  hud.textContent = JSON.stringify(stats);
+  post(stats);
+  lat = []; frames = 0; bytes = 0; windowStart = now;
+}, 2000);
+
+async function draw(blob) {
+  const bmp = await createImageBitmap(blob);
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close();
+}
+
+// ---- capture mode: request → decode → draw, one in flight
+async function pollLoop() {
+  for (;;) {
+    const t0 = performance.now();
+    try {
+      const res = await fetch("/game/capture", { method: "POST" });
+      const blob = await res.blob();
+      await draw(blob);
+      lat.push(performance.now() - t0);
+      frames++; bytes += blob.size;
+    } catch (e) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+}
+
+// ---- stream mode: parse multipart/x-mixed-replace JPEG parts off one fetch.
+// Latency is readback (X-Capture-Ms, unix ms) → drawn.
+async function streamLoop() {
+  const res = await fetch("/game/stream");
+  const reader = res.body.getReader();
+  let buf = new Uint8Array(0);
+  const dec = new TextDecoder();
+  const append = (chunk) => { const b = new Uint8Array(buf.length + chunk.length); b.set(buf); b.set(chunk, buf.length); buf = b; };
+  const find = (seq, from = 0) => {
+    outer: for (let i = from; i <= buf.length - seq.length; i++) {
+      for (let j = 0; j < seq.length; j++) if (buf[i + j] !== seq[j]) continue outer;
+      return i;
+    }
+    return -1;
+  };
+  const CRLF2 = [13, 10, 13, 10];
+  let latest = null, drawing = false;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    append(value);
+    for (;;) {
+      const h = find(CRLF2);
+      if (h < 0) break;
+      const head = dec.decode(buf.subarray(0, h));
+      const len = +(/content-length:\s*(\d+)/i.exec(head) || [])[1];
+      const cap = +(/x-capture-ms:\s*([\d.]+)/i.exec(head) || [])[1];
+      if (!len || buf.length < h + 4 + len) break;
+      const body = buf.slice(h + 4, h + 4 + len);
+      buf = buf.slice(h + 4 + len);
+      latest = { body, cap };
+    }
+    // Draw only the newest complete part; skip any that piled up.
+    if (latest && !drawing) {
+      const { body, cap } = latest; latest = null; drawing = true;
+      draw(new Blob([body], { type: "image/jpeg" })).then(() => {
+        lat.push(Date.now() - cap); frames++; bytes += body.length; drawing = false;
+      });
+    }
+  }
+}
+
+// ---- input: page events → POST /game/input, sent in order, one in flight;
+// consecutive mouse moves coalesce so a 120 Hz pointer can't back the queue up.
+let surface = { w: 1280, h: 720 };
+fetch("/game/state").then((r) => r.json()).then((s) => {
+  const m = s.input && s.input.mouse;
+  if (m && m.surface_width) surface = { w: m.surface_width, h: m.surface_height };
+});
+const queue = [];
+let sending = false, inputSent = 0, inputDropped = 0;
+function send(cmd) {
+  const last = queue[queue.length - 1];
+  if (cmd.type === "mouse_move" && last && last.type === "mouse_move") queue[queue.length - 1] = cmd;
+  else queue.push(cmd);
+  pump();
+}
+async function pump() {
+  if (sending) return;
+  sending = true;
+  while (queue.length) {
+    const cmd = queue.shift();
+    await fetch("/game/input", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cmd) });
+    inputSent++;
+  }
+  sending = false;
+}
+// KeyboardEvent.code → the debug wire's Key names (letters, digits, arrows,
+// space, enter, escape — all `Key::from_name` accepts).
+function keyName(code) {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+  if (/^Digit\d$/.test(code)) return code.slice(5);
+  return { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+           Space: "space", Enter: "enter", Escape: "escape" }[code];
+}
+function onKey(e, down) {
+  if (e.repeat) return e.preventDefault();
+  const key = keyName(e.code);
+  if (!key) { inputDropped++; return; }
+  e.preventDefault();
+  send({ type: "key", key, down });
+}
+canvas.addEventListener("keydown", (e) => onKey(e, true));
+canvas.addEventListener("keyup", (e) => onKey(e, false));
+const toSurface = (e) => ({
+  x: Math.round(e.offsetX / canvas.clientWidth * surface.w),
+  y: Math.round(e.offsetY / canvas.clientHeight * surface.h),
+});
+canvas.addEventListener("mousemove", (e) => send({ type: "mouse_move", ...toSurface(e) }));
+const BUTTONS = ["left", "middle", "right"];
+canvas.addEventListener("mousedown", (e) => { canvas.focus(); send({ type: "mouse_move", ...toSurface(e) }); send({ type: "mouse_button", button: BUTTONS[e.button], down: true }); });
+canvas.addEventListener("mouseup", (e) => send({ type: "mouse_button", button: BUTTONS[e.button], down: false }));
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); send({ type: "mouse_wheel", delta: Math.sign(-e.deltaY) }); }, { passive: false });
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// ---- selftest: drive the handlers above with synthetic events, then read
+// back /state.input through the same proxy and report it.
+async function selftest() {
+  await new Promise((r) => setTimeout(r, 3000));
+  const read = async (phase) => {
+    await new Promise((r) => setTimeout(r, 600));
+    const s = await (await fetch("/game/state")).json();
+    post({ selftest: phase, held_keys: s.input.held_keys,
+           mouse: { x: s.input.mouse.x, y: s.input.mouse.y, buttons: s.input.mouse.buttons } });
+  };
+  const at = (x, y) => ({ clientX: canvas.offsetLeft + x, clientY: canvas.offsetTop + y, bubbles: true });
+  canvas.focus();
+  canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", key: "w", bubbles: true }));
+  canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "ArrowLeft", key: "ArrowLeft", bubbles: true }));
+  canvas.dispatchEvent(new MouseEvent("mousemove", at(320, 180)));
+  canvas.dispatchEvent(new MouseEvent("mousedown", { ...at(640, 360), button: 0 }));
+  await read("held W+Left, left button at canvas (640,360)");
+  canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW", key: "w", bubbles: true }));
+  canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "ArrowLeft", key: "ArrowLeft", bubbles: true }));
+  canvas.dispatchEvent(new MouseEvent("mouseup", { ...at(640, 360), button: 0 }));
+  await read("released");
+}
+
+(MODE === "stream" ? streamLoop : pollLoop)();
+if (params.get("selftest")) selftest();
+</script>
+</body>
+</html>
