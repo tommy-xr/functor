@@ -1662,6 +1662,49 @@ const tourScenarios = {
   },
 };
 
+// Fitted holds (`grip.fun`'s tables): the shotgun's support hand on the
+// fore-end, pumped slowly and rolled; and the ball taken at two of its
+// fitted placements (the ball's centre in the right grip's frame).
+const BALL_PLACED = [[-0.044, 0, 0.0079], [-0.044, 0, -0.0121]];
+const takeBallAt = (centre, mark) => {
+  const at = sub(BALL, centre);
+  return [
+    { frames: 25, right: { to: add(at, [0, 0.12, 0]), squeeze: 0 } },
+    { frames: 15, right: { to: at } },
+    { frames: 6, right: { squeeze: 1 }, mark },
+    { frames: 25, right: { to: add(at, [0, 0.1, 0]) }, mark: `${mark}Up` },
+    { frames: 20, right: {} },
+    { frames: 25, right: { to: at } },
+    { frames: 1, right: { squeeze: 0 } },
+    { frames: 20, right: { to: add(at, [0, 0.12, 0]) } },
+  ];
+};
+// Low on the table's right, the hand's palm side toward the camera.
+const atBallFit = { eye: [0.25, 1.2, 5.0], target: [-0.18, 1.0, 4.55], fov: 30 };
+// Left of the fore-end, above and back: the support hand on it.
+const atFore = { eye: [4.45, 1.45, -0.62], target: [4.62, 1.15, 0.13], fov: 30 };
+const fitScenarios = {
+  "fits-shotgun": {
+    fists: { right: SHOTGUN_FIST },
+    station: 3,
+    neck: NECK,
+    spectator: atFore,
+    steps: [
+      ...takeShotgun,
+      ...takeFore,
+      { frames: 40, left: { to: sgFore(SHOTGUN.fore - SHOTGUN.travel) }, mark: "back" },
+      { frames: 40, left: { to: sgFore(SHOTGUN.fore) }, mark: "home" },
+      { frames: 30, left: { turn: roll(35) }, mark: "rolled" },
+      { frames: 30, left: { turn: [0, 0, 0, 1] }, mark: "level" },
+    ],
+  },
+  "fits-ball": {
+    station: 1,
+    spectator: atBallFit,
+    steps: [...takeBallAt(BALL_PLACED[0], "spec"), ...takeBallAt(BALL_PLACED[1], "fingers")],
+  },
+};
+
 export const scenarios = {
   // Pick the ball up and throw it into the basket.
   "grab-throw": {
@@ -1917,4 +1960,5 @@ export const scenarios = {
   ...handViewScenarios,
   ...handScenarios,
   ...tourScenarios,
+  ...fitScenarios,
 };

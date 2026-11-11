@@ -90,7 +90,10 @@ type Prop = {
   latch: Option.t<Seating.Latch>,
   // A loose round come to rest: bodiless where it lies (`pose`), costing no
   // physics or read-back, until a hand takes it.
-  lying: bool
+  lying: bool,
+  // Held, the free prop's fitted placement nearest where it was taken
+  // (`Grip.nearestGrasp`): the hand's pose on it.
+  grasp: Option.t<float>
 }
 
 // Prop poses and velocities are rig-local.
@@ -139,8 +142,14 @@ type Model = {
   nextMag: float,
   nextRound: float,
   // Loose rounds taken out of the world past `looseCap` (oldest first).
-  lost: float
+  lost: float,
+  // Each tracked hand as drawn after the last step (`shownAll`), for
+  // `/state`.
+  shown: List<Shown>
 }
+
+/// A hand as drawn: its root (rig-local) and fingers (`shownOn`).
+type Shown = { side: Hold.Side, at: Input.pose, fingers: Hand.FingerPose }
 
 let zero = Hold.zero
 // Slower than this, a release is a drop.
@@ -156,7 +165,8 @@ let spawned = (k: Props.Kind): Prop =>
       | Props.Mag(fits, _) => Option.Some(Ammo.full(fits))
       | _ => Option.None,
     latch: Option.None,
-    lying: false }
+    lying: false,
+    grasp: Option.None }
 
 /// The shotgun starts unloaded: its tube is loaded from the box.
 let emptyShotgun: Gun.State = { Gun.stocked(Pump.weapon) with ammo: Ammo.unloaded(Pump.weapon.well.kind) }
@@ -194,7 +204,7 @@ let init: Model =
     handView: Accepted, glove: Skinned, stickUp: false, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
     feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon),
     shotgun: emptyShotgun, shellBox: 0.0, buttonA: (false, false),
-    stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
+    stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0, shown: []
   }, 1.0)
 
 // --- input ---
@@ -502,13 +512,24 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
         let taken =
           (match p.held with
            | Option.Some(h) => Hold.handOff(side, g, h)
-           | Option.None => Hold.grab(side, g, p.pose, if Option.isSome(p.slot) || Option.isSome(required) then Option.None else Props.grip(k))) in
+           | Option.None => Hold.grab(side, g, p.pose, if Option.isSome(p.slot) || Option.isSome(required) then Option.None else authoredOf(k, side, Hold.relative(g, p.pose)))) in
         let held =
           (match required with
            | Option.Some(a) => Hold.settleInto(a, taken)
            | Option.None => taken) in
-        taking({ p with held: Option.Some(held), support: stays, fore: false, slot: Option.None, scored: false, lying: false })))
+        // A free prop's fitted placement nearest where it is held.
+        let grasp = Grip.graspedFor(k) |> Option.map((gr) => let (i, _) = Grip.nearestGrasp(gr, side, held.offset) in i) in
+        taking({ p with held: Option.Some(held), support: stays, fore: false, slot: Option.None, scored: false, lying: false, grasp: grasp })))
       |> Option.defaultValue(m)
+
+/// The grip a free prop at `offset` (in a hand's grip frame) snaps to: its
+/// authored grip (the bottle's neck), or the nearest of its fitted
+/// placements it snaps to (`Grip.snapGrasp`), if any.
+let authoredOf = (k: Props.Kind, side: Hold.Side, offset: Input.pose): Option.t<Input.pose> =>
+  match Props.grip(k) with
+  | Option.Some(a) => Option.Some(a)
+  | Option.None =>
+    Grip.graspedFor(k) |> Option.bind((gr) => Grip.snapGrasp(gr, side, offset))
 
 /// Hands hover what they reach, and a fresh squeeze takes it; both hands
 /// pressing on one prop, the nearer (`Hold.pick`). A hand at the slide of a
@@ -935,6 +956,29 @@ let pumping = (m: Model, st: Stations.Station, world: World): (Model, List<Relea
       let (slide, strokes) = Gun.pullTo(w.rack, start, Option.Some(z)) in
       stroked((withGun(m, k, { g with slide: slide }), [], []), st, world, k, side, Option.Some(h.side), gun, if List.isEmpty(strokes) then zero else Hold.velocity(h.history), strokes))
 
+/// A gun held at its grip, settled, but not on its grip as it is now (a hot
+/// reload moved it, `Fitted`): settling into it again.
+let regrip = (p: Prop): Prop =>
+  if not Props.gripRequired(p.kind) || p.fore then p
+  else
+    let regripped = p.held |> Option.bind((h) => Props.grip(p.kind) |> Option.filter((a) => Option.isNone(h.snapTo) && not Hold.near(h.offset, Hold.inverse(a)))
+      |> Option.map((a) => Hold.settleInto(a, h))) in
+    if Option.isSome(regripped) then { p with held: regripped } else p
+
+// A pistol held on its grip as it was before a reload moved the grip 1 cm:
+// it settles into the grip as it is now, and is left alone there; held by
+// its foregrip alone, a rifle keeps its hold.
+expect (
+  let grip = Props.grip(Props.Pistol) |> Option.defaultValue(Hold.origin) in
+  let old = Hold.compose(Hold.p(0.0, 0.01, 0.0), Hold.inverse(grip)) in
+  let held: Hold.Held = { side: Hold.Right, offset: old, accepted: old, history: [], snapTo: Option.None } in
+  let p = regrip({ spawned(Props.Pistol) with held: Option.Some(held), slot: Option.None }) in
+  let settled = List.range(4.0) |> List.fold((h, _) => Hold.settle(h), p.held |> Option.defaultValue(held)) in
+  let rifle = { spawned(Props.Rifle) with held: Option.Some(held), fore: true, slot: Option.None } in
+  Option.isNone(settled.snapTo) && Hold.near(settled.offset, Hold.inverse(grip))
+    && regrip({ p with held: Option.Some(settled) }).held == Option.Some(settled) && regrip(rifle) == rifle
+)
+
 /// One fixed step, given the world and the props as read back (`read`): the
 /// next model (with the step's `pulses`), and the props let go (their
 /// velocity and spin to give the world).
@@ -960,7 +1004,7 @@ let step = (m: Model, st: Stations.Station, world: World, read: (Prop) => Prop, 
   let grabbed = grabbing(supported, (leftEdge, rightEdge), slots, stowed, st.id == Stations.armory.id) in
   let (moved, released) = holdAll(grabbed, st, world.sweep, slots, stowed, t) in
   let held = { moved with props: moved.props |> List.map((p) =>
-    if alone |> List.any((k) => k == p.kind) then { p with held: p.held |> Option.map((h) => Hold.settleInto(Props.grip(p.kind) |> Option.defaultValue(Longarm.grip), h)) } else p) } in
+    if alone |> List.any((k) => k == p.kind) then { p with held: p.held |> Option.map((h) => Hold.settleInto(Props.grip(p.kind) |> Option.defaultValue(Longarm.grip), h)) } else regrip(p)) } in
   // Then the magazines (and shells) at the wells, the slides and the pump,
   // from the poses the holds just accepted.
   let (seated, fell, seatFelt) = seating(held, st, world) in
@@ -1119,7 +1163,7 @@ let tick = (m: Model, dt: float, tts: float) =>
     [Physics.setVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.velocity)),
      Physics.setAngularVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.spin))]) in
   let buzzes = next.pulses |> List.map((se) => let (side, e) = se in Pulses.effect(side, e)) in
-  (next, Effect.batch(List.append(throws, buzzes)))
+  ({ next with shown: shownAll(next) }, Effect.batch(List.append(throws, buzzes)))
 
 let solid = (named: (string, Stations.Box)) =>
   let (name, b) = named in
@@ -1322,35 +1366,44 @@ let onOf = (m: Model, side: Hold.Side): On =>
     racked |> Option.bind((k) => let p = propOf(m, k) in p.held |> Option.map((h) => OnSlide(p, h)))
       |> Option.defaultValue(OnNothing)
 
-/// Where a hand on `on` is drawn: tracked, or (`Accepted`) on what it holds
-/// as the hold accepted it. A holding hand at the grip its prop's pose
-/// implies; a rifle's (or shotgun's) support hand on the foregrip (the
-/// fore-end, where the pump has it); a hand racking a slide (or charging
-/// handle) on it, where the slide has it. Steering always uses the tracked
-/// pose.
-let drawnAt = (m: Model, on: On, g: Input.pose): Input.pose =>
-  if m.handView == Tracked then g
-  else
-  match on with
-  | OnHeld(_, h) => Hold.gripOn(h)
-  | OnFore(p, h) => Longarm.supportOn(foreOf(p.kind), pumpOf(m, p.kind), h.accepted, wantedOf(m, p, h), g)
-  | OnSlide(p, h) => Gun.rackOn(weaponOf(p.kind), (gunOf(m, p.kind)).slide, h.accepted, wantedOf(m, p, h), g)
-  | OnNothing => g
-
-/// Where a hand is drawn (`drawnAt`, tracked at `g`).
-let drawnHand = (m: Model, side: Hold.Side, g: Input.pose): Input.pose =>
-  drawnAt(m, onOf(m, side), g)
-
-/// How a hand on `on` curls its fingers (`Props.fingers`): on its prop, or,
+/// Where a hand on `on` is drawn and how it curls its fingers. Drawn
+/// tracked, or (`Accepted`) on what it holds as the hold accepted it: a
+/// holding hand at the grip its prop's pose implies; a support hand on the
+/// fore-end at its fitted slide and roll nearest its tracked ones
+/// (`Grip.supportAt`; where the pump has the fore-end); a hand racking a
+/// slide (or charging handle) at its fitted placement on it, where the slide
+/// has it (`Grip.rackAt`). Steering always uses the tracked pose. Its
+/// fingers: a free prop's fitted placement's (`Grip.graspPose`), a support
+/// hand's fitted at its slide and roll, else its prop's (`Props.fingers`);
 /// empty, as its controller's trigger and grip have them.
-let fingersOn = (m: Model, side: Hold.Side, on: On): Hand.FingerPose =>
+let shownOn = (m: Model, side: Hold.Side, on: On, g: Input.pose): (Input.pose, Hand.FingerPose) =>
   let trigger = triggerOf(m.xr, side) in
+  let view = (p: Input.pose) => if m.handView == Tracked then g else p in
   match on with
   // Held by the foregrip alone, a long gun is held at its fore.
-  | OnHeld(p, _) => Props.fingers(p.kind, if p.fore then Props.AtFore else Props.AtGrip, trigger)
-  | OnFore(p, _) => Props.fingers(p.kind, Props.AtFore, trigger)
-  | OnSlide(p, _) => Props.fingers(p.kind, Props.AtSlide, trigger)
-  | OnNothing => Hand.empty(trigger, squeezeOf(m.xr, side))
+  | OnHeld(p, h) =>
+    (view(Hold.gripOn(h)),
+     if p.fore then Props.fingers(p.kind, Props.AtFore, trigger)
+     else p.grasp |> Option.bind((i) => Grip.graspPose(p.kind, i)) |> Option.defaultValue(Props.fingers(p.kind, Props.AtGrip, trigger)))
+  | OnFore(p, h) =>
+    (match Grip.supportFor(p.kind) with
+     | Option.Some(su) =>
+       let (at, fingers) = Grip.supportAt(su, side, pumpOf(m, p.kind), Hold.relative(wantedOf(m, p, h), g)) in
+       (view(Hold.compose(h.accepted, at)), fingers)
+     | Option.None => (g, Props.fingers(p.kind, Props.AtFore, trigger)))
+  | OnSlide(p, h) =>
+    (Grip.rackAt(p.kind, side, (gunOf(m, p.kind)).slide.pull) |> Option.map((at) => view(Hold.compose(h.accepted, at))) |> Option.defaultValue(g),
+     Props.fingers(p.kind, Props.AtSlide, trigger))
+  | OnNothing => (g, Hand.empty(trigger, squeezeOf(m.xr, side)))
+
+/// Each tracked hand as drawn (`shownOn`).
+let shownAll = (m: Model): List<Shown> =>
+  [Hold.Left, Hold.Right] |> List.concatMap((side) =>
+    gripOf(m.xr, side) |> Option.map((g) => let (at, f) = shownOn(m, side, onOf(m, side), g) in [{ side: side, at: at, fingers: f }]) |> Option.defaultValue([]))
+
+/// Where a hand is drawn (`shownOn`, tracked at `g`).
+let drawnHand = (m: Model, side: Hold.Side, g: Input.pose): Input.pose =>
+  let (at, _) = shownOn(m, side, onOf(m, side), g) in at
 
 /// A sampled input with only keys pressed and XR, for checks.
 let snapshotOf = (pressed: List<Key.t>, xr: Option.t<Input.xr>): Input.snapshot =>
@@ -1600,16 +1653,14 @@ let skinOf = (shown: (Hold.Side, Hand.Thumb, List<(float, float)>)): Scene.t =>
   let (side, thumb, levels) = shown in
   Skin.scene(side, thumb, levels)
 
-/// A hand's glove where `drawnAt` puts it, and (drawn elsewhere by over
+/// A hand's glove where `shownOn` puts it, and (drawn elsewhere by over
 /// `Hold.ghostDistance`) a translucent ghost, the same glove, where it really
 /// is.
 let handScene = (m: Model, st: Stations.Station, side: Hold.Side): (Scene.t, Scene.t) =>
   match gripOf(m.xr, side) with
   | Option.None => (Scene.group([]), Scene.group([]))
   | Option.Some(g) =>
-    let on = onOf(m, side) in
-    let drawn = drawnAt(m, on, g) in
-    let fingers = fingersOn(m, side, on) in
+    let (drawn, fingers) = shownOn(m, side, onOf(m, side), g) in
     let key = if side == Hold.Left then "glove-left" else "glove-right" in
     let glove = match m.glove with
       | Capsule => Scene.group([

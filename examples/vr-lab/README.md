@@ -47,8 +47,9 @@ Empty, the grip curls the middle, ring and little fingers round the
 controller's handle and the trigger the index. Holding, each prop takes
 its fitted pose (`Props.fingers`, generated into `fitted.fun`; see Grips):
 a gun's index hooked on its trigger and pulled in with it, a cartridge
-pinched, a support hand on a fore-end wrapped (its fit wants the fore-end's
-placement, which the drawn support hand doesn't take yet).
+pinched, a support hand wrapped on its fore-end and a racking hand on its
+slide at their fitted placements, a free prop at the fitted placement it
+was taken nearest (see Grips).
 A hand's ghost is the same glove.
 
 The skinned glove's model: [`@webxr-input-profiles/assets`](https://www.npmjs.com/package/@webxr-input-profiles/assets)
@@ -131,14 +132,30 @@ and `grips.json` / `grips.md`, the metrics. Edit a spec, rerun (about 11 s),
 look. The three guns hold by their solved placements: each is laid out in
 a fist's frame (`layout`) and held at `placement` in it, checked in as data
 (generated into `fitted.fun`; an expect in `grip.fun` keeps them current;
-a gun already held keeps its old hold across a hot reload until retaken).
+a gun already held settles into a reloaded hold).
 The handles' rake now runs up
 the fist, so a held pistol points 12° above the grip's -Z, the rifle and
 shotgun 14°; a two-hand aim steers the layout's frame, so the barrel still
-runs from the primary fist to the support. The other props keep their
-authored grips. Each spec's fit becomes the pose the game draws
-(`fitted.fun`, a buried digit keeping its old preset): rerun with
-`--write` after a spec edit, or `grip.fun`'s expects fail.
+runs from the primary fist to the support. Each spec's fit becomes the
+pose the game draws (`fitted.fun`, a buried digit keeping its old preset):
+rerun with `--write` after a spec edit, or `grip.fun`'s expects fail
+(`Grip.fingerprint` hashes every input a fit reads).
+
+A fit costs 50-300 ms, so the game only looks fits up. A support hand on a
+fore-end is drawn at its tracked slide along it and roll about it, clamped
+to a grid of fitted placements (`Grip.Slider`, generated into
+`fitted.fun` as a table), its fingers blended from the four cells round
+it; mirrored for the left hand. A racking hand sits at its slide's fitted
+placement and moves with it. A free prop taken within 2.5 cm and 20° of
+one of a few fitted placements (`Grip.graspSets`: its spec's and some
+nudged off it) snaps there; else it is held where it was taken, with the
+nearest's pose. The gallery also shows a few of these (`gallery.fun`'s
+`views`).
+
+The thumb turns across the palm (`opposition` 0 to 1) or, where that
+sinks the thenar past its 3 mm give, abducts out of it (below 0): round a
+ball, along a brick's side. An item seats on the palm or the thenar's
+base, whichever stands proud.
 
 ## Haptics
 

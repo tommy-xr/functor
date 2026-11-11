@@ -125,7 +125,11 @@ await run("racking hand drawn on the slide", async (rt) => {
   const hand = toWorld(at("rackHeld").left.at);
   const drawn = placedAt(kids[4]);
   const ghost = placedAt(kids[6]);
-  check(drawn && len(sub(drawn, end)) < 1e-4, `drawn at the slide's end (${drawn && (len(sub(drawn, end)) * 1000).toFixed(3)} mm), ${(len(sub(end, hand)) * 100).toFixed(1)} cm short of the tracked hand`);
+  // At its fitted placement on the slide (`/state`'s `shown`), back with it: within 6 cm of the slide's end.
+  const shownAt = m.shown.find((h) => h.side.$ctor === "Hold.Left")?.at.position;
+  const shownW = shownAt && toWorld([shownAt.x, shownAt.y, shownAt.z]);
+  check(drawn && shownW && len(sub(drawn, shownW)) < 1e-4 && len(sub(drawn, end)) < 0.06,
+    `drawn at its fitted placement on the slide, ${drawn && (len(sub(drawn, end)) * 100).toFixed(1)} cm from its end, ${(len(sub(end, hand)) * 100).toFixed(1)} cm short of the tracked hand`);
   check(ghost && len(sub(ghost, hand)) < 1e-4, `its ghost at the tracked hand (${ghost && (len(sub(ghost, hand)) * 1000).toFixed(3)} mm)`);
 });
 

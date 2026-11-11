@@ -267,29 +267,6 @@ expect (
     && Hold.near3((Hold.compose(rifle, layout)).position, fist.position) && foreGap(fore, 0.0, rifle, hand) < 0.0001
 )
 
-// --- what the support hand is drawn at ---
-
-/// Where the support hand at `hand` is drawn on foregrip `f` (slid back
-/// `pull`) of a weapon accepted at `accepted` and wanted at `wanted`: carried
-/// with it where the level stopped it short, its fist on the foregrip line,
-/// between its ends.
-let supportOn = (f: Fore, pull: float, accepted: Input.pose, wanted: Input.pose, hand: Input.pose): Input.pose =>
-  let moved = Hold.compose(accepted, Hold.relative(wanted, hand)) in
-  let local = (Hold.relative(accepted, moved)).position in
-  let z = Math.clamp(f.layout.position.z - f.far + pull, f.layout.position.z - f.near + pull, local.z) in
-  Hold.at(Quat.add(accepted.position, Quat.rotate(accepted.orientation, Quat.v3(f.layout.position.x, f.layout.position.y, z))), moved.orientation)
-
-// Unblocked, a hand on the line is drawn where it is; stopped 10 cm short,
-// it is drawn 10 cm back with the rifle; past the end, at the end.
-expect (
-  let rifle = Gun.heldAt(weapon, levelHand) in
-  let hand = Hold.at(ahead(level, 0.3), Quat.yaw(0.3)) in
-  let back = Hold.at(Quat.add(rifle.position, Quat.v3(0.0, 0.0, 0.1)), rifle.orientation) in
-  Hold.near(supportOn(fore, 0.0, rifle, rifle, hand), hand)
-    && Hold.near(supportOn(fore, 0.0, back, rifle, hand), Hold.at(Quat.add(hand.position, Quat.v3(0.0, 0.0, 0.1)), hand.orientation))
-    && Hold.near3((supportOn(fore, 0.0, rifle, rifle, Hold.at(ahead(level, 0.6), Quat.identity))).position, ahead(level, foreFar))
-)
-
 // --- the look ---
 
 let part = (sx: float, sy: float, sz: float, x: float, y: float, z: float) =>

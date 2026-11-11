@@ -999,6 +999,16 @@ let ghostOf = (m: Game.Model, side: Hold.Side): bool =>
 let trackedOf = (m: Game.Model, side: Hold.Side): Input.pose => Game.gripOf(m.xr, side) |> Option.defaultValue(Hold.origin)
 let asTracked = (m: Game.Model): Game.Model => { m with handView: Game.Tracked }
 
+// A left support hand drawn at a fitted placement on gun `k` (at `gun`, its
+// fore-end back `pull`): `Grip.supportAt` takes it to itself, within 1 mm.
+let onFitted = (k: Props.Kind, pull: float, gun: Input.pose, drawn: Input.pose): bool =>
+  Grip.supportFor(k) |> Option.map((su) =>
+    let rel = Hold.relative(gun, drawn) in
+    let (at, _) = Grip.supportAt(su, Hold.Left, pull, rel) in
+    Quat.length(Quat.sub(at.position, rel.position)) < 0.001 && Quat.angle(at.orientation, rel.orientation) < 0.001) |> Option.defaultValue(false)
+// A gun's pose as its hold accepted it.
+let acceptedOf = (p: Game.Prop): Input.pose => p.held |> Option.map((h) => h.accepted) |> Option.defaultValue(Hold.origin)
+
 // The pistol pushed through the stand-in wall with the hand: the hand drawn
 // on its grip at the wall, ghosted; in `Tracked`, where it is. The other
 // hand, holding nothing, where it is.
@@ -1009,34 +1019,36 @@ expect (
     && Hold.near(drawnOf(m, Hold.Left), trackedOf(m, Hold.Left))
 )
 // Both hands pushed on through the stand-in wall: the right drawn on the
-// rifle's grip and the left on its foregrip, where the wall stopped it, each
-// ghosted; in `Tracked`, where they are, no ghost.
+// rifle's grip and the left at a fitted placement on its foregrip, where
+// the wall stopped it, each ghosted; in `Tracked`, where they are, no ghost.
 expect (
   let m = last(playBoth(rifleWall, ready, rifleThrough)) in
   let accepted = rifleAccepted(m) in
   m.handView == Game.Accepted && Hold.near(drawnOf(m, Hold.Right), Hold.compose(accepted, Longarm.grip))
-    && Longarm.foreGap(Longarm.fore, 0.0, accepted, (drawnOf(m, Hold.Left)).position) < 0.0001
+    && onFitted(Props.Rifle, 0.0, accepted, drawnOf(m, Hold.Left))
     && ghostOf(m, Hold.Right) && ghostOf(m, Hold.Left)
     && Hold.near(drawnOf(asTracked(m), Hold.Left), trackedOf(m, Hold.Left)) && not ghostOf(asTracked(m), Hold.Right)
 )
-// The pistol's slide pulled 2 cm: the racking hand drawn where it is (on the
-// slide's line, the pistol unblocked), no ghost. Pulled 4 cm past the
-// travel: drawn at the slide's end, ghosted, and still there with the
-// pistol's hand lost; in `Tracked`, where it is.
+// The pistol's slide pulled 2 cm: the racking hand drawn at its fitted
+// placement on the slide, 2 cm back. Pulled 4 cm past the travel: drawn at
+// the slide's end, ghosted, and still there with the pistol's hand lost; in
+// `Tracked`, where it is.
 expect (
   let rack = (back: float) => playBoth(Game.noWorld, last(racked), [(lefty(onSlideUp(0.0), 0.0), upHold), (lefty(onSlideUp(0.0), 1.0), upHold), (lefty(onSlideUp(back), 1.0), upHold)]) in
   let part = last(rack(0.02)) in
   let past = last(rack(Gun.slideTravel + 0.04)) in
   let lost = last(playBoth(Game.noWorld, past, [(lefty(onSlideUp(Gun.slideTravel + 0.04), 1.0), Game.away)])) in
-  part.gun.slide.hand == Option.Some(Hold.Left) && Hold.near(drawnOf(part, Hold.Left), onSlideUp(0.02)) && not ghostOf(part, Hold.Left)
-    && Hold.near(drawnOf(past, Hold.Left), onSlideUp(Gun.slideTravel)) && ghostOf(past, Hold.Left)
-    && lost.gun.slide.hand == Option.Some(Hold.Left) && Hold.near(drawnOf(lost, Hold.Left), onSlideUp(Gun.slideTravel))
+  let racking = (m: Game.Model, back: float) =>
+    Grip.rackAt(Props.Pistol, Hold.Left, back) |> Option.map((at) => Hold.near(drawnOf(m, Hold.Left), Hold.compose(acceptedOf(pistol(m)), at))) |> Option.defaultValue(false) in
+  part.gun.slide.hand == Option.Some(Hold.Left) && racking(part, 0.02)
+    && racking(past, Gun.slideTravel) && ghostOf(past, Hold.Left)
+    && lost.gun.slide.hand == Option.Some(Hold.Left) && racking(lost, Gun.slideTravel)
     && Hold.near(drawnOf(asTracked(past), Hold.Left), trackedOf(past, Hold.Left))
 )
-// The fore-end pulled 5 cm past the pump's travel: the support drawn where
-// the fore-end stops, ghosted.
+// The fore-end pulled 5 cm past the pump's travel: the support drawn at a
+// fitted placement on it where it stops, ghosted.
 expect (
   let m = last(play2(last(pumped), List.range(8.0) |> List.map((i) => (foreAt(0.3 - 0.02 * (i + 1.0), 1.0), sgStill)))) in
   Game.supportOf(shotgun(m)) == Option.Some(Hold.Left) && Math.abs(m.shotgun.slide.pull - Pump.pumpTravel) < 0.0001
-    && Hold.near3((drawnOf(m, Hold.Left)).position, (foreOf(pumpFist, Pump.foreNear - Pump.pumpTravel, 0.0, 0.0)).position) && ghostOf(m, Hold.Left)
+    && onFitted(Props.Shotgun, Pump.pumpTravel, acceptedOf(shotgun(m)), drawnOf(m, Hold.Left)) && ghostOf(m, Hold.Left)
 )

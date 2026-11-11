@@ -25,6 +25,9 @@
 // (both hands' fingers redrawn each frame). The extra draw is added to the
 // aimed shotgun's worst frame too: a trigger moving under the aim.
 //
+// Last, the ball grabbed eight times a step at a time: a grab's extra step
+// cost (it picks the ball's fitted placement), set on the aimed shotgun's.
+//
 // From `GET /frames`: `step` (one fixed step's producer work: sampledInput,
 // tick, physics) and `draw` (once a frame), min / median / p95 / max. The
 // summary compares the MIN column: wall-clock medians swing with DVFS and
@@ -36,8 +39,8 @@
 //   npm run bench:vr-lab -- --capsule   # the capsule glove (G first) instead of the skinned
 import { Worker } from "node:worker_threads";
 import { sleep } from "./mcp-rpc.mjs";
-import { launch, play } from "./xr-scenario.mjs";
-import { project, scenarios } from "./vr-lab-scenarios.mjs";
+import { launch, play, sub } from "./xr-scenario.mjs";
+import { BALL, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8294;
 // Each scenario with the capsule glove: G pressed before it starts.
@@ -195,3 +198,35 @@ const regripFrame = (sg.step.min + sg.draw.min + regrip / 2) * QUEST;
 console.log(`both hands' fingers redrawn: +${regrip.toFixed(0)} µs a draw (medians); one hand's under the aimed shotgun, Quest (×${QUEST}) ${regripFrame.toFixed(0)} µs (${pct(regripFrame)} of ${BUDGET_US.toFixed(0)})`);
 const bothFrame = (sg.step.min + sg.draw.min + regrip) * QUEST;
 console.log(`both hands' fingers redrawn under the aimed shotgun, Quest (×${QUEST}) ${bothFrame.toFixed(0)} µs (${pct(bothFrame)} of ${BUDGET_US.toFixed(0)})`);
+
+// The ball taken at its spec's placement (its centre in the right grip's
+// frame), held, let go in place; eight times. A grab picks the prop's fitted
+// placement (`Grip.nearestGrasp`): each grab's step against the steps after.
+const BALL_IN_HAND = [-0.044, 0, 0.0079];
+const grabs = {
+  station: 1,
+  steps: [
+    { frames: 30, right: { to: sub(BALL, BALL_IN_HAND), squeeze: 0 } },
+    ...Array.from({ length: 8 }, (_, i) => [
+      { frames: 1, right: { squeeze: 1 }, mark: `grab${i}` },
+      { frames: 10, right: {} },
+      { frames: 1, right: { squeeze: 0 } },
+      { frames: 8, right: {} },
+    ]).flat(),
+  ],
+};
+const grabbed = new Set();
+const grabFrames = await stepwise(grabs, async ({ state, mark }) => {
+  if (mark?.startsWith("grab")) grabbed.add(state.frame);
+});
+const stepOf = (f) => f.sim_us - f.draw_us;
+const firstGrab = Math.min(...grabbed);
+const grabStep = stats(grabFrames.filter((f) => grabbed.has(f.frame)).map(stepOf));
+const otherStep = stats(grabFrames.filter((f) => !grabbed.has(f.frame) && f.frame > firstGrab).map(stepOf));
+console.log(`\nthe ball grabbed ${grabbed.size} times, a step at a time, µs`);
+console.log(`  ${"".padEnd(5)} ${["min", "med", "p95", "max"].map((h) => h.padStart(7)).join(" ")}`);
+console.log(row("grab", grabStep));
+console.log(row("other", otherStep));
+const grabExtra = grabStep.min - otherStep.min;
+const grabFrame = (sg.step.min + grabExtra + sg.draw.min) * QUEST;
+console.log(`a grab's step: +${grabExtra.toFixed(0)} µs (mins); on the aimed shotgun's frame, Quest (×${QUEST}) ${grabFrame.toFixed(0)} µs (${pct(grabFrame)} of ${BUDGET_US.toFixed(0)})`);
