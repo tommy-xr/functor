@@ -9,3 +9,4 @@
 *.trace text eol=lf
 # Generated from Rust by ts-rs and byte-compared by its drift test.
 tools/functor-sdk/src/generated/*.ts text eol=lf
+app/ui/src/generated/*.ts text eol=lf
