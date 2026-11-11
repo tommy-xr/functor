@@ -14,18 +14,27 @@ npm run demo:vr-lab -- grab-throw out.gif --mp4 out.mp4 --still out.png
 npm run grips:vr-lab -- out/                       # the grip gallery: a contact sheet per held item
 ```
 
+**The hand's pose** is the controller's aim orientation at its grip position
+(`Game.gripOf`). The grip pose's -Z runs up the controller's handle (on a
+Touch, 60° above where it points); the hand, and everything it holds, takes
+-Z as the way it points. Scripted samples without an aim keep the grip's turn.
+Stick locomotion (`Game.Walk`) moves and turns tracked poses into the
+station's frame at the same boundary, so nothing past it changes.
+
 | Input | Action |
 | --- | --- |
 | `1`-`9` | jump to that station and reset it |
-| menu | next station (reset) |
+| menu | next station (reset); you land over its spot, wherever you stand |
+| left stick | walk, along where you look |
+| right stick left/right | snap turn 30° |
 | grip (squeeze) | grab what's in reach; open to let go |
 | trigger | fire the held gun (station 3) |
 | grip on the shotgun's fore-end | hold it; draw it back and home to pump |
 | B / Y (holding the rifle's grip), `F` | the rifle's selector: semi / full-auto |
 | B / Y (holding the pistol) | its slide release, when locked back |
 | A / X (on a gun's trigger hand), `M` | drop the gun's magazine |
-| `H` / thumbstick click | draw a holding hand where it is tracked, or (the default) where its blocked prop implies |
-| `G` / thumbstick up (either hand) | switch the glove: skinned (the default) or capsules |
+| `H` / right thumbstick click | draw a holding hand where it is tracked, or (the default) where its blocked prop implies |
+| `G` / left thumbstick click | switch the glove: skinned (the default) or capsules |
 
 `GET /state` shows the station, both hands (`tracked`, `squeezed`, `armed`,
 `hover`), `handView`, `glove`, the props (`held`, and `pose`/`velocity` read back from
@@ -132,10 +141,10 @@ look. The three guns hold by their solved placements: each is laid out in
 a fist's frame (`layout`) and held at `placement` in it, checked in as data
 (generated into `fitted.fun`; an expect in `grip.fun` keeps them current;
 a gun already held keeps its old hold across a hot reload until retaken).
-The handles' rake now runs up
-the fist, so a held pistol points 12° above the grip's -Z, the rifle and
-shotgun 14°; a two-hand aim steers the layout's frame, so the barrel still
-runs from the primary fist to the support. The other props keep their
+The guns keep their solved positions but
+not the solve's turn (`Gun.levelled`): each bore runs along the hand's -Z,
+where it points; a two-hand aim steers the layout's frame, so the barrel
+still runs from the primary fist to the support. The other props keep their
 authored grips. Each spec's fit becomes the pose the game draws
 (`fitted.fun`, a buried digit keeping its old preset): rerun with
 `--write` after a spec edit, or `grip.fun`'s expects fail.
@@ -322,7 +331,7 @@ and take the pistol; the pouch takes a magazine.
 `e2e/vr-lab-armory.mjs`.
 
 Worn checks still open: whether the pistol sits naturally in the hand (the
-barrel along the grip pose's -Z), whether shots land where the sights look,
+barrel along the hand's -Z), whether shots land where the sights look,
 the trigger thresholds on a real trigger, the recoil and fire pulse's feel,
 and drawing from the thigh holster.
 
@@ -345,9 +354,12 @@ own grips and bore (`Longarm.weapon`).
   step to that pose, like any held prop (`Physics.sweep`, rotation-aware), and
   both grips and the muzzle come from the pose it accepts. Tracking only
   steers; the accepted pose never feeds back.
-- **Slide and break.** Along the foregrip the support slides freely. Past
-  12 cm off the primary hand's axis, or 8 cm past either end of the foregrip,
-  it breaks off: a break pulse, and the hand must open before it takes the
+- **Slide and break.** Along the foregrip the support slides freely. Taking
+  it needs the hand within 6 cm of the foregrip line; once supporting, it is
+  forgiving (`Longarm.keeps`): measured from the two-hand aim line, it only
+  breaks 60 cm off it, 25 cm past either end, or with the aim swung 150° from
+  the primary hand, so a quick pull or a shot's kick keeps the grip. Broken:
+  a break pulse, and the hand must open before it takes the
   foregrip again. Opened, it lets go with a release pulse. Either way the
   rifle stays where the aim had it on that step, then eases back into the
   primary hand (2 cm, 8.6° a step at most).
@@ -515,8 +527,8 @@ loose rounds taken away (`lost`), are what the station was reset with.
 and `latch`, and `lost`. `npm run test:vr-lab` runs `e2e/vr-lab-ammo.mjs` and
 `e2e/vr-lab-reload.mjs` (the shotgun's tube and pump: `e2e/vr-lab-shotgun.mjs`).
 
-Worn checks still open: reaching the thumbstick down on the trigger hand
-without shifting the grip, the readouts' legibility at arm's length, whether
+Worn checks still open: reaching A/X on the trigger hand without shifting
+the grip, the readouts' legibility at arm's length, whether
 the dry click reads as a dry pull, and finding the pouch with a magazine.
 Reloading: whether the 4 cm / 0.85 latch is too sticky or too strict, the
 seat depth's feel and its click, the slide's and charging handle's stroke
