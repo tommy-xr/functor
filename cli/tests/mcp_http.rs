@@ -255,6 +255,14 @@ fn http_without_the_token_env_is_a_startup_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("FUNCTOR_MCP_TOKEN"), "{stderr}");
     assert_eq!(stderr.trim().lines().count(), 1, "{stderr}");
+    // A token that could never match a header (here a trailing newline) too.
+    let output = functor()
+        .args(["mcp", "--http", "0"])
+        .env("FUNCTOR_MCP_TOKEN", format!("{TOKEN}\n"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success() && String::from_utf8_lossy(&output.stderr).contains("FUNCTOR_MCP_TOKEN"));
 }
 
 #[test]
@@ -273,6 +281,13 @@ fn requests_without_the_exact_token_get_401() {
         .unwrap()
         .status();
     assert_eq!(status, 401);
+    // The scheme is case-insensitive (RFC 9110); the token is not.
+    let auth = |value: String| {
+        let request = client().post(&server.url).header("Authorization", value);
+        request.send().unwrap().status().as_u16()
+    };
+    assert_eq!(auth(format!("bearer {}", TOKEN.to_uppercase())), 401);
+    assert_ne!(auth(format!("bearer {TOKEN}")), 401);
     // rmcp's loopback `Host` check stays on behind the token (DNS rebinding).
     let status = client()
         .post(&server.url)

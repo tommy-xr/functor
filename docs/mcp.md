@@ -61,18 +61,20 @@ FUNCTOR_MCP_TOKEN=$(openssl rand -hex 32) functor mcp --http 0 --attach http://1
 - **Loopback only.** It binds `127.0.0.1`; `0` picks a free port. Exactly one
   `[mcp] listening on <url>` line on stderr gives the real URL; stdout carries
   nothing.
-- **Bearer token.** `FUNCTOR_MCP_TOKEN` is required (never a flag: argv is
-  visible to other local users); starting without it is an error. Every request
-  must send `Authorization: Bearer <token>` or gets `401`. The token is not
+- **Bearer token.** `FUNCTOR_MCP_TOKEN` (visible ASCII) is required — never a
+  flag: argv is visible to other local users; starting without it is an error.
+  Every request must send `Authorization: Bearer <token>` (the token exact, the
+  scheme in any case) or gets `401`. The token is not
   passed on to launched games or the Node code runner.
 - **`Host` check.** Requests whose `Host` is not loopback (`localhost`,
   `127.0.0.1`, `::1`) get `403` from `/mcp`, against DNS rebinding.
 - **Sessions are shared.** Every MCP connection sees the same game sessions.
 - **Lifecycle.** The server stops on SIGINT/SIGTERM (Ctrl-C on Windows) or when
-  its **stdin reaches EOF** — the convention for a child: the host keeps a pipe
-  to stdin open and closes it (or dies) to stop the server, which works on every
-  OS. Stdin is not watched when it is a terminal, so starting it with
-  `< /dev/null` stops it at once. Shutdown kills launched games; attached ones
+  its **stdin reaches EOF** — the convention for a child, which works on every
+  OS: the host must pipe stdin and hold it open, and closes it (or dies) to stop
+  the server. An inherited `/dev/null` (`< /dev/null`, a GUI launch, a
+  non-interactive background job) therefore stops it at once; a terminal is not
+  watched. Shutdown kills launched games; attached ones
   keep running.
 
 ### `app_context`

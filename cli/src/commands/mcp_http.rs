@@ -2,8 +2,10 @@
 //! host (e.g. a desktop app) that runs this server as a child and hands its URL
 //! to an agent. Loopback only, bearer-token gated (docs/mcp.md).
 
+use std::future::Future as _;
 use std::io::{self, IsTerminal as _, Read as _};
 use std::sync::Arc;
+use std::task::{Context, Waker};
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -27,9 +29,11 @@ const MAX_APP_CONTEXT_BYTES: usize = 64 * 1024;
 
 pub fn token_from_env() -> io::Result<String> {
     match std::env::var(TOKEN_ENV) {
-        Ok(token) if !token.is_empty() => Ok(token),
+        // Visible ASCII only: header parsers trim whitespace, so a token with a
+        // trailing newline would silently never match.
+        Ok(token) if !token.is_empty() && token.bytes().all(|b| b.is_ascii_graphic()) => Ok(token),
         _ => Err(io::Error::other(format!(
-            "`functor mcp --http` needs a bearer token: set {TOKEN_ENV} to a secret clients will send as `Authorization: Bearer <token>`"
+            "`functor mcp --http` needs a bearer token: set {TOKEN_ENV} to a secret of visible ASCII characters that clients send as `Authorization: Bearer <token>`"
         ))),
     }
 }
@@ -58,21 +62,30 @@ pub async fn serve(server: FunctorMcp, port: u16, token: String) -> io::Result<(
         .await
         .map_err(|error| io::Error::other(format!("cannot listen on 127.0.0.1:{port}: {error}")))?;
     let address = listener.local_addr()?;
+    // Poll once so the signal handlers exist before the URL is announced: a
+    // host may signal as soon as it reads the line.
+    let mut signal = std::pin::pin!(shutdown_signal());
+    if signal.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready() {
+        return Ok(());
+    }
     eprintln!("[mcp] listening on http://{address}/mcp");
 
     tokio::select! {
         result = axum::serve(listener, app) => result,
-        _ = shutdown_signal() => Ok(()),
+        _ = signal => Ok(()),
         _ = stdin_closed() => Ok(()),
     }
 }
 
-/// 401 unless `Authorization: Bearer <token>` matches, compared in constant time.
+/// 401 unless `Authorization: Bearer <token>` matches (scheme case-insensitive,
+/// token exact and compared in constant time).
 async fn require_token(State(token): State<Arc<str>>, request: Request, next: Next) -> Response {
     let presented = request
         .headers()
         .get(header::AUTHORIZATION)
-        .and_then(|value| value.as_bytes().strip_prefix(b"Bearer "));
+        .and_then(|value| value.as_bytes().split_at_checked(7))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case(b"bearer "))
+        .map(|(_, presented)| presented);
     match presented {
         Some(presented) if bool::from(presented.ct_eq(token.as_bytes())) => next.run(request).await,
         _ => (
@@ -97,7 +110,8 @@ async fn put_app_context(State(server): State<FunctorMcp>, body: Bytes) -> Respo
 }
 
 /// Resolve when stdin reaches EOF — the parent closed it or died — so a child
-/// server never outlives its host. Not watched on a terminal (interactive use
+/// server never outlives its host — so a host must pipe stdin and hold it
+/// open (an inherited `/dev/null` stops the server at once). Not watched on a terminal (interactive use
 /// stops with Ctrl-C). A plain thread, since a tokio stdin read cannot be
 /// cancelled and would stall runtime shutdown after a signal.
 async fn stdin_closed() {
@@ -107,7 +121,13 @@ async fn stdin_closed() {
     let (closed, wait) = tokio::sync::oneshot::channel::<()>();
     std::thread::spawn(move || {
         let mut buffer = [0u8; 512];
-        while matches!(io::stdin().read(&mut buffer), Ok(n) if n > 0) {}
+        loop {
+            match io::stdin().read(&mut buffer) {
+                Ok(0) => break,
+                Err(error) if error.kind() != io::ErrorKind::Interrupted => break,
+                _ => {}
+            }
+        }
         let _ = closed.send(());
     });
     let _ = wait.await;

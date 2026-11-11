@@ -94,7 +94,7 @@ jobs:
         env:
           FUNCTOR_BIN: ${{ github.workspace }}/target/debug/functor${{ runner.os == 'Windows' && '.exe' || '' }}
 
-      # `functor mcp --http` against the real binary built above (no GPU:
-      # its one launched game runs headless).
+      # `functor mcp --http` against the real binary (cargo builds it for the
+      # test; no GPU: its one launched game runs headless).
       - name: Test MCP over HTTP
         run: cargo test -p functor-cli --test mcp_http
