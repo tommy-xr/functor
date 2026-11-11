@@ -33,9 +33,9 @@ let center = Quat.v3(0.0, 0.0475, (stockBack - muzzleAhead) / 2.0)
 let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 
 /// Where the primary hand's root sits in `layout`: the shotgun grip spec's
-/// solved placement (`Grip.specs`; kept current by an expect there), less
-/// its 4 mm sideways part. The muzzle 14° above the grip's -Z.
-let placement: Input.pose = Hold.at(Quat.v3(0.0, 0.0 - 0.021437, 0.017474), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.0 - 0.25))
+/// solved placement (`Fitted`, generated). The muzzle 14° above the grip's
+/// -Z.
+let placement: Input.pose = Fitted.shotgunGripPlacement
 
 /// The primary hand's pose in the shotgun's frame: its pistol grip. Like
 /// the rifle's, only taken there.
@@ -43,7 +43,7 @@ let grip: Input.pose = Hold.compose(layout, placement)
 let gripZone = 0.07
 
 /// The support line: the fore-end, wherever the pump has it.
-let fore: Longarm.Fore = { grip: layout, hand: placement, near: foreNear, far: foreFar, travel: pumpTravel }
+let fore: Longarm.Fore = { layout: layout, hand: placement, near: foreNear, far: foreFar, travel: pumpTravel }
 
 /// How a shell is guided into the loading port: a 3 cm catch, 5 cm to pull
 /// out of; lying along the bore, its head back, within ~32° (dot 0.85) to

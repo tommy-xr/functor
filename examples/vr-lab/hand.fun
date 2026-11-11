@@ -143,10 +143,11 @@ let pinch: FingerPose = { thumb: uniformThumb(0.5, 0.1), index: uniform(0.5), mi
 /// An open palm: the ball, the brick.
 let palmOpen: FingerPose = { thumb: uniformThumb(0.2, 0.3), index: uniform(0.18), middle: uniform(0.2), ring: uniform(0.22), little: uniform(0.25) }
 /// A gun's grip `f` (its index resting on the trigger), the trigger pulled
-/// `trigger` (0..1): the index curls in as far as `onTrigger`'s does.
+/// `trigger` (0..1): the index curls in as far as `onTrigger`'s does, at
+/// most a fist's.
 let pullTrigger = (f: FingerPose, trigger: float): FingerPose =>
   let t = Math.clamp01(trigger) in
-  { f with index: { curl: f.index.curl + t * (triggerPulled - triggerRest), tip: f.index.tip + t * (hookPulled - hookRest) } }
+  { f with index: { curl: Math.min(1.0, f.index.curl + t * (triggerPulled - triggerRest)), tip: Math.min(1.0, f.index.tip + t * (hookPulled - hookRest)) } }
 
 /// An empty hand on its controller: the grip (`squeeze`) curls the middle,
 /// ring and little fingers from relaxed to wrapped round the handle, the

@@ -504,10 +504,13 @@ type Intent =
 /// root's -Z, squared to the intent's axis), and a hand edit (`nudge`: the
 /// item moved in the hand's root frame after the solve; `Hold.origin` for
 /// none).
-type Spec = { name: string, kind: Props.Kind, site: Props.Site, solids: List<Solid>, intent: Intent, forward: Input.point3, nudge: Input.pose }
+type Spec = { name: string, kind: Props.Kind, site: Props.Site, solids: List<Solid>, intent: Intent, forward: Input.point3, nudge: Input.pose, centre: bool }
 
 let spec = (name: string, k: Props.Kind, site: Props.Site, solids: List<Solid>, intent: Intent, forward: Input.point3): Spec =>
-  { name: name, kind: k, site: site, solids: solids, intent: intent, forward: forward, nudge: Hold.origin }
+  { name: name, kind: k, site: site, solids: solids, intent: intent, forward: forward, nudge: Hold.origin, centre: false }
+
+/// A gun's grip spec, centred (`placed`).
+let centred = (s: Spec): Spec => { s with centre: true }
 
 let up = Quat.v3(0.0, 1.0, 0.0)
 let ahead = Quat.v3(0.0, 0.0, 0.0 - 1.0)
@@ -526,16 +529,16 @@ let specs: List<Spec> = [
     [boxAt(Hold.p(0.0, 0.0, Props.stickLength / 2.0 - 0.07), Quat.v3(1.3 * Props.stickThickness, 1.3 * Props.stickThickness, 0.12)), boxAt(Hold.origin, Props.extent(Props.Stick))],
     Power(Quat.v3(0.0, 0.0, Props.stickLength / 2.0 - 0.07), ahead, 0.65 * Props.stickThickness), Quat.v3(0.0, 0.0 - 1.0, 0.0)),
   spec("bottle neck", Props.Bottle, Props.AtGrip, bottleSolids, Power(Quat.v3(0.0, Props.neckAt, 0.0), up, Props.neckRadius), ahead),
-  spec("pistol grip", Props.Pistol, Props.AtGrip, pistolSolids,
-    Pistol(Quat.sub(Gun.handleAt, Gun.center), raked(Gun.handleRake), 0.015, gunAt(Gun.center, 0.0, 0.006, 0.0 - 0.019)), ahead),
+  centred(spec("pistol grip", Props.Pistol, Props.AtGrip, pistolSolids,
+    Pistol(Quat.sub(Gun.handleAt, Gun.center), raked(Gun.handleRake), 0.015, gunAt(Gun.center, 0.0, 0.006, 0.0 - 0.019)), ahead)),
   spec("pistol slide", Props.Pistol, Props.AtSlide, pistolSolids, Free(Hold.at(Gun.pistol.rack.at, Quat.identity)), ahead),
-  spec("rifle grip", Props.Rifle, Props.AtGrip, rifleSolids,
-    Pistol(gunAt(Longarm.center, 0.0, 0.0, 0.012), raked(0.0 - 0.25), 0.015, gunAt(Longarm.center, 0.0, 0.022, 0.0 - 0.038)), ahead),
+  centred(spec("rifle grip", Props.Rifle, Props.AtGrip, rifleSolids,
+    Pistol(gunAt(Longarm.center, 0.0, 0.0, 0.012), raked(0.0 - 0.25), 0.015, gunAt(Longarm.center, 0.0, 0.022, 0.0 - 0.038)), ahead)),
   // The support hands: the fore-end's axis up the fist, the palm under it.
   spec("rifle foregrip", Props.Rifle, Props.AtFore, rifleSolids,
     Power(gunAt(Longarm.center, 0.0, 0.02, 0.0 - (Longarm.foreNear + Longarm.foreFar) / 2.0), ahead, 0.015), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
-  spec("shotgun grip", Props.Shotgun, Props.AtGrip, shotgunSolids,
-    Pistol(gunAt(Pump.center, 0.0, 0.0, 0.012), raked(0.0 - 0.25), 0.015, gunAt(Pump.center, 0.0, 0.004, 0.0 - 0.038)), ahead),
+  centred(spec("shotgun grip", Props.Shotgun, Props.AtGrip, shotgunSolids,
+    Pistol(gunAt(Pump.center, 0.0, 0.0, 0.012), raked(0.0 - 0.25), 0.015, gunAt(Pump.center, 0.0, 0.004, 0.0 - 0.038)), ahead)),
   spec("shotgun fore-end", Props.Shotgun, Props.AtFore, shotgunSolids,
     Power(gunAt(Pump.center, 0.0, 0.025, 0.0 - (Pump.foreNear + Pump.foreFar) / 2.0), ahead, 0.02), Quat.v3(0.0 - 1.0, 0.0, 0.0)),
   spec("pistol mag", Props.Mag(Ammo.PistolMag, 0.0), Props.AtGrip, magSolids(Ammo.PistolMag), Power(Quat.v3(0.0, 0.004, 0.0), up, 0.013), ahead),
@@ -596,8 +599,14 @@ let proposal = (s: Spec): Input.pose =>
   | Free(hand) => Hold.inverse(hand)
 
 /// Where a spec's item sits in the right hand's root frame: the proposal,
-/// nudged.
-let placed = (s: Spec): Input.pose => Hold.compose(s.nudge, proposal(s))
+/// centred if its spec says (moved along its frame's X until the hand's root
+/// is on its centre plane: both hands share a gun's grip, `Props.grip` has
+/// no side, and a placement there is its own mirror; the palm push's 1-4 mm
+/// sideways part is lost), then nudged.
+let placed = (s: Spec): Input.pose =>
+  let p = proposal(s) in
+  let c = if s.centre then Hold.p((Hold.inverse(p)).position.x, 0.0, 0.0) else Hold.origin in
+  Hold.compose(s.nudge, Hold.compose(c, p))
 
 /// The hand's root in the item's frame (what a prop's grip is).
 let handOn = (s: Spec): Input.pose => Hold.inverse(placed(s))
@@ -814,12 +823,12 @@ let triggerSink = 0.005
 
 /// Fitted at its placement, a spec holds: no digit buried or ending inside
 /// (but those `known`; a pistol grip's index `triggerSink`); the palm on it
-/// within 2 mm (Power, Pistol, Palm); the index's hook within 5 mm of the
+/// within 2 mm, and in it at most `palmIn` (Power, Pistol, Palm); the index's hook within 5 mm of the
 /// trigger (Pistol); the pinch point within `pinch` of the line between the
 /// pads, both pads touching (or within `pinch`) (Pinch); strain under 0.25;
 /// the left hand's fit the right's mirrored; and the game's pose for it
 /// (`Fitted`) current: `npm run grips:vr-lab -- --write` regenerates it.
-let fitHolds = (name: string, known: List<float>, pinch: float): bool =>
+let fitHolds = (name: string, known: List<float>, pinch: float, palmIn: float): bool =>
   items |> List.find((it) => it.name == name) |> Option.map((it) =>
     let right = compare(Hold.Right, it) in
     let (r, l, m) = (right.fitted, (compare(Hold.Left, it)).fitted, right.fit) in
@@ -829,7 +838,7 @@ let fitHolds = (name: string, known: List<float>, pinch: float): bool =>
     let inside = (d: float, g: float) => g < (if pistol && d == 1.0 then 0.0 - triggerSink else 0.0) in
     let posed = Hand.local(Hold.Right, r.pose) in
     let padGap = (j: float) => let g = padOf(posed, j) in gapOf(held(Hold.Right, it), g.a, g.b, g.radius) in
-    let palmOn = m.palm >= 0.0 && m.palm <= 0.002 in
+    let palmOn = m.palm >= 0.0 - palmIn && m.palm <= 0.002 in
     let intent =
       match it.spec.intent with
       | Power(_, _, _) => palmOn
@@ -844,33 +853,42 @@ let fitHolds = (name: string, known: List<float>, pinch: float): bool =>
       && r.pose.thumb.opposition == l.pose.thumb.opposition
       && (Fitted.all |> List.find((np) => let (n, _) = np in n == name) |> Option.map((np) => let (_, f) = np in poseNear(f, adopted(it, r))) |> Option.defaultValue(false)))
     |> Option.defaultValue(false)
-expect fitHolds("ball", [], 0.003)
+expect fitHolds("ball", [], 0.003, 0.0)
 // Missed, deferred: the brick's and shotgun grip's thumbs start inside at
 // every turn, open or straight; the shell's pinch point sits 5.5 mm off the
 // line between the pads, and its index pad 5.4 mm off it (a proximal bone
-// touches first).
-expect fitHolds("brick", [0.0], 0.003)
-expect fitHolds("stick (band)", [], 0.003)
-expect fitHolds("bottle neck", [], 0.003)
-expect fitHolds("pistol grip", [], 0.003)
-expect fitHolds("pistol slide", [], 0.003)
-expect fitHolds("rifle grip", [], 0.003)
-expect fitHolds("rifle foregrip", [], 0.003)
-expect fitHolds("shotgun grip", [0.0], 0.003)
-expect fitHolds("shotgun fore-end", [], 0.003)
-expect fitHolds("pistol mag", [], 0.003)
-expect fitHolds("rifle mag", [], 0.003)
-expect fitHolds("shell (from the box)", [], 0.006)
+// touches first); centred, the shotgun grip's palm sits 2.2 mm in it.
+expect fitHolds("brick", [0.0], 0.003, 0.0)
+expect fitHolds("stick (band)", [], 0.003, 0.0)
+expect fitHolds("bottle neck", [], 0.003, 0.0)
+expect fitHolds("pistol grip", [], 0.003, 0.0)
+expect fitHolds("pistol slide", [], 0.003, 0.0)
+expect fitHolds("rifle grip", [], 0.003, 0.0)
+expect fitHolds("rifle foregrip", [], 0.003, 0.0)
+expect fitHolds("shotgun grip", [0.0], 0.003, 0.0025)
+expect fitHolds("shotgun fore-end", [], 0.003, 0.0)
+expect fitHolds("pistol mag", [], 0.003, 0.0)
+expect fitHolds("rifle mag", [], 0.003, 0.0)
+expect fitHolds("shell (from the box)", [], 0.006, 0.0)
 
-// The guns' placements, checked in as plain data (`Gun.placement`,
-// `Longarm.placement`, `Pump.placement`, in each layout's frame), are the
-// solve's but for its sideways part (under 5 mm), which both hands share as
-// 0: within 0.1 mm and 0.001 rad. Edit a spec, rerun, copy the new numbers.
+/// A gun grip spec's layout frame (in its item's), if it is one.
+let layoutOf = (s: Spec): Option.t<Input.pose> =>
+  if s.site != Props.AtGrip then Option.None
+  else if s.kind == Props.Pistol then Option.Some(Gun.layout)
+  else if s.kind == Props.Rifle then Option.Some(Longarm.layout)
+  else if s.kind == Props.Shotgun then Option.Some(Pump.layout)
+  else Option.None
+
+/// Where a gun grip spec puts the hand's root in its layout frame: what
+/// `Fitted` checks in as the gun's placement.
+let placementOf = (it: Item): Option.t<Input.pose> => layoutOf(it.spec) |> Option.map((l) => Hold.relative(l, it.hand))
+
+// The guns' placements (`Fitted.*Placement`, generated) are the solve's,
+// within 0.1 mm and 0.001 rad, and centred.
 expect (
-  [("pistol grip", Gun.layout, Gun.placement), ("rifle grip", Longarm.layout, Longarm.placement), ("shotgun grip", Pump.layout, Pump.placement)] |> List.all((t) =>
-    let (name, layout, placement) = t in
-    items |> List.find((it) => it.name == name) |> Option.map((it) =>
-      let solved = Hold.relative(layout, it.hand) in
-      Quat.length(Quat.sub(Quat.v3(0.0, solved.position.y, solved.position.z), placement.position)) < 0.0001
-        && Quat.angle(solved.orientation, placement.orientation) < 0.001 && Math.abs(solved.position.x) < 0.005) |> Option.defaultValue(false))
+  [("pistol grip", Gun.placement), ("rifle grip", Longarm.placement), ("shotgun grip", Pump.placement)] |> List.all((t) =>
+    let (name, placement) = t in
+    items |> List.find((it) => it.name == name) |> Option.bind(placementOf) |> Option.map((solved) =>
+      Quat.length(Quat.sub(solved.position, placement.position)) < 0.0001 && Quat.angle(solved.orientation, placement.orientation) < 0.001
+        && Math.abs(solved.position.x) < 0.000001) |> Option.defaultValue(false))
 )

@@ -8,8 +8,9 @@
 
 /// One item measured at its placement: its preset and fit (`Grip.compare`),
 /// the hand's root in its frame (its placement), the intent's own checks
-/// (`Grip.checksOf`), and the pose the game takes (`Grip.adopted`).
-type Row = { name: string, intent: string, compared: Grip.Compared, hand: Input.pose, checks: Grip.Checks, adopted: Hand.FingerPose }
+/// (`Grip.checksOf`), the pose the game takes (`Grip.adopted`), and a gun
+/// grip's placement in its layout frame (`Grip.placementOf`).
+type Row = { name: string, intent: string, compared: Grip.Compared, hand: Input.pose, checks: Grip.Checks, adopted: Hand.FingerPose, placement: Option.t<Input.pose> }
 
 type Model = { rows: List<Row> }
 
@@ -17,7 +18,7 @@ let init: Model = { rows: [] }
 
 let rowOf = (it: Grip.Item): Row =>
   let c = Grip.compare(Hold.Right, it) in
-  { name: it.name, intent: Grip.intentName(it.spec.intent), compared: c, hand: it.hand, checks: Grip.checksOf(Hold.Right, it, c.fitted), adopted: Grip.adopted(it, c.fitted) }
+  { name: it.name, intent: Grip.intentName(it.spec.intent), compared: c, hand: it.hand, checks: Grip.checksOf(Hold.Right, it, c.fitted), adopted: Grip.adopted(it, c.fitted), placement: Grip.placementOf(it) }
 
 let tick = (m: Model, dt, tts) => if List.isEmpty(m.rows) then { rows: Grip.items |> List.map(rowOf) } else m
 

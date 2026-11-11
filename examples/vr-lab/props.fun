@@ -69,15 +69,15 @@ let radius = (k: Kind): float =>
   | _ => Quat.length(extent(k)) / 2.0
 
 /// From a point to where a hand takes the prop: its surface (0 inside a box,
-/// negative inside the ball), or a gun's grip (the rifle's pistol grip; its
-/// foregrip is `Longarm.foreGap`).
+/// negative inside the ball), or a gun's layout fist (by its grip; the
+/// rifle's pistol grip's; its foregrip is `Longarm.foreGap`).
 let gap = (k: Kind, q: Input.point3, pose: Input.pose): float =>
   let local = Quat.rotate(Quat.conj(pose.orientation), Quat.sub(q, pose.position)) in
   match k with
   | Ball => Quat.length(local) - ballRadius
-  | Pistol => Quat.length(Quat.sub(local, Gun.grip.position))
-  | Rifle => Quat.length(Quat.sub(local, Longarm.grip.position))
-  | Shotgun => Quat.length(Quat.sub(local, Pump.grip.position))
+  | Pistol => Quat.length(Quat.sub(local, Gun.layout.position))
+  | Rifle => Quat.length(Quat.sub(local, Longarm.layout.position))
+  | Shotgun => Quat.length(Quat.sub(local, Pump.layout.position))
   | _ =>
     let e = extent(k) in
     let out = (v: float, size: float) => Math.max(0.0, Math.abs(v) - size / 2.0) in
@@ -166,14 +166,16 @@ type Site = | AtGrip | AtFore | AtSlide
 
 /// The fingers on a prop: each held item's fitted pose (`Fitted`, generated
 /// from `Grip.specs`). `trigger` is the hand's trigger, pulling a gun's index
-/// in (`Hand.pullTrigger`). A cartridge (no spec) is pinched; the rifle's
-/// charging handle wrapped. A support hand keeps the power wrap: its fit
-/// assumes the fore-end's placement (its axis up the fist), which the drawn
-/// support hand (`Longarm.supportOn`, turned as tracked) doesn't take yet.
+/// in (`Hand.pullTrigger`). A cartridge (no spec) is pinched. Only the guns
+/// sit at their spec's placement; the other props are held where they were
+/// grabbed (the bottle snapped to its neck), so their fit is the spec's
+/// placement's, until a grab-time fit. A hand on a fore-end or a slide keeps
+/// the power wrap: their fits want a turn the drawn hand doesn't take (it is
+/// turned as tracked: `Longarm.supportOn`, `Gun.rackOn`).
 let fingers = (k: Kind, site: Site, trigger: float): Hand.FingerPose =>
   match site with
   | AtFore => Hand.power
-  | AtSlide => if k == Pistol then Fitted.pistolSlide else Hand.power
+  | AtSlide => Hand.power
   | AtGrip =>
     (match k with
      | Ball => Fitted.ball

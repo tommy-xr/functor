@@ -9,7 +9,8 @@
 // The stick lies on the table at rig (-0.3, 0.9175, -0.6) along rig -Z, 0.7 m
 // long and 3.5 cm thick.
 
-import { check } from "./mcp-rpc.mjs";
+import { readFileSync } from "node:fs";
+import { ROOT, check } from "./mcp-rpc.mjs";
 import { add, qconj, qmul, qrot, quat, some, sub, xyz } from "./xr-scenario.mjs";
 
 export const project = "examples/vr-lab";
@@ -267,10 +268,16 @@ export const armory = { feet: [4, 0, 0], yaw: Math.PI / 2 };
 // right hand as the gun's fist (`fists`; each take below switches it), so
 // the geometry below is the fist's; the controller is injected at
 // fist ∘ placement.
-const deg = (r) => (r * 180) / Math.PI;
-export const PISTOL_FIST = { position: [0, -0.020051, 0.021077], orientation: pitch(deg(-0.21)) };
-export const RIFLE_FIST = { position: [0, -0.003108, 0.012794], orientation: pitch(deg(-0.25)) };
-export const SHOTGUN_FIST = { position: [0, -0.021437, 0.017474], orientation: pitch(deg(-0.25)) };
+// Read from the generated `fitted.fun` (`let pistolGripPlacement: Input.pose = { position: { x: …`).
+const FITTED = readFileSync(`${ROOT}examples/vr-lab/fitted.fun`, "utf8");
+const placement = (name) => {
+  const line = FITTED.split("\n").find((l) => l.startsWith(`let ${name}:`));
+  const v = [...line.matchAll(/[xyzw]: (0\.0 - )?([0-9.]+)/g)].map((m) => (m[1] ? -1 : 1) * Number(m[2]));
+  return { position: v.slice(0, 3), orientation: v.slice(3, 7) };
+};
+export const PISTOL_FIST = placement("pistolGripPlacement");
+export const RIFLE_FIST = placement("rifleGripPlacement");
+export const SHOTGUN_FIST = placement("shotgunGripPlacement");
 export const PISTOL = [0.15, 0.9675, -0.5];
 // The resting pistol's grip, where a level hand takes it.
 // The grip in the pistol's frame (`Gun.grip`): where the hand holds it.
@@ -1154,7 +1161,7 @@ const reloadScenarios = {
       { frames: 1, right: { squeeze: 0 } },
       { frames: 10, right: {} },
       { frames: 20, right: { to: [0.5, 1.15, -0.35] }, spectator: atRifleWell },
-      { frames: 15, right: { to: RIFLE_GRIP } },
+      { frames: 15, right: { to: RIFLE_GRIP }, fists: { right: RIFLE_FIST } },
       { frames: 6, right: { squeeze: 1 } },
       { frames: 30, right: { to: RIFLE_HAND } },
       { frames: 6, right: {} },

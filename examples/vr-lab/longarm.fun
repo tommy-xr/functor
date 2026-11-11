@@ -30,10 +30,9 @@ let center = Quat.v3(0.0, 0.0275, (stockBack - muzzleAhead) / 2.0)
 let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 
 /// Where the primary hand's root sits in `layout`: the rifle grip spec's
-/// solved placement (`Grip.specs`; kept current by an expect there), less its
-/// 1 mm sideways part. Its grip up the fist: the muzzle 14° above the
-/// grip's -Z.
-let placement: Input.pose = Hold.at(Quat.v3(0.0, 0.0 - 0.003108, 0.012794), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.0 - 0.25))
+/// solved placement (`Fitted`, generated). Its grip up the fist: the muzzle
+/// 14° above the grip's -Z.
+let placement: Input.pose = Fitted.rifleGripPlacement
 
 /// The primary hand's pose in the rifle's frame: its pistol grip. Like the
 /// pistol's, only taken there.
@@ -58,14 +57,14 @@ expect Gun.clearBelow(weapon, size)
 
 // --- the foregrip ---
 
-/// A two-handed weapon's support line: through the layout's fist (`grip`:
+/// A two-handed weapon's support line: through the layout's fist (`layout`:
 /// the layout frame, in the weapon's) parallel to the bore, from `near` to
 /// `far` ahead of it (the rifle's foregrip, or a pump's fore-end home), and
 /// how far that slides back (`travel`: a pump's; 0 for a fixed foregrip).
 /// And where the primary hand's root sits in that frame (`hand`).
-type Fore = { grip: Input.pose, hand: Input.pose, near: float, far: float, travel: float }
+type Fore = { layout: Input.pose, hand: Input.pose, near: float, far: float, travel: float }
 
-let fore: Fore = { grip: layout, hand: placement, near: foreNear, far: foreFar, travel: 0.0 }
+let fore: Fore = { layout: layout, hand: placement, near: foreNear, far: foreFar, travel: 0.0 }
 
 /// The layout frame a primary hand at `primary` holds a weapon by: what the
 /// support line and the two-hand aim are measured from.
@@ -90,7 +89,7 @@ let alongOf = (fist: Input.pose, q: Input.point3): Along =>
 /// From a point to the foregrip of a weapon at `pose`, slid back `pull`: 0
 /// on its line.
 let foreGap = (f: Fore, pull: float, pose: Input.pose, q: Input.point3): float =>
-  let a = alongOf(Hold.compose(pose, f.grip), q) in
+  let a = alongOf(Hold.compose(pose, f.layout), q) in
   let past = Math.max(0.0, Math.max(f.near - pull - a.along, a.along - (f.far - pull))) in
   Math.sqrt(a.off * a.off + past * past)
 
@@ -277,8 +276,8 @@ expect (
 let supportOn = (f: Fore, pull: float, accepted: Input.pose, wanted: Input.pose, hand: Input.pose): Input.pose =>
   let moved = Hold.compose(accepted, Hold.relative(wanted, hand)) in
   let local = (Hold.relative(accepted, moved)).position in
-  let z = Math.clamp(f.grip.position.z - f.far + pull, f.grip.position.z - f.near + pull, local.z) in
-  Hold.at(Quat.add(accepted.position, Quat.rotate(accepted.orientation, Quat.v3(f.grip.position.x, f.grip.position.y, z))), moved.orientation)
+  let z = Math.clamp(f.layout.position.z - f.far + pull, f.layout.position.z - f.near + pull, local.z) in
+  Hold.at(Quat.add(accepted.position, Quat.rotate(accepted.orientation, Quat.v3(f.layout.position.x, f.layout.position.y, z))), moved.orientation)
 
 // Unblocked, a hand on the line is drawn where it is; stopped 10 cm short,
 // it is drawn 10 cm back with the rifle; past the end, at the end.

@@ -25,19 +25,18 @@ let center = Quat.v3(0.0, 0.0025, 0.0 - 0.0475)
 let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 
 /// Where the hand's root sits in `layout`: the pistol grip spec's solved
-/// placement (`Grip.specs`; an expect there keeps it current), less its 1 mm
-/// sideways part so both hands share it. Its handle up the fist, so the
-/// muzzle sits 12° above the grip's -Z.
-let placement: Input.pose = Hold.at(Quat.v3(0.0, 0.0 - 0.020051, 0.021077), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.0 - 0.21))
+/// placement (`Fitted`, generated). Its handle up the fist, so the muzzle
+/// sits 12° above the grip's -Z.
+let placement: Input.pose = Fitted.pistolGripPlacement
 
 /// The hand's pose in the pistol's frame: its grip. A pistol is only taken
 /// there (`gripZone`), and always settles into it.
 let grip: Input.pose = Hold.compose(layout, placement)
 
-/// How near the grip a hand must be to take the pistol: the front of the
-/// barrel is out of reach, so it is never taken by the muzzle end. 8 cm: a
-/// hand at a holster (the pistol's centre) is 7.2 cm from its grip.
-let gripZone = 0.08
+/// How near the layout's fist a hand must be to take the pistol
+/// (`Props.gap`): the front of the barrel is out of reach, so it is never
+/// taken by the muzzle end.
+let gripZone = 0.07
 
 /// How a magazine (or shell) is guided into a well (`Seating`). It latches
 /// when its centre is within `entry` of where it sits at the well's mouth and
@@ -592,7 +591,7 @@ expect (let p = Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(0.4)) in Hold.near(kic
 expect (
   let p = heldAt(pistol, Hold.p(0.0, 1.2, -0.3)) in
   let up = boreOf(pistol, kicked(pistol, 1.0, p)) in
-  up.dir.y > 0.13 && up.muzzle.z > (boreOf(pistol, p)).muzzle.z
+  up.dir.y > (boreOf(pistol, p)).dir.y + 0.1 && up.muzzle.z > (boreOf(pistol, p)).muzzle.z
 )
 
 // --- the look ---

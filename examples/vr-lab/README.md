@@ -130,7 +130,9 @@ capsules white where free, green touching, red inside; the targets yellow)
 and `grips.json` / `grips.md`, the metrics. Edit a spec, rerun (about 11 s),
 look. The three guns hold by their solved placements: each is laid out in
 a fist's frame (`layout`) and held at `placement` in it, checked in as data
-(an expect in `grip.fun` keeps them current). The handles' rake now runs up
+(generated into `fitted.fun`; an expect in `grip.fun` keeps them current;
+a gun already held keeps its old hold across a hot reload until retaken).
+The handles' rake now runs up
 the fist, so a held pistol points 12° above the grip's -Z, the rifle and
 shotgun 14°; a two-hand aim steers the layout's frame, so the barrel still
 runs from the primary fist to the support. The other props keep their
