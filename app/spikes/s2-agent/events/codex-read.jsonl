@@ -1,0 +1,7 @@
+{"event":{"model":null,"session":"01a1cbb8-1953-7602-a9df-d965658a3d5a","type":"started"},"ms":1414}
+{"event":{"text":"error: Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (/Users/bryphe/.codex/config.toml): `projects./Users/bryphe/shock2quest.model` is ignored.","type":"text"},"ms":1436}
+{"event":{"text":"error: Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (/Users/bryphe/.codex/config.toml): `projects./Users/bryphe/shock2quest.model` is ignored.","type":"text"},"ms":1436}
+{"event":{"text":"I’ll check the current game state.","type":"text"},"ms":4275}
+{"event":{"text":"Current frame: **403**. The model is an empty JSON object (`{}`).","type":"text"},"ms":9035}
+{"event":{"input":66914,"output":93,"type":"usage"},"ms":9047}
+{"event":{"ok":true,"summary":"Current frame: **403**. The model is an empty JSON object (`{}`).","type":"finished"},"ms":9047}

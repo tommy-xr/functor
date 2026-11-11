@@ -1,0 +1,21 @@
+{"event":{"model":"claude-fable-5-2","session":"9c358bcb-d515-4e92-8cab-7cd8327ac969","type":"started"},"ms":537}
+{"event":{"input":21748,"output":24,"type":"usage"},"ms":2340}
+{"event":{"type":"limits","windows":[{"name":"7d","observed_at":0,"overage":false,"resets_at":1794654000000,"used_pct":79.0}]},"ms":2354}
+{"event":{"input":43693,"output":48,"type":"usage"},"ms":3147}
+{"event":{"text":"- **Current","type":"text_delta"},"ms":4435}
+{"event":{"text":" frame:** 179 ","type":"text_delta"},"ms":4435}
+{"event":{"text":"(about 2.98 se","type":"text_delta"},"ms":4435}
+{"event":{"text":"conds since start)\n- **","type":"text_delta"},"ms":4435}
+{"event":{"text":"Fact about the model:**","type":"text_delta"},"ms":4435}
+{"event":{"text":" it is","type":"text_delta"},"ms":4435}
+{"event":{"text":" currently an","type":"text_delta"},"ms":4435}
+{"event":{"text":" empty J","type":"text_delta"},"ms":4435}
+{"event":{"text":"SON object (","type":"text_delta"},"ms":4435}
+{"event":{"text":"`{}`) — the game","type":"text_delta"},"ms":4435}
+{"event":{"text":" has no model","type":"text_delta"},"ms":4436}
+{"event":{"text":" state popul","type":"text_delta"},"ms":4436}
+{"event":{"text":"ated at this point.","type":"text_delta"},"ms":4436}
+{"event":{"input":65698,"output":115,"type":"usage"},"ms":4441}
+{"event":{"text":"- **Current frame:** 179 (about 2.98 seconds since start)\n- **Fact about the model:** it is currently an empty JSON object (`{}`) — the game has no model state populated at this point.","type":"text"},"ms":4441}
+{"event":{"input":65698,"output":184,"type":"usage"},"ms":4449}
+{"event":{"ok":true,"summary":"- **Current frame:** 179 (about 2.98 seconds since start)\n- **Fact about the model:** it is currently an empty JSON object (`{}`) — the game has no model state populated at this point.","type":"finished"},"ms":4449}

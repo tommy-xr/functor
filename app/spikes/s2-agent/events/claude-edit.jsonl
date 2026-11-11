@@ -1,0 +1,20 @@
+{"event":{"model":"claude-fable-5-2","session":"b5bc96a5-021c-4888-a99d-99ad64798040","type":"started"},"ms":468}
+{"event":{"input":31460,"output":24,"type":"usage"},"ms":1841}
+{"event":{"input":{"file_path":"/private/var/folders/ng/bq9xhq897rz8n91dv2dmw74h0000gn/T/s2-agent-aa871c57-aee1-4657-8810-4fc55195fd13/scratch.txt"},"name":"Read","type":"tool_use"},"ms":2947}
+{"event":{"type":"limits","windows":[{"name":"7d","observed_at":0,"overage":false,"resets_at":1794654000000,"used_pct":79.0}]},"ms":2951}
+{"event":{"content":"1\thello\n2\t","type":"tool_result"},"ms":2959}
+{"event":{"input":65337,"output":48,"type":"usage"},"ms":3985}
+{"event":{"input":99313,"output":64,"type":"usage"},"ms":5685}
+{"event":{"input":{"file_path":"/private/var/folders/ng/bq9xhq897rz8n91dv2dmw74h0000gn/T/s2-agent-aa871c57-aee1-4657-8810-4fc55195fd13/scratch.txt","new_string":"frame=233","old_string":"hello","replace_all":false},"name":"Edit","type":"tool_use"},"ms":5685}
+{"event":{"content":"The file /private/var/folders/ng/bq9xhq897rz8n91dv2dmw74h0000gn/T/s2-agent-aa871c57-aee1-4657-8810-4fc55195fd13/scratch.txt has been updated successfully. (file state is current in your context — no need to Read it back)","type":"tool_result"},"ms":5694}
+{"event":{"text":"`scratch.txt`","type":"text_delta"},"ms":6801}
+{"event":{"text":" now contains `frame=233","type":"text_delta"},"ms":6801}
+{"event":{"text":"` (replacing `hello","type":"text_delta"},"ms":6801}
+{"event":{"text":"`),","type":"text_delta"},"ms":6801}
+{"event":{"text":" from","type":"text_delta"},"ms":6801}
+{"event":{"text":" the game state's frame 233","type":"text_delta"},"ms":6801}
+{"event":{"text":".","type":"text_delta"},"ms":6801}
+{"event":{"input":133608,"output":102,"type":"usage"},"ms":6803}
+{"event":{"text":"`scratch.txt` now contains `frame=233` (replacing `hello`), from the game state's frame 233.","type":"text"},"ms":6803}
+{"event":{"input":133608,"output":447,"type":"usage"},"ms":6812}
+{"event":{"ok":true,"summary":"`scratch.txt` now contains `frame=233` (replacing `hello`), from the game state's frame 233.","type":"finished"},"ms":6812}
