@@ -1,8 +1,9 @@
 //! `functor-app`: the desktop app's shell around `functor-app-core`.
 
+mod server;
 mod session;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -37,13 +38,21 @@ struct Args {
     start_session: bool,
 
     /// Run game sessions without a GPU (`--headless` instead of `--hidden`).
-    #[arg(long, requires = "start_session")]
+    #[arg(long)]
     no_gpu: bool,
 
     /// The `functor` binary for game sessions (else `FUNCTOR_BIN`, else one
     /// next to this executable, else `functor` on PATH).
-    #[arg(long, value_name = "PATH", requires = "start_session")]
+    #[arg(long, value_name = "PATH")]
     functor: Option<PathBuf>,
+
+    /// The port to serve the UI on, on 127.0.0.1 (0 picks a free one).
+    #[arg(long, default_value_t = 0, conflicts_with = "print")]
+    port: u16,
+
+    /// Serve the UI from this directory instead of the one built in.
+    #[arg(long, value_name = "PATH", conflicts_with = "print")]
+    ui_dir: Option<PathBuf>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -53,13 +62,9 @@ async fn main() -> std::io::Result<ExitCode> {
         eprintln!("functor-app: only --headless is supported yet");
         return Ok(ExitCode::from(2));
     }
-    if !args.print {
-        println!("functor-app: nothing to serve yet");
-        return Ok(ExitCode::SUCCESS);
-    }
     let start = std::fs::canonicalize(args.dir.unwrap_or_else(|| PathBuf::from(".")))?;
-    let state = functor_app_core::discover(&start);
-    if !args.start_session {
+    let mut state = functor_app_core::discover(&start);
+    if args.print && !args.start_session {
         print!("{}", print(&state));
         return Ok(ExitCode::SUCCESS);
     }
@@ -68,7 +73,18 @@ async fn main() -> std::io::Result<ExitCode> {
         std::env::var_os("FUNCTOR_BIN"),
         std::env::current_exe().ok(),
     );
-    print_session(state, functor, args.no_gpu).await
+    if args.print {
+        return print_session(state, functor, args.no_gpu).await;
+    }
+    state.git = server::git_info(Path::new(&state.repo_root));
+    let ui = match args.ui_dir {
+        Some(dir) => server::Ui::Dir(dir),
+        None => server::Ui::Embedded,
+    };
+    let shutdown = shutdown_signal()?;
+    let (tx, events) = mpsc::unbounded_channel();
+    let driver = Driver::new(functor, args.no_gpu, tx);
+    server::serve(state, driver, events, args.port, ui, shutdown).await
 }
 
 /// `--start-session`: start, print once polled, stop. Exits 1 if the session

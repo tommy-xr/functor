@@ -1,5 +1,6 @@
-//! Runs the core's session commands: one `functor run native` child at a
-//! time, its output read for the debug server's address, `/state` polled.
+//! Runs the core's commands other than replies: one `functor run native`
+//! child at a time, its output read for the debug server's address, `/state`
+//! polled; and project file listings.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -8,6 +9,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use functor_app_core::projects::read_project_files;
 use functor_app_core::{listening_url, Command, Event, SessionEvent};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -76,7 +78,11 @@ impl Driver {
                     let _ = events.send(Event::Session { id, event });
                 });
             }
-            // No clients to answer until the app serves a UI.
+            Command::ListFiles { path, dir } => {
+                let files = read_project_files(&dir);
+                let _ = self.events.send(Event::Files { path, files });
+            }
+            // Clients are the server's (`server::run`); `--print` has none.
             Command::Reply(_) | Command::Broadcast(_) => {}
         }
     }

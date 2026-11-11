@@ -15,6 +15,14 @@ projects: Array<Project>,
  */
 active: string | null, 
 /**
+ * The active project's `.fun` files and `functor.json`, sorted.
+ */
+files: Array<string>, 
+/**
+ * The repo's checkout; `None` outside git.
+ */
+git: GitInfo | null, 
+/**
  * The active project's game session; `None` until one first starts.
  */
 session: Session | null, };
@@ -28,6 +36,16 @@ export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project"
  * What `functor.json` declares to run.
  */
 export type Entries = { "kind": "single", file: string, } | { "kind": "named", roles: Array<Role>, } | { "kind": "invalid", error: string, };
+
+export type GitInfo = { 
+/**
+ * `HEAD` when detached.
+ */
+branch: string, 
+/**
+ * Abbreviated, as `git rev-parse --short` prints it.
+ */
+commit: string, };
 
 export type Project = { 
 /**

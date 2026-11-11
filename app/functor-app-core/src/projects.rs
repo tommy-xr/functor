@@ -166,17 +166,55 @@ pub fn projects_from_manifests(
     projects
 }
 
-/// The project nearest `start` (both relative to the repo root): the deepest
-/// one containing it, else the first, else none.
-pub fn nearest_project<'a>(paths: &[&'a str], start: &str) -> Option<&'a str> {
+/// The project to open from `start` (both relative to the repo root): the
+/// deepest one containing `start`; else the first directly under `start`;
+/// else the first under `examples/`; else the first; else none. `paths` is
+/// sorted.
+pub fn default_project<'a>(paths: &[&'a str], start: &str) -> Option<&'a str> {
     let contains = |p: &str| p == "." || Path::new(start).starts_with(p);
     let depth = |p: &str| if p == "." { 0 } else { p.split('/').count() };
+    let child_of_start =
+        |p: &str| p != "." && p.rsplit_once('/').map_or(".", |(dir, _)| dir) == start;
+    let first = |pred: &dyn Fn(&str) -> bool| paths.iter().copied().find(|p| pred(p));
     paths
         .iter()
         .copied()
         .filter(|p| contains(p))
         .max_by_key(|p| depth(p))
+        .or_else(|| first(&child_of_start))
+        .or_else(|| first(&|p| Path::new(p).starts_with("examples")))
         .or_else(|| paths.first().copied())
+}
+
+/// The names of a project directory's `.fun` files and its `functor.json`,
+/// sorted: what loads with the project (`file = module` is not recursive).
+pub fn project_files(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut files: Vec<String> = names
+        .into_iter()
+        .filter(|n| n == "functor.json" || (n.ends_with(".fun") && n.len() > 4))
+        .collect();
+    files.sort();
+    files
+}
+
+/// [`project_files`] over `dir`'s regular files; empty if it cannot be read.
+pub fn read_project_files(dir: &Path) -> Vec<String> {
+    let names = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned());
+    project_files(names)
+}
+
+/// A project's directory from its `path`.
+pub fn project_dir(root: &Path, path: &str) -> PathBuf {
+    if path == "." {
+        root.into()
+    } else {
+        root.join(path)
+    }
 }
 
 /// The nearest ancestor of `start` (itself included) with a `.git` (a
@@ -214,11 +252,16 @@ pub fn read_manifests(root: &Path) -> Vec<(PathBuf, io::Result<String>)> {
 }
 
 /// The state for a start directory: its repo root, every project under it,
-/// and the nearest one active. `start` should be canonical.
+/// and the [`default_project`] active with its files listed. `start` should
+/// be canonical.
 pub fn discover(start: &Path) -> AppState {
     let root = repo_root(start);
     let projects = projects_from_manifests(&root, read_manifests(&root));
-    AppState::new(&root, start, projects)
+    let mut state = AppState::new(&root, start, projects);
+    if let Some(path) = &state.active {
+        state.files = read_project_files(&project_dir(&root, path));
+    }
+    state
 }
 
 #[cfg(test)]
@@ -228,52 +271,107 @@ mod tests {
     const PATHS: [&str; 3] = ["examples/hello", "examples/orbs", "tools/fixture"];
 
     #[test]
-    fn nearest_is_the_start_dir_when_it_is_a_project() {
+    fn default_is_the_start_dir_when_it_is_a_project() {
         assert_eq!(
-            nearest_project(&PATHS, "examples/orbs"),
+            default_project(&PATHS, "examples/orbs"),
             Some("examples/orbs")
         );
     }
 
     #[test]
-    fn nearest_is_the_closest_ancestor_project() {
+    fn default_is_the_closest_ancestor_project() {
         assert_eq!(
-            nearest_project(&PATHS, "examples/orbs/assets/models"),
+            default_project(&PATHS, "examples/orbs/assets/models"),
             Some("examples/orbs")
         );
         let nested = ["examples", "examples/orbs"];
         assert_eq!(
-            nearest_project(&nested, "examples/orbs/x"),
+            default_project(&nested, "examples/orbs/x"),
             Some("examples/orbs")
         );
+        // The repo root as a project contains every start.
+        assert_eq!(default_project(&[".", "examples/hello"], "."), Some("."));
     }
 
     #[test]
-    fn nearest_from_the_repo_root_is_the_first_project() {
-        assert_eq!(nearest_project(&PATHS, "."), Some("examples/hello"));
-        // Unless the root is itself a project.
-        assert_eq!(nearest_project(&[".", "examples/hello"], "."), Some("."));
-    }
-
-    #[test]
-    fn nearest_does_not_match_a_sibling_sharing_a_prefix() {
+    fn outside_a_project_a_child_of_start_comes_first() {
+        let paths = [
+            "cli/templates",
+            "examples/hello",
+            "games/a",
+            "games/b",
+            "tools",
+        ];
+        assert_eq!(default_project(&paths, "games"), Some("games/a"));
+        assert_eq!(default_project(&paths, "."), Some("tools"));
+        // A grandchild is not a child.
         assert_eq!(
-            nearest_project(&["examples/hello", "tools"], "examples/hello-world"),
-            Some("examples/hello")
+            default_project(&["games/a/x", "games/b"], "games"),
+            Some("games/b")
         );
+    }
+
+    #[test]
+    fn then_a_project_under_examples() {
+        // This repo from its root: not `cli/templates`, the first by path.
+        let paths = ["cli/templates", "examples/animation", "examples/hello"];
+        assert_eq!(default_project(&paths, "."), Some("examples/animation"));
+        assert_eq!(default_project(&paths, "docs"), Some("examples/animation"));
         assert_eq!(
-            nearest_project(&["a/hello"], "a/hello-world"),
+            default_project(&["a/x", "examples/deep/game"], "b"),
+            Some("examples/deep/game")
+        );
+        // `examples-old` is not under `examples/`.
+        assert_eq!(
+            default_project(&["a/x", "examples-old/y"], "b"),
+            Some("a/x")
+        );
+    }
+
+    #[test]
+    fn default_does_not_match_a_sibling_sharing_a_prefix() {
+        assert_eq!(
+            default_project(&["a/hello", "b"], "a/hello-world"),
             Some("a/hello")
         );
         assert_eq!(
-            nearest_project(&["a", "b/hello"], "b/hello-world"),
+            default_project(&["a", "b/hello"], "b/hello-world"),
             Some("a")
         );
     }
 
     #[test]
-    fn nearest_with_no_projects_is_none() {
-        assert_eq!(nearest_project(&[], "examples/hello"), None);
+    fn default_with_no_projects_is_none() {
+        assert_eq!(default_project(&[], "examples/hello"), None);
+    }
+
+    #[test]
+    fn project_files_are_the_fun_files_and_manifest_sorted() {
+        let names = [
+            "notes.txt",
+            "game.fun",
+            "functor.json",
+            "assets.fun",
+            ".fun",
+            "a.fun.bak",
+        ];
+        assert_eq!(
+            project_files(names.map(String::from)),
+            ["assets.fun", "functor.json", "game.fun"]
+        );
+    }
+
+    #[test]
+    fn reads_project_files_from_the_top_level_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        for file in ["game.fun", "functor.json", "readme.md", "sub/x.fun"] {
+            std::fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(file), "").unwrap();
+        }
+        std::fs::create_dir(dir.join("dir.fun")).unwrap();
+        assert_eq!(read_project_files(dir), ["functor.json", "game.fun"]);
+        assert!(read_project_files(&dir.join("missing")).is_empty());
     }
 
     #[test]
@@ -360,6 +458,7 @@ mod tests {
         assert_eq!(state.repo_root, root.to_string_lossy());
         assert_eq!(state.active.as_deref(), Some("games/a"));
         assert_eq!(state.projects[2].name, "b");
+        assert_eq!(state.files, ["functor.json"]);
 
         // From the root, the first project in path order is active.
         assert_eq!(discover(&root).active.as_deref(), Some("games/a"));

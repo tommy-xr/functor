@@ -12,7 +12,7 @@ pub mod state;
 pub use print::print;
 pub use projects::discover;
 pub use session::{listening_url, Session, SessionEvent, SessionStatus};
-pub use state::{update, AppState, Command, Event};
+pub use state::{update, AppState, Command, Event, GitInfo};
 
 #[cfg(all(test, feature = "ts"))]
 mod ts_bindings;

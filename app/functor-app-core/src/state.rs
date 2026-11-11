@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::projects::{nearest_project, relative, Project};
+use crate::projects::{default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::session::{Session, SessionEvent, SessionStatus};
 
@@ -17,20 +17,36 @@ pub struct AppState {
     pub projects: Vec<Project>,
     /// The active project's `path`; `None` only when there are no projects.
     pub active: Option<String>,
+    /// The active project's `.fun` files and `functor.json`, sorted.
+    pub files: Vec<String>,
+    /// The repo's checkout; `None` outside git.
+    pub git: Option<GitInfo>,
     /// The active project's game session; `None` until one first starts.
     pub session: Option<Session>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GitInfo {
+    /// `HEAD` when detached.
+    pub branch: String,
+    /// Abbreviated, as `git rev-parse --short` prints it.
+    pub commit: String,
+}
+
 impl AppState {
-    /// The state for `projects` under `root`, with the project nearest
-    /// `start` (a directory under `root`) active.
+    /// The state for `projects` under `root`, with the [`default_project`]
+    /// for `start` (a directory under `root`) active. Files and git are the
+    /// shell's to fill in.
     pub fn new(root: &Path, start: &Path, projects: Vec<Project>) -> Self {
         let paths: Vec<&str> = projects.iter().map(|p| p.path.as_str()).collect();
-        let active = nearest_project(&paths, &relative(root, start)).map(str::to_string);
+        let active = default_project(&paths, &relative(root, start)).map(str::to_string);
         Self {
             repo_root: root.to_string_lossy().into_owned(),
             projects,
             active,
+            files: Vec::new(),
+            git: None,
             session: None,
         }
     }
@@ -43,6 +59,11 @@ pub enum Event {
     Session {
         id: u64,
         event: SessionEvent,
+    },
+    /// Project `path`'s files, as `ListFiles` read them.
+    Files {
+        path: String,
+        files: Vec<String>,
     },
 }
 
@@ -59,6 +80,8 @@ pub enum Command {
     StopSession { id: u64 },
     /// `GET /state` on session `id`'s debug server after the poll interval.
     PollState { id: u64, debug_url: String },
+    /// Read project `path`'s files in `dir`, answering with `Event::Files`.
+    ListFiles { path: String, dir: PathBuf },
 }
 
 pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
@@ -69,6 +92,12 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             let switch = state.active.as_ref() != Some(&path)
                 && state.projects.iter().any(|p| p.path == path);
             if switch {
+                commands.push(Command::ListFiles {
+                    dir: project_dir(Path::new(&state.repo_root), &path),
+                    path: path.clone(),
+                });
+                // Cleared, so the old project's files never show under the new name.
+                state.files.clear();
                 state.active = Some(path);
                 // The session follows the active project, restarting only a live one.
                 let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
@@ -85,6 +114,14 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         Event::Client(ClientMsg::StopSession) => (stop(&mut state, &mut commands), true),
         Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
+        // A listing for a project switched away from is dropped.
+        Event::Files { path, files } => {
+            let current = state.active.as_ref() == Some(&path) && state.files != files;
+            if current {
+                state.files = files;
+            }
+            (current, false)
+        }
     };
     // A client message that changed nothing still answers with the state, so
     // the sender sees what is active.
@@ -105,12 +142,7 @@ fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
         return false;
     };
     let id = state.session.as_ref().map_or(1, |s| s.id + 1);
-    let root = Path::new(&state.repo_root);
-    let dir = if path == "." {
-        root.into()
-    } else {
-        root.join(path)
-    };
+    let dir = project_dir(Path::new(&state.repo_root), path);
     commands.push(Command::StartSession { id, dir });
     state.session = Some(Session {
         id,
@@ -206,6 +238,8 @@ mod tests {
             repo_root: "/repo".to_string(),
             projects: vec![project("examples/a"), project("examples/b")],
             active: Some("examples/a".to_string()),
+            files: vec!["functor.json".to_string(), "game.fun".to_string()],
+            git: None,
             session: None,
         }
     }
@@ -253,6 +287,20 @@ mod tests {
         })
     }
 
+    fn list_b() -> Command {
+        Command::ListFiles {
+            path: "examples/b".to_string(),
+            dir: PathBuf::from("/repo/examples/b"),
+        }
+    }
+
+    fn files(path: &str, files: &[&str]) -> Event {
+        Event::Files {
+            path: path.to_string(),
+            files: files.iter().map(|f| f.to_string()).collect(),
+        }
+    }
+
     #[test]
     fn get_state_replies_with_the_state_unchanged() {
         let (next, commands) = update(state(), Event::Client(ClientMsg::GetState));
@@ -264,13 +312,28 @@ mod tests {
     }
 
     #[test]
-    fn switching_to_a_known_project_broadcasts_it() {
+    fn switching_to_a_known_project_broadcasts_it_and_lists_its_files() {
         let (next, commands) = update(state(), switch("examples/b"));
         assert_eq!(next.active.as_deref(), Some("examples/b"));
-        assert_eq!(
-            commands,
-            vec![Command::Broadcast(ServerMsg::State { state: next })]
-        );
+        assert!(next.files.is_empty());
+        assert_eq!(commands, vec![list_b(), broadcast(&next)]);
+    }
+
+    #[test]
+    fn the_active_projects_files_are_stored_and_broadcast() {
+        let (switched, _) = update(state(), switch("examples/b"));
+        let (next, commands) = update(switched, files("examples/b", &["b.fun"]));
+        assert_eq!(next.files, ["b.fun"]);
+        assert_eq!(commands, vec![broadcast(&next)]);
+        // The same listing again changes nothing.
+        let (again, commands) = update(next.clone(), files("examples/b", &["b.fun"]));
+        assert_eq!((again, commands), (next, vec![]));
+    }
+
+    #[test]
+    fn files_for_another_project_are_dropped() {
+        let (next, commands) = update(state(), files("examples/b", &["b.fun"]));
+        assert_eq!((next, commands), (state(), vec![]));
     }
 
     #[test]
@@ -452,6 +515,7 @@ mod tests {
         assert_eq!(
             commands,
             vec![
+                list_b(),
                 Command::StopSession { id: 1 },
                 Command::StartSession {
                     id: 2,
@@ -478,7 +542,7 @@ mod tests {
                 status: SessionStatus::Stopped,
             });
             assert_eq!(next.session, expected);
-            assert_eq!(commands, vec![broadcast(&next)]);
+            assert_eq!(commands, vec![list_b(), broadcast(&next)]);
         }
     }
 
