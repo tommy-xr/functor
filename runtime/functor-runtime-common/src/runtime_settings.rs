@@ -100,15 +100,19 @@ pub struct XrSettings {
     /// `Xr.streamDepth({url, hz})`: POST the environment depth to `url`.
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_depth: Option<DepthStreamSettings>,
+    pub stream_depth: Option<SensorStreamSettings>,
+    /// `Xr.streamCamera({url, hz})`: POST the passthrough camera to `url`.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_camera: Option<SensorStreamSettings>,
 }
 
-/// Where and how often `Xr.streamDepth` sends depth frames.
+/// Where and how often `Xr.streamDepth` or `Xr.streamCamera` sends frames.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct DepthStreamSettings {
+pub struct SensorStreamSettings {
     pub url: String,
-    /// Frames a second, at most the readback rate.
+    /// Frames a second, at most as many as the shell captures.
     pub hz: f32,
 }
 
@@ -160,11 +164,21 @@ pub struct PassthroughState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    /// `GET /state.passthrough.camera`: the `Xr.streamCamera` stream, present
+    /// while `settings` asks for one.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<SensorStreamState>,
 }
 
 impl PassthroughState {
-    /// A shell with no camera feed (desktop, web): emulated while wanted.
-    pub fn emulated(config: Option<GameConfig>, settings: Option<&GameSettings>) -> Option<Self> {
+    /// A shell with no camera feed (desktop, web): emulated while wanted,
+    /// with its emulated `camera` stream.
+    pub fn emulated(
+        config: Option<GameConfig>,
+        settings: Option<&GameSettings>,
+        camera: Option<SensorStreamState>,
+    ) -> Option<Self> {
         passthrough_requested(config).then(|| PassthroughState {
             mode: if passthrough_wanted(config, settings) {
                 PassthroughMode::Emulated
@@ -172,6 +186,7 @@ impl PassthroughState {
                 PassthroughMode::Paused
             },
             warning: None,
+            camera,
         })
     }
 }
@@ -246,11 +261,12 @@ impl FusedMeshState {
     }
 }
 
-/// `GET /state.xr.stream`: the `Xr.streamDepth` stream, present while
-/// `settings` asks for one.
+/// A sensor stream's report: `GET /state.xr.stream` (`Xr.streamDepth`) or
+/// `/state.passthrough.camera` (`Xr.streamCamera`), present while `settings`
+/// asks for one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct DepthStreamState {
+pub struct SensorStreamState {
     pub url: String,
     pub hz: f32,
     /// Frames the server answered 2xx.
@@ -273,7 +289,7 @@ pub struct XrState {
     pub mesh: FusedMeshState,
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream: Option<DepthStreamState>,
+    pub stream: Option<SensorStreamState>,
 }
 
 impl XrState {
@@ -284,7 +300,7 @@ impl XrState {
         config: Option<GameConfig>,
         (width, height, frames): (u32, u32, u64),
         mesh: FusedMeshState,
-        stream: Option<DepthStreamState>,
+        stream: Option<SensorStreamState>,
     ) -> Option<Self> {
         scene_requested(config).then_some(XrState {
             depth: EnvironmentDepthState {
@@ -366,11 +382,11 @@ mod tests {
                 colliders: 3,
                 floor_m: Some(0.0),
             },
-            stream: Some(DepthStreamState {
+            stream: Some(SensorStreamState {
                 url: "http://127.0.0.1:9000/frames".to_string(),
                 hz: 15.0,
                 sent: 4,
-                ..DepthStreamState::default()
+                ..SensorStreamState::default()
             }),
         };
         assert_eq!(
@@ -390,10 +406,29 @@ mod tests {
         let state = PassthroughState {
             mode: PassthroughMode::Unavailable,
             warning: Some("no feed".to_string()),
+            camera: None,
         };
         assert_eq!(
             serde_json::to_value(state).unwrap(),
             serde_json::json!({ "mode": "unavailable", "warning": "no feed" })
+        );
+        let state = PassthroughState {
+            mode: PassthroughMode::Composited,
+            warning: None,
+            camera: Some(SensorStreamState {
+                url: "http://127.0.0.1:9001/camera".to_string(),
+                hz: 5.0,
+                errors: 1,
+                last_error: Some("HTTP 500".to_string()),
+                ..SensorStreamState::default()
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::json!({ "mode": "composited", "camera": {
+                "url": "http://127.0.0.1:9001/camera", "hz": 5.0,
+                "sent": 0, "dropped": 0, "errors": 1, "last_error": "HTTP 500"
+            } })
         );
     }
 
@@ -424,13 +459,13 @@ mod tests {
         assert!(passthrough_wanted(config(true), None));
         assert!(passthrough_wanted(config(true), settings(None).as_ref()));
         assert!(!passthrough_wanted(config(true), settings(Some(false)).as_ref()));
-        assert_eq!(PassthroughState::emulated(config(false), None), None);
+        assert_eq!(PassthroughState::emulated(config(false), None, None), None);
         assert_eq!(
-            PassthroughState::emulated(config(true), settings(Some(false)).as_ref()).unwrap().mode,
+            PassthroughState::emulated(config(true), settings(Some(false)).as_ref(), None).unwrap().mode,
             PassthroughMode::Paused
         );
         assert_eq!(
-            PassthroughState::emulated(config(true), None).unwrap().mode,
+            PassthroughState::emulated(config(true), None, None).unwrap().mode,
             PassthroughMode::Emulated
         );
     }

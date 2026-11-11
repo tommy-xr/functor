@@ -62,9 +62,11 @@ pub mod debug_http;
 pub mod debug_protocol;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_files;
+pub mod camera_frame;
+pub mod camera_stream;
 pub mod depth_frame;
 mod depth_readback;
-pub mod depth_stream;
+pub mod sensor_stream;
 pub mod environment_depth;
 pub mod fused_mesh;
 mod fused_room;

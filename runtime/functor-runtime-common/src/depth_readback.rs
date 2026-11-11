@@ -46,13 +46,127 @@ const PACK_FRAGMENT_SHADER_SOURCE: &str = r#"
 pub(crate) struct DepthReadback<M> {
     fbo: glow::Framebuffer,
     color: glow::Renderbuffer,
-    pbo: glow::Buffer,
+    pack: PixelPack<M>,
     program: ShaderProgram,
     depth_texture_loc: UniformLocation,
     depth_layer_loc: UniformLocation,
-    pending: Option<(glow::Fence, M)>,
     /// The frame of the last pass asked; only a frame's first pass starts.
     last_pass: Option<u64>,
+}
+
+/// A `width`×`height` RGBA8 framebuffer read into a pixel-pack buffer without
+/// stalling: [`Self::start`] queues the copy behind a fence, and a later
+/// [`Self::poll`] maps the buffer once the fence has signalled. The pixels'
+/// metadata `M` waits beside the fence.
+pub(crate) struct PixelPack<M> {
+    pbo: glow::Buffer,
+    width: u32,
+    height: u32,
+    pending: Option<(glow::Fence, M)>,
+}
+
+impl<M> PixelPack<M> {
+    pub(crate) fn new(gl: &glow::Context, width: u32, height: u32) -> PixelPack<M> {
+        unsafe {
+            let pbo = gl.create_buffer().expect("pixel pack buffer");
+            crate::gpu_counters::gpu_counters().buffer_created();
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
+            gl.buffer_data_size(
+                glow::PIXEL_PACK_BUFFER,
+                (width * height * 4) as i32,
+                glow::STREAM_READ,
+            );
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            PixelPack {
+                pbo,
+                width,
+                height,
+                pending: None,
+            }
+        }
+    }
+
+    pub(crate) fn delete(self, gl: &glow::Context) {
+        unsafe {
+            if let Some((fence, _)) = self.pending {
+                gl.delete_sync(fence);
+            }
+            gl.delete_buffer(self.pbo);
+        }
+        crate::gpu_counters::gpu_counters().buffer_deleted();
+    }
+
+    pub(crate) fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Copy the bound read framebuffer's bottom-left `width`×`height` into
+    /// the buffer, behind a fence; `meta` comes back with the pixels.
+    pub(crate) fn start(&mut self, gl: &glow::Context, meta: M) {
+        let fence = unsafe {
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbo));
+            gl.read_pixels(
+                0,
+                0,
+                self.width as i32,
+                self.height as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::BufferOffset(0),
+            );
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
+                .expect("pixel pack fence")
+        };
+        self.pending = Some((fence, meta));
+    }
+
+    /// The pixels in flight (rows bottom-up) and their metadata once the
+    /// fence has signalled — at once when `wait` (mapping then waits for the
+    /// copy). A failed wait or map drops them.
+    pub(crate) fn poll(&mut self, gl: &glow::Context, wait: bool) -> Option<(Vec<u8>, M)> {
+        let (fence, meta) = self.pending.take()?;
+        let status = if wait {
+            glow::ALREADY_SIGNALED
+        } else {
+            unsafe { gl.client_wait_sync(fence, 0, 0) }
+        };
+        if status == glow::TIMEOUT_EXPIRED {
+            self.pending = Some((fence, meta));
+            return None;
+        }
+        let rgba = (status != glow::WAIT_FAILED).then(|| self.read(gl)).flatten();
+        unsafe { gl.delete_sync(fence) };
+        rgba.map(|rgba| (rgba, meta))
+    }
+
+    /// The pixel-pack buffer's bytes; `None` if it could not be mapped.
+    fn read(&self, gl: &glow::Context) -> Option<Vec<u8>> {
+        let len = (self.width * self.height * 4) as usize;
+        let mut rgba = Some(vec![0; len]);
+        unsafe {
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbo));
+            // WebGL 2 has no mapping; its read is a copy.
+            #[cfg(target_arch = "wasm32")]
+            if let Some(rgba) = &mut rgba {
+                gl.get_buffer_sub_data(glow::PIXEL_PACK_BUFFER, 0, rgba);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let mapped =
+                    gl.map_buffer_range(glow::PIXEL_PACK_BUFFER, 0, len as i32, glow::MAP_READ_BIT);
+                match rgba.as_mut().filter(|_| !mapped.is_null()) {
+                    Some(rgba) => {
+                        rgba.copy_from_slice(std::slice::from_raw_parts(mapped, len));
+                        gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+                    }
+                    None => rgba = None,
+                }
+            }
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+        }
+        rgba
+    }
 }
 
 impl<M> DepthReadback<M> {
@@ -86,34 +200,23 @@ impl<M> DepthReadback<M> {
                 Some(color),
             );
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
-
-            let pbo = gl.create_buffer().expect("depth readback buffer");
-            crate::gpu_counters::gpu_counters().buffer_created();
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
-            gl.buffer_data_size(glow::PIXEL_PACK_BUFFER, size * size * 4, glow::STREAM_READ);
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
             DepthReadback {
                 fbo,
                 color,
-                pbo,
+                pack: PixelPack::new(gl, READBACK_SIZE, READBACK_SIZE),
                 depth_texture_loc: program.get_uniform_location(gl, "depthTexture"),
                 depth_layer_loc: program.get_uniform_location(gl, "depthLayer"),
                 program,
-                pending: None,
                 last_pass: None,
             }
         }
     }
 
     pub(crate) fn delete(self, gl: &glow::Context) {
+        self.pack.delete(gl);
         unsafe {
-            if let Some((fence, _)) = self.pending {
-                gl.delete_sync(fence);
-            }
             gl.delete_framebuffer(self.fbo);
             gl.delete_renderbuffer(self.color);
-            gl.delete_buffer(self.pbo);
-            crate::gpu_counters::gpu_counters().buffer_deleted();
             gl.delete_program(self.program.program_id);
         }
     }
@@ -124,7 +227,7 @@ impl<M> DepthReadback<M> {
     pub(crate) fn can_start(&mut self, frame: u64) -> bool {
         let first_pass = self.last_pass != Some(frame);
         self.last_pass = Some(frame);
-        first_pass && frame % READBACK_EVERY == 0 && self.pending.is_none()
+        first_pass && frame % READBACK_EVERY == 0 && !self.pack.busy()
     }
 
     /// Pack `view`'s layer and start copying it into the pixel-pack buffer;
@@ -138,7 +241,7 @@ impl<M> DepthReadback<M> {
         meta: M,
     ) {
         let size = READBACK_SIZE as i32;
-        let fence = unsafe {
+        unsafe {
             let previous = crate::renderer::ambient_framebuffer(gl);
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
             gl.viewport(0, 0, size, size);
@@ -153,71 +256,14 @@ impl<M> DepthReadback<M> {
             gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(view.texture));
             quad.draw(gl);
             gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbo));
-            gl.read_pixels(
-                0,
-                0,
-                size,
-                size,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelPackData::BufferOffset(0),
-            );
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-            let fence = gl
-                .fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
-                .expect("depth readback fence");
+            self.pack.start(gl, meta);
             gl.enable(glow::DEPTH_TEST);
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
-            fence
-        };
-        self.pending = Some((fence, meta));
+        }
     }
 
-    /// The readback in flight's pixels and metadata once its fence has
-    /// signalled — at once when `wait` (mapping then waits for the copy).
-    /// A failed wait or map drops the readback.
+    /// The readback in flight's pixels and metadata ([`PixelPack::poll`]).
     pub(crate) fn poll(&mut self, gl: &glow::Context, wait: bool) -> Option<(Vec<u8>, M)> {
-        let (fence, meta) = self.pending.take()?;
-        let status = if wait {
-            glow::ALREADY_SIGNALED
-        } else {
-            unsafe { gl.client_wait_sync(fence, 0, 0) }
-        };
-        if status == glow::TIMEOUT_EXPIRED {
-            self.pending = Some((fence, meta));
-            return None;
-        }
-        let rgba = (status != glow::WAIT_FAILED).then(|| self.read(gl)).flatten();
-        unsafe { gl.delete_sync(fence) };
-        rgba.map(|rgba| (rgba, meta))
-    }
-
-    /// The pixel-pack buffer's bytes; `None` if it could not be mapped.
-    fn read(&self, gl: &glow::Context) -> Option<Vec<u8>> {
-        let len = (READBACK_SIZE * READBACK_SIZE * 4) as usize;
-        let mut rgba = Some(vec![0; len]);
-        unsafe {
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbo));
-            // WebGL 2 has no mapping; its read is a copy.
-            #[cfg(target_arch = "wasm32")]
-            if let Some(rgba) = &mut rgba {
-                gl.get_buffer_sub_data(glow::PIXEL_PACK_BUFFER, 0, rgba);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let mapped =
-                    gl.map_buffer_range(glow::PIXEL_PACK_BUFFER, 0, len as i32, glow::MAP_READ_BIT);
-                match rgba.as_mut().filter(|_| !mapped.is_null()) {
-                    Some(rgba) => {
-                        rgba.copy_from_slice(std::slice::from_raw_parts(mapped, len));
-                        gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
-                    }
-                    None => rgba = None,
-                }
-            }
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-        }
-        rgba
+        self.pack.poll(gl, wait)
     }
 }

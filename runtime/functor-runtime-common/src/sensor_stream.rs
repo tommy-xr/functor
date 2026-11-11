@@ -1,24 +1,18 @@
-//! `Xr.streamDepth`: environment depth readbacks POSTed to a host URL as
-//! [`crate::depth_frame`]s, off the render and sim threads.
+//! `Xr.streamDepth` and `Xr.streamCamera`: sensor frames POSTed to a host
+//! URL, off the render and sim threads.
 //!
-//! Bounded: one readback pending (the shared [`crate::depth_readback`]), one
-//! POST in flight, and one latest frame waiting — a newer frame replaces it
-//! and counts as dropped. Requests time out and are never retried, and
-//! redirects are not followed. Only loopback destinations (a headset reaches
-//! its host through `adb reverse`) and origins the operator allowed receive
-//! frames.
+//! Bounded per stream kind: one POST in flight and one latest frame waiting —
+//! a newer frame replaces it and counts as dropped. Requests time out and are
+//! never retried, and redirects are not followed. Only loopback destinations
+//! (a headset reaches its host through `adb reverse`) and origins the
+//! operator allowed receive frames.
 
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use cgmath::{Matrix4, SquareMatrix};
-
-use crate::depth_frame::{self, DepthFrameHeader, DepthFrameSource, DepthFrameTime};
-use crate::depth_readback::READBACK_SIZE;
-use crate::environment_depth::EnvironmentDepthView;
 pub use crate::net::http_client::Destination;
 use crate::net::http_client;
-use crate::runtime_settings::{DepthStreamSettings, DepthStreamState};
+use crate::runtime_settings::{SensorStreamSettings, SensorStreamState};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 /// The whole request: connect, send, and the response back.
@@ -34,23 +28,33 @@ pub fn parse_origin(origin: &str) -> Result<String, String> {
     Ok(destination.origin())
 }
 
-/// Why `destination` may not receive frames, if it may not.
-fn refusal(destination: &Destination, allowed: &[String]) -> Option<String> {
+/// Why `destination` may not receive `knob`'s frames, if it may not.
+fn refusal(knob: &str, destination: &Destination, allowed: &[String]) -> Option<String> {
     let origin = destination.origin();
     (!destination.is_loopback() && !allowed.contains(&origin)).then(|| {
         format!(
-            "Xr.streamDepth: refusing to upload sensor data to {origin}; only loopback is \
+            "{knob}: refusing to upload sensor data to {origin}; only loopback is \
 allowed by default — the operator allows another origin with `--allow-sensor-upload {origin}` \
 (desktop) or `adb shell setprop debug.functor.allow_sensor_upload {origin}` (Quest)"
         )
     })
 }
 
-/// POST one body within [`REQUEST_TIMEOUT`]; any 2xx is success. The
-/// response body is never read.
-fn post(destination: &Destination, body: &[u8]) -> Result<(), String> {
-    let headers = [("Content-Type".to_string(), depth_frame::CONTENT_TYPE.to_string())];
-    match http_client::request_status("POST", destination, &headers, body, CONNECT_TIMEOUT, REQUEST_TIMEOUT)? {
+/// POST one frame — a big-endian u32 header length, the header, the payload
+/// — within [`REQUEST_TIMEOUT`]; any 2xx is success. The response body is
+/// never read.
+fn post(
+    destination: &Destination,
+    content_type: &str,
+    header: &[u8],
+    payload: &[u8],
+) -> Result<(), String> {
+    let mut body = Vec::with_capacity(4 + header.len() + payload.len());
+    body.extend_from_slice(&(header.len() as u32).to_be_bytes());
+    body.extend_from_slice(header);
+    body.extend_from_slice(payload);
+    let headers = [("Content-Type".to_string(), content_type.to_string())];
+    match http_client::request_status("POST", destination, &headers, &body, CONNECT_TIMEOUT, REQUEST_TIMEOUT)? {
         code if (200..300).contains(&code) => Ok(()),
         code => Err(format!("HTTP {code}")),
     }
@@ -60,8 +64,12 @@ fn post(destination: &Destination, body: &[u8]) -> Result<(), String> {
 struct Queued {
     destination: Destination,
     generation: u64,
-    header: DepthFrameHeader,
-    rgba: Vec<u8>,
+    content_type: &'static str,
+    /// The JSON header.
+    header: Vec<u8>,
+    /// Builds the payload on the sender thread (a conversion stays off the
+    /// render thread).
+    payload: Box<dyn FnOnce() -> Vec<u8> + Send>,
 }
 
 /// The sender thread's state. The counters belong to the current
@@ -84,7 +92,7 @@ fn send_thread(channel: Channel) {
     let (shared, wake) = &*channel;
     loop {
         let queued = {
-            let mut shared = shared.lock().expect("depth stream state");
+            let mut shared = shared.lock().expect("sensor stream state");
             loop {
                 if shared.stopped {
                     return;
@@ -92,14 +100,17 @@ fn send_thread(channel: Channel) {
                 if let Some(queued) = shared.latest.take() {
                     break queued;
                 }
-                shared = wake.wait(shared).expect("depth stream state");
+                shared = wake.wait(shared).expect("sensor stream state");
             }
         };
+        let payload = (queued.payload)();
         let result = post(
             &queued.destination,
-            &depth_frame::encode(&queued.header, &queued.rgba),
+            queued.content_type,
+            &queued.header,
+            &payload,
         );
-        let mut shared = shared.lock().expect("depth stream state");
+        let mut shared = shared.lock().expect("sensor stream state");
         if shared.generation != queued.generation {
             continue;
         }
@@ -113,38 +124,50 @@ fn send_thread(channel: Channel) {
     }
 }
 
-/// The one sender thread every stream shares, so a new stream never puts a
-/// second POST in flight beside an older stream's. Ends when dropped.
-pub(crate) struct DepthSender(Channel);
+/// The one sender thread every stream of a kind (depth, camera) shares, so a
+/// new stream never puts a second POST in flight beside an older stream's.
+/// Ends when dropped.
+pub(crate) struct SensorSender(Channel);
 
-impl DepthSender {
-    pub(crate) fn new() -> DepthSender {
+impl SensorSender {
+    /// `kind` names the thread: "depth", "camera".
+    pub(crate) fn new(kind: &str) -> SensorSender {
         let channel: Channel = Default::default();
         let thread_channel = channel.clone();
         std::thread::Builder::new()
-            .name("functor-depth-stream".to_string())
+            .name(format!("functor-{kind}-stream"))
             .spawn(move || send_thread(thread_channel))
-            .expect("spawn the depth stream thread");
-        DepthSender(channel)
+            .expect("spawn the sensor stream thread");
+        SensorSender(channel)
     }
 }
 
-impl Drop for DepthSender {
+impl Drop for SensorSender {
     fn drop(&mut self) {
         let (shared, wake) = &*self.0;
-        let mut shared = shared.lock().expect("depth stream state");
+        let mut shared = shared.lock().expect("sensor stream state");
         shared.stopped = true;
         shared.latest = None;
         wake.notify_one();
     }
 }
 
-/// What a stream needs to know about one readback, from when it started.
+/// A frame a stream asked for ([`SensorStreamer::capture`]), carried to
+/// [`SensorStreamer::send`] with whatever produced it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct StreamCapture {
     /// The stream it was taken for; another stream drops it.
     stream: u64,
-    steady_ns: i64,
+    /// When it was asked for, [`steady_ns`].
+    pub(crate) steady_ns: i64,
+}
+
+/// A frame's place in its stream, for its header.
+pub(crate) struct FrameIds {
+    /// 16 hex digits, new each time the stream starts.
+    pub(crate) stream: String,
+    /// +1 per frame queued; a gap is a dropped frame.
+    pub(crate) seq: u64,
 }
 
 /// The nanoseconds since this process first asked: the `"steady"` clock.
@@ -153,26 +176,11 @@ fn steady_ns() -> i64 {
     START.get_or_init(Instant::now).elapsed().as_nanos() as i64
 }
 
-/// A projection's near and far planes (`None`: infinite), perspective or
-/// orthographic, GL conventions.
-fn near_far(projection: &Matrix4<f32>) -> (f32, Option<f32>) {
-    let (a, b) = (projection.z.z, projection.w.z);
-    let (near, far) = if projection.z.w == 0.0 {
-        ((b + 1.0) / a, (b - 1.0) / a)
-    } else {
-        (b / (a - 1.0), b / (a + 1.0))
-    };
-    (near, (far.is_finite() && far > 0.0).then_some(far))
-}
-
-fn columns(m: Matrix4<f32>) -> [f32; 16] {
-    let m: &[f32; 16] = m.as_ref();
-    *m
-}
-
-/// One `settings` stream on the render thread.
-pub(crate) struct DepthStreamer {
-    settings: DepthStreamSettings,
+/// One `settings` stream (`knob`'s) on the render thread.
+pub(crate) struct SensorStreamer {
+    knob: &'static str,
+    content_type: &'static str,
+    settings: SensorStreamSettings,
     /// Where frames go and the sender's generation for this stream; `None`
     /// when refused, and `refused` says why.
     sink: Option<(Destination, Channel, u64)>,
@@ -185,17 +193,19 @@ pub(crate) struct DepthStreamer {
     next_due: f64,
 }
 
-impl DepthStreamer {
-    /// A stream to `settings.url` through `sender`, which forgets any older
-    /// stream's waiting frame and counters.
+impl SensorStreamer {
+    /// `knob`'s stream of `content_type` frames to `settings.url` through
+    /// `sender`, which forgets any older stream's waiting frame and counters.
     pub(crate) fn new(
-        settings: DepthStreamSettings,
+        knob: &'static str,
+        content_type: &'static str,
+        settings: SensorStreamSettings,
         allowed: &[String],
-        sender: &DepthSender,
-    ) -> DepthStreamer {
+        sender: &SensorSender,
+    ) -> SensorStreamer {
         let refused = match Destination::parse(&settings.url) {
-            Err(e) => Err(format!("Xr.streamDepth: {e}")),
-            Ok(destination) => match refusal(&destination, allowed) {
+            Err(e) => Err(format!("{knob}: {e}")),
+            Ok(destination) => match refusal(knob, &destination, allowed) {
                 Some(refused) => Err(refused),
                 None => Ok(destination),
             },
@@ -204,7 +214,7 @@ impl DepthStreamer {
             Ok(destination) => {
                 let channel = sender.0.clone();
                 let generation = {
-                    let mut shared = channel.0.lock().expect("depth stream state");
+                    let mut shared = channel.0.lock().expect("sensor stream state");
                     *shared = Shared {
                         generation: shared.generation + 1,
                         ..Shared::default()
@@ -218,7 +228,9 @@ impl DepthStreamer {
                 (None, Some(refused))
             }
         };
-        DepthStreamer {
+        SensorStreamer {
+            knob,
+            content_type,
             settings,
             sink,
             refused,
@@ -233,11 +245,11 @@ impl DepthStreamer {
     fn shared(&self) -> Option<(std::sync::MutexGuard<'_, Shared>, &Condvar, &Destination, u64)> {
         let (destination, channel, generation) = self.sink.as_ref()?;
         let (shared, wake) = &**channel;
-        let shared = shared.lock().expect("depth stream state");
+        let shared = shared.lock().expect("sensor stream state");
         (shared.generation == *generation).then_some((shared, wake, destination, *generation))
     }
 
-    pub(crate) fn settings(&self) -> &DepthStreamSettings {
+    pub(crate) fn settings(&self) -> &SensorStreamSettings {
         &self.settings
     }
 
@@ -247,7 +259,7 @@ impl DepthStreamer {
         if live && !self.live {
             self.stream = std::hash::BuildHasher::hash_one(
                 &std::collections::hash_map::RandomState::new(),
-                steady_ns(),
+                (self.knob, steady_ns()),
             );
             self.seq = 0;
             self.next_due = 0.0;
@@ -260,7 +272,7 @@ impl DepthStreamer {
         self.live = live;
     }
 
-    /// A capture to take now, if streaming and a frame is due.
+    /// A frame to take now, if streaming and one is due.
     pub(crate) fn capture(&mut self) -> Option<StreamCapture> {
         if !self.live || self.sink.is_none() {
             return None;
@@ -274,27 +286,33 @@ impl DepthStreamer {
         )
     }
 
-    /// Queue a finished readback, replacing (and counting) a frame still
-    /// waiting.
+    /// Queue `capture`'s frame — `header` serializes its JSON header given its
+    /// ids; `payload` runs on the sender thread — replacing (and counting) a
+    /// frame still waiting. A capture from before a stop or restart is
+    /// dropped.
     pub(crate) fn send(
         &mut self,
-        rgba: Vec<u8>,
-        view: &EnvironmentDepthView,
-        space_epoch: u64,
         capture: StreamCapture,
+        payload: impl FnOnce() -> Vec<u8> + Send + 'static,
+        header: impl FnOnce(FrameIds) -> Vec<u8>,
     ) {
         if !self.live || capture.stream != self.stream {
             return;
         }
-        let header = self.header(view, space_epoch, capture);
+        let header = header(FrameIds {
+            stream: format!("{:016x}", self.stream),
+            seq: self.seq,
+        });
+        let content_type = self.content_type;
         let Some((mut shared, wake, destination, generation)) = self.shared() else {
             return;
         };
         let queued = Queued {
             destination: destination.clone(),
             generation,
+            content_type,
             header,
-            rgba,
+            payload: Box::new(payload),
         };
         if shared.latest.replace(queued).is_some() {
             shared.dropped += 1;
@@ -304,49 +322,9 @@ impl DepthStreamer {
         self.seq += 1;
     }
 
-    fn header(
-        &self,
-        view: &EnvironmentDepthView,
-        space_epoch: u64,
-        capture: StreamCapture,
-    ) -> DepthFrameHeader {
-        let (near, far) = near_far(&view.projection);
-        let (source, clock, display_ns) = match view.display_ns {
-            Some(ns) => (DepthFrameSource::Device, "xr", ns),
-            None => (DepthFrameSource::Emulated, "steady", capture.steady_ns),
-        };
-        DepthFrameHeader {
-            schema: depth_frame::SCHEMA.to_string(),
-            stream: format!("{:016x}", self.stream),
-            seq: self.seq,
-            source,
-            // The first pass of a frame reads back: the left eye in stereo.
-            eye: "left".to_string(),
-            width: READBACK_SIZE,
-            height: READBACK_SIZE,
-            encoding: depth_frame::ENCODING.to_string(),
-            rows: depth_frame::ROWS.to_string(),
-            camera_to_world: columns(view.view.invert().unwrap_or(Matrix4::identity())),
-            projection: columns(view.projection),
-            view_projection: columns(view.view_projection),
-            near,
-            far,
-            // Shells render (and so read back) only while tracking is valid.
-            tracking: true,
-            space_epoch,
-            time: DepthFrameTime {
-                clock: clock.to_string(),
-                display_ns,
-                acquire_ns: None,
-                sensor_ns: None,
-            },
-            payload_len: (READBACK_SIZE * READBACK_SIZE * 4) as u64,
-        }
-    }
-
-    /// `GET /state.xr.stream`.
-    pub(crate) fn state(&self) -> DepthStreamState {
-        let mut state = DepthStreamState {
+    /// `GET /state`'s report of this stream.
+    pub(crate) fn state(&self) -> SensorStreamState {
+        let mut state = SensorStreamState {
             url: self.settings.url.clone(),
             hz: self.settings.hz,
             last_error: self.refused.clone(),
@@ -362,7 +340,7 @@ impl DepthStreamer {
     }
 }
 
-impl Drop for DepthStreamer {
+impl Drop for SensorStreamer {
     /// A stopped stream's waiting frame is discarded; a POST in flight
     /// finishes.
     fn drop(&mut self) {
@@ -370,6 +348,35 @@ impl Drop for DepthStreamer {
             shared.latest = None;
         }
     }
+}
+
+/// Follow `settings`: `None` stops `slot`'s stream; new settings start a new
+/// one through `sender` (created on first use). Frames go out only while
+/// `live`.
+pub(crate) fn follow(
+    slot: &mut Option<SensorStreamer>,
+    sender: &mut Option<SensorSender>,
+    kind: &str,
+    knob: &'static str,
+    content_type: &'static str,
+    settings: Option<&SensorStreamSettings>,
+    allowed: &[String],
+    live: bool,
+) {
+    let Some(settings) = settings else {
+        *slot = None;
+        return;
+    };
+    if slot.as_ref().is_none_or(|stream| stream.settings() != settings) {
+        *slot = Some(SensorStreamer::new(
+            knob,
+            content_type,
+            settings.clone(),
+            allowed,
+            sender.get_or_insert_with(|| SensorSender::new(kind)),
+        ));
+    }
+    slot.as_mut().expect("set above").set_live(live);
 }
 
 /// Whether a frame is due at `now` (seconds) at `hz`, advancing `next_due`.
@@ -403,7 +410,7 @@ mod tests {
     #[test]
     fn loopback_is_allowed_and_other_origins_need_the_operator() {
         let allowed = vec!["http://192.168.1.5:9000".to_string()];
-        let refused = |url: &str| refusal(&Destination::parse(url).unwrap(), &allowed);
+        let refused = |url: &str| refusal("Xr.streamDepth", &Destination::parse(url).unwrap(), &allowed);
         assert_eq!(refused("http://127.0.0.1:9000/f"), None);
         assert_eq!(refused("http://localhost:1/"), None);
         assert_eq!(refused("http://[::1]/"), None);
@@ -411,13 +418,15 @@ mod tests {
         assert!(refused("http://192.168.1.5:9001/frames").is_some());
         assert!(refused("http://example.com/").is_some());
         // A refused streamer starts no thread and says why.
-        let streamer = DepthStreamer::new(
-            DepthStreamSettings {
+        let streamer = SensorStreamer::new(
+            "Xr.streamDepth",
+            "application/octet-stream",
+            SensorStreamSettings {
                 url: "http://10.0.0.2/f".to_string(),
                 hz: 10.0,
             },
             &[],
-            &DepthSender::new(),
+            &SensorSender::new("depth"),
         );
         assert!(streamer.sink.is_none());
         assert!(streamer.state().last_error.unwrap().contains("--allow-sensor-upload"));
@@ -448,20 +457,5 @@ mod tests {
             .collect();
         assert_eq!(sent.len(), 3);
         assert!(sent.windows(2).all(|w| w[1] - w[0] > 0.89), "{sent:?}");
-    }
-
-    #[test]
-    fn near_and_far_come_from_the_projection() {
-        let finite = cgmath::perspective(cgmath::Deg(90.0), 1.0, 0.1, 20.0);
-        let (near, far) = near_far(&finite);
-        assert!((near - 0.1).abs() < 1e-5 && (far.unwrap() - 20.0).abs() < 1e-2);
-        let mut camera = crate::Camera::default();
-        camera.near = 0.25;
-        camera.far = f32::INFINITY;
-        let infinite = camera.projection_matrix_from_fov_angles(-0.7, 0.7, -0.7, 0.7);
-        assert_eq!(near_far(&infinite), (0.25, None));
-        let ortho = cgmath::ortho(-1.0, 1.0, -1.0, 1.0, 0.5, 8.0);
-        let (near, far) = near_far(&ortho);
-        assert!((near - 0.5).abs() < 1e-5 && (far.unwrap() - 8.0).abs() < 1e-4);
     }
 }

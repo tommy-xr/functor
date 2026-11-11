@@ -1518,6 +1518,7 @@ mod tests {
             passthrough: Some(crate::runtime_settings::PassthroughState {
                 mode: crate::runtime_settings::PassthroughMode::Composited,
                 warning: None,
+                camera: None,
             }),
             battery: None,
             skinned: crate::gpu_counters::SkinnedWork {

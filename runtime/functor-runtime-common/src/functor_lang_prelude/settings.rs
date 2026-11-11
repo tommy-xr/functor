@@ -9,7 +9,7 @@
 use super::*;
 
 use crate::runtime_settings::{
-    DepthStreamSettings, ExternalPrefix, FoveationLevel, GameConfig, GameSettings, XrConfig,
+    SensorStreamSettings, ExternalPrefix, FoveationLevel, GameConfig, GameSettings, XrConfig,
     XrSettings,
 };
 
@@ -24,7 +24,8 @@ struct XrKnobs {
     msaa: Option<u32>,
     foveation: Option<FoveationLevel>,
     passthrough_enabled: Option<bool>,
-    stream_depth: Option<DepthStreamSettings>,
+    stream_depth: Option<SensorStreamSettings>,
+    stream_camera: Option<SensorStreamSettings>,
 }
 
 struct FunctorLangXr(XrKnobs);
@@ -101,8 +102,8 @@ impl crate::host_registry::FromArg for FoveationLevel {
     }
 }
 
-/// `Xr.streamDepth`'s `{url, hz}`.
-struct StreamOptionsArg(DepthStreamSettings);
+/// `Xr.streamDepth`'s and `Xr.streamCamera`'s `{url, hz}`.
+struct StreamOptionsArg(SensorStreamSettings);
 
 impl crate::host_registry::FromArg for StreamOptionsArg {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
@@ -117,10 +118,10 @@ impl crate::host_registry::FromArg for StreamOptionsArg {
         if !(hz.is_finite() && *hz > 0.0) {
             return fail(format!("{path}: hz must be a positive number, got {hz}"));
         }
-        if let Err(e) = crate::depth_stream::Destination::parse(url) {
+        if let Err(e) = crate::sensor_stream::Destination::parse(url) {
             return fail(format!("{path}: {e}"));
         }
-        Ok(StreamOptionsArg(DepthStreamSettings {
+        Ok(StreamOptionsArg(SensorStreamSettings {
             url: url.to_string(),
             hz: *hz as f32,
         }))
@@ -208,6 +209,16 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         |options: StreamOptionsArg, xr: FunctorLangXr| {
             FunctorLangXr(XrKnobs {
                 stream_depth: Some(options.0),
+                ..xr.0
+            })
+        },
+    );
+    reg.fn2(
+        "Xr.streamCamera",
+        "Xr.streamCamera({url, hz}, xr)",
+        |options: StreamOptionsArg, xr: FunctorLangXr| {
+            FunctorLangXr(XrKnobs {
+                stream_camera: Some(options.0),
                 ..xr.0
             })
         },
@@ -319,6 +330,8 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 Some("Xr.passthroughEnabled")
             } else if xr.0.stream_depth.is_some() {
                 Some("Xr.streamDepth")
+            } else if xr.0.stream_camera.is_some() {
+                Some("Xr.streamCamera")
             } else {
                 None
             };
@@ -389,6 +402,7 @@ in `let config = Config.create() |> Config.xr(…)`, then pause or resume the fe
                 foveation: xr.0.foveation,
                 passthrough: xr.0.passthrough_enabled,
                 stream_depth: xr.0.stream_depth,
+                stream_camera: xr.0.stream_camera,
             };
             Ok(FunctorLangSettings(settings))
         },

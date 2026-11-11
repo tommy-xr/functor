@@ -783,7 +783,7 @@ pub struct Args {
 
     /// Let `Xr.streamDepth` upload depth frames to this origin
     /// (`http://host[:port]`) besides loopback. Repeatable.
-    #[arg(long, value_parser = functor_runtime_common::depth_stream::parse_origin)]
+    #[arg(long, value_parser = functor_runtime_common::sensor_stream::parse_origin)]
     allow_sensor_upload: Vec<String>,
 
     /// Drive the game deterministically from a scripted input file instead of
@@ -1196,6 +1196,7 @@ fn service_debug_request(
             let stand_in_depth = scene_context.stand_in_depth_stats();
             let fused_room = scene_context.fused_room_state();
             let depth_stream = scene_context.depth_stream_state();
+            let camera_stream = scene_context.camera_stream_state();
             let cull = counters.frame_cull();
             let cells = counters.frame_cells();
             let reload = reload.state(Instant::now());
@@ -1225,6 +1226,7 @@ fn service_debug_request(
                     passthrough: functor_runtime_common::runtime_settings::PassthroughState::emulated(
                         g.config(),
                         g.settings().as_ref(),
+                        camera_stream,
                     ),
                     battery: None,
                     skinned,
@@ -3204,6 +3206,7 @@ Escape again to quit"
             scene_context.set_fused_room_wanted(snapshot.wants_fused_room);
             // `Xr.streamDepth` (with `Xr.scene`) uploads only from a live
             // clock: not paused, scrubbed, scripted or replayed.
+            let live = !clock.is_pinned() && !args.replay && input_script.is_none();
             scene_context.set_depth_stream(
                 snapshot
                     .settings
@@ -3212,7 +3215,24 @@ Escape again to quit"
                     .filter(|_| {
                         functor_runtime_common::runtime_settings::scene_requested(snapshot.config)
                     }),
-                !clock.is_pinned() && !args.replay && input_script.is_none(),
+                live,
+            );
+            // `Xr.streamCamera` (with `Xr.passthrough`) likewise, and only
+            // while the feed runs.
+            scene_context.set_camera_stream(
+                snapshot
+                    .settings
+                    .as_ref()
+                    .and_then(|settings| settings.xr.stream_camera.as_ref())
+                    .filter(|_| {
+                        functor_runtime_common::runtime_settings::passthrough_requested(
+                            snapshot.config,
+                        )
+                    }),
+                live && functor_runtime_common::runtime_settings::passthrough_wanted(
+                    snapshot.config,
+                    snapshot.settings.as_ref(),
+                ),
             );
 
             // Follow window resizes: query the drawable size each frame.
@@ -3652,6 +3672,16 @@ Escape again to quit"
                 );
             }
             let render_ns = render_started.elapsed().as_nanos() as u64;
+            // The stand-in room as `Xr.streamCamera`'s camera, at the game's
+            // view (not a detached debug camera).
+            scene_context.stream_emulated_camera(
+                &gl,
+                shader_version,
+                asset_cache.clone(),
+                &frame,
+                &authored_view_camera,
+                frame_time.clone(),
+            );
             stage_window.render_ns += render_ns;
             stage_window.frame_ns += last_rendered.elapsed().as_nanos() as u64;
             last_rendered = Instant::now();

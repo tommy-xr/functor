@@ -16,9 +16,9 @@
 //! cargo test -p functor-runtime-desktop --test depth_stream -- --ignored --nocapture
 //! ```
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod sensor_server;
+
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,13 +27,14 @@ use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::depth_frame::{decode, DepthFrameHeader, DepthFrameSource};
 use functor_runtime_common::environment_depth::EnvironmentDepthSource;
 use functor_runtime_common::math::Angle;
-use functor_runtime_common::runtime_settings::DepthStreamSettings;
+use functor_runtime_common::runtime_settings::SensorStreamSettings;
 use functor_runtime_common::shadow::ShadowMap;
 use functor_runtime_common::{
     render_frame, Camera, DebugRenderMode, Frame, FrameTime, Scene3D, SceneContext, SceneObject,
     Viewport,
 };
 use glow::HasContext;
+use sensor_server::Server;
 
 /// The readback's size, so stand-in texels and streamed pixels coincide.
 const SIZE: u32 = 320;
@@ -41,6 +42,7 @@ const SIZE: u32 = 320;
 const BOX_HALF: [f32; 3] = [0.4, 0.4, 0.4];
 const BOX_CENTER: [f32; 3] = [0.0, 0.4, 0.0];
 const TOLERANCE_M: f32 = 0.005;
+const DEPTH: &str = functor_runtime_common::depth_frame::CONTENT_TYPE;
 
 fn main() {
     if !std::env::args().any(|arg| arg == "--ignored" || arg == "--include-ignored") {
@@ -59,7 +61,7 @@ fn main() {
 }
 
 fn frames_decode_onto_the_room(harness: &Harness) {
-    let server = Server::start(Duration::ZERO, false);
+    let server = Server::start(DEPTH, Duration::ZERO, false);
     harness.stream(&server, true);
     harness.render_until(|| server.bodies().len() >= 10, "10 frames");
     harness.stop();
@@ -129,7 +131,7 @@ fn frames_decode_onto_the_room(harness: &Harness) {
 }
 
 fn a_slow_server_sees_one_post_at_a_time(harness: &Harness) {
-    let server = Server::start(Duration::from_millis(150), false);
+    let server = Server::start(DEPTH, Duration::from_millis(150), false);
     harness.stream(&server, true);
     harness.render_until(|| harness.state().dropped >= 5 && server.bodies().len() >= 3, "drops");
     let state = harness.state();
@@ -159,7 +161,7 @@ fn a_slow_server_sees_one_post_at_a_time(harness: &Harness) {
 }
 
 fn nothing_uploads_unless_live(harness: &Harness) {
-    let server = Server::start(Duration::ZERO, false);
+    let server = Server::start(DEPTH, Duration::ZERO, false);
     harness.stream(&server, false);
     for _ in 0..200 {
         harness.render();
@@ -184,11 +186,13 @@ fn nothing_uploads_unless_live(harness: &Harness) {
     let first = decode(&server.bodies()[0]).unwrap().0;
     let resumed = decode(&server.bodies()[before]).unwrap().0;
     assert_ne!(first.stream, resumed.stream);
-    assert_eq!(resumed.seq, 0);
+    // Seq restarts at 0; a frame replaced before the sender woke is a drop.
+    let dropped = harness.last_state.lock().unwrap().as_ref().unwrap().dropped;
+    assert!(resumed.seq <= dropped, "resumed at seq {}, {dropped} dropped", resumed.seq);
 }
 
 fn a_silent_server_times_out(harness: &Harness) {
-    let server = Server::start(Duration::ZERO, true);
+    let server = Server::start(DEPTH, Duration::ZERO, true);
     harness.stream(&server, true);
     harness.render_until(|| harness.state().errors >= 1, "a timeout");
     harness.stop();
@@ -208,87 +212,13 @@ fn matrix(columns: &[f32; 16]) -> Matrix4<f32> {
     Matrix4::from_cols(c(0), c(4), c(8), c(12))
 }
 
-
-/// An HTTP server that records each POST body, answering 204 after `delay`
-/// — or never, when `silent`.
-struct Server {
-    url: String,
-    bodies: Arc<Mutex<Vec<Vec<u8>>>>,
-    max_in_flight: Arc<AtomicUsize>,
-}
-
-impl Server {
-    fn start(delay: Duration, silent: bool) -> Server {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/frames", listener.local_addr().unwrap());
-        let bodies = Arc::new(Mutex::new(Vec::new()));
-        let max_in_flight = Arc::new(AtomicUsize::new(0));
-        let in_flight = Arc::new(AtomicUsize::new(0));
-        let (thread_bodies, thread_max) = (bodies.clone(), max_in_flight.clone());
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { return };
-                let (bodies, max, in_flight) =
-                    (thread_bodies.clone(), thread_max.clone(), in_flight.clone());
-                std::thread::spawn(move || {
-                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                    max.fetch_max(now, Ordering::SeqCst);
-                    let body = read_request(&mut stream);
-                    if silent {
-                        std::thread::sleep(Duration::from_secs(5));
-                    } else {
-                        std::thread::sleep(delay);
-                        bodies.lock().unwrap().extend(body);
-                        let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
-                    }
-                    in_flight.fetch_sub(1, Ordering::SeqCst);
-                });
-            }
-        });
-        Server {
-            url,
-            bodies,
-            max_in_flight,
-        }
-    }
-
-    fn bodies(&self) -> Vec<Vec<u8>> {
-        self.bodies.lock().unwrap().clone()
-    }
-}
-
-/// A request's body, by its `Content-Length`.
-fn read_request(stream: &mut std::net::TcpStream) -> Option<Vec<u8>> {
-    let mut data = Vec::new();
-    let mut chunk = [0u8; 65536];
-    let head_end = loop {
-        if let Some(i) = data.windows(4).position(|w| w == b"\r\n\r\n") {
-            break i + 4;
-        }
-        let n = stream.read(&mut chunk).ok().filter(|n| *n > 0)?;
-        data.extend_from_slice(&chunk[..n]);
-    };
-    let head = String::from_utf8_lossy(&data[..head_end]).to_ascii_lowercase();
-    assert!(head.starts_with("post /frames http/1.1"), "{head}");
-    assert!(head.contains("content-type: application/vnd.functor.depth-frame"), "{head}");
-    let len: usize = head
-        .lines()
-        .find_map(|l| l.strip_prefix("content-length:"))
-        .and_then(|v| v.trim().parse().ok())?;
-    while data.len() < head_end + len {
-        let n = stream.read(&mut chunk).ok().filter(|n| *n > 0)?;
-        data.extend_from_slice(&chunk[..n]);
-    }
-    Some(data[head_end..head_end + len].to_vec())
-}
-
 struct Harness {
     gl: glow::Context,
     fbo: glow::Framebuffer,
     asset_cache: Arc<AssetCache>,
     scene_context: SceneContext,
     shadow_map: ShadowMap,
-    last_state: Mutex<Option<functor_runtime_common::runtime_settings::DepthStreamState>>,
+    last_state: Mutex<Option<functor_runtime_common::runtime_settings::SensorStreamState>>,
     _window: glfw::PWindow,
     _glfw: glfw::Glfw,
 }
@@ -366,7 +296,7 @@ impl Harness {
     }
 
     fn stream_at(&self, server: &Server, hz: f32, live: bool) {
-        let settings = DepthStreamSettings {
+        let settings = SensorStreamSettings {
             url: server.url.clone(),
             hz,
         };
@@ -379,7 +309,7 @@ impl Harness {
         self.scene_context.set_depth_stream(None, false);
     }
 
-    fn state(&self) -> functor_runtime_common::runtime_settings::DepthStreamState {
+    fn state(&self) -> functor_runtime_common::runtime_settings::SensorStreamState {
         self.scene_context.depth_stream_state().expect("streaming")
     }
 
