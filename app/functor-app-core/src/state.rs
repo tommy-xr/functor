@@ -105,10 +105,13 @@ fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
         return false;
     };
     let id = state.session.as_ref().map_or(1, |s| s.id + 1);
-    commands.push(Command::StartSession {
-        id,
-        dir: Path::new(&state.repo_root).join(path),
-    });
+    let root = Path::new(&state.repo_root);
+    let dir = if path == "." {
+        root.into()
+    } else {
+        root.join(path)
+    };
+    commands.push(Command::StartSession { id, dir });
     state.session = Some(Session {
         id,
         pid: None,
@@ -469,7 +472,7 @@ mod tests {
             let (next, commands) = update(before, switch("examples/b"));
             assert_eq!(next.active.as_deref(), Some("examples/b"));
             // The old project's outcome is cleared, not carried over.
-            let expected = had_session.then(|| Session {
+            let expected = had_session.then_some(Session {
                 id: 1,
                 pid: None,
                 status: SessionStatus::Stopped,

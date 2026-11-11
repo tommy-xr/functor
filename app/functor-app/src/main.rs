@@ -1,8 +1,20 @@
 //! `functor-app`: the desktop app's shell around `functor-app-core`.
 
+mod session;
+
 use std::path::PathBuf;
+use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::Parser;
+use functor_app_core::protocol::ClientMsg;
+use functor_app_core::{print, update, AppState, Event, SessionStatus};
+use tokio::sync::mpsc;
+
+use session::Driver;
+
+/// How long `--start-session` waits for the first `/state`.
+const START_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Parser, Debug)]
 #[command(about = "The Functor desktop app")]
@@ -18,22 +30,123 @@ struct Args {
     /// Print the state as text and exit.
     #[arg(long)]
     print: bool,
+
+    /// With --print: start the active project's game session, print once it
+    /// answers `/state`, then stop it.
+    #[arg(long, requires = "print")]
+    start_session: bool,
+
+    /// Run game sessions without a GPU (`--headless` instead of `--hidden`).
+    #[arg(long)]
+    no_gpu: bool,
+
+    /// The `functor` binary for game sessions (else `FUNCTOR_BIN`, else one
+    /// next to this executable, else `functor` on PATH).
+    #[arg(long, value_name = "PATH")]
+    functor: Option<PathBuf>,
 }
 
-fn main() -> std::io::Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> std::io::Result<ExitCode> {
     let args = Args::parse();
     if !args.headless {
         eprintln!("functor-app: only --headless is supported yet");
-        std::process::exit(2);
+        return Ok(ExitCode::from(2));
     }
     if !args.print {
         println!("functor-app: nothing to serve yet");
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     let start = std::fs::canonicalize(args.dir.unwrap_or_else(|| PathBuf::from(".")))?;
-    print!(
-        "{}",
-        functor_app_core::print(&functor_app_core::discover(&start))
+    let state = functor_app_core::discover(&start);
+    if !args.start_session {
+        print!("{}", print(&state));
+        return Ok(ExitCode::SUCCESS);
+    }
+    let functor = session::functor_bin(
+        args.functor,
+        std::env::var_os("FUNCTOR_BIN"),
+        std::env::current_exe().ok(),
     );
-    Ok(())
+    print_session(state, functor, args.no_gpu).await
+}
+
+/// `--start-session`: start, print once polled, stop. Exits 1 if the session
+/// fails or never answers, 128 + n on signal n, after killing the child.
+async fn print_session(
+    mut state: AppState,
+    functor: PathBuf,
+    no_gpu: bool,
+) -> std::io::Result<ExitCode> {
+    // Handlers go in before the child exists, so no signal can skip its kill.
+    let shutdown = shutdown_signal()?;
+    tokio::pin!(shutdown);
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut driver = Driver::new(functor, no_gpu, tx);
+    state = step(state, Event::Client(ClientMsg::StartSession), &mut driver).await;
+    let deadline = tokio::time::sleep(START_TIMEOUT);
+    tokio::pin!(deadline);
+    let outcome = loop {
+        match state.session.as_ref().map(|s| &s.status) {
+            None => break Err((1, "no project to start a session for".to_string())),
+            Some(SessionStatus::Running { frame: Some(_), .. }) => break Ok(()),
+            Some(SessionStatus::Starting | SessionStatus::Running { .. }) => {}
+            Some(_) => break Err((1, "the session did not start".to_string())),
+        }
+        tokio::select! {
+            Some(event) = events.recv() => state = step(state, event, &mut driver).await,
+            _ = &mut deadline => {
+                let msg = format!("no answer from /state within {}s", START_TIMEOUT.as_secs());
+                break Err((1, msg));
+            }
+            signal = &mut shutdown => break Err((128 + signal, format!("signal {signal}"))),
+        }
+    };
+    print!("{}", print(&state));
+    let tail = driver.output_tail();
+    step(state, Event::Client(ClientMsg::StopSession), &mut driver).await;
+    Ok(match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err((code, msg)) => {
+            eprintln!("functor-app: {msg}");
+            if !tail.is_empty() {
+                eprintln!("functor-app: the game's last output lines:");
+                for line in tail {
+                    eprintln!("  {line}");
+                }
+            }
+            ExitCode::from(code)
+        }
+    })
+}
+
+async fn step(state: AppState, event: Event, driver: &mut Driver) -> AppState {
+    let (state, commands) = update(state, event);
+    for command in commands {
+        driver.run(command).await;
+    }
+    state
+}
+
+/// Resolves to the signal number on SIGINT, SIGTERM or SIGHUP (Ctrl-C off Unix).
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = u8>> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut int = signal(SignalKind::interrupt())?;
+        let mut term = signal(SignalKind::terminate())?;
+        let mut hup = signal(SignalKind::hangup())?;
+        Ok(async move {
+            tokio::select! {
+                _ = int.recv() => 2,
+                _ = term.recv() => 15,
+                _ = hup.recv() => 1,
+            }
+        })
+    }
+    #[cfg(not(unix))]
+    Ok(async {
+        let _ = tokio::signal::ctrl_c().await;
+        2
+    })
 }

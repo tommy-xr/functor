@@ -55,7 +55,7 @@ pub enum SessionEvent {
     },
     /// A `GET /state`: its `frame`, or why it failed.
     Polled(Result<u64, String>),
-    /// The child exited; `reason` is its status and last stderr line.
+    /// The child exited; `reason` is its status and the error it printed.
     Exited {
         reason: String,
     },

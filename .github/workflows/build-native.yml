@@ -86,3 +86,10 @@ jobs:
       - name: Build CLI
         run: cargo build
         working-directory: cli
+
+      # The app's session test drives a real `functor` (skipped in "Run
+      # tests", which runs before the CLI exists).
+      - name: Test app game sessions
+        run: cargo test -p functor-app --test session
+        env:
+          FUNCTOR_BIN: ${{ github.workspace }}/target/debug/functor${{ runner.os == 'Windows' && '.exe' || '' }}
