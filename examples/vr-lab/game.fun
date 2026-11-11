@@ -142,8 +142,13 @@ type Model = {
   nextMag: float,
   nextRound: float,
   // Loose rounds taken out of the world past `looseCap` (oldest first).
-  lost: float
+  lost: float,
+  // Each tracked hand as drawn after the last step (`shownAll`).
+  shown: List<Shown>
 }
+
+/// A hand as drawn: its root (rig-local) and fingers (`shownOn`).
+type Shown = { side: Hold.Side, at: Input.pose, fingers: Hand.FingerPose }
 
 let zero = Hold.zero
 // Slower than this, a release is a drop.
@@ -198,7 +203,7 @@ let init: Model =
     handView: Accepted, glove: Skinned, stickUp: false, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
     feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon),
     shotgun: emptyShotgun, shellBox: 0.0, buttonA: (false, false),
-    stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
+    stick: (false, false), releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0, shown: []
   }, 1.0)
 
 // --- input ---
@@ -518,11 +523,13 @@ let take = (m: Model, side: Hold.Side, k: Props.Kind): Model =>
 
 /// The grip a free prop at `offset` (in a hand's grip frame) snaps to: its
 /// authored grip (the bottle's neck), or the nearest of its fitted
-/// placements (`Grip.nearestGrasp`), if any.
+/// placements (`Grip.nearestGrasp`) within `Grip.snapRadius`, if any.
 let authoredOf = (k: Props.Kind, side: Hold.Side, offset: Input.pose): Option.t<Input.pose> =>
   match Props.grip(k) with
   | Option.Some(a) => Option.Some(a)
-  | Option.None => Grip.graspedFor(k) |> Option.map((gr) => let (_, a) = Grip.nearestGrasp(gr, side, offset) in a)
+  | Option.None =>
+    Grip.graspedFor(k) |> Option.map((gr) => let (_, a) = Grip.nearestGrasp(gr, side, offset) in a)
+      |> Option.filter((a) => Quat.length(Quat.sub(a.position, (Hold.inverse(offset)).position)) <= Grip.snapRadius)
 
 /// Hands hover what they reach, and a fresh squeeze takes it; both hands
 /// pressing on one prop, the nearer (`Hold.pick`). A hand at the slide of a
@@ -1156,7 +1163,7 @@ let tick = (m: Model, dt: float, tts: float) =>
     [Physics.setVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.velocity)),
      Physics.setAngularVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.spin))]) in
   let buzzes = next.pulses |> List.map((se) => let (side, e) = se in Pulses.effect(side, e)) in
-  (next, Effect.batch(List.append(throws, buzzes)))
+  ({ next with shown: shownAll(next) }, Effect.batch(List.append(throws, buzzes)))
 
 let solid = (named: (string, Stations.Box)) =>
   let (name, b) = named in
@@ -1388,6 +1395,11 @@ let shownOn = (m: Model, side: Hold.Side, on: On, g: Input.pose): (Input.pose, H
     (Grip.rackAt(p.kind, side, (gunOf(m, p.kind)).slide.pull) |> Option.map((at) => view(Hold.compose(h.accepted, at))) |> Option.defaultValue(g),
      Props.fingers(p.kind, Props.AtSlide, trigger))
   | OnNothing => (g, Hand.empty(trigger, squeezeOf(m.xr, side)))
+
+/// Each tracked hand as drawn (`shownOn`).
+let shownAll = (m: Model): List<Shown> =>
+  [Hold.Left, Hold.Right] |> List.concatMap((side) =>
+    gripOf(m.xr, side) |> Option.map((g) => let (at, f) = shownOn(m, side, onOf(m, side), g) in [{ side: side, at: at, fingers: f }]) |> Option.defaultValue([]))
 
 /// Where a hand is drawn (`shownOn`, tracked at `g`).
 let drawnHand = (m: Model, side: Hold.Side, g: Input.pose): Input.pose =>
@@ -1648,8 +1660,11 @@ let handScene = (m: Model, st: Stations.Station, side: Hold.Side): (Scene.t, Sce
   match gripOf(m.xr, side) with
   | Option.None => (Scene.group([]), Scene.group([]))
   | Option.Some(g) =>
-    let on = onOf(m, side) in
-    let (drawn, fingers) = shownOn(m, side, on, g) in
+    // As the last step left it (`shown`); drawn before any step, worked out.
+    let (drawn, fingers) =
+      match m.shown |> List.find((h) => h.side == side) with
+      | Option.Some(h) => (h.at, h.fingers)
+      | Option.None => shownOn(m, side, onOf(m, side), g) in
     let key = if side == Hold.Left then "glove-left" else "glove-right" in
     let glove = match m.glove with
       | Capsule => Scene.group([

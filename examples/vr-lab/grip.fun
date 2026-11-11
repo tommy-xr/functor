@@ -1053,13 +1053,19 @@ let rackAt = (k: Props.Kind, side: Hold.Side, pull: float): Option.t<Input.pose>
     Hold.at(Quat.add(h.position, Quat.v3(0.0, 0.0, pull)), h.orientation))
 
 // --- free props ---
-// A free prop is held where it is taken, unless the hand snaps to one of
-// its fitted placements (`Hold.snaps`): its spec's, and a few nudged off it
-// (`Grasps`: moved in the hand's root frame, the palm pushed back on for a
-// palm grip). The nearest is chosen when a hand takes it, under the turns
-// its solids are alike under (any, for a ball); its fit is the hand's pose.
+// A free prop is held where it is taken, unless the hand is within
+// `snapRadius` of one of its fitted placements: its spec's, and a few
+// nudged off it (`Grasps`: moved in the hand's root frame, the palm pushed
+// back on for a palm grip). The nearest is chosen when a hand takes it,
+// under the turns its solids are alike under (any, for a ball); its fit is
+// the hand's pose.
 
 type Grasps = { name: string, nudges: List<Input.pose>, alike: List<Input.quaternion>, round: bool, push: bool }
+
+/// A hand this near a fitted placement snaps to it: nearer than an authored
+/// grip's reach (`Hold.snapRadius`), so a prop taken a hand's width off
+/// still stays where it was taken (and takes the nearest's pose).
+let snapRadius = 0.025
 
 let turnAbout = (axis: Input.point3, a: float): Input.quaternion => Quat.axisAngle(axis, a)
 let flips = [Quat.identity, turnAbout(Quat.v3(1.0, 0.0, 0.0), Math.pi), turnAbout(up, Math.pi), turnAbout(Quat.v3(0.0, 0.0, 1.0), Math.pi)]

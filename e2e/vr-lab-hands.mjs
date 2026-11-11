@@ -33,12 +33,18 @@
 //      turned within its correction's bound) where FK puts the preset's
 //      curl and tip, at each pull.
 //
+//   8. A support hand on the shotgun's fore-end, home and pumped back: drawn
+//      at its fitted placement (`/state`'s `shown`), every capsule where FK
+//      puts its fitted fingers; it rides the fore-end back its travel.
+//   9. The ball taken at two of its fitted placements: each its own
+//      placement (`grasp`) and its own fitted pose, the capsules at FK.
+//
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab-hands.mjs
 import { readFileSync } from "node:fs";
 import { ROOT, check, failures } from "./mcp-rpc.mjs";
 import { add, compose, len, qmul, qrot, record, rigToWorld, session, sub } from "./xr-scenario.mjs";
-import { grabTable, project, scenarios } from "./vr-lab-scenarios.mjs";
+import { BALL, armory, grabTable, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8300;
 const run = (name, body) => session(name, project, PORT, body);
@@ -410,6 +416,66 @@ await run("a hooked index (tip ≠ curl): capsules and skinned at FK", async (rt
   }
   check(far < 1e-4 && over <= 0, `skinned: each of the 20 joints at FK's curl and tip, at each pull (worst ${mm(far)}), turned within its correction's bound (${(-over).toFixed(2)}° inside)`);
 });
+
+// --- fitted holds (`grip.fun`'s tables, looked up at runtime) ---
+// A hand as `/state` shows it drawn (`shown`): its grip (rig-local) and its
+// fingers, in this script's shapes.
+const sideOf = (s) => (s.$ctor ?? s).endsWith("Left") ? "left" : "right";
+function shownOf(state, side) {
+  const h = state.model.shown.find((s) => sideOf(s.side) === side);
+  if (!h) return undefined;
+  const { position: p, orientation: q } = h.at;
+  const f = h.fingers;
+  return { grip: { position: [p.x, p.y, p.z], orientation: [q.x, q.y, q.z, q.w] }, pose: { thumb: f.thumb, fingers: [f.index, f.middle, f.ring, f.little] } };
+}
+const somed = (o) => (o?.$ctor === "Option.Some" ? o.args[0] : undefined);
+
+await run("a support hand fitted on the sliding fore-end", async (rt) => {
+  const loop = scenarios["shotgun-loop"];
+  const upTo = loop.steps.findIndex((s) => s.mark === "pumped");
+  const { scenes, marks } = await record(rt, capsules({ ...loop, steps: loop.steps.slice(0, upTo + 1) }), { scenes: true });
+  const [home, back] = ["onFore", "pumpedBack"].map((m) => shownOf(marks[m], "left"));
+  for (const [mark, s] of [["onFore", home], ["pumpedBack", back]]) {
+    const g = glove(scenes[mark].scene.obj.Group[4]);
+    const off = g && s ? worst(g, expected("left", s.grip, s.pose, armory)) : Infinity;
+    check(off < 1e-4, `${mark}: the support glove's capsules where FK puts its fitted fingers, at its fitted placement (worst ${mm(off)})`);
+  }
+  const moved = home && back ? len(sub(back.grip.position, home.grip.position)) : 0;
+  check(Math.abs(moved - 0.09) < 0.005, `pumped back, the support hand rides the fore-end back ${(moved * 100).toFixed(1)} cm (its 9 cm travel)`);
+  const wrapped = (s) => s && s.pose.fingers.every((f) => f.curl > 0.3);
+  check(wrapped(home) && wrapped(back), "its fingers wrap the fore-end (each finger's curl over 0.3) at both");
+});
+
+// The ball's centre in a right hand's grip frame at two of its fitted
+// placements (`Grip.graspSets`): its spec's, and 2 cm toward the fingers.
+const BALL_IN_HAND = [[-0.044, 0, 0.0079], [-0.044, 0, -0.0121]];
+const takeBall = (centre) => {
+  const at = sub(BALL, centre);
+  return {
+    station: 1,
+    steps: [
+      { frames: 20, right: { to: add(at, [0, 0.12, 0]), squeeze: 0 } },
+      { frames: 15, right: { to: at } },
+      { frames: 6, right: { squeeze: 1 }, mark: "held" },
+      { frames: 10, right: { to: add(at, [0, 0.1, 0]) }, mark: "lifted" },
+    ],
+  };
+};
+const taken = [];
+for (const [i, centre] of BALL_IN_HAND.entries()) {
+  await run(`a ball taken at its placement ${i}, fitted there`, async (rt) => {
+    const { scenes, marks } = await record(rt, capsules(takeBall(centre)), { scenes: true });
+    const ball = marks.lifted.model.props.find((p) => p.kind.$ctor === "Props.Ball");
+    const s = shownOf(marks.lifted, "right");
+    const g = glove(scenes.lifted.scene.obj.Group[5]);
+    const off = g && s ? worst(g, expected("right", s.grip, s.pose, grabTable)) : Infinity;
+    check(somed(ball?.held) && off < 1e-4, `held at placement ${somed(ball?.grasp)}: the glove's capsules where FK puts its fitted fingers (worst ${mm(off)})`);
+    taken.push({ grasp: somed(ball?.grasp), pose: s?.pose });
+  });
+}
+const [ta, tb] = taken;
+check(ta?.grasp === 0 && tb?.grasp === 1, `the ball taken two ways: its spec's placement, then the one 2 cm toward the fingers (${ta?.grasp}, ${tb?.grasp})`);
+check(ta && tb && JSON.stringify(ta.pose) !== JSON.stringify(tb.pose), "two different fitted poses");
 
 if (failures.length) {
   console.error(`\n${failures.length} failure(s)`);
