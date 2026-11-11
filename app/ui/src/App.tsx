@@ -1,6 +1,8 @@
 import { useState, type KeyboardEvent, type ReactNode } from "react";
 import type { AppState, ClientMsg, Session, SessionMode } from "./generated/protocol";
+import { ChatDock, type CanvasTab } from "./Chat";
 import { GameView } from "./GameView";
+import { Icon } from "./Icon";
 import { useAppSocket, type Conn } from "./socket";
 
 type Send = (msg: ClientMsg) => void;
@@ -11,8 +13,10 @@ type View = (typeof VIEWS)[number];
 const VIEW_LABELS: Record<View, string> = { explorer: "Explorer", tasks: "Tasks", devices: "Devices" };
 
 export function App() {
-  const { state, conn, send } = useAppSocket();
+  const { state, conn, send, transcripts, fetchTranscript, accepted, notice } = useAppSocket();
   const [view, setView] = useView();
+  // Lifted so the chat's cards can switch it.
+  const [tab, setTab] = useState<CanvasTab>("game");
   const online = conn === "open" && state !== null;
   return (
     <div className="app">
@@ -31,8 +35,18 @@ export function App() {
               Headsets you connect by cable or Wi-Fi will appear here.
             </PlaceholderPane>
           )}
-          <Canvas state={state} online={online} send={send} />
-          <ChatDock />
+          <Canvas state={state} online={online} send={send} tab={tab} onTab={setTab} />
+          <ChatDock
+            state={state}
+            conn={conn}
+            send={send}
+            transcripts={transcripts}
+            fetchTranscript={fetchTranscript}
+            accepted={accepted}
+            notice={notice}
+            tab={tab}
+            onTab={setTab}
+          />
         </div>
       </div>
     </div>
@@ -211,16 +225,28 @@ const TABS = [
   { id: "diff", label: "Diff", text: "Changes the agent makes will appear here for review." },
 ] as const;
 
-function Canvas({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
-  const [tab, setTab] = useState(0);
+function Canvas({
+  state,
+  online,
+  send,
+  tab: id,
+  onTab,
+}: {
+  state: AppState | null;
+  online: boolean;
+  send: Send;
+  tab: CanvasTab;
+  onTab: (tab: CanvasTab) => void;
+}) {
+  const tab = TABS.findIndex((t) => t.id === id);
   // Arrow keys move between tabs, as in the ARIA tabs pattern.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     // Only from a tab: the mode picker in the same bar keeps its arrow keys.
     const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
     if (!step || (e.target as HTMLElement).getAttribute("role") !== "tab") return;
-    const next = (tab + step + TABS.length) % TABS.length;
-    setTab(next);
-    document.getElementById(`tab-${TABS[next]!.id}`)?.focus();
+    const next = TABS[(tab + step + TABS.length) % TABS.length]!;
+    onTab(next.id);
+    document.getElementById(`tab-${next.id}`)?.focus();
   };
   const current = TABS[tab]!;
   return (
@@ -235,7 +261,7 @@ function Canvas({ state, online, send }: { state: AppState | null; online: boole
             aria-selected={i === tab}
             aria-controls="canvas-panel"
             tabIndex={i === tab ? 0 : -1}
-            onClick={() => setTab(i)}
+            onClick={() => onTab(t.id)}
           >
             {t.label}
           </button>
@@ -283,72 +309,5 @@ function ModePicker({ state, online, send }: { state: AppState | null; online: b
       </select>
       <Icon name="chevron" />
     </div>
-  );
-}
-
-/** Drawn but inert until there is an agent to talk to. */
-function ChatDock() {
-  return (
-    <section className="chat" aria-labelledby="chat-heading">
-      <header className="chat-head">
-        <h2 id="chat-heading">Agent</h2>
-      </header>
-      <div className="chat-body">
-        <p className="hint">Conversations with an agent that sees the live game will appear here.</p>
-      </div>
-      <div className="composer-wrap">
-        <div className="composer" aria-disabled="true">
-          <textarea aria-label="Message the agent" rows={2} placeholder="The agent is not available yet" disabled />
-          <div className="composer-row">
-            <button type="button" className="round" aria-label="Attach a capture or file" disabled>
-              <Icon name="plus" />
-            </button>
-            <button type="button" className="model" aria-label="Choose the model" disabled>
-              claude
-              <Icon name="chevron" />
-            </button>
-            <span className="spacer" />
-            <button type="button" className="round round-plain" aria-label="Hold to talk" disabled>
-              <Icon name="mic" />
-            </button>
-            <button type="button" className="round round-send" aria-label="Send" disabled>
-              <Icon name="send" />
-            </button>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-const ICONS: Record<string, ReactNode> = {
-  explorer: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
-  tasks: <path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" />,
-  devices: <path d="M4 9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6a2 2 0 0 1-2 2h-3l-2-3h-2l-2 3H6a2 2 0 0 1-2-2z" />,
-  chevron: <path d="M6 9l6 6 6-6" />,
-  plus: <path d="M12 5v14M5 12h14" />,
-  mic: (
-    <>
-      <rect x="9" y="3" width="6" height="11" rx="3" />
-      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-    </>
-  ),
-  send: <path d="M12 19V5M6 11l6-6 6 6" />,
-};
-
-function Icon({ name }: { name: keyof typeof ICONS }) {
-  return (
-    <svg
-      className="icon"
-      aria-hidden="true"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {ICONS[name]}
-    </svg>
   );
 }
