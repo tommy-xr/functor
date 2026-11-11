@@ -33,9 +33,12 @@ let rowOf = (it: Grip.Item): Row =>
   { name: it.name, intent: Grip.intentName(it.spec.intent), compared: c, hand: it.hand, checks: Grip.checksOf(Hold.Right, it, c.fitted.pose), adopted: Grip.adopted(it, c.fitted), placement: Grip.placementOf(it),
     extra: not (Grip.items |> List.any((i) => i.name == it.name)) }
 
-// A spec's item with the hand elsewhere on it, named.
-let viewOf = (name: string, label: string, hand: (Grip.Item) => Input.pose): List<Grip.Item> =>
-  Grip.itemNamed(name) |> Option.map((it) => [{ it with name: $"{name} ({label})", hand: hand(it) }]) |> Option.defaultValue([])
+/// A spec's item shown with the hand elsewhere on it: named, and where (a
+/// fit away: placed in `tick`, so loading pays nothing).
+type View = { item: Grip.Item, label: string, hand: (Grip.Item) => Input.pose }
+
+let viewOf = (name: string, label: string, hand: (Grip.Item) => Input.pose): List<View> =>
+  Grip.itemNamed(name) |> Option.map((it) => [{ item: it, label: $"{name} ({label})", hand: hand }]) |> Option.defaultValue([])
 // A support cell's hand: slid `s`, rolled `r`, its palm pushed back on.
 let slid = (s: float, r: float): ((Grip.Item) => Input.pose) => (it: Grip.Item) =>
   let h = Grip.slidOn(it, s, r, it.hand) in Grip.pushedBy((Grip.cellAt(it, true, h)).push, h)
@@ -44,7 +47,7 @@ let grasped = (i: float): ((Grip.Item) => Input.pose) => (it: Grip.Item) =>
   Grip.graspSets |> List.find((g) => g.name == it.name) |> Option.bind((g) => List.nth(i, g.nudges)) |> Option.map((n) =>
     let h = Grip.nudgedHand(it, n) in Grip.pushedBy((Grip.cellAt(it, true, h)).push, h)) |> Option.defaultValue(it.hand)
 
-let views: List<Grip.Item> = List.flatten([
+let views: List<View> = List.flatten([
   viewOf("rifle foregrip", "slid back 10 cm", slid(0.0 - 0.1, 0.0)),
   viewOf("rifle foregrip", "slid on 10 cm, rolled 23 deg", slid(0.1, 0.4)),
   viewOf("shotgun fore-end", "slid back 6 cm, rolled 34 deg", slid(0.0 - 0.06, 0.6)),
@@ -53,11 +56,13 @@ let views: List<Grip.Item> = List.flatten([
   viewOf("ball", "1.5 cm along the knuckles", grasped(3.0)),
 ])
 
-let shown = Grip.items |> List.append(views)
+// Every item shown, the views' hands where their specs' are (each row has
+// its own).
+let shown = Grip.items |> List.append(views |> List.map((v) => { v.item with name: v.label }))
 
 let tick = (m: Model, dt, tts) =>
   if List.isEmpty(m.rows) then
-    { rows: shown |> List.map(rowOf),
+    { rows: Grip.items |> List.append(views |> List.map((v) => { v.item with name: v.label, hand: v.hand(v.item) })) |> List.map(rowOf),
       tables: Grip.sliders |> List.map((sl) => tableRow(sl.name, Grip.tableOf(sl), (cs) => Grip.tableHands(sl, cs))),
       grasps: Grip.graspSets |> List.map((g) => tableRow(g.name, Grip.graspCells(g), (cs) => Grip.graspHands(g, cs))),
       fingerprint: Grip.fingerprint }
@@ -98,7 +103,7 @@ let itemScene = (r: Row, it: Grip.Item): Scene.t =>
 
 let draw = (m: Model, tts) =>
   let i = Math.floor(tts) in
-  let shown = List.zip(shown, m.rows) |> List.nth(i) |> Option.map((ri) => let (r, it) = ri in Scene.memo($"grip-{i}", i, (_) => itemScene(r, it))) |> Option.defaultValue(Scene.group([])) in
+  let shown = List.zip(shown, m.rows) |> List.nth(i) |> Option.map((ri) => let (r, it) = ri in Scene.memo($"grip-{i}", i, (_) => itemScene(r, { it with hand: r.hand }))) |> Option.defaultValue(Scene.group([])) in
   Frame.createLit(Camera3D.lookAt(Vec3.make(0.0, 1.05, 0.0 - 0.35), Vec3.make(0.0, 1.0, 0.0)),
     shown,
     [Light.ambient(Color.rgb(0.35, 0.35, 0.38)), Light.directional(Vec3.make(0.3, -1.0, -0.4), Color.rgb(1.0, 1.0, 1.0), 0.8)])

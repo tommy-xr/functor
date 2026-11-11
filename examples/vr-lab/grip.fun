@@ -744,13 +744,13 @@ expect (
   cl.buried && cl.curls == [0.0, 0.0] && not (close(handle, Hold.Right, 1.0, 0.0, fingerRig)).buried
 )
 // On the handle: every finger closes round it, the thumb opposed, the palm
-// on it; the same every time; and the left hand's fit on the mirrored
-// handle is the right's.
+// on it (a fit is the same every time: the ball's grab check fits twice);
+// and the left hand's fit on the mirrored handle is the right's.
 expect (
   let r = fit(Hold.Right, handle) in
   let m = measure(Hold.Right, handle, r.pose) in
   not (r.buried |> List.any((b) => b)) && not r.palmBuried && r.pose.thumb.opposition >= 0.5
-    && (m.digits |> List.all((g) => g >= 0.0 && g < 0.012)) && m.contacts >= 5.0 && fit(Hold.Right, handle) == r
+    && (m.digits |> List.all((g) => g >= 0.0 && g < 0.012)) && m.contacts >= 5.0
 )
 expect (
   let mirrored = (s: Solid) => { s with at: Hand.mirror(s.at) } in
