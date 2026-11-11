@@ -168,6 +168,10 @@ layout. The workbench was chosen.
   from state, it can draw it from any viewpoint: head view, or cameras parked
   in the world and switched between while playing in the headset.
 
+- **D19 — agent runs load the user's own agent settings** (their Claude
+  settings, hooks and tool servers), as in the terminal. An isolated mode is a
+  later option.
+
 Taken from the other two layouts:
 
 - Captures, diffs and voice capsules appear as cards in the chat, each with
