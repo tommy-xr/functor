@@ -17,7 +17,7 @@
 //   3. Rotation only: the primary hand still, the support swings the barrel
 //      into the wall; the swept turn stops it short of the support.
 //   4. Support slide and break: slid along the foregrip the aim holds;
-//      dragged 15 cm off the axis it breaks off at 12 cm, back to one hand,
+//      a 15 cm jerk off the aim holds; pulled 80 cm away it breaks off, back to one hand,
 //      with no pop on that step, then settles into the primary hand.
 //   5. Hand-off both ways: primary opens (the support keeps it), retaken,
 //      support opens: no pop at any of them.
@@ -166,7 +166,10 @@ await run("support slide and break", async (rt) => {
   check(slid.every((s) => supportSide(s.state.model) === "Hold.Left" && straight(s.state.model) < 1e-4), "slid 16-38 cm along the foregrip: still two hands, the aim unchanged");
   const broke = steps.findIndex((s, i) => i > index("slidBack") && supportSide(s.state.model) === undefined);
   const offAt = (i) => steps[i].left.at[0] - steps[index("slidBack")].left.at[0];
-  check(broke > 0 && offAt(broke) > RIFLE.breakOff && offAt(broke - 1) <= RIFLE.breakOff + 1e-9, `breaks off ${(offAt(broke) * 100).toFixed(1)} cm off the axis`);
+  // Forgiving once supporting (`Longarm.keeps`): 15 cm off still holds; the pull-off breaks it.
+  const at15 = steps.findIndex((s, i) => i > index("slidBack") && offAt(i) >= 0.15);
+  check(at15 > 0 && supportSide(steps[at15].state.model) === "Hold.Left", "15 cm off the aim: still supporting");
+  check(broke > 0 && offAt(broke) > 0.3, `breaks off once pulled away (${(offAt(broke) * 100).toFixed(1)} cm)`);
   check(holderSide(steps[broke].state.model) === "Hold.Right", "back to one hand: the right");
   const [m] = stepMoves(steps, broke - 1, broke);
   check(m.moved <= 0.001 && m.turned <= (0.5 * Math.PI) / 180, `no pop on the break step (${(m.moved * 1000).toFixed(3)} mm, ${deg(m.turned).toFixed(3)}°)`);

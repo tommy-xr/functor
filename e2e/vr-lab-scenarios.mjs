@@ -263,8 +263,8 @@ const inventoryScenarios = {
 
 export const armory = { feet: [4, 0, 0], yaw: Math.PI / 2 };
 // Where the hand's root sits in each gun's layout frame (`Gun.placement`,
-// `Longarm.placement`, `Pump.placement`): the handle up the fist, so the bore
-// is 12° (14°) above the hand's -Z. A scenario holding a gun scripts its
+// `Longarm.placement`, `Pump.placement`): the solved position, levelled
+// (`Gun.levelled`), so the bore runs along the hand's -Z. A scenario holding a gun scripts its
 // right hand as the gun's fist (`fists`; each take below switches it), so
 // the geometry below is the fist's; the controller is injected at
 // fist ∘ placement.
@@ -273,7 +273,7 @@ const FITTED = readFileSync(`${REPO}examples/vr-lab/fitted.fun`, "utf8");
 const placement = (name) => {
   const line = FITTED.split("\n").find((l) => l.startsWith(`let ${name}:`));
   const v = [...line.matchAll(/[xyzw]: (0\.0 - )?([0-9.]+)/g)].map((m) => (m[1] ? -1 : 1) * Number(m[2]));
-  return { position: v.slice(0, 3), orientation: v.slice(3, 7) };
+  return { position: v.slice(0, 3), orientation: [0, 0, 0, 1] };
 };
 export const PISTOL_FIST = placement("pistolGripPlacement");
 export const RIFLE_FIST = placement("rifleGripPlacement");
@@ -458,7 +458,7 @@ export const RIFLE_RACK = [0.55, 1.05, -0.62];
 export const GRIP_IN_RIFLE = [0, -0.0275, 0.14];
 export const RIFLE_GRIP = add(RIFLE_RACK, GRIP_IN_RIFLE);
 // Half the collider (from the rifle's centre), the bore, and the foregrip.
-export const RIFLE = { half: [0.025, 0.0725, 0.42], bore: 0.06, muzzle: 0.56, foreNear: 0.14, foreFar: 0.4, breakOff: 0.12 };
+export const RIFLE = { half: [0.025, 0.0725, 0.42], bore: 0.06, muzzle: 0.56, foreNear: 0.14, foreFar: 0.4 };
 const ID = [0, 0, 0, 1];
 const scale = (v, k) => v.map((c) => c * k);
 const dot = (a, b) => a.reduce((s, c, i) => s + c * b[i], 0);
@@ -515,7 +515,8 @@ const bothTo = (to, q = LEFTWARD) => ({ right: { to, turn: q }, left: { to: ahea
 export const RIFLE_SWING = { at: [-0.3, 1.2, -0.5], d: 0.18, deg: 35 };
 const swungTo = (deg) => add(RIFLE_SWING.at, qrot(yaw(deg), [0, 0, -RIFLE_SWING.d]));
 // Dragged 15 cm off the axis to the right, from the raised aim.
-const DRAG = add(aheadOf(RIFLE_AIM, ID, 0.25), [0.15, 0, 0]);
+// Dragged 80 cm sideways: a deliberate pull-off (a 15 cm jerk keeps the grip).
+const DRAG = add(aheadOf(RIFLE_AIM, ID, 0.25), [0.8, 0, 0]);
 
 // Behind the player's left shoulder: both hands on the rifle, the shot down range.
 const behindRifle = { eye: [2.85, 1.9, 0.95], target: [7.0, 1.2, -0.1], fov: 40 };
