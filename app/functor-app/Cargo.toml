@@ -8,11 +8,18 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 clap = { version = "4.5.6", features = ["derive"] }
 functor-app-core = { path = "../functor-app-core" }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# The agent runner (claude / codex) and its event types; one pinned revision.
+mis-agent = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
+mis-types = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
 serde_json = "1.0"
 # Game-session children, signals and timers; the server runs on the same
 # runtime.
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
+# Task ids for `mis-agent` runs and the tool server's bearer tokens.
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+# Finds the app's child processes in tests, on every OS (mis-agent uses it too).
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tempfile = "3"
 tokio-tungstenite = "0.29"

@@ -34,12 +34,16 @@ session_mode: SessionMode,
 /**
  * Sessions run `--headless` (`functor-app --no-gpu`), so there are no frames.
  */
-no_gpu: boolean, };
+no_gpu: boolean, 
+/**
+ * Every project's tasks, by id; their transcripts travel separately.
+ */
+tasks: Array<Task>, };
 
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, };
 
 /**
  * What `functor.json` declares to run.
@@ -61,6 +65,15 @@ branch: string,
  */
 commit: string, };
 
+export type Harness = "claude" | "codex";
+
+/**
+ * One transcript entry, in the order the UI shows them.
+ */
+export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" };
+
+export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
+
 export type MouseButton = "left" | "right" | "middle";
 
 export type Project = { 
@@ -79,10 +92,21 @@ path: string, entries: Entries, };
  */
 export type Role = { name: string, file: string, module?: string, prefix?: string, };
 
+export type Run = { 
+/**
+ * The index of the user message that started it; events for another
+ * run of the task are dropped.
+ */
+id: number, 
+/**
+ * The latest (cumulative) usage, added as an item when the run ends.
+ */
+usage: Usage | null, };
+
 /**
  * Core → UI.
  */
-export type ServerMsg = { "type": "state", state: AppState, };
+export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "rejected", reason: string, };
 
 export type Session = { 
 /**
@@ -105,3 +129,41 @@ export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "
  * `surface_height`): the space `/input` mouse coordinates are in.
  */
 surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
+
+export type Task = { 
+/**
+ * Unique among the loaded tasks.
+ */
+id: number, 
+/**
+ * The project's path relative to the repo root.
+ */
+project: string, 
+/**
+ * Short, from the first message.
+ */
+title: string, 
+/**
+ * From [`derive_status`], after every change.
+ */
+status: TaskStatus, harness: Harness, 
+/**
+ * As the agent reported it.
+ */
+model: string | null, 
+/**
+ * The agent's session, from its `started`; a follow-up resumes it.
+ */
+session_id: string | null, 
+/**
+ * The run in flight.
+ */
+run: Run | null, };
+
+export type TaskStatus = { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "failed", summary: string | null, };
+
+export type Usage = { 
+/**
+ * Includes cached prompt tokens.
+ */
+input: number, output: number, };

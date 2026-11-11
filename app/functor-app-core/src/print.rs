@@ -1,10 +1,10 @@
 //! The `--print` text dump of the state.
 
 use crate::projects::Entries;
-use crate::{AppState, Display, SessionStatus};
+use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 
 /// One line per field, then one per project in path order, the active one
-/// marked `*`:
+/// marked `*`, then one per task:
 ///
 /// ```text
 /// repo: /src/functor
@@ -14,6 +14,8 @@ use crate::{AppState, Display, SessionStatus};
 /// projects: 2
 /// * examples/hello (hello): entry game.fun
 ///   examples/orbs (orbs): entries client=game.fun module=Client, server=game.fun module=Server
+/// tasks: 1
+///   #1 waiting_on_you examples/hello "Make the cube spin" (claude): 6 items, 2 tool calls
 /// ```
 pub fn print(state: &AppState) -> String {
     let active = state.active.as_deref();
@@ -53,7 +55,81 @@ pub fn print(state: &AppState) -> String {
         };
         lines.push(format!("{mark} {} ({}): {entries}", p.path, p.name));
     }
+    if !state.tasks.is_empty() {
+        lines.push(format!("tasks: {}", state.tasks.len()));
+        lines.extend(state.tasks.iter().map(task));
+    }
     lines.join("\n") + "\n"
+}
+
+fn task(t: &Task) -> String {
+    let status = match &t.status {
+        TaskStatus::InProgress => "in_progress".to_string(),
+        TaskStatus::WaitingOnYou => "waiting_on_you".to_string(),
+        TaskStatus::ReadyForReview => "ready_for_review".to_string(),
+        TaskStatus::Failed { summary: None } => "failed".to_string(),
+        TaskStatus::Failed { summary: Some(s) } => format!("failed ({})", clip(s)),
+    };
+    let model = t
+        .model
+        .as_ref()
+        .map(|m| format!(" {m}"))
+        .unwrap_or_default();
+    let tools = t
+        .transcript
+        .iter()
+        .filter(|i| matches!(i, Item::Tool { .. }))
+        .count();
+    format!(
+        "  #{} {status} {} {:?} ({}{model}): {} items, {tools} tool calls",
+        t.id,
+        t.project,
+        t.title,
+        t.harness.name(),
+        t.transcript.len(),
+    )
+}
+
+/// One transcript item as a line, as `functor-app task` prints it:
+///
+/// ```text
+/// you: What is the count?
+/// tool: mcp__mis__get_state {"session":"s1"} -> {"frame":180,"model":{"count":3}}
+/// agent: The game is on frame 180 and the count is 3.
+/// usage: 2400 in, 75 out
+/// finished: ok
+/// ```
+pub fn print_item(item: &Item) -> String {
+    match item {
+        Item::User { text } => format!("you: {text}"),
+        Item::Agent { text, .. } => format!("agent: {text}"),
+        Item::Tool {
+            name,
+            input,
+            result,
+        } => {
+            let result = result.as_deref().map_or("(no result)".to_string(), clip);
+            format!("tool: {name} {} -> {result}", clip(&input.to_string()))
+        }
+        Item::Usage { input, output } => format!("usage: {input} in, {output} out"),
+        Item::Finished { ok: true, .. } => "finished: ok".to_string(),
+        Item::Finished { ok: false, summary } => {
+            format!("failed: {}", summary.as_deref().unwrap_or("no summary"))
+        }
+        Item::Stopped => "stopped".to_string(),
+    }
+}
+
+/// Longest tool input or result shown, in characters.
+const CLIP_CHARS: usize = 200;
+
+/// `text` on one line, cut to [`CLIP_CHARS`] with `…`.
+fn clip(text: &str) -> String {
+    let line = text.replace('\n', "\\n");
+    match line.char_indices().nth(CLIP_CHARS) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line,
+    }
 }
 
 /// How the next (or the live) session runs: `hidden`, `window` or `headless`.
@@ -144,6 +220,7 @@ mod tests {
             }),
             session_mode: SessionMode::Hidden,
             no_gpu: false,
+            tasks: vec![],
         };
         assert_eq!(
             print(&state),
@@ -171,6 +248,7 @@ projects: 3
             session: None,
             session_mode: SessionMode::Window,
             no_gpu: false,
+            tasks: vec![],
         };
         assert_eq!(
             print(&state),
@@ -195,6 +273,7 @@ projects: 3
                 session: Some(Session { id: 1, pid, status }),
                 session_mode: SessionMode::Hidden,
                 no_gpu: false,
+                tasks: vec![],
             };
             print(&state).lines().nth(2).unwrap().to_string()
         };
@@ -223,5 +302,76 @@ projects: 3
             line(None, SessionStatus::Failed { reason: reason() }),
             "session: failed: exit status: 1: error: bad"
         );
+    }
+
+    #[test]
+    fn prints_tasks_and_items() {
+        use crate::tasks::{Harness, Task};
+        let transcript = vec![
+            Item::User {
+                text: "What is the count?".into(),
+            },
+            Item::Tool {
+                name: "mcp__mis__get_state".into(),
+                input: serde_json::json!({"session": "s1"}),
+                result: Some("{\"frame\":180,\n\"count\":3}".into()),
+            },
+            Item::Agent {
+                text: "It is 3.".into(),
+                partial: false,
+            },
+            Item::Usage {
+                input: 2400,
+                output: 75,
+            },
+            Item::Finished {
+                ok: false,
+                summary: Some("usage limit".into()),
+            },
+        ];
+        let state = AppState {
+            repo_root: "/r".into(),
+            projects: vec![],
+            active: None,
+            files: vec![],
+            git: None,
+            session: None,
+            session_mode: SessionMode::Hidden,
+            no_gpu: false,
+            tasks: vec![Task {
+                id: 3,
+                project: "examples/counter".into(),
+                title: "What is the count?".into(),
+                status: TaskStatus::Failed {
+                    summary: Some("usage limit".into()),
+                },
+                harness: Harness::Claude,
+                model: Some("claude-model".into()),
+                session_id: None,
+                run: None,
+                transcript: transcript.clone(),
+            }],
+        };
+        let text = print(&state);
+        assert!(
+            text.ends_with(
+                "tasks: 1\n  #3 failed (usage limit) examples/counter \"What is the count?\" \
+                 (claude claude-model): 5 items, 1 tool calls\n"
+            ),
+            "{text}"
+        );
+        let lines: Vec<String> = transcript.iter().map(print_item).collect();
+        assert_eq!(
+            lines,
+            [
+                "you: What is the count?",
+                r#"tool: mcp__mis__get_state {"session":"s1"} -> {"frame":180,\n"count":3}"#,
+                "agent: It is 3.",
+                "usage: 2400 in, 75 out",
+                "failed: usage limit",
+            ]
+        );
+        let long = "x".repeat(300);
+        assert_eq!(clip(&long).chars().count(), CLIP_CHARS + 1);
     }
 }

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::tasks::{Harness, Item};
 use crate::{AppState, SessionMode};
 
 /// UI → core.
@@ -24,6 +25,24 @@ pub enum ClientMsg {
     /// Forwarded to a running session; dropped otherwise. Not answered.
     Input {
         input: GameInput,
+    },
+    /// Start a task in the active project with its first message.
+    NewTask {
+        message: String,
+        harness: Harness,
+    },
+    /// A follow-up on `task`, continuing its agent session.
+    SendMessage {
+        task: u64,
+        message: String,
+    },
+    /// Stop `task`'s run.
+    StopTask {
+        task: u64,
+    },
+    /// Answered with [`ServerMsg::Transcript`].
+    GetTranscript {
+        task: u64,
     },
 }
 
@@ -68,4 +87,11 @@ pub enum MouseButton {
 pub enum ServerMsg {
     /// The whole state; the UI replaces what it holds.
     State { state: AppState },
+    /// `task`'s whole transcript, answering `GetTranscript`.
+    Transcript { task: u64, items: Vec<Item> },
+    /// Item `index` of `task`'s transcript, added (at the end) or replaced:
+    /// a streamed text arrives as repeats of one index.
+    Item { task: u64, index: usize, item: Item },
+    /// A message was refused, saying why; nothing changed.
+    Rejected { reason: String },
 }

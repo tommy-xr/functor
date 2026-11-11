@@ -1,0 +1,13 @@
+{"ms":0,"event":{"type":"started","session":"fake-session-2","model":"claude-model"}}
+{"ms":10,"event":{"type":"usage","input":1500,"output":24}}
+{"ms":20,"event":{"type":"tool_use","name":"Read","input":{"file_path":"/work/functor/examples/counter/game.fun"}}}
+{"ms":20,"event":{"type":"tool_use","name":"Read","input":{"file_path":"/work/functor/examples/counter/functor.json"}}}
+{"ms":30,"event":{"type":"tool_result","content":"1\t// counter"}}
+{"ms":30,"event":{"type":"tool_result","content":"1\t{ \"language\": \"functor-lang\" }"}}
+{"ms":40,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"/work/functor/examples/counter/game.fun","old_string":"\"count: \"","new_string":"\"clicks: \"","replace_all":false}}}
+{"ms":50,"event":{"type":"tool_result","content":"The file has been updated."}}
+{"ms":60,"event":{"type":"text_delta","text":"The label now reads "}}
+{"ms":60,"event":{"type":"text_delta","text":"`clicks:`."}}
+{"ms":60,"event":{"type":"text","text":"The label now reads `clicks:`."}}
+{"ms":70,"event":{"type":"usage","input":4100,"output":140}}
+{"ms":70,"event":{"type":"finished","ok":true,"summary":"The label now reads `clicks:`."}}
