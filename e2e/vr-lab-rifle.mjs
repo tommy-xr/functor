@@ -29,7 +29,7 @@
 import { check, failures } from "./mcp-rpc.mjs";
 import { add, fmt, len, placedAt, play, qrot, quat, record, rigToWorld, session, some, sub, turnOf, xyz } from "./xr-scenario.mjs";
 import {
-  ARMORY_WALL_X, GRIP_IN_RIFLE, armory, RIFLE, RIFLE_SWING, TARGETS, TARGET_SIZE, project, scenarios, twoHandAim,
+  ARMORY_WALL_X, GRIP_IN_RIFLE, RIFLE_FIST, armory, RIFLE, RIFLE_SWING, TARGETS, TARGET_SIZE, project, scenarios, twoHandAim,
 } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8299;
@@ -116,7 +116,8 @@ await run("barrel into the wall, two hands", async (rt) => {
   const drawnRight = placedAt(kids[5]);
   const drawnLeft = placedAt(kids[4]);
   const accPose = poseOf(acc);
-  const gripW = toWorld(gripOn(accPose));
+  // The hand's root on the grip: the fist's placement past it.
+  const gripW = toWorld(at(accPose, add(GRIP_IN_RIFLE, RIFLE_FIST.position)));
   check(drawnRight && len(sub(drawnRight, gripW)) < 1e-4, `the right hand drawn on the accepted grip (${drawnRight && (len(sub(drawnRight, gripW)) * 1000).toFixed(3)} mm)`);
   // The left drawn on the foregrip line: along the barrel from the grip, between its ends.
   const leftRig = drawnLeft && toRig(drawnLeft);
@@ -127,7 +128,7 @@ await run("barrel into the wall, two hands", async (rt) => {
   const ha = hands("stillHeld");
   const ghostR = placedAt(kids[7]);
   const ghostL = placedAt(kids[6]);
-  check(ghostR && len(sub(ghostR, toWorld(ha.right.at))) < 1e-4 && ghostL && len(sub(ghostL, toWorld(ha.left.at))) < 1e-4, "ghosts at both tracked hands");
+  check(ghostR && len(sub(ghostR, toWorld(ha.sent.right.at))) < 1e-4 && ghostL && len(sub(ghostL, toWorld(ha.left.at))) < 1e-4, "ghosts at both tracked hands");
   // Held there, the hands still, it stays at the wall: the hold's slide along
   // the contact normal trembles it a little (`Hold.move`), never turns it.
   const pressed = stepMoves(steps, index("pushed"), index("still"));

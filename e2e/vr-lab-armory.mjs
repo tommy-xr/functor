@@ -25,7 +25,7 @@
 //   node e2e/vr-lab-armory.mjs
 import { check, failures } from "./mcp-rpc.mjs";
 import { add, fmt, len, placedAt, play, qrot, quat, record, rigToWorld, session, some, sub, turnOf, xyz } from "./xr-scenario.mjs";
-import { ARMORY_WALL_X, GRIP_IN_PISTOL, PISTOL_HALF, SLIDE, TARGETS, TARGET_SIZE, armory, muzzleOf, project, scenarios } from "./vr-lab-scenarios.mjs";
+import { ARMORY_WALL_X, GRIP_IN_PISTOL, PISTOL_FIST, PISTOL_HALF, SLIDE, TARGETS, TARGET_SIZE, armory, muzzleOf, project, scenarios } from "./vr-lab-scenarios.mjs";
 
 const PORT = 8298;
 const SNAP_STEP = 0.02;
@@ -95,10 +95,11 @@ await run("barrel into the wall", async (rt) => {
   // on the grip where the wall stopped the pistol; the ghost at the hand.
   check(pushed.handView.$ctor === "Accepted", "the hands drawn Accepted by default");
   const kids = scenes.pushed.scene.obj.Group;
-  const grip = toWorld(inPistol(pose, GRIP_IN_PISTOL));
+  // The hand's root on the grip: the fist's placement past it.
+  const grip = toWorld(inPistol(pose, add(GRIP_IN_PISTOL, PISTOL_FIST.position)));
   const drawn = placedAt(kids[5]);
   const ghost = placedAt(kids[7]);
-  const hand = toWorld(at("pushed").right.at);
+  const hand = toWorld(at("pushed").sent.right.at);
   check(drawn && len(sub(drawn, grip)) < 1e-4, `the hand drawn on the pistol's grip at the wall (${drawn && (len(sub(drawn, grip)) * 1000).toFixed(3)} mm), ${(len(sub(grip, hand)) * 100).toFixed(1)} cm short of the tracked hand`);
   check(ghost && len(sub(ghost, hand)) < 1e-4, `its ghost at the tracked hand (${ghost && (len(sub(ghost, hand)) * 1000).toFixed(3)} mm)`);
   const clicked = marks.clicked.model;

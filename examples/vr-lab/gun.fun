@@ -20,13 +20,22 @@ let muzzleAhead = 0.15
 let size = Quat.v3(0.035, 0.135, 0.205)
 let center = Quat.v3(0.0, 0.0025, 0.0 - 0.0475)
 
-/// The hand's pose in the pistol's frame (centred on its collider): the
-/// authored grip. A pistol is only taken there (`gripZone`), and always
-/// settles into it.
-let grip: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
+/// The frame the pistol is laid out in (the fist's, as below), in its own
+/// (centred on its collider).
+let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 
-/// How near the grip a hand must be to take the pistol: the front of the
-/// barrel is out of reach, so it is never taken by the muzzle end.
+/// Where the hand's root sits in `layout`: the pistol grip spec's solved
+/// placement (`Fitted`, generated). Its handle up the fist, so the muzzle
+/// sits 12° above the grip's -Z.
+let placement: Input.pose = Fitted.pistolGripPlacement
+
+/// The hand's pose in the pistol's frame: its grip. A pistol is only taken
+/// there (`gripZone`), and always settles into it.
+let grip: Input.pose = Hold.compose(layout, placement)
+
+/// How near the layout's fist a hand must be to take the pistol
+/// (`Props.gap`): the front of the barrel is out of reach, so it is never
+/// taken by the muzzle end.
 let gripZone = 0.07
 
 /// How a magazine (or shell) is guided into a well (`Seating`). It latches
@@ -73,10 +82,11 @@ type Readout = { at: Input.point3, tilt: float, size: float }
 /// first), and its recoil's size (1: the pistol's).
 type Weapon = { grip: Input.pose, chamber: Input.point3, muzzle: Input.point3, selector: bool, well: Well, readout: Readout, rack: Rack, pellets: float, spread: float, recoil: float }
 
-/// A weapon whose bore runs `bore` above the grip's fist, parallel to its
-/// -Z, from `chamberAhead` to `muzzleAhead` ahead of it: one bullet a shot.
-let weaponAt = (g: Input.pose, bore: float, chamberAhead: float, muzzleAhead: float, selector: bool, well: Well, readout: Readout, rack: Rack): Weapon =>
-  let along = (ahead: float) => Quat.add(g.position, Quat.rotate(g.orientation, Quat.v3(0.0, bore, 0.0 - ahead))) in
+/// A weapon laid out in `layout` (a fist's frame) and held at `g`: its bore
+/// runs `bore` above the layout's fist, parallel to its -Z, from
+/// `chamberAhead` to `muzzleAhead` ahead of it: one bullet a shot.
+let weaponAt = (layout: Input.pose, g: Input.pose, bore: float, chamberAhead: float, muzzleAhead: float, selector: bool, well: Well, readout: Readout, rack: Rack): Weapon =>
+  let along = (ahead: float) => Quat.add(layout.position, Quat.rotate(layout.orientation, Quat.v3(0.0, bore, 0.0 - ahead))) in
   { grip: g, chamber: along(chamberAhead), muzzle: along(muzzleAhead), selector: selector, well: well, readout: readout, rack: rack,
     pellets: 1.0, spread: 0.0, recoil: 1.0 }
 
@@ -89,7 +99,7 @@ let slideTravel = 0.04
 
 // The magazine in the handle, raked with it; its readout on the slide's back
 // face; the slide taken at its rear serrations, the port on its right.
-let pistol = weaponAt(grip, bore, chamberAhead, muzzleAhead, false,
+let pistol = weaponAt(layout, grip, bore, chamberAhead, muzzleAhead, false,
   { kind: Ammo.PistolMag, at: Quat.sub(handleAt, center), rake: handleRake, drop: 0.12, guide: guide },
   { at: Quat.sub(Quat.v3(0.0, bore, 0.056), center), tilt: 0.0, size: 0.0045 },
   { at: Quat.sub(Quat.v3(0.0, bore, 0.04), center), radius: 0.035, travel: slideTravel, lockBack: 0.7 * slideTravel, boltLock: 0.7 * slideTravel,
@@ -175,35 +185,40 @@ let boreOf = (w: Weapon, pose: Input.pose): Bore =>
 /// A weapon held settled in a hand at `hand`: where it is.
 let heldAt = (w: Weapon, hand: Input.pose): Input.pose => Hold.compose(hand, Hold.inverse(w.grip))
 
-// Level, yawed, pitched and rolled hands: the muzzle 5 cm above the hand's
-// -Z axis and 15 cm along it, and the shot along that axis.
+/// The pistol held with its layout's fist at `fist`.
+let byFist = (fist: Input.pose): Input.pose => heldAt(pistol, Hold.compose(fist, placement))
+
+// Held level, the shot leaves 12° above the hand's -Z (the handle's rake).
+expect Hold.near3((boreOf(pistol, heldAt(pistol, Hold.origin))).dir, Quat.v3(0.0, Math.sin(0.21), 0.0 - Math.cos(0.21)))
+// The layout's fist level, yawed, pitched and rolled: the muzzle 5 cm above
+// its -Z axis and 15 cm along it, and the shot along that axis.
 expect (
-  let b = boreOf(pistol, heldAt(pistol, Hold.p(0.1, 1.2, -0.3))) in
+  let b = boreOf(pistol, byFist(Hold.p(0.1, 1.2, -0.3))) in
   Hold.near3(b.muzzle, Quat.v3(0.1, 1.25, -0.45)) && Hold.near3(b.chamber, Quat.v3(0.1, 1.25, -0.32)) && Hold.near3(b.dir, Quat.v3(0.0, 0.0, -1.0))
 )
 expect (
   // A quarter turn left: the barrel points along -X.
-  let b = boreOf(pistol, heldAt(pistol, Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(Math.pi / 2.0)))) in
+  let b = boreOf(pistol, byFist(Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(Math.pi / 2.0)))) in
   Hold.near3(b.muzzle, Quat.v3(-0.05, 1.25, -0.3)) && Hold.near3(b.dir, Quat.v3(-1.0, 0.0, 0.0))
 )
 expect (
   // Tipped 30 degrees up.
   let a = Math.pi / 6.0 in
-  let b = boreOf(pistol, heldAt(pistol, Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), a)))) in
+  let b = boreOf(pistol, byFist(Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), a)))) in
   Hold.near3(b.dir, Quat.v3(0.0, Math.sin(a), 0.0 - Math.cos(a)))
     && Hold.near3(b.muzzle, Quat.v3(0.0, 1.0 + 0.05 * Math.cos(a) + 0.15 * Math.sin(a), 0.05 * Math.sin(a) - 0.15 * Math.cos(a)))
 )
 expect (
   // Rolled a quarter turn clockwise (about -Z): the bore is beside the hand,
   // on its right, still parallel to its -Z.
-  let b = boreOf(pistol, heldAt(pistol, Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(0.0, 0.0, -1.0), Math.pi / 2.0)))) in
+  let b = boreOf(pistol, byFist(Hold.at(Quat.v3(0.0, 1.0, 0.0), Quat.axisAngle(Quat.v3(0.0, 0.0, -1.0), Math.pi / 2.0)))) in
   Hold.near3(b.muzzle, Quat.v3(0.05, 1.0, -0.15)) && Hold.near3(b.dir, Quat.v3(0.0, 0.0, -1.0))
 )
 expect (
-  // Yawed, pitched and rolled at once: the muzzle is the hand's (0, 5, -15) cm.
+  // Yawed, pitched and rolled at once: the muzzle is the fist's (0, 5, -15) cm.
   let q = Quat.mul(Quat.yaw(0.6), Quat.mul(Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), -0.3), Quat.axisAngle(Quat.v3(0.0, 0.0, 1.0), 1.1))) in
   let hand = Hold.at(Quat.v3(0.2, 1.3, -0.4), q) in
-  let b = boreOf(pistol, heldAt(pistol, hand)) in
+  let b = boreOf(pistol, byFist(hand)) in
   Hold.near3(b.muzzle, Quat.add(hand.position, Quat.rotate(q, Quat.v3(0.0, 0.05, -0.15))))
     && Hold.near3(b.dir, Quat.rotate(q, Quat.v3(0.0, 0.0, -1.0)))
 )
@@ -576,7 +591,7 @@ expect (let p = Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.yaw(0.4)) in Hold.near(kic
 expect (
   let p = heldAt(pistol, Hold.p(0.0, 1.2, -0.3)) in
   let up = boreOf(pistol, kicked(pistol, 1.0, p)) in
-  up.dir.y > 0.13 && up.muzzle.z > (boreOf(pistol, p)).muzzle.z
+  up.dir.y > (boreOf(pistol, p)).dir.y + 0.1 && up.muzzle.z > (boreOf(pistol, p)).muzzle.z
 )
 
 // --- the look ---

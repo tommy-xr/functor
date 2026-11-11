@@ -35,7 +35,8 @@
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/vr-lab-hands.mjs
-import { check, failures } from "./mcp-rpc.mjs";
+import { readFileSync } from "node:fs";
+import { ROOT, check, failures } from "./mcp-rpc.mjs";
 import { add, compose, len, qmul, qrot, record, rigToWorld, session, sub } from "./xr-scenario.mjs";
 import { grabTable, project, scenarios } from "./vr-lab-scenarios.mjs";
 
@@ -69,12 +70,18 @@ const empty = (trigger, squeeze) => ({
   thumb: { curl: 0.5, tip: 0.5, opposition: 0.25 },
   fingers: [mix(0.15, 0.55, trigger), mix(0.15, POWER.middle, squeeze), mix(0.15, POWER.ring, squeeze), mix(0.15, POWER.little, squeeze)].map(uniform),
 });
-// The pistol grip's (`Hand.onTrigger`): wrapped, the index hooked on the
-// trigger, its tip bent further than its knuckle.
-const onTrigger = (t) => ({
-  thumb: { curl: 0.75, tip: 0.75, opposition: 1 },
-  fingers: [{ curl: mix(0.25, 0.55, t), tip: mix(0.4, 0.75, t) }, ...[0.75, 0.72, 0.6].map(uniform)],
-});
+// The pistol grip's: its fitted pose (generated into `fitted.fun`), the
+// trigger pulling the index in (`Hand.pullTrigger`: 0.30 a curl, 0.35 a tip).
+const fitted = (() => {
+  const line = readFileSync(`${ROOT}examples/vr-lab/fitted.fun`, "utf8").split("\n").find((l) => l.startsWith("let pistolGrip:"));
+  const v = [...line.matchAll(/(curl|tip|opposition): (0\.0 - )?([0-9.]+)/g)].map((m) => (m[2] ? -1 : 1) * Number(m[3]));
+  return { thumb: { curl: v[0], tip: v[1], opposition: v[2] }, fingers: [0, 1, 2, 3].map((k) => ({ curl: v[3 + 2 * k], tip: v[4 + 2 * k] })) };
+})();
+const onTrigger = (t) => {
+  const k = Math.min(1, Math.max(0, t));
+  const [index, ...rest] = fitted.fingers;
+  return { thumb: fitted.thumb, fingers: [{ curl: index.curl + k * 0.3, tip: index.tip + k * 0.35 }, ...rest] };
+};
 
 // Each bone `[length, flexion at its base]` from `base`: the joints, then the tip.
 const chain = (base, bones) => {
@@ -235,7 +242,7 @@ await run("a held pistol's index follows its trigger", async (rt) => {
     `the index closes with the trigger and opens with it (${reaches.map((d) => (d * 100).toFixed(2)).join(" → ")} cm from the palm)`);
   const others = ["middle", "ring", "little", "thumb"].every((f) => Math.abs(reach(g("trigger0"), f) - reach(g("trigger100"), f)) < 1e-6);
   check(others, "the other fingers stay wrapped");
-  // Wrapped round the grip, the index on the trigger (`Hand.onTrigger`).
+  // Wrapped round the grip, the index on the trigger (its fitted pose).
   const local = (mark) => g(mark).raw[0].map((i) => i.position);
   const want = (t) => caps(capsuleEnds("right", drawnPose(onTrigger(t)))).map(([x, y, z]) => [-x, y, -z]);
   const off = Math.max(...[["trigger0", 0], ["trigger50", 0.5], ["trigger100", 1]].flatMap(([m, t]) => local(m).map((p, i) => len(sub(p, want(t)[i])))));

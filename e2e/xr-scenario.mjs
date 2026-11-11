@@ -24,6 +24,12 @@
 // it: the eyes sit at `eye` in the head's frame from a neck fixed at `at`,
 // so a `head: { turn }` turns it about the neck, as a real head does.
 //
+// A scenario's `fists` (`{ right?, left? }`, each a pose `{ position,
+// orientation }`) script that hand as the fist a held gun is laid out in:
+// the controller is injected at the fist composed with the pose (the gun's
+// `placement`: where the hand's root sits in that frame). A segment's own
+// `fists` replaces them from its first step (`{ right: null }`: none).
+//
 // A scenario may instead name a recorded `fixture` (`e2e/xr-fixture.mjs`
 // format; a path from the repo root): its steps replace `station`/`steps`,
 // and its `marks` name steps the same way.
@@ -239,10 +245,19 @@ export async function play(rt, scenario, onStep = async () => {}) {
   const marks = {};
   let step = 0;
   let last = await rt.get("/state");
+  let fists = { ...(scenario.fists ?? {}) };
+  // The controller a scripted hand (a fist, under `fists`) is injected at.
+  const injected = (side, h) => {
+    const f = fists[side];
+    if (!f || h.active === false) return h;
+    const c = compose({ position: h.at, orientation: h.orientation ?? [0, 0, 0, 1] }, f);
+    return { ...h, at: c.position, orientation: c.orientation };
+  };
   const resolve = (spec) => spec && Object.fromEntries(Object.entries(spec).map(([k, v]) => [k, typeof v === "function" ? v(last) : v]));
   for (const seg of scenario.steps) {
     const from = { head: { ...hands.head }, left: { ...hands.left }, right: { ...hands.right } };
     const specs = { head: resolve(seg.head), left: resolve(seg.left), right: resolve(seg.right) };
+    if (seg.fists) fists = { ...fists, ...seg.fists };
     for (let i = 0; i < seg.frames; i++) {
       for (const side of ["head", "left", "right"]) {
         const spec = specs[side];
@@ -259,14 +274,15 @@ export async function play(rt, scenario, onStep = async () => {}) {
       if (neck) hands.head.at = headAt(hands.head.orientation);
       const tapped = i === 0 && seg.tap;
       if (tapped) await rt.post("/input", { type: "key", key: seg.tap, down: true });
-      await rt.post("/input", sample(hands));
+      const sent = { ...hands, left: injected("left", hands.left), right: injected("right", hands.right) };
+      await rt.post("/input", sample(sent));
       const state = await advance(rt);
       last = state;
       if (tapped) await rt.post("/input", { type: "key", key: seg.tap, down: false });
       step++;
       const mark = i === seg.frames - 1 ? seg.mark : undefined;
       if (mark) marks[mark] = state;
-      await onStep({ step, mark, marked: mark ? [mark] : [], state, hands, seg, first: i === 0 });
+      await onStep({ step, mark, marked: mark ? [mark] : [], state, hands, sent, seg, first: i === 0 });
     }
   }
   return marks;
@@ -280,8 +296,9 @@ export async function play(rt, scenario, onStep = async () => {}) {
 export async function record(rt, scenario, { scenes: keepScenes = false } = {}) {
   const steps = [];
   const scenes = {};
-  const marks = await play(rt, scenario, async ({ state, hands, marked }) => {
-    steps.push(hands ? { state, left: { ...hands.left }, right: { ...hands.right } } : { state });
+  const marks = await play(rt, scenario, async ({ state, hands, sent, marked }) => {
+    // `left`/`right` as scripted (a fist, under `fists`); `sent` as injected.
+    steps.push(hands ? { state, left: { ...hands.left }, right: { ...hands.right }, sent: { left: sent.left, right: sent.right } } : { state });
     if (keepScenes && marked.length) {
       const scene = await rt.get("/scene");
       for (const m of marked) scenes[m] = scene;

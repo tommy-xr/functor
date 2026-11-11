@@ -28,13 +28,22 @@ let pumpTravel = 0.09
 let size = Quat.v3(0.05, 0.095, stockBack + muzzleAhead)
 let center = Quat.v3(0.0, 0.0475, (stockBack - muzzleAhead) / 2.0)
 
-/// The primary hand's pose in the shotgun's frame (centred on its
-/// collider): the authored pistol grip. Like the rifle's, only taken there.
-let grip: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
+/// The frame the shotgun is laid out in (the primary fist's), in its own
+/// (centred on its collider).
+let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
+
+/// Where the primary hand's root sits in `layout`: the shotgun grip spec's
+/// solved placement (`Fitted`, generated). The muzzle 14° above the grip's
+/// -Z.
+let placement: Input.pose = Fitted.shotgunGripPlacement
+
+/// The primary hand's pose in the shotgun's frame: its pistol grip. Like
+/// the rifle's, only taken there.
+let grip: Input.pose = Hold.compose(layout, placement)
 let gripZone = 0.07
 
 /// The support line: the fore-end, wherever the pump has it.
-let fore: Longarm.Fore = { grip: grip, near: foreNear, far: foreFar, travel: pumpTravel }
+let fore: Longarm.Fore = { layout: layout, hand: placement, near: foreNear, far: foreFar, travel: pumpTravel }
 
 /// How a shell is guided into the loading port: a 3 cm catch, 5 cm to pull
 /// out of; lying along the bore, its head back, within ~32° (dot 0.85) to
@@ -49,7 +58,7 @@ let portAt = Quat.v3(0.0, 0.045, 0.0 - 0.12)
 // The readout on the receiver's top at its back, tipped toward the eye; the
 // port a pumped-out shell leaves by on the right.
 let weapon: Gun.Weapon =
-  { Gun.weaponAt(grip, bore, chamberAhead, muzzleAhead, false,
+  { Gun.weaponAt(layout, grip, bore, chamberAhead, muzzleAhead, false,
       { kind: Ammo.Shell, at: Quat.sub(portAt, center), rake: 0.0, drop: 0.06, guide: portGuide },
       { at: Quat.sub(Quat.v3(0.0, 0.0905, 0.01), center), tilt: 0.0 - Math.pi / 6.0, size: 0.005 },
       { at: Quat.sub(Quat.v3(0.0, 0.0, 0.0 - (foreNear + foreFar) / 2.0), center), radius: 0.0, travel: pumpTravel, lockBack: 0.0, boltLock: 0.0,
@@ -61,7 +70,7 @@ expect Gun.clearBelow(weapon, size)
 // The support line is the fore-end where the pump has it: 30 cm ahead with
 // the pump home, 21 cm pumped back; a hand stays on it anywhere it slides.
 let level = Hold.at(Quat.v3(0.2, 1.1, -0.3), Quat.identity)
-let held = Gun.heldAt(weapon, level)
+let held = Gun.heldAt(weapon, Hold.compose(level, placement))
 let ahead = (d: float) => Quat.v3(0.2, 1.1, -0.3 - d)
 expect Longarm.foreGap(fore, 0.0, held, ahead(0.3)) < 0.0001 && Math.abs(Longarm.foreGap(fore, 0.0, held, ahead(0.21)) - 0.07) < 0.0001
 expect Longarm.foreGap(fore, pumpTravel, held, ahead(0.21)) < 0.0001

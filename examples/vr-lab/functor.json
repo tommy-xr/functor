@@ -1,5 +1,5 @@
 {
   "language": "functor-lang",
-  "entry": "game.fun",
+  "entries": { "client": "game.fun", "gallery": "gallery.fun" },
   "mouseCapture": false
 }

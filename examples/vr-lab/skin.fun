@@ -173,10 +173,10 @@ let rightWrist = wristOf(Hold.Right)
 let thumbOf = (side: Hold.Side, t: Hand.Thumb): List<(string, Input.pose)> =>
   placements(side, Hand.local(side, { Hand.flat with thumb: t }), thumbJoints)
 
-// The thumbs the game poses (an empty hand's, then `Props.fingers`'
-// presets'), placed at load: placing one costs about 85 µs a redraw. Any
+// The thumbs the game poses (an empty hand's, the cartridge's pinch, the
+// charging handle's wrap, then every fitted pose's), placed at load: placing one costs about 85 µs a redraw. Any
 // other thumb is placed as drawn.
-let thumbPresets = [(Hand.empty(0.0, 0.0)).thumb, Hand.power.thumb, Hand.pinch.thumb, Hand.palmOpen.thumb]
+let thumbPresets = [(Hand.empty(0.0, 0.0)).thumb, Hand.power.thumb, Hand.pinch.thumb, ..(Fitted.all |> List.map((np) => let (_, f) = np in f.thumb))]
 let presetThumbs = (side: Hold.Side) => thumbPresets |> List.map((t) => (t, thumbOf(side, t)))
 let leftThumbs = presetThumbs(Hold.Left)
 let rightThumbs = presetThumbs(Hold.Right)
