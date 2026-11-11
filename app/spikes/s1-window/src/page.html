@@ -33,7 +33,7 @@ setInterval(() => {
     p50: s.length ? +pct(s, 0.5).toFixed(1) : null,
     p95: s.length ? +pct(s, 0.95).toFixed(1) : null,
     bytes: frames ? Math.round(bytes / frames) : 0,
-    inputSent, inputDropped,
+    inputSent, inputDropped, streamBytes,
     inputRttP50: rtt.length ? +pct(rtt.slice().sort((a, b) => a - b), 0.5).toFixed(1) : null,
     inputRttMax: rtt.length ? Math.max(...rtt) : null,
   };
@@ -67,8 +67,13 @@ async function pollLoop() {
 
 // ---- stream mode: parse multipart/x-mixed-replace JPEG parts off one fetch.
 // Latency is readback (X-Capture-Ms, unix ms) → drawn.
+let streamBytes = 0;
 async function streamLoop() {
-  const res = await fetch("/game/stream");
+  try { await streamLoopInner(); } catch (e) { post({ streamError: String(e) }); }
+}
+async function streamLoopInner() {
+  const res = await fetch("/game/stream?octet");
+  post({ streamResponse: res.status, ctype: res.headers.get("content-type"), hasBody: !!res.body });
   const reader = res.body.getReader();
   let buf = new Uint8Array(0);
   const dec = new TextDecoder();
@@ -84,7 +89,8 @@ async function streamLoop() {
   let latest = null, drawing = false;
   for (;;) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) { post({ streamDone: streamBytes }); break; }
+    streamBytes += value.length;
     append(value);
     for (;;) {
       const h = find(CRLF2);
@@ -185,7 +191,29 @@ async function selftest() {
   await read("released");
 }
 
-(MODE === "stream" ? streamLoop : pollLoop)();
+// ---- img mode: WebKit/Chrome render multipart JPEG natively in an <img>.
+// No per-frame event, so copy it to the canvas each rAF and count frames whose
+// top-left HUD strip (hello's "frame N" counter) changed.
+function imgLoop() {
+  const img = new Image();
+  img.src = "/game/stream";
+  const probe = document.createElement("canvas"); probe.width = 200; probe.height = 80;
+  const pctx = probe.getContext("2d", { willReadFrequently: true });
+  let lastHash = 0;
+  const tick = () => {
+    if (img.naturalWidth) {
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      pctx.drawImage(img, 0, 0, 200, 80, 0, 0, 200, 80);
+      const d = pctx.getImageData(0, 0, 200, 80).data;
+      let h = 0; for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i] + d[i + 1]) | 0;
+      if (h !== lastHash) { lastHash = h; frames++; }
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+({ stream: streamLoop, img: imgLoop }[MODE] || pollLoop)();
 if (params.get("selftest")) selftest();
 </script>
 </body>

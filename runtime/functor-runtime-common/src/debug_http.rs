@@ -245,9 +245,10 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
         // stream gets its own thread so the serial accept loop stays free.
         ("GET", "/stream") => {
             let tx = tx.clone();
+            let octet = query.contains("octet");
             let _ = std::thread::Builder::new()
                 .name("functor-debug-stream".to_string())
-                .spawn(move || stream_jpeg(stream, tx));
+                .spawn(move || stream_jpeg(stream, tx, octet));
         }
         ("GET", "/state") => {
             let (resp_tx, resp_rx) = mpsc::channel::<RuntimeState>();
@@ -930,10 +931,14 @@ fn respond_report<T: serde::Serialize>(
 /// The next frame is requested before this one is encoded, so encoding
 /// overlaps the render loop's next frame. `X-Capture-Ms` is the readback's
 /// unix time in ms, for capture→display latency.
-fn stream_jpeg(mut stream: TcpStream, tx: mpsc::Sender<DebugRequest>) {
+/// `?octet` sends the same framing as `application/octet-stream`: WebKit's
+/// `fetch` rejects a multipart/x-mixed-replace body ("Load failed").
+fn stream_jpeg(mut stream: TcpStream, tx: mpsc::Sender<DebugRequest>, octet: bool) {
     let _ = stream.set_nodelay(true);
-    let head = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\
-                Cache-Control: no-store\r\nConnection: close\r\n\r\n";
+    let ctype = if octet { "application/octet-stream" } else { "multipart/x-mixed-replace; boundary=frame" };
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    );
     if stream.write_all(head.as_bytes()).is_err() {
         return;
     }
