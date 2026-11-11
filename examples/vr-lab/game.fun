@@ -94,6 +94,65 @@ type Prop = {
 }
 
 // Prop poses and velocities are rig-local.
+/// Stick locomotion: tracked poses land in the station's frame turned by
+/// `yaw` about +Y and moved by `offset`. Everything past the input boundary
+/// (holds, slots, guns) sees station-frame poses; the camera rig moves too.
+type Walk = { offset: Input.point3, yaw: float }
+let standing: Walk = { offset: Quat.v3(0.0, 0.0, 0.0), yaw: 0.0 }
+
+let walkPose = (w: Walk, p: Input.pose): Input.pose =>
+  let q = Quat.yaw(w.yaw) in
+  { position: Quat.add(w.offset, Quat.rotate(q, p.position)), orientation: Quat.mul(q, p.orientation) }
+
+let walkedController = (w: Walk, c: Input.controller): Input.controller =>
+  { c with grip: c.grip |> Option.map((p) => walkPose(w, p)), aim: c.aim |> Option.map((p) => walkPose(w, p)) }
+
+/// A tracked sample in the station's frame.
+let walked = (w: Walk, xr: Option.t<Input.xr>): Option.t<Input.xr> =>
+  if w == standing then xr
+  else xr |> Option.map((x) => { x with head: x.head |> Option.map((p) => walkPose(w, p)), left: walkedController(w, x.left), right: walkedController(w, x.right) })
+
+/// A walk that puts the tracked head `head` over the station's feet, facing
+/// as it does: a station jump lands you at the station, wherever you stand.
+let arrive = (head: Option.t<Input.pose>): Walk =>
+  match head with
+  | Option.Some(h) => { offset: Quat.v3(0.0 - h.position.x, 0.0, 0.0 - h.position.z), yaw: 0.0 }
+  | Option.None => standing
+
+/// The walk turned by `by` radians about the tracked head `head`, which stays put.
+let snapTurned = (w: Walk, head: Input.point3, by: float): Walk =>
+  let at = Quat.add(w.offset, Quat.rotate(Quat.yaw(w.yaw), head)) in
+  let yaw = w.yaw + by in
+  { offset: Quat.sub(at, Quat.rotate(Quat.yaw(yaw), head)), yaw: yaw }
+
+/// Smooth walking speed (m/s) at full stick, the stick's dead zone, and the
+/// snap turn's step.
+let walkSpeed = 2.0
+let deadZone = 0.2
+let snapStep = 30.0 * Math.pi / 180.0
+
+/// The walk after `dt` of the left stick `stick`, along the head's facing
+/// (`head`, station frame) flattened onto the floor.
+let stepped = (w: Walk, head: Input.pose, stick: Input.point2, dt: float): Walk =>
+  if Math.abs(stick.x) < deadZone && Math.abs(stick.y) < deadZone then w
+  else
+    let flat = (v: Input.point3) => let f = Quat.v3(v.x, 0.0, v.z) in let l = Quat.length(f) in if l < 0.0001 then f else Quat.scale(1.0 / l, f) in
+    let fwd = flat(Quat.rotate(head.orientation, Quat.v3(0.0, 0.0, 0.0 - 1.0))) in
+    let right = flat(Quat.rotate(head.orientation, Quat.v3(1.0, 0.0, 0.0))) in
+    let v = Quat.add(Quat.scale(stick.y, fwd), Quat.scale(stick.x, right)) in
+    { w with offset: Quat.add(w.offset, Quat.scale(walkSpeed * dt, v)) }
+
+// Full stick forward for a second, facing -Z: 2 m ahead. A snap turn keeps
+// the head where it was. Arriving puts the head over the feet.
+expect Hold.near3((stepped(standing, Hold.origin, { x: 0.0, y: 1.0 }, 1.0)).offset, Quat.v3(0.0, 0.0, 0.0 - 2.0))
+expect (stepped(standing, Hold.origin, { x: 0.1, y: 0.1 }, 1.0)) == standing
+expect (
+  let w = { offset: Quat.v3(0.3, 0.0, 0.0 - 1.0), yaw: 0.4 } in
+  let head = Quat.v3(0.2, 1.6, 0.1) in
+  Hold.near3((walkPose(snapTurned(w, head, snapStep), Hold.at(head, Quat.identity))).position, (walkPose(w, Hold.at(head, Quat.identity))).position)
+)
+expect Hold.near3((walkPose(arrive(Option.Some(Hold.at(Quat.v3(0.5, 1.2, 0.0 - 0.7), Quat.identity))), Hold.at(Quat.v3(0.5, 1.2, 0.0 - 0.7), Quat.identity))).position, Quat.v3(0.0, 1.2, 0.0))
+
 type Model = {
   station: float,
   xr: Option.t<Input.xr>,
@@ -103,9 +162,13 @@ type Model = {
   cycle: bool,
   thumbstick: bool,
   handView: HandView,
-  // The glove drawn, and either thumbstick's level pushed up (for its edge).
+  // The glove drawn, and the left thumbstick click's level (for its edge).
   glove: Glove,
-  stickUp: bool,
+  leftClick: bool,
+  // Stick locomotion: where the player has moved and turned in the station's
+  // frame, and the right stick's level pushed sideways (for the snap edge).
+  walk: Walk,
+  turnStick: bool,
   // Bumped on reset: fresh tags respawn the props at rest.
   gen: float,
   props: List<Prop>,
@@ -191,7 +254,7 @@ let reset = (m: Model, id: float): Model =>
 let init: Model =
   reset({
     station: 1.0, xr: Option.None, left: Hold.idle, right: Hold.idle, cycle: false, thumbstick: false,
-    handView: Accepted, glove: Skinned, stickUp: false, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
+    handView: Accepted, glove: Skinned, leftClick: false, walk: standing, turnStick: false, gen: 0.0, props: [], fresh: true, lastRelease: Option.None, score: 0.0, hips: Hips.init,
     feltLeft: Pulses.idle, feltRight: Pulses.idle, pulses: [], gun: Gun.stocked(Gun.pistol), rifle: Gun.stocked(Longarm.weapon),
     shotgun: emptyShotgun, shellBox: 0.0, buttonA: (false, false), buttonB: (false, false),
     releasing: [], slideRelease: [], nextMag: 1.0, nextRound: 1.0, lost: 0.0
@@ -226,15 +289,26 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
       |> Option.map((kv) => let (_, id) = kv in id) in
   // Menu (left controller) jumps to the next station; B/Y stay on the guns.
   let cycle = buttons(s.xr, (c) => c.menuPressed) in
-  let thumbstick = buttons(s.xr, (c) => c.thumbstickPressed) in
+  let rawLevel = (side: Hold.Side, of: (Input.controller) => bool) => controller(s.xr, side) |> Option.map(of) |> Option.defaultValue(false) in
+  // H, or the right thumbstick click, flips the hand view; G, or the left
+  // click, the glove (the sticks themselves walk and turn).
+  let thumbstick = rawLevel(Hold.Right, (c) => c.thumbstickPressed) in
+  let leftClick = rawLevel(Hold.Left, (c) => c.thumbstickPressed) in
   let key = (k: Key.t) => s.pressedKeys |> List.any((p) => p == k) in
   let flip = key(Key.H) || (thumbstick && not m.thumbstick) in
-  // G, or either thumbstick pushed up, switches the glove.
-  let up = buttons(s.xr, (c) => stickUp(m.stickUp, c.thumbstick.y)) in
-  let swap = key(Key.G) || (up && not m.stickUp) in
+  let swap = key(Key.G) || (leftClick && not m.leftClick) in
+  // The right stick pushed sideways snap-turns about the head, once a push.
+  let rawHead = s.xr |> Option.bind((x) => x.head) in
+  let turnX = controller(s.xr, Hold.Right) |> Option.map((c) => c.thumbstick.x) |> Option.defaultValue(0.0) in
+  let turnStick = if m.turnStick then Math.abs(turnX) > 0.3 else Math.abs(turnX) >= 0.7 in
+  let walk =
+    if turnStick && not m.turnStick then
+      rawHead |> Option.map((h) => snapTurned(m.walk, h.position, if turnX > 0.0 then 0.0 - snapStep else snapStep)) |> Option.defaultValue(m.walk)
+    else m.walk in
+  let xr = walked(walk, s.xr) in
   // A fresh press (`now`, not `was`) on the hand at gun `k`'s trigger.
   let pressedOn = (k: Props.Kind, side: Hold.Side, now: bool, was: bool) => now && not was && triggerHand(m, k) == Option.Some(side) in
-  let level = (side: Hold.Side, of: (Input.controller) => bool) => controller(s.xr, side) |> Option.map(of) |> Option.defaultValue(false) in
+  let level = rawLevel in
   let (aLeft, aRight) = (level(Hold.Left, (c) => c.primaryPressed), level(Hold.Right, (c) => c.primaryPressed)) in
   let (wasLeft, wasRight) = m.buttonA in
   // The selector: B/Y on the hand at the rifle's trigger, or F.
@@ -252,21 +326,16 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
   // The pistol's slide release: B/Y on its trigger hand (on the rifle's,
   // B/Y is the selector).
   let slideRelease = if pressedOn(Props.Pistol, Hold.Left, bLeft, wasBLeft) || pressedOn(Props.Pistol, Hold.Right, bRight, wasBRight) then [Props.Pistol] else [] in
-  let next = { m with xr: s.xr, cycle: cycle, thumbstick: thumbstick, handView: if flip then flipped(m.handView) else m.handView,
-               glove: if swap then otherGlove(m.glove) else m.glove, stickUp: up,
+  let next = { m with xr: xr, cycle: cycle, thumbstick: thumbstick, handView: if flip then flipped(m.handView) else m.handView,
+               glove: if swap then otherGlove(m.glove) else m.glove, leftClick: leftClick, walk: walk, turnStick: turnStick,
                buttonA: (aLeft, aRight), buttonB: (bLeft, bRight), rifle: if select then Gun.select(Longarm.weapon, m.rifle) else m.rifle,
                releasing: releasing, slideRelease: slideRelease } in
+  // A station jump lands the head over the station's feet.
+  let jump = (id: float) => let w = arrive(rawHead) in { reset(next, id) with walk: w, xr: walked(w, s.xr) } in
   match chosen with
-  | Option.Some(id) => reset(next, id)
-  | Option.None => if cycle && not m.cycle then reset(next, Stations.after(m.station)) else next
+  | Option.Some(id) => jump(id)
+  | Option.None => if cycle && not m.cycle then jump(Stations.after(m.station)) else next
 
-/// A thumbstick held down: pushed to -0.7, let back past -0.3.
-let stickDown = (was: bool, y: float): bool => if was then y < 0.0 - 0.3 else y <= 0.0 - 0.7
-
-expect stickDown(false, -0.7) && not stickDown(false, -0.6) && stickDown(true, -0.4) && not stickDown(true, -0.3)
-
-/// A thumbstick held up: `stickDown` mirrored.
-let stickUp = (was: bool, y: float): bool => stickDown(was, 0.0 - y)
 
 /// A gun's magazine dropped out: a new magazine prop with its rounds, free
 /// below the well (`Gun.dropOf`), the chambered round left in the gun. A gun
@@ -1131,7 +1200,12 @@ let tick = (m: Model, dt: float, tts: float) =>
     [Physics.setVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.velocity)),
      Physics.setAngularVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.spin))]) in
   let buzzes = next.pulses |> List.map((se) => let (side, e) = se in Pulses.effect(side, e)) in
-  (next, Effect.batch(List.append(throws, buzzes)))
+  // The left stick walks along the head's facing.
+  let walk =
+    m.xr |> Option.bind((x) => x.head) |> Option.bind((head) =>
+      controller(m.xr, Hold.Left) |> Option.filter((c) => c.active) |> Option.map((c) => stepped(m.walk, head, c.thumbstick, dt)))
+      |> Option.defaultValue(m.walk) in
+  ({ next with walk: walk }, Effect.batch(List.append(throws, buzzes)))
 
 let solid = (named: (string, Stations.Box)) =>
   let (name, b) = named in
@@ -1373,8 +1447,8 @@ let snapshotOf = (pressed: List<Key.t>, xr: Option.t<Input.xr>): Input.snapshot 
              released: { left: false, right: false, middle: false } },
     xr: xr, gamepad: Option.None, touch: Option.None }
 
-// Accepted to start; H switches it, and back; so does a thumbstick click,
-// once per press.
+// Accepted to start; H switches it, and back; so does the right thumbstick
+// click, once per press.
 expect (
   let keys = snapshotOf in
   let clicked = Option.Some({ head: Option.None, left: away, right: { hand(zero, 0.0) with thumbstickPressed: true } }) in
@@ -1383,11 +1457,11 @@ expect (
   init.handView == Accepted && once.handView == Tracked && sampledInput(once, keys([Key.H], Option.None)).handView == Accepted
     && held.handView == Tracked
 )
-// Skinned to start; G switches the glove, and back; so does either
-// thumbstick pushed up, once per push; it leaves the hand view alone.
+// Skinned to start; G switches the glove, and back; so does the left
+// thumbstick click, once per press; it leaves the hand view alone.
 expect (
   let keys = snapshotOf in
-  let pushed = Option.Some({ head: Option.None, left: { hand(zero, 0.0) with thumbstick: { x: 0.0, y: 0.9 } }, right: away }) in
+  let pushed = Option.Some({ head: Option.None, left: { hand(zero, 0.0) with thumbstickPressed: true }, right: away }) in
   let once = sampledInput(init, keys([Key.G], Option.None)) in
   let held = sampledInput(sampledInput(init, keys([], pushed)), keys([], pushed)) in
   init.glove == Skinned && once.glove == Capsule && sampledInput(once, keys([Key.G], Option.None)).glove == Skinned
@@ -1719,7 +1793,9 @@ let lights = [
 // stand at eye height and look down at the station.
 let camera = (m: Model, st: Stations.Station) =>
   match m.xr with
-  | Option.Some(_) => Stations.rig(st)
+  | Option.Some(_) =>
+    if m.walk == standing then Stations.rig(st)
+    else Stations.rigAt({ st with feet: Stations.toWorld(st, m.walk.offset), yaw: st.yaw + m.walk.yaw })
   | Option.None =>
     Camera3D.firstPerson(Quat.toVec3(Quat.add(st.feet, Quat.v3(0.0, 1.6, 0.0))), Angle.radians(st.yaw), -24deg, 70deg)
       |> Camera3D.clip(0.05, 60.0)
