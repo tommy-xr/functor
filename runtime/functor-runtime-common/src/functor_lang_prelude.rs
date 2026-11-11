@@ -220,6 +220,7 @@ pub mod lightmap;
 pub mod mesh;
 pub mod model;
 mod json;
+pub mod launch;
 pub mod path;
 pub mod solid;
 mod sprite;
@@ -1866,6 +1867,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         job::register(&mut reg);
         path::register(&mut reg);
         json::register(&mut reg);
+        launch::register(&mut reg);
         mesh::register(&mut reg);
         cells::register(&mut reg);
         nav::register(&mut reg);

@@ -101,6 +101,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Xr",
     "Source",
     "Config",
+    "Launch",
     "Settings",
     "Debug",
 ];

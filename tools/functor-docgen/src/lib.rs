@@ -90,7 +90,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
     (
         ApiGroup::Engine,
         "Shell options",
-        &["Config", "Source", "Settings", "Xr"],
+        &["Config", "Launch", "Source", "Settings", "Xr"],
     ),
     (ApiGroup::Engine, "Parts", &["Solid", "Sketch", "Typeface", "Mesh"]),
     (
