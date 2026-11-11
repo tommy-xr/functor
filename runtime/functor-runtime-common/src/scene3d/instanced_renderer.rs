@@ -95,6 +95,10 @@ fn instance_transform_glsl(base: u32) -> String {
     )
 }
 
+// A model mesh's vertex colour in the instanced VAOs, clear of both instance
+// layouts (4-7 rigid, 6-9 skinned). Primitives pin it white.
+const MODEL_COLOR_LOCATION: u32 = 10;
+
 // The joint blend shared by the skinned instanced vertex shaders — the same
 // palette blend as `SkinnedMaterial` (200-joint uniform array), evaluated
 // ONCE per node and read by every copy (the shared-pose contract).
@@ -127,6 +131,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 2) in vec3 inNormal;
         layout (location = 3) in vec4 inTangent;
         layout (location = 7) in vec3 instanceTint;
+        layout (location = 10) in vec4 inColor; // MODEL_COLOR_LOCATION
 
         uniform vec4 baseColor; // raw sRGB-authored — see FRAGMENT_SHADER_SOURCE
         uniform mat3 normalMatrix;
@@ -143,7 +148,8 @@ const VERTEX_SHADER_SOURCE: &str = r#"
             vec4 wp = instanceWorld(inPos);
             texCoord = inTex;
             worldPos = wp.xyz;
-            instanceColor = vec4(functorSrgbToLinear(baseColor.rgb * instanceTint), baseColor.a);
+            instanceColor =
+                vec4(functorSrgbToLinear(baseColor.rgb * instanceTint), baseColor.a) * inColor;
             vec3 ln = localNormalMatrix * inNormal;
             vec3 safeScale = mix(instanceScale, vec3(1.0),
                 vec3(lessThan(abs(instanceScale), vec3(1e-8))));
@@ -259,6 +265,7 @@ const SKINNED_VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 2) in vec3 inNormal;
         layout (location = 3) in vec4 inTangent;
         layout (location = 9) in vec3 instanceTint;
+        layout (location = 10) in vec4 inColor; // MODEL_COLOR_LOCATION
 
         uniform vec4 baseColor; // raw sRGB-authored — see FRAGMENT_SHADER_SOURCE
         uniform mat3 normalMatrix;
@@ -277,7 +284,8 @@ const SKINNED_VERTEX_SHADER_SOURCE: &str = r#"
             vec4 wp = world * vec4(instanceLocal(sp), 1.0);
             texCoord = inTex;
             worldPos = wp.xyz;
-            instanceColor = vec4(functorSrgbToLinear(baseColor.rgb * instanceTint), baseColor.a);
+            instanceColor =
+                vec4(functorSrgbToLinear(baseColor.rgb * instanceTint), baseColor.a) * inColor;
             vec3 ln = localNormalMatrix * (mat3(skin) * inNormal);
             vec3 safeScale = mix(instanceScale, vec3(1.0),
                 vec3(lessThan(abs(instanceScale), vec3(1e-8))));
@@ -736,6 +744,9 @@ impl InstancedRenderer {
                 ctx.gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
                 instance_attrib_layout(ctx.gl, 4, true);
                 ctx.gl.bind_buffer(glow::ARRAY_BUFFER, None);
+                // Primitives have no colour array.
+                ctx.gl
+                    .vertex_attrib_4_f32(MODEL_COLOR_LOCATION, 1.0, 1.0, 1.0, 1.0);
             }
             (mesh.index_buffer, mesh.index_count)
         };
@@ -1130,7 +1141,8 @@ unsafe fn acquire_model_vaos(
 /// Rigid (`skinned == false`): the joint/weight channels are skipped —
 /// their locations 4/5 carry the instance TRS instead (base 4). Skinned:
 /// every mesh channel is enabled (joints/weights at 4/5 feed the palette
-/// blend) and the instance layout sits at locations 6-8.
+/// blend) and the instance layout sits at locations 6-8. Either way the
+/// vertex colour moves to `MODEL_COLOR_LOCATION`.
 ///
 /// No tint attribute either way: a bare model template has no material
 /// colors for the tint to multiply, so the STAMP ignores it — the hardware
@@ -1166,10 +1178,15 @@ unsafe fn create_model_state(
                 {
                     continue;
                 }
-                gl.enable_vertex_attrib_array(location as u32);
+                // The colour's own index is an instance channel here.
+                let location = match attribute.attribute_channel {
+                    BuiltInVertexChannel::Color => MODEL_COLOR_LOCATION,
+                    _ => location as u32,
+                };
+                gl.enable_vertex_attrib_array(location);
                 match attribute.attribute_type {
                     VertexAttributeType::Float => gl.vertex_attrib_pointer_f32(
-                        location as u32,
+                        location,
                         attribute.size,
                         glow::FLOAT,
                         false,

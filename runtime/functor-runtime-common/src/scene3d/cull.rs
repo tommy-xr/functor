@@ -196,6 +196,7 @@ mod tests {
             tangent: cgmath::vec4(1.0, 0.0, 0.0, 1.0),
             joint_indices: joints.into(),
             weights: weights.into(),
+            color: cgmath::vec4(1.0, 1.0, 1.0, 1.0),
         }
     }
 

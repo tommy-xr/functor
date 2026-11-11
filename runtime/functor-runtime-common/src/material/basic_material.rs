@@ -10,6 +10,7 @@ use super::Material;
 const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
         layout (location = 1) in vec2 inTex;
+        layout (location = 6) in vec4 inColor; // white unless a model's mesh has colours
 
         uniform mat4 world;
         uniform mat4 view;
@@ -17,8 +18,10 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         out vec2 texCoord;
         out vec3 worldPos;
+        out vec4 vertexColor;
 
         void main() {
+            vertexColor = inColor;
             texCoord = inTex;
             worldPos = (world * vec4(inPos, 1.0)).xyz;
             gl_Position = projection * view * world * vec4(inPos, 1.0);
@@ -30,11 +33,12 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         in vec2 texCoord;
         in highp vec3 worldPos; // full precision for the fog distance (see FOG_GLSL)
+        in vec4 vertexColor;
 
         uniform sampler2D texture1;
 
         void main() {
-            vec4 c = texture(texture1, texCoord);
+            vec4 c = texture(texture1, texCoord) * vertexColor;
             fragColor = functorOutput(vec4(applyFog(c.rgb, worldPos), c.a));
         }
 "#;
@@ -124,6 +128,7 @@ impl Material for BasicMaterial {
                     uniforms.fog.set(p, ctx.gl, ctx.fog, ctx.sky_gradient, &ctx.camera_pos);
                 }
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
+                crate::render::pin_white_vertex_color(ctx.gl);
             }
         }
 

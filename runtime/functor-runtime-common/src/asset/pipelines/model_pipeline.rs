@@ -130,6 +130,16 @@ impl AssetPipeline<Model> for ModelPipeline {
     }
 }
 
+/// A primitive's glTF `COLOR_0` per vertex: linear RGBA (alpha 1 for an RGB
+/// accessor), multiplied into the base colour. Empty when it has none.
+fn vertex_colors(primitive: &gltf::Primitive, buffers: &[gltf::buffer::Data]) -> Vec<[f32; 4]> {
+    primitive
+        .reader(|buffer| Some(&buffers[buffer.index()]))
+        .read_colors(0)
+        .map(|colors| colors.into_rgba_f32().collect())
+        .unwrap_or_default()
+}
+
 fn process_node(
     node: &gltf::Node,
     buffers: &[gltf::buffer::Data],
@@ -174,6 +184,8 @@ fn process_node(
                 .read_tangents()
                 .map(|v| v.collect::<Vec<_>>())
                 .unwrap_or_default();
+
+            let colors = vertex_colors(&primitive, buffers);
 
             let scale = 1.0;
 
@@ -221,6 +233,7 @@ fn process_node(
                             joint[3] as f32,
                         ),
                         weights: vec4(weight[0], weight[1], weight[2], weight[3]),
+                        color: colors.get(i).copied().unwrap_or([1.0; 4]).into(),
                     }
                 })
                 .collect();
@@ -457,6 +470,22 @@ mod tests {
         let parts: Vec<&str> = model.meshes.iter().map(|mesh| mesh.part.as_str()).collect();
         assert_eq!(parts, ["Body", "Body", "Body_2", "mesh"]);
         assert!(model.skeleton.get_joint_count() > 0, "skinned");
+    }
+
+    #[test]
+    fn color_0_is_read_per_vertex() {
+        use crate::model::test_glb::{glb, TestNode};
+        let colors = |node: TestNode| {
+            let gltf = gltf::Gltf::from_slice(&glb(&[node], false)).unwrap();
+            let buffers = [gltf::buffer::Data(gltf.blob.clone().unwrap())];
+            let primitive = gltf.document.meshes().next().unwrap().primitives().next().unwrap();
+            vertex_colors(&primitive, &buffers)
+        };
+        assert_eq!(
+            colors(TestNode::unnamed().color([1.0, 0.5, 0.0, 1.0])),
+            vec![[1.0, 0.5, 0.0, 1.0]; 24]
+        );
+        assert!(colors(TestNode::unnamed()).is_empty());
     }
 
     // Unparseable bytes must become the empty model, not a panic (asset
