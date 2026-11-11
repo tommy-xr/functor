@@ -59,7 +59,8 @@ function startServer(port = 0, { dir = ROOT, gpu = false } = {}) {
   return new Promise((resolve, reject) => {
     child.stderr.on("data", (d) => {
       err += d;
-      const m = err.match(/^\[functor-app\] listening on (http:\/\/\S+)$/m);
+      // Up to the newline: the line can arrive split across chunks.
+      const m = err.match(/^\[functor-app\] listening on (http:\/\/\S+)\r?\n/m);
       if (m) resolve({ child, url: m[1], port: Number(new URL(m[1]).port) });
     });
     child.on("exit", (code) => reject(new Error(`functor-app exited (${code}) before listening:\n${err}`)));
