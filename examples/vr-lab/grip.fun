@@ -579,14 +579,16 @@ let indexKnuckle = Hand.jointOf(flatRight, 7.0)
 
 /// Where a spec's intent puts its item in the right hand's root frame,
 /// before its nudge. Power: its axis up the fist's channel (the grip's Y
-/// through its origin), `forward` ahead, then onto the palm. Pistol: that,
-/// slid along the channel until the trigger is in the plane the index
+/// through its origin), `forward` ahead, then onto the palm. Pistol: the
+/// same with `forward` exact (a level bore), slid along the channel until the trigger is in the plane the index
 /// closes in, and back onto the palm. Pinch: the point between the pads. Palm: the surface on the palm.
 let proposal = (s: Spec): Input.pose =>
   match s.intent with
   | Power(at, axis, _) => onPalm(s.solids, itemAt(alignTurn(axis, up, s.forward, ahead), at, Hold.zero))
   | Pistol(at, axis, _, trigger) =>
-    let item = onPalm(s.solids, itemAt(alignTurn(axis, up, s.forward, ahead), at, Hold.zero)) in
+    // The bore exactly ahead (where the hand points), the handle as near up
+    // the fist's channel as that leaves it (its rake stays the gun's).
+    let item = onPalm(s.solids, itemAt(alignTurn(s.forward, ahead, axis, up), at, Hold.zero)) in
     let hinge = Quat.rotate(indexKnuckle.orientation, Quat.v3(1.0, 0.0, 0.0)) in
     let off = Quat.dot(Quat.sub((Hold.compose(item, Hold.at(trigger, Quat.identity))).position, indexKnuckle.position), hinge) / Quat.dot(up, hinge) in
     onPalm(s.solids, Hold.at(Quat.sub(item.position, Quat.scale(off, up)), item.orientation))
@@ -857,7 +859,8 @@ expect fitHolds("ball", [], 0.003, 0.0)
 // Missed, deferred: the brick's and shotgun grip's thumbs start inside at
 // every turn, open or straight; the shell's pinch point sits 5.5 mm off the
 // line between the pads, and its index pad 5.4 mm off it (a proximal bone
-// touches first); centred, the shotgun grip's palm sits 2.2 mm in it.
+// touches first); level and centred, the shotgun grip's palm sits 4.2 mm
+// in it and its index 7.5 mm past the trigger's face.
 expect fitHolds("brick", [0.0], 0.003, 0.0)
 expect fitHolds("stick (band)", [], 0.003, 0.0)
 expect fitHolds("bottle neck", [], 0.003, 0.0)
@@ -865,7 +868,7 @@ expect fitHolds("pistol grip", [], 0.003, 0.0)
 expect fitHolds("pistol slide", [], 0.003, 0.0)
 expect fitHolds("rifle grip", [], 0.003, 0.0)
 expect fitHolds("rifle foregrip", [], 0.003, 0.0)
-expect fitHolds("shotgun grip", [0.0], 0.003, 0.0025)
+expect fitHolds("shotgun grip", [0.0, 1.0], 0.003, 0.0045)
 expect fitHolds("shotgun fore-end", [], 0.003, 0.0)
 expect fitHolds("pistol mag", [], 0.003, 0.0)
 expect fitHolds("rifle mag", [], 0.003, 0.0)
@@ -886,7 +889,7 @@ let placementOf = (it: Item): Option.t<Input.pose> => layoutOf(it.spec) |> Optio
 // The guns' placements (`Fitted.*Placement`, generated) are the solve's,
 // within 0.1 mm and 0.001 rad, and centred.
 expect (
-  [("pistol grip", Fitted.pistolGripPlacement), ("rifle grip", Fitted.rifleGripPlacement), ("shotgun grip", Fitted.shotgunGripPlacement)] |> List.all((t) =>
+  [("pistol grip", Gun.placement), ("rifle grip", Longarm.placement), ("shotgun grip", Pump.placement)] |> List.all((t) =>
     let (name, placement) = t in
     items |> List.find((it) => it.name == name) |> Option.bind(placementOf) |> Option.map((solved) =>
       Quat.length(Quat.sub(solved.position, placement.position)) < 0.0001 && Quat.angle(solved.orientation, placement.orientation) < 0.001

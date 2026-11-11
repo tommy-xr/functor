@@ -6,14 +6,14 @@
 // the hips (`Hips`, `Slots`) to put them away in and take them back from.
 // Station 3 is the armory: a pistol (`Gun`) on a bench, fired at targets down
 // range, and holstered at the thigh; and a rifle (`Longarm`) in a rack beside
-// it, aimed with a second hand on its foregrip, semi or full-auto (A/X while
+// it, aimed with a second hand on its foregrip, semi or full-auto (B/Y while
 // holding it, or F). Both are loaded (12+1, 30+1; `Ammo`) with a readout on
-// each; the thumbstick pushed down on a gun's hand (or M) drops its magazine,
+// each; A/X on a gun's hand (or M) drops its magazine,
 // a prop like any other, and spare magazines stand on the bench. A magazine
 // brought to a well's mouth lined up latches and is guided in along the well
 // (`Seating`); the other hand racks the slide or charging handle to chamber
 // (a chambered round flies out loose). The last shot locks the slide back;
-// a rack (or A/X on the pistol's hand) releases it. And a pump shotgun
+// a rack (or B/Y on the pistol's hand) releases it. And a pump shotgun
 // (`Pump`) racked beside the rifle, held like it: the hand on its fore-end
 // pumps it (one shot a stroke, a spread of pellets), and its tube is loaded a
 // shell at a time from the box on the bench, through the port under it.
@@ -26,13 +26,14 @@
 //   npm run test:vr-lab                          # injected XR scenarios, headless
 //   npm run demo:vr-lab -- grab-throw out.gif    # a spectator video of one
 //
-// 1-9 jump to a station and reset it (B/Y or a menu button cycles stations
-// on the headset). A hand is a skinned glove (`Skin`) on a capsule glove's
+// 1-9 jump to a station and reset it (menu cycles stations on the headset,
+// landing you over the station's spot). The left stick walks, the right
+// snap-turns (`Walk`). A hand is a skinned glove (`Skin`) on a capsule glove's
 // joints (`Hand`), its fingers curled by the controller's grip and trigger,
-// or round what it holds (`Props.fingers`); G or a thumbstick pushed up
+// or round what it holds (`Props.fingers`); G or the left thumbstick click
 // draws the capsules instead, and back. A holding hand is drawn on what it
-// holds, where the blocked prop implies; H or a thumbstick click switches it
-// to where it is tracked, and back.
+// holds, where the blocked prop implies; H or the right thumbstick click
+// switches it to where it is tracked, and back.
 // `GET /state` shows the station, both hands, the props and the last release.
 // Each hold event buzzes its hand (`Pulses`), and a ring at the hand shows it.
 //
@@ -100,9 +101,7 @@ type Prop = {
 type Walk = { offset: Input.point3, yaw: float }
 let standing: Walk = { offset: Quat.v3(0.0, 0.0, 0.0), yaw: 0.0 }
 
-let walkPose = (w: Walk, p: Input.pose): Input.pose =>
-  let q = Quat.yaw(w.yaw) in
-  { position: Quat.add(w.offset, Quat.rotate(q, p.position)), orientation: Quat.mul(q, p.orientation) }
+let walkPose = (w: Walk, p: Input.pose): Input.pose => Hold.compose(Hold.at(w.offset, Quat.yaw(w.yaw)), p)
 
 let walkedController = (w: Walk, c: Input.controller): Input.controller =>
   { c with grip: c.grip |> Option.map((p) => walkPose(w, p)), aim: c.aim |> Option.map((p) => walkPose(w, p)) }
@@ -121,7 +120,7 @@ let arrive = (head: Option.t<Input.pose>): Walk =>
 
 /// The walk turned by `by` radians about the tracked head `head`, which stays put.
 let snapTurned = (w: Walk, head: Input.point3, by: float): Walk =>
-  let at = Quat.add(w.offset, Quat.rotate(Quat.yaw(w.yaw), head)) in
+  let at = (walkPose(w, Hold.at(head, Quat.identity))).position in
   let yaw = w.yaw + by in
   { offset: Quat.sub(at, Quat.rotate(Quat.yaw(yaw), head)), yaw: yaw }
 
@@ -131,21 +130,24 @@ let walkSpeed = 2.0
 let deadZone = 0.2
 let snapStep = 30.0 * Math.pi / 180.0
 
-/// The walk after `dt` of the left stick `stick`, along the head's facing
-/// (`head`, station frame) flattened onto the floor.
+/// The walk after `dt` of the left stick `stick`, along the head's heading
+/// (`head`, station frame; `Hips.headingOr`, so looking up or down still
+/// walks). The dead zone is round, and speed ramps from 0 past it.
 let stepped = (w: Walk, head: Input.pose, stick: Input.point2, dt: float): Walk =>
-  if Math.abs(stick.x) < deadZone && Math.abs(stick.y) < deadZone then w
+  let mag = Math.sqrt(stick.x * stick.x + stick.y * stick.y) in
+  if mag < deadZone then w
   else
-    let flat = (v: Input.point3) => let f = Quat.v3(v.x, 0.0, v.z) in let l = Quat.length(f) in if l < 0.0001 then f else Quat.scale(1.0 / l, f) in
-    let fwd = flat(Quat.rotate(head.orientation, Quat.v3(0.0, 0.0, 0.0 - 1.0))) in
-    let right = flat(Quat.rotate(head.orientation, Quat.v3(1.0, 0.0, 0.0))) in
-    let v = Quat.add(Quat.scale(stick.y, fwd), Quat.scale(stick.x, right)) in
+    let k = Math.min(1.0, (mag - deadZone) / (1.0 - deadZone)) / mag in
+    let turn = Quat.yaw(Hips.headingOr(0.0, head.orientation)) in
+    let v = Quat.rotate(turn, Quat.v3(stick.x * k, 0.0, 0.0 - stick.y * k)) in
     { w with offset: Quat.add(w.offset, Quat.scale(walkSpeed * dt, v)) }
 
 // Full stick forward for a second, facing -Z: 2 m ahead. A snap turn keeps
 // the head where it was. Arriving puts the head over the feet.
 expect Hold.near3((stepped(standing, Hold.origin, { x: 0.0, y: 1.0 }, 1.0)).offset, Quat.v3(0.0, 0.0, 0.0 - 2.0))
 expect (stepped(standing, Hold.origin, { x: 0.1, y: 0.1 }, 1.0)) == standing
+// Looking straight down (pitched -90°), forward still walks ahead.
+expect Hold.near3((stepped(standing, Hold.at(Hold.zero, Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), 0.0 - Math.pi / 2.0)), { x: 0.0, y: 1.0 }, 1.0)).offset, Quat.v3(0.0, 0.0, 0.0 - 2.0))
 expect (
   let w = { offset: Quat.v3(0.3, 0.0, 0.0 - 1.0), yaw: 0.4 } in
   let head = Quat.v3(0.2, 1.6, 0.1) in
@@ -189,13 +191,13 @@ type Model = {
   shotgun: Gun.State,
   // The shells left in the armory's box.
   shellBox: float,
-  // Each hand's A/X level (left, right), for its press edges.
+  // Each hand's A/X and B/Y levels (left, right), for their press edges.
   buttonA: (bool, bool),
   buttonB: (bool, bool),
-  // Each hand's thumbstick held down (the magazine release), for its edges,
-  // and the guns whose release was pressed this step.
+  // The guns whose magazine release (A/X on a gun's trigger hand) was
+  // pressed this step.
   releasing: List<Props.Kind>,
-  // The guns whose slide release (A/X on the pistol's trigger hand) was
+  // The guns whose slide release (B/Y on the pistol's trigger hand) was
   // pressed this step.
   slideRelease: List<Props.Kind>,
   // The next ejected magazine's and loose round's ids.
@@ -269,6 +271,12 @@ let stationKeys = [
 
 let exists = (id: float) => Stations.all |> List.any((s) => s.id == id)
 
+/// A thumbstick axis held down: pushed to -0.7, let back past -0.3 (a
+/// hysteresis, so one push is one edge).
+let stickDown = (was: bool, y: float): bool => if was then y < 0.0 - 0.3 else y <= 0.0 - 0.7
+
+expect stickDown(false, -0.7) && not stickDown(false, -0.6) && stickDown(true, -0.4) && not stickDown(true, -0.3)
+
 let buttons = (xr: Option.t<Input.xr>, pressed: (Input.controller) => bool): bool =>
   xr |> Option.map((x) => pressed(x.left) || pressed(x.right)) |> Option.defaultValue(false)
 
@@ -300,19 +308,18 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
   // The right stick pushed sideways snap-turns about the head, once a push.
   let rawHead = s.xr |> Option.bind((x) => x.head) in
   let turnX = controller(s.xr, Hold.Right) |> Option.map((c) => c.thumbstick.x) |> Option.defaultValue(0.0) in
-  let turnStick = if m.turnStick then Math.abs(turnX) > 0.3 else Math.abs(turnX) >= 0.7 in
+  let turnStick = stickDown(m.turnStick, 0.0 - Math.abs(turnX)) in
+  let snapped = turnStick && not m.turnStick && Option.isSome(rawHead) in
   let walk =
-    if turnStick && not m.turnStick then
-      rawHead |> Option.map((h) => snapTurned(m.walk, h.position, if turnX > 0.0 then 0.0 - snapStep else snapStep)) |> Option.defaultValue(m.walk)
+    if snapped then rawHead |> Option.map((h) => snapTurned(m.walk, h.position, if turnX > 0.0 then 0.0 - snapStep else snapStep)) |> Option.defaultValue(m.walk)
     else m.walk in
   let xr = walked(walk, s.xr) in
   // A fresh press (`now`, not `was`) on the hand at gun `k`'s trigger.
   let pressedOn = (k: Props.Kind, side: Hold.Side, now: bool, was: bool) => now && not was && triggerHand(m, k) == Option.Some(side) in
-  let level = rawLevel in
-  let (aLeft, aRight) = (level(Hold.Left, (c) => c.primaryPressed), level(Hold.Right, (c) => c.primaryPressed)) in
+  let (aLeft, aRight) = (rawLevel(Hold.Left, (c) => c.primaryPressed), rawLevel(Hold.Right, (c) => c.primaryPressed)) in
   let (wasLeft, wasRight) = m.buttonA in
   // The selector: B/Y on the hand at the rifle's trigger, or F.
-  let (bLeft, bRight) = (level(Hold.Left, (c) => c.secondaryPressed), level(Hold.Right, (c) => c.secondaryPressed)) in
+  let (bLeft, bRight) = (rawLevel(Hold.Left, (c) => c.secondaryPressed), rawLevel(Hold.Right, (c) => c.secondaryPressed)) in
   let (wasBLeft, wasBRight) = m.buttonB in
   let select = key(Key.F) || pressedOn(Props.Rifle, Hold.Left, bLeft, wasBLeft) || pressedOn(Props.Rifle, Hold.Right, bRight, wasBRight) in
   // The magazine release: A/X on the hand at a gun's trigger, or M for every
@@ -329,7 +336,11 @@ let sampledInput = (m: Model, s: Input.snapshot): Model =>
   let next = { m with xr: xr, cycle: cycle, thumbstick: thumbstick, handView: if flip then flipped(m.handView) else m.handView,
                glove: if swap then otherGlove(m.glove) else m.glove, leftClick: leftClick, walk: walk, turnStick: turnStick,
                buttonA: (aLeft, aRight), buttonB: (bLeft, bRight), rifle: if select then Gun.select(Longarm.weapon, m.rifle) else m.rifle,
-               releasing: releasing, slideRelease: slideRelease } in
+               releasing: releasing, slideRelease: slideRelease,
+               // A snap turn isn't motion: no held prop throws from it, and
+               // the hips recentre on the head rather than trail it.
+               props: if snapped then m.props |> List.map((p) => { p with held: p.held |> Option.map((h) => { h with history: [] }) }) else m.props,
+               hips: if snapped then Hips.init else m.hips } in
   // A station jump lands the head over the station's feet.
   let jump = (id: float) => let w = arrive(rawHead) in { reset(next, id) with walk: w, xr: walked(w, s.xr) } in
   match chosen with
@@ -410,6 +421,17 @@ let gripOf = (xr: Option.t<Input.xr>, side: Hold.Side): Option.t<Input.pose> =>
       | Option.None => Option.None
     else Option.None
   | Option.None => Option.None
+
+// A Touch's sample: the aim 60° below the grip's -Z, its origin ahead. The
+// hand is at the grip, turned as the aim.
+expect (
+  let grip = Hold.at(Quat.v3(0.1, 1.2, -0.3), Quat.axisAngle(Quat.v3(1.0, 0.0, 0.0), Math.pi / 3.0)) in
+  let aim = Hold.at(Quat.v3(0.1, 1.13, -0.38), Quat.identity) in
+  let c = { active: true, grip: Option.Some(grip), aim: Option.Some(aim), trigger: 0.0, squeeze: 0.0, thumbstick: { x: 0.0, y: 0.0 },
+            primaryPressed: false, secondaryPressed: false, thumbstickPressed: false, menuPressed: false } in
+  let off = { c with active: false } in
+  gripOf(Option.Some({ head: Option.None, left: off, right: c }), Hold.Right) == Option.Some(Hold.at(grip.position, aim.orientation))
+)
 
 let squeezeOf = (xr: Option.t<Input.xr>, side: Hold.Side): float =>
   match xr with
@@ -1193,6 +1215,13 @@ let tick = (m: Model, dt: float, tts: float) =>
           && Option.isSome(castOf(st)(p.kind, pose, Hold.at(Quat.sub(pose.position, Quat.v3(0.0, 0.003, 0.0)), pose.orientation))) in
         { p with pose: pose, velocity: if still then zero else Stations.dirToRig(st, Quat.v3(v.x, v.y, v.z)), lying: still }
       | Option.None => p in
+  // The left stick walks along the head's facing, before the step: the hands
+  // and what they hold move with the camera the same frame.
+  let walk =
+    m.xr |> Option.bind((x) => x.head) |> Option.bind((head) =>
+      controller(m.xr, Hold.Left) |> Option.filter((c) => c.active) |> Option.map((c) => stepped(m.walk, head, c.thumbstick, dt)))
+      |> Option.defaultValue(m.walk) in
+  let m = if walk == m.walk then m else { m with walk: walk, xr: walked({ offset: Quat.sub(walk.offset, m.walk.offset), yaw: 0.0 }, m.xr) } in
   let (next, released) = step(m, st, worldOf(st, m.gen), read, tts, dt) in
   // Declared dynamic and given their velocities in the same frame: both land
   // on the next step, so none spends a step at rest.
@@ -1200,12 +1229,7 @@ let tick = (m: Model, dt: float, tts: float) =>
     [Physics.setVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.velocity)),
      Physics.setAngularVelocity(tagOf(m.gen, r.prop), Quat.toVec3(r.spin))]) in
   let buzzes = next.pulses |> List.map((se) => let (side, e) = se in Pulses.effect(side, e)) in
-  // The left stick walks along the head's facing.
-  let walk =
-    m.xr |> Option.bind((x) => x.head) |> Option.bind((head) =>
-      controller(m.xr, Hold.Left) |> Option.filter((c) => c.active) |> Option.map((c) => stepped(m.walk, head, c.thumbstick, dt)))
-      |> Option.defaultValue(m.walk) in
-  ({ next with walk: walk }, Effect.batch(List.append(throws, buzzes)))
+  (next, Effect.batch(List.append(throws, buzzes)))
 
 let solid = (named: (string, Stations.Box)) =>
   let (name, b) = named in
@@ -1825,6 +1849,15 @@ let boxScene = (m: Model, st: Stations.Station): Scene.t =>
 // checks read from `/scene`: the left and right hands, then their ghosts. 8
 // is what the body wears; 9 the haptic cues; 10 the range's shots; 11 the
 // rifle rack's ring; 12 the shell box.
+// Walked, the headset's rig maps a tracked pose where the walk puts it.
+expect (
+  let st = Stations.armory in
+  let w = { offset: Quat.v3(0.4, 0.0, 0.0 - 1.2), yaw: 0.7 } in
+  let p = Hold.at(Quat.v3(0.2, 1.5, -0.3), Quat.identity) in
+  let m = { init with walk: w, xr: Option.Some({ head: Option.None, left: away, right: away }) } in
+  Hold.near3((Camera3D.mapTrackedPose(camera(m, st), p)).position, Stations.toWorld(st, (walkPose(w, p)).position))
+)
+
 let draw = (m: Model, tts) =>
   let st = Stations.find(m.station) in
   let (left, leftGhost) = handScene(m, st, Hold.Left) in

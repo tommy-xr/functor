@@ -33,8 +33,8 @@ let center = Quat.v3(0.0, 0.0475, (stockBack - muzzleAhead) / 2.0)
 let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 
 /// Where the primary hand's root sits in `layout`: the shotgun grip spec's
-/// solved position (`Fitted`, generated), levelled (`Gun.levelled`).
-let placement: Input.pose = Gun.levelled(Fitted.shotgunGripPlacement)
+/// solved placement (`Fitted`, generated): the bore along the hand's -Z.
+let placement: Input.pose = Fitted.shotgunGripPlacement
 
 /// The primary hand's pose in the shotgun's frame: its pistol grip. Like
 /// the rifle's, only taken there.

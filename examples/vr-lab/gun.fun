@@ -24,14 +24,10 @@ let center = Quat.v3(0.0, 0.0025, 0.0 - 0.0475)
 /// (centred on its collider).
 let layout: Input.pose = Hold.at(Quat.scale(0.0 - 1.0, center), Quat.identity)
 
-/// A grip placement kept where it sits but unturned: the bore along the
-/// hand's -Z.
-let levelled = (p: Input.pose): Input.pose => { position: p.position, orientation: Quat.identity }
-
 /// Where the hand's root sits in `layout`: the pistol grip spec's solved
-/// position (`Fitted`, generated), levelled so the bore runs along the
-/// hand's -Z, the way it points (the solve's 12° rake aimed it high).
-let placement: Input.pose = levelled(Fitted.pistolGripPlacement)
+/// placement (`Fitted`, generated): the bore along the hand's -Z, the way it
+/// points.
+let placement: Input.pose = Fitted.pistolGripPlacement
 
 /// The hand's pose in the pistol's frame: its grip. A pistol is only taken
 /// there (`gripZone`), and always settles into it.

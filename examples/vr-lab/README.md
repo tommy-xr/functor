@@ -141,9 +141,9 @@ look. The three guns hold by their solved placements: each is laid out in
 a fist's frame (`layout`) and held at `placement` in it, checked in as data
 (generated into `fitted.fun`; an expect in `grip.fun` keeps them current;
 a gun already held keeps its old hold across a hot reload until retaken).
-The guns keep their solved positions but
-not the solve's turn (`Gun.levelled`): each bore runs along the hand's -Z,
-where it points; a two-hand aim steers the layout's frame, so the barrel
+A gun grip's solve (`Pistol`) keeps the
+bore exactly along the hand's -Z, where it points, with the handle as near
+the fist's channel as that leaves it; a two-hand aim steers the layout's frame, so the barrel
 still runs from the primary fist to the support. The other props keep their
 authored grips. Each spec's fit becomes the pose the game draws
 (`fitted.fun`, a buried digit keeping its old preset): rerun with
@@ -356,9 +356,10 @@ own grips and bore (`Longarm.weapon`).
   steers; the accepted pose never feeds back.
 - **Slide and break.** Along the foregrip the support slides freely. Taking
   it needs the hand within 6 cm of the foregrip line; once supporting, it is
-  forgiving (`Longarm.keeps`): measured from the two-hand aim line, it only
-  breaks 60 cm off it, 25 cm past either end, or with the aim swung 150° from
-  the primary hand, so a quick pull or a shot's kick keeps the grip. Broken:
+  forgiving (`Longarm.keeps`): it only breaks with the support hand 25 cm
+  further from the primary fist than the foregrip's far end, within 5 cm of
+  it (or behind it), or the aim swung 90° from the primary hand, so a bent
+  wrist, a quick pull or a shot's kick keeps the grip. Broken:
   a break pulse, and the hand must open before it takes the
   foregrip again. Opened, it lets go with a release pulse. Either way the
   rifle stays where the aim had it on that step, then eases back into the

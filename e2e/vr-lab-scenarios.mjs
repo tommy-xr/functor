@@ -263,8 +263,8 @@ const inventoryScenarios = {
 
 export const armory = { feet: [4, 0, 0], yaw: Math.PI / 2 };
 // Where the hand's root sits in each gun's layout frame (`Gun.placement`,
-// `Longarm.placement`, `Pump.placement`): the solved position, levelled
-// (`Gun.levelled`), so the bore runs along the hand's -Z. A scenario holding a gun scripts its
+// `Longarm.placement`, `Pump.placement`): solved with the bore along the
+// hand's -Z. A scenario holding a gun scripts its
 // right hand as the gun's fist (`fists`; each take below switches it), so
 // the geometry below is the fist's; the controller is injected at
 // fist ∘ placement.
@@ -273,7 +273,7 @@ const FITTED = readFileSync(`${REPO}examples/vr-lab/fitted.fun`, "utf8");
 const placement = (name) => {
   const line = FITTED.split("\n").find((l) => l.startsWith(`let ${name}:`));
   const v = [...line.matchAll(/[xyzw]: (0\.0 - )?([0-9.]+)/g)].map((m) => (m[1] ? -1 : 1) * Number(m[2]));
-  return { position: v.slice(0, 3), orientation: [0, 0, 0, 1] };
+  return { position: v.slice(0, 3), orientation: v.slice(3, 7) };
 };
 export const PISTOL_FIST = placement("pistolGripPlacement");
 export const RIFLE_FIST = placement("rifleGripPlacement");
