@@ -76,6 +76,7 @@ pub mod gpu_counters;
 pub mod haptics;
 mod frame;
 pub mod frame_capture;
+pub mod frame_stream;
 pub mod frame_telemetry;
 mod frame_time;
 pub mod game_clock;

@@ -1362,6 +1362,13 @@ desktop runtime's --headless/--debug-port path"
                 "the headset's view follows the wearer; POST /camera is desktop-only".to_string(),
             ));
         }
+        // Desktop-only for now: the headset would pay for an eye readback
+        // per streamed frame inside its frame budget.
+        DebugRequest::Stream(response) => {
+            let _ = response.send(Err(
+                "GET /stream is desktop-only; use POST /capture on the headset".to_string(),
+            ));
+        }
         DebugRequest::DisplayRefreshRate(hz, response) => {
             let _ = response.send(match debug.display_refresh_rate.as_mut() {
                 Some(display) => request_display_refresh_rate(session, display, hz),

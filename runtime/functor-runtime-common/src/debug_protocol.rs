@@ -205,7 +205,13 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// hot reloads and the shell's indicator,
 /// [`crate::reload_indicator::ReloadState`]). Additive — a pre-v35 runtime
 /// omits it, which deserializes as idle.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 35;
+///
+/// 36 adds `GET /stream`: live JPEG frames on one response, as
+/// `multipart/x-mixed-replace` or (`?octet=1`) the same bytes as
+/// `application/octet-stream`; each part carries `X-Rendered-Frame` (as
+/// `/state` numbers `rendered_frames`) and `X-Capture-Ms`. Desktop only; a
+/// pre-v36 runtime answers 404.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 36;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -255,6 +261,11 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/capture",
         description: "PNG (image/png) of the next rendered frame",
+    },
+    DebugRoute {
+        method: "GET",
+        path: "/stream",
+        description: "live JPEG frames on one response until the client closes: multipart/x-mixed-replace (for <img>), or ?octet=1 for the same bytes as application/octet-stream (for fetch); ?w=&h= fits frames within that size (never up), ?q=1-100 (default 80), ?fps= (>= 1) caps the rate (default: every rendered frame the client keeps up with; slower clients skip frames); unknown keys are ignored. Each part has X-Rendered-Frame (as /state numbers rendered_frames) and X-Capture-Ms (unix ms at readback). No readback while no client is connected. 503 without a framebuffer (--headless, the headset)",
     },
     DebugRoute {
         method: "GET",
@@ -1261,6 +1272,9 @@ pub fn validate_project_asset_path(path: &str) -> Result<(), String> {
 /// Request delivered from a runtime's transport thread to its frame loop.
 pub enum DebugRequest {
     Capture(Sender<Result<Vec<u8>, CaptureError>>),
+    /// `GET /stream`: the render loop's frame tap, which reads back a frame
+    /// whenever a client requests one. `Err` (503) without a framebuffer.
+    Stream(Sender<Result<std::sync::Arc<crate::frame_stream::FrameTap>, String>>),
     State(Sender<RuntimeState>),
     Scene(Sender<String>),
     Trace(Sender<String>),
@@ -1983,6 +1997,7 @@ mod tests {
         let expected: BTreeSet<_> = [
             "GET /",
             "POST /capture",
+            "GET /stream",
             "GET /state",
             "GET /frames",
             "GET /spikes",

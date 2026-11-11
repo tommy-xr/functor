@@ -8,7 +8,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 
@@ -16,6 +16,7 @@ use crate::debug_protocol::{
     self, CaptureError, DebugRequest, InputCommand, ProjectAssetPaths, ProjectSources,
     RewindCommand, RuntimeState, TimeCommand,
 };
+use crate::frame_stream;
 
 const MAX_HEADER_LINE_BYTES: u64 = 8 * 1024;
 const MAX_HEADER_LINES: usize = 64;
@@ -240,6 +241,15 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     "capture failed",
                 ),
             }
+        }
+        // A stream outlives its request, so it gets its own thread and the
+        // accept loop stays free for `/input`, `/state` and the rest.
+        ("GET", "/stream") => {
+            let (tx, query) = (tx.clone(), query.to_string());
+            let cors_origin = cors_origin.map(str::to_string);
+            let _ = std::thread::Builder::new()
+                .name("functor-debug-stream".to_string())
+                .spawn(move || stream_frames(stream, &tx, &query, cors_origin.as_deref()));
         }
         ("GET", "/state") => {
             let (resp_tx, resp_rx) = mpsc::channel::<RuntimeState>();
@@ -918,6 +928,101 @@ fn respond_report<T: serde::Serialize>(
     }
 }
 
+/// How long a stream waits for a frame before checking that its client is
+/// still there.
+const STREAM_IDLE_CHECK: Duration = Duration::from_secs(1);
+/// An uncapped stream's read-ahead frame older than this is skipped.
+const STREAM_STALE_MS: f64 = 100.0;
+
+/// Serve `GET /stream` until the client goes away (see [`frame_stream`]).
+fn stream_frames(
+    mut stream: TcpStream,
+    tx: &mpsc::Sender<DebugRequest>,
+    query: &str,
+    cors_origin: Option<&str>,
+) {
+    let params = match frame_stream::parse_query(query) {
+        Ok(params) => params,
+        Err(error) => return respond_text(&mut stream, cors_origin, 400, "Bad Request", &error),
+    };
+    let (resp_tx, resp_rx) = mpsc::channel();
+    if tx.send(DebugRequest::Stream(resp_tx)).is_err() {
+        runtime_gone(&mut stream, cors_origin);
+        return;
+    }
+    let tap = match resp_rx.recv_timeout(CAPTURE_REPLY_TIMEOUT) {
+        Ok(Ok(tap)) => tap,
+        Ok(Err(message)) => {
+            return respond_text(&mut stream, cors_origin, 503, "Service Unavailable", &message)
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let message =
+                "runtime did not start the stream (is `GET /state`'s rendered_frames advancing?)";
+            return respond_text(&mut stream, cors_origin, 503, "Service Unavailable", message);
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let message = "stream failed";
+            return respond_text(&mut stream, cors_origin, 500, "Internal Server Error", message);
+        }
+    };
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nCache-Control: no-store\r\n{}Connection: close\r\n\r\n",
+        params.content_type(),
+        cors_headers(cors_origin),
+    );
+    let _ = stream.set_nodelay(true);
+    if stream.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    let uncapped = params.interval().is_zero();
+    // By deadline, so `fps` is the mean rate rather than interval + wait.
+    let mut pacer = crate::FramePacer::new(params.interval());
+    let mut seen = 0;
+    loop {
+        std::thread::sleep(pacer.delay(Instant::now()));
+        tap.request();
+        let Some((seq, frame)) = tap.newer_than(seen, STREAM_IDLE_CHECK) else {
+            // No frame yet: stop if the client left or the render loop ended
+            // (it holds the only other reference).
+            if client_closed(&stream) || std::sync::Arc::strong_count(&tap) == 1 {
+                return;
+            }
+            continue;
+        };
+        seen = seq;
+        if uncapped {
+            // A frame read ahead while a slow write was blocked is stale:
+            // skip to the next one.
+            if frame_stream::unix_ms() - frame.captured_ms > STREAM_STALE_MS {
+                continue;
+            }
+            // Read the next frame back while this one encodes.
+            tap.request();
+        }
+        let Ok(jpeg) = frame_stream::encode_jpeg(&frame, &params) else {
+            return;
+        };
+        let part = frame_stream::part(&jpeg, frame.rendered_frame, frame.captured_ms);
+        if stream.write_all(&part).is_err() {
+            return;
+        }
+    }
+}
+
+/// Whether the peer has closed its end: end-of-stream or an error. A read
+/// that would block, or bytes it sent, mean it is still there.
+fn client_closed(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return true;
+    }
+    let closed = match stream.peek(&mut [0]) {
+        Ok(read) => read == 0,
+        Err(error) => error.kind() != std::io::ErrorKind::WouldBlock,
+    };
+    let _ = stream.set_nonblocking(false);
+    closed
+}
+
 fn runtime_gone(stream: &mut TcpStream, cors_origin: Option<&str>) -> Option<()> {
     respond_text(
         stream,
@@ -972,6 +1077,18 @@ fn respond_text(
     )
 }
 
+fn cors_headers(cors_origin: Option<&str>) -> String {
+    cors_origin.map_or_else(String::new, |origin| {
+        format!(
+            "Access-Control-Allow-Origin: {origin}\r\n\
+             Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+             Access-Control-Allow-Headers: Content-Type\r\n\
+             Access-Control-Allow-Private-Network: true\r\n\
+             Vary: Origin\r\n"
+        )
+    })
+}
+
 fn respond_bytes(
     stream: &mut TcpStream,
     cors_origin: Option<&str>,
@@ -980,19 +1097,11 @@ fn respond_bytes(
     content_type: &str,
     body: &[u8],
 ) {
-    let cors_headers = cors_origin.map_or_else(String::new, |origin| {
-        format!(
-            "Access-Control-Allow-Origin: {origin}\r\n\
-             Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-             Access-Control-Allow-Headers: Content-Type\r\n\
-             Access-Control-Allow-Private-Network: true\r\n\
-             Vary: Origin\r\n"
-        )
-    });
     let header = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
-         {cors_headers}Connection: close\r\n\r\n",
+         {}Connection: close\r\n\r\n",
         body.len(),
+        cors_headers(cors_origin),
     );
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body);
@@ -1583,6 +1692,164 @@ Content-Length: {}\r\n\r\n{body}",
         let response = client.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with("reloaded asset"));
+    }
+
+    /// A fake render loop for `/stream`: hands out `tap` (or refuses, like
+    /// `--headless`), publishes a frame whenever one is requested, and answers
+    /// `GET /frames`. Ends when the transport drops its sender.
+    fn fake_stream_runtime(
+        rx: mpsc::Receiver<DebugRequest>,
+        tap: Option<std::sync::Arc<frame_stream::FrameTap>>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut rendered = 0;
+            loop {
+                match rx.recv_timeout(Duration::from_millis(2)) {
+                    Ok(DebugRequest::Stream(response)) => {
+                        let _ = response.send(
+                            tap.clone()
+                                .ok_or_else(|| "streaming is unavailable in --headless mode".into()),
+                        );
+                    }
+                    Ok(DebugRequest::Frames(last, response)) => {
+                        let _ = response
+                            .send(crate::frame_telemetry::FrameTelemetry::new(60.0).frames(last));
+                    }
+                    Ok(_) => panic!("unexpected request"),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+                rendered += 1;
+                if let Some(tap) = tap.as_ref().filter(|tap| tap.take_request()) {
+                    tap.publish(frame_stream::StreamFrame {
+                        width: 4,
+                        height: 2,
+                        rgba: vec![128; 4 * 2 * 4],
+                        rendered_frame: rendered,
+                        captured_ms: frame_stream::unix_ms(),
+                    });
+                }
+            }
+        })
+    }
+
+    fn get(address: std::net::SocketAddr, path: &str) -> TcpStream {
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        stream
+    }
+
+    /// Read through the end of the response head (or a part's headers).
+    fn read_head(reader: &mut impl BufRead) -> String {
+        let mut head = String::new();
+        while !head.ends_with("\r\n\r\n") {
+            assert!(
+                reader.read_line(&mut head).unwrap() > 0,
+                "closed mid-head: {head}"
+            );
+        }
+        head
+    }
+
+    /// One stream part's raw bytes.
+    fn read_part(reader: &mut impl BufRead) -> Vec<u8> {
+        let head = read_head(reader);
+        let length: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut rest = vec![0; length + 2];
+        reader.read_exact(&mut rest).unwrap();
+        [head.into_bytes(), rest].concat()
+    }
+
+    /// Both framings carry the same part bytes; only the response's
+    /// `Content-Type` differs. A stream left open does not hold up other
+    /// requests, and closing it frees its thread and its hold on the tap.
+    #[test]
+    fn stream_frames_parts_identically_in_both_framings_without_blocking_requests() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let tap = std::sync::Arc::new(frame_stream::FrameTap::default());
+        let _runtime = fake_stream_runtime(spawn_listener(listener).unwrap(), Some(tap.clone()));
+
+        let mut multipart = BufReader::new(get(address, "/stream?w=2"));
+        let head = read_head(&mut multipart);
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+        assert!(
+            head.contains("Content-Type: multipart/x-mixed-replace; boundary=functor-frame\r\n")
+        );
+        let part = read_part(&mut multipart);
+        let text = String::from_utf8_lossy(&part);
+        assert!(
+            text.starts_with("--functor-frame\r\nContent-Type: image/jpeg\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("X-Rendered-Frame: ") && text.contains("X-Capture-Ms: "));
+
+        // The stream stays open while another request is answered.
+        let mut frames = String::new();
+        get(address, "/frames?last=1")
+            .read_to_string(&mut frames)
+            .unwrap();
+        assert!(frames.starts_with("HTTP/1.1 200 OK\r\n"), "{frames}");
+
+        let mut octet = BufReader::new(get(address, "/stream?w=2&octet=1"));
+        let head = read_head(&mut octet);
+        assert!(
+            head.contains("Content-Type: application/octet-stream\r\n"),
+            "{head}"
+        );
+        let without_frame_number = |part: &[u8]| {
+            String::from_utf8_lossy(part)
+                .lines()
+                .filter(|line| !line.starts_with("X-Rendered-Frame:") && !line.starts_with("X-Capture-Ms:"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(
+            without_frame_number(&read_part(&mut octet)),
+            without_frame_number(&part)
+        );
+
+        drop((multipart, octet));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::sync::Arc::strong_count(&tap) > 2 {
+            assert!(
+                Instant::now() < deadline,
+                "closed streams still hold the tap"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn stream_refuses_a_bad_query_and_a_runtime_without_frames() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let _runtime = fake_stream_runtime(spawn_listener(listener).unwrap(), None);
+        let mut response = String::new();
+        get(address, "/stream?w=0")
+            .read_to_string(&mut response)
+            .unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
+            "{response}"
+        );
+        let mut response = String::new();
+        get(address, "/stream")
+            .read_to_string(&mut response)
+            .unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "{response}"
+        );
+        assert!(response.ends_with("streaming is unavailable in --headless mode"));
     }
 
     #[test]
