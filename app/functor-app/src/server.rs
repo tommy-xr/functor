@@ -20,13 +20,17 @@ use functor_app_core::protocol::{ClientMsg, ServerMsg};
 use functor_app_core::{update, AppState, Command, Event, GitInfo};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::session::Driver;
 
 mod assets {
     include!(concat!(env!("OUT_DIR"), "/ui_assets.rs"));
 }
+
+/// Messages queued for one client. A client this far behind is dropped
+/// rather than buffered without bound; its page reconnects for a fresh state.
+const CLIENT_QUEUE: usize = 32;
 
 const NOT_BUILT: &str = "<!doctype html><title>Functor</title>\
     <p>UI not built — run <code>npm run build:app-ui</code>, then rebuild functor-app \
@@ -42,17 +46,9 @@ pub enum Ui {
 
 /// From the socket handlers into the core loop.
 enum Input {
-    Connect {
-        id: u64,
-        out: UnboundedSender<String>,
-    },
-    Client {
-        id: u64,
-        msg: ClientMsg,
-    },
-    Disconnect {
-        id: u64,
-    },
+    Connect { id: u64, out: Sender<String> },
+    Client { id: u64, msg: ClientMsg },
+    Disconnect { id: u64 },
 }
 
 struct Ctx {
@@ -111,7 +107,7 @@ async fn run(
     shutdown: impl Future<Output = u8>,
 ) -> u8 {
     tokio::pin!(shutdown);
-    let mut clients: HashMap<u64, UnboundedSender<String>> = HashMap::new();
+    let mut clients: HashMap<u64, Sender<String>> = HashMap::new();
     loop {
         let (event, from) = tokio::select! {
             biased;
@@ -141,13 +137,18 @@ async fn run(
         for command in commands {
             match command {
                 Command::Reply(msg) => {
-                    if let Some(out) = from.and_then(|id| clients.get(&id)) {
-                        let _ = out.send(json(&msg));
+                    if let Some(id) = from {
+                        if clients
+                            .get(&id)
+                            .is_some_and(|out| out.try_send(json(&msg)).is_err())
+                        {
+                            clients.remove(&id);
+                        }
                     }
                 }
                 Command::Broadcast(msg) => {
                     let text = json(&msg);
-                    clients.retain(|_, out| out.send(text.clone()).is_ok());
+                    clients.retain(|_, out| out.try_send(text.clone()).is_ok());
                 }
                 command => driver.run(command).await,
             }
@@ -176,7 +177,7 @@ async fn ws(
 
 async fn client(ctx: Arc<Ctx>, socket: WebSocket) {
     let id = ctx.next_id.fetch_add(1, Ordering::Relaxed);
-    let (out, mut outgoing) = mpsc::unbounded_channel();
+    let (out, mut outgoing) = mpsc::channel(CLIENT_QUEUE);
     if ctx.inputs.send(Input::Connect { id, out }).is_err() {
         return;
     }
@@ -249,8 +250,6 @@ fn content_type(path: &str) -> &'static str {
         Some("js") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml",
-        Some("json" | "map") => "application/json",
-        Some("png") => "image/png",
         _ => "application/octet-stream",
     }
 }
@@ -291,10 +290,24 @@ mod tests {
     fn git_info_reads_a_checkout_and_is_none_outside_git() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(git_info(tmp.path()), None);
-        let here = git_info(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
-        assert!(
-            !here.branch.is_empty() && here.commit.len() >= 4,
-            "{here:?}"
-        );
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(tmp.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "trunk"]);
+        // No commit yet: no info.
+        assert_eq!(git_info(tmp.path()), None);
+        git(&["commit", "-q", "--allow-empty", "-m", "x"]);
+        let info = git_info(tmp.path()).unwrap();
+        assert_eq!(info.branch, "trunk");
+        assert!(info.commit.len() >= 4, "{info:?}");
     }
 }

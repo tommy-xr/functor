@@ -37,11 +37,11 @@ const printed = execFileSync(APP, ["--headless", "--print", "-d", ROOT], { encod
 const DEFAULT = printed.match(/^active: (.+)$/m)[1];
 const nameOf = (path) => path.split("/").pop();
 
-/** What the Explorer should list for a project: its .fun files and functor.json. */
+/** What the Explorer should list: functor.json and the loadable .fun/.funi modules. */
 function expectedFiles(path) {
   const dir = `${ROOT}${path}`;
   return readdirSync(dir)
-    .filter((n) => (n === "functor.json" || n.endsWith(".fun")) && statSync(`${dir}/${n}`).isFile())
+    .filter((n) => (n === "functor.json" || /^[A-Za-z]\w*\.funi?$/.test(n)) && statSync(`${dir}/${n}`).isFile())
     .sort();
 }
 

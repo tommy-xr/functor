@@ -186,12 +186,21 @@ pub fn default_project<'a>(paths: &[&'a str], start: &str) -> Option<&'a str> {
         .or_else(|| paths.first().copied())
 }
 
-/// The names of a project directory's `.fun` files and its `functor.json`,
-/// sorted: what loads with the project (`file = module` is not recursive).
+/// The names of a project directory's loadable `.fun` / `.funi` files and its
+/// `functor.json`, sorted. Mirrors the loader: top level only (`file = module`
+/// is not recursive), and a stem must be a module name (`game`, not `.#game`
+/// or `2d`).
 pub fn project_files(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let module_stem = |stem: &str| {
+        stem.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
     let mut files: Vec<String> = names
         .into_iter()
-        .filter(|n| n == "functor.json" || (n.ends_with(".fun") && n.len() > 4))
+        .filter(|n| {
+            let stem = n.strip_suffix(".fun").or_else(|| n.strip_suffix(".funi"));
+            n == "functor.json" || stem.is_some_and(module_stem)
+        })
         .collect();
     files.sort();
     files
@@ -346,18 +355,21 @@ mod tests {
     }
 
     #[test]
-    fn project_files_are_the_fun_files_and_manifest_sorted() {
+    fn project_files_are_the_loadable_modules_and_manifest_sorted() {
         let names = [
             "notes.txt",
             "game.fun",
             "functor.json",
             "assets.fun",
+            "net.funi",
             ".fun",
             "a.fun.bak",
+            ".#game.fun",
+            "2d.fun",
         ];
         assert_eq!(
             project_files(names.map(String::from)),
-            ["assets.fun", "functor.json", "game.fun"]
+            ["assets.fun", "functor.json", "game.fun", "net.funi"]
         );
     }
 

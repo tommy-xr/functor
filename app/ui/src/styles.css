@@ -205,8 +205,15 @@ dd {
   color: var(--danger);
 }
 
-.conn:empty {
-  display: none;
+.pill-stale {
+  opacity: 0.5;
+}
+
+.branch {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Rail */
@@ -375,6 +382,13 @@ dd {
 
 .button:disabled {
   opacity: 0.45;
+}
+
+/* A disabled primary must not read as the action to take. */
+.button-primary:disabled,
+.round-send:disabled {
+  background: var(--surface-2);
+  color: var(--faint);
 }
 
 /* Canvas */
@@ -547,10 +561,18 @@ dd {
     border-bottom: 1px solid var(--border);
     box-shadow: var(--shadow-bar);
   }
+  .workspace,
+  .panes {
+    flex: 1 0 auto;
+  }
   .pane,
-  .canvas,
-  .chat {
+  .canvas {
     flex: none;
+    min-height: 0;
+  }
+  /* The dock takes the rest of a short page, so no band shows below it. */
+  .chat {
+    flex: 1 0 auto;
     min-height: 0;
   }
   .pane {

@@ -74,7 +74,7 @@ function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
       </span>
       <span className="title-project">{project?.name ?? (state ? "No project" : "")}</span>
       {state?.git && (
-        <span className="pill mono" title="Branch · commit">
+        <span className="pill mono branch" title={`${state.git.branch} · ${state.git.commit}`}>
           {state.git.branch} · {state.git.commit}
         </span>
       )}
@@ -84,7 +84,8 @@ function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
           <span className="pill pill-warn">{conn === "connecting" ? "Connecting…" : "Reconnecting…"}</span>
         )}
       </span>
-      <span className={`pill pill-session-${word}`}>Local session · {word}</span>
+      {/* Dimmed while disconnected: the last state may no longer be true. */}
+      <span className={`pill pill-session-${word}${conn === "open" ? "" : " pill-stale"}`}>Local session · {word}</span>
       <span className="pill">No headset</span>
     </header>
   );
@@ -137,9 +138,15 @@ function ExplorerPane({ state, online, send }: { state: AppState | null; online:
           </select>
           <Icon name="chevron" />
         </div>
-        <p className="hint">
-          {projects.length === 1 ? "The only project" : `One of ${projects.length} projects`} in this repo
-        </p>
+        {state && (
+          <p className="hint">
+            {projects.length === 0
+              ? "No projects in this repo"
+              : projects.length === 1
+                ? "The only project in this repo"
+                : `One of ${projects.length} projects in this repo`}
+          </p>
+        )}
         <ul className="files" aria-label="Files">
           {(state?.files ?? []).map((f) => (
             <li key={f} className={f.endsWith(".fun") ? undefined : "dim"}>

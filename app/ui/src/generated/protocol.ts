@@ -15,7 +15,8 @@ projects: Array<Project>,
  */
 active: string | null, 
 /**
- * The active project's `.fun` files and `functor.json`, sorted.
+ * The active project's loadable `.fun`/`.funi` files and `functor.json`,
+ * sorted ([`crate::projects::project_files`]).
  */
 files: Array<string>, 
 /**

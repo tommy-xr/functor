@@ -17,7 +17,8 @@ pub struct AppState {
     pub projects: Vec<Project>,
     /// The active project's `path`; `None` only when there are no projects.
     pub active: Option<String>,
-    /// The active project's `.fun` files and `functor.json`, sorted.
+    /// The active project's loadable `.fun`/`.funi` files and `functor.json`,
+    /// sorted ([`crate::projects::project_files`]).
     pub files: Vec<String>,
     /// The repo's checkout; `None` outside git.
     pub git: Option<GitInfo>,

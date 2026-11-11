@@ -78,6 +78,10 @@ async fn main() -> std::io::Result<ExitCode> {
     }
     state.git = server::git_info(Path::new(&state.repo_root));
     let ui = match args.ui_dir {
+        Some(dir) if !dir.join("index.html").is_file() => {
+            eprintln!("functor-app: no index.html in --ui-dir {}", dir.display());
+            return Ok(ExitCode::from(2));
+        }
         Some(dir) => server::Ui::Dir(dir),
         None => server::Ui::Embedded,
     };
