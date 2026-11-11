@@ -1,0 +1,563 @@
+/* The app's one stylesheet: dark tokens, then layout, then components. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0e1217;
+  --surface: #151a21;
+  --surface-2: #1a2029;
+  --surface-3: #1c232c;
+  --border: #222a35;
+  --border-strong: #2a3340;
+  --selected: #2a3340;
+  --chip: #222a35;
+
+  --text: #e7ecf2;
+  --text-2: #c9d2dc;
+  --muted: #aeb8c4;
+  --faint: #8d99a8;
+
+  --accent: #5ee6f2;
+  --accent-ink: #062026;
+  --accent-soft: #7fe9f4;
+  --accent-soft-bg: #0f2a2e;
+  --ok: #5fd49a;
+  --ok-bg: #172a22;
+  --warn: #f2b05e;
+  --warn-bg: #33270f;
+  --danger: #f28b82;
+  --danger-bg: #351c1b;
+
+  --sans: -apple-system, system-ui, "Segoe UI", Inter, Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-s: 6px;
+  --radius-m: 8px;
+  --radius-l: 10px;
+  --radius-xl: 12px;
+  --shadow-bar: 0 2px 12px rgba(0, 0, 0, 0.5);
+  --shadow-rail: 3px 0 12px rgba(0, 0, 0, 0.4);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 var(--sans);
+}
+
+button,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button:not(:disabled),
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+h2,
+p,
+ul,
+dl,
+dd {
+  margin: 0;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+/* Layout: title bar over rail | side pane | canvas | chat. */
+
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.panes {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.pane {
+  flex: 0 0 260px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 12px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.canvas {
+  flex: 1 1 400px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat {
+  flex: 0 0 360px;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Title bar */
+
+.titlebar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-bar);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.brand img {
+  margin: -3px 0;
+}
+
+.title-project {
+  color: var(--muted);
+}
+
+.pill {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pill.mono {
+  padding: 2px 8px;
+  color: var(--text-2);
+}
+
+.pill-session-running {
+  background: var(--accent-soft-bg);
+  color: var(--accent-soft);
+}
+
+.pill-session-starting,
+.pill-warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.pill-session-failed,
+.pill-session-exited {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.conn:empty {
+  display: none;
+}
+
+/* Rail */
+
+.rail {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 6px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  box-shadow: var(--shadow-rail);
+}
+
+.rail button {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: var(--radius-l);
+  background: transparent;
+  color: var(--faint);
+  display: grid;
+  place-items: center;
+}
+
+.rail button:hover {
+  color: var(--text-2);
+}
+
+.rail button[aria-pressed="true"] {
+  background: var(--selected);
+  color: var(--accent);
+}
+
+/* Side panes */
+
+.eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.pane-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.switcher {
+  position: relative;
+}
+
+.switcher select {
+  appearance: none;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 32px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.switcher select:disabled {
+  color: var(--muted);
+}
+
+.switcher .icon {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--muted);
+}
+
+.files {
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.files li {
+  padding: 5px 8px;
+  border-radius: var(--radius-s);
+  color: var(--text-2);
+}
+
+.files li.dim {
+  color: var(--faint);
+}
+
+.card {
+  padding: 12px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rows div {
+  display: flex;
+  justify-content: space-between;
+}
+
+.rows dt {
+  color: var(--muted);
+}
+
+.reason {
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.button {
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.button-primary {
+  flex: 1 1 auto;
+  border: 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.button:disabled {
+  opacity: 0.45;
+}
+
+/* Canvas */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs button {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--muted);
+}
+
+.tabs button[aria-selected="true"] {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.canvas-body {
+  flex: 1 1 auto;
+  padding: 14px;
+  display: flex;
+}
+
+.placeholder {
+  flex: 1 1 auto;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* Chat dock */
+
+.chat-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-head h2 {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-body {
+  flex: 1 1 auto;
+  padding: 14px;
+}
+
+.composer-wrap {
+  padding: 12px;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 10px 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  background: var(--surface-2);
+  opacity: 0.55;
+}
+
+.composer textarea {
+  resize: none;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 14px;
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.round {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+}
+
+.round .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.round-plain {
+  border: 0;
+}
+
+.round-send {
+  border: 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.model {
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.model .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Responsive overrides last, so they win over the rules above. */
+
+/* Below desktop width the chat drops under the canvas. */
+@media (max-width: 1100px) {
+  .panes {
+    flex-wrap: wrap;
+    overflow: auto;
+    align-content: flex-start;
+  }
+  .pane,
+  .canvas {
+    min-height: 420px;
+  }
+  .chat {
+    flex: 1 1 100%;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+}
+
+/* Narrow: one column, the rail a row along the top, the page scrolling. */
+@media (max-width: 760px) {
+  .app {
+    height: auto;
+    min-height: 100vh;
+  }
+  .workspace,
+  .panes {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    overflow: visible;
+  }
+  .rail {
+    flex-direction: row;
+    padding: 6px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow-bar);
+  }
+  .pane,
+  .canvas,
+  .chat {
+    flex: none;
+    min-height: 0;
+  }
+  .pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .canvas-body {
+    min-height: 320px;
+  }
+}
