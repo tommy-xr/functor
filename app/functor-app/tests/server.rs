@@ -255,6 +255,7 @@ async fn input_is_posted_to_the_session() {
         r#"{"type":"mouse_move","x":10,"y":20}"#,
         r#"{"type":"mouse_button","button":"left","down":true}"#,
         r#"{"type":"key","key":"w","down":false}"#,
+        r#"{"type":"mouse_button","button":"left","down":false}"#,
     ];
     for input in sent {
         let msg = format!(r#"{{"type":"input","input":{input}}}"#);
@@ -272,6 +273,28 @@ async fn input_is_posted_to_the_session() {
     let quiet = tokio::time::timeout(Duration::from_millis(300), socket.next()).await;
     assert!(quiet.is_err(), "input was answered: {quiet:?}");
 
+    // A client that goes away holding a key or button has them released for it.
+    socket
+        .send(Message::text(
+            r#"{"type":"input","input":{"type":"key","key":"a","down":true}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        inputs.recv_timeout(Duration::from_secs(10)).unwrap(),
+        r#"{"type":"key","key":"a","down":true}"#
+    );
+    // The left button was let go above; only `a` is still held.
+    drop(socket);
+    assert_eq!(
+        inputs.recv_timeout(Duration::from_secs(10)).unwrap(),
+        r#"{"type":"key","key":"a","down":false}"#
+    );
+    let quiet = inputs.recv_timeout(Duration::from_millis(300));
+    assert!(quiet.is_err(), "more input posted: {quiet:?}");
+
+    let mut socket = connect(&server.addr).await;
+    next_state(&mut socket).await;
     socket
         .send(Message::text(r#"{"type":"stop_session"}"#))
         .await

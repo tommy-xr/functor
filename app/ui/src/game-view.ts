@@ -12,7 +12,6 @@ const KEYS: Record<string, string> = {
   ArrowRight: "right",
   Space: "space",
   Enter: "enter",
-  NumpadEnter: "enter",
 };
 for (let i = 0; i < 26; i++) {
   const letter = String.fromCharCode(97 + i);

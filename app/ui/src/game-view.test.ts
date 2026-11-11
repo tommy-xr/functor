@@ -11,11 +11,10 @@ test("keys map to the wire's names", () => {
   assert.equal(wireKey("ArrowRight"), "right");
   assert.equal(wireKey("Space"), "space");
   assert.equal(wireKey("Enter"), "enter");
-  assert.equal(wireKey("NumpadEnter"), "enter");
 });
 
 test("keys the wire does not know, and Escape, are not forwarded", () => {
-  for (const code of ["Escape", "Tab", "ShiftLeft", "F1", "Minus", "", "toString", "constructor"]) {
+  for (const code of ["Escape", "Tab", "ShiftLeft", "F1", "Minus", "NumpadEnter", "", "toString", "constructor"]) {
     assert.equal(wireKey(code), null, code);
   }
 });

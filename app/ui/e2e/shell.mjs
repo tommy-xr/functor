@@ -86,10 +86,8 @@ async function run(browser, width, height) {
   const tag = `${width}x${height}`;
   let server = await startServer();
   const page = await browser.newPage({ viewport: { width, height } });
-  const errors = [];
+  const errors = watchErrors(page);
   const external = [];
-  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-  page.on("pageerror", (e) => errors.push(String(e)));
   page.on("request", (r) => {
     const { hostname } = new URL(r.url());
     if (!LOOPBACK.has(hostname)) external.push(r.url());
