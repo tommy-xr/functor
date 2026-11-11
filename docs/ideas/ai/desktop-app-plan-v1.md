@@ -46,7 +46,9 @@ app/
   MakeItSo repo, pinned to a revision): `Agent::run(task, prompt, RunOpts, tx)`
   streaming `AgentEvent`s. It is offered one loopback HTTP MCP server per run.
 - **The agent's game tools** are the existing `functor mcp` tools, served over
-  HTTP as well as stdio (task 1.6) so they fit that one-server slot.
+  HTTP as well as stdio (task 1.6) so they fit that one-server slot. The tool
+  router lives in the `functor` binary, so the core runs `functor mcp --http`
+  as a child rather than hosting the tools itself.
 - `functor app` launches the sibling `functor-app` binary. The `functor` CLI
   gains no webview dependency and its build time must not move.
 
@@ -81,8 +83,9 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 1.4a | `GET /stream` on the debug server (decided by S1): JPEG frames encoded off the render thread, sized to the on-screen view, sent only while a client is connected. Serve `multipart/x-mixed-replace` for `<img>` and the same framing as `application/octet-stream` for `fetch` (WKWebView's `fetch` rejects the multipart type). Pace hidden sessions by frame time instead of a fixed 16 ms sleep. Serve input on its own connection so it never queues behind a frame. | Bench in the PR: fps, read-to-drawn ms and game CPU at 1280×720 and 2560×1440 against the S1 numbers; `frame_bench` unchanged. |
 | 1.4b | Input coverage for the game view: modifier, Tab and function keys on the `/input` wire, and relative mouse (pointer lock) for free-look games. | Unit tests on key names; Playwright: pointer-locked moves reach `/state.input`. |
 | 1.5 | Transport: reuse `runtime/functor-runtime-web/scrubber.js` and `timeline-model.js` against the native session's `/time`, `/rewind`, `/input-log`. No redrawn copy. | Existing `timeline-model` tests still pass; Playwright: pause, step, rewind change `/state.frame`. |
-| 1.6 ∥ | `functor mcp --http <port>`: the same tool router over rmcp's HTTP transport with a bearer token. Add an `app_context` tool the core fills in (open view, selected file, active session). | Existing MCP tests on both transports. |
-| 1.7 | Agent runner: a task = one conversation; run through `mis-agent` with the session attached via 1.6; stream events to the UI; Stop; persist tasks and transcripts per project under `~/.functor/app/`. A `FakeAgent` that replays recorded events drives the tests. | Unit tests with `FakeAgent`; one opt-in live test. |
+| 1.6 ∥ | `functor mcp --http <port|0>`: the same tool router over rmcp 2.2's streamable-HTTP server (feature `transport-streamable-http-server`, mounted in axum at `/mcp`), bearer token from an env var, bound URL printed on stderr. `--attach <debug-url>` registers an existing session at start. An `app_context` tool returns what the app last posted to it (open view, selected file, active session). No tool may be named `report_*` or `approve`. | Existing MCP tests on both transports; a request without the token is refused. |
+| 1.6a ∥ | Upstream, in MakeItSo's `mis-agent`: hide only its own three report tools instead of every `mcp__mis__*` call, so our game-tool calls reach the event stream; map Codex `mcp_tool_call` and `file_change` items to `ToolUse` / `ToolResult`. Pin the new revision here. | Upstream tests; the S2 spike's Claude run shows `tool_use` for `game_state`. |
+| 1.7 | Agent runner: a task = one conversation; the core spawns `functor mcp --http 0 --attach …` as a child and passes it to `mis-agent` as the run's one MCP server; stream events to the UI; Stop; persist tasks and transcripts per project under `~/.functor/app/`. Protocol types mirror `AgentEvent` (it has no TS derives); tool results are paired to calls by order. Runs use folder-scoped permissions on the project. A `FakeAgent` replaying the event logs recorded in S2 drives the tests. | Unit tests with `FakeAgent`; one opt-in live test. |
 | 1.8 | Chat UI: composer (D15) with context chips, steps, cards for captures and changes with "open in canvas", result pill. | Playwright with `FakeAgent`. |
 | 1.9 | Changes: per-task diff of the working tree, diff view in the canvas, Keep / Revert. | Test on a temp git repo. |
 | 1.9b | Code view with the game (D16): the Code and Diff tabs can keep the game visible, side by side or as a draggable mini view, or hidden; the choice is remembered. A fourth choice puts the game in its own window. The control is a button strip in the tab bar after Game / Code / Diff. The game element is the same one as 1.4, moved, not a second stream. | Playwright: each mode shows a live frame beside the code; one stream open. |
@@ -175,3 +178,32 @@ absolute numbers as ±10%.
   function keys, and relative mouse (task 1.4b).
 - Not checked: how input feels with a person at the keyboard, Retina size in
   the window itself, scenes heavier than `hello`.
+
+### S2 — agent and tools (2026-11-11)
+
+Branch `spike/app-s2-agent-tools` (not for merge); recorded event logs are in
+its `app/spikes/s2-agent/events/`.
+
+- **Go on `mis-agent` as a git dependency.** It builds with this toolchain,
+  adds 5 crates not already in the lockfile, has no version conflicts, and
+  costs under 10 s cold.
+- **A run can call a game tool end to end.** Claude and Codex both called a
+  `game_state` tool on a loopback HTTP MCP server and answered with live
+  values.
+- **But the call is invisible to the UI today.** `mis-agent` hides every call
+  to its `mis` server from the event stream, and its Codex parser has no case
+  for MCP calls. Fix upstream (task 1.6a); one server slot is then enough.
+- **rmcp 2.2 has the HTTP server transport**; mounting it with a bearer check
+  is about 35 lines (task 1.6).
+- **Events the UI must render:** streamed text deltas then the whole text
+  (Claude; Codex sends whole text only), `tool_use` / `tool_result` with no
+  linking id, file edits as an `Edit` tool call, `usage`, `finished{ok,
+  summary}`. Tool results carry text only, so captures are shown from the MCP
+  side, not the event stream.
+- **Permissions:** folder-scoped mode on the project lets the agent edit and
+  call the tools without prompting. That mode also loads the user's own Claude
+  settings, hooks and MCP servers; the isolated mode does not. A refused call
+  comes back as an ordinary tool result. Asking the user instead needs an
+  `approve` tool on our server.
+- Not checked: a real refusal and ask mode, raw Codex output for MCP calls,
+  image tool results.
