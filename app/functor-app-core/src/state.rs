@@ -16,12 +16,13 @@ use crate::creation::{
 use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
-use crate::protocol::{ClientMsg, GameInput, ServerMsg};
+use crate::protocol::{ClientMsg, ServerMsg};
 use crate::session::{Display, Session, SessionEvent, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, Harness, Item, Run,
     RunEvent, Task, TaskStatus,
 };
+use crate::transport::{SessionCall, Timeline, Transport};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -92,6 +93,11 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub canvas_stacked: bool,
+    /// A page shows a transport bar: the session is polled often and its
+    /// input log read for marks.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub transport_watched: bool,
     /// The shell's clock (ms) when the event being stepped arrived, set
     /// before each `update`; the core only compares it.
     #[serde(skip)]
@@ -163,6 +169,7 @@ impl AppState {
             highlight: None,
             highlight_seq: 0,
             canvas_stacked: false,
+            transport_watched: false,
             clock: 0,
             now: 0,
             user_layout_at: None,
@@ -294,13 +301,27 @@ pub enum Command {
     },
     /// Kill session `id`'s child.
     StopSession { id: u64 },
-    /// `GET /state` on session `id`'s debug server after the poll interval.
-    PollState { id: u64, debug_url: String },
-    /// `POST /input` to session `id`'s debug server, in order.
-    Input {
+    /// `GET /state?model=0` on session `id`'s debug server after the poll
+    /// interval (shorter when `fast`), posted in order with its calls;
+    /// `after` transport calls were sent before it.
+    PollState {
         id: u64,
         debug_url: String,
-        input: GameInput,
+        fast: bool,
+        after: u64,
+    },
+    /// Input or a transport call to session `id`'s debug server, in order.
+    Call {
+        id: u64,
+        debug_url: String,
+        call: SessionCall,
+    },
+    /// `GET /input-log?from=` on session `id`'s debug server after the
+    /// marks interval, answering with `SessionEvent::InputLog`.
+    ReadInputLog {
+        id: u64,
+        debug_url: String,
+        from: u64,
     },
     /// Read project `path`'s files in `dir`, answering with `Event::Files`.
     ListFiles { path: String, dir: PathBuf },
@@ -404,6 +425,8 @@ pub struct RunSpec {
 
 pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let mut commands = Vec::new();
+    let get_state = event == Event::Client(ClientMsg::GetState);
+    let shown = transport_shown(&state);
     // A handler may move only the highlight (a step click on a shown tab).
     let highlighted = state.highlight.clone();
     let (changed, from_client) = match event {
@@ -433,13 +456,41 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 ..
             }) = &state.session
             {
-                commands.push(Command::Input {
+                commands.push(Command::Call {
                     id: *id,
                     debug_url: debug_url.clone(),
-                    input,
+                    call: SessionCall::Input(input),
                 });
             }
             return (state, commands);
+        }
+        // Shown at once and broadcast as `ServerMsg::Transport` (below).
+        Event::Client(ClientMsg::Transport { call }) => {
+            if let Some(Session {
+                id,
+                status:
+                    SessionStatus::Running {
+                        debug_url,
+                        timeline,
+                        ..
+                    },
+                ..
+            }) = &mut state.session
+            {
+                if let Some(call) = timeline.call(call) {
+                    commands.push(Command::Call {
+                        id: *id,
+                        debug_url: debug_url.clone(),
+                        call: SessionCall::Transport(call),
+                    });
+                }
+            }
+            (false, false)
+        }
+        Event::Client(ClientMsg::WatchTransport { on }) => {
+            state.transport_watched = on;
+            read_marks(&mut state, &mut commands);
+            (false, false)
         }
         Event::Client(ClientMsg::StartSession) => {
             let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
@@ -730,7 +781,82 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     } else if from_client {
         commands.push(Command::Reply(msg()));
     }
+    send_transport(&state, shown, get_state, &mut commands);
     (state, commands)
+}
+
+/// The active session's timeline, while it runs.
+fn timeline(state: &AppState) -> Option<(u64, &Timeline)> {
+    let session = state.session.as_ref()?;
+    match &session.status {
+        SessionStatus::Running { timeline, .. } => Some((session.id, timeline)),
+        _ => None,
+    }
+}
+
+/// What the clients were last sent: the transport, and whose marks at
+/// which revision (`None`: no marks).
+type Shown = (Option<Transport>, Option<(u64, u64)>);
+
+fn transport_shown(state: &AppState) -> Shown {
+    let timeline = timeline(state);
+    (
+        timeline.and_then(|(_, t)| t.clock),
+        timeline
+            .filter(|(_, t)| !t.marks.is_empty())
+            .map(|(id, t)| (id, t.marks_rev)),
+    )
+}
+
+/// Broadcasts the transport and marks where they changed since `before`; a
+/// client asking for the state gets them too, when there are any. Apart from
+/// the state, as they change every poll.
+fn send_transport(state: &AppState, before: Shown, get_state: bool, commands: &mut Vec<Command>) {
+    let now = transport_shown(state);
+    let send = |msg| {
+        if get_state {
+            Command::Reply(msg)
+        } else {
+            Command::Broadcast(msg)
+        }
+    };
+    if (get_state && now.0.is_some()) || (!get_state && now.0 != before.0) {
+        commands.push(send(ServerMsg::Transport { transport: now.0 }));
+    }
+    if (get_state && now.1.is_some()) || (!get_state && now.1 != before.1) {
+        let marks = timeline(state)
+            .map(|(_, t)| t.marks.clone())
+            .unwrap_or_default();
+        commands.push(send(ServerMsg::Marks { marks }));
+    }
+}
+
+/// Starts reading the session's input log for marks, if a page shows them
+/// and no read is on its way.
+fn read_marks(state: &mut AppState, commands: &mut Vec<Command>) {
+    let watched = state.transport_watched;
+    let Some(Session {
+        id,
+        status:
+            SessionStatus::Running {
+                debug_url,
+                timeline,
+                ..
+            },
+        ..
+    }) = &mut state.session
+    else {
+        return;
+    };
+    if !watched || timeline.reading || !timeline.clock.is_some_and(|c| c.clock) {
+        return;
+    }
+    timeline.reading = true;
+    commands.push(Command::ReadInputLog {
+        id: *id,
+        debug_url: debug_url.clone(),
+        from: timeline.next_read(),
+    });
 }
 
 /// Starts opening a folder with `command`, or records why not in
@@ -811,6 +937,7 @@ fn opened(
         highlight: _,
         highlight_seq: _,
         canvas_stacked: _,
+        transport_watched: _,
         clock: _,
         now: _,
         user_layout_at: _,
@@ -1784,6 +1911,7 @@ fn on_session(
     event: SessionEvent,
     commands: &mut Vec<Command>,
 ) -> bool {
+    let fast = state.transport_watched;
     let Some(session) = state.session.as_mut().filter(|s| s.id == id) else {
         return false;
     };
@@ -1795,33 +1923,51 @@ fn on_session(
             commands.push(Command::PollState {
                 id,
                 debug_url: debug_url.clone(),
+                fast,
+                after: 0,
             });
             session.status = SessionStatus::Running {
                 debug_url,
-                frame: None,
                 surface: None,
+                timeline: Box::default(),
             };
         }
         (
-            SessionEvent::Polled(result),
+            SessionEvent::Polled { after, result },
             SessionStatus::Running {
                 debug_url,
-                frame,
-                surface,
+                timeline,
+                ..
             },
         ) => {
             // Keep polling through a failed request; the child's exit ends it.
             commands.push(Command::PollState {
                 id,
                 debug_url: debug_url.clone(),
+                fast,
+                after: timeline.calls,
             });
-            match result {
-                Ok(polled) if (*frame, *surface) != (Some(polled.frame), polled.surface) => {
-                    *frame = Some(polled.frame);
+            let Ok(polled) = result else {
+                return false;
+            };
+            timeline.polled(after, polled.frame, polled.clock);
+            read_marks(state, commands);
+            // The clock goes as `ServerMsg::Transport`; only a new surface is state.
+            return match &mut state.session.as_mut().map(|s| &mut s.status) {
+                Some(SessionStatus::Running { surface, .. }) if *surface != polled.surface => {
                     *surface = polled.surface;
+                    true
                 }
-                _ => return false,
+                _ => false,
+            };
+        }
+        (SessionEvent::InputLog(result), SessionStatus::Running { timeline, .. }) => {
+            timeline.reading = false;
+            if let Ok(page) = result {
+                timeline.read(page);
             }
+            read_marks(state, commands);
+            return false;
         }
         (SessionEvent::Exited { reason }, SessionStatus::Running { .. }) => {
             session.status = SessionStatus::Exited { reason };
@@ -1843,7 +1989,9 @@ fn on_session(
 mod tests {
     use super::*;
     use crate::projects::Entries;
-    use crate::session::Polled;
+    use crate::protocol::GameInput;
+    use crate::session::{Polled, PolledClock};
+    use crate::transport::{LogPage, Mark, TransportCall};
 
     fn project(path: &str) -> Project {
         Project {
@@ -1880,21 +2028,54 @@ mod tests {
         }
     }
 
+    /// Running, polled once at `frame` (paused, nothing recorded) unless `None`.
     fn running(frame: Option<u64>) -> SessionStatus {
+        let mut timeline = Timeline::default();
+        if let Some(frame) = frame {
+            timeline.polled(0, frame, Some(PolledClock::default()));
+        }
         SessionStatus::Running {
             debug_url: URL.to_string(),
-            frame,
             surface: frame.map(|_| SURFACE),
+            timeline: Box::new(timeline),
         }
     }
 
     const SURFACE: [u32; 2] = [800, 600];
 
     fn polled(frame: u64) -> SessionEvent {
-        SessionEvent::Polled(Ok(Polled {
+        polled_clock(frame, PolledClock::default())
+    }
+
+    fn polled_clock(frame: u64, clock: PolledClock) -> SessionEvent {
+        SessionEvent::Polled {
+            after: 0,
+            result: Ok(Polled {
+                frame,
+                surface: Some(SURFACE),
+                clock: Some(clock),
+            }),
+        }
+    }
+
+    /// The transport `frame` shows after a poll with `clock`.
+    fn shown(frame: u64, clock: PolledClock) -> Transport {
+        Transport {
+            clock: true,
+            paused: clock.paused,
             frame,
-            surface: Some(SURFACE),
-        }))
+            recorded: clock.recorded,
+            generation: clock.generation,
+            seek: 0,
+        }
+    }
+
+    fn transport(transport: Option<Transport>) -> Command {
+        Command::Broadcast(ServerMsg::Transport { transport })
+    }
+
+    fn marks(marks: Vec<Mark>) -> Command {
+        Command::Broadcast(ServerMsg::Marks { marks })
     }
 
     fn start_cmd(id: u64, project: &str, display: Display) -> Command {
@@ -1925,6 +2106,8 @@ mod tests {
         Command::PollState {
             id,
             debug_url: URL.to_string(),
+            fast: false,
+            after: 0,
         }
     }
 
@@ -2084,11 +2267,16 @@ mod tests {
         let before = with_session(1, Some(9), running(None));
         let (next, commands) = update(before, session(1, polled(12)));
         assert_eq!(next, with_session(1, Some(9), running(Some(12))));
-        assert_eq!(commands, vec![poll(1), broadcast(&next)]);
+        // A first surface is state; the clock goes apart from it.
+        let clock = Some(shown(12, PolledClock::default()));
+        assert_eq!(commands, vec![poll(1), broadcast(&next), transport(clock)]);
         // The same poll, or a failed request, changes nothing but still polls.
         for event in [
             polled(12),
-            SessionEvent::Polled(Err("connection refused".to_string())),
+            SessionEvent::Polled {
+                after: 0,
+                result: Err("connection refused".to_string()),
+            },
         ] {
             let (again, commands) = update(next.clone(), session(1, event));
             assert_eq!(again, next);
@@ -2107,7 +2295,8 @@ mod tests {
             reason: "signal: 9".to_string(),
         };
         assert_eq!(next, with_session(1, None, status));
-        assert_eq!(commands, vec![broadcast(&next)]);
+        // The transport goes with the session.
+        assert_eq!(commands, vec![broadcast(&next), transport(None)]);
     }
 
     #[test]
@@ -2146,16 +2335,20 @@ mod tests {
 
     #[test]
     fn stop_kills_a_live_session() {
-        for status in [SessionStatus::Starting, running(Some(12))] {
+        for (status, hidden) in [
+            (SessionStatus::Starting, vec![]),
+            (running(Some(12)), vec![transport(None)]),
+        ] {
             let (next, commands) = update(
                 with_session(1, Some(9), status),
                 client(ClientMsg::StopSession),
             );
             assert_eq!(next, with_session(1, None, SessionStatus::Stopped));
-            assert_eq!(
-                commands,
-                vec![Command::StopSession { id: 1 }, broadcast(&next)]
-            );
+            let expected = [
+                vec![Command::StopSession { id: 1 }, broadcast(&next)],
+                hidden,
+            ];
+            assert_eq!(commands, expected.concat());
         }
         // An exited session just clears; a stopped one only replies.
         let exited = SessionStatus::Exited {
@@ -2196,7 +2389,8 @@ mod tests {
                 recents_b(),
                 Command::StopSession { id: 1 },
                 start_cmd(2, "examples/b", Display::Hidden),
-                broadcast(&next)
+                broadcast(&next),
+                transport(None)
             ]
         );
     }
@@ -2224,10 +2418,14 @@ mod tests {
     #[test]
     fn a_new_surface_is_recorded() {
         let before = with_session(1, Some(9), running(Some(12)));
-        let resized = SessionEvent::Polled(Ok(Polled {
-            frame: 12,
-            surface: Some([1024, 768]),
-        }));
+        let resized = SessionEvent::Polled {
+            after: 0,
+            result: Ok(Polled {
+                frame: 12,
+                surface: Some([1024, 768]),
+                clock: Some(PolledClock::default()),
+            }),
+        };
         let (next, commands) = update(before, session(1, resized));
         let Some(SessionStatus::Running { surface, .. }) = next.session.as_ref().map(|s| &s.status)
         else {
@@ -2235,6 +2433,219 @@ mod tests {
         };
         assert_eq!(*surface, Some([1024, 768]));
         assert_eq!(commands, vec![poll(1), broadcast(&next)]);
+    }
+
+    /// Session 1, running: polled at frame `newest` with frames 1–`newest`
+    /// recorded, playing, at program revision `revision`.
+    fn recording(newest: u64, revision: u64) -> AppState {
+        let before = with_session(1, Some(9), running(None));
+        let (s, _) = update(
+            before,
+            session(1, polled_clock(newest, recorded(newest, revision))),
+        );
+        s
+    }
+
+    fn recorded(newest: u64, revision: u64) -> PolledClock {
+        PolledClock {
+            recorded: Some([1, newest]),
+            program_revision: revision,
+            ..PolledClock::default()
+        }
+    }
+
+    fn bar(call: TransportCall) -> Event {
+        client(ClientMsg::Transport { call })
+    }
+
+    fn posted(call: TransportCall) -> Command {
+        Command::Call {
+            id: 1,
+            debug_url: URL.to_string(),
+            call: SessionCall::Transport(call),
+        }
+    }
+
+    fn read(from: u64) -> Command {
+        Command::ReadInputLog {
+            id: 1,
+            debug_url: URL.to_string(),
+            from,
+        }
+    }
+
+    fn watch(on: bool) -> Event {
+        client(ClientMsg::WatchTransport { on })
+    }
+
+    #[test]
+    fn transport_calls_are_posted_in_order_and_shown_at_once() {
+        let s = recording(100, 0);
+        let playing = shown(100, recorded(100, 0));
+        let (s, commands) = update(s, bar(TransportCall::Pause));
+        let paused = Transport {
+            paused: true,
+            ..playing
+        };
+        assert_eq!(
+            commands,
+            vec![posted(TransportCall::Pause), transport(Some(paused))]
+        );
+        // A seek shows at once, clamped to the window, with its page's id.
+        let (s, commands) = update(s, bar(TransportCall::Seek { frame: 900, id: 3 }));
+        let sought = TransportCall::Seek { frame: 100, id: 3 };
+        let at = |frame| Transport {
+            frame,
+            seek: 3,
+            ..paused
+        };
+        assert_eq!(commands, vec![posted(sought), transport(Some(at(100)))]);
+        let (s, commands) = update(s, bar(TransportCall::Seek { frame: 40, id: 4 }));
+        assert_eq!(
+            commands[0],
+            posted(TransportCall::Seek { frame: 40, id: 4 })
+        );
+        // A poll sent before those calls does not undo them; its window is news.
+        let (s, commands) = update(s, session(1, polled_clock(103, recorded(103, 0))));
+        let ahead = Transport {
+            frame: 40,
+            seek: 4,
+            recorded: Some([1, 103]),
+            ..paused
+        };
+        assert_eq!(
+            commands,
+            vec![
+                Command::PollState {
+                    id: 1,
+                    debug_url: URL.to_string(),
+                    fast: false,
+                    after: 3,
+                },
+                transport(Some(ahead))
+            ]
+        );
+        // One sent after them is the runtime's word.
+        let landed = PolledClock {
+            paused: true,
+            ..recorded(103, 0)
+        };
+        let answer = SessionEvent::Polled {
+            after: 3,
+            result: Ok(Polled {
+                frame: 41,
+                surface: Some(SURFACE),
+                clock: Some(landed),
+            }),
+        };
+        let (_, commands) = update(s, session(1, answer));
+        let word = Transport { frame: 41, ..ahead };
+        assert_eq!(commands[1], transport(Some(word)));
+    }
+
+    #[test]
+    fn transport_calls_need_a_running_session_with_a_clock() {
+        let old_runtime = {
+            let polled = SessionEvent::Polled {
+                after: 0,
+                result: Ok(Polled {
+                    frame: 7,
+                    surface: Some(SURFACE),
+                    clock: None,
+                }),
+            };
+            update(with_session(1, Some(9), running(None)), session(1, polled)).0
+        };
+        for before in [
+            state(),
+            with_session(1, Some(9), SessionStatus::Starting),
+            with_session(1, Some(9), running(None)),
+            old_runtime,
+        ] {
+            let (next, commands) = update(before.clone(), bar(TransportCall::Step));
+            assert_eq!((next, commands), (before, vec![]));
+        }
+    }
+
+    #[test]
+    fn a_watched_transport_polls_fast_and_reads_marks() {
+        let s = recording(10, 0);
+        let (s, commands) = update(s, watch(true));
+        assert_eq!(commands, vec![read(0)]);
+        // One read at a time.
+        let (s, commands) = update(s, watch(true));
+        assert_eq!(commands, vec![]);
+        let (s, commands) = update(s, session(1, polled_clock(10, recorded(10, 0))));
+        assert_eq!(
+            commands,
+            vec![Command::PollState {
+                id: 1,
+                debug_url: URL.to_string(),
+                fast: true,
+                after: 0,
+            }]
+        );
+        // A read's marks go to every page, and the next read follows.
+        let page = LogPage {
+            generation: 0,
+            oldest: 1,
+            newest: 10,
+            steps: vec![(4, vec![("key-down".into(), "W down".into())])],
+        };
+        let (s, commands) = update(s, session(1, SessionEvent::InputLog(Ok(page))));
+        let w = Mark {
+            id: 1,
+            frame: 4,
+            kind: "key-down".into(),
+            label: "W down".into(),
+        };
+        assert_eq!(commands, vec![read(11), marks(vec![w.clone()])]);
+        // A new page gets the transport and marks apart from the state.
+        let (s, commands) = update(s, client(ClientMsg::GetState));
+        assert_eq!(
+            commands[1..],
+            [
+                Command::Reply(ServerMsg::Transport {
+                    transport: Some(shown(10, recorded(10, 0)))
+                }),
+                Command::Reply(ServerMsg::Marks { marks: vec![w] })
+            ]
+        );
+        // Unwatched, the read on its way is the last.
+        let (s, commands) = update(s, watch(false));
+        assert_eq!(commands, vec![]);
+        let failed = SessionEvent::InputLog(Err("connection refused".into()));
+        let (_, commands) = update(s, session(1, failed));
+        assert_eq!(commands, vec![]);
+    }
+
+    #[test]
+    fn a_hot_reload_marks_the_frame_shown_and_a_new_session_starts_bare() {
+        let s = recording(10, 0);
+        let (s, commands) = update(s, session(1, polled_clock(12, recorded(12, 1))));
+        let reload = Mark {
+            id: 1,
+            frame: 12,
+            kind: "reload-ok".into(),
+            label: "hot reload".into(),
+        };
+        assert_eq!(commands[2], marks(vec![reload]));
+        // Stopped: no transport and no marks; restarted, none until polled.
+        let (s, commands) = update(s, client(ClientMsg::StopSession));
+        assert_eq!(commands[2..], [transport(None), marks(vec![])]);
+        let (s, _) = update(s, client(ClientMsg::StartSession));
+        let listening = SessionEvent::Listening {
+            debug_url: URL.to_string(),
+        };
+        let (s, commands) = update(s, session(2, listening));
+        assert!(!commands.iter().any(|c| matches!(
+            c,
+            Command::Broadcast(ServerMsg::Transport { .. } | ServerMsg::Marks { .. })
+        )));
+        let Some(SessionStatus::Running { timeline, .. }) = s.session.map(|s| s.status) else {
+            panic!("running");
+        };
+        assert_eq!(*timeline, Timeline::default());
     }
 
     /// `s` with the active project's game at `placement`.
@@ -2278,7 +2689,10 @@ mod tests {
             (Placement::Window, Placement::Pane, Display::Hidden),
             (Placement::Window, Placement::Mini, Display::Hidden),
         ] {
-            for status in [SessionStatus::Starting, running(Some(12))] {
+            for (status, hidden) in [
+                (SessionStatus::Starting, vec![]),
+                (running(Some(12)), vec![transport(None)]),
+            ] {
                 let before = placed(with_session(1, Some(9), status), from);
                 let (next, commands) = update(before, place(to));
                 assert_eq!(next.layouts["examples/a"].game.placement, to);
@@ -2290,16 +2704,13 @@ mod tests {
                         status: SessionStatus::Starting
                     })
                 );
-                assert_eq!(
-                    commands,
-                    vec![
-                        save_layout_cmd("examples/a", &next.layouts["examples/a"]),
-                        Command::StopSession { id: 1 },
-                        start_cmd(2, "examples/a", display),
-                        broadcast(&next)
-                    ],
-                    "{from:?} -> {to:?}"
-                );
+                let expected = vec![
+                    save_layout_cmd("examples/a", &next.layouts["examples/a"]),
+                    Command::StopSession { id: 1 },
+                    start_cmd(2, "examples/a", display),
+                    broadcast(&next),
+                ];
+                assert_eq!(commands, [expected, hidden].concat(), "{from:?} -> {to:?}");
             }
         }
         // Without a live session the placement is only recorded, for the next start.
@@ -2422,10 +2833,10 @@ mod tests {
         assert_eq!(next, before);
         assert_eq!(
             commands,
-            vec![Command::Input {
+            vec![Command::Call {
                 id: 3,
                 debug_url: URL.to_string(),
-                input: key()
+                call: SessionCall::Input(key())
             }]
         );
         let failed = SessionStatus::Failed {
@@ -2496,7 +2907,30 @@ mod tests {
         assert_eq!(json["type"], "state");
         assert_eq!(json["state"]["active"], "examples/a");
         assert_eq!(json["state"]["session"]["status"]["kind"], "running");
-        assert_eq!(json["state"]["session"]["status"]["frame"], 12);
+        // The clock travels apart from the state.
+        assert_eq!(
+            json["state"]["session"]["status"]["timeline"],
+            serde_json::Value::Null
+        );
+        let json = serde_json::to_value(ServerMsg::Transport {
+            transport: Some(shown(12, PolledClock::default())),
+        })
+        .unwrap();
+        assert_eq!(json["type"], "transport");
+        assert_eq!(json["transport"]["frame"], 12);
+        let call = |json: serde_json::Value| -> ClientMsg { serde_json::from_value(json).unwrap() };
+        assert_eq!(
+            call(
+                serde_json::json!({"type": "transport", "call": {"type": "seek", "frame": 40, "id": 2}})
+            ),
+            ClientMsg::Transport {
+                call: TransportCall::Seek { frame: 40, id: 2 }
+            }
+        );
+        assert_eq!(
+            call(serde_json::json!({"type": "watch_transport", "on": true})),
+            ClientMsg::WatchTransport { on: true }
+        );
     }
 
     // Tasks.
@@ -2893,7 +3327,11 @@ mod tests {
                 other => panic!("{other:?}"),
             })
             .collect();
-        assert_eq!(kinds, ["stop_session", "stop_run", "save", "broadcast"]);
+        // The last broadcast hides the transport.
+        assert_eq!(
+            kinds,
+            ["stop_session", "stop_run", "save", "broadcast", "broadcast"]
+        );
     }
 
     #[test]
@@ -4054,6 +4492,7 @@ mod tests {
                     recents: expected.recents.clone()
                 },
                 broadcast(&next),
+                transport(None),
             ]
         );
         // The next session is the new project's, with a new id.

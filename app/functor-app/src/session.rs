@@ -1,6 +1,7 @@
 //! Runs the core's commands other than replies: one `functor run native`
 //! child at a time, its output read for the debug server's address, `/state`
-//! polled, input posted; agent runs (`agent::Runner`); saving tasks,
+//! polled and input and transport calls posted (in one ordered queue), its
+//! input log read for marks; agent runs (`agent::Runner`); saving tasks,
 //! layouts and recent projects; project file listings and reads; opening
 //! folders (`folders`); and tasks' changes (`changes::Git`).
 
@@ -14,9 +15,11 @@ use std::time::{Duration, SystemTime};
 use functor_app_core::creation::NewProjectRequest;
 
 use functor_app_core::projects::read_project_files;
-use functor_app_core::protocol::{GameInput, ServerMsg};
+use functor_app_core::protocol::ServerMsg;
+use functor_app_core::transport::enqueue;
 use functor_app_core::{
-    listening_url, Command, Display, Event, Harness, Layout, Polled, SessionEvent,
+    listening_url, Command, Display, Event, Harness, Layout, LogPage, Polled, PolledClock,
+    SessionCall, SessionEvent, TransportCall,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -28,9 +31,12 @@ use tokio::task::JoinHandle;
 use crate::agent::{Agents, Runner, ViewRoute};
 use crate::changes::Git;
 
-/// Each `/state` serializes the whole model on the game's loop, so a UI that
-/// keeps polling should weigh this against the model's size.
+/// Between `/state` polls (`?model=0`, so the model is never serialized);
+/// shorter while a page shows the transport bar, for a smooth playhead.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+const FAST_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Between input-log reads for the bar's marks.
+const MARKS_INTERVAL: Duration = Duration::from_millis(250);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long output written just before an exit is still collected.
 const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -98,8 +104,21 @@ struct Live {
     stop: oneshot::Sender<()>,
     task: JoinHandle<()>,
     tail: Arc<Mutex<VecDeque<String>>>,
-    /// The child's input poster, started by its first input.
-    input: Option<UnboundedSender<GameInput>>,
+    /// The child's poster of input, transport calls and polls, started by
+    /// the first of them.
+    poster: Option<UnboundedSender<SessionCall>>,
+}
+
+impl Live {
+    fn poster(
+        &mut self,
+        debug_url: String,
+        events: &UnboundedSender<Event>,
+    ) -> &UnboundedSender<SessionCall> {
+        let id = self.id;
+        self.poster
+            .get_or_insert_with(|| post_calls(id, debug_url, events.clone()))
+    }
 }
 
 impl Driver {
@@ -154,23 +173,36 @@ impl Driver {
                     self.stop().await;
                 }
             }
-            Command::PollState { id, debug_url } => {
-                let events = self.events.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(POLL_INTERVAL).await;
-                    let event = SessionEvent::Polled(poll_state(&debug_url).await);
-                    let _ = events.send(Event::Session { id, event });
-                });
-            }
-            Command::Input {
+            Command::PollState {
                 id,
                 debug_url,
-                input,
+                fast,
+                after,
             } => {
                 if let Some(live) = self.live.as_mut().filter(|l| l.id == id) {
-                    let poster = live.input.get_or_insert_with(|| post_inputs(debug_url));
-                    let _ = poster.send(input);
+                    schedule_poll(live.poster(debug_url, &self.events).clone(), fast, after);
                 }
+            }
+            Command::Call {
+                id,
+                debug_url,
+                call,
+            } => {
+                if let Some(live) = self.live.as_mut().filter(|l| l.id == id) {
+                    let _ = live.poster(debug_url, &self.events).send(call);
+                }
+            }
+            Command::ReadInputLog {
+                id,
+                debug_url,
+                from,
+            } => {
+                let events = self.events.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(MARKS_INTERVAL).await;
+                    let event = SessionEvent::InputLog(read_input_log(&debug_url, from).await);
+                    let _ = events.send(Event::Session { id, event });
+                });
             }
             Command::ListFiles { path, dir } => {
                 let files = read_project_files(&dir);
@@ -473,7 +505,7 @@ impl Driver {
             stop,
             task,
             tail,
-            input: None,
+            poster: None,
         });
     }
 
@@ -643,11 +675,15 @@ pub async fn exchange(
     Ok((head.to_string(), body.to_string()))
 }
 
-/// `GET /state`'s `frame` and pointer surface.
+/// `GET /state`'s `frame`, pointer surface and `clock`.
 async fn poll_state(debug_url: &str) -> Result<Polled, String> {
-    let body = request(debug_url, "GET", "/state", &[], "").await?;
+    let body = request(debug_url, "GET", "/state?model=0", &[], "").await?;
+    parse_state(&body)
+}
+
+fn parse_state(body: &str) -> Result<Polled, String> {
     let state: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("GET /state: {e}"))?;
+        serde_json::from_str(body).map_err(|e| format!("GET /state: {e}"))?;
     let frame = state["frame"]
         .as_u64()
         .ok_or_else(|| "GET /state: no `frame`".to_string())?;
@@ -657,29 +693,121 @@ async fn poll_state(debug_url: &str) -> Result<Polled, String> {
         (Some(w), Some(h)) if w > 0 && h > 0 => Some([w, h]),
         _ => None,
     };
-    Ok(Polled { frame, surface })
+    // Absent before debug protocol v37.
+    let clock = state.get("clock").map(|c| {
+        let recorded = &c["recorded"];
+        PolledClock {
+            paused: c["paused"].as_bool().unwrap_or(false),
+            recorded: recorded["oldest"]
+                .as_u64()
+                .zip(recorded["newest"].as_u64())
+                .map(|(o, n)| [o, n]),
+            generation: c["generation"].as_u64().unwrap_or(0),
+            program_revision: c["program_revision"].as_u64().unwrap_or(0),
+        }
+    });
+    Ok(Polled {
+        frame,
+        surface,
+        clock,
+    })
 }
 
-/// Posts each input to `/input` in order, one request at a time: the debug
-/// server answers each on its next frame, so moves that queue meanwhile are
-/// collapsed to the latest. Ends when the sender drops (the session stops).
-fn post_inputs(debug_url: String) -> UnboundedSender<GameInput> {
+/// `GET /input-log?from=`: each step's marks (steps without any left out).
+async fn read_input_log(debug_url: &str, from: u64) -> Result<LogPage, String> {
+    let body = request(
+        debug_url,
+        "GET",
+        &format!("/input-log?from={from}"),
+        &[],
+        "",
+    )
+    .await?;
+    parse_input_log(&body)
+}
+
+fn parse_input_log(body: &str) -> Result<LogPage, String> {
+    let log: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("GET /input-log: {e}"))?;
+    let number = |key: &str| log[key].as_u64().unwrap_or(0);
+    let steps = log["steps"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let steps = steps
+        .iter()
+        .filter_map(|step| {
+            let marks: Vec<(String, String)> = step["marks"]
+                .as_array()?
+                .iter()
+                .filter_map(|m| {
+                    Some((
+                        m["kind"].as_str()?.to_string(),
+                        m["label"].as_str()?.to_string(),
+                    ))
+                })
+                .collect();
+            Some((step["frame"].as_u64()?, marks)).filter(|(_, m)| !m.is_empty())
+        })
+        .collect();
+    Ok(LogPage {
+        generation: number("generation"),
+        oldest: number("oldest"),
+        newest: number("newest"),
+        steps,
+    })
+}
+
+/// Queues a poll on `poster` after the interval (`fast`: shorter).
+fn schedule_poll(poster: UnboundedSender<SessionCall>, fast: bool, after: u64) {
+    tokio::spawn(async move {
+        tokio::time::sleep(if fast {
+            FAST_POLL_INTERVAL
+        } else {
+            POLL_INTERVAL
+        })
+        .await;
+        let _ = poster.send(SessionCall::Poll { after });
+    });
+}
+
+/// Posts session `id`'s calls in order, one request at a time: the debug
+/// server answers each on its next frame, so a seek or move that queues
+/// meanwhile is collapsed to the latest (`enqueue`), and a poll reports what
+/// every call before it did. Ends when the sender drops (the session stops).
+fn post_calls(
+    id: u64,
+    debug_url: String,
+    events: UnboundedSender<Event>,
+) -> UnboundedSender<SessionCall> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         let mut queue = VecDeque::new();
         loop {
-            while let Ok(input) = rx.try_recv() {
-                enqueue(&mut queue, input);
+            while let Ok(call) = rx.try_recv() {
+                enqueue(&mut queue, call);
             }
-            let input = match queue.pop_front() {
-                Some(input) => input,
+            let call = match queue.pop_front() {
+                Some(call) => call,
                 None => match rx.recv().await {
-                    Some(input) => input,
+                    Some(call) => call,
                     None => return,
                 },
             };
-            let body = serde_json::to_string(&input).expect("GameInput serializes");
-            if let Err(e) = request(&debug_url, "POST", "/input", &[], &body).await {
+            let (path, body) = match call {
+                SessionCall::Poll { after } => {
+                    let result = poll_state(&debug_url).await;
+                    let event = SessionEvent::Polled { after, result };
+                    let _ = events.send(Event::Session { id, event });
+                    continue;
+                }
+                SessionCall::Input(input) => (
+                    "/input",
+                    serde_json::to_string(&input).expect("GameInput serializes"),
+                ),
+                SessionCall::Transport(call) => transport_request(&call),
+            };
+            if let Err(e) = request(&debug_url, "POST", path, &[], &body).await {
                 eprintln!("functor-app: {e}");
             }
         }
@@ -687,18 +815,25 @@ fn post_inputs(debug_url: String) -> UnboundedSender<GameInput> {
     tx
 }
 
-/// Queues `input`, replacing a mouse move still waiting at the back.
-fn enqueue(queue: &mut VecDeque<GameInput>, input: GameInput) {
-    if let (Some(GameInput::MouseMove { .. }), GameInput::MouseMove { .. }) = (queue.back(), &input)
-    {
-        queue.pop_back();
+/// The debug server's `POST` route and body for a transport call.
+fn transport_request(call: &TransportCall) -> (&'static str, String) {
+    let time = |command: serde_json::Value| ("/time", command.to_string());
+    match call {
+        // `cancel` pauses at the current time; `set` would need it read first.
+        TransportCall::Pause => time(serde_json::json!({"type": "cancel"})),
+        TransportCall::Resume => time(serde_json::json!({"type": "resume"})),
+        // One step of the web timeline's 60 Hz.
+        TransportCall::Step => time(serde_json::json!({"type": "advance", "dts": 1.0 / 60.0})),
+        TransportCall::Seek { frame, .. } => {
+            ("/seek", serde_json::json!({ "frame": frame }).to_string())
+        }
     }
-    queue.push_back(input);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use functor_app_core::protocol::GameInput;
 
     /// Every `GameInput` the app posts reads back as the debug server's
     /// `InputCommand` with the same fields: the hand mirror cannot drift.
@@ -765,29 +900,230 @@ mod tests {
         assert_eq!(cause(&tail(&[])), None);
     }
 
+    /// `/state`'s clock and `/input-log`'s marks, as the runtime's own types
+    /// serialize them, read back as the core keeps them.
     #[test]
-    fn queued_mouse_moves_collapse_to_the_latest() {
-        let moved = |x| GameInput::MouseMove { x, y: 0 };
-        let key = |down| GameInput::Key {
-            key: "w".to_string(),
-            down,
+    fn the_runtimes_clock_and_marks_parse() {
+        use functor_runtime_common::debug_protocol::{
+            ClockState, InputLog, InputLogStep, RecordedFrames, TimelineMark,
         };
-        let mut queue = VecDeque::new();
-        for input in [
-            moved(1),
-            moved(2),
-            key(true),
-            moved(3),
-            moved(4),
-            key(false),
-        ] {
-            enqueue(&mut queue, input);
-        }
-        // A move before a key stays, so the key lands where the pointer was.
+        let clock = ClockState {
+            paused: true,
+            recorded: Some(RecordedFrames {
+                oldest: 3,
+                newest: 40,
+            }),
+            generation: 2,
+            program_revision: 5,
+        };
+        let state = serde_json::json!({
+            "frame": 12,
+            "clock": clock,
+            "input": {"mouse": {"surface_width": 800, "surface_height": 600}},
+        });
+        let polled = parse_state(&state.to_string()).unwrap();
         assert_eq!(
-            Vec::from(queue),
-            [moved(2), key(true), moved(4), key(false)]
+            polled,
+            Polled {
+                frame: 12,
+                surface: Some([800, 600]),
+                clock: Some(PolledClock {
+                    paused: true,
+                    recorded: Some([3, 40]),
+                    generation: 2,
+                    program_revision: 5,
+                }),
+            }
         );
+        // A runtime before the clock (v37) reports none; nothing recorded is no window.
+        let old = serde_json::json!({"frame": 1, "input": {"mouse": {}}});
+        assert_eq!(parse_state(&old.to_string()).unwrap().clock, None);
+        let bare = serde_json::json!({"frame": 0, "clock": ClockState::default(), "input": {}});
+        assert_eq!(
+            parse_state(&bare.to_string()).unwrap().clock,
+            Some(PolledClock::default())
+        );
+
+        let step = |frame, marks: Vec<TimelineMark>| InputLogStep {
+            frame,
+            marks,
+            ..InputLogStep::default()
+        };
+        let w = TimelineMark {
+            kind: "key-down".into(),
+            label: "W down".into(),
+        };
+        let log = InputLog {
+            generation: 1,
+            oldest: 3,
+            newest: 5,
+            steps: vec![step(3, vec![]), step(4, vec![w]), step(5, vec![])],
+        };
+        let page = parse_input_log(&serde_json::to_string(&log).unwrap()).unwrap();
+        assert_eq!(
+            page,
+            LogPage {
+                generation: 1,
+                oldest: 3,
+                newest: 5,
+                steps: vec![(4, vec![("key-down".into(), "W down".into())])],
+            }
+        );
+    }
+
+    /// A debug server that records each request, answers `/state` with a
+    /// frame, and takes `slow` before answering `POST /seek {"frame":1}`.
+    struct FakeDebugServer {
+        url: String,
+        requests: Arc<Mutex<Vec<(String, String, String)>>>,
+        /// The most requests it was answering at once.
+        overlap: Arc<Mutex<(u32, u32)>>,
+    }
+
+    impl FakeDebugServer {
+        async fn start(slow: Duration) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let requests: Arc<Mutex<Vec<(String, String, String)>>> = Arc::default();
+            let overlap: Arc<Mutex<(u32, u32)>> = Arc::default();
+            let (log, busy) = (requests.clone(), overlap.clone());
+            tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let (log, busy) = (log.clone(), busy.clone());
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 1024];
+                        // Head and body (the client sends both, then waits).
+                        let request = loop {
+                            let n = stream.read(&mut chunk).await.unwrap();
+                            buf.extend_from_slice(&chunk[..n]);
+                            let text = String::from_utf8_lossy(&buf).to_string();
+                            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                                let length = head
+                                    .lines()
+                                    .find_map(|l| l.strip_prefix("Content-Length: "))
+                                    .map_or(0, |n| n.parse().unwrap());
+                                if body.len() >= length {
+                                    break (head.to_string(), body.to_string());
+                                }
+                            }
+                        };
+                        let mut words = request.0.split(' ');
+                        let (method, path) = (words.next().unwrap(), words.next().unwrap());
+                        {
+                            let mut b = busy.lock().unwrap();
+                            b.0 += 1;
+                            b.1 = b.1.max(b.0);
+                        }
+                        log.lock()
+                            .unwrap()
+                            .push((method.into(), path.into(), request.1.clone()));
+                        if path == "/seek" && request.1 == r#"{"frame":1}"# {
+                            tokio::time::sleep(slow).await;
+                        }
+                        let body = if path.starts_with("/state") {
+                            r#"{"frame":9,"clock":{"paused":false,"generation":0,"program_revision":0},"input":{}}"#
+                        } else {
+                            "ok"
+                        };
+                        busy.lock().unwrap().0 -= 1;
+                        let reply = format!(
+                            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(reply.as_bytes()).await;
+                    });
+                }
+            });
+            Self {
+                url,
+                requests,
+                overlap,
+            }
+        }
+
+        fn requests(&self) -> Vec<(String, String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    /// The next session event, or a panic after a few seconds.
+    async fn next_event(events: &mut mpsc::UnboundedReceiver<Event>) -> SessionEvent {
+        match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+            Ok(Some(Event::Session { id: 7, event })) => event,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn calls_are_posted_in_order_and_a_slow_one_is_not_overtaken() {
+        let server = FakeDebugServer::start(Duration::from_millis(300)).await;
+        let (events, mut rx) = mpsc::unbounded_channel();
+        let poster = post_calls(7, server.url.clone(), events);
+        let seek = |frame| SessionCall::Transport(TransportCall::Seek { frame, id: frame });
+        poster.send(seek(1)).unwrap();
+        // The slow seek is on its way while the rest queue behind it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let key = SessionCall::Input(functor_app_core::protocol::GameInput::Key {
+            key: "w".into(),
+            down: true,
+        });
+        let pause = SessionCall::Transport(TransportCall::Pause);
+        let step = SessionCall::Transport(TransportCall::Step);
+        let resume = SessionCall::Transport(TransportCall::Resume);
+        for call in [seek(2), key, seek(3), seek(4), pause, step, resume] {
+            poster.send(call).unwrap();
+        }
+        poster.send(SessionCall::Poll { after: 5 }).unwrap();
+        // The poll answers last, with what every call before it did.
+        let SessionEvent::Polled { after: 5, result } = next_event(&mut rx).await else {
+            panic!("a poll's answer");
+        };
+        assert_eq!(result.unwrap().frame, 9);
+        let wire = |method: &str, path: &str, body: &str| (method.into(), path.into(), body.into());
+        assert_eq!(
+            server.requests(),
+            vec![
+                wire("POST", "/seek", r#"{"frame":1}"#),
+                wire("POST", "/seek", r#"{"frame":2}"#),
+                wire("POST", "/input", r#"{"type":"key","key":"w","down":true}"#),
+                // 3 waited behind the key and was replaced by 4.
+                wire("POST", "/seek", r#"{"frame":4}"#),
+                wire("POST", "/time", r#"{"type":"cancel"}"#),
+                wire(
+                    "POST",
+                    "/time",
+                    &format!(r#"{{"dts":{},"type":"advance"}}"#, 1.0f64 / 60.0)
+                ),
+                wire("POST", "/time", r#"{"type":"resume"}"#),
+                wire("GET", "/state?model=0", ""),
+            ]
+        );
+        assert_eq!(server.overlap.lock().unwrap().1, 1, "one request at a time");
+    }
+
+    #[tokio::test]
+    async fn polls_come_faster_while_the_bar_shows() {
+        let server = FakeDebugServer::start(Duration::ZERO).await;
+        let (events, mut rx) = mpsc::unbounded_channel();
+        let poster = post_calls(7, server.url.clone(), events);
+        for fast in [true, false] {
+            let asked = tokio::time::Instant::now();
+            schedule_poll(poster.clone(), fast, 0);
+            let SessionEvent::Polled { .. } = next_event(&mut rx).await else {
+                panic!("a poll's answer");
+            };
+            let took = asked.elapsed();
+            if fast {
+                assert!(
+                    took >= FAST_POLL_INTERVAL && took < POLL_INTERVAL,
+                    "{took:?}"
+                );
+            } else {
+                assert!(took >= POLL_INTERVAL, "{took:?}");
+            }
+        }
     }
 
     #[test]
