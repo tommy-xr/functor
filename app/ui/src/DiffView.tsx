@@ -171,7 +171,7 @@ export function Counts({ added, removed }: { added: number; removed: number }) {
   );
 }
 
-function FileCounts({ file }: { file: FileDiff["file"] }) {
+export function FileCounts({ file }: { file: FileDiff["file"] }) {
   return file.binary ? <span className="counts mono">binary</span> : <Counts added={file.added} removed={file.removed} />;
 }
 

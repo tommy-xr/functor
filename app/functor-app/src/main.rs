@@ -410,6 +410,7 @@ async fn run_task(
         }
     }
     let new = driver.new_task(args.prompt, args.harness);
+    state.now = server::wall_ms();
     let (next, commands) = update(state, new);
     state = next;
     for command in commands {
@@ -489,7 +490,8 @@ fn say(item: &Item) {
     let _ = writeln!(std::io::stdout(), "{}", print_item(item));
 }
 
-async fn step(state: AppState, event: Event, driver: &mut Driver) -> AppState {
+async fn step(mut state: AppState, event: Event, driver: &mut Driver) -> AppState {
+    state.now = server::wall_ms();
     let (state, commands) = update(state, event);
     for command in commands {
         driver.run(command).await;

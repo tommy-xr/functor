@@ -440,16 +440,24 @@ impl Layout {
     /// Drops the tabs `keep` refuses (a deleted file, a removed task); a pane
     /// that leaves empty is removed.
     pub fn retain(&mut self, keep: impl Fn(&View) -> bool) {
+        self.retain_dyn(&keep);
+    }
+
+    fn retain_dyn(&mut self, keep: &dyn Fn(&View) -> bool) {
         let emptied: Vec<u64> = self
             .panes()
             .into_iter()
-            .filter(|p| !p.tabs.is_empty() && !p.tabs.iter().any(&keep))
+            .filter(|p| !p.tabs.is_empty() && !p.tabs.iter().any(keep))
             .map(|p| p.id)
             .collect();
         for id in emptied {
             self.remove_pane(id);
         }
         self.for_each_pane(|p| p.retain_tabs(&mut |t| keep(t)));
+        // "Restore my layout" never brings a dropped tab back.
+        if let Some(before) = &mut self.agent.restore {
+            before.retain_dyn(keep);
+        }
         self.normalize();
     }
 

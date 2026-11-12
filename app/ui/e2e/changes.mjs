@@ -165,7 +165,7 @@ async function untracked(browser) {
     const input = page.getByLabel("Message the agent");
     await input.fill("Start the count at ten");
     await input.press("Enter");
-    await expect(page.getByTestId("task-status")).toHaveText("Waiting on you", { timeout: 15_000 });
+    await expect(page.getByTestId("task-status")).toHaveText("Done", { timeout: 15_000 });
     await page.locator(".chat").getByRole("button", { name: "View diff" }).first().click();
     await expect(page.getByTestId("diff-empty")).toHaveText(
       "This folder is not a git repository, so changes are not tracked.",

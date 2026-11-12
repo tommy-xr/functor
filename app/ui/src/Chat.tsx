@@ -14,7 +14,6 @@ import {
   atBottom,
   clip,
   connectionLines,
-  initialTask,
   outcome,
   pickHarness,
   toolFile,
@@ -53,7 +52,7 @@ type Props = {
   canvasWord: string;
   /** Opens or focuses the Game tab, beside what is shown. */
   onOpenGame: () => void;
-  /** The current task; `null` is the empty state. */
+  /** The current task (the core's); `null` is the empty state. */
   selected: number | null;
   onSelect: (task: number | null) => void;
   /** Opens or focuses the current task's Changes tab at `path` (repo-relative), or at its top. */
@@ -95,12 +94,6 @@ export function ChatDock({
     () => (state?.tasks ?? []).filter((t) => t.project === active).sort((a, b) => b.id - a.id),
     [state?.tasks, active],
   );
-  // Chosen afresh on load and on a project switch.
-  const loaded = state !== null;
-  useEffect(() => {
-    if (state) setSelected(initialTask(state.tasks, active));
-    // Not on every state: only the first one and a project switch choose.
-  }, [loaded, active]);
   const current = tasks.find((t) => t.id === selected) ?? null;
   const items = current ? transcripts.get(current.id) : undefined;
   // Once per task per connection: `fetchTranscript` skips one already asked for.
@@ -114,8 +107,8 @@ export function ChatDock({
   const [shownNotice, setShownNotice] = useState<string | null>(null);
   useEffect(() => {
     if (!pending || !accepted || accepted.text !== pending.text) return;
+    // A new task becomes the current one in the core as it starts.
     if (pending.task !== null && pending.task !== accepted.task) return;
-    if (pending.task === null) setSelected(accepted.task);
     setPending(null);
     setDraft((d) => (d === pending.text ? "" : d));
     setShownNotice(null);
@@ -593,41 +586,7 @@ function WalkthroughCard({ item, index, walk }: { item: WalkthroughItem; index: 
         <span className="eyebrow">Walkthrough</span>
         <span>{steps[0]?.title}</span>
       </p>
-      <ol className="walk-steps">
-        {steps.map((s, i) => {
-          const where = viewPhrase(s.view);
-          return (
-            <li key={i}>
-              <button
-                type="button"
-                className="walk-step"
-                aria-current={i === current ? "step" : undefined}
-                disabled={!can || !available[i]}
-                onMouseDown={keep}
-                onClick={() => go(i)}
-              >
-                <span className="walk-n" aria-hidden="true">
-                  {i + 1}
-                </span>
-                <span className="walk-body">
-                  <span className="walk-title">{s.title}</span>
-                  {s.note && <span className="walk-note">{s.note}</span>}
-                  <span className="walk-where">
-                    {available[i] ? (
-                      <>
-                        {where.code && <code>{where.code}</code>}
-                        {where.code ? where.after : where.after?.replace(/^ /, "")}
-                      </>
-                    ) : (
-                      "No longer available"
-                    )}
-                  </span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
+      <WalkSteps steps={steps} current={current} available={available} enabled={can} onStep={go} />
       <div className="chat-card-actions walk-nav">
         <button type="button" className="button button-small" disabled={!can || prev === null} onMouseDown={keep} onClick={() => go(prev)}>
           Prev
@@ -638,6 +597,62 @@ function WalkthroughCard({ item, index, walk }: { item: WalkthroughItem; index: 
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * A walkthrough's steps, each a button showing its view (the chat's card and
+ * the task page). A click keeps the keyboard focus where it was.
+ */
+export function WalkSteps({
+  steps,
+  current,
+  available,
+  enabled,
+  onStep,
+}: {
+  steps: WalkthroughItem["steps"];
+  current: number | null;
+  available: readonly boolean[];
+  enabled: boolean;
+  onStep: (step: number) => void;
+}) {
+  return (
+    <ol className="walk-steps">
+      {steps.map((s, i) => {
+        const where = viewPhrase(s.view);
+        return (
+          <li key={i}>
+            <button
+              type="button"
+              className="walk-step"
+              aria-current={i === current ? "step" : undefined}
+              disabled={!enabled || !available[i]}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onStep(i)}
+            >
+              <span className="walk-n" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span className="walk-body">
+                <span className="walk-title">{s.title}</span>
+                {s.note && <span className="walk-note">{s.note}</span>}
+                <span className="walk-where">
+                  {available[i] ? (
+                    <>
+                      {where.code && <code>{where.code}</code>}
+                      {where.code ? where.after : where.after?.replace(/^ /, "")}
+                    </>
+                  ) : (
+                    "No longer available"
+                  )}
+                </span>
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

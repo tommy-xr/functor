@@ -243,6 +243,11 @@ impl Driver {
                     eprintln!("functor-app: cannot save task {}: {e}", task.id);
                 }
             }
+            Command::DeleteTask { dir, task } => {
+                if let Err(e) = crate::store::delete(&self.home, &dir, task) {
+                    eprintln!("functor-app: cannot delete task {task}: {e}");
+                }
+            }
             Command::SaveHarness { dir, harness } => {
                 if let Err(e) = crate::store::save_harness(&self.home, &dir, harness) {
                     eprintln!("functor-app: cannot save the agent choice: {e}");

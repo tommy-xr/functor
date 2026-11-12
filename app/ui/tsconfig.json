@@ -17,6 +17,8 @@
     // A browser page: no @types/node globals.
     "types": [],
     "noEmit": true,
+    // Pure modules import each other as `./x.ts`, so `node --test` resolves them too.
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
   // `*.test.ts` run under Node (`node --test`, type stripping), importing

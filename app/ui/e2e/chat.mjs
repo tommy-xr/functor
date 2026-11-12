@@ -112,7 +112,7 @@ async function conversation(browser, width, height) {
     expect(await rows(log)).toEqual(["user", "step", "capture", "step", "change", "agent", "result"]);
     await expect(log.locator(".usage")).toHaveText("24.1k tokens in · 410 out");
     await expect(log.getByRole("link", { name: "language guide" })).toHaveAttribute("rel", "noopener noreferrer");
-    await expect(badge).toHaveText("Waiting on you");
+    await expect(badge).toHaveText("Done");
     await expect(send).toBeEnabled();
     // Steps expand to their input and result; long results are cut until asked.
     const read = log.getByRole("button", { name: /^Read game\.fun/ });

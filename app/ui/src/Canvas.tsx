@@ -12,10 +12,11 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import type { AppState, Direction, GamePlacement, Highlight, LayoutOp, Mini, Node, Pane, Placement, Session, Task, View } from "./generated/protocol";
+import type { AppState, Direction, GamePlacement, Highlight, Item, LayoutOp, Mini, Node, Pane, Placement, Session, Task, View } from "./generated/protocol";
 import { DiffView, type DiffTarget } from "./DiffView";
 import { hasChange } from "./diff-model";
 import { FileView } from "./FileView";
+import { TaskPage } from "./TaskPage";
 import { GameView } from "./GameView";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
@@ -58,6 +59,10 @@ export type CanvasProps = {
   /** The chat's current task, whose changes the open-view menu offers. */
   currentTask: Task | null;
   onNewTask: () => void;
+  transcripts: ReadonlyMap<number, Item[]>;
+  fetchTranscript: (task: number) => void;
+  /** Makes `task` the chat's current task and puts the cursor in its composer. */
+  onContinue: (task: number) => void;
 };
 
 /** What every pane needs, passed down the split tree. */
@@ -551,13 +556,13 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
         id={`panel-${pane.id}`}
         {...(active ? { "aria-labelledby": tabId(pane.id, active) } : { "aria-label": "Empty pane" })}
       >
-        {active ? <ViewBody view={active} ctx={ctx} /> : <EmptyPane pane={pane} ctx={ctx} />}
+        {active ? <ViewBody view={active} pane={pane.id} ctx={ctx} /> : <EmptyPane pane={pane} ctx={ctx} />}
       </div>
     </section>
   );
 }
 
-function ViewBody({ view, ctx }: { view: View; ctx: Ctx }) {
+function ViewBody({ view, pane, ctx }: { view: View; pane: number; ctx: Ctx }) {
   const { state } = ctx;
   switch (view.kind) {
     case "game":
@@ -594,12 +599,27 @@ function ViewBody({ view, ctx }: { view: View; ctx: Ctx }) {
         />
       );
     }
-    case "task":
+    case "task": {
+      const task = state?.tasks.find((t) => t.id === view.task) ?? null;
+      // Beside this page's pane, not the one that happens to have the focus.
+      const openChanges = () => {
+        ctx.op({ type: "focus", pane });
+        ctx.op({ type: "open", view: { kind: "changes", task: view.task }, target: { kind: "side" } });
+      };
       return (
-        <div className="placeholder">
-          <p>The task page comes later; its conversation is in the chat.</p>
-        </div>
+        <TaskPage
+          state={state}
+          task={task}
+          items={ctx.transcripts.get(view.task)}
+          fetchTranscript={ctx.fetchTranscript}
+          online={ctx.online}
+          send={ctx.send}
+          notice={ctx.notice}
+          onContinue={() => ctx.onContinue(view.task)}
+          onOpenChanges={openChanges}
+        />
       );
+    }
   }
 }
 

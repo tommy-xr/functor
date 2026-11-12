@@ -1,0 +1,5 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-slow-1", "model": "claude-model"}}
+{"ms": 100, "event": {"type": "tool_use", "name": "Read", "input": {"file_path": "game.fun"}}}
+{"ms": 150, "event": {"type": "tool_result", "content": "1\t// counter"}}
+{"ms": 200, "event": {"type": "text", "text": "Still thinking about the count."}}
+{"ms": 600000, "event": {"type": "finished", "ok": true, "summary": "Done thinking."}}

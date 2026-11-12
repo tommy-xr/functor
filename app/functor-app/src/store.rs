@@ -96,6 +96,8 @@ pub fn load(home: &Path, state: &AppState) -> (Vec<Task>, u64) {
                 }
                 Ok(task) => tasks.push(Task {
                     project: project.path.clone(),
+                    // Saved before tasks kept times: last active when last written.
+                    updated_at: task.updated_at.or_else(|| modified_ms(&file)),
                     ..task
                 }),
                 Err(e) => eprintln!("functor-app: skipping {}: {e}", file.display()),
@@ -103,6 +105,13 @@ pub fn load(home: &Path, state: &AppState) -> (Vec<Task>, u64) {
         }
     }
     (tasks, highest)
+}
+
+/// `file`'s modification time, ms since the Unix epoch.
+fn modified_ms(file: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(file).ok()?.modified().ok()?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    u64::try_from(since.as_millis()).ok()
 }
 
 /// Reserves a task id no other app process on `home` holds: the first from
@@ -246,6 +255,15 @@ pub fn save(home: &Path, dir: &Path, task: &Task) -> io::Result<()> {
     write_whole(&tasks.join(format!("{}.json", task.id)), &to_stored(task))
 }
 
+/// Removes task `id`'s file for the project at `dir`, and nothing else: its
+/// id stays reserved. A file already gone is not an error.
+pub fn delete(home: &Path, dir: &Path, id: u64) -> io::Result<()> {
+    match std::fs::remove_file(tasks_dir(home, dir).join(format!("{id}.json"))) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +317,8 @@ mod tests {
             baseline: None,
             change: None,
             reverting: false,
+            created_at: None,
+            updated_at: Some(1),
             transcript: vec![Item::User { text: "hi".into() }],
         };
         let dir = root.join("a");
@@ -338,6 +358,8 @@ mod tests {
             baseline: None,
             change: None,
             reverting: false,
+            created_at: None,
+            updated_at: Some(1),
             transcript: vec![Item::User { text: "hi".into() }],
         }
     }
@@ -453,6 +475,70 @@ mod tests {
         assert_eq!(loaded.iter().map(|t| t.id).collect::<Vec<_>>(), [3]);
         assert_eq!(loaded[0].model.as_deref(), Some("m"));
         assert_eq!(reserve_id(&home, highest + 1).unwrap(), 4);
+    }
+
+    /// A store from before tasks kept their times loads, last active when
+    /// its file was last written.
+    #[test]
+    fn a_task_saved_without_times_is_dated_by_its_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, dir, home) = one_project(tmp.path());
+        let tasks = tasks_dir(&home, &dir);
+        std::fs::create_dir_all(&tasks).unwrap();
+        std::fs::write(tasks.join("3.json"), V1_TASK_3).unwrap();
+        let written = modified_ms(&tasks.join("3.json")).unwrap();
+        let (loaded, _) = load(&home, &state);
+        assert_eq!(loaded[0].created_at, None);
+        assert_eq!(loaded[0].updated_at, Some(written));
+        // A saved time wins over the file's.
+        save(&home, &dir, &task(1)).unwrap();
+        let (loaded, _) = load(&home, &state);
+        assert_eq!(loaded[0].updated_at, Some(1));
+    }
+
+    /// Deleting a task removes its file and nothing else under the home:
+    /// not another task's, not the project's layout or agent pick, not its
+    /// reserved id. A second delete is not an error.
+    #[test]
+    fn delete_removes_exactly_the_tasks_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, dir, home) = one_project(tmp.path());
+        for id in [1, 2] {
+            reserve_id(&home, id).unwrap();
+            save(&home, &dir, &task(id)).unwrap();
+        }
+        save_harness(&home, &dir, Harness::Codex).unwrap();
+        save_layout(&home, &dir, &Layout::initial()).unwrap();
+        save_recents(&home, &[]).unwrap();
+        let listing = || {
+            let mut all: Vec<PathBuf> = walk(&home);
+            all.sort();
+            all
+        };
+        let before = listing();
+        delete(&home, &dir, 1).unwrap();
+        let gone: Vec<PathBuf> = before
+            .iter()
+            .filter(|p| !listing().contains(p))
+            .cloned()
+            .collect();
+        assert_eq!(gone, [tasks_dir(&home, &dir).join("1.json")]);
+        assert_eq!(listing().len(), before.len() - 1);
+        assert_eq!(load(&home, &state).0, vec![task(2)]);
+        delete(&home, &dir, 1).unwrap();
+        assert!(!tmp.path().join("repo").exists(), "touched the repo");
+    }
+
+    /// Every file under `dir`.
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .flat_map(|e| match e.path() {
+                p if p.is_dir() => walk(&p),
+                p => vec![p],
+            })
+            .collect()
     }
 
     /// Task 3 as the app saved it before ids were reserved.

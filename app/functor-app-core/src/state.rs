@@ -19,8 +19,8 @@ use crate::projects::{check_relative, default_project, project_dir, relative, Pr
 use crate::protocol::{ClientMsg, GameInput, ServerMsg};
 use crate::session::{Display, Session, SessionEvent, SessionStatus};
 use crate::tasks::{
-    apply, derive_status, end_run, has_change, stop_run, title, Harness, Item, Run, RunEvent, Task,
-    TaskStatus,
+    apply, derive_status, end_run, has_change, renamed, stop_run, title, Harness, Item, Run,
+    RunEvent, Task, TaskStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +50,10 @@ pub struct AppState {
     pub no_gpu: bool,
     /// Every project's tasks, by id; their transcripts travel separately.
     pub tasks: Vec<Task>,
+    /// Per project path, the chat's current task (`None`: a new one), the
+    /// one the Tasks pane shows selected. Absent until a client first
+    /// chooses one for the project; not kept across restarts.
+    pub current_task: BTreeMap<String, Option<u64>>,
     /// The agents this machine can run, in the order the picker lists them.
     pub harnesses: Vec<Harness>,
     /// Per project path, the agent last picked for its new tasks.
@@ -93,6 +97,11 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub clock: u64,
+    /// The shell's wall clock (ms since the Unix epoch) when the event
+    /// being stepped arrived, set with `clock`; tasks' times. 0: unknown.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub now: u64,
     /// The last `Highlight::seq` given out; never reused.
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
@@ -138,6 +147,7 @@ impl AppState {
             session: None,
             no_gpu: false,
             tasks: Vec::new(),
+            current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
             layouts,
@@ -154,6 +164,7 @@ impl AppState {
             highlight_seq: 0,
             canvas_stacked: false,
             clock: 0,
+            now: 0,
             user_layout_at: None,
             contexts: BTreeMap::new(),
         }
@@ -326,6 +337,9 @@ pub enum Command {
     StopRun { task: u64, run: u64 },
     /// Write `task` (with its transcript) to the store for the project at `dir`.
     SaveTask { dir: PathBuf, task: Box<Task> },
+    /// Remove task `task`'s file from the store for the project at `dir`;
+    /// nothing else.
+    DeleteTask { dir: PathBuf, task: u64 },
     /// Remember `harness` as the pick for new tasks in the project at `dir`.
     SaveHarness { dir: PathBuf, harness: Harness },
     /// Remember `layout` for the project at `dir`; writes may be coalesced.
@@ -458,6 +472,18 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::CanvasStacked { stacked }) => {
             state.canvas_stacked = stacked;
             (false, false)
+        }
+        Event::Client(ClientMsg::SelectTask { task, if_unset }) => {
+            match select_task(&mut state, task, if_unset) {
+                Ok(changed) => (changed, true),
+                Err(reason) => (reject(&mut commands, reason), false),
+            }
+        }
+        Event::Client(ClientMsg::RenameTask { task, title }) => {
+            (rename_task(&mut state, task, &title, &mut commands), false)
+        }
+        Event::Client(ClientMsg::DeleteTask { task }) => {
+            (delete_task(&mut state, task, &mut commands), false)
         }
         Event::AgentView { task, run, request } => (
             agent_view(&mut state, task, run, request, &mut commands),
@@ -767,6 +793,7 @@ fn opened(
         git,
         tracks_changes,
         tasks,
+        current_task,
         harness_choice,
         layouts,
         session: _,
@@ -785,6 +812,7 @@ fn opened(
         highlight_seq: _,
         canvas_stacked: _,
         clock: _,
+        now: _,
         user_layout_at: _,
         contexts: _,
     } = *new;
@@ -798,6 +826,7 @@ fn opened(
         git,
         tracks_changes,
         tasks,
+        current_task,
         harness_choice,
         layouts,
         // The old folder's highlight could name a project of the same path.
@@ -1247,6 +1276,101 @@ fn no_task(id: u64) -> ServerMsg {
     }
 }
 
+/// `now` as a task time: `None` when the shell gave no clock.
+fn stamp(now: u64) -> Option<u64> {
+    (now > 0).then_some(now)
+}
+
+/// Sets the active project's current task (with `if_unset`, only when it
+/// has none); whether it changed. A task must be one of that project's.
+fn select_task(state: &mut AppState, task: Option<u64>, if_unset: bool) -> Result<bool, String> {
+    let Some(project) = state.active.clone() else {
+        return Err("there is no project to choose a task in".to_string());
+    };
+    if if_unset && state.current_task.contains_key(&project) {
+        return Ok(false);
+    }
+    if let Some(id) = task {
+        if !state
+            .tasks
+            .iter()
+            .any(|t| t.id == id && t.project == project)
+        {
+            return Err(format!("there is no task {id} in {project}"));
+        }
+    }
+    Ok(state.current_task.insert(project, task) != Some(task))
+}
+
+/// Gives task `id` the title the user typed.
+fn rename_task(state: &mut AppState, id: u64, title: &str, commands: &mut Vec<Command>) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
+        commands.push(Command::Reply(no_task(id)));
+        return false;
+    };
+    let title = match renamed(title) {
+        Ok(title) => title,
+        Err(reason) => return reject(commands, reason),
+    };
+    if task.title == title {
+        return false;
+    }
+    task.title = title;
+    commands.push(save(&root, task));
+    true
+}
+
+/// Why task `id` cannot be deleted now: its run (or revert) would carry on
+/// writing it, and its change would be left with no way to review it.
+fn can_delete(state: &AppState, task: &Task) -> Result<(), String> {
+    let id = task.id;
+    if task.run.is_some() || task.reverting {
+        return Err(format!(
+            "task {id} is running: stop it before deleting the task"
+        ));
+    }
+    if state.tracks_changes && has_change(task) {
+        return Err(format!(
+            "task {id} has a change to review: keep or revert it before deleting the task"
+        ));
+    }
+    // Not measured yet (a stop's diff in flight, or one that failed): it may hold edits.
+    if state.tracks_changes && task.baseline.is_some() && task.change.is_none() {
+        return Err(format!(
+            "task {id}'s change is not measured yet: open its changes, then try again"
+        ));
+    }
+    Ok(())
+}
+
+/// Forgets task `id`: the shell removes its stored file (the conversation),
+/// its tabs close, and a chat on it moves to a new task. Files in the
+/// repo are never touched.
+fn delete_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
+    let Some(at) = state.tasks.iter().position(|t| t.id == id) else {
+        commands.push(Command::Reply(no_task(id)));
+        return false;
+    };
+    if let Err(reason) = can_delete(state, &state.tasks[at]) {
+        return reject(commands, reason);
+    }
+    let task = state.tasks.remove(at);
+    state.contexts.remove(&id);
+    for current in state.current_task.values_mut() {
+        if *current == Some(id) {
+            *current = None;
+        }
+    }
+    // Its Task and Changes tabs no longer check out, so they close.
+    prune(state, &task.project, commands);
+    commands.push(Command::DeleteTask {
+        dir: project_dir(Path::new(&state.repo_root), &task.project),
+        task: id,
+    });
+    true
+}
+
 /// Starts task `id` in the active project with `message`.
 fn new_task(
     state: &mut AppState,
@@ -1264,6 +1388,7 @@ fn new_task(
     if let Err(reason) = can_run(state, &project, None, &message) {
         return reject(commands, reason);
     }
+    state.current_task.insert(project.clone(), Some(id));
     state.tasks.push(Task {
         id,
         project,
@@ -1276,6 +1401,8 @@ fn new_task(
         baseline: None,
         change: None,
         reverting: false,
+        created_at: stamp(state.now),
+        updated_at: None,
         transcript: Vec::new(),
     });
     start_run(state, id, message, commands);
@@ -1346,11 +1473,13 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
     let attach = context.session.clone();
     state.contexts.insert(id, context.clone());
     let tracks = state.tracks_changes;
+    let now = stamp(state.now);
     let task = state
         .tasks
         .iter_mut()
         .find(|t| t.id == id)
         .expect("a known task");
+    task.updated_at = now.or(task.updated_at);
     let run = task.transcript.len() as u64;
     task.transcript.push(Item::User {
         text: message.clone(),
@@ -1389,9 +1518,12 @@ fn stop_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
         return reject(commands, format!("task {id} is not running"));
     };
     commands.push(Command::StopRun { task: id, run });
+    task.updated_at = stamp(state.now).or(task.updated_at);
     let changed = stop_run(task);
-    // A stopped run reports no change of its own: what it left is measured now.
+    // A stopped run reports no change of its own: what it left is measured
+    // now, and unknown until then.
     if let Some(baseline) = task.baseline.clone() {
+        task.change = None;
         commands.push(Command::Diff {
             task: id,
             baseline,
@@ -1431,13 +1563,14 @@ fn reviewable(state: &mut AppState, id: u64) -> Result<&mut Task, String> {
 /// until a follow-up, whose run takes a new one.
 fn keep(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
     let root = PathBuf::from(&state.repo_root);
+    let now = stamp(state.now);
     let task = match reviewable(state, id) {
         Ok(task) => task,
         Err(reason) => return reject(commands, reason),
     };
     task.baseline = None;
     task.change = None;
-    close(&root, task, Item::Kept, commands);
+    close(&root, task, Item::Kept, now, commands);
     true
 }
 
@@ -1480,8 +1613,9 @@ fn revert(state: &mut AppState, id: u64, tree: &str, commands: &mut Vec<Command>
     true
 }
 
-/// Ends task `id`'s review with `item` (`Kept` or `Reverted`).
-fn close(root: &Path, task: &mut Task, item: Item, commands: &mut Vec<Command>) {
+/// Ends task `id`'s review with `item` (`Kept` or `Reverted`) at `now`.
+fn close(root: &Path, task: &mut Task, item: Item, now: Option<u64>, commands: &mut Vec<Command>) {
+    task.updated_at = now.or(task.updated_at);
     task.transcript.push(item);
     task.status = derive_status(task);
     commands.push(save(root, task));
@@ -1545,6 +1679,7 @@ fn on_reverted(
     commands: &mut Vec<Command>,
 ) -> bool {
     let root = PathBuf::from(&state.repo_root);
+    let now = stamp(state.now);
     let Some(task) = state
         .tasks
         .iter_mut()
@@ -1557,7 +1692,7 @@ fn on_reverted(
         Ok(()) => {
             task.baseline = None;
             task.change = None;
-            close(&root, task, Item::Reverted, commands);
+            close(&root, task, Item::Reverted, now, commands);
         }
         Err(reason) => {
             commands.push(Command::Broadcast(ServerMsg::Rejected {
@@ -1582,6 +1717,7 @@ fn on_run(
     commands: &mut Vec<Command>,
 ) -> bool {
     let root = PathBuf::from(&state.repo_root);
+    let now = stamp(state.now);
     // A stopped run's late events find no run of that id.
     let Some(task) = state
         .tasks
@@ -1600,6 +1736,9 @@ fn on_run(
         RunEvent::Agent(event) => {
             let before = (task.session_id.clone(), task.model.clone());
             let changed = apply(task, event);
+            if !changed.is_empty() {
+                task.updated_at = now.or(task.updated_at);
+            }
             let summary = (task.session_id.clone(), task.model.clone()) != before;
             // Saved as each item completes (not per streamed piece), so a
             // crash keeps the run so far and the session to resume.
@@ -1613,6 +1752,7 @@ fn on_run(
             summary
         }
         RunEvent::Ended { error } => {
+            task.updated_at = now.or(task.updated_at);
             let changed = end_run(task, error);
             commands.push(save(&root, task));
             broadcast_items(commands, task, changed);
@@ -2433,7 +2573,7 @@ mod tests {
             .unwrap()
     }
 
-    /// A task that ran once and finished: waiting on the user.
+    /// A task that ran once and finished: done.
     fn finished_task() -> AppState {
         let (s, _) = update(state(), new_task("What is the count?"));
         let (s, _) = update(s, agent(1, 0, started("sess-1")));
@@ -2502,7 +2642,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_events_stream_items_and_ended_waits_on_the_user() {
+    fn agent_events_stream_items_and_an_ok_end_is_done() {
         let (s, _) = update(state(), new_task("hi"));
         // Started changes the summary: saved (for a resume after a crash)
         // and the state is broadcast.
@@ -2535,7 +2675,7 @@ mod tests {
         assert_eq!(task(&s, 1).status, TaskStatus::InProgress);
         let (s, commands) = update(s, ended(1, 0));
         let t = task(&s, 1);
-        assert_eq!(t.status, TaskStatus::WaitingOnYou);
+        assert_eq!(t.status, TaskStatus::Done);
         assert_eq!(t.run, None);
         assert_eq!(
             commands,
@@ -2713,7 +2853,7 @@ mod tests {
                 summary: Some(INTERRUPTED.to_string())
             }
         );
-        assert_eq!(task(&s, 4).status, TaskStatus::WaitingOnYou);
+        assert_eq!(task(&s, 4).status, TaskStatus::Done);
     }
 
     #[test]
@@ -2847,11 +2987,267 @@ mod tests {
             state: Box::new(finished_task()),
         })
         .unwrap();
-        assert_eq!(
-            json["state"]["tasks"][0]["status"]["kind"],
-            "waiting_on_you"
-        );
+        assert_eq!(json["state"]["tasks"][0]["status"]["kind"], "done");
         assert!(json["state"]["tasks"][0].get("transcript").is_none());
+    }
+
+    // The Tasks view: the current task, rename, delete, times.
+
+    fn select(task: Option<u64>) -> Event {
+        client(ClientMsg::SelectTask {
+            task,
+            if_unset: false,
+        })
+    }
+
+    fn at(now: u64, s: AppState) -> AppState {
+        AppState { now, ..s }
+    }
+
+    #[test]
+    fn the_current_task_is_one_per_project_and_a_new_task_takes_it() {
+        let (s, _) = update(state(), new_task("one"));
+        assert_eq!(s.current_task.get("examples/a"), Some(&Some(1)));
+        // Back to a new task, then task 1 again: each answered with the state.
+        let (s, commands) = update(s, select(None));
+        assert_eq!(s.current_task["examples/a"], None);
+        assert_eq!(commands, vec![broadcast(&s)]);
+        let (s, _) = update(s, select(Some(1)));
+        let (again, commands) = update(s.clone(), select(Some(1)));
+        assert_eq!(again, s);
+        assert!(matches!(
+            &commands[..],
+            [Command::Reply(ServerMsg::State { .. })]
+        ));
+        // Another project's task, or none, is refused.
+        let (s, _) = update(s, ended(1, 0));
+        let (s, _) = update(s, switch("examples/b"));
+        let (s, commands) = update(s, select(Some(1)));
+        assert_eq!(commands, rejected("there is no task 1 in examples/b"));
+        assert_eq!(s.current_task.get("examples/b"), None);
+        assert_eq!(s.current_task["examples/a"], Some(1));
+        let (s, commands) = update(s, select(Some(9)));
+        assert_eq!(commands, rejected("there is no task 9 in examples/b"));
+        // A page's default applies only where nothing is chosen yet.
+        let default = |task| {
+            client(ClientMsg::SelectTask {
+                task,
+                if_unset: true,
+            })
+        };
+        let (s, _) = update(s, switch("examples/a"));
+        let (s, _) = update(s, default(None));
+        assert_eq!(s.current_task["examples/a"], Some(1));
+        let (s, _) = update(s, switch("examples/b"));
+        let (s, _) = update(s, default(None));
+        assert_eq!(s.current_task["examples/b"], None);
+    }
+
+    #[test]
+    fn a_rename_is_saved_and_a_bad_title_refused() {
+        let s = finished_task();
+        let rename = |title: &str| {
+            client(ClientMsg::RenameTask {
+                task: 1,
+                title: title.to_string(),
+            })
+        };
+        let (s, commands) = update(s, rename("  Count  check "));
+        let t = task(&s, 1);
+        assert_eq!(t.title, "Count check");
+        assert_eq!(
+            commands,
+            vec![
+                Command::SaveTask {
+                    dir: PathBuf::from("/repo/examples/a"),
+                    task: Box::new(t.clone()),
+                },
+                broadcast(&s),
+            ]
+        );
+        let (s, commands) = update(s, rename(" "));
+        assert_eq!(commands, rejected("a task's title cannot be empty"));
+        assert_eq!(task(&s, 1).title, "Count check");
+        let (_, commands) = update(
+            s,
+            client(ClientMsg::RenameTask {
+                task: 5,
+                title: "x".to_string(),
+            }),
+        );
+        assert_eq!(commands, rejected("there is no task 5"));
+    }
+
+    #[test]
+    fn delete_forgets_the_task_closes_its_tabs_and_removes_only_its_file() {
+        let (s, _) = update(state(), nth_task(1, "one"));
+        let (s, _) = update(s, ended(1, 0));
+        let (s, _) = update(s, nth_task(2, "two"));
+        let (s, _) = update(s, ended(2, 0));
+        // Task 1's page and changes beside the game, task 2's page too.
+        let open = |view| {
+            op(LayoutOp::Open {
+                view,
+                target: Target::Side,
+            })
+        };
+        let (s, _) = update(s, open(View::Task { task: 1 }));
+        let (s, _) = update(s, open(View::Changes { task: 1 }));
+        let (s, _) = update(s, open(View::Task { task: 2 }));
+        let (s, _) = update(s, select(Some(1)));
+        let (s, commands) = update(s, client(ClientMsg::DeleteTask { task: 1 }));
+        assert_eq!(s.tasks.iter().map(|t| t.id).collect::<Vec<_>>(), [2]);
+        assert_eq!(s.current_task["examples/a"], None);
+        let layout = &s.layouts["examples/a"];
+        assert_eq!(
+            crate::print_layout(layout),
+            "right 50% (#1[*game] | >#3[*task:2])"
+        );
+        assert_eq!(
+            commands,
+            vec![
+                Command::SaveLayout {
+                    dir: PathBuf::from("/repo/examples/a"),
+                    layout: Box::new(layout.clone()),
+                },
+                Command::DeleteTask {
+                    dir: PathBuf::from("/repo/examples/a"),
+                    task: 1,
+                },
+                broadcast(&s),
+            ]
+        );
+        let (_, commands) = update(s, client(ClientMsg::DeleteTask { task: 1 }));
+        assert_eq!(commands, rejected("there is no task 1"));
+    }
+
+    #[test]
+    fn delete_is_refused_while_running_or_with_a_change_to_review() {
+        let delete = || client(ClientMsg::DeleteTask { task: 1 });
+        let (s, _) = update(state(), new_task("hi"));
+        let (s, commands) = update(s, delete());
+        assert_eq!(
+            commands,
+            rejected("task 1 is running: stop it before deleting the task")
+        );
+        assert_eq!(s.tasks.len(), 1);
+        let s = reviewed(one_file(2));
+        let (s, commands) = update(s, delete());
+        assert_eq!(
+            commands,
+            rejected("task 1 has a change to review: keep or revert it before deleting the task")
+        );
+        // A stopped run's change is unknown until measured: no delete before.
+        let (s2, _) = update(tracked(), new_task("hi"));
+        let (s2, _) = update(s2, baseline(1, 0, "tree-1"));
+        let (s2, _) = update(s2, client(ClientMsg::StopTask { task: 1 }));
+        let (s2, commands) = update(s2, delete());
+        assert_eq!(
+            commands,
+            rejected("task 1's change is not measured yet: open its changes, then try again")
+        );
+        let (s2, _) = update(s2, change(1, "tree-1", Change::default()));
+        let (s2, _) = update(s2, delete());
+        assert!(s2.tasks.is_empty());
+        // Once kept it goes, leaving the files as they are (no revert).
+        let (s, _) = update(s, keep(1));
+        let (s, commands) = update(s, delete());
+        assert!(s.tasks.is_empty());
+        assert!(commands
+            .iter()
+            .all(|c| !matches!(c, Command::Revert { .. })));
+        assert!(commands.contains(&Command::DeleteTask {
+            dir: PathBuf::from("/repo/examples/a"),
+            task: 1,
+        }));
+    }
+
+    #[test]
+    fn a_deleted_tab_is_not_brought_back_by_restore() {
+        let (s, _) = update(state(), new_task("hi"));
+        let (s, _) = update(s, ended(1, 0));
+        let open = op(LayoutOp::Open {
+            view: View::Task { task: 1 },
+            target: Target::Side,
+        });
+        let (mut s, _) = update(s, open);
+        // As if the agent had arranged views since: the snapshot holds the page.
+        let layout = s.layouts.get_mut("examples/a").unwrap();
+        layout.agent.restore = Some(Box::new(layout.clone()));
+        let _ = layout.apply(LayoutOp::Close { view: View::Game }, |_| Ok(()));
+        let (s, _) = update(s, client(ClientMsg::DeleteTask { task: 1 }));
+        let layout = &s.layouts["examples/a"];
+        let before = layout.agent.restore.as_deref().expect("a snapshot");
+        assert_eq!(crate::print_layout(before), ">#1[*game]");
+    }
+
+    #[test]
+    fn task_times_follow_the_shells_clock() {
+        let (s, _) = update(at(1_000, state()), new_task("hi"));
+        let t = task(&s, 1);
+        assert_eq!((t.created_at, t.updated_at), (Some(1_000), Some(1_000)));
+        // A run's events and its end, then a review, move the last activity.
+        let (s, _) = update(at(2_000, s), agent(1, 0, started("s")));
+        assert_eq!(task(&s, 1).updated_at, Some(1_000), "no item, no activity");
+        let (s, _) = update(at(3_000, s), agent(1, 0, finished()));
+        assert_eq!(task(&s, 1).updated_at, Some(3_000));
+        let (s, _) = update(at(4_000, s), ended(1, 0));
+        let t = task(&s, 1);
+        assert_eq!((t.created_at, t.updated_at), (Some(1_000), Some(4_000)));
+        // A rename or a selection is not activity.
+        let rename = client(ClientMsg::RenameTask {
+            task: 1,
+            title: "x".to_string(),
+        });
+        let (s, _) = update(at(5_000, s), rename);
+        let (s, _) = update(at(6_000, s), select(None));
+        assert_eq!(task(&s, 1).updated_at, Some(4_000));
+        let (s, _) = update(at(7_000, s), send(1, "again"));
+        assert_eq!(task(&s, 1).updated_at, Some(7_000));
+        let (s, _) = update(at(8_000, s), client(ClientMsg::StopTask { task: 1 }));
+        assert_eq!(task(&s, 1).updated_at, Some(8_000));
+        // A keep, and a finished revert.
+        let s = reviewed(one_file(2));
+        assert_eq!(task(&s, 1).updated_at, None, "no clock, no time");
+        let (s, _) = update(at(9_000, s), keep(1));
+        assert_eq!(task(&s, 1).updated_at, Some(9_000));
+        let s = reviewed(one_file(2));
+        let (s, _) = update(s, revert(1));
+        let (s, _) = update(at(10_000, s), reverted(1, "tree-1", Ok(())));
+        assert_eq!(task(&s, 1).updated_at, Some(10_000));
+    }
+
+    #[test]
+    fn task_view_messages_are_type_tagged() {
+        for (json, msg) in [
+            (
+                r#"{"type":"select_task","task":null,"if_unset":false}"#,
+                ClientMsg::SelectTask {
+                    task: None,
+                    if_unset: false,
+                },
+            ),
+            (
+                r#"{"type":"select_task","task":3,"if_unset":true}"#,
+                ClientMsg::SelectTask {
+                    task: Some(3),
+                    if_unset: true,
+                },
+            ),
+            (
+                r#"{"type":"rename_task","task":3,"title":"x"}"#,
+                ClientMsg::RenameTask {
+                    task: 3,
+                    title: "x".to_string(),
+                },
+            ),
+            (
+                r#"{"type":"delete_task","task":3}"#,
+                ClientMsg::DeleteTask { task: 3 },
+            ),
+        ] {
+            assert_eq!(serde_json::from_str::<ClientMsg>(json).unwrap(), msg);
+        }
     }
 
     // Changes.
@@ -2933,9 +3329,9 @@ mod tests {
         assert_eq!(t.status, TaskStatus::ReadyForReview);
         assert_eq!(t.baseline.as_deref(), Some("tree-1"));
         assert_eq!(t.change, Some(one_file(2)));
-        // No change: waiting on the user, as without git.
+        // No change: done, as without git.
         let s = reviewed(Change::default());
-        assert_eq!(task(&s, 1).status, TaskStatus::WaitingOnYou);
+        assert_eq!(task(&s, 1).status, TaskStatus::Done);
         // A failed run with a change stays failed.
         let (s, _) = update(tracked(), new_task("x"));
         let (s, _) = update(s, baseline(1, 0, "tree-1"));
@@ -2970,9 +3366,9 @@ mod tests {
             let (again, commands) = update(s.clone(), event);
             assert_eq!((again, commands), (s.clone(), vec![]));
         }
-        // An emptied change (the user undid it by hand) waits on the user.
+        // An emptied change (the user undid it by hand) leaves it done.
         let (next, _) = update(s, change(1, "tree-1", Change::default()));
-        assert_eq!(task(&next, 1).status, TaskStatus::WaitingOnYou);
+        assert_eq!(task(&next, 1).status, TaskStatus::Done);
     }
 
     #[test]

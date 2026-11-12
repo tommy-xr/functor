@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
@@ -8,6 +8,8 @@ import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
 import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
+import { TasksPane } from "./TasksPane";
+import { choiceKey, chosenTask, currentTask, needsYou } from "./tasks-model";
 
 
 const VIEWS = ["explorer", "tasks", "devices"] as const;
@@ -34,20 +36,21 @@ export function App() {
     checkProject,
   } = useAppSocket();
   const [view, setView] = useView();
-  // The chat's current task (`null`: a new one).
-  const [selected, setSelected] = useState<number | null>(null);
-  const [target, setTarget] = useState<CanvasProps["target"]>(null);
-  // A new project created with a description: its first task (newer than
-  // every task when it was created), once it starts, is the chat's.
-  const [follow, setFollow] = useState<number | null>(null);
+  const online = conn === "open" && state !== null;
+  // The chat's current task (`null`: a new one) is the core's, per project,
+  // so the dock, the Tasks pane and every window agree. Until the core has
+  // one (a restarted app forgets), this page's last, else the newest open
+  // task, and the core is told so.
+  const chosen = chosenTask(state);
+  const seen = useRef(new Map<string, number | null>());
+  if (state?.active && chosen !== undefined) seen.current.set(choiceKey(state), chosen);
+  const selected = currentTask(state, seen.current);
   useEffect(() => {
-    if (follow === null || !state) return;
-    if (state.new_project?.step.kind === "failed") return setFollow(null);
-    const first = state.tasks.find((t) => t.id > follow && t.project === state.active);
-    if (state.new_project || !first) return;
-    setSelected(first.id);
-    setFollow(null);
-  }, [follow, state]);
+    // Only where the core still has none: another window's or a new task's choice wins.
+    if (online && state.active && chosen === undefined) send({ type: "select_task", task: selected, if_unset: true });
+  }, [online, state?.active, chosen === undefined]);
+  const setSelected = (task: number | null) => send({ type: "select_task", task, if_unset: false });
+  const [target, setTarget] = useState<CanvasProps["target"]>(null);
   // The chat's actions open or focus a view beside what the user is looking at.
   const openBeside = (view: TabView) => send({ type: "layout", op: { type: "open", view, target: { kind: "side" } } });
   const viewDiff = (path: string | null) => {
@@ -58,11 +61,20 @@ export function App() {
     openBeside({ kind: "changes", task: selected });
     setTarget((t) => ({ task: selected, path, seq: (t?.seq ?? 0) + 1 }));
   };
+  const composer = () => document.querySelector<HTMLTextAreaElement>("textarea[aria-label='Message the agent']")?.focus();
   const newTask = () => {
     setSelected(null);
-    document.querySelector<HTMLTextAreaElement>("textarea[aria-label='Message the agent']")?.focus();
+    composer();
   };
-  const online = conn === "open" && state !== null;
+  // A task row: the chat's current task, and its page in the focused pane (or beside it).
+  const openTask = (task: number, side: boolean) => {
+    setSelected(task);
+    send({ type: "layout", op: { type: "open", view: { kind: "task", task }, target: { kind: side ? "side" : "focused" } } });
+  };
+  const continueTask = (task: number) => {
+    setSelected(task);
+    composer();
+  };
   const task = state?.tasks.find((t) => t.id === selected && t.project === state.active) ?? null;
   const folder: FolderProps = { state, online, send, dirs, listDirs };
   useWindowMenu(state, send);
@@ -72,13 +84,21 @@ export function App() {
     <div className="app" inert={!!state?.new_project}>
       <TitleBar state={state} conn={conn} />
       <div className="workspace">
-        <Rail view={view} onSelect={setView} />
+        <Rail view={view} onSelect={setView} waiting={needsYou(state?.tasks ?? [], state?.active ?? null)} />
         <div className="panes">
           {view === "explorer" && <ExplorerPane {...folder} />}
           {view === "tasks" && (
-            <PlaceholderPane title="Tasks">
-              Each conversation with the agent will be listed here until you keep or drop its change.
-            </PlaceholderPane>
+            <TasksPane
+              state={state}
+              online={online}
+              send={send}
+              transcripts={transcripts}
+              fetchTranscript={fetchTranscript}
+              notice={notice}
+              selected={selected}
+              onOpen={openTask}
+              onNewTask={newTask}
+            />
           )}
           {view === "devices" && (
             <PlaceholderPane title="Devices">
@@ -100,6 +120,9 @@ export function App() {
               fetchFile={fetchFile}
               currentTask={task}
               onNewTask={newTask}
+              transcripts={transcripts}
+              fetchTranscript={fetchTranscript}
+              onContinue={continueTask}
             />
           )}
           <ChatDock
@@ -126,7 +149,6 @@ export function App() {
         plan={plan}
         checkProject={checkProject}
         harness={pickHarness(state)}
-        onDescribed={() => setFollow(Math.max(0, ...state.tasks.map((t) => t.id)))}
       />
     )}
     </>
@@ -226,21 +248,24 @@ function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
   );
 }
 
-function Rail({ view, onSelect }: { view: View; onSelect: (v: View) => void }) {
+/** `waiting`: the active project's tasks that need the user, badged on Tasks. */
+function Rail({ view, onSelect, waiting }: { view: View; onSelect: (v: View) => void; waiting: number }) {
   return (
     <nav className="rail" aria-label="Views">
-      {VIEWS.map((v) => (
-        <button
-          key={v}
-          type="button"
-          aria-label={VIEW_LABELS[v]}
-          title={VIEW_LABELS[v]}
-          aria-pressed={v === view}
-          onClick={() => onSelect(v)}
-        >
-          <Icon name={v} />
-        </button>
-      ))}
+      {VIEWS.map((v) => {
+        const badge = v === "tasks" && waiting > 0;
+        const label = badge ? `${VIEW_LABELS[v]}, ${waiting} need${waiting === 1 ? "s" : ""} you` : VIEW_LABELS[v];
+        return (
+          <button key={v} type="button" aria-label={label} title={label} aria-pressed={v === view} onClick={() => onSelect(v)}>
+            <Icon name={v} />
+            {badge && (
+              <span className="rail-badge" aria-hidden="true" data-testid="tasks-badge">
+                {waiting > 99 ? "99+" : waiting}
+              </span>
+            )}
+          </button>
+        );
+      })}
     </nav>
   );
 }
