@@ -813,13 +813,10 @@ a:hover {
   scroll-margin-top: 56px;
 }
 
+/* A feature row with a list where the media would be. */
 .headset-inner {
-  max-width: 1052px;
-  margin: 0 auto;
-  display: grid;
   grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
   align-items: start;
-  gap: var(--space-xl);
 }
 
 .state-list {
@@ -881,9 +878,6 @@ a:hover {
   .also,
   .headset-inner {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .headset-inner {
-    gap: var(--space-md);
   }
 }
 

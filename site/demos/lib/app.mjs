@@ -7,10 +7,9 @@
 // Prereqs: npm run build:app && npm run build:cli (release: the game renders
 // live), @playwright/test's chromium, and ffmpeg on PATH.
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { GIT_ENV, ROOT, git, tempHome, tempProject } from "../../../app/ui/e2e/app.mjs";
+import { GIT_ENV, ROOT, git, tempDir, tempHome, tempProject } from "../../../app/ui/e2e/app.mjs";
 
 export { ROOT, stopServer, watchState } from "../../../app/ui/e2e/app.mjs";
 
@@ -189,8 +188,7 @@ export async function type(page, text) {
  * [`gif`].
  */
 export async function record(page) {
-  const dir = mkdtempSync(join(tmpdir(), "functor-app-demo-"));
-  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  const dir = tempDir("functor-app-demo-");
   const cdp = await page.context().newCDPSession(page);
   const start = Date.now();
   const frames = [];
