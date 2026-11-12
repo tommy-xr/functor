@@ -30,6 +30,14 @@
   --danger: #f28b82;
   --danger-bg: #351c1b;
 
+  /* Syntax: each ≥ 4.5:1 on --sunk and on the diff's added/removed rows. */
+  --syn-keyword: #c4a5f5;
+  --syn-type: #7cc4ec;
+  --syn-string: #a3d49a;
+  --syn-number: #ebb27c;
+  --syn-comment: #8693a2;
+  --syn-operator: var(--muted);
+
   --sans: -apple-system, system-ui, "Segoe UI", Inter, Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
 
@@ -1393,6 +1401,33 @@ blockquote {
 
 .code-note {
   padding: 12px;
+}
+
+/* Syntax tokens (syntax.ts), in the file view and the diff alike. */
+.tok-keyword {
+  color: var(--syn-keyword);
+}
+
+.tok-typeName {
+  color: var(--syn-type);
+}
+
+.tok-string {
+  color: var(--syn-string);
+}
+
+.tok-number,
+.tok-atom {
+  color: var(--syn-number);
+}
+
+.tok-comment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+.tok-operator {
+  color: var(--syn-operator);
 }
 
 .placeholder {
