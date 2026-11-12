@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import type { AppState, Change, Item, Task, TaskStatus } from "./generated/protocol";
 import {
   changeSummary,
+  choiceKey,
   chosenTask,
+  currentTask,
   deleteBlock,
   groupTasks,
   needsYou,
@@ -132,6 +134,21 @@ test("the current task is the core's, per active project", () => {
   assert.equal(chosenTask(state({ b: 3 })), undefined);
   assert.equal(chosenTask(state({ a: 3 }, null)), undefined);
   assert.equal(chosenTask(null), undefined);
+});
+
+test("until the core has one, the page's last choice, else the newest open task", () => {
+  const tasks = [task(1, { kind: "done" }), task(2, { kind: "in_progress" }), task(3, { kind: "kept" })];
+  const state = (current: AppState["current_task"]) => ({ repo_root: "/r", active: "a", tasks, current_task: current }) as AppState;
+  const none = new Map<string, number | null>();
+  assert.equal(currentTask(state({ a: 3 }), none), 3);
+  assert.equal(currentTask(state({ a: null }), none), null);
+  assert.equal(currentTask(state({}), none), 2);
+  // A restarted app forgot: what this page last saw, while that task is there.
+  const seen = (v: number | null) => new Map([[choiceKey(state({})), v]]);
+  assert.equal(currentTask(state({}), seen(1)), 1);
+  assert.equal(currentTask(state({}), seen(null)), null);
+  assert.equal(currentTask(state({}), seen(9)), 2);
+  assert.equal(currentTask(null, none), null);
 });
 
 const tool = (name: string, result: string | null, input: object = {}): Item => ({ kind: "tool", name, input: input as never, result });

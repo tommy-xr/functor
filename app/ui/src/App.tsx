@@ -1,15 +1,15 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
-import { basename, initialTask, pickHarness } from "./chat-model";
+import { basename, pickHarness } from "./chat-model";
 import { FolderActions, NoProject, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
 import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
-import { chosenTask, needsYou } from "./tasks-model";
+import { choiceKey, chosenTask, currentTask, needsYou } from "./tasks-model";
 
 
 const VIEWS = ["explorer", "tasks", "devices"] as const;
@@ -38,10 +38,13 @@ export function App() {
   const [view, setView] = useView();
   const online = conn === "open" && state !== null;
   // The chat's current task (`null`: a new one) is the core's, per project,
-  // so the dock, the Tasks pane and every window agree. Until one is
-  // chosen, the newest open task is, and the core is told so.
+  // so the dock, the Tasks pane and every window agree. Until the core has
+  // one (a restarted app forgets), this page's last, else the newest open
+  // task, and the core is told so.
   const chosen = chosenTask(state);
-  const selected = chosen !== undefined ? chosen : state ? initialTask(state.tasks, state.active) : null;
+  const seen = useRef(new Map<string, number | null>());
+  if (state?.active && chosen !== undefined) seen.current.set(choiceKey(state), chosen);
+  const selected = currentTask(state, seen.current);
   useEffect(() => {
     if (online && state.active && chosen === undefined) send({ type: "select_task", task: selected });
   }, [online, state?.active, chosen === undefined]);

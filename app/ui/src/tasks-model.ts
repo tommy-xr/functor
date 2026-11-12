@@ -3,7 +3,7 @@
 // task. No React, so `node --test` runs them.
 
 import type { AppState, Change, Item, Task, TaskStatus } from "./generated/protocol";
-import { firstLine } from "./chat-model.ts";
+import { firstLine, initialTask } from "./chat-model.ts";
 import { hasChange, plural, totals } from "./diff-model.ts";
 
 export type Group = "waiting" | "review" | "progress" | "done";
@@ -118,4 +118,23 @@ export function relativeTime(at: number | null, now: number): string {
 export function chosenTask(state: AppState | null): number | null | undefined {
   if (!state?.active) return undefined;
   return state.current_task[state.active];
+}
+
+/** Where a page remembers the core's choice for the active project (`currentTask`). */
+export function choiceKey(state: AppState): string {
+  return `${state.repo_root}\n${state.active}`;
+}
+
+/**
+ * The chat's current task: the core's choice; until it has one (none yet,
+ * or the app restarted), the one this page last saw chosen while that task
+ * is still there, else the newest open task.
+ */
+export function currentTask(state: AppState | null, seen: ReadonlyMap<string, number | null>): number | null {
+  if (!state?.active) return null;
+  const chosen = chosenTask(state);
+  if (chosen !== undefined) return chosen;
+  const last = seen.get(choiceKey(state));
+  if (last === null || state.tasks.some((t) => t.id === last && t.project === state.active)) return last ?? null;
+  return initialTask(state.tasks, state.active);
 }
