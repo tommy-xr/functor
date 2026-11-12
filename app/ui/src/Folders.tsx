@@ -187,12 +187,11 @@ export function FolderActions(props: FolderProps) {
 
 /**
  * The canvas with no project to show: no folder open, or one holding no
- * project. Offers to open a folder (and a recent one), or a new project here.
+ * project. Offers to open a folder (and a recent one), and a new project here
+ * once the caller can make one.
  */
 export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProject?: () => void }) {
   const { state, online, send } = props;
-  // Until new projects can be made here.
-  const [stub, setStub] = useState(false);
   const recents = state?.recents ?? [];
   const folder = state?.folder ?? "";
   return (
@@ -208,12 +207,12 @@ export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProje
             <h2 className="pane-title">No folder open</h2>
           )}
           <div className="empty-actions">
-            {folder && (
+            {folder && onNewProject && (
               <button
                 type="button"
                 className="button button-compact button-primary"
                 disabled={!online}
-                onClick={onNewProject ?? (() => setStub(true))}
+                onClick={onNewProject}
               >
                 New project here
               </button>
@@ -221,7 +220,7 @@ export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProje
             {state?.native_picker && (
               <button
                 type="button"
-                className={`button button-compact${folder ? "" : " button-primary"}`}
+                className={`button button-compact${folder && onNewProject ? "" : " button-primary"}`}
                 disabled={!online}
                 onClick={() => send({ type: "pick_folder" })}
               >
@@ -229,7 +228,6 @@ export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProje
               </button>
             )}
           </div>
-          {stub && <p className="notice">Making a new project here is not available yet.</p>}
           {/* No native picker: a folder is opened by its path. */}
           {!state?.native_picker && (
             <>

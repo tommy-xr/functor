@@ -88,8 +88,8 @@ async function folders(browser, width, height) {
     await expect(none).toContainText(empty);
     await expect(explorer).toContainText("No projects in this folder");
     await expect(page).toHaveTitle(`Functor — ${empty.split("/").pop()}`);
-    await none.getByRole("button", { name: "New project here" }).click();
-    await expect(none.locator(".notice")).toHaveText("Making a new project here is not available yet.");
+    // Nothing is offered that cannot be done yet.
+    await expect(none.getByRole("button", { name: /New project/ })).toHaveCount(0);
     await expect(none.getByRole("region", { name: "Recent projects" }).getByRole("button")).toHaveText([
       /^mygame/,
       /^counter/,
