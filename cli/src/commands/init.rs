@@ -82,12 +82,22 @@ pub static TEMPLATES: &[Template] = &[
     template!("blank", "templates/blank", ["functor.json", "game.fun"]),
     template!("2d", "templates/2d", ["functor.json", "game.fun"]),
     template!("fps", "templates/fps", ["functor.json", "game.fun"]),
-    template!("multiplayer", "templates/multiplayer", ["functor.json", "game.fun"]),
+    template!(
+        "multiplayer",
+        "templates/multiplayer",
+        ["functor.json", "game.fun"]
+    ),
     template!("vr", "templates/vr", ["functor.json", "game.fun"]),
     template!(
         "netpong",
         "../examples/netpong",
-        ["functor.json", "client.fun", "server.fun", "protocol.fun", "game.fun"]
+        [
+            "functor.json",
+            "client.fun",
+            "server.fun",
+            "protocol.fun",
+            "game.fun"
+        ]
     ),
     template!("tetris", "../examples/tetris", ["functor.json", "game.fun"]),
 ];
@@ -105,9 +115,9 @@ pub fn names() -> Vec<&'static str> {
 /// description as help.
 pub fn parser() -> impl TypedValueParser<Value = &'static Template> {
     PossibleValuesParser::new(
-        TEMPLATES
-            .iter()
-            .map(|template| PossibleValue::new(template.name).help(template.manifest().description)),
+        TEMPLATES.iter().map(|template| {
+            PossibleValue::new(template.name).help(template.manifest().description)
+        }),
     )
     .map(|name| find(&name).expect("clap only accepts table names"))
 }
@@ -137,7 +147,12 @@ pub fn list(json: bool) -> String {
                 Kind::Starter => "starter",
                 Kind::Example => "example",
             };
-            [manifest.name, kind.to_string(), manifest.tags.join(","), manifest.description]
+            [
+                manifest.name,
+                kind.to_string(),
+                manifest.tags.join(","),
+                manifest.description,
+            ]
         })
         .collect();
     let header = ["NAME", "KIND", "TAGS", "DESCRIPTION"].map(String::from);
@@ -313,8 +328,11 @@ mod tests {
                 .unwrap()
                 .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
                 .collect();
-            let expected: BTreeSet<String> =
-                template.file_names().into_iter().map(String::from).collect();
+            let expected: BTreeSet<String> = template
+                .file_names()
+                .into_iter()
+                .map(String::from)
+                .collect();
             assert_eq!(written, expected, "{}", template.name);
             for file in template.files {
                 assert_eq!(
@@ -352,10 +370,18 @@ mod tests {
     fn the_table_matches_the_template_directories() {
         let mut names = BTreeSet::new();
         for template in TEMPLATES {
-            assert!(names.insert(template.name), "duplicate template {}", template.name);
+            assert!(
+                names.insert(template.name),
+                "duplicate template {}",
+                template.name
+            );
             let manifest = template.manifest();
             assert_eq!(manifest.name, template.name, "template.json name");
-            assert!(!manifest.description.contains('\n'), "{}: one line", template.name);
+            assert!(
+                !manifest.description.contains('\n'),
+                "{}: one line",
+                template.name
+            );
 
             let dir = template_dir(template);
             let required: BTreeSet<String> = fs::read_dir(&dir)
@@ -365,8 +391,11 @@ mod tests {
                     name == "functor.json" || name.ends_with(".fun") || name.ends_with(".funi")
                 })
                 .collect();
-            let listed: BTreeSet<String> =
-                template.file_names().into_iter().map(String::from).collect();
+            let listed: BTreeSet<String> = template
+                .file_names()
+                .into_iter()
+                .map(String::from)
+                .collect();
             assert!(
                 required.is_subset(&listed),
                 "{} must list every module in {}: {:?}",
@@ -378,7 +407,10 @@ mod tests {
             for file in template.files {
                 let mut components = Path::new(file.name).components();
                 assert!(
-                    matches!((components.next(), components.next()), (Some(Component::Normal(_)), None)),
+                    matches!(
+                        (components.next(), components.next()),
+                        (Some(Component::Normal(_)), None)
+                    ),
                     "{}: {:?} must be a plain file name",
                     template.name,
                     file.name
@@ -403,7 +435,10 @@ mod tests {
             .filter(|template| template.manifest().kind == Kind::Starter)
             .map(|template| template.dir.trim_start_matches("templates/").to_string())
             .collect();
-        assert_eq!(template_dirs, starters, "every cli/templates directory is a starter in the table");
+        assert_eq!(
+            template_dirs, starters,
+            "every cli/templates directory is a starter in the table"
+        );
     }
 
     /// `--list`'s text and JSON, pinned. Regenerate the snapshots with
@@ -411,13 +446,21 @@ mod tests {
     #[test]
     fn list_matches_its_snapshots() {
         let snapshots = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
-        for (file, actual) in [("init-list.txt", list(false)), ("init-list.json", list(true))] {
+        for (file, actual) in [
+            ("init-list.txt", list(false)),
+            ("init-list.json", list(true)),
+        ] {
             let path = snapshots.join(file);
             if std::env::var_os("UPDATE_GOLDENS").is_some() {
                 fs::create_dir_all(&snapshots).unwrap();
                 fs::write(&path, &actual).unwrap();
             }
-            assert_eq!(fs::read_to_string(&path).unwrap(), actual, "{}", path.display());
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                actual,
+                "{}",
+                path.display()
+            );
         }
     }
 
@@ -426,8 +469,16 @@ mod tests {
         let listed: Vec<serde_json::Value> = serde_json::from_str(&list(true)).unwrap();
         assert_eq!(listed.len(), TEMPLATES.len());
         for entry in listed {
-            let keys: BTreeSet<&str> = entry.as_object().unwrap().keys().map(String::as_str).collect();
-            assert_eq!(keys, BTreeSet::from(["description", "kind", "name", "tags"]));
+            let keys: BTreeSet<&str> = entry
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                BTreeSet::from(["description", "kind", "name", "tags"])
+            );
         }
     }
 
@@ -478,7 +529,10 @@ mod tests {
         assert!(error.to_string().contains("protocol.fun"));
         let left: Vec<_> = fs::read_dir(&directory.0).unwrap().collect();
         assert_eq!(left.len(), 1, "only the user's file remains");
-        assert_eq!(fs::read_to_string(directory.0.join("protocol.fun")).unwrap(), "mine\n");
+        assert_eq!(
+            fs::read_to_string(directory.0.join("protocol.fun")).unwrap(),
+            "mine\n"
+        );
     }
 
     /// A link planted under one of the template's names cannot carry a write
@@ -500,6 +554,10 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(left, ["server.fun"], "files written before the link are rolled back");
+        assert_eq!(
+            left,
+            ["server.fun"],
+            "files written before the link are rolled back"
+        );
     }
 }

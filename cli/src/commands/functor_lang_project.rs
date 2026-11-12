@@ -510,7 +510,10 @@ impl FunctorLangProject {
                 ExprKind::External(path) => {
                     let api = path.join(".");
                     let why = if file_readers.contains(api.as_str()) {
-                        ("files", "it's read first, to learn which paths are external")
+                        (
+                            "files",
+                            "it's read first, to learn which paths are external",
+                        )
                     } else if api == "Launch.args" {
                         ("launch args", "it's read before the game is launched")
                     } else {
@@ -627,7 +630,12 @@ value `config` doesn't use"
         };
         let diags = self.check(&project)?;
         for diag in &diags {
-            emit_at(&project, diag.span.start, Severity::Error, diag.message.clone());
+            emit_at(
+                &project,
+                diag.span.start,
+                Severity::Error,
+                diag.message.clone(),
+            );
         }
         if !diags.is_empty() {
             return Err(Error::other(format!(
@@ -669,7 +677,12 @@ value `config` doesn't use"
             .map(|f| (f, Severity::Error))
             .chain(findings.warnings.iter().map(|f| (f, Severity::Warning)))
         {
-            emit_at(&project, finding.span.start, severity, finding.message.clone());
+            emit_at(
+                &project,
+                finding.span.start,
+                severity,
+                finding.message.clone(),
+            );
         }
         if !findings.errors.is_empty() {
             return Err(Error::other(format!(
@@ -701,7 +714,11 @@ value `config` doesn't use"
             config: names.config,
             loading: names.loading,
         };
-        Ok(functor_lang::reads::phase_errors(&project.module, &types, &entry))
+        Ok(functor_lang::reads::phase_errors(
+            &project.module,
+            &types,
+            &entry,
+        ))
     }
 
     /// The successful-build tail: report what loaded.
@@ -746,22 +763,22 @@ value `config` doesn't use"
     /// naming that binding, instead of at launch.
     /// The validation body is the exact one the runtimes use at load
     /// (`functor_runtime_common::functor_lang_producer::validate_contract`).
-    pub fn check_contract(
-        &self,
-        project: &functor_lang::project::Project,
-    ) -> Result<(), Error> {
+    pub fn check_contract(&self, project: &functor_lang::project::Project) -> Result<(), Error> {
         use functor_runtime_common::functor_lang_prelude::FunctorHost;
         use functor_runtime_common::functor_lang_producer::validate_contract;
         // A module role resolves against the linked project (the block's
         // CANONICAL path); an unknown block is a build error naming the role.
-        let names = self.entry_role().resolve(&self.entry, project).map_err(|e| {
-            Error::other(match self.role.as_str() {
-                "" => e,
-                role => format!("functor.json entry `{role}`: {e}"),
-            })
-        })?;
-        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
-            .map_err(|f| {
+        let names = self
+            .entry_role()
+            .resolve(&self.entry, project)
+            .map_err(|e| {
+                Error::other(match self.role.as_str() {
+                    "" => e,
+                    role => format!("functor.json entry `{role}`: {e}"),
+                })
+            })?;
+        let session =
+            functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|f| {
                 Error::other(format!(
                     "cannot load the {} project: {}",
                     self.entry,
@@ -894,8 +911,8 @@ value `config` doesn't use"
         let three_mf = export_format(output)?;
         let text = std::fs::read_to_string(params)
             .map_err(|e| Error::other(format!("cannot read {}: {e}", params.display())))?;
-        let params = parse_params(&text)
-            .map_err(|e| Error::other(format!("{}: {e}", params.display())))?;
+        let params =
+            parse_params(&text).map_err(|e| Error::other(format!("{}: {e}", params.display())))?;
         let mesh = Evaluator::from_project(project)
             .and_then(|evaluator| evaluator.evaluate(function, &params))
             .map_err(Error::other)?;
@@ -1531,7 +1548,9 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
                 Ok(loaded) => warn_unsupported(self, &loaded, &Environment::Vr),
                 Err(e) => {
                     emit(Event::Warning {
-                        message: format!("check failed ({e}) — the headset keeps the previous program"),
+                        message: format!(
+                            "check failed ({e}) — the headset keeps the previous program"
+                        ),
                     });
                     attempted = current;
                     observed_assets = current_assets;
@@ -2096,7 +2115,8 @@ fn project_asset_files(root: &Path, external: &[String]) -> Result<ProjectFiles,
                 .collect::<Result<Vec<_>, _>>()?
                 .join("/");
             // A name `File.bytes` couldn't ask for anyway (e.g. a backslash).
-            if functor_runtime_common::debug_protocol::validate_project_asset_path(&locator).is_err()
+            if functor_runtime_common::debug_protocol::validate_project_asset_path(&locator)
+                .is_err()
             {
                 continue;
             }
@@ -2573,7 +2593,13 @@ fn post_project(
         functor_runtime_common::debug_protocol::encode_entry_role_query(role)
     );
     // Answered when the load lands, which a heavy one takes a while to do.
-    http_post_bytes(addr, &path, "application/json", files_json.as_bytes(), LOAD_TIMEOUT)
+    http_post_bytes(
+        addr,
+        &path,
+        "application/json",
+        files_json.as_bytes(),
+        LOAD_TIMEOUT,
+    )
 }
 
 /// How long a push waits for its load: the runtime's own reply limit.
@@ -2650,7 +2676,13 @@ fn take_refresh_rate_arg(runner_args: &[String]) -> Result<(Option<f32>, Vec<Str
 /// runner's shared debug HTTP server. Returns (status, body). `Connection: close`
 /// keeps the read side trivial (read to EOF, split headers off).
 fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> {
-    http_post_bytes(addr, "/reload-source", "text/plain", source.as_bytes(), LOAD_TIMEOUT)
+    http_post_bytes(
+        addr,
+        "/reload-source",
+        "text/plain",
+        source.as_bytes(),
+        LOAD_TIMEOUT,
+    )
 }
 
 /// The debug protocol version a runtime reports at `GET /`, or `None` when the
@@ -2753,17 +2785,29 @@ pub fn warn_unsupported(
     project: &functor_lang::project::Project,
     environment: &Environment,
 ) {
-    let Ok(names) = role.entry_role().resolve(&role.entry, project) else { return };
+    let Ok(names) = role.entry_role().resolve(&role.entry, project) else {
+        return;
+    };
     let mut roots = names.hooks().to_vec();
     roots.extend([names.init, names.config, names.loading]);
     for finding in crate::util::shell_support::check(project, &roots, environment) {
-        emit_at(project, finding.span.start, Severity::Warning, finding.message);
+        emit_at(
+            project,
+            finding.span.start,
+            Severity::Warning,
+            finding.message,
+        );
     }
 }
 
 /// Emit a diagnostic at a project-wide offset, with its source line for the
 /// caret (already in memory: no extra IO).
-fn emit_at(project: &functor_lang::project::Project, offset: usize, severity: Severity, message: String) {
+fn emit_at(
+    project: &functor_lang::project::Project,
+    offset: usize,
+    severity: Severity,
+    message: String,
+) {
     let (file, line, col) = project.sources.resolve(offset);
     emit(Event::Diagnostic {
         severity,
@@ -3120,7 +3164,10 @@ mod tests {
         };
         let err = captured.select(None).unwrap_err();
         assert!(err.to_string().contains("was removed"), "{err}");
-        assert!(err.to_string().contains("capture is now the default"), "{err}");
+        assert!(
+            err.to_string().contains("capture is now the default"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -3268,7 +3315,10 @@ mod tests {
             ),
         ]);
         let client = config.select(Some("client")).unwrap();
-        assert_eq!((client.entry.as_str(), client.prefix.as_str()), ("game.fun", ""));
+        assert_eq!(
+            (client.entry.as_str(), client.prefix.as_str()),
+            ("game.fun", "")
+        );
         let server = config.select(Some("server")).unwrap();
         assert_eq!(
             (server.entry.as_str(), server.prefix.as_str()),

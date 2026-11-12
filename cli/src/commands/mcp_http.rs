@@ -59,7 +59,10 @@ pub async fn serve(server: FunctorMcp, port: u16, token: String) -> io::Result<(
             put(put_app_context).layer(DefaultBodyLimit::max(MAX_APP_CONTEXT_BYTES)),
         )
         .with_state(server)
-        .layer(middleware::from_fn_with_state(Arc::<str>::from(token), require_token));
+        .layer(middleware::from_fn_with_state(
+            Arc::<str>::from(token),
+            require_token,
+        ));
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
@@ -68,7 +71,11 @@ pub async fn serve(server: FunctorMcp, port: u16, token: String) -> io::Result<(
     // Poll once so the signal handlers exist before the URL is announced: a
     // host may signal as soon as it reads the line.
     let mut signal = std::pin::pin!(shutdown_signal());
-    if signal.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready() {
+    if signal
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_ready()
+    {
         return Ok(());
     }
     eprintln!("[mcp] listening on http://{address}/mcp");
@@ -107,7 +114,11 @@ async fn put_app_context(State(server): State<FunctorMcp>, body: Bytes) -> Respo
             server.set_app_context(context);
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(_) => (StatusCode::BAD_REQUEST, "the app context must be a JSON object").into_response(),
+        Ok(_) => (
+            StatusCode::BAD_REQUEST,
+            "the app context must be a JSON object",
+        )
+            .into_response(),
         Err(error) => (StatusCode::BAD_REQUEST, format!("invalid JSON: {error}")).into_response(),
     }
 }

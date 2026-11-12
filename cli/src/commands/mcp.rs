@@ -142,7 +142,9 @@ pub async fn execute(
     app_url: Option<&str>,
 ) -> io::Result<()> {
     // Read the secrets before anything else so a misconfigured start fails fast.
-    let token = http.map(|_| super::mcp_http::token_from_env()).transpose()?;
+    let token = http
+        .map(|_| super::mcp_http::token_from_env())
+        .transpose()?;
     let app = app_url
         .map(super::mcp_app::app_link)
         .transpose()
@@ -596,7 +598,15 @@ impl Registry {
                 },
             )
         });
-        self.insert_with_gate(url, port, child, scratch, manifest, operation_gate, quarantined)
+        self.insert_with_gate(
+            url,
+            port,
+            child,
+            scratch,
+            manifest,
+            operation_gate,
+            quarantined,
+        )
     }
 
     fn insert_with_gate(
@@ -1198,7 +1208,11 @@ impl FunctorMcp {
     /// are the app's, not a fixed schema. Served over HTTP only.
     #[tool]
     async fn app_context(&self) -> Result<CallToolResult, ErrorData> {
-        let context = self.app_context.lock().expect("app context poisoned").clone();
+        let context = self
+            .app_context
+            .lock()
+            .expect("app context poisoned")
+            .clone();
         let body = match context {
             Some(context) => serde_json::json!({ "context": context }),
             None => serde_json::json!({
@@ -1327,8 +1341,15 @@ files writes the inline project to a scratch directory this server owns",
         // below fails on it with the runtime's own message.
         let manifest = std::fs::read_to_string(dir.join("functor.json")).ok();
         let spawned = resolve!(
-            self.spawn_runtime(&dir, args.entry.as_deref(), mode_flag, scratch, manifest, false)
-                .await
+            self.spawn_runtime(
+                &dir,
+                args.entry.as_deref(),
+                mode_flag,
+                scratch,
+                manifest,
+                false
+            )
+            .await
         );
         let (id, url, port, discovery) = (
             spawned.session,
@@ -1395,9 +1416,8 @@ files writes the inline project to a scratch directory this server owns",
             }
         };
         let dir = std::path::PathBuf::from(&args.dir);
-        let manifest_text = resolve!(std::fs::read_to_string(dir.join("functor.json")).map_err(
-            |error| format!("cannot read {}/functor.json: {error}", absolute(&dir))
-        ));
+        let manifest_text = resolve!(std::fs::read_to_string(dir.join("functor.json"))
+            .map_err(|error| format!("cannot read {}/functor.json: {error}", absolute(&dir))));
         let declared = resolve!(declared_entries(&manifest_text));
         let roles = resolve!(group_roles(args.roles.as_deref(), &declared));
         let labels = group_labels(&roles);
@@ -2532,7 +2552,10 @@ impl FunctorMcp {
         Some((id, group))
     }
 
-    fn group_by_id(&self, id: Option<&str>) -> Result<(String, Arc<tokio::sync::Mutex<Group>>), String> {
+    fn group_by_id(
+        &self,
+        id: Option<&str>,
+    ) -> Result<(String, Arc<tokio::sync::Mutex<Group>>), String> {
         let registry = self.sessions.lock().expect("mcp registry poisoned");
         match id {
             Some(id) => registry
@@ -2549,7 +2572,12 @@ launch_session_group"
                     } else {
                         format!(
                             "unknown group {id:?}: known groups are {}",
-                            registry.groups.keys().cloned().collect::<Vec<_>>().join(", ")
+                            registry
+                                .groups
+                                .keys()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         )
                     }
                 }),
@@ -2564,7 +2592,12 @@ wired to each other by this process, with no sockets)"
             ),
             None => Err(format!(
                 "several groups are running ({}) — name one with `group`",
-                registry.groups.keys().cloned().collect::<Vec<_>>().join(", ")
+                registry
+                    .groups
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
         }
     }
@@ -3775,10 +3808,7 @@ runtime, restart both the runtime and this MCP server before reconnecting."
                 }),
                 _ => continue,
             };
-            if let Err(error) = self
-                .post(&target.url, "/input", command.to_string())
-                .await
-            {
+            if let Err(error) = self.post(&target.url, "/input", command.to_string()).await {
                 failures.push(format!("touch contact {id}: {error}"));
             }
         }
@@ -3985,7 +4015,11 @@ enum WireFilter {
 }
 
 impl WireFilter {
-    fn parse(link: Option<&str>, direction: Option<&str>, known: &[String]) -> Result<Self, String> {
+    fn parse(
+        link: Option<&str>,
+        direction: Option<&str>,
+        known: &[String],
+    ) -> Result<Self, String> {
         let sent = match direction {
             None => None,
             Some("sent") => Some(true),
@@ -5166,10 +5200,7 @@ overwrite: true to replace it",
     // end up with a project that builds and runs the wrong role: the sources
     // become this session's, the manifest stays whoever's it was. Refuse when
     // the two disagree about the entries rather than write the mismatch.
-    if let (Some(booted), true) = (
-        manifest,
-        existing.iter().any(|name| name == "functor.json"),
-    ) {
+    if let (Some(booted), true) = (manifest, existing.iter().any(|name| name == "functor.json")) {
         let there = std::fs::read_to_string(dir.join("functor.json")).unwrap_or_default();
         if let (Some(mine), Some(theirs)) = (manifest_entries(booted), manifest_entries(&there)) {
             if mine != theirs {
@@ -5541,15 +5572,14 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 mod tests {
     use super::{
         acquire_target_operation, base64_encoded_len, checked_output_total, declared_entries,
-        deliverable_prefix, encoded_capture_total, group_labels, group_roles, MAX_DELIVERY_BYTES,
-        ensure_operation_active, extend_bounded, find_guide_section, guide_sections,
-        json_encoded_len, node_code_call_result, node_code_summary, read_body,
-        read_bounded_response, render_api_hits, render_guide_contents, render_guide_section,
-        retain_final_snapshot, search_api, serialize_json_bounded, spawn_node_child,
-        strip_front_matter, truncate_code_error, CodeInputRestore, CodeOutputBudget, FunctorMcp,
-        NodeCodeOutput, Registry, RunGameCodeUnsafeArgs, SessionTarget, WireFilter,
-        LANGUAGE_GUIDE,
-        MAX_CODE_CAPTURE_BYTES, MAX_CODE_TEXT_BYTES, QUICK_FACTS_SLUG,
+        deliverable_prefix, encoded_capture_total, ensure_operation_active, extend_bounded,
+        find_guide_section, group_labels, group_roles, guide_sections, json_encoded_len,
+        node_code_call_result, node_code_summary, read_body, read_bounded_response,
+        render_api_hits, render_guide_contents, render_guide_section, retain_final_snapshot,
+        search_api, serialize_json_bounded, spawn_node_child, strip_front_matter,
+        truncate_code_error, CodeInputRestore, CodeOutputBudget, FunctorMcp, NodeCodeOutput,
+        Registry, RunGameCodeUnsafeArgs, SessionTarget, WireFilter, LANGUAGE_GUIDE,
+        MAX_CODE_CAPTURE_BYTES, MAX_CODE_TEXT_BYTES, MAX_DELIVERY_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
     use std::sync::{
@@ -5621,8 +5651,17 @@ mod tests {
             .map(|tool| tool.name.to_string())
             .collect();
         assert!(names.iter().any(|name| name == "app_context"), "{names:?}");
-        for reserved in ["report_status", "report_evidence", "report_result", "approve", "merge_pr"] {
-            assert!(!names.iter().any(|name| name == reserved), "{reserved} is reserved");
+        for reserved in [
+            "report_status",
+            "report_evidence",
+            "report_result",
+            "approve",
+            "merge_pr",
+        ] {
+            assert!(
+                !names.iter().any(|name| name == reserved),
+                "{reserved} is reserved"
+            );
         }
     }
 
@@ -5630,21 +5669,34 @@ mod tests {
     fn the_router_drops_the_code_runner_on_request_and_app_context_off_http() {
         let names = |server: FunctorMcp| -> Vec<String> {
             let router = server.router();
-            router.list_all().into_iter().map(|tool| tool.name.to_string()).collect()
+            router
+                .list_all()
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect()
         };
         let has = |names: &[String], name: &str| names.iter().any(|n| n == name);
         let stdio = names(FunctorMcp::new());
-        assert!(has(&stdio, "run_game_code_unsafe") && !has(&stdio, "app_context"), "{stdio:?}");
+        assert!(
+            has(&stdio, "run_game_code_unsafe") && !has(&stdio, "app_context"),
+            "{stdio:?}"
+        );
         let app = names(FunctorMcp {
             http_mode: true,
             no_unsafe_code: true,
             ..FunctorMcp::new()
         });
-        assert!(!has(&app, "run_game_code_unsafe") && has(&app, "app_context"), "{app:?}");
+        assert!(
+            !has(&app, "run_game_code_unsafe") && has(&app, "app_context"),
+            "{app:?}"
+        );
         assert_eq!(app.len(), stdio.len());
         // The view tools exist only with an app to forward to.
         for names in [&stdio, &app] {
-            assert!(!has(names, "show_view") && !has(names, "present"), "{names:?}");
+            assert!(
+                !has(names, "show_view") && !has(names, "present"),
+                "{names:?}"
+            );
         }
         let linked = names(FunctorMcp {
             http_mode: true,
@@ -5654,7 +5706,10 @@ mod tests {
             }),
             ..FunctorMcp::new()
         });
-        assert!(has(&linked, "show_view") && has(&linked, "present"), "{linked:?}");
+        assert!(
+            has(&linked, "show_view") && has(&linked, "present"),
+            "{linked:?}"
+        );
         assert_eq!(linked.len(), stdio.len() + 3);
     }
 
@@ -6466,7 +6521,8 @@ mod tests {
     /// preservation exists to prevent, one step later.
     #[test]
     fn saving_refuses_a_manifest_that_names_a_module_the_session_no_longer_has() {
-        let dir = std::env::temp_dir().join(format!("functor-mcp-save-gone-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("functor-mcp-save-gone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let error = super::save_project_to(
@@ -6488,7 +6544,8 @@ mod tests {
     /// written.
     #[test]
     fn overwriting_refuses_a_directory_whose_manifest_declares_other_entries() {
-        let dir = std::env::temp_dir().join(format!("functor-mcp-save-clash-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("functor-mcp-save-clash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("functor.json"), "{\"entry\":\"game.fun\"}").unwrap();
@@ -6532,8 +6589,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("functor-mcp-save-att-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        super::save_project_to(&dir, &[("game.fun".into(), "let x = 1".into())], None, false)
-            .unwrap();
+        super::save_project_to(
+            &dir,
+            &[("game.fun".into(), "let x = 1".into())],
+            None,
+            false,
+        )
+        .unwrap();
 
         let manifest: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("functor.json")).unwrap())
@@ -6561,8 +6623,13 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("functor.json"), "{\"entry\":\"game.fun\"}").unwrap();
 
-        super::save_project_to(&dir, &[("game.fun".into(), "let init = 2".into())], None, true)
-            .unwrap();
+        super::save_project_to(
+            &dir,
+            &[("game.fun".into(), "let init = 2".into())],
+            None,
+            true,
+        )
+        .unwrap();
 
         assert_eq!(
             std::fs::read_to_string(dir.join("game.fun")).unwrap(),
@@ -6592,9 +6659,13 @@ mod tests {
         std::fs::write(dir.join("functor.json"), "{}").unwrap();
         std::fs::write(dir.join("game.fun"), "someone else's game").unwrap();
 
-        let error =
-            super::save_project_to(&dir, &[("game.fun".into(), "let init = 1".into())], None, false)
-                .unwrap_err();
+        let error = super::save_project_to(
+            &dir,
+            &[("game.fun".into(), "let init = 1".into())],
+            None,
+            false,
+        )
+        .unwrap_err();
 
         assert!(error.contains("already holds a project"), "{error}");
         assert!(error.contains("overwrite"), "{error}");
@@ -6863,7 +6934,11 @@ mod tests {
     #[test]
     fn explicit_roles_are_taken_verbatim_and_checked() {
         let declared = vec!["client".to_string(), "server".to_string()];
-        let asked = ["server".to_string(), "client".to_string(), "client".to_string()];
+        let asked = [
+            "server".to_string(),
+            "client".to_string(),
+            "client".to_string(),
+        ];
         assert_eq!(group_roles(Some(&asked), &declared).unwrap(), asked);
 
         let typo = ["sevrer".to_string()];
@@ -6910,16 +6985,26 @@ mod tests {
 
     #[test]
     fn the_wire_filter_selects_by_link_and_direction() {
-        let known = vec!["server".to_string(), "client1".to_string(), "client2".to_string()];
+        let known = vec![
+            "server".to_string(),
+            "client1".to_string(),
+            "client2".to_string(),
+        ];
         let rows = [
             packet("client1", "server", 0),
             packet("server", "client1", 1),
             packet("server", "client2", 2),
         ];
         let matching = |filter: WireFilter| -> Vec<u64> {
-            rows.iter().filter(|p| filter.matches(p)).map(|p| p.seq).collect()
+            rows.iter()
+                .filter(|p| filter.matches(p))
+                .map(|p| p.seq)
+                .collect()
         };
-        assert_eq!(matching(WireFilter::parse(None, None, &known).unwrap()), [0, 1, 2]);
+        assert_eq!(
+            matching(WireFilter::parse(None, None, &known).unwrap()),
+            [0, 1, 2]
+        );
         assert_eq!(
             matching(WireFilter::parse(Some("client1"), None, &known).unwrap()),
             [0, 1]

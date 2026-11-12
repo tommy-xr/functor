@@ -31,8 +31,14 @@ fn unsupported(environment: &Environment) -> &'static [(&'static str, &'static s
             ("Launch.args", NO_ARGS),
         ],
         Environment::Wasm => &[
-            ("Sub.listen", "never opens on a top-level page: the browser is a client only"),
-            ("Effect.playThen", "plays, but its message never arrives in the browser"),
+            (
+                "Sub.listen",
+                "never opens on a top-level page: the browser is a client only",
+            ),
+            (
+                "Effect.playThen",
+                "plays, but its message never arrives in the browser",
+            ),
             ("Launch.args", NO_ARGS),
         ],
     }
@@ -44,12 +50,23 @@ fn unsupported(environment: &Environment) -> &'static [(&'static str, &'static s
 pub(crate) fn check(project: &Project, roots: &[&str], environment: &Environment) -> Vec<Finding> {
     let table = unsupported(environment);
     let index = CodeIndex::new(&project.module);
-    let reached: HashSet<String> = roots.iter().filter_map(|name| index.deps_of(name)).flatten().collect();
+    let reached: HashSet<String> = roots
+        .iter()
+        .filter_map(|name| index.deps_of(name))
+        .flatten()
+        .collect();
     // Per table row: (first use, uses).
     let mut found: Vec<Option<(functor_lang::Span, usize)>> = vec![None; table.len()];
-    for def in project.module.defs.iter().filter(|d| reached.contains(&d.name)) {
+    for def in project
+        .module
+        .defs
+        .iter()
+        .filter(|d| reached.contains(&d.name))
+    {
         walk(&def.value, &mut |expr| {
-            let ExprKind::External(path) = &expr.kind else { return };
+            let ExprKind::External(path) = &expr.kind else {
+                return;
+            };
             let path = path.join(".");
             if let Some(i) = table.iter().position(|(name, _)| *name == path) {
                 let entry = found[i].get_or_insert((expr.span, 0));
@@ -106,11 +123,20 @@ mod tests {
         assert_eq!(messages(NET, Environment::Native), Vec::<String>::new());
         let vr = messages(NET, Environment::Vr);
         assert_eq!(vr.len(), 2, "{vr:?}");
-        assert!(vr[0].starts_with("`Sub.connect` fails as `Net.Error`"), "{vr:?}");
-        assert!(vr[1].starts_with("`Sub.listen`") && vr[1].ends_with("(2 uses)"), "{vr:?}");
+        assert!(
+            vr[0].starts_with("`Sub.connect` fails as `Net.Error`"),
+            "{vr:?}"
+        );
+        assert!(
+            vr[1].starts_with("`Sub.listen`") && vr[1].ends_with("(2 uses)"),
+            "{vr:?}"
+        );
         let wasm = messages(NET, Environment::Wasm);
         assert_eq!(wasm.len(), 1, "{wasm:?}");
-        assert!(wasm[0].contains("`wasm` cannot perform it (2 uses)"), "{wasm:?}");
+        assert!(
+            wasm[0].contains("`wasm` cannot perform it (2 uses)"),
+            "{wasm:?}"
+        );
     }
 
     /// A sibling counts only through what the entry uses: `Helper`'s
@@ -121,11 +147,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("game.fun"), "let a = Helper.open()\n").unwrap();
-        std::fs::write(dir.join("helper.fun"), "let open = () => Sub.connect(\"ws://h\", (e) => e)\n").unwrap();
-        std::fs::write(dir.join("server.fun"), "let s = Sub.listen(\"0.0.0.0:9\", (e) => e)\n").unwrap();
+        std::fs::write(
+            dir.join("helper.fun"),
+            "let open = () => Sub.connect(\"ws://h\", (e) => e)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("server.fun"),
+            "let s = Sub.listen(\"0.0.0.0:9\", (e) => e)\n",
+        )
+        .unwrap();
         let project = functor_lang::project::load(&dir.join("game.fun"))
             .unwrap_or_else(|e| panic!("load: {}", e.render()));
-        let found: Vec<String> = check(&project, &["a"], &Environment::Vr).into_iter().map(|f| f.message).collect();
+        let found: Vec<String> = check(&project, &["a"], &Environment::Vr)
+            .into_iter()
+            .map(|f| f.message)
+            .collect();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].starts_with("`Sub.connect`"), "{found:?}");
@@ -135,10 +172,15 @@ mod tests {
     /// signatures, not the unresolved-name path the other tests take.
     #[test]
     fn prelude_linked_builtins_are_found() {
-        let dir = std::env::temp_dir().join(format!("shell-support-prelude-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("shell-support-prelude-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("game.fun"), "let subscriptions = (m) => Sub.listen(\"0.0.0.0:9\", (e) => e)\n").unwrap();
+        std::fs::write(
+            dir.join("game.fun"),
+            "let subscriptions = (m) => Sub.listen(\"0.0.0.0:9\", (e) => e)\n",
+        )
+        .unwrap();
         let project = functor_lang::project::load_with_bundled_modules(
             &dir.join("game.fun"),
             &std::collections::HashMap::new(),
@@ -158,7 +200,10 @@ mod tests {
             "let tick = (m) => Sub.connect(\"ws://h\", (e) => e)\n\
              module Server {\n  let tick = (m) => Sub.listen(\"0.0.0.0:9\", (e) => e)\n}\n",
         );
-        let client: Vec<String> = check(&project, &["tick"], &Environment::Wasm).into_iter().map(|f| f.message).collect();
+        let client: Vec<String> = check(&project, &["tick"], &Environment::Wasm)
+            .into_iter()
+            .map(|f| f.message)
+            .collect();
         assert!(client.is_empty(), "{client:?}");
         let server = check(&project, &["Server.tick"], &Environment::Wasm);
         assert_eq!(server.len(), 1);
