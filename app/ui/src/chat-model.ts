@@ -7,6 +7,7 @@ export const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
   in_progress: "In progress",
   waiting_on_you: "Waiting on you",
   ready_for_review: "Ready for review",
+  done: "Done",
   failed: "Failed",
   kept: "Kept",
   reverted: "Reverted",

@@ -22,6 +22,7 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   compose: <path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />,
+  trash: <path d="M4 7h16M10 11v6M14 11v6M9 7V4h6v3M6 7l1 13h10l1-13" />,
   "split-right": (
     <>
       <rect x="3" y="4" width="18" height="16" rx="2" />

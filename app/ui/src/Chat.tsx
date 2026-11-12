@@ -14,7 +14,6 @@ import {
   atBottom,
   clip,
   connectionLines,
-  initialTask,
   outcome,
   pickHarness,
   toolFile,
@@ -53,7 +52,7 @@ type Props = {
   canvasWord: string;
   /** Opens or focuses the Game tab, beside what is shown. */
   onOpenGame: () => void;
-  /** The current task; `null` is the empty state. */
+  /** The current task (the core's); `null` is the empty state. */
   selected: number | null;
   onSelect: (task: number | null) => void;
   /** Opens or focuses the current task's Changes tab at `path` (repo-relative), or at its top. */
@@ -95,12 +94,6 @@ export function ChatDock({
     () => (state?.tasks ?? []).filter((t) => t.project === active).sort((a, b) => b.id - a.id),
     [state?.tasks, active],
   );
-  // Chosen afresh on load and on a project switch.
-  const loaded = state !== null;
-  useEffect(() => {
-    if (state) setSelected(initialTask(state.tasks, active));
-    // Not on every state: only the first one and a project switch choose.
-  }, [loaded, active]);
   const current = tasks.find((t) => t.id === selected) ?? null;
   const items = current ? transcripts.get(current.id) : undefined;
   // Once per task per connection: `fetchTranscript` skips one already asked for.
@@ -114,8 +107,8 @@ export function ChatDock({
   const [shownNotice, setShownNotice] = useState<string | null>(null);
   useEffect(() => {
     if (!pending || !accepted || accepted.text !== pending.text) return;
+    // A new task becomes the current one in the core as it starts.
     if (pending.task !== null && pending.task !== accepted.task) return;
-    if (pending.task === null) setSelected(accepted.task);
     setPending(null);
     setDraft((d) => (d === pending.text ? "" : d));
     setShownNotice(null);

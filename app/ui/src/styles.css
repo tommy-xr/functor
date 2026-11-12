@@ -2374,6 +2374,447 @@ blockquote {
   font-size: 12px;
 }
 
+/* Tasks pane (D12): grouped rows, each opening its task. */
+
+.rail button {
+  position: relative;
+}
+
+.rail-badge {
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.tasks-pane {
+  gap: 10px;
+}
+
+.tasks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tasks-head .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tasks-head .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.tasks-search {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  background: var(--sunk);
+  font-size: 12.5px;
+}
+
+.tasks-search::placeholder {
+  color: var(--faint);
+}
+
+.tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tasks-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tasks-group-label {
+  padding: 0 4px;
+}
+
+.tasks-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--faint);
+}
+
+.tasks-group-toggle .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.tasks-rows {
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-row {
+  border-radius: var(--radius-m);
+}
+
+.task-row:hover {
+  background: var(--surface-3);
+}
+
+.task-row-selected {
+  background: var(--selected);
+}
+
+.task-row-selected:hover {
+  background: var(--selected);
+}
+
+.task-row-line {
+  display: flex;
+  align-items: flex-start;
+}
+
+.task-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 4px 6px 8px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-row-top,
+.task-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-title,
+.task-second {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-title {
+  font-weight: 600;
+}
+
+.task-second,
+.task-when {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.task-when {
+  flex: none;
+  margin-left: auto;
+}
+
+.task-actions {
+  flex: none;
+  display: flex;
+  padding: 2px 2px 0 0;
+  opacity: 0;
+}
+
+.task-row:hover .task-actions,
+.task-row:focus-within .task-actions,
+.task-row-selected .task-actions {
+  opacity: 1;
+}
+
+.task-actions .icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.task-actions .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.task-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-s);
+  background: var(--sunk);
+}
+
+.task-confirm {
+  margin: 2px 6px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.task-row > .reason {
+  padding: 0 8px 6px;
+}
+
+.badge-waiting_on_you {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.badge-done,
+.badge-kept {
+  background: var(--chip);
+  color: var(--text-2);
+}
+
+/* Task page (the Task tab): a read view of one task, section by section. */
+
+.task-page {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 6px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.task-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-page-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-page-name {
+  min-width: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.task-name-button {
+  max-width: 100%;
+  padding: 0 2px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.task-name-button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.task-page-rename {
+  margin: 0;
+  font-size: 16px;
+  max-width: 560px;
+}
+
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.task-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 760px;
+}
+
+.task-given {
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent-soft);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.task-sub {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.task-followups {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.task-runs {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.task-run {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+
+.task-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 4px;
+  color: var(--text-2);
+}
+
+.task-step-failed .step-dot {
+  background: var(--danger);
+}
+
+.task-step-flag {
+  flex: none;
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.task-step-unanswered .task-step-flag {
+  color: var(--muted);
+}
+
+.task-change {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-change .counts {
+  margin-left: 4px;
+}
+
+.task-change-files {
+  margin: 0;
+  padding: 6px 8px;
+  list-style: none;
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+}
+
+.task-change-files li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-change-files .mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-usage {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-usage th,
+.task-usage td {
+  padding: 4px 16px 4px 0;
+  text-align: right;
+}
+
+.task-usage th:first-child {
+  text-align: left;
+}
+
+.task-usage thead th {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.task-usage tbody th {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.task-usage tfoot th,
+.task-usage tfoot td {
+  border-top: 1px solid var(--border-strong);
+  font-weight: 600;
+}
+
 /* Responsive overrides last, so they win over the rules above. */
 
 /* Below desktop width the chat drops under the canvas. */

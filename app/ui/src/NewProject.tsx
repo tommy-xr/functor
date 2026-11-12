@@ -11,8 +11,6 @@ export type NewProjectProps = FolderProps & {
   plan: PlanMsg | null;
   checkProject: (request: NewProjectRequest) => void;
   harness: Harness;
-  /** Sent with a description: the chat shows its task once it starts. */
-  onDescribed: () => void;
 };
 
 /**
@@ -20,7 +18,7 @@ export type NewProjectProps = FolderProps & {
  * fields are the page's own; the plan, progress and errors are the core's.
  */
 export function NewProjectModal(props: NewProjectProps) {
-  const { state, online, send, dirs, listDirs, plan, checkProject, harness, onDescribed } = props;
+  const { state, online, send, dirs, listDirs, plan, checkProject, harness } = props;
   const np = state?.new_project;
   const templates = state?.templates ?? [];
   const [name, setName] = useState(np?.name ?? "");
@@ -51,7 +49,8 @@ export function NewProjectModal(props: NewProjectProps) {
   const close = () => !busy && send({ type: "close_new_project" });
   const ready = online && !busy && !!current?.plan && !state?.templates_error;
   const create = () => {
-    if (ready && send({ type: "create_project", request, harness }) && describe.trim()) onDescribed();
+    // With a description, its task becomes the chat's once it starts (the core's current task).
+    if (ready) send({ type: "create_project", request, harness });
   };
   // Focus goes back where it was when the modal closes.
   useEffect(() => {
