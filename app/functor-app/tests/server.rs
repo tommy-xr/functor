@@ -111,14 +111,19 @@ async fn state_where(socket: &mut Socket, done: impl Fn(&Value) -> bool) -> Valu
 #[tokio::test(flavor = "current_thread")]
 async fn clients_get_the_state_and_see_a_switch_broadcast() {
     let tmp = tree();
-    let server = serve(tmp.path(), &[]);
+    // Opening a project starts its game: with no `functor`, it fails at once.
+    let server = serve(tmp.path(), &["--functor", "/nonexistent/functor"]);
+    let failed = |s: &Value, id: u64| {
+        s["session"]["id"] == id && s["session"]["status"]["kind"] == "failed"
+    };
     let mut one = connect(&server.ws).await;
     let mut two = connect(&server.ws).await;
     for socket in [&mut one, &mut two] {
         // The templates are listed as the app starts, then broadcast.
         let state = state_where(socket, |s| {
-            s["templates"].as_array().is_some_and(|t| !t.is_empty())
-                || !s["templates_error"].is_null()
+            (s["templates"].as_array().is_some_and(|t| !t.is_empty())
+                || !s["templates_error"].is_null())
+                && failed(s, 1)
         })
         .await;
         // Outside any project, a child of the start directory opens first.
@@ -134,7 +139,10 @@ async fn clients_get_the_state_and_see_a_switch_broadcast() {
     let switch = r#"{"type":"set_active_project","path":"b"}"#;
     one.send(Message::text(switch)).await.unwrap();
     for socket in [&mut one, &mut two] {
-        let state = state_where(socket, |s| !s["files"].as_array().unwrap().is_empty()).await;
+        let state = state_where(socket, |s| {
+            !s["files"].as_array().unwrap().is_empty() && failed(s, 2)
+        })
+        .await;
         assert_eq!(state["active"], "b", "{state}");
         assert_eq!(state["files"], serde_json::json!(["b.fun", "functor.json"]));
     }

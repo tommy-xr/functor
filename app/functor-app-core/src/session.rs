@@ -78,12 +78,13 @@ impl Display {
         }
     }
 
-    /// The `functor run native` flag, if any.
-    pub fn flag(self) -> Option<&'static str> {
+    /// The `functor run native` flags. A session the app shows opens paused
+    /// on frame 0 (D37); its own window runs at once, as it has no transport bar.
+    pub fn flags(self) -> &'static [&'static str] {
         match self {
-            Self::Headless => Some("--headless"),
-            Self::Hidden => Some("--hidden"),
-            Self::Window => None,
+            Self::Headless => &["--headless", "--paused"],
+            Self::Hidden => &["--hidden", "--paused"],
+            Self::Window => &[],
         }
     }
 }
@@ -120,6 +121,8 @@ pub enum SessionEvent {
     StartFailed {
         reason: String,
     },
+    /// A project file changed after the child ended.
+    SourceChanged,
 }
 
 /// What the core keeps from a `GET /state`.
@@ -162,6 +165,13 @@ pub(crate) fn loopback_url(line: &str, tag: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sessions_the_app_shows_open_paused() {
+        assert_eq!(Display::Hidden.flags(), ["--hidden", "--paused"]);
+        assert_eq!(Display::Headless.flags(), ["--headless", "--paused"]);
+        assert!(Display::Window.flags().is_empty());
+    }
 
     #[test]
     fn reads_the_bound_address_from_the_listening_line() {

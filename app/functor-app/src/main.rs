@@ -227,6 +227,7 @@ async fn app(
     // `--print` and `task` act on the folder they name or are run in, never
     // on whatever was open last.
     let interactive = !args.print && args.command.is_none();
+    state.start_on_open = interactive;
     let recents = if interactive { &state.recents[..] } else { &[] };
     let (tx, events) = mpsc::unbounded_channel();
     let hub = link::Hub::new(home.clone(), tx.clone())?;

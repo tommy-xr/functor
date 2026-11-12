@@ -71,10 +71,13 @@ test("lines are classed by kind and their text is never markup", () => {
         { kind: "added", text: '<script>alert(1)</script><img src=x onerror="alert(1)">' },
         { kind: "context", text: "" },
         { kind: "note", text: "No newline at end of file" },
-      ]),
+      ], "notes.txt"),
     ),
   );
   assert.ok(!/<script|<img/i.test(html), html);
+  // Highlighted, the text is still only text.
+  const fun = renderToStaticMarkup(createElement("div", null, renderLines([{ kind: "added", text: '"<script>alert(1)</script>"' }], "game.fun")));
+  assert.ok(!/<script/i.test(fun) && fun.includes('<span class="tok-string">'), fun);
   assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), html);
   assert.deepEqual(
     [...html.matchAll(/class="dl dl-(\w+)"/g)].map((m) => m[1]),

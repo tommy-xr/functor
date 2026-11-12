@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AppState, FileDiff, Task, TaskStatus } from "./generated/protocol";
 import {
   collapse,
@@ -131,6 +131,8 @@ function FileBlock({ id, diff, current }: { id: string; diff: FileDiff; current:
   const [expanded, setExpanded] = useState(false);
   const { file, lines, omitted } = diff;
   const { shown, hidden } = collapse(lines, expanded);
+  // Tokenised once per diff, not on every render of the view.
+  const rendered = useMemo(() => renderLines(shown, file.path), [lines, expanded, file.path]);
   return (
     <section className="diff-file" id={id} aria-label={file.path} data-current={current || undefined}>
       <header className="diff-file-head">
@@ -143,7 +145,7 @@ function FileBlock({ id, diff, current }: { id: string; diff: FileDiff; current:
         <p className="diff-omitted">No line changes (renamed or its mode changed).</p>
       ) : (
         <div className="diff-lines">
-          <div className="diff-lines-inner">{renderLines(shown)}</div>
+          <div className="diff-lines-inner">{rendered}</div>
         </div>
       )}
       {hidden > 0 && (

@@ -259,6 +259,9 @@ Flows:
 placement control. The explorer's session card shows status only. "Stop" in
 the chat always means the agent.
 
+*Revised 2026-11-12 by D37: no empty state to start from; the game opens
+paused on its first frame.*
+
 ### D23 — the app opens any folder
 
 A project is a folder, not a place in a repository: a subfolder of a repo, a
@@ -515,6 +518,54 @@ Rules:
 
 Pinned notes and measured lines need only a point or object to attach to and
 come first; side-by-side versions and ghosts wait on the branching spike (S5).
+
+### D37 — the game opens paused on its first frame
+
+*2026-11-12. Replaces D22's "Start game" empty state.*
+
+Opening a project — at app start, from a folder or a recent project, by
+switching projects, or after creating one — starts its game, hidden and
+paused on frame 0: after `init`, before any tick moves time. The game view
+shows that frame; the transport bar shows it paused at the start. Play runs
+it from there. The game view has no Start prompt.
+
+- **One start/stop control** stays beside the placement control (D22):
+  **Stop game** ends the process and frees what it holds; when stopped,
+  **Start game** brings it back paused on frame 0. Play and pause are the
+  transport bar's.
+- **Own window** is not started on open, and runs at once when started: that
+  window has no transport bar.
+- **A live game in a pane keeps its tab**, so opening a project brings its
+  Game tab back if it was closed.
+- **A game that fails to load** shows its error where the frame would be;
+  saving a project file starts it again.
+- **Cost:** one hidden game process per open project, from the moment it
+  opens. Switching projects stops the previous one; closing the app stops it.
+- **The agent** is told the game starts paused; its tools step or resume it.
+### D38 — the extrapolation is before-and-after evidence
+
+The runtime can already draw where the game goes next under the current code:
+the extrapolated path from a moment, with the recorded inputs. Run from the
+same moment under the old code and under the new, that is a before and after
+in one picture, with no second game kept alive.
+
+- **In the transport bar.** An Extrapolate control beside pause and step shows
+  the predicted path in the game view. When an edit lands while paused — the
+  user's or the agent's — the path is shown for a moment by itself, so the
+  effect of the edit is seen before anything is replayed.
+- **In the chat.** When a run changes the code, the change card carries the
+  two paths from the moment the user was looking at: the old one faint, the
+  new one bright ("fell short" beside "clears the gap"). It is the default
+  before-and-after on the decision page (D35) whenever the change moves
+  something, and it opens the Captures tab.
+- **Same moment, same inputs, both codes.** The picture is honest only if the
+  two paths differ by the code alone; it says which moment and which inputs
+  it used.
+- **Limits.** It shows motion and position, not feel, sound or anything a
+  path cannot draw; those still need captures, the lab or the real before and
+  after (D31, D32). A change that moves nothing gets no path.
+
+In the headset the two paths are drawn in the world (D36).
 
 ## Open
 

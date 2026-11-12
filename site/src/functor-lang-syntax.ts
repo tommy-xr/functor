@@ -1,0 +1,133 @@
+// Functor Lang's tokenizer as a CodeMirror stream parser: the language only,
+// no theme. The site's editors wrap it in a StreamLanguage (functor-lang.ts);
+// the desktop app runs it statically over read-only text (app/ui/src/syntax.ts).
+// Functor Lang has no Lezer grammar; keep the keyword list in sync with the
+// language (.claude/skills/functor-lang/SKILL.md is the source of truth).
+
+import type { StreamParser } from "@codemirror/language";
+
+const KEYWORDS = new Set([
+  "let",
+  "type",
+  "match",
+  "with",
+  "module",
+  "mut",
+  "in",
+  "if",
+  "then",
+  "else",
+  "not",
+]);
+const ATOMS = new Set(["true", "false"]);
+
+// The tokenizer's whole state: a stack of nesting contexts. `$"…"` pushes an
+// `interpolated`, a `{` inside one pushes a `hole` (which counts its own nested
+// braces so the closing `}` returns to the string), and a plain `"…"` pushes a
+// `string` for the unterminated-across-lines case.
+type Context =
+  | { kind: "interpolated" }
+  | { kind: "string" }
+  | { kind: "hole"; braces: number };
+
+interface State {
+  contexts: Context[];
+}
+
+export const functorLangParser: StreamParser<State> = {
+  name: "functor-lang",
+  startState: (): State => ({ contexts: [] }),
+  copyState: (state): State => ({
+    contexts: state.contexts.map((context) => ({ ...context })),
+  }),
+  token(stream, state) {
+    const context = state.contexts.at(-1);
+    if (context?.kind === "interpolated") {
+      if (stream.match('\\"') || stream.match("\\\\") || stream.match("\\n") || stream.match("\\t")) {
+        return "string";
+      }
+      if (stream.match("{{") || stream.match("}}")) return "string";
+      if (stream.match('"')) {
+        state.contexts.pop();
+        return "string";
+      }
+      if (stream.match("{")) {
+        state.contexts.push({ kind: "hole", braces: 0 });
+        return "bracket";
+      }
+      // `peek()` is non-null while `eol()` is false, so the guard runs first.
+      while (!stream.eol() && !/["\\{}]/.test(stream.peek()!)) stream.next();
+      if (stream.pos === stream.start) stream.next();
+      return "string";
+    }
+    if (context?.kind === "string") {
+      while (!stream.eol()) {
+        if (stream.next() === "\\") stream.next();
+        else if (stream.current().endsWith('"')) {
+          state.contexts.pop();
+          break;
+        }
+      }
+      return "string";
+    }
+    if (stream.eatSpace()) return null;
+    if (stream.match("//")) {
+      stream.skipToEnd();
+      return "comment";
+    }
+    if (stream.match('$"')) {
+      state.contexts.push({ kind: "interpolated" });
+      return "string";
+    }
+    if (stream.match('"')) {
+      state.contexts.push({ kind: "string" });
+      while (!stream.eol()) {
+        if (stream.next() === "\\") stream.next();
+        else if (stream.current().endsWith('"')) {
+          state.contexts.pop();
+          break;
+        }
+      }
+      return "string";
+    }
+    if (context?.kind === "hole") {
+      if (stream.match("{")) {
+        context.braces += 1;
+        return "bracket";
+      }
+      if (stream.match("}")) {
+        if (context.braces === 0) state.contexts.pop();
+        else context.braces -= 1;
+        return "bracket";
+      }
+    }
+    // A number, with an optional unit suffix touching the digits (`90deg`) —
+    // one token, as the lexer sees it.
+    if (stream.match(/^\d+(\.\d+)?([A-Za-z_][A-Za-z0-9_]*)?/)) return "number";
+    // Uppercase head: constructors and prelude namespaces (Scene, Math, …).
+    if (stream.match(/^[A-Z][A-Za-z0-9_]*/)) return "typeName";
+    if (stream.match(/^[a-z_][A-Za-z0-9_]*/)) {
+      const word = stream.current();
+      if (KEYWORDS.has(word)) return "keyword";
+      if (ATOMS.has(word)) return "atom";
+      return "variableName";
+    }
+    if (
+      stream.match("|>") ||
+      stream.match("=>") ||
+      stream.match(":=") ||
+      stream.match("&&") ||
+      stream.match("||") ||
+      stream.match("<=") ||
+      stream.match(">=") ||
+      stream.match("!=")
+    )
+      return "operator";
+    if (stream.match(/^[+\-*/<>=|]/)) return "operator";
+    stream.next();
+    return null;
+  },
+  languageData: {
+    commentTokens: { line: "//" },
+  },
+};

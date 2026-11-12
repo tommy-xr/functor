@@ -5,6 +5,7 @@
 
 import { createElement as h, type ReactNode } from "react";
 import type { Change, DiffLine, FileChange, LineKind, Omitted, Task } from "./generated/protocol";
+import { langFor, renderTokens, tokenizeDiff, type Token } from "./syntax.ts";
 
 /** A file's lines shown before "Show more". */
 export const COLLAPSE_LINES = 80;
@@ -56,18 +57,26 @@ export function collapse(lines: DiffLine[], expanded: boolean, limit = COLLAPSE_
 
 const MARKS: Record<LineKind, string> = { hunk: "", context: " ", added: "+", removed: "-", note: "\\" };
 
-/** One diff line: its marker and text, both text nodes. */
-export function renderLine(line: DiffLine, key: number): ReactNode {
+/** One diff line: its marker and text, both text nodes; the text coloured by `tokens` when given. */
+export function renderLine(line: DiffLine, key: number, tokens: Token[] | null = null): ReactNode {
   return h(
     "div",
     { key, className: `dl dl-${line.kind}` },
     h("span", { className: "dl-mark", "aria-hidden": true }, MARKS[line.kind]),
-    h("span", { className: "dl-text" }, line.text),
+    h("span", { className: "dl-text" }, tokens ? renderTokens(tokens) : line.text),
   );
 }
 
-export function renderLines(lines: DiffLine[]): ReactNode {
-  return lines.map(renderLine);
+/** The lines, highlighted when `path`'s language is known. */
+export function renderLines(lines: DiffLine[], path: string): ReactNode {
+  const lang = langFor(path);
+  let tokens: (Token[] | null)[] | null = null;
+  try {
+    tokens = lang && tokenizeDiff(lang, lines);
+  } catch {
+    // Shown plain (see syntax.ts's LineStream).
+  }
+  return lines.map((line, i) => renderLine(line, i, tokens?.[i] ?? null));
 }
 
 /** Why a file's lines are not shown, in one line. */
