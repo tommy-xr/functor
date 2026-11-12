@@ -43,10 +43,6 @@ pub struct AppState {
     pub harnesses: Vec<Harness>,
     /// Per project path, the agent last picked for its new tasks.
     pub harness_choice: BTreeMap<String, Harness>,
-    /// The next new task's id: above every id on disk, readable or not, so
-    /// no new task overwrites a file the store skipped.
-    #[serde(skip)]
-    pub next_task: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,7 +74,6 @@ impl AppState {
             tasks: Vec::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
-            next_task: 1,
         }
     }
 }
@@ -102,11 +97,16 @@ pub enum Event {
         run: u64,
         event: RunEvent,
     },
-    /// The saved tasks, read at startup; ids are unique. `highest` is the
-    /// highest id of any task file, including ones that could not be read.
+    /// The saved tasks, read at startup; ids are unique.
     TasksLoaded {
         tasks: Vec<Task>,
-        highest: u64,
+    },
+    /// A client's `NewTask`, with the id the shell reserved for it (unique
+    /// across app processes sharing a store), or why it could not.
+    NewTask {
+        id: Result<u64, String>,
+        message: String,
+        harness: Harness,
     },
     /// Task `task`'s change since `baseline`, as the shell's git computed it.
     Change {
@@ -270,9 +270,25 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (current, false)
         }
         // Task messages that change nothing answer with `Rejected`, not the state.
-        Event::Client(ClientMsg::NewTask { message, harness }) => {
-            (new_task(&mut state, message, harness, &mut commands), false)
-        }
+        // Shells reserve an id first and send `Event::NewTask`.
+        Event::Client(ClientMsg::NewTask { .. }) => (
+            reject(&mut commands, "a new task needs an id".to_string()),
+            false,
+        ),
+        Event::NewTask {
+            id,
+            message,
+            harness,
+        } => match id {
+            Ok(id) => (
+                new_task(&mut state, id, message, harness, &mut commands),
+                false,
+            ),
+            Err(e) => (
+                reject(&mut commands, format!("cannot reserve a task id: {e}")),
+                false,
+            ),
+        },
         Event::Client(ClientMsg::SendMessage { task, message }) => (
             send_message(&mut state, task, message, &mut commands),
             false,
@@ -320,7 +336,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Run { task, run, event } => {
             (on_run(&mut state, task, run, event, &mut commands), false)
         }
-        Event::TasksLoaded { tasks, highest } => {
+        Event::TasksLoaded { tasks } => {
             state.tasks = tasks
                 .into_iter()
                 .map(|mut t| {
@@ -332,8 +348,6 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 })
                 .collect();
             state.tasks.sort_by_key(|t| t.id);
-            let loaded = state.tasks.last().map_or(0, |t| t.id);
-            state.next_task = highest.max(loaded) + 1;
             (true, false)
         }
         Event::Shutdown => {
@@ -442,9 +456,10 @@ fn no_task(id: u64) -> ServerMsg {
     }
 }
 
-/// Starts a task in the active project with `message`.
+/// Starts task `id` in the active project with `message`.
 fn new_task(
     state: &mut AppState,
+    id: u64,
     message: String,
     harness: Harness,
     commands: &mut Vec<Command>,
@@ -458,8 +473,6 @@ fn new_task(
     if let Err(reason) = can_run(state, &project, None, &message) {
         return reject(commands, reason);
     }
-    let id = state.next_task;
-    state.next_task += 1;
     state.tasks.push(Task {
         id,
         project,
@@ -933,7 +946,6 @@ mod tests {
             tasks: vec![],
             harnesses: vec![Harness::Claude, Harness::Codex],
             harness_choice: BTreeMap::new(),
-            next_task: 1,
         }
     }
 
@@ -1427,11 +1439,17 @@ mod tests {
 
     use crate::tasks::{AgentEvent, INTERRUPTED};
 
+    /// A new task, given id 1.
     fn new_task(message: &str) -> Event {
-        client(ClientMsg::NewTask {
+        nth_task(1, message)
+    }
+
+    fn nth_task(id: u64, message: &str) -> Event {
+        Event::NewTask {
+            id: Ok(id),
             message: message.to_string(),
             harness: Harness::Claude,
-        })
+        }
     }
 
     fn send(task: u64, message: &str) -> Event {
@@ -1641,7 +1659,7 @@ mod tests {
             commands,
             rejected("task 1 is still running: wait for it to finish or stop it")
         );
-        let (next, commands) = update(s.clone(), new_task("second"));
+        let (next, commands) = update(s.clone(), nth_task(2, "second"));
         assert_eq!(next, s);
         assert_eq!(
             commands,
@@ -1649,7 +1667,7 @@ mod tests {
         );
         // Another project may run alongside it.
         let (b, _) = update(s, switch("examples/b"));
-        let (b, commands) = update(b, new_task("in b"));
+        let (b, commands) = update(b, nth_task(2, "in b"));
         assert_eq!(task(&b, 2).project, "examples/b");
         assert!(matches!(commands[0], Command::StartRun(_)), "{commands:?}");
     }
@@ -1745,7 +1763,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_tasks_lose_their_runs_and_new_ids_follow_them() {
+    fn loaded_tasks_lose_their_runs() {
         let mut saved = task(&finished_task(), 1).clone();
         saved.id = 4;
         // Saved mid-run, before the app died.
@@ -1760,7 +1778,6 @@ mod tests {
             state(),
             Event::TasksLoaded {
                 tasks: vec![saved, cut],
-                highest: 3,
             },
         );
         assert_eq!(s.tasks.iter().map(|t| t.id).collect::<Vec<_>>(), [2, 4]);
@@ -1772,18 +1789,27 @@ mod tests {
             }
         );
         assert_eq!(task(&s, 4).status, TaskStatus::WaitingOnYou);
-        let (s, _) = update(s, new_task("next"));
-        assert_eq!(s.tasks.last().unwrap().id, 5);
-        // An unreadable file's id is never reused.
-        let (s, _) = update(
-            state(),
-            Event::TasksLoaded {
-                tasks: vec![],
-                highest: 7,
-            },
-        );
-        let (s, _) = update(s, new_task("next"));
-        assert_eq!(s.tasks.last().unwrap().id, 8);
+    }
+
+    #[test]
+    fn a_new_task_takes_the_shells_id_or_is_rejected() {
+        let (s, _) = update(state(), nth_task(7, "hi"));
+        assert_eq!(s.tasks.iter().map(|t| t.id).collect::<Vec<_>>(), [7]);
+        let failed = Event::NewTask {
+            id: Err("disk full".to_string()),
+            message: "hi".to_string(),
+            harness: Harness::Claude,
+        };
+        let (next, commands) = update(state(), failed);
+        assert_eq!(next, state());
+        assert_eq!(commands, rejected("cannot reserve a task id: disk full"));
+        let bare = client(ClientMsg::NewTask {
+            message: "hi".to_string(),
+            harness: Harness::Claude,
+        });
+        let (next, commands) = update(state(), bare);
+        assert_eq!(next, state());
+        assert_eq!(commands, rejected("a new task needs an id"));
     }
 
     #[test]
@@ -2086,7 +2112,7 @@ mod tests {
         assert_eq!(commands, rejected("task 1's change is being reverted"));
         let (_, commands) = update(s.clone(), send(1, "more"));
         assert_eq!(commands, rejected("task 1's change is being reverted"));
-        let (_, commands) = update(s.clone(), new_task("other"));
+        let (_, commands) = update(s.clone(), nth_task(2, "other"));
         assert_eq!(commands, rejected("task 1's change is being reverted"));
 
         let (done, commands) = update(s.clone(), reverted(1, "tree-1", Ok(())));
@@ -2159,7 +2185,7 @@ mod tests {
         // Another task running, even in another project: an agent may edit
         // anywhere in the repo, so no revert goes on under it.
         let (s, _) = update(reviewed(one_file(2)), switch("examples/b"));
-        let (s, _) = update(s, new_task("second"));
+        let (s, _) = update(s, nth_task(2, "second"));
         let (next, commands) = update(s.clone(), revert(1));
         assert_eq!(next, s);
         assert_eq!(
@@ -2232,13 +2258,7 @@ mod tests {
     fn a_loaded_task_is_not_left_reverting() {
         let mut saved = task(&reviewed(one_file(2)), 1).clone();
         saved.reverting = true;
-        let (s, _) = update(
-            tracked(),
-            Event::TasksLoaded {
-                tasks: vec![saved],
-                highest: 1,
-            },
-        );
+        let (s, _) = update(tracked(), Event::TasksLoaded { tasks: vec![saved] });
         let t = task(&s, 1);
         assert!(!t.reverting);
         assert_eq!(t.status, TaskStatus::ReadyForReview);

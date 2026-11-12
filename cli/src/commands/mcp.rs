@@ -24,6 +24,7 @@ use base64::Engine as _;
 use functor_docgen::{ApiItem, ApiReference};
 use functor_runtime_common::net::ConnCommand;
 use functor_runtime_common::{debug_protocol::DEBUG_PROTOCOL_SERVICE, Key};
+use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::service::RequestContext;
@@ -132,10 +133,15 @@ const QUICK_FACTS_SLUG: &str = "quick-facts";
 /// Serve MCP over stdio until the client disconnects, or over loopback HTTP
 /// (`http` = port) until signalled or stdin closes. `attach` URLs become
 /// attached sessions first, exactly as `connect_game` would make them.
-pub async fn execute(http: Option<u16>, attach: &[String]) -> io::Result<()> {
+/// `no_unsafe_code` drops `run_game_code_unsafe` from the tools.
+pub async fn execute(http: Option<u16>, attach: &[String], no_unsafe_code: bool) -> io::Result<()> {
     // Read the token before anything else so a misconfigured start fails fast.
     let token = http.map(|_| super::mcp_http::token_from_env()).transpose()?;
-    let server = FunctorMcp::new();
+    let server = FunctorMcp {
+        http_mode: http.is_some(),
+        no_unsafe_code,
+        ..FunctorMcp::new()
+    };
     for raw in attach {
         let url = raw.trim_end_matches('/');
         server
@@ -918,6 +924,10 @@ pub struct FunctorMcp {
     docs: Arc<OnceLock<Result<ApiReference, String>>>,
     /// The JSON object an embedding app last `PUT /app-context` (HTTP mode).
     app_context: Arc<Mutex<Option<Value>>>,
+    /// Served over HTTP, where an app can set the context: lists `app_context`.
+    http_mode: bool,
+    /// `--no-unsafe-code`: `run_game_code_unsafe` is neither listed nor callable.
+    no_unsafe_code: bool,
 }
 
 fn ok_text(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
@@ -1162,6 +1172,8 @@ impl FunctorMcp {
             sessions: Arc::new(Mutex::new(Registry::default())),
             docs: Arc::new(OnceLock::new()),
             app_context: Arc::new(Mutex::new(None)),
+            http_mode: false,
+            no_unsafe_code: false,
         }
     }
 
@@ -1169,8 +1181,8 @@ impl FunctorMcp {
     /// this server last supplied, saying what its user is looking at — e.g.
     /// `view` (which panel), `file` (the open file) and `session` (the game
     /// session in view). Read it to resolve "this file" or "this game". It may
-    /// be absent: `context` is null when no app has supplied one (always so
-    /// over stdio). Its keys are the app's, not a fixed schema.
+    /// be absent: `context` is null when no app has supplied one. Its keys
+    /// are the app's, not a fixed schema. Served over HTTP only.
     #[tool]
     async fn app_context(&self) -> Result<CallToolResult, ErrorData> {
         let context = self.app_context.lock().expect("app context poisoned").clone();
@@ -2259,6 +2271,19 @@ rebuild that runtime from this version of Functor."
 }
 
 impl FunctorMcp {
+    /// This server's tools, which `list_tools` and `call_tool` both go
+    /// through: a removed one is unlisted and a call to it is refused.
+    fn router(&self) -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
+        if self.no_unsafe_code {
+            router.remove_route("run_game_code_unsafe");
+        }
+        if !self.http_mode {
+            router.remove_route("app_context");
+        }
+        router
+    }
+
     /// The prelude API reference, generated once per process.
     fn api_docs(&self) -> Result<&ApiReference, String> {
         self.docs
@@ -4585,10 +4610,11 @@ async fn acquire_target_operation(
 }
 
 #[tool_handler(
+    router = self.router(),
     name = "functor",
     instructions = "Drive Functor games over their debug runtime. Launch or attach to a game \
 (launch_game / connect_game). For trusted local multi-step automation, prefer \
-`run_game_code_unsafe`: it runs a Playwright-style JavaScript function against an injected \
+`run_game_code_unsafe` when it is listed: it runs a Playwright-style JavaScript function against an injected \
 `game` SDK in a Node.js child process, returning its value, SDK-call trace, logs, and captures. \
 It is explicitly RCE-equivalent local code, not a security sandbox. For one-off operations or \
 clients without Node.js, observe with get_state (read model), get_scene, get_trace, or \
@@ -5583,6 +5609,24 @@ mod tests {
         for reserved in ["report_status", "report_evidence", "report_result", "approve", "merge_pr"] {
             assert!(!names.iter().any(|name| name == reserved), "{reserved} is reserved");
         }
+    }
+
+    #[test]
+    fn the_router_drops_the_code_runner_on_request_and_app_context_off_http() {
+        let names = |server: FunctorMcp| -> Vec<String> {
+            let router = server.router();
+            router.list_all().into_iter().map(|tool| tool.name.to_string()).collect()
+        };
+        let has = |names: &[String], name: &str| names.iter().any(|n| n == name);
+        let stdio = names(FunctorMcp::new());
+        assert!(has(&stdio, "run_game_code_unsafe") && !has(&stdio, "app_context"), "{stdio:?}");
+        let app = names(FunctorMcp {
+            http_mode: true,
+            no_unsafe_code: true,
+            ..FunctorMcp::new()
+        });
+        assert!(!has(&app, "run_game_code_unsafe") && has(&app, "app_context"), "{app:?}");
+        assert_eq!(app.len(), stdio.len());
     }
 
     #[test]

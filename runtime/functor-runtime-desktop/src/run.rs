@@ -25,7 +25,7 @@ use glfw::{Action, Key};
 use glow::*;
 
 use crate::game::Game;
-use functor_runtime_common::frame_stream::{FrameTap, StreamFrame};
+use functor_runtime_common::frame_stream::{FrameTapOwner, StreamFrame};
 use functor_runtime_common::FramePacer;
 use functor_runtime_common::frame_telemetry::{us, FrameRecord, FrameTelemetry};
 use functor_runtime_common::reload_indicator::{ReloadIndicator, ReloadIndicatorPainter};
@@ -952,6 +952,15 @@ fn parse_script_dt(s: &str) -> Result<f32, String> {
         return Err("must be a positive, finite timestep in seconds".into());
     }
     Ok(v)
+}
+
+/// The rate a `hidden` window paces to, unless `scripted` (`--fixed-time`,
+/// `--input-script`, `--capture-frame`: those keep their own sleep); `None`
+/// for those and visible windows. 60 Hz unless `--display-hz` names one: a
+/// hidden session has no display, and pacing it to a 120 Hz monitor would
+/// double its cost.
+fn hidden_pace_hz(hidden: bool, scripted: bool, display_hz: Option<f32>) -> Option<f32> {
+    (hidden && !scripted).then(|| display_hz.unwrap_or(60.0))
 }
 
 fn parse_display_hz(s: &str) -> Result<f32, String> {
@@ -2321,21 +2330,13 @@ Escape releases while captured"
         // `/state.rendered_frames`: buffer swaps so far.
         let mut rendered_frames: u64 = 0;
         // `GET /stream`'s frame tap, made by the first stream request.
-        let mut stream_tap: Option<Arc<FrameTap>> = None;
-        // Hidden live sessions pace toward the display's rate; the other
+        let mut stream_tap: Option<FrameTapOwner> = None;
+        // Hidden live sessions pace (see `hidden_pace_hz`); the other
         // unsynced runs keep their fixed sleep below.
-        let monitor_hz = glfw.with_primary_monitor(|_, monitor| {
-            let mode = monitor?.get_video_mode()?;
-            (mode.refresh_rate > 0).then_some(mode.refresh_rate as f32)
-        });
-        let mut hidden_pacer = (hidden
-            && args.fixed_time.is_none()
-            && args.capture_frame.is_none()
-            && input_script.is_none())
-        .then(|| {
-            let hz = args.display_hz.or(monitor_hz).unwrap_or(60.0);
-            FramePacer::new(std::time::Duration::from_secs_f32(1.0 / hz))
-        });
+        let scripted =
+            args.fixed_time.is_some() || args.capture_frame.is_some() || input_script.is_some();
+        let mut hidden_pacer = hidden_pace_hz(hidden, scripted, args.display_hz)
+            .map(|hz| FramePacer::new(std::time::Duration::from_secs_f32(1.0 / hz)));
         // `/frames` and `/spikes`; spikes are judged against a 60 Hz frame
         // unless `--display-hz` says otherwise.
         let mut telemetry = FrameTelemetry::new(args.display_hz.unwrap_or(60.0));
@@ -4086,7 +4087,7 @@ Escape again to quit"
                         }
                         debug_server::DebugRequest::Stream(resp) => {
                             let tap = stream_tap.get_or_insert_with(Default::default);
-                            let _ = resp.send(Ok(tap.clone()));
+                            let _ = resp.send(Ok(tap.share()));
                             continue;
                         }
                         req => req,
@@ -4190,7 +4191,7 @@ Escape again to quit"
                 }
             }
             // The last client left: drop the tap and its held frame.
-            if stream_tap.as_ref().is_some_and(|tap| Arc::strong_count(tap) == 1) {
+            if stream_tap.as_ref().is_some_and(FrameTapOwner::unshared) {
                 stream_tap = None;
             }
             reload.poll(Instant::now(), rendered_frames);
@@ -4237,8 +4238,8 @@ Escape again to quit"
             // Hidden and `--fixed-time` runs skip vsync above, and a hidden
             // window's swap never blocks on the compositor — cap the loop
             // explicitly so a long-lived session (`--hidden --debug-port`)
-            // doesn't busy-spin a core: a hidden live session paces to the
-            // display's rate, other runs sleep 16 ms (as the headless loop
+            // doesn't busy-spin a core: a hidden live session paces to 60 Hz
+            // (or `--display-hz`), other runs sleep 16 ms (as the headless loop
             // does). `--capture-frame` runs are exempt: they exit at the
             // capture, and `--capture-at-frame N` counts sim frames, so the
             // cap would stretch a near-instant scripted capture to N/60 s.
@@ -4255,6 +4256,16 @@ Escape again to quit"
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hidden_live_sessions_pace_at_60_hz_unless_display_hz_says() {
+        assert_eq!(hidden_pace_hz(true, false, None), Some(60.0));
+        assert_eq!(hidden_pace_hz(true, false, Some(120.0)), Some(120.0));
+        // Scripted runs and visible windows keep their own timing.
+        assert_eq!(hidden_pace_hz(true, true, None), None);
+        assert_eq!(hidden_pace_hz(true, true, Some(120.0)), None);
+        assert_eq!(hidden_pace_hz(false, false, Some(120.0)), None);
+    }
+
     use super::*;
     use functor_runtime_common::{TrackingPose, XrControllerSnapshot};
     use std::io::Write;

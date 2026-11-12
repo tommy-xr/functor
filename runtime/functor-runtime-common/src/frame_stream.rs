@@ -119,11 +119,10 @@ pub fn fit_within(
     (side(width), side(height))
 }
 
-/// Now as Unix ms, the clock `X-Capture-Ms` uses.
+/// Now as Unix ms, the clock `X-Capture-Ms` uses: the prelude's portable
+/// clock, for the desktop render loop.
 pub fn unix_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |since| since.as_secs_f64() * 1000.0)
+    crate::functor_lang_prelude::now_ms()
 }
 
 /// One read-back frame, as the render loop hands it over.
@@ -145,9 +144,51 @@ pub struct FrameTap {
     requested: AtomicBool,
     latest: Mutex<(u64, Option<Arc<StreamFrame>>)>,
     published: Condvar,
+    /// Set when the render loop drops its [`FrameTapOwner`]: no frame will
+    /// come, however many clients still hold the tap.
+    closed: AtomicBool,
+}
+
+/// The render loop's hold on a [`FrameTap`]. Dropping it closes the tap and
+/// wakes every waiting client, so each stream ends.
+#[derive(Default)]
+pub struct FrameTapOwner(Arc<FrameTap>);
+
+impl FrameTapOwner {
+    /// A client's handle on the tap.
+    pub fn share(&self) -> Arc<FrameTap> {
+        self.0.clone()
+    }
+
+    /// Whether only the owner holds the tap: every client has left.
+    pub fn unshared(&self) -> bool {
+        Arc::strong_count(&self.0) == 1
+    }
+}
+
+impl std::ops::Deref for FrameTapOwner {
+    type Target = FrameTap;
+
+    fn deref(&self) -> &FrameTap {
+        &self.0
+    }
+}
+
+impl Drop for FrameTapOwner {
+    fn drop(&mut self) {
+        // Under the lock, so a client cannot check and then miss the wake-up.
+        let _latest = self.0.latest.lock().unwrap();
+        self.0.closed.store(true, Ordering::Release);
+        self.0.published.notify_all();
+    }
 }
 
 impl FrameTap {
+    /// Client side: whether the render loop is gone (see [`FrameTapOwner`]).
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     /// Render side, once per frame: whether to read this frame back. Clears
     /// the request, so one request costs at most one readback.
     pub fn take_request(&self) -> bool {
@@ -167,13 +208,15 @@ impl FrameTap {
     }
 
     /// Client side: the latest frame if it was published after `seen`
-    /// (0 = none yet), waiting up to `timeout` for one. Returns its sequence
-    /// number to pass as `seen` next time.
+    /// (0 = none yet), waiting up to `timeout` for one, or until the tap
+    /// closes. Returns its sequence number to pass as `seen` next time.
     pub fn newer_than(&self, seen: u64, timeout: Duration) -> Option<(u64, Arc<StreamFrame>)> {
         let latest = self.latest.lock().unwrap();
         let (latest, _) = self
             .published
-            .wait_timeout_while(latest, timeout, |(seq, _)| *seq <= seen)
+            .wait_timeout_while(latest, timeout, |(seq, _)| {
+                *seq <= seen && !self.is_closed()
+            })
             .unwrap();
         match &*latest {
             (seq, Some(frame)) if *seq > seen => Some((*seq, frame.clone())),
@@ -410,5 +453,31 @@ X-Rendered-Frame: 42\r\nX-Capture-Ms: 1700000000123.4\r\n\r\nJPEG\r\n"
             "a waiting client wakes on publish"
         );
         publisher.join().unwrap();
+    }
+
+    /// Two clients each hold the tap, so neither can tell from the count
+    /// that the render loop is gone; closing wakes and ends both.
+    #[test]
+    fn dropping_the_owner_closes_the_tap_for_every_client() {
+        let owner = FrameTapOwner::default();
+        let clients: Vec<_> = (0..2)
+            .map(|_| {
+                let tap = owner.share();
+                std::thread::spawn(move || {
+                    let started = std::time::Instant::now();
+                    while !tap.is_closed() {
+                        assert!(tap.newer_than(0, Duration::from_secs(30)).is_none());
+                    }
+                    started.elapsed()
+                })
+            })
+            .collect();
+        assert!(!owner.unshared());
+        std::thread::sleep(Duration::from_millis(20));
+        drop(owner);
+        for client in clients {
+            let waited = client.join().unwrap();
+            assert!(waited < Duration::from_secs(5), "woken late: {waited:?}");
+        }
     }
 }

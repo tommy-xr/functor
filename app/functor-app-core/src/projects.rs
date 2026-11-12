@@ -191,15 +191,11 @@ pub fn default_project<'a>(paths: &[&'a str], start: &str) -> Option<&'a str> {
 /// is not recursive), and a stem must be a module name (`game`, not `.#game`
 /// or `2d`).
 pub fn project_files(names: impl IntoIterator<Item = String>) -> Vec<String> {
-    let module_stem = |stem: &str| {
-        stem.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-            && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    };
     let mut files: Vec<String> = names
         .into_iter()
         .filter(|n| {
             let stem = n.strip_suffix(".fun").or_else(|| n.strip_suffix(".funi"));
-            n == "functor.json" || stem.is_some_and(module_stem)
+            n == "functor.json" || stem.is_some_and(functor_lang::project::is_module_stem)
         })
         .collect();
     files.sort();

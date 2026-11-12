@@ -982,9 +982,8 @@ fn stream_frames(
         std::thread::sleep(pacer.delay(Instant::now()));
         tap.request();
         let Some((seq, frame)) = tap.newer_than(seen, STREAM_IDLE_CHECK) else {
-            // No frame yet: stop if the client left or the render loop ended
-            // (it holds the only other reference).
-            if client_closed(&stream) || std::sync::Arc::strong_count(&tap) == 1 {
+            // No frame yet: stop if the client left or the render loop ended.
+            if client_closed(&stream) || tap.is_closed() {
                 return;
             }
             continue;
@@ -1696,10 +1695,12 @@ Content-Length: {}\r\n\r\n{body}",
 
     /// A fake render loop for `/stream`: hands out `tap` (or refuses, like
     /// `--headless`), publishes a frame whenever one is requested, and answers
-    /// `GET /frames`. Ends when the transport drops its sender.
+    /// `GET /frames`. Ends when the transport drops its sender or `stop` is
+    /// set, dropping (closing) the tap.
     fn fake_stream_runtime(
         rx: mpsc::Receiver<DebugRequest>,
-        tap: Option<std::sync::Arc<frame_stream::FrameTap>>,
+        tap: Option<frame_stream::FrameTapOwner>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             let mut rendered = 0;
@@ -1707,8 +1708,11 @@ Content-Length: {}\r\n\r\n{body}",
                 match rx.recv_timeout(Duration::from_millis(2)) {
                     Ok(DebugRequest::Stream(response)) => {
                         let _ = response.send(
-                            tap.clone()
-                                .ok_or_else(|| "streaming is unavailable in --headless mode".into()),
+                            tap.as_ref()
+                                .map(frame_stream::FrameTapOwner::share)
+                                .ok_or_else(|| {
+                                    "streaming is unavailable in --headless mode".into()
+                                }),
                         );
                     }
                     Ok(DebugRequest::Frames(last, response)) => {
@@ -1718,6 +1722,9 @@ Content-Length: {}\r\n\r\n{body}",
                     Ok(_) => panic!("unexpected request"),
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
                 }
                 rendered += 1;
                 if let Some(tap) = tap.as_ref().filter(|tap| tap.take_request()) {
@@ -1775,8 +1782,10 @@ Content-Length: {}\r\n\r\n{body}",
     fn stream_frames_parts_identically_in_both_framings_without_blocking_requests() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
-        let tap = std::sync::Arc::new(frame_stream::FrameTap::default());
-        let _runtime = fake_stream_runtime(spawn_listener(listener).unwrap(), Some(tap.clone()));
+        let owner = frame_stream::FrameTapOwner::default();
+        let tap = owner.share();
+        let stop = Default::default();
+        let _runtime = fake_stream_runtime(spawn_listener(listener).unwrap(), Some(owner), stop);
 
         let mut multipart = BufReader::new(get(address, "/stream?w=2"));
         let head = read_head(&mut multipart);
@@ -1828,11 +1837,39 @@ Content-Length: {}\r\n\r\n{body}",
         }
     }
 
+    /// Two open streams each hold the tap; when the render loop ends, both
+    /// end, rather than each keeping the other's count above one.
+    #[test]
+    fn every_stream_ends_when_the_render_loop_does() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let owner = frame_stream::FrameTapOwner::default();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runtime =
+            fake_stream_runtime(spawn_listener(listener).unwrap(), Some(owner), stop.clone());
+        let mut streams: Vec<_> = (0..2)
+            .map(|_| {
+                let mut stream = BufReader::new(get(address, "/stream"));
+                assert!(read_head(&mut stream).starts_with("HTTP/1.1 200 OK\r\n"));
+                read_part(&mut stream);
+                stream
+            })
+            .collect();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        runtime.join().unwrap();
+        for stream in &mut streams {
+            // Parts already sent, then the end (not the 5 s read timeout).
+            let mut rest = Vec::new();
+            stream.read_to_end(&mut rest).expect("the stream ended");
+        }
+    }
+
     #[test]
     fn stream_refuses_a_bad_query_and_a_runtime_without_frames() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
-        let _runtime = fake_stream_runtime(spawn_listener(listener).unwrap(), None);
+        let _runtime =
+            fake_stream_runtime(spawn_listener(listener).unwrap(), None, Default::default());
         let mut response = String::new();
         get(address, "/stream?w=0")
             .read_to_string(&mut response)

@@ -102,8 +102,8 @@ run doesn't steal input from whoever is at the machine. A hidden window keeps a
 valid GL context and framebuffer, so rendering, `/capture`, and `--capture-frame`
 work unchanged (audio too). `--capture-frame` implies `--hidden` — a scripted
 screenshot run has no reason to grab your mouse. A hidden live session paces
-itself to the primary display's refresh rate (or `--display-hz`, so that
-simulated rate also runs in real time; 60 Hz without a display); `--fixed-time` and `--input-script` runs keep a fixed
+itself to 60 Hz, whatever the display's rate (or to `--display-hz`, so that
+simulated rate also runs in real time); `--fixed-time` and `--input-script` runs keep a fixed
 16 ms sleep per frame, and `--capture-frame` runs do not sleep.
 
 ```sh

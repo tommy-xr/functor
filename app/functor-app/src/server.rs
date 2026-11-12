@@ -143,6 +143,9 @@ async fn run(
                     clients.insert(id, out);
                     (vec![Event::Client(ClientMsg::GetState)], Some(id))
                 }
+                Input::Client { id, msg: ClientMsg::NewTask { message, harness } } => {
+                    (vec![driver.new_task(message, harness)], Some(id))
+                }
                 Input::Client { id, msg } => {
                     if let ClientMsg::Input { input } = &msg {
                         track(held.entry(id).or_default(), input);

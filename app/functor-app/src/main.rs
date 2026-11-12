@@ -122,8 +122,11 @@ async fn main() -> std::io::Result<ExitCode> {
         eprintln!("functor-app: no home directory; set FUNCTOR_APP_HOME");
         return Ok(ExitCode::from(2));
     };
+    if let Err(e) = store::make_private(&home) {
+        eprintln!("functor-app: cannot make {} private: {e}", home.display());
+    }
     let (tasks, highest) = store::load(&home, &state);
-    state = update(state, Event::TasksLoaded { tasks, highest }).0;
+    state = update(state, Event::TasksLoaded { tasks }).0;
     if args.print && !args.start_session {
         print!("{}", print(&state));
         return Ok(ExitCode::SUCCESS);
@@ -147,7 +150,7 @@ async fn main() -> std::io::Result<ExitCode> {
     };
     state.tracks_changes = git.is_some();
     let (tx, events) = mpsc::unbounded_channel();
-    let driver = Driver::new(functor, agents, home, git, tx);
+    let driver = Driver::new(functor, agents, home, highest, git, tx);
     if args.print {
         return print_session(state, driver, events).await;
     }
@@ -280,11 +283,8 @@ async fn run_task(
             return Ok(ExitCode::from(code));
         }
     }
-    let new = ClientMsg::NewTask {
-        message: args.prompt,
-        harness: args.harness,
-    };
-    let (next, commands) = update(state, Event::Client(new));
+    let new = driver.new_task(args.prompt, args.harness);
+    let (next, commands) = update(state, new);
     state = next;
     for command in commands {
         match command {

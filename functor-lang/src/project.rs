@@ -633,7 +633,7 @@ fn is_loadable_stem(path: &Path) -> bool {
 /// Whether `stem` is a valid module identifier: non-empty, starts with an ASCII
 /// letter, and is otherwise ASCII alphanumeric or `_`. This is the same rule
 /// [`module_name`] enforces — a file whose stem fails it cannot name a module.
-fn is_module_stem(stem: &str) -> bool {
+pub fn is_module_stem(stem: &str) -> bool {
     !stem.is_empty()
         && stem.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
         && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')

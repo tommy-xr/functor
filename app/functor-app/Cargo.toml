@@ -22,5 +22,7 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+# The debug server's `POST /input` type, for the `GameInput` drift test.
+functor_runtime_common = { path = "../../runtime/functor-runtime-common" }
 tempfile = "3"
 tokio-tungstenite = "0.29"

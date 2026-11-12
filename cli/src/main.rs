@@ -333,6 +333,11 @@ enum Command {
         /// Repeatable.
         #[arg(long, value_name = "URL")]
         attach: Vec<String>,
+
+        /// Leave out `run_game_code_unsafe` (arbitrary Node.js code) and refuse
+        /// calls to it, for a host that sandboxes its agent.
+        #[arg(long)]
+        no_unsafe_code: bool,
     },
     /// Inspect assets headlessly (no GPU/GL context).
     Inspect {
@@ -409,8 +414,13 @@ async fn main() -> tokio::io::Result<()> {
     // BEFORE the output stream is initialized — a single event line (or a live
     // region's ANSI) written to that stdout would corrupt the protocol. It also
     // ignores `-d`, since each launched game names its own directory.
-    if let Command::Mcp { http, attach } = &args.command {
-        return finish_inspect(commands::mcp::execute(*http, attach).await);
+    if let Command::Mcp {
+        http,
+        attach,
+        no_unsafe_code,
+    } = &args.command
+    {
+        return finish_inspect(commands::mcp::execute(*http, attach, *no_unsafe_code).await);
     }
 
     output::init(

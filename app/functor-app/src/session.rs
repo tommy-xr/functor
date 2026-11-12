@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::{GameInput, ServerMsg};
-use functor_app_core::{listening_url, Command, Display, Event, Polled, SessionEvent};
+use functor_app_core::{listening_url, Command, Display, Event, Harness, Polled, SessionEvent};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Child;
@@ -48,6 +48,9 @@ pub struct Driver {
     runs: Runner,
     /// Where tasks are saved (`store::home`).
     home: PathBuf,
+    /// Where the next task id reservation starts: above every id loaded
+    /// or reserved here.
+    next_task: u64,
     /// The repo's git, when changes are tracked.
     git: Option<Arc<Git>>,
 }
@@ -63,10 +66,12 @@ struct Live {
 }
 
 impl Driver {
+    /// `highest` is the highest task id in `home` (`store::load`).
     pub fn new(
         functor: PathBuf,
         agents: Agents,
         home: PathBuf,
+        highest: u64,
         git: Option<Arc<Git>>,
         events: UnboundedSender<Event>,
     ) -> Self {
@@ -76,7 +81,22 @@ impl Driver {
             events,
             live: None,
             home,
+            next_task: highest + 1,
             git,
+        }
+    }
+
+    /// A client's new task as the core takes it: with an id reserved in
+    /// the store. A task the core then rejects leaves its id unused.
+    pub fn new_task(&mut self, message: String, harness: Harness) -> Event {
+        let id = crate::store::reserve_id(&self.home, self.next_task);
+        if let Ok(id) = id {
+            self.next_task = id + 1;
+        }
+        Event::NewTask {
+            id: id.map_err(|e| e.to_string()),
+            message,
+            harness,
         }
     }
 
@@ -437,6 +457,46 @@ fn enqueue(queue: &mut VecDeque<GameInput>, input: GameInput) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `GameInput` the app posts reads back as the debug server's
+    /// `InputCommand` with the same fields: the hand mirror cannot drift.
+    #[test]
+    fn game_inputs_are_debug_server_input_commands() {
+        use functor_app_core::protocol::MouseButton;
+        use functor_runtime_common::debug_protocol::InputCommand;
+        let buttons = [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
+        let inputs = [
+            GameInput::Key {
+                key: "space".into(),
+                down: true,
+            },
+            GameInput::MouseMove { x: -3, y: 7 },
+            GameInput::MouseWheel { delta: -1 },
+        ]
+        .into_iter()
+        .chain(buttons.map(|button| GameInput::MouseButton {
+            button,
+            down: false,
+        }));
+        for input in inputs {
+            // Exhaustive: a new variant fails to compile until it is mapped.
+            let expected = match input.clone() {
+                GameInput::Key { key, down } => InputCommand::Key { key, down },
+                GameInput::MouseMove { x, y } => InputCommand::MouseMove { x, y },
+                GameInput::MouseWheel { delta } => InputCommand::MouseWheel { delta },
+                GameInput::MouseButton { button, down } => {
+                    let name = serde_json::to_value(button).unwrap();
+                    let name = name.as_str().unwrap().to_string();
+                    assert!(functor_runtime_common::MouseButton::from_name(&name).is_some());
+                    InputCommand::MouseButton { button: name, down }
+                }
+            };
+            let wire = serde_json::to_value(&input).unwrap();
+            let read: InputCommand = serde_json::from_value(wire.clone())
+                .unwrap_or_else(|e| panic!("{wire} is not an InputCommand: {e}"));
+            assert_eq!(read, expected, "{wire}");
+        }
+    }
 
     #[test]
     fn cause_prefers_an_error_or_panic_line() {
