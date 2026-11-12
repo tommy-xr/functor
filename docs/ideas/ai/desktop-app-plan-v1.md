@@ -140,6 +140,7 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 4.6a | Presentation agent (D31): a separate, read-only run with its own configurable agent, model and skill, and MCP tools for reading the change, capturing either version and assembling the presentation. | Fake-agent tests through the real tool path; one live run with its token cost recorded. |
 | 4.7 | Before and after in place, and the lab (D31, D32): switching versions by branch; the lab from a capsule's recorded moment; both in the headset panel. | Desktop tests under the XR emulator; device when attached. |
 | 4.8 | Agents in the room (D34): the characters as a Functor scene fed by 1.17, drawn by the runtime as an overlay beside the panel; look-and-press opens a task, look-and-talk steers it. The desktop cards move to the same scene if it holds up. | Emulator captures; device when attached; `frame_bench` unchanged when hidden. |
+| 4.9 | Presentation in the world (D36): notes and measured lines pinned to objects first; then two versions side by side and the ghost of the old, after S5. Drawn by the runtime as an overlay; each mark tied to its panel item. | Emulator captures; device when attached; `frame_bench` unchanged when nothing is shown. |
 
 ## M5 and later
 
