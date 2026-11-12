@@ -13,6 +13,7 @@ import {
   ROOT,
   reopen,
   requireBuilt,
+  shot,
   startServer,
   stopServer,
   tabs,
@@ -23,10 +24,13 @@ import {
 } from "./app.mjs";
 
 const FIXTURE = `${ROOT}app/ui/e2e/fixtures/views.jsonl`;
+const BESIDE = `${ROOT}app/ui/e2e/fixtures/views-beside.jsonl`;
 const ASK = "Make the counter count by two, and show me";
 const DRAFT = "Next, make the cube";
 
 requireBuilt();
+// Each scenario's temp home and project clean up on exit.
+process.setMaxListeners(20);
 if (!FUNCTOR) {
   console.log("SKIPPED: agent views — set FUNCTOR_BIN (npm run build:cli:debug) for the real tool server");
   process.exit(0);
@@ -52,8 +56,8 @@ function userPane(page) {
   }));
 }
 
-async function setUp(browser, width, height) {
-  const server = await startServer(0, { dir: tempProject("examples/counter"), fakeAgent: FIXTURE });
+async function setUp(browser, width, height, fakeAgent = FIXTURE) {
+  const server = await startServer(0, { dir: tempProject("examples/counter"), fakeAgent });
   const page = await browser.newPage({ viewport: { width, height } });
   const app = watchState(page);
   const errors = watchErrors(page);
@@ -110,10 +114,8 @@ async function walkthrough(browser, width, height) {
     expect(await input.evaluate((el) => [document.activeElement === el, el.selectionStart, el.value])).toEqual([true, 6, DRAFT]);
     expect(await userPane(page)).toEqual(before.pane);
     await frame(8);
-    if (process.env.APP_UI_SHOTS) {
-      // The whole page: narrow, it scrolls, with the canvas above the chat.
-      await page.screenshot({ path: `${process.env.APP_UI_SHOTS}/agent-walkthrough-${width}.png`, fullPage: width < 1000 });
-    }
+    // Narrow, the page scrolls (the canvas above the chat): all of it.
+    await shot(page, `agent-walkthrough-${width}`, { fullPage: width < 1000 });
 
     // Stepping: the changes scrolled to game.fun, then the game; back again. The composer keeps the focus.
     const next = card.getByRole("button", { name: "Next" });
@@ -179,6 +181,34 @@ async function stacked(browser) {
   }
 }
 
+/**
+ * The agent's split rebuilds the pane the user reads in: their place in a
+ * long file and their keyboard focus there survive it.
+ */
+async function readingPlace(browser) {
+  const { server, page, errors, input } = await setUp(browser, 1440, 900, BESIDE);
+  try {
+    await page.getByRole("list", { name: "Files" }).getByRole("button", { name: "game.fun", exact: true }).click();
+    await input.fill(ASK);
+    await input.press("Enter");
+    const tab = page.locator(".pane-box[data-pane='1'] [role=tab][aria-selected=true]");
+    await expect(tab).toHaveText("game.fun");
+    await tab.focus();
+    const scroller = page.locator(".pane-box[data-pane='1'] .code-scroll");
+    await scroller.evaluate((el) => (el.scrollTop = 300));
+    await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(300);
+    await expect.poll(() => tabs(page), { timeout: 15_000 }).toEqual([["Game", "game.fun"], ["functor.json"]]);
+    await expect(page.getByTestId("code-mark")).toHaveAttribute("data-lines", "2-3");
+    expect(await scroller.evaluate((el) => el.scrollTop)).toBe(300);
+    expect(await tab.evaluate((el) => document.activeElement === el)).toBe(true);
+    expect(errors, "console errors (reading)").toEqual([]);
+    console.log("ok: agent views keep the reader's place");
+  } finally {
+    await page.close();
+    await stopServer(server);
+  }
+}
+
 /** "Let the agent arrange views" off: the card only, nothing moves, nothing auto-opens. */
 async function settingOff(browser) {
   const { server, page, app, errors, input, log } = await setUp(browser, 1440, 900);
@@ -208,6 +238,7 @@ try {
   await walkthrough(browser, 1440, 900);
   await walkthrough(browser, 700, 900);
   await stacked(browser);
+  await readingPlace(browser);
   await settingOff(browser);
 } catch (e) {
   console.error(`FAIL: ${e.message}`);

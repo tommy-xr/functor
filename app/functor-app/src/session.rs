@@ -590,6 +590,27 @@ pub async fn request(
     body: &str,
 ) -> Result<String, String> {
     let what = format!("{method} {path}");
+    let (head, body) = exchange(url, method, path, headers, body).await?;
+    let status = head.lines().next().unwrap_or_default();
+    if !status
+        .split(' ')
+        .nth(1)
+        .is_some_and(|code| code.starts_with('2'))
+    {
+        return Err(format!("{what}: {status}: {}", body.trim()));
+    }
+    Ok(body)
+}
+
+/// As [`request`], but the response's head and body whatever its status.
+pub async fn exchange(
+    url: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<(String, String), String> {
+    let what = format!("{method} {path}");
     let addr = url
         .strip_prefix("http://")
         .ok_or_else(|| format!("not an http url: {url}"))?;
@@ -614,15 +635,7 @@ pub async fn request(
         .map_err(|e| format!("{what}: {e}"))?;
     let text = String::from_utf8_lossy(&response);
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-    let status = head.lines().next().unwrap_or_default();
-    if !status
-        .split(' ')
-        .nth(1)
-        .is_some_and(|code| code.starts_with('2'))
-    {
-        return Err(format!("{what}: {status}: {}", body.trim()));
-    }
-    Ok(body.to_string())
+    Ok((head.to_string(), body.to_string()))
 }
 
 /// `GET /state`'s `frame` and pointer surface.

@@ -38,17 +38,13 @@ pub fn app_link(url: &str) -> Result<AppLink, String> {
             "--app-url {url}: must be an http:// URL on 127.0.0.1, localhost or [::1]"
         ));
     }
-    match std::env::var(APP_TOKEN_ENV) {
-        Ok(token) if !token.is_empty() && token.bytes().all(|b| b.is_ascii_graphic()) => {
-            Ok(AppLink {
-                url: url.to_string(),
-                token,
-            })
-        }
-        _ => Err(format!(
-            "--app-url needs its secret: set {APP_TOKEN_ENV} to visible ASCII characters"
-        )),
-    }
+    let token = super::mcp_http::secret_from_env(APP_TOKEN_ENV).ok_or_else(|| {
+        format!("--app-url needs its secret: set {APP_TOKEN_ENV} to visible ASCII characters")
+    })?;
+    Ok(AppLink {
+        url: url.to_string(),
+        token,
+    })
 }
 
 // A view in the app's canvas: a project file, this task's changes, or the

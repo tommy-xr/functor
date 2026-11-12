@@ -310,7 +310,7 @@ fn handle(
             if !arranges {
                 return Ok((off(&view), false));
             }
-            let message = agent_show(state, &project, id, &view, commands)?;
+            let (message, _) = agent_show(state, &project, [id, run], &view, commands)?;
             Ok((message, true))
         }
         ViewRequest::Present { steps } => {
@@ -358,18 +358,19 @@ fn off(view: &ViewTarget) -> String {
     )
 }
 
-/// Shows `target` under the agent's rules and highlights it; what happened.
+/// Shows `target` for run `[task, run]` under the agent's rules and
+/// highlights it; what happened, in words and as a [`Placed`].
 fn agent_show(
     state: &mut AppState,
     project: &str,
-    task: u64,
+    run: [u64; 2],
     target: &ViewTarget,
     commands: &mut Vec<Command>,
-) -> Result<String, String> {
-    let view = view_of(target, task);
+) -> Result<(String, Placed), String> {
+    let view = view_of(target, run[0]);
     let mut layout = state.layouts.get(project).cloned().unwrap_or_default();
     let before = layout.clone();
-    let placed = layout.agent_show(&view, state.canvas_stacked, |v| {
+    let placed = layout.agent_show(&view, state.canvas_stacked, run, |v| {
         check_view(state, project, v)
     })?;
     if layout != before {
@@ -381,27 +382,27 @@ fn agent_show(
         Placed::Shown => format!("Showed {what} in the pane beside the user's."),
         // The user is reading it: neither scrolled nor highlighted under them.
         Placed::InView => {
-            return Ok(format!(
-                "{what} is the tab the user is reading; it was left as they have it."
-            ))
+            let message =
+                format!("{what} is the tab the user is reading; it was left as they have it.");
+            return Ok((message, placed));
         }
         Placed::Behind => {
-            return Ok(format!(
+            let message = format!(
                 "The user's canvas is too narrow to split, so {what} is a tab behind the one they are reading; it was not brought forward."
-            ))
+            );
+            return Ok((message, placed));
         }
         Placed::GameElsewhere(placement) => {
             let where_ = match placement {
                 Placement::Mini => "in its mini view",
                 _ => "in its own window",
             };
-            return Ok(format!(
-                "The game is already in sight {where_}; nothing was moved."
-            ));
+            let message = format!("The game is already in sight {where_}; nothing was moved.");
+            return Ok((message, placed));
         }
     };
     highlight(state, project, &view, target);
-    Ok(message)
+    Ok((message, placed))
 }
 
 /// Points the highlight at `target`'s lines or changed file, when it has one.
@@ -421,7 +422,9 @@ fn highlight(state: &mut AppState, project: &str, view: &View, target: &ViewTarg
         state.highlight = None;
         return;
     }
-    let seq = state.highlight.as_ref().map_or(0, |h| h.seq) + 1;
+    // Never reused, so a page that scrolled to one never skips the next.
+    state.highlight_seq += 1;
+    let seq = state.highlight_seq;
     state.highlight = Some(Highlight {
         project: project.to_string(),
         view: view.clone(),
@@ -585,11 +588,16 @@ pub(crate) fn auto_apply(
     if available(state, &project, id, &first.view).is_err() {
         return false;
     }
-    if agent_show(state, &project, id, &first.view, commands).is_err() {
-        return false;
+    // A step left behind the user's tab (a stacked canvas) was not shown:
+    // the card stays at its start.
+    match agent_show(state, &project, [id, run], &first.view, commands) {
+        Ok((_, Placed::Behind)) => true,
+        Ok(_) => {
+            mark_current(state, id, item, 0, commands);
+            true
+        }
+        Err(_) => false,
     }
-    mark_current(state, id, item, 0, commands);
-    true
 }
 
 #[cfg(test)]
@@ -1224,5 +1232,134 @@ mod tests {
             .message
             .contains("already in sight in its mini view"));
         assert_eq!(layout(&s), &before);
+    }
+
+    fn live(mut s: AppState) -> AppState {
+        s.session = Some(Session {
+            id: 1,
+            pid: None,
+            status: SessionStatus::Running {
+                debug_url: "http://127.0.0.1:9".into(),
+                frame: None,
+                surface: None,
+            },
+        });
+        s
+    }
+
+    fn op(op: LayoutOp) -> Event {
+        Event::Client(ClientMsg::Layout { op })
+    }
+
+    #[test]
+    fn restore_with_a_live_game_keeps_the_users_tab_and_close_leaves_the_game() {
+        // The user's a.fun shows, the game behind it; the session runs.
+        let s = live(running());
+        let (s, _) = update(s, show(game_fun(None)));
+        let (s, _) = update(s, op(LayoutOp::Restore));
+        assert_eq!(crate::print_layout(layout(&s)), ">#1[game, *file:a.fun]");
+        // The agent's Game tab, once the game runs, stays on "Close agent tabs".
+        let (s, _) = update(running(), op(LayoutOp::Close { view: View::Game }));
+        let (s, _) = update(s, show(ViewTarget::Game));
+        let (s, _) = update(s, show(game_fun(None)));
+        assert!(
+            layout(&s).agent.tabs.contains(&View::Game),
+            "{:?}",
+            layout(&s)
+        );
+        let (s, commands) = update(live(s), op(LayoutOp::CloseAgentTabs));
+        assert!(
+            !commands
+                .iter()
+                .any(|c| matches!(c, Command::Reply(ServerMsg::Rejected { .. }))),
+            "{commands:?}"
+        );
+        assert!(layout(&s).find(&View::Game).is_some());
+        assert!(layout(&s).find(&file("game.fun")).is_none());
+        assert!(layout(&s).agent.tabs.is_empty());
+    }
+
+    #[test]
+    fn a_later_runs_first_change_takes_a_new_snapshot() {
+        let (s, _) = update(running(), show(game_fun(None)));
+        let (s, _) = ended(s);
+        // The user works on: closes the agent's tab, opens their own.
+        let (s, _) = update(
+            s,
+            op(LayoutOp::Open {
+                view: View::Changes { task: 1 },
+                target: Target::Side,
+            }),
+        );
+        let users = crate::print_layout(layout(&s));
+        let (s, _) = update(
+            s,
+            Event::Client(ClientMsg::SendMessage {
+                task: 1,
+                message: "more".into(),
+            }),
+        );
+        let run = s.tasks[0].run.as_ref().unwrap().id;
+        let request = ViewRequest::Show {
+            view: ViewTarget::Game,
+        };
+        let (s, _) = update(
+            s,
+            Event::AgentView {
+                task: 1,
+                run,
+                request,
+            },
+        );
+        let (s, _) = update(s, op(LayoutOp::Restore));
+        assert_eq!(
+            crate::print_layout(layout(&s)),
+            users,
+            "back to before this run, not the first"
+        );
+    }
+
+    #[test]
+    fn highlights_are_never_numbered_twice_and_a_step_click_sends_its_highlight() {
+        let (s, _) = update(running(), show(game_fun(Some([1, 1]))));
+        let first = s.highlight.as_ref().unwrap().seq;
+        let (s, _) = update(s, Event::Client(ClientMsg::ClearHighlight { seq: first }));
+        let (s, _) = update(s, show(game_fun(Some([1, 1]))));
+        assert!(s.highlight.as_ref().unwrap().seq > first);
+        // Two steps in one shown file: the second click moves only the highlight.
+        let steps = vec![
+            step("a", game_fun(Some([1, 1]))),
+            step("b", game_fun(Some([2, 2]))),
+        ];
+        let (s, _) = update(s, present(steps));
+        let (s, _) = update(
+            s,
+            Event::Client(ClientMsg::WalkthroughStep {
+                task: 1,
+                item: 1,
+                step: 0,
+            }),
+        );
+        let (s, commands) = update(
+            s,
+            Event::Client(ClientMsg::WalkthroughStep {
+                task: 1,
+                item: 1,
+                step: 1,
+            }),
+        );
+        assert_eq!(s.highlight.as_ref().unwrap().lines, Some([2, 2]));
+        assert!(commands.iter().any(|c| matches!(c, Command::Broadcast(ServerMsg::State { state }) if state.highlight.as_ref().unwrap().lines == Some([2, 2]))), "{commands:?}");
+    }
+
+    #[test]
+    fn a_step_left_behind_the_users_tab_is_not_marked_shown() {
+        let (s, _) = update(
+            running(),
+            Event::Client(ClientMsg::CanvasStacked { stacked: true }),
+        );
+        let (s, _) = update(s, present(vec![step("a", game_fun(None))]));
+        let (s, _) = ended(s);
+        assert_eq!(walkthrough(&s).2, None);
     }
 }

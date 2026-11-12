@@ -28,14 +28,17 @@ pub const TOKEN_ENV: &str = "FUNCTOR_MCP_TOKEN";
 const MAX_APP_CONTEXT_BYTES: usize = 64 * 1024;
 
 pub fn token_from_env() -> io::Result<String> {
-    match std::env::var(TOKEN_ENV) {
-        // Visible ASCII only: header parsers trim whitespace, so a token with a
-        // trailing newline would silently never match.
-        Ok(token) if !token.is_empty() && token.bytes().all(|b| b.is_ascii_graphic()) => Ok(token),
-        _ => Err(io::Error::other(format!(
-            "`functor mcp --http` needs a bearer token: set {TOKEN_ENV} to a secret of visible ASCII characters that clients send as `Authorization: Bearer <token>`"
-        ))),
-    }
+    secret_from_env(TOKEN_ENV).ok_or_else(|| io::Error::other(format!(
+        "`functor mcp --http` needs a bearer token: set {TOKEN_ENV} to a secret of visible ASCII characters that clients send as `Authorization: Bearer <token>`"
+    )))
+}
+
+/// The secret in `name`, if set. Visible ASCII only: header parsers trim
+/// whitespace, so a secret with a trailing newline would silently never match.
+pub fn secret_from_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_graphic()))
 }
 
 /// Serve `/mcp` and `/app-context` on `127.0.0.1:port` until a shutdown

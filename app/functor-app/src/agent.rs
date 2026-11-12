@@ -141,11 +141,10 @@ impl ViewRoute {
 
     /// The run `presented` is the secret of, comparing each in constant time.
     pub fn find(&self, presented: &[u8]) -> Option<(u64, u64)> {
-        use subtle::ConstantTimeEq;
         let secrets = self.secrets.lock().expect("view secrets poisoned");
         let mut found = None;
         for (secret, task, run) in secrets.iter() {
-            if bool::from(secret.as_bytes().ct_eq(presented)) {
+            if crate::server::same(secret.as_bytes(), presented) {
                 found = Some((*task, *run));
             }
         }
@@ -788,39 +787,21 @@ impl FakeMcp {
         }
     }
 
-    /// One POST to `/mcp`: the response's head and body.
+    /// One POST to the tool server's `/mcp`: the response's head and body.
     fn post(&self, message: &serde_json::Value) -> Result<(String, String), String> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let addr = self
-            .url
-            .strip_prefix("http://")
-            .and_then(|rest| rest.split_once('/'))
-            .map(|(addr, path)| (addr.to_string(), format!("/{path}")))
-            .ok_or_else(|| format!("not an http URL: {}", self.url))?;
-        let (addr, path) = addr;
+        let base = self.url.trim_end_matches("/mcp");
+        let auth = format!("Bearer {}", self.token);
+        let mut headers = vec![
+            ("Authorization", auth.as_str()),
+            ("Accept", "application/json, text/event-stream"),
+            ("Content-Type", "application/json"),
+        ];
+        if !self.session.is_empty() {
+            headers.push(("Mcp-Session-Id", self.session.as_str()));
+        }
         let body = message.to_string();
-        let session = match self.session.as_str() {
-            "" => String::new(),
-            s => format!("Mcp-Session-Id: {s}\r\n"),
-        };
-        let head = format!(
-            "POST {path} HTTP/1.0\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\n{session}\
-             Accept: application/json, text/event-stream\r\nContent-Type: application/json\r\n\
-             Content-Length: {}\r\n\r\n{body}",
-            self.token,
-            body.len()
-        );
-        let response = self.runtime.block_on(async {
-            let mut stream = tokio::net::TcpStream::connect(&addr).await?;
-            stream.write_all(head.as_bytes()).await?;
-            let mut response = Vec::new();
-            stream.read_to_end(&mut response).await?;
-            Ok::<_, std::io::Error>(response)
-        });
-        let response = response.map_err(|e| e.to_string())?;
-        let text = String::from_utf8_lossy(&response);
-        let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-        Ok((head.to_string(), body.to_string()))
+        let exchange = crate::session::exchange(base, "POST", "/mcp", &headers, &body);
+        self.runtime.block_on(exchange)
     }
 }
 

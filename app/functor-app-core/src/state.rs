@@ -93,6 +93,10 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub clock: u64,
+    /// The last `Highlight::seq` given out; never reused.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub highlight_seq: u64,
     /// When (`clock`) the user last changed the layout.
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
@@ -147,6 +151,7 @@ impl AppState {
             last_parent: None,
             first_task: None,
             highlight: None,
+            highlight_seq: 0,
             canvas_stacked: false,
             clock: 0,
             user_layout_at: None,
@@ -385,6 +390,8 @@ pub struct RunSpec {
 
 pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let mut commands = Vec::new();
+    // A handler may move only the highlight (a step click on a shown tab).
+    let highlighted = state.highlight.clone();
     let (changed, from_client) = match event {
         Event::Client(ClientMsg::GetState) => (false, true),
         Event::Client(ClientMsg::SetActiveProject { path }) => {
@@ -679,7 +686,6 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (false, false)
         }
     };
-    let highlighted = state.highlight.clone();
     prune_highlight(&mut state);
     let changed = changed || state.highlight != highlighted;
     refresh_contexts(&mut state, &mut commands);
@@ -776,6 +782,7 @@ fn opened(
         last_parent: _,
         first_task: _,
         highlight: _,
+        highlight_seq: _,
         canvas_stacked: _,
         clock: _,
         user_layout_at: _,
@@ -1093,11 +1100,21 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
     let before = state.layouts.get(&project).cloned().unwrap_or_default();
     let mut layout = before.clone();
     let restore = op == LayoutOp::Restore;
+    let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
+    // A running game keeps its tab: "Close agent tabs" leaves it, unmarked.
+    if op == LayoutOp::CloseAgentTabs && live {
+        layout.agent.tabs.retain(|t| *t != View::Game);
+    }
     match layout.apply(op, |view| check_view(state, &project, view)) {
         Ok(true) => {
             let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
-            // Restoring keeps a running game's tab, in the pane the focus is back in.
-            if restore && live && layout.game.placement == Placement::Pane {
+            // Restoring keeps a running game's tab, in the pane the focus is
+            // back in, when the snapshot has none.
+            if restore
+                && live
+                && layout.game.placement == Placement::Pane
+                && layout.find(&View::Game).is_none()
+            {
                 let game = LayoutOp::Open {
                     view: View::Game,
                     target: Target::Focused,

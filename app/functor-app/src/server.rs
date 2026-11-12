@@ -61,6 +61,9 @@ const BATCH: usize = 256;
 const MAX_VIEW_BYTES: usize = 16 * 1024;
 /// How long a view request waits for the core's answer.
 const VIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// View requests waiting for the core at once; more are refused (429), so
+/// a flood never queues ahead of the user's own messages.
+const VIEW_IN_FLIGHT: usize = 4;
 
 const NOT_BUILT: &str = "<!doctype html><title>Functor</title>\
     <p>UI not built — run <code>npm run build:app-ui</code>, then rebuild functor-app \
@@ -142,7 +145,7 @@ impl std::fmt::Debug for Token {
 }
 
 /// `a == b` in time that depends only on their lengths.
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     use subtle::ConstantTimeEq;
     a.ct_eq(b).into()
 }
@@ -162,6 +165,8 @@ struct Ctx {
     origins: [String; 2],
     ui: Ui,
     views: Arc<ViewRoute>,
+    /// View requests waiting for the core (`VIEW_IN_FLIGHT`).
+    in_flight: std::sync::atomic::AtomicUsize,
 }
 
 /// Serves until `shutdown` resolves to an exit code, then stops the session
@@ -189,6 +194,7 @@ pub async fn serve(
         ],
         ui,
         views,
+        in_flight: Default::default(),
     });
     let app = Router::new()
         .route("/ws", get(ws))
@@ -221,6 +227,13 @@ async fn run(
     // Per client, the releases of the keys and buttons it holds down: sent
     // for it if it goes away mid-press, so nothing stays held in the game.
     let mut held: HashMap<u64, HashSet<GameInput>> = HashMap::new();
+    // Per client, whether its canvas stacks its panes: the core is told
+    // "stacked" while any connected client's does.
+    let mut stacked: HashMap<u64, bool> = HashMap::new();
+    let stacked_msg = |stacked: &HashMap<u64, bool>| {
+        let any = stacked.values().any(|s| *s);
+        Event::Client(ClientMsg::CanvasStacked { stacked: any })
+    };
     loop {
         let (events, from, mut answer) = tokio::select! {
             biased;
@@ -253,6 +266,10 @@ async fn run(
                 Input::Client { id, msg: ClientMsg::NewTask { message, harness } } => {
                     (vec![driver.new_task(message, harness)], Some(id), None)
                 }
+                Input::Client { id, msg: ClientMsg::CanvasStacked { stacked: s } } => {
+                    stacked.insert(id, s);
+                    (vec![stacked_msg(&stacked)], Some(id), None)
+                }
                 Input::Client { id, msg } => {
                     if let ClientMsg::Input { input } = &msg {
                         track(held.entry(id).or_default(), input);
@@ -263,8 +280,14 @@ async fn run(
                     clients.remove(&id);
                     let releases = held.remove(&id).unwrap_or_default();
                     let releases = releases.into_iter().map(|input| Event::Client(ClientMsg::Input { input }));
-                    (releases.collect(), None, None)
+                    let mut events: Vec<Event> = releases.collect();
+                    if stacked.remove(&id).is_some() {
+                        events.push(stacked_msg(&stacked));
+                    }
+                    (events, None, None)
                 }
+                // One whose caller gave up (timed out) is not applied late.
+                Input::AgentView { reply, .. } if reply.is_closed() => (vec![], None, None),
                 Input::AgentView { task, run, request, reply } => {
                     (vec![Event::AgentView { task, run, request }], None, Some(reply))
                 }
@@ -384,15 +407,18 @@ fn json(msg: &ServerMsg) -> String {
     serde_json::to_string(msg).expect("ServerMsg serializes")
 }
 
-/// Milliseconds since the epoch: the core's clock (`AppState::clock`).
+/// Milliseconds since this process started, on a monotonic clock: the
+/// core's clock (`AppState::clock`).
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
 }
 
 /// A run's view request: see the module docs. The answer is the core's
-/// `ViewReply` (`200`), else `401` / `403` / `400` / `413` / `503`.
+/// `ViewReply` (`200`), else `401` / `403` / `400` / `413` / `429` / `503`.
 async fn agent_view(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes) -> Response {
     if headers.contains_key(header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
@@ -415,6 +441,22 @@ async fn agent_view(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes
             return (StatusCode::BAD_REQUEST, format!("not a view request: {e}")).into_response()
         }
     };
+    // Released when this handler ends, however it ends.
+    struct Slot<'a>(&'a std::sync::atomic::AtomicUsize);
+    impl Drop for Slot<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    if ctx.in_flight.fetch_add(1, Ordering::Relaxed) >= VIEW_IN_FLIGHT {
+        ctx.in_flight.fetch_sub(1, Ordering::Relaxed);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many view requests at once",
+        )
+            .into_response();
+    }
+    let _slot = Slot(&ctx.in_flight);
     let (reply, answer) = oneshot::channel();
     let input = Input::AgentView {
         task,

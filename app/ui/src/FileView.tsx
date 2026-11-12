@@ -9,6 +9,13 @@ const REFRESH_MS = 2000;
 export type LineMark = { lines: [number, number]; seq: number };
 
 /**
+ * Per file, where its scroller was left and the highlight it last scrolled
+ * to. Kept across mounts: a split around the pane (the agent opening a view
+ * beside it) mounts it anew, and the reader must not lose their place.
+ */
+const kept = new Map<string, { top: number; seq: number | null }>();
+
+/**
  * A project file, read only: its text with line numbers, fetched while shown
  * and again every few seconds. The text is rendered as text nodes only.
  * `mark`'s lines are highlighted and scrolled to (this view's scroller only,
@@ -50,16 +57,24 @@ export function FileView({
   const [lineHeight, setLineHeight] = useState(0);
   // Our own scroll is not the user's: the next scroll event is skipped.
   const ours = useRef(false);
-  useLayoutEffect(() => {
-    const pre = scroller.current?.querySelector(".code-text");
-    if (pre) setLineHeight(parseFloat(getComputedStyle(pre).lineHeight) || 0);
-  }, [shown !== null]);
-  // Scrolled to once per highlight, when the text and its geometry are in.
-  const scrolledFor = useRef<number | null>(null);
+  const place = () => kept.get(path) ?? kept.set(path, { top: 0, seq: null }).get(path)!;
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (!mark || !range || !lineHeight || !el || scrolledFor.current === mark.seq) return;
-    scrolledFor.current = mark.seq;
+    if (!el) return;
+    const pre = el.querySelector(".code-text");
+    if (pre) setLineHeight(parseFloat(getComputedStyle(pre).lineHeight) || 0);
+    // Back where the reader left it.
+    const top = place().top;
+    if (Math.abs(el.scrollTop - top) >= 1) {
+      ours.current = true;
+      el.scrollTop = top;
+    }
+  }, [shown !== null, path]);
+  // Scrolled to once per highlight, when the text and its geometry are in.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!mark || !range || !lineHeight || !el || place().seq === mark.seq) return;
+    place().seq = mark.seq;
     const b = band.current?.getBoundingClientRect().top ?? 0;
     const top = b - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight / 3;
     const want = Math.round(Math.min(Math.max(top, 0), el.scrollHeight - el.clientHeight));
@@ -69,11 +84,12 @@ export function FileView({
     }
   }, [mark?.seq, range !== null, lineHeight]);
   const onScroll = () => {
+    const el = scroller.current;
+    if (el) place().top = el.scrollTop;
     if (ours.current) {
       ours.current = false;
       return;
     }
-    const el = scroller.current;
     const b = band.current;
     if (!mark || !el || !b) return;
     const view = el.getBoundingClientRect();

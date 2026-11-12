@@ -113,6 +113,15 @@ export function Canvas(props: CanvasProps) {
 
   useShortcuts(layout, op, refocus);
   useStackedReport(main, props.online, send);
+  useEffect(() => {
+    const track = (e: FocusEvent) => {
+      const el = e.target instanceof HTMLElement ? e.target : null;
+      const pane = el?.closest<HTMLElement>("[data-pane]");
+      lastFocus = pane ? { pane: Number(pane.dataset.pane), id: el?.id ?? "" } : null;
+    };
+    document.addEventListener("focusin", track);
+    return () => document.removeEventListener("focusin", track);
+  }, []);
   const placement = placementOf(layout);
   const highlight = state?.highlight?.project === state?.active ? (state?.highlight ?? null) : null;
   const ctx: Ctx = { ...props, op, titles, focus: layout?.focus ?? null, placement, refocus, agentTabs: agentTabs(layout), highlight };
@@ -265,6 +274,13 @@ function GameSlot() {
   return <div className="game-slot" ref={ref} />;
 }
 
+/**
+ * Where keyboard focus last was in a pane (its id, and the element's id if
+ * it has one). A split around a pane (the agent opening a view beside it)
+ * mounts it anew, dropping that focus to the page; the new pane takes it back.
+ */
+let lastFocus: { pane: number; id: string } | null = null;
+
 /** Keyed by id, so a node's local state (a splitter preview) never passes to another. */
 function nodeId(node: Node) {
   return `${node.kind}-${node.id}`;
@@ -388,6 +404,13 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
   // Native listeners, not React's: the game view is portalled in from
   // `GameHost`, so its React events never pass through this pane.
   const box = useRef<HTMLElement>(null);
+  // Mounted anew (see `lastFocus`): focus that fell to the page comes back.
+  useLayoutEffect(() => {
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (!lost || lastFocus?.pane !== pane.id) return;
+    const el = (lastFocus.id && document.getElementById(lastFocus.id)) || box.current?.querySelector<HTMLElement>("[role=tab][aria-selected=true]");
+    el?.focus({ preventScroll: true });
+  }, []);
   const live = useRef({ focused, pane, op });
   live.current = { focused, pane, op };
   useEffect(() => {

@@ -14,10 +14,15 @@ arranges: boolean,
  */
 tabs: Array<View>, 
 /**
- * The layout before the agent's first change since the last restore:
- * "Restore my layout" returns to it. Dropped once the layout is that again.
+ * The layout before the first change of the agent's latest run that
+ * changed it: "Restore my layout" returns to it. Dropped once the
+ * layout is that again.
  */
-restore: Layout | null, };
+restore: Layout | null, 
+/**
+ * That run, as `[task, run]`: its later changes keep the snapshot.
+ */
+restore_run: [number, number] | null, };
 
 export type AppState = { 
 /**

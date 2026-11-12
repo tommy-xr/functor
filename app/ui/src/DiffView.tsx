@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AppState, FileDiff, Task, TaskStatus } from "./generated/protocol";
 import {
   collapse,
@@ -13,6 +13,13 @@ import type { DiffMsg, Notice, Send } from "./socket";
 
 /** A file "View diff" asked to show; `seq` tells repeats apart. */
 export type DiffTarget = { path: string | null; seq: number };
+
+/**
+ * Per task, where its diff's scroller was left and the target it last
+ * scrolled to: kept across mounts (a split around its pane mounts it anew)
+ * and across refreshed diffs, so neither moves the reader.
+ */
+const kept = new Map<number, { top: number; seq: number | null }>();
 
 /** The current task's change: its files, each unified diff, and Keep / Revert. */
 export function DiffView({
@@ -50,10 +57,19 @@ export function DiffView({
   }, [key, online]);
 
   const current = diff && task && diff.task === task.id ? diff : undefined;
-  // Scrolled to the file "View diff" named, once its diff is here.
+  const place = (id: number) => kept.get(id) ?? kept.set(id, { top: 0, seq: null }).get(id)!;
+  const box = useRef<HTMLDivElement>(null);
+  // Back where the reader left it, once its diff is here.
+  const shown = !!current && !!change;
+  useLayoutEffect(() => {
+    if (box.current && task) box.current.scrollTop = place(task.id).top;
+  }, [shown, task?.id]);
+  // Scrolled once to the file a target names (per target), once its diff is here.
   useEffect(() => {
-    if (!target?.path || !current) return;
+    if (!target?.path || !current || place(current.task).seq === target.seq) return;
     const i = current.files.findIndex((f) => f.file.path === target.path);
+    if (i < 0) return;
+    place(current.task).seq = target.seq;
     scrollToTop(document.getElementById(`diff-file-${current.task}-${i}`));
   }, [target?.seq, current]);
 
@@ -72,7 +88,7 @@ export function DiffView({
   }
   const sum = totals(change);
   return (
-    <div className="diff" data-testid="diff-view">
+    <div className="diff" data-testid="diff-view" ref={box} onScroll={(e) => (place(task.id).top = e.currentTarget.scrollTop)}>
       <header className="diff-head">
         <h2 className="eyebrow">Change</h2>
         <span className="diff-total">

@@ -26,10 +26,16 @@ struct HttpServer {
 
 impl HttpServer {
     fn start(extra: &[&str]) -> Self {
+        Self::start_env(extra, &[])
+    }
+
+    /// As `start`, with `env` set too.
+    fn start_env(extra: &[&str], env: &[(&str, &str)]) -> Self {
         let mut child = functor()
             .args(["mcp", "--http", "0"])
             .args(extra)
             .env("FUNCTOR_MCP_TOKEN", TOKEN)
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -223,18 +229,23 @@ fn wait_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
     None
 }
 
+/// A request's head, read a byte at a time up to its blank line.
+fn read_head(stream: &mut std::net::TcpStream) -> String {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+        head.push(byte[0]);
+    }
+    String::from_utf8_lossy(&head).to_string()
+}
+
 /// A stand-in debug runtime answering `GET /` (discovery) and `GET /state`.
 fn fake_debug_runtime() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
         for mut stream in listener.incoming().map_while(Result::ok) {
-            let mut head = Vec::new();
-            let mut byte = [0u8; 1];
-            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
-                head.push(byte[0]);
-            }
-            let head = String::from_utf8_lossy(&head);
+            let head = read_head(&mut stream);
             let path = head.split_whitespace().nth(1).unwrap_or("");
             let body = match path {
                 "/" => json!({"service": "functor debug runtime", "protocol_version": 8}),
@@ -479,12 +490,7 @@ fn stub_app(replies: Vec<Option<Value>>) -> (String, mpsc::Receiver<AppRequest>)
     std::thread::spawn(move || {
         let mut replies = replies.into_iter();
         for mut stream in listener.incoming().map_while(Result::ok) {
-            let mut head = Vec::new();
-            let mut byte = [0u8; 1];
-            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
-                head.push(byte[0]);
-            }
-            let head = String::from_utf8_lossy(&head).to_string();
+            let head = read_head(&mut stream);
             let length = head
                 .lines()
                 .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
@@ -520,21 +526,7 @@ fn stub_app(replies: Vec<Option<Value>>) -> (String, mpsc::Receiver<AppRequest>)
 
 /// `functor mcp --http 0 --app-url <url>` with both secrets set.
 fn app_server(url: &str) -> HttpServer {
-    let mut child = functor()
-        .args(["mcp", "--http", "0", "--no-unsafe-code", "--app-url", url])
-        .env("FUNCTOR_MCP_TOKEN", TOKEN)
-        .env("FUNCTOR_MCP_APP_TOKEN", APP_TOKEN)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let stdin = child.stdin.take();
-    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-    let line = lines.next().unwrap().unwrap();
-    std::thread::spawn(move || lines.for_each(drop));
-    let url = line.strip_prefix("[mcp] listening on ").expect(&line).to_string();
-    HttpServer { child, stdin, url }
+    HttpServer::start_env(&["--no-unsafe-code", "--app-url", url], &[("FUNCTOR_MCP_APP_TOKEN", APP_TOKEN)])
 }
 
 #[test]
