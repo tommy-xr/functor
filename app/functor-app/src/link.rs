@@ -58,7 +58,7 @@ const MAX_PENDING: usize = 64;
 const MAX_PENDING_PER_IP: usize = 4;
 /// Pairing prompts open at once: all, and from one address.
 const MAX_ASKING: usize = 4;
-const MAX_ASKING_PER_IP: usize = 1;
+const MAX_ASKING_PER_IP: usize = 2;
 /// Tunnelled requests waiting on one device at once; more get 429 before
 /// their bodies are read.
 const MAX_TUNNEL_IN_FLIGHT: usize = 8;
