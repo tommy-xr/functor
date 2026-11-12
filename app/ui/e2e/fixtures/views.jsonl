@@ -1,0 +1,9 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-views-1", "model": "claude-model"}}
+{"ms": 200, "event": {"type": "tool_use", "name": "Edit", "input": {"file_path": "game.fun", "old_string": "count: m.count + 1.0", "new_string": "count: m.count + 2.0"}}}
+{"ms": 250, "edit": {"path": "game.fun", "old": "count: m.count + 1.0", "new": "count: m.count + 2.0"}}
+{"ms": 300, "event": {"type": "tool_result", "content": "The file has been updated."}}
+{"ms": 2500, "mcp": {"tool": "show_view", "arguments": {"view": {"kind": "file", "path": "game.fun", "lines": [15, 17]}}}}
+{"ms": 4500, "mcp": {"tool": "present", "arguments": {"steps": [{"title": "Inc counts by two", "note": "update adds 2.0 per click instead of 1.0.", "view": {"kind": "file", "path": "game.fun", "lines": [17, 17]}}, {"title": "The change", "view": {"kind": "changes", "path": "game.fun"}}, {"title": "The counter", "note": "Click the button: the count goes up by two.", "view": {"kind": "game"}}]}}}
+{"ms": 5000, "event": {"type": "text", "text": "The counter now counts by two."}}
+{"ms": 5100, "event": {"type": "usage", "input": 3000, "output": 40}}
+{"ms": 5200, "event": {"type": "finished", "ok": true, "summary": "The counter now counts by two."}}

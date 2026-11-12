@@ -8,7 +8,9 @@ import {
   initialTask,
   outcome,
   phraseText,
+  stepAvailable,
   stepPhrase,
+  walkTo,
   tokens,
   toolKind,
   usageBefore,
@@ -181,4 +183,36 @@ test("following the bottom: within a few pixels counts", () => {
   assert.equal(atBottom({ scrollTop: 480, scrollHeight: 1000, clientHeight: 500 }), true);
   assert.equal(atBottom({ scrollTop: 400, scrollHeight: 1000, clientHeight: 500 }), false);
   assert.equal(atBottom({ scrollTop: 0, scrollHeight: 300, clientHeight: 500 }), true);
+});
+
+test("the view tools read as what they showed", () => {
+  const file = { kind: "file", path: "src/ladder.fun", lines: [4, 5] };
+  assert.equal(phrase("mcp__mis__show_view", { view: file }), "Showed ladder.fun, lines 4–5");
+  assert.deepEqual(stepPhrase("mcp__mis__show_view", { view: file }), { text: "Showed", code: "ladder.fun", after: ", lines 4–5" });
+  assert.equal(phrase("mcp__mis__show_view", { view: { ...file, lines: [7, 7] } }), "Showed ladder.fun, line 7");
+  assert.equal(phrase("mcp__mis__show_view", { view: { kind: "file", path: "a.fun", lines: null } }), "Showed a.fun");
+  assert.equal(phrase("mcp__mis__show_view", { view: { kind: "game" } }), "Showed the game");
+  assert.equal(phrase("mcp__mis__show_view", { view: { kind: "changes", path: null } }), "Showed the changes");
+  assert.equal(phrase("mcp__mis__show_view", { view: { kind: "changes", path: "game.fun" } }), "Showed game.fun in the changes");
+  assert.equal(phrase("mcp__mis__show_view", {}), "Showed a view");
+  assert.equal(phrase("mcp__mis__present", { steps: [] }), "Presented a walkthrough");
+});
+
+test("a walkthrough step is unavailable once its file or change is gone", () => {
+  const file = { kind: "file", path: "game.fun", lines: null } as const;
+  assert.equal(stepAvailable(file, ["game.fun"], false), true);
+  assert.equal(stepAvailable(file, ["other.fun"], true), false);
+  assert.equal(stepAvailable({ kind: "changes", path: null }, [], true), true);
+  assert.equal(stepAvailable({ kind: "changes", path: "game.fun" }, ["game.fun"], false), false);
+  assert.equal(stepAvailable({ kind: "game" }, [], false), true);
+});
+
+test("prev and next skip unavailable steps and stop at the ends", () => {
+  const ok = [true, false, true, true];
+  assert.equal(walkTo(ok, null, 1), 0);
+  assert.equal(walkTo(ok, null, -1), null);
+  assert.equal(walkTo(ok, 0, 1), 2);
+  assert.equal(walkTo(ok, 2, -1), 0);
+  assert.equal(walkTo(ok, 3, 1), null);
+  assert.equal(walkTo([false, true], null, 1), 1);
 });

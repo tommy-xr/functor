@@ -54,7 +54,7 @@ export function DiffView({
   useEffect(() => {
     if (!target?.path || !current) return;
     const i = current.files.findIndex((f) => f.file.path === target.path);
-    document.getElementById(`diff-file-${current.task}-${i}`)?.scrollIntoView({ block: "start" });
+    scrollToTop(document.getElementById(`diff-file-${current.task}-${i}`));
   }, [target?.seq, current]);
 
   let empty: string | null = null;
@@ -88,7 +88,7 @@ export function DiffView({
             key={f.path}
             type="button"
             className="diff-index-item"
-            onClick={() => document.getElementById(`diff-file-${task.id}-${i}`)?.scrollIntoView({ block: "start" })}
+            onClick={() => scrollToTop(document.getElementById(`diff-file-${task.id}-${i}`))}
           >
             <span className="mono">{f.path}</span>
             <FileCounts file={f} />
@@ -103,6 +103,12 @@ export function DiffView({
       ))}
     </div>
   );
+}
+
+/** Scrolls the diff (only it, never the page) so `el` is at its top. */
+function scrollToTop(el: HTMLElement | null) {
+  const box = el?.closest<HTMLElement>(".diff");
+  if (el && box) box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top;
 }
 
 function FileBlock({ id, diff, current }: { id: string; diff: FileDiff; current: boolean }) {

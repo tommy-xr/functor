@@ -2209,6 +2209,171 @@ blockquote {
   right: 8px;
 }
 
+/* The agent's views (D25): its tab mark, the floating restore bar, the
+   highlighted lines it points at, and its walkthrough card. */
+
+.agent-dot {
+  flex: none;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+.agent-bar {
+  position: absolute;
+  z-index: 2;
+  left: 18px;
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.agent-bar .agent-dot {
+  margin-right: 0;
+}
+
+.menu button[role="menuitemcheckbox"] {
+  justify-content: flex-start;
+}
+
+.menu-check {
+  flex: none;
+  width: 14px;
+  color: var(--accent-soft);
+}
+
+.code-scroll {
+  position: relative;
+}
+
+/* Wide as the longest line, so a highlight spans it while scrolling sideways. */
+.code-lines {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  align-items: flex-start;
+  min-width: 100%;
+  width: max-content;
+}
+
+.code-mark {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: -1;
+  background: var(--accent-soft-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.code-lines-label {
+  color: var(--accent-soft);
+  font-size: 12px;
+}
+
+.walkthrough-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.walk-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.walk-step {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+}
+
+.walk-step:hover:not(:disabled) {
+  background: var(--selected);
+}
+
+.walk-step[aria-current="step"] {
+  background: var(--accent-soft-bg);
+  color: var(--text);
+}
+
+.walk-step:disabled {
+  opacity: 0.55;
+}
+
+.walk-n {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--chip);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.walk-step[aria-current="step"] .walk-n {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.walk-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.walk-title {
+  font-weight: 600;
+}
+
+.walk-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.walk-where {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.walk-nav {
+  align-items: center;
+}
+
+.walk-count {
+  flex: 1;
+  text-align: center;
+  color: var(--faint);
+  font-size: 12px;
+}
+
 /* Responsive overrides last, so they win over the rules above. */
 
 /* Below desktop width the chat drops under the canvas. */
