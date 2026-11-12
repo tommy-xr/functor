@@ -82,6 +82,31 @@ graphs: Array<CellsWalk>, };
 export type CellsWalk = { visible: number, portals: number, cut: number, outside: boolean, everything: boolean, };
 
 /**
+ * `GET /state`'s `clock` (v37): whether time runs, and the recorded window
+ * a timeline can seek in.
+ */
+export type ClockState = { 
+/**
+ * Pinned by `POST /time` (`set`, `advance`, `cancel`), `POST /seek`, or
+ * the shell's own scrubber. Steps an `advance` queued still run.
+ */
+paused: boolean, 
+/**
+ * The seekable window, numbered as `frame`. Omitted before the first
+ * recorded step, and for producers that record no history.
+ */
+recorded?: RecordedFrames, 
+/**
+ * Bumps when recorded frames are replaced (a branch, a hot reload that
+ * restarts history, a project load); `GET /input-log`'s `generation`.
+ */
+generation: number, 
+/**
+ * Successful code swaps (hot reloads) since the program loaded.
+ */
+program_revision: number, };
+
+/**
  * One frame's frustum culling, summed over every pass (shadow, render
  * targets, each eye): draws tested against the pass's frustum, and those
  * skipped. A hardware-instanced node counts once.
@@ -373,7 +398,12 @@ tts: number, dts: number,
  * The sampled snapshot `sampledInput` received; `None` for a game that
  * doesn't define it.
  */
-input: InputSnapshot | null, };
+input: InputSnapshot | null, 
+/**
+ * The step's recorded edge events (v37), as timeline marks. `default`
+ * because a pre-v37 runtime omits it.
+ */
+marks: Array<TimelineMark>, };
 
 /**
  * Runtime-owned input sampled for one fixed simulation step.
@@ -517,6 +547,11 @@ warning?: string,
 camera?: SensorStreamState, };
 
 /**
+ * The oldest and newest frames of a recorded window, inclusive.
+ */
+export type RecordedFrames = { oldest: number, newest: number, };
+
+/**
  * How the last pushed reload settled.
  */
 export type ReloadOutcome = { 
@@ -625,7 +660,12 @@ http: HttpStats,
  * for [`crate::reload_indicator::FADE`]. `default`
  * because a pre-v35 runtime omits it.
  */
-reload: ReloadState, viewport: RuntimeViewport, views: Array<RuntimeView>, 
+reload: ReloadState, 
+/**
+ * The clock and its recorded history (v37). `default` because a pre-v37
+ * runtime omits it.
+ */
+clock: ClockState, viewport: RuntimeViewport, views: Array<RuntimeView>, 
 /**
  * The structured JSON view of the model
  * ([`crate::protocol::GameProducer::state_json`]) — the default thing to
@@ -834,6 +874,12 @@ export type StageTimings = { frames: number, sim_ms: number, render_ms: number, 
  * `vertices` is patches × the patch mesh's vertex count (grid + skirt).
  */
 export type TerrainDraws = { patches: number, vertices: number, };
+
+/**
+ * One recorded event as a timeline shows it: `kind` (`key-down`,
+ * `mouse-button-up`, `ui-input`, …) and a human `label` (`W down`).
+ */
+export type TimelineMark = { kind: string, label: string, };
 
 /**
  * One touch contact transition at the shell boundary.

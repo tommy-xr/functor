@@ -302,6 +302,100 @@ same way it drives the game.
   walkthrough is applied without a click; a setting turns that off. To be
   judged in use.
 
+## Decisions, fifth round — the headset
+
+These extend D5 (the headset owns the game state), D8 (status toast), D9 (the
+device link) and D21 (the Headset placement).
+
+### D26 — pairing needs no cable
+
+- The Functor app on the headset finds desktops on the Wi-Fi and shows a code.
+  The desktop shows the same code with "a headset wants to pair"; the user
+  clicks Allow. Nothing is typed in the headset.
+- After pairing the headset reconnects by itself (D9).
+- The cable still works and does more in one step: it installs the headset
+  app, pairs, and enables updates.
+- Limit: the headset app must be installed before it can pair. A first install
+  is a sideload over the cable until there is a store listing. Updates after
+  pairing travel over the link; the headset asks the user to confirm.
+
+### D27 — connection is a small set of states, each with one fix
+
+Not paired · asking to pair · paired but away · connected (Wi-Fi or cable) ·
+needs an update · cannot reach. The title-bar pill shows the state's word
+everywhere; the Devices pane shows the detail (link quality, battery, the
+build running) and the one action that fixes the state.
+
+### D28 — the in-headset panel is drawn by the runtime
+
+An overlay the runtime draws over any game, opened by the menu button; the
+game's code does not know about it. Sections: Now (the task in front of the
+user), Tasks (waiting on you, in progress, ready to review), Build, and a way
+through to the game's own menu. With the panel closed, one small light on the
+wrist carries the status: working, needs you, reloaded, not connected.
+
+Agent-built tuning UI (D7) stays game-authored; the task panel does not.
+
+### D29 — a router decides what speech becomes
+
+- One small, fast model call per utterance splits it into parts and labels
+  each: steer the running task, or a new task.
+- The decision is always shown, with a one-tap override in each direction.
+- Steering a running task means stopping the run and resuming it with the new
+  message, since the agent CLIs take no input mid-run.
+- A new task queues behind the running one (one run per project at a time).
+
+### D30 — queued tasks start by themselves
+
+Bias to action. When a queued task is about to start, it is given its
+original request plus everything the user has said since, in order, so a
+later change of mind is honoured — including dropping the task.
+
+### D31 — a presentation when the user must decide
+
+Whenever a task needs a decision — a change ready to keep or revert, or a
+question from the agent — the user gets a prepared presentation: everything
+needed to say yes or to give feedback. It is not produced for changes that
+need no decision.
+
+Four parts, any of which may be absent:
+
+1. **Highlights** — the change and, where it matters, its architecture, in a
+   few points. Each links to its code spot for drilling in.
+2. **Before and after captures** — the same camera and moment on both
+   versions.
+3. **A lab** — when the change needs to be felt: the moment the user gave
+   feedback, replayed in the new version; or, when there is no such moment, a
+   small test scene built for the change.
+4. **The real before and after** — switching the running game between the two
+   versions (D32).
+
+- **One format, several renderings:** the walkthrough card on the desktop
+  (D25), pages in the headset panel, and later a code-city view (D33).
+- **A separate presentation agent** prepares it, with read access to the code
+  and tools to read the change, capture frames from either version, and
+  assemble the result. Which agent, model and skill it uses is configurable
+  per project, with a built-in default.
+- **The tools are ours.** Building a presentation — and the visualisations in
+  it — goes through MCP tools the tool server exposes, so any agent can do
+  it. A small Functor helper for authoring presentation scenes is a likely
+  shape for the visual parts.
+
+### D32 — before and after by branching state
+
+Each version keeps its own state, so the old code only ever sees state the
+old code produced. Switching swaps the code and the branch together; coming
+back restores the other branch exactly. "Before" starts from the last state
+the old code produced, or from the lab's recorded moment. Built on the
+recorder's existing rewind and branch; needs a spike to confirm on device.
+
+### D33 — code city as a later rendering
+
+A Functor-specific code-city view is a third rendering of the same
+presentation: the buildings a change touched light up and the user steps
+between them. In VR it is far simpler than on the desktop — the changed
+modules and their neighbours at table scale.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.

@@ -9,6 +9,7 @@ import { Icon } from "./Icon";
 import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
+import { TransportContext, useTransport } from "./TransportBar";
 import { choiceKey, chosenTask, currentTask, needsYou } from "./tasks-model";
 
 
@@ -34,6 +35,8 @@ export function App() {
     listDirs,
     plan,
     checkProject,
+    transport,
+    marks,
   } = useAppSocket();
   const [view, setView] = useView();
   const online = conn === "open" && state !== null;
@@ -79,7 +82,7 @@ export function App() {
   const folder: FolderProps = { state, online, send, dirs, listDirs };
   useWindowMenu(state, send);
   return (
-    <>
+    <TransportContext.Provider value={{ transport, marks }}>
     {/* Behind the new-project modal, nothing takes focus or clicks. */}
     <div className="app" inert={!!state?.new_project}>
       <TitleBar state={state} conn={conn} />
@@ -151,7 +154,7 @@ export function App() {
         harness={pickHarness(state)}
       />
     )}
-    </>
+    </TransportContext.Provider>
   );
 }
 
@@ -276,7 +279,8 @@ function ExplorerPane(props: FolderProps) {
   const where = state?.git ? "repo" : "folder";
   const session = state?.session;
   const status = session?.status;
-  const frame = status?.kind === "running" ? status.frame : null;
+  const { transport } = useTransport();
+  const frame = status?.kind === "running" ? (transport?.frame ?? null) : null;
   const reason = status?.kind === "failed" || status?.kind === "exited" ? status.reason : null;
   const openFile = (path: string, side: boolean) =>
     send({ type: "layout", op: { type: "open", view: { kind: "file", path }, target: { kind: side ? "side" : "focused" } } });

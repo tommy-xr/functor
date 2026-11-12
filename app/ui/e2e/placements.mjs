@@ -126,7 +126,8 @@ async function placements(browser, width, height) {
     await expect.poll(() => game()?.mini.width).toBe(440);
     box = await mini.boundingBox();
     expect(Math.abs(box.width - 440)).toBeLessThanOrEqual(1);
-    const body = await mini.locator(".mini-body").boundingBox();
+    // The game view, above any transport bar.
+    const body = await mini.getByTestId("game-view").boundingBox();
     // The session's surface, or 16:9 before it reports one.
     const surface = app.state.session?.status.surface;
     const aspect = surface ? surface[0] / surface[1] : 16 / 9;

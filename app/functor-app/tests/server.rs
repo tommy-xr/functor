@@ -80,24 +80,30 @@ async fn connect(ws: &str) -> Socket {
     tokio_tungstenite::connect_async(ws).await.unwrap().0
 }
 
-/// The next state message, within a timeout.
-async fn next_state(socket: &mut Socket) -> Value {
+/// The next message, within a timeout.
+async fn next_msg(socket: &mut Socket) -> Value {
     let msg = tokio::time::timeout(Duration::from_secs(10), socket.next())
         .await
         .expect("no message within 10s")
         .unwrap()
         .unwrap();
-    let json: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+    serde_json::from_str(msg.to_text().unwrap()).unwrap()
+}
+
+/// The next message, which is the state.
+async fn next_state(socket: &mut Socket) -> Value {
+    let json = next_msg(socket).await;
     assert_eq!(json["type"], "state", "{json}");
     json["state"].clone()
 }
 
-/// Reads states until one matches `done`.
+/// Reads states until one matches `done`, skipping the session's clock
+/// (`transport`, `marks`), which travels apart from them.
 async fn state_where(socket: &mut Socket, done: impl Fn(&Value) -> bool) -> Value {
     loop {
-        let state = next_state(socket).await;
-        if done(&state) {
-            return state;
+        let json = next_msg(socket).await;
+        if json["type"] == "state" && done(&json["state"]) {
+            return json["state"].clone();
         }
     }
 }
@@ -281,6 +287,11 @@ async fn input_is_posted_to_the_session() {
     })
     .await;
     assert_eq!(state["session"]["status"]["kind"], "running", "{state}");
+    // Its clock follows, apart from the state (this fake reports no `clock`).
+    let json = next_msg(&mut socket).await;
+    assert_eq!(json["type"], "transport", "{json}");
+    assert_eq!(json["transport"]["frame"], 1, "{json}");
+    assert_eq!(json["transport"]["clock"], false, "{json}");
 
     let sent = [
         r#"{"type":"key","key":"w","down":true}"#,
@@ -325,8 +336,10 @@ async fn input_is_posted_to_the_session() {
     let quiet = inputs.recv_timeout(Duration::from_millis(300));
     assert!(quiet.is_err(), "more input posted: {quiet:?}");
 
+    // A new page gets the state, then the clock.
     let mut socket = connect(&server.ws).await;
     next_state(&mut socket).await;
+    assert_eq!(next_msg(&mut socket).await["type"], "transport");
     socket
         .send(Message::text(r#"{"type":"stop_session"}"#))
         .await

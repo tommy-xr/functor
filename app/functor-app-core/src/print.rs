@@ -375,9 +375,13 @@ fn session(state: &AppState) -> String {
         SessionStatus::Stopped => "stopped".to_string(),
         SessionStatus::Starting => format!("starting{pid}"),
         SessionStatus::Running {
-            debug_url, frame, ..
+            debug_url,
+            timeline,
+            ..
         } => {
-            let frame = frame.map_or("not polled".to_string(), |f| format!("frame {f}"));
+            let frame = timeline
+                .clock
+                .map_or("not polled".to_string(), |c| format!("frame {}", c.frame));
             format!("running{pid} {debug_url} {frame}")
         }
         SessionStatus::Exited { reason } => format!("exited: {reason}"),
@@ -391,6 +395,13 @@ mod tests {
     use crate::changes::FileChange;
     use crate::projects::{Project, Role};
     use crate::Session;
+
+    /// A timeline polled once at `frame`.
+    fn polled_at(frame: u64) -> crate::transport::Timeline {
+        let mut timeline = crate::transport::Timeline::default();
+        timeline.polled(0, frame, Some(Default::default()));
+        timeline
+    }
 
     #[test]
     fn prints_a_change_with_renames_binaries_and_the_rest_counted() {
@@ -474,8 +485,8 @@ mod tests {
                 pid: Some(4242),
                 status: SessionStatus::Running {
                     debug_url: "http://127.0.0.1:52011".into(),
-                    frame: Some(30),
                     surface: Some([800, 600]),
+                    timeline: Box::new(polled_at(30)),
                 },
             }),
             no_gpu: false,
@@ -648,8 +659,8 @@ recents: 2
                 Some(7),
                 SessionStatus::Running {
                     debug_url: "http://127.0.0.1:1".into(),
-                    frame: None,
                     surface: None,
+                    timeline: Default::default(),
                 }
             ),
             "session: running pid 7 http://127.0.0.1:1 not polled"

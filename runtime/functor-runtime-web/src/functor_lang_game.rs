@@ -730,45 +730,6 @@ thread_local! {
     static TIMELINE_LOG: RefCell<TimelineLog> = RefCell::new(TimelineLog::default());
 }
 
-fn input_marker(input: &InputEvent) -> Option<(&'static str, String)> {
-    match input {
-        InputEvent::Key { code, is_down } => {
-            let name = functor_runtime_common::Key::from_i32(*code)
-                .map(|key| key.name())
-                .unwrap_or_else(|| format!("key {code}"));
-            let edge = if *is_down { "down" } else { "up" };
-            Some((
-                if *is_down { "key-down" } else { "key-up" },
-                format!("{name} {edge}"),
-            ))
-        }
-        InputEvent::MouseMove { x, y } => Some(("mouse-move", format!("mouse move ({x}, {y})"))),
-        InputEvent::MouseWheel { delta } => Some(("mouse-wheel", format!("mouse wheel {delta:+}"))),
-        InputEvent::MouseButton { button, is_down } => {
-            let name = functor_runtime_common::MouseButton::from_i32(*button)
-                .map(|b| b.name())
-                .unwrap_or_else(|| format!("button {button}"));
-            let edge = if *is_down { "down" } else { "up" };
-            Some((
-                if *is_down {
-                    "mouse-button-down"
-                } else {
-                    "mouse-button-up"
-                },
-                format!("mouse {name} {edge}"),
-            ))
-        }
-        // Touch is never recorded as a sparse event (only inside `Snapshot`,
-        // which this marker log doesn't unpack), so no timeline marker can
-        // fire for it — returning a label here would advertise a feature
-        // that cannot appear.
-        InputEvent::Touch { .. } => None,
-        InputEvent::Snapshot(_) => None,
-        InputEvent::UiEvent(event) => Some(("ui-input", format!("UI {event:?}"))),
-        InputEvent::WebviewEvent(event) => Some(("webview-input", format!("webview {event:?}"))),
-    }
-}
-
 /// Copy newly recorded inputs into the DOM timeline's compact marker log. The
 /// producer's recorder is authoritative: inputs discarded while paused never
 /// appear, and replayable inputs land on their exact rendered frame.
@@ -798,23 +759,10 @@ pub fn publish_timeline_inputs(game: &dyn GameProducer) {
             .map_or(lo, |cursor| cursor.saturating_add(1).max(lo));
         if start <= hi {
             for frame in start..=hi {
-                let mut last_mouse_move = None;
-                for input in game.recorded_inputs_at(frame) {
-                    if matches!(&input, InputEvent::MouseMove { .. }) {
-                        // Pointer-lock mouselook can emit several moves per
-                        // rendered frame. One marker still says "input here"
-                        // without multiplying bridge payload and DOM hits.
-                        last_mouse_move = Some(input);
-                        continue;
-                    }
-                    if let Some((kind, label)) = input_marker(&input) {
-                        log.push(frame, kind, label);
-                    }
-                }
-                if let Some(input) = last_mouse_move {
-                    if let Some((kind, label)) = input_marker(&input) {
-                        log.push(frame, kind, label);
-                    }
+                // Shared with the native `GET /input-log` marks.
+                let inputs = game.recorded_inputs_at(frame);
+                for (kind, label) in functor_runtime_common::protocol::frame_marks(&inputs) {
+                    log.push(frame, kind, label);
                 }
             }
         }
