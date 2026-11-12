@@ -892,10 +892,12 @@ struct DebugLoopState {
     camera_error: Option<String>,
     /// The device link to a desktop app (`None` without app storage).
     link: Option<functor_device_link::client::Client>,
-    /// `xr_override` came from this device's debug port, not the link's
-    /// tunnel: only such a sample may drive the pairing overlay, so a
-    /// desktop can never start or confirm a pairing itself.
-    xr_override_local: bool,
+    /// `xr_override` drives the pairing overlay too: it came from this
+    /// device's debug port, not the link's tunnel, while `adb shell setprop
+    /// debug.functor.pair_input 1` was set. Game code can reach port 8123
+    /// (`Effect.httpPost`) but cannot set a property, so neither a desktop
+    /// nor a game it pushed can start or confirm a pairing.
+    xr_override_pairs: bool,
     link_gestures: functor_runtime_common::link_overlay::Gestures,
 }
 
@@ -1248,12 +1250,13 @@ fn service_debug_request(
                 // Applied over the live sample just before the fixed steps.
                 InputCommand::Xr(sample) => {
                     debug.xr_override = Some(*sample);
-                    debug.xr_override_local = !via_link;
+                    debug.xr_override_pairs = !via_link
+                        && system_property("debug.functor.pair_input").as_deref() == Some("1");
                     Ok(())
                 }
                 InputCommand::XrClear => {
                     debug.xr_override = None;
-                    debug.xr_override_local = false;
+                    debug.xr_override_pairs = false;
                     Ok(())
                 }
                 // Rejected: the device runtime does not sample pads (Quest controllers ARE the xr domain), so
@@ -2074,7 +2077,7 @@ pub fn android_main(app: AndroidApp) {
         // injected on this device's own debug port, never the link's.
         let pairing = debug.link.as_ref().and_then(|client| {
             let shown = client.pairing();
-            let sample = if debug.xr_override_local {
+            let sample = if debug.xr_override_pairs {
                 debug.xr_override.as_ref()
             } else {
                 debug.input.xr.as_ref()
@@ -2443,15 +2446,18 @@ images cannot be posed"
                 functor_runtime_common::DebugRenderMode::Default,
             );
             // Head-locked over the game, placed from the head center so both
-            // eyes agree on its depth.
-            if let (Some(look), Some(center)) = (reload_look, tracked_center) {
-                if let Some(eye_in_head) = tracking_pose_from_view(view).relative_to(center) {
+            // eyes agree on their depth.
+            let eye_in_head = tracked_center
+                .filter(|_| reload_look.is_some() || pairing.is_some())
+                .and_then(|center| tracking_pose_from_view(view).relative_to(center));
+            if let Some(eye_in_head) = eye_in_head {
+                let fov = [view.fov.angle_left, view.fov.angle_right, view.fov.angle_down, view.fov.angle_up];
+                unsafe {
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(eye.framebuffers[image_index]));
+                }
+                if let Some(look) = reload_look {
                     let painter = reload_painter
                         .get_or_insert_with(|| ReloadIndicatorPainter::new(&gl, "#version 300 es"));
-                    let fov = [view.fov.angle_left, view.fov.angle_right, view.fov.angle_down, view.fov.angle_up];
-                    unsafe {
-                        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(eye.framebuffers[image_index]));
-                    }
                     painter.draw(
                         &gl,
                         functor_runtime_common::reload_indicator::head_locked_transform(fov, eye_in_head, &look),
@@ -2460,16 +2466,10 @@ images cannot be posed"
                         scene_context.output_srgb_encode(),
                     );
                 }
-            }
-            if let (Some(pairing), Some(center)) = (&pairing, tracked_center) {
-                if let Some(eye_in_head) = tracking_pose_from_view(view).relative_to(center) {
+                if let Some(pairing) = &pairing {
                     let painter = link_painter.get_or_insert_with(|| {
                         functor_runtime_common::link_overlay::LinkOverlayPainter::new(&gl, "#version 300 es")
                     });
-                    let fov = [view.fov.angle_left, view.fov.angle_right, view.fov.angle_down, view.fov.angle_up];
-                    unsafe {
-                        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(eye.framebuffers[image_index]));
-                    }
                     painter.draw(
                         &gl,
                         pairing,

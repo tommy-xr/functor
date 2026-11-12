@@ -269,7 +269,8 @@ enum Ended {
 }
 
 enum Found {
-    At(String),
+    /// Its addresses, to try in turn.
+    At(Vec<String>),
     Nothing,
     Command(Command),
     Gone,
@@ -317,7 +318,7 @@ impl<H: Host> Worker<H> {
             self.shared
                 .update(|v| v.paired = stored.desktop_name.clone());
             let ended = match self.find(Some(desktop)) {
-                Found::At(addr) => self.session(&addr, device, Some(&secret)),
+                Found::At(addrs) => self.session(&addrs, device, Some(&secret)),
                 Found::Nothing => Ended::Over {
                     linked: false,
                     why: "desktop not found".into(),
@@ -364,7 +365,7 @@ impl<H: Host> Worker<H> {
     fn pair(&mut self, device: DeviceId) -> Ended {
         self.shared.update(|v| v.pairing = Some(Pairing::Searching));
         let ended = match self.find(None) {
-            Found::At(addr) => self.session(&addr, device, None),
+            Found::At(addrs) => self.session(&addrs, device, None),
             Found::Nothing => Ended::Over {
                 linked: false,
                 why: "No Functor desktop found on this network".into(),
@@ -393,7 +394,7 @@ impl<H: Host> Worker<H> {
     /// whose TXT `id` is `desktop`, or (pairing) the first found.
     fn find(&mut self, desktop: Option<DesktopId>) -> Found {
         if let Some(addr) = &self.config.desktop {
-            return Found::At(addr.clone());
+            return Found::At(vec![addr.clone()]);
         }
         self.host.browsing(true);
         let found = self.browse(desktop);
@@ -446,24 +447,33 @@ impl<H: Host> Worker<H> {
             if want.is_some() && id != want.as_deref() {
                 continue;
             }
-            if let Some(ip) = info.get_addresses_v4().into_iter().next() {
-                break Found::At(format!("{ip}:{}", info.get_port()));
+            let port = info.get_port();
+            let addrs: Vec<String> = info
+                .get_addresses_v4()
+                .into_iter()
+                .map(|ip| format!("{ip}:{port}"))
+                .collect();
+            if !addrs.is_empty() {
+                break Found::At(addrs);
             }
         };
         let _ = daemon.shutdown();
         result
     }
 
-    /// One connection to `addr`: pairs without a secret, else links.
-    fn session(&mut self, addr: &str, device: DeviceId, secret: Option<&Secret>) -> Ended {
-        let mut ws = match connect(addr) {
-            Ok(ws) => ws,
-            Err(why) => {
-                return Ended::Over {
-                    linked: false,
-                    why: format!("cannot reach {addr}: {why}"),
-                }
-            }
+    /// One connection, to the first of `addrs` that answers: pairs without
+    /// a secret, else links.
+    fn session(&mut self, addrs: &[String], device: DeviceId, secret: Option<&Secret>) -> Ended {
+        let mut tried = Vec::new();
+        let Some(mut ws) = addrs.iter().find_map(|addr| {
+            connect(addr)
+                .map_err(|why| tried.push(format!("{addr}: {why}")))
+                .ok()
+        }) else {
+            return Ended::over(
+                false,
+                format!("cannot reach the desktop ({})", tried.join("; ")),
+            );
         };
         let identity = Identity {
             device,
@@ -532,18 +542,21 @@ impl<H: Host> Worker<H> {
                             }
                             conn.apply(out, self)?;
                         }
-                        Command::Cancel => {
+                        // Pairing, before the code shows too: hang up.
+                        Command::Cancel if secret.is_none() => {
+                            conn.cancelled = true;
                             let out = machine.cancel();
-                            conn.cancelled = out.end.is_some();
                             conn.apply(out, self)?;
+                            return Err(Ended::Cancelled);
                         }
-                        Command::Pair if machine.linked() => {
+                        // Linking, or about to: drop it and pair.
+                        Command::Pair if secret.is_some() => {
                             if let Ok(msgs) = machine.send(&Frame::Close("pairing again".into())) {
                                 let _ = conn.send_all(msgs);
                             }
                             return Err(Ended::PairRequested);
                         }
-                        Command::Pair => {}
+                        Command::Cancel | Command::Pair => {}
                     }
                 }
                 let t = now();

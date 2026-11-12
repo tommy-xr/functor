@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use cgmath::{Matrix4, Quaternion, SquareMatrix};
+use cgmath::Matrix4;
 use glow::HasContext;
 
 use crate::color_space::{OutputAlpha, OutputEncodeUniform};
@@ -243,18 +243,8 @@ fn quad(out: &mut Vec<f32>, rect: [f32; 4], uv: Option<[f32; 4]>, color: [f32; 4
 /// is the eye's `[left, right, down, up]` in radians; `eye_in_head` its pose
 /// relative to the head centre, so both eyes agree on the panel's depth.
 pub fn head_locked_transform(fov: [f32; 4], eye_in_head: TrackingPose) -> Matrix4<f32> {
-    let [left, right, down, up] = fov;
-    let projection = crate::Camera {
-        near: 0.05,
-        far: 10.0,
-        ..Default::default()
-    }
-    .projection_matrix_from_fov_angles(left, right, down, up);
-    let [x, y, z, w] = eye_in_head.orientation;
-    let eye = Matrix4::from_translation(eye_in_head.position.into())
-        * Matrix4::from(Quaternion::new(w, x, y, z));
-    let eye_from_head = eye.invert().unwrap_or(Matrix4::identity());
-    projection * eye_from_head * Matrix4::from_translation(cgmath::vec3(0.0, -0.18, -1.0))
+    crate::reload_indicator::head_to_clip(fov, eye_in_head)
+        * Matrix4::from_translation(cgmath::vec3(0.0, -0.18, -1.0))
 }
 
 /// The overlay's GL program, font atlas and current mesh.

@@ -664,9 +664,9 @@ async fn the_headset_client_pairs_tunnels_and_relinks() {
 struct Quest {
     serial: String,
     debug: String,
-    /// The pairing file and guardian setting before the test, put back after.
+    /// The pairing file and properties before the test, put back after.
     pairing: Option<Vec<u8>>,
-    guardian: String,
+    props: Vec<(&'static str, String)>,
 }
 
 const PACKAGE: &str = "dev.functor.runner";
@@ -748,10 +748,9 @@ impl Drop for Quest {
                 self.shell(&format!("run-as {PACKAGE} rm -f {PAIRING_FILE}"));
             }
         }
-        self.shell(&format!(
-            "setprop debug.oculus.guardian_pause {}",
-            self.guardian
-        ));
+        for (name, value) in &self.props {
+            self.shell(&format!("setprop {name} {value}"));
+        }
         let port = self.debug.rsplit(':').next().unwrap().to_string();
         let _ = self.adb(&["forward", "--remove", &format!("tcp:{port}")]);
     }
@@ -784,13 +783,20 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
         serial,
         debug: format!("http://127.0.0.1:{port}"),
         pairing: None,
-        guardian: String::new(),
+        props: Vec::new(),
     };
     let saved = quest.adb(&["exec-out", "run-as", PACKAGE, "cat", PAIRING_FILE]);
     quest.pairing = saved.status.success().then_some(saved.stdout);
-    quest.guardian = quest.shell("getprop debug.oculus.guardian_pause");
-    if quest.guardian.is_empty() {
-        quest.guardian = "0".into();
+    // Guardian would hold the app at its boundary dialog; injected presses
+    // drive the overlay only while `pair_input` is set.
+    for name in ["debug.oculus.guardian_pause", "debug.functor.pair_input"] {
+        let before = quest.shell(&format!("getprop {name}"));
+        let before = if before.is_empty() {
+            "0".into()
+        } else {
+            before
+        };
+        quest.props.push((name, before));
     }
     assert!(
         quest
@@ -799,8 +805,9 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
             .success(),
         "a debuggable {PACKAGE} is installed"
     );
-    // Without a boundary set up, Guardian would hold the app at its dialog.
-    quest.shell("setprop debug.oculus.guardian_pause 1");
+    for (name, _) in &quest.props {
+        quest.shell(&format!("setprop {name} 1"));
+    }
     quest.adb(&["forward", &format!("tcp:{port}"), "tcp:8123"]);
 
     let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;

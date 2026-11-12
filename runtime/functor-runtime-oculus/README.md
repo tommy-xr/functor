@@ -111,11 +111,13 @@ the desktop shows the same code, press **A** (Matches) and click Allow there;
 relinks by itself, with backoff, after a restart or a dropped network.
 `/state.link` reports the link and any pairing on screen.
 
-- The desktop's requests arrive on a second loopback debug listener, so the
-  shell knows which came through the link: an `xr` sample injected that way
-  reaches the game but never the overlay, so a desktop cannot start or confirm
-  a pairing. One injected on port 8123 (over `adb forward`) can; that is how
-  `npm run test:quest-link` pairs a Quest nobody wears.
+- Only the controllers drive the overlay. For automation, an `xr` sample
+  injected on port 8123 (over `adb forward`) does too, but only while
+  `adb shell setprop debug.functor.pair_input 1` is set; that is how
+  `npm run test:quest-link` pairs a Quest nobody wears. The desktop's requests
+  arrive on a second loopback debug listener and never count, and game code
+  (which can reach port 8123) cannot set a property: neither a desktop nor a
+  game it pushed can start or confirm a pairing.
 - mDNS answers arrive as multicast, which Android drops unless the app holds a
   `WifiManager.MulticastLock` (`CHANGE_WIFI_MULTICAST_STATE`): held only while
   browsing.
