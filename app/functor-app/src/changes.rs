@@ -45,7 +45,7 @@ pub struct Git {
 
 impl Git {
     /// The git of `root` when it is a work tree's top level; `None` outside
-    /// git (or without git). Runs at startup, before the core loop.
+    /// git (or without git). Blocking: runs as a folder is read.
     pub fn open(root: &Path, home: &Path) -> Option<Self> {
         let mut command = std::process::Command::new("git");
         command

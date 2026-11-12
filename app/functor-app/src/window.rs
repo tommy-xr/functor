@@ -10,7 +10,8 @@ use std::process::ExitCode;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use muda::{Menu, PredefinedMenuItem, Submenu};
+use muda::accelerator::{Accelerator, Code, Modifiers};
+use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
@@ -18,6 +19,9 @@ use tao::platform::macos::EventLoopExtMacOS;
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Window, WindowBuilder};
 use wry::{NewWindowResponse, WebView, WebViewBuilder};
+
+use functor_app_core::folders::MAX_RECENTS;
+use functor_app_core::Recent;
 
 use crate::server::Token;
 use crate::WindowLink;
@@ -35,9 +39,18 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 enum UserEvent {
     /// The page's `document.title`.
     Title(String),
+    /// A menu bar item was chosen.
+    Menu(MenuId),
+    /// The page's recent projects, for Open Recent.
+    Recents(Vec<Recent>),
     /// The runtime thread has finished.
     Done,
 }
+
+/// The File menu's Open Folder item.
+const OPEN_FOLDER: &str = "open-folder";
+/// Open Recent's items: this, then the entry's index.
+const RECENT: &str = "recent-";
 
 /// Runs `app` on a new thread with the window's link to it, and the window
 /// here until `app` has finished; `app`'s result.
@@ -66,7 +79,7 @@ pub fn run(
         return finished.recv().unwrap_or_else(|_| failed());
     };
     let geometry = home.map(|home| home.join("window.json"));
-    let (window, webview, menu) =
+    let (window, webview, (menu, open_recent)) =
         match open(&event_loop, &origin, &token, geometry.as_deref(), smoke) {
             Ok(opened) => opened,
             Err(e) => {
@@ -75,6 +88,12 @@ pub fn run(
                 return Err(e);
             }
         };
+
+    let chosen = event_loop.create_proxy();
+    MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
+        let _ = chosen.send_event(UserEvent::Menu(e.id));
+    }));
+    let mut recents = Vec::new();
 
     let smoke_by = Instant::now() + SMOKE_TIMEOUT;
     // Set once stopping starts; past it the window gives up waiting.
@@ -109,6 +128,18 @@ pub fn run(
                 }
                 window.set_title(&t);
             }
+            // The page acts on its own menu commands, as on its buttons.
+            Event::UserEvent(UserEvent::Menu(id)) => {
+                if let Some(script) = menu_script(id.as_ref(), &recents) {
+                    if let Err(e) = webview.evaluate_script(&script) {
+                        eprintln!("functor-app: cannot run the menu command: {e}");
+                    }
+                }
+            }
+            Event::UserEvent(UserEvent::Recents(list)) => {
+                recents = list;
+                fill_recent(&open_recent, &recents);
+            }
             Event::UserEvent(UserEvent::Done) => *flow = ControlFlow::Exit,
             // Also reached on Quit (the app menu's, the Dock's), which exits
             // the process right after: everything stops here, first.
@@ -142,14 +173,15 @@ pub fn run(
     }
 }
 
-/// The window, its webview on `origin` and the menu bar.
+/// The window, its webview on `origin` and the menu bar (with its Open
+/// Recent submenu).
 fn open(
     event_loop: &EventLoop<UserEvent>,
     origin: &str,
     token: &Token,
     geometry: Option<&Path>,
     smoke: bool,
-) -> io::Result<(Window, WebView, Menu)> {
+) -> io::Result<(Window, WebView, (Menu, Submenu))> {
     let screens: Vec<Rect> = event_loop
         .primary_monitor()
         .into_iter()
@@ -176,7 +208,9 @@ fn open(
         .map_err(io::Error::other)?;
 
     let title = event_loop.create_proxy();
+    let listed = event_loop.create_proxy();
     let nav_origin = origin.to_string();
+    let ipc_origin = origin.to_string();
     let webview = WebViewBuilder::new()
         .with_url(format!("{origin}/"))
         // Only on our own page; `server` describes the token's model.
@@ -194,6 +228,14 @@ fn open(
         })
         .with_document_title_changed_handler(move |t| {
             let _ = title.send_event(UserEvent::Title(t));
+        })
+        // Only our page's messages; they only label menu items.
+        .with_ipc_handler(move |req| {
+            if own(&req.uri().to_string(), &ipc_origin) {
+                if let Some(list) = parse_recents(req.body()) {
+                    let _ = listed.send_event(UserEvent::Recents(list));
+                }
+            }
         })
         .build(&window)
         .map_err(io::Error::other)?;
@@ -217,9 +259,10 @@ fn stop(
     }
 }
 
-/// The menu bar: Quit and Hide, the Edit shortcuts (WKWebView takes copy and
-/// paste from the menu), and the standard Window items.
-fn menu() -> muda::Result<Menu> {
+/// The menu bar: Quit and Hide, Open Folder (⌘O) and Open Recent, the Edit
+/// shortcuts (WKWebView takes copy and paste from the menu), and the
+/// standard Window items.
+fn menu() -> muda::Result<(Menu, Submenu)> {
     let sep = PredefinedMenuItem::separator;
     let app = Submenu::with_items(
         "Functor",
@@ -232,6 +275,14 @@ fn menu() -> muda::Result<Menu> {
             &PredefinedMenuItem::quit(None),
         ],
     )?;
+    let open_folder = MenuItem::with_id(
+        OPEN_FOLDER,
+        "Open Folder…",
+        true,
+        Some(Accelerator::new(Modifiers::META, Code::KeyO)),
+    );
+    let open_recent = Submenu::new("Open Recent", false);
+    let file = Submenu::with_items("File", true, &[&open_folder, &open_recent])?;
     let edit = Submenu::with_items(
         "Edit",
         true,
@@ -257,7 +308,53 @@ fn menu() -> muda::Result<Menu> {
         ],
     )?;
     window.set_as_windows_menu_for_nsapp();
-    Menu::with_items(&[&app, &edit, &window])
+    Ok((
+        Menu::with_items(&[&app, &file, &edit, &window])?,
+        open_recent,
+    ))
+}
+
+/// Replaces Open Recent's items with `recents`; disabled when there are none.
+fn fill_recent(menu: &Submenu, recents: &[Recent]) {
+    for item in menu.items() {
+        if let Some(item) = item.as_menuitem() {
+            let _ = menu.remove(item);
+        }
+    }
+    for (i, r) in recents.iter().enumerate() {
+        let label = format!("{} — {}", r.name, r.path);
+        let _ = menu.append(&MenuItem::with_id(
+            format!("{RECENT}{i}"),
+            label,
+            true,
+            None,
+        ));
+    }
+    menu.set_enabled(!recents.is_empty());
+}
+
+/// The page's `{"recents": [{"name", "path"}, …]}`, at most [`MAX_RECENTS`].
+fn parse_recents(body: &str) -> Option<Vec<Recent>> {
+    #[derive(serde::Deserialize)]
+    struct Listed {
+        recents: Vec<Recent>,
+    }
+    let mut list = serde_json::from_str::<Listed>(body).ok()?.recents;
+    list.truncate(MAX_RECENTS);
+    Some(list)
+}
+
+/// The script that hands menu item `id`'s command to the page, which sends
+/// it as its own buttons do (the server checks every path).
+fn menu_script(id: &str, recents: &[Recent]) -> Option<String> {
+    let msg = match id {
+        OPEN_FOLDER => serde_json::json!({"type": "pick_folder"}),
+        _ => {
+            let i: usize = id.strip_prefix(RECENT)?.parse().ok()?;
+            serde_json::json!({"type": "open_folder", "path": recents.get(i)?.path})
+        }
+    };
+    Some(format!("window.functorMenu?.({msg});"))
 }
 
 /// Whether the webview may load `url`: only the app's own page. A web link
@@ -411,6 +508,44 @@ mod tests {
             "file:///etc/passwd",
         ] {
             assert!(!own(url, ORIGIN), "{url}");
+        }
+    }
+
+    #[test]
+    fn menu_commands_reach_the_page_as_messages() {
+        let recents = [recent("hello", "/a/\"hello\"');")];
+        assert_eq!(
+            menu_script(OPEN_FOLDER, &recents).unwrap(),
+            r#"window.functorMenu?.({"type":"pick_folder"});"#
+        );
+        // The path is JSON, so no quote in it ends the script's string.
+        assert_eq!(
+            menu_script("recent-0", &recents).unwrap(),
+            r#"window.functorMenu?.({"path":"/a/\"hello\"');","type":"open_folder"});"#
+        );
+        for id in ["recent-1", "recent-x", "quit", ""] {
+            assert_eq!(menu_script(id, &recents), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn recents_from_the_page_are_names_and_paths() {
+        let body = r#"{"recents":[{"name":"a","path":"/a"},{"name":"b","path":"/b"}]}"#;
+        let ab = vec![recent("a", "/a"), recent("b", "/b")];
+        assert_eq!(parse_recents(body), Some(ab));
+        for bad in ["", "{}", r#"{"recents":[{"name":1,"path":"/a"}]}"#] {
+            assert_eq!(parse_recents(bad), None, "{bad}");
+        }
+        let many = (0..20).map(|i| format!(r#"{{"name":"{i}","path":"/{i}"}}"#));
+        let body = format!(r#"{{"recents":[{}]}}"#, many.collect::<Vec<_>>().join(","));
+        assert_eq!(parse_recents(&body).unwrap().len(), MAX_RECENTS);
+    }
+
+    fn recent(name: &str, path: &str) -> Recent {
+        Recent {
+            name: name.into(),
+            path: path.into(),
+            missing: false,
         }
     }
 

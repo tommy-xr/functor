@@ -12,6 +12,7 @@ export type Accepted = { task: number; text: string; seq: number };
 export type Notice = { reason: string; seq: number };
 export type DiffMsg = Extract<ServerMsg, { type: "diff" }>;
 export type FileMsg = Extract<ServerMsg, { type: "file" }>;
+export type DirsMsg = Extract<ServerMsg, { type: "dirs" }>;
 
 /** `files`' key for `path` of `project`. */
 export const fileKey = (project: string, path: string) => `${project}\n${path}`;
@@ -53,7 +54,12 @@ export function useAppSocket() {
   const [diffs, setDiffs] = useState<ReadonlyMap<number, DiffMsg>>(new Map());
   // The last text of each file asked for (`fetchFile`), by `fileKey`.
   const [files, setFiles] = useState<ReadonlyMap<string, FileMsg>>(new Map());
+  // The last directory suggestions asked for (`listDirs`).
+  const [dirs, setDirs] = useState<DirsMsg | null>(null);
   const socket = useRef<WebSocket | null>(null);
+  // The open folder's root: files are keyed by project path, which another
+  // folder's project may share.
+  const root = useRef<string | null>(null);
   // Asked for on this connection.
   const requested = useRef(new Set<number>());
 
@@ -74,7 +80,12 @@ export function useAppSocket() {
         const msg = JSON.parse(e.data as string) as ServerMsg;
         switch (msg.type) {
           case "state":
+            if (root.current !== null && root.current !== msg.state.repo_root) setFiles(new Map());
+            root.current = msg.state.repo_root;
             setState(msg.state);
+            break;
+          case "dirs":
+            setDirs(msg);
             break;
           case "transcript":
             setTranscripts((all) => new Map(all).set(msg.task, msg.items));
@@ -100,6 +111,8 @@ export function useAppSocket() {
             setDiffs((all) => new Map(all).set(msg.task, msg));
             break;
           case "file":
+            // Read for a folder open before this one.
+            if (msg.root !== root.current) break;
             setFiles((all) => {
               const key = fileKey(msg.project, msg.path);
               const had = all.get(key);
@@ -141,5 +154,20 @@ export function useAppSocket() {
   };
   const fetchDiff = (task: number) => send({ type: "get_diff", task });
   const fetchFile = (path: string) => send({ type: "get_file", path });
-  return { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff, files, fetchFile };
+  const listDirs = (path: string) => send({ type: "list_dirs", path });
+  return {
+    state,
+    conn,
+    send,
+    transcripts,
+    fetchTranscript,
+    accepted,
+    notice,
+    diffs,
+    fetchDiff,
+    files,
+    fetchFile,
+    dirs,
+    listDirs,
+  };
 }

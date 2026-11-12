@@ -10,6 +10,7 @@ use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 ///
 /// ```text
 /// repo: /src/functor
+/// folder: /src/functor/examples/hello
 /// active: examples/hello
 /// session: running pid 4242 http://127.0.0.1:52011 frame 30
 /// mode: hidden
@@ -22,11 +23,17 @@ use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 ///   #1 ready_for_review examples/hello "Make the cube spin" (claude): 6 items, 2 tool calls
 ///     change: 1 file, +2 -1
 ///       examples/hello/game.fun +2 -1
+/// recents: 2
+///   hello /src/functor/examples/hello
+///   old /src/old (missing)
 /// ```
+///
+/// Recents list the first [`RECENTS_SHOWN`].
 pub fn print(state: &AppState) -> String {
     let active = state.active.as_deref();
     let mut lines = vec![
-        format!("repo: {}", state.repo_root),
+        format!("repo: {}", or_none(&state.repo_root)),
+        format!("folder: {}", or_none(&state.folder)),
         format!("active: {}", active.unwrap_or("none")),
         format!("session: {}", session(state)),
         format!("mode: {}", mode(state)),
@@ -75,7 +82,25 @@ pub fn print(state: &AppState) -> String {
             }
         }
     }
+    if !state.recents.is_empty() {
+        lines.push(format!("recents: {}", state.recents.len()));
+        for r in state.recents.iter().take(RECENTS_SHOWN) {
+            let missing = if r.missing { " (missing)" } else { "" };
+            lines.push(format!("  {} {}{missing}", r.name, r.path));
+        }
+    }
     lines.join("\n") + "\n"
+}
+
+/// How many recent projects `print` lists.
+pub const RECENTS_SHOWN: usize = 5;
+
+fn or_none(path: &str) -> &str {
+    if path.is_empty() {
+        "none"
+    } else {
+        path
+    }
 }
 
 /// A layout on one line: each pane as `#id[tabs]`, the focused one marked
@@ -380,11 +405,28 @@ mod tests {
             harnesses: vec![],
             harness_choice: Default::default(),
             layouts: [("examples/hello".to_string(), split_layout())].into(),
+            folder: "/src/functor/examples/hello".to_string(),
+            recents: vec![
+                crate::Recent {
+                    name: "hello".into(),
+                    path: "/src/functor/examples/hello".into(),
+                    missing: false,
+                },
+                crate::Recent {
+                    name: "old".into(),
+                    path: "/src/old".into(),
+                    missing: true,
+                },
+            ],
+            native_picker: false,
+            open_error: None,
+            opening: 0,
         };
         assert_eq!(
             print(&state),
             "\
 repo: /src/functor
+folder: /src/functor/examples/hello
 active: examples/hello
 session: running pid 4242 http://127.0.0.1:52011 frame 30
 mode: hidden
@@ -394,6 +436,9 @@ projects: 3
 * examples/hello (hello): entry game.fun
   examples/orbs (orbs): entries client=game.fun module=Client, server=server.fun
   old (old): invalid: bad
+recents: 2
+  hello /src/functor/examples/hello
+  old /src/old (missing)
 "
         );
     }
@@ -473,16 +518,17 @@ projects: 3
             harnesses: vec![],
             harness_choice: Default::default(),
             layouts: Default::default(),
+            ..AppState::none()
         };
         assert_eq!(
             print(&state),
-            "repo: /tmp/empty\nactive: none\nsession: stopped\nmode: hidden\nprojects: 0\n"
+            "repo: /tmp/empty\nfolder: none\nactive: none\nsession: stopped\nmode: hidden\nprojects: 0\n"
         );
         let no_gpu = AppState {
             no_gpu: true,
             ..state
         };
-        assert_eq!(print(&no_gpu).lines().nth(3), Some("mode: headless"));
+        assert_eq!(print(&no_gpu).lines().nth(4), Some("mode: headless"));
     }
 
     #[test]
@@ -501,8 +547,9 @@ projects: 3
                 harnesses: vec![],
                 harness_choice: Default::default(),
                 layouts: Default::default(),
+                ..AppState::none()
             };
-            print(&state).lines().nth(2).unwrap().to_string()
+            print(&state).lines().nth(3).unwrap().to_string()
         };
         let reason = || "exit status: 1: error: bad".to_string();
         assert_eq!(line(None, SessionStatus::Stopped), "session: stopped");
@@ -594,6 +641,7 @@ projects: 3
             harnesses: vec![],
             harness_choice: Default::default(),
             layouts: Default::default(),
+            ..AppState::none()
         };
         let text = print(&state);
         assert!(

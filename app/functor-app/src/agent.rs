@@ -144,6 +144,11 @@ impl Runner {
         self.live.insert(id, Live { run, cancel, task });
     }
 
+    /// The git new runs measure changes with: the open workspace's.
+    pub fn set_git(&mut self, git: Option<Arc<Git>>) {
+        self.git = git;
+    }
+
     /// Cancels run `run` of `task` and waits until its agent and tool server
     /// are gone.
     pub async fn stop(&mut self, task: u64, run: u64) {
@@ -214,7 +219,7 @@ async fn run(
     let token = token();
     // A cancel while starting drops the child's stdin, which stops it.
     let started = tokio::select! {
-        started = ToolServer::start(functor, spec.attach.as_deref(), &token) => started,
+        started = ToolServer::start(functor, &spec.dir, spec.attach.as_deref(), &token) => started,
         _ = &mut cancel => return None,
     };
     let server = match started {
@@ -329,10 +334,19 @@ fn tool_server_args(attach: Option<&str>) -> Vec<&str> {
 }
 
 impl ToolServer {
-    async fn start(functor: &Path, attach: Option<&str>, token: &str) -> Result<Self, String> {
+    /// In `dir`, the run's project, as the agent is: its tools resolve a
+    /// relative directory against it, and the app's own working directory
+    /// is wherever it was started, not the open folder.
+    async fn start(
+        functor: &Path,
+        dir: &Path,
+        attach: Option<&str>,
+        token: &str,
+    ) -> Result<Self, String> {
         // Killed if dropped before `stop` (a cancel or failure while starting).
         let mut child = Command::new(functor)
             .args(tool_server_args(attach))
+            .current_dir(dir)
             .kill_on_drop(true)
             .env(TOKEN_ENV, token)
             .stdin(Stdio::piped())

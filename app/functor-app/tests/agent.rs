@@ -847,8 +847,8 @@ async fn shutdown_stops_a_run() {
         .unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
-        text.ends_with(
-            "tasks: 1\n  #1 waiting_on_you a \"hi\" (claude claude-model): 3 items, 1 tool calls\n"
+        text.contains(
+            "\ntasks: 1\n  #1 waiting_on_you a \"hi\" (claude claude-model): 3 items, 1 tool calls\n"
         ),
         "{text}"
     );

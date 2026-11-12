@@ -4,6 +4,7 @@
 //! feeds results in as events.
 
 pub mod changes;
+pub mod folders;
 pub mod layout;
 pub mod print;
 pub mod projects;
@@ -13,6 +14,7 @@ pub mod state;
 pub mod tasks;
 
 pub use changes::Change;
+pub use folders::Recent;
 pub use layout::{Layout, LayoutOp, View};
 pub use print::{print, print_change, print_item, print_layout};
 pub use projects::discover;

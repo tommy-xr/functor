@@ -24,10 +24,13 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 # Task ids for `mis-agent` runs and the tool server's bearer tokens.
 uuid = { version = "1", features = ["v4"] }
 
-# The window (macOS only for now): a WKWebView (wry) on tao's event loop, and
-# the menu bar that gives it Quit and the Edit shortcuts (muda).
+# The window (macOS only for now): a WKWebView (wry) on tao's event loop, the
+# menu bar that gives it Quit, Open Folder and the Edit shortcuts (muda), and
+# its native folder picker (rfd: AppKit's NSOpenPanel through the objc2
+# crates wry already uses).
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
+rfd = { version = "0.17", default-features = false }
 tao = "0.37"
 wry = { version = "0.57", default-features = false }
 

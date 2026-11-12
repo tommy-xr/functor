@@ -2,7 +2,8 @@
 //! `<home>/projects/<project key>/tasks/<id>.json`, and the project's picked
 //! agent in `<home>/projects/<project key>/harness.json` and its canvas
 //! layout in `layout.json` beside it, where home is
-//! `FUNCTOR_APP_HOME` or `~/.functor/app`. Never inside the user's repo.
+//! `FUNCTOR_APP_HOME` or `~/.functor/app`; the recent projects, app-wide,
+//! in `<home>/recents.json`. Never inside the user's repo.
 //! Task ids are reserved in `<home>/task-ids/`, so app processes sharing a
 //! home never give two tasks one id. All of it is private to the user.
 
@@ -15,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use functor_app_core::projects::project_dir;
 use functor_app_core::tasks::{from_stored, to_stored};
-use functor_app_core::{AppState, Harness, Layout, Task};
+use functor_app_core::{AppState, Harness, Layout, Recent, Task};
 
 /// `FUNCTOR_APP_HOME` (`env`), else `.functor/app` in `user_home`.
 pub fn home(env: Option<OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
@@ -214,6 +215,28 @@ pub(crate) fn write_whole(file: &Path, text: &str) -> io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     written
+}
+
+fn recents_file(home: &Path) -> PathBuf {
+    home.join("recents.json")
+}
+
+/// The recent projects, each marked missing unless it is still a directory;
+/// none if the file is missing or unreadable.
+pub fn load_recents(home: &Path) -> Vec<Recent> {
+    let text = std::fs::read_to_string(recents_file(home)).unwrap_or_default();
+    let recents: Vec<Recent> = serde_json::from_str(&text).unwrap_or_default();
+    recents
+        .into_iter()
+        .map(|r| Recent {
+            missing: !Path::new(&r.path).is_dir(),
+            ..r
+        })
+        .collect()
+}
+
+pub fn save_recents(home: &Path, recents: &[Recent]) -> io::Result<()> {
+    save_json(&recents_file(home), &recents)
 }
 
 /// Writes `task` for the project at `dir`, replacing its file whole.
@@ -523,6 +546,69 @@ mod tests {
         assert_eq!(back.game.placement, Placement::Mini);
         assert_eq!(back.game.mini.width, 420);
         assert_eq!(back.game.dock, None);
+    }
+
+    #[test]
+    fn recents_load_back_with_missing_folders_marked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        assert_eq!(load_recents(&home), vec![]);
+        let recent = |path: &Path, missing| Recent {
+            name: "x".into(),
+            path: path.to_string_lossy().into_owned(),
+            missing,
+        };
+        let gone = tmp.path().join("gone");
+        save_recents(&home, &[recent(tmp.path(), true), recent(&gone, false)]).unwrap();
+        assert_eq!(
+            load_recents(&home),
+            vec![recent(tmp.path(), false), recent(&gone, true)]
+        );
+        std::fs::write(recents_file(&home), "{").unwrap();
+        assert_eq!(load_recents(&home), vec![]);
+    }
+
+    /// One project opened two ways — its own folder outside git, then its
+    /// parent through a symlink with a trailing slash — finds its tasks,
+    /// layout and agent pick again: the store keys the canonical directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_project_opened_by_another_path_finds_its_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(tmp.path()).unwrap().join("real");
+        let game = real.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join("functor.json"), r#"{"language": "functor-lang"}"#).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("link")).unwrap();
+        let home = tmp.path().join("home");
+        let first = crate::folders::load(&game.to_string_lossy(), &home, false).unwrap();
+        assert_eq!(first.state.active.as_deref(), Some("."));
+        save(
+            &home,
+            &game,
+            &Task {
+                project: ".".into(),
+                ..task(7)
+            },
+        )
+        .unwrap();
+        save_harness(&home, &game, Harness::Codex).unwrap();
+        let mut layout = Layout::initial();
+        layout.game.mini.width = 420;
+        save_layout(&home, &game, &layout).unwrap();
+
+        let via = format!("{}/", tmp.path().join("link").display());
+        let again = crate::folders::load(&via, &home, false).unwrap().state;
+        assert_eq!(again.repo_root, real.to_string_lossy());
+        assert_eq!(again.active.as_deref(), Some("game"));
+        assert_eq!(again.tasks.len(), 1);
+        assert_eq!(
+            (again.tasks[0].id, again.tasks[0].project.as_str()),
+            (7, "game")
+        );
+        assert_eq!(again.harness_choice.get("game"), Some(&Harness::Codex));
+        assert_eq!(again.layouts["game"].game.mini.width, 420);
+        assert!(!real.join(".functor").exists() && !game.join(".functor").exists());
     }
 
     #[test]
