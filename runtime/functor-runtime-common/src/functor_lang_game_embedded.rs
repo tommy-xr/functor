@@ -2629,6 +2629,68 @@ let draw = (model, tts) =>
         assert!(crate::protocol::input_log(&game, 4).steps.is_empty());
     }
 
+    /// `/state.clock`, `/seek` and the input log's marks all number frames as
+    /// `/state` does: a seek shows a frame and keeps the future, the next
+    /// step branches from it.
+    #[test]
+    fn the_clock_seek_and_marks_number_frames_as_state_does() {
+        use crate::debug_protocol::{RecordedFrames, TimelineMark};
+        use crate::protocol::{clock_state, input_log, seek_to_state_frame};
+        let mut game = parked_input_game();
+        assert_eq!(clock_state(&game, false).recorded, None);
+        let dt = 1.0 / 60.0;
+        for frame in 1..=3 {
+            if frame == 2 {
+                game.key_event(crate::Key::Space as i32, true);
+            }
+            game.tick(frame_time(frame as f32 * dt, dt));
+        }
+        let clock = clock_state(&game, true);
+        assert!(clock.paused);
+        assert_eq!(
+            clock.recorded,
+            Some(RecordedFrames {
+                oldest: 1,
+                newest: 3
+            })
+        );
+        let marks: Vec<_> = input_log(&game, 1)
+            .steps
+            .into_iter()
+            .map(|s| s.marks)
+            .collect();
+        let space = TimelineMark {
+            kind: "key-down".into(),
+            label: "Space down".into(),
+        };
+        assert_eq!(marks, vec![vec![], vec![space], vec![]]);
+
+        assert_eq!(
+            seek_to_state_frame(&mut game, 2).as_deref(),
+            Ok("showing frame 2")
+        );
+        assert_eq!(game.state_frame(), Some(2));
+        // The future is kept: seek forward again.
+        assert_eq!(clock_state(&game, true).recorded, clock.recorded);
+        assert_eq!(
+            seek_to_state_frame(&mut game, 99).as_deref(),
+            Ok("showing frame 3 (requested 99, clamped to the recorded window)")
+        );
+        seek_to_state_frame(&mut game, 1).unwrap();
+        // The next step branches: frames 2 and 3 are replaced.
+        game.tick(frame_time(2.0 * dt, dt));
+        let branched = clock_state(&game, true);
+        assert_eq!(
+            branched.recorded,
+            Some(RecordedFrames {
+                oldest: 1,
+                newest: 2
+            })
+        );
+        assert_ne!(branched.generation, clock.generation);
+        assert_eq!(game.state_frame(), Some(2));
+    }
+
     /// Each key press counts and fires a raycast; each answer counts.
     const PARKED_INPUT_GAME: &str = r#"
 type Msg<'h> = | Hit(hit: 'h)

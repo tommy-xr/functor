@@ -228,11 +228,102 @@ pub fn rewind_to_state_frame<G: GameProducer + ?Sized>(
     })
 }
 
+/// `POST /seek {frame}`, numbered as [`GameProducer::state_frame`]: show
+/// recorded frame `N - 1` without branching, clamped to the window like
+/// [`rewind_to_state_frame`]. The shell pauses its clock on success.
+pub fn seek_to_state_frame<G: GameProducer + ?Sized>(
+    game: &mut G,
+    frame: u64,
+) -> Result<String, String> {
+    game.seek_scene_to(frame.saturating_sub(1))?;
+    let landed = game.state_frame().unwrap_or(frame);
+    Ok(if landed == frame {
+        format!("showing frame {frame}")
+    } else {
+        format!("showing frame {landed} (requested {frame}, clamped to the recorded window)")
+    })
+}
+
+/// `GET /state`'s `clock`: `paused` from the shell's clock, the rest from the
+/// producer's recorder, numbered as [`GameProducer::state_frame`].
+pub fn clock_state<G: GameProducer + ?Sized>(
+    game: &G,
+    paused: bool,
+) -> crate::debug_protocol::ClockState {
+    crate::debug_protocol::ClockState {
+        paused,
+        recorded: game
+            .scene_frame_range()
+            .map(|(lo, hi)| crate::debug_protocol::RecordedFrames {
+                oldest: lo + 1,
+                newest: hi + 1,
+            }),
+        generation: game.scene_timeline_generation(),
+        program_revision: game.scene_program_revision(),
+    }
+}
+
+/// One recorded edge event as a timeline mark: `(kind, label)`. Sampled
+/// snapshots and touches are not edge events here, so they mark nothing.
+pub fn input_mark(input: &crate::RecordedInput) -> Option<(&'static str, String)> {
+    use crate::RecordedInput;
+    match input {
+        RecordedInput::Key { code, is_down } => {
+            let name = crate::Key::from_i32(*code)
+                .map(|key| key.name())
+                .unwrap_or_else(|| format!("key {code}"));
+            let edge = if *is_down { "down" } else { "up" };
+            Some((
+                if *is_down { "key-down" } else { "key-up" },
+                format!("{name} {edge}"),
+            ))
+        }
+        RecordedInput::MouseMove { x, y } => Some(("mouse-move", format!("mouse move ({x}, {y})"))),
+        RecordedInput::MouseWheel { delta } => {
+            Some(("mouse-wheel", format!("mouse wheel {delta:+}")))
+        }
+        RecordedInput::MouseButton { button, is_down } => {
+            let name = crate::MouseButton::from_i32(*button)
+                .map(|b| b.name())
+                .unwrap_or_else(|| format!("button {button}"));
+            let edge = if *is_down { "down" } else { "up" };
+            Some((
+                if *is_down {
+                    "mouse-button-down"
+                } else {
+                    "mouse-button-up"
+                },
+                format!("mouse {name} {edge}"),
+            ))
+        }
+        RecordedInput::Touch { .. } | RecordedInput::Snapshot(_) => None,
+        RecordedInput::UiEvent(event) => Some(("ui-input", format!("UI {event:?}"))),
+        RecordedInput::WebviewEvent(event) => Some(("webview-input", format!("webview {event:?}"))),
+    }
+}
+
+/// One recorded frame's marks, in order. Pointer-lock mouselook can record
+/// several moves a frame; one mark (the last) still says "input here".
+pub fn frame_marks(inputs: &[crate::RecordedInput]) -> Vec<(&'static str, String)> {
+    let mut marks = Vec::new();
+    let mut last_move = None;
+    for input in inputs {
+        if matches!(input, crate::RecordedInput::MouseMove { .. }) {
+            last_move = Some(input);
+        } else {
+            marks.extend(input_mark(input));
+        }
+    }
+    marks.extend(last_move.and_then(input_mark));
+    marks
+}
+
 /// `GET /input-log?from=N`: the retained recorded steps from state frame `N`
 /// on, numbered as [`GameProducer::state_frame`] (recorded frame `r` produced
-/// state frame `r + 1`), each with the sampled snapshot it consumed.
+/// state frame `r + 1`), each with the sampled snapshot it consumed and its
+/// edge events as marks.
 pub fn input_log<G: GameProducer + ?Sized>(game: &G, from: u64) -> crate::debug_protocol::InputLog {
-    use crate::debug_protocol::{InputLog, InputLogStep};
+    use crate::debug_protocol::{InputLog, InputLogStep, TimelineMark};
     let generation = game.scene_timeline_generation();
     let Some((lo, hi)) = game.scene_frame_range() else {
         return InputLog { generation, ..InputLog::default() };
@@ -240,18 +331,24 @@ pub fn input_log<G: GameProducer + ?Sized>(game: &G, from: u64) -> crate::debug_
     let steps = (from.max(lo + 1)..=hi + 1)
         .filter_map(|frame| {
             let time = game.recorded_frame_time_at(frame - 1)?;
-            let input = game
-                .recorded_inputs_at(frame - 1)
+            let inputs = game.recorded_inputs_at(frame - 1);
+            let marks = frame_marks(&inputs)
                 .into_iter()
-                .find_map(|input| match input {
-                    crate::RecordedInput::Snapshot(snapshot) => Some(*snapshot),
-                    _ => None,
-                });
+                .map(|(kind, label)| TimelineMark {
+                    kind: kind.to_string(),
+                    label,
+                })
+                .collect();
+            let input = inputs.into_iter().find_map(|input| match input {
+                crate::RecordedInput::Snapshot(snapshot) => Some(*snapshot),
+                _ => None,
+            });
             Some(InputLogStep {
                 frame,
                 tts: time.tts,
                 dts: time.dts,
                 input,
+                marks,
             })
         })
         .collect();

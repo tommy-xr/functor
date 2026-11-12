@@ -252,8 +252,16 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 .spawn(move || stream_frames(stream, &tx, &query, cors_origin.as_deref()));
         }
         ("GET", "/state") => {
+            // `?model=0`: a cheap poll that never serializes the model.
+            let model = match query_number::<u8>(query, "model") {
+                Ok(model) => model != Some(0),
+                Err(error) => {
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
+                    return Some(());
+                }
+            };
             let (resp_tx, resp_rx) = mpsc::channel::<RuntimeState>();
-            if tx.send(DebugRequest::State(resp_tx)).is_err() {
+            if tx.send(DebugRequest::State(model, resp_tx)).is_err() {
                 return runtime_gone(&mut stream, cors_origin);
             }
             match recv(resp_rx) {
@@ -466,6 +474,27 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 return runtime_gone(&mut stream, cors_origin);
             }
             respond_result(&mut stream, cors_origin, recv(resp_rx), "rewind")
+        }
+        ("POST", "/seek") => {
+            let command =
+                match parse_json::<debug_protocol::SeekCommand>(&mut reader, content_length) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        respond_text(
+                            &mut stream,
+                            cors_origin,
+                            400,
+                            "Bad Request",
+                            &format!("bad seek json: {error}"),
+                        );
+                        return Some(());
+                    }
+                };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::Seek(command.frame, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_result(&mut stream, cors_origin, recv(resp_rx), "seek")
         }
         ("POST", "/camera") => {
             let command =
@@ -843,7 +872,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
 }
 
 /// `key=N` from a query (`None` when absent): `GET /frames`' `last`,
-/// `GET /input-log`'s `from`.
+/// `GET /input-log`'s `from`, `GET /state`'s `model`.
 fn query_number<T: std::str::FromStr>(query: &str, key: &str) -> Result<Option<T>, String> {
     query
         .split('&')
@@ -1511,6 +1540,77 @@ Content-Length: {}\r\n\r\n{body}",
             "{response}"
         );
         assert!(response.ends_with("pinned by --fixed-time"));
+    }
+
+    /// `?model=0` asks the runtime for a state without the model; absent or
+    /// any other number keeps it, and a malformed value never reaches it.
+    #[test]
+    fn state_takes_model_from_the_query() {
+        let get = |path: &str| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let client = connect(
+                &listener,
+                format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            );
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            // The reply is dropped unanswered (a 500): only the request matters.
+            // A refused query sends none, and the server's exit ends the wait.
+            let model = match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(DebugRequest::State(model, _)) => Some(model),
+                Ok(_) => panic!("expected a state request"),
+                Err(_) => None,
+            };
+            server.join().unwrap();
+            (model, client.join().unwrap())
+        };
+        assert_eq!(get("/state").0, Some(true));
+        assert_eq!(get("/state?model=1").0, Some(true));
+        assert_eq!(get("/state?model=0").0, Some(false));
+        let (model, response) = get("/state?model=no");
+        assert_eq!(model, None);
+        assert!(response.starts_with("HTTP/1.1 400 "), "{response}");
+    }
+
+    /// The seek target reaches the runtime as the state frame; its refusal
+    /// and a malformed body are 400s.
+    #[test]
+    fn seek_forwards_the_frame_and_reports_refusal() {
+        let post = |body: &str, answer: Option<Result<String, String>>| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let request = format!(
+                "POST /seek HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let client = connect(&listener, request);
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            if let Some(answer) = answer {
+                match rx.recv().unwrap() {
+                    DebugRequest::Seek(frame, response) => {
+                        assert_eq!(frame, 42);
+                        response.send(answer).unwrap();
+                    }
+                    _ => panic!("expected a seek request"),
+                }
+            }
+            server.join().unwrap();
+            client.join().unwrap()
+        };
+        let ok = post(r#"{"frame":42}"#, Some(Ok("showing frame 42".into())));
+        assert!(
+            ok.starts_with("HTTP/1.1 200 OK\r\n") && ok.ends_with("showing frame 42"),
+            "{ok}"
+        );
+        let refused = post(
+            r#"{"frame":42}"#,
+            Some(Err("seek: nothing recorded yet".into())),
+        );
+        assert!(refused.starts_with("HTTP/1.1 400 "), "{refused}");
+        for malformed in [r#"{"frame":-1}"#, r#"{"frame":42,"branch":true}"#] {
+            let response = post(malformed, None);
+            assert!(response.starts_with("HTTP/1.1 400 "), "{response}");
+        }
     }
 
     /// The requested rate reaches the runtime as Hz; malformed JSON and the
