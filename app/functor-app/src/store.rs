@@ -482,6 +482,48 @@ mod tests {
         assert!(!tmp.path().join("repo").exists(), "wrote inside the repo");
     }
 
+    /// `layout.json` as written before game placements: the root and focus.
+    const OLD_LAYOUT: &str = r#"{"root":{"kind":"split","id":2,"direction":"right","ratio":500,"first":{"kind":"pane","id":1,"tabs":[{"kind":"game"}],"active":0},"second":{"kind":"pane","id":3,"tabs":[{"kind":"file","path":"game.fun"}],"active":0}},"focus":3}"#;
+
+    #[test]
+    fn old_layouts_load_as_a_pane_and_placements_round_trip() {
+        use functor_app_core::layout::{Corner, Mini, Placement};
+        use functor_app_core::{print_layout, LayoutOp};
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, dir, home) = one_project(tmp.path());
+        let file = layout_file(&home, &dir);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, OLD_LAYOUT).unwrap();
+        let mut layout = load_layouts(&home, &state).remove("a").unwrap();
+        assert_eq!(layout.game, Default::default());
+        assert_eq!(
+            print_layout(&layout),
+            "right 50% (#1[*game] | >#3[*file:game.fun])"
+        );
+        // Moved to Mini, saved and read back: placement, corner, width and dock.
+        let mini = LayoutOp::SetMini {
+            mini: Mini {
+                corner: Corner::TopLeft,
+                width: 420,
+            },
+        };
+        for op in [
+            LayoutOp::Place {
+                placement: Placement::Mini,
+            },
+            mini,
+        ] {
+            assert!(layout.apply(op, |_| Ok(())).unwrap());
+        }
+        save_layout(&home, &dir, &layout).unwrap();
+        let back = load_layouts(&home, &state).remove("a").unwrap();
+        assert_eq!(back, layout);
+        assert_eq!(print_layout(&back), ">#3[*file:game.fun]");
+        assert_eq!(back.game.placement, Placement::Mini);
+        assert_eq!(back.game.mini.width, 420);
+        assert!(back.game.dock.is_some());
+    }
+
     #[test]
     fn harness_picks_load_back_per_project() {
         let tmp = tempfile::tempdir().unwrap();
