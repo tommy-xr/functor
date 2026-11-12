@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { AppState, Session, View as TabView } from "./generated/protocol";
+import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
+import { baseName, FolderActions, NoProject, type FolderProps } from "./Folders";
 import { Icon } from "./Icon";
 import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
@@ -13,7 +14,7 @@ type View = (typeof VIEWS)[number];
 const VIEW_LABELS: Record<View, string> = { explorer: "Explorer", tasks: "Tasks", devices: "Devices" };
 
 export function App() {
-  const { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff, files, fetchFile } =
+  const { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff, files, fetchFile, dirs, listDirs } =
     useAppSocket();
   const [view, setView] = useView();
   // The chat's current task (`null`: a new one).
@@ -32,13 +33,15 @@ export function App() {
   };
   const online = conn === "open" && state !== null;
   const task = state?.tasks.find((t) => t.id === selected && t.project === state.active) ?? null;
+  const folder: FolderProps = { state, online, send, dirs, listDirs };
+  useWindowMenu(state, send);
   return (
     <div className="app">
       <TitleBar state={state} conn={conn} />
       <div className="workspace">
         <Rail view={view} onSelect={setView} />
         <div className="panes">
-          {view === "explorer" && <ExplorerPane state={state} online={online} send={send} />}
+          {view === "explorer" && <ExplorerPane {...folder} />}
           {view === "tasks" && (
             <PlaceholderPane title="Tasks">
               Each conversation with the agent will be listed here until you keep or drop its change.
@@ -49,19 +52,23 @@ export function App() {
               Headsets you connect by cable or Wi-Fi will appear here.
             </PlaceholderPane>
           )}
-          <Canvas
-            state={state}
-            online={online}
-            send={send}
-            diffs={diffs}
-            fetchDiff={fetchDiff}
-            notice={notice}
-            target={target}
-            files={files}
-            fetchFile={fetchFile}
-            currentTask={task}
-            onNewTask={newTask}
-          />
+          {state && !state.active ? (
+            <NoProject {...folder} />
+          ) : (
+            <Canvas
+              state={state}
+              online={online}
+              send={send}
+              diffs={diffs}
+              fetchDiff={fetchDiff}
+              notice={notice}
+              target={target}
+              files={files}
+              fetchFile={fetchFile}
+              currentTask={task}
+              onNewTask={newTask}
+            />
+          )}
           <ChatDock
             state={state}
             conn={conn}
@@ -81,6 +88,30 @@ export function App() {
       </div>
     </div>
   );
+}
+
+/** The window's own hooks into the page; absent in a browser. */
+type WindowHooks = {
+  functorMenu?: (msg: ClientMsg) => void;
+  ipc?: { postMessage: (text: string) => void };
+};
+
+/**
+ * The window's menu bar: Open Folder and Open Recent arrive as messages to
+ * send like a button's, and the recent projects go out for Open Recent.
+ */
+function useWindowMenu(state: AppState | null, send: Send) {
+  const hooks = window as WindowHooks;
+  useEffect(() => {
+    hooks.functorMenu = (msg) => {
+      if (msg.type === "pick_folder" || msg.type === "open_folder") send(msg);
+    };
+  }, [send]);
+  const listed = (state?.recents ?? []).filter((r) => !r.missing).map(({ name, path }) => ({ name, path }));
+  const recents = JSON.stringify({ recents: listed });
+  useEffect(() => {
+    if (state) hooks.ipc?.postMessage(recents);
+  }, [recents, state === null]);
 }
 
 /** The open rail view, kept in the URL hash so a reload reopens it. */
@@ -114,19 +145,20 @@ function canvasWord(state: AppState | null): string {
 }
 
 function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
-  const project = activeProject(state);
+  // The project, else the open folder.
+  const name = activeProject(state)?.name ?? (state?.folder ? baseName(state.folder) : null);
   const word = sessionWord(state?.session);
   // The app window shows it as its title.
   useEffect(() => {
-    document.title = project ? `Functor — ${project.name}` : "Functor";
-  }, [project?.name]);
+    document.title = name ? `Functor — ${name}` : "Functor";
+  }, [name]);
   return (
     <header className="titlebar">
       <span className="brand">
         <img src="icon.svg" alt="" width={28} height={28} />
         Functor
       </span>
-      <span className="title-project">{project?.name ?? (state ? "No project" : "")}</span>
+      <span className="title-project">{name ?? (state ? "No folder open" : "")}</span>
       {state?.git && (
         <span className="pill mono branch" title={`${state.git.branch} · ${state.git.commit}`}>
           {state.git.branch} · {state.git.commit}
@@ -170,8 +202,10 @@ function Rail({ view, onSelect }: { view: View; onSelect: (v: View) => void }) {
   );
 }
 
-function ExplorerPane({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
+function ExplorerPane(props: FolderProps) {
+  const { state, online, send } = props;
   const projects = state?.projects ?? [];
+  const where = state?.git ? "repo" : "folder";
   const session = state?.session;
   const status = session?.status;
   const frame = status?.kind === "running" ? status.frame : null;
@@ -201,13 +235,16 @@ function ExplorerPane({ state, online, send }: { state: AppState | null; online:
         </div>
         {state && (
           <p className="hint">
-            {projects.length === 0
-              ? "No projects in this repo"
-              : projects.length === 1
-                ? "The only project in this repo"
-                : `One of ${projects.length} projects in this repo`}
+            {!state.folder
+              ? "No folder open"
+              : projects.length === 0
+                ? `No projects in this ${where}`
+                : projects.length === 1
+                  ? `The only project in this ${where}`
+                  : `One of ${projects.length} projects in this ${where}`}
           </p>
         )}
+        <FolderActions {...props} />
         {/* A click opens the file in the focused pane; Alt-click or the side button, beside it. */}
         <ul className="files" aria-label="Files">
           {(state?.files ?? []).map((f) => (

@@ -419,6 +419,7 @@ mod tests {
                 },
             ],
             native_picker: false,
+            open_error: None,
         };
         assert_eq!(
             print(&state),

@@ -53,6 +53,8 @@ pub struct AppState {
     pub recents: Vec<Recent>,
     /// The window can show a native folder picker (`ClientMsg::PickFolder`).
     pub native_picker: bool,
+    /// Why the last folder asked for did not open; cleared by the next try.
+    pub open_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +93,7 @@ impl AppState {
             layouts,
             recents: Vec::new(),
             native_picker: false,
+            open_error: None,
         }
     }
 
@@ -330,27 +333,18 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
         Event::Client(ClientMsg::OpenFolder { path }) | Event::Picked { path: Some(path) } => {
-            match can_open(&state) {
-                Ok(()) => commands.push(Command::OpenFolder { path }),
-                Err(reason) => commands.push(Command::Broadcast(ServerMsg::Rejected { reason })),
-            }
-            (false, false)
+            let open = can_open(&state).map(|()| Command::OpenFolder { path });
+            (try_open(&mut state, open, &mut commands), false)
         }
         Event::Picked { path: None } => (false, false),
         Event::Client(ClientMsg::PickFolder) => {
-            let ok = match state.native_picker {
-                true => can_open(&state),
-                false => Err("there is no folder picker here: type the folder's path".to_string()),
-            };
-            match ok {
-                Ok(()) => commands.push(Command::PickFolder {
-                    from: Some(PathBuf::from(&state.folder)).filter(|f| !f.as_os_str().is_empty()),
-                }),
-                Err(reason) => {
-                    reject(&mut commands, reason);
-                }
+            if !state.native_picker {
+                let reason = "there is no folder picker here: type the folder's path";
+                return (state, vec![reject_cmd(reason)]);
             }
-            (false, false)
+            let from = Some(PathBuf::from(&state.folder)).filter(|f| !f.as_os_str().is_empty());
+            let pick = can_open(&state).map(|()| Command::PickFolder { from });
+            (try_open(&mut state, pick, &mut commands), false)
         }
         Event::Opened { folder, result } => {
             (opened(&mut state, folder, result, &mut commands), false)
@@ -504,34 +498,50 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     (state, commands)
 }
 
+/// Starts opening a folder with `command`, or records why not in
+/// `open_error`; whether the state changed.
+fn try_open(
+    state: &mut AppState,
+    command: Result<Command, String>,
+    commands: &mut Vec<Command>,
+) -> bool {
+    let error = match command {
+        Ok(command) => {
+            commands.push(command);
+            None
+        }
+        Err(reason) => Some(reason),
+    };
+    let changed = state.open_error != error;
+    state.open_error = error;
+    changed
+}
+
 /// Swaps in the workspace the shell read for `folder`, stopping the
-/// session; its failure is broadcast (an event has no client to answer).
+/// session; or records why it cannot in `open_error`.
 fn opened(
     state: &mut AppState,
     folder: String,
     result: Result<Box<AppState>, String>,
     commands: &mut Vec<Command>,
 ) -> bool {
-    let fail = |commands: &mut Vec<Command>, reason: String| {
-        commands.push(Command::Broadcast(ServerMsg::Rejected { reason }));
-    };
     let new = match result {
         Ok(new) => new,
         Err(reason) => {
-            fail(commands, format!("cannot open {folder}: {reason}"));
-            let marked = mark_missing(&mut state.recents, &folder);
-            if marked {
+            state.open_error = Some(format!("cannot open {folder}: {reason}"));
+            if mark_missing(&mut state.recents, &folder) {
                 save_recents(state, commands);
             }
-            return marked;
+            return true;
         }
     };
     // A run may have started while the folder was read.
     if let Err(reason) = can_open(state) {
-        fail(commands, reason);
-        return false;
+        state.open_error = Some(reason);
+        return true;
     }
     stop(state, commands);
+    state.open_error = None;
     // Every workspace field, by name, so a new one is not left behind.
     let AppState {
         repo_root,
@@ -549,6 +559,7 @@ fn opened(
         harnesses: _,
         recents: _,
         native_picker: _,
+        open_error: _,
     } = *new;
     commands.push(Command::UseWorkspace {
         root: PathBuf::from(&repo_root),
@@ -778,8 +789,14 @@ fn get_file(state: &AppState, path: String, commands: &mut Vec<Command>) {
 }
 
 fn reject(commands: &mut Vec<Command>, reason: String) -> bool {
-    commands.push(Command::Reply(ServerMsg::Rejected { reason }));
+    commands.push(reject_cmd(&reason));
     false
+}
+
+fn reject_cmd(reason: &str) -> Command {
+    Command::Reply(ServerMsg::Rejected {
+        reason: reason.to_string(),
+    })
 }
 
 fn no_task(id: u64) -> ServerMsg {
@@ -3105,28 +3122,32 @@ mod tests {
     fn no_folder_opens_while_a_run_or_revert_is_active() {
         let (running, _) = update(state(), new_task("hi"));
         let reason = "task 1 is running: stop it before opening another folder";
+        let refused = AppState {
+            open_error: Some(reason.into()),
+            ..running.clone()
+        };
         let (next, commands) = update(running.clone(), open("/other"));
-        assert_eq!(next, running);
-        assert_eq!(commands, vec![broadcast_rejected(reason)]);
+        assert_eq!(next, refused);
+        assert_eq!(commands, vec![broadcast(&refused)]);
         // Nor when a run started while the folder was read.
         let read = Event::Opened {
             folder: "/other".into(),
             result: Ok(Box::new(other())),
         };
         let (next, commands) = update(running.clone(), read);
-        assert_eq!(next, running);
-        assert_eq!(commands, vec![broadcast_rejected(reason)]);
+        assert_eq!(next, refused);
+        assert_eq!(commands, vec![broadcast(&refused)]);
         let mut reverting = finished_task();
         reverting.tasks[0].reverting = true;
-        assert_eq!(
-            update(reverting, open("/other")).1,
-            vec![broadcast_rejected(reason)]
-        );
-        // Stopped, it opens.
-        let (stopped, _) = update(running, client(ClientMsg::StopTask { task: 1 }));
+        let (next, _) = update(reverting, open("/other"));
+        assert_eq!(next.open_error.as_deref(), Some(reason));
+        // Stopped, it opens, and the reason is gone.
+        let (stopped, _) = update(refused, client(ClientMsg::StopTask { task: 1 }));
+        let (next, commands) = update(stopped, open("/other"));
+        assert_eq!(next.open_error, None);
         assert!(matches!(
-            update(stopped, open("/other")).1[..],
-            [Command::OpenFolder { .. }]
+            commands[..],
+            [Command::OpenFolder { .. }, Command::Broadcast(_)]
         ));
     }
 
@@ -3203,9 +3224,12 @@ mod tests {
         let (next, commands) = update(before.clone(), failed("/gone"));
         assert!(next.recents[0].missing);
         assert_eq!(
+            next.open_error.as_deref(),
+            Some("cannot open /gone: it does not exist")
+        );
+        assert_eq!(
             commands,
             vec![
-                broadcast_rejected("cannot open /gone: it does not exist"),
                 Command::SaveRecents {
                     recents: next.recents.clone()
                 },
@@ -3213,12 +3237,13 @@ mod tests {
             ]
         );
         // Not a recent: only the reason.
-        let (same, commands) = update(before.clone(), failed("/x"));
-        assert_eq!(same, before);
+        let (other, commands) = update(before.clone(), failed("/x"));
+        assert_eq!(other.recents, before.recents);
         assert_eq!(
-            commands,
-            vec![broadcast_rejected("cannot open /x: it does not exist")]
+            other.open_error.as_deref(),
+            Some("cannot open /x: it does not exist")
         );
+        assert_eq!(commands, vec![broadcast(&other)]);
         // A recent can be removed.
         let (removed, commands) = update(
             next,
@@ -3256,11 +3281,12 @@ mod tests {
             }]
         );
         let (busy, _) = update(window, new_task("hi"));
-        let (_, commands) = update(busy, client(ClientMsg::PickFolder));
+        let (next, commands) = update(busy, client(ClientMsg::PickFolder));
         assert_eq!(
-            commands,
-            rejected("task 1 is running: stop it before opening another folder")
+            next.open_error.as_deref(),
+            Some("task 1 is running: stop it before opening another folder")
         );
+        assert_eq!(commands, vec![broadcast(&next)]);
     }
 
     #[test]

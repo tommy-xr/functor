@@ -3,9 +3,14 @@
 
 export type AppState = { 
 /**
- * Absolute path of the repo root.
+ * Absolute path of the open folder's repo root (its nearest ancestor
+ * with a `.git`, else the folder); empty when no folder is open.
  */
 repo_root: string, 
+/**
+ * The folder the app opened, canonical; empty when none is.
+ */
+folder: string, 
 /**
  * Sorted by `path`.
  */
@@ -52,7 +57,19 @@ harness_choice: { [key in string]: Harness },
 /**
  * Per project path, its canvas layout; every project has one.
  */
-layouts: { [key in string]: Layout }, };
+layouts: { [key in string]: Layout }, 
+/**
+ * Recent projects, most recent first; kept for the app, not the folder.
+ */
+recents: Array<Recent>, 
+/**
+ * The window can show a native folder picker (`ClientMsg::PickFolder`).
+ */
+native_picker: boolean, 
+/**
+ * Why the last folder asked for did not open; cleared by the next try.
+ */
+open_error: string | null, };
 
 /**
  * The summary that travels with the task.
@@ -75,7 +92,7 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -230,6 +247,20 @@ name: string,
  */
 path: string, entries: Entries, };
 
+export type Recent = { 
+/**
+ * The project directory's name.
+ */
+name: string, 
+/**
+ * Absolute and canonical: one entry per directory however it was opened.
+ */
+path: string, 
+/**
+ * Its directory could not be opened when last checked.
+ */
+missing: boolean, };
+
 /**
  * One `"entries"` role: `"client.fun"`, or `{ "file", "module" | "prefix" }`
  * for roles sharing a file.
@@ -250,7 +281,7 @@ usage: Usage | null, };
 /**
  * Core → UI.
  */
-export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", project: string, path: string, text: string | null, error: string | null, } | { "type": "rejected", reason: string, };
+export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", project: string, path: string, text: string | null, error: string | null, } | { "type": "dirs", path: string, dirs: Array<string>, error: string | null, } | { "type": "rejected", reason: string, };
 
 export type Session = { 
 /**

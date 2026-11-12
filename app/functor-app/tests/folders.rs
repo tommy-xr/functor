@@ -192,8 +192,9 @@ async fn folders_open_as_workspaces_and_become_recent_projects() {
         (&s("notes.txt"), "it is not a folder"),
     ] {
         send(&mut ws, json!({"type": "open_folder", "path": path})).await;
-        let msg = until(&mut ws, |m| m["type"] == "rejected").await;
-        assert_eq!(msg["reason"], format!("cannot open {path}: {why}"));
+        let error = format!("cannot open {path}: {why}");
+        let state = state_where(&mut ws, |s| s["open_error"] == error).await;
+        assert_eq!(state["folder"], s("repo"));
     }
 
     // Suggestions: directory names under the typed prefix, never files or

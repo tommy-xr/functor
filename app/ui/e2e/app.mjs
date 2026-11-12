@@ -74,9 +74,12 @@ export function tempProject(project) {
  * `#token=`), port and token once it listens. `home` defaults to a fresh temp
  * dir; pass the previous server's `home` and `token` to restart it with its
  * tasks for the same open page. `fakeAgent` is a fixture for the fake agent.
+ * `dir: null` passes no `-d`, so the app picks its folder from `cwd` and its
+ * recent projects.
  */
-export function startServer(port = 0, { dir = ROOT, gpu = false, home = tempHome(), fakeAgent, token } = {}) {
-  const args = ["--headless", "--port", String(port), "-d", dir];
+export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token } = {}) {
+  const args = ["--headless", "--port", String(port)];
+  if (dir) args.push("-d", dir);
   if (!gpu) args.push("--no-gpu");
   if (FUNCTOR) args.push("--functor", FUNCTOR);
   // XDG_CONFIG_HOME too: git also reads its ignore and attributes files there.
@@ -85,7 +88,7 @@ export function startServer(port = 0, { dir = ROOT, gpu = false, home = tempHome
   else delete env.FUNCTOR_APP_FAKE_AGENT;
   if (token) env.FUNCTOR_APP_TOKEN = token;
   else delete env.FUNCTOR_APP_TOKEN;
-  const child = spawn(APP, args, { stdio: ["ignore", "ignore", "pipe"], env });
+  const child = spawn(APP, args, { stdio: ["ignore", "ignore", "pipe"], env, cwd });
   let err = "";
   return new Promise((resolve, reject) => {
     child.stderr.on("data", (d) => {
