@@ -551,12 +551,12 @@ export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "
  */
 surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
 
-export type Stance = "thinking" | "working" | "waiting" | "done" | "failed";
-
 /**
  * Which app needs the update.
  */
 export type Side = "headset" | "desktop";
+
+export type Stance = "thinking" | "working" | "waiting" | "done" | "failed";
 
 /**
  * Where creating a project is.

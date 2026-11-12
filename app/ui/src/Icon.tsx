@@ -37,6 +37,41 @@ const ICONS: Record<string, ReactNode> = {
   ),
   dock: <path d="M12 4v10M8 10l4 4 4-4M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />,
   "pop-out": <path d="M14 4h6v6M20 4l-8 8M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />,
+  // The agent cards' call kinds (D34).
+  "kind-thinking": (
+    <>
+      <path d="M7 17a4 4 0 0 1-.5-8A5.5 5.5 0 0 1 17 8.5 4.3 4.3 0 0 1 17.5 17z" />
+      <path d="M6 20.5h.01M3.5 22h.01" />
+    </>
+  ),
+  "kind-files": <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h4" />,
+  "kind-shell": (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9l3 3-3 3M12 15h5" />
+    </>
+  ),
+  "kind-network": (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+    </>
+  ),
+  "kind-game": <path d="M7 8h10a4 4 0 0 1 4 4v1a3 3 0 0 1-5.4 1.8L15 14H9l-.6.8A3 3 0 0 1 3 13v-1a4 4 0 0 1 4-4zM8 10v3M6.5 11.5h3M15 11h.01M17 12.5h.01" />,
+  "kind-agents": (
+    <>
+      <circle cx="9" cy="8" r="3" />
+      <path d="M3 20a6 6 0 0 1 12 0M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 6" />
+    </>
+  ),
+  "kind-skills": <path d="M12 3l2.2 5.6L20 9.3l-4.5 3.8L17 19l-5-3.2L7 19l1.5-5.9L4 9.3l5.8-.7z" />,
+  "kind-ask": (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.7M12 17h.01" />
+    </>
+  ),
+  alert: <path d="M12 4l9 16H3zM12 10v4M12 17h.01" />,
 };
 
 export function Icon({ name }: { name: keyof typeof ICONS }) {
