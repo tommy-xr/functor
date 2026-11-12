@@ -84,9 +84,10 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
     if unhex::<16>(&stored.id).is_none() {
         stored.id = hex(uuid::Uuid::new_v4().as_bytes());
     }
+    // Private, as a headset's pairing would be.
     let save = |stored: &Stored| {
-        let _ = std::fs::create_dir_all(&args.store);
-        let _ = std::fs::write(&file, serde_json::to_string(stored).unwrap());
+        let _ = crate::store::make_private(&args.store);
+        let _ = crate::store::write_whole(&file, &serde_json::to_string(stored).unwrap());
     };
     save(&stored);
     let Ok(signal) = crate::shutdown_signal() else {

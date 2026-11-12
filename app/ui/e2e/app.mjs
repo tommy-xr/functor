@@ -77,8 +77,11 @@ export function tempProject(project) {
  * `dir: null` passes no `-d`, so the app picks its folder from `cwd` and its
  * recent projects.
  */
-export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token } = {}) {
+export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token, deviceLink = false } = {}) {
   const args = ["--headless", "--port", String(port)];
+  // No LAN listener or mDNS advert unless a test pairs a stub device.
+  if (!deviceLink) args.push("--no-device-link");
+  else args.push("--device-link", "127.0.0.1:0", "--no-mdns");
   if (dir) args.push("-d", dir);
   if (!gpu) args.push("--no-gpu");
   if (FUNCTOR) args.push("--functor", FUNCTOR);

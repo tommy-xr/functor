@@ -478,7 +478,7 @@ mod socket {
 
     pub fn serve(repo: &Path, home: &Path, functor: &Path, fixture: &Path) -> App {
         let mut child = Command::new(env!("CARGO_BIN_EXE_functor-app"))
-            .args(["--headless", "--port", "0", "-d"])
+            .args(["--headless", "--no-device-link", "--port", "0", "-d"])
             .arg(repo)
             .arg("--functor")
             .arg(functor)

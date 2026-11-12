@@ -886,6 +886,55 @@ mod tests {
         }
     }
 
+    /// Registered (and, where multicast loops back, seen by a browser
+    /// carrying only the version and id), then withdrawn.
+    #[test]
+    fn the_advert_is_registered_and_withdrawn() {
+        let home = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let hub = Hub::new(home.path().into(), tx).unwrap();
+        let port = 45_871;
+        if let Err(e) = hub.advertise(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))) {
+            eprintln!("SKIPPED: no mDNS socket here: {e}");
+            return;
+        }
+        let browser = mdns_sd::ServiceDaemon::new().unwrap();
+        let found = browser.browse(SERVICE).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut seen = None;
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match found.recv_timeout(left) {
+                Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) if info.port == port => {
+                    seen = Some(info);
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        match seen {
+            Some(info) => {
+                let mut keys: Vec<&str> = info.txt_properties.iter().map(|p| p.key()).collect();
+                keys.sort();
+                assert_eq!(keys, ["id", "v"]);
+                assert_eq!(
+                    info.get_property_val_str("id"),
+                    Some(hex(&hub.0.id).as_str())
+                );
+            }
+            None => eprintln!("multicast does not loop back here: browse check skipped"),
+        }
+        let _ = browser.shutdown();
+        let (daemon, fullname) = hub.0.mdns.lock().unwrap().take().unwrap();
+        let status = daemon.unregister(&fullname).unwrap();
+        let status = status.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(
+            matches!(status, mdns_sd::UnregisterStatus::OK),
+            "{status:?}"
+        );
+        let _ = daemon.shutdown();
+    }
+
     #[test]
     fn host_labels_are_dns_safe() {
         assert_eq!(host_label("Bryan's Mac"), "Bryan-s-Mac");

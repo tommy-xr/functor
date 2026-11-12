@@ -29,7 +29,14 @@ impl Drop for Server {
 fn serve(dir: &Path, home: &Path, functor: &Path) -> Server {
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/e2e/fixtures/chat.jsonl");
     let mut child = Command::new(env!("CARGO_BIN_EXE_functor-app"))
-        .args(["--headless", "--no-gpu", "--port", "0", "-d"])
+        .args([
+            "--headless",
+            "--no-gpu",
+            "--no-device-link",
+            "--port",
+            "0",
+            "-d",
+        ])
         .arg(dir)
         .arg("--functor")
         .arg(functor)

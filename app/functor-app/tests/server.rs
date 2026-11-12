@@ -33,7 +33,7 @@ fn serve(dir: &Path, extra: &[&str]) -> Server {
 
 fn serve_env(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server {
     let mut child = Command::new(env!("CARGO_BIN_EXE_functor-app"))
-        .args(["--headless", "--port", "0", "-d"])
+        .args(["--headless", "--no-device-link", "--port", "0", "-d"])
         .arg(dir)
         .args(extra)
         .envs(env.iter().copied())
