@@ -36,6 +36,9 @@ test("the bubble shows the first running call and how many run", () => {
   assert.equal(bubble(t, act("working", { calls, error })).error, true);
   assert.deepEqual(bubble(t, act("thinking", { error })), { kind: null, text: error, count: 0, error: true });
   assert.deepEqual(bubble(t, act("thinking")), { kind: "thinking", text: "thinking", count: 0, error: false });
+  // A question shows over an earlier call still running.
+  const ask = { kind: "ask" as const, label: "asking: Ten or twenty?" };
+  assert.equal(bubble(t, act("waiting", { calls: [calls[0]!, ask] })).text, "asking: Ten or twenty?");
 });
 
 test("with nothing running, the bubble says whose turn it is", () => {
@@ -48,7 +51,7 @@ test("with nothing running, the bubble says whose turn it is", () => {
 const state = (tasks: Task[], activity: Record<number, Activity>): AppState =>
   ({ active: "a", tasks, activity }) as unknown as AppState;
 
-test("the strip leaves done tasks out and lists the user's turn first", () => {
+test("the strip leaves done tasks out and lists what needs the user first", () => {
   const tasks = [
     task(1, { kind: "in_progress" }, { run: running }),
     task(2, { kind: "waiting_on_you" }),
@@ -65,7 +68,7 @@ test("the strip leaves done tasks out and lists the user's turn first", () => {
     5: act("waiting"),
     6: act("waiting"),
   });
-  assert.deepEqual(cardTasks(s).map((t) => t.id), [5, 2, 1, 4]);
+  assert.deepEqual(cardTasks(s).map((t) => t.id), [5, 2, 4, 1]);
   assert.deepEqual(cardTasks(null), []);
 });
 

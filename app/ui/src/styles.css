@@ -3253,12 +3253,6 @@ g.avatar-eyes {
   stroke: none;
 }
 
-/* Done and failed: the character steps back. */
-.avatar-done,
-.avatar-failed {
-  opacity: 0.7;
-}
-
 .agent-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -3269,6 +3263,7 @@ g.avatar-eyes {
 
 .agent-top {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 6px;
   min-width: 0;
@@ -3282,16 +3277,6 @@ g.avatar-eyes {
   white-space: nowrap;
   color: var(--text-2);
   font-size: 12px;
-}
-
-.agent-stance {
-  flex: none;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--chip);
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
 }
 
 .agent-thinking .agent-stance,
@@ -3374,14 +3359,14 @@ g.avatar-eyes {
 }
 
 /* Only while it works does anything move. */
-.agent-thinking .agent-bubble .icon,
-.agent-working .agent-bubble .icon {
+.agent-thinking .agent-bubble:not(.agent-bubble-error) .icon,
+.agent-working .agent-bubble:not(.agent-bubble-error) .icon {
   animation: pulse 1s ease-in-out infinite alternate;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-thinking .agent-bubble .icon,
-  .agent-working .agent-bubble .icon {
+  .agent-thinking .agent-bubble:not(.agent-bubble-error) .icon,
+  .agent-working .agent-bubble:not(.agent-bubble-error) .icon {
     animation: none;
   }
 }

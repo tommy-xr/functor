@@ -5,6 +5,7 @@
 import type { Activity, AppState, Harness, Stance, Task } from "./generated/protocol";
 import { bubble, cardLabel, cardTasks, ENGINE_WORDS, STANCE_WORDS } from "./agent-model";
 import { Icon } from "./Icon";
+import { untitled } from "./tasks-model";
 
 /** Eyes per stance, in the avatar's 36×36 box. */
 function Face({ stance }: { stance: Stance }) {
@@ -73,8 +74,8 @@ export function AgentCard({ task, activity, onOpen }: { task: Task; activity: Ac
       <Avatar harness={task.harness} stance={activity.stance} />
       <span className="agent-text">
         <span className="agent-top">
-          <span className="agent-title">{task.title || "Untitled task"}</span>
-          <span className="agent-stance" data-testid="agent-stance">
+          <span className="agent-title">{untitled(task)}</span>
+          <span className="badge agent-stance" data-testid="agent-stance">
             {STANCE_WORDS[activity.stance]}
           </span>
         </span>

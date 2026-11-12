@@ -12,6 +12,7 @@
 import { chromium, expect } from "@playwright/test";
 import {
   ROOT,
+  reopen,
   requireBuilt,
   shot,
   startServer,
@@ -57,8 +58,7 @@ async function agentsView(browser, width, height) {
   const restart = async (fixture) => {
     await stopServer(server);
     server = await startServer(server.port, { dir, fakeAgent: `${FIXTURES}/${fixture}`, home: server.home, token: server.token });
-    await page.goto("about:blank");
-    await page.goto(server.url);
+    await reopen(page, server.url);
     await expect(page.getByRole("tab", { name: "Game" })).toBeVisible();
   };
   const ask = async (text) => {
@@ -106,6 +106,8 @@ async function agentsView(browser, width, height) {
     await expect(bubble).toHaveClass(/agent-bubble-error/, PHASE);
     await expect(bubble).toHaveText("Claude requested permissions to use Bas…");
     await expect(stance).toHaveText("Thinking");
+    // A warning does not blink.
+    expect(await motion(card)).toBe("none");
     await still("error");
 
     await expect(stance).toHaveText("Done", PHASE);
@@ -133,13 +135,13 @@ async function agentsView(browser, width, height) {
     await expect(card.locator(".avatar-codex")).toHaveCount(1);
     await expect(stance).toHaveText("Thinking", PHASE);
 
-    // The strip: the user's turn first, then the running one, then the failed.
+    // The strip: what needs the user first, then the running one.
     await rail.getByRole("button", { name: "Tasks" }).click();
     await expect(strip.getByTestId("agent-card")).toHaveCount(3);
     expect(await strip.getByTestId("agent-card").evaluateAll((cs) => cs.map((c) => c.dataset.stance))).toEqual([
       "waiting",
-      "thinking",
       "failed",
+      "thinking",
     ]);
     await expect(stripCard(CODEX).locator(".avatar-codex")).toHaveCount(1);
     await expect(stripCard(REVIEW).locator(".avatar-claude")).toHaveCount(1);
