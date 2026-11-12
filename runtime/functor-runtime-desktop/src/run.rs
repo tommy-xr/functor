@@ -1204,8 +1204,9 @@ fn service_debug_request(
         }
         // Producer reads reply from the sim side, after every call queued
         // before them, so the shell never waits on them.
-        debug_server::DebugRequest::State(resp) => {
+        debug_server::DebugRequest::State(with_model, resp) => {
             let frame = *frame_count;
+            let paused = clock.is_paused();
             let frame_stats = telemetry.stats();
             let pending_steps = clock.pending_steps();
             let sim_thread = sim_thread.to_string();
@@ -1232,10 +1233,19 @@ fn service_debug_request(
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
                     reload,
+                    clock: functor_runtime_common::protocol::clock_state(g, paused),
                     viewport: debug_server::RuntimeViewport::new(width, height),
                     views: vec![debug_server::RuntimeView::new("main", width, height)],
-                    model: g.state_json(),
-                    model_debug: g.state_debug(),
+                    model: if with_model {
+                        g.state_json()
+                    } else {
+                        serde_json::Value::Null
+                    },
+                    model_debug: if with_model {
+                        g.state_debug()
+                    } else {
+                        String::new()
+                    },
                     input: state_input,
                     sim_thread: Some(sim_thread),
                     display_refresh_rate: None,
@@ -1359,6 +1369,22 @@ fn service_debug_request(
             });
             if let Some(tts) = tts {
                 clock.rebase(tts as f32);
+            }
+            let _ = resp.send(result);
+        }
+        debug_server::DebugRequest::Seek(frame, resp) => {
+            // As the scrubber's seek: show the frame, then park the clock on
+            // it at its recorded `tts`, so a step or resume branches from it.
+            let (result, tts) = sim.call(move |g| {
+                let result = functor_runtime_common::protocol::seek_to_state_frame(g, frame);
+                let tts = result.is_ok().then(|| g.current_scene_tts()).flatten();
+                (result, tts)
+            });
+            if result.is_ok() {
+                if let Some(tts) = tts {
+                    clock.rebase(tts as f32);
+                }
+                clock.pause();
             }
             let _ = resp.send(result);
         }

@@ -5,8 +5,13 @@ import {
   createTimelineState,
   describeRecordedAvailability,
   deriveTimelineView,
+  markerDetail,
+  markerLabel,
   normalizePreviewConfig,
+  pauseButton,
   reduceTimeline,
+  seekKeyTarget,
+  timelineTicks,
 } from "./timeline-model.js";
 
 const publish = (state, frame, hi, paused, lo = 0, generation = 0) =>
@@ -321,4 +326,44 @@ test("either endpoint grows the one shared window when dragged away from the pla
     view.selectedFrame - view.backwardStartFrame,
     "one window, mirrored"
   );
+});
+
+test("playhead keys step a frame, ten with Shift, a second by page, and reach both ends", () => {
+  let state = publish(createTimelineState(), 120, 300, true, 30);
+  const view = deriveTimelineView(state);
+  assert.equal(seekKeyTarget(view, "ArrowLeft"), 119);
+  assert.equal(seekKeyTarget(view, "ArrowRight", true), 130);
+  assert.equal(seekKeyTarget(view, "PageUp"), 180);
+  assert.equal(seekKeyTarget(view, "Home"), 30);
+  assert.equal(seekKeyTarget(view, "End"), 300);
+  assert.equal(seekKeyTarget(view, "a"), null);
+  assert.equal(seekKeyTarget(null, "Home"), null);
+});
+
+test("a marker cluster explains itself", () => {
+  const one = { frame: 12, count: 1, labels: ["W down"] };
+  const many = { frame: 12, count: 3, labels: ["W down", "W up", "A down"] };
+  assert.equal(markerDetail(one), "frame 12 · W down");
+  assert.equal(markerDetail(many), "frame 12 · W down · 3 events");
+  assert.equal(markerLabel(many), "frame 12, W down, 3 nearby events");
+});
+
+test("the pause button names what a click does", () => {
+  assert.deepEqual(pauseButton(false), { glyph: "⏸", tip: "Pause", label: "Pause" });
+  assert.deepEqual(pauseButton(true), { glyph: "▶", tip: "Play", label: "Play" });
+});
+
+test("ticks fall each second, heavier every fifth, and widen over long spans", () => {
+  const ticks = timelineTicks({ lo: 30, hi: 330 });
+  assert.deepEqual(
+    ticks.map((t) => t.frame),
+    [60, 120, 180, 240, 300]
+  );
+  assert.deepEqual(
+    ticks.map((t) => t.major),
+    [false, false, false, false, true]
+  );
+  assert.equal(ticks[0].x, 100);
+  // 100 s: one tick per 5 s.
+  assert.equal(timelineTicks({ lo: 0, hi: 6000 })[1].frame, 300);
 });

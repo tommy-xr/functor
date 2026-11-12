@@ -137,7 +137,7 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -264,6 +264,16 @@ agent: AgentLayout, };
 export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "set_mini", mini: Mini, } | { "type": "restore" } | { "type": "close_agent_tabs" } | { "type": "agent_arranges", on: boolean, };
 
 export type LineKind = "hunk" | "context" | "added" | "removed" | "note";
+
+/**
+ * An event on the timeline: an input edge or a hot reload, with the kind
+ * and label the web timeline gives it.
+ */
+export type Mark = { id: number, frame: number, 
+/**
+ * `key-down`, `mouse-button-up`, `ui-input`, `reload-ok`, ….
+ */
+kind: string, label: string, };
 
 /**
  * The mini view: the canvas corner it sits in and its width in CSS
@@ -400,7 +410,7 @@ views: number, };
 /**
  * Core → UI.
  */
-export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", root: string, project: string, path: string, text: string | null, error: string | null, } | { "type": "dirs", path: string, dirs: Array<string>, error: string | null, } | { "type": "new_project_plan", request: NewProjectRequest, plan: Plan | null, error: string | null, } | { "type": "rejected", reason: string, };
+export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", root: string, project: string, path: string, text: string | null, error: string | null, } | { "type": "dirs", path: string, dirs: Array<string>, error: string | null, } | { "type": "new_project_plan", request: NewProjectRequest, plan: Plan | null, error: string | null, } | { "type": "rejected", reason: string, } | { "type": "transport", transport: Transport | null, } | { "type": "marks", marks: Array<Mark>, };
 
 export type Session = { 
 /**
@@ -412,7 +422,7 @@ id: number,
  */
 pid: number | null, status: SessionStatus, };
 
-export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "kind": "running", debug_url: string, frame: number | null, 
+export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "kind": "running", debug_url: string, 
 /**
  * The game's pointer surface (`/state.input.mouse.surface_width`,
  * `surface_height`): the space `/input` mouse coordinates are in.
@@ -495,6 +505,45 @@ export type Template = {
 name: string, description: string, tags: Array<string>, kind: TemplateKind, };
 
 export type TemplateKind = "starter" | "example";
+
+/**
+ * What the bar shows: `GET /state`'s `frame` and `clock`, with the bar's
+ * seeks applied until the runtime has answered them.
+ */
+export type Transport = { 
+/**
+ * The runtime reports its clock (debug protocol v37): without it there
+ * is a frame to show but nothing to drive.
+ */
+clock: boolean, 
+/**
+ * Pinned: paused, stepped, or parked on a seek.
+ */
+paused: boolean, 
+/**
+ * The recorded steps behind the state shown (`/state.frame`).
+ */
+frame: number, 
+/**
+ * The seekable window `[oldest, newest]`, numbered as `frame`; `None`
+ * until a step is recorded.
+ */
+recorded: [number, number] | null, 
+/**
+ * Bumps when recorded frames are replaced: a step or resume from a
+ * seeked frame branches, and so may a hot reload.
+ */
+generation: number, 
+/**
+ * The `id` of the last seek asked for (0: none), so the page that asked
+ * stops waiting for it.
+ */
+seek: number, };
+
+/**
+ * What the bar asks of the session.
+ */
+export type TransportCall = { "type": "pause" } | { "type": "resume" } | { "type": "step" } | { "type": "seek", frame: number, id: number, };
 
 export type Usage = { 
 /**

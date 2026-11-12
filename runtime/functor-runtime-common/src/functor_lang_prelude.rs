@@ -14571,6 +14571,7 @@ size: Vec3.make(1.0, 1.0, 1.0), force: Vec3.make(0.0, 0.0, 0.0), turbulence: 0.0
             pending_net: 0,
             http: Default::default(),
             reload: Default::default(),
+            clock: Default::default(),
             viewport: crate::debug_protocol::RuntimeViewport::new(1, 1),
             views: vec![],
             model: value_to_json(&value),

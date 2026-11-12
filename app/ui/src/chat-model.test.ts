@@ -147,7 +147,7 @@ test("the dock opens on the newest open task of the project", () => {
 });
 
 const snap = (over: Partial<Snapshot>): Snapshot => ({ conn: "open", active: "a", session: null, ...over });
-const running = { kind: "running", debug_url: "http://127.0.0.1:1", frame: 3, surface: null } as const;
+const running = { kind: "running", debug_url: "http://127.0.0.1:1", surface: null } as const;
 
 test("connection lines: the socket dropping and coming back", () => {
   assert.deepEqual(connectionLines(snap({}), snap({ conn: "reconnecting" })), ["Connection lost, reconnecting…"]);
@@ -171,8 +171,8 @@ test("connection lines: the active project's session starting, stopping and fail
     connectionLines(snap({ session: { kind: "starting" } }), snap({ session: { kind: "failed", reason: "no gpu" } })),
     ["Game session failed: no gpu"],
   );
-  // Frames ticking by, the first state, and a project switch say nothing.
-  assert.deepEqual(connectionLines(snap({ session: running }), snap({ session: { ...running, frame: 9 } })), []);
+  // A new surface, the first state, and a project switch say nothing.
+  assert.deepEqual(connectionLines(snap({ session: running }), snap({ session: { ...running, surface: [800, 600] } })), []);
   assert.deepEqual(connectionLines(snap({ active: undefined }), snap({ session: running })), []);
   assert.deepEqual(connectionLines(snap({ session: running }), snap({ active: "b" })), []);
   assert.deepEqual(connectionLines(snap({}), snap({ session: { kind: "starting" } })), []);
