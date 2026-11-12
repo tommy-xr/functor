@@ -128,6 +128,12 @@ async function panes(browser, width, height) {
     await expect.poll(() => layout()?.root?.ratio).toBeGreaterThanOrEqual(280);
     await expect.poll(() => layout()?.root?.ratio).toBeLessThanOrEqual(320);
 
+    // A click in a pane focuses it, the game view (portalled in) included.
+    await pane(0).getByTestId("file-view").click();
+    await expect(pane(0)).toHaveClass(/pane-focused/);
+    await page.getByTestId("game-view").click();
+    await expect(pane(1)).toHaveClass(/pane-focused/);
+
     // A reload shows exactly this layout, from the core.
     const before = JSON.stringify(layout());
     await page.reload();
