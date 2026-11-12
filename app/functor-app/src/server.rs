@@ -2,7 +2,7 @@
 //! the core protocol on 127.0.0.1. One loop owns the state and runs `update`;
 //! socket handlers only forward messages in and out.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::{Future, IntoFuture};
 use std::net::Ipv4Addr;
 use std::path::{Component, Path, PathBuf};
@@ -16,7 +16,7 @@ use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use functor_app_core::protocol::{ClientMsg, ServerMsg};
+use functor_app_core::protocol::{ClientMsg, GameInput, ServerMsg};
 use functor_app_core::{update, AppState, Command, Event, GitInfo};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
@@ -108,8 +108,11 @@ async fn run(
 ) -> u8 {
     tokio::pin!(shutdown);
     let mut clients: HashMap<u64, Sender<String>> = HashMap::new();
+    // Per client, the releases of the keys and buttons it holds down: sent
+    // for it if it goes away mid-press, so nothing stays held in the game.
+    let mut held: HashMap<u64, HashSet<GameInput>> = HashMap::new();
     loop {
-        let (event, from) = tokio::select! {
+        let (events, from) = tokio::select! {
             biased;
             signal = &mut shutdown => {
                 let (_, commands) = update(state, Event::Client(ClientMsg::StopSession));
@@ -118,41 +121,77 @@ async fn run(
                 }
                 return signal;
             }
-            Some(event) = events.recv() => (event, None),
+            Some(event) = events.recv() => (vec![event], None),
             Some(input) = inputs.recv() => match input {
                 // A new client is answered with the whole state.
                 Input::Connect { id, out } => {
                     clients.insert(id, out);
-                    (Event::Client(ClientMsg::GetState), Some(id))
+                    (vec![Event::Client(ClientMsg::GetState)], Some(id))
                 }
-                Input::Client { id, msg } => (Event::Client(msg), Some(id)),
+                Input::Client { id, msg } => {
+                    if let ClientMsg::Input { input } = &msg {
+                        track(held.entry(id).or_default(), input);
+                    }
+                    (vec![Event::Client(msg)], Some(id))
+                }
                 Input::Disconnect { id } => {
                     clients.remove(&id);
-                    continue;
+                    let releases = held.remove(&id).unwrap_or_default();
+                    let releases = releases.into_iter().map(|input| Event::Client(ClientMsg::Input { input }));
+                    (releases.collect(), None)
                 }
             },
         };
-        let commands;
-        (state, commands) = update(state, event);
-        for command in commands {
-            match command {
-                Command::Reply(msg) => {
-                    if let Some(id) = from {
-                        if clients
-                            .get(&id)
-                            .is_some_and(|out| out.try_send(json(&msg)).is_err())
-                        {
-                            clients.remove(&id);
+        for event in events {
+            let commands;
+            (state, commands) = update(state, event);
+            for command in commands {
+                match command {
+                    Command::Reply(msg) => {
+                        if let Some(id) = from {
+                            if clients
+                                .get(&id)
+                                .is_some_and(|out| out.try_send(json(&msg)).is_err())
+                            {
+                                clients.remove(&id);
+                            }
                         }
                     }
+                    Command::Broadcast(msg) => {
+                        let text = json(&msg);
+                        clients.retain(|_, out| out.try_send(text.clone()).is_ok());
+                    }
+                    command => driver.run(command).await,
                 }
-                Command::Broadcast(msg) => {
-                    let text = json(&msg);
-                    clients.retain(|_, out| out.try_send(text.clone()).is_ok());
-                }
-                command => driver.run(command).await,
             }
         }
+    }
+}
+
+/// Records the release for a key or button `input` presses, or forgets it
+/// when `input` lets go.
+fn track(held: &mut HashSet<GameInput>, input: &GameInput) {
+    let (release, down) = match input {
+        GameInput::Key { key, down } => (
+            GameInput::Key {
+                key: key.clone(),
+                down: false,
+            },
+            *down,
+        ),
+        GameInput::MouseButton { button, down } => (
+            GameInput::MouseButton {
+                button: *button,
+                down: false,
+            },
+            *down,
+        ),
+        GameInput::MouseMove { .. } | GameInput::MouseWheel { .. } => return,
+    };
+    if down {
+        held.insert(release);
+    } else {
+        held.remove(&release);
     }
 }
 
@@ -277,6 +316,31 @@ pub fn git_info(root: &Path) -> Option<GitInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_keys_and_buttons_are_tracked_as_their_releases() {
+        use functor_app_core::protocol::MouseButton;
+        let key = |key: &str, down| GameInput::Key {
+            key: key.to_string(),
+            down,
+        };
+        let left = |down| GameInput::MouseButton {
+            button: MouseButton::Left,
+            down,
+        };
+        let mut held = HashSet::new();
+        for input in [
+            key("w", true),
+            key("a", true),
+            left(true),
+            GameInput::MouseMove { x: 1, y: 2 },
+            key("a", false),
+            key("w", true),
+        ] {
+            track(&mut held, &input);
+        }
+        assert_eq!(held, HashSet::from([key("w", false), left(false)]));
+    }
 
     #[test]
     fn content_types_by_extension() {

@@ -183,3 +183,121 @@ fn serves_the_ui_dir_and_nothing_outside_it() {
         assert!(response.starts_with("HTTP/1.1 404"), "{path}: {response}");
     }
 }
+
+/// A fake debug server: answers `GET /state` and sends every `POST /input`
+/// body on `inputs`.
+fn fake_debug_server(inputs: std::sync::mpsc::Sender<String>) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut reader = BufReader::new(stream.unwrap());
+            let mut head = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = n.trim().parse().unwrap();
+                }
+                head.push_str(&line);
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let reply = if head.starts_with("POST /input ") {
+                let _ = inputs.send(String::from_utf8(body).unwrap());
+                "ok".to_string()
+            } else {
+                r#"{"frame":1,"input":{"mouse":{"surface_width":800,"surface_height":600}}}"#
+                    .to_string()
+            };
+            let mut stream = reader.into_inner();
+            let _ = write!(stream, "HTTP/1.0 200 OK\r\n\r\n{reply}");
+        }
+    });
+    port
+}
+
+/// Input from the page reaches the running session's `POST /input`, in order.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn input_is_posted_to_the_session() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (inputs_tx, inputs) = std::sync::mpsc::channel();
+    let port = fake_debug_server(inputs_tx);
+    let tmp = tree();
+    // A `functor` that only announces the fake server, then waits to be killed.
+    let fake = tmp.path().join("functor");
+    let script = format!(
+        "#!/bin/sh\necho '[debug-server] listening on http://127.0.0.1:{port}' >&2\nexec sleep 30\n"
+    );
+    std::fs::write(&fake, script).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let server = serve(tmp.path(), &["--functor", fake.to_str().unwrap()]);
+    let mut socket = connect(&server.addr).await;
+    next_state(&mut socket).await;
+
+    socket
+        .send(Message::text(r#"{"type":"start_session"}"#))
+        .await
+        .unwrap();
+    let state = state_where(&mut socket, |s| {
+        s["session"]["status"]["surface"] == serde_json::json!([800, 600])
+    })
+    .await;
+    assert_eq!(state["session"]["status"]["kind"], "running", "{state}");
+
+    let sent = [
+        r#"{"type":"key","key":"w","down":true}"#,
+        r#"{"type":"mouse_move","x":10,"y":20}"#,
+        r#"{"type":"mouse_button","button":"left","down":true}"#,
+        r#"{"type":"key","key":"w","down":false}"#,
+        r#"{"type":"mouse_button","button":"left","down":false}"#,
+    ];
+    for input in sent {
+        let msg = format!(r#"{{"type":"input","input":{input}}}"#);
+        socket.send(Message::text(msg)).await.unwrap();
+    }
+    for input in sent {
+        let posted = inputs.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&posted).unwrap(),
+            serde_json::from_str::<Value>(input).unwrap()
+        );
+    }
+    // Input is not answered with the state. (The fake's polls never change,
+    // so they broadcast nothing either.)
+    let quiet = tokio::time::timeout(Duration::from_millis(300), socket.next()).await;
+    assert!(quiet.is_err(), "input was answered: {quiet:?}");
+
+    // A client that goes away holding a key or button has them released for it.
+    socket
+        .send(Message::text(
+            r#"{"type":"input","input":{"type":"key","key":"a","down":true}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        inputs.recv_timeout(Duration::from_secs(10)).unwrap(),
+        r#"{"type":"key","key":"a","down":true}"#
+    );
+    // The left button was let go above; only `a` is still held.
+    drop(socket);
+    assert_eq!(
+        inputs.recv_timeout(Duration::from_secs(10)).unwrap(),
+        r#"{"type":"key","key":"a","down":false}"#
+    );
+    let quiet = inputs.recv_timeout(Duration::from_millis(300));
+    assert!(quiet.is_err(), "more input posted: {quiet:?}");
+
+    let mut socket = connect(&server.addr).await;
+    next_state(&mut socket).await;
+    socket
+        .send(Message::text(r#"{"type":"stop_session"}"#))
+        .await
+        .unwrap();
+    state_where(&mut socket, |s| s["session"]["status"]["kind"] == "stopped").await;
+}

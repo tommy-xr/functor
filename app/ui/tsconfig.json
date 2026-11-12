@@ -19,5 +19,8 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  // `*.test.ts` run under Node (`node --test`, type stripping), importing
+  // `node:test` and `./x.ts` specifiers this browser config does not allow.
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["src/**/*.test.ts"]
 }

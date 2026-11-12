@@ -112,6 +112,9 @@ jobs:
       - name: Typecheck the desktop app UI
         run: npm run check:app-ui
 
+      - name: Unit-test the desktop app UI
+        run: npm run test:app-ui-unit
+
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 

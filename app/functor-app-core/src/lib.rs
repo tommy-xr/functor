@@ -11,7 +11,9 @@ pub mod state;
 
 pub use print::print;
 pub use projects::discover;
-pub use session::{listening_url, Session, SessionEvent, SessionStatus};
+pub use session::{
+    listening_url, Display, Polled, Session, SessionEvent, SessionMode, SessionStatus,
+};
 pub use state::{update, AppState, Command, Event, GitInfo};
 
 #[cfg(all(test, feature = "ts"))]

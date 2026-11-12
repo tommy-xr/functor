@@ -1,5 +1,6 @@
 import { useState, type KeyboardEvent, type ReactNode } from "react";
-import type { AppState, ClientMsg, Session } from "./generated/protocol";
+import type { AppState, ClientMsg, Session, SessionMode } from "./generated/protocol";
+import { GameView } from "./GameView";
 import { useAppSocket, type Conn } from "./socket";
 
 type Send = (msg: ClientMsg) => void;
@@ -30,7 +31,7 @@ export function App() {
               Headsets you connect by cable or Wi-Fi will appear here.
             </PlaceholderPane>
           )}
-          <Canvas />
+          <Canvas state={state} online={online} send={send} />
           <ChatDock />
         </div>
       </div>
@@ -205,17 +206,18 @@ function PlaceholderPane({ title, children }: { title: string; children: ReactNo
 }
 
 const TABS = [
-  { id: "game", label: "Game", text: "The running game will appear here, with its timeline below it." },
+  { id: "game", label: "Game" },
   { id: "code", label: "Code", text: "The project's code will open here." },
   { id: "diff", label: "Diff", text: "Changes the agent makes will appear here for review." },
 ] as const;
 
-function Canvas() {
+function Canvas({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
   const [tab, setTab] = useState(0);
   // Arrow keys move between tabs, as in the ARIA tabs pattern.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // Only from a tab: the mode picker in the same bar keeps its arrow keys.
     const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
-    if (!step) return;
+    if (!step || (e.target as HTMLElement).getAttribute("role") !== "tab") return;
     const next = (tab + step + TABS.length) % TABS.length;
     setTab(next);
     document.getElementById(`tab-${TABS[next]!.id}`)?.focus();
@@ -238,13 +240,49 @@ function Canvas() {
             {t.label}
           </button>
         ))}
+        {current.id === "game" && (
+          <>
+            <span className="spacer" />
+            <ModePicker state={state} online={online} send={send} />
+          </>
+        )}
       </div>
       <div className="canvas-body" id="canvas-panel" role="tabpanel" aria-labelledby={`tab-${current.id}`}>
-        <div className="placeholder">
-          <p>{current.text}</p>
-        </div>
+        {current.id === "game" ? (
+          <GameView state={state} online={online} send={send} />
+        ) : (
+          <div className="placeholder">
+            <p>{current.text}</p>
+          </div>
+        )}
       </div>
     </main>
+  );
+}
+
+const MODES: { mode: SessionMode; label: string }[] = [
+  { mode: "hidden", label: "In this window" },
+  { mode: "window", label: "Its own window" },
+];
+
+/** Where the game runs; a change restarts a live session. */
+function ModePicker({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
+  return (
+    <div className="switcher switcher-compact">
+      <select
+        aria-label="Where the game runs"
+        value={state?.session_mode ?? "hidden"}
+        disabled={!online}
+        onChange={(e) => send({ type: "set_session_mode", mode: e.target.value as SessionMode })}
+      >
+        {MODES.map(({ mode, label }) => (
+          <option key={mode} value={mode}>
+            {label}
+          </option>
+        ))}
+      </select>
+      <Icon name="chevron" />
+    </div>
   );
 }
 

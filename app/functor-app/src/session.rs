@@ -1,6 +1,6 @@
 //! Runs the core's commands other than replies: one `functor run native`
 //! child at a time, its output read for the debug server's address, `/state`
-//! polled; and project file listings.
+//! polled, input posted; and project file listings.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use functor_app_core::projects::read_project_files;
-use functor_app_core::{listening_url, Command, Event, SessionEvent};
+use functor_app_core::protocol::GameInput;
+use functor_app_core::{listening_url, Command, Display, Event, Polled, SessionEvent};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Child;
@@ -21,7 +22,7 @@ use tokio::task::JoinHandle;
 /// Each `/state` serializes the whole model on the game's loop, so a UI that
 /// keeps polling should weigh this against the model's size.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
-const POLL_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long output written just before an exit is still collected.
 const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// Output lines kept for a failure report.
@@ -38,8 +39,6 @@ pub fn functor_bin(flag: Option<PathBuf>, env: Option<OsString>, exe: Option<Pat
 
 pub struct Driver {
     functor: PathBuf,
-    /// Run the child with `--headless` (no GL) instead of `--hidden`.
-    no_gpu: bool,
     events: UnboundedSender<Event>,
     live: Option<Live>,
 }
@@ -50,13 +49,14 @@ struct Live {
     stop: oneshot::Sender<()>,
     task: JoinHandle<()>,
     tail: Arc<Mutex<VecDeque<String>>>,
+    /// The child's input poster, started by its first input.
+    input: Option<UnboundedSender<GameInput>>,
 }
 
 impl Driver {
-    pub fn new(functor: PathBuf, no_gpu: bool, events: UnboundedSender<Event>) -> Self {
+    pub fn new(functor: PathBuf, events: UnboundedSender<Event>) -> Self {
         Self {
             functor,
-            no_gpu,
             events,
             live: None,
         }
@@ -64,7 +64,7 @@ impl Driver {
 
     pub async fn run(&mut self, command: Command) {
         match command {
-            Command::StartSession { id, dir } => self.start(id, &dir),
+            Command::StartSession { id, dir, display } => self.start(id, &dir, display),
             Command::StopSession { id } => {
                 if self.live.as_ref().is_some_and(|l| l.id == id) {
                     self.stop().await;
@@ -74,9 +74,19 @@ impl Driver {
                 let events = self.events.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(POLL_INTERVAL).await;
-                    let event = SessionEvent::Polled(poll_frame(&debug_url).await);
+                    let event = SessionEvent::Polled(poll_state(&debug_url).await);
                     let _ = events.send(Event::Session { id, event });
                 });
+            }
+            Command::Input {
+                id,
+                debug_url,
+                input,
+            } => {
+                if let Some(live) = self.live.as_mut().filter(|l| l.id == id) {
+                    let poster = live.input.get_or_insert_with(|| post_inputs(debug_url));
+                    let _ = poster.send(input);
+                }
             }
             Command::ListFiles { path, dir } => {
                 let files = read_project_files(&dir);
@@ -95,19 +105,16 @@ impl Driver {
             .unwrap_or_default()
     }
 
-    fn start(&mut self, id: u64, dir: &Path) {
+    fn start(&mut self, id: u64, dir: &Path, display: Display) {
         let send = |event| {
             let _ = self.events.send(Event::Session { id, event });
-        };
-        let display = if self.no_gpu {
-            "--headless"
-        } else {
-            "--hidden"
         };
         let spawned = tokio::process::Command::new(&self.functor)
             .arg("-d")
             .arg(dir)
-            .args(["run", "native", display, "--debug-port", "0"])
+            .args(["run", "native"])
+            .args(display.flag())
+            .args(["--debug-port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -140,6 +147,7 @@ impl Driver {
             stop,
             task,
             tail,
+            input: None,
         });
     }
 
@@ -233,34 +241,88 @@ async fn kill(mut child: Child) {
     let _ = child.kill().await;
 }
 
-/// `GET /state`'s `frame`. HTTP/1.0, so the server closes after one response.
-async fn poll_frame(debug_url: &str) -> Result<u64, String> {
+/// One HTTP/1.0 request (the server closes after its response): the status
+/// line's code and the body, or why it failed.
+async fn request(debug_url: &str, method: &str, path: &str, body: &str) -> Result<String, String> {
+    let what = format!("{method} {path}");
     let addr = debug_url
         .strip_prefix("http://")
         .ok_or_else(|| format!("not an http url: {debug_url}"))?;
     let request = async {
         let mut stream = TcpStream::connect(addr).await?;
-        let head = format!("GET /state HTTP/1.0\r\nHost: {addr}\r\n\r\n");
+        let head = format!(
+            "{method} {path} HTTP/1.0\r\nHost: {addr}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
         stream.write_all(head.as_bytes()).await?;
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await?;
         Ok::<_, std::io::Error>(response)
     };
-    let response = tokio::time::timeout(POLL_TIMEOUT, request)
+    let response = tokio::time::timeout(REQUEST_TIMEOUT, request)
         .await
-        .map_err(|_| "GET /state timed out".to_string())?
-        .map_err(|e| format!("GET /state: {e}"))?;
+        .map_err(|_| format!("{what} timed out"))?
+        .map_err(|e| format!("{what}: {e}"))?;
     let text = String::from_utf8_lossy(&response);
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
     let status = head.lines().next().unwrap_or_default();
     if status.split(' ').nth(1) != Some("200") {
-        return Err(format!("GET /state: {status}"));
+        return Err(format!("{what}: {status}: {}", body.trim()));
     }
+    Ok(body.to_string())
+}
+
+/// `GET /state`'s `frame` and pointer surface.
+async fn poll_state(debug_url: &str) -> Result<Polled, String> {
+    let body = request(debug_url, "GET", "/state", "").await?;
     let state: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| format!("GET /state: {e}"))?;
-    state["frame"]
+        serde_json::from_str(&body).map_err(|e| format!("GET /state: {e}"))?;
+    let frame = state["frame"]
         .as_u64()
-        .ok_or_else(|| "GET /state: no `frame`".to_string())
+        .ok_or_else(|| "GET /state: no `frame`".to_string())?;
+    let mouse = &state["input"]["mouse"];
+    let size = |key: &str| mouse[key].as_u64().and_then(|n| u32::try_from(n).ok());
+    let surface = match (size("surface_width"), size("surface_height")) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some([w, h]),
+        _ => None,
+    };
+    Ok(Polled { frame, surface })
+}
+
+/// Posts each input to `/input` in order, one request at a time: the debug
+/// server answers each on its next frame, so moves that queue meanwhile are
+/// collapsed to the latest. Ends when the sender drops (the session stops).
+fn post_inputs(debug_url: String) -> UnboundedSender<GameInput> {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut queue = VecDeque::new();
+        loop {
+            while let Ok(input) = rx.try_recv() {
+                enqueue(&mut queue, input);
+            }
+            let input = match queue.pop_front() {
+                Some(input) => input,
+                None => match rx.recv().await {
+                    Some(input) => input,
+                    None => return,
+                },
+            };
+            let body = serde_json::to_string(&input).expect("GameInput serializes");
+            if let Err(e) = request(&debug_url, "POST", "/input", &body).await {
+                eprintln!("functor-app: {e}");
+            }
+        }
+    });
+    tx
+}
+
+/// Queues `input`, replacing a mouse move still waiting at the back.
+fn enqueue(queue: &mut VecDeque<GameInput>, input: GameInput) {
+    if let (Some(GameInput::MouseMove { .. }), GameInput::MouseMove { .. }) = (queue.back(), &input)
+    {
+        queue.pop_back();
+    }
+    queue.push_back(input);
 }
 
 #[cfg(test)]
@@ -290,6 +352,31 @@ mod tests {
         );
         assert_eq!(cause(&tail(&["a", "b"])), Some("b"));
         assert_eq!(cause(&tail(&[])), None);
+    }
+
+    #[test]
+    fn queued_mouse_moves_collapse_to_the_latest() {
+        let moved = |x| GameInput::MouseMove { x, y: 0 };
+        let key = |down| GameInput::Key {
+            key: "w".to_string(),
+            down,
+        };
+        let mut queue = VecDeque::new();
+        for input in [
+            moved(1),
+            moved(2),
+            key(true),
+            moved(3),
+            moved(4),
+            key(false),
+        ] {
+            enqueue(&mut queue, input);
+        }
+        // A move before a key stays, so the key lands where the pointer was.
+        assert_eq!(
+            Vec::from(queue),
+            [moved(2), key(true), moved(4), key(false)]
+        );
     }
 
     #[test]
