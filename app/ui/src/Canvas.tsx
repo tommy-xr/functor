@@ -60,8 +60,8 @@ type Ctx = CanvasProps & {
   op: (op: LayoutOp) => boolean;
   titles: Map<string, string>;
   focus: number | null;
-  /** Moves DOM focus into the focused pane once the next layout arrives. */
-  refocus: () => void;
+  /** With an op's `send` result: DOM focus follows into the focused pane once its layout arrives. */
+  refocus: (sent: boolean) => void;
 };
 
 export function isLive(session: Session | null | undefined): boolean {
@@ -81,15 +81,21 @@ export function Canvas(props: CanvasProps) {
   const views = panesOf(layout).flatMap((p) => p.tabs);
   const titles = tabTitles(views, state?.tasks ?? []);
 
-  // After a keyboard action, focus follows the layout the core sends back.
+  // After a keyboard action, focus follows the layout the core sends back:
+  // the first that differs from the one it acted on, within a second.
   const main = useRef<HTMLElement>(null);
-  const wantFocus = useRef(false);
-  const refocus = useCallback(() => {
-    wantFocus.current = true;
+  const shown = useRef(layout);
+  shown.current = layout;
+  const wantFocus = useRef<{ from: string; until: number } | null>(null);
+  const refocus = useCallback((sent: boolean) => {
+    if (sent) wantFocus.current = { from: JSON.stringify(shown.current), until: Date.now() + 1000 };
   }, []);
   useLayoutEffect(() => {
-    if (!wantFocus.current || !main.current) return;
-    wantFocus.current = false;
+    const want = wantFocus.current;
+    if (!want || !main.current || JSON.stringify(layout) === want.from) return;
+    wantFocus.current = null;
+    // Never out of a field the user has gone on to type in.
+    if (Date.now() > want.until || isTyping(document.activeElement)) return;
     const pane = main.current.querySelector(`[data-pane="${layout?.focus}"]`) ?? main.current;
     pane.querySelector<HTMLElement>("[role=tab][aria-selected=true], .pane-actions button, .empty-canvas button")?.focus();
   }, [layout]);
@@ -99,14 +105,18 @@ export function Canvas(props: CanvasProps) {
   return (
     <main className="canvas" ref={main} aria-label="Canvas">
       <GameHost state={state} online={props.online} send={send}>
-        {layout?.root ? <NodeView node={layout.root} ctx={ctx} /> : <EmptyCanvas ctx={ctx} />}
+        {layout?.root ? <NodeView key={nodeId(layout.root)} node={layout.root} ctx={ctx} /> : <EmptyCanvas ctx={ctx} />}
       </GameHost>
     </main>
   );
 }
 
 /** Global layout shortcuts (see `shortcutFor`), acting on the focused pane. */
-function useShortcuts(layout: AppState["layouts"][string] | null, op: (op: LayoutOp) => void, refocus: () => void) {
+function useShortcuts(
+  layout: AppState["layouts"][string] | null,
+  op: (op: LayoutOp) => boolean,
+  refocus: (sent: boolean) => void,
+) {
   const live = useRef(layout);
   live.current = layout;
   useEffect(() => {
@@ -126,21 +136,22 @@ function useShortcuts(layout: AppState["layouts"][string] | null, op: (op: Layou
       const pane = focusedPane(layout);
       if (!pane) return;
       const step = action === "next_tab" ? 1 : action === "previous_tab" ? -1 : 0;
+      let sent: boolean;
       if (step && pane.tabs.length > 1) {
         const view = pane.tabs[(pane.active + step + pane.tabs.length) % pane.tabs.length]!;
-        op({ type: "open", view, target: { kind: "pane", pane: pane.id } });
+        sent = op({ type: "open", view, target: { kind: "pane", pane: pane.id } });
       } else if (action === "close_tab") {
         const view = pane.tabs[pane.active];
-        op(view ? { type: "close", view } : { type: "close_pane", pane: pane.id });
+        sent = op(view ? { type: "close", view } : { type: "close_pane", pane: pane.id });
       } else if (action === "split_right") {
-        op({ type: "split", pane: pane.id, direction: "right" });
+        sent = op({ type: "split", pane: pane.id, direction: "right" });
       } else if (action === "next_pane" && panes.length > 1) {
         const next = panes[(panes.indexOf(pane) + 1) % panes.length]!;
-        op({ type: "focus", pane: next.id });
+        sent = op({ type: "focus", pane: next.id });
       } else {
         return;
       }
-      refocus();
+      refocus(sent);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -186,6 +197,11 @@ function GameSlot() {
   return <div className="game-slot" ref={ref} />;
 }
 
+/** Keyed by id, so a node's local state (a splitter preview) never passes to another. */
+function nodeId(node: Node) {
+  return `${node.kind}-${node.id}`;
+}
+
 function NodeView({ node, ctx }: { node: Node; ctx: Ctx }) {
   if (node.kind === "pane") return <PaneView pane={node} ctx={ctx} />;
   return <SplitView split={node} ctx={ctx} />;
@@ -197,8 +213,14 @@ type SplitNode = Extract<Node, { kind: "split" }>;
 function SplitView({ split, ctx }: { split: SplitNode; ctx: Ctx }) {
   const box = useRef<HTMLDivElement>(null);
   const [dragged, setDragged] = useState<number | null>(null);
-  // The core's ratio, once it has the dragged one, replaces it.
-  useEffect(() => setDragged(null), [split.ratio]);
+  // Ratios sent and not yet seen back. The core's ratio replaces the preview
+  // once it is the last one sent, or one this page never sent (another window).
+  const pending = useRef<number[]>([]);
+  useEffect(() => {
+    const at = pending.current.indexOf(split.ratio);
+    pending.current = at < 0 ? [] : pending.current.slice(at + 1);
+    if (!pending.current.length) setDragged(null);
+  }, [split.ratio]);
   const ratio = dragged ?? split.ratio;
   const right = split.direction === "right";
   /**
@@ -208,7 +230,9 @@ function SplitView({ split, ctx }: { split: SplitNode; ctx: Ctx }) {
   const resize = (r: number, from: number) => {
     const clamped = Math.round(Math.min(Math.max(r, RATIO_MIN), RATIO_MAX));
     if (clamped === from) return from === split.ratio ? null : from;
-    return ctx.op({ type: "resize", split: split.id, ratio: clamped }) ? clamped : null;
+    if (!ctx.op({ type: "resize", split: split.id, ratio: clamped })) return null;
+    pending.current.push(clamped);
+    return clamped;
   };
   const at = (e: PointerEvent) => {
     const r = box.current!.getBoundingClientRect();
@@ -231,7 +255,7 @@ function SplitView({ split, ctx }: { split: SplitNode; ctx: Ctx }) {
   return (
     <div ref={box} className={`split split-${split.direction}`}>
       <div className="split-child" style={{ flexGrow: ratio }}>
-        <NodeView node={split.first} ctx={ctx} />
+        <NodeView key={nodeId(split.first)} node={split.first} ctx={ctx} />
       </div>
       <div
         className="splitter"
@@ -258,7 +282,7 @@ function SplitView({ split, ctx }: { split: SplitNode; ctx: Ctx }) {
         onPointerCancel={() => setDragged(null)}
       />
       <div className="split-child" style={{ flexGrow: 1000 - ratio }}>
-        <NodeView node={split.second} ctx={ctx} />
+        <NodeView key={nodeId(split.second)} node={split.second} ctx={ctx} />
       </div>
     </div>
   );
@@ -345,8 +369,7 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
       : null;
     if (e.key === "Delete") {
       e.preventDefault();
-      op({ type: "close", view: pane.tabs[i]! });
-      ctx.refocus();
+      ctx.refocus(op({ type: "close", view: pane.tabs[i]! }));
       return;
     }
     if (to === null) return;
@@ -561,8 +584,7 @@ function ViewMenu({ ctx, pane }: { ctx: Ctx; pane: Pane }) {
   const { open, setOpen, ref: menu, onKeyDown } = useMenu();
   const pick = (op: LayoutOp) => {
     setOpen(false);
-    ctx.op(op);
-    ctx.refocus();
+    ctx.refocus(ctx.op(op));
   };
   return (
     <div className="pane-menu" ref={menu} onKeyDown={onKeyDown}>

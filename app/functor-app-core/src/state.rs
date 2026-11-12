@@ -294,8 +294,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             }
             let listed = state.files != files;
             state.files = files;
-            // Tabs of files that are gone close.
-            let pruned = prune(&mut state, &path, &mut commands);
+            // Tabs of files that are gone close; an empty listing is an
+            // unreadable directory (a project has its functor.json), not that.
+            let pruned = !state.files.is_empty() && prune(&mut state, &path, &mut commands);
             (listed || pruned, false)
         }
         // Task messages that change nothing answer with `Rejected`, not the state.
@@ -547,8 +548,8 @@ fn check_view(state: &AppState, project: &str, view: &View) -> Result<(), String
     }
 }
 
-/// Answers `GetFile`: the shell reads a well-formed path, others are
-/// answered with why not.
+/// Answers `GetFile`: the shell reads one of the active project's listed
+/// files, others are answered with why not.
 fn get_file(state: &AppState, path: String, commands: &mut Vec<Command>) {
     let Some(project) = state.active.clone() else {
         reject(
@@ -557,7 +558,7 @@ fn get_file(state: &AppState, path: String, commands: &mut Vec<Command>) {
         );
         return;
     };
-    match check_relative(&path) {
+    match check_view(state, &project, &View::File { path: path.clone() }) {
         Ok(()) => commands.push(Command::ReadFile {
             dir: project_dir(Path::new(&state.repo_root), &project),
             project,
@@ -2641,6 +2642,41 @@ mod tests {
                 text: None,
                 error: Some("\"/etc/passwd\" is not a path inside the project".to_string()),
             })]
+        );
+    }
+
+    #[test]
+    fn get_file_reads_only_listed_files() {
+        let (_, commands) = update(
+            state(),
+            client(ClientMsg::GetFile {
+                path: ".env".into(),
+            }),
+        );
+        assert_eq!(
+            commands,
+            vec![Command::Reply(ServerMsg::File {
+                project: "examples/a".to_string(),
+                path: ".env".to_string(),
+                text: None,
+                error: Some(".env is not one of examples/a's files".to_string()),
+            })]
+        );
+    }
+
+    #[test]
+    fn an_empty_listing_closes_no_file_tabs_and_open_tabs_still_show() {
+        let (s, _) = update(state(), open_file("game.fun", Target::Side));
+        let (s, _) = update(s, op(LayoutOp::Focus { pane: 1 }));
+        let before = s.layouts["examples/a"].clone();
+        // An unreadable directory lists nothing: the tab stays.
+        let (s, _) = update(s, files("examples/a", &[]));
+        assert_eq!(s.layouts["examples/a"], before);
+        // Showing the open tab needs no listing.
+        let (s, _) = update(s, open_file("game.fun", Target::Focused));
+        assert_eq!(
+            crate::print_layout(&s.layouts["examples/a"]),
+            "right 50% (#1[*game] | >#3[*file:game.fun])"
         );
     }
 

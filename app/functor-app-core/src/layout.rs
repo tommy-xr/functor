@@ -210,7 +210,10 @@ impl Layout {
         let before = self.clone();
         match op {
             LayoutOp::Open { view, target } => {
-                valid(&view)?;
+                // An open view is only shown, so a listing not in yet cannot refuse it.
+                if self.find(&view).is_none() {
+                    valid(&view)?;
+                }
                 self.open(view, target);
             }
             LayoutOp::Move { view, pane, index } => self.move_view(&view, pane, index),

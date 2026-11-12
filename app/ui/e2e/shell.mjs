@@ -355,6 +355,7 @@ async function gameViewGpu(browser) {
 
     // Moving the Game tab to another pane moves the one view: the same <img>,
     // never a second stream, and frames that keep changing.
+    await page.setViewportSize({ width: 1440, height: 900 });
     await img.evaluate((el) => (el.dataset.mark = "the one"));
     await page.getByRole("button", { name: "Split right" }).first().click();
     await expect(page.locator(".pane-box")).toHaveCount(2);
@@ -382,6 +383,7 @@ async function gameViewGpu(browser) {
     await page.waitForTimeout(500);
     expect(moved.equals(await img.screenshot()), "the frame changed after the move").toBe(false);
     expect(await page.getByTestId("game-view").count()).toBe(1);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/game-moved-1440.png` });
 
     // Stopping the session ends the stream.
     await page.getByRole("button", { name: "Stop game" }).click();

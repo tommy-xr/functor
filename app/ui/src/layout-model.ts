@@ -32,23 +32,13 @@ export function panesOf(layout: Layout | null | undefined): Pane[] {
   return out;
 }
 
-/** The pane `view` is open in, and its tab index. */
-export function findView(layout: Layout | null | undefined, view: View): { pane: Pane; index: number } | null {
-  const key = viewKey(view);
-  for (const pane of panesOf(layout)) {
-    const index = pane.tabs.findIndex((t) => viewKey(t) === key);
-    if (index >= 0) return { pane, index };
-  }
-  return null;
+/** The pane with the focus, if any. */
+export function focusedPane(layout: Layout | null | undefined): Pane | null {
+  return panesOf(layout).find((p) => p.id === layout?.focus) ?? null;
 }
 
 function basename(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
-}
-
-/** The pane with the focus, if any. */
-export function focusedPane(layout: Layout | null | undefined): Pane | null {
-  return panesOf(layout).find((p) => p.id === layout?.focus) ?? null;
 }
 
 function folder(path: string): string {

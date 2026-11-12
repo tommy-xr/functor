@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppState, ClientMsg, Item, ServerMsg } from "./generated/protocol";
 import { applyItem } from "./chat-model";
 
@@ -111,11 +111,12 @@ export function useAppSocket() {
     };
   }, []);
 
-  const send: Send = (msg) => {
+  // Stable, so effects and listeners that use it are not redone per message.
+  const send: Send = useCallback((msg) => {
     if (socket.current?.readyState !== WebSocket.OPEN) return false;
     socket.current.send(JSON.stringify(msg));
     return true;
-  };
+  }, []);
   const fetchTranscript = (task: number) => {
     if (requested.current.has(task) || !send({ type: "get_transcript", task })) return;
     requested.current.add(task);

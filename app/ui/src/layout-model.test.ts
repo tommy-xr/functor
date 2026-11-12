@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Layout, Task, View } from "./generated/protocol";
-import { findView, isTyping, keysFor, panesOf, shortcutFor, shortcutHelp, tabTitles, viewKey } from "./layout-model.ts";
+import { isTyping, keysFor, panesOf, shortcutFor, shortcutHelp, tabTitles, viewKey } from "./layout-model.ts";
 
 const file = (path: string): View => ({ kind: "file", path });
 
@@ -21,7 +21,7 @@ test("tab titles: a task's changes and page by its title", () => {
   assert.deepEqual([...titles.values()], ["Changes · Make the cube spin", "Task · Make the cube spin", "Changes · task 9"]);
 });
 
-test("panes in order, and finding a view", () => {
+test("panes in order", () => {
   const layout: Layout = {
     root: {
       kind: "split",
@@ -42,10 +42,6 @@ test("panes in order, and finding a view", () => {
   };
   assert.deepEqual(panesOf(layout).map((p) => p.id), [1, 2, 3]);
   assert.deepEqual(panesOf(null), []);
-  const hit = findView(layout, file("b.fun"));
-  assert.equal(hit?.pane.id, 2);
-  assert.equal(hit?.index, 1);
-  assert.equal(findView(layout, file("c.fun")), null);
 });
 
 const keys = (code: string, mods: Partial<Record<"altKey" | "ctrlKey" | "metaKey" | "shiftKey", boolean>> = {}) => ({

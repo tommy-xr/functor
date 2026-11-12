@@ -662,6 +662,12 @@ blockquote {
   margin-left: auto;
 }
 
+/* At tab height, so the bar does not grow while the Game tab shows. */
+.pane-game .switcher-compact select {
+  min-height: 30px;
+  font-size: 12.5px;
+}
+
 .pane-actions .icon-button {
   width: 32px;
   height: 30px;
