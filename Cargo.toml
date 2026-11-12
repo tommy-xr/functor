@@ -15,6 +15,20 @@ members = [
     "tools/functor-lang-lsp",
     "tools/functor-lang-wasm",
 ]
+# A bare `cargo build`/`cargo test` at the root skips the desktop app
+# (axum, sysinfo, the git-pinned agent crate); name it with `-p functor-app`.
+default-members = [
+    "cli",
+    "functor-prelude",
+    "functor-solid",
+    "functor-lang",
+    "runtime/functor-runtime-common",
+    "runtime/functor-runtime-desktop",
+    "runtime/functor-runtime-web",
+    "tools/functor-docgen",
+    "tools/functor-lang-lsp",
+    "tools/functor-lang-wasm",
+]
 
 # Debug info dominated target/ size (it was repeatedly filling the disk during
 # development). Our own crates emit line-tables-only debug info (`debug = 1`) —
