@@ -89,7 +89,7 @@ produces a pure `Frame`, so `/scene` is real data with no rendering). This is th
 runtime expression of the LLM-native principle: drive and observe a game with no
 GPU window. Limitations vs. windowed:
 
-- `/capture` is unavailable (no pixels to read back) and returns `503`.
+- `/capture` and `/stream` are unavailable (no pixels to read back) and return `503`.
 - Audio isn't played, and `Audio.playThen` completion messages are **not**
   delivered — don't gate game logic on audio completion when running headless.
 - `--capture-frame` is rejected (it needs GL).
@@ -101,7 +101,10 @@ created but never shown, never takes focus, and never captures the cursor, so a
 run doesn't steal input from whoever is at the machine. A hidden window keeps a
 valid GL context and framebuffer, so rendering, `/capture`, and `--capture-frame`
 work unchanged (audio too). `--capture-frame` implies `--hidden` — a scripted
-screenshot run has no reason to grab your mouse.
+screenshot run has no reason to grab your mouse. A hidden live session paces
+itself to the primary display's refresh rate (or `--display-hz`, so that
+simulated rate also runs in real time; 60 Hz without a display); `--fixed-time` and `--input-script` runs keep a fixed
+16 ms sleep per frame, and `--capture-frame` runs do not sleep.
 
 ```sh
 ./target/debug/functor -d examples/hello run native --debug-port 8077 --hidden
@@ -114,6 +117,7 @@ screenshot run has no reason to grab your mouse.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
+| `GET /stream` | live JPEG frames on one response until the client closes, for an `<img>` (`multipart/x-mixed-replace`) or `fetch` (`?octet=1`) — see below (protocol v36) |
 | `GET /state` | runtime state JSON: `frame` (the recorded sim steps behind the state shown — 0 before the first, one more per step, the target after `POST /rewind`, which takes this number; stays 0 under `--fixed-time`, whose zero-dt ticks record nothing; protocol v28), `rendered_frames` (frames the shell rendered and submitted since launch — one per buffer swap on desktop, one per `xrEndFrame` with layers on Quest, 0 in `--headless`; it advances while the clock is paused or pinned, so it is the "is it rendering" check; protocol v29), `tts`, `model_revision` + `pending_net` (protocol v10 — see below), `http` (`{pending, completed, failed}`: `Effect.httpGet`/`httpPost` requests since launch — `pending` went to the transport and has not reached the game, `completed` came back with any HTTP status, `failed` came back as `Net.Failure`; a `pending` that never falls is a request that never answers; protocol v31), combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest, each with `samples`: the MSAA samples per pixel it renders with — protocol v27), `input` (keyboard/mouse held + pressed/released sets and optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text), `instance_uploads` (`{count, bytes}`: the last rendered frame's `Scene.instanced` instance-buffer uploads — 0 after the first frame for a retained list; protocol v17), `terrain` (`{patches, vertices}`: the last rendered frame's terrain draws, summed over its eye draws — the terrain vertex budget without a GPU profiler; protocol v19), `sim_thread` (where the game logic runs and its scheduling class, e.g. `"pipelined: user-interactive"`; protocol v16), `config` / `settings` (the game's launch-time `config` value and its latest `settings(model)`, e.g. `{"xr":{"refresh_rate":90}}` / `{"xr":{"foveation":"high"}}`; each omitted when the game defines none; reported on desktop and Quest; protocol v18), `passthrough` (`{mode, warning?}`: how the shell shows the real world behind `Frame.withPassthrough` frames — `composited` on a headset showing its camera feed, `emulated` on desktop's stand-in room, `paused` by `settings`, `unavailable` with the reason; omitted unless `config` requests `Xr.passthrough`; protocol v20), `skinned` (`{draws, pose_evals}`: the last rendered frame's skinned mesh draw calls and pose evaluations, summed over its shadow and eye passes; protocol v22), `cull` (`{tested, culled}`: the last rendered frame's frustum tests and the draws they skipped, summed over its shadow, render-target and eye passes; a hardware-instanced node counts once; `FUNCTOR_CULL=0` turns culling off), `cells` (`{walks, visible, hidden, graphs}`: the last rendered frame's `Scene.cells` portal walks — one per eye or render-target pass per node — the cells they reached, the `Scene.inCells` subtrees they hid, and per walk in draw order (the first 256) `{visible, portals, cut, outside, everything}`: cells reached, portal crossings, crossings cut by `Cells.withMinPortal`, whether it started outside every cell, and whether it drew everything), `frame_stats` (`{frames, spikes, spike_threshold_us, stages}`: p50/p99/max µs per stage over the frame ring — see [Frame telemetry](#frame-telemetry-get-frames-and-get-spikes-protocol-v30); omitted before the first frame; protocol v30), `stages` (`{frames, sim_ms, render_ms, sim_wait_ms, frame_ms}`: the shell's mean stage cost and wall time between rendered frames over its last completed 300-frame window; omitted until one completes and in `--headless`; protocol v22), `xr` (`{depth: {mode, width, height, frames, warning?}, mesh: {chunks, triangles, fused_frames, voxel_m, colliders, floor_m?}}`: the environment depth behind `Xr.scene` — `device` when a headset depth image arrived this frame, `waiting` before the first, `emulated` for the desktop/web stand-in room (`Frame.withStandInRoom`) rendered as depth, `unavailable` with the reason; `frames` counts images acquired or stand-in passes rendered; `mesh` is the room fused from that depth (`Frame.withFusedRoom`): chunks with surface, their triangles, depth frames fused, the voxel edge in metres, and — for a `Physics.fusedRoom` body — its `colliders` (chunk meshes plus the floor plane) and `floor_m` (the floor plane's height, absent until the floor is seen); omitted unless `config` requests `Xr.scene`; protocol v25), and on Quest `display_refresh_rate` (`current`/`requested`/`available` Hz; protocol v15, omitted on desktop), `battery` (`{level_pct, status, plugged, current_now_ma, current_avg_ma, charge_uah, voltage_mv, temp_c, sampled_ms}` from Android's `BatteryManager`, sampled at most once per second; a field the device doesn't report is `null`; protocol v21, omitted on desktop), and `build` (`pr | <sha7>` for a CI-built APK, `dev` for a local one; protocol v23); on desktop `audio` (`{played, dropped, recent}`: one-shot sounds since launch — `played` was handed to the output device, `dropped` didn't (no device, `--headless`, a missing or undecodable file) — and the last 8 sound paths; a seek or rewind restores frames without re-running their effects; omitted on Quest), and `haptics` (`{sent, dropped, recent}`: `Effect.haptic` pulses since launch — `sent` were handed to the controller (counted without one on desktop and `--headless`), `dropped` lost their frame's per-hand arbitration (strongest wins, ties to the longer) or were refused (an unfocused headset session) — and the last 8 sent as `{hand, amplitude, seconds, frame}`; a fork, ghost, seek, rewind or hot reload never adds one; desktop and Quest; protocol v34) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /frames` | the shell's last `?last=N` frames (default the whole 600-frame ring) as `{stats, frames}` — see [Frame telemetry](#frame-telemetry-get-frames-and-get-spikes-protocol-v30) (protocol v30) |
@@ -645,6 +649,55 @@ An invalid view (eye equal to target, looking straight up or down, a field of
 view outside 0–180°) is a 400 and shows the authored view again. So is
 `--headless` (nothing is rendered) and the headset, whose view follows the
 wearer.
+
+### `GET /stream` — live frames (protocol v36)
+
+One long response carrying a JPEG of each rendered frame, for showing a hidden
+session in a page. The render loop only reads the framebuffer back (at the
+same point as `/capture`), and only for a frame a client asked for;
+flipping, scaling and encoding run on the connection's own thread. With no
+client connected the stream costs nothing per frame. Desktop only: the
+headset and `--headless` answer `503`.
+
+| Parameter | Meaning |
+| --- | --- |
+| `w`, `h` | fit frames within this size, keeping the aspect ratio; frames are scaled down, never up (default: the framebuffer's size) |
+| `q` | JPEG quality, 1–100 (default 80; below 90 chroma is subsampled 4:2:0) |
+| `fps` | at most this many frames per second, at least 1 (default: one per rendered frame the client keeps up with) |
+| `octet` | `1` serves the same bytes as `application/octet-stream` |
+
+A malformed value is a `400`; unknown parameters are ignored, so an `<img>`
+can reconnect with a cache-buster (`&t=…`). A slow client skips frames
+rather than queueing them: uncapped, the next frame is read back while the
+last one encodes, and one that waited more than 100 ms is skipped. A closed
+connection ends the stream and frees its thread within a frame or two of the
+next part (within a second while no frame renders).
+
+By default the response is `multipart/x-mixed-replace; boundary=functor-frame`,
+which an `<img src=…/stream>` shows natively. WKWebView's `fetch` rejects that
+content type, so `?octet=1` sends the identical body as
+`application/octet-stream` for a client that parses the parts itself. Each
+part is:
+
+```text
+--functor-frame
+Content-Type: image/jpeg
+Content-Length: 98802
+X-Rendered-Frame: 1234
+X-Capture-Ms: 1762890000123.4
+
+<JPEG bytes>
+```
+
+followed by `\r\n`. `X-Rendered-Frame` is the `rendered_frames` that `GET
+/state` reports when answered on the frame the image shows; `X-Capture-Ms` is
+the readback's Unix time in milliseconds, so a client on the same machine
+measures latency as `Date.now() - X-Capture-Ms`. Other requests are served
+while a stream is open.
+
+```sh
+curl -sN "$H/stream?w=1280&fps=30" -o /dev/null   # or <img src="$H/stream?w=1280">
+```
 
 ### `GET /input-log` — record a session's input (protocol v33)
 

@@ -28,6 +28,8 @@ functor-solid = { path = "../../functor-solid" }
 egui = "0.34"
 egui_glow = { version = "0.34", default-features = false }
 image = "0.25.1"
+# `GET /stream`'s JPEG frames: pure Rust, about twice as fast as `image`'s encoder.
+jpeg-encoder = "0.7.1"
 once_cell = "1.19.0"
 # Rigid-body physics (docs/physics.md). Default features only — NO
 # `enhanced-determinism` (we need local single-binary determinism, which rapier
