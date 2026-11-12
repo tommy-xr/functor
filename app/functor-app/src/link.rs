@@ -214,7 +214,10 @@ impl Hub {
 
     fn advertise(&self, addr: SocketAddr) -> Result<(), mdns_sd::Error> {
         let daemon = mdns_sd::ServiceDaemon::new()?;
-        let host = format!("{}.local.", host_label(&self.0.name));
+        // A host name of the advert's own, never the machine's: the system's
+        // responder owns `<machine>.local`, and a second claim to it is a
+        // conflict the OS answers by renaming the computer.
+        let host = format!("functor-{}.local.", hex(&self.0.id));
         let props: HashMap<String, String> = [
             ("v".to_string(), VERSION.to_string()),
             ("id".to_string(), hex(&self.0.id)),
@@ -618,19 +621,6 @@ fn desktop_name() -> String {
     match name.is_empty() {
         true => "Functor desktop".to_string(),
         false => name,
-    }
-}
-
-/// A DNS label for `name`: `Bryan's Mac` → `Bryan-s-Mac`.
-fn host_label(name: &str) -> String {
-    let label: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .take(63)
-        .collect();
-    match label.trim_matches('-') {
-        "" => "functor".to_string(),
-        l => l.to_string(),
     }
 }
 
@@ -1150,11 +1140,5 @@ mod tests {
         let v4: IpAddr = "10.0.0.2".parse().unwrap();
         let mapped: IpAddr = "::ffff:10.0.0.2".parse().unwrap();
         assert_eq!(key(mapped), v4);
-    }
-
-    #[test]
-    fn host_labels_are_dns_safe() {
-        assert_eq!(host_label("Bryan's Mac"), "Bryan-s-Mac");
-        assert_eq!(host_label("!!"), "functor");
     }
 }
