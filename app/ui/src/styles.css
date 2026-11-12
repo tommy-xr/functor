@@ -2473,6 +2473,7 @@ blockquote {
 }
 
 .task-row {
+  position: relative;
   border-radius: var(--radius-m);
 }
 
@@ -2496,7 +2497,7 @@ blockquote {
 .task-main {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 6px 4px 6px 8px;
+  padding: 6px 8px;
   border: 0;
   border-radius: var(--radius-m);
   background: transparent;
@@ -2539,16 +2540,23 @@ blockquote {
   margin-left: auto;
 }
 
+/* Over the row's time while hovered or focused, so the title keeps the width. */
 .task-actions {
-  flex: none;
+  position: absolute;
+  top: 2px;
+  right: 2px;
   display: flex;
-  padding: 2px 2px 0 0;
+  border-radius: var(--radius-m);
+  background: var(--surface-3);
   opacity: 0;
 }
 
-.task-row:hover .task-actions,
-.task-row:focus-within .task-actions,
 .task-row-selected .task-actions {
+  background: var(--selected);
+}
+
+.task-row:hover .task-actions,
+.task-row:focus-within .task-actions {
   opacity: 1;
 }
 
@@ -2753,6 +2761,17 @@ blockquote {
   gap: 8px;
 }
 
+.task-change-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.task-change-actions .button-primary {
+  flex: none;
+}
+
 .task-change .counts {
   margin-left: 4px;
 }
@@ -2784,6 +2803,7 @@ blockquote {
 }
 
 .task-usage {
+  align-self: flex-start;
   border-collapse: collapse;
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;

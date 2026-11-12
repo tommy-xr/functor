@@ -1,0 +1,9 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-label-1", "model": "claude-model"}}
+{"ms": 100, "event": {"type": "tool_use", "name": "Read", "input": {"file_path": "game.fun"}}}
+{"ms": 150, "event": {"type": "tool_result", "content": "1\t// counter — the interactive-UI hello world (docs/ui-interaction.md U3)."}}
+{"ms": 200, "event": {"type": "tool_use", "name": "Edit", "input": {"file_path": "game.fun", "old_string": "// counter — the interactive-UI hello world", "new_string": "// counter — the labelled hello world"}}}
+{"ms": 250, "edit": {"path": "game.fun", "old": "// counter — the interactive-UI hello world", "new": "// counter — the labelled hello world"}}
+{"ms": 300, "event": {"type": "tool_result", "content": "The file has been updated."}}
+{"ms": 350, "event": {"type": "text", "text": "The counter's header now calls it the labelled hello world."}}
+{"ms": 400, "event": {"type": "usage", "input": 4100, "output": 52}}
+{"ms": 450, "event": {"type": "finished", "ok": true, "summary": "Relabelled the counter."}}

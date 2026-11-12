@@ -296,12 +296,12 @@ function ChangeSection({
         ))}
         {task.change.more > 0 && <li className="hint">and {plural(task.change.more, "more file")}</li>}
       </ul>
-      <div className="review-buttons">
+      <div className="task-change-actions">
         <button type="button" className="button" onClick={onOpenChanges}>
           Open changes
         </button>
+        {task.status.kind === "ready_for_review" && <ReviewActions task={task} send={send} online={online} notice={notice} />}
       </div>
-      {task.status.kind === "ready_for_review" && <ReviewActions task={task} send={send} online={online} notice={notice} />}
     </div>
   );
 }

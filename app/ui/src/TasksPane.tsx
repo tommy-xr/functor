@@ -250,15 +250,15 @@ function TaskRow({
           >
             <span className="task-row-top">
               <span className="task-title">{title}</span>
-              <TaskBadge status={task.status} testid="task-row-status" />
-            </span>
-            <span className="task-row-sub">
-              <span className="task-second">{second}</span>
               {when && (
                 <time className="task-when" dateTime={new Date(task.updated_at!).toISOString()}>
                   {when}
                 </time>
               )}
+            </span>
+            <span className="task-row-sub">
+              <TaskBadge status={task.status} testid="task-row-status" />
+              <span className="task-second">{second}</span>
             </span>
           </button>
         )}
