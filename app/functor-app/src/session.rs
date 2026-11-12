@@ -1,8 +1,8 @@
 //! Runs the core's commands other than replies: one `functor run native`
 //! child at a time, its output read for the debug server's address, `/state`
-//! polled, input posted; agent runs (`agent::Runner`); saving tasks and
-//! layouts; project file listings and reads; and tasks' changes
-//! (`changes::Git`).
+//! polled, input posted; agent runs (`agent::Runner`); saving tasks,
+//! layouts and recent projects; project file listings and reads; opening
+//! folders (`folders`); and tasks' changes (`changes::Git`).
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
@@ -57,10 +57,13 @@ pub struct Driver {
     /// Where the next task id reservation starts: above every id loaded
     /// or reserved here.
     next_task: u64,
-    /// The repo's git, when changes are tracked.
+    /// The open workspace's git, when changes are tracked.
     git: Option<Arc<Git>>,
     /// Layouts not written yet, by project dir; flushed on drop too.
     layouts: Arc<Mutex<HashMap<PathBuf, Layout>>>,
+    /// Workspaces read for `Event::Opened`, by root, until the core takes
+    /// one (`Command::UseWorkspace`): its git and highest task id.
+    opened: Arc<Mutex<HashMap<PathBuf, (Option<Git>, u64)>>>,
 }
 
 /// Writes and forgets every pending layout.
@@ -91,25 +94,31 @@ struct Live {
 }
 
 impl Driver {
-    /// `highest` is the highest task id in `home` (`store::load`).
+    /// With no workspace yet: `Command::UseWorkspace` brings its git and
+    /// task ids.
     pub fn new(
         functor: PathBuf,
         agents: Agents,
         home: PathBuf,
-        highest: u64,
-        git: Option<Arc<Git>>,
         events: UnboundedSender<Event>,
     ) -> Self {
         Self {
-            runs: Runner::new(functor.clone(), agents, git.clone(), events.clone()),
+            runs: Runner::new(functor.clone(), agents, None, events.clone()),
             functor,
             events,
             live: None,
             home,
-            next_task: highest + 1,
-            git,
+            next_task: 1,
+            git: None,
             layouts: Arc::default(),
+            opened: Arc::default(),
         }
+    }
+
+    /// Reads the folder `path` names for the core (blocking), keeping its
+    /// git for `Command::UseWorkspace`; with `track`, changes are tracked.
+    pub fn open(&self, path: String, track: bool) -> Event {
+        open_folder(&self.home, &self.opened, path, track)
     }
 
     /// A client's new task as the core takes it: with an id reserved in
@@ -154,8 +163,37 @@ impl Driver {
             }
             Command::ListFiles { path, dir } => {
                 let files = read_project_files(&dir);
-                let _ = self.events.send(Event::Files { path, files });
+                let _ = self.events.send(Event::Files { path, dir, files });
             }
+            Command::OpenFolder { path } => {
+                let (home, opened, events) =
+                    (self.home.clone(), self.opened.clone(), self.events.clone());
+                tokio::task::spawn_blocking(move || {
+                    let _ = events.send(open_folder(&home, &opened, path, true));
+                });
+            }
+            Command::UseWorkspace { root } => {
+                let Some((git, highest)) = self.opened.lock().unwrap().remove(&root) else {
+                    return;
+                };
+                self.git = git.map(Arc::new);
+                self.runs.set_git(self.git.clone());
+                self.next_task = self.next_task.max(highest + 1);
+            }
+            Command::PickFolder { from } => {
+                let events = self.events.clone();
+                tokio::spawn(async move {
+                    let path = crate::folders::pick(from).await;
+                    let _ = events.send(Event::Picked { path });
+                });
+            }
+            Command::SaveRecents { recents } => {
+                if let Err(e) = crate::store::save_recents(&self.home, &recents) {
+                    eprintln!("functor-app: cannot save the recent projects: {e}");
+                }
+            }
+            // Without a client to answer there is no one to list for.
+            Command::ListDirs { .. } => {}
             Command::StartRun(spec) => self.runs.start(*spec),
             Command::StopRun { task, run } => self.runs.stop(task, run).await,
             Command::SaveTask { dir, task } => {
@@ -229,6 +267,23 @@ impl Driver {
                     more: 0,
                     error: Some(error),
                 },
+            };
+            let _ = reply.try_send(serde_json::to_string(&msg).expect("ServerMsg serializes"));
+        });
+    }
+
+    /// Lists directories completing `path` in the background and sends them
+    /// to `reply` as `ServerMsg::Dirs`, with why `path` cannot be opened.
+    pub fn list_dirs(&self, path: String, reply: Option<Sender<String>>) {
+        let Some(reply) = reply else {
+            return;
+        };
+        tokio::task::spawn_blocking(move || {
+            let home = std::env::home_dir();
+            let msg = ServerMsg::Dirs {
+                dirs: crate::folders::suggest(&path, home.as_deref()),
+                error: crate::folders::resolve(&path, home.as_deref()).err(),
+                path,
             };
             let _ = reply.try_send(serde_json::to_string(&msg).expect("ServerMsg serializes"));
         });
@@ -337,6 +392,28 @@ impl Driver {
             let _ = live.stop.send(());
             let _ = live.task.await;
         }
+    }
+}
+
+/// `Event::Opened` for the folder `path` names, keeping what the core does
+/// not hold (its git, its highest task id) in `opened` by root.
+fn open_folder(
+    home: &Path,
+    opened: &Mutex<HashMap<PathBuf, (Option<Git>, u64)>>,
+    path: String,
+    track: bool,
+) -> Event {
+    let result = crate::folders::load(&path, home, track).map(|loaded| {
+        let root = PathBuf::from(&loaded.state.repo_root);
+        opened
+            .lock()
+            .unwrap()
+            .insert(root, (loaded.git, loaded.highest));
+        Box::new(loaded.state)
+    });
+    Event::Opened {
+        folder: path,
+        result,
     }
 }
 

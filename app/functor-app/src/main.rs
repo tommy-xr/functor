@@ -3,6 +3,7 @@
 mod agent;
 mod changes;
 mod files;
+mod folders;
 mod server;
 mod session;
 mod store;
@@ -10,10 +11,9 @@ mod store;
 mod window;
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -162,23 +162,12 @@ async fn app(
     token: server::Token,
     window: Option<WindowLink>,
 ) -> std::io::Result<ExitCode> {
-    let start = std::fs::canonicalize(args.dir.unwrap_or_else(|| PathBuf::from(".")))?;
-    let mut state = functor_app_core::discover(&start);
-    state.no_gpu = args.no_gpu;
     let Some(home) = store::home(std::env::var_os("FUNCTOR_APP_HOME"), std::env::home_dir()) else {
         eprintln!("functor-app: no home directory; set FUNCTOR_APP_HOME");
         return Ok(ExitCode::from(2));
     };
     if let Err(e) = store::make_private(&home) {
         eprintln!("functor-app: cannot make {} private: {e}", home.display());
-    }
-    let (tasks, highest) = store::load(&home, &state);
-    state = update(state, Event::TasksLoaded { tasks }).0;
-    let layouts = store::load_layouts(&home, &state);
-    state = update(state, Event::LayoutsLoaded { layouts }).0;
-    if args.print && !args.start_session {
-        print!("{}", print(&state));
-        return Ok(ExitCode::SUCCESS);
     }
     let functor = session::functor_bin(
         args.functor,
@@ -190,16 +179,43 @@ async fn app(
         Some(fixture) => Agents::Fake(std::path::absolute(fixture)?),
         None => Agents::Real,
     };
+    let mut state = AppState::none();
+    state.no_gpu = args.no_gpu;
     state.harnesses = agents.available();
-    state.harness_choice = store::load_harnesses(&home, &state);
-    // `--print` changes no task, so it measures none.
-    let git = match args.print {
-        true => None,
-        false => changes::Git::open(Path::new(&state.repo_root), &home).map(Arc::new),
+    state.native_picker = window.is_some();
+    state.recents = store::load_recents(&home);
+    let dir = args.dir.map(std::fs::canonicalize).transpose()?;
+    let cwd = match dir {
+        Some(_) => None,
+        None => std::env::current_dir()
+            .ok()
+            .filter(|cwd| folders::cwd_holds_project(cwd)),
     };
-    state.tracks_changes = git.is_some();
     let (tx, events) = mpsc::unbounded_channel();
-    let driver = Driver::new(functor, agents, home, highest, git, tx);
+    let mut driver = Driver::new(functor, agents, home, tx);
+    if let Some(folder) = functor_app_core::folders::startup(dir, cwd, &state.recents) {
+        // `--print` changes no task, so it measures none.
+        let opened = driver.open(folder.to_string_lossy().into_owned(), !args.print);
+        if let Event::Opened {
+            folder,
+            result: Err(e),
+        } = &opened
+        {
+            eprintln!("functor-app: cannot open {folder}: {e}");
+        }
+        let commands;
+        (state, commands) = update(state, opened);
+        for command in commands {
+            // `--print` writes nothing to the store.
+            if !(args.print && matches!(command, Command::SaveRecents { .. })) {
+                driver.run(command).await;
+            }
+        }
+    }
+    if args.print && !args.start_session {
+        print!("{}", print(&state));
+        return Ok(ExitCode::SUCCESS);
+    }
     if args.print {
         return print_session(state, driver, events).await;
     }
@@ -222,7 +238,6 @@ async fn app(
         };
         return run_task(state, driver, events, task).await;
     }
-    state.git = server::git_info(Path::new(&state.repo_root));
     let ui = match args.ui_dir {
         Some(dir) if !dir.join("index.html").is_file() => {
             eprintln!("functor-app: no index.html in --ui-dir {}", dir.display());

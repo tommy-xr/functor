@@ -255,6 +255,10 @@ async fn run(
                         baseline,
                         from.and_then(|id| clients.get(&id).cloned()),
                     ),
+                    // So are directory suggestions.
+                    Command::ListDirs { path } => {
+                        driver.list_dirs(path, from.and_then(|id| clients.get(&id).cloned()))
+                    }
                     // So is a file's text.
                     Command::ReadFile { project, path, dir } => driver.read_file(
                         project,
