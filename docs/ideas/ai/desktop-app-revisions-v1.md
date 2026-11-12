@@ -396,6 +396,60 @@ presentation: the buildings a change touched light up and the user steps
 between them. In VR it is far simpler than on the desktop — the changed
 modules and their neighbours at table scale.
 
+## Decisions, sixth round — seeing the agents
+
+### D34 — agents are characters you can read at a glance
+
+Each running agent is drawn as a small character, so the state of the work is
+visible without reading a transcript. The same four signals appear on the
+desktop and in the headset; only the staging differs.
+
+**What a character shows**
+
+- **Who it is.** One character per task. Claude and Codex differ in silhouette
+  and colour, not only in a label. A subagent is a smaller figure tied to the
+  agent that started it.
+- **What it is doing: a thought bubble.** An icon for the kind of call plus one
+  short line ("reading `weapons.fun`", "running tests"). The kinds are a small
+  fixed set: thinking, files, shell, network, game (our own game tools),
+  agents, skills, asking you. A shell command is sorted by what it touches, so
+  `cat` is files and `curl` is network. Calls running together show a count. A
+  refusal or error turns the bubble red, and the mark stays until the user's
+  next message.
+- **How much room it has left: a bar.** How full the context window is, in the
+  manner of a health bar: amber at 70%, red at 90%.
+- **Its stance.** Thinking, working, waiting for you, done, failed. "Waiting
+  for you" must be the easiest to spot, from across the window or the room.
+
+**Desktop.** The character is a compact card: avatar, bubble, bar. Cards sit in
+the Tasks pane and the running task's card rides in the chat dock, so it is in
+view whichever layout is open. Selecting a card opens that task. No animation
+runs while nothing is happening.
+
+**Headset.** The same characters stand in the room at table scale, beside the
+panel (D28) and never inside the game's scene: the runtime draws them as an
+overlay, as it does the panel. The bubble and bar face the user. Looking at a
+character and pressing opens its task in the panel; holding to talk while
+looking at it steers that task (D29). The wrist light is the same stance signal
+when the room view is closed.
+
+**One scene, two stagings.** The characters are a Functor scene fed agent
+events as messages, so the desktop card strip and the headset room are two
+cameras on one model, and the engine is exercised on something real. The first
+version is flat cards; places the characters walk to (a bench for files, a
+terminal, the game) come only once the event feed is proven.
+
+**What it needs.** The app already has every tool call per task and which
+engine runs it. Still missing from the event stream: which agent a subagent's
+calls belong to, and how full the context is (only running token totals arrive
+today).
+
+The vocabulary — call kinds, the context thresholds, clock marks for long
+calls, a sticky error mark — follows
+[lot-map](https://github.com/alexeyw/lot-map), which draws one agent as a map
+of places. Here there are several agents at once, so the agents are the
+characters and the kinds are what appears over their heads.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
