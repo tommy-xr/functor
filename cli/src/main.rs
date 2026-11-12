@@ -426,8 +426,11 @@ async fn main() -> tokio::io::Result<()> {
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let args = match Args::try_parse_from(&argv) {
         Ok(args) => args,
+        // A nested command missing its own subcommand (`functor inspect`)
+        // does not parse with `app` added either: its own help stands.
         Err(e) if no_subcommand(&e) && commands::app::installed() => {
-            Args::parse_from(argv.into_iter().chain(["app".into()]))
+            Args::try_parse_from(argv.into_iter().chain(["app".into()]))
+                .unwrap_or_else(|_| e.exit())
         }
         Err(e) => e.exit(),
     };

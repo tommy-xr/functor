@@ -53,3 +53,15 @@ fn a_bad_flag_is_still_an_error_with_the_app_installed() {
     assert!(!out.status.success());
     assert!(out.stdout.is_empty());
 }
+
+#[test]
+fn a_command_missing_its_own_subcommand_keeps_its_help() {
+    let out = functor()
+        .env("FUNCTOR_APP_BIN", "/bin/echo")
+        .arg("inspect")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Usage: functor inspect"));
+}
