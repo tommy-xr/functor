@@ -3820,7 +3820,7 @@ mod tests {
         let (next, _) = update(s.clone(), create("a/b", ""));
         assert!(matches!(step(&next), Step::Failed { reason, .. } if reason.starts_with("'/'")));
         let mut unknown = s.clone();
-        unknown.templates.truncate(0);
+        unknown.templates.clear();
         unknown.templates_error = Some("functor cannot list templates".into());
         let (next, _) = update(unknown, create("ok", ""));
         assert_eq!(step(&next), &failed("functor cannot list templates"));
