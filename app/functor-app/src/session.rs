@@ -61,10 +61,12 @@ pub struct Driver {
     git: Option<Arc<Git>>,
     /// Layouts not written yet, by project dir; flushed on drop too.
     layouts: Arc<Mutex<HashMap<PathBuf, Layout>>>,
-    /// Workspaces read for `Event::Opened`, by root, until the core takes
-    /// one (`Command::UseWorkspace`): its git and highest task id.
-    opened: Arc<Mutex<HashMap<PathBuf, (Option<Git>, u64)>>>,
+    opened: Arc<Opened>,
 }
+
+/// Workspaces read for `Event::Opened`, by root, until the core takes one
+/// (`Command::UseWorkspace`): its git and highest task id.
+type Opened = Mutex<HashMap<PathBuf, (Option<Git>, u64)>>;
 
 /// Writes and forgets every pending layout.
 fn write_layouts(home: &Path, pending: &Mutex<HashMap<PathBuf, Layout>>) {
@@ -397,12 +399,7 @@ impl Driver {
 
 /// `Event::Opened` for the folder `path` names, keeping what the core does
 /// not hold (its git, its highest task id) in `opened` by root.
-fn open_folder(
-    home: &Path,
-    opened: &Mutex<HashMap<PathBuf, (Option<Git>, u64)>>,
-    path: String,
-    track: bool,
-) -> Event {
+fn open_folder(home: &Path, opened: &Opened, path: String, track: bool) -> Event {
     let result = crate::folders::load(&path, home, track).map(|loaded| {
         let root = PathBuf::from(&loaded.state.repo_root);
         opened

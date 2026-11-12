@@ -1,5 +1,7 @@
 //! Opening folders over the WebSocket, directory suggestions, and the
-//! recent projects across restarts, in temp trees with a temp home.
+//! recent projects across restarts, in temp trees with a temp home. Paths
+//! are spelled as on Unix.
+#![cfg(unix)]
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};

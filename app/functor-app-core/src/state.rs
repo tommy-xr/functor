@@ -586,7 +586,11 @@ fn remember_active(state: &mut AppState, commands: &mut Vec<Command>) {
     let Some(active) = &state.active else {
         return;
     };
-    let dir = project_dir(Path::new(&state.repo_root), active);
+    // Rebuilt from its parts, so one directory has one spelling: on Windows
+    // `games/a` under `C:\r` joins as `C:\r\games/a`.
+    let dir: PathBuf = project_dir(Path::new(&state.repo_root), active)
+        .components()
+        .collect();
     if remember(&mut state.recents, &dir.to_string_lossy()) {
         save_recents(state, commands);
     }
@@ -1367,11 +1371,20 @@ mod tests {
         }
     }
 
+    /// `path` as this OS spells it (`\repo\examples\b` on Windows).
+    fn native(path: &str) -> String {
+        Path::new(path)
+            .components()
+            .collect::<PathBuf>()
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn recents_b() -> Command {
         Command::SaveRecents {
             recents: vec![Recent {
                 name: "b".into(),
-                path: "/repo/examples/b".into(),
+                path: native("/repo/examples/b"),
                 missing: false,
             }],
         }
@@ -1403,7 +1416,7 @@ mod tests {
         assert_eq!(next.active.as_deref(), Some("examples/b"));
         assert!(next.files.is_empty());
         // It is the most recent project now.
-        assert_eq!(next.recents[0].path, "/repo/examples/b");
+        assert_eq!(next.recents[0].path, native("/repo/examples/b"));
         assert_eq!(commands, vec![list_b(), recents_b(), broadcast(&next)]);
     }
 
@@ -3094,12 +3107,6 @@ mod tests {
         new
     }
 
-    fn broadcast_rejected(reason: &str) -> Command {
-        Command::Broadcast(ServerMsg::Rejected {
-            reason: reason.to_string(),
-        })
-    }
-
     #[test]
     fn opening_a_folder_asks_the_shell_to_read_it() {
         let (next, commands) = update(state(), open("/other"));
@@ -3176,7 +3183,7 @@ mod tests {
             recents: vec![
                 Recent {
                     name: "other".into(),
-                    path: "/other".into(),
+                    path: native("/other"),
                     missing: false,
                 },
                 before.recents[0].clone(),

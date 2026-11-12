@@ -147,7 +147,8 @@ pub fn load(path: &str, home: &Path, track: bool) -> Result<Loaded, String> {
     })
 }
 
-#[cfg(test)]
+// Spelled with `/`, as on Unix; the window (and its picker) is macOS-only.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -199,7 +200,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_symlinked_folder_resolves_to_its_target() {
         let (_tmp, root) = tree(&["real/project/"]);
@@ -211,7 +211,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_unreadable_folder_is_refused() {
         use std::os::unix::fs::PermissionsExt;
