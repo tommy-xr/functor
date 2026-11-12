@@ -178,20 +178,23 @@ export function ProjectPicker(props: FolderProps) {
           disabled={!online}
           onClick={() => menu.setOpen((o) => !o)}
         >
-          <span className="picker-name mono">{shown}</span>
+          {/* A project's path in mono; "No folder open" and the like muted, not mistaken for one. */}
+          <span className={active ? "picker-name mono" : "picker-name picker-none"}>{shown}</span>
           <Icon name="chevron" />
         </button>
         {menu.open && (
           <div className="menu" role="menu" aria-label="Projects" onClick={close}>
             {projects.length > 0 && (
               <div role="group" aria-label={`Projects in this ${where}`}>
-                <p className="menu-help">{`${projects.length === 1 ? "The only project" : `${projects.length} projects`} in this ${where}`}</p>
+                {/* Visible group labels; the groups' aria-labels name them for screen readers. */}
+                <p className="menu-help" aria-hidden="true">{`${projects.length === 1 ? "The only project" : `${projects.length} projects`} in this ${where}`}</p>
                 {projects.map((p) => (
                   <button
                     key={p.path}
                     type="button"
                     role="menuitem"
                     aria-current={p.path === state?.active || undefined}
+                    disabled={!online}
                     onClick={() => send({ type: "set_active_project", path: p.path })}
                   >
                     <span className="menu-title mono">{label(p)}</span>
@@ -202,7 +205,9 @@ export function ProjectPicker(props: FolderProps) {
             {recents.length > 0 && (
               <div role="group" aria-label="Recent projects">
                 {projects.length > 0 && <hr className="menu-rule" />}
-                <p className="menu-help">Recent</p>
+                <p className="menu-help" aria-hidden="true">
+                  Recent
+                </p>
                 <RecentItems recents={recents} online={online} send={send} role="menuitem" />
               </div>
             )}
@@ -210,11 +215,12 @@ export function ProjectPicker(props: FolderProps) {
             <button
               type="button"
               role="menuitem"
+              disabled={!online}
               onClick={() => (state?.native_picker ? send({ type: "pick_folder" }) : setField((n) => n + 1))}
             >
               Open folder…
             </button>
-            <button type="button" role="menuitem" onClick={() => send({ type: "show_new_project", here: false })}>
+            <button type="button" role="menuitem" disabled={!online} onClick={() => send({ type: "show_new_project", here: false })}>
               New project…
             </button>
           </div>

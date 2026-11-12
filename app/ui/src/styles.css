@@ -975,6 +975,10 @@ blockquote {
   font-size: 12.5px;
 }
 
+.picker-none {
+  color: var(--muted);
+}
+
 .picker-button .icon {
   flex: none;
   width: 14px;
