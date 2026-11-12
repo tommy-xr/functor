@@ -457,6 +457,11 @@ a:hover {
   justify-content: flex-start;
 }
 
+.hero-more {
+  flex-basis: 100%;
+  font-size: 0.85rem;
+}
+
 .button-primary,
 .button-pink {
   font-family: var(--font-mono);
@@ -528,12 +533,28 @@ a:hover {
 }
 
 .feature-row {
-  max-width: 1100px;
+  /* The band carries the gutter, so this is the hero's 1100px column less its padding. */
+  max-width: 1052px;
   margin: 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
   align-items: center;
   gap: var(--space-xl);
+}
+
+/* A capture of a whole window's text: copy above, media at its own size below. */
+.feature-row-stack {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-lg);
+}
+
+.feature-row-stack .feature-media {
+  order: 2;
+  max-width: 963px;
+}
+
+.feature-row-stack .feature-body p {
+  max-width: 42rem;
 }
 
 /* Alternate the media to the right on the untinted bands. */
@@ -586,6 +607,13 @@ a:hover {
   max-width: 30rem;
 }
 
+.feature-body code,
+.lede code,
+.status-line code,
+.state-list code {
+  color: var(--text);
+}
+
 /* Scroll-into-focus reveal — gated on .reveal (added by features.js) so the rows
    stay visible if the script never runs. The media slides in from its own side
    (reinforcing the alternation); the copy fades up just behind it. */
@@ -621,10 +649,10 @@ a:hover {
 /* Stack to one column on narrow viewports (media always on top). */
 @media (max-width: 760px) {
   .feature-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-md);
   }
-  .feature-row:nth-child(even) .feature-media {
+  .feature-band:nth-child(even) .feature-media {
     order: 0;
   }
 }
@@ -635,6 +663,224 @@ a:hover {
     opacity: 1;
     transform: none;
     transition: none;
+  }
+}
+
+/* The loop: the desktop app's describe → edit → reload → scrub → keep cycle.
+   One wide capture, then five steps on a rail drawn like the scrubber's own
+   line (cyan past, pink future). */
+.loop {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--section-gap) var(--space-md) var(--space-xl);
+  /* Clear the sticky header when reached by #app. */
+  scroll-margin-top: 56px;
+}
+
+.loop-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  font-size: clamp(1.4rem, 3.4vw, 2.2rem);
+  line-height: 1.25;
+  color: var(--text);
+  margin: 0;
+}
+
+.lede {
+  color: var(--text-dim);
+  max-width: 42rem;
+  margin: 18px 0 0;
+}
+
+.loop-media {
+  margin-top: var(--space-lg);
+}
+
+.loop-media::after {
+  opacity: 0.45;
+}
+
+.loop-steps {
+  list-style: none;
+  margin: var(--space-lg) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0 var(--space-md);
+  position: relative;
+  counter-reset: step;
+}
+
+.loop-steps::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 10px;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--cyan), var(--pink));
+}
+
+.loop-steps li {
+  position: relative;
+  min-width: 0;
+  padding-top: 40px;
+  counter-increment: step;
+}
+
+.loop-steps li::before {
+  content: counter(step);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  border: 2px solid var(--cyan);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.loop-steps li:nth-child(n + 4)::before {
+  border-color: var(--pink);
+}
+
+.loop-steps h3 {
+  font-family: var(--font-display);
+  font-size: 0.92rem;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  margin: 0 0 8px;
+}
+
+.loop-steps p {
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  line-height: 1.65;
+  margin: 0;
+}
+
+.loop-steps q {
+  color: var(--text);
+  quotes: "\201C" "\201D";
+}
+
+.status-line {
+  max-width: 46rem;
+  margin: var(--space-lg) 0 0;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  font-size: 0.88rem;
+}
+
+/* Four short facts about the app, under its two rows. */
+.also {
+  list-style: none;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-xl) var(--space-md) 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md) var(--space-xl);
+}
+
+.also li {
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 0.92rem;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.also b {
+  display: block;
+  color: var(--text);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+/* Headset band: what works on a Quest today and what is being built. */
+.headset {
+  margin-top: var(--section-gap);
+  padding: var(--space-xl) var(--space-md);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* A feature row with a list where the media would be. */
+.headset-inner {
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  align-items: start;
+}
+
+.state-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.state-list li {
+  color: var(--text-dim);
+  font-size: 0.92rem;
+  line-height: 1.65;
+}
+
+.tag {
+  display: block;
+  width: fit-content;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.6;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 10px;
+  margin-bottom: 6px;
+}
+
+.tag-now {
+  color: var(--green);
+}
+
+.tag-soon {
+  color: var(--amber);
+}
+
+@media (max-width: 900px) {
+  .loop-steps {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-md) 0;
+  }
+  .loop-steps::before {
+    left: 10px;
+    right: auto;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    height: auto;
+    background: linear-gradient(180deg, var(--cyan), var(--pink));
+  }
+  .loop-steps li {
+    padding: 0 0 0 44px;
+  }
+}
+
+@media (max-width: 760px) {
+  .also,
+  .headset-inner {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -732,6 +978,11 @@ a:hover {
   margin: 0 auto 24px;
 }
 
+.cta-band .hero-actions {
+  justify-content: center;
+  margin-top: 0;
+}
+
 .tok-k { color: var(--pink); }
 .tok-t { color: var(--amber); }
 .tok-n { color: #b7a9e0; }
@@ -740,22 +991,18 @@ a:hover {
 .tok-a { color: var(--amber); }
 .tok-o { color: var(--text-dim); }
 
-/* The "put the FUN in functional programming" band between the hero and features. */
-.fun-interstitial {
-  text-align: center;
-  padding: var(--section-gap) var(--space-md) 0;
-}
-
-.fun-interstitial p {
+/* The "put the FUN in functional programming" line above "How does it work?". */
+.how-it-works .fun-line {
   font-family: var(--font-display);
   font-weight: 600;
   letter-spacing: 0.05em;
   font-size: clamp(1.1rem, 2.6vw, 1.7rem);
   color: var(--text-dim);
-  margin: 0;
+  max-width: none;
+  margin: 0 0 var(--space-lg);
 }
 
-.fun-interstitial .fun-accent {
+.fun-line .fun-accent {
   background: linear-gradient(90deg, var(--cyan), var(--pink));
   -webkit-background-clip: text;
   background-clip: text;
@@ -804,7 +1051,9 @@ a:hover {
 
 .footer-links {
   display: flex;
-  gap: 22px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 22px;
 }
 
 .footer-links a {

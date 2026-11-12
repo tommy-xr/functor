@@ -35,11 +35,13 @@
         <h1 class="hero-title">FUNCTOR</h1>
         <p class="hero-tagline">Game development from an alternate timeline.</p>
         <p class="hero-sub">
-          A free, open-source game engine.
+          A free, open-source game engine. Write a game as a few pure functions, or describe a
+          change and watch an agent make it while the game runs.
         </p>
         <div class="hero-actions">
           <a class="button-primary" href="sandbox.html">▶ Open the sandbox</a>
           <a class="button-pink" href="manual/">Get started</a>
+          <a class="hero-more" href="#app">See the desktop app ↓</a>
         </div>
       </div>
       <div class="hero-demo">
@@ -102,27 +104,168 @@
       </div>
     </section>
 
-    <section class="fun-interstitial">
-      <p>Put the <span class="fun-accent">fun</span> in functional programming.</p>
+    <section class="loop" id="app">
+      <h2 class="loop-title">Direct the game.<br />Watch it change.</h2>
+      <p class="lede">
+        Run <code>functor</code> in a project and it opens a workbench with your game on one side
+        and a coding agent on the other. The agent can see the running game: its state, its
+        frames, its inputs. So you can talk about what is on screen.
+      </p>
+
+      <div class="feature-media loop-media">
+        <picture>
+          <source media="(prefers-reduced-motion: reduce)" srcset="media/app-loop.png" />
+          <img src="media/app-loop.gif" alt="The desktop app on the platformer: the hero's jump falls into the gap, a request is typed, the agent edits jumpVelocity in game.fun, the game reloads, the timeline is dragged back, the jump clears the gap, and the change is kept" loading="lazy" />
+        </picture>
+      </div>
+
+      <ol class="loop-steps">
+        <li>
+          <h3>Describe it</h3>
+          <p>
+            Say what should change, in plain words.
+            <q>The jump falls short. Make it clear the gap.</q>
+          </p>
+        </li>
+        <li>
+          <h3>The agent edits</h3>
+          <p>
+            It reads the live game state and changes the code. It can press keys, step frames
+            and capture the picture to check.
+          </p>
+        </li>
+        <li>
+          <h3>The game reloads</h3>
+          <p>
+            The running game picks up the new code in place. No rebuild, no restart, and your
+            state survives.
+          </p>
+        </li>
+        <li>
+          <h3>Scrub to check</h3>
+          <p>
+            Pause, step a frame at a time, or drag back along the timeline and watch the moment
+            again.
+          </p>
+        </li>
+        <li>
+          <h3>Keep or revert</h3>
+          <p>
+            Read the diff, then keep the change or revert it. Each task is one change you can
+            undo.
+          </p>
+        </li>
+      </ol>
+
+      <p class="status-line">
+        The app is a preview, on macOS first, and is not in the prebuilt download yet. To try it
+        today, build it from source: <code>npm run build:app &amp;&amp; npm run build:cli</code>,
+        then <code>./target/release/functor -d &lt;project&gt;</code>.
+      </p>
+    </section>
+
+    <div class="feature-rows">
+      <div class="feature-band">
+        <article class="feature-row feature-row-stack">
+          <div class="feature-media">
+            <picture>
+              <source media="(prefers-reduced-motion: reduce)" srcset="media/app-review.png" />
+              <img src="media/app-review.gif" alt="After a run, the walkthrough card steps through the changed line of game.fun, opened beside the game, then the diff, then the game, and Keep change is clicked" loading="lazy" />
+            </picture>
+          </div>
+          <div class="feature-body">
+            <h3>It shows its work</h3>
+            <p>
+              When a run ends, the agent can open the lines it changed beside your work and step
+              you through them. It never moves your cursor or closes your tabs, and one click
+              puts your layout back.
+            </p>
+          </div>
+        </article>
+      </div>
+
+      <div class="feature-band">
+        <article class="feature-row">
+          <div class="feature-media">
+            <picture>
+              <source media="(prefers-reduced-motion: reduce)" srcset="media/app-transport.png" />
+              <img src="media/app-transport.gif" alt="The game pane's transport bar: the game is paused mid-jump, walked back and forward a frame at a time, dragged back along the rail past key and hot-reload marks, and resumed" loading="lazy" />
+            </picture>
+          </div>
+          <div class="feature-body">
+            <h3>Rewind before you decide</h3>
+            <p>
+              The transport bar under the game works like the web player's. Marks on the rail
+              show where you pressed a key and where the code reloaded, so the moment you care
+              about is easy to find again.
+            </p>
+          </div>
+        </article>
+      </div>
+    </div>
+
+    <ul class="also">
+      <li>
+        <b>Bring your own agent</b>
+        Claude Code or Codex, running with the settings you already use in the terminal.
+      </li>
+      <li>
+        <b>A task is a conversation</b>
+        Requests are listed as waiting on you, in progress or ready for review. A change waits
+        there until you keep or revert it.
+      </li>
+      <li>
+        <b>The game stays in view</b>
+        Put it in a pane beside the code, shrink it to a corner, or give it its own window.
+      </li>
+      <li>
+        <b>Start from a template</b>
+        Pick a starter or a complete example, describe the game you want, and the first task
+        starts with the project.
+      </li>
+    </ul>
+
+    <section class="headset">
+      <div class="feature-row headset-inner">
+        <div class="feature-body">
+          <h3>The same loop, headset on</h3>
+          <p>
+            Some changes have to be judged from inside the game. Functor reloads a running game
+            on a Meta Quest the same way it does on the desktop.
+          </p>
+        </div>
+        <ul class="state-list">
+          <li>
+            <span class="tag tag-now">Works today</span>
+            <code>functor run vr</code> runs your project on the headset and reloads it every
+            time you save, with an indicator in view.
+          </li>
+          <li>
+            <span class="tag tag-soon">In progress</span>
+            Pairing with the desktop app over Wi-Fi: match a six-digit code, nothing to type in
+            the headset. Planned after that: describing a change while you play.
+          </li>
+        </ul>
+      </div>
     </section>
 
     <section class="features-section">
-      <h2 class="section-title">Features</h2>
+      <h2 class="section-title">What the loop stands on</h2>
       <div class="feature-rows">
         <div class="feature-band">
           <article class="feature-row">
             <div class="feature-media">
               <img
                 src="media/feature-instant-feedback.gif"
-                alt="Editing a value in the live editor grows the orbs on screen instantly — no reload"
+                alt="Editing a value in the live editor grows the orbs on screen instantly, with no reload"
                 loading="lazy"
               />
             </div>
             <div class="feature-body">
               <h3>Instant Feedback</h3>
               <p>
-                Edit your game while it runs. The runtime swaps your code under the live model —
-                no rebuild, no restart, no losing your place.
+                Edit your game while it runs. The runtime swaps your code under the live model. No
+                rebuild, no restart, no losing your place.
               </p>
             </div>
           </article>
@@ -151,24 +294,6 @@
           <article class="feature-row">
             <div class="feature-media">
               <img
-                src="media/feature-batteries.gif"
-                alt="A rigged character streamed from a CDN, animating with an idle/walk/run blend"
-                loading="lazy"
-              />
-            </div>
-            <div class="feature-body">
-              <h3>Batteries Included</h3>
-              <p>
-                Asset management, networking, physics, and spatial audio — in the box, ready to use.
-              </p>
-            </div>
-          </article>
-        </div>
-
-        <div class="feature-band">
-          <article class="feature-row">
-            <div class="feature-media">
-              <img
                 src="media/feature-introspective.gif"
                 alt="Live values from the running game appearing inline in the code as time scrubs"
                 loading="lazy"
@@ -177,8 +302,8 @@
             <div class="feature-body">
               <h3>Introspective</h3>
               <p>
-                Analyze the live values coursing through your game at any moment — nothing is hidden
-                behind opaque binary state.
+                Read the live values moving through your game at any moment. The whole state is
+                plain data, so nothing is hidden from you or from an agent.
               </p>
             </div>
           </article>
@@ -196,8 +321,27 @@
             <div class="feature-body">
               <h3>AI Native</h3>
               <p>
-                Register functor mcp and any coding agent can build, run, inspect, and rewind your
-                game — real Functor code, deterministic, on the runtime that ships to native and web.
+                The app is one client of an open door. Register <code>functor mcp</code> and any
+                coding agent, in any terminal, can launch, inspect, drive and rewind your game with
+                the same tools.
+              </p>
+            </div>
+          </article>
+        </div>
+
+        <div class="feature-band">
+          <article class="feature-row">
+            <div class="feature-media">
+              <img
+                src="media/feature-batteries.gif"
+                alt="A rigged character streamed from a CDN, animating with an idle/walk/run blend"
+                loading="lazy"
+              />
+            </div>
+            <div class="feature-body">
+              <h3>Batteries Included</h3>
+              <p>
+                Asset management, networking, physics, and spatial audio. In the box, ready to use.
               </p>
             </div>
           </article>
@@ -206,11 +350,13 @@
     </section>
 
     <section class="how-it-works">
+      <p class="fun-line">Put the <span class="fun-accent">fun</span> in functional programming.</p>
       <h2>How does it work?</h2>
       <p>
         Functor is a functional language built for game development, inspired by Elm and F#.
-        Pure functions, interpreted, no compilation. Functor lives in a Rust runtime that does
-        the heavy lifting — graphics and physics.
+        Pure functions, interpreted, no compilation. It lives in a Rust runtime that does the
+        heavy lifting: graphics and physics. Because a game is plain data and pure functions, it
+        can be reloaded, rewound and read, by you or by an agent.
       </p>
     </section>
 
@@ -221,9 +367,10 @@
           <div class="platform-icons">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.2 4v7.1H3zm8.4-1.3L21 2.5v8.6h-9.6zM3 12.9h7.2V20L3 18.9zm8.4 0H21v8.6l-9.6-1.3z"/></svg>
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.22-3.91-1.21-1.77-3.1-2.02-3.77-2.05-1.6-.16-3.13.94-3.94.94-.81 0-2.07-.92-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.83 1.3 10.4.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.29-1.28 3.15-2.54.99-1.46 1.4-2.87 1.42-2.94-.03-.01-2.72-1.04-2.75-4.13zM14.6 4.6c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M12 2c-2.2 0-3.6 1.800-3.6 4.2 0 1.3.2 2.2-.5 3.4C6.6 11.900 5 14.3 5 17c0 1.2.4 2.2 1 3l-1.5 1.2c-.4.3-.2.800.3.800h4.7c.800-.5 1.6-.7 2.5-.7s1.7.2 2.5.7h4.7c.5 0 .7-.5.3-.800L18 20c.6-.800 1-1.800 1-3 0-2.7-1.6-5.100-2.900-7.4-.7-1.2-.5-2.100-.5-3.4C15.6 3.800 14.2 2 12 2zm0 7.5c1.7 0 3.5 3.6 3.5 6.5 0 2-1.5 3.5-3.5 3.5S8.5 18 8.5 16c0-2.900 1.800-6.5 3.5-6.5zM10.5 5.5a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6zm3 0a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6z"/></svg>
           </div>
           <h3>Native</h3>
-          <p>Windows · macOS</p>
+          <p>Windows · macOS · Linux</p>
         </div>
         <div class="platform">
           <div class="platform-icons">
@@ -244,8 +391,11 @@
 
     <section class="cta-band">
       <h2>Build a game as a pure function.</h2>
-      <p>Nothing to install — try in the browser now.</p>
-      <a class="button-primary" href="sandbox.html">▶ Open the sandbox</a>
+      <p>Nothing to install. Try it in the browser now.</p>
+      <div class="hero-actions">
+        <a class="button-primary" href="sandbox.html">▶ Open the sandbox</a>
+        <a class="button-pink" href="manual/">Get started</a>
+      </div>
     </section>
 
     <footer class="landing-footer">
@@ -254,6 +404,7 @@
         <span>FUNCTOR</span>
       </div>
       <nav class="footer-links">
+        <a href="#app">Desktop app</a>
         <a href="sandbox.html">Sandbox</a>
         <a href="manual/">Manual</a>
         <a href="docs/">API Reference</a>

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::activity::{activities, Activity};
 use crate::agent_view::{
     agent_view, app_context, auto_apply, prune_highlight, refresh_contexts, step_clicked,
     AppContext, Highlight, ViewReply, ViewRequest,
@@ -52,6 +53,8 @@ pub struct AppState {
     pub no_gpu: bool,
     /// Every project's tasks, by id; their transcripts travel separately.
     pub tasks: Vec<Task>,
+    /// Per task id, what its agent is doing (D34), refreshed after every event.
+    pub activity: BTreeMap<u64, Activity>,
     /// Per project path, the chat's current task (`None`: a new one), the
     /// one the Tasks pane shows selected. Absent until a client first
     /// chooses one for the project; not kept across restarts.
@@ -156,6 +159,7 @@ impl AppState {
             session: None,
             no_gpu: false,
             tasks: Vec::new(),
+            activity: BTreeMap::new(),
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
@@ -809,7 +813,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
     };
     prune_highlight(&mut state);
-    let changed = changed || state.highlight != highlighted;
+    let activity = activities(&state.tasks);
+    let changed = changed || state.highlight != highlighted || state.activity != activity;
+    state.activity = activity;
     refresh_contexts(&mut state, &mut commands);
     // A client message that changed nothing still answers with the state, so
     // the sender sees what is active.
@@ -967,6 +973,8 @@ fn opened(
         current_task,
         harness_choice,
         layouts,
+        // Derived from `tasks` at the end of the step.
+        activity: _,
         session: _,
         no_gpu: _,
         harnesses: _,
@@ -3048,6 +3056,12 @@ mod tests {
             .unwrap()
     }
 
+    /// `s` with its tasks' activity derived, as every step leaves it.
+    fn derived(mut s: AppState) -> AppState {
+        s.activity = activities(&s.tasks);
+        s
+    }
+
     /// A task that ran once and finished: done.
     fn finished_task() -> AppState {
         let (s, _) = update(state(), new_task("What is the count?"));
@@ -3097,6 +3111,44 @@ mod tests {
                 }),
             ]
         );
+    }
+
+    #[test]
+    fn a_call_starting_or_ending_resends_the_state_with_its_activity() {
+        use crate::activity::{Call, CallKind, Stance};
+        let (s, _) = update(state(), new_task("hi"));
+        assert_eq!(s.activity[&1].stance, Stance::Thinking);
+        let read = AgentEvent::ToolUse {
+            name: "Read".to_string(),
+            input: serde_json::json!({"file_path": "game.fun"}),
+        };
+        let (s, commands) = update(s, agent(1, 0, read));
+        assert_eq!(s.activity[&1].stance, Stance::Working);
+        assert_eq!(
+            s.activity[&1].calls,
+            [Call {
+                kind: CallKind::Files,
+                label: "reading game.fun".to_string()
+            }]
+        );
+        assert!(commands.contains(&broadcast(&s)), "{commands:?}");
+        // Streamed text leaves the activity as it is: no state.
+        let (s, _) = update(
+            s,
+            agent(
+                1,
+                0,
+                AgentEvent::ToolResult {
+                    content: "1".into(),
+                },
+            ),
+        );
+        let delta = AgentEvent::TextDelta { text: "Th".into() };
+        let (s, commands) = update(s, agent(1, 0, delta));
+        assert!(!commands.contains(&broadcast(&s)), "{commands:?}");
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, ended(1, 0));
+        assert_eq!(s.activity[&1].stance, Stance::Done);
     }
 
     #[test]
@@ -3368,10 +3420,18 @@ mod tests {
                 other => panic!("{other:?}"),
             })
             .collect();
-        // The last broadcast hides the transport.
+        // The state (the stopped task's activity), its item, and the
+        // transport hidden.
         assert_eq!(
             kinds,
-            ["stop_session", "stop_run", "save", "broadcast", "broadcast"]
+            [
+                "stop_session",
+                "stop_run",
+                "save",
+                "broadcast",
+                "broadcast",
+                "broadcast"
+            ]
         );
     }
 
@@ -4163,10 +4223,10 @@ mod tests {
             project: "examples/b".to_string(),
             ..task(&finished_task(), 1).clone()
         };
-        let s = AppState {
+        let s = derived(AppState {
             tasks: vec![other],
             ..state()
-        };
+        });
         for (event, reason) in [
             (
                 open_file("missing.fun", Target::Focused),
@@ -4523,7 +4583,7 @@ mod tests {
             ],
             ..other()
         };
-        assert_eq!(next, expected);
+        assert_eq!(next, derived(expected.clone()));
         assert_eq!(
             commands,
             vec![
