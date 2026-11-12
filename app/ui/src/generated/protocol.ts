@@ -70,6 +70,12 @@ no_gpu: boolean,
  */
 tasks: Array<Task>, 
 /**
+ * Per project path, the chat's current task (`None`: a new one), the
+ * one the Tasks pane shows selected. Absent until a client first
+ * chooses one for the project; not kept across restarts.
+ */
+current_task: { [key in string]: number | null }, 
+/**
  * The agents this machine can run, in the order the picker lists them.
  */
 harnesses: Array<Harness>, 
@@ -131,7 +137,7 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -465,9 +471,19 @@ change: Change | null,
 /**
  * A revert is being written; no run or second revert may start.
  */
-reverting: boolean, };
+reverting: boolean, 
+/**
+ * When it was started: the shell's wall clock, ms since the Unix
+ * epoch. Last active: a message, a run's event or a review. Both absent
+ * from tasks saved before they were kept.
+ */
+created_at: number | null, 
+/**
+ * Last active, as `created_at`.
+ */
+updated_at: number | null, };
 
-export type TaskStatus = { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
+export type TaskStatus = { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "done" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
 
 /**
  * One of `functor init --list --json`'s entries.

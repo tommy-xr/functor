@@ -576,7 +576,7 @@ async fn tasks_over_the_websocket() {
     let mut ws = connect(&app.ws).await;
     assert_eq!(next(&mut ws).await["state"]["tasks"], json!([]));
 
-    // A new task: its items stream in order and it ends waiting on the user.
+    // A new task: its items stream in order and it ends done (no change).
     send(
         &mut ws,
         json!({"type": "new_task", "message": "What frame is it?", "harness": "claude"}),
@@ -599,7 +599,7 @@ async fn tasks_over_the_websocket() {
         !agent.argv.iter().any(|a| a.starts_with("--replay-resume")),
         "{agent:?}"
     );
-    let (state, rest) = until(&mut ws, status_is("waiting_on_you")).await;
+    let (state, rest) = until(&mut ws, status_is("done")).await;
     items.extend(rest);
     let k = |i: u64, kind: &str, flag: bool| (i, kind.to_string(), flag);
     // (index, kind, partial or answered). The streamed pieces of a text
@@ -651,7 +651,7 @@ async fn tasks_over_the_websocket() {
         let (rejected, _) = until(&mut ws, |m| m["type"] == "rejected").await;
         assert_eq!(rejected["reason"], reason);
     }
-    until(&mut ws, status_is("waiting_on_you")).await;
+    until(&mut ws, status_is("done")).await;
     assert_gone(&[&server, &agent]);
 
     // Stop mid-run ends it at once and leaves no children.
@@ -1089,7 +1089,7 @@ async fn the_view_route_takes_only_the_running_runs_secret() {
     );
 
     // The secret dies with its run.
-    until(&mut ws, status_is("waiting_on_you")).await;
+    until(&mut ws, status_is("done")).await;
     assert_eq!(post_view(&url, Some(&secret), false, &show).0, 401);
 }
 

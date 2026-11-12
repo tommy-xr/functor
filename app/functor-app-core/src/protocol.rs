@@ -121,6 +121,22 @@ pub enum ClientMsg {
     CanvasStacked {
         stacked: bool,
     },
+    /// Make `task` (of the active project) the chat's current task; `None`
+    /// is a new task (`AppState::current_task`).
+    SelectTask {
+        task: Option<u64>,
+    },
+    /// Give `task` the title the user typed ([`crate::tasks::renamed`]).
+    RenameTask {
+        task: u64,
+        title: String,
+    },
+    /// Forget `task`: its stored conversation is removed and its tabs close.
+    /// The user's files are untouched; refused while it runs or has a
+    /// change to review.
+    DeleteTask {
+        task: u64,
+    },
 }
 
 /// Keyboard and mouse input in the debug server's `POST /input` shape.

@@ -297,6 +297,7 @@ async fn run(
         for event in events {
             let commands;
             state.clock = now_ms();
+            state.now = wall_ms();
             (state, commands) = update(state, event);
             for command in commands {
                 match command {
@@ -405,6 +406,13 @@ fn track(held: &mut HashSet<GameInput>, input: &GameInput) {
 
 fn json(msg: &ServerMsg) -> String {
     serde_json::to_string(msg).expect("ServerMsg serializes")
+}
+
+/// Milliseconds since the Unix epoch: the core's wall clock (`AppState::now`).
+pub fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Milliseconds since this process started, on a monotonic clock: the

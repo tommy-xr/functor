@@ -62,6 +62,14 @@ pub struct Task {
     /// A revert is being written; no run or second revert may start.
     #[serde(default)]
     pub reverting: bool,
+    /// When it was started: the shell's wall clock, ms since the Unix
+    /// epoch. Last active: a message, a run's event or a review. Both absent
+    /// from tasks saved before they were kept.
+    #[serde(default)]
+    pub created_at: Option<u64>,
+    /// Last active, as `created_at`.
+    #[serde(default)]
+    pub updated_at: Option<u64>,
     /// Sent as `ServerMsg::Transcript` and `ServerMsg::Item`, never with the
     /// state, which is resent on every session poll.
     #[serde(skip)]
@@ -77,6 +85,8 @@ pub enum TaskStatus {
     WaitingOnYou,
     /// The last run finished ok with a change to keep or revert.
     ReadyForReview,
+    /// The last run finished ok and left no change to review (an answer).
+    Done,
     Failed {
         summary: Option<String>,
     },
@@ -334,6 +344,7 @@ pub fn derive_status(task: &Task) -> TaskStatus {
             summary: summary.clone(),
         },
         Some(Item::Finished { ok: true, .. }) if has_change(task) => TaskStatus::ReadyForReview,
+        Some(Item::Finished { ok: true, .. }) => TaskStatus::Done,
         Some(_) => TaskStatus::WaitingOnYou,
         None if task.transcript.is_empty() => TaskStatus::WaitingOnYou,
         // A run with no outcome and no run in flight: the app stopped mid-run.
@@ -407,6 +418,21 @@ pub fn title(message: &str) -> String {
         }
     };
     format!("{cut}…")
+}
+
+/// Longest title a rename may give, in characters.
+pub const RENAME_CHARS: usize = 120;
+
+/// A title the user typed, spaces collapsed; why it cannot be one.
+pub fn renamed(title: &str) -> Result<String, String> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    match title.chars().count() {
+        0 => Err("a task's title cannot be empty".to_string()),
+        n if n > RENAME_CHARS => Err(format!(
+            "a task's title is at most {RENAME_CHARS} characters"
+        )),
+        _ => Ok(title),
+    }
 }
 
 /// The tool server's base URL from its stderr line:
@@ -494,6 +520,8 @@ mod tests {
             baseline: None,
             change: None,
             reverting: false,
+            created_at: None,
+            updated_at: None,
             transcript: vec![Item::User {
                 text: message.to_string(),
             }],
@@ -661,13 +689,13 @@ mod tests {
     fn status_rules() {
         let mut task = running("hi");
         assert_eq!(derive_status(&task), TaskStatus::InProgress);
-        // A finished run whose last word is the agent's waits on the user.
+        // A run that finished ok and changed nothing is done (an answer).
         replay(&mut task, fixture(CLAUDE_GAME_TOOL));
         assert_eq!(derive_status(&task), TaskStatus::InProgress);
         assert_eq!(end_run(&mut task, None), Vec::<usize>::new());
-        assert_eq!(task.status, TaskStatus::WaitingOnYou);
+        assert_eq!(task.status, TaskStatus::Done);
 
-        // Stopped by the user: waiting on them too.
+        // Stopped by the user: waiting on them.
         let mut task = running("hi");
         apply(
             &mut task,
@@ -731,7 +759,7 @@ mod tests {
             },
         );
         end_run(&mut task, None);
-        assert_eq!(task.status, TaskStatus::WaitingOnYou);
+        assert_eq!(task.status, TaskStatus::Done);
     }
 
     #[test]
@@ -764,6 +792,18 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_title_is_collapsed_and_bounded() {
+        assert_eq!(
+            renamed("  Spin \n the  cube "),
+            Ok("Spin the cube".to_string())
+        );
+        assert!(renamed(" \t ").is_err());
+        let long = "x".repeat(RENAME_CHARS);
+        assert_eq!(renamed(&long), Ok(long.clone()));
+        assert!(renamed(&format!("{long}y")).is_err());
+    }
+
+    #[test]
     fn reads_the_tool_servers_url_from_its_listening_line() {
         assert_eq!(
             mcp_listening_url("[mcp] listening on http://127.0.0.1:61234/mcp\n").as_deref(),
@@ -787,9 +827,26 @@ mod tests {
         let text = to_stored(&task);
         let value: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["version"], STORE_VERSION);
-        assert_eq!(value["task"]["status"]["kind"], "waiting_on_you");
+        assert_eq!(value["task"]["status"]["kind"], "done");
         assert_eq!(value["transcript"][0]["kind"], "user");
-        assert_eq!(from_stored(&text), Ok(task));
+        assert_eq!(from_stored(&text), Ok(task.clone()));
+
+        // A file from before tasks kept their times loads without them.
+        let mut old = value.clone();
+        let fields = old["task"].as_object_mut().unwrap();
+        fields.remove("created_at").unwrap();
+        fields.remove("updated_at").unwrap();
+        let mut timed = task;
+        timed.updated_at = Some(5);
+        let loaded = from_stored(&old.to_string()).unwrap();
+        assert_eq!((loaded.created_at, loaded.updated_at), (None, None));
+        assert_eq!(
+            Task {
+                updated_at: Some(5),
+                ..loaded
+            },
+            timed
+        );
 
         let other = text.replacen("\"version\": 1", "\"version\": 2", 1);
         assert_eq!(
