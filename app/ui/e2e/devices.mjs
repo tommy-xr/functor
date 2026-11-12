@@ -12,20 +12,12 @@
 // APP_UI_SHOTS=<dir> saves stills of each state and the prompt at both
 // widths, and the frames of a pair → connected loop at 1440×900.
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { APP, requireBuilt, shot, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { APP, requireBuilt, shot, startServer, stopServer, tempDir, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 requireBuilt();
-
-const dirs = [];
-process.on("exit", () => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
-function tempDir(prefix) {
-  dirs.push(mkdtempSync(join(tmpdir(), prefix)));
-  return dirs.at(-1);
-}
 
 /** A stub headset; `line(prefix)` waits for its next line starting so. */
 function stub(link, store, name, extra = []) {
@@ -56,13 +48,7 @@ function stub(link, store, name, extra = []) {
         .toBe(true);
       return found;
     },
-    stop() {
-      if (child.exitCode !== null) return Promise.resolve();
-      return new Promise((resolve) => {
-        child.on("exit", resolve);
-        child.kill("SIGTERM");
-      });
-    },
+    stop: () => stopServer({ child }),
   };
 }
 
@@ -93,7 +79,7 @@ async function devicesView(browser, width, height) {
     await expect(pill).toHaveText("Headset · Not paired");
     await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: "Devices" }).click();
     await expect(pane.getByTestId("devices-empty")).toContainText("Open Functor in the headset on the same Wi-Fi");
-    await expect(pane.getByTestId("devices-empty")).toContainText("cable");
+    await expect(pane.getByTestId("devices-empty")).toContainText("a cable comes later");
     await shot(page, `devices-empty-${width}`);
     await step(page, width);
 
@@ -170,11 +156,11 @@ async function devicesView(browser, width, height) {
     await expect(card("Stranger")).toHaveCount(0);
     expect(pairings()).not.toContain("Stranger");
 
-    // Mid-sentence in the composer: requests wait behind an amber pill and
-    // the composer keeps its focus and text.
+    // Mid-sentence in the composer: two requests arrive and wait behind an
+    // amber pill; the composer keeps its focus and every key.
     const composer = page.getByLabel("Message the agent");
     await composer.click();
-    await composer.pressSequentially("make the cube spin fa");
+    const typing = composer.pressSequentially("make the cube spin faster please", { delay: 150 });
     const one = stub(server.link, tempDir("functor-stub-"), "Quest Pro", ["--once"]);
     await one.line("code ");
     const two = stub(server.link, tempDir("functor-stub-"), "Quest 2", ["--once"]);
@@ -183,20 +169,25 @@ async function devicesView(browser, width, height) {
     await expect(prompt).toBeHidden();
     await expect(pill).toHaveClass(/pill-attention/);
     await expect(composer).toBeFocused();
-    await expect(composer).toHaveValue("make the cube spin fa");
-    await composer.pressSequentially("st");
-    await expect(composer).toHaveValue("make the cube spin fast");
     await shot(page, `devices-waiting-${width}`, { fullPage: true });
-    // The pill brings them, one at a time.
-    await pill.click();
-    await expect(prompt.getByRole("heading")).toHaveText("Quest Pro wants to pair");
+    await typing;
+    await expect(prompt).toBeHidden();
+    await expect(composer).toHaveValue("make the cube spin faster please");
+    // A moment after the last key, the oldest opens by itself.
+    await expect(prompt.getByRole("heading")).toHaveText("Quest Pro wants to pair", { timeout: 10_000 });
     await expect(prompt).toContainText("1 more request is waiting");
-    await prompt.getByRole("button", { name: "Not mine" }).click();
+    // Put off, the next one opens; the put-off one waits for the pill.
+    await prompt.getByRole("button", { name: "Decide later" }).click();
     await expect(prompt.getByRole("heading")).toHaveText("Quest 2 wants to pair");
     await prompt.getByRole("button", { name: "Not mine" }).click();
     await expect(prompt).toBeHidden();
+    await expect(pill).toHaveClass(/pill-attention/);
+    await pill.click();
+    await expect(prompt.getByRole("heading")).toHaveText("Quest Pro wants to pair");
+    await prompt.getByRole("button", { name: "Not mine" }).click();
+    await expect(prompt).toBeHidden();
     await Promise.all([one.line("ended"), two.line("ended")]);
-    await expect(composer).toHaveValue("make the cube spin fast");
+    await expect(composer).toHaveValue("make the cube spin faster please");
 
     // Forget, confirmed in place.
     await card("Quest 3").getByRole("button", { name: "Forget this headset" }).click();

@@ -245,13 +245,16 @@ blockquote {
 }
 
 .pill-session-starting,
-.pill-warn {
+.pill-warn,
+.pill-hs-asking_to_pair,
+.pill-hs-needs_update {
   background: var(--warn-bg);
   color: var(--warn);
 }
 
 .pill-session-failed,
-.pill-session-exited {
+.pill-session-exited,
+.pill-hs-cannot_reach {
   background: var(--danger-bg);
   color: var(--danger);
 }
@@ -2824,13 +2827,7 @@ blockquote {
 }
 
 .device-card {
-  padding: 14px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  background: var(--surface);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .device-card p {
@@ -2871,8 +2868,7 @@ blockquote {
 }
 
 .device-actions {
-  display: flex;
-  gap: 8px;
+  margin: 0;
 }
 
 .device-actions .button {
@@ -2893,29 +2889,12 @@ blockquote {
 }
 
 .device-confirm {
-  padding: 8px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-m);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 12px;
+  margin: 0;
 }
 
 .pill-hs-connected {
   background: var(--ok-bg);
   color: var(--ok);
-}
-
-.pill-hs-asking_to_pair,
-.pill-hs-needs_update {
-  background: var(--warn-bg);
-  color: var(--warn);
-}
-
-.pill-hs-cannot_reach {
-  background: var(--danger-bg);
-  color: var(--danger);
 }
 
 .pill-hs-not_paired,
@@ -2938,13 +2917,8 @@ blockquote {
 /* The pairing prompt: one request, centred, its code large. */
 .pair-modal {
   width: min(440px, 100%);
+  overflow: auto;
   padding: 22px;
-  border: 1px solid var(--border-strong);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 14px;
   text-align: center;
@@ -2956,8 +2930,10 @@ blockquote {
 
 .pair-modal h2 {
   margin: 0;
+  max-width: 100%;
   font-size: 16px;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .pair-modal p {
@@ -2978,13 +2954,6 @@ blockquote {
   background: var(--warn-bg);
   color: var(--warn) !important;
   font-size: 12px;
-}
-
-.pair-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
 }
 
 .button-quiet {

@@ -34,11 +34,18 @@ export async function shot(page, name, { fullPage = false } = {}) {
   await page.screenshot({ path: `${dir}/${name}.png`, fullPage });
 }
 
+const temps = [];
+process.on("exit", () => temps.forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+/** A fresh temp directory, removed when the process exits. */
+export function tempDir(prefix) {
+  temps.push(mkdtempSync(join(tmpdir(), prefix)));
+  return temps.at(-1);
+}
+
 /** A fresh app home, removed when the process exits. */
 export function tempHome() {
-  const home = mkdtempSync(join(tmpdir(), "functor-app-e2e-"));
-  process.on("exit", () => rmSync(home, { recursive: true, force: true }));
-  return home;
+  return tempDir("functor-app-e2e-");
 }
 
 /** Git reading no user or system config, as every git these tests start (the app's included). */

@@ -203,6 +203,8 @@ function useShortcuts(
   useEffect(() => {
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
       const target = e.target instanceof HTMLElement ? e.target : null;
+      // Not behind a modal dialog (the pairing prompt, new project).
+      if (target?.closest("[aria-modal='true']")) return;
       const action = shortcutFor(e, {
         typing: isTyping(target),
         captured: target?.closest(".game-captured") != null,

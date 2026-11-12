@@ -3,12 +3,12 @@ import type { AppState, ClientMsg, Session, View as TabView } from "./generated/
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
 import { DevicesPane, PairPrompt } from "./Devices";
-import { mayInterrupt, nextRequest, WORDS } from "./devices-model";
+import { autoOpen, mayOpen, WORDS } from "./devices-model";
 import { basename, pickHarness } from "./chat-model";
 import { FolderActions, NoProject, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
-import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
+import { focusedPane, isTyping, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
 import { choiceKey, chosenTask, currentTask, needsYou } from "./tasks-model";
@@ -168,37 +168,57 @@ export function App() {
 }
 
 /**
- * When the pairing prompt shows. A new request opens it at once, unless the
- * user is typing in a field (the composer): then the pill turns amber and
- * the prompt waits for that field to lose focus, or for a click on the pill.
- * "Later" hides it until the pill is clicked.
+ * When the pairing prompt shows. A request opens it by itself once the user
+ * has not typed into a field (the composer) for a few seconds and holds no
+ * pointer down; until then the pill is amber. Never over the new-project
+ * modal. "Decide later" puts a request off until the pill is clicked;
+ * requests queue, one prompt at a time.
  */
 function usePairPrompt(state: AppState | null) {
-  const next = nextRequest(state?.devices);
-  const id = next?.request ?? null;
+  const requests = state?.devices.requests ?? [];
   const [open, setOpen] = useState<number | null>(null);
-  const [later, setLater] = useState<number | null>(null);
+  const [later, setLater] = useState<number[]>([]);
+  const typedAt = useRef(0);
+  const pointerDown = useRef(false);
   useEffect(() => {
-    if (id === null || id === later) return;
-    if (mayInterrupt(document.activeElement)) {
-      setOpen(id);
-      return;
-    }
-    // After the focus has moved: then the new element is known.
-    const moved = () =>
-      setTimeout(() => {
-        if (mayInterrupt(document.activeElement)) setOpen(id);
-      }, 0);
-    document.addEventListener("focusout", moved);
-    return () => document.removeEventListener("focusout", moved);
-  }, [id, later]);
-  const shown = next !== null && open === next.request;
+    const typed = (e: Event) => {
+      if (isTyping(e.target as HTMLElement)) typedAt.current = Date.now();
+    };
+    const down = () => (pointerDown.current = true);
+    const up = () => (pointerDown.current = false);
+    document.addEventListener("keydown", typed, true);
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("pointercancel", up, true);
+    return () => {
+      document.removeEventListener("keydown", typed, true);
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up, true);
+      document.removeEventListener("pointercancel", up, true);
+    };
+  }, []);
+  const shown = requests.find((r) => r.request === open) ?? null;
+  const next = autoOpen(requests, later);
+  const modal = !!state?.new_project;
+  useEffect(() => {
+    if (shown || !next || modal) return;
+    const id = next.request;
+    const tick = () => mayOpen(typedAt.current, Date.now(), pointerDown.current) && setOpen(id);
+    tick();
+    const timer = setInterval(tick, 250);
+    return () => clearInterval(timer);
+  }, [shown?.request, next?.request, modal]);
   return {
-    request: shown ? next : null,
-    deferred: next !== null && !shown,
-    show: () => setOpen(id),
+    request: modal ? null : shown,
+    deferred: requests.length > 0 && !shown,
+    show: () => {
+      const first = requests[0];
+      if (!first) return;
+      setLater((l) => l.filter((id) => id !== first.request));
+      setOpen(first.request);
+    },
     later: () => {
-      setLater(id);
+      if (open !== null) setLater((l) => [...l, open]);
       setOpen(null);
     },
   };

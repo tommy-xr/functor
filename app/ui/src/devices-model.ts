@@ -1,8 +1,8 @@
 // The Devices pane's pure parts (D26, D27): each state's word (the title
 // pill and the card say the same), its one fix, the code as people read it,
-// and which pairing request the prompt shows.
+// and when the pairing prompt may open.
 
-import type { Device, Devices, Headset, PairRequest } from "./generated/protocol";
+import type { Device, Headset, PairRequest } from "./generated/protocol";
 
 /** The title pill's and the cards' word for each state. */
 export const WORDS: Record<Headset, string> = {
@@ -13,11 +13,6 @@ export const WORDS: Record<Headset, string> = {
   needs_update: "Out of date",
   cannot_reach: "Unreachable",
 };
-
-/** A card's state, as the pill names it. */
-export function deviceWord(d: Device): Headset {
-  return d.state.state;
-}
 
 /** The one thing that fixes a card's state, said plainly (nothing to click
  *  unless it is built). */
@@ -52,23 +47,24 @@ export function clock(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-/** The request the prompt shows: the oldest (requests queue one at a time). */
-export function nextRequest(devices: Devices | undefined): PairRequest | null {
-  return devices?.requests[0] ?? null;
-}
+/** Typing this recently in a field holds the prompt back. */
+export const TYPING_IDLE_MS = 3000;
 
 /**
- * Whether the prompt may open by itself now. Not while the user types in a
- * text field (the composer, a search): the pill turns amber instead, and
- * the prompt opens on a click of the pill or once the field loses focus.
+ * Whether the prompt may open by itself now: not within `TYPING_IDLE_MS`
+ * of a key typed into a field (the composer, a search), and not while a
+ * pointer is down (it would swallow that click).
  */
-export function mayInterrupt(active: Element | null): boolean {
-  if (!active) return true;
-  const tag = active.tagName;
-  return !(tag === "TEXTAREA" || tag === "INPUT" || (active as HTMLElement).isContentEditable);
+export function mayOpen(typedAt: number, now: number, pointerDown: boolean): boolean {
+  return !pointerDown && now - typedAt >= TYPING_IDLE_MS;
 }
 
-/** "12 ms", "80%, charging" and the like for a connected card's rows. */
+/** The request the prompt opens by itself: the oldest not put off with "Later". */
+export function autoOpen(requests: PairRequest[], later: number[]): PairRequest | null {
+  return requests.find((r) => !later.includes(r.request)) ?? null;
+}
+
+/** A connected card's rows: link and latency, battery, build, project. */
 export function details(d: Device): [string, string][] {
   if (d.state.state !== "connected") return [];
   const s = d.state;
@@ -78,14 +74,4 @@ export function details(d: Device): [string, string][] {
   if (s.build) rows.push(["Build", s.build]);
   rows.push(["Running", s.project ?? "Nothing"]);
   return rows;
-}
-
-/** "3 min ago" for a last-seen time (wall ms). */
-export function ago(then: number | null, now: number): string {
-  if (then === null) return "Never";
-  const s = Math.max(0, Math.round((now - then) / 1000));
-  if (s < 60) return "Just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return `${Math.floor(s / 86400)} d ago`;
 }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ago, clock, details, fixFor, mayInterrupt, nextRequest, secondsLeft, spacedCode, WORDS } from "./devices-model.ts";
-import type { Device, Devices, PairRequest } from "./generated/protocol";
+import { autoOpen, clock, details, fixFor, mayOpen, secondsLeft, spacedCode, TYPING_IDLE_MS, WORDS } from "./devices-model.ts";
+import type { Device, PairRequest } from "./generated/protocol";
 
 const device = (state: Device["state"]): Device => ({
   id: "ab",
@@ -43,19 +43,18 @@ test("the code reads in two groups and the expiry counts down", () => {
   assert.equal(clock(5), "0:05");
 });
 
-test("the prompt shows the oldest request, one at a time", () => {
-  const devices: Devices = { listening: null, list: [], requests: [request(3), request(4)], headset: "asking_to_pair" };
-  assert.equal(nextRequest(devices)?.request, 3);
-  assert.equal(nextRequest({ ...devices, requests: [] }), null);
-  assert.equal(nextRequest(undefined), null);
+test("the prompt opens the oldest request not put off", () => {
+  const requests = [request(3), request(4)];
+  assert.equal(autoOpen(requests, [])?.request, 3);
+  assert.equal(autoOpen(requests, [3])?.request, 4);
+  assert.equal(autoOpen(requests, [3, 4]), null);
+  assert.equal(autoOpen([], []), null);
 });
 
-test("the prompt waits while the user types", () => {
-  assert.equal(mayInterrupt(null), true);
-  assert.equal(mayInterrupt({ tagName: "BUTTON", isContentEditable: false } as unknown as Element), true);
-  assert.equal(mayInterrupt({ tagName: "TEXTAREA" } as unknown as Element), false);
-  assert.equal(mayInterrupt({ tagName: "INPUT" } as unknown as Element), false);
-  assert.equal(mayInterrupt({ tagName: "DIV", isContentEditable: true } as unknown as Element), false);
+test("the prompt waits while the user types or holds a pointer down", () => {
+  assert.equal(mayOpen(0, TYPING_IDLE_MS, false), true);
+  assert.equal(mayOpen(1000, 1000 + TYPING_IDLE_MS - 1, false), false);
+  assert.equal(mayOpen(0, 100_000, true), false);
 });
 
 test("a connected card's details", () => {
@@ -67,11 +66,4 @@ test("a connected card's details", () => {
     ["Running", "examples/hello"],
   ]);
   assert.deepEqual(details(device({ state: "away" })), []);
-});
-
-test("last seen reads in plain units", () => {
-  assert.equal(ago(null, 0), "Never");
-  assert.equal(ago(0, 30_000), "Just now");
-  assert.equal(ago(0, 180_000), "3 min ago");
-  assert.equal(ago(0, 7_200_000), "2 h ago");
 });
