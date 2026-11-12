@@ -156,7 +156,8 @@ layout. The workbench was chosen.
 - **D15 — composer** follows the current chat-app pattern: one rounded
   container, attach and model picker on the left, mic and send on the right.
 
-- **D16 — the game stays visible while reading code.** The Code and Diff tabs
+- **D16 — the game stays visible while reading code.** *(Superseded by D20
+  and D21.)* The Code and Diff tabs
   offer the game side by side, as a draggable mini view, in its own window, or
   hidden, chosen from a button strip in the tab bar.
 
@@ -185,9 +186,121 @@ Taken from the other two layouts:
 Proposed, awaiting confirmation:
 
 - A repo with several projects gets a project switcher at the top of the
-  explorer; the app opens on the project nearest the start directory.
+  explorer; the app opens on the project nearest the start directory. (See D23.)
 - Chat history is kept per project.
 - The app starts with `functor app`; bare `functor` keeps printing help.
+
+## Decisions, fourth round — canvas, game view, projects
+
+These replace D16 and the fixed Game / Code / Diff tabs of D10's canvas. The
+title bar, rail, side pane and chat dock are unchanged.
+
+### D20 — the canvas is panes of tabs
+
+- **A view is a tab.** View types: the game, a file, a task's changes, a task
+  page, and later a visualizer. New view types need no layout work.
+- **A pane holds tabs.** Each pane's tab bar ends with four actions: open a
+  view here, split right, split down, pop out into its own window.
+- **Where a view opens.** In the focused pane by default. "To the side" opens
+  it in the neighbouring pane, creating one with a split right if there is
+  none. A view that is already open is focused, not duplicated.
+- **Closing.** Closing a pane's last tab removes the pane. An empty canvas
+  offers three actions: start the game, open a file, start a task.
+- **From the chat.** "View diff" and "Open in canvas" open or focus the
+  matching tab; they never replace what the user is looking at in another
+  pane.
+- **Layout is state.** The core holds it per project, so it survives a
+  reload and a restart. There is a "reset layout" action.
+- **Shortcuts (proposed):** split right, split down, close tab, focus the
+  game, focus pane *n*, and "open to the side" on a file in the explorer.
+
+### D21 — one game view, four placements
+
+There is one game view per project. Choosing a placement moves it; it is
+never shown twice.
+
+| Placement | Where the game runs | What the desktop shows | Input |
+| --- | --- | --- | --- |
+| Pane | Hidden local session | A Game tab in a pane | Click to play, Esc to release |
+| Mini | Hidden local session | A small floating view over the canvas; drag to move, resize from a corner | Same, while focused |
+| Own window | A normal game window | A one-line note in place of the view | In that window |
+| Headset | On the headset | The mirror, as a Game tab or mini (D5, D18) | In the headset; the desktop drives only its cameras |
+
+- **The control.** One placement control on the game view (in the tab bar
+  when it is a tab, in the title strip when it is mini), next to Start game /
+  Stop game. Headset is offered only while a headset is connected.
+- **Pane ↔ Mini is instant.** Same session, same stream; the view moves.
+  "Dock" returns a mini view to the pane it came from.
+- **Own window and Headset change where the game runs.** Today that restarts
+  the session, so the game starts from its initial state. Carrying the state
+  across is a later improvement; the model being plain data makes it possible.
+- **One banner** (D17): "Click to play", "Esc to release", or "Mirrored from
+  headset".
+
+Flows:
+
+1. **At the desk.** Start game → the Game tab opens in the focused pane. Open
+   a file to the side → code and game side by side. Ask the agent for a
+   change → the game reloads in place → a Changes tab is offered from the
+   chat.
+2. **Reading code.** Switch the game to Mini → the pane is free for code and
+   the game keeps running in the corner. Dock it to bring it back.
+3. **Second monitor.** Pop the game out to its own window, or pop out any
+   other tab (a file, the changes) and keep the game in the app.
+4. **Into VR.** Connect a headset → choose Headset → the game runs on the
+   device and the desktop view becomes the mirror, with the head view or a
+   parked dev camera. Spoken feedback arrives in the chat as capsules, the
+   agent works, and the headset reloads. Choosing Pane afterwards brings the
+   game back to the desktop.
+
+### D22 — one place to start and stop the game
+
+"Start game" is the game view's empty state; "Stop game" sits beside the
+placement control. The explorer's session card shows status only. "Stop" in
+the chat always means the agent.
+
+### D23 — the app opens any folder
+
+A project is a folder, not a place in a repository: a subfolder of a repo, a
+loose folder, or the root of a new repo all work. The app keeps a list of
+recent projects. A repo with several projects still gets the project
+switcher.
+
+### D24 — new project
+
+A modal, opened from the project switcher:
+
+- **Name and Folder** (a path with Browse). Any folder; created if missing.
+- **Track changes with git** — offered only when the folder is not already
+  tracked. Reviewing and reverting the agent's changes depends on it.
+- **Start from** — a gallery that scrolls, with search and tag filters.
+  Starters (blank, 3D, first person, 2D, multiplayer, VR) and complete
+  example games. A template is an ordinary project folder plus a small
+  manifest (name, description, tags, preview), so adding one needs no app
+  change. Templates are local for now.
+- **Describe the game (optional)** — becomes the project's first task, built
+  from the chosen template. This covers genres with no template.
+- **Create and start.** The game always starts; there is no option not to.
+
+### D25 — the agent can drive the view
+
+The layout is core state (D20), so the agent can change it through tools, the
+same way it drives the game.
+
+- **Tools.** Open or focus a view (a file at a line range, a task's changes
+  at a file, the game, a task page); arrange it (to the side, split);
+  highlight lines; put the game at a moment (pause, a frame, a dev camera).
+  The agent reads the current layout through `app_context`.
+- **Walkthroughs.** The agent's main use is showing its work: an ordered list
+  of steps ("the change in `ladder.fun`", "the climb at the top rung, paused")
+  shown in the chat as one card the user steps through, and can replay.
+- **It never takes the wheel.** Agent-opened views go to a pane the user is
+  not typing in; the focused tab and the text cursor are never moved; the
+  agent cannot close the user's tabs; "restore my layout" undoes everything
+  it arranged.
+- **Automatic by default.** When a run finishes, the first step of its
+  walkthrough is applied without a click; a setting turns that off. To be
+  judged in use.
 
 ## Open
 
