@@ -288,7 +288,15 @@ async fn run_task(
         }
     }
     let secret = views.and_then(|v| v.register(spec.task, spec.run));
-    let run = run(&spec, &functor, &agents, &send, cancel, secret.as_ref(), contexts);
+    let run = run(
+        &spec,
+        &functor,
+        &agents,
+        &send,
+        cancel,
+        secret.as_ref(),
+        contexts,
+    );
     let error = match futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(run)).await
     {
         Ok(Some(error)) => error,
@@ -610,7 +618,9 @@ impl Agent for FakeAgent {
             }
             // Its scripted tool calls go to the run's real tool server, as an agent's do.
             if let Some(mcp) = opts.mcp {
-                command.env(FAKE_MCP_URL_ENV, &mcp.url).env(FAKE_MCP_TOKEN_ENV, &mcp.token);
+                command
+                    .env(FAKE_MCP_URL_ENV, &mcp.url)
+                    .env(FAKE_MCP_TOKEN_ENV, &mcp.token);
             }
             let mut child = command
                 .stdin(Stdio::null())
@@ -687,13 +697,19 @@ pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
             let arguments = call["arguments"].clone();
             let name = format!("mcp__mis__{tool}");
             let used = serde_json::json!({"type": "tool_use", "name": name, "input": arguments});
-            writeln!(out, "{used}").and_then(|()| out.flush()).map_err(|e| bad(&e))?;
+            writeln!(out, "{used}")
+                .and_then(|()| out.flush())
+                .map_err(|e| bad(&e))?;
             let content = match mcp.get_or_insert_with(FakeMcp::from_env) {
-                Ok(client) => client.call(tool, arguments).unwrap_or_else(|e| format!("error: {e}")),
+                Ok(client) => client
+                    .call(tool, arguments)
+                    .unwrap_or_else(|e| format!("error: {e}")),
                 Err(e) => format!("error: {e}"),
             };
             let result = serde_json::json!({"type": "tool_result", "content": content});
-            writeln!(out, "{result}").and_then(|()| out.flush()).map_err(|e| bad(&e))?;
+            writeln!(out, "{result}")
+                .and_then(|()| out.flush())
+                .map_err(|e| bad(&e))?;
             continue;
         }
         let event = &mut line["event"];
@@ -739,10 +755,12 @@ impl FakeMcp {
             .lines()
             .find_map(|l| {
                 let (k, v) = l.split_once(':')?;
-                k.eq_ignore_ascii_case("mcp-session-id").then(|| v.trim().to_string())
+                k.eq_ignore_ascii_case("mcp-session-id")
+                    .then(|| v.trim().to_string())
             })
             .ok_or("no Mcp-Session-Id")?;
-        client.post(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))?;
+        client
+            .post(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))?;
         Ok(client)
     }
 
@@ -763,7 +781,10 @@ impl FakeMcp {
         match (text, response["result"]["isError"].as_bool()) {
             (Some(text), Some(true)) => Err(text.to_string()),
             (Some(text), _) => Ok(text.to_string()),
-            _ => Err(response["error"]["message"].as_str().unwrap_or("no result").to_string()),
+            _ => Err(response["error"]["message"]
+                .as_str()
+                .unwrap_or("no result")
+                .to_string()),
         }
     }
 

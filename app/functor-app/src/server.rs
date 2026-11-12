@@ -403,11 +403,17 @@ async fn agent_view(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case(b"bearer "))
         .map(|(_, secret)| secret);
     let Some((task, run)) = presented.and_then(|secret| ctx.views.find(secret)) else {
-        return (StatusCode::UNAUTHORIZED, [(header::WWW_AUTHENTICATE, "Bearer")]).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+        )
+            .into_response();
     };
     let request: ViewRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("not a view request: {e}")).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("not a view request: {e}")).into_response()
+        }
     };
     let (reply, answer) = oneshot::channel();
     let input = Input::AgentView {

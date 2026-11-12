@@ -274,8 +274,17 @@ async fn app(
                 token.reveal()
             );
             let shutdown = async { 128 + signal.await };
-            server::serve(state, driver, events, listener, token, views.clone(), ui, shutdown)
-                .await?
+            server::serve(
+                state,
+                driver,
+                events,
+                listener,
+                token,
+                views.clone(),
+                ui,
+                shutdown,
+            )
+            .await?
         }
         Some((listening, close)) => {
             eprintln!("[functor-app] listening on {origin}");
@@ -287,8 +296,17 @@ async fn app(
                     _ = close => 0,
                 }
             };
-            server::serve(state, driver, events, listener, token, views.clone(), ui, shutdown)
-                .await?
+            server::serve(
+                state,
+                driver,
+                events,
+                listener,
+                token,
+                views.clone(),
+                ui,
+                shutdown,
+            )
+            .await?
         }
     };
     Ok(ExitCode::from(code))
