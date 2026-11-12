@@ -207,7 +207,8 @@ pub struct GamePlacement {
     pub dock: Option<Dock>,
 }
 
-/// Where [`LayoutOp::Open`] puts a view that is not open yet.
+/// Where [`LayoutOp::Open`] puts a view. One already open moves only to a
+/// named `Pane`; otherwise it is shown where it is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -228,8 +229,8 @@ pub enum Target {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutOp {
-    /// Shows `view` and focuses its pane: where it is if already open, else
-    /// added last in `target`.
+    /// Shows `view` and focuses its pane: added last in `target`, or if
+    /// already open, where it is (moved there when `target` names a pane).
     Open {
         view: View,
         target: Target,
@@ -638,7 +639,14 @@ impl Layout {
 
     fn open(&mut self, view: View, target: Target) {
         if let Some((pane, i)) = self.find(&view) {
-            self.show(pane, i);
+            // Asked for in a named pane ("open here"): the tab moves there.
+            // A view is open once, so anywhere else it is only shown.
+            match target {
+                Target::Pane { pane: to } if to != pane && self.pane_mut(to).is_some() => {
+                    self.move_view(&view, to, usize::MAX)
+                }
+                _ => self.show(pane, i),
+            }
             return;
         }
         let pane = match target {
@@ -927,7 +935,7 @@ mod tests {
     #[test]
     fn opening_an_open_view_focuses_it_where_it_is() {
         let mut l = two();
-        for target in [Target::Focused, Target::Side, Target::Pane { pane: 2 }] {
+        for target in [Target::Focused, Target::Side, Target::Pane { pane: 1 }] {
             let mut l2 = l.clone();
             assert!(apply(&mut l2, open(View::Game, target)));
             // Shown and focused in pane 1, never a second Game tab.
@@ -937,6 +945,26 @@ mod tests {
         }
         // Already shown and focused: nothing changes.
         assert!(!apply(&mut l, open(file("a.fun"), Target::Focused)));
+    }
+
+    #[test]
+    fn opening_an_open_view_in_another_pane_moves_it_there() {
+        let mut l = two();
+        assert!(apply(&mut l, open(file("b.fun"), Target::Pane { pane: 1 })));
+        let (to, _) = l.find(&file("a.fun")).unwrap();
+        let from = l.find(&View::Game).unwrap().0;
+        assert_ne!(from, to);
+        assert!(apply(
+            &mut l,
+            open(file("b.fun"), Target::Pane { pane: to })
+        ));
+        // One tab for it, last in the named pane, shown and focused.
+        assert_eq!(l.find(&file("b.fun")), Some((to, 1)));
+        assert_eq!(l.focus, Some(to));
+        assert_eq!(l.panes().iter().map(|p| p.tabs.len()).sum::<usize>(), 3);
+        // The last tab of a pane leaves no empty pane behind.
+        assert!(apply(&mut l, open(View::Game, Target::Pane { pane: to })));
+        assert_eq!(l.panes().len(), 1);
     }
 
     #[test]

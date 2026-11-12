@@ -226,6 +226,65 @@ pub(crate) fn write_whole(file: &Path, text: &str) -> io::Result<()> {
     written
 }
 
+/// A device paired with this desktop: `<home>/devices.json`, with its
+/// pairing secret (hex). Never sent to the core or the page.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredPairing {
+    /// The device's id, hex.
+    pub id: String,
+    pub name: String,
+    pub secret: String,
+    /// Wall-clock ms.
+    pub first_seen: u64,
+    pub last_seen: u64,
+}
+
+fn pairings_file(home: &Path) -> PathBuf {
+    home.join("devices.json")
+}
+
+/// The stored pairings; none if the file is missing. An unparsable file is
+/// moved aside (`devices.json.bad`), never overwritten.
+pub fn load_pairings(home: &Path) -> io::Result<Vec<StoredPairing>> {
+    let file = pairings_file(home);
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    match serde_json::from_str(&text) {
+        Ok(pairings) => Ok(pairings),
+        Err(e) => {
+            eprintln!(
+                "functor-app: {} is unreadable ({e}); moved aside",
+                file.display()
+            );
+            std::fs::rename(&file, file.with_extension("json.bad"))?;
+            Ok(Vec::new())
+        }
+    }
+}
+
+pub fn save_pairings(home: &Path, pairings: &[StoredPairing]) -> io::Result<()> {
+    save_json(&pairings_file(home), &pairings)
+}
+
+/// This app home's random device-link id, made on first use
+/// (`<home>/desktop-id`): headsets tell desktops apart by it.
+pub fn desktop_id(home: &Path) -> io::Result<[u8; 16]> {
+    let file = home.join("desktop-id");
+    if let Some(id) = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| functor_device_link::unhex(t.trim()))
+    {
+        return Ok(id);
+    }
+    let id = *uuid::Uuid::new_v4().as_bytes();
+    create_private_dir(home)?;
+    write_whole(&file, &functor_device_link::hex(&id))?;
+    Ok(id)
+}
+
 fn recents_file(home: &Path) -> PathBuf {
     home.join("recents.json")
 }

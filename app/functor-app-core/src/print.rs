@@ -89,7 +89,80 @@ pub fn print(state: &AppState) -> String {
             lines.push(format!("  {} {}{missing}", r.name, r.path));
         }
     }
+    // Only once the link is on or a device is known.
+    if state.devices.listening.is_some() || !state.devices.list.is_empty() {
+        lines.extend(print_devices(&state.devices));
+    }
     lines.join("\n") + "\n"
+}
+
+/// `headset:` with the device link's address, then a line per device:
+///
+/// ```text
+/// headset: connected (link 0.0.0.0:53122)
+///   Quest 3 0a1b2c3d: connected over wifi, battery 80%, build abc, running examples/hello, 12 ms; tunnel http://127.0.0.1:53130
+///   Quest Pro 9f8e7d6c: asking to pair, code 482 913
+/// ```
+pub fn print_devices(devices: &crate::Devices) -> Vec<String> {
+    use crate::devices::{DeviceState, Headset, LinkKind};
+    let word = match devices.headset {
+        Headset::NotPaired => "not paired",
+        Headset::AskingToPair => "asking to pair",
+        Headset::Away => "away",
+        Headset::Connected => "connected",
+        Headset::NeedsUpdate => "needs an update",
+        Headset::CannotReach => "cannot reach",
+    };
+    let link = devices
+        .listening
+        .as_deref()
+        .map_or("link off".to_string(), |a| format!("link {a}"));
+    let mut lines = vec![format!("headset: {word} ({link})")];
+    for d in &devices.list {
+        let state = match &d.state {
+            DeviceState::Away => "away".to_string(),
+            DeviceState::Connected {
+                link,
+                battery,
+                build,
+                project,
+                latency_ms,
+                ..
+            } => {
+                let mut parts = vec![format!(
+                    "connected over {}",
+                    match link {
+                        LinkKind::Wifi => "wifi",
+                        LinkKind::Cable => "cable",
+                    }
+                )];
+                parts.extend(battery.map(|b| format!("battery {b}%")));
+                parts.extend(build.as_ref().map(|b| format!("build {b}")));
+                parts.extend(project.as_ref().map(|p| format!("running {p}")));
+                parts.extend(latency_ms.map(|ms| format!("{ms} ms")));
+                parts.join(", ")
+            }
+            DeviceState::NeedsUpdate { reason, .. } => format!("needs an update: {reason}"),
+            DeviceState::CannotReach { reason, .. } => format!("cannot reach: {reason}"),
+        };
+        let tunnel = d
+            .tunnel
+            .as_ref()
+            .map(|t| format!("; tunnel {t}"))
+            .unwrap_or_default();
+        let short = &d.id[..d.id.len().min(8)];
+        lines.push(format!("  {} {short}: {state}{tunnel}", d.name));
+    }
+    for r in &devices.requests {
+        let short = &r.device[..r.device.len().min(8)];
+        let (a, b) = r.code.split_at(r.code.len() / 2);
+        let allowed = if r.allowed { ", allowed" } else { "" };
+        lines.push(format!(
+            "  {} {short}: asking to pair, code {a} {b}{allowed}",
+            r.name
+        ));
+    }
+    lines
 }
 
 /// How many recent projects `print` lists.
@@ -693,5 +766,56 @@ recents: 2
         assert_eq!(print_item(&Item::Reverted), "reverted: the change");
         let long = "x".repeat(300);
         assert_eq!(clip(&long).chars().count(), CLIP_CHARS + 1);
+    }
+
+    #[test]
+    fn prints_devices_and_their_states() {
+        use crate::devices::{on_link, LinkEvent, LinkKind, Paired};
+        let mut d = crate::Devices::default();
+        let paired = vec![Paired {
+            id: "0a1b2c3d4e5f".into(),
+            name: "Quest 3".into(),
+            first_seen: 1,
+            last_seen: 1,
+        }];
+        let listening = Some("0.0.0.0:53122".into());
+        on_link(&mut d, LinkEvent::Started { listening, paired }, 0);
+        let tunnel = LinkEvent::TunnelOpened {
+            device: "0a1b2c3d4e5f".into(),
+            url: "http://127.0.0.1:53130".into(),
+        };
+        on_link(&mut d, tunnel, 0);
+        let connected = LinkEvent::Connected {
+            conn: 1,
+            device: "0a1b2c3d4e5f".into(),
+            name: "Quest 3".into(),
+            app_version: "0.1.0".into(),
+            link: LinkKind::Wifi,
+        };
+        on_link(&mut d, connected, 0);
+        let status = LinkEvent::Status {
+            conn: 1,
+            battery: Some(80),
+            charging: false,
+            build: "abc".into(),
+            project: Some("examples/hello".into()),
+        };
+        on_link(&mut d, status, 0);
+        on_link(&mut d, LinkEvent::Latency { conn: 1, ms: 12 }, 0);
+        let ask = LinkEvent::PairRequest {
+            request: 2,
+            device: "9f8e7d6c5b".into(),
+            name: "Quest Pro".into(),
+            app_version: "0.1.0".into(),
+            code: "482913".into(),
+            expires_at: 9,
+        };
+        on_link(&mut d, ask, 0);
+        assert_eq!(
+            print_devices(&d).join("\n"),
+            "headset: asking to pair (link 0.0.0.0:53122)\n  \
+             Quest 3 0a1b2c3d: connected over wifi, battery 80%, build abc, running examples/hello, 12 ms; tunnel http://127.0.0.1:53130\n  \
+             Quest Pro 9f8e7d6c: asking to pair, code 482 913"
+        );
     }
 }

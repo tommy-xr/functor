@@ -34,11 +34,18 @@ export async function shot(page, name, { fullPage = false } = {}) {
   await page.screenshot({ path: `${dir}/${name}.png`, fullPage });
 }
 
+const temps = [];
+process.on("exit", () => temps.forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+/** A fresh temp directory, removed when the process exits. */
+export function tempDir(prefix) {
+  temps.push(mkdtempSync(join(tmpdir(), prefix)));
+  return temps.at(-1);
+}
+
 /** A fresh app home, removed when the process exits. */
 export function tempHome() {
-  const home = mkdtempSync(join(tmpdir(), "functor-app-e2e-"));
-  process.on("exit", () => rmSync(home, { recursive: true, force: true }));
-  return home;
+  return tempDir("functor-app-e2e-");
 }
 
 /** Git reading no user or system config, as every git these tests start (the app's included). */
@@ -75,10 +82,14 @@ export function tempProject(project) {
  * dir; pass the previous server's `home` and `token` to restart it with its
  * tasks for the same open page. `fakeAgent` is a fixture for the fake agent.
  * `dir: null` passes no `-d`, so the app picks its folder from `cwd` and its
- * recent projects.
+ * recent projects. `deviceLink` turns the device link on (loopback, no mDNS)
+ * and resolves with its address as `link`.
  */
-export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token } = {}) {
+export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token, deviceLink = false } = {}) {
   const args = ["--headless", "--port", String(port)];
+  // No LAN listener or mDNS advert unless a test pairs a stub device.
+  if (!deviceLink) args.push("--no-device-link");
+  else args.push("--device-link", "127.0.0.1:0", "--no-mdns");
   if (dir) args.push("-d", dir);
   if (!gpu) args.push("--no-gpu");
   if (FUNCTOR) args.push("--functor", FUNCTOR);
@@ -96,8 +107,11 @@ export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tem
       // Up to the newline: the line can arrive split across chunks.
       const m = err.match(/^\[functor-app\] listening on (http:\/\/\S+)\r?\n/m);
       if (!m) return;
+      // With the device link, also where headsets dial (the next line).
+      const link = err.match(/^\[functor-app\] device link on (\S+)\r?\n/m)?.[1];
+      if (deviceLink && !link) return;
       const url = new URL(m[1]);
-      resolve({ child, url: m[1], port: Number(url.port), home, token: url.hash.replace(/^#token=/, "") });
+      resolve({ child, url: m[1], port: Number(url.port), home, token: url.hash.replace(/^#token=/, ""), link });
     });
     child.on("exit", (code) => reject(new Error(`functor-app exited (${code}) before listening:\n${err}`)));
   });

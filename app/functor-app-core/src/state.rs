@@ -14,6 +14,7 @@ use crate::changes::Change;
 use crate::creation::{
     folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template, OPEN_STEP, TASK_STEP,
 };
+use crate::devices::{self, on_link, Devices, LinkCommand, LinkEvent};
 use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
@@ -123,6 +124,8 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub contexts: BTreeMap<u64, AppContext>,
+    /// Headsets, app-wide.
+    pub devices: Devices,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +181,7 @@ impl AppState {
             now: 0,
             user_layout_at: None,
             contexts: BTreeMap::new(),
+            devices: Devices::default(),
         }
     }
 
@@ -265,6 +269,8 @@ pub enum Event {
         run: u64,
         request: ViewRequest,
     },
+    /// From the shell's device link.
+    Link(LinkEvent),
     /// The app is exiting: stop the session and every run.
     Shutdown,
 }
@@ -401,6 +407,8 @@ pub enum Command {
         run: u64,
         context: AppContext,
     },
+    /// To the device link.
+    Link(LinkCommand),
 }
 
 /// One agent run for the shell to start.
@@ -544,6 +552,43 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             agent_view(&mut state, task, run, request, &mut commands),
             false,
         ),
+        Event::Link(event) => {
+            if let LinkEvent::Failed { reason } = &event {
+                commands.push(Command::Broadcast(ServerMsg::Rejected {
+                    reason: reason.clone(),
+                }));
+            }
+            let (changed, link) = on_link(&mut state.devices, event, state.now);
+            commands.extend(link.into_iter().map(Command::Link));
+            (changed, false)
+        }
+        Event::Client(ClientMsg::AllowPairing { request }) => {
+            match devices::allow(&mut state.devices, request, state.now) {
+                Ok(command) => {
+                    commands.push(Command::Link(command));
+                    (true, false)
+                }
+                Err(reason) => (reject(&mut commands, reason), false),
+            }
+        }
+        Event::Client(ClientMsg::DenyPairing { request }) => {
+            match devices::deny(&mut state.devices, request) {
+                Ok(command) => {
+                    commands.push(Command::Link(command));
+                    (true, false)
+                }
+                Err(reason) => (reject(&mut commands, reason), false),
+            }
+        }
+        Event::Client(ClientMsg::ForgetDevice { device }) => {
+            match devices::forget(&state.devices, &device) {
+                Ok(command) => commands.push(Command::Link(command)),
+                Err(reason) => {
+                    reject(&mut commands, reason);
+                }
+            }
+            (false, false)
+        }
         Event::Client(ClientMsg::GetFile { path }) => {
             get_file(&state, path, &mut commands);
             (false, false)
@@ -950,6 +995,7 @@ fn opened(
         now: _,
         user_layout_at: _,
         contexts: _,
+        devices: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {
@@ -5027,5 +5073,66 @@ mod tests {
         assert_eq!(s.new_project.unwrap().parent, "/games");
         let (_, commands) = update(listed(), client(ClientMsg::PickParent));
         assert_eq!(commands, rejected("there is no folder picker here"));
+    }
+
+    #[test]
+    fn pairing_and_forgetting_go_through_the_link() {
+        use crate::devices::{Headset, LinkCommand, LinkEvent, Paired};
+        let link = |e| Event::Link(e);
+        let (s, commands) = update(
+            state(),
+            link(LinkEvent::PairRequest {
+                request: 4,
+                device: "ab".into(),
+                name: "Quest 3".into(),
+                app_version: "0.1.0".into(),
+                code: "123456".into(),
+                expires_at: 1_000,
+            }),
+        );
+        // Broadcast: every page shows the prompt.
+        assert!(matches!(commands[..], [Command::Broadcast(_)]));
+        assert_eq!(s.devices.headset, Headset::AskingToPair);
+        let (_, commands) = update(s.clone(), client(ClientMsg::AllowPairing { request: 4 }));
+        assert!(commands.contains(&Command::Link(LinkCommand::Allow { request: 4 })));
+        let (_, commands) = update(s.clone(), client(ClientMsg::AllowPairing { request: 5 }));
+        assert_eq!(commands, rejected("that pairing request has ended"));
+        // Expired by the core's wall clock.
+        let late = AppState {
+            now: 1_000,
+            ..s.clone()
+        };
+        let (_, commands) = update(late, client(ClientMsg::AllowPairing { request: 4 }));
+        assert_eq!(commands, rejected("that pairing request has ended"));
+        let (denied, commands) = update(s.clone(), client(ClientMsg::DenyPairing { request: 4 }));
+        assert_eq!(commands[0], Command::Link(LinkCommand::Deny { request: 4 }));
+        assert!(denied.devices.list.is_empty());
+        let device = Paired {
+            id: "ab".into(),
+            name: "Quest 3".into(),
+            first_seen: 1,
+            last_seen: 1,
+        };
+        let (s, _) = update(s, link(LinkEvent::Paired { request: 4, device }));
+        assert_eq!(s.devices.headset, Headset::Away);
+        let (s, commands) = update(
+            s,
+            client(ClientMsg::ForgetDevice {
+                device: "ab".into(),
+            }),
+        );
+        assert_eq!(
+            commands[0],
+            Command::Link(LinkCommand::Forget {
+                device: "ab".into()
+            })
+        );
+        let (s, _) = update(
+            s,
+            link(LinkEvent::Forgotten {
+                device: "ab".into(),
+            }),
+        );
+        assert_eq!(s.devices.headset, Headset::NotPaired);
     }
 }

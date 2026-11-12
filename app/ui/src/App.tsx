@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
+import { DevicesPane, PairPrompt } from "./Devices";
+import { autoOpen, mayOpen, WORDS } from "./devices-model";
 import { basename, pickHarness } from "./chat-model";
 import { FolderActions, NoProject, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
-import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
+import { focusedPane, isTyping, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
 import { TransportContext, useTransport } from "./TransportBar";
@@ -81,11 +83,16 @@ export function App() {
   const task = state?.tasks.find((t) => t.id === selected && t.project === state.active) ?? null;
   const folder: FolderProps = { state, online, send, dirs, listDirs };
   useWindowMenu(state, send);
+  const pairing = usePairPrompt(state);
+  const showDevices = () => {
+    setView("devices");
+    pairing.show();
+  };
   return (
     <TransportContext.Provider value={{ transport, marks }}>
-    {/* Behind the new-project modal, nothing takes focus or clicks. */}
-    <div className="app" inert={!!state?.new_project}>
-      <TitleBar state={state} conn={conn} />
+    {/* Behind a modal, nothing takes focus or clicks. */}
+    <div className="app" inert={!!state?.new_project || pairing.request !== null}>
+      <TitleBar state={state} conn={conn} deferred={pairing.deferred} onHeadset={showDevices} />
       <div className="workspace">
         <Rail view={view} onSelect={setView} waiting={needsYou(state?.tasks ?? [], state?.active ?? null)} />
         <div className="panes">
@@ -103,11 +110,7 @@ export function App() {
               onNewTask={newTask}
             />
           )}
-          {view === "devices" && (
-            <PlaceholderPane title="Devices">
-              Headsets you connect by cable or Wi-Fi will appear here.
-            </PlaceholderPane>
-          )}
+          {view === "devices" && <DevicesPane devices={state?.devices} online={online} send={send} />}
           {state && !state.active ? (
             <NoProject {...folder} onNewProject={() => send({ type: "show_new_project", here: !!state.folder })} />
           ) : (
@@ -155,8 +158,74 @@ export function App() {
         harness={pickHarness(state)}
       />
     )}
+    {pairing.request && (
+      <PairPrompt
+        request={pairing.request}
+        waiting={(state?.devices.requests.length ?? 1) - 1}
+        online={online}
+        send={send}
+        onLater={pairing.later}
+      />
+    )}
     </TransportContext.Provider>
   );
+}
+
+/**
+ * When the pairing prompt shows. A request opens it by itself once the user
+ * has not typed into a field (the composer) for a few seconds and holds no
+ * pointer down; until then the pill is amber. Never over the new-project
+ * modal. "Decide later" puts a request off until the pill is clicked;
+ * requests queue, one prompt at a time.
+ */
+function usePairPrompt(state: AppState | null) {
+  const requests = state?.devices.requests ?? [];
+  const [open, setOpen] = useState<number | null>(null);
+  const [later, setLater] = useState<number[]>([]);
+  const typedAt = useRef(0);
+  const pointerDown = useRef(false);
+  useEffect(() => {
+    const typed = (e: Event) => {
+      if (isTyping(e.target as HTMLElement)) typedAt.current = Date.now();
+    };
+    const down = () => (pointerDown.current = true);
+    const up = () => (pointerDown.current = false);
+    document.addEventListener("keydown", typed, true);
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("pointercancel", up, true);
+    return () => {
+      document.removeEventListener("keydown", typed, true);
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up, true);
+      document.removeEventListener("pointercancel", up, true);
+    };
+  }, []);
+  const shown = requests.find((r) => r.request === open) ?? null;
+  const next = autoOpen(requests, later);
+  const modal = !!state?.new_project;
+  useEffect(() => {
+    if (shown || !next || modal) return;
+    const id = next.request;
+    const tick = () => mayOpen(typedAt.current, Date.now(), pointerDown.current) && setOpen(id);
+    tick();
+    const timer = setInterval(tick, 250);
+    return () => clearInterval(timer);
+  }, [shown?.request, next?.request, modal]);
+  return {
+    request: modal ? null : shown,
+    deferred: requests.length > 0 && !shown,
+    show: () => {
+      const first = requests[0];
+      if (!first) return;
+      setLater((l) => l.filter((id) => id !== first.request));
+      setOpen(first.request);
+    },
+    later: () => {
+      if (open !== null) setLater((l) => [...l, open]);
+      setOpen(null);
+    },
+  };
 }
 
 /** The window's own hooks into the page; absent in a browser. */
@@ -213,7 +282,19 @@ function canvasWord(state: AppState | null): string {
   return `${tabTitles(views, state?.tasks ?? []).get(viewKey(view))} tab`;
 }
 
-function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
+function TitleBar({
+  state,
+  conn,
+  deferred,
+  onHeadset,
+}: {
+  state: AppState | null;
+  conn: Conn;
+  /** A pairing request is waiting behind the pill. */
+  deferred: boolean;
+  onHeadset: () => void;
+}) {
+  const headset = state?.devices.headset ?? "not_paired";
   // The project, else the open folder.
   const name = activeProject(state)?.name ?? (state?.folder ? basename(state.folder) : null);
   const word = sessionWord(state?.session);
@@ -247,7 +328,15 @@ function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
       </span>
       {/* Dimmed while disconnected: the last state may no longer be true. */}
       <span className={`pill pill-session-${word}${conn === "open" ? "" : " pill-stale"}`}>Local session · {word}</span>
-      <span className="pill">No headset</span>
+      <button
+        type="button"
+        className={`pill pill-button pill-hs-${headset}${deferred ? " pill-attention" : ""}${conn === "open" ? "" : " pill-stale"}`}
+        data-testid="headset-pill"
+        title="Devices"
+        onClick={onHeadset}
+      >
+        Headset · {WORDS[headset]}
+      </button>
     </header>
   );
 }
@@ -368,11 +457,3 @@ function ExplorerPane(props: FolderProps) {
   );
 }
 
-function PlaceholderPane({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <aside className="pane" aria-label={title}>
-      <h2 className="pane-title">{title}</h2>
-      <p className="hint">{children}</p>
-    </aside>
-  );
-}

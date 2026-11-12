@@ -6,13 +6,13 @@ import { Icon } from "./Icon";
 import type { Notice, Send } from "./socket";
 import { deleteBlock, groupTasks, relativeTime, secondaryLine, untitled, type Group } from "./tasks-model";
 
-/** The wall clock, ticking every 30 s so relative times move on. */
-export function useNow(): number {
+/** The wall clock, ticking every `ms` (30 s: relative times move on). */
+export function useNow(ms = 30_000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    const timer = setInterval(() => setNow(Date.now()), ms);
     return () => clearInterval(timer);
-  }, []);
+  }, [ms]);
   return now;
 }
 

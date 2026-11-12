@@ -8,6 +8,7 @@ members = [
     "functor-prelude",
     "functor-solid",
     "functor-lang",
+    "runtime/functor-device-link",
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
