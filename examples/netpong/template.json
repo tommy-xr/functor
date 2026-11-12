@@ -1,0 +1,6 @@
+{
+  "name": "netpong",
+  "description": "Authoritative multiplayer Pong: a server and client roles in separate files.",
+  "tags": ["2d", "multiplayer", "keyboard"],
+  "kind": "example"
+}

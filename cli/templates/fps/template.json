@@ -1,0 +1,6 @@
+{
+  "name": "fps",
+  "description": "First person: WASD to move, the mouse to look.",
+  "tags": ["3d", "first-person", "keyboard", "mouse"],
+  "kind": "starter"
+}
