@@ -68,9 +68,14 @@ export function renderLine(line: DiffLine, key: number, tokens: Token[] | null =
 }
 
 /** The lines, highlighted when `path`'s language is known. */
-export function renderLines(lines: DiffLine[], path = ""): ReactNode {
+export function renderLines(lines: DiffLine[], path: string): ReactNode {
   const lang = langFor(path);
-  const tokens = lang ? tokenizeDiff(lang, lines) : null;
+  let tokens: (Token[] | null)[] | null = null;
+  try {
+    tokens = lang && tokenizeDiff(lang, lines);
+  } catch {
+    // Shown plain (see syntax.ts's LineStream).
+  }
   return lines.map((line, i) => renderLine(line, i, tokens?.[i] ?? null));
 }
 

@@ -45,7 +45,8 @@ npm run test:editor-keybindings # headless e2e — opt-in Vim in the sandbox and
   non-loopback browser origins because its code-push API has no authentication.
   Current Chromium may ask once for local-network access when the link starts.
 - `src/functor-lang.ts` — the Functor Lang CodeMirror language + synthwave theme,
-  shared by both editors.
+  shared by both editors. Its tokenizer is `src/functor-lang-syntax.ts`, which the
+  desktop app (`app/ui`) also uses.
 - `manual/index.html` — getting started, the game contract, language principles,
   and topic guides. Runnable examples link directly into the sandbox.
 - `docs/index.html` / `src/api-reference-html.mjs` / `src/api-docs.ts` — the API

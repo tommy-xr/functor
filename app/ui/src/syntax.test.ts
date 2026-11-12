@@ -84,8 +84,24 @@ test("rendered text keeps its exact characters", () => {
   assert.match(html, /<span class="tok-comment">\/\/ c<\/span>/);
   const plain = html.replace(/<[^>]+>/g, "").replace(/&quot;/g, '"');
   assert.equal(plain, text);
-  // Unknown types and very long files stay plain.
+  // Unknown types and files past the cap stay plain.
   assert.equal(renderText("notes.txt", text), text);
-  const long = "x\n".repeat(MAX_HIGHLIGHT_LINES);
-  assert.equal(renderText("big.fun", long), long);
+  const lines = (n: number) => Array(n).fill("x").join("\n");
+  assert.notEqual(renderText("big.fun", lines(MAX_HIGHLIGHT_LINES)), lines(MAX_HIGHLIGHT_LINES));
+  assert.equal(renderText("big.fun", lines(MAX_HIGHLIGHT_LINES + 1)), lines(MAX_HIGHLIGHT_LINES + 1));
+});
+
+test("JSON through the same parser", () => {
+  const [line] = tokenize(langFor("functor.json")!, ['  "entry": "game.fun", "n": 2, "on": true, "x": null']);
+  assert.deepEqual(show(line!).filter((t) => t.includes(":") && !t.startsWith(":")), [
+    'string:"entry"',
+    'string:"game.fun"',
+    'string:"n"',
+    "number:2",
+    'string:"on"',
+    "atom:true",
+    'string:"x"',
+    "variableName:null",
+  ]);
+  assert.ok(langFor("prelude.funi"));
 });

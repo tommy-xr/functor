@@ -16,9 +16,13 @@ type Lang = StreamParser<unknown>;
 /** Beyond this, a file shows as plain text: tokens are cheap, a span per token is not. */
 export const MAX_HIGHLIGHT_LINES = 5000;
 
-/** The language for a path: `.fun`, and `.json` (its strings, numbers and booleans lex the same). */
+/**
+ * The language for a path: Functor Lang (`.fun`, `.funi`), and `.json` through
+ * the same parser: its strings, plain numbers and booleans lex alike (`null`
+ * stays plain; `-1` and `1e-5` split at the sign).
+ */
 export function langFor(path: string): Lang | null {
-  return /\.(fun|json)$/i.test(path) ? (functorLangParser as Lang) : null;
+  return /\.(funi?|json)$/i.test(path) ? (functorLangParser as Lang) : null;
 }
 
 function start(lang: Lang): unknown {
@@ -26,9 +30,10 @@ function start(lang: Lang): unknown {
 }
 
 /**
- * The part of CodeMirror's `StringStream` a stream parser calls, same
- * semantics. Importing the real one brings most of @codemirror/language
- * (~230 KB minified) into the bundle.
+ * The part of CodeMirror's `StringStream` the Functor Lang parser calls; a
+ * parser calling more throws, and the text shows plain (`renderText`,
+ * `renderLines`). Importing the real one brings most of
+ * @codemirror/language (~230 KB minified) into the bundle.
  */
 class LineStream {
   pos = 0;
@@ -48,7 +53,7 @@ class LineStream {
   }
   eatSpace() {
     const from = this.pos;
-    while (/[\s ]/.test(this.string.charAt(this.pos))) this.pos++;
+    while (/\s/.test(this.string.charAt(this.pos))) this.pos++;
     return this.pos > from;
   }
   skipToEnd() {
@@ -76,7 +81,7 @@ export function tokenizeLine(lang: Lang, line: string, state: unknown): Token[] 
   const stream = new LineStream(line);
   while (!stream.eol()) {
     const kind = lang.token(stream as unknown as StringStream, state) ?? null;
-    // A parser that does not advance would loop forever: take one character.
+    // A token that consumed nothing would loop forever: take one character.
     if (stream.pos === stream.start) stream.next();
     const text = line.slice(stream.start, stream.pos);
     const last = out.at(-1);
@@ -131,8 +136,14 @@ export function renderText(path: string, text: string): ReactNode {
   if (!lang) return text;
   const lines = text.split("\n");
   if (lines.length > MAX_HIGHLIGHT_LINES) return text;
-  return tokenize(lang, lines).flatMap((tokens, i) => {
-    const nodes = renderTokens(tokens, `${i}:`);
+  let tokens: Token[][];
+  try {
+    tokens = tokenize(lang, lines);
+  } catch {
+    return text;
+  }
+  return tokens.flatMap((line, i) => {
+    const nodes = renderTokens(line, `${i}:`);
     return i < lines.length - 1 ? [...nodes, "\n"] : nodes;
   });
 }
