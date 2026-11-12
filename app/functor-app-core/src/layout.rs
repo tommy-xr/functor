@@ -953,7 +953,10 @@ mod tests {
         let (to, _) = l.find(&file("a.fun")).unwrap();
         let from = l.find(&View::Game).unwrap().0;
         assert_ne!(from, to);
-        assert!(apply(&mut l, open(file("b.fun"), Target::Pane { pane: to })));
+        assert!(apply(
+            &mut l,
+            open(file("b.fun"), Target::Pane { pane: to })
+        ));
         // One tab for it, last in the named pane, shown and focused.
         assert_eq!(l.find(&file("b.fun")), Some((to, 1)));
         assert_eq!(l.focus, Some(to));
