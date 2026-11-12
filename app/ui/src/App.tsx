@@ -368,7 +368,7 @@ function ExplorerPane(props: FolderProps) {
   const openFile = (path: string, side: boolean) =>
     send({ type: "layout", op: { type: "open", view: { kind: "file", path }, target: { kind: side ? "side" : "focused" } } });
   return (
-    <aside className="pane" aria-label="Explorer">
+    <aside className="pane explorer" aria-label="Explorer">
       <ProjectPicker {...props} />
       <section className="stack">
         <h2 id="files-heading" className="files-heading">

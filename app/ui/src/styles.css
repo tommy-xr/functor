@@ -3295,6 +3295,10 @@ blockquote {
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
+  /* As tall as its content here, so the project menu hangs over the canvas, not clipped. */
+  .explorer {
+    overflow: visible;
+  }
   /* Bounded, so a long file scrolls inside its pane rather than the page;
      the panes scroll, so the mini view stays put over them. */
   .canvas {
