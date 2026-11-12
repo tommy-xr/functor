@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent_view::{
+    agent_view, app_context, auto_apply, prune_highlight, refresh_contexts, step_clicked,
+    AppContext, Highlight, ViewReply, ViewRequest,
+};
 use crate::changes::Change;
 use crate::creation::{
     folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template, OPEN_STEP, TASK_STEP,
@@ -13,7 +17,7 @@ use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, GameInput, ServerMsg};
-use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
+use crate::session::{Display, Session, SessionEvent, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, stop_run, title, Harness, Item, Run, RunEvent, Task,
     TaskStatus,
@@ -77,6 +81,26 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub first_task: Option<(u64, String, Harness)>,
+    /// What the agent or a walkthrough step last pointed at (D25).
+    pub highlight: Option<Highlight>,
+    /// The page's canvas is too narrow for panes side by side, so they
+    /// stack: the agent's views make no splits there.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub canvas_stacked: bool,
+    /// The shell's clock (ms) when the event being stepped arrived, set
+    /// before each `update`; the core only compares it.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub clock: u64,
+    /// When (`clock`) the user last changed the layout.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub user_layout_at: Option<u64>,
+    /// Per running task, the app context its tool server last got.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub contexts: BTreeMap<u64, AppContext>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +146,11 @@ impl AppState {
             new_project: None,
             last_parent: None,
             first_task: None,
+            highlight: None,
+            canvas_stacked: false,
+            clock: 0,
+            user_layout_at: None,
+            contexts: BTreeMap::new(),
         }
     }
 
@@ -201,6 +230,13 @@ pub enum Event {
         task: u64,
         baseline: String,
         result: Result<(), String>,
+    },
+    /// Run `run` of task `task`'s tool server asks to change the view
+    /// (`POST /agent/view` with the run's secret); answered with `ViewReply`.
+    AgentView {
+        task: u64,
+        run: u64,
+        request: ViewRequest,
     },
     /// The app is exiting: stop the session and every run.
     Shutdown,
@@ -312,6 +348,15 @@ pub enum Command {
         baseline: String,
         paths: Vec<String>,
     },
+    /// The answer to the `Event::AgentView` being stepped, for its caller.
+    ViewReply(ViewReply),
+    /// Give run `run` of task `task`'s tool server this context (`PUT
+    /// /app-context`); writes may be coalesced.
+    AppContext {
+        task: u64,
+        run: u64,
+        context: AppContext,
+    },
 }
 
 /// One agent run for the shell to start.
@@ -336,16 +381,6 @@ pub struct RunSpec {
     /// The game session's debug server, when it runs this task's project.
     pub attach: Option<String>,
     pub context: AppContext,
-}
-
-/// What the tool server's `app_context` tool reports to the agent.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct AppContext {
-    /// The task's project, relative to the repo root.
-    pub project: String,
-    /// The game session's debug URL, when it runs this project.
-    pub session: Option<String>,
-    pub session_mode: SessionMode,
 }
 
 pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
@@ -393,7 +428,34 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::SetHarness { harness }) => {
             (set_harness(&mut state, harness, &mut commands), true)
         }
-        Event::Client(ClientMsg::Layout { op }) => (layout_op(&mut state, op, &mut commands), true),
+        Event::Client(ClientMsg::Layout { op }) => {
+            let changed = layout_op(&mut state, op, &mut commands);
+            if changed {
+                state.user_layout_at = Some(state.clock);
+            }
+            (changed, true)
+        }
+        Event::Client(ClientMsg::WalkthroughStep { task, item, step }) => {
+            match step_clicked(&mut state, task, item, step, &mut commands) {
+                Ok(changed) => (changed, false),
+                Err(reason) => (reject(&mut commands, reason), false),
+            }
+        }
+        Event::Client(ClientMsg::ClearHighlight { seq }) => {
+            let clear = state.highlight.as_ref().is_some_and(|h| h.seq == seq);
+            if clear {
+                state.highlight = None;
+            }
+            (clear, false)
+        }
+        Event::Client(ClientMsg::CanvasStacked { stacked }) => {
+            state.canvas_stacked = stacked;
+            (false, false)
+        }
+        Event::AgentView { task, run, request } => (
+            agent_view(&mut state, task, run, request, &mut commands),
+            false,
+        ),
         Event::Client(ClientMsg::GetFile { path }) => {
             get_file(&state, path, &mut commands);
             (false, false)
@@ -575,7 +637,10 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (false, false)
         }
         Event::Run { task, run, event } => {
-            (on_run(&mut state, task, run, event, &mut commands), false)
+            let ended = matches!(event, RunEvent::Ended { .. });
+            let changed = on_run(&mut state, task, run, event, &mut commands);
+            let shown = changed && ended && auto_apply(&mut state, task, run, &mut commands);
+            (changed || shown, false)
         }
         Event::TasksLoaded { tasks } => {
             state.tasks = tasks
@@ -614,6 +679,10 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (false, false)
         }
     };
+    let highlighted = state.highlight.clone();
+    prune_highlight(&mut state);
+    let changed = changed || state.highlight != highlighted;
+    refresh_contexts(&mut state, &mut commands);
     // A client message that changed nothing still answers with the state, so
     // the sender sees what is active.
     let msg = || ServerMsg::State {
@@ -706,6 +775,11 @@ fn opened(
         new_project: _,
         last_parent: _,
         first_task: _,
+        highlight: _,
+        canvas_stacked: _,
+        clock: _,
+        user_layout_at: _,
+        contexts: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {
@@ -719,6 +793,8 @@ fn opened(
         tasks,
         harness_choice,
         layouts,
+        // The old folder's highlight could name a project of the same path.
+        highlight: None,
         ..std::mem::replace(state, AppState::none())
     };
     remember_active(state, commands);
@@ -1010,15 +1086,24 @@ fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Comman
 /// Applies `op` to the active project's layout. A live game in a pane
 /// keeps its tab: closing it is refused (Stop game, or another placement,
 /// first). A placement whose session runs differently restarts it.
-fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<Command>) -> bool {
+pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<Command>) -> bool {
     let Some(project) = state.active.clone() else {
         return false;
     };
     let before = state.layouts.get(&project).cloned().unwrap_or_default();
     let mut layout = before.clone();
+    let restore = op == LayoutOp::Restore;
     match layout.apply(op, |view| check_view(state, &project, view)) {
         Ok(true) => {
             let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
+            // Restoring keeps a running game's tab, in the pane the focus is back in.
+            if restore && live && layout.game.placement == Placement::Pane {
+                let game = LayoutOp::Open {
+                    view: View::Game,
+                    target: Target::Focused,
+                };
+                let _ = layout.apply(game, |_| Ok(()));
+            }
             if live
                 && layout.game.placement == Placement::Pane
                 && layout.find(&View::Game).is_none()
@@ -1062,7 +1147,7 @@ fn prune(state: &mut AppState, project: &str, commands: &mut Vec<Command>) -> bo
     changed
 }
 
-fn save_layout(state: &mut AppState, project: &str, layout: Layout, commands: &mut Vec<Command>) {
+pub(crate) fn save_layout(state: &mut AppState, project: &str, layout: Layout, commands: &mut Vec<Command>) {
     commands.push(Command::SaveLayout {
         dir: project_dir(Path::new(&state.repo_root), project),
         layout: Box::new(layout.clone()),
@@ -1072,7 +1157,7 @@ fn save_layout(state: &mut AppState, project: &str, layout: Layout, commands: &m
 
 /// Why `view` cannot be open in `project`'s layout. Files are checked
 /// against the listing only for the active project, the one listed.
-fn check_view(state: &AppState, project: &str, view: &View) -> Result<(), String> {
+pub(crate) fn check_view(state: &AppState, project: &str, view: &View) -> Result<(), String> {
     match view {
         View::Game => Ok(()),
         View::File { path } => {
@@ -1235,14 +1320,9 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
         .expect("a known task")
         .project;
     // The session is the active project's; another project's task gets none.
-    let attach = match &state.session {
-        Some(Session {
-            status: SessionStatus::Running { debug_url, .. },
-            ..
-        }) if state.active.as_ref() == Some(project) => Some(debug_url.clone()),
-        _ => None,
-    };
-    let session_mode = placement(state, project).session_mode();
+    let context = app_context(state, project);
+    let attach = context.session.clone();
+    state.contexts.insert(id, context.clone());
     let tracks = state.tracks_changes;
     let task = state
         .tasks
@@ -1256,6 +1336,7 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
     task.run = Some(Run {
         id: run,
         usage: None,
+        views: 0,
     });
     task.status = derive_status(task);
     commands.push(Command::StartRun(Box::new(RunSpec {
@@ -1268,12 +1349,8 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
         resume: task.session_id.clone(),
         snapshot: tracks && task.baseline.is_none(),
         baseline: task.baseline.clone().filter(|_| tracks),
-        attach: attach.clone(),
-        context: AppContext {
-            project: task.project.clone(),
-            session: attach,
-            session_mode,
-        },
+        attach,
+        context,
     })));
     commands.push(save(&root, task));
     broadcast_items(commands, task, vec![run as usize]);
@@ -1522,14 +1599,14 @@ fn on_run(
     }
 }
 
-fn save(root: &Path, task: &Task) -> Command {
+pub(crate) fn save(root: &Path, task: &Task) -> Command {
     Command::SaveTask {
         dir: project_dir(root, &task.project),
         task: Box::new(task.clone()),
     }
 }
 
-fn broadcast_items(commands: &mut Vec<Command>, task: &Task, changed: Vec<usize>) {
+pub(crate) fn broadcast_items(commands: &mut Vec<Command>, task: &Task, changed: Vec<usize>) {
     for index in changed {
         commands.push(Command::Broadcast(ServerMsg::Item {
             task: task.id,
@@ -2153,6 +2230,7 @@ mod tests {
             })),
             focus: Some(1),
             game: Default::default(),
+            agent: Default::default(),
         };
         s.layouts.insert("examples/b".to_string(), file_only);
         let (next, _) = update(s, switch("examples/b"));
@@ -2344,6 +2422,7 @@ mod tests {
     #[test]
     fn a_new_task_starts_a_run_in_the_active_project() {
         let (next, commands) = update(state(), new_task("  What is the count?\nAnd why?"));
+        let s0 = state();
         let t = task(&next, 1);
         assert_eq!(t.title, "What is the count?");
         assert_eq!(t.project, "examples/a");
@@ -2366,11 +2445,7 @@ mod tests {
                     snapshot: false,
                     baseline: None,
                     attach: None,
-                    context: AppContext {
-                        project: "examples/a".to_string(),
-                        session: None,
-                        session_mode: SessionMode::Hidden,
-                    },
+                    context: crate::agent_view::app_context(&s0, "examples/a"),
                 })),
                 Command::SaveTask {
                     dir: PathBuf::from("/repo/examples/a"),
@@ -2596,7 +2671,11 @@ mod tests {
         cut.transcript.push(Item::User {
             text: "more".to_string(),
         });
-        cut.run = Some(Run { id: 3, usage: None });
+        cut.run = Some(Run {
+            id: 3,
+            usage: None,
+            views: 0,
+        });
         cut.status = TaskStatus::InProgress;
         let (s, _) = update(
             state(),
@@ -3270,12 +3349,14 @@ mod tests {
             }),
             focus: Some(2),
             game: Default::default(),
+            agent: Default::default(),
         };
         // Another project's files are not listed yet, so its file tabs stay.
         let theirs = Layout {
             root: Some(pane(1, vec![file("b.fun")])),
             focus: Some(1),
             game: Default::default(),
+            agent: Default::default(),
         };
         let layouts = BTreeMap::from([
             ("examples/a".to_string(), saved),
@@ -3298,6 +3379,7 @@ mod tests {
                 root: None,
                 focus: None,
                 game: Default::default(),
+                agent: Default::default(),
             }
         );
         assert_eq!(

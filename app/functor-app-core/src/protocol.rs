@@ -106,6 +106,21 @@ pub enum ClientMsg {
     RemoveRecent {
         path: String,
     },
+    /// Show step `step` of the walkthrough at transcript index `item` of
+    /// `task` (a click on its card).
+    WalkthroughStep {
+        task: u64,
+        item: usize,
+        step: usize,
+    },
+    /// The user scrolled highlight `seq` (`AppState::highlight`) out of view.
+    ClearHighlight {
+        seq: u64,
+    },
+    /// The canvas now stacks its panes (too narrow side by side), or not.
+    CanvasStacked {
+        stacked: bool,
+    },
 }
 
 /// Keyboard and mouse input in the debug server's `POST /input` shape.

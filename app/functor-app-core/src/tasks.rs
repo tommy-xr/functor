@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::agent_view::Step;
 use crate::changes::Change;
 use crate::session::loopback_url;
 
@@ -93,6 +94,9 @@ pub struct Run {
     pub id: u64,
     /// The latest (cumulative) usage, added as an item when the run ends.
     pub usage: Option<Usage>,
+    /// View requests the run made ([`crate::agent_view::MAX_VIEW_REQUESTS`]).
+    #[serde(default)]
+    pub views: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +140,12 @@ pub enum Item {
     Kept,
     /// The user reverted the task's change.
     Reverted,
+    /// The agent's walkthrough (`present`, D25), which the user steps
+    /// through; `current` is the step shown last, `None` until one is.
+    Walkthrough {
+        steps: Vec<Step>,
+        current: Option<usize>,
+    },
 }
 
 /// The app's mirror of `mis-agent`'s `AgentEvent` (which has no TS types),
@@ -476,7 +486,11 @@ mod tests {
             harness: Harness::Claude,
             model: None,
             session_id: None,
-            run: Some(Run { id: 0, usage: None }),
+            run: Some(Run {
+                id: 0,
+                usage: None,
+                views: 0,
+            }),
             baseline: None,
             change: None,
             reverting: false,
@@ -592,6 +606,7 @@ mod tests {
         task.run = Some(Run {
             id: task.transcript.len() as u64 - 1,
             usage: None,
+            views: 0,
         });
         let result = AgentEvent::ToolResult {
             content: "late".to_string(),

@@ -3,6 +3,7 @@
 //! tasks. No UI, window or server; the shell in `functor-app` runs IO and
 //! feeds results in as events.
 
+pub mod agent_view;
 pub mod changes;
 pub mod creation;
 pub mod folders;
@@ -22,7 +23,8 @@ pub use projects::discover;
 pub use session::{
     listening_url, Display, Polled, Session, SessionEvent, SessionMode, SessionStatus,
 };
-pub use state::{update, AppContext, AppState, Command, Event, GitInfo, RunSpec};
+pub use agent_view::AppContext;
+pub use state::{update, AppState, Command, Event, GitInfo, RunSpec};
 pub use tasks::{AgentEvent, Harness, Item, RunEvent, Task, TaskStatus};
 
 #[cfg(all(test, feature = "ts"))]
