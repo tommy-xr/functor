@@ -7,10 +7,21 @@
 // APP_UI_SHOTS=<dir> saves the empty state and a finished conversation.
 import { mkdirSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal, watchState } from "./app.mjs";
+import {
+  FUNCTOR,
+  ROOT,
+  requireBuilt,
+  startServer,
+  stopServer,
+  tempProject,
+  watchErrors,
+  watchExternal,
+  watchState,
+} from "./app.mjs";
 
 const SHOTS = process.env.APP_UI_SHOTS;
-const PROJECT = `${ROOT}examples/counter`;
+// A copy in a throwaway repo: a run snapshots its repo's working tree.
+const PROJECT = tempProject("examples/counter");
 const CHAT = `${ROOT}app/ui/e2e/fixtures/chat.jsonl`;
 const FAIL = `${ROOT}app/ui/e2e/fixtures/fail.jsonl`;
 const FIRST = "What frame is the game on?";

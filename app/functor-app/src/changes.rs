@@ -405,6 +405,7 @@ pub(crate) mod tests {
         static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
         let home = HOME.get_or_init(|| tempfile::tempdir().unwrap());
         std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_CONFIG_HOME", home.path());
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
     }
@@ -445,6 +446,7 @@ pub(crate) mod tests {
                 .args(args)
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("XDG_CONFIG_HOME", std::env::var_os("XDG_CONFIG_HOME").unwrap())
                 .output()
                 .unwrap();
             assert!(out.status.success(), "git {args:?}: {out:?}");

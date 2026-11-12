@@ -1,9 +1,10 @@
 import { useState, type KeyboardEvent, type ReactNode } from "react";
-import type { AppState, Session, SessionMode } from "./generated/protocol";
+import type { AppState, Session, SessionMode, Task } from "./generated/protocol";
 import { ChatDock, type CanvasTab } from "./Chat";
+import { DiffView, type DiffTarget } from "./DiffView";
 import { GameView } from "./GameView";
 import { Icon } from "./Icon";
-import { useAppSocket, type Conn, type Send } from "./socket";
+import { useAppSocket, type Conn, type DiffMsg, type Notice, type Send } from "./socket";
 
 
 const VIEWS = ["explorer", "tasks", "devices"] as const;
@@ -12,11 +13,19 @@ type View = (typeof VIEWS)[number];
 const VIEW_LABELS: Record<View, string> = { explorer: "Explorer", tasks: "Tasks", devices: "Devices" };
 
 export function App() {
-  const { state, conn, send, transcripts, fetchTranscript, accepted, notice } = useAppSocket();
+  const { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff } = useAppSocket();
   const [view, setView] = useView();
   // Lifted so the chat's cards can switch it.
   const [tab, setTab] = useState<CanvasTab>("game");
+  // The chat's current task (`null`: a new one), which the Diff tab reviews.
+  const [selected, setSelected] = useState<number | null>(null);
+  const [target, setTarget] = useState<DiffTarget | null>(null);
+  const viewDiff = (path: string | null) => {
+    setTab("diff");
+    setTarget((t) => ({ path, seq: (t?.seq ?? 0) + 1 }));
+  };
   const online = conn === "open" && state !== null;
+  const task = state?.tasks.find((t) => t.id === selected && t.project === state.active) ?? null;
   return (
     <div className="app">
       <TitleBar state={state} conn={conn} />
@@ -34,7 +43,14 @@ export function App() {
               Headsets you connect by cable or Wi-Fi will appear here.
             </PlaceholderPane>
           )}
-          <Canvas state={state} online={online} send={send} tab={tab} onTab={setTab} />
+          <Canvas
+            state={state}
+            online={online}
+            send={send}
+            tab={tab}
+            onTab={setTab}
+            review={{ task, diff: task ? diffs.get(task.id) : undefined, fetchDiff, notice, target }}
+          />
           <ChatDock
             state={state}
             conn={conn}
@@ -45,6 +61,9 @@ export function App() {
             notice={notice}
             tab={tab}
             onTab={setTab}
+            selected={selected}
+            onSelect={setSelected}
+            onViewDiff={viewDiff}
           />
         </div>
       </div>
@@ -202,8 +221,17 @@ function PlaceholderPane({ title, children }: { title: string; children: ReactNo
 const TABS = [
   { id: "game", label: "Game" },
   { id: "code", label: "Code", text: "The project's code will open here." },
-  { id: "diff", label: "Diff", text: "Changes the agent makes will appear here for review." },
+  { id: "diff", label: "Diff" },
 ] as const;
+
+/** What the Diff tab shows: the current task's change. */
+type Review = {
+  task: Task | null;
+  diff: DiffMsg | undefined;
+  fetchDiff: (task: number) => void;
+  notice: Notice | null;
+  target: DiffTarget | null;
+};
 
 function Canvas({
   state,
@@ -211,12 +239,14 @@ function Canvas({
   send,
   tab: id,
   onTab,
+  review,
 }: {
   state: AppState | null;
   online: boolean;
   send: Send;
   tab: CanvasTab;
   onTab: (tab: CanvasTab) => void;
+  review: Review;
 }) {
   const tab = TABS.findIndex((t) => t.id === id);
   // Arrow keys move between tabs, as in the ARIA tabs pattern.
@@ -262,6 +292,8 @@ function Canvas({
       <div className="canvas-body" id="canvas-panel" role="tabpanel" aria-labelledby={`tab-${current.id}`}>
         {current.id === "game" ? (
           <GameView state={state} online={online} send={send} />
+        ) : current.id === "diff" ? (
+          <DiffView state={state} online={online} send={send} {...review} />
         ) : (
           <div className="placeholder">
             <p>{current.text}</p>

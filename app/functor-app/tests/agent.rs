@@ -77,6 +77,8 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .args(args)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        // No `git/ignore` or `git/attributes` of the user's.
+        .env("XDG_CONFIG_HOME", dir)
         .output()
         .unwrap();
     assert!(out.status.success(), "git {args:?}: {out:?}");
@@ -290,6 +292,7 @@ fn task_command(repo: &Path, home: &Path, functor: &Path, fixture: &Path, prompt
         .env("FUNCTOR_APP_HOME", home)
         .env("FUNCTOR_APP_FAKE_AGENT", fixture)
         .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1");
     command
@@ -474,6 +477,7 @@ mod socket {
             .env("FUNCTOR_APP_HOME", home)
             .env("FUNCTOR_APP_FAKE_AGENT", fixture)
             .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdout(Stdio::null())

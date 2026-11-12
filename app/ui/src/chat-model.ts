@@ -49,7 +49,7 @@ export function stepPhrase(name: string, input: JsonValue): Phrase {
     const v = isObject(input) ? input[key] : undefined;
     return typeof v === "string" && v.trim() ? v.trim() : undefined;
   };
-  const file = arg("file_path") ?? arg("notebook_path") ?? arg("path");
+  const file = toolFile(input);
   const named = (text: string, fallback: string) =>
     file ? { text, code: basename(file) } : { text: `${text} ${fallback}` };
   switch (bare) {
@@ -82,6 +82,15 @@ export function stepPhrase(name: string, input: JsonValue): Phrase {
     }
   }
   return { text: GAME_TOOLS.get(bare) ?? bare };
+}
+
+/** The file a tool call names, as its input gives it. */
+export function toolFile(input: JsonValue): string | undefined {
+  for (const key of ["file_path", "notebook_path", "path"]) {
+    const v = isObject(input) ? input[key] : undefined;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
 }
 
 export function phraseText({ text, code }: Phrase): string {
@@ -129,9 +138,11 @@ export function applyItem(items: Item[] | undefined, index: number, item: Item):
 
 export type Outcome = { tone: "ok" | "danger" | "neutral"; label: string };
 
-/** The result pill for a `finished` or `stopped` item; `null` for others. */
+/** The result pill for a `finished`, `stopped`, `kept` or `reverted` item; `null` for others. */
 export function outcome(item: Item): Outcome | null {
   if (item.kind === "stopped") return { tone: "neutral", label: "Stopped" };
+  if (item.kind === "kept") return { tone: "ok", label: "Change kept" };
+  if (item.kind === "reverted") return { tone: "neutral", label: "Change reverted" };
   if (item.kind !== "finished") return null;
   if (item.ok) return { tone: "ok", label: "Done" };
   const why = item.summary ? firstLine(item.summary) : "";
@@ -162,10 +173,12 @@ export function clip(text: string, lines = 12, chars = 800): { shown: string; mo
   return shown.length < text.length ? { shown: `${shown}…`, more: true } : { shown: text, more: false };
 }
 
-/** The task the dock opens on: the newest in `project` that is in progress or waiting on you. */
+/** The task the dock opens on: the newest in `project` that is in progress, ready for review or waiting on you. */
 export function initialTask(tasks: Task[], project: string | null): number | null {
   const open = tasks.filter(
-    (t) => t.project === project && (t.status.kind === "in_progress" || t.status.kind === "waiting_on_you"),
+    (t) =>
+      t.project === project &&
+      (t.status.kind === "in_progress" || t.status.kind === "ready_for_review" || t.status.kind === "waiting_on_you"),
   );
   return open.length ? Math.max(...open.map((t) => t.id)) : null;
 }
