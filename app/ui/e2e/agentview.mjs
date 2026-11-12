@@ -7,13 +7,12 @@
 // APP_UI_SHOTS=<dir> saves stills; APP_UI_FRAMES=<dir> saves numbered frames
 // of the 1440 run for a GIF.
 import { chromium, expect } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import {
   FUNCTOR,
   ROOT,
   reopen,
   requireBuilt,
-  shot,
   startServer,
   stopServer,
   tabs,
@@ -38,10 +37,9 @@ function framer(page) {
   const dir = process.env.APP_UI_FRAMES;
   let n = 0;
   return async (hold = 1) => {
-    if (!dir) return;
+    if (!dir || !page) return;
     mkdirSync(dir, { recursive: true });
     const png = await page.screenshot();
-    const { writeFileSync } = await import("node:fs");
     for (let i = 0; i < hold; i++) writeFileSync(`${dir}/${String(n++).padStart(4, "0")}.png`, png);
   };
 }
@@ -112,8 +110,10 @@ async function walkthrough(browser, width, height) {
     expect(await input.evaluate((el) => [document.activeElement === el, el.selectionStart, el.value])).toEqual([true, 6, DRAFT]);
     expect(await userPane(page)).toEqual(before.pane);
     await frame(8);
-    if (width === 1440) await shot(page, "agent-walkthrough-1440");
-    else await shot(page, `agent-walkthrough-${width}`);
+    if (process.env.APP_UI_SHOTS) {
+      // The whole page: narrow, it scrolls, with the canvas above the chat.
+      await page.screenshot({ path: `${process.env.APP_UI_SHOTS}/agent-walkthrough-${width}.png`, fullPage: width < 1000 });
+    }
 
     // Stepping: the changes scrolled to game.fun, then the game; back again. The composer keeps the focus.
     const next = card.getByRole("button", { name: "Next" });

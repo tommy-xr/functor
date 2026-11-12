@@ -616,7 +616,7 @@ function WalkthroughCard({ item, index, walk }: { item: WalkthroughItem; index: 
                     {available[i] ? (
                       <>
                         {where.code && <code>{where.code}</code>}
-                        {(where.after ?? "").replace(/^ /, "")}
+                        {where.code ? where.after : where.after?.replace(/^ /, "")}
                       </>
                     ) : (
                       "No longer available"
