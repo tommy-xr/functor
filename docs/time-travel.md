@@ -25,8 +25,10 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   (touching nothing) rather than landing them on different times when the two
   retention windows disagree. Non-destructive scrubbing (`seek_scene_to`) lets
   you drag back *and* forth; the future is branched only when play resumes.
-- **Live triggers.** Desktop debug server `POST /rewind {"frame":N}` (#225); an
-  egui scrubber overlay on desktop (`~` console toggle, hidden by default); a
+- **Live triggers.** Desktop debug server `POST /rewind {"frame":N}` (#225) and
+  the non-destructive `POST /seek {"frame":N}` with `/state.clock` (debug
+  protocol v37, which the desktop app's transport bar drives); an egui
+  scrubber overlay on desktop (`~` console toggle, hidden by default); a
   custom DOM/SVG timeline on web (index-functor-lang.html, outside the canvas —
   see the design note below).
 - **PRs:** `History` primitive #218, per-frame model recording #219, coupled

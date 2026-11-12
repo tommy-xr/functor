@@ -107,6 +107,8 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 2.2 | Device link, desktop side: WebSocket listener with token auth, request/response tunnelling of debug-runtime calls, a local port that proxies to the device through the link, mDNS advert. A loopback **device stub** binary speaks the device side for tests. | Tests: stub connects, `curl` to the proxied port reaches the stub; bad token refused. |
 | 2.3 | Device link, Quest side: read the pairing file, find the desktop by mDNS, dial with the token, serve tunnelled requests into the existing debug handler, reconnect with backoff. | Stub-level tests in common code; on-device check per the `vr-device-loop` skill. |
 | 2.4 | Pairing: on cable attach, write token and desktop address to the headset over adb and enable adb over Wi-Fi. Devices pane shows link, cable, battery, build, Forget. | Fake `adb` tests; headset when attached. State in the PR when none was. |
+| 2.4a | Pairing without a cable (D26): the headset app lists desktops it finds and shows a code; the desktop shows the same code and Allow / Not mine; the pairing secret is exchanged only after Allow. | Stub pairs end to end; a wrong or expired code is refused; nothing typed on the device side. |
+| 2.4c | Connection states (D27): the six states as core state from link and adb events, the title-bar pill, the Devices pane cards with their one action each, headset-app update over the link. | Core unit tests per transition; Playwright with a stub device walking every state. |
 | 2.4b | Headset placement (D21): the fourth game placement appears while a headset is linked; choosing it runs the project on the device and turns the desktop game view into the mirror placeholder (the mirror itself is 4.5). | Stub-driven Playwright. |
 | 2.5 | `run vr` over the link: source and asset pushes go through the tunnel when a link is up, adb forward otherwise. | Existing `run vr` tests; stub test. |
 
@@ -126,14 +128,32 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 4.2 | Speech-to-text on the desktop: Whisper via `whisper-rs`, model downloaded on first use to `~/.functor/models`; composer mic uses it. | Test with a checked-in short clip; model download behind a flag in CI. |
 | 4.3 | Quest: `RECORD_AUDIO`, mic capture, thumbstick push-to-talk, clip + capsule data sent over the link. | Stub sends a recorded clip end to end; headset for the mic. |
 | 4.4 | Headset status toast (heard → working → reloaded) driven over the link. | Capture on device or emulator. |
+| 4.4a | Overlay panel (D28): the runtime draws the panel over any game on the menu button — Now and Talk first, then Tasks — fed over the link; the wrist light when closed. | Emulator captures; device when attached; `frame_bench` unchanged when the panel is closed. |
+| 4.4b | Router (D29, D30): one model call per utterance splitting it into steer / new task, the decision shown with overrides on desktop and headset, steer as stop-and-resume, a task queue that starts the next task with every later utterance attached. | Core unit tests for the queue; router tests on recorded utterances; fake-agent end to end. |
 | S3 | Spike before 4.5: can `/state.model` round-trip into a second session for `examples/vr-lab` and two other examples? List what breaks (closures, host handles). | Findings appended here. |
 | 4.5 | Mirror view (D5): desktop draws from the headset's state with head view and switchable dev cameras (D18, via the debug camera); fall back to the headset's own capture where S3 says the model does not round-trip. | Stub feeds recorded state; frame matches a golden. |
+| S5 | Spike before 4.7: two named state branches kept alive at once and switched with the code (D32), on desktop then device; what fails and what it costs in memory. | Findings appended here. |
+| 4.6 | Presentation (D31), format and desktop: the four-part format, stored with the task; before/after captures taken headlessly from the task's baseline and current files; the desktop card renders all parts; prepared when a task needs a decision. | Core and shell tests; captures match goldens for a fixture change; Playwright. |
+| 4.6a | Presentation agent (D31): a separate, read-only run with its own configurable agent, model and skill, and MCP tools for reading the change, capturing either version and assembling the presentation. | Fake-agent tests through the real tool path; one live run with its token cost recorded. |
+| 4.7 | Before and after in place, and the lab (D31, D32): switching versions by branch; the lab from a capsule's recorded moment; both in the headset panel. | Desktop tests under the XR emulator; device when attached. |
 
 ## M5 and later
+
+Code city as a rendering of presentations (D33).
 
 Developer menu and build info; agent-authored tuning UI (D7), which needs UI
 render targets wired in VR and the VR gamma fix first; TTS (Kokoro) played in
 the headset; focus mode; agents visible in the world.
+
+## Carried over from review, not yet scheduled
+
+- Stopping a run can hold the core loop for up to 3 s while the tool server exits.
+- A force-killed app can leave a hidden game running until its next write fails; the game should exit when its parent's pipe closes.
+- A running agent keeps the old session address if the game restarts mid-run.
+- No cap on concurrent `/stream` clients; no body cap on `/mcp`.
+- The hidden game window is a fixed size, so wide views letterbox; the session should match the view.
+- Pop-out windows for non-game tabs: needs the core to know a view is out in another window, and a window-closed event.
+- Packaging: a `.app` bundle, signing, and shipping `functor-app` in releases.
 
 ## Risks
 

@@ -5,6 +5,8 @@ use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::transport::{LogPage, Timeline};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Session {
@@ -22,13 +24,17 @@ pub enum SessionStatus {
     Stopped,
     /// Spawning, or waiting for the debug server's listening line.
     Starting,
-    /// `frame` and `surface` are from the last successful poll.
+    /// `surface` is from the last successful poll.
     Running {
         debug_url: String,
-        frame: Option<u64>,
         /// The game's pointer surface (`/state.input.mouse.surface_width`,
         /// `surface_height`): the space `/input` mouse coordinates are in.
         surface: Option<[u32; 2]>,
+        /// Its clock and marks: sent as `ServerMsg::Transport` and
+        /// `ServerMsg::Marks`, never with the state, as they change every poll.
+        #[serde(skip)]
+        #[cfg_attr(feature = "ts", ts(skip))]
+        timeline: Box<Timeline>,
     },
     /// The child exited on its own after it was running.
     Exited {
@@ -98,8 +104,14 @@ pub enum SessionEvent {
     Listening {
         debug_url: String,
     },
-    /// A `GET /state`, or why it failed.
-    Polled(Result<Polled, String>),
+    /// A `GET /state` sent after `after` transport calls (`Command::PollState`),
+    /// or why it failed.
+    Polled {
+        after: u64,
+        result: Result<Polled, String>,
+    },
+    /// A `GET /input-log` read (`Command::ReadInputLog`), or why it failed.
+    InputLog(Result<LogPage, String>),
     /// The child exited; `reason` is its status and the error it printed.
     Exited {
         reason: String,
@@ -116,6 +128,19 @@ pub struct Polled {
     pub frame: u64,
     /// `None` while the game reports no surface (0×0).
     pub surface: Option<[u32; 2]>,
+    /// `/state.clock`; `None` from a runtime too old to report it.
+    pub clock: Option<PolledClock>,
+}
+
+/// `GET /state`'s `clock` (debug protocol v37).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PolledClock {
+    pub paused: bool,
+    /// `[oldest, newest]`, numbered as `frame`.
+    pub recorded: Option<[u64; 2]>,
+    pub generation: u64,
+    /// Successful hot reloads since the program loaded.
+    pub program_revision: u64,
 }
 
 /// The debug server's URL from its stderr line, with the port it really
