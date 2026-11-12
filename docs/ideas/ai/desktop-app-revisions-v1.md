@@ -282,7 +282,7 @@ A modal, opened from the project switcher:
   from the chosen template. This covers genres with no template.
 - **Create and start.** The game always starts; there is no option not to.
 
-### D25 — the agent can drive the view (proposed)
+### D25 — the agent can drive the view
 
 The layout is core state (D20), so the agent can change it through tools, the
 same way it drives the game.
@@ -298,8 +298,9 @@ same way it drives the game.
   not typing in; the focused tab and the text cursor are never moved; the
   agent cannot close the user's tabs; "restore my layout" undoes everything
   it arranged.
-- **Open:** whether the first step of a walkthrough is applied automatically
-  when a run finishes, or only when the user clicks the card.
+- **Automatic by default.** When a run finishes, the first step of its
+  walkthrough is applied without a click; a setting turns that off. To be
+  judged in use.
 
 ## Open
 
