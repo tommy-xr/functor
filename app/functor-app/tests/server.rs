@@ -77,10 +77,7 @@ type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn connect(ws: &str) -> Socket {
-    tokio_tungstenite::connect_async(ws)
-        .await
-        .unwrap()
-        .0
+    tokio_tungstenite::connect_async(ws).await.unwrap().0
 }
 
 /// The next state message, within a timeout.

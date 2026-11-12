@@ -9,6 +9,7 @@ import { chromium, expect } from "@playwright/test";
 import {
   FUNCTOR,
   ROOT,
+  reopen,
   requireBuilt,
   shot,
   startServer,
@@ -83,7 +84,7 @@ async function conversation(browser, width, height) {
     // The pick is the server's, per project: it survives a reload.
     await picker.selectOption("codex");
     await expect.poll(() => app.state?.harness_choice["examples/counter"]).toBe("codex");
-    await page.reload();
+    await reopen(page, server.url);
     await expect(picker).toHaveValue("codex");
     await picker.selectOption("claude");
     await expect.poll(() => app.state?.harness_choice["examples/counter"]).toBe("claude");
@@ -127,7 +128,7 @@ async function conversation(browser, width, height) {
     await input.press("Enter");
     await expect(log.locator(".msg-user")).toHaveText([FIRST, "And the count?"]);
     await expect(log.getByTestId("step")).toHaveCount(4);
-    await page.reload();
+    await reopen(page, server.url);
     await expect(heading).toHaveText(FIRST);
     await expect(log.locator(".msg-user")).toHaveText([FIRST, "And the count?"]);
     await expect(results).toHaveText(["Done", "Done"], { timeout: 15_000 });
@@ -167,7 +168,7 @@ async function conversation(browser, width, height) {
     // A restarted server: connection lines, and the transcript fetched again.
     await stopServer(server);
     await expect(log.locator(".conn-line")).toHaveText(["Connection lost, reconnecting…"]);
-    server = await startServer(server.port, { dir: PROJECT, fakeAgent: CHAT, home: server.home });
+    server = await startServer(server.port, { dir: PROJECT, fakeAgent: CHAT, home: server.home, token: server.token });
     await expect(log.locator(".conn-line")).toHaveText(["Connection lost, reconnecting…", "Reconnected"], {
       timeout: 15_000,
     });

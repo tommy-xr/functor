@@ -22,6 +22,9 @@ const MAX_DELAY = 5000;
  */
 const TOKEN = takeToken();
 
+/** False after a reload in a browser, say: the page can then never connect. */
+export const HAS_TOKEN = TOKEN !== "";
+
 function takeToken(): string {
   const injected = (window as { functorToken?: string }).functorToken;
   if (injected) return injected;

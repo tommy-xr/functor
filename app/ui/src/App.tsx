@@ -4,7 +4,7 @@ import { ChatDock, type CanvasTab } from "./Chat";
 import { DiffView, type DiffTarget } from "./DiffView";
 import { GameView } from "./GameView";
 import { Icon } from "./Icon";
-import { useAppSocket, type Conn, type DiffMsg, type Notice, type Send } from "./socket";
+import { HAS_TOKEN, useAppSocket, type Conn, type DiffMsg, type Notice, type Send } from "./socket";
 
 
 const VIEWS = ["explorer", "tasks", "devices"] as const;
@@ -118,7 +118,13 @@ function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
       <span className="spacer" />
       <span role="status" className="conn">
         {conn !== "open" && (
-          <span className="pill pill-warn">{conn === "connecting" ? "Connecting…" : "Reconnecting…"}</span>
+          <span className="pill pill-warn">
+            {!HAS_TOKEN
+              ? "No session token — open the URL functor-app printed"
+              : conn === "connecting"
+                ? "Connecting…"
+                : "Reconnecting…"}
+          </span>
         )}
       </span>
       {/* Dimmed while disconnected: the last state may no longer be true. */}

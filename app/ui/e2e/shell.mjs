@@ -53,12 +53,29 @@ async function run(browser, width, height) {
   const explorer = page.getByRole("complementary", { name: "Explorer" });
   const status = page.getByTestId("session-status");
   try {
+    // Without the launch's token (here, the printed URL's fragment) the page
+    // cannot connect: its attempts are refused and no state arrives.
+    const stranger = await browser.newPage();
+    const attempts = [];
+    stranger.on("websocket", (ws) => {
+      attempts.push(ws);
+      ws.on("framereceived", () => attempts.push("frame"));
+    });
+    await stranger.goto(server.url.split("#")[0]);
+    await expect.poll(() => attempts.length, { message: "socket attempts" }).toBeGreaterThanOrEqual(2);
+    await expect(stranger.locator(".titlebar")).toContainText("No session token — open the URL functor-app printed");
+    expect(attempts, "frames without the token").not.toContain("frame");
+    await stranger.close();
+
     await page.goto(server.url);
 
     // The state arrives over the socket: project and branch in the title bar.
     await expect(titlebar).toContainText(nameOf(DEFAULT));
     await expect(titlebar).toContainText(`${BRANCH} · ${COMMIT}`);
     await expect(titlebar).toContainText("No headset");
+    // The token is dropped from the address bar once read; the title names the project.
+    expect(page.url(), "address bar").not.toContain("token");
+    await expect(page).toHaveTitle(`Functor — ${nameOf(DEFAULT)}`);
     await expect(explorer.getByRole("list", { name: "Files" }).getByRole("listitem")).toHaveText(
       expectedFiles(DEFAULT),
     );
@@ -108,7 +125,7 @@ async function run(browser, width, height) {
     // The page reconnects to a restarted server and takes its state.
     await stopServer(server);
     await expect(titlebar).toContainText("Reconnecting…");
-    server = await startServer(server.port, { home: server.home });
+    server = await startServer(server.port, { home: server.home, token: server.token });
     await expect(titlebar).not.toContainText("Reconnecting…", { timeout: 15_000 });
     await expect(titlebar).toContainText(nameOf(DEFAULT));
     await expect(page.getByLabel("Project")).toHaveValue(DEFAULT);

@@ -70,11 +70,12 @@ export function tempProject(project) {
 }
 
 /**
- * Starts functor-app and resolves with it, its URL and port once it listens.
- * `home` defaults to a fresh temp dir; pass the previous server's `home` to
- * restart it with its tasks. `fakeAgent` is a fixture for the fake agent.
+ * Starts functor-app and resolves with it, its URL (carrying the launch's
+ * `#token=`), port and token once it listens. `home` defaults to a fresh temp
+ * dir; pass the previous server's `home` and `token` to restart it with its
+ * tasks for the same open page. `fakeAgent` is a fixture for the fake agent.
  */
-export function startServer(port = 0, { dir = ROOT, gpu = false, home = tempHome(), fakeAgent } = {}) {
+export function startServer(port = 0, { dir = ROOT, gpu = false, home = tempHome(), fakeAgent, token } = {}) {
   const args = ["--headless", "--port", String(port), "-d", dir];
   if (!gpu) args.push("--no-gpu");
   if (FUNCTOR) args.push("--functor", FUNCTOR);
@@ -82,6 +83,8 @@ export function startServer(port = 0, { dir = ROOT, gpu = false, home = tempHome
   const env = { ...process.env, ...GIT_ENV, XDG_CONFIG_HOME: home, FUNCTOR_APP_HOME: home };
   if (fakeAgent) env.FUNCTOR_APP_FAKE_AGENT = fakeAgent;
   else delete env.FUNCTOR_APP_FAKE_AGENT;
+  if (token) env.FUNCTOR_APP_TOKEN = token;
+  else delete env.FUNCTOR_APP_TOKEN;
   const child = spawn(APP, args, { stdio: ["ignore", "ignore", "pipe"], env });
   let err = "";
   return new Promise((resolve, reject) => {
@@ -89,10 +92,21 @@ export function startServer(port = 0, { dir = ROOT, gpu = false, home = tempHome
       err += d;
       // Up to the newline: the line can arrive split across chunks.
       const m = err.match(/^\[functor-app\] listening on (http:\/\/\S+)\r?\n/m);
-      if (m) resolve({ child, url: m[1], port: Number(new URL(m[1]).port), home });
+      if (!m) return;
+      const url = new URL(m[1]);
+      resolve({ child, url: m[1], port: Number(url.port), home, token: url.hash.replace(/^#token=/, "") });
     });
     child.on("exit", (code) => reject(new Error(`functor-app exited (${code}) before listening:\n${err}`)));
   });
+}
+
+/**
+ * A reload that keeps the connection: the page holds the token in memory
+ * only, so a plain reload cannot reconnect; this opens the printed URL anew.
+ */
+export async function reopen(page, url) {
+  await page.goto("about:blank");
+  await page.goto(url);
 }
 
 export function stopServer({ child }) {

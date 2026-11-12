@@ -272,7 +272,8 @@ fn open(url: &str) {
     }
 }
 
-/// A window or screen, in points, with y down from the top of the main screen.
+/// A window's content or a screen, in points, with y down from the top of the
+/// main screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Rect {
     x: f64,
@@ -297,7 +298,12 @@ fn place(saved: Option<Rect>, screens: &[Rect]) -> Rect {
     }
     let (w, h) = saved.map_or(DEFAULT, |s| (s.w, s.h));
     let Some(screen) = screens.first() else {
-        return size(Rect { x: 0.0, y: 0.0, w, h });
+        return size(Rect {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+        });
     };
     let (w, h) = (w.min(screen.w).max(MIN.0), h.min(screen.h).max(MIN.1));
     Rect {
@@ -340,7 +346,8 @@ fn save(window: &Window, path: &Path) {
         return;
     }
     let scale = window.scale_factor();
-    let Ok(at) = window.outer_position() else {
+    // The content's corner: what `with_position` places on macOS.
+    let Ok(at) = window.inner_position() else {
         return;
     };
     let at = at.to_logical::<f64>(scale);
@@ -387,7 +394,11 @@ mod tests {
 
     #[test]
     fn web_and_mail_links_go_outside_and_nothing_else_does() {
-        for url in ["https://example.com/a", "HTTP://example.com", "mailto:a@b.c"] {
+        for url in [
+            "https://example.com/a",
+            "HTTP://example.com",
+            "mailto:a@b.c",
+        ] {
             assert!(outside(url), "{url}");
         }
         for url in [
@@ -414,7 +425,10 @@ mod tests {
     fn first_launch_centres_the_default_size() {
         let at = place(None, &[SCREEN]);
         assert_eq!((at.w, at.h), DEFAULT);
-        assert_eq!((at.x, at.y), ((1728.0 - 1440.0) / 2.0, (1117.0 - 900.0) / 2.0));
+        assert_eq!(
+            (at.x, at.y),
+            ((1728.0 - 1440.0) / 2.0, (1117.0 - 900.0) / 2.0)
+        );
         // A small screen: fitted, never below the minimum.
         let small = Rect {
             w: 1280.0,
@@ -455,7 +469,14 @@ mod tests {
             h: 100.0,
             ..edge
         };
-        assert_eq!(place(Some(small), &[SCREEN]), Rect { w: MIN.0, h: MIN.1, ..edge });
+        assert_eq!(
+            place(Some(small), &[SCREEN]),
+            Rect {
+                w: MIN.0,
+                h: MIN.1,
+                ..edge
+            }
+        );
     }
 
     #[test]
@@ -502,7 +523,13 @@ mod tests {
             h: 800.0,
         };
         assert_eq!(parse(&format(r)), Some(r));
-        for text in ["", "{}", "[1,2,3,4]", r#"{"x":1,"y":2,"width":3}"#, "not json"] {
+        for text in [
+            "",
+            "{}",
+            "[1,2,3,4]",
+            r#"{"x":1,"y":2,"width":3}"#,
+            "not json",
+        ] {
             assert_eq!(parse(text), None, "{text}");
         }
     }

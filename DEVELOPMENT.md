@@ -129,6 +129,31 @@ Either produces a single `functor` binary (the CLI, with the desktop runtime lin
 in as a library and run in-process — there is no separate `functor-runner`), under
 `target/release/` or `target/debug/` respectively.
 
+## Desktop app (preview)
+
+`functor-app` (under `app/`) is a chat-and-game-view app around a project. It is
+not part of the default workspace build. Build it with its UI embedded, plus the
+release CLI it runs game sessions with:
+
+```sh
+npm run build:app          # the UI bundle, then target/release/functor-app
+npm run build:cli          # target/release/functor, built separately
+```
+
+Run it from the release `functor` (it finds the `functor-app` next to itself,
+else `FUNCTOR_APP_BIN`, else on PATH):
+
+```sh
+./target/release/functor app -d examples/primitives                 # the window (macOS only for now)
+./target/release/functor app -d examples/primitives -- --headless   # no window: open the printed URL in a browser
+```
+
+`--headless` prints `[functor-app] listening on http://127.0.0.1:<port>/#token=…`.
+The token is new each launch and the server refuses the page's socket without
+it, so open that exact URL (a reload of the page needs it again). Saved tasks,
+transcripts and the window's size and place live in `~/.functor/app/`
+(`FUNCTOR_APP_HOME` overrides).
+
 ## What `build`/`run` do under the hood
 
 The `functor` binary is **self-contained**: the desktop runtime is linked in and the

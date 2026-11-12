@@ -504,10 +504,7 @@ mod socket {
     >;
 
     pub async fn connect(ws: &str) -> Socket {
-        tokio_tungstenite::connect_async(ws)
-            .await
-            .unwrap()
-            .0
+        tokio_tungstenite::connect_async(ws).await.unwrap().0
     }
 
     pub async fn send(socket: &mut Socket, msg: Value) {

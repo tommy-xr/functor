@@ -106,7 +106,10 @@ enum Cmd {
 
 /// The window's side of the runtime thread: where to send the server's
 /// origin once it listens, and the window's request to shut down.
-type WindowLink = (std::sync::mpsc::Sender<String>, tokio::sync::oneshot::Receiver<()>);
+type WindowLink = (
+    std::sync::mpsc::Sender<String>,
+    tokio::sync::oneshot::Receiver<()>,
+);
 
 fn main() -> std::io::Result<ExitCode> {
     // First, while this is the only thread: it edits the environment.

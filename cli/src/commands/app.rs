@@ -112,7 +112,10 @@ mod tests {
         let env = || Some(OsString::from("/env/functor-app"));
         let path = || paths(&["/usr/bin", "/path/a", "/path/b"]);
         let everything = |_: &Path| true;
-        assert_eq!(find(Some(exe), env(), path(), everything), Ok(sibling.clone()));
+        assert_eq!(
+            find(Some(exe), env(), path(), everything),
+            Ok(sibling.clone())
+        );
         let no_sibling = |p: &Path| p != sibling;
         assert_eq!(
             find(Some(exe), env(), path(), no_sibling),
@@ -144,7 +147,10 @@ mod tests {
             )
         );
         let err = find(None, Some("/x/app".into()), None, |_| false).unwrap_err();
-        assert_eq!(err, format!("FUNCTOR_APP_BIN (/x/app), {} on PATH", app_name()));
+        assert_eq!(
+            err,
+            format!("FUNCTOR_APP_BIN (/x/app), {} on PATH", app_name())
+        );
     }
 
     #[test]
@@ -153,9 +159,19 @@ mod tests {
         let extra = ["--headless".to_string(), "--print".to_string()];
         assert_eq!(
             args(functor, Some(Path::new("examples/primitives")), &extra),
-            ["--functor", "/bin/functor", "-d", "examples/primitives", "--headless", "--print"]
-                .map(OsString::from)
+            [
+                "--functor",
+                "/bin/functor",
+                "-d",
+                "examples/primitives",
+                "--headless",
+                "--print"
+            ]
+            .map(OsString::from)
         );
-        assert_eq!(args(functor, None, &[]), ["--functor", "/bin/functor"].map(OsString::from));
+        assert_eq!(
+            args(functor, None, &[]),
+            ["--functor", "/bin/functor"].map(OsString::from)
+        );
     }
 }
