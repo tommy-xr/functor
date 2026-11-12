@@ -27,7 +27,7 @@ impl Drop for Server {
 /// `functor-app --headless`, with `-d dir` if given, started in `cwd`.
 fn serve(dir: Option<&Path>, cwd: &Path, home: &Path) -> Server {
     let mut command = Command::new(env!("CARGO_BIN_EXE_functor-app"));
-    command.args(["--headless", "--port", "0"]);
+    command.args(["--headless", "--no-device-link", "--port", "0"]);
     if let Some(dir) = dir {
         command.arg("-d").arg(dir);
     }

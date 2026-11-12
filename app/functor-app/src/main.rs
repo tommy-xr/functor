@@ -5,9 +5,11 @@ mod changes;
 mod creation;
 mod files;
 mod folders;
+mod link;
 mod server;
 mod session;
 mod store;
+mod stub;
 #[cfg(target_os = "macos")]
 mod window;
 
@@ -73,6 +75,19 @@ struct Args {
     #[arg(long, value_name = "PATH", conflicts_with = "print")]
     ui_dir: Option<PathBuf>,
 
+    /// Turn off the device link: no LAN listener, no mDNS advert.
+    #[arg(long, global = true)]
+    no_device_link: bool,
+
+    /// Where the device link listens for headsets (a free port on every
+    /// interface by default).
+    #[arg(long, value_name = "ADDR", default_value = "0.0.0.0:0", global = true)]
+    device_link: std::net::SocketAddr,
+
+    /// Listen for headsets without advertising (tests).
+    #[arg(long, hide = true, global = true)]
+    no_mdns: bool,
+
     /// The fake agent's child: print a recorded run's events, then exit.
     #[arg(long, value_name = "FIXTURE", hide = true)]
     replay_events: Option<PathBuf>,
@@ -105,6 +120,10 @@ enum Cmd {
         #[arg(long)]
         start_session: bool,
     },
+    /// Speak the device side of the device link, for tests: pair, link,
+    /// answer canned debug requests.
+    #[command(hide = true)]
+    DeviceStub(stub::StubArgs),
 }
 
 /// The window's side of the runtime thread: where to send the server's
@@ -117,7 +136,7 @@ type WindowLink = (
 fn main() -> std::io::Result<ExitCode> {
     // First, while this is the only thread: it edits the environment.
     let token = server::Token::take();
-    let args = Args::parse();
+    let mut args = Args::parse();
     if let Some(fixture) = &args.replay_events {
         return Ok(
             match agent::replay(fixture, args.replay_resume.as_deref()) {
@@ -134,6 +153,12 @@ fn main() -> std::io::Result<ExitCode> {
             .enable_all()
             .build()
     };
+    if matches!(args.command, Some(Cmd::DeviceStub(_))) {
+        let Some(Cmd::DeviceStub(stub)) = args.command.take() else {
+            unreachable!("just matched");
+        };
+        return Ok(runtime()?.block_on(stub::run(stub)));
+    }
     if args.headless {
         return runtime()?.block_on(app(args, token, None));
     }
@@ -204,8 +229,10 @@ async fn app(
     let interactive = !args.print && args.command.is_none();
     let recents = if interactive { &state.recents[..] } else { &[] };
     let (tx, events) = mpsc::unbounded_channel();
+    let hub = link::Hub::new(home.clone(), tx.clone())?;
     let views = std::sync::Arc::new(agent::ViewRoute::default());
-    let mut driver = Driver::new(functor, agents, home, tx, views.clone());
+    let mut driver = Driver::new(functor, agents, home, tx.clone(), views.clone());
+    driver.link = Some(hub.clone());
     if let Some(folder) = functor_app_core::folders::startup(dir, cwd, recents) {
         // `--print` changes no task, so it measures none.
         let opened = driver.open(folder.to_string_lossy().into_owned(), !args.print);
@@ -227,6 +254,8 @@ async fn app(
         }
     }
     if args.print && !args.start_session {
+        // The stored pairings, all away: `--print` starts no link.
+        (state, _) = update(state, hub.started(None));
         print!("{}", print(&state));
         return Ok(ExitCode::SUCCESS);
     }
@@ -266,6 +295,25 @@ async fn app(
     let (listener, origin) = server::bind(args.port).await?;
     // Runs started from here on can show views (`task` and `--print` have no route).
     views.listen(&origin);
+    // The rest of the app works without the link; why it is off is said
+    // after the `listening on` line, which launchers read first.
+    let link = match args.no_device_link {
+        true => Ok(None),
+        false => {
+            let config = link::Config {
+                bind: args.device_link,
+                advertise: !args.no_mdns,
+            };
+            hub.listen(config).await.map(|addr| Some(addr.to_string()))
+        }
+    };
+    let listening = link.as_ref().ok().cloned().flatten();
+    let _ = tx.send(hub.started(listening.clone()));
+    let say_link = || match &link {
+        Ok(Some(addr)) => eprintln!("[functor-app] device link on {addr}"),
+        Ok(None) => {}
+        Err(e) => eprintln!("functor-app: the device link is off: {e}"),
+    };
     let code = match window {
         // The full URL, for a person to open; see `server` on the token.
         None => {
@@ -273,6 +321,7 @@ async fn app(
                 "[functor-app] listening on {origin}/#token={}",
                 token.reveal()
             );
+            say_link();
             let shutdown = async { 128 + signal.await };
             server::serve(
                 state,
@@ -286,9 +335,10 @@ async fn app(
             )
             .await?
         }
-        Some((listening, close)) => {
+        Some((window_origin, close)) => {
             eprintln!("[functor-app] listening on {origin}");
-            let _ = listening.send(origin);
+            say_link();
+            let _ = window_origin.send(origin);
             // Closing the window stops everything the way a signal does.
             let shutdown = async {
                 tokio::select! {
@@ -309,6 +359,7 @@ async fn app(
             .await?
         }
     };
+    hub.shutdown();
     Ok(ExitCode::from(code))
 }
 
