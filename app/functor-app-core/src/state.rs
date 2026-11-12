@@ -4020,7 +4020,8 @@ mod tests {
         assert_eq!(
             commands,
             vec![Command::PickFolder {
-                from: Some(PathBuf::from("/")),
+                // `/` is not absolute on Windows: the picker starts anywhere.
+                from: Some(PathBuf::from("/")).filter(|p| p.is_absolute()),
                 parent: true
             }]
         );
