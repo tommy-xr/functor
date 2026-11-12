@@ -129,3 +129,21 @@ export function isTyping(el: { tagName?: string; isContentEditable?: boolean } |
   if (!el) return false;
   return el.isContentEditable === true || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName ?? "");
 }
+
+/** `[first, last]` within a file of `count` lines; `null` when it starts past the end. */
+export function clampLines([first, last]: [number, number], count: number): [number, number] | null {
+  const a = Math.max(1, first);
+  if (a > count) return null;
+  return [a, Math.min(Math.max(a, last), count)];
+}
+
+/** Each view the agent opened (`Layout.agent.tabs`), by `viewKey`. */
+export function agentTabs(layout: Layout | null | undefined): Set<string> {
+  return new Set((layout?.agent?.tabs ?? []).map(viewKey));
+}
+
+/**
+ * The canvas stacks its panes below this content width (CSS: the
+ * `@container (max-width: 560px)` rule), so the agent opens no splits there.
+ */
+export const STACK_WIDTH = 560;

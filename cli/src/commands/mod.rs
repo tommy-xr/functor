@@ -7,6 +7,7 @@ pub mod import;
 pub mod init;
 pub mod inspect;
 pub mod mcp;
+pub mod mcp_app;
 pub mod mcp_http;
 pub mod mcp_net;
 pub mod model_export;

@@ -1,7 +1,7 @@
 // The chat dock's pure parts: tool-call phrases, transcript updates, outcome
 // pills, connection lines and scroll-follow. No React, so `node --test` runs them.
 
-import type { AppState, Harness, Item, JsonValue, SessionStatus, Task, TaskStatus, Usage } from "./generated/protocol";
+import type { AppState, Harness, Item, JsonValue, SessionStatus, Task, TaskStatus, Usage, ViewTarget } from "./generated/protocol";
 
 export const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
   in_progress: "In progress",
@@ -12,8 +12,8 @@ export const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
   reverted: "Reverted",
 };
 
-/** A step's one line: a verb, and a file, command or pattern shown as code. */
-export type Phrase = { text: string; code?: string };
+/** A step's one line: a verb, a file, command or pattern shown as code, and any words after it. */
+export type Phrase = { text: string; code?: string; after?: string };
 
 /** `mcp__<server>__get_state` → `get_state`; other names unchanged. */
 export function toolName(name: string): string {
@@ -46,6 +46,7 @@ const GAME_TOOLS = new Map(
     init_game: "Created a game",
     save_project: "Saved the project",
     app_context: "Checked what you are looking at",
+    present: "Presented a walkthrough",
     api_reference: "Read the API reference",
     language_guide: "Read the language guide",
   }),
@@ -89,6 +90,10 @@ export function stepPhrase(name: string, input: JsonValue): Phrase {
       const frames = isObject(input) && typeof input.frames === "number" ? input.frames : 1;
       return { text: `Stepped ${frames} frame${frames === 1 ? "" : "s"}` };
     }
+    case "show_view": {
+      const view = isObject(input) ? input.view : null;
+      return view && isObject(view) ? { text: "Showed", ...viewPhrase(view as ViewTarget) } : { text: "Showed a view" };
+    }
   }
   return { text: GAME_TOOLS.get(bare) ?? bare };
 }
@@ -102,8 +107,46 @@ export function toolFile(input: JsonValue): string | undefined {
   return undefined;
 }
 
-export function phraseText({ text, code }: Phrase): string {
-  return code ? `${text} ${code}` : text;
+export function phraseText({ text, code, after }: Phrase): string {
+  return (code ? `${text} ${code}` : text) + (after ?? "");
+}
+
+/** A view as a phrase's code and words: `game.fun` + ", lines 4–5"; "the changes"; "the game". */
+export function viewPhrase(view: ViewTarget): Pick<Phrase, "code" | "after"> {
+  switch (view.kind) {
+    case "file": {
+      const lines = Array.isArray(view.lines) ? view.lines : null;
+      const after = !lines ? "" : lines[0] === lines[1] ? `, line ${lines[0]}` : `, lines ${lines[0]}–${lines[1]}`;
+      return { code: basename(String(view.path)), after };
+    }
+    case "changes":
+      return view.path ? { code: basename(view.path), after: " in the changes" } : { after: " the changes" };
+    case "game":
+      return { after: " the game" };
+    default:
+      return { after: " a view" };
+  }
+}
+
+/**
+ * The step Prev (`dir` -1) or Next (+1) goes to from `current` (`null`: none
+ * shown yet, so Next is the first): the nearest available one, else `null`.
+ */
+export function walkTo(available: readonly boolean[], current: number | null, dir: 1 | -1): number | null {
+  for (let i = current === null ? (dir > 0 ? 0 : -1) : current + dir; i >= 0 && i < available.length; i += dir) {
+    if (available[i]) return i;
+  }
+  return null;
+}
+
+/**
+ * Whether a walkthrough step can still be shown: its file is among the
+ * project's `files`, its task still has a change, or it is the game.
+ */
+export function stepAvailable(view: ViewTarget, files: readonly string[], changes: boolean): boolean {
+  if (view.kind === "file") return files.includes(view.path);
+  if (view.kind === "changes") return changes;
+  return true;
 }
 
 /** How a tool call shows: a change card, a capture card, or a plain step. */

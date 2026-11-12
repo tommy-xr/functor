@@ -333,9 +333,16 @@ finished: ok
     let put = requests.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(put.head.starts_with("PUT /app-context "), "{}", put.head);
     let context: Value = serde_json::from_str(&put.body).unwrap();
+    let game = serde_json::json!({"kind": "game"});
     assert_eq!(
         context,
-        serde_json::json!({"project": "a", "session": null, "session_mode": "hidden"})
+        serde_json::json!({
+            "project": "a", "active_project": "a", "session": null, "session_mode": "hidden",
+            "layout": {
+                "panes": [{"tabs": [game], "shown": game, "focused": true}],
+                "game": "pane", "agent_tabs": [], "agent_arranges": true,
+            },
+        })
     );
     let auth = put.header("authorization").unwrap();
     let token = auth.strip_prefix("Bearer ").unwrap();
@@ -925,4 +932,313 @@ fn live_claude_reads_the_game_through_its_tools() {
         answer.contains(&format!("{count}")),
         "{answer} (count {count})"
     );
+}
+
+/// One raw request to the app's view route (`http://host:port/path`):
+/// the status and body.
+#[cfg(unix)]
+fn post_view(url: &str, auth: Option<&str>, origin: bool, body: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let rest = url.strip_prefix("http://").unwrap();
+    let (addr, path) = rest.split_once('/').unwrap();
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    let auth = auth.map_or(String::new(), |a| format!("Authorization: Bearer {a}\r\n"));
+    let origin = if origin {
+        "Origin: http://evil.example\r\n"
+    } else {
+        ""
+    };
+    let request = format!(
+        "POST /{path} HTTP/1.1\r\nHost: {addr}\r\n{auth}{origin}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    // A refused oversize body may be cut off mid-write.
+    let _ = stream.write_all(request.as_bytes());
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    let status = response.split(' ').nth(1).unwrap_or("0").parse().unwrap();
+    let body = response
+        .split_once("\r\n\r\n")
+        .map_or("", |(_, b)| b)
+        .to_string();
+    (status, body)
+}
+
+/// The view route takes the running task's own secret only, applies only
+/// view changes to its project, and refuses the secret once the run ends.
+/// The stub tool server records its argv and the secret it was given.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn the_view_route_takes_only_the_running_runs_secret() {
+    use serde_json::json;
+    use socket::*;
+
+    let repo = tree();
+    for (file, text) in [
+        ("b/functor.json", r#"{"language": "functor-lang"}"#),
+        ("b/b.fun", ""),
+    ] {
+        let path = repo.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let home = tempfile::tempdir().unwrap();
+    let (args, secret) = (home.path().join("args"), home.path().join("secret"));
+    let body = format!(
+        // Only as the tool server: the app also runs `functor init --list`.
+        "[ \"$1\" = mcp ] && printf '%s\\n' \"$@\" > '{0}' && printf %s \"$FUNCTOR_MCP_APP_TOKEN\" > '{1}.tmp' && mv '{1}.tmp' '{1}'\nexec cat >/dev/null",
+        args.display(),
+        secret.display()
+    );
+    let (functor, requests) = stub::with_body(home.path(), &body);
+    let fixture = slow_fixture(home.path(), 2500);
+    let app = serve(repo.path(), home.path(), &functor, &fixture);
+    let mut ws = connect(&app.ws).await;
+    let first = next(&mut ws).await;
+    assert_eq!(first["state"]["active"], "a");
+    let b_layout = first["state"]["layouts"]["b"].clone();
+    send(
+        &mut ws,
+        json!({"type": "new_task", "message": "Show me", "harness": "claude"}),
+    )
+    .await;
+    until(&mut ws, waiting_call(1)).await;
+    eventually("the stub to record its secret", || secret.is_file());
+    let secret = std::fs::read_to_string(&secret).unwrap();
+    let args = std::fs::read_to_string(&args).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    let at = args
+        .iter()
+        .position(|a| *a == "--app-url")
+        .unwrap_or_else(|| panic!("no --app-url in {args:?}"));
+    let url = args[at + 1].to_string();
+    assert!(
+        url.starts_with("http://127.0.0.1:") && url.ends_with("/agent/view"),
+        "{url}"
+    );
+    assert_eq!(secret.len(), 64);
+    // Never in an argv: the tool server's, or the agent's.
+    let (server, agent) = run_children(app.child.id());
+    for p in [&server, &agent] {
+        assert!(
+            !p.argv.iter().any(|a| a.contains(&secret)),
+            "secret in argv: {p:?}"
+        );
+    }
+    let _first_context = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let show = json!({"op": "show", "view": {"kind": "file", "path": "game.fun", "lines": [1, 1]}})
+        .to_string();
+    assert_eq!(post_view(&url, None, false, &show).0, 401);
+    assert_eq!(post_view(&url, Some("wrong"), false, &show).0, 401);
+    assert_eq!(post_view(&url, Some(&secret[..63]), false, &show).0, 401);
+    assert_eq!(
+        post_view(&url, Some(&secret), true, &show).0,
+        403,
+        "a page's request"
+    );
+    assert_eq!(post_view(&url, Some(&secret), false, "{not json").0, 400);
+    let close = json!({"op": "close", "view": {"kind": "game"}}).to_string();
+    assert_eq!(
+        post_view(&url, Some(&secret), false, &close).0,
+        400,
+        "only the typed ops"
+    );
+    let huge =
+        json!({"op": "show", "view": {"kind": "file", "path": "x".repeat(20 * 1024)}}).to_string();
+    assert_eq!(post_view(&url, Some(&secret), false, &huge).0, 413);
+    let (status, reply) = post_view(&url, Some(&secret), false, &show);
+    assert_eq!(status, 200, "{reply}");
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    let traversal =
+        json!({"op": "show", "view": {"kind": "file", "path": "../b/b.fun"}}).to_string();
+    let (_, refused) = post_view(&url, Some(&secret), false, &traversal);
+    assert!(
+        refused.contains("\"ok\":false") && refused.contains("not a path inside"),
+        "{refused}"
+    );
+
+    // Only project a's layout changed: game.fun opened beside, marked as the agent's.
+    let (state, _) = until(&mut ws, |m| {
+        m["type"] == "state"
+            && m["state"]["layouts"]["a"]["agent"]["tabs"]
+                .as_array()
+                .is_some_and(|t| !t.is_empty())
+    })
+    .await;
+    let layouts = &state["state"]["layouts"];
+    assert_eq!(
+        layouts["a"]["agent"]["tabs"],
+        json!([{"kind": "file", "path": "game.fun"}])
+    );
+    assert_eq!(layouts["a"]["focus"], 1, "the user's pane keeps the focus");
+    assert_eq!(layouts["b"], b_layout);
+    // The tool server's app context followed the layout change.
+    let put = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(put.head.starts_with("PUT /app-context "), "{}", put.head);
+    let context: Value = serde_json::from_str(&put.body).unwrap();
+    assert_eq!(
+        context["layout"]["panes"].as_array().unwrap().len(),
+        2,
+        "{context}"
+    );
+    assert_eq!(
+        context["layout"]["panes"][1]["shown"],
+        json!({"kind": "file", "path": "game.fun"})
+    );
+
+    // The secret dies with its run.
+    until(&mut ws, status_is("waiting_on_you")).await;
+    assert_eq!(post_view(&url, Some(&secret), false, &show).0, 401);
+}
+
+/// A run that shows a file mid-run, then presents a walkthrough, through
+/// the run's real tool server (the fake agent's child calls it over MCP).
+#[cfg(unix)]
+fn view_fixture(dir: &Path) -> PathBuf {
+    let path = dir.join("views.jsonl");
+    let lines = [
+        r#"{"ms":0,"event":{"type":"started","session":"fake-views-1","model":"claude-model"}}"#,
+        r#"{"ms":0,"mcp":{"tool":"show_view","arguments":{"view":{"kind":"file","path":"game.fun","lines":[1,2]}}}}"#,
+        r#"{"ms":1500,"mcp":{"tool":"present","arguments":{"steps":[{"title":"The count","note":"It starts at one.","view":{"kind":"file","path":"game.fun","lines":[2,2]}},{"title":"The game","view":{"kind":"game"}}]}}}"#,
+        r#"{"ms":1500,"event":{"type":"text","text":"Shown."}}"#,
+        r#"{"ms":3000,"event":{"type":"finished","ok":true,"summary":"Shown."}}"#,
+    ];
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    path
+}
+
+/// The whole channel with the real `functor mcp` (`FUNCTOR_BIN`): a
+/// mid-run `show_view` opens beside the user's pane, `present` adds the
+/// card, the run's end applies its first step; with the setting off nothing
+/// moves; "Restore my layout" restores.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn views_through_the_real_tool_server() {
+    use serde_json::json;
+    use socket::*;
+    let Some(functor) = std::env::var_os("FUNCTOR_BIN")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    else {
+        eprintln!("SKIPPED: set FUNCTOR_BIN to a built `functor` to use the real tool server");
+        return;
+    };
+    let repo = tree();
+    std::fs::write(
+        repo.path().join("a/game.fun"),
+        "let a = 1\nlet b = 2\nlet c = 3\n",
+    )
+    .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let fixture = view_fixture(home.path());
+    let app = serve(repo.path(), home.path(), &functor, &fixture);
+    let mut ws = connect(&app.ws).await;
+    let user = next(&mut ws).await["state"]["layouts"]["a"].clone();
+    assert_eq!(user["focus"], 1);
+    let layout_is = |want: &'static str| {
+        move |m: &Value| {
+            m["type"] == "state"
+                && functor_app_core::print_layout(
+                    &serde_json::from_value(m["state"]["layouts"]["a"].clone()).unwrap(),
+                ) == want
+        }
+    };
+    send(
+        &mut ws,
+        json!({"type": "new_task", "message": "Show me", "harness": "claude"}),
+    )
+    .await;
+    // Mid-run: beside the user's pane, the focus still theirs.
+    let (state, _) = until(
+        &mut ws,
+        layout_is("right 50% (>#1[*game] | #3[*file:game.fun])"),
+    )
+    .await;
+    assert_eq!(state["state"]["highlight"]["lines"], json!([1, 2]));
+    assert!(
+        state["state"]["tasks"][0]["run"].is_object(),
+        "while the run goes on"
+    );
+    // The card arrives; the end of the run shows its first step.
+    let (_, items) = until(&mut ws, |m| {
+        m["type"] == "item" && m["item"]["kind"] == "walkthrough"
+    })
+    .await;
+    assert!(
+        items
+            .iter()
+            .any(|(_, kind, answered)| kind == "tool" && *answered),
+        "{items:?}"
+    );
+    // The state goes before the items it changed.
+    let (state, _) = until(&mut ws, |m| {
+        m["type"] == "state" && m["state"]["highlight"]["lines"] == json!([2, 2])
+    })
+    .await;
+    assert!(state["state"]["tasks"][0]["run"].is_null());
+    let (msg, _) = until(&mut ws, |m| {
+        m["type"] == "item" && m["item"]["kind"] == "walkthrough" && m["item"]["current"] == 0
+    })
+    .await;
+    assert_eq!(msg["item"]["steps"][1]["view"], json!({"kind": "game"}));
+    send(&mut ws, json!({"type": "get_transcript", "task": 1})).await;
+    let (transcript, _) = until(&mut ws, |m| m["type"] == "transcript").await;
+    let results: Vec<&str> = transcript["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["result"].as_str())
+        .collect();
+    assert_eq!(
+        results,
+        [
+            "Opened game.fun, lines 1–2 in the pane beside the user's.",
+            "Added a walkthrough of 2 steps to the chat; its first step opens beside the user's work when this run ends."
+        ]
+    );
+
+    // Restore puts the user's layout back.
+    send(
+        &mut ws,
+        json!({"type": "layout", "op": {"type": "restore"}}),
+    )
+    .await;
+    until(&mut ws, layout_is(">#1[*game]")).await;
+
+    // With the setting off, a second run moves nothing.
+    send(
+        &mut ws,
+        json!({"type": "layout", "op": {"type": "agent_arranges", "on": false}}),
+    )
+    .await;
+    send(
+        &mut ws,
+        json!({"type": "send_message", "task": 1, "message": "Again"}),
+    )
+    .await;
+    let (shown, _) = until(&mut ws, |m| {
+        m["type"] == "item" && m["index"] == 7 && !m["item"]["result"].is_null()
+    })
+    .await;
+    assert!(
+        shown["item"]["result"]
+            .as_str()
+            .unwrap()
+            .contains("turned off"),
+        "{shown}"
+    );
+    until(&mut ws, |m| {
+        m["type"] == "item" && m["index"] == 11 && m["item"]["kind"] == "finished"
+    })
+    .await;
+    let (state, _) = until(&mut ws, |m| {
+        m["type"] == "state" && m["state"]["tasks"][0]["run"].is_null()
+    })
+    .await;
+    let layout: functor_app_core::Layout =
+        serde_json::from_value(state["state"]["layouts"]["a"].clone()).unwrap();
+    assert_eq!(functor_app_core::print_layout(&layout), ">#1[*game]");
+    assert!(!layout.agent.arranges);
 }

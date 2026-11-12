@@ -12,7 +12,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import type { AppState, Direction, GamePlacement, LayoutOp, Mini, Node, Pane, Placement, Session, Task, View } from "./generated/protocol";
+import type { AppState, Direction, GamePlacement, Highlight, LayoutOp, Mini, Node, Pane, Placement, Session, Task, View } from "./generated/protocol";
 import { DiffView, type DiffTarget } from "./DiffView";
 import { hasChange } from "./diff-model";
 import { FileView } from "./FileView";
@@ -21,8 +21,10 @@ import { Icon } from "./Icon";
 import { useMenu } from "./menu";
 import { DEFAULT_ASPECT, isLeft, isTop, miniKey, miniRect, nearestCorner, resizedWidth, clampWidth } from "./mini-model";
 import {
+  agentTabs,
   focusedPane,
   isTyping,
+  STACK_WIDTH,
   placementOf,
   keysFor,
   panesOf,
@@ -67,6 +69,10 @@ type Ctx = CanvasProps & {
   placement: Placement;
   /** With an op's `send` result: DOM focus follows into the focused pane once its layout arrives. */
   refocus: (sent: boolean) => void;
+  /** The views the agent opened, by `viewKey`. */
+  agentTabs: Set<string>;
+  /** What the agent or a walkthrough step points at in this project. */
+  highlight: Highlight | null;
 };
 
 export function isLive(session: Session | null | undefined): boolean {
@@ -106,11 +112,23 @@ export function Canvas(props: CanvasProps) {
   }, [layout]);
 
   useShortcuts(layout, op, refocus);
+  useStackedReport(main, props.online, send);
+  useEffect(() => {
+    const track = (e: FocusEvent) => {
+      const el = e.target instanceof HTMLElement ? e.target : null;
+      const pane = el?.closest<HTMLElement>("[data-pane]");
+      lastFocus = pane ? { pane: Number(pane.dataset.pane), id: el?.id ?? "" } : null;
+    };
+    document.addEventListener("focusin", track);
+    return () => document.removeEventListener("focusin", track);
+  }, []);
   const placement = placementOf(layout);
-  const ctx: Ctx = { ...props, op, titles, focus: layout?.focus ?? null, placement, refocus };
+  const highlight = state?.highlight?.project === state?.active ? (state?.highlight ?? null) : null;
+  const ctx: Ctx = { ...props, op, titles, focus: layout?.focus ?? null, placement, refocus, agentTabs: agentTabs(layout), highlight };
   return (
     <main className="canvas" ref={main} aria-label="Canvas">
       {placement === "window" && <WindowNote ctx={ctx} />}
+      {layout && (layout.agent.restore || ctx.agentTabs.size > 0) && <AgentBar ctx={ctx} restorable={!!layout.agent.restore} />}
       <GameHost state={state} online={props.online} send={send}>
         <div className="canvas-body">
           {layout?.root ? <NodeView key={nodeId(layout.root)} node={layout.root} ctx={ctx} /> : <EmptyCanvas ctx={ctx} />}
@@ -119,6 +137,53 @@ export function Canvas(props: CanvasProps) {
         {placement === "mini" && layout && <MiniGame key={state?.active} ctx={ctx} game={layout.game} canvas={main} />}
       </GameHost>
     </main>
+  );
+}
+
+/**
+ * Tells the core when the canvas stacks its panes (`STACK_WIDTH`), so the
+ * agent's views make no splits there: on each change and each connect.
+ */
+function useStackedReport(main: RefObject<HTMLElement | null>, online: boolean, send: CanvasProps["send"]) {
+  useEffect(() => {
+    const el = main.current;
+    if (!el || !online) return;
+    let last: boolean | null = null;
+    const report = () => {
+      const style = getComputedStyle(el);
+      const width = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const stacked = width <= STACK_WIDTH;
+      if (stacked !== last && send({ type: "canvas_stacked", stacked })) last = stacked;
+    };
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [online, send]);
+}
+
+/**
+ * Shown while the agent has arranged views: "Restore my layout" (back to
+ * before its first change) and "Close agent tabs". It floats, so it never
+ * moves what the user is reading.
+ */
+function AgentBar({ ctx, restorable }: { ctx: Ctx; restorable: boolean }) {
+  const keep = (e: { preventDefault: () => void }) => e.preventDefault();
+  return (
+    <div className="agent-bar" role="group" aria-label="Views the agent arranged" data-testid="agent-bar">
+      <span className="agent-dot" aria-hidden="true" />
+      <span className="agent-bar-text">The agent arranged views</span>
+      {restorable && (
+        <button type="button" className="link-button" disabled={!ctx.online} onMouseDown={keep} onClick={() => ctx.op({ type: "restore" })}>
+          Restore my layout
+        </button>
+      )}
+      {ctx.agentTabs.size > 0 && (
+        <button type="button" className="link-button" disabled={!ctx.online} onMouseDown={keep} onClick={() => ctx.op({ type: "close_agent_tabs" })}>
+          Close agent tabs
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -208,6 +273,13 @@ function GameSlot() {
   }, [claim]);
   return <div className="game-slot" ref={ref} />;
 }
+
+/**
+ * Where keyboard focus last was in a pane (its id, and the element's id if
+ * it has one). A split around a pane (the agent opening a view beside it)
+ * mounts it anew, dropping that focus to the page; the new pane takes it back.
+ */
+let lastFocus: { pane: number; id: string } | null = null;
 
 /** Keyed by id, so a node's local state (a splitter preview) never passes to another. */
 function nodeId(node: Node) {
@@ -318,13 +390,27 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
   const focused = ctx.focus === pane.id;
   const active = pane.tabs[pane.active] ?? null;
   const [over, setOver] = useState(false);
-  // The shown tab stays in view in a bar that scrolls.
+  // The shown tab stays in view in a bar that scrolls: the bar alone
+  // scrolls, never the page (an agent's tab must not move what the user reads).
   useEffect(() => {
-    if (active) document.getElementById(tabId(pane.id, active))?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const tab = active && document.getElementById(tabId(pane.id, active));
+    const bar = tab && tab.closest<HTMLElement>(".pane-tabs");
+    if (!tab || !bar) return;
+    const t = tab.getBoundingClientRect();
+    const b = bar.getBoundingClientRect();
+    if (t.left < b.left) bar.scrollLeft -= b.left - t.left;
+    else if (t.right > b.right) bar.scrollLeft += t.right - b.right;
   }, [pane.id, active && viewKey(active)]);
   // Native listeners, not React's: the game view is portalled in from
   // `GameHost`, so its React events never pass through this pane.
   const box = useRef<HTMLElement>(null);
+  // Mounted anew (see `lastFocus`): focus that fell to the page comes back.
+  useLayoutEffect(() => {
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (!lost || lastFocus?.pane !== pane.id) return;
+    const el = (lastFocus.id && document.getElementById(lastFocus.id)) || box.current?.querySelector<HTMLElement>("[role=tab][aria-selected=true]");
+    el?.focus({ preventScroll: true });
+  }, []);
   const live = useRef({ focused, pane, op });
   live.current = { focused, pane, op };
   useEffect(() => {
@@ -409,10 +495,11 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
           {pane.tabs.map((view, i) => {
             const title = titles.get(viewKey(view)) ?? "";
             const selected = i === pane.active;
+            const byAgent = ctx.agentTabs.has(viewKey(view));
             return (
               <div
                 key={viewKey(view)}
-                className="tab"
+                className={`tab${byAgent ? " tab-agent" : ""}`}
                 role="presentation"
                 data-tab-index={i}
                 draggable
@@ -431,10 +518,11 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
                   aria-selected={selected}
                   aria-controls={`panel-${pane.id}`}
                   tabIndex={selected ? 0 : -1}
-                  title={title}
+                  title={byAgent ? `${title} (opened by the agent)` : title}
                   onClick={() => show(view)}
                   onKeyDown={(e) => onTabKey(e, i)}
                 >
+                  {byAgent && <span className="agent-dot" data-testid="agent-mark" aria-label="Opened by the agent" />}
                   {title}
                 </button>
                 {/* A running game keeps its tab (the core refuses): Stop game, or Mini, first. */}
@@ -474,17 +562,25 @@ function ViewBody({ view, ctx }: { view: View; ctx: Ctx }) {
   switch (view.kind) {
     case "game":
       return <GameSlot />;
-    case "file":
+    case "file": {
+      const h = ctx.highlight;
+      const mark = h?.view.kind === "file" && h.view.path === view.path && h.lines ? { lines: h.lines, seq: h.seq } : null;
       return (
         <FileView
           path={view.path}
           file={state?.active ? ctx.files.get(fileKey(state.active, view.path)) : undefined}
           fetchFile={ctx.fetchFile}
           online={ctx.online}
+          mark={mark}
+          onUnmark={(seq) => ctx.send({ type: "clear_highlight", seq })}
         />
       );
+    }
     case "changes": {
       const task = state?.tasks.find((t) => t.id === view.task) ?? null;
+      // The core's highlight counts down, so it never repeats a click's `seq`.
+      const h = ctx.highlight;
+      const pointed = h?.view.kind === "changes" && h.view.task === view.task && h.file ? { path: h.file, seq: -h.seq } : null;
       return (
         <DiffView
           state={state}
@@ -494,7 +590,7 @@ function ViewBody({ view, ctx }: { view: View; ctx: Ctx }) {
           diff={ctx.diffs.get(view.task)}
           fetchDiff={ctx.fetchDiff}
           notice={ctx.notice}
-          target={ctx.target?.task === view.task ? ctx.target : null}
+          target={pointed ?? (ctx.target?.task === view.task ? ctx.target : null)}
         />
       );
     }
@@ -762,6 +858,8 @@ function PaneActions({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
 /** "Open a view here": a menu of `offers`, then "Reset layout". */
 function ViewMenu({ ctx, pane }: { ctx: Ctx; pane: Pane }) {
   const { open, setOpen, ref: menu, onKeyDown } = useMenu();
+  const layout = ctx.state?.active ? ctx.state.layouts[ctx.state.active] : undefined;
+  const arranges = layout?.agent.arranges ?? true;
   const pick = (op: LayoutOp) => {
     setOpen(false);
     ctx.refocus(ctx.op(op));
@@ -796,6 +894,18 @@ function ViewMenu({ ctx, pane }: { ctx: Ctx; pane: Pane }) {
           <hr className="menu-rule" />
           <button type="button" role="menuitem" onClick={() => pick({ type: "reset" })}>
             <span className="menu-title">Reset layout</span>
+          </button>
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={arranges}
+            title="When on, the agent can open views beside yours and its walkthroughs open when a run ends"
+            onClick={() => pick({ type: "agent_arranges", on: !arranges })}
+          >
+            <span className="menu-check" aria-hidden="true">
+              {arranges ? "✓" : ""}
+            </span>
+            <span className="menu-title">Let the agent arrange views</span>
           </button>
           <p className="menu-help">{shortcutHelp(PLATFORM)}</p>
         </div>

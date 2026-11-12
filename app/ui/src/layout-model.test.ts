@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Layout, Task, View } from "./generated/protocol";
-import { isTyping, keysFor, panesOf, shortcutFor, shortcutHelp, tabTitles, viewKey } from "./layout-model.ts";
+import { agentTabs, clampLines, isTyping, keysFor, panesOf, shortcutFor, shortcutHelp, tabTitles, viewKey } from "./layout-model.ts";
 
 const file = (path: string): View => ({ kind: "file", path });
 
@@ -88,4 +88,19 @@ test("shortcut labels follow the platform", () => {
   assert.equal(keysFor("split_right", "MacIntel"), "⌥\\");
   assert.equal(keysFor("close_tab", "Linux x86_64"), "Alt+W");
   assert.match(shortcutHelp("MacIntel"), /^⌥W close tab · ⌥\] next tab/);
+});
+
+test("highlighted lines are clamped to the file", () => {
+  assert.deepEqual(clampLines([4, 5], 10), [4, 5]);
+  assert.deepEqual(clampLines([8, 20], 10), [8, 10]);
+  assert.deepEqual(clampLines([0, 2], 10), [1, 2]);
+  assert.deepEqual(clampLines([6, 3], 10), [6, 6]);
+  assert.equal(clampLines([11, 12], 10), null);
+});
+
+test("the agent's tabs by key; none in an older layout", () => {
+  const layout = { agent: { arranges: true, tabs: [file("a.fun"), { kind: "game" }], restore: null } } as unknown as Layout;
+  assert.deepEqual([...agentTabs(layout)], ["file:a.fun", "game"]);
+  assert.equal(agentTabs({} as Layout).size, 0);
+  assert.equal(agentTabs(null).size, 0);
 });

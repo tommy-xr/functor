@@ -1,0 +1,3 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-beside-1", "model": "claude-model"}}
+{"ms": 2500, "mcp": {"tool": "show_view", "arguments": {"view": {"kind": "file", "path": "functor.json", "lines": [2, 3]}}}}
+{"ms": 3000, "event": {"type": "finished", "ok": true, "summary": "Shown."}}

@@ -1,6 +1,29 @@
 // Generated from the Rust app-protocol types by ts-rs. Do not edit.
 // Regenerate: UPDATE_TS=1 cargo test -p functor-app-core --features ts ts_bindings
 
+/**
+ * The agent's part of a layout (D25): kept with it, so it survives restarts.
+ */
+export type AgentLayout = { 
+/**
+ * "Let the agent arrange views". Off, its view requests change nothing.
+ */
+arranges: boolean, 
+/**
+ * Open tabs the agent opened: marked, and closed by "Close agent tabs".
+ */
+tabs: Array<View>, 
+/**
+ * The layout before the first change of the agent's latest run that
+ * changed it: "Restore my layout" returns to it. Dropped once the
+ * layout is that again.
+ */
+restore: Layout | null, 
+/**
+ * That run, as `[task, run]`: its later changes keep the snapshot.
+ */
+restore_run: [number, number] | null, };
+
 export type AppState = { 
 /**
  * Absolute path of the open folder's repo root (its nearest ancestor
@@ -81,7 +104,11 @@ templates_error: string | null,
 /**
  * The new-project modal, while open.
  */
-new_project: NewProject | null, };
+new_project: NewProject | null, 
+/**
+ * What the agent or a walkthrough step last pointed at (D25).
+ */
+highlight: Highlight | null, };
 
 /**
  * The summary that travels with the task.
@@ -104,7 +131,7 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -180,9 +207,27 @@ commit: string, };
 export type Harness = "claude" | "codex";
 
 /**
+ * What the agent or a walkthrough step last pointed at, until the user
+ * scrolls it out of view or its tab stops being shown.
+ */
+export type Highlight = { project: string, view: View, 
+/**
+ * A file's lines, `[first, last]`, 1-based.
+ */
+lines: [number, number] | null, 
+/**
+ * A changes view's file, relative to the repo root.
+ */
+file: string | null, 
+/**
+ * New per highlight, so showing the same again scrolls again.
+ */
+seq: number, };
+
+/**
  * One transcript entry, in the order the UI shows them.
  */
-export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" };
+export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" } | { "kind": "walkthrough", steps: Array<WalkthroughStep>, current: number | null, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
@@ -200,13 +245,17 @@ focus: number | null,
  * Where the game view shows. Absent from layouts saved before it
  * existed, which load as a pane.
  */
-game: GamePlacement, };
+game: GamePlacement, 
+/**
+ * What the agent arranged (D25). Absent from older layouts.
+ */
+agent: AgentLayout, };
 
 /**
  * A change to the layout. Ops naming a pane or split that is gone (another
  * window changed the layout first) change nothing.
  */
-export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "set_mini", mini: Mini, };
+export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "set_mini", mini: Mini, } | { "type": "restore" } | { "type": "close_agent_tabs" } | { "type": "agent_arranges", on: boolean, };
 
 export type LineKind = "hunk" | "context" | "added" | "removed" | "note";
 
@@ -336,7 +385,11 @@ id: number,
 /**
  * The latest (cumulative) usage, added as an item when the run ends.
  */
-usage: Usage | null, };
+usage: Usage | null, 
+/**
+ * View requests the run made ([`crate::agent_view::MAX_VIEW_REQUESTS`]).
+ */
+views: number, };
 
 /**
  * Core → UI.
@@ -437,3 +490,12 @@ input: number, output: number, };
  * What a tab shows. New view types need no layout work.
  */
 export type View = { "kind": "game" } | { "kind": "file", path: string, } | { "kind": "changes", task: number, } | { "kind": "task", task: number, };
+
+/**
+ * What a view request or walkthrough step shows: one of the run's
+ * project's files (`lines` `[first, last]`, 1-based), its task's changes
+ * (scrolled to `path`), or the game. Paths are relative to the project.
+ */
+export type ViewTarget = { "kind": "file", path: string, lines: [number, number] | null, } | { "kind": "changes", path: string | null, } | { "kind": "game" };
+
+export type WalkthroughStep = { title: string, note: string | null, view: ViewTarget, };

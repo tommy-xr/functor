@@ -52,6 +52,9 @@ export function App() {
   const openBeside = (view: TabView) => send({ type: "layout", op: { type: "open", view, target: { kind: "side" } } });
   const viewDiff = (path: string | null) => {
     if (selected === null) return;
+    // The user's own target replaces a step's pointer into these changes.
+    const h = state?.highlight;
+    if (h?.view.kind === "changes" && h.view.task === selected) send({ type: "clear_highlight", seq: h.seq });
     openBeside({ kind: "changes", task: selected });
     setTarget((t) => ({ task: selected, path, seq: (t?.seq ?? 0) + 1 }));
   };

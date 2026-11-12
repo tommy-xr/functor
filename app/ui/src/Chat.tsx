@@ -20,10 +20,13 @@ import {
   toolFile,
   phraseText,
   STATUS_WORDS,
+  stepAvailable,
   stepPhrase,
   toolKind,
   usageBefore,
   usageText,
+  viewPhrase,
+  walkTo,
   type Snapshot,
 } from "./chat-model";
 import { Counts, ReviewActions, TaskBadge } from "./DiffView";
@@ -55,6 +58,17 @@ type Props = {
   onSelect: (task: number | null) => void;
   /** Opens or focuses the current task's Changes tab at `path` (repo-relative), or at its top. */
   onViewDiff: (path: string | null) => void;
+};
+
+const NO_FILES: string[] = [];
+
+/** What a walkthrough card needs: which steps can be shown, and a way to show one. */
+type Walk = {
+  files: readonly string[];
+  /** The task still has a change to show. */
+  changes: boolean;
+  online: boolean;
+  onStep: ((item: number, step: number) => void) | null;
 };
 
 /** A line the dock shows for a connection or session change, at the conversation's length when it happened. */
@@ -119,6 +133,19 @@ export function ChatDock({
   }, [conn]);
 
   const lines = useConnectionLines(state, conn, current?.id ?? null, items?.length);
+  // Stable while nothing it holds changes: every row is memoised on it.
+  const files = state?.files ?? NO_FILES;
+  const changes = !!current && !!state?.tracks_changes && hasChange(current);
+  const taskId = current?.id ?? null;
+  const walk = useMemo<Walk>(
+    () => ({
+      files,
+      changes,
+      online,
+      onStep: taskId === null ? null : (item, step) => send({ type: "walkthrough_step", task: taskId, item, step }),
+    }),
+    [files, changes, online, taskId, send],
+  );
   const harness: Harness = current?.harness ?? pickHarness(state);
   const running = current?.run != null;
 
@@ -146,6 +173,7 @@ export function ChatDock({
         lines={lines.filter((l) => l.project === active && l.task === (current?.id ?? null))}
         onOpenGame={onOpenGame}
         onViewDiff={onViewDiff}
+        walk={walk}
         repoRoot={state?.repo_root ?? ""}
         project={current?.project ?? ""}
         review={
@@ -303,6 +331,7 @@ function Conversation({
   lines,
   onOpenGame,
   onViewDiff,
+  walk,
   repoRoot,
   project,
   review,
@@ -312,6 +341,7 @@ function Conversation({
   lines: Line[];
   onOpenGame: () => void;
   onViewDiff: (path: string | null) => void;
+  walk: Walk;
   repoRoot: string;
   /** The task's project, which relative tool paths are in. */
   project: string;
@@ -342,6 +372,8 @@ function Conversation({
       <Fragment key={i}>
         <Row
           item={item}
+          index={i}
+          walk={walk}
           usage={usageBefore(items!, i)}
           pending={i > runFrom}
           onOpenGame={onOpenGame}
@@ -394,6 +426,8 @@ function Conversation({
 /** One transcript item. Memoised: an `Item` update replaces only its own object, so a streamed reply re-renders alone. */
 const Row = memo(function Row({
   item,
+  index,
+  walk,
   usage,
   pending,
   onOpenGame,
@@ -403,6 +437,8 @@ const Row = memo(function Row({
   project,
 }: {
   item: Item;
+  index: number;
+  walk: Walk;
   usage: Usage | null;
   pending: boolean;
   onOpenGame: () => void;
@@ -431,6 +467,8 @@ const Row = memo(function Row({
       );
     case "usage":
       return null;
+    case "walkthrough":
+      return <WalkthroughCard item={item} index={index} walk={walk} />;
     case "finished":
     case "stopped":
     case "kept":
@@ -496,6 +534,7 @@ function ToolCall({
       <span className="step-text">
         {phrase.text}
         {phrase.code && <code>{phrase.code}</code>}
+        {phrase.after}
         {pending && <span className="step-busy">…</span>}
         {file && !file.binary && <Counts added={file.added} removed={file.removed} />}
       </span>
@@ -528,6 +567,76 @@ function ToolCall({
         </button>
       </div>
       {details}
+    </div>
+  );
+}
+
+type WalkthroughItem = Extract<Item, { kind: "walkthrough" }>;
+
+/**
+ * The agent's walkthrough (`present`): its steps, the current one marked,
+ * Prev / Next. A click shows the step's view in the canvas; the composer
+ * keeps the keyboard focus. A step whose file or change is gone is shown as
+ * unavailable.
+ */
+function WalkthroughCard({ item, index, walk }: { item: WalkthroughItem; index: number; walk: Walk }) {
+  const { steps, current } = item;
+  const available = steps.map((s) => stepAvailable(s.view, walk.files, walk.changes));
+  const can = walk.online && walk.onStep !== null;
+  const go = (step: number | null) => step !== null && walk.onStep?.(index, step);
+  const prev = walkTo(available, current, -1);
+  const next = walkTo(available, current, 1);
+  const keep = (e: { preventDefault: () => void }) => e.preventDefault();
+  return (
+    <div className="chat-card walkthrough" data-testid="walkthrough" role="group" aria-label={`Walkthrough: ${steps[0]?.title ?? ""}`}>
+      <p className="walkthrough-title">
+        <span className="eyebrow">Walkthrough</span>
+        <span>{steps[0]?.title}</span>
+      </p>
+      <ol className="walk-steps">
+        {steps.map((s, i) => {
+          const where = viewPhrase(s.view);
+          return (
+            <li key={i}>
+              <button
+                type="button"
+                className="walk-step"
+                aria-current={i === current ? "step" : undefined}
+                disabled={!can || !available[i]}
+                onMouseDown={keep}
+                onClick={() => go(i)}
+              >
+                <span className="walk-n" aria-hidden="true">
+                  {i + 1}
+                </span>
+                <span className="walk-body">
+                  <span className="walk-title">{s.title}</span>
+                  {s.note && <span className="walk-note">{s.note}</span>}
+                  <span className="walk-where">
+                    {available[i] ? (
+                      <>
+                        {where.code && <code>{where.code}</code>}
+                        {where.code ? where.after : where.after?.replace(/^ /, "")}
+                      </>
+                    ) : (
+                      "No longer available"
+                    )}
+                  </span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="chat-card-actions walk-nav">
+        <button type="button" className="button button-small" disabled={!can || prev === null} onMouseDown={keep} onClick={() => go(prev)}>
+          Prev
+        </button>
+        <span className="walk-count">{current === null ? `${steps.length} steps` : `Step ${current + 1} of ${steps.length}`}</span>
+        <button type="button" className="button button-small" disabled={!can || next === null} onMouseDown={keep} onClick={() => go(next)}>
+          {current === null ? "Start" : "Next"}
+        </button>
+      </div>
     </div>
   );
 }

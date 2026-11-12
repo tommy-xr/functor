@@ -209,6 +209,10 @@ pub fn print_item(item: &Item) -> String {
         Item::Stopped => "stopped".to_string(),
         Item::Kept => "kept: the change".to_string(),
         Item::Reverted => "reverted: the change".to_string(),
+        Item::Walkthrough { steps, .. } => {
+            let titles: Vec<&str> = steps.iter().map(|s| s.title.as_str()).collect();
+            format!("walkthrough: {}", titles.join(" → "))
+        }
     }
 }
 
@@ -426,6 +430,7 @@ mod tests {
             new_project: None,
             last_parent: None,
             first_task: None,
+            ..AppState::none()
         };
         assert_eq!(
             print(&state),
@@ -480,6 +485,7 @@ recents: 2
             }),
             focus: Some(2),
             game: GamePlacement::default(),
+            agent: Default::default(),
         }
     }
 
@@ -491,6 +497,7 @@ recents: 2
                 root: None,
                 focus: None,
                 game: GamePlacement::default(),
+                agent: Default::default(),
             }),
             "empty"
         );

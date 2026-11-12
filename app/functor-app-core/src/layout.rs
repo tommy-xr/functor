@@ -77,6 +77,60 @@ pub struct Layout {
     /// existed, which load as a pane.
     #[serde(default)]
     pub game: GamePlacement,
+    /// What the agent arranged (D25). Absent from older layouts.
+    #[serde(default)]
+    pub agent: AgentLayout,
+}
+
+/// The agent's part of a layout (D25): kept with it, so it survives restarts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AgentLayout {
+    /// "Let the agent arrange views". Off, its view requests change nothing.
+    #[serde(default = "on")]
+    pub arranges: bool,
+    /// Open tabs the agent opened: marked, and closed by "Close agent tabs".
+    #[serde(default)]
+    pub tabs: Vec<View>,
+    /// The layout before the first change of the agent's latest run that
+    /// changed it: "Restore my layout" returns to it. Dropped once the
+    /// layout is that again.
+    #[serde(default)]
+    pub restore: Option<Box<Layout>>,
+    /// That run, as `[task, run]`: its later changes keep the snapshot.
+    #[serde(default)]
+    pub restore_run: Option<[u64; 2]>,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl Default for AgentLayout {
+    fn default() -> Self {
+        Self {
+            arranges: true,
+            tabs: Vec::new(),
+            restore: None,
+            restore_run: None,
+        }
+    }
+}
+
+/// Where [`Layout::agent_show`] put a view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placed {
+    /// Added to a pane beside the user's, and shown there.
+    Opened,
+    /// Already open beside the user's pane: shown there.
+    Shown,
+    /// The tab the user's pane shows: nothing to change.
+    InView,
+    /// Added (or left) behind the tab the user's pane shows: the canvas
+    /// stacks its panes, so no split was made.
+    Behind,
+    /// The game is in its mini view or own window, already in sight.
+    GameElsewhere(Placement),
 }
 
 /// Where the project's one game view shows (D21).
@@ -218,6 +272,15 @@ pub enum LayoutOp {
     SetMini {
         mini: Mini,
     },
+    /// "Restore my layout": back to [`AgentLayout::restore`], the
+    /// placement staying.
+    Restore,
+    /// Closes every tab the agent opened ([`AgentLayout::tabs`]).
+    CloseAgentTabs,
+    /// "Let the agent arrange views" on or off.
+    AgentArranges {
+        on: bool,
+    },
 }
 
 pub const RATIO_MIN: u16 = 100;
@@ -262,6 +325,7 @@ impl Layout {
             })),
             focus: Some(1),
             game: GamePlacement::default(),
+            agent: AgentLayout::default(),
         }
     }
 
@@ -346,11 +410,28 @@ impl Layout {
             LayoutOp::Reset => {
                 *self = Self {
                     game: self.game,
+                    agent: std::mem::take(&mut self.agent),
                     ..Self::initial()
                 }
             }
             LayoutOp::Place { placement } => self.place(placement),
             LayoutOp::SetMini { mini } => self.game.mini = mini,
+            LayoutOp::Restore => {
+                if let Some(before) = self.agent.restore.take() {
+                    self.root = before.root;
+                    self.focus = before.focus;
+                    self.agent.tabs.clear();
+                    self.agent.restore_run = None;
+                }
+            }
+            LayoutOp::CloseAgentTabs => {
+                for view in std::mem::take(&mut self.agent.tabs) {
+                    if let Some((pane, i)) = self.find(&view) {
+                        self.take_tab(pane, i);
+                    }
+                }
+            }
+            LayoutOp::AgentArranges { on } => self.agent.arranges = on,
         }
         self.normalize();
         Ok(*self != before)
@@ -432,6 +513,119 @@ impl Layout {
         if !panes.iter().any(|p| Some(p.id) == self.focus) {
             self.focus = panes.first().map(|p| p.id);
         }
+        // The agent's marks name open tabs only; a snapshot that is the
+        // layout again has nothing left to restore.
+        let mut tabs = std::mem::take(&mut self.agent.tabs);
+        let mut seen = HashSet::new();
+        tabs.retain(|t| self.find(t).is_some() && seen.insert(t.clone()));
+        self.agent.tabs = tabs;
+        if let Some(before) = &mut self.agent.restore {
+            before.agent = AgentLayout::default();
+            before.normalize();
+            if (&before.root, before.focus) == (&self.root, self.focus) {
+                self.agent.restore = None;
+                self.agent.restore_run = None;
+            }
+        }
+    }
+
+    /// Shows `view` for the agent without taking the wheel (D25): never in
+    /// the focused pane over the tab it shows, never moving the focus. An
+    /// open view is shown where it is, or moved out from behind the user's
+    /// tab; a new one goes to the pane after (else before) the focused one,
+    /// made by a split right when there is none — unless the canvas is
+    /// `stacked`, where it goes behind the user's tab instead. The first
+    /// change of each run (`[task, run]`) snapshots the layout; tabs it adds
+    /// are marked. `valid` says why a view cannot be opened.
+    pub fn agent_show(
+        &mut self,
+        view: &View,
+        stacked: bool,
+        run: [u64; 2],
+        valid: impl Fn(&View) -> Result<(), String>,
+    ) -> Result<Placed, String> {
+        if *view == View::Game && self.game.placement != Placement::Pane {
+            return Ok(Placed::GameElsewhere(self.game.placement));
+        }
+        let found = self.find(view);
+        if found.is_none() {
+            valid(view)?;
+        }
+        // A snapshot from an earlier run would undo the user's work since.
+        if self.agent.restore.is_none() || self.agent.restore_run != Some(run) {
+            let mut before = self.clone();
+            before.agent = AgentLayout::default();
+            self.agent.restore = Some(Box::new(before));
+            self.agent.restore_run = Some(run);
+        }
+        let user = self.focus;
+        let placed = match found {
+            Some((pane, i)) if Some(pane) != user => {
+                self.pane_mut(pane).expect("found").active = i;
+                Placed::Shown
+            }
+            Some((_, i)) if self.focused_shows(i) => Placed::InView,
+            // Behind the user's tab: out to a pane of its own, if there can be one.
+            Some((pane, i)) => match self.side_pane(stacked) {
+                Some(to) => {
+                    // Never the pane's last tab: the user's shown one stays.
+                    self.take_tab(pane, i);
+                    self.add_shown(to, view.clone());
+                    Placed::Shown
+                }
+                None => Placed::Behind,
+            },
+            None => {
+                let placed = match self.side_pane(stacked) {
+                    Some(to) => {
+                        self.add_shown(to, view.clone());
+                        Placed::Opened
+                    }
+                    // An empty pane (one a split left) shows nothing to keep.
+                    None => {
+                        let focus = user.expect("no pane for the agent only beside the user's");
+                        let p = self.pane_mut(focus).expect("focused");
+                        p.tabs.push(view.clone());
+                        match p.tabs.len() {
+                            1 => Placed::Opened,
+                            _ => Placed::Behind,
+                        }
+                    }
+                };
+                self.agent.tabs.push(view.clone());
+                placed
+            }
+        };
+        self.normalize();
+        Ok(placed)
+    }
+
+    /// Whether the focused pane shows its tab `i`.
+    fn focused_shows(&self, i: usize) -> bool {
+        self.panes()
+            .into_iter()
+            .any(|p| Some(p.id) == self.focus && p.active == i)
+    }
+
+    /// The pane "to the side": the focused pane's neighbour, a new one split
+    /// right of it, or on an empty canvas the first pane. `None` when the
+    /// canvas is `stacked` and the focused pane is the only one.
+    fn side_pane(&mut self, stacked: bool) -> Option<u64> {
+        let Some(focus) = self.focus else {
+            return Some(self.add_root());
+        };
+        match self.neighbour(focus) {
+            Some(pane) => Some(pane),
+            None if stacked => None,
+            None => self.split(focus, Direction::Right),
+        }
+    }
+
+    /// Adds `view` last in `pane` and shows it there; the focus stays.
+    fn add_shown(&mut self, pane: u64, view: View) {
+        let p = self.pane_mut(pane).expect("a pane of the layout");
+        p.tabs.push(view);
+        p.active = p.tabs.len() - 1;
     }
 
     fn open(&mut self, view: View, target: Target) {
@@ -446,13 +640,7 @@ impl Layout {
                 Some(pane) => pane,
                 None => self.add_root(),
             },
-            Target::Side => match self.focus {
-                Some(focus) => self
-                    .neighbour(focus)
-                    .or_else(|| self.split(focus, Direction::Right))
-                    .expect("the focused pane exists"),
-                None => self.add_root(),
-            },
+            Target::Side => self.side_pane(false).expect("a side pane unless stacked"),
         };
         let p = self.pane_mut(pane).expect("a pane of the layout");
         p.tabs.push(view);
@@ -681,6 +869,7 @@ mod tests {
             root: Some(root),
             focus: Some(focus),
             game: GamePlacement::default(),
+            agent: Default::default(),
         }
     }
 
@@ -787,6 +976,7 @@ mod tests {
                 root: None,
                 focus: None,
                 game: GamePlacement::default(),
+                agent: Default::default(),
             };
             assert!(apply(&mut l, open(View::Game, target)));
             assert_eq!(l, Layout::initial());
@@ -1040,6 +1230,7 @@ mod tests {
                 root: None,
                 focus: None,
                 game: GamePlacement::default(),
+                agent: Default::default(),
             }
         );
     }
@@ -1141,6 +1332,7 @@ mod tests {
             }),
             focus: Some(42),
             game: GamePlacement::default(),
+            agent: Default::default(),
         };
         l.normalize();
         assert_eq!(
@@ -1155,6 +1347,7 @@ mod tests {
                 }),
                 focus: Some(1),
                 game: GamePlacement::default(),
+                agent: Default::default(),
             }
         );
         check(&l);
@@ -1163,6 +1356,7 @@ mod tests {
             root: None,
             focus: Some(1),
             game: GamePlacement::default(),
+            agent: Default::default(),
         };
         empty.normalize();
         assert_eq!(empty.focus, None);
@@ -1246,6 +1440,8 @@ mod tests {
         if let Some(root) = &l.root {
             splits(root, &mut ids);
         }
+        // Agent marks name open tabs only.
+        assert!(l.agent.tabs.iter().all(|t| l.find(t).is_some()), "{l:?}");
         match l.focus {
             Some(f) => assert!(panes.iter().any(|p| p.id == f), "{l:?}"),
             None => assert!(l.root.is_none(), "{l:?}"),
@@ -1280,6 +1476,25 @@ mod tests {
             for _ in 0..60 {
                 let view = views[next(views.len() as u64) as usize].clone();
                 let id = next(12);
+                // The agent's moves mixed in, each checked never to take the wheel.
+                match next(15) {
+                    11 | 12 => {
+                        agent(&mut l, view, next(2) == 0);
+                        check(&l);
+                        continue;
+                    }
+                    13 => {
+                        apply(&mut l, LayoutOp::Restore);
+                        check(&l);
+                        continue;
+                    }
+                    14 => {
+                        apply(&mut l, LayoutOp::CloseAgentTabs);
+                        check(&l);
+                        continue;
+                    }
+                    _ => {}
+                }
                 let op = match next(11) {
                     0 => open(view, Target::Focused),
                     1 => open(view, Target::Side),
@@ -1526,5 +1741,272 @@ mod tests {
         )
         .unwrap();
         assert_eq!(op, open(View::Changes { task: 3 }, Target::Side));
+    }
+
+    /// The user's tab in `l`'s focused pane, and the focus: what an agent
+    /// change must never move.
+    fn wheel(l: &Layout) -> (Option<u64>, Option<View>) {
+        let shown = l
+            .panes()
+            .into_iter()
+            .find(|p| Some(p.id) == l.focus)
+            .and_then(|p| p.tabs.get(p.active).cloned());
+        (l.focus, shown)
+    }
+
+    fn agent(l: &mut Layout, view: View, stacked: bool) -> Placed {
+        let before = wheel(l);
+        let tabs = l.panes().iter().map(|p| p.tabs.len()).sum::<usize>();
+        let placed = l.agent_show(&view, stacked, [1, 0], ok).unwrap();
+        // On an empty canvas there is no focus to keep: its first pane takes
+        // it; in an empty pane, no tab to keep.
+        if before.0.is_some() {
+            assert_eq!(l.focus, before.0, "the agent moved the user's focus");
+        }
+        if before.1.is_some() {
+            assert_eq!(wheel(l).1, before.1, "the agent changed the user's tab");
+        }
+        let after = l.panes().iter().map(|p| p.tabs.len()).sum::<usize>();
+        assert!(after >= tabs, "the agent closed a tab");
+        placed
+    }
+
+    #[test]
+    fn with_one_pane_the_agent_splits_right_and_leaves_the_focus() {
+        let mut l = layout(pane(1, &[View::Game, file("a.fun")], 1), 1);
+        let user = l.clone();
+        assert_eq!(agent(&mut l, file("b.fun"), false), Placed::Opened);
+        assert_eq!(
+            crate::print_layout(&l),
+            "right 50% (>#1[game, *file:a.fun] | #3[*file:b.fun])"
+        );
+        assert_eq!(l.agent.tabs, [file("b.fun")]);
+        let mut restore = user;
+        restore.agent = AgentLayout::default();
+        assert_eq!(l.agent.restore.as_deref(), Some(&restore));
+    }
+
+    #[test]
+    fn stacked_with_one_pane_it_opens_behind_the_users_tab() {
+        let mut l = layout(pane(1, &[file("a.fun")], 0), 1);
+        assert_eq!(agent(&mut l, file("b.fun"), true), Placed::Behind);
+        assert_eq!(crate::print_layout(&l), ">#1[*file:a.fun, file:b.fun]");
+        assert_eq!(l.agent.tabs, [file("b.fun")]);
+        // A view already behind the user's tab stays there.
+        let mut l = layout(pane(1, &[file("a.fun"), file("b.fun")], 0), 1);
+        assert_eq!(agent(&mut l, file("b.fun"), true), Placed::Behind);
+        assert_eq!(crate::print_layout(&l), ">#1[*file:a.fun, file:b.fun]");
+        assert!(l.agent.tabs.is_empty(), "the user's tab is not the agent's");
+    }
+
+    #[test]
+    fn stacked_with_two_panes_it_uses_the_other_one() {
+        let mut l = layout(
+            split(
+                3,
+                Direction::Right,
+                pane(1, &[file("a.fun")], 0),
+                pane(2, &[View::Game], 0),
+            ),
+            1,
+        );
+        assert_eq!(agent(&mut l, file("b.fun"), true), Placed::Opened);
+        assert_eq!(
+            crate::print_layout(&l),
+            "right 50% (>#1[*file:a.fun] | #2[game, *file:b.fun])"
+        );
+    }
+
+    #[test]
+    fn the_agent_uses_the_pane_after_the_focused_one_else_before() {
+        let two = |focus| {
+            layout(
+                split(
+                    3,
+                    Direction::Right,
+                    pane(1, &[file("a.fun")], 0),
+                    pane(2, &[View::Game], 0),
+                ),
+                focus,
+            )
+        };
+        let mut l = two(1);
+        agent(&mut l, file("c.fun"), false);
+        assert_eq!(
+            crate::print_layout(&l),
+            "right 50% (>#1[*file:a.fun] | #2[game, *file:c.fun])"
+        );
+        let mut l = two(2);
+        agent(&mut l, file("c.fun"), false);
+        assert_eq!(
+            crate::print_layout(&l),
+            "right 50% (#1[file:a.fun, *file:c.fun] | >#2[*game])"
+        );
+    }
+
+    #[test]
+    fn an_open_view_is_shown_where_it_is_or_brought_out_from_behind_the_users_tab() {
+        // In the other pane, behind another tab: shown there.
+        let mut l = layout(
+            split(
+                3,
+                Direction::Right,
+                pane(1, &[file("a.fun")], 0),
+                pane(2, &[View::Game, file("b.fun")], 0),
+            ),
+            1,
+        );
+        assert_eq!(agent(&mut l, file("b.fun"), false), Placed::Shown);
+        assert_eq!(
+            crate::print_layout(&l),
+            "right 50% (>#1[*file:a.fun] | #2[game, *file:b.fun])"
+        );
+        assert!(l.agent.tabs.is_empty());
+        // The tab the user is looking at: nothing changes, nothing to restore.
+        let mut l = layout(pane(1, &[file("a.fun")], 0), 1);
+        let user = l.clone();
+        assert_eq!(agent(&mut l, file("a.fun"), false), Placed::InView);
+        assert_eq!(l, user);
+        // Behind the user's tab: out to a pane beside it.
+        let mut l = layout(pane(1, &[file("a.fun"), View::Game], 0), 1);
+        assert_eq!(agent(&mut l, View::Game, false), Placed::Shown);
+        assert_eq!(
+            crate::print_layout(&l),
+            "right 50% (>#1[*file:a.fun] | #3[*game])"
+        );
+    }
+
+    #[test]
+    fn a_game_in_mini_or_its_own_window_is_left_where_it_is() {
+        for placement in [Placement::Mini, Placement::Window] {
+            let mut l = layout(pane(1, &[file("a.fun")], 0), 1);
+            l.game.placement = placement;
+            let user = l.clone();
+            assert_eq!(
+                agent(&mut l, View::Game, false),
+                Placed::GameElsewhere(placement)
+            );
+            assert_eq!(l, user);
+        }
+        let mut l = layout(pane(1, &[file("a.fun")], 0), 1);
+        assert_eq!(agent(&mut l, View::Game, false), Placed::Opened);
+        assert_eq!(
+            crate::print_layout(&l),
+            "right 50% (>#1[*file:a.fun] | #3[*game])"
+        );
+    }
+
+    #[test]
+    fn on_an_empty_canvas_the_agent_opens_a_pane() {
+        let mut l = Layout {
+            root: None,
+            focus: None,
+            game: GamePlacement::default(),
+            agent: Default::default(),
+        };
+        assert_eq!(
+            l.agent_show(&file("a.fun"), false, [1, 0], ok),
+            Ok(Placed::Opened)
+        );
+        assert_eq!(crate::print_layout(&l), ">#1[*file:a.fun]");
+    }
+
+    #[test]
+    fn a_refused_view_changes_nothing() {
+        let mut l = layout(pane(1, &[file("a.fun")], 0), 1);
+        let user = l.clone();
+        let refuse = |_: &View| Err("not listed".to_string());
+        assert_eq!(
+            l.agent_show(&file("x.fun"), false, [1, 0], refuse),
+            Err("not listed".to_string())
+        );
+        assert_eq!(l, user);
+        // An open view needs no check.
+        assert_eq!(
+            l.agent_show(&file("a.fun"), false, [1, 0], refuse),
+            Ok(Placed::InView)
+        );
+    }
+
+    #[test]
+    fn restore_puts_back_the_layout_from_before_the_agents_first_change() {
+        let mut l = layout(pane(1, &[View::Game, file("a.fun")], 1), 1);
+        let user = l.clone();
+        agent(&mut l, file("b.fun"), false);
+        agent(&mut l, file("c.fun"), false);
+        agent(&mut l, View::Game, false);
+        // The snapshot is still the one from before the first change.
+        assert_eq!(l.agent.restore.as_ref().unwrap().root, user.root);
+        assert!(apply(
+            &mut l,
+            LayoutOp::Place {
+                placement: Placement::Mini
+            }
+        ));
+        assert!(apply(&mut l, LayoutOp::Restore));
+        // The Game tab left with the placement, which the restore keeps.
+        assert_eq!(crate::print_layout(&l), ">#1[*file:a.fun]");
+        assert_eq!(l.game.placement, Placement::Mini);
+        assert_eq!(l.agent, AgentLayout::default());
+        assert!(
+            !apply(&mut l, LayoutOp::Restore),
+            "restoring twice does nothing"
+        );
+        // Undoing the agent's change by hand leaves nothing to restore.
+        let mut l = layout(pane(1, &[file("a.fun")], 0), 1);
+        agent(&mut l, file("b.fun"), false);
+        assert!(apply(
+            &mut l,
+            LayoutOp::Close {
+                view: file("b.fun")
+            }
+        ));
+        assert!(apply(&mut l, LayoutOp::ClosePane { pane: 3 }) || l.panes().len() == 1);
+        assert_eq!(l.agent.restore, None, "{}", crate::print_layout(&l));
+    }
+
+    #[test]
+    fn close_agent_tabs_closes_only_the_agents() {
+        let mut l = layout(
+            split(
+                3,
+                Direction::Right,
+                pane(1, &[file("a.fun")], 0),
+                pane(2, &[View::Game], 0),
+            ),
+            1,
+        );
+        agent(&mut l, file("b.fun"), false);
+        agent(&mut l, file("c.fun"), false);
+        assert_eq!(l.agent.tabs, [file("b.fun"), file("c.fun")]);
+        assert!(apply(&mut l, LayoutOp::CloseAgentTabs));
+        assert_eq!(
+            crate::print_layout(&l),
+            "right 50% (>#1[*file:a.fun] | #2[*game])"
+        );
+        assert!(l.agent.tabs.is_empty());
+        // A mark goes with its tab: closed by the user, it is forgotten.
+        agent(&mut l, file("b.fun"), false);
+        assert!(apply(
+            &mut l,
+            LayoutOp::Close {
+                view: file("b.fun")
+            }
+        ));
+        assert!(l.agent.tabs.is_empty());
+    }
+
+    #[test]
+    fn the_setting_survives_reset_and_old_layouts_have_it_on() {
+        let mut l = Layout::initial();
+        assert!(l.agent.arranges);
+        assert!(apply(&mut l, LayoutOp::AgentArranges { on: false }));
+        assert!(apply(&mut l, open(file("a.fun"), Target::Side)));
+        assert!(apply(&mut l, LayoutOp::Reset));
+        assert!(!l.agent.arranges);
+        let old: Layout = serde_json::from_str(r#"{"root": null, "focus": null}"#).unwrap();
+        assert_eq!(old.agent, AgentLayout::default());
+        let json = serde_json::to_string(&l).unwrap();
+        assert_eq!(serde_json::from_str::<Layout>(&json).unwrap(), l);
     }
 }
