@@ -198,7 +198,9 @@ export async function record(page) {
     frames.push({ at: (Date.now() - start) / 1000, file });
     cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
   });
-  await cdp.send("Page.startScreencast", { format: "png" });
+  // At the viewport's own size: the screencast otherwise scales a tall page down.
+  const { width, height } = page.viewportSize();
+  await cdp.send("Page.startScreencast", { format: "png", maxWidth: width, maxHeight: height });
   return {
     stop: async () => {
       await cdp.send("Page.stopScreencast");

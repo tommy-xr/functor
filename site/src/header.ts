@@ -36,8 +36,9 @@ const BURGER = `<input type="checkbox" id="nav-toggle" class="nav-toggle" />
 // still in development, so it ships unlinked and is reached by typing its URL.
 // The landing footer (index.html) mirrors this list — keep them in step.
 const NAV = [
-  // A section of the landing page; "./" so it resolves from any page.
-  { id: "app", href: "./#app", label: "Desktop app" },
+  // A section of the landing page ("./" resolves from any page). Left off
+  // the sandbox/IDE headers: their toolbars leave no room for a fifth entry.
+  { id: "app", href: "./#app", label: "Desktop app", roomy: true },
   { id: "sandbox", href: "sandbox.html", label: "Sandbox" },
   { id: "manual", href: "manual/", label: "Manual" },
   { id: "docs", href: "docs/", label: "API Reference" },
@@ -66,7 +67,7 @@ const renderHeader = ({
   controls = "",
 }: HeaderOptions): string => {
   const nav = [
-    ...NAV.map(
+    ...NAV.filter(({ roomy }) => !(roomy && controls)).map(
       ({ id, href, label }) =>
         `<a href="${prefix}${href}"${id === active ? ' aria-current="page"' : ""}>${label}</a>`
     ),

@@ -8,8 +8,8 @@
 //
 // What it records, cropped to the canvas and the chat beside it: the
 // walkthrough card's first step, with the changed line of game.fun marked in
-// a pane the agent opened beside the game → Next: the change's diff → Keep
-// change.
+// a pane the agent opened beside the game → Next: the change's diff → Next:
+// back to the game → Keep change.
 //
 // Prereqs: npm run build:app && npm run build:cli, @playwright/test's
 // chromium, and ffmpeg on PATH.
@@ -34,7 +34,7 @@ import {
 
 const { out, still } = outputs("app-review");
 const WIDTH = 1280; // wide enough for the canvas to split, so the agent's file opens beside the game
-const HEIGHT = 720;
+const HEIGHT = 860; // tall enough for the whole conversation under the agent card
 const FPS = 8;
 
 requireBuilt();
@@ -65,6 +65,9 @@ try {
   await card.getByRole("button", { name: "Next" }).click();
   await page.getByTestId("diff-view").waitFor();
   await sleep(2600);
+  await card.getByRole("button", { name: "Next" }).click();
+  await card.locator(".walk-count").filter({ hasText: "Step 3 of 3" }).waitFor();
+  await sleep(1500);
 
   await chat.getByTestId("review-card").getByRole("button", { name: "Keep change" }).click();
   await chat.getByTestId("task-status").filter({ hasText: "Kept" }).waitFor();

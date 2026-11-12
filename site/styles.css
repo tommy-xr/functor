@@ -542,14 +542,19 @@ a:hover {
   gap: var(--space-xl);
 }
 
-/* App captures carry a whole window's text, so their media gets more room. */
-.feature-row-wide {
-  grid-template-columns: minmax(0, 1.45fr) minmax(0, 0.85fr);
+/* A capture of a whole window's text: copy above, media at its own size below. */
+.feature-row-stack {
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-lg);
 }
 
-.feature-band:nth-child(even) .feature-row-wide {
-  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.45fr);
+.feature-row-stack .feature-media {
+  order: 2;
+  max-width: 963px;
+}
+
+.feature-row-stack .feature-body p {
+  max-width: 42rem;
 }
 
 /* Alternate the media to the right on the untinted bands. */
@@ -643,8 +648,7 @@ a:hover {
 
 /* Stack to one column on narrow viewports (media always on top). */
 @media (max-width: 760px) {
-  .feature-row,
-  .feature-band:nth-child(even) .feature-row-wide {
+  .feature-row {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-md);
   }
@@ -810,7 +814,6 @@ a:hover {
   margin-top: var(--section-gap);
   padding: var(--space-xl) var(--space-md);
   background: rgba(0, 0, 0, 0.2);
-  scroll-margin-top: 56px;
 }
 
 /* A feature row with a list where the media would be. */

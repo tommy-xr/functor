@@ -261,10 +261,11 @@ const playerFrame = (page) => {
   // clear color rgb(26, 51, 77); "not clear color" = the scene rendered.
   const rendered = Math.abs(pixel[0] - 26) + Math.abs(pixel[1] - 51) + Math.abs(pixel[2] - 77) > 30;
   check("landing hero scene renders", rendered, `center = rgb(${pixel})`);
-  const tagline = await page.locator(".hero-sub").textContent();
+  const tagline = (await page.locator(".hero-sub").textContent()).replace(/\s+/g, " ");
   check(
     "landing hero uses the engine-wide tagline",
-    tagline.trim().startsWith("A free, open-source game engine."),
+    tagline.trim() ===
+      "A free, open-source game engine. Write a game as a few pure functions, or describe a change and watch an agent make it while the game runs.",
     JSON.stringify(tagline.trim())
   );
 

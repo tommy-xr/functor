@@ -5,8 +5,9 @@
 //
 // What it records, cropped to the game and its bar: the save hot-reloads the
 // game (a mark lands on the rail) → the hero runs and jumps (key marks) → the
-// game is paused in mid-air and stepped a frame at a time → the playhead is
-// dragged back to before the run → resumed, the run and jump are played again.
+// game is paused in mid-air and walked back and forth a frame at a time → the
+// playhead is dragged back to before the run → resumed, the run and jump are
+// played again.
 //
 // Prereqs: npm run build:app && npm run build:cli, @playwright/test's
 // chromium, and ffmpeg on PATH.
@@ -58,13 +59,18 @@ try {
   await bar.getByRole("button", { name: /^frame \d+, hot reload/ }).waitFor({ timeout: 20_000 });
   await sleep(900);
 
-  // Play, pause in mid-air, and step on a frame at a time.
+  // Play, pause in mid-air, then walk back and forward a frame at a time.
   await runAndJump(page, view, debugUrl);
   await untilState(debugUrl, (s) => s.model.vy < 9, "the jump's rise");
   await pause(bar, debugUrl);
   await page.keyboard.up("ArrowRight");
   await sleep(900);
-  for (let i = 0; i < 8; i++) {
+  await bar.getByRole("slider", { name: "Selected frame" }).focus();
+  for (let i = 0; i < 10; i++) {
+    await page.keyboard.press("ArrowLeft");
+    await sleep(180);
+  }
+  for (let i = 0; i < 5; i++) {
     await bar.getByRole("button", { name: "Step one frame forward" }).click();
     await sleep(220);
   }
