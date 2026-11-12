@@ -1080,6 +1080,243 @@ blockquote {
   margin: 0 0 4px 10px;
 }
 
+/* New project (D24): a modal of the form beside a gallery of templates. */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(5, 8, 12, 0.72);
+}
+
+.modal {
+  width: min(1040px, 100%);
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-bar);
+}
+
+.modal-head,
+.modal-foot {
+  flex: none;
+  padding: 14px 18px;
+}
+
+.modal-head {
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+}
+
+.np-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 18px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.np-form .hint {
+  overflow-wrap: anywhere;
+}
+
+.np-folder {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.np-folder .path-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.np-folder > .button {
+  min-height: 36px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.np-describe {
+  resize: vertical;
+  min-height: 84px;
+  font-family: var(--sans);
+  line-height: 1.45;
+}
+
+.np-gallery {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+}
+
+.np-gallery-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.np-gallery-head .eyebrow {
+  flex: none;
+  margin: 0;
+}
+
+.np-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.np-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip-button {
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chip-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft-bg);
+  color: var(--accent-soft);
+}
+
+/* The gallery scrolls inside the modal; new templates land here. */
+.np-templates {
+  flex: 1 1 auto;
+  min-height: 160px;
+  max-height: 56vh;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  align-content: start;
+  gap: 10px;
+  padding: 2px;
+}
+
+.np-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.np-card:hover {
+  border-color: var(--border-strong);
+}
+
+.np-card[aria-checked="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.np-card[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.np-preview {
+  height: 64px;
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
+  background: var(--sunk);
+}
+
+.np-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 10px;
+}
+
+.np-card-name {
+  font-weight: 600;
+}
+
+.np-card-desc {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.np-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.np-kind,
+.np-tag {
+  padding: 1px 6px;
+  border-radius: var(--radius-s);
+  background: var(--chip);
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.np-kind {
+  color: var(--text-2);
+}
+
+.modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.np-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.modal-actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
 /* File tab: read-only text with line numbers. */
 
 .code {
@@ -2040,6 +2277,29 @@ blockquote {
   }
   .canvas-body {
     overflow: auto;
+  }
+}
+
+/* Narrow, the new-project modal is one column that scrolls as a whole. */
+@media (max-width: 760px) {
+  .modal-body {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+  .np-form {
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .np-templates {
+    max-height: 50vh;
+  }
+  .modal-foot {
+    flex-wrap: wrap;
+  }
+  .modal-actions {
+    margin-left: auto;
   }
 }
 

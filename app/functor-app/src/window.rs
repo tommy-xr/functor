@@ -47,7 +47,8 @@ enum UserEvent {
     Done,
 }
 
-/// The File menu's Open Folder item.
+/// The File menu's New Project and Open Folder items.
+const NEW_PROJECT: &str = "new-project";
 const OPEN_FOLDER: &str = "open-folder";
 /// Open Recent's items: this, then the entry's index.
 const RECENT: &str = "recent-";
@@ -259,7 +260,8 @@ fn stop(
     }
 }
 
-/// The menu bar: Quit and Hide, Open Folder (⌘O) and Open Recent, the Edit
+/// The menu bar: Quit and Hide, New Project (⇧⌘N), Open Folder (⌘O) and
+/// Open Recent, the Edit
 /// shortcuts (WKWebView takes copy and paste from the menu), and the
 /// standard Window items.
 fn menu() -> muda::Result<(Menu, Submenu)> {
@@ -275,6 +277,15 @@ fn menu() -> muda::Result<(Menu, Submenu)> {
             &PredefinedMenuItem::quit(None),
         ],
     )?;
+    let new_project = MenuItem::with_id(
+        NEW_PROJECT,
+        "New Project…",
+        true,
+        Some(Accelerator::new(
+            Modifiers::META | Modifiers::SHIFT,
+            Code::KeyN,
+        )),
+    );
     let open_folder = MenuItem::with_id(
         OPEN_FOLDER,
         "Open Folder…",
@@ -282,7 +293,7 @@ fn menu() -> muda::Result<(Menu, Submenu)> {
         Some(Accelerator::new(Modifiers::META, Code::KeyO)),
     );
     let open_recent = Submenu::new("Open Recent", false);
-    let file = Submenu::with_items("File", true, &[&open_folder, &open_recent])?;
+    let file = Submenu::with_items("File", true, &[&new_project, &open_folder, &open_recent])?;
     let edit = Submenu::with_items(
         "Edit",
         true,
@@ -348,6 +359,7 @@ fn parse_recents(body: &str) -> Option<Vec<Recent>> {
 /// it as its own buttons do (the server checks every path).
 fn menu_script(id: &str, recents: &[Recent]) -> Option<String> {
     let msg = match id {
+        NEW_PROJECT => serde_json::json!({"type": "show_new_project", "here": false}),
         OPEN_FOLDER => serde_json::json!({"type": "pick_folder"}),
         _ => {
             let i: usize = id.strip_prefix(RECENT)?.parse().ok()?;
@@ -522,6 +534,10 @@ mod tests {
         assert_eq!(
             menu_script("recent-0", &recents).unwrap(),
             r#"window.functorMenu?.({"path":"/a/\"hello\"');","type":"open_folder"});"#
+        );
+        assert_eq!(
+            menu_script(NEW_PROJECT, &recents).unwrap(),
+            r#"window.functorMenu?.({"here":false,"type":"show_new_project"});"#
         );
         for id in ["recent-1", "recent-x", "quit", ""] {
             assert_eq!(menu_script(id, &recents), None, "{id}");

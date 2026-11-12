@@ -151,6 +151,14 @@ export function FolderActions(props: FolderProps) {
   const recents = state?.recents ?? [];
   return (
     <>
+      <button
+        type="button"
+        className="button button-compact"
+        disabled={!online}
+        onClick={() => send({ type: "show_new_project", here: false })}
+      >
+        New project…
+      </button>
       <div className="folder-actions">
         <button
           type="button"
@@ -189,10 +197,8 @@ export function FolderActions(props: FolderProps) {
  * The canvas with no project to show: no folder open, or one holding no
  * project. Offers to open a folder (and a recent one), or a new project here.
  */
-export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProject?: () => void }) {
+export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProject: () => void }) {
   const { state, online, send } = props;
-  // Until new projects can be made here.
-  const [stub, setStub] = useState(false);
   const recents = state?.recents ?? [];
   const folder = state?.folder ?? "";
   return (
@@ -208,20 +214,13 @@ export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProje
             <h2 className="pane-title">No folder open</h2>
           )}
           <div className="empty-actions">
-            {folder && (
-              <button
-                type="button"
-                className="button button-compact button-primary"
-                disabled={!online}
-                onClick={onNewProject ?? (() => setStub(true))}
-              >
-                New project here
-              </button>
-            )}
+            <button type="button" className="button button-compact button-primary" disabled={!online} onClick={onNewProject}>
+              {folder ? "New project here" : "New project…"}
+            </button>
             {state?.native_picker && (
               <button
                 type="button"
-                className={`button button-compact${folder ? "" : " button-primary"}`}
+                className="button button-compact"
                 disabled={!online}
                 onClick={() => send({ type: "pick_folder" })}
               >
@@ -229,7 +228,6 @@ export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProje
               </button>
             )}
           </div>
-          {stub && <p className="notice">Making a new project here is not available yet.</p>}
           {/* No native picker: a folder is opened by its path. */}
           {!state?.native_picker && (
             <>
