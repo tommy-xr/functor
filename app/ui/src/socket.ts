@@ -11,6 +11,10 @@ export type Conn = "connecting" | "open" | "reconnecting";
 export type Accepted = { task: number; text: string; seq: number };
 export type Notice = { reason: string; seq: number };
 export type DiffMsg = Extract<ServerMsg, { type: "diff" }>;
+export type FileMsg = Extract<ServerMsg, { type: "file" }>;
+
+/** `files`' key for `path` of `project`. */
+export const fileKey = (project: string, path: string) => `${project}\n${path}`;
 
 const MIN_DELAY = 250;
 const MAX_DELAY = 5000;
@@ -29,6 +33,8 @@ export function useAppSocket() {
   const [notice, setNotice] = useState<Notice | null>(null);
   // The last diff of each task asked for (`fetchDiff`).
   const [diffs, setDiffs] = useState<ReadonlyMap<number, DiffMsg>>(new Map());
+  // The last text of each file asked for (`fetchFile`), by `fileKey`.
+  const [files, setFiles] = useState<ReadonlyMap<string, FileMsg>>(new Map());
   const socket = useRef<WebSocket | null>(null);
   // Asked for on this connection.
   const requested = useRef(new Set<number>());
@@ -75,6 +81,15 @@ export function useAppSocket() {
           case "diff":
             setDiffs((all) => new Map(all).set(msg.task, msg));
             break;
+          case "file":
+            setFiles((all) => {
+              const key = fileKey(msg.project, msg.path);
+              const had = all.get(key);
+              // A refresh that changed nothing keeps the views as they are.
+              if (had?.text === msg.text && had?.error === msg.error) return all;
+              return new Map(all).set(key, msg);
+            });
+            break;
           case "rejected":
             setNotice({ reason: msg.reason, seq: ++seq });
             break;
@@ -106,5 +121,6 @@ export function useAppSocket() {
     requested.current.add(task);
   };
   const fetchDiff = (task: number) => send({ type: "get_diff", task });
-  return { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff };
+  const fetchFile = (path: string) => send({ type: "get_file", path });
+  return { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff, files, fetchFile };
 }

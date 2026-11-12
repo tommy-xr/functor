@@ -51,7 +51,11 @@ harnesses: Array<Harness>,
 /**
  * Per project path, the agent last picked for its new tasks.
  */
-harness_choice: { [key in string]: Harness }, };
+harness_choice: { [key in string]: Harness }, 
+/**
+ * Per project path, its canvas layout; every project has one.
+ */
+layouts: { [key in string]: Layout }, };
 
 /**
  * The summary that travels with the task.
@@ -74,13 +78,18 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, };
 
 export type DiffLine = { kind: LineKind, 
 /**
  * Without its `+`/`-`/` ` marker; a hunk header whole; a note without `\ `.
  */
 text: string, };
+
+/**
+ * `Right`: the second child sits right of the first; `Down`: below it.
+ */
+export type Direction = "right" | "down";
 
 /**
  * What `functor.json` declares to run.
@@ -138,14 +147,51 @@ export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: 
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
+export type Layout = { 
+/**
+ * `None`: an empty canvas.
+ */
+root: Node | null, 
+/**
+ * The pane views open in by default; a pane of `root` exactly when
+ * there is one.
+ */
+focus: number | null, };
+
+/**
+ * A change to the layout. Ops naming a pane or split that is gone (another
+ * window changed the layout first) change nothing.
+ */
+export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" };
+
 export type LineKind = "hunk" | "context" | "added" | "removed" | "note";
 
 export type MouseButton = "left" | "right" | "middle";
+
+export type Node = { "kind": "pane" } & Pane | { "kind": "split", id: number, direction: Direction, 
+/**
+ * The first child's share, in thousandths ([`RATIO_MIN`]..=[`RATIO_MAX`]).
+ */
+ratio: number, first: Node, second: Node, };
 
 /**
  * Why a file's lines are not in the diff.
  */
 export type Omitted = "binary" | "large" | "budget" | "unreadable";
+
+export type Pane = { 
+/**
+ * Unique among the layout's panes and splits.
+ */
+id: number, 
+/**
+ * In tab-bar order. Empty only for a pane a split just made.
+ */
+tabs: Array<View>, 
+/**
+ * Index of the shown tab in `tabs` (0 when empty).
+ */
+active: number, };
 
 export type Project = { 
 /**
@@ -177,7 +223,7 @@ usage: Usage | null, };
 /**
  * Core → UI.
  */
-export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "rejected", reason: string, };
+export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", project: string, path: string, text: string | null, error: string | null, } | { "type": "rejected", reason: string, };
 
 export type Session = { 
 /**
@@ -200,6 +246,11 @@ export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "
  * `surface_height`): the space `/input` mouse coordinates are in.
  */
 surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
+
+/**
+ * Where [`LayoutOp::Open`] puts a view that is not open yet.
+ */
+export type Target = { "kind": "focused" } | { "kind": "side" } | { "kind": "pane", pane: number, };
 
 export type Task = { 
 /**
@@ -252,3 +303,8 @@ export type Usage = {
  * Includes cached prompt tokens.
  */
 input: number, output: number, };
+
+/**
+ * What a tab shows. New view types need no layout work.
+ */
+export type View = { "kind": "game" } | { "kind": "file", path: string, } | { "kind": "changes", task: number, } | { "kind": "task", task: number, };

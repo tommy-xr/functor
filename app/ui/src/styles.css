@@ -166,6 +166,9 @@ blockquote {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  padding: 10px;
+  /* Narrow, side-by-side panes stack (see the container query below). */
+  container-type: inline-size;
 }
 
 .chat {
@@ -355,9 +358,56 @@ blockquote {
 }
 
 .files li {
-  padding: 5px 8px;
+  display: flex;
+  align-items: center;
   border-radius: var(--radius-s);
   color: var(--text-2);
+}
+
+.files li:hover {
+  background: var(--surface-3);
+}
+
+.file-button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-side {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-right: 2px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+}
+
+.files li:hover .file-side,
+.file-side:focus-visible {
+  opacity: 1;
+}
+
+.file-side:hover {
+  color: var(--text);
+}
+
+.file-side .icon {
+  width: 14px;
+  height: 14px;
 }
 
 .files li.dim {
@@ -434,35 +484,329 @@ blockquote {
   color: var(--faint);
 }
 
-/* Canvas */
+/* Canvas: the layout's split tree, its leaves panes of tabs. */
 
-.tabs {
+.split {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
 }
 
-.tabs button {
-  padding: 6px 14px;
-  border: 0;
-  border-radius: var(--radius-m);
-  background: transparent;
+.split-down {
+  flex-direction: column;
+}
+
+/* Sized by flex-grow, the split's ratio in thousandths. */
+.split-child {
+  flex: 0 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.splitter {
+  flex: 0 0 10px;
+  position: relative;
+  touch-action: none;
+  cursor: col-resize;
+}
+
+.split-down > .splitter {
+  cursor: row-resize;
+}
+
+.splitter::after {
+  content: "";
+  position: absolute;
+  inset: 0 4px;
+  border-radius: 2px;
+}
+
+.split-down > .splitter::after {
+  inset: 4px 0;
+}
+
+.splitter:hover::after {
+  background: var(--border-strong);
+}
+
+.splitter:focus-visible {
+  outline: none;
+}
+
+.splitter:focus-visible::after {
+  background: var(--accent);
+}
+
+.pane-box {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg);
+}
+
+.pane-focused {
+  border-color: var(--border-strong);
+}
+
+.pane-drop {
+  border-color: var(--accent-soft);
+}
+
+.pane-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 2px 4px;
+  padding: 4px 6px 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background: var(--surface);
+}
+
+/* Many tabs scroll sideways inside the bar. */
+.pane-tabs {
+  flex: 1 1 120px;
+  min-width: 0;
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pane-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  flex: none;
+  max-width: 220px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-m) var(--radius-m) 0 0;
   color: var(--muted);
 }
 
-.tabs button[aria-selected="true"] {
+.tab:hover {
+  color: var(--text-2);
+}
+
+.tab:has(> [aria-selected="true"]) {
+  background: var(--surface-2);
+  color: var(--text);
+  border-bottom-color: var(--border-strong);
+}
+
+.pane-focused .tab:has(> [aria-selected="true"]) {
+  border-bottom-color: var(--accent);
+}
+
+.tab-title {
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-title.mono {
+  font-family: var(--mono);
+}
+
+.tab-title:focus-visible {
+  outline-offset: -2px;
+}
+
+.tab-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--faint);
+  line-height: 1;
+}
+
+.tab-close:hover {
   background: var(--selected);
   color: var(--text);
 }
 
-.canvas-body {
-  flex: 1 1 auto;
-  /* Bounded, so a long diff scrolls inside the tab, not the page. */
-  min-height: 0;
-  padding: 14px;
+.pane-game,
+.pane-actions {
+  flex: none;
+  align-self: center;
   display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 4px;
+}
+
+.pane-actions {
+  gap: 0;
+  margin-left: auto;
+}
+
+.pane-actions .icon-button {
+  width: 32px;
+  height: 30px;
+}
+
+.pane-actions .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.icon-button[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pane-menu {
+  position: relative;
+}
+
+.pane-menu .menu {
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.menu-rule {
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid var(--border-strong);
+}
+
+.menu-help {
+  padding: 6px 10px 4px;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.pane-body {
+  flex: 1 1 auto;
+  /* Bounded, so a long diff or file scrolls inside its tab, not the page. */
+  min-width: 0;
+  min-height: 0;
+  padding: 10px;
+  display: flex;
+}
+
+.game-slot,
+.game-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.empty-pane,
+.empty-canvas {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.empty-actions .button-primary {
+  flex: none;
+}
+
+.empty-files {
+  width: min(100%, 320px);
+  max-height: 240px;
+  overflow: auto;
+  text-align: left;
+}
+
+.button-compact {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+/* File tab: read-only text with line numbers. */
+
+.code {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--sunk);
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.code-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  padding: 10px 0;
+}
+
+.code-gutter,
+.code-text {
+  margin: 0;
+  font: 13px/1.7 var(--mono);
+}
+
+/* The numbers stay put while the text scrolls sideways. */
+.code-gutter {
+  flex: none;
+  position: sticky;
+  left: 0;
+  padding: 0 14px 0 12px;
+  background: var(--sunk);
+  color: var(--faint);
+  text-align: right;
+  user-select: none;
+}
+
+.code-text {
+  flex: 1 0 auto;
+  padding-right: 12px;
+  color: var(--text-2);
+  white-space: pre;
+  tab-size: 4;
+}
+
+.code-note {
+  padding: 12px;
 }
 
 .placeholder {
@@ -1365,7 +1709,27 @@ blockquote {
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
-  .canvas-body {
+  /* Bounded, so a long file scrolls inside its pane rather than the page. */
+  .canvas {
+    height: 85vh;
+    min-height: 480px;
+    overflow: auto;
+  }
+}
+
+/* A canvas too narrow for panes side by side stacks them; their ratios wait. */
+@container (max-width: 560px) {
+  .split-right {
+    flex-direction: column;
+  }
+  .splitter {
+    display: none;
+  }
+  /* Stacked, every pane gets a usable height and the canvas scrolls. */
+  .split-child {
+    flex: 1 0 auto !important;
+  }
+  .pane-body {
     min-height: 320px;
   }
 }

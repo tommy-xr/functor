@@ -1,6 +1,7 @@
 //! The `--print` text dump of the state.
 
 use crate::changes::Change;
+use crate::layout::{Direction, Layout, Node, View};
 use crate::projects::Entries;
 use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 
@@ -12,6 +13,7 @@ use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 /// active: examples/hello
 /// session: running pid 4242 http://127.0.0.1:52011 frame 30
 /// mode: hidden
+/// layout: right 50% (>#1[*game] | #3[*file:game.fun, changes:1])
 /// projects: 2
 /// * examples/hello (hello): entry game.fun
 ///   examples/orbs (orbs): entries client=game.fun module=Client, server=game.fun module=Server
@@ -27,8 +29,12 @@ pub fn print(state: &AppState) -> String {
         format!("active: {}", active.unwrap_or("none")),
         format!("session: {}", session(state)),
         format!("mode: {}", mode(state)),
-        format!("projects: {}", state.projects.len()),
     ];
+    if let Some(active) = active {
+        let layout = state.layouts.get(active).cloned().unwrap_or_default();
+        lines.push(format!("layout: {}", print_layout(&layout)));
+    }
+    lines.push(format!("projects: {}", state.projects.len()));
     for p in &state.projects {
         let mark = if Some(p.path.as_str()) == active {
             '*'
@@ -68,6 +74,53 @@ pub fn print(state: &AppState) -> String {
         }
     }
     lines.join("\n") + "\n"
+}
+
+/// A layout on one line: each pane as `#id[tabs]`, the focused one marked
+/// `>` and its shown tab `*`; each split as `right|down N% (first | second)`,
+/// N the first child's share; `empty` for no panes.
+pub fn print_layout(layout: &Layout) -> String {
+    fn node(n: &Node, focus: Option<u64>) -> String {
+        match n {
+            Node::Pane(p) => {
+                let tabs: Vec<String> = p
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let mark = if i == p.active { "*" } else { "" };
+                        let view = match v {
+                            View::Game => "game".to_string(),
+                            View::File { path } => format!("file:{path}"),
+                            View::Changes { task } => format!("changes:{task}"),
+                            View::Task { task } => format!("task:{task}"),
+                        };
+                        format!("{mark}{view}")
+                    })
+                    .collect();
+                let mark = if focus == Some(p.id) { ">" } else { "" };
+                format!("{mark}#{}[{}]", p.id, tabs.join(", "))
+            }
+            Node::Split {
+                direction,
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                let dir = match direction {
+                    Direction::Right => "right",
+                    Direction::Down => "down",
+                };
+                let (a, b) = (node(first, focus), node(second, focus));
+                format!("{dir} {}% ({a} | {b})", ratio / 10)
+            }
+        }
+    }
+    match &layout.root {
+        Some(root) => node(root, layout.focus),
+        None => "empty".to_string(),
+    }
 }
 
 fn task(t: &Task) -> String {
@@ -304,6 +357,7 @@ mod tests {
             tasks: vec![],
             harnesses: vec![],
             harness_choice: Default::default(),
+            layouts: [("examples/hello".to_string(), split_layout())].into(),
         };
         assert_eq!(
             print(&state),
@@ -312,11 +366,58 @@ repo: /src/functor
 active: examples/hello
 session: running pid 4242 http://127.0.0.1:52011 frame 30
 mode: hidden
+layout: right 60% (#1[game, *file:game.fun] | down 50% (>#2[*changes:2, task:2] | #5[]))
 projects: 3
 * examples/hello (hello): entry game.fun
   examples/orbs (orbs): entries client=game.fun module=Client, server=server.fun
   old (old): invalid: bad
 "
+        );
+    }
+
+    fn split_layout() -> Layout {
+        use crate::layout::Pane;
+        let pane = |id, tabs: Vec<View>, active| Node::Pane(Pane { id, tabs, active });
+        Layout {
+            root: Some(Node::Split {
+                id: 4,
+                direction: Direction::Right,
+                ratio: 600,
+                first: Box::new(pane(
+                    1,
+                    vec![
+                        View::Game,
+                        View::File {
+                            path: "game.fun".into(),
+                        },
+                    ],
+                    1,
+                )),
+                second: Box::new(Node::Split {
+                    id: 6,
+                    direction: Direction::Down,
+                    ratio: 500,
+                    first: Box::new(pane(
+                        2,
+                        vec![View::Changes { task: 2 }, View::Task { task: 2 }],
+                        0,
+                    )),
+                    second: Box::new(pane(5, vec![], 0)),
+                }),
+            }),
+            focus: Some(2),
+        }
+    }
+
+    #[test]
+    fn prints_layouts() {
+        assert_eq!(print_layout(&Layout::initial()), ">#1[*game]");
+        assert_eq!(
+            print_layout(&Layout {
+                root: None,
+                focus: None
+            }),
+            "empty"
         );
     }
 
@@ -335,6 +436,7 @@ projects: 3
             tasks: vec![],
             harnesses: vec![],
             harness_choice: Default::default(),
+            layouts: Default::default(),
         };
         assert_eq!(
             print(&state),
@@ -363,6 +465,7 @@ projects: 3
                 tasks: vec![],
                 harnesses: vec![],
                 harness_choice: Default::default(),
+                layouts: Default::default(),
             };
             print(&state).lines().nth(2).unwrap().to_string()
         };
@@ -456,6 +559,7 @@ projects: 3
             }],
             harnesses: vec![],
             harness_choice: Default::default(),
+            layouts: Default::default(),
         };
         let text = print(&state);
         assert!(

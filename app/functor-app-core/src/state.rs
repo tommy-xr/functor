@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::changes::Change;
-use crate::projects::{default_project, project_dir, relative, Project};
+use crate::layout::{Layout, LayoutOp, View};
+use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, GameInput, ServerMsg};
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
@@ -43,6 +44,8 @@ pub struct AppState {
     pub harnesses: Vec<Harness>,
     /// Per project path, the agent last picked for its new tasks.
     pub harness_choice: BTreeMap<String, Harness>,
+    /// Per project path, its canvas layout; every project has one.
+    pub layouts: BTreeMap<String, Layout>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +64,10 @@ impl AppState {
     pub fn new(root: &Path, start: &Path, projects: Vec<Project>) -> Self {
         let paths: Vec<&str> = projects.iter().map(|p| p.path.as_str()).collect();
         let active = default_project(&paths, &relative(root, start)).map(str::to_string);
+        let layouts = projects
+            .iter()
+            .map(|p| (p.path.clone(), Layout::initial()))
+            .collect();
         Self {
             repo_root: root.to_string_lossy().into_owned(),
             projects,
@@ -74,6 +81,7 @@ impl AppState {
             tasks: Vec::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
+            layouts,
         }
     }
 }
@@ -100,6 +108,10 @@ pub enum Event {
     /// The saved tasks, read at startup; ids are unique.
     TasksLoaded {
         tasks: Vec<Task>,
+    },
+    /// The saved layouts by project path, read at startup after the tasks.
+    LayoutsLoaded {
+        layouts: BTreeMap<String, Layout>,
     },
     /// A client's `NewTask`, with the id the shell reserved for it (unique
     /// across app processes sharing a store), or why it could not.
@@ -157,6 +169,15 @@ pub enum Command {
     SaveTask { dir: PathBuf, task: Box<Task> },
     /// Remember `harness` as the pick for new tasks in the project at `dir`.
     SaveHarness { dir: PathBuf, harness: Harness },
+    /// Remember `layout` for the project at `dir`; writes may be coalesced.
+    SaveLayout { dir: PathBuf, layout: Box<Layout> },
+    /// Read `path` (checked by [`check_relative`]) in project `project`'s
+    /// `dir`, answering the asking client with `ServerMsg::File`.
+    ReadFile {
+        project: String,
+        path: String,
+        dir: PathBuf,
+    },
     /// Compute task `task`'s change since `baseline`, answering with
     /// `Event::Change`; with `reply`, also its full diff to the asking
     /// client as `ServerMsg::Diff`.
@@ -260,14 +281,22 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::SetHarness { harness }) => {
             (set_harness(&mut state, harness, &mut commands), true)
         }
+        Event::Client(ClientMsg::Layout { op }) => (layout_op(&mut state, op, &mut commands), true),
+        Event::Client(ClientMsg::GetFile { path }) => {
+            get_file(&state, path, &mut commands);
+            (false, false)
+        }
         Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
         // A listing for a project switched away from is dropped.
         Event::Files { path, files } => {
-            let current = state.active.as_ref() == Some(&path) && state.files != files;
-            if current {
-                state.files = files;
+            if state.active.as_ref() != Some(&path) {
+                return (state, commands);
             }
-            (current, false)
+            let listed = state.files != files;
+            state.files = files;
+            // Tabs of files that are gone close.
+            let pruned = prune(&mut state, &path, &mut commands);
+            (listed || pruned, false)
         }
         // Task messages that change nothing answer with `Rejected`, not the state.
         // Shells reserve an id first and send `Event::NewTask`.
@@ -348,6 +377,15 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 })
                 .collect();
             state.tasks.sort_by_key(|t| t.id);
+            (true, false)
+        }
+        Event::LayoutsLoaded { layouts } => {
+            for (path, layout) in layouts {
+                if state.projects.iter().any(|p| p.path == path) {
+                    state.layouts.insert(path.clone(), layout);
+                    prune(&mut state, &path, &mut commands);
+                }
+            }
             (true, false)
         }
         Event::Shutdown => {
@@ -443,6 +481,95 @@ fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Comman
     });
     state.harness_choice.insert(path.clone(), harness);
     true
+}
+
+/// Applies `op` to the active project's layout.
+fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<Command>) -> bool {
+    let Some(project) = state.active.clone() else {
+        return false;
+    };
+    let mut layout = state.layouts.get(&project).cloned().unwrap_or_default();
+    match layout.apply(op, |view| check_view(state, &project, view)) {
+        Ok(true) => {
+            save_layout(state, &project, layout, commands);
+            true
+        }
+        Ok(false) => false,
+        Err(reason) => reject(commands, reason),
+    }
+}
+
+/// Drops `project`'s tabs whose view no longer exists; whether any did.
+fn prune(state: &mut AppState, project: &str, commands: &mut Vec<Command>) -> bool {
+    let Some(before) = state.layouts.get(project) else {
+        return false;
+    };
+    let mut layout = before.clone();
+    layout.retain(|view| check_view(state, project, view).is_ok());
+    let changed = &layout != before;
+    if changed {
+        save_layout(state, project, layout, commands);
+    }
+    changed
+}
+
+fn save_layout(state: &mut AppState, project: &str, layout: Layout, commands: &mut Vec<Command>) {
+    commands.push(Command::SaveLayout {
+        dir: project_dir(Path::new(&state.repo_root), project),
+        layout: Box::new(layout.clone()),
+    });
+    state.layouts.insert(project.to_string(), layout);
+}
+
+/// Why `view` cannot be open in `project`'s layout. Files are checked
+/// against the listing only for the active project, the one listed.
+fn check_view(state: &AppState, project: &str, view: &View) -> Result<(), String> {
+    match view {
+        View::Game => Ok(()),
+        View::File { path } => {
+            check_relative(path)?;
+            let listed = state.active.as_deref() != Some(project) || state.files.contains(path);
+            match listed {
+                true => Ok(()),
+                false => Err(format!("{path} is not one of {project}'s files")),
+            }
+        }
+        View::Changes { task } | View::Task { task } => {
+            match state
+                .tasks
+                .iter()
+                .any(|t| t.id == *task && t.project == project)
+            {
+                true => Ok(()),
+                false => Err(format!("there is no task {task} in {project}")),
+            }
+        }
+    }
+}
+
+/// Answers `GetFile`: the shell reads a well-formed path, others are
+/// answered with why not.
+fn get_file(state: &AppState, path: String, commands: &mut Vec<Command>) {
+    let Some(project) = state.active.clone() else {
+        reject(
+            commands,
+            "there is no project to read a file in".to_string(),
+        );
+        return;
+    };
+    match check_relative(&path) {
+        Ok(()) => commands.push(Command::ReadFile {
+            dir: project_dir(Path::new(&state.repo_root), &project),
+            project,
+            path,
+        }),
+        Err(error) => commands.push(Command::Reply(ServerMsg::File {
+            project,
+            path,
+            text: None,
+            error: Some(error),
+        })),
+    }
 }
 
 fn reject(commands: &mut Vec<Command>, reason: String) -> bool {
@@ -946,6 +1073,7 @@ mod tests {
             tasks: vec![],
             harnesses: vec![Harness::Claude, Harness::Codex],
             harness_choice: BTreeMap::new(),
+            layouts: BTreeMap::new(),
         }
     }
 
@@ -2293,5 +2421,264 @@ mod tests {
         assert_eq!(t["status"]["kind"], "ready_for_review");
         assert_eq!(t["change"]["files"][0]["path"], "examples/a/game.fun");
         assert_eq!(t["change"]["files"][0]["added"], 2);
+    }
+
+    // Layouts.
+
+    use crate::layout::{Direction, Node, Pane, Target};
+
+    fn op(op: LayoutOp) -> Event {
+        client(ClientMsg::Layout { op })
+    }
+
+    fn open_file(path: &str, target: Target) -> Event {
+        op(LayoutOp::Open {
+            view: View::File {
+                path: path.to_string(),
+            },
+            target,
+        })
+    }
+
+    fn save_layout_cmd(project: &str, layout: &Layout) -> Command {
+        Command::SaveLayout {
+            dir: PathBuf::from(format!("/repo/{project}")),
+            layout: Box::new(layout.clone()),
+        }
+    }
+
+    #[test]
+    fn a_new_state_gives_every_project_the_initial_layout() {
+        let s = AppState::new(
+            Path::new("/repo"),
+            Path::new("/repo"),
+            vec![project("examples/a"), project("examples/b")],
+        );
+        assert_eq!(s.layouts.len(), 2);
+        assert!(s.layouts.values().all(|l| *l == Layout::initial()));
+    }
+
+    #[test]
+    fn a_layout_op_changes_the_active_projects_layout_saves_and_broadcasts() {
+        let (next, commands) = update(state(), open_file("game.fun", Target::Side));
+        let layout = &next.layouts["examples/a"];
+        assert_eq!(
+            crate::print_layout(layout),
+            "right 50% (#1[*game] | >#3[*file:game.fun])"
+        );
+        assert_eq!(
+            commands,
+            vec![save_layout_cmd("examples/a", layout), broadcast(&next)]
+        );
+        // The other project's layout is its own.
+        let (b, _) = update(next.clone(), switch("examples/b"));
+        assert_eq!(b.layouts.get("examples/b"), None);
+        assert_eq!(b.layouts["examples/a"], *layout);
+        // An op that changes nothing only replies.
+        let (again, commands) = update(next.clone(), open_file("game.fun", Target::Side));
+        assert_eq!(again, next);
+        assert_eq!(
+            commands,
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(next)
+            })]
+        );
+    }
+
+    #[test]
+    fn a_view_that_cannot_open_is_rejected() {
+        let other = Task {
+            project: "examples/b".to_string(),
+            ..task(&finished_task(), 1).clone()
+        };
+        let s = AppState {
+            tasks: vec![other],
+            ..state()
+        };
+        for (event, reason) in [
+            (
+                open_file("missing.fun", Target::Focused),
+                "missing.fun is not one of examples/a's files",
+            ),
+            (
+                open_file("../x.fun", Target::Focused),
+                "\"../x.fun\" is not a path inside the project",
+            ),
+            (
+                op(LayoutOp::Open {
+                    view: View::Changes { task: 1 },
+                    target: Target::Side,
+                }),
+                "there is no task 1 in examples/a",
+            ),
+        ] {
+            let (next, commands) = update(s.clone(), event);
+            assert_eq!(next, s);
+            assert_eq!(
+                commands,
+                vec![
+                    Command::Reply(ServerMsg::Rejected {
+                        reason: reason.to_string()
+                    }),
+                    Command::Reply(ServerMsg::State {
+                        state: Box::new(s.clone())
+                    })
+                ]
+            );
+        }
+        // A task of the project opens.
+        let (next, _) = update(
+            finished_task(),
+            op(LayoutOp::Open {
+                view: View::Task { task: 1 },
+                target: Target::Focused,
+            }),
+        );
+        assert_eq!(
+            crate::print_layout(&next.layouts["examples/a"]),
+            ">#1[game, *task:1]"
+        );
+    }
+
+    #[test]
+    fn loaded_layouts_are_normalized_and_lose_stale_tabs() {
+        let s = finished_task();
+        let pane = |id, tabs: Vec<View>| {
+            Node::Pane(Pane {
+                id,
+                tabs,
+                active: 0,
+            })
+        };
+        let file = |p: &str| View::File {
+            path: p.to_string(),
+        };
+        let saved = Layout {
+            root: Some(Node::Split {
+                id: 3,
+                direction: Direction::Right,
+                ratio: 500,
+                // A second Game tab, a gone task, a file no longer there.
+                first: Box::new(pane(
+                    1,
+                    vec![
+                        View::Game,
+                        View::Changes { task: 1 },
+                        View::Task { task: 9 },
+                    ],
+                )),
+                second: Box::new(pane(
+                    2,
+                    vec![View::Game, file("gone.fun"), file("game.fun")],
+                )),
+            }),
+            focus: Some(2),
+        };
+        // Another project's files are not listed yet, so its file tabs stay.
+        let theirs = Layout {
+            root: Some(pane(1, vec![file("b.fun")])),
+            focus: Some(1),
+        };
+        let layouts = BTreeMap::from([
+            ("examples/a".to_string(), saved),
+            ("examples/b".to_string(), theirs.clone()),
+            ("examples/gone".to_string(), Layout::initial()),
+        ]);
+        let (next, _) = update(s, Event::LayoutsLoaded { layouts });
+        assert_eq!(
+            crate::print_layout(&next.layouts["examples/a"]),
+            "right 50% (#1[*game, changes:1] | >#2[*file:game.fun])"
+        );
+        assert_eq!(next.layouts["examples/b"], theirs);
+        assert!(!next.layouts.contains_key("examples/gone"));
+        // Once b is active and listed without b.fun, its tab closes and is saved.
+        let (b, _) = update(next, switch("examples/b"));
+        let (b, commands) = update(b, files("examples/b", &["c.fun"]));
+        assert_eq!(
+            b.layouts["examples/b"],
+            Layout {
+                root: None,
+                focus: None
+            }
+        );
+        assert_eq!(
+            commands,
+            vec![
+                save_layout_cmd("examples/b", &b.layouts["examples/b"]),
+                broadcast(&b)
+            ]
+        );
+    }
+
+    #[test]
+    fn get_file_asks_the_shell_for_a_well_formed_path() {
+        let (next, commands) = update(
+            state(),
+            client(ClientMsg::GetFile {
+                path: "game.fun".into(),
+            }),
+        );
+        assert_eq!(next, state());
+        assert_eq!(
+            commands,
+            vec![Command::ReadFile {
+                project: "examples/a".to_string(),
+                path: "game.fun".to_string(),
+                dir: PathBuf::from("/repo/examples/a"),
+            }]
+        );
+        let (_, commands) = update(
+            state(),
+            client(ClientMsg::GetFile {
+                path: "/etc/passwd".into(),
+            }),
+        );
+        assert_eq!(
+            commands,
+            vec![Command::Reply(ServerMsg::File {
+                project: "examples/a".to_string(),
+                path: "/etc/passwd".to_string(),
+                text: None,
+                error: Some("\"/etc/passwd\" is not a path inside the project".to_string()),
+            })]
+        );
+    }
+
+    #[test]
+    fn layout_messages_are_type_tagged() {
+        let msg: ClientMsg = serde_json::from_str(
+            r#"{"type":"layout","op":{"type":"move","view":{"kind":"game"},"pane":2,"index":0}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            msg,
+            ClientMsg::Layout {
+                op: LayoutOp::Move {
+                    view: View::Game,
+                    pane: 2,
+                    index: 0
+                }
+            }
+        );
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"get_file","path":"game.fun"}"#).unwrap();
+        assert_eq!(
+            msg,
+            ClientMsg::GetFile {
+                path: "game.fun".into()
+            }
+        );
+        let json = serde_json::to_value(ServerMsg::State {
+            state: Box::new(AppState::new(
+                Path::new("/r"),
+                Path::new("/r"),
+                vec![project("a")],
+            )),
+        })
+        .unwrap();
+        assert_eq!(
+            json["state"]["layouts"]["a"]["root"]["tabs"][0]["kind"],
+            "game"
+        );
     }
 }

@@ -1,6 +1,7 @@
 //! Tasks on disk: one JSON file per task (`tasks::to_stored`) under
 //! `<home>/projects/<project key>/tasks/<id>.json`, and the project's picked
-//! agent in `<home>/projects/<project key>/harness.json`, where home is
+//! agent in `<home>/projects/<project key>/harness.json` and its canvas
+//! layout in `layout.json` beside it, where home is
 //! `FUNCTOR_APP_HOME` or `~/.functor/app`. Never inside the user's repo.
 //! Task ids are reserved in `<home>/task-ids/`, so app processes sharing a
 //! home never give two tasks one id. All of it is private to the user.
@@ -14,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use functor_app_core::projects::project_dir;
 use functor_app_core::tasks::{from_stored, to_stored};
-use functor_app_core::{AppState, Harness, Task};
+use functor_app_core::{AppState, Harness, Layout, Task};
 
 /// `FUNCTOR_APP_HOME` (`env`), else `.functor/app` in `user_home`.
 pub fn home(env: Option<OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
@@ -34,6 +35,10 @@ fn tasks_dir(home: &Path, dir: &Path) -> PathBuf {
 
 fn harness_file(home: &Path, dir: &Path) -> PathBuf {
     project_home(home, dir).join("harness.json")
+}
+
+fn layout_file(home: &Path, dir: &Path) -> PathBuf {
+    project_home(home, dir).join("layout.json")
 }
 
 /// A directory name for `dir`: its last component, readable, then a hash
@@ -168,6 +173,28 @@ pub fn save_harness(home: &Path, dir: &Path, harness: Harness) -> std::io::Resul
     let file = harness_file(home, dir);
     create_private_dir(file.parent().expect("under home"))?;
     write_whole(&file, &serde_json::to_string(&harness)?)
+}
+
+/// Each discovered project's saved layout, as written; the core normalizes
+/// it. A missing or unreadable file is no layout.
+pub fn load_layouts(home: &Path, state: &AppState) -> BTreeMap<String, Layout> {
+    let root = Path::new(&state.repo_root);
+    state
+        .projects
+        .iter()
+        .filter_map(|p| {
+            let text = std::fs::read_to_string(layout_file(home, &project_dir(root, &p.path)));
+            let layout = serde_json::from_str(&text.ok()?).ok()?;
+            Some((p.path.clone(), layout))
+        })
+        .collect()
+}
+
+/// Writes `layout` for the project at `dir`.
+pub fn save_layout(home: &Path, dir: &Path, layout: &Layout) -> io::Result<()> {
+    let file = layout_file(home, dir);
+    create_private_dir(file.parent().expect("under home"))?;
+    write_whole(&file, &serde_json::to_string(layout)?)
 }
 
 /// Written aside then renamed, so a crash never leaves half a file. The
@@ -429,6 +456,30 @@ mod tests {
     }
   ]
 }"#;
+
+    #[test]
+    fn layouts_load_back_per_project() {
+        use functor_app_core::{LayoutOp, View};
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, dir, home) = one_project(tmp.path());
+        let mut layout = Layout::initial();
+        let side = LayoutOp::Open {
+            view: View::File {
+                path: "game.fun".into(),
+            },
+            target: functor_app_core::layout::Target::Side,
+        };
+        assert!(layout.apply(side, |_| Ok(())).unwrap());
+        save_layout(&home, &dir, &layout).unwrap();
+        assert_eq!(
+            load_layouts(&home, &state),
+            BTreeMap::from([("a".into(), layout)])
+        );
+        // A file that is not a layout is none.
+        std::fs::write(layout_file(&home, &dir), "{\"root\": 3}").unwrap();
+        assert_eq!(load_layouts(&home, &state), BTreeMap::new());
+        assert!(!tmp.path().join("repo").exists(), "wrote inside the repo");
+    }
 
     #[test]
     fn harness_picks_load_back_per_project() {

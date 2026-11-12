@@ -15,7 +15,7 @@
     "build:cli:debug": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
     "build:app-ui": "node app/ui/build.mjs",
     "check:app-ui": "tsc -p app/ui --noEmit",
-    "test:app-ui": "npm run build:app-ui && cargo build -p functor-app && node app/ui/e2e/shell.mjs && node app/ui/e2e/chat.mjs && node app/ui/e2e/changes.mjs",
+    "test:app-ui": "npm run build:app-ui && cargo build -p functor-app && node app/ui/e2e/shell.mjs && node app/ui/e2e/chat.mjs && node app/ui/e2e/changes.mjs && node app/ui/e2e/panes.mjs",
     "test:app-ui-unit": "node --test app/ui/src/*.test.ts",
     "build:lang-wasm": "wasm-pack build tools/functor-lang-wasm --target=web",
     "build:lsp": "cargo install --path tools/functor-lang-lsp --force && (pkill -x functor-lang-lsp || true)",
