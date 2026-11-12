@@ -70,15 +70,21 @@ enum Input {
 pub struct Token(String);
 
 impl Token {
-    /// From `FUNCTOR_APP_TOKEN` when set (tests restarting a server for the
-    /// same page), else random; the variable is removed either way, so no
-    /// child inherits it. Call before any thread starts.
+    /// Random; in a debug build, `FUNCTOR_APP_TOKEN` instead when it is
+    /// URL-safe (tests restarting a server for the same open page). The
+    /// variable is removed either way, so no child inherits it. Call before
+    /// any thread starts.
     pub fn take() -> Token {
         let var = std::env::var("FUNCTOR_APP_TOKEN").ok();
         std::env::remove_var("FUNCTOR_APP_TOKEN");
-        match var.filter(|t| !t.is_empty()) {
+        let safe = |t: &String| {
+            !t.is_empty()
+                && t.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        };
+        match var.filter(|t| cfg!(debug_assertions) && safe(t)) {
             Some(token) => Token(token),
-            None => Token(uuid::Uuid::new_v4().simple().to_string()),
+            None => Token(crate::agent::token()),
         }
     }
 
@@ -106,7 +112,8 @@ impl std::fmt::Debug for Token {
 
 /// `a == b` in time that depends only on their lengths.
 fn same(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0, |diff, (x, y)| diff | (x ^ y)) == 0
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
 }
 
 /// The listener for `port` on 127.0.0.1 (0: a free one), and its origin.

@@ -4,20 +4,20 @@
 //! in `--headless`.
 
 use std::io;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc;
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use muda::{Menu, PredefinedMenuItem, Submenu};
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
 use tao::platform::macos::EventLoopExtMacOS;
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Window, WindowBuilder};
-use wry::{NewWindowResponse, WebViewBuilder};
+use wry::{NewWindowResponse, WebView, WebViewBuilder};
 
 use crate::server::Token;
 use crate::WindowLink;
@@ -53,90 +53,49 @@ pub fn run(
     let proxy = event_loop.create_proxy();
     let (listening, origin) = mpsc::channel();
     let (close, closed) = tokio::sync::oneshot::channel();
-    let (done, stopped) = mpsc::channel();
-    let thread = std::thread::spawn(move || {
-        let result = app((listening, closed));
-        let _ = done.send(());
+    let (done, finished) = mpsc::channel();
+    std::thread::spawn(move || {
+        // A panic still ends the loop, as a failure.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| app((listening, closed))));
+        let _ = done.send(result.unwrap_or(Ok(ExitCode::FAILURE)));
         let _ = proxy.send_event(UserEvent::Done);
-        result
     });
+    let failed = || Ok(ExitCode::FAILURE);
     // No origin: the app stopped before serving (and said why).
     let Ok(origin) = origin.recv() else {
-        return joined(thread);
+        return finished.recv().unwrap_or_else(|_| failed());
     };
-
     let geometry = home.map(|home| home.join("window.json"));
-    let screens: Vec<Rect> = event_loop
-        .primary_monitor()
-        .into_iter()
-        .chain(event_loop.available_monitors())
-        .map(|m| {
-            let at = m.position().to_logical::<f64>(m.scale_factor());
-            let size = m.size().to_logical::<f64>(m.scale_factor());
-            Rect {
-                x: at.x,
-                y: at.y,
-                w: size.width,
-                h: size.height,
+    let (window, webview, menu) =
+        match open(&event_loop, &origin, &token, geometry.as_deref(), smoke) {
+            Ok(opened) => opened,
+            Err(e) => {
+                let _ = close.send(());
+                let _ = finished.recv();
+                return Err(e);
             }
-        })
-        .collect();
-    let saved = geometry.as_deref().and_then(load);
-    let at = place(saved, &screens);
-    let window = WindowBuilder::new()
-        .with_title("Functor")
-        .with_inner_size(LogicalSize::new(at.w, at.h))
-        .with_min_inner_size(LogicalSize::new(MIN.0, MIN.1))
-        .with_position(LogicalPosition::new(at.x, at.y))
-        .with_focused(!smoke)
-        .build(&event_loop)
-        .map_err(io::Error::other)?;
+        };
 
-    let title = event_loop.create_proxy();
-    let nav_origin = origin.clone();
-    let webview = WebViewBuilder::new()
-        .with_url(format!("{origin}/"))
-        // Only on our own page; `server` describes the token's model.
-        .with_initialization_script(format!(
-            "if (location.origin === {}) window.functorToken = {};",
-            serde_json::to_string(&origin).expect("a string"),
-            serde_json::to_string(token.reveal()).expect("a string"),
-        ))
-        .with_navigation_handler(move |url| navigate(&url, &nav_origin))
-        .with_new_window_req_handler(|url, _| {
-            if outside(&url) {
-                open(&url);
-            }
-            NewWindowResponse::Deny
-        })
-        .with_document_title_changed_handler(move |t| {
-            let _ = title.send_event(UserEvent::Title(t));
-        })
-        .build(&window)
-        .map_err(io::Error::other)?;
-
-    let menu = menu().map_err(io::Error::other)?;
-    let deadline = Instant::now() + SMOKE_TIMEOUT;
+    let smoke_by = Instant::now() + SMOKE_TIMEOUT;
+    // Set once stopping starts; past it the window gives up waiting.
+    let mut stop_by = None;
     let mut close = Some(close);
-    let mut thread = Some(thread);
     let mut result = None;
     let mut smoke_failed = false;
     event_loop.run_return(|event, _, flow| {
-        if *flow != ControlFlow::Exit {
-            *flow = match smoke && close.is_some() {
-                true => ControlFlow::WaitUntil(deadline),
-                false => ControlFlow::Wait,
-            };
-        }
         match event {
             Event::NewEvents(StartCause::Init) => menu.init_for_nsapp(),
-            Event::NewEvents(StartCause::ResumeTimeReached { .. }) if close.is_some() => {
-                eprintln!(
-                    "functor-app: window smoke: the page did not connect within {}s",
-                    SMOKE_TIMEOUT.as_secs()
-                );
-                smoke_failed = true;
-                stop(&mut close, geometry.as_deref(), &window);
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                if close.is_some() {
+                    eprintln!(
+                        "functor-app: window smoke: the page did not connect within {}s",
+                        SMOKE_TIMEOUT.as_secs()
+                    );
+                    smoke_failed = true;
+                    stop(&mut close, geometry.as_deref(), &window);
+                } else if stop_by.is_some_and(|by| Instant::now() >= by) {
+                    *flow = ControlFlow::Exit;
+                }
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -155,24 +114,91 @@ pub fn run(
             // the process right after: everything stops here, first.
             Event::LoopDestroyed => {
                 stop(&mut close, geometry.as_deref(), &window);
-                if stopped.recv_timeout(STOP_TIMEOUT).is_err() {
-                    eprintln!(
+                let by = *stop_by.get_or_insert_with(|| Instant::now() + STOP_TIMEOUT);
+                match finished.recv_timeout(by.saturating_duration_since(Instant::now())) {
+                    Ok(r) => result = Some(r),
+                    Err(_) => eprintln!(
                         "functor-app: still stopping after {}s; exiting",
                         STOP_TIMEOUT.as_secs()
-                    );
-                }
-                if let Some(thread) = thread.take().filter(JoinHandle::is_finished) {
-                    result = Some(joined(thread));
+                    ),
                 }
             }
             _ => {}
+        }
+        if *flow != ControlFlow::Exit {
+            *flow = match (&close, smoke) {
+                (Some(_), true) => ControlFlow::WaitUntil(smoke_by),
+                (Some(_), false) => ControlFlow::Wait,
+                (None, _) => ControlFlow::WaitUntil(
+                    *stop_by.get_or_insert_with(|| Instant::now() + STOP_TIMEOUT),
+                ),
+            };
         }
     });
     drop(webview);
     match (smoke_failed, result) {
         (false, Some(result)) => result,
-        _ => Ok(ExitCode::FAILURE),
+        _ => failed(),
     }
+}
+
+/// The window, its webview on `origin` and the menu bar.
+fn open(
+    event_loop: &EventLoop<UserEvent>,
+    origin: &str,
+    token: &Token,
+    geometry: Option<&Path>,
+    smoke: bool,
+) -> io::Result<(Window, WebView, Menu)> {
+    let screens: Vec<Rect> = event_loop
+        .primary_monitor()
+        .into_iter()
+        .chain(event_loop.available_monitors())
+        .map(|m| {
+            let at = m.position().to_logical::<f64>(m.scale_factor());
+            let size = m.size().to_logical::<f64>(m.scale_factor());
+            Rect {
+                x: at.x,
+                y: at.y,
+                w: size.width,
+                h: size.height,
+            }
+        })
+        .collect();
+    let at = place(geometry.and_then(load), &screens);
+    let window = WindowBuilder::new()
+        .with_title("Functor")
+        .with_inner_size(LogicalSize::new(at.w, at.h))
+        .with_min_inner_size(LogicalSize::new(MIN.0, MIN.1))
+        .with_position(LogicalPosition::new(at.x, at.y))
+        .with_focused(!smoke)
+        .build(event_loop)
+        .map_err(io::Error::other)?;
+
+    let title = event_loop.create_proxy();
+    let nav_origin = origin.to_string();
+    let webview = WebViewBuilder::new()
+        .with_url(format!("{origin}/"))
+        // Only on our own page; `server` describes the token's model.
+        .with_initialization_script(format!(
+            "if (location.origin === {}) window.functorToken = {};",
+            serde_json::to_string(origin).expect("a string"),
+            serde_json::to_string(token.reveal()).expect("a string"),
+        ))
+        .with_navigation_handler(move |url| navigate(&url, &nav_origin))
+        .with_new_window_req_handler(|url, _| {
+            if outside(&url) {
+                open_outside(&url);
+            }
+            NewWindowResponse::Deny
+        })
+        .with_document_title_changed_handler(move |t| {
+            let _ = title.send_event(UserEvent::Title(t));
+        })
+        .build(&window)
+        .map_err(io::Error::other)?;
+    let menu = menu().map_err(io::Error::other)?;
+    Ok((window, webview, menu))
 }
 
 /// Saves where `window` is, hides it and asks the runtime thread to stop
@@ -189,10 +215,6 @@ fn stop(
         window.set_visible(false);
         let _ = close.send(());
     }
-}
-
-fn joined(thread: JoinHandle<io::Result<ExitCode>>) -> io::Result<ExitCode> {
-    thread.join().unwrap_or(Ok(ExitCode::FAILURE))
 }
 
 /// The menu bar: Quit and Hide, the Edit shortcuts (WKWebView takes copy and
@@ -246,7 +268,7 @@ fn navigate(url: &str, origin: &str) -> bool {
         return true;
     }
     if outside(url) {
-        open(url);
+        open_outside(url);
     }
     false
 }
@@ -263,7 +285,7 @@ fn outside(url: &str) -> bool {
     matches!(scheme.as_deref(), Some("http" | "https" | "mailto"))
 }
 
-fn open(url: &str) {
+fn open_outside(url: &str) {
     eprintln!("[functor-app] opening in the browser: {url}");
     match std::process::Command::new("/usr/bin/open").arg(url).spawn() {
         // Reaped off the main thread.
@@ -358,7 +380,7 @@ fn save(window: &Window, path: &Path) {
         w: size.width,
         h: size.height,
     };
-    if let Err(e) = std::fs::write(path, format(rect)) {
+    if let Err(e) = crate::store::write_whole(path, &format(rect)) {
         eprintln!("functor-app: cannot save {}: {e}", path.display());
     }
 }
