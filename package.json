@@ -35,7 +35,7 @@
     "generate:docs": "node scripts/generate-docs.mjs",
     "check:docs": "node scripts/generate-docs.mjs --check",
     "test:quest-link": "FUNCTOR_QUEST_E2E=1 cargo test -p functor-app --test device_link quest_pairs_over_wifi -- --nocapture",
-    "test:golden":"npm run fetch:assets && npm run build:cli:debug && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture --test-threads=1",
+    "test:golden": "npm run fetch:assets && npm run build:cli:debug && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture --test-threads=1",
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots",
     "test:golden-manifests": "node --test scripts/goldens.test.mjs",

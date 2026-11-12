@@ -124,8 +124,9 @@ relinks by itself, with backoff, after a restart or a dropped network.
 - The pairing is `files/device-link.json` in the app's private storage:
   `{"device", "desktop", "desktop_name", "secret"}` (hex ids and secret). The
   app reads it before each connection attempt and every 5 s while unpaired, so
-  a pairing written from outside lands without a restart; on a debuggable
-  build: `adb shell run-as dev.functor.runner sh -c 'cat > files/device-link.json'`.
+  a pairing written from outside lands without a restart. Write it whole (a
+  file that does not parse is moved aside as `.bad`); on a debuggable build:
+  `adb shell run-as dev.functor.runner sh -c 'cat > files/new && mv files/new files/device-link.json'`.
   Keep the app's `device` id: the desktop knows the headset by it.
 - A refusal in the clear (`NotPaired`) never removes the stored secret: anyone
   on the network could forge one. Pair again to replace it.

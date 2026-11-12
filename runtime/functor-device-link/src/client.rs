@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
@@ -123,18 +123,22 @@ pub struct Stored {
 
 impl Stored {
     /// The file at `path`; a missing one is created with a new device id.
-    /// One that does not parse is left alone and reads as unpaired.
+    /// One that does not parse is moved aside (`.bad`) and started afresh,
+    /// so the headset can still pair.
     pub fn load(path: &Path) -> io::Result<Stored> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(e),
         };
-        let mut stored: Stored = if text.is_empty() {
-            Stored::default()
-        } else {
-            serde_json::from_str(&text)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+        let mut stored: Stored = match serde_json::from_str(&text) {
+            Ok(stored) => stored,
+            Err(_) if text.is_empty() => Stored::default(),
+            Err(e) => {
+                log::error!("device link: {path:?} does not parse ({e}); moved aside");
+                std::fs::rename(path, path.with_extension("bad"))?;
+                Stored::default()
+            }
         };
         if unhex::<16>(&stored.device).is_none() {
             let mut id = [0u8; 16];
@@ -188,13 +192,16 @@ struct Shared {
 impl Shared {
     fn update(&self, f: impl FnOnce(&mut View)) {
         let mut shown = self.shown.lock().unwrap();
+        let before = shown.view.pairing.clone();
         f(&mut shown.view);
-        shown.hide_at = match shown.view.pairing {
-            Some(Pairing::Paired { .. } | Pairing::Failed { .. }) => {
-                Some(Instant::now() + OUTCOME_SHOWN)
-            }
-            _ => None,
-        };
+        if shown.view.pairing != before {
+            shown.hide_at = match shown.view.pairing {
+                Some(Pairing::Paired { .. } | Pairing::Failed { .. }) => {
+                    Some(Instant::now() + OUTCOME_SHOWN)
+                }
+                _ => None,
+            };
+        }
         self.pairing
             .store(shown.view.pairing.is_some(), Ordering::Release);
     }
@@ -657,7 +664,7 @@ impl Connection<'_> {
         out: Output<device::Event>,
         worker: &Worker<H>,
     ) -> Result<(), Ended> {
-        self.send_all(out.send)?;
+        // Events first: a pairing is stored even if its PairDone fails to send.
         for event in out.events {
             match event {
                 device::Event::Code {
@@ -720,6 +727,11 @@ impl Connection<'_> {
                 }
             }
         }
+        let sent = self.send_all(out.send);
+        // Stored: a lost PairDone is harmless.
+        if !self.paired {
+            sent?;
+        }
         match out.end {
             None => Ok(()),
             Some(End::Done) if self.paired => Err(Ended::Paired),
@@ -752,10 +764,11 @@ impl Connection<'_> {
     }
 }
 
+/// Milliseconds on a monotonic clock: the machine's deadlines are relative,
+/// and a headset's wall clock jumps when it syncs.
 fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
 fn text(id: u32, status: u16, body: &str) -> Response {
@@ -776,8 +789,9 @@ pub fn forward(debug: SocketAddr, request: &Request) -> Response {
     if path == "/stream" {
         return text(request.id, 501, "/stream is not tunnelled yet");
     }
-    if !request.target.starts_with('/') {
-        return text(request.id, 400, "bad target");
+    let clean = |t: &str| !t.is_empty() && !t.contains([' ', '\r', '\n']);
+    if !request.target.starts_with('/') || !clean(&request.target) || !clean(&request.method) {
+        return text(request.id, 400, "bad request line");
     }
     exchange(debug, request).unwrap_or_else(|e| {
         text(
@@ -799,8 +813,8 @@ fn exchange(debug: SocketAddr, request: &Request) -> io::Result<Response> {
         request.body.len()
     );
     for (name, value) in &request.headers {
-        let clean = |t: &str| !t.contains(['\r', '\n']);
-        if FORWARDED.contains(&name.to_ascii_lowercase().as_str()) && clean(value) {
+        if FORWARDED.contains(&name.to_ascii_lowercase().as_str()) && !value.contains(['\r', '\n'])
+        {
             head.push_str(&format!("{name}: {value}\r\n"));
         }
     }
@@ -810,6 +824,13 @@ fn exchange(debug: SocketAddr, request: &Request) -> io::Result<Response> {
     let mut bytes = Vec::new();
     // One byte past the link's limit is enough to know it is too large.
     stream.take(MAX_FRAME as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_FRAME {
+        return Ok(text(
+            request.id,
+            502,
+            "the response is too large for the link",
+        ));
+    }
     parse_response(request.id, &bytes)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed response"))
 }
@@ -965,10 +986,14 @@ mod tests {
         std::fs::write(&path, written).unwrap();
         let paired = Stored::load(&path).unwrap();
         assert_eq!(paired.pairing().unwrap().0, [0xab; 16]);
-        // Garbage is an error, and stays on disk for whoever wrote it.
+        // Garbage is moved aside, and the headset starts afresh.
         std::fs::write(&path, "{").unwrap();
-        assert!(Stored::load(&path).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{");
+        let fresh = Stored::load(&path).unwrap();
+        assert!(fresh.device().is_some() && fresh.pairing().is_none());
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("bad")).unwrap(),
+            "{"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }
