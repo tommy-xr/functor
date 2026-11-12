@@ -1,0 +1,17 @@
+[package]
+name = "functor-device-link"
+version = "0.1.0"
+edition = "2021"
+
+# The device link's protocol: framing, pairing and the authenticated
+# transport, as sans-IO state machines for both roles. Shared by the desktop
+# app and the headset runtime, so it pulls in no async runtime, GL or app code.
+
+[dependencies]
+# The pairing code and its commitment.
+blake2 = { version = "0.10", default-features = false }
+# OS randomness for the shells (`OsEntropy`); the machines take any `Entropy`.
+getrandom = "0.3"
+# Noise (NN for pairing, NNpsk0 after): pure-Rust X25519, ChaChaPoly and
+# BLAKE2s only. Not `std`: it would pull in `ring`.
+snow = { version = "0.10", default-features = false, features = ["use-blake2", "use-chacha20poly1305", "use-curve25519"] }

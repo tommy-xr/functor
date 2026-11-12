@@ -114,7 +114,11 @@ new_project: NewProject | null,
 /**
  * What the agent or a walkthrough step last pointed at (D25).
  */
-highlight: Highlight | null, };
+highlight: Highlight | null, 
+/**
+ * Headsets, app-wide.
+ */
+devices: Devices, };
 
 /**
  * The summary that travels with the task.
@@ -137,9 +141,69 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
+
+export type Device = { 
+/**
+ * The device's own random id, hex.
+ */
+id: string, name: string, 
+/**
+ * A pairing is stored for it.
+ */
+paired: boolean, state: DeviceState, 
+/**
+ * The headset app's version, as it last said over its link.
+ */
+app_version: string | null, 
+/**
+ * Wall-clock ms, from its links.
+ */
+first_seen: number | null, last_seen: number | null, 
+/**
+ * Its debug runtime through the link: `http://127.0.0.1:<port>`, kept
+ * while paired (it answers 503 while the device is away).
+ */
+tunnel: string | null, };
+
+export type DeviceState = { "state": "away" } | { "state": "connected", link: LinkKind, 
+/**
+ * Percent.
+ */
+battery: number | null, charging: boolean, 
+/**
+ * The runtime build it runs.
+ */
+build: string | null, 
+/**
+ * The project it runs.
+ */
+project: string | null, 
+/**
+ * The last ping's round trip.
+ */
+latency_ms: number | null, } | { "state": "needs_update", update: Side, reason: string, since: number, } | { "state": "cannot_reach", reason: string, since: number, };
+
+export type Devices = { 
+/**
+ * Where the device link listens (`host:port`); `None` when it is off.
+ */
+listening: string | null, 
+/**
+ * Paired devices, and unpaired ones whose app is too old to pair, by
+ * name then id.
+ */
+list: Array<Device>, 
+/**
+ * Devices asking to pair, oldest first: the prompt shows one at a time.
+ */
+requests: Array<PairRequest>, 
+/**
+ * The title bar's one word for them all.
+ */
+headset: Headset, };
 
 export type DiffLine = { kind: LineKind, 
 /**
@@ -213,6 +277,11 @@ commit: string, };
 export type Harness = "claude" | "codex";
 
 /**
+ * The state word for all devices: the one that most needs the user.
+ */
+export type Headset = "not_paired" | "asking_to_pair" | "away" | "connected" | "needs_update" | "cannot_reach";
+
+/**
  * What the agent or a walkthrough step last pointed at, until the user
  * scrolls it out of view or its tab stops being shown.
  */
@@ -264,6 +333,8 @@ agent: AgentLayout, };
 export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "set_mini", mini: Mini, } | { "type": "restore" } | { "type": "close_agent_tabs" } | { "type": "agent_arranges", on: boolean, };
 
 export type LineKind = "hunk" | "context" | "added" | "removed" | "note";
+
+export type LinkKind = "wifi" | "cable";
 
 /**
  * An event on the timeline: an input edge or a hot reload, with the kind
@@ -321,6 +392,31 @@ ratio: number, first: Node, second: Node, };
  * Why a file's lines are not in the diff.
  */
 export type Omitted = "binary" | "large" | "budget" | "unreadable";
+
+/**
+ * A device asking to pair (unauthenticated: its id and name are claims).
+ */
+export type PairRequest = { request: number, 
+/**
+ * The id it claims, hex.
+ */
+device: string, name: string, app_version: string, 
+/**
+ * Both sides show it.
+ */
+code: string, 
+/**
+ * Wall-clock ms.
+ */
+expires_at: number, 
+/**
+ * The user allowed it; the headset's own confirmation is awaited.
+ */
+allowed: boolean, 
+/**
+ * It claims the id of a device already paired.
+ */
+repair: boolean, };
 
 export type Pane = { 
 /**
@@ -430,12 +526,18 @@ export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "
 surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
 
 /**
+ * Which app needs the update.
+ */
+export type Side = "headset" | "desktop";
+
+/**
  * Where creating a project is.
  */
 export type Step = { "kind": "editing" } | { "kind": "creating", path: string, } | { "kind": "opening", path: string, } | { "kind": "failed", reason: string, done: Array<string>, not_done: Array<string>, };
 
 /**
- * Where [`LayoutOp::Open`] puts a view that is not open yet.
+ * Where [`LayoutOp::Open`] puts a view. One already open moves only to a
+ * named `Pane`; otherwise it is shown where it is.
  */
 export type Target = { "kind": "focused" } | { "kind": "side" } | { "kind": "pane", pane: number, };
 

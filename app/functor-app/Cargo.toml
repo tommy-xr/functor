@@ -7,7 +7,11 @@ edition = "2021"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 clap = { version = "4.5.6", features = ["derive"] }
 functor-app-core = { path = "../functor-app-core" }
+# The device link's protocol: framing, pairing, the authenticated transport.
+functor-device-link = { path = "../../runtime/functor-device-link" }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Advertises the device link on the LAN (pure Rust, no async runtime).
+mdns-sd = { version = "0.21", default-features = false }
 # The agent runner (claude / codex) and its event types; one pinned revision.
 mis-agent = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
 mis-types = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
@@ -21,6 +25,8 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process"
 # Kills a hung tool server's process tree, and finds child processes in
 # tests, on every OS (the version mis-agent uses).
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+# The device link's WebSocket, both roles (axum's own `ws` uses this version).
+tokio-tungstenite = "0.29"
 # Task ids for `mis-agent` runs and the tool server's bearer tokens.
 uuid = { version = "1", features = ["v4"] }
 
@@ -38,4 +44,3 @@ wry = { version = "0.57", default-features = false }
 # The debug server's `POST /input` type, for the `GameInput` drift test.
 functor_runtime_common = { path = "../../runtime/functor-runtime-common" }
 tempfile = "3"
-tokio-tungstenite = "0.29"

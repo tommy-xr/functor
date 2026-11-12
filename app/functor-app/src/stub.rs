@@ -1,0 +1,347 @@
+//! `functor-app device-stub`: the device role of the device link, for tests
+//! and for driving the Devices pane without a headset. It pairs (printing
+//! its code), links with the secret it stored, answers `GET /` and
+//! `GET /state` from a canned table, sends heartbeats, and can be told to
+//! misbehave. One line per event on stdout: `code 482913`, `paired <desktop>`,
+//! `linked <desktop>`, `request GET /state`, `rejected <why>`, `ended <why>`.
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use functor_device_link::device::{self, Device, Identity};
+use functor_device_link::wire::{Frame, Hello, Mode, Reply, Response, Status};
+use functor_device_link::{hex, shared, unhex, End, OsEntropy, Secret, SharedEntropy};
+use functor_device_link::{HEARTBEAT_MS, MAX_MESSAGE, VERSION};
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::link::{PATH, SERVICE};
+use crate::server::now_ms;
+
+#[derive(clap::Args, Debug)]
+pub struct StubArgs {
+    /// The desktop's device link, `host:port` (else found by mDNS).
+    #[arg(long)]
+    desktop: Option<String>,
+
+    /// Where the stub keeps its id and pairing.
+    #[arg(long, value_name = "DIR")]
+    store: PathBuf,
+
+    #[arg(long, default_value = "Device stub")]
+    name: String,
+
+    /// The headset app version it reports.
+    #[arg(long, default_value = "0.1.0")]
+    app_version: String,
+
+    /// The link protocol version its hello claims.
+    #[arg(long, default_value_t = VERSION)]
+    protocol: u16,
+
+    #[arg(long, value_enum)]
+    misbehave: Option<Misbehave>,
+
+    /// Exit when the first link ends instead of reconnecting.
+    #[arg(long)]
+    once: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum Misbehave {
+    /// Link with a secret the desktop never gave.
+    WrongSecret,
+    /// Once linked, drop the connection without closing it.
+    Drop,
+    /// Once linked, go silent with the connection open.
+    Stall,
+    /// Once linked, send a message over the size limit.
+    Oversize,
+}
+
+/// `<store>/device.json`.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Stored {
+    id: String,
+    secret: Option<String>,
+    desktop: Option<String>,
+}
+
+fn say(line: &str) {
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+}
+
+pub async fn run(args: StubArgs) -> std::process::ExitCode {
+    let file = args.store.join("device.json");
+    let mut stored: Stored = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    if unhex::<16>(&stored.id).is_none() {
+        stored.id = hex(uuid::Uuid::new_v4().as_bytes());
+    }
+    // Private, as a headset's pairing would be.
+    let save = |stored: &Stored| {
+        let _ = crate::store::make_private(&args.store);
+        let _ = crate::store::write_whole(&file, &serde_json::to_string(stored).unwrap());
+    };
+    save(&stored);
+    let Ok(signal) = crate::shutdown_signal() else {
+        return std::process::ExitCode::FAILURE;
+    };
+    tokio::pin!(signal);
+    loop {
+        let addr = match &args.desktop {
+            Some(a) => a.clone(),
+            None => match discover(stored.desktop.clone()).await {
+                Some(a) => a,
+                None => {
+                    say("ended no desktop found");
+                    return std::process::ExitCode::FAILURE;
+                }
+            },
+        };
+        let result = tokio::select! {
+            r = session(&args, &mut stored, &addr) => r,
+            _ = &mut signal => return std::process::ExitCode::SUCCESS,
+        };
+        save(&stored);
+        match result {
+            // Paired: link at once with the new secret.
+            Ok(true) => continue,
+            Ok(false) => say("ended"),
+            Err(why) => say(&format!("ended {why}")),
+        }
+        if args.once {
+            return std::process::ExitCode::SUCCESS;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// One connection; `Ok(true)` when it paired.
+async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<bool, String> {
+    let config = WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE));
+    let url = format!("ws://{addr}{PATH}");
+    let (mut ws, _) = tokio_tungstenite::connect_async_with_config(url, Some(config), true)
+        .await
+        .map_err(|e| e.to_string())?;
+    let identity = Identity {
+        device: unhex(&stored.id).expect("a valid id"),
+        name: args.name.clone(),
+        app_version: args.app_version.clone(),
+    };
+    let entropy: SharedEntropy = shared(OsEntropy);
+    let now = now_ms();
+    let secret = match args.misbehave {
+        Some(Misbehave::WrongSecret) => Some(Secret(rand32())),
+        _ => stored.secret.as_deref().and_then(Secret::from_hex),
+    };
+    if args.protocol != VERSION {
+        return another_version(args, &identity, &mut ws).await;
+    }
+    let (mut machine, first) = match &secret {
+        Some(secret) => Device::link(&identity, secret, status(args), entropy, now),
+        None => Device::pair(&identity, entropy, now),
+    };
+    for msg in first.send {
+        ws.send(Message::Binary(msg.into()))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(HEARTBEAT_MS));
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    let mut silent = false;
+    let mut served = 0u64;
+    loop {
+        let out = tokio::select! {
+            msg = ws.next() => match msg {
+                // Stalled: read and ignore, so the socket stays open.
+                Some(Ok(Message::Binary(_))) if silent => continue,
+                Some(Ok(Message::Binary(bytes))) => machine.receive(&bytes, now_ms()),
+                Some(Ok(Message::Close(_))) | None => return Err("closed by the desktop".into()),
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => return Err(e.to_string()),
+            },
+            _ = heartbeat.tick(), if machine.linked() && !silent => {
+                let msgs = machine.send(&Frame::Status(status(args))).map_err(|e| e.to_string())?;
+                functor_device_link::Output { send: msgs, ..Default::default() }
+            }
+            _ = tick.tick(), if !silent => match machine.check(now_ms()) {
+                Some(e) => return Err(e.to_string()),
+                None => continue,
+            },
+        };
+        for msg in out.send {
+            ws.send(Message::Binary(msg.into()))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let mut paired = false;
+        for event in out.events {
+            match event {
+                // The headset's user would compare first; the stub agrees at once.
+                device::Event::Code { code, .. } => {
+                    say(&format!("code {code}"));
+                    for msg in machine.confirm().send {
+                        ws.send(Message::Binary(msg.into()))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                device::Event::Paired {
+                    desktop,
+                    desktop_name,
+                    secret,
+                } => {
+                    stored.secret = Some(secret.to_hex());
+                    stored.desktop = Some(hex(&desktop));
+                    paired = true;
+                    say(&format!("paired {desktop_name}"));
+                }
+                device::Event::Linked { desktop_name, .. } => {
+                    say(&format!("linked {desktop_name}"));
+                    match args.misbehave {
+                        Some(Misbehave::Drop) => {
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                            // Gone without a close: the socket just drops.
+                            return Err("dropped".into());
+                        }
+                        Some(Misbehave::Stall) => silent = true,
+                        Some(Misbehave::Oversize) => {
+                            let big = vec![0u8; MAX_MESSAGE + 1];
+                            let _ = ws.send(Message::Binary(big.into())).await;
+                        }
+                        _ => {}
+                    }
+                }
+                device::Event::Request(r) => {
+                    say(&format!("request {} {}", r.method, r.target));
+                    served += 1;
+                    let response = canned(r.id, &r.method, &r.target, &args.name, served);
+                    for msg in machine.respond(response).map_err(|e| e.to_string())? {
+                        ws.send(Message::Binary(msg.into()))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                device::Event::Channel { .. } => {}
+                device::Event::Rejected(reject) => say(&format!("rejected {reject:?}")),
+            }
+        }
+        match out.end {
+            None => {}
+            Some(End::Done) => {
+                let _ = ws.close(None).await;
+                return Ok(paired);
+            }
+            Some(End::Failed(e)) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// A hello claiming `args.protocol`: the desktop should refuse it by name.
+async fn another_version(
+    args: &StubArgs,
+    identity: &Identity,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> Result<bool, String> {
+    let mut hello = Hello {
+        version: args.protocol,
+        device: identity.device,
+        name: identity.name.clone(),
+        mode: Mode::Pair,
+        app_version: identity.app_version.clone(),
+    }
+    .encode();
+    hello.extend([0u8; 32]);
+    ws.send(Message::Binary(hello.into()))
+        .await
+        .map_err(|e| e.to_string())?;
+    match ws.next().await {
+        Some(Ok(Message::Binary(bytes))) => match Reply::decode(&bytes) {
+            Ok(Reply::Reject(reject)) => {
+                say(&format!("rejected {reject:?}"));
+                Err("another version".into())
+            }
+            other => Err(format!("unexpected reply {other:?}")),
+        },
+        other => Err(format!("no reply: {other:?}")),
+    }
+}
+
+fn status(args: &StubArgs) -> Status {
+    Status {
+        battery: Some(80),
+        charging: false,
+        build: format!("stub-{}", args.app_version),
+        project: Some("examples/hello".to_string()),
+    }
+}
+
+/// The debug runtime's two simplest routes, canned.
+fn canned(id: u32, method: &str, target: &str, name: &str, served: u64) -> Response {
+    let (status, kind, body) = match (method, target) {
+        ("GET", "/") => (
+            200,
+            "text/plain",
+            "functor debug runtime (device stub)\n".to_string(),
+        ),
+        ("GET", "/state") => (
+            200,
+            "application/json",
+            serde_json::json!({ "stub": true, "name": name, "served": served }).to_string(),
+        ),
+        _ => (404, "text/plain", "not found\n".to_string()),
+    };
+    Response {
+        id,
+        status,
+        headers: vec![("content-type".into(), kind.into())],
+        body: body.into_bytes(),
+    }
+}
+
+fn rand32() -> [u8; 32] {
+    let mut out = [0; 32];
+    functor_device_link::Entropy::fill(&mut OsEntropy, &mut out);
+    out
+}
+
+/// A desktop's link address by mDNS, preferring `desktop` (its id).
+async fn discover(desktop: Option<String>) -> Option<String> {
+    tokio::task::spawn_blocking(move || {
+        let daemon = mdns_sd::ServiceDaemon::new().ok()?;
+        let found = daemon.browse(SERVICE).ok()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut first = None;
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            let info = match found.recv_timeout(left) {
+                Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => info,
+                Ok(_) => continue,
+                Err(_) => break,
+            };
+            let Some(ip) = info.get_addresses_v4().into_iter().next() else {
+                continue;
+            };
+            let addr = format!("{ip}:{}", info.get_port());
+            let ours = desktop.is_some() && info.get_property_val_str("id") == desktop.as_deref();
+            if ours || desktop.is_none() {
+                first = Some(addr);
+                break;
+            }
+            first.get_or_insert(addr);
+        }
+        let _ = daemon.shutdown();
+        first
+    })
+    .await
+    .ok()
+    .flatten()
+}

@@ -78,6 +78,20 @@ async function panes(browser, width, height) {
     await expect.poll(() => shown(page)).toEqual(["Game", "game.fun"]);
     await step(page, width);
 
+    // A view picked in a new split opens there, though open in another pane.
+    await pane(1).getByRole("button", { name: "Split down" }).click();
+    await pane(2).getByRole("tabpanel").getByRole("button", { name: "game.fun" }).click();
+    await expect.poll(() => tabs(page)).toEqual([["Game"], ["functor.json"], ["game.fun"]]);
+    await expect(pane(2)).toHaveClass(/pane-focused/);
+    await expect(pane(2).getByTestId("file-view")).toContainText("let init");
+    await toCanvas();
+    const back = pane(1).getByRole("tab", { name: "functor.json" });
+    const backBox = await back.boundingBox();
+    await pane(2).getByRole("tab", { name: "game.fun" }).dragTo(back, {
+      targetPosition: { x: backBox.width - 4, y: backBox.height / 2 },
+    });
+    await expect.poll(() => tabs(page)).toEqual([["Game"], ["functor.json", "game.fun"]]);
+
     // Split down: an empty, focused pane under the second, offering views.
     await pane(1).getByRole("button", { name: "Split down" }).click();
     await expect.poll(() => tabs(page)).toEqual([["Game"], ["functor.json", "game.fun"], []]);
