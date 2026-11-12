@@ -78,9 +78,13 @@ test("playhead keys seek as the web's do, and forward from the newest frame step
   assert.deepEqual(keyAction(view, "Home", false), { seek: 1 });
   assert.deepEqual(keyAction(view, "ArrowRight", false), { step: true });
   assert.equal(keyAction(view, "x", false), null);
-  // Past a window frozen by a pause, forward steps on.
+  // A pause froze the window at 50 and steps recorded 51–52: forward walks
+  // them without branching, then steps on from the newest.
   let stepped = follow(createTimelineState(), at(50));
-  stepped = follow(follow(stepped, at(50, { paused: true })), at(51, { paused: true, recorded: [1, 51] }));
+  stepped = follow(stepped, at(50, { paused: true }));
+  stepped = follow(stepped, at(50, { paused: true, recorded: [1, 52] }));
+  assert.deepEqual(keyAction(deriveTimelineView(stepped), "ArrowRight", false), { past: 51 });
+  stepped = follow(stepped, at(52, { paused: true, recorded: [1, 52] }));
   assert.deepEqual(keyAction(deriveTimelineView(stepped), "ArrowRight", false), { step: true });
   const earlier = deriveTimelineView(reduceTimeline(follow(createTimelineState(), at(50, { paused: true })), { type: "seek-requested", id: 1, frame: 20 }))!;
   assert.deepEqual(keyAction(earlier, "ArrowRight", true), { seek: 30 });

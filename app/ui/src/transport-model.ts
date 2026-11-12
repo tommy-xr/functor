@@ -57,16 +57,19 @@ export function followMarks(state: TimelineState, marks: Mark[]): TimelineState 
   return reduceTimeline(state, { type: "events-published", events: marks });
 }
 
-export type KeyAction = { seek: number } | { step: true } | null;
+export type KeyAction = { seek: number } | { past: number } | { step: true } | null;
 
 /**
- * What a key on the playhead does: the web scrubber's seek, except that an
- * arrow forward from the last frame it can seek to steps the game one frame.
+ * What a key on the playhead does: the web scrubber's seek, except forward
+ * from the window's end. A pause freezes the window, so steps after it are
+ * recorded past it: forward walks them (`past`, not clamped to the window),
+ * and from the newest recorded frame steps the game.
  */
 export function keyAction(view: TimelineView | null, key: string, shiftKey: boolean): KeyAction {
   if (!view) return null;
-  const end = Math.min(view.viewport.hi, view.recorded.hi);
-  if ((key === "ArrowRight" || key === "ArrowUp") && view.selectedFrame >= end) return { step: true };
+  if ((key === "ArrowRight" || key === "ArrowUp") && view.selectedFrame >= view.viewport.hi) {
+    return view.selectedFrame >= view.recorded.hi ? { step: true } : { past: view.selectedFrame + 1 };
+  }
   const frame = seekKeyTarget(view, key, shiftKey);
   return frame === null ? null : { seek: frame };
 }

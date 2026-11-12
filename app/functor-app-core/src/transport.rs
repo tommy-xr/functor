@@ -142,16 +142,16 @@ impl Timeline {
         };
         let shown = self.clock.filter(|c| c.clock);
         let branched = shown.is_some_and(|c| c.generation != clock.generation);
+        // A reload lands on the frame the runtime showed through the swap (as
+        // on the web); the first poll is a baseline, not news.
+        if self.revision.is_some_and(|r| r != clock.program_revision) {
+            self.push(frame, "reload-ok", "hot reload".to_string());
+        }
         // A seek not yet answered: keep showing the frame it asked for.
         let frame = match shown {
             Some(c) if stale => c.frame,
             _ => frame,
         };
-        // A reload lands on the frame shown through the swap (as on the web);
-        // the first poll is a baseline, not news.
-        if self.revision.is_some_and(|r| r != clock.program_revision) {
-            self.push(frame, "reload-ok", "hot reload".to_string());
-        }
         self.revision = Some(clock.program_revision);
         self.clock = Some(Transport {
             clock: true,
@@ -190,9 +190,12 @@ impl Timeline {
     }
 
     /// An input-log read's marks. A new generation replaced recorded frames,
-    /// so their input marks go and the log is read again from the oldest.
+    /// so their input marks go and the log is read again from the oldest:
+    /// a page read from a later frame (the cursor, as one read is on its way
+    /// at a time) misses the retained frames before it, so it is dropped.
     pub fn read(&mut self, page: LogPage) {
         if self.log_generation != Some(page.generation) {
+            let partial = self.cursor.is_some_and(|from| from > page.oldest);
             let before = self.marks.len();
             self.marks.retain(|m| m.kind.starts_with("reload"));
             if self.marks.len() != before {
@@ -200,6 +203,9 @@ impl Timeline {
             }
             self.cursor = None;
             self.log_generation = Some(page.generation);
+            if partial {
+                return;
+            }
         }
         let from = self.next_read();
         for (frame, marks) in page.steps.into_iter().filter(|(f, _)| *f >= from) {
@@ -432,8 +438,38 @@ mod tests {
         // Seek to 5 and resume: a new generation replaced frames 6 on.
         t.polled(0, 9, clock(false, [1, 9], 1, 5));
         assert_eq!(labels(&t), [(3, "W down"), (8, "W up")]);
+        // The read from 11 sees the new generation: the old input marks go,
+        // and the log is read again from the oldest.
+        t.read(page(1, 1, 9, &[]));
+        assert_eq!(labels(&t), []);
         t.read(page(1, 1, 9, &[(3, "W down"), (7, "S down")]));
         assert_eq!(labels(&t), [(3, "W down"), (7, "S down")]);
+    }
+
+    #[test]
+    fn a_branch_seen_by_a_later_read_rereads_from_the_oldest() {
+        let mut t = Timeline::default();
+        t.polled(0, 100, clock(true, [1, 100], 0, 0));
+        t.read(page(0, 1, 100, &[(30, "W down"), (90, "W up")]));
+        assert_eq!(t.next_read(), 101);
+        // Seek to 40, step: a new generation, and the read from 101 finds nothing.
+        t.read(page(1, 1, 41, &[]));
+        assert_eq!(labels(&t), [], "the old input marks go");
+        assert_eq!(t.next_read(), 0, "read again from the oldest");
+        t.read(page(1, 1, 41, &[(30, "W down")]));
+        assert_eq!(labels(&t), [(30, "W down")]);
+        assert_eq!(t.next_read(), 42);
+    }
+
+    #[test]
+    fn a_reload_marks_the_polled_frame_not_a_pending_seek() {
+        let mut t = Timeline::default();
+        t.polled(0, 100, clock(true, [1, 100], 0, 0));
+        t.call(seek(40, 1));
+        // Sent before the seek: the reload happened at 100.
+        t.polled(0, 100, clock(true, [1, 100], 0, 1));
+        assert_eq!(labels(&t), [(100, "hot reload")]);
+        assert_eq!(t.clock.unwrap().frame, 40);
     }
 
     #[test]

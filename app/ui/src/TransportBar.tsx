@@ -60,7 +60,8 @@ export function TransportBar({
 }) {
   const [timeline, dispatch] = useTimeline();
   const rail = useRef<HTMLDivElement>(null);
-  const nextSeek = useRef(1);
+  // Seek ids echo back from the core to every page: start each page's apart.
+  const nextSeek = useRef(Date.now() * 1000);
   const [hovered, setHovered] = useState<number | null>(null);
 
   useEffect(() => {
@@ -76,6 +77,7 @@ export function TransportBar({
   const call = (call: TransportCall) => online && send({ type: "transport", call });
   // Shown at once by the model; the core is asked for the frame it settled on.
   const seek = (frame: number) => {
+    if (!online) return;
     const id = nextSeek.current++;
     const next = dispatch((s) => reduceTimeline(s, { type: "seek-requested", id, frame }));
     if (next.requestedSeekId === id) call({ type: "seek", frame: next.requestedFrame!, id });
@@ -132,7 +134,17 @@ export function TransportBar({
           {view && (
             <>
               {view.hasUnavailableHistory && (
-                <rect className="transport-unavailable" x="0" y="12" width={view.unavailableEndUnit * 1000} height="6" rx="3" />
+                <>
+                  <rect className="transport-unavailable" x="0" y="12" width={view.unavailableEndUnit * 1000} height="6" rx="3" />
+                  <rect
+                    className="transport-unavailable"
+                    x={view.unavailableAfterStartUnit * 1000}
+                    y="12"
+                    width={Math.max(1 - view.unavailableAfterStartUnit, 0) * 1000}
+                    height="6"
+                    rx="3"
+                  />
+                </>
               )}
               <rect
                 className="transport-recorded"
@@ -219,6 +231,7 @@ export function TransportBar({
               if (!action) return;
               e.preventDefault();
               if ("step" in action) call({ type: "step" });
+              else if ("past" in action) call({ type: "seek", frame: action.past, id: nextSeek.current++ });
               else seek(action.seek);
             }}
             {...drag}

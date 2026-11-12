@@ -122,7 +122,8 @@ async function noGpu(browser) {
     await expect.poll(async () => (await now()).frame).toBeGreaterThan(head * 0.5);
 
     // Keys on the playhead: arrows a frame, Home and End the window's ends
-    // (it froze at the pause), and forward from its end steps.
+    // (it froze at the pause); forward from its end walks the step recorded
+    // past it, then steps on from the newest.
     const at = (await now()).frame;
     await playhead.focus();
     await page.keyboard.press("ArrowLeft");
@@ -134,7 +135,10 @@ async function noGpu(browser) {
     await page.keyboard.press("End");
     await expect.poll(async () => (await now()).frame).toBe(paused);
     await page.keyboard.press("ArrowRight");
-    await expect.poll(async () => (await now()).frame).toBe(paused + 1);
+    await expect.poll(async () => (await now()).frame).toBe(head);
+    expect((await now()).recorded.newest, "walked, not branched").toBe(head);
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(async () => (await now()).frame).toBe(head + 1);
 
     // Resume from a sought frame: play branches there, and the bar follows.
     await page.keyboard.press("Home");
@@ -162,6 +166,7 @@ async function noGpu(browser) {
     await expect(compact.getByTestId("transport-frame")).toHaveCount(0);
     await compact.getByRole("button", { name: "Pause" }).click();
     await expect.poll(async () => (await now()).paused).toBe(true);
+    await expect(compact.getByRole("button", { name: "Play" })).toBeVisible();
     await shot(page, "transport-mini");
     await compact.getByRole("button", { name: "Play" }).click();
     await expect.poll(async () => (await now()).paused).toBe(false);
@@ -298,6 +303,8 @@ async function gpu(browser) {
     // Dragged back, then to the window's end (where it froze at the pause):
     // that earlier frame's picture again, with the steps after it kept.
     await dragTo(page, bar, 0.4);
+    await expect.poll(async () => (await now()).frame === (await shown(bar))).toBe(true);
+    await page.waitForTimeout(400);
     await still();
     await page.keyboard.press("End");
     await expect.poll(async () => (await now()).frame).toBe(frame);
