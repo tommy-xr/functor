@@ -98,6 +98,8 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 1.14 ∥ | Templates in the CLI (D24): a template manifest (name, description, tags, preview), `functor init --list` (text and JSON) and `--from <template>`; add blank, 2D and VR starters; ship chosen examples as templates. | CLI tests: every listed template creates a project that passes `functor build`. |
 | 1.15 | New-project modal (D24): name, folder with a native folder picker, optional git init, the template gallery with search and tags, optional description that becomes the first task; creates, switches to and starts the project. | Playwright with a fake template list; an end-to-end create in a temp folder. |
 | 1.16 | Agent-driven view (D25), after 1.9b: view tools on the agent's tool server that call back into the core (open/focus, arrange, highlight, game moment), the walkthrough card in the chat with its first step applied automatically when a run ends (a setting turns that off), the "never takes the wheel" rules and "restore my layout". | Core unit tests for the rules; Playwright with a fake-agent fixture that issues view calls; focus and cursor unchanged. |
+| 1.17 | Agent activity (D34), core: classify each call into the fixed kinds (shell commands by what they touch), a stance per task, context fill, and subagent calls tied to their parent. The last two need more from the agent runner's event stream. | Core unit tests on recorded event logs; a classifier table test. |
+| 1.18 | Agent cards (D34), desktop: avatar, thought bubble and context bar per running task in the Tasks pane and the chat dock; engines and subagents told apart by shape. | Playwright with `FakeAgent`; stills of every stance. |
 
 ## M2 — devices and the Wi-Fi link
 
@@ -136,6 +138,7 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 4.6 | Presentation (D31), format and desktop: the four-part format, stored with the task; before/after captures taken headlessly from the task's baseline and current files; the desktop card renders all parts; prepared when a task needs a decision. | Core and shell tests; captures match goldens for a fixture change; Playwright. |
 | 4.6a | Presentation agent (D31): a separate, read-only run with its own configurable agent, model and skill, and MCP tools for reading the change, capturing either version and assembling the presentation. | Fake-agent tests through the real tool path; one live run with its token cost recorded. |
 | 4.7 | Before and after in place, and the lab (D31, D32): switching versions by branch; the lab from a capsule's recorded moment; both in the headset panel. | Desktop tests under the XR emulator; device when attached. |
+| 4.8 | Agents in the room (D34): the characters as a Functor scene fed by 1.17, drawn by the runtime as an overlay beside the panel; look-and-press opens a task, look-and-talk steers it. The desktop cards move to the same scene if it holds up. | Emulator captures; device when attached; `frame_bench` unchanged when hidden. |
 
 ## M5 and later
 
@@ -143,7 +146,7 @@ Code city as a rendering of presentations (D33).
 
 Developer menu and build info; agent-authored tuning UI (D7), which needs UI
 render targets wired in VR and the VR gamma fix first; TTS (Kokoro) played in
-the headset; focus mode; agents visible in the world.
+the headset; focus mode; places the agent characters walk to (D34).
 
 ## Carried over from review, not yet scheduled
 
