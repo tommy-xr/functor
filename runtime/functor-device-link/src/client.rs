@@ -869,8 +869,10 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    /// A one-shot HTTP server: answers each connection with `reply`, and
-    /// hands back what it read.
+    /// An HTTP server: reads each whole request (head, then `Content-Length`
+    /// bytes, as the debug runtime does), hands it back, answers `reply`.
+    /// Answering before the body is read would reset the connection on
+    /// Windows, losing the reply.
     fn server(reply: &'static str) -> (SocketAddr, Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -878,9 +880,19 @@ mod tests {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap();
-                let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+                let mut seen = Vec::new();
+                let mut byte = [0u8; 1];
+                while !seen.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    seen.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&seen).to_string();
+                let len = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Content-Length: "))
+                    .map_or(0, |n| n.trim().parse().unwrap());
+                let mut body = vec![0u8; len];
+                stream.read_exact(&mut body).unwrap();
+                let _ = tx.send(head + &String::from_utf8_lossy(&body));
                 stream.write_all(reply.as_bytes()).unwrap();
             }
         });

@@ -192,19 +192,6 @@ impl Stub {
             }
         }
     }
-
-    /// Every line within `window`.
-    fn lines_for(&self, window: Duration) -> Vec<String> {
-        let deadline = Instant::now() + window;
-        let mut out = Vec::new();
-        while let Ok(line) = self
-            .lines
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        {
-            out.push(line);
-        }
-        out
-    }
 }
 
 /// `GET path` on `url` (`http://127.0.0.1:port`): status and body.
@@ -455,17 +442,30 @@ async fn a_wrong_secret_is_refused_then_rate_limited() {
         "Test Quest",
         &["--misbehave", "wrong-secret"],
     );
-    let lines = liar.lines_for(Duration::from_secs(9));
-    let refused = lines.iter().filter(|l| *l == "rejected NotPaired").count();
-    // The budget (10) is spent, then connections are cut before any answer.
-    assert!((8..=12).contains(&refused), "{refused} refusals: {lines:?}");
-    let cut = lines
-        .iter()
-        .filter(|l| l.starts_with("ended") && !l.contains("not paired"))
-        .count();
-    assert!(cut >= 2, "{lines:?}");
-    // It never linked.
-    assert!(!lines.iter().any(|l| l.starts_with("linked")));
+    // Until two connections are cut before any answer, however slow the
+    // runner; it never links.
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(60);
+    let (mut refused, mut cut, mut lines) = (0, 0, Vec::new());
+    while cut < 2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok(line) = liar.lines.recv_timeout(left) else {
+            panic!("not cut twice within 60 s: {lines:?}");
+        };
+        if line == "rejected NotPaired" {
+            refused += 1;
+        } else if line.starts_with("ended") && !line.contains("not paired") {
+            cut += 1;
+        }
+        assert!(!line.starts_with("linked"), "it linked: {lines:?}");
+        lines.push(line);
+    }
+    // The budget (10, refilling one per 6 s) was spent before the cuts.
+    let refills = started.elapsed().as_secs() as usize / 6;
+    assert!(
+        (8..=12 + refills).contains(&refused),
+        "{refused} refusals: {lines:?}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
