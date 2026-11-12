@@ -9,7 +9,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { GIT_ENV, ROOT, git, tempHome, tempProject } from "../../../app/ui/e2e/app.mjs";
 
 export { ROOT, stopServer, watchState } from "../../../app/ui/e2e/app.mjs";
@@ -33,7 +33,7 @@ export function requireBuilt() {
 
 /** The output GIF (argv[2], else site/media/`name`.gif) and its still beside it. */
 export function outputs(name) {
-  const out = process.argv[2] ? join(process.cwd(), process.argv[2]) : join(ROOT, `site/media/${name}.gif`);
+  const out = process.argv[2] ? resolvePath(process.argv[2]) : join(ROOT, `site/media/${name}.gif`);
   if (!out.endsWith(".gif")) {
     console.error(`the output path must end in .gif (got ${out})`);
     process.exit(1);
