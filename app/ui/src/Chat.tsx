@@ -30,11 +30,9 @@ import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
 import type { Accepted, Conn, Notice, Send } from "./socket";
 import { Icon } from "./Icon";
+import { useMenu } from "./menu";
 
-export type CanvasTab = "game" | "code" | "diff";
 
-
-const TAB_WORDS: Record<CanvasTab, string> = { game: "Game tab", code: "Code tab", diff: "Diff tab" };
 const RECENT = 8;
 /** The composer's textarea grows up to this, then scrolls. */
 const MAX_INPUT_PX = 160;
@@ -47,12 +45,14 @@ type Props = {
   fetchTranscript: (task: number) => void;
   accepted: Accepted | null;
   notice: Notice | null;
-  tab: CanvasTab;
-  onTab: (tab: CanvasTab) => void;
+  /** The canvas's focused tab, for the composer's context chip. */
+  canvasWord: string;
+  /** Opens or focuses the Game tab, beside what is shown. */
+  onOpenGame: () => void;
   /** The current task; `null` is the empty state. */
   selected: number | null;
   onSelect: (task: number | null) => void;
-  /** Opens the Diff tab at `path` (repo-relative), or at its top. */
+  /** Opens or focuses the current task's Changes tab at `path` (repo-relative), or at its top. */
   onViewDiff: (path: string | null) => void;
 };
 
@@ -68,8 +68,8 @@ export function ChatDock({
   fetchTranscript,
   accepted,
   notice,
-  tab,
-  onTab,
+  canvasWord,
+  onOpenGame,
   selected,
   onSelect: setSelected,
   onViewDiff,
@@ -147,7 +147,7 @@ export function ChatDock({
         task={current}
         items={items}
         lines={lines.filter((l) => l.project === active && l.task === (current?.id ?? null))}
-        onTab={onTab}
+        onOpenGame={onOpenGame}
         onViewDiff={onViewDiff}
         repoRoot={state?.repo_root ?? ""}
         project={current?.project ?? ""}
@@ -181,7 +181,7 @@ export function ChatDock({
           busy={pending !== null}
           onSubmit={submit}
           onStop={stop}
-          tab={tab}
+          canvasWord={canvasWord}
           placeholder={current ? "Reply in this task" : "Ask for a change, or about the running game"}
         />
       </div>
@@ -218,29 +218,7 @@ function ChatHead({
   current: Task | null;
   onSelect: (task: number | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const menu = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    menu.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
-    const close = (e: MouseEvent) => {
-      if (!menu.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
-      setOpen(false);
-      menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    }
-    const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-    if (!step) return;
-    e.preventDefault();
-    const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    items[(at + step + items.length) % items.length]?.focus();
-  };
+  const { open, setOpen, ref: menu, onKeyDown } = useMenu();
   return (
     <header className="chat-head">
       <div className="chat-title">
@@ -326,7 +304,7 @@ function Conversation({
   task,
   items,
   lines,
-  onTab,
+  onOpenGame,
   onViewDiff,
   repoRoot,
   project,
@@ -335,7 +313,7 @@ function Conversation({
   task: Task | null;
   items: Item[] | undefined;
   lines: Line[];
-  onTab: (tab: CanvasTab) => void;
+  onOpenGame: () => void;
   onViewDiff: (path: string | null) => void;
   repoRoot: string;
   /** The task's project, which relative tool paths are in. */
@@ -369,7 +347,7 @@ function Conversation({
           item={item}
           usage={usageBefore(items!, i)}
           pending={i > runFrom}
-          onTab={onTab}
+          onOpenGame={onOpenGame}
           onViewDiff={onViewDiff}
           change={task?.change ?? null}
           repoRoot={repoRoot}
@@ -421,7 +399,7 @@ const Row = memo(function Row({
   item,
   usage,
   pending,
-  onTab,
+  onOpenGame,
   onViewDiff,
   change,
   repoRoot,
@@ -430,7 +408,7 @@ const Row = memo(function Row({
   item: Item;
   usage: Usage | null;
   pending: boolean;
-  onTab: (tab: CanvasTab) => void;
+  onOpenGame: () => void;
   onViewDiff: (path: string | null) => void;
   change: Change | null;
   repoRoot: string;
@@ -447,7 +425,7 @@ const Row = memo(function Row({
         <ToolCall
           item={item}
           pending={pending && item.result === null}
-          onTab={onTab}
+          onOpenGame={onOpenGame}
           onViewDiff={onViewDiff}
           change={change}
           repoRoot={repoRoot}
@@ -488,7 +466,7 @@ type ToolItem = Extract<Item, { kind: "tool" }>;
 function ToolCall({
   item,
   pending,
-  onTab,
+  onOpenGame,
   onViewDiff,
   change,
   repoRoot,
@@ -496,7 +474,7 @@ function ToolCall({
 }: {
   item: ToolItem;
   pending: boolean;
-  onTab: (tab: CanvasTab) => void;
+  onOpenGame: () => void;
   onViewDiff: (path: string | null) => void;
   change: Change | null;
   repoRoot: string;
@@ -545,7 +523,9 @@ function ToolCall({
         <button
           type="button"
           className="button button-small"
-          onClick={() => (isChange ? onViewDiff(file?.path ?? null) : onTab("game"))}
+          // Clicking keeps the keyboard focus where it was (the composer).
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => (isChange ? onViewDiff(file?.path ?? null) : onOpenGame())}
         >
           {isChange ? "View diff" : "Open in canvas"}
         </button>
@@ -598,7 +578,7 @@ function Composer({
   busy,
   onSubmit,
   onStop,
-  tab,
+  canvasWord,
   placeholder,
 }: {
   state: AppState | null;
@@ -612,7 +592,7 @@ function Composer({
   busy: boolean;
   onSubmit: () => void;
   onStop: () => void;
-  tab: CanvasTab;
+  canvasWord: string;
   placeholder: string;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
@@ -639,7 +619,7 @@ function Composer({
       <ul className="chips" aria-label="What the agent will see">
         {project && <li className="chip mono">{project.path}</li>}
         <li className="chip">{session === "running" ? "Game running" : "No game running"}</li>
-        <li className="chip">{TAB_WORDS[tab]}</li>
+        <li className="chip">{canvasWord}</li>
       </ul>
       <textarea
         ref={input}

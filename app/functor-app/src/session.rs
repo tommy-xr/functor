@@ -1,9 +1,10 @@
 //! Runs the core's commands other than replies: one `functor run native`
 //! child at a time, its output read for the debug server's address, `/state`
-//! polled, input posted; agent runs (`agent::Runner`); saving tasks;
-//! project file listings; and tasks' changes (`changes::Git`).
+//! polled, input posted; agent runs (`agent::Runner`); saving tasks and
+//! layouts; project file listings and reads; and tasks' changes
+//! (`changes::Git`).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -12,7 +13,9 @@ use std::time::Duration;
 
 use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::{GameInput, ServerMsg};
-use functor_app_core::{listening_url, Command, Display, Event, Harness, Polled, SessionEvent};
+use functor_app_core::{
+    listening_url, Command, Display, Event, Harness, Layout, Polled, SessionEvent,
+};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Child;
@@ -31,6 +34,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// Output lines kept for a failure report.
 const TAIL_LINES: usize = 20;
+/// How long a layout change waits to be written, so a burst (a splitter
+/// stepped by key) is one write.
+const LAYOUT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// The `functor` to run: `--functor`, else `FUNCTOR_BIN`, else one next to
 /// this executable (`exe`), else `functor` on `PATH`.
@@ -53,6 +59,25 @@ pub struct Driver {
     next_task: u64,
     /// The repo's git, when changes are tracked.
     git: Option<Arc<Git>>,
+    /// Layouts not written yet, by project dir; flushed on drop too.
+    layouts: Arc<Mutex<HashMap<PathBuf, Layout>>>,
+}
+
+/// Writes and forgets every pending layout.
+fn write_layouts(home: &Path, pending: &Mutex<HashMap<PathBuf, Layout>>) {
+    let layouts = std::mem::take(&mut *pending.lock().unwrap());
+    for (dir, layout) in layouts {
+        if let Err(e) = crate::store::save_layout(home, &dir, &layout) {
+            eprintln!("functor-app: cannot save the layout: {e}");
+        }
+    }
+}
+
+impl Drop for Driver {
+    /// A layout changed just before exit is still written.
+    fn drop(&mut self) {
+        write_layouts(&self.home, &self.layouts);
+    }
 }
 
 /// The current child's supervisor. Dropping it kills the child.
@@ -83,6 +108,7 @@ impl Driver {
             home,
             next_task: highest + 1,
             git,
+            layouts: Arc::default(),
         }
     }
 
@@ -142,6 +168,21 @@ impl Driver {
                     eprintln!("functor-app: cannot save the agent choice: {e}");
                 }
             }
+            Command::SaveLayout { dir, layout } => {
+                let first = {
+                    let mut pending = self.layouts.lock().unwrap();
+                    pending.insert(dir, *layout).is_none() && pending.len() == 1
+                };
+                if first {
+                    let (home, pending) = (self.home.clone(), self.layouts.clone());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(LAYOUT_DEBOUNCE).await;
+                        write_layouts(&home, &pending);
+                    });
+                }
+            }
+            // Without a client to answer there is no one to read it for.
+            Command::ReadFile { .. } => {}
             // Without a client to answer, only the summary is refreshed.
             Command::Diff { task, baseline, .. } => self.diff(task, baseline, None),
             Command::Revert {
@@ -188,6 +229,33 @@ impl Driver {
                     more: 0,
                     error: Some(error),
                 },
+            };
+            let _ = reply.try_send(serde_json::to_string(&msg).expect("ServerMsg serializes"));
+        });
+    }
+
+    /// Reads `path` of `project` (at `dir`) in the background and sends it
+    /// to `reply` as `ServerMsg::File`.
+    pub fn read_file(
+        &self,
+        project: String,
+        path: String,
+        dir: PathBuf,
+        reply: Option<Sender<String>>,
+    ) {
+        let Some(reply) = reply else {
+            return;
+        };
+        tokio::task::spawn_blocking(move || {
+            let (text, error) = match crate::files::read_project_file(&dir, &path) {
+                Ok(text) => (Some(text), None),
+                Err(error) => (None, Some(error)),
+            };
+            let msg = ServerMsg::File {
+                project,
+                path,
+                text,
+                error,
             };
             let _ = reply.try_send(serde_json::to_string(&msg).expect("ServerMsg serializes"));
         });

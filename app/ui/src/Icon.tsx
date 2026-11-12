@@ -22,6 +22,19 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   compose: <path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />,
+  "split-right": (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M12 4v16" />
+    </>
+  ),
+  "split-down": (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 12h18" />
+    </>
+  ),
+  "pop-out": <path d="M14 4h6v6M20 4l-8 8M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />,
 };
 
 export function Icon({ name }: { name: keyof typeof ICONS }) {

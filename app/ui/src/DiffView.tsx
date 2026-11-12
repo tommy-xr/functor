@@ -54,7 +54,7 @@ export function DiffView({
   useEffect(() => {
     if (!target?.path || !current) return;
     const i = current.files.findIndex((f) => f.file.path === target.path);
-    document.getElementById(`diff-file-${i}`)?.scrollIntoView({ block: "start" });
+    document.getElementById(`diff-file-${current.task}-${i}`)?.scrollIntoView({ block: "start" });
   }, [target?.seq, current]);
 
   let empty: string | null = null;
@@ -88,7 +88,7 @@ export function DiffView({
             key={f.path}
             type="button"
             className="diff-index-item"
-            onClick={() => document.getElementById(`diff-file-${i}`)?.scrollIntoView({ block: "start" })}
+            onClick={() => document.getElementById(`diff-file-${task.id}-${i}`)?.scrollIntoView({ block: "start" })}
           >
             <span className="mono">{f.path}</span>
             <FileCounts file={f} />
@@ -99,7 +99,7 @@ export function DiffView({
       {current?.error && <p className="reason">The diff could not be read: {current.error}</p>}
       {!current && <p className="hint">Loading the diff…</p>}
       {current?.files.map((f, i) => (
-        <FileBlock key={f.file.path} id={`diff-file-${i}`} diff={f} current={f.file.path === target?.path} />
+        <FileBlock key={f.file.path} id={`diff-file-${task.id}-${i}`} diff={f} current={f.file.path === target?.path} />
       ))}
     </div>
   );
@@ -218,7 +218,8 @@ export function ReviewActions({
           {task.reverting ? "Reverting…" : "Revert"}
         </button>
         {onViewDiff && (
-          <button type="button" className="button" onClick={onViewDiff}>
+          // Clicking keeps the keyboard focus where it was (the composer).
+          <button type="button" className="button" onMouseDown={(e) => e.preventDefault()} onClick={onViewDiff}>
             View diff
           </button>
         )}

@@ -143,7 +143,7 @@ async function gameViewNoGpu(browser) {
     // Arrow keys on the picker stay with it rather than switching tabs.
     await picker.focus();
     await page.keyboard.press("ArrowRight");
-    await expect(page.getByRole("tab", { name: "Game" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: "Game", exact: true })).toHaveAttribute("aria-selected", "true");
     await page.keyboard.press("Escape");
     await picker.selectOption("hidden");
     await expect.poll(() => app.state?.session_mode).toBe("hidden");
@@ -198,14 +198,14 @@ async function gameViewNoGpu(browser) {
     await expect(banner).toHaveText("Click to play");
     await page.keyboard.up("KeyS");
 
-    // Leaving the tab releases what is held too.
+    // Leaving the tab (for a file in its pane) releases what is held too.
     await view.click();
     await page.keyboard.down("KeyD");
     await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual(["D"]);
-    await page.getByRole("tab", { name: "Code" }).click();
+    await page.getByRole("button", { name: "game.fun", exact: true }).click();
     await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual([]);
     await page.keyboard.up("KeyD");
-    await page.getByRole("tab", { name: "Game" }).click();
+    await page.getByRole("tab", { name: "Game", exact: true }).click();
     await expect(banner).toHaveText("Click to play");
 
     // The picker restarts the session in the other mode (headless here, so no window opens).
@@ -324,9 +324,9 @@ async function gameViewGpu(browser) {
 
     // One stream while shown; none on another tab or a hidden page; back on return.
     await expect.poll(() => openStreams(port)).toBe(1);
-    await page.getByRole("tab", { name: "Code" }).click();
+    await page.getByRole("button", { name: "game.fun", exact: true }).click();
     await expect.poll(() => openStreams(port)).toBe(0);
-    await page.getByRole("tab", { name: "Game" }).click();
+    await page.getByRole("tab", { name: "Game", exact: true }).click();
     await expect.poll(() => openStreams(port)).toBe(1);
     const setHidden = (hidden) =>
       page.evaluate((hidden) => {
@@ -352,6 +352,38 @@ async function gameViewGpu(browser) {
       await page.waitForTimeout(1000);
       await page.screenshot({ path: `${SHOTS}/game-700.png`, fullPage: true });
     }
+
+    // Moving the Game tab to another pane moves the one view: the same <img>,
+    // never a second stream, and frames that keep changing.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await img.evaluate((el) => (el.dataset.mark = "the one"));
+    await page.getByRole("button", { name: "Split right" }).first().click();
+    await expect(page.locator(".pane-box")).toHaveCount(2);
+    const peaks = [];
+    // lsof blocks this process, so sampled sparsely.
+    const sample = setInterval(() => peaks.push(openStreams(port)), 150);
+    try {
+      const from = await page.getByRole("tab", { name: "Game", exact: true }).boundingBox();
+      const to = await page.locator(".pane-box").nth(1).locator(".pane-body").boundingBox();
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(from.x + from.width / 2 + 20, from.y + 10, { steps: 5 });
+      await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 10 });
+      await page.mouse.up();
+      // game.fun, opened above, stays behind in the first pane.
+      await expect(page.locator(".pane-box").nth(1).getByRole("tab", { name: "Game", exact: true })).toBeVisible();
+      await expect(img).toHaveAttribute("data-mark", "the one");
+      await expect.poll(() => openStreams(port)).toBe(1);
+      await page.waitForTimeout(600);
+    } finally {
+      clearInterval(sample);
+    }
+    expect(Math.max(...peaks), "streams open at once while moving").toBeLessThanOrEqual(1);
+    const moved = await img.screenshot();
+    await page.waitForTimeout(500);
+    expect(moved.equals(await img.screenshot()), "the frame changed after the move").toBe(false);
+    expect(await page.getByTestId("game-view").count()).toBe(1);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/game-moved-1440.png` });
 
     // Stopping the session ends the stream.
     await page.getByRole("button", { name: "Stop game" }).click();

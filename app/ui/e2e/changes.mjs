@@ -1,11 +1,11 @@
 // A task's change, end to end against the fake agent in a throwaway git
 // repo: the run edits game.fun, the task is ready for review, the chat card
-// and the Diff tab show the edit, Revert (confirmed in place) puts the file
+// and the Changes tab show the edit, Revert (confirmed in place) puts the file
 // back, and a second run's change is kept. Runs at 1440×900 and 700×900.
 //
 //   npm run test:app-ui
 //
-// APP_UI_SHOTS=<dir> saves stills of the Diff tab and the frames of a
+// APP_UI_SHOTS=<dir> saves stills of the Changes tab and the frames of a
 // review → view diff → revert loop at 1440×900.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -50,14 +50,11 @@ async function review(browser, width, height) {
   const input = dock.getByLabel("Message the agent");
   const badge = dock.getByTestId("task-status");
   const card = log.getByTestId("review-card");
-  const diffTab = page.getByRole("tab", { name: "Diff" });
-  const canvas = page.locator("#canvas-panel");
+  const diffTab = page.getByRole("tab", { name: "Changes · Start the count at ten" });
+  const canvas = page.locator(".canvas");
   try {
     await page.goto(server.url);
-    // No task yet: the Diff tab says so in one line.
-    await diffTab.click();
-    await expect(canvas.getByTestId("diff-empty")).toHaveText("Pick a task to review its change.");
-    await page.getByRole("tab", { name: "Game" }).click();
+    await expect(page.getByRole("tab", { name: "Game" })).toBeVisible();
 
     await input.fill("Start the count at ten");
     await input.press("Enter");
@@ -75,7 +72,7 @@ async function review(browser, width, height) {
     await expect(dock.getByRole("menu").getByRole("menuitem")).toContainText(["Ready for review"]);
     await page.keyboard.press("Escape");
 
-    // "View diff" opens the Diff tab at that file, its lines coloured by kind.
+    // "View diff" opens the Changes tab at that file, its lines coloured by kind.
     await change.getByRole("button", { name: "View diff" }).click();
     await expect(diffTab).toHaveAttribute("aria-selected", "true");
     const file = canvas.getByRole("region", { name: "examples/counter/game.fun" });
@@ -169,7 +166,7 @@ async function untracked(browser) {
     await input.fill("Start the count at ten");
     await input.press("Enter");
     await expect(page.getByTestId("task-status")).toHaveText("Waiting on you", { timeout: 15_000 });
-    await page.getByRole("tab", { name: "Diff" }).click();
+    await page.locator(".chat").getByRole("button", { name: "View diff" }).first().click();
     await expect(page.getByTestId("diff-empty")).toHaveText(
       "This folder is not a git repository, so changes are not tracked.",
     );

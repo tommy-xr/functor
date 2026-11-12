@@ -213,6 +213,22 @@ pub fn read_project_files(dir: &Path) -> Vec<String> {
     project_files(names)
 }
 
+/// Why `path` cannot name a file inside a project, read as relative to its
+/// directory: it must be `/`-separated names, never `..`, `.`, a root, a
+/// drive or a backslash. The shell still refuses a symlink that leads out.
+pub fn check_relative(path: &str) -> Result<(), String> {
+    let bad = path.is_empty()
+        || path.len() > 1024
+        || path.contains(['\\', '\0', ':'])
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..");
+    match bad {
+        true => Err(format!("{path:?} is not a path inside the project")),
+        false => Ok(()),
+    }
+}
+
 /// A project's directory from its `path`.
 pub fn project_dir(root: &Path, path: &str) -> PathBuf {
     if path == "." {
@@ -272,6 +288,39 @@ pub fn discover(start: &Path) -> AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_plain_relative_paths_name_project_files() {
+        for ok in [
+            "game.fun",
+            "src/game.fun",
+            "a b/c-d.funi",
+            ".gitignore",
+            "x..y",
+        ] {
+            assert_eq!(check_relative(ok), Ok(()), "{ok}");
+        }
+        let long = "a".repeat(1025);
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../../x",
+            "a/./b",
+            ".",
+            "..",
+            "a//b",
+            "a/",
+            "/",
+            "C:/x",
+            "c:x",
+            "a\\..\\x",
+            "a\0b",
+            &long,
+        ] {
+            assert!(check_relative(bad).is_err(), "{bad:?}");
+        }
+    }
 
     const PATHS: [&str; 3] = ["examples/hello", "examples/orbs", "tools/fixture"];
 
