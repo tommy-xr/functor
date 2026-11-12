@@ -142,6 +142,7 @@ export function App() {
             selected={selected}
             onSelect={setSelected}
             onViewDiff={viewDiff}
+            onOpenTask={(task) => openTask(task, false)}
           />
         </div>
       </div>

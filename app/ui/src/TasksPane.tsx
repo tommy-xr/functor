@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import type { AppState, Item, Task } from "./generated/protocol";
+import { AgentStrip } from "./AgentCard";
 import { TaskBadge } from "./DiffView";
 import { Icon } from "./Icon";
 import type { Notice, Send } from "./socket";
@@ -116,6 +117,7 @@ export function TasksPane({
           New task
         </button>
       </div>
+      <AgentStrip state={state} onOpen={(task) => onOpen(task, false)} />
       <input
         type="search"
         className="text-input tasks-search"

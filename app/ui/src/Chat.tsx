@@ -28,6 +28,8 @@ import {
   walkTo,
   type Snapshot,
 } from "./chat-model";
+import { AgentCard } from "./AgentCard";
+import { dockTask } from "./agent-model";
 import { Counts, ReviewActions, TaskBadge } from "./DiffView";
 import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
@@ -57,6 +59,8 @@ type Props = {
   onSelect: (task: number | null) => void;
   /** Opens or focuses the current task's Changes tab at `path` (repo-relative), or at its top. */
   onViewDiff: (path: string | null) => void;
+  /** Opens a task (an agent card's click). */
+  onOpenTask: (task: number) => void;
 };
 
 const NO_FILES: string[] = [];
@@ -87,6 +91,7 @@ export function ChatDock({
   selected,
   onSelect: setSelected,
   onViewDiff,
+  onOpenTask,
 }: Props) {
   const online = conn === "open" && state !== null;
   const active = state?.active ?? null;
@@ -139,6 +144,7 @@ export function ChatDock({
     }),
     [files, changes, online, taskId, send],
   );
+  const agent = dockTask(state, current?.id ?? null);
   const harness: Harness = current?.harness ?? pickHarness(state);
   const running = current?.run != null;
 
@@ -159,6 +165,11 @@ export function ChatDock({
   return (
     <section className="chat" aria-labelledby="chat-heading">
       <ChatHead tasks={tasks} current={current} onSelect={select} />
+      {agent && (
+        <div className="chat-agent">
+          <AgentCard task={agent} activity={state!.activity[agent.id]!} onOpen={onOpenTask} />
+        </div>
+      )}
       <Conversation
         key={current?.id ?? "new"}
         task={current}
