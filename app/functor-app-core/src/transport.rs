@@ -10,7 +10,7 @@ use crate::protocol::GameInput;
 use crate::session::PolledClock;
 
 /// What the bar shows: `GET /state`'s `frame` and `clock`, with the bar's
-/// own calls applied until the runtime has answered them.
+/// seeks applied until the runtime has answered them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Transport {
@@ -67,7 +67,7 @@ pub enum TransportCall {
 pub enum SessionCall {
     Input(GameInput),
     Transport(TransportCall),
-    /// `GET /state?model=0`, sent after `after` transport calls.
+    /// `GET /state?model=0`, sent after `after` seeks.
     Poll {
         after: u64,
     },
@@ -111,9 +111,9 @@ const MARK_CAP: usize = 4096;
 pub struct Timeline {
     /// `None` until the first successful poll.
     pub clock: Option<Transport>,
-    /// Transport calls sent this session. A poll sent before the latest is
-    /// answered before that call lands, so its frame and pause are stale.
-    pub calls: u64,
+    /// Seeks sent this session. A poll sent before the latest is answered
+    /// before that seek lands, so its frame is stale.
+    pub seeks: u64,
     /// In the recorded window, oldest first.
     pub marks: Vec<Mark>,
     /// Bumps when `marks` changes.
@@ -130,9 +130,9 @@ pub struct Timeline {
 }
 
 impl Timeline {
-    /// A poll sent after `after` transport calls reported `frame` and `clock`.
+    /// A poll sent after `after` seeks reported `frame` and `clock`.
     pub fn polled(&mut self, after: u64, frame: u64, clock: Option<PolledClock>) {
-        let stale = after < self.calls;
+        let stale = after < self.seeks;
         let Some(clock) = clock else {
             self.clock = Some(Transport {
                 frame,
@@ -142,10 +142,10 @@ impl Timeline {
         };
         let shown = self.clock.filter(|c| c.clock);
         let branched = shown.is_some_and(|c| c.generation != clock.generation);
-        // A call not yet answered: keep showing what it asked for.
-        let (frame, paused) = match shown {
-            Some(c) if stale => (c.frame, c.paused),
-            _ => (frame, clock.paused),
+        // A seek not yet answered: keep showing the frame it asked for.
+        let frame = match shown {
+            Some(c) if stale => c.frame,
+            _ => frame,
         };
         // A reload lands on the frame shown through the swap (as on the web);
         // the first poll is a baseline, not news.
@@ -155,7 +155,7 @@ impl Timeline {
         self.revision = Some(clock.program_revision);
         self.clock = Some(Transport {
             clock: true,
-            paused,
+            paused: clock.paused,
             frame,
             recorded: clock.recorded,
             generation: clock.generation,
@@ -164,33 +164,24 @@ impl Timeline {
         self.prune(branched);
     }
 
-    /// The bar's `call`, shown until the runtime answers: the call to post
-    /// (a seek clamped to the window), or `None` when it cannot be made (no
-    /// clock, or a seek with nothing recorded).
+    /// The bar's `call` to post, or `None` when it cannot be made (no clock,
+    /// or a seek with nothing recorded). A seek is clamped to the window and
+    /// shown at once, so a drag never waits on the runtime; pause, step and
+    /// resume show when a poll reports them, so a pause freezes the window
+    /// where the runtime really stopped.
     pub fn call(&mut self, call: TransportCall) -> Option<TransportCall> {
         let clock = self.clock.as_mut().filter(|c| c.clock)?;
-        let call = match call {
-            TransportCall::Pause | TransportCall::Step => {
-                clock.paused = true;
-                call
-            }
-            TransportCall::Resume => {
-                clock.paused = false;
-                call
-            }
-            TransportCall::Seek { frame, id } => {
-                let [oldest, newest] = clock.recorded?;
-                clock.frame = frame.clamp(oldest, newest);
-                clock.paused = true;
-                clock.seek = id;
-                TransportCall::Seek {
-                    frame: clock.frame,
-                    id,
-                }
-            }
+        let TransportCall::Seek { frame, id } = call else {
+            return Some(call);
         };
-        self.calls += 1;
-        Some(call)
+        let [oldest, newest] = clock.recorded?;
+        clock.frame = frame.clamp(oldest, newest);
+        clock.seek = id;
+        self.seeks += 1;
+        Some(TransportCall::Seek {
+            frame: clock.frame,
+            id,
+        })
     }
 
     /// Where the next input-log read starts.
@@ -314,31 +305,36 @@ mod tests {
             })
         );
         assert_eq!(t.call(TransportCall::Pause), None);
-        assert_eq!(t.calls, 0);
+        assert_eq!(t.seeks, 0);
     }
 
     #[test]
-    fn calls_show_at_once_and_stale_polls_do_not_undo_them() {
+    fn a_seek_shows_at_once_and_stale_polls_do_not_undo_it() {
         let mut t = Timeline::default();
         t.polled(0, 100, clock(false, [1, 100], 0, 0));
         assert_eq!(t.call(seek(40, 7)), Some(seek(40, 7)));
         let shown = t.clock.unwrap();
-        assert_eq!((shown.frame, shown.paused, shown.seek), (40, true, 7));
-        // A poll sent before the seek still reports the old frame, running.
+        assert_eq!((shown.frame, shown.seek), (40, 7));
+        // A poll sent before the seek still reports the old frame.
         t.polled(0, 103, clock(false, [1, 103], 0, 0));
         let shown = t.clock.unwrap();
-        assert_eq!((shown.frame, shown.paused), (40, true));
-        // ...but its window is news.
-        assert_eq!(shown.recorded, Some([1, 103]));
+        assert_eq!(shown.frame, 40);
+        // ...but its window and clock are news: running until the seek lands.
+        assert_eq!((shown.recorded, shown.paused), (Some([1, 103]), false));
         // A poll sent after it is the runtime's word.
         t.polled(1, 41, clock(true, [1, 103], 0, 0));
-        assert_eq!((t.clock.unwrap().frame, t.clock.unwrap().seek), (41, 7));
-        // Resume shows as running; step and pause as paused.
-        assert!(t.call(TransportCall::Resume).is_some());
-        assert!(!t.clock.unwrap().paused);
-        assert!(t.call(TransportCall::Step).is_some());
-        assert!(t.clock.unwrap().paused);
-        assert_eq!(t.calls, 3);
+        let shown = t.clock.unwrap();
+        assert_eq!((shown.frame, shown.paused, shown.seek), (41, true, 7));
+        // Pause, step and resume are posted as they are and shown when polled.
+        for call in [
+            TransportCall::Resume,
+            TransportCall::Step,
+            TransportCall::Pause,
+        ] {
+            assert_eq!(t.call(call.clone()), Some(call));
+        }
+        assert_eq!(t.clock, Some(shown));
+        assert_eq!(t.seeks, 1);
     }
 
     #[test]

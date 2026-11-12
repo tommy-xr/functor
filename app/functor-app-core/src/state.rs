@@ -303,7 +303,7 @@ pub enum Command {
     StopSession { id: u64 },
     /// `GET /state?model=0` on session `id`'s debug server after the poll
     /// interval (shorter when `fast`), posted in order with its calls;
-    /// `after` transport calls were sent before it.
+    /// `after` seeks were sent before it.
     PollState {
         id: u64,
         debug_url: String,
@@ -1945,7 +1945,7 @@ fn on_session(
                 id,
                 debug_url: debug_url.clone(),
                 fast,
-                after: timeline.calls,
+                after: timeline.seeks,
             });
             let Ok(polled) = result else {
                 return false;
@@ -2479,25 +2479,19 @@ mod tests {
     }
 
     #[test]
-    fn transport_calls_are_posted_in_order_and_shown_at_once() {
+    fn transport_calls_are_posted_and_a_seek_shows_at_once() {
         let s = recording(100, 0);
         let playing = shown(100, recorded(100, 0));
+        // A pause is posted; it shows when a poll reports it.
         let (s, commands) = update(s, bar(TransportCall::Pause));
-        let paused = Transport {
-            paused: true,
-            ..playing
-        };
-        assert_eq!(
-            commands,
-            vec![posted(TransportCall::Pause), transport(Some(paused))]
-        );
+        assert_eq!(commands, vec![posted(TransportCall::Pause)]);
         // A seek shows at once, clamped to the window, with its page's id.
         let (s, commands) = update(s, bar(TransportCall::Seek { frame: 900, id: 3 }));
         let sought = TransportCall::Seek { frame: 100, id: 3 };
         let at = |frame| Transport {
             frame,
             seek: 3,
-            ..paused
+            ..playing
         };
         assert_eq!(commands, vec![posted(sought), transport(Some(at(100)))]);
         let (s, commands) = update(s, bar(TransportCall::Seek { frame: 40, id: 4 }));
@@ -2505,13 +2499,18 @@ mod tests {
             commands[0],
             posted(TransportCall::Seek { frame: 40, id: 4 })
         );
-        // A poll sent before those calls does not undo them; its window is news.
-        let (s, commands) = update(s, session(1, polled_clock(103, recorded(103, 0))));
+        // A poll sent before those seeks does not undo them; its clock is news.
+        let paused = PolledClock {
+            paused: true,
+            ..recorded(103, 0)
+        };
+        let (s, commands) = update(s, session(1, polled_clock(103, paused)));
         let ahead = Transport {
             frame: 40,
             seek: 4,
+            paused: true,
             recorded: Some([1, 103]),
-            ..paused
+            ..playing
         };
         assert_eq!(
             commands,
@@ -2520,22 +2519,18 @@ mod tests {
                     id: 1,
                     debug_url: URL.to_string(),
                     fast: false,
-                    after: 3,
+                    after: 2,
                 },
                 transport(Some(ahead))
             ]
         );
         // One sent after them is the runtime's word.
-        let landed = PolledClock {
-            paused: true,
-            ..recorded(103, 0)
-        };
         let answer = SessionEvent::Polled {
-            after: 3,
+            after: 2,
             result: Ok(Polled {
                 frame: 41,
                 surface: Some(SURFACE),
-                clock: Some(landed),
+                clock: Some(paused),
             }),
         };
         let (_, commands) = update(s, session(1, answer));

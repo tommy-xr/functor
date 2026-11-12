@@ -18,6 +18,7 @@ import { hasChange } from "./diff-model";
 import { FileView } from "./FileView";
 import { TaskPage } from "./TaskPage";
 import { GameView } from "./GameView";
+import { useTransport } from "./TransportBar";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
 import { DEFAULT_ASPECT, isLeft, isTop, miniKey, miniRect, nearestCorner, resizedWidth, clampWidth } from "./mini-model";
@@ -713,6 +714,8 @@ function WindowNote({ ctx }: { ctx: Ctx }) {
 
 /** The mini view's title strip height (CSS: `.mini-strip`). */
 const MINI_STRIP = 36;
+/** The compact transport bar's height under it (CSS: `.transport-compact`). */
+const MINI_TRANSPORT = 33;
 
 /** `el`'s padding box in CSS pixels, following resizes. */
 function useClientSize(el: RefObject<HTMLElement | null>) {
@@ -744,6 +747,9 @@ function MiniGame({ ctx, game, canvas }: { ctx: Ctx; game: GamePlacement; canvas
   const status = ctx.state?.session?.status;
   const surface = status?.kind === "running" ? status.surface : null;
   const aspect = surface ? surface[0] / surface[1] : DEFAULT_ASPECT;
+  // The card's chrome: its strip, and the transport bar while one shows.
+  const { transport } = useTransport();
+  const chrome = MINI_STRIP + (status?.kind === "running" && transport?.clock ? MINI_TRANSPORT : 0);
   // Sent and not yet answered. The core answers every op with its state (a
   // new object, changed or not), so the next one replaces the preview.
   const [sent, setSent] = useState<Mini | null>(null);
@@ -752,10 +758,10 @@ function MiniGame({ ctx, game, canvas }: { ctx: Ctx; game: GamePlacement; canvas
   // Unmeasured, it is laid out unseen: the game view moves in at once, never remounted.
   const canvasSize = size ?? { w: 0, h: 0 };
   // Resizing starts from the width shown, which a small canvas may have cut.
-  const fitted = miniRect(sent ?? mini, aspect, canvasSize, MINI_STRIP);
+  const fitted = miniRect(sent ?? mini, aspect, canvasSize, chrome);
   const shown = { ...(sent ?? mini), width: size ? clampWidth(fitted.w) : (sent ?? mini).width };
   const width = drag?.resize ? resizedWidth(shown.corner, shown.width, drag.dx, drag.dy, aspect) : shown.width;
-  const rect = miniRect({ ...shown, width }, aspect, canvasSize, MINI_STRIP);
+  const rect = miniRect({ ...shown, width }, aspect, canvasSize, chrome);
   // Moved, the card stays inside the canvas.
   const within = (v: number, room: number) => Math.min(Math.max(v, 0), Math.max(0, room));
   const x = drag && !drag.resize ? within(rect.x + drag.dx, canvasSize.w - rect.w) : rect.x;
