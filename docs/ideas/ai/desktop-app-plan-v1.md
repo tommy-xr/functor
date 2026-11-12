@@ -101,6 +101,8 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 1.17 | Agent activity (D34), core: classify each call into the fixed kinds (shell commands by what they touch), a stance per task, context fill, and subagent calls tied to their parent. The last two need more from the agent runner's event stream. | Core unit tests on recorded event logs; a classifier table test. |
 | 1.18 | Agent cards (D34), desktop: avatar, thought bubble and context bar per running task in the Tasks pane and the chat dock; engines and subagents told apart by shape. | Playwright with `FakeAgent`; stills of every stance. |
 | 1.19 | Agent-run metrics: a fixed set of scenarios run through `functor-app task`, recording turns, tokens, time and outcome per scenario to a file, so prompt and settings changes can be compared and regressions seen. | The scenarios run against `FakeAgent` in CI; one opt-in live run with its numbers recorded here. |
+| 1.20 | Extrapolate in the app (D38): the control on the transport bar, the path drawn in the game view, and the automatic peek when an edit lands while paused; reuses the runtime's extrapolation and the web scrubber's model. Then re-record the site's app-loop capture with it. | Core and shell tests; Playwright with a fixture edit: the path changes after the edit; stills. |
+| 1.21 | Extrapolation as evidence (D38): the old and new paths from the task's moment on the change card, taken headlessly from the task's baseline and current files with the same inputs. | A fixture change whose two paths differ; captures match goldens. |
 
 ## M2 — devices and the Wi-Fi link
 
