@@ -1,7 +1,8 @@
 // The game view's transport bar (D13): pause, step, seek and resume a
 // session by mouse and keyboard, in a pane and compact in Mini, checked
 // against the session's own /state. Without a GPU (CI) on examples/counter:
-// the clock exists without frames. FUNCTOR_APP_GPU=1 adds a hidden session
+// the clock exists without frames. Then input and hot-reload marks on a copy
+// of examples/breakout (it has an `input` hook). FUNCTOR_APP_GPU=1 adds a hidden session
 // on examples/primitives: the picture holds still while paused, changes on a
 // step, and a seek back shows the earlier picture again.
 //
@@ -9,9 +10,20 @@
 //
 // APP_UI_SHOTS=<dir> saves stills at 1440 and 700 wide and of the mini view,
 // and (with a GPU) the frames of a play → pause → step → drag back → resume loop.
-import { mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, ROOT, requireBuilt, shot, startServer, stopServer, watchErrors, watchExternal, watchState } from "./app.mjs";
+import {
+  FUNCTOR,
+  ROOT,
+  requireBuilt,
+  shot,
+  startServer,
+  stopServer,
+  tempProject,
+  watchErrors,
+  watchExternal,
+  watchState,
+} from "./app.mjs";
 
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 
@@ -167,6 +179,53 @@ async function noGpu(browser) {
   }
 }
 
+/** Marks: a key pressed in the view, and a hot reload of an edited file, each explained by its tooltip. */
+async function marks(browser) {
+  const dir = tempProject("examples/breakout");
+  const server = await startServer(0, { dir });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const app = watchState(page);
+  const errors = watchErrors(page);
+  const external = watchExternal(page);
+  try {
+    const { bar, debugUrl } = await begin(page, app, server);
+    const view = page.getByTestId("game-view");
+    await view.click();
+    await page.keyboard.down("KeyA");
+    await page.waitForTimeout(100);
+    await page.keyboard.up("KeyA");
+    await page.keyboard.press("Escape");
+    const key = bar.getByRole("button", { name: /^frame \d+, A down/ });
+    await expect(key).toHaveCount(1, { timeout: 10_000 });
+    await key.hover();
+    await expect(bar.getByRole("status")).toHaveText(/^frame \d+ · A down/);
+
+    // The agent edits a file: the session reloads, a mark says so, and the
+    // recorded history carries on.
+    const before = await clock(debugUrl);
+    appendFileSync(`${dir}/game.fun`, "\nlet transportProbe = 1.0\n");
+    const reload = bar.getByRole("button", { name: /^frame \d+, hot reload/ });
+    await expect(reload).toHaveCount(1, { timeout: 20_000 });
+    const after = await clock(debugUrl);
+    expect(after.program_revision).toBe(before.program_revision + 1);
+    expect(after.recorded.oldest).toBe(before.recorded.oldest);
+    await expect(key).toHaveCount(1);
+    await reload.hover();
+    await expect(bar.getByRole("status")).toHaveText(/^frame \d+ · hot reload/);
+    await shot(page, "transport-marks");
+    // A click on a mark seeks to it.
+    const at = Number((await reload.getAttribute("aria-label")).match(/^frame (\d+)/)[1]);
+    await reload.click();
+    await expect.poll(async () => (await clock(debugUrl)).frame).toBe(at);
+    expect(errors, "console errors").toEqual([]);
+    expect(external, "non-loopback requests").toEqual([]);
+    console.log("ok: transport marks");
+  } finally {
+    await page.close();
+    await stopServer(server);
+  }
+}
+
 /** The mean absolute difference of two PNGs' pixels, decoded in the page (0–255). */
 function difference(page, a, b) {
   return page.evaluate(
@@ -265,6 +324,7 @@ async function gpu(browser) {
 const browser = await chromium.launch();
 try {
   await noGpu(browser);
+  await marks(browser);
   await gpu(browser);
 } finally {
   await browser.close();
