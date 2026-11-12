@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::changes::Change;
 use crate::session::loopback_url;
 
 /// The persisted format's version; a file with any other is skipped.
@@ -49,6 +50,17 @@ pub struct Task {
     pub session_id: Option<String>,
     /// The run in flight.
     pub run: Option<Run>,
+    /// The snapshot (a git tree in the app's store) the task's change is
+    /// measured from: taken as its first run, or the first after a keep or
+    /// revert, started. `None` outside git.
+    #[serde(default)]
+    pub baseline: Option<String>,
+    /// What changed since `baseline`, as last computed.
+    #[serde(default)]
+    pub change: Option<Change>,
+    /// A revert is being written; no run or second revert may start.
+    #[serde(default)]
+    pub reverting: bool,
     /// Sent as `ServerMsg::Transcript` and `ServerMsg::Item`, never with the
     /// state, which is resent on every session poll.
     #[serde(skip)]
@@ -62,12 +74,15 @@ pub enum TaskStatus {
     InProgress,
     /// The last run ended and the next move is the user's.
     WaitingOnYou,
-    /// Reserved for the change review, which will derive it from the task's
-    /// diff; nothing derives it yet.
+    /// The last run finished ok with a change to keep or revert.
     ReadyForReview,
     Failed {
         summary: Option<String>,
     },
+    /// The change was kept: the task is done until a follow-up.
+    Kept,
+    /// The change was reverted: the task is done until a follow-up.
+    Reverted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +132,10 @@ pub enum Item {
     },
     /// The user stopped the run.
     Stopped,
+    /// The user kept the task's change.
+    Kept,
+    /// The user reverted the task's change.
+    Reverted,
 }
 
 /// The app's mirror of `mis-agent`'s `AgentEvent` (which has no TS types),
@@ -159,6 +178,11 @@ pub enum AgentEvent {
 /// What the shell observed about one run of a task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunEvent {
+    /// The working tree's snapshot, taken before the agent started: the
+    /// task's baseline (sent only when it had none).
+    Baseline {
+        tree: String,
+    },
     Agent(AgentEvent),
     /// The agent and its tool server are gone; `error` if the run could not
     /// start or broke.
@@ -284,15 +308,22 @@ pub fn stop_run(task: &mut Task) -> Vec<usize> {
     changed
 }
 
-/// The status from the run and how the last run ended.
+/// The status from the run, a review that closed the task, and how the
+/// last run ended (with a change to review, after an ok finish).
 pub fn derive_status(task: &Task) -> TaskStatus {
     if task.run.is_some() {
         return TaskStatus::InProgress;
+    }
+    match task.transcript.last() {
+        Some(Item::Kept) => return TaskStatus::Kept,
+        Some(Item::Reverted) => return TaskStatus::Reverted,
+        _ => {}
     }
     match run_outcome(&task.transcript) {
         Some(Item::Finished { ok: false, summary }) => TaskStatus::Failed {
             summary: summary.clone(),
         },
+        Some(Item::Finished { ok: true, .. }) if has_change(task) => TaskStatus::ReadyForReview,
         Some(_) => TaskStatus::WaitingOnYou,
         None if task.transcript.is_empty() => TaskStatus::WaitingOnYou,
         // A run with no outcome and no run in flight: the app stopped mid-run.
@@ -300,6 +331,11 @@ pub fn derive_status(task: &Task) -> TaskStatus {
             summary: Some(INTERRUPTED.to_string()),
         },
     }
+}
+
+/// A non-empty change since the task's baseline.
+pub fn has_change(task: &Task) -> bool {
+    task.baseline.is_some() && task.change.as_ref().is_some_and(|c| !c.is_empty())
 }
 
 /// The last run's `Finished` or `Stopped`: the last one after its user message.
@@ -441,6 +477,9 @@ mod tests {
             model: None,
             session_id: None,
             run: Some(Run { id: 0, usage: None }),
+            baseline: None,
+            change: None,
+            reverting: false,
             transcript: vec![Item::User {
                 text: message.to_string(),
             }],

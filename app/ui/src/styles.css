@@ -75,6 +75,35 @@ select:not(:disabled) {
   outline-offset: 2px;
 }
 
+/* Every scroller: a thin dark thumb on a clear track, not the light default. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*:hover {
+  scrollbar-color: var(--faint) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 h2,
 p,
 ul,
@@ -391,6 +420,13 @@ blockquote {
   opacity: 0.45;
 }
 
+.button-danger {
+  border: 0;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-weight: 600;
+}
+
 /* A disabled primary must not read as the action to take. */
 .button-primary:disabled,
 .round-send:disabled {
@@ -423,6 +459,8 @@ blockquote {
 
 .canvas-body {
   flex: 1 1 auto;
+  /* Bounded, so a long diff scrolls inside the tab, not the page. */
+  min-height: 0;
   padding: 14px;
   display: flex;
 }
@@ -437,6 +475,184 @@ blockquote {
   padding: 24px;
   text-align: center;
   color: var(--muted);
+}
+
+/* Diff tab: the change's files, then each one's unified diff. */
+
+.diff {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diff-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.diff-total {
+  color: var(--text-2);
+}
+
+.counts {
+  margin-left: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.count-add {
+  color: var(--ok);
+}
+
+.count-del {
+  color: var(--danger);
+}
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-confirm {
+  max-width: 560px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+}
+
+.diff-index {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: var(--radius-l);
+  background: var(--surface);
+}
+
+.diff-index-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+}
+
+.diff-index-item:hover {
+  background: var(--surface-2);
+}
+
+.diff-index-item .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.diff-file {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--sunk);
+  scroll-margin-top: 4px;
+}
+
+.diff-file[data-current] {
+  border-color: var(--border-strong);
+}
+
+.diff-file-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.diff-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.diff-omitted {
+  padding: 10px 12px;
+  color: var(--muted);
+}
+
+.diff-lines {
+  overflow-x: auto;
+  padding: 6px 0;
+  font: 12.5px/1.6 var(--mono);
+}
+
+/* As wide as the longest line, so every row's colour spans the scroll. */
+.diff-lines-inner {
+  width: max-content;
+  min-width: 100%;
+}
+
+.dl {
+  display: flex;
+  padding: 0 12px;
+  white-space: pre;
+  color: var(--text-2);
+}
+
+.dl-mark {
+  flex: none;
+  width: 2ch;
+  color: var(--faint);
+}
+
+.dl-added {
+  background: var(--ok-bg);
+}
+
+.dl-added .dl-mark {
+  color: var(--ok);
+}
+
+.dl-removed {
+  background: var(--danger-bg);
+}
+
+.dl-removed .dl-mark {
+  color: var(--danger);
+}
+
+.dl-hunk {
+  margin-top: 4px;
+  color: var(--faint);
+}
+
+.dl-hunk:first-child {
+  margin-top: 0;
+}
+
+.dl-note {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.diff-more {
+  margin: 0 12px 10px;
 }
 
 /* The picker in the tab bar: the project switcher's look, at tab height. */
@@ -555,6 +771,11 @@ blockquote {
 .badge-in_progress {
   background: var(--accent-soft-bg);
   color: var(--accent-soft);
+}
+
+.badge-ready_for_review {
+  background: var(--ok-bg);
+  color: var(--ok);
 }
 
 .badge-failed {
@@ -873,6 +1094,10 @@ blockquote {
 }
 
 .chat-card .step-line {
+  color: var(--text-2);
+}
+
+.review-card-title {
   color: var(--text-2);
 }
 

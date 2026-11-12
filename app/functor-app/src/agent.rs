@@ -5,6 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use functor_app_core::tasks::mcp_listening_url;
@@ -16,6 +17,8 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+use crate::changes::Git;
 
 /// The env var `functor mcp --http` reads its bearer token from.
 const TOKEN_ENV: &str = "FUNCTOR_MCP_TOKEN";
@@ -97,6 +100,7 @@ impl Agents {
 pub struct Runner {
     functor: PathBuf,
     agents: Agents,
+    git: Option<Arc<Git>>,
     events: UnboundedSender<Event>,
     live: HashMap<u64, Live>,
 }
@@ -109,10 +113,16 @@ struct Live {
 }
 
 impl Runner {
-    pub fn new(functor: PathBuf, agents: Agents, events: UnboundedSender<Event>) -> Self {
+    pub fn new(
+        functor: PathBuf,
+        agents: Agents,
+        git: Option<Arc<Git>>,
+        events: UnboundedSender<Event>,
+    ) -> Self {
         Self {
             functor,
             agents,
+            git,
             events,
             live: HashMap::new(),
         }
@@ -127,6 +137,7 @@ impl Runner {
             spec,
             self.functor.clone(),
             self.agents.clone(),
+            self.git.clone(),
             self.events.clone(),
             cancelled,
         ));
@@ -144,14 +155,16 @@ impl Runner {
     }
 }
 
-/// One run, then its `Ended`, also after a panic. A cancelled run sends
-/// none (the core has moved on). Every path stops the tool server.
+/// One run, then its change (when tracked) and its `Ended`, also after a
+/// panic. A cancelled run sends neither (the core has moved on). Every path
+/// stops the tool server.
 async fn run_task(
     spec: RunSpec,
     functor: PathBuf,
     agents: Agents,
+    git: Option<Arc<Git>>,
     events: UnboundedSender<Event>,
-    cancel: oneshot::Receiver<()>,
+    mut cancel: oneshot::Receiver<()>,
 ) {
     let send = |event| {
         let _ = events.send(Event::Run {
@@ -160,14 +173,33 @@ async fn run_task(
             event,
         });
     };
-    let run = run(&spec, &functor, &agents, &send, cancel);
-    match futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(run)).await {
-        Ok(Some(error)) => send(RunEvent::Ended { error }),
-        Ok(None) => {}
-        Err(_) => send(RunEvent::Ended {
-            error: Some("the run panicked".to_string()),
-        }),
+    let git = git.filter(|_| spec.snapshot || spec.baseline.is_some());
+    let mut baseline = spec.baseline.clone();
+    // Taken before the agent starts, so the change is all its own work (and
+    // anyone else's edits meanwhile, which git cannot tell apart).
+    if let (Some(git), true) = (&git, spec.snapshot) {
+        tokio::select! {
+            tree = git.snapshot() => match tree {
+                Ok(tree) => {
+                    send(RunEvent::Baseline { tree: tree.clone() });
+                    baseline = Some(tree);
+                }
+                Err(e) => eprintln!("functor-app: cannot snapshot the working tree: {e}"),
+            },
+            _ = &mut cancel => return,
+        }
     }
+    let run = run(&spec, &functor, &agents, &send, cancel);
+    let error = match futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(run)).await
+    {
+        Ok(Some(error)) => error,
+        Ok(None) => return,
+        Err(_) => Some("the run panicked".to_string()),
+    };
+    if let (Some(git), Some(baseline)) = (&git, baseline) {
+        crate::changes::measure(git, spec.task, baseline, &events).await;
+    }
+    send(RunEvent::Ended { error });
 }
 
 /// The tool server, the app context, the agent: the run's error, or `None`
@@ -445,7 +477,10 @@ impl Agent for FakeAgent {
 
 /// `--replay-events`: prints `fixture`'s events on stdout, one JSON line
 /// each, after each line's `ms` (from the run's start). A `resume`d run
-/// reports that session, as an agent continuing it would.
+/// reports that session, as an agent continuing it would. A line with
+/// `"edit": {"path", "old", "new"}` instead of an event makes the edit,
+/// replacing `old`'s first match in `path` (from the working directory) as
+/// an agent's edit tool would.
 pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
     use std::io::Write;
     let text =
@@ -461,6 +496,20 @@ pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
         let mut line: serde_json::Value = serde_json::from_str(line).map_err(|e| bad(&e))?;
         let at = Duration::from_millis(line["ms"].as_u64().unwrap_or(0));
         std::thread::sleep(at.saturating_sub(start.elapsed()));
+        if let Some(edit) = line.get("edit") {
+            let field = |key: &str| {
+                edit[key]
+                    .as_str()
+                    .ok_or_else(|| bad(&format!("no edit.{key}")))
+            };
+            let (path, old, new) = (field("path")?, field("old")?, field("new")?);
+            let text = std::fs::read_to_string(path).map_err(|e| bad(&e))?;
+            if !text.contains(old) {
+                return Err(bad(&format!("{path} has no {old:?}")));
+            }
+            std::fs::write(path, text.replacen(old, new, 1)).map_err(|e| bad(&e))?;
+            continue;
+        }
         let event = &mut line["event"];
         if let (Some(session), "started") = (resume, event["type"].as_str().unwrap_or("")) {
             event["session"] = session.into();

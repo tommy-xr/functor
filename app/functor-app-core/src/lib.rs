@@ -3,6 +3,7 @@
 //! tasks. No UI, window or server; the shell in `functor-app` runs IO and
 //! feeds results in as events.
 
+pub mod changes;
 pub mod print;
 pub mod projects;
 pub mod protocol;
@@ -10,7 +11,8 @@ pub mod session;
 pub mod state;
 pub mod tasks;
 
-pub use print::{print, print_item};
+pub use changes::Change;
+pub use print::{print, print_change, print_item};
 pub use projects::discover;
 pub use session::{
     listening_url, Display, Polled, Session, SessionEvent, SessionMode, SessionStatus,

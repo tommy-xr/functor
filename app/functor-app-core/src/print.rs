@@ -1,5 +1,6 @@
 //! The `--print` text dump of the state.
 
+use crate::changes::Change;
 use crate::projects::Entries;
 use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 
@@ -15,7 +16,9 @@ use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 /// * examples/hello (hello): entry game.fun
 ///   examples/orbs (orbs): entries client=game.fun module=Client, server=game.fun module=Server
 /// tasks: 1
-///   #1 waiting_on_you examples/hello "Make the cube spin" (claude): 6 items, 2 tool calls
+///   #1 ready_for_review examples/hello "Make the cube spin" (claude): 6 items, 2 tool calls
+///     change: 1 file, +2 -1
+///       examples/hello/game.fun +2 -1
 /// ```
 pub fn print(state: &AppState) -> String {
     let active = state.active.as_deref();
@@ -57,7 +60,12 @@ pub fn print(state: &AppState) -> String {
     }
     if !state.tasks.is_empty() {
         lines.push(format!("tasks: {}", state.tasks.len()));
-        lines.extend(state.tasks.iter().map(task));
+        for t in &state.tasks {
+            lines.push(task(t));
+            if let Some(change) = t.change.as_ref().filter(|c| !c.is_empty()) {
+                lines.extend(print_change(change).lines().map(|l| format!("    {l}")));
+            }
+        }
     }
     lines.join("\n") + "\n"
 }
@@ -69,6 +77,8 @@ fn task(t: &Task) -> String {
         TaskStatus::ReadyForReview => "ready_for_review".to_string(),
         TaskStatus::Failed { summary: None } => "failed".to_string(),
         TaskStatus::Failed { summary: Some(s) } => format!("failed ({})", clip(s)),
+        TaskStatus::Kept => "kept".to_string(),
+        TaskStatus::Reverted => "reverted".to_string(),
     };
     let model = t
         .model
@@ -117,7 +127,43 @@ pub fn print_item(item: &Item) -> String {
             format!("failed: {}", summary.as_deref().unwrap_or("no summary"))
         }
         Item::Stopped => "stopped".to_string(),
+        Item::Kept => "kept: the change".to_string(),
+        Item::Reverted => "reverted: the change".to_string(),
     }
+}
+
+/// A change summary, as `functor-app task` prints it at the end:
+///
+/// ```text
+/// change: 3 files, +4 -1
+///   examples/counter/game.fun +3 -1
+///   examples/counter/old.fun -> examples/counter/new name.fun +1 -0
+///   examples/counter/icon.png (binary)
+/// ```
+pub fn print_change(change: &Change) -> String {
+    if change.is_empty() {
+        return "change: none\n".to_string();
+    }
+    let n = change.files.len() + change.more as usize;
+    let added: u32 = change.files.iter().map(|f| f.added).sum();
+    let removed: u32 = change.files.iter().map(|f| f.removed).sum();
+    let plural = if n == 1 { "" } else { "s" };
+    let mut out = format!("change: {n} file{plural}, +{added} -{removed}\n");
+    for f in &change.files {
+        let path = match &f.from {
+            Some(from) => format!("{from} -> {}", f.path),
+            None => f.path.clone(),
+        };
+        let counts = match f.binary {
+            true => "(binary)".to_string(),
+            false => format!("+{} -{}", f.added, f.removed),
+        };
+        out.push_str(&format!("  {path} {counts}\n"));
+    }
+    if change.more > 0 {
+        out.push_str(&format!("  … and {} more\n", change.more));
+    }
+    out
 }
 
 /// Longest tool input or result shown, in characters.
@@ -163,8 +209,42 @@ fn session(state: &AppState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::changes::FileChange;
     use crate::projects::{Project, Role};
     use crate::{Session, SessionMode};
+
+    #[test]
+    fn prints_a_change_with_renames_binaries_and_the_rest_counted() {
+        let file = |path: &str, added, removed| FileChange {
+            path: path.into(),
+            from: None,
+            added,
+            removed,
+            binary: false,
+            large: false,
+        };
+        let change = Change {
+            files: vec![
+                file("a/game.fun", 3, 1),
+                FileChange {
+                    from: Some("a/old.fun".into()),
+                    ..file("a/new name.fun", 1, 0)
+                },
+                FileChange {
+                    binary: true,
+                    ..file("a/icon.png", 0, 0)
+                },
+            ],
+            more: 2,
+            tree: "t".into(),
+        };
+        assert_eq!(
+            print_change(&change),
+            "change: 5 files, +4 -1\n  a/game.fun +3 -1\n  a/old.fun -> a/new name.fun +1 -0\n  \
+             a/icon.png (binary)\n  … and 2 more\n"
+        );
+        assert_eq!(print_change(&Change::default()), "change: none\n");
+    }
 
     #[test]
     fn prints_projects_with_the_active_one_marked() {
@@ -209,6 +289,7 @@ mod tests {
             active: Some("examples/hello".into()),
             files: vec![],
             git: None,
+            tracks_changes: false,
             session: Some(Session {
                 id: 1,
                 pid: Some(4242),
@@ -248,6 +329,7 @@ projects: 3
             active: None,
             files: vec![],
             git: None,
+            tracks_changes: false,
             session: None,
             session_mode: SessionMode::Window,
             no_gpu: false,
@@ -276,6 +358,7 @@ projects: 3
                 active: None,
                 files: vec![],
                 git: None,
+                tracks_changes: false,
                 session: Some(Session { id: 1, pid, status }),
                 session_mode: SessionMode::Hidden,
                 no_gpu: false,
@@ -344,6 +427,7 @@ projects: 3
             active: None,
             files: vec![],
             git: None,
+            tracks_changes: false,
             session: None,
             session_mode: SessionMode::Hidden,
             no_gpu: false,
@@ -358,6 +442,19 @@ projects: 3
                 model: Some("claude-model".into()),
                 session_id: None,
                 run: None,
+                baseline: Some("tree".into()),
+                change: Some(Change::from_files(
+                    vec![FileChange {
+                        path: "examples/counter/game.fun".into(),
+                        from: None,
+                        added: 2,
+                        removed: 1,
+                        binary: false,
+                        large: false,
+                    }],
+                    "t".into(),
+                )),
+                reverting: false,
                 transcript: transcript.clone(),
             }],
             harnesses: vec![],
@@ -368,7 +465,8 @@ projects: 3
         assert!(
             text.ends_with(
                 "tasks: 1\n  #3 failed (usage limit) examples/counter \"What is the count?\" \
-                 (claude claude-model): 5 items, 1 tool calls\n"
+                 (claude claude-model): 5 items, 1 tool calls\n    \
+                 change: 1 file, +2 -1\n      examples/counter/game.fun +2 -1\n"
             ),
             "{text}"
         );
@@ -383,6 +481,8 @@ projects: 3
                 "failed: usage limit",
             ]
         );
+        assert_eq!(print_item(&Item::Kept), "kept: the change");
+        assert_eq!(print_item(&Item::Reverted), "reverted: the change");
         let long = "x".repeat(300);
         assert_eq!(clip(&long).chars().count(), CLIP_CHARS + 1);
     }

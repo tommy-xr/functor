@@ -9,32 +9,30 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { AppState, Harness, Item, Task, TaskStatus, Usage } from "./generated/protocol";
+import type { AppState, Change, Harness, Item, Task, Usage } from "./generated/protocol";
 import {
   atBottom,
   clip,
   connectionLines,
   initialTask,
   outcome,
+  toolFile,
   phraseText,
+  STATUS_WORDS,
   stepPhrase,
   toolKind,
   usageBefore,
   usageText,
   type Snapshot,
 } from "./chat-model";
+import { Counts, ReviewActions, TaskBadge } from "./DiffView";
+import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
 import type { Accepted, Conn, Notice, Send } from "./socket";
 import { Icon } from "./Icon";
 
 export type CanvasTab = "game" | "code" | "diff";
 
-const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
-  in_progress: "In progress",
-  waiting_on_you: "Waiting on you",
-  ready_for_review: "Ready for review",
-  failed: "Failed",
-};
 
 const TAB_WORDS: Record<CanvasTab, string> = { game: "Game tab", code: "Code tab", diff: "Diff tab" };
 const RECENT = 8;
@@ -51,21 +49,38 @@ type Props = {
   notice: Notice | null;
   tab: CanvasTab;
   onTab: (tab: CanvasTab) => void;
+  /** The current task; `null` is the empty state. */
+  selected: number | null;
+  onSelect: (task: number | null) => void;
+  /** Opens the Diff tab at `path` (repo-relative), or at its top. */
+  onViewDiff: (path: string | null) => void;
 };
 
 /** A line the dock shows for a connection or session change, at the conversation's length when it happened. */
 type Line = { id: number; project: string | null; task: number | null; at: number; text: string };
 
 /** The chat dock: one task's conversation (the current task) and the composer. */
-export function ChatDock({ state, conn, send, transcripts, fetchTranscript, accepted, notice, tab, onTab }: Props) {
+export function ChatDock({
+  state,
+  conn,
+  send,
+  transcripts,
+  fetchTranscript,
+  accepted,
+  notice,
+  tab,
+  onTab,
+  selected,
+  onSelect: setSelected,
+  onViewDiff,
+}: Props) {
   const online = conn === "open" && state !== null;
   const active = state?.active ?? null;
   const tasks = useMemo(
     () => (state?.tasks ?? []).filter((t) => t.project === active).sort((a, b) => b.id - a.id),
     [state?.tasks, active],
   );
-  // `null` is the empty state. Chosen afresh on load and on a project switch.
-  const [selected, setSelected] = useState<number | null>(null);
+  // Chosen afresh on load and on a project switch.
   const loaded = state !== null;
   useEffect(() => {
     if (state) setSelected(initialTask(state.tasks, active));
@@ -133,6 +148,16 @@ export function ChatDock({ state, conn, send, transcripts, fetchTranscript, acce
         items={items}
         lines={lines.filter((l) => l.project === active && l.task === (current?.id ?? null))}
         onTab={onTab}
+        onViewDiff={onViewDiff}
+        repoRoot={state?.repo_root ?? ""}
+        project={current?.project ?? ""}
+        review={
+          current &&
+          current.run === null &&
+          hasChange(current) && (
+            <ReviewCard task={current} send={send} online={online} notice={notice} onViewDiff={onViewDiff} />
+          )
+        }
       />
       <div className="composer-wrap">
         {shownNotice && (
@@ -271,11 +296,28 @@ function ChatHead({
   );
 }
 
-function TaskBadge({ status }: { status: TaskStatus }) {
+/** The end of a conversation whose change waits: its size, Keep / Revert and View diff. */
+function ReviewCard({
+  task,
+  send,
+  online,
+  notice,
+  onViewDiff,
+}: {
+  task: Task & { change: Change };
+  send: Send;
+  online: boolean;
+  notice: Notice | null;
+  onViewDiff: (path: string | null) => void;
+}) {
+  const sum = totals(task.change);
   return (
-    <span className={`badge badge-${status.kind}`} data-testid="task-status">
-      {STATUS_WORDS[status.kind]}
-    </span>
+    <div className="chat-card review-card" data-testid="review-card">
+      <p className="review-card-title">
+        Review change · {plural(sum.files, "file")} <Counts added={sum.added} removed={sum.removed} />
+      </p>
+      <ReviewActions task={task} send={send} online={online} notice={notice} onViewDiff={() => onViewDiff(null)} />
+    </div>
   );
 }
 
@@ -285,18 +327,28 @@ function Conversation({
   items,
   lines,
   onTab,
+  onViewDiff,
+  repoRoot,
+  project,
+  review,
 }: {
   task: Task | null;
   items: Item[] | undefined;
   lines: Line[];
   onTab: (tab: CanvasTab) => void;
+  onViewDiff: (path: string | null) => void;
+  repoRoot: string;
+  /** The task's project, which relative tool paths are in. */
+  project: string;
+  /** Shown after the conversation: the change waiting for review. */
+  review: ReactNode;
 }) {
   const log = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
   useLayoutEffect(() => {
     const el = log.current;
     if (el && follow) el.scrollTop = el.scrollHeight;
-  }, [items, lines, follow]);
+  }, [items, lines, follow, !!review]);
   const runFrom = task?.run?.id ?? Infinity;
   // `Infinity` is every line past the transcript's end.
   const linesAt = (at: number) =>
@@ -313,7 +365,16 @@ function Conversation({
   } else {
     body = (items ?? []).map((item, i) => (
       <Fragment key={i}>
-        <Row item={item} usage={usageBefore(items!, i)} pending={i > runFrom} onTab={onTab} />
+        <Row
+          item={item}
+          usage={usageBefore(items!, i)}
+          pending={i > runFrom}
+          onTab={onTab}
+          onViewDiff={onViewDiff}
+          change={task?.change ?? null}
+          repoRoot={repoRoot}
+          project={project}
+        />
         {linesAt(i + 1)}
       </Fragment>
     ));
@@ -336,6 +397,7 @@ function Conversation({
         {body}
         {/* Lines from before the transcript arrived, or past its end. */}
         {lines.some((l) => l.at > n) && linesAt(Infinity)}
+        {items && review}
       </div>
       {!follow && (
         <button
@@ -360,11 +422,20 @@ const Row = memo(function Row({
   usage,
   pending,
   onTab,
+  onViewDiff,
+  change,
+  repoRoot,
+  project,
 }: {
   item: Item;
   usage: Usage | null;
   pending: boolean;
   onTab: (tab: CanvasTab) => void;
+  onViewDiff: (path: string | null) => void;
+  change: Change | null;
+  repoRoot: string;
+  /** The task's project, which relative tool paths are in. */
+  project: string;
 }) {
   switch (item.kind) {
     case "user":
@@ -372,11 +443,23 @@ const Row = memo(function Row({
     case "agent":
       return <AgentText text={item.text} partial={item.partial} />;
     case "tool":
-      return <ToolCall item={item} pending={pending && item.result === null} onTab={onTab} />;
+      return (
+        <ToolCall
+          item={item}
+          pending={pending && item.result === null}
+          onTab={onTab}
+          onViewDiff={onViewDiff}
+          change={change}
+          repoRoot={repoRoot}
+          project={project}
+        />
+      );
     case "usage":
       return null;
     case "finished":
-    case "stopped": {
+    case "stopped":
+    case "kept":
+    case "reverted": {
       const { tone, label } = outcome(item)!;
       return (
         <div className="outcome">
@@ -402,9 +485,29 @@ function AgentText({ text, partial }: { text: string; partial: boolean }) {
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 
-function ToolCall({ item, pending, onTab }: { item: ToolItem; pending: boolean; onTab: (tab: CanvasTab) => void }) {
+function ToolCall({
+  item,
+  pending,
+  onTab,
+  onViewDiff,
+  change,
+  repoRoot,
+  project,
+}: {
+  item: ToolItem;
+  pending: boolean;
+  onTab: (tab: CanvasTab) => void;
+  onViewDiff: (path: string | null) => void;
+  change: Change | null;
+  repoRoot: string;
+  /** The task's project, which relative tool paths are in. */
+  project: string;
+}) {
   const phrase = stepPhrase(item.name, item.input);
   const kind = toolKind(item.name);
+  // The change's counts for the file this call edited, while that file is in it.
+  const path = toolFile(item.input);
+  const file = kind === "change" && path ? fileFor(change, repoRoot, project, path) : null;
   const [open, setOpen] = useState(false);
   const line = (
     <button
@@ -419,6 +522,7 @@ function ToolCall({ item, pending, onTab }: { item: ToolItem; pending: boolean; 
         {phrase.text}
         {phrase.code && <code>{phrase.code}</code>}
         {pending && <span className="step-busy">…</span>}
+        {file && !file.binary && <Counts added={file.added} removed={file.removed} />}
       </span>
       <Icon name={open ? "chevron-up" : "chevron"} />
     </button>
@@ -432,14 +536,18 @@ function ToolCall({ item, pending, onTab }: { item: ToolItem; pending: boolean; 
       </div>
     );
   }
-  const change = kind === "change";
+  const isChange = kind === "change";
   return (
-    <div className="chat-card" data-testid={change ? "change-card" : "capture-card"} aria-busy={pending}>
+    <div className="chat-card" data-testid={isChange ? "change-card" : "capture-card"} aria-busy={pending}>
       {line}
-      {!change && <p className="chat-card-note">The capture went to the agent; the canvas shows the game live.</p>}
+      {!isChange && <p className="chat-card-note">The capture went to the agent; the canvas shows the game live.</p>}
       <div className="chat-card-actions">
-        <button type="button" className="button button-small" onClick={() => onTab(change ? "diff" : "game")}>
-          {change ? "View diff" : "Open in canvas"}
+        <button
+          type="button"
+          className="button button-small"
+          onClick={() => (isChange ? onViewDiff(file?.path ?? null) : onTab("game"))}
+        >
+          {isChange ? "View diff" : "Open in canvas"}
         </button>
       </div>
       {details}

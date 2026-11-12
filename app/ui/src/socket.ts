@@ -10,6 +10,7 @@ export type Conn = "connecting" | "open" | "reconnecting";
 /** A user message the core accepted (its item arrived); `seq` tells repeats apart. */
 export type Accepted = { task: number; text: string; seq: number };
 export type Notice = { reason: string; seq: number };
+export type DiffMsg = Extract<ServerMsg, { type: "diff" }>;
 
 const MIN_DELAY = 250;
 const MAX_DELAY = 5000;
@@ -26,6 +27,8 @@ export function useAppSocket() {
   const [transcripts, setTranscripts] = useState<ReadonlyMap<number, Item[]>>(new Map());
   const [accepted, setAccepted] = useState<Accepted | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // The last diff of each task asked for (`fetchDiff`).
+  const [diffs, setDiffs] = useState<ReadonlyMap<number, DiffMsg>>(new Map());
   const socket = useRef<WebSocket | null>(null);
   // Asked for on this connection.
   const requested = useRef(new Set<number>());
@@ -69,6 +72,9 @@ export function useAppSocket() {
             });
             break;
           }
+          case "diff":
+            setDiffs((all) => new Map(all).set(msg.task, msg));
+            break;
           case "rejected":
             setNotice({ reason: msg.reason, seq: ++seq });
             break;
@@ -99,5 +105,6 @@ export function useAppSocket() {
     if (requested.current.has(task) || !send({ type: "get_transcript", task })) return;
     requested.current.add(task);
   };
-  return { state, conn, send, transcripts, fetchTranscript, accepted, notice };
+  const fetchDiff = (task: number) => send({ type: "get_diff", task });
+  return { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff };
 }

@@ -1,7 +1,7 @@
 //! Runs the core's commands other than replies: one `functor run native`
 //! child at a time, its output read for the debug server's address, `/state`
-//! polled, input posted; agent runs (`agent::Runner`); saving tasks; and
-//! project file listings.
+//! polled, input posted; agent runs (`agent::Runner`); saving tasks;
+//! project file listings; and tasks' changes (`changes::Git`).
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -11,16 +11,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use functor_app_core::projects::read_project_files;
-use functor_app_core::protocol::GameInput;
+use functor_app_core::protocol::{GameInput, ServerMsg};
 use functor_app_core::{listening_url, Command, Display, Event, Polled, SessionEvent};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Child;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self, Sender, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::agent::{Agents, Runner};
+use crate::changes::Git;
 
 /// Each `/state` serializes the whole model on the game's loop, so a UI that
 /// keeps polling should weigh this against the model's size.
@@ -47,6 +48,8 @@ pub struct Driver {
     runs: Runner,
     /// Where tasks are saved (`store::home`).
     home: PathBuf,
+    /// The repo's git, when changes are tracked.
+    git: Option<Arc<Git>>,
 }
 
 /// The current child's supervisor. Dropping it kills the child.
@@ -64,14 +67,16 @@ impl Driver {
         functor: PathBuf,
         agents: Agents,
         home: PathBuf,
+        git: Option<Arc<Git>>,
         events: UnboundedSender<Event>,
     ) -> Self {
         Self {
-            runs: Runner::new(functor.clone(), agents, events.clone()),
+            runs: Runner::new(functor.clone(), agents, git.clone(), events.clone()),
             functor,
             events,
             live: None,
             home,
+            git,
         }
     }
 
@@ -117,9 +122,71 @@ impl Driver {
                     eprintln!("functor-app: cannot save the agent choice: {e}");
                 }
             }
+            // Without a client to answer, only the summary is refreshed.
+            Command::Diff { task, baseline, .. } => self.diff(task, baseline, None),
+            Command::Revert {
+                task,
+                baseline,
+                paths,
+            } => self.revert(task, baseline, paths),
             // Clients are the server's (`server::run`); `--print` has none.
             Command::Reply(_) | Command::Broadcast(_) => {}
         }
+    }
+
+    /// Measures `task`'s change since `baseline` in the background; with
+    /// `reply`, also sends its full diff there as `ServerMsg::Diff`.
+    pub fn diff(&self, task: u64, baseline: String, reply: Option<Sender<String>>) {
+        let Some(git) = self.git.clone() else {
+            return;
+        };
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let Some(reply) = reply else {
+                return crate::changes::measure(&git, task, baseline, &events).await;
+            };
+            let msg = match git.diff(&baseline).await {
+                Ok((change, files, more)) => {
+                    let tree = Some(change.tree.clone());
+                    let _ = events.send(Event::Change {
+                        task,
+                        baseline,
+                        change,
+                    });
+                    ServerMsg::Diff {
+                        task,
+                        tree,
+                        files,
+                        more,
+                        error: None,
+                    }
+                }
+                Err(error) => ServerMsg::Diff {
+                    task,
+                    tree: None,
+                    files: vec![],
+                    more: 0,
+                    error: Some(error),
+                },
+            };
+            let _ = reply.try_send(serde_json::to_string(&msg).expect("ServerMsg serializes"));
+        });
+    }
+
+    fn revert(&self, task: u64, baseline: String, paths: Vec<String>) {
+        let git = self.git.clone();
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let result = match git {
+                Some(git) => git.revert(&baseline, &paths).await,
+                None => Err("changes are tracked only in a git repository".to_string()),
+            };
+            let _ = events.send(Event::Reverted {
+                task,
+                baseline,
+                result,
+            });
+        });
     }
 
     /// The current child's last output lines, oldest first.
