@@ -169,7 +169,10 @@ async function tasksView(browser, width, height) {
     await expect(section("Usage").locator("tfoot")).toHaveText("1 turn4.1k52");
     await expect(taskPage.getByRole("region", { name: "Walkthrough" })).toHaveCount(0);
     await taskPage.evaluate((el) => el.scrollTo(0, 0));
+    // Narrow, the canvas is below the pane: the still shows it.
+    await page.locator(".canvas").evaluate((el) => el.scrollIntoView());
     await shot(page, `task-page-${width}`);
+    await page.evaluate(() => window.scrollTo(0, 0));
     await step(page, width);
 
     // Open changes puts the Changes tab beside the page.
