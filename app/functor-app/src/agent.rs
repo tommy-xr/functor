@@ -315,14 +315,21 @@ struct ToolServer {
     base: String,
 }
 
+/// `functor`'s arguments for a tool server attached to `attach`. Without
+/// `--no-unsafe-code` the agent could run any Node.js outside its folder
+/// sandbox.
+fn tool_server_args(attach: Option<&str>) -> Vec<&str> {
+    let mut args = vec!["mcp", "--http", "0", "--no-unsafe-code"];
+    if let Some(url) = attach {
+        args.extend(["--attach", url]);
+    }
+    args
+}
+
 impl ToolServer {
     async fn start(functor: &Path, attach: Option<&str>, token: &str) -> Result<Self, String> {
-        let mut command = Command::new(functor);
-        command.args(["mcp", "--http", "0"]);
-        if let Some(url) = attach {
-            command.args(["--attach", url]);
-        }
-        let mut child = command
+        let mut child = Command::new(functor)
+            .args(tool_server_args(attach))
             .env(TOKEN_ENV, token)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -542,6 +549,20 @@ mod tests {
         assert_eq!(p.folders, [root.to_string_lossy()]);
         assert!(p.mcp.is_empty() && p.commands.is_empty(), "{p:?}");
         assert_eq!(mis_agent::check(&p), Ok(()));
+    }
+
+    #[test]
+    fn the_tool_server_never_offers_unsandboxed_code() {
+        assert_eq!(
+            tool_server_args(None),
+            ["mcp", "--http", "0", "--no-unsafe-code"]
+        );
+        let attached = tool_server_args(Some("http://127.0.0.1:9"));
+        assert!(attached.contains(&"--no-unsafe-code"), "{attached:?}");
+        assert!(
+            attached.ends_with(&["--attach", "http://127.0.0.1:9"]),
+            "{attached:?}"
+        );
     }
 
     #[test]

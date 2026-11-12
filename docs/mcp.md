@@ -48,10 +48,16 @@ startup, exactly as `connect_game` would, so the game tools work immediately:
 Functor debug runtime is a startup error naming it. Attached sessions are never
 killed on shutdown.
 
+`--no-unsafe-code` leaves out [`run_game_code_unsafe`](#unsafe-sdk-code-in-a-node-child):
+it is not listed, and a call to it is refused (`tool not found`). A host that
+holds its agent to a sandbox passes it, since that tool runs arbitrary Node.js;
+the desktop app always does.
+
 ## Serving over HTTP
 
-`functor mcp --http <port>` serves the **same tools** over MCP streamable HTTP,
-for a host that runs the server as a child and hands its URL to an agent:
+`functor mcp --http <port>` serves the same tools over MCP streamable HTTP,
+plus [`app_context`](#app_context), for a host that runs the server as a child
+and hands its URL to an agent:
 
 ```sh
 FUNCTOR_MCP_TOKEN=$(openssl rand -hex 32) functor mcp --http 0 --attach http://127.0.0.1:53498
@@ -83,8 +89,8 @@ An embedding app tells the agent what its user is looking at by `PUT`ting a
 JSON **object** to `/app-context` on the same server (same token; at most
 64 KiB, else `413`; a non-object is `400`). Each `PUT` replaces the last. The
 `app_context` tool returns `{"context": <that object>}`, or
-`{"context": null, "note": "none set: …"}` before any `PUT` and always over
-stdio. The app owns the keys; for example:
+`{"context": null, "note": "none set: …"}` before any `PUT`. Over stdio, where
+nothing can set it, the tool does not exist. The app owns the keys; for example:
 
 ```sh
 curl -X PUT -H "Authorization: Bearer $FUNCTOR_MCP_TOKEN" \
@@ -153,7 +159,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | --- | --- |
 | `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `entry` names the ROLE, for a project whose `functor.json` declares `entries` (`"server"`, `"client"`; default `client`, or the sole entry) — one session per role. `mode` is `hidden` (default) or `headless`. The response carries `protocol_version`; pass `discovery: true` for the full endpoint index. |
 | `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
-| `app_context` | What the embedding app's user is looking at (view, file, session), as the app last supplied it — or `null` when none is set. See [`app_context`](#app_context). |
+| `app_context` | HTTP only. What the embedding app's user is looking at (view, file, session), as the app last supplied it — or `null` when none is set. See [`app_context`](#app_context). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
 | `stop_game` | Kill a launched game and close its exact-URL aliases/pending connects; merely forget one attached id. |
 
@@ -181,7 +187,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame, as `get_state` numbers `frame` (it pins the clock first, as `/rewind` requires). |
 | `reload_source` / `reload_project` | Hot-reload the entry, or every sibling module, with the live model preserved. |
-| `run_game_code_unsafe` | Run a JavaScript function against an injected game SDK in a local Node child, returning its JSON value, SDK-call trace, logs, captures, and final state. This is deliberately RCE-equivalent; see below. |
+| `run_game_code_unsafe` | Run a JavaScript function against an injected game SDK in a local Node child, returning its JSON value, SDK-call trace, logs, captures, and final state. This is deliberately RCE-equivalent; see below. Absent under `--no-unsafe-code`. |
 
 **Authoring.**
 

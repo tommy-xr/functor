@@ -1,5 +1,5 @@
 //! `functor mcp --http`: the token gate, tool parity with stdio, `app_context`,
-//! `--attach`, and shutdown — against the real binary, no GPU (docs/mcp.md).
+//! `--no-unsafe-code`, `--attach`, and shutdown — against the real binary, no GPU (docs/mcp.md).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -136,13 +136,17 @@ impl HttpMcp {
     }
 
     fn request(&mut self, method: &str, params: Value) -> Value {
+        self.response(method, params)["result"].clone()
+    }
+
+    /// The whole JSON-RPC response (`result` or `error`).
+    fn response(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
         let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let (status, _, body) = post_mcp(&self.url, Some(TOKEN), Some(&self.session), &message);
         assert_eq!(status, 200, "{body}");
-        let response = response_with_id(&body, id);
-        response["result"].clone()
+        response_with_id(&body, id)
     }
 
     /// A tool call's text, asserting it succeeded.
@@ -167,6 +171,13 @@ fn tool_names(list: &Value) -> Vec<String> {
 /// Run `functor mcp <extra>` over stdio: initialize, then each request in
 /// order; returns their results. Closing stdin ends the server.
 fn stdio_requests(extra: &[&str], requests: &[(&str, Value)]) -> Vec<Value> {
+    let responses = stdio_responses(extra, requests);
+    responses.into_iter().map(|response| response["result"].clone()).collect()
+}
+
+/// As [`stdio_requests`], but the whole responses (`result` or `error`), in
+/// request order whatever order they arrived in.
+fn stdio_responses(extra: &[&str], requests: &[(&str, Value)]) -> Vec<Value> {
     let mut child = functor()
         .arg("mcp")
         .args(extra)
@@ -192,11 +203,12 @@ fn stdio_requests(extra: &[&str], requests: &[(&str, Value)]) -> Vec<Value> {
         assert!(stdout.read_line(&mut line).unwrap() > 0, "stdio server closed early");
         let message: Value = serde_json::from_str(&line).unwrap();
         if message["id"].as_u64().is_some_and(|id| id > 0) {
-            results.push(message["result"].clone());
+            results.push(message);
         }
     }
     drop(stdin);
     assert!(wait_exit(&mut child, Duration::from_secs(10)).is_some());
+    results.sort_by_key(|message| message["id"].as_u64());
     results
 }
 
@@ -303,12 +315,16 @@ fn requests_without_the_exact_token_get_401() {
 }
 
 #[test]
-fn http_lists_the_same_tools_as_stdio_and_none_reserved() {
+fn http_lists_the_stdio_tools_plus_app_context_and_none_reserved() {
     let server = HttpServer::start(&[]);
     let http = tool_names(&HttpMcp::connect(&server.url).request("tools/list", json!({})));
     let stdio = tool_names(&stdio_requests(&[], &[("tools/list", json!({}))])[0]);
-    assert_eq!(http, stdio);
-    assert!(http.contains(&"app_context".to_string()) && http.contains(&"get_state".to_string()));
+    let mut expected = stdio.clone();
+    expected.push("app_context".to_string());
+    expected.sort();
+    assert_eq!(http, expected);
+    assert!(http.contains(&"get_state".to_string()));
+    assert!(http.contains(&"run_game_code_unsafe".to_string()));
     // An embedding agent runner reserves these for its own tools.
     for reserved in ["report_status", "report_evidence", "report_result", "approve", "merge_pr"] {
         assert!(!http.contains(&reserved.to_string()), "{reserved}");
@@ -342,10 +358,29 @@ fn app_context_returns_what_was_last_put() {
     let got: Value = serde_json::from_str(&mcp.call("app_context", json!({}))).unwrap();
     assert_eq!(got["context"], context, "the oversize body did not replace it");
 
-    // Over stdio the tool exists and reports none set.
-    let stdio = &stdio_requests(&[], &[("tools/call", json!({"name": "app_context", "arguments": {}}))])[0];
-    let text: Value = serde_json::from_str(stdio["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(text["context"], Value::Null);
+    // Over stdio no app can set one, so the tool is not there.
+    let call = json!({"name": "app_context", "arguments": {}});
+    let stdio = &stdio_responses(&[], &[("tools/call", call)])[0];
+    assert!(stdio["error"].is_object(), "{stdio}");
+}
+
+/// `--no-unsafe-code` (the desktop app's tool server): the arbitrary-code tool
+/// is unlisted and refused on both transports; the rest stay.
+#[test]
+fn no_unsafe_code_hides_and_refuses_the_code_runner() {
+    const UNSAFE: &str = "run_game_code_unsafe";
+    let call = json!({"name": UNSAFE, "arguments": {"session": "s1", "code": "async () => 1"}});
+    let server = HttpServer::start(&["--no-unsafe-code"]);
+    let mut mcp = HttpMcp::connect(&server.url);
+    let http = tool_names(&mcp.request("tools/list", json!({})));
+    assert!(!http.contains(&UNSAFE.to_string()) && http.contains(&"get_state".to_string()), "{http:?}");
+    let refused = mcp.response("tools/call", call.clone());
+    assert!(refused["error"]["message"].as_str().unwrap().contains("not found"), "{refused}");
+
+    let stdio = stdio_responses(&["--no-unsafe-code"], &[("tools/list", json!({})), ("tools/call", call)]);
+    let names = tool_names(&stdio[0]["result"]);
+    assert!(!names.contains(&UNSAFE.to_string()) && names.contains(&"get_state".to_string()), "{names:?}");
+    assert!(stdio[1]["error"]["message"].as_str().unwrap().contains("not found"), "{}", stdio[1]);
 }
 
 #[test]
