@@ -563,7 +563,13 @@ function WindowNote({ ctx }: { ctx: Ctx }) {
   const live = isLive(ctx.state?.session);
   return (
     <div className="game-note" data-testid="game-note">
-      <p>{live ? "The game is running in its own window." : "The game runs in its own window."}</p>
+      <p>
+        {ctx.state?.no_gpu
+          ? "Own window: sessions here run without a GPU, so there is no window to show."
+          : live
+            ? "The game is running in its own window."
+            : "The game runs in its own window."}
+      </p>
       {!live && (
         <button
           type="button"

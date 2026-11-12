@@ -233,7 +233,7 @@ async function gameViewNoGpu(browser) {
       expect(placed()).toBe(back ? "pane" : "window");
       await expect(note).toHaveCount(back ? 0 : 1);
       if (!back) {
-        await expect(note).toContainText("The game is running in its own window.");
+        await expect(note).toContainText("Own window: sessions here run without a GPU");
         await expect(page.getByRole("tab", { name: "Game", exact: true })).toHaveCount(0);
         await expect(view).toHaveCount(0);
       }
