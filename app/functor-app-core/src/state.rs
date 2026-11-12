@@ -186,6 +186,9 @@ pub struct RunSpec {
     /// Snapshot the working tree before the agent starts, as the task's
     /// baseline: changes are tracked and the task has none yet.
     pub snapshot: bool,
+    /// The task's baseline, when tracked: its change is measured against
+    /// it as the run ends.
+    pub baseline: Option<String>,
     /// The game session's debug server, when it runs this task's project.
     pub attach: Option<String>,
     pub context: AppContext,
@@ -566,6 +569,7 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
         message,
         resume: task.session_id.clone(),
         snapshot: tracks && task.baseline.is_none(),
+        baseline: task.baseline.clone().filter(|_| tracks),
         attach: attach.clone(),
         context: AppContext {
             project: task.project.clone(),
@@ -1504,6 +1508,7 @@ mod tests {
                     message: "  What is the count?\nAnd why?".to_string(),
                     resume: None,
                     snapshot: false,
+                    baseline: None,
                     attach: None,
                     context: AppContext {
                         project: "examples/a".to_string(),

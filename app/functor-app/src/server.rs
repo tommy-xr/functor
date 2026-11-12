@@ -174,6 +174,12 @@ async fn run(
                         }
                     }
                     Command::Broadcast(msg) => queue(&mut outgoing, msg),
+                    // The diff answers the asking client, not everyone.
+                    Command::Diff {
+                        task,
+                        baseline,
+                        reply: true,
+                    } => driver.diff(task, baseline, from.and_then(|id| clients.get(&id).cloned())),
                     command => driver.run(command).await,
                 }
             }

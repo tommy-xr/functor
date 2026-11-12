@@ -267,19 +267,8 @@ pub fn nul_list(out: &str) -> Vec<String> {
 pub enum RevertOp {
     /// Remove a file the task created (or that took a removed path's place).
     Delete { path: String },
-    /// Write the baseline's blob `oid` at `path`.
-    Write {
-        path: String,
-        oid: String,
-        mode: FileMode,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileMode {
-    Regular,
-    Executable,
-    Symlink,
+    /// Check out the baseline's blob `oid` (a file or symlink) at `path`.
+    Write { path: String, oid: String },
 }
 
 /// The steps that put each of `changed` (repo-relative paths that differ
@@ -307,16 +296,12 @@ pub fn revert_plan(listing: &str, changed: &[String]) -> Result<Vec<RevertOp>, S
         match entries.get(path.as_str()) {
             None => deletes.push(RevertOp::Delete { path: path.clone() }),
             Some(&(mode, oid)) => {
-                let mode = match mode {
-                    "100644" => FileMode::Regular,
-                    "100755" => FileMode::Executable,
-                    "120000" => FileMode::Symlink,
-                    _ => return Err(format!("cannot revert {path}: it is a submodule")),
-                };
+                if !matches!(mode, "100644" | "100755" | "120000") {
+                    return Err(format!("cannot revert {path}: it is a submodule"));
+                }
                 writes.push(RevertOp::Write {
                     path: path.clone(),
                     oid: oid.to_string(),
-                    mode,
                 });
             }
         }
@@ -565,10 +550,9 @@ index e8823e1..10adcaf 100644
         let changed: Vec<String> = ["created.txt", "run me.sh", "link", "dir/old.fun"]
             .map(String::from)
             .to_vec();
-        let write = |path: &str, oid: &str, mode| RevertOp::Write {
+        let write = |path: &str, oid: &str| RevertOp::Write {
             path: path.to_string(),
             oid: oid.to_string(),
-            mode,
         };
         assert_eq!(
             revert_plan(listing, &changed).unwrap(),
@@ -576,9 +560,9 @@ index e8823e1..10adcaf 100644
                 RevertOp::Delete {
                     path: "created.txt".to_string()
                 },
-                write("run me.sh", "bbbb", FileMode::Executable),
-                write("link", "cccc", FileMode::Symlink),
-                write("dir/old.fun", "eeee", FileMode::Regular),
+                write("run me.sh", "bbbb"),
+                write("link", "cccc"),
+                write("dir/old.fun", "eeee"),
             ]
         );
         assert_eq!(

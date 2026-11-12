@@ -33,7 +33,7 @@ fn harness_file(home: &Path, dir: &Path) -> PathBuf {
 
 /// A directory name for `dir`: its last component, readable, then a hash
 /// of the whole path, so `a/b` and `a-b` differ: `counter-1c9a…`.
-fn key(dir: &Path) -> String {
+pub(crate) fn key(dir: &Path) -> String {
     let name: String = dir
         .file_name()
         .map(|n| n.to_string_lossy())
@@ -181,6 +181,9 @@ mod tests {
             model: None,
             session_id: Some("s".into()),
             run: None,
+            baseline: None,
+            change: None,
+            reverting: false,
             transcript: vec![Item::User { text: "hi".into() }],
         };
         let dir = root.join("a");

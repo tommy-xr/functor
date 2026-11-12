@@ -1,6 +1,7 @@
 //! `functor-app`: the desktop app's shell around `functor-app-core`.
 
 mod agent;
+mod changes;
 mod server;
 mod session;
 mod store;
@@ -9,12 +10,14 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use functor_app_core::protocol::{ClientMsg, ServerMsg};
 use functor_app_core::{
-    print, print_item, update, AppState, Command, Event, Harness, Item, SessionStatus,
+    print, print_change, print_item, update, AppState, Command, Event, Harness, Item,
+    SessionStatus,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
@@ -138,8 +141,10 @@ async fn main() -> std::io::Result<ExitCode> {
     };
     state.harnesses = agents.available();
     state.harness_choice = store::load_harnesses(&home, &state);
+    let git = changes::Git::open(Path::new(&state.repo_root), &home).map(Arc::new);
+    state.tracks_changes = git.is_some();
     let (tx, events) = mpsc::unbounded_channel();
-    let driver = Driver::new(functor, agents, home, tx);
+    let driver = Driver::new(functor, agents, home, git, tx);
     if args.print {
         return print_session(state, driver, events).await;
     }
@@ -317,6 +322,12 @@ async fn run_task(
     let items = transcript(&state);
     for item in &items[if args.follow { printed } else { 0 }..] {
         say(item);
+    }
+    if state.tracks_changes {
+        let task = state.tasks.iter().find(|t| t.id == id).expect("the task");
+        let change = task.change.clone().unwrap_or_default();
+        use std::io::Write;
+        let _ = write!(std::io::stdout(), "{}", print_change(&change));
     }
     Ok(match (signal, items.last()) {
         (Some(signal), _) => ExitCode::from(128 + signal),
