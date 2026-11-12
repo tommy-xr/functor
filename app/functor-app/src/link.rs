@@ -47,10 +47,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use crate::server::{now_ms, wall_ms};
 use crate::store::{self, StoredPairing};
 
-/// The DNS-SD service type.
-pub const SERVICE: &str = "_functor-link._tcp.local.";
-/// The one path the listener answers.
-pub const PATH: &str = "/link";
+pub use functor_device_link::{PATH, SERVICE};
 
 /// Connections not yet authenticated or pairing, at once: all, and from
 /// one address (an IPv6 /64 counts as one).

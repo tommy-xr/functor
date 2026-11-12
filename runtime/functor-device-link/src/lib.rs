@@ -27,6 +27,8 @@
 //! with an implicit counter, so a tampered, replayed, reordered or dropped
 //! message fails to decrypt and ends the connection.
 
+#[cfg(feature = "client")]
+pub mod client;
 pub mod desktop;
 pub mod device;
 pub mod wire;
@@ -37,6 +39,11 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 pub use crypto::code;
+
+/// The DNS-SD service type the desktop advertises its link under.
+pub const SERVICE: &str = "_functor-link._tcp.local.";
+/// The one path the desktop's link listener answers.
+pub const PATH: &str = "/link";
 
 /// The link protocol's version, in every hello. Peers of other versions are
 /// refused with [`wire::Reject::Version`]; neither side guesses.
