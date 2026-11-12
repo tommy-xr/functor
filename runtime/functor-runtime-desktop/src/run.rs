@@ -954,6 +954,15 @@ fn parse_script_dt(s: &str) -> Result<f32, String> {
     Ok(v)
 }
 
+/// The rate a `hidden` window paces to, unless `scripted` (`--fixed-time`,
+/// `--input-script`, `--capture-frame`: those keep their own sleep); `None`
+/// for those and visible windows. 60 Hz unless `--display-hz` names one: a
+/// hidden session has no display, and pacing it to a 120 Hz monitor would
+/// double its cost.
+fn hidden_pace_hz(hidden: bool, scripted: bool, display_hz: Option<f32>) -> Option<f32> {
+    (hidden && !scripted).then(|| display_hz.unwrap_or(60.0))
+}
+
 fn parse_display_hz(s: &str) -> Result<f32, String> {
     let v: f32 = s.parse().map_err(|e| format!("{e}"))?;
     if !v.is_finite() || v <= 0.0 {
@@ -2322,20 +2331,12 @@ Escape releases while captured"
         let mut rendered_frames: u64 = 0;
         // `GET /stream`'s frame tap, made by the first stream request.
         let mut stream_tap: Option<FrameTapOwner> = None;
-        // Hidden live sessions pace toward the display's rate; the other
+        // Hidden live sessions pace (see `hidden_pace_hz`); the other
         // unsynced runs keep their fixed sleep below.
-        let monitor_hz = glfw.with_primary_monitor(|_, monitor| {
-            let mode = monitor?.get_video_mode()?;
-            (mode.refresh_rate > 0).then_some(mode.refresh_rate as f32)
-        });
-        let mut hidden_pacer = (hidden
-            && args.fixed_time.is_none()
-            && args.capture_frame.is_none()
-            && input_script.is_none())
-        .then(|| {
-            let hz = args.display_hz.or(monitor_hz).unwrap_or(60.0);
-            FramePacer::new(std::time::Duration::from_secs_f32(1.0 / hz))
-        });
+        let scripted =
+            args.fixed_time.is_some() || args.capture_frame.is_some() || input_script.is_some();
+        let mut hidden_pacer = hidden_pace_hz(hidden, scripted, args.display_hz)
+            .map(|hz| FramePacer::new(std::time::Duration::from_secs_f32(1.0 / hz)));
         // `/frames` and `/spikes`; spikes are judged against a 60 Hz frame
         // unless `--display-hz` says otherwise.
         let mut telemetry = FrameTelemetry::new(args.display_hz.unwrap_or(60.0));
@@ -4255,6 +4256,17 @@ Escape again to quit"
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hidden_live_sessions_pace_at_60_hz_unless_display_hz_says() {
+        use super::hidden_pace_hz;
+        assert_eq!(hidden_pace_hz(true, false, None), Some(60.0));
+        assert_eq!(hidden_pace_hz(true, false, Some(120.0)), Some(120.0));
+        // Scripted runs and visible windows keep their own timing.
+        assert_eq!(hidden_pace_hz(true, true, None), None);
+        assert_eq!(hidden_pace_hz(true, true, Some(120.0)), None);
+        assert_eq!(hidden_pace_hz(false, false, Some(120.0)), None);
+    }
+
     use super::*;
     use functor_runtime_common::{TrackingPose, XrControllerSnapshot};
     use std::io::Write;
