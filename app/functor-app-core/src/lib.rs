@@ -3,6 +3,7 @@
 //! tasks. No UI, window or server; the shell in `functor-app` runs IO and
 //! feeds results in as events.
 
+pub mod activity;
 pub mod agent_view;
 pub mod changes;
 pub mod creation;
