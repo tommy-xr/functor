@@ -991,6 +991,12 @@ blockquote {
   overflow: auto;
 }
 
+/* Its items as wide as the menu, so a long recent path ellipsises. */
+.picker .menu [role="group"] {
+  display: flex;
+  flex-direction: column;
+}
+
 .files-heading {
   margin: 0;
   padding: 0 8px;
