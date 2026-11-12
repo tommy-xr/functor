@@ -72,6 +72,21 @@ pub enum ClientMsg {
     GetFile {
         path: String,
     },
+    /// Open `path` (absolute; `~` is the user's home) as the workspace,
+    /// stopping the session; refused while an agent run is active.
+    OpenFolder {
+        path: String,
+    },
+    /// Choose a folder to open in the native picker (`AppState::native_picker`).
+    PickFolder,
+    /// Answered with [`ServerMsg::Dirs`]: directories completing `path`.
+    ListDirs {
+        path: String,
+    },
+    /// Drop `path` from the recent projects.
+    RemoveRecent {
+        path: String,
+    },
 }
 
 /// Keyboard and mouse input in the debug server's `POST /input` shape.
@@ -139,6 +154,14 @@ pub enum ServerMsg {
         project: String,
         path: String,
         text: Option<String>,
+        error: Option<String>,
+    },
+    /// Answering `ListDirs`: up to a few directories completing `path`
+    /// (their paths, hidden ones left out), and why `path` cannot be
+    /// opened, if it cannot.
+    Dirs {
+        path: String,
+        dirs: Vec<String>,
         error: Option<String>,
     },
     /// A message was refused, saying why; nothing changed.

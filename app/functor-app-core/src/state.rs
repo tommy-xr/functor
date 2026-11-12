@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::changes::Change;
+use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, GameInput, ServerMsg};
@@ -18,8 +19,11 @@ use crate::tasks::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AppState {
-    /// Absolute path of the repo root.
+    /// Absolute path of the open folder's repo root (its nearest ancestor
+    /// with a `.git`, else the folder); empty when no folder is open.
     pub repo_root: String,
+    /// The folder the app opened, canonical; empty when none is.
+    pub folder: String,
     /// Sorted by `path`.
     pub projects: Vec<Project>,
     /// The active project's `path`; `None` only when there are no projects.
@@ -45,6 +49,10 @@ pub struct AppState {
     pub harness_choice: BTreeMap<String, Harness>,
     /// Per project path, its canvas layout; every project has one.
     pub layouts: BTreeMap<String, Layout>,
+    /// Recent projects, most recent first; kept for the app, not the folder.
+    pub recents: Vec<Recent>,
+    /// The window can show a native folder picker (`ClientMsg::PickFolder`).
+    pub native_picker: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +77,7 @@ impl AppState {
             .collect();
         Self {
             repo_root: root.to_string_lossy().into_owned(),
+            folder: start.to_string_lossy().into_owned(),
             projects,
             active,
             files: Vec::new(),
@@ -80,7 +89,14 @@ impl AppState {
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
             layouts,
+            recents: Vec::new(),
+            native_picker: false,
         }
+    }
+
+    /// No folder open.
+    pub fn none() -> Self {
+        Self::new(Path::new(""), Path::new(""), Vec::new())
     }
 }
 
@@ -92,10 +108,22 @@ pub enum Event {
         id: u64,
         event: SessionEvent,
     },
-    /// Project `path`'s files, as `ListFiles` read them.
+    /// Project `path`'s files in `dir`, as `ListFiles` read them.
     Files {
         path: String,
+        dir: PathBuf,
         files: Vec<String>,
+    },
+    /// The shell's reading of `folder` (as asked) for `OpenFolder`: the
+    /// workspace as the shell loads it (repo root, projects, active project
+    /// and its files, tasks, layouts, picks, git), or why it cannot be opened.
+    Opened {
+        folder: String,
+        result: Result<Box<AppState>, String>,
+    },
+    /// The folder chosen in the native picker; `None` if it was cancelled.
+    Picked {
+        path: Option<String>,
     },
     /// From the shell, about run `run` of task `task`.
     Run {
@@ -134,6 +162,18 @@ pub enum Event {
     Shutdown,
 }
 
+/// Why no other folder can be opened now: a run (or revert) of this
+/// workspace's would carry on against the old one.
+fn can_open(state: &AppState) -> Result<(), String> {
+    match state.tasks.iter().find(|t| t.run.is_some() || t.reverting) {
+        Some(t) => Err(format!(
+            "task {} is running: stop it before opening another folder",
+            t.id
+        )),
+        None => Ok(()),
+    }
+}
+
 /// What the shell does after an `update`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -159,6 +199,17 @@ pub enum Command {
     },
     /// Read project `path`'s files in `dir`, answering with `Event::Files`.
     ListFiles { path: String, dir: PathBuf },
+    /// Read the folder `path` names as a workspace, answering with `Event::Opened`.
+    OpenFolder { path: String },
+    /// The workspace rooted at `root` is open: its git measures changes now.
+    UseWorkspace { root: PathBuf },
+    /// Show the native folder picker at `from`, answering with `Event::Picked`.
+    PickFolder { from: Option<PathBuf> },
+    /// List directories completing `path`, answering the asking client
+    /// with `ServerMsg::Dirs`.
+    ListDirs { path: String },
+    /// Remember the recent projects, app-wide.
+    SaveRecents { recents: Vec<Recent> },
     /// Start an agent run, answering with `Event::Run`s that end in `Ended`.
     StartRun(Box<RunSpec>),
     /// Cancel run `run` of task `task`, waiting until its processes are gone.
@@ -242,6 +293,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 // Cleared, so the old project's files never show under the new name.
                 state.files.clear();
                 state.active = Some(path);
+                remember_active(&mut state, &mut commands);
                 // The session follows the active project.
                 restart_live(&mut state, &mut commands);
             }
@@ -277,9 +329,50 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (false, false)
         }
         Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
-        // A listing for a project switched away from is dropped.
-        Event::Files { path, files } => {
-            if state.active.as_ref() != Some(&path) {
+        Event::Client(ClientMsg::OpenFolder { path }) | Event::Picked { path: Some(path) } => {
+            match can_open(&state) {
+                Ok(()) => commands.push(Command::OpenFolder { path }),
+                Err(reason) => commands.push(Command::Broadcast(ServerMsg::Rejected { reason })),
+            }
+            (false, false)
+        }
+        Event::Picked { path: None } => (false, false),
+        Event::Client(ClientMsg::PickFolder) => {
+            let ok = match state.native_picker {
+                true => can_open(&state),
+                false => Err("there is no folder picker here: type the folder's path".to_string()),
+            };
+            match ok {
+                Ok(()) => commands.push(Command::PickFolder {
+                    from: Some(PathBuf::from(&state.folder)).filter(|f| !f.as_os_str().is_empty()),
+                }),
+                Err(reason) => {
+                    reject(&mut commands, reason);
+                }
+            }
+            (false, false)
+        }
+        Event::Opened { folder, result } => {
+            (opened(&mut state, folder, result, &mut commands), false)
+        }
+        Event::Client(ClientMsg::ListDirs { path }) => {
+            commands.push(Command::ListDirs { path });
+            (false, false)
+        }
+        Event::Client(ClientMsg::RemoveRecent { path }) => {
+            let before = state.recents.len();
+            state.recents.retain(|r| r.path != path);
+            let removed = state.recents.len() != before;
+            if removed {
+                save_recents(&state, &mut commands);
+            }
+            (removed, true)
+        }
+        // A listing for a project switched away from (or another
+        // workspace's of the same path) is dropped.
+        Event::Files { path, dir, files } => {
+            let root = Path::new(&state.repo_root);
+            if state.active.as_ref() != Some(&path) || project_dir(root, &path) != dir {
                 return (state, commands);
             }
             let listed = state.files != files;
@@ -409,6 +502,89 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         commands.push(Command::Reply(msg()));
     }
     (state, commands)
+}
+
+/// Swaps in the workspace the shell read for `folder`, stopping the
+/// session; its failure is broadcast (an event has no client to answer).
+fn opened(
+    state: &mut AppState,
+    folder: String,
+    result: Result<Box<AppState>, String>,
+    commands: &mut Vec<Command>,
+) -> bool {
+    let fail = |commands: &mut Vec<Command>, reason: String| {
+        commands.push(Command::Broadcast(ServerMsg::Rejected { reason }));
+    };
+    let new = match result {
+        Ok(new) => new,
+        Err(reason) => {
+            fail(commands, format!("cannot open {folder}: {reason}"));
+            let marked = mark_missing(&mut state.recents, &folder);
+            if marked {
+                save_recents(state, commands);
+            }
+            return marked;
+        }
+    };
+    // A run may have started while the folder was read.
+    if let Err(reason) = can_open(state) {
+        fail(commands, reason);
+        return false;
+    }
+    stop(state, commands);
+    // Every workspace field, by name, so a new one is not left behind.
+    let AppState {
+        repo_root,
+        folder,
+        projects,
+        active,
+        files,
+        git,
+        tracks_changes,
+        tasks,
+        harness_choice,
+        layouts,
+        session: _,
+        no_gpu: _,
+        harnesses: _,
+        recents: _,
+        native_picker: _,
+    } = *new;
+    commands.push(Command::UseWorkspace {
+        root: PathBuf::from(&repo_root),
+    });
+    *state = AppState {
+        repo_root,
+        folder,
+        projects,
+        active,
+        files,
+        git,
+        tracks_changes,
+        tasks,
+        harness_choice,
+        layouts,
+        ..std::mem::replace(state, AppState::none())
+    };
+    remember_active(state, commands);
+    true
+}
+
+/// Puts the active project first in the recent projects.
+fn remember_active(state: &mut AppState, commands: &mut Vec<Command>) {
+    let Some(active) = &state.active else {
+        return;
+    };
+    let dir = project_dir(Path::new(&state.repo_root), active);
+    if remember(&mut state.recents, &dir.to_string_lossy()) {
+        save_recents(state, commands);
+    }
+}
+
+fn save_recents(state: &AppState, commands: &mut Vec<Command>) {
+    commands.push(Command::SaveRecents {
+        recents: state.recents.clone(),
+    });
 }
 
 /// Stops the session, then starts a new one if it was live. An ended
@@ -1102,6 +1278,7 @@ mod tests {
             harnesses: vec![Harness::Claude, Harness::Codex],
             harness_choice: BTreeMap::new(),
             layouts: BTreeMap::new(),
+            ..AppState::none()
         }
     }
 
@@ -1173,9 +1350,20 @@ mod tests {
         }
     }
 
+    fn recents_b() -> Command {
+        Command::SaveRecents {
+            recents: vec![Recent {
+                name: "b".into(),
+                path: "/repo/examples/b".into(),
+                missing: false,
+            }],
+        }
+    }
+
     fn files(path: &str, files: &[&str]) -> Event {
         Event::Files {
             path: path.to_string(),
+            dir: PathBuf::from(format!("/repo/{path}")),
             files: files.iter().map(|f| f.to_string()).collect(),
         }
     }
@@ -1197,7 +1385,9 @@ mod tests {
         let (next, commands) = update(state(), switch("examples/b"));
         assert_eq!(next.active.as_deref(), Some("examples/b"));
         assert!(next.files.is_empty());
-        assert_eq!(commands, vec![list_b(), broadcast(&next)]);
+        // It is the most recent project now.
+        assert_eq!(next.recents[0].path, "/repo/examples/b");
+        assert_eq!(commands, vec![list_b(), recents_b(), broadcast(&next)]);
     }
 
     #[test]
@@ -1403,6 +1593,7 @@ mod tests {
             commands,
             vec![
                 list_b(),
+                recents_b(),
                 Command::StopSession { id: 1 },
                 start_cmd(2, "examples/b", Display::Hidden),
                 broadcast(&next)
@@ -1426,7 +1617,7 @@ mod tests {
                 status: SessionStatus::Stopped,
             });
             assert_eq!(next.session, expected);
-            assert_eq!(commands, vec![list_b(), broadcast(&next)]);
+            assert_eq!(commands, vec![list_b(), recents_b(), broadcast(&next)]);
         }
     }
 
@@ -2862,5 +3053,234 @@ mod tests {
             json["state"]["layouts"]["a"]["root"]["tabs"][0]["kind"],
             "game"
         );
+    }
+
+    // Opening folders.
+
+    fn open(path: &str) -> Event {
+        client(ClientMsg::OpenFolder {
+            path: path.to_string(),
+        })
+    }
+
+    /// The workspace the shell reads for `/other`: one project at its root,
+    /// with a saved task, layout and agent pick.
+    fn other() -> AppState {
+        let mut new = AppState::new(Path::new("/other"), Path::new("/other"), vec![project(".")]);
+        new.files = vec!["functor.json".into()];
+        new.tracks_changes = true;
+        new.tasks = vec![Task {
+            project: ".".into(),
+            ..task(&finished_task(), 1).clone()
+        }];
+        new.harness_choice.insert(".".into(), Harness::Codex);
+        new
+    }
+
+    fn broadcast_rejected(reason: &str) -> Command {
+        Command::Broadcast(ServerMsg::Rejected {
+            reason: reason.to_string(),
+        })
+    }
+
+    #[test]
+    fn opening_a_folder_asks_the_shell_to_read_it() {
+        let (next, commands) = update(state(), open("/other"));
+        assert_eq!(next, state());
+        assert_eq!(
+            commands,
+            vec![Command::OpenFolder {
+                path: "/other".into()
+            }]
+        );
+        // The picker's choice opens the same way; a cancel does nothing.
+        let picked = Event::Picked {
+            path: Some("/other".into()),
+        };
+        assert_eq!(update(state(), picked).1, commands);
+        assert_eq!(update(state(), Event::Picked { path: None }).1, vec![]);
+    }
+
+    #[test]
+    fn no_folder_opens_while_a_run_or_revert_is_active() {
+        let (running, _) = update(state(), new_task("hi"));
+        let reason = "task 1 is running: stop it before opening another folder";
+        let (next, commands) = update(running.clone(), open("/other"));
+        assert_eq!(next, running);
+        assert_eq!(commands, vec![broadcast_rejected(reason)]);
+        // Nor when a run started while the folder was read.
+        let read = Event::Opened {
+            folder: "/other".into(),
+            result: Ok(Box::new(other())),
+        };
+        let (next, commands) = update(running.clone(), read);
+        assert_eq!(next, running);
+        assert_eq!(commands, vec![broadcast_rejected(reason)]);
+        let mut reverting = finished_task();
+        reverting.tasks[0].reverting = true;
+        assert_eq!(
+            update(reverting, open("/other")).1,
+            vec![broadcast_rejected(reason)]
+        );
+        // Stopped, it opens.
+        let (stopped, _) = update(running, client(ClientMsg::StopTask { task: 1 }));
+        assert!(matches!(
+            update(stopped, open("/other")).1[..],
+            [Command::OpenFolder { .. }]
+        ));
+    }
+
+    #[test]
+    fn an_opened_folder_replaces_the_workspace_and_stops_the_session() {
+        let mut before = with_session(1, Some(9), running(Some(12)));
+        before.no_gpu = true;
+        before.recents = vec![Recent {
+            name: "a".into(),
+            path: "/repo/examples/a".into(),
+            missing: false,
+        }];
+        let read = Event::Opened {
+            folder: "/other/".into(),
+            result: Ok(Box::new(other())),
+        };
+        let (next, commands) = update(before.clone(), read);
+        let expected = AppState {
+            session: Some(Session {
+                id: 1,
+                pid: None,
+                status: SessionStatus::Stopped,
+            }),
+            no_gpu: true,
+            harnesses: before.harnesses.clone(),
+            recents: vec![
+                Recent {
+                    name: "other".into(),
+                    path: "/other".into(),
+                    missing: false,
+                },
+                before.recents[0].clone(),
+            ],
+            ..other()
+        };
+        assert_eq!(next, expected);
+        assert_eq!(
+            commands,
+            vec![
+                Command::StopSession { id: 1 },
+                Command::UseWorkspace {
+                    root: PathBuf::from("/other")
+                },
+                Command::SaveRecents {
+                    recents: expected.recents.clone()
+                },
+                broadcast(&next),
+            ]
+        );
+        // The next session is the new project's, with a new id.
+        let (_, commands) = update(next, client(ClientMsg::StartSession));
+        assert_eq!(
+            commands[0],
+            Command::StartSession {
+                id: 2,
+                dir: PathBuf::from("/other"),
+                display: Display::Headless,
+            }
+        );
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_opened_says_why_and_marks_its_recent_missing() {
+        let mut before = state();
+        before.recents = vec![Recent {
+            name: "gone".into(),
+            path: "/gone".into(),
+            missing: false,
+        }];
+        let failed = |folder: &str| Event::Opened {
+            folder: folder.into(),
+            result: Err("it does not exist".into()),
+        };
+        let (next, commands) = update(before.clone(), failed("/gone"));
+        assert!(next.recents[0].missing);
+        assert_eq!(
+            commands,
+            vec![
+                broadcast_rejected("cannot open /gone: it does not exist"),
+                Command::SaveRecents {
+                    recents: next.recents.clone()
+                },
+                broadcast(&next),
+            ]
+        );
+        // Not a recent: only the reason.
+        let (same, commands) = update(before.clone(), failed("/x"));
+        assert_eq!(same, before);
+        assert_eq!(
+            commands,
+            vec![broadcast_rejected("cannot open /x: it does not exist")]
+        );
+        // A recent can be removed.
+        let (removed, commands) = update(
+            next,
+            client(ClientMsg::RemoveRecent {
+                path: "/gone".into(),
+            }),
+        );
+        assert!(removed.recents.is_empty());
+        assert_eq!(
+            commands,
+            vec![
+                Command::SaveRecents { recents: vec![] },
+                broadcast(&removed)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_native_picker_opens_only_where_there_is_one() {
+        let (_, commands) = update(state(), client(ClientMsg::PickFolder));
+        assert_eq!(
+            commands,
+            rejected("there is no folder picker here: type the folder's path")
+        );
+        let window = AppState {
+            native_picker: true,
+            folder: "/repo/examples/a".into(),
+            ..state()
+        };
+        let (_, commands) = update(window.clone(), client(ClientMsg::PickFolder));
+        assert_eq!(
+            commands,
+            vec![Command::PickFolder {
+                from: Some(PathBuf::from("/repo/examples/a"))
+            }]
+        );
+        let (busy, _) = update(window, new_task("hi"));
+        let (_, commands) = update(busy, client(ClientMsg::PickFolder));
+        assert_eq!(
+            commands,
+            rejected("task 1 is running: stop it before opening another folder")
+        );
+    }
+
+    #[test]
+    fn a_listing_from_another_workspace_is_dropped() {
+        let stale = Event::Files {
+            path: "examples/a".into(),
+            dir: PathBuf::from("/old/examples/a"),
+            files: vec!["x.fun".into()],
+        };
+        let (next, commands) = update(state(), stale);
+        assert_eq!(next, state());
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn with_no_folder_open_nothing_is_active() {
+        let none = AppState::none();
+        assert_eq!((none.repo_root.as_str(), none.folder.as_str()), ("", ""));
+        assert_eq!(none.active, None);
+        let (_, commands) = update(none, client(ClientMsg::StartSession));
+        assert!(matches!(commands[..], [Command::Reply(_)]));
     }
 }
