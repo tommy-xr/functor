@@ -379,7 +379,12 @@ fn agent_show(
     let message = match placed {
         Placed::Opened => format!("Opened {what} in the pane beside the user's."),
         Placed::Shown => format!("Showed {what} in the pane beside the user's."),
-        Placed::InView => format!("{what} is the tab the user is looking at; it is highlighted."),
+        // The user is reading it: neither scrolled nor highlighted under them.
+        Placed::InView => {
+            return Ok(format!(
+                "{what} is the tab the user is reading; it was left as they have it."
+            ))
+        }
         Placed::Behind => {
             return Ok(format!(
                 "The user's canvas is too narrow to split, so {what} is a tab behind the one they are reading; it was not brought forward."
@@ -1173,6 +1178,25 @@ mod tests {
         }
         let ok = r#"{"op": "present", "steps": [{"title": "t", "view": {"kind": "file", "path": "a.fun", "lines": [1, 2]}}]}"#;
         assert!(serde_json::from_str::<ViewRequest>(ok).is_ok());
+    }
+
+    #[test]
+    fn the_file_the_user_is_reading_is_neither_scrolled_nor_highlighted() {
+        let (s, commands) = update(
+            running(),
+            show(ViewTarget::File {
+                path: "a.fun".into(),
+                lines: Some([3, 4]),
+            }),
+        );
+        assert!(
+            reply(&commands)
+                .message
+                .contains("the tab the user is reading"),
+            "{commands:?}"
+        );
+        assert_eq!(s.highlight, None);
+        assert_eq!(layout(&s), &user_layout());
     }
 
     #[test]
