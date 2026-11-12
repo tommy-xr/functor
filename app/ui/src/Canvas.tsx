@@ -626,29 +626,35 @@ function ViewBody({ view, pane, ctx }: { view: View; pane: number; ctx: Ctx }) {
   }
 }
 
-/** Stop and the placement control, in the tab bar while the Game tab shows (D21, D22). */
+/** Start or stop and the placement control, in the tab bar while the Game tab shows (D21, D22). */
 function GameControls({ ctx }: { ctx: Ctx }) {
   return (
     <div className="pane-game">
-      <StopGame ctx={ctx} />
+      <StartStopGame ctx={ctx} />
       <PlacementControl ctx={ctx} />
     </div>
   );
 }
 
-function StopGame({ ctx, compact = false }: { ctx: Ctx; compact?: boolean }) {
-  if (!isLive(ctx.state?.session)) return null;
-  const stop = () => ctx.send({ type: "stop_session" });
+/**
+ * The one start/stop control (D22): Stop game ends the process; Start game
+ * brings it back paused on its first frame (D37). Play is the transport's.
+ */
+function StartStopGame({ ctx, compact = false }: { ctx: Ctx; compact?: boolean }) {
+  const live = isLive(ctx.state?.session);
+  const label = live ? "Stop game" : "Start game";
+  const disabled = !ctx.online || (!live && !ctx.state?.active);
+  const toggle = () => ctx.send({ type: live ? "stop_session" : "start_session" });
   if (compact) {
     return (
-      <button type="button" className="icon-button" aria-label="Stop game" title="Stop game" disabled={!ctx.online} onClick={stop}>
-        <Icon name="stop" />
+      <button type="button" className="icon-button" aria-label={label} title={label} disabled={disabled} onClick={toggle}>
+        <Icon name={live ? "stop" : "power"} />
       </button>
     );
   }
   return (
-    <button type="button" className="button button-compact" disabled={!ctx.online} onClick={stop}>
-      Stop game
+    <button type="button" className="button button-compact" disabled={disabled} onClick={toggle}>
+      {label}
     </button>
   );
 }
@@ -696,20 +702,10 @@ function WindowNote({ ctx }: { ctx: Ctx }) {
               ? "The game is running in its own window."
               : "The game runs in its own window.")}
       </p>
-      {!live && (
-        <button
-          type="button"
-          className="button button-compact"
-          disabled={!ctx.online || !ctx.state?.active}
-          onClick={() => ctx.send({ type: "start_session" })}
-        >
-          Start game
-        </button>
-      )}
+      <StartStopGame ctx={ctx} />
       <button type="button" className="button button-compact" disabled={!ctx.online} onClick={() => ctx.op({ type: "place", placement: "pane" })}>
         Bring back to a pane
       </button>
-      <StopGame ctx={ctx} />
     </div>
   );
 }
@@ -817,7 +813,7 @@ function MiniGame({ ctx, game, canvas }: { ctx: Ctx; game: GamePlacement; canvas
           Game
         </button>
         <PlacementControl ctx={ctx} />
-        <StopGame ctx={ctx} compact />
+        <StartStopGame ctx={ctx} compact />
         <button
           type="button"
           className="icon-button"

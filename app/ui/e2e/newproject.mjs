@@ -109,6 +109,8 @@ async function newProject(browser, width, height) {
     await step(page, width);
     await expect.poll(() => app.state.tasks.every((t) => !t.run), { timeout: 15_000 }).toBe(true);
     await expect.poll(() => app.state.session?.status.kind, { timeout: 30_000 }).toBe("running");
+    // Paused on its first frame (D37): the agent's run left the clock alone.
+    await expect(page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" })).toBeVisible();
     await step(page, width);
     await shot(page, `newproject-${tag}-opened`);
 

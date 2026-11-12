@@ -13,6 +13,12 @@ export const APP = `${ROOT}target/debug/functor-app${EXE}`;
 export const FUNCTOR = process.env.FUNCTOR_BIN && existsSync(process.env.FUNCTOR_BIN) ? process.env.FUNCTOR_BIN : null;
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
+/** A session's own clock (`/state`'s `frame` and `clock`), without the model. */
+export async function clock(debugUrl) {
+  const state = await (await fetch(`${debugUrl}/state?model=0`)).json();
+  return { frame: state.frame, ...state.clock };
+}
+
 /** Exits unless functor-app and the built UI exist. */
 export function requireBuilt() {
   for (const [path, what] of [
