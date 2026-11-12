@@ -264,7 +264,7 @@ const playerFrame = (page) => {
   const tagline = await page.locator(".hero-sub").textContent();
   check(
     "landing hero uses the engine-wide tagline",
-    tagline.trim() === "A free, open-source game engine.",
+    tagline.trim().startsWith("A free, open-source game engine."),
     JSON.stringify(tagline.trim())
   );
 

@@ -36,6 +36,8 @@ const BURGER = `<input type="checkbox" id="nav-toggle" class="nav-toggle" />
 // still in development, so it ships unlinked and is reached by typing its URL.
 // The landing footer (index.html) mirrors this list — keep them in step.
 const NAV = [
+  // A section of the landing page; "./" so it resolves from any page.
+  { id: "app", href: "./#app", label: "Desktop app" },
   { id: "sandbox", href: "sandbox.html", label: "Sandbox" },
   { id: "manual", href: "manual/", label: "Manual" },
   { id: "docs", href: "docs/", label: "API Reference" },
