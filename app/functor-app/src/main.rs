@@ -32,7 +32,8 @@ const START_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Parser, Debug)]
 #[command(about = "The Functor desktop app")]
 struct Args {
-    /// Start directory for project discovery (defaults to the current directory).
+    /// The folder to open (else the current directory if it is in or holds a
+    /// project, else the most recent project).
     #[arg(short, long, global = true)]
     dir: Option<PathBuf>,
 
@@ -174,6 +175,12 @@ async fn app(
         std::env::var_os("FUNCTOR_BIN"),
         std::env::current_exe().ok(),
     );
+    // Absolute, as children run in project directories; a bare name is
+    // still looked up on PATH.
+    let functor = match functor.components().count() {
+        1 => functor,
+        _ => std::path::absolute(functor)?,
+    };
     // Absolute: the fake agent's child runs in the project directory.
     let agents = match std::env::var_os("FUNCTOR_APP_FAKE_AGENT").filter(|f| !f.is_empty()) {
         Some(fixture) => Agents::Fake(std::path::absolute(fixture)?),
@@ -191,9 +198,13 @@ async fn app(
             .ok()
             .filter(|cwd| folders::cwd_holds_project(cwd)),
     };
+    // `--print` and `task` act on the folder they name or are run in, never
+    // on whatever was open last.
+    let interactive = !args.print && args.command.is_none();
+    let recents = if interactive { &state.recents[..] } else { &[] };
     let (tx, events) = mpsc::unbounded_channel();
     let mut driver = Driver::new(functor, agents, home, tx);
-    if let Some(folder) = functor_app_core::folders::startup(dir, cwd, &state.recents) {
+    if let Some(folder) = functor_app_core::folders::startup(dir, cwd, recents) {
         // `--print` changes no task, so it measures none.
         let opened = driver.open(folder.to_string_lossy().into_owned(), !args.print);
         if let Event::Opened {

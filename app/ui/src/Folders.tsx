@@ -90,9 +90,12 @@ function OpenFolderForm({
 }: Omit<FolderProps, "state"> & { autoFocus?: boolean }) {
   const [path, setPath] = useState("");
   const error = pathError(path, dirs);
+  // While what is typed still completes to a folder, it is not yet wrong.
+  const completes = dirs?.path === path.trim() && dirs.dirs.length > 0;
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (error === null) send({ type: "open_folder", path: path.trim() });
+    // Before the server has answered, it checks the path when asked to open it.
+    if (path.trim() && !error) send({ type: "open_folder", path: path.trim() });
   };
   return (
     <form className="open-folder-form" onSubmit={submit}>
@@ -105,8 +108,8 @@ function OpenFolderForm({
         listDirs={listDirs}
         autoFocus={autoFocus}
       />
-      {error && <p className="reason">{error}</p>}
-      <button type="submit" className="button button-compact" disabled={!online || error !== null}>
+      {error && !completes && <p className="reason">{error}</p>}
+      <button type="submit" className="button button-compact" disabled={!online || !path.trim() || !!error}>
         Open
       </button>
     </form>
@@ -129,7 +132,10 @@ function RecentItems({ recents, online, send, role }: { recents: Recent[]; onlin
           onClick={() => send(r.missing ? { type: "remove_recent", path: r.path } : { type: "open_folder", path: r.path })}
         >
           <span className="recent-name">{r.name}</span>
-          <span className="recent-path mono">{r.missing ? "Missing · remove" : r.path}</span>
+          {/* Cut at the start: the end of a path tells entries apart. */}
+          <span className="recent-path mono">
+            <bdi>{r.missing ? "Missing · remove" : r.path}</bdi>
+          </span>
         </button>
       ))}
     </>

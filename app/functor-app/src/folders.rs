@@ -45,6 +45,13 @@ pub fn resolve(path: &str, home: Option<&Path>) -> Result<PathBuf, String> {
     if !dir.is_dir() {
         return Err("it is not a folder".to_string());
     }
+    // Their walk for projects would read the whole disk or home.
+    if dir.parent().is_none() {
+        return Err("that is the whole disk: open a folder inside it".to_string());
+    }
+    if home.and_then(|h| std::fs::canonicalize(h).ok()).as_deref() == Some(&dir) {
+        return Err("that is your whole home folder: open a folder inside it".to_string());
+    }
     std::fs::read_dir(&dir).map_err(|e| format!("it cannot be read: {e}"))?;
     Ok(dir)
 }
@@ -105,10 +112,10 @@ pub async fn pick(_from: Option<PathBuf>) -> Option<String> {
 }
 
 /// Whether the app started in `cwd` should open it: it is in or above a
-/// project. The filesystem root (where the Finder starts apps) never is: its
-/// walk would be the whole disk.
+/// project. The filesystem root (where the Finder starts apps) and the
+/// home folder never are: their walks would read the whole disk or home.
 pub fn cwd_holds_project(cwd: &Path) -> bool {
-    if cwd.parent().is_none() {
+    if resolve(&cwd.to_string_lossy(), std::env::home_dir().as_deref()).is_err() {
         return false;
     }
     let state = discover(cwd);
@@ -181,7 +188,17 @@ mod tests {
             assert_eq!(resolve(&spelled, None), Ok(root.join("a/b")), "{spelled}");
         }
         assert_eq!(resolve("~/a", Some(&root)), Ok(root.join("a")));
-        assert_eq!(resolve("~", Some(&root)), Ok(root.clone()));
+        let whole = |what: &str| {
+            Err(format!(
+                "that is your whole {what}: open a folder inside it"
+            ))
+        };
+        assert_eq!(resolve("~", Some(&root)), whole("home folder"));
+        assert_eq!(resolve(&s(&root), Some(&root)), whole("home folder"));
+        assert_eq!(
+            resolve("/", None),
+            Err("that is the whole disk: open a folder inside it".into())
+        );
         for (bad, why) in [
             ("", "no folder given"),
             ("a/b", "give the folder's full path"),
