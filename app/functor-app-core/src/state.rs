@@ -607,7 +607,7 @@ fn stop_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
 }
 
 /// Task `id`, when its change can be kept or reverted now.
-fn reviewable<'a>(state: &'a mut AppState, id: u64) -> Result<&'a mut Task, String> {
+fn reviewable(state: &mut AppState, id: u64) -> Result<&mut Task, String> {
     if !state.tracks_changes {
         return Err("changes are tracked only in a git repository".to_string());
     }

@@ -139,7 +139,10 @@ impl Git {
     async fn files(&self, base: &str) -> Result<(Vec<FileChange>, String), String> {
         let now = self.snapshot().await?;
         let out = self
-            .git(&["diff", "--numstat", "-z", "-M", "--no-ext-diff", base, &now], None)
+            .git(
+                &["diff", "--numstat", "-z", "-M", "--no-ext-diff", base, &now],
+                None,
+            )
             .await?;
         Ok((parse_numstat(&out)?, now))
     }
@@ -215,7 +218,10 @@ impl Git {
         }
         let now = self.snapshot().await?;
         let names = self
-            .git(&["diff", "--name-only", "-z", "--no-renames", base, &now], None)
+            .git(
+                &["diff", "--name-only", "-z", "--no-renames", base, &now],
+                None,
+            )
             .await?;
         let changed = nul_list(&names);
         if changed.is_empty() {
@@ -237,7 +243,9 @@ impl Git {
             RevertOp::Delete { .. } => None,
         });
         let input: String = oids.map(|oid| format!("{oid}\n")).collect();
-        let checked = self.stdin(&["cat-file", "--batch-check"], None, &input).await?;
+        let checked = self
+            .stdin(&["cat-file", "--batch-check"], None, &input)
+            .await?;
         if checked.lines().any(|l| l.ends_with(" missing")) {
             return Err(BASELINE_GONE.to_string());
         }
@@ -309,7 +317,11 @@ fn delete_all(root: &Path, paths: &[String]) -> Result<(), String> {
         let file = root.join(path);
         let mut dir = root.to_path_buf();
         let mut reachable = true;
-        for part in Path::new(path).parent().into_iter().flat_map(Path::components) {
+        for part in Path::new(path)
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+        {
             dir.push(part);
             match std::fs::symlink_metadata(&dir) {
                 Ok(m) if m.file_type().is_symlink() => {
@@ -533,7 +545,9 @@ pub(crate) mod tests {
             .unwrap();
         assert!(!probe.success(), "the snapshot reached the repo's objects");
         // Nothing of the app's in the repo, and no index left behind.
-        assert!(!walk(&git.dir).iter().any(|p| p.to_string_lossy().contains("index-")));
+        assert!(!walk(&git.dir)
+            .iter()
+            .any(|p| p.to_string_lossy().contains("index-")));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -595,10 +609,16 @@ pub(crate) mod tests {
         let base = git.snapshot().await.unwrap();
         edit(&repo);
         git.revert(&base).await.unwrap();
-        assert_eq!(repo.read("game.fun").as_deref(), Some("let a = 1\nlet b = 2\n"));
+        assert_eq!(
+            repo.read("game.fun").as_deref(),
+            Some("let a = 1\nlet b = 2\n")
+        );
         assert_eq!(repo.read("gone.fun").as_deref(), Some("let gone = 0\n"));
         assert_eq!(repo.read("dir/new file.fun"), None);
-        assert!(!repo.root.join("dir").exists(), "its emptied directory stays");
+        assert!(
+            !repo.root.join("dir").exists(),
+            "its emptied directory stays"
+        );
         assert_eq!(
             repo.read("notes.txt").as_deref(),
             Some("untracked before the task\n")
@@ -656,7 +676,10 @@ pub(crate) mod tests {
             repo.read("game.fun").as_deref(),
             Some("let a = 1\nlet b = 3\nlet c = 4\n")
         );
-        assert_eq!(repo.read("dir/new file.fun").as_deref(), Some("let n = 1\n"));
+        assert_eq!(
+            repo.read("dir/new file.fun").as_deref(),
+            Some("let n = 1\n")
+        );
     }
 
     #[test]

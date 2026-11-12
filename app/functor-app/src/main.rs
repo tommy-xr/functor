@@ -16,8 +16,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use functor_app_core::protocol::{ClientMsg, ServerMsg};
 use functor_app_core::{
-    print, print_change, print_item, update, AppState, Command, Event, Harness, Item,
-    SessionStatus,
+    print, print_change, print_item, update, AppState, Command, Event, Harness, Item, SessionStatus,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
@@ -141,7 +140,11 @@ async fn main() -> std::io::Result<ExitCode> {
     };
     state.harnesses = agents.available();
     state.harness_choice = store::load_harnesses(&home, &state);
-    let git = changes::Git::open(Path::new(&state.repo_root), &home).map(Arc::new);
+    // `--print` changes no task, so it measures none.
+    let git = match args.print {
+        true => None,
+        false => changes::Git::open(Path::new(&state.repo_root), &home).map(Arc::new),
+    };
     state.tracks_changes = git.is_some();
     let (tx, events) = mpsc::unbounded_channel();
     let driver = Driver::new(functor, agents, home, git, tx);

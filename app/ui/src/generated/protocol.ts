@@ -24,6 +24,11 @@ files: Array<string>,
  */
 git: GitInfo | null, 
 /**
+ * The repo root is a git work tree, so tasks' changes are tracked
+ * (snapshot, diff, keep, revert). Off outside git.
+ */
+tracks_changes: boolean, 
+/**
  * The active project's game session; `None` until one first starts.
  */
 session: Session | null, 
@@ -49,14 +54,60 @@ harnesses: Array<Harness>,
 harness_choice: { [key in string]: Harness }, };
 
 /**
+ * The summary that travels with the task.
+ */
+export type Change = { 
+/**
+ * In git's order (by path), at most [`MAX_FILES`].
+ */
+files: Array<FileChange>, 
+/**
+ * Changed files past [`MAX_FILES`], not listed.
+ */
+more: number, };
+
+/**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, };
+
+export type DiffLine = { kind: LineKind, 
+/**
+ * Without its `+`/`-`/` ` marker; a hunk header whole; a note without `\ `.
+ */
+text: string, };
 
 /**
  * What `functor.json` declares to run.
  */
 export type Entries = { "kind": "single", file: string, } | { "kind": "named", roles: Array<Role>, } | { "kind": "invalid", error: string, };
+
+export type FileChange = { 
+/**
+ * Relative to the repo root; a rename's new path.
+ */
+path: string, 
+/**
+ * A rename's old path.
+ */
+from: string | null, added: number, removed: number, 
+/**
+ * Git counts no lines in it.
+ */
+binary: boolean, 
+/**
+ * More than [`FILE_LINES`] lines changed: summarised, not rendered.
+ */
+large: boolean, };
+
+/**
+ * One file of a full diff (`ServerMsg::Diff`).
+ */
+export type FileDiff = { file: FileChange, 
+/**
+ * From the first hunk header on; empty when `omitted`.
+ */
+lines: Array<DiffLine>, omitted: Omitted | null, };
 
 /**
  * Keyboard and mouse input in the debug server's `POST /input` shape.
@@ -78,11 +129,18 @@ export type Harness = "claude" | "codex";
 /**
  * One transcript entry, in the order the UI shows them.
  */
-export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" };
+export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
+export type LineKind = "hunk" | "context" | "added" | "removed" | "note";
+
 export type MouseButton = "left" | "right" | "middle";
+
+/**
+ * Why a file's lines are not in the diff.
+ */
+export type Omitted = "binary" | "large" | "budget" | "unreadable";
 
 export type Project = { 
 /**
@@ -114,7 +172,7 @@ usage: Usage | null, };
 /**
  * Core → UI.
  */
-export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "rejected", reason: string, };
+export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "rejected", reason: string, };
 
 export type Session = { 
 /**
@@ -166,9 +224,23 @@ session_id: string | null,
 /**
  * The run in flight.
  */
-run: Run | null, };
+run: Run | null, 
+/**
+ * The snapshot (a git tree in the app's store) the task's change is
+ * measured from: taken as its first run, or the first after a keep or
+ * revert, started. `None` outside git.
+ */
+baseline: string | null, 
+/**
+ * What changed since `baseline`, as last computed.
+ */
+change: Change | null, 
+/**
+ * A revert is being written; no run or second revert may start.
+ */
+reverting: boolean, };
 
-export type TaskStatus = { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "failed", summary: string | null, };
+export type TaskStatus = { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
 
 export type Usage = { 
 /**

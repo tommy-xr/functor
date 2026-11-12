@@ -179,7 +179,11 @@ async fn run(
                         task,
                         baseline,
                         reply: true,
-                    } => driver.diff(task, baseline, from.and_then(|id| clients.get(&id).cloned())),
+                    } => driver.diff(
+                        task,
+                        baseline,
+                        from.and_then(|id| clients.get(&id).cloned()),
+                    ),
                     command => driver.run(command).await,
                 }
             }

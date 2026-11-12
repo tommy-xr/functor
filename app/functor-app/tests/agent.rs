@@ -57,6 +57,47 @@ fn tree() -> tempfile::TempDir {
     tmp
 }
 
+/// `tree()` as a git repo with one commit, its git reading no user config.
+#[cfg(unix)]
+fn git_tree() -> tempfile::TempDir {
+    let tmp = tree();
+    std::fs::write(tmp.path().join("a/game.fun"), "let x = 1\n").unwrap();
+    git(tmp.path(), &["init", "-q", "-b", "main"]);
+    git(tmp.path(), &["add", "-A"]);
+    git(tmp.path(), &["commit", "-q", "-m", "first"]);
+    tmp
+}
+
+#[cfg(unix)]
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// A run that edits the project's `game.fun` (`x` → `xx`) as its agent would.
+#[cfg(unix)]
+fn edit_fixture(dir: &Path) -> PathBuf {
+    let path = dir.join("edit.jsonl");
+    let lines = [
+        r#"{"ms":0,"event":{"type":"started","session":"fake-session-1","model":"claude-model"}}"#,
+        r#"{"ms":0,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"game.fun"}}}"#,
+        r#"{"ms":0,"edit":{"path":"game.fun","old":"x","new":"xx"}}"#,
+        r#"{"ms":0,"event":{"type":"tool_result","content":"The file has been updated."}}"#,
+        r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"Renamed x."}}"#,
+    ];
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    path
+}
+
 /// Every file under `dir`, relative.
 fn files(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
@@ -247,7 +288,10 @@ fn task_command(repo: &Path, home: &Path, functor: &Path, fixture: &Path, prompt
         .arg("--functor")
         .arg(functor)
         .env("FUNCTOR_APP_HOME", home)
-        .env("FUNCTOR_APP_FAKE_AGENT", fixture);
+        .env("FUNCTOR_APP_FAKE_AGENT", fixture)
+        .env("HOME", home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
     command
 }
 
@@ -429,6 +473,9 @@ mod socket {
             .arg(functor)
             .env("FUNCTOR_APP_HOME", home)
             .env("FUNCTOR_APP_FAKE_AGENT", fixture)
+            .env("HOME", home)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -642,6 +689,108 @@ async fn tasks_over_the_websocket() {
             "user", "tool", "agent", "usage", "finished", //
             "user", "tool", "stopped",
         ]
+    );
+}
+
+/// In a git repo, a run that edits a file is ready for review; its diff
+/// comes on request; Keep closes it; a follow-up measures from a fresh
+/// baseline; Revert puts that one back. The user's git state is untouched.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_change_is_reviewed_kept_and_reverted() {
+    use serde_json::json;
+    use socket::*;
+
+    let repo = git_tree();
+    let home = tempfile::tempdir().unwrap();
+    let (functor, _requests) = stub::functor(home.path());
+    let fixture = edit_fixture(home.path());
+    let head = git(repo.path(), &["rev-parse", "HEAD"]);
+    let app = serve(repo.path(), home.path(), &functor, &fixture);
+    let mut ws = connect(&app.addr).await;
+    assert_eq!(next(&mut ws).await["state"]["tracks_changes"], true);
+    let game = repo.path().join("a/game.fun");
+    let read = || std::fs::read_to_string(&game).unwrap();
+    let diff = |msg: &Value| -> Vec<String> {
+        let lines = msg["files"][0]["lines"].as_array().unwrap();
+        lines
+            .iter()
+            .map(|l| {
+                format!(
+                    "{} {}",
+                    l["kind"].as_str().unwrap(),
+                    l["text"].as_str().unwrap()
+                )
+            })
+            .collect()
+    };
+
+    send(
+        &mut ws,
+        json!({"type": "new_task", "message": "Rename x", "harness": "claude"}),
+    )
+    .await;
+    let (state, _) = until(&mut ws, status_is("ready_for_review")).await;
+    let task = &state["state"]["tasks"][0];
+    let first = task["baseline"].as_str().unwrap().to_string();
+    assert_eq!(
+        task["change"],
+        json!({"files": [{"path": "a/game.fun", "from": null, "added": 1, "removed": 1,
+            "binary": false, "large": false}], "more": 0})
+    );
+    assert_eq!(read(), "let xx = 1\n");
+    send(&mut ws, json!({"type": "get_diff", "task": 1})).await;
+    let (msg, _) = until(&mut ws, |m| m["type"] == "diff").await;
+    assert_eq!(
+        diff(&msg),
+        ["hunk @@ -1 +1 @@", "removed let x = 1", "added let xx = 1"]
+    );
+
+    send(&mut ws, json!({"type": "keep_change", "task": 1})).await;
+    let (state, _) = until(&mut ws, status_is("kept")).await;
+    assert_eq!(state["state"]["tasks"][0]["baseline"], Value::Null);
+    assert_eq!(read(), "let xx = 1\n");
+
+    // The follow-up's change is its own: measured from the kept file.
+    send(
+        &mut ws,
+        json!({"type": "send_message", "task": 1, "message": "Again"}),
+    )
+    .await;
+    let (state, _) = until(&mut ws, status_is("ready_for_review")).await;
+    let second = state["state"]["tasks"][0]["baseline"].as_str().unwrap();
+    assert_ne!(second, first);
+    send(&mut ws, json!({"type": "get_diff", "task": 1})).await;
+    let (msg, _) = until(&mut ws, |m| m["type"] == "diff").await;
+    assert_eq!(
+        diff(&msg),
+        [
+            "hunk @@ -1 +1 @@",
+            "removed let xx = 1",
+            "added let xxx = 1"
+        ]
+    );
+
+    send(&mut ws, json!({"type": "revert_change", "task": 1})).await;
+    until(&mut ws, status_is("reverted")).await;
+    assert_eq!(read(), "let xx = 1\n");
+    assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(repo.path(), &["stash", "list"]), "");
+    assert_eq!(
+        git(repo.path(), &["status", "--porcelain"]),
+        " M a/game.fun\n"
+    );
+    drop(ws);
+    drop(app);
+
+    // The CLI ends with the change it made.
+    let out = task_command(repo.path(), home.path(), &functor, &fixture, "Once more")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.ends_with("finished: ok\nchange: 1 file, +1 -1\n  a/game.fun +1 -1\n"),
+        "{stdout}"
     );
 }
 

@@ -497,7 +497,11 @@ pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
         let at = Duration::from_millis(line["ms"].as_u64().unwrap_or(0));
         std::thread::sleep(at.saturating_sub(start.elapsed()));
         if let Some(edit) = line.get("edit") {
-            let field = |key: &str| edit[key].as_str().ok_or_else(|| bad(&format!("no edit.{key}")));
+            let field = |key: &str| {
+                edit[key]
+                    .as_str()
+                    .ok_or_else(|| bad(&format!("no edit.{key}")))
+            };
             let (path, old, new) = (field("path")?, field("old")?, field("new")?);
             let text = std::fs::read_to_string(path).map_err(|e| bad(&e))?;
             if !text.contains(old) {
