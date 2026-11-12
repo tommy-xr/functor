@@ -5,7 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use functor_app_core::tasks::mcp_listening_url;
@@ -15,13 +15,19 @@ use mis_types::{PermissionMode, Permissions};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::changes::Git;
 
 /// The env var `functor mcp --http` reads its bearer token from.
 const TOKEN_ENV: &str = "FUNCTOR_MCP_TOKEN";
+/// And its `--app-url` secret: the run's for the app's view route.
+const APP_TOKEN_ENV: &str = "FUNCTOR_MCP_APP_TOKEN";
+/// The app's route for its runs' view requests (see `server`).
+pub const VIEW_PATH: &str = "/agent/view";
+/// Context changes closer together than this go to the tool server as one.
+const CONTEXT_DEBOUNCE: Duration = Duration::from_millis(200);
 /// How long the tool server may take to print its listening line.
 const LISTEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the tool server gets to exit after its stdin closes (it stops
@@ -36,7 +42,10 @@ Your MCP server `mis` has tools for its running game — state, scene, captures,
 launching and stopping it — and `app_context`, which says what the user is looking at \
 in the Functor app. Prefer reading live state and captures over guessing. Functor Lang \
 (`.fun`) is a custom language, not F#: its rules are in the repo's `functor-lang` skill \
-(`.claude/skills/functor-lang/`) and its docs; read them before writing it.";
+(`.claude/skills/functor-lang/`) and its docs; read them before writing it. \
+`show_view` and `present` show the user views in the app, beside their work. When you \
+finish a change, call `present` once: the changed file ranges, then the game. Do not \
+show anything else they did not ask to see.";
 
 /// What a run may do unattended: folder-scoped on the repo root. Edits
 /// anywhere in the repo are accepted, the game tools are allowed (`mis-agent`
@@ -103,6 +112,7 @@ pub struct Runner {
     git: Option<Arc<Git>>,
     events: UnboundedSender<Event>,
     live: HashMap<u64, Live>,
+    views: Arc<ViewRoute>,
 }
 
 struct Live {
@@ -110,6 +120,64 @@ struct Live {
     /// Fired (or dropped) to cancel the run.
     cancel: oneshot::Sender<()>,
     task: JoinHandle<()>,
+    /// The latest app context, as JSON, for the tool server.
+    context: watch::Sender<String>,
+}
+
+/// The app's `POST /agent/view` route: its URL once the server listens, and
+/// one secret per run with a tool server, each naming its task and run.
+/// A secret is removed when its run ends ([`RunSecret`]'s drop).
+#[derive(Default)]
+pub struct ViewRoute {
+    url: OnceLock<String>,
+    secrets: Mutex<Vec<(String, u64, u64)>>,
+}
+
+impl ViewRoute {
+    /// The server listens at `origin`: runs started from now get the route.
+    pub fn listen(&self, origin: &str) {
+        let _ = self.url.set(format!("{origin}{VIEW_PATH}"));
+    }
+
+    /// The run `presented` is the secret of, comparing each in constant time.
+    pub fn find(&self, presented: &[u8]) -> Option<(u64, u64)> {
+        use subtle::ConstantTimeEq;
+        let secrets = self.secrets.lock().expect("view secrets poisoned");
+        let mut found = None;
+        for (secret, task, run) in secrets.iter() {
+            if bool::from(secret.as_bytes().ct_eq(presented)) {
+                found = Some((*task, *run));
+            }
+        }
+        found
+    }
+
+    /// A fresh secret for run `run` of `task`; `None` with no server to route to.
+    fn register(self: &Arc<Self>, task: u64, run: u64) -> Option<RunSecret> {
+        let url = self.url.get()?.clone();
+        let secret = token();
+        let mut secrets = self.secrets.lock().expect("view secrets poisoned");
+        secrets.push((secret.clone(), task, run));
+        Some(RunSecret {
+            route: self.clone(),
+            secret,
+            url,
+        })
+    }
+}
+
+/// A run's view secret, valid until dropped.
+struct RunSecret {
+    route: Arc<ViewRoute>,
+    secret: String,
+    url: String,
+}
+
+impl Drop for RunSecret {
+    fn drop(&mut self) {
+        let mut secrets = self.route.secrets.lock().expect("view secrets poisoned");
+        secrets.retain(|(s, ..)| *s != self.secret);
+    }
 }
 
 impl Runner {
@@ -118,6 +186,7 @@ impl Runner {
         agents: Agents,
         git: Option<Arc<Git>>,
         events: UnboundedSender<Event>,
+        views: Arc<ViewRoute>,
     ) -> Self {
         Self {
             functor,
@@ -125,6 +194,7 @@ impl Runner {
             git,
             events,
             live: HashMap::new(),
+            views,
         }
     }
 
@@ -133,6 +203,8 @@ impl Runner {
         let (cancel, cancelled) = oneshot::channel();
         let run = spec.run;
         let id = spec.task;
+        let json = serde_json::to_string(&spec.context).expect("the context serializes");
+        let (context, contexts) = watch::channel(json);
         let task = tokio::spawn(run_task(
             spec,
             self.functor.clone(),
@@ -140,8 +212,26 @@ impl Runner {
             self.git.clone(),
             self.events.clone(),
             cancelled,
+            Some(self.views.clone()),
+            contexts,
         ));
-        self.live.insert(id, Live { run, cancel, task });
+        self.live.insert(
+            id,
+            Live {
+                run,
+                cancel,
+                task,
+                context,
+            },
+        );
+    }
+
+    /// Run `run` of `task`'s tool server gets `context` (debounced).
+    pub fn context(&self, task: u64, run: u64, context: &functor_app_core::AppContext) {
+        if let Some(live) = self.live.get(&task).filter(|l| l.run == run) {
+            let json = serde_json::to_string(context).expect("the context serializes");
+            live.context.send_replace(json);
+        }
     }
 
     /// The git new runs measure changes with: the open workspace's.
@@ -163,6 +253,7 @@ impl Runner {
 /// One run, then its change (when tracked) and its `Ended`, also after a
 /// panic. A cancelled run sends neither (the core has moved on). Every path
 /// stops the tool server.
+#[allow(clippy::too_many_arguments)]
 async fn run_task(
     spec: RunSpec,
     functor: PathBuf,
@@ -170,6 +261,8 @@ async fn run_task(
     git: Option<Arc<Git>>,
     events: UnboundedSender<Event>,
     mut cancel: oneshot::Receiver<()>,
+    views: Option<Arc<ViewRoute>>,
+    contexts: watch::Receiver<String>,
 ) {
     let send = |event| {
         let _ = events.send(Event::Run {
@@ -194,13 +287,16 @@ async fn run_task(
             _ = &mut cancel => return,
         }
     }
-    let run = run(&spec, &functor, &agents, &send, cancel);
+    let secret = views.and_then(|v| v.register(spec.task, spec.run));
+    let run = run(&spec, &functor, &agents, &send, cancel, secret.as_ref(), contexts);
     let error = match futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(run)).await
     {
         Ok(Some(error)) => error,
         Ok(None) => return,
         Err(_) => Some("the run panicked".to_string()),
     };
+    // The route refuses the run's requests from here on.
+    drop(secret);
     if let (Some(git), Some(baseline)) = (&git, baseline) {
         crate::changes::measure(git, spec.task, baseline, &events).await;
     }
@@ -215,25 +311,34 @@ async fn run(
     agents: &Agents,
     send: &impl Fn(RunEvent),
     mut cancel: oneshot::Receiver<()>,
+    secret: Option<&RunSecret>,
+    mut contexts: watch::Receiver<String>,
 ) -> Option<Option<String>> {
     let token = token();
+    let app = secret.map(|s| (s.url.as_str(), s.secret.as_str()));
     // A cancel while starting drops the child's stdin, which stops it.
     let started = tokio::select! {
-        started = ToolServer::start(functor, &spec.dir, spec.attach.as_deref(), &token) => started,
+        started = ToolServer::start(functor, &spec.dir, spec.attach.as_deref(), &token, app) => started,
         _ = &mut cancel => return None,
     };
     let server = match started {
         Ok(server) => server,
         Err(error) => return Some(Some(error)),
     };
-    let context = serde_json::to_string(&spec.context).expect("the context serializes");
-    let auth = format!("Bearer {token}");
-    let headers = [("Authorization", auth.as_str())];
-    let put = crate::session::request(&server.base, "PUT", "/app-context", &headers, &context);
-    // Not fatal: the agent can still use every other tool.
-    if let Err(e) = put.await {
-        eprintln!("functor-app: {e}");
-    }
+    let context = contexts.borrow_and_update().clone();
+    put_context(&server.base, &token, &context).await;
+    // Later contexts (the layout, placement, project or session changed),
+    // each burst as one; aborted with the run.
+    let pusher = {
+        let (base, token) = (server.base.clone(), token.clone());
+        AbortOnDrop(tokio::spawn(async move {
+            while contexts.changed().await.is_ok() {
+                tokio::time::sleep(CONTEXT_DEBOUNCE).await;
+                let context = contexts.borrow_and_update().clone();
+                put_context(&base, &token, &context).await;
+            }
+        }))
+    };
 
     let mcp = Mcp {
         url: format!("{}/mcp", server.base),
@@ -272,8 +377,29 @@ async fn run(
             }
         }
     };
+    drop(pusher);
     server.stop().await;
     outcome
+}
+
+/// `PUT /app-context` on the tool server at `base`. Not fatal: the agent can
+/// still use every other tool.
+async fn put_context(base: &str, token: &str, context: &str) {
+    let auth = format!("Bearer {token}");
+    let headers = [("Authorization", auth.as_str())];
+    let put = crate::session::request(base, "PUT", "/app-context", &headers, context);
+    if let Err(e) = put.await {
+        eprintln!("functor-app: {e}");
+    }
+}
+
+/// Aborts its task when dropped (a cancelled run drops it mid-await).
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// The app's copy of an agent event; `None` for those a transcript does
@@ -322,13 +448,17 @@ struct ToolServer {
     base: String,
 }
 
-/// `functor`'s arguments for a tool server attached to `attach`. Without
-/// `--no-unsafe-code` the agent could run any Node.js outside its folder
-/// sandbox.
-fn tool_server_args(attach: Option<&str>) -> Vec<&str> {
+/// `functor`'s arguments for a tool server attached to `attach`, forwarding
+/// view requests to `app` (its secret goes in the environment, never here).
+/// Without `--no-unsafe-code` the agent could run any Node.js outside its
+/// folder sandbox.
+fn tool_server_args<'a>(attach: Option<&'a str>, app: Option<&'a str>) -> Vec<&'a str> {
     let mut args = vec!["mcp", "--http", "0", "--no-unsafe-code"];
     if let Some(url) = attach {
         args.extend(["--attach", url]);
+    }
+    if let Some(url) = app {
+        args.extend(["--app-url", url]);
     }
     args
 }
@@ -342,13 +472,19 @@ impl ToolServer {
         dir: &Path,
         attach: Option<&str>,
         token: &str,
+        app: Option<(&str, &str)>,
     ) -> Result<Self, String> {
         // Killed if dropped before `stop` (a cancel or failure while starting).
-        let mut child = Command::new(functor)
-            .args(tool_server_args(attach))
+        let mut command = Command::new(functor);
+        command
+            .args(tool_server_args(attach, app.map(|(url, _)| url)))
             .current_dir(dir)
             .kill_on_drop(true)
-            .env(TOKEN_ENV, token)
+            .env(TOKEN_ENV, token);
+        if let Some((_, secret)) = app {
+            command.env(APP_TOKEN_ENV, secret);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -472,6 +608,10 @@ impl Agent for FakeAgent {
             if let Some(dir) = opts.cwd {
                 command.current_dir(dir);
             }
+            // Its scripted tool calls go to the run's real tool server, as an agent's do.
+            if let Some(mcp) = opts.mcp {
+                command.env(FAKE_MCP_URL_ENV, &mcp.url).env(FAKE_MCP_TOKEN_ENV, &mcp.token);
+            }
             let mut child = command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -500,18 +640,25 @@ impl Agent for FakeAgent {
     }
 }
 
+/// Where the fake agent's child finds the run's tool server.
+const FAKE_MCP_URL_ENV: &str = "FUNCTOR_APP_FAKE_MCP_URL";
+const FAKE_MCP_TOKEN_ENV: &str = "FUNCTOR_APP_FAKE_MCP_TOKEN";
+
 /// `--replay-events`: prints `fixture`'s events on stdout, one JSON line
 /// each, after each line's `ms` (from the run's start). A `resume`d run
 /// reports that session, as an agent continuing it would. A line with
 /// `"edit": {"path", "old", "new"}` instead of an event makes the edit,
 /// replacing `old`'s first match in `path` (from the working directory) as
-/// an agent's edit tool would.
+/// an agent's edit tool would. A line with `"mcp": {"tool", "arguments"}`
+/// calls that tool on the run's tool server over MCP, printing its
+/// `tool_use` and `tool_result` as the agent's.
 pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
     use std::io::Write;
     let text =
         std::fs::read_to_string(fixture).map_err(|e| format!("{}: {e}", fixture.display()))?;
     let start = std::time::Instant::now();
     let mut out = std::io::stdout().lock();
+    let mut mcp: Option<Result<FakeMcp, String>> = None;
     for (n, line) in text
         .lines()
         .enumerate()
@@ -535,6 +682,20 @@ pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
             std::fs::write(path, text.replacen(old, new, 1)).map_err(|e| bad(&e))?;
             continue;
         }
+        if let Some(call) = line.get("mcp") {
+            let tool = call["tool"].as_str().ok_or_else(|| bad(&"no mcp.tool"))?;
+            let arguments = call["arguments"].clone();
+            let name = format!("mcp__mis__{tool}");
+            let used = serde_json::json!({"type": "tool_use", "name": name, "input": arguments});
+            writeln!(out, "{used}").and_then(|()| out.flush()).map_err(|e| bad(&e))?;
+            let content = match mcp.get_or_insert_with(FakeMcp::from_env) {
+                Ok(client) => client.call(tool, arguments).unwrap_or_else(|e| format!("error: {e}")),
+                Err(e) => format!("error: {e}"),
+            };
+            let result = serde_json::json!({"type": "tool_result", "content": content});
+            writeln!(out, "{result}").and_then(|()| out.flush()).map_err(|e| bad(&e))?;
+            continue;
+        }
         let event = &mut line["event"];
         if let (Some(session), "started") = (resume, event["type"].as_str().unwrap_or("")) {
             event["session"] = session.into();
@@ -544,6 +705,102 @@ pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
             .map_err(|e| bad(&e))?;
     }
     Ok(())
+}
+
+/// The fake agent's MCP client: one session on the run's tool server, over
+/// HTTP/1.0 so each answer ends with its connection.
+struct FakeMcp {
+    runtime: tokio::runtime::Runtime,
+    url: String,
+    token: String,
+    session: String,
+    next: u64,
+}
+
+impl FakeMcp {
+    fn from_env() -> Result<Self, String> {
+        let var = |name| std::env::var(name).map_err(|_| format!("{name} is not set"));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut client = Self {
+            runtime,
+            url: var(FAKE_MCP_URL_ENV)?,
+            token: var(FAKE_MCP_TOKEN_ENV)?,
+            session: String::new(),
+            next: 1,
+        };
+        let init = serde_json::json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "functor-app-fake-agent", "version": "0"}}});
+        let (head, _) = client.post(&init)?;
+        client.session = head
+            .lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.eq_ignore_ascii_case("mcp-session-id").then(|| v.trim().to_string())
+            })
+            .ok_or("no Mcp-Session-Id")?;
+        client.post(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))?;
+        Ok(client)
+    }
+
+    /// `tools/call`: the result's text, or an error with the tool's.
+    fn call(&mut self, tool: &str, arguments: serde_json::Value) -> Result<String, String> {
+        let id = self.next;
+        self.next += 1;
+        let call = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments}});
+        let (_, body) = self.post(&call)?;
+        let response = body
+            .lines()
+            .map(|l| l.strip_prefix("data:").unwrap_or(l).trim())
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|m| m["id"] == id)
+            .ok_or_else(|| format!("no answer to {tool}"))?;
+        let text = response["result"]["content"][0]["text"].as_str();
+        match (text, response["result"]["isError"].as_bool()) {
+            (Some(text), Some(true)) => Err(text.to_string()),
+            (Some(text), _) => Ok(text.to_string()),
+            _ => Err(response["error"]["message"].as_str().unwrap_or("no result").to_string()),
+        }
+    }
+
+    /// One POST to `/mcp`: the response's head and body.
+    fn post(&self, message: &serde_json::Value) -> Result<(String, String), String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let addr = self
+            .url
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(addr, path)| (addr.to_string(), format!("/{path}")))
+            .ok_or_else(|| format!("not an http URL: {}", self.url))?;
+        let (addr, path) = addr;
+        let body = message.to_string();
+        let session = match self.session.as_str() {
+            "" => String::new(),
+            s => format!("Mcp-Session-Id: {s}\r\n"),
+        };
+        let head = format!(
+            "POST {path} HTTP/1.0\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\n{session}\
+             Accept: application/json, text/event-stream\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            self.token,
+            body.len()
+        );
+        let response = self.runtime.block_on(async {
+            let mut stream = tokio::net::TcpStream::connect(&addr).await?;
+            stream.write_all(head.as_bytes()).await?;
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await?;
+            Ok::<_, std::io::Error>(response)
+        });
+        let response = response.map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&response);
+        let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+        Ok((head.to_string(), body.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -572,10 +829,10 @@ mod tests {
     #[test]
     fn the_tool_server_never_offers_unsandboxed_code() {
         assert_eq!(
-            tool_server_args(None),
+            tool_server_args(None, None),
             ["mcp", "--http", "0", "--no-unsafe-code"]
         );
-        let attached = tool_server_args(Some("http://127.0.0.1:9"));
+        let attached = tool_server_args(Some("http://127.0.0.1:9"), None);
         assert!(attached.contains(&"--no-unsafe-code"), "{attached:?}");
         assert!(
             attached.ends_with(&["--attach", "http://127.0.0.1:9"]),
@@ -600,7 +857,8 @@ mod tests {
         std::fs::write(&stub, script).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         let (tx, _events) = mpsc::unbounded_channel();
-        let mut runner = Runner::new(stub, Agents::Fake(dir.path().join("x")), None, tx);
+        let views = Arc::new(ViewRoute::default());
+        let mut runner = Runner::new(stub, Agents::Fake(dir.path().join("x")), None, tx, views);
         runner.start(RunSpec {
             task: 1,
             run: 1,
@@ -612,11 +870,10 @@ mod tests {
             snapshot: false,
             baseline: None,
             attach: None,
-            context: functor_app_core::AppContext {
-                project: ".".to_string(),
-                session: None,
-                session_mode: Default::default(),
-            },
+            context: functor_app_core::agent_view::app_context(
+                &functor_app_core::AppState::none(),
+                ".",
+            ),
         });
         let pid = loop {
             if let Ok(text) = std::fs::read_to_string(&pid_file) {

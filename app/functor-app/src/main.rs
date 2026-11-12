@@ -204,7 +204,8 @@ async fn app(
     let interactive = !args.print && args.command.is_none();
     let recents = if interactive { &state.recents[..] } else { &[] };
     let (tx, events) = mpsc::unbounded_channel();
-    let mut driver = Driver::new(functor, agents, home, tx);
+    let views = std::sync::Arc::new(agent::ViewRoute::default());
+    let mut driver = Driver::new(functor, agents, home, tx, views.clone());
     if let Some(folder) = functor_app_core::folders::startup(dir, cwd, recents) {
         // `--print` changes no task, so it measures none.
         let opened = driver.open(folder.to_string_lossy().into_owned(), !args.print);
@@ -263,6 +264,8 @@ async fn app(
     driver.run(Command::ListTemplates).await;
     let signal = shutdown_signal()?;
     let (listener, origin) = server::bind(args.port).await?;
+    // Runs started from here on can show views (`task` and `--print` have no route).
+    views.listen(&origin);
     let code = match window {
         // The full URL, for a person to open; see `server` on the token.
         None => {
@@ -271,7 +274,8 @@ async fn app(
                 token.reveal()
             );
             let shutdown = async { 128 + signal.await };
-            server::serve(state, driver, events, listener, token, ui, shutdown).await?
+            server::serve(state, driver, events, listener, token, views.clone(), ui, shutdown)
+                .await?
         }
         Some((listening, close)) => {
             eprintln!("[functor-app] listening on {origin}");
@@ -283,7 +287,8 @@ async fn app(
                     _ = close => 0,
                 }
             };
-            server::serve(state, driver, events, listener, token, ui, shutdown).await?
+            server::serve(state, driver, events, listener, token, views.clone(), ui, shutdown)
+                .await?
         }
     };
     Ok(ExitCode::from(code))

@@ -25,7 +25,7 @@ use tokio::sync::mpsc::{self, Sender, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::agent::{Agents, Runner};
+use crate::agent::{Agents, Runner, ViewRoute};
 use crate::changes::Git;
 
 /// Each `/state` serializes the whole model on the game's loop, so a UI that
@@ -110,9 +110,10 @@ impl Driver {
         agents: Agents,
         home: PathBuf,
         events: UnboundedSender<Event>,
+        views: Arc<ViewRoute>,
     ) -> Self {
         Self {
-            runs: Runner::new(functor.clone(), agents, None, events.clone()),
+            runs: Runner::new(functor.clone(), agents, None, events.clone(), views),
             functor,
             events,
             live: None,
@@ -269,8 +270,9 @@ impl Driver {
                 baseline,
                 paths,
             } => self.revert(task, baseline, paths),
-            // Clients are the server's (`server::run`); `--print` has none.
-            Command::Reply(_) | Command::Broadcast(_) => {}
+            Command::AppContext { task, run, context } => self.runs.context(task, run, &context),
+            // Clients and view requests are the server's (`server::run`); `--print` has neither.
+            Command::Reply(_) | Command::Broadcast(_) | Command::ViewReply(_) => {}
         }
     }
 
