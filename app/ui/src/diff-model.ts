@@ -14,15 +14,22 @@ export function hasChange(task: Task | null | undefined): task is Task & { chang
   return !!task?.baseline && !!task.change && (task.change.files.length > 0 || task.change.more > 0);
 }
 
-/** The change's entry for a tool call's `file_path` (absolute, or relative to the repo). */
-export function fileFor(change: Change | null | undefined, repoRoot: string, filePath: string): FileChange | null {
+/** The change's entry for a tool call's `file_path`: absolute, or relative to the task's project. */
+export function fileFor(
+  change: Change | null | undefined,
+  repoRoot: string,
+  project: string,
+  filePath: string,
+): FileChange | null {
   if (!change) return null;
   const root = repoRoot.endsWith("/") ? repoRoot : `${repoRoot}/`;
-  const rel = filePath.startsWith(root) ? filePath.slice(root.length) : filePath;
+  const dir = project === "." || project === "" ? "" : `${project}/`;
+  const abs = filePath.startsWith("/") ? filePath : `${root}${dir}${filePath}`;
+  const rel = abs.startsWith(root) ? abs.slice(root.length) : null;
   return (
     change.files.find((f) => f.path === rel) ??
-    // A path from another checkout of the same repo, or relative to the project.
-    change.files.find((f) => filePath.endsWith(`/${f.path}`) || f.path.endsWith(`/${rel}`)) ??
+    // An absolute path from another checkout of the same repo.
+    (rel === null ? change.files.find((f) => abs.endsWith(`/${f.path}`)) : undefined) ??
     null
   );
 }

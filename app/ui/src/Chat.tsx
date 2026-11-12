@@ -150,6 +150,7 @@ export function ChatDock({
         onTab={onTab}
         onViewDiff={onViewDiff}
         repoRoot={state?.repo_root ?? ""}
+        project={current?.project ?? ""}
         review={
           current &&
           current.run === null &&
@@ -328,6 +329,7 @@ function Conversation({
   onTab,
   onViewDiff,
   repoRoot,
+  project,
   review,
 }: {
   task: Task | null;
@@ -336,6 +338,8 @@ function Conversation({
   onTab: (tab: CanvasTab) => void;
   onViewDiff: (path: string | null) => void;
   repoRoot: string;
+  /** The task's project, which relative tool paths are in. */
+  project: string;
   /** Shown after the conversation: the change waiting for review. */
   review: ReactNode;
 }) {
@@ -369,6 +373,7 @@ function Conversation({
           onViewDiff={onViewDiff}
           change={task?.change ?? null}
           repoRoot={repoRoot}
+          project={project}
         />
         {linesAt(i + 1)}
       </Fragment>
@@ -420,6 +425,7 @@ const Row = memo(function Row({
   onViewDiff,
   change,
   repoRoot,
+  project,
 }: {
   item: Item;
   usage: Usage | null;
@@ -428,6 +434,8 @@ const Row = memo(function Row({
   onViewDiff: (path: string | null) => void;
   change: Change | null;
   repoRoot: string;
+  /** The task's project, which relative tool paths are in. */
+  project: string;
 }) {
   switch (item.kind) {
     case "user":
@@ -443,6 +451,7 @@ const Row = memo(function Row({
           onViewDiff={onViewDiff}
           change={change}
           repoRoot={repoRoot}
+          project={project}
         />
       );
     case "usage":
@@ -483,6 +492,7 @@ function ToolCall({
   onViewDiff,
   change,
   repoRoot,
+  project,
 }: {
   item: ToolItem;
   pending: boolean;
@@ -490,12 +500,14 @@ function ToolCall({
   onViewDiff: (path: string | null) => void;
   change: Change | null;
   repoRoot: string;
+  /** The task's project, which relative tool paths are in. */
+  project: string;
 }) {
   const phrase = stepPhrase(item.name, item.input);
   const kind = toolKind(item.name);
   // The change's counts for the file this call edited, while that file is in it.
   const path = toolFile(item.input);
-  const file = kind === "change" && path ? fileFor(change, repoRoot, path) : null;
+  const file = kind === "change" && path ? fileFor(change, repoRoot, project, path) : null;
   const [open, setOpen] = useState(false);
   const line = (
     <button

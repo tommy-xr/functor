@@ -204,7 +204,16 @@ export function ReviewActions({
         <button type="button" className="button button-primary" disabled={busy} onClick={() => act("keep_change")}>
           Keep change
         </button>
-        <button type="button" className="button" disabled={busy} onClick={() => setConfirming(true)}>
+        <button
+          type="button"
+          className="button"
+          disabled={busy}
+          onClick={() => {
+            // Measured afresh, so the confirmation counts what is there now.
+            send({ type: "get_diff", task: task.id });
+            setConfirming(true);
+          }}
+        >
           {task.reverting ? "Reverting…" : "Revert"}
         </button>
         {onViewDiff && (

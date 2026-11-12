@@ -114,18 +114,34 @@ impl Git {
         command
     }
 
-    /// Runs git; its stdout, or why it failed.
-    async fn git(&self, args: &[&str], index: Option<&Path>) -> Result<String, String> {
-        let out = self
-            .command(args, index)
-            .output()
-            .await
-            .map_err(|e| format!("cannot run git: {e}"))?;
+    /// Runs git, `input` on its stdin; its output whatever the exit.
+    async fn output(
+        &self,
+        args: &[&str],
+        index: Option<&Path>,
+        input: &str,
+    ) -> Result<std::process::Output, String> {
+        run(self.command(args, index), args[0], input).await
+    }
+
+    /// Runs git with `input` on its stdin; its stdout, or why it failed.
+    async fn stdin(
+        &self,
+        args: &[&str],
+        index: Option<&Path>,
+        input: &str,
+    ) -> Result<String, String> {
+        let out = self.output(args, index, input).await?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             return Err(format!("git {}: {}", args[0], err.trim()));
         }
         String::from_utf8(out.stdout).map_err(|_| format!("git {}: output is not UTF-8", args[0]))
+    }
+
+    /// Runs git; its stdout, or why it failed.
+    async fn git(&self, args: &[&str], index: Option<&Path>) -> Result<String, String> {
+        self.stdin(args, index, "").await
     }
 
     /// The working tree now, tracked and untracked-but-not-ignored files,
@@ -135,25 +151,82 @@ impl Git {
         let kept = self.dir.join("index");
         // Seeded from the last snapshot's index, so git hashes only what
         // changed since; the first starts from HEAD (none before a commit).
-        if tokio::fs::copy(&kept, &index.0).await.is_err() {
-            let _ = self.git(&["read-tree", "HEAD"], Some(&index.0)).await;
+        match tokio::fs::copy(&kept, &index.0).await {
+            // With the kept index's time: git judges which entries it can
+            // trust by stat against it.
+            Ok(_) => {
+                let at = std::fs::metadata(&kept).and_then(|m| m.modified());
+                let copy = std::fs::File::options().write(true).open(&index.0);
+                if let (Ok(at), Ok(copy)) = (at, copy) {
+                    let _ = copy.set_modified(at);
+                }
+                self.untrack_ignored(&index.0).await?;
+            }
+            Err(_) => {
+                let _ = self.git(&["read-tree", "HEAD"], Some(&index.0)).await;
+            }
         }
-        self.git(&["add", "-A"], Some(&index.0)).await?;
+        // `--ignore-errors`: a file git cannot add (an unreadable one, a
+        // nested repo with no commit) stays out; the rest is still a snapshot.
+        let out = self
+            .output(&["add", "-A", "--ignore-errors"], Some(&index.0), "")
+            .await?;
+        if !matches!(out.status.code(), Some(0 | 1)) {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("git add: {}", err.trim()));
+        }
         let tree = self.git(&["write-tree"], Some(&index.0)).await?;
         let _ = tokio::fs::rename(&index.0, &kept).await;
         Ok(tree.trim().to_string())
     }
 
+    /// Drops from a kept `index` the files now ignored that HEAD does not
+    /// track: once un-ignored (a `.gitignore` edited), they would otherwise
+    /// stay in every later snapshot.
+    async fn untrack_ignored(&self, index: &Path) -> Result<(), String> {
+        let listed = self
+            .git(
+                &["ls-files", "-z", "-c", "-i", "--exclude-standard"],
+                Some(index),
+            )
+            .await?;
+        let ignored = nul_list(&listed);
+        if ignored.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["ls-tree", "-r", "-z", "--name-only", "HEAD", "--"];
+        args.extend(ignored.iter().map(String::as_str));
+        let head = self.git(&args, None).await.unwrap_or_default();
+        let head: HashSet<String> = nul_list(&head).into_iter().collect();
+        let mut args = vec!["rm", "-q", "--cached", "--"];
+        args.extend(
+            ignored
+                .iter()
+                .filter(|p| !head.contains(*p))
+                .map(String::as_str),
+        );
+        if args.len() > 4 {
+            self.git(&args, Some(index)).await?;
+        }
+        Ok(())
+    }
+
     /// The files that differ between `base` and the working tree now, and
     /// the snapshot they were measured against.
     async fn files(&self, base: &str) -> Result<(Vec<FileChange>, String), String> {
+        let base = oid(base)?;
         let now = self.snapshot().await?;
-        let out = self
-            .git(
-                &["diff", "--numstat", "-z", "-M", "--no-ext-diff", base, &now],
-                None,
-            )
-            .await?;
+        let args = [
+            "diff",
+            "--numstat",
+            "-z",
+            "-M",
+            "--no-ext-diff",
+            "--no-textconv",
+            base,
+            &now,
+        ];
+        let out = self.git(&args, None).await?;
         Ok((parse_numstat(&out)?, now))
     }
 
@@ -225,6 +298,7 @@ impl Git {
     /// snapshot or one of its files is gone, or when it would reach through a
     /// symlink or remove anything outside those paths.
     pub async fn revert(&self, base: &str, paths: &[String]) -> Result<(), String> {
+        let base = oid(base)?;
         let tree = format!("{base}^{{tree}}");
         if self.git(&["cat-file", "-e", &tree], None).await.is_err() {
             return Err(BASELINE_GONE.to_string());
@@ -267,7 +341,6 @@ impl Git {
             return Err(BASELINE_GONE.to_string());
         }
 
-        let root = self.root.clone();
         let deletes: Vec<String> = plan
             .iter()
             .filter_map(|op| match op {
@@ -275,13 +348,34 @@ impl Git {
                 RevertOp::Write { .. } => None,
             })
             .collect();
-        let checked = writes.clone();
-        tokio::task::spawn_blocking(move || {
-            preflight(&root, &deletes, &checked)?;
-            delete_all(&root, &deletes)
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        let (root, d, w) = (self.root.clone(), deletes.clone(), writes.clone());
+        tokio::task::spawn_blocking(move || preflight(&root, &d, &w))
+            .await
+            .map_err(|e| e.to_string())??;
+        // `.gitignore`s first: under their rules as they were, a "created"
+        // file they ignore existed before the task, hidden from its
+        // baseline, and is kept rather than deleted.
+        let rules = |p: &String| p == ".gitignore" || p.ends_with("/.gitignore");
+        let (rule_deletes, deletes): (Vec<_>, Vec<_>) = deletes.into_iter().partition(rules);
+        let (rule_writes, writes): (Vec<_>, Vec<_>) = writes.into_iter().partition(rules);
+        self.apply(base, rule_deletes, rule_writes).await?;
+        let deletes = self.not_ignored(deletes).await?;
+        self.apply(base, deletes, writes).await
+    }
+
+    /// Deletes `deletes`, then checks `writes` out from `base`.
+    async fn apply(
+        &self,
+        base: &str,
+        deletes: Vec<String>,
+        writes: Vec<String>,
+    ) -> Result<(), String> {
+        if !deletes.is_empty() {
+            let root = self.root.clone();
+            tokio::task::spawn_blocking(move || delete_all(&root, &deletes))
+                .await
+                .map_err(|e| e.to_string())??;
+        }
         if writes.is_empty() {
             return Ok(());
         }
@@ -299,34 +393,61 @@ impl Git {
         Ok(())
     }
 
-    /// Runs git with `input` on its stdin; its stdout.
-    async fn stdin(
-        &self,
-        args: &[&str],
-        index: Option<&Path>,
-        input: &str,
-    ) -> Result<String, String> {
-        let mut child = self
-            .command(args, index)
-            .stdin(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("cannot run git: {e}"))?;
-        let mut stdin = child.stdin.take().expect("piped");
-        let input = input.as_bytes().to_vec();
-        // Written alongside the read, so a full pipe cannot stall either side.
-        let write = tokio::spawn(async move {
-            let _ = stdin.write_all(&input).await;
-        });
-        let out = child
-            .wait_with_output()
-            .await
-            .map_err(|e| format!("git {}: {e}", args[0]))?;
-        let _ = write.await;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            return Err(format!("git {}: {}", args[0], err.trim()));
+    /// Those of `paths` the working tree's ignore rules do not ignore.
+    async fn not_ignored(&self, paths: Vec<String>) -> Result<Vec<String>, String> {
+        if paths.is_empty() {
+            return Ok(paths);
         }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        let input: String = paths.iter().map(|p| format!("{p}\0")).collect();
+        let mut command = self.command(&["check-ignore", "--no-index", "-z", "--stdin"], None);
+        // It takes paths, not pathspecs, and refuses the literal switch.
+        command.env_remove("GIT_LITERAL_PATHSPECS");
+        let out = run(command, "check-ignore", &input).await?;
+        // 1: none of them is ignored.
+        if !matches!(out.status.code(), Some(0 | 1)) {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("git check-ignore: {}", err.trim()));
+        }
+        let ignored: HashSet<String> = nul_list(&String::from_utf8_lossy(&out.stdout))
+            .into_iter()
+            .collect();
+        Ok(paths.into_iter().filter(|p| !ignored.contains(p)).collect())
+    }
+}
+
+/// Runs `command`, `input` on its stdin; its output whatever the exit.
+async fn run(
+    mut command: tokio::process::Command,
+    name: &str,
+    input: &str,
+) -> Result<std::process::Output, String> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    let mut stdin = child.stdin.take().expect("piped");
+    let input = input.as_bytes().to_vec();
+    // Written alongside the read, so a full pipe cannot stall either side.
+    let write = tokio::spawn(async move {
+        let _ = stdin.write_all(&input).await;
+    });
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("git {name}: {e}"))?;
+    let _ = write.await;
+    Ok(out)
+}
+
+/// `base` when it is an object id (40 or 64 hex digits), so a stored task
+/// can never pass git an option.
+fn oid(base: &str) -> Result<&str, String> {
+    let hex = base
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+    match hex && matches!(base.len(), 40 | 64) {
+        true => Ok(base),
+        false => Err(format!("not a snapshot id: {base:?}")),
     }
 }
 
@@ -348,6 +469,13 @@ fn plain(path: &Path) -> PathBuf {
 /// and all.
 fn preflight(root: &Path, deletes: &[String], writes: &[String]) -> Result<(), String> {
     let deleted: HashSet<&str> = deletes.iter().map(String::as_str).collect();
+    // A file to delete that is a directory now (a nested repo) stops it here,
+    // before anything is touched.
+    for path in deletes {
+        if std::fs::symlink_metadata(root.join(path)).is_ok_and(|m| m.is_dir()) {
+            return Err(format!("{path} is a directory now: move it away to revert"));
+        }
+    }
     for path in deletes.iter().chain(writes) {
         let mut prefix = String::new();
         for part in path.split('/').take(path.split('/').count() - 1) {
@@ -392,37 +520,14 @@ fn preflight(root: &Path, deletes: &[String], writes: &[String]) -> Result<(), S
 }
 
 /// Removes each of `paths` (repo-relative) under `root`, then directories
-/// left empty by it. Refuses a path reached through a symlink, which could
-/// lead outside the repo, or one that is a directory now.
+/// left empty by it. `preflight` has checked that none is reached through a
+/// symlink or is a directory.
 fn delete_all(root: &Path, paths: &[String]) -> Result<(), String> {
     for path in paths {
         let file = root.join(path);
-        let mut dir = root.to_path_buf();
-        let mut reachable = true;
-        for part in Path::new(path)
-            .parent()
-            .into_iter()
-            .flat_map(Path::components)
-        {
-            dir.push(part);
-            match std::fs::symlink_metadata(&dir) {
-                Ok(m) if m.file_type().is_symlink() => {
-                    return Err(format!("{path}: {} is a symlink", dir.display()));
-                }
-                Ok(m) if m.is_dir() => {}
-                // No directory there: nothing to delete.
-                _ => reachable = false,
-            }
-            if !reachable {
-                break;
-            }
-        }
-        if !reachable {
-            continue;
-        }
         match std::fs::symlink_metadata(&file) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(format!("{path}: {e}")),
+            // Gone already, or its directory is.
+            Err(_) => continue,
             Ok(m) if m.is_dir() => return Err(format!("{path} is a directory now")),
             Ok(_) => std::fs::remove_file(&file).map_err(|e| format!("{path}: {e}"))?,
         }
@@ -822,6 +927,62 @@ pub(crate) mod tests {
         // The hook is live: the user's own `git add` runs it.
         repo.git(&["add", "game.fun"]);
         assert!(marker.exists(), "the hook is not installed");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn revert_keeps_a_file_ignored_before_the_task_that_the_task_unignored() {
+        let repo = Repo::new(&[(".gitignore", ".env\n"), ("game.fun", "let a = 1\n")]);
+        repo.write(".env", "SECRET=1\n");
+        let git = repo.open();
+        let base = git.snapshot().await.unwrap();
+        // The agent drops the rule: `.env` now looks created by the task.
+        repo.write(".gitignore", "");
+        repo.write("game.fun", "let a = 2\n");
+        let change = git.change(&base).await.unwrap();
+        let paths = change.paths();
+        assert!(paths.contains(&".env".to_string()), "{paths:?}");
+        git.revert(&base, &paths).await.unwrap();
+        assert_eq!(repo.read(".env").as_deref(), Some("SECRET=1\n"));
+        assert_eq!(repo.read(".gitignore").as_deref(), Some(".env\n"));
+        assert_eq!(repo.read("game.fun").as_deref(), Some("let a = 1\n"));
+        // Ignored again, it leaves later snapshots too.
+        assert!(git.change(&base).await.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_nested_repo_neither_breaks_a_snapshot_nor_is_deleted_by_revert() {
+        let repo = repo();
+        let git = repo.open();
+        let base = git.snapshot().await.unwrap();
+        // With no commit, git cannot add it: the rest is still measured.
+        std::fs::create_dir(repo.root.join("sub")).unwrap();
+        repo.git(&["-C", "sub", "init", "-q"]);
+        edit(&repo);
+        let change = git.change(&base).await.unwrap();
+        assert!(change.files.iter().any(|f| f.path == "game.fun"));
+        // With one, it is a change git calls a file: Revert refuses it whole.
+        repo.write("sub/x.txt", "x\n");
+        repo.git(&["-C", "sub", "add", "x.txt"]);
+        repo.git(&["-C", "sub", "commit", "-q", "-m", "x"]);
+        let paths = git.change(&base).await.unwrap().paths();
+        assert!(paths.contains(&"sub".to_string()), "{paths:?}");
+        let refused = git.revert(&base, &paths).await.unwrap_err();
+        assert!(refused.contains("sub is a directory now"), "{refused}");
+        assert_eq!(
+            repo.read("dir/new file.fun").as_deref(),
+            Some("let n = 1\n")
+        );
+        assert_eq!(repo.read("sub/x.txt").as_deref(), Some("x\n"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_stored_baseline_that_is_not_an_id_never_reaches_git() {
+        let repo = repo();
+        let git = repo.open();
+        for bad in ["--output=/tmp/x", "HEAD", "abc"] {
+            assert!(git.revert(bad, &[]).await.is_err(), "{bad}");
+            assert!(git.change(bad).await.is_err(), "{bad}");
+        }
     }
 
     #[test]

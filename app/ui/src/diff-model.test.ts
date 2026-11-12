@@ -28,15 +28,18 @@ const change: Change = {
   tree: "t",
 };
 
-test("a tool call's file finds its entry, absolute or relative", () => {
+test("a tool call's file finds its entry, absolute or relative to the project", () => {
   const game = change.files[0];
-  assert.equal(fileFor(change, "/repo", "/repo/examples/counter/game.fun"), game);
-  assert.equal(fileFor(change, "/repo/", "examples/counter/game.fun"), game);
-  // Relative to the project, or from another checkout of the repo.
-  assert.equal(fileFor(change, "/repo", "game.fun"), game);
-  assert.equal(fileFor(change, "/repo", "/elsewhere/examples/counter/game.fun"), game);
-  assert.equal(fileFor(change, "/repo", "/repo/examples/counter/other.fun"), null);
-  assert.equal(fileFor(null, "/repo", "/repo/README.md"), null);
+  const at = (path: string, project = "examples/counter") => fileFor(change, "/repo", project, path);
+  assert.equal(at("/repo/examples/counter/game.fun"), game);
+  assert.equal(at("game.fun"), game);
+  assert.equal(at("README.md", "."), change.files[1]);
+  // Another checkout of the repo.
+  assert.equal(at("/elsewhere/examples/counter/game.fun"), game);
+  // Same name, another project: not this change's file.
+  assert.equal(at("game.fun", "examples/other"), null);
+  assert.equal(at("/repo/examples/counter/other.fun"), null);
+  assert.equal(fileFor(null, "/repo", ".", "/repo/README.md"), null);
 });
 
 test("totals and whether there is a change", () => {
