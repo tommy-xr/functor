@@ -67,11 +67,12 @@ jobs:
       # across the whole OS matrix for free: this job already has the common
       # runtime compiled. The functor-lang suite runs on the default test-thread stack —
       # that is deliberate: it guards the MAX_EVAL_DEPTH-fits-2-MiB budget (#221).
-      # The `ts` feature adds the drift test for the SDK's generated
-      # debug-protocol types (tools/functor-sdk/src/generated/protocol.ts).
+      # The `ts` features add the drift tests for the generated TS wire types:
+      # the SDK's debug protocol (tools/functor-sdk/src/generated/protocol.ts)
+      # and the desktop app's (app/ui/src/generated/protocol.ts).
       - name: Run tests
         run: |
-          cargo test -p functor_runtime_common -p functor-lang -p functor-docgen -p functor-solid --features functor_runtime_common/ts
+          cargo test -p functor_runtime_common -p functor-lang -p functor-docgen -p functor-solid -p functor-app-core -p functor-app --features functor_runtime_common/ts,functor-app-core/ts
 
       - name: Validate API documentation generation
         run: npm run check:docs
@@ -85,3 +86,16 @@ jobs:
       - name: Build CLI
         run: cargo build
         working-directory: cli
+
+      # The app's session test, and its agent test's tool-server case, drive
+      # a real `functor` (skipped in "Run tests", which runs before the CLI
+      # exists).
+      - name: Test app game sessions and agent tools
+        run: cargo test -p functor-app --test session --test agent
+        env:
+          FUNCTOR_BIN: ${{ github.workspace }}/target/debug/functor${{ runner.os == 'Windows' && '.exe' || '' }}
+
+      # `functor mcp --http` against the real binary (cargo builds it for the
+      # test; no GPU: its one launched game runs headless).
+      - name: Test MCP over HTTP
+        run: cargo test -p functor-cli --test mcp_http

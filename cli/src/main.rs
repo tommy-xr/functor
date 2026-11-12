@@ -317,11 +317,28 @@ enum Command {
         runner_args: Vec<String>,
     },
     /// Serve the debug runtime as MCP (Model Context Protocol) tools over
-    /// stdio, so a coding agent can launch, observe, and drive Functor games
+    /// stdio (or loopback HTTP with `--http`), so a coding agent can launch, observe, and drive Functor games
     /// through the standard interface (see `docs/mcp.md`). Register it with
     /// `claude mcp add functor -- functor mcp`. Each game names its own
     /// directory when it is launched, so the global `-d` flag is ignored.
-    Mcp,
+    Mcp {
+        /// Serve over streamable HTTP at `http://127.0.0.1:<PORT>/mcp` instead
+        /// of stdio (`0` = any free port; the URL is printed on stderr).
+        /// Requires a bearer token in `FUNCTOR_MCP_TOKEN`.
+        #[arg(long, value_name = "PORT")]
+        http: Option<u16>,
+
+        /// Register an already-running debug runtime (e.g.
+        /// `http://127.0.0.1:8077`) as an attached session at startup.
+        /// Repeatable.
+        #[arg(long, value_name = "URL")]
+        attach: Vec<String>,
+
+        /// Leave out `run_game_code_unsafe` (arbitrary Node.js code) and refuse
+        /// calls to it, for a host that sandboxes its agent.
+        #[arg(long)]
+        no_unsafe_code: bool,
+    },
     /// Inspect assets headlessly (no GPU/GL context).
     Inspect {
         #[command(subcommand)]
@@ -397,8 +414,13 @@ async fn main() -> tokio::io::Result<()> {
     // BEFORE the output stream is initialized — a single event line (or a live
     // region's ANSI) written to that stdout would corrupt the protocol. It also
     // ignores `-d`, since each launched game names its own directory.
-    if matches!(args.command, Command::Mcp) {
-        return finish_inspect(commands::mcp::execute().await);
+    if let Command::Mcp {
+        http,
+        attach,
+        no_unsafe_code,
+    } = &args.command
+    {
+        return finish_inspect(commands::mcp::execute(*http, attach, *no_unsafe_code).await);
     }
 
     output::init(
@@ -590,7 +612,7 @@ async fn run(args: &Args) -> io::Result<()> {
             Command::Docs { .. }
             | Command::Init { .. }
             | Command::Inspect { .. }
-            | Command::Mcp
+            | Command::Mcp { .. }
             | Command::Import => {
                 unreachable!("is_routed excludes")
             }
@@ -781,7 +803,7 @@ async fn run(args: &Args) -> io::Result<()> {
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
         // Handled earlier (before the output stream is initialized).
-        Command::Mcp => unreachable!(),
+        Command::Mcp { .. } => unreachable!(),
         // Handled earlier (right after functor.json validation).
         Command::Import => unreachable!(),
     }
@@ -836,7 +858,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Bake { .. } => "bake",
         Command::Run { .. } => "run",
         Command::Develop { .. } => "develop",
-        Command::Mcp => "mcp",
+        Command::Mcp { .. } => "mcp",
         Command::Inspect { .. } => "inspect",
         Command::Import => "import",
         Command::Push { .. } => "push",

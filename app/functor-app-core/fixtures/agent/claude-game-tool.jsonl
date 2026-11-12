@@ -1,0 +1,12 @@
+{"ms":0,"event":{"type":"started","session":"fake-session-1","model":"claude-model"}}
+{"ms":10,"event":{"type":"usage","input":1200,"output":20}}
+{"ms":10,"event":{"type":"limits","windows":[]}}
+{"ms":20,"event":{"type":"tool_use","name":"mcp__mis__get_state","input":{"session":"s1"}}}
+{"ms":30,"event":{"type":"tool_result","content":"{\"frame\":180,\"model\":{\"count\":3}}"}}
+{"ms":40,"event":{"type":"text_delta","text":"The game is on "}}
+{"ms":40,"event":{"type":"text_delta","text":"frame 180 and "}}
+{"ms":40,"event":{"type":"text_delta","text":"the count is 3."}}
+{"ms":50,"event":{"type":"usage","input":2400,"output":60}}
+{"ms":50,"event":{"type":"text","text":"The game is on frame 180 and the count is 3."}}
+{"ms":60,"event":{"type":"usage","input":2400,"output":75}}
+{"ms":60,"event":{"type":"finished","ok":true,"summary":"The game is on frame 180 and the count is 3."}}

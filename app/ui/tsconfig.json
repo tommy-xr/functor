@@ -1,0 +1,26 @@
+{
+  // Typecheck-only (`npm run check:app-ui`); esbuild transpiles (build.mjs)
+  // and reads `jsx` from here too.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "jsx": "react-jsx",
+    // A browser page: no @types/node globals.
+    "types": [],
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  // `*.test.ts` run under Node (`node --test`, type stripping), importing
+  // `node:test` and `./x.ts` specifiers this browser config does not allow.
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["src/**/*.test.ts"]
+}

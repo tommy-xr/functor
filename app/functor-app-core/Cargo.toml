@@ -1,0 +1,21 @@
+[package]
+name = "functor-app-core"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Derive TypeScript for the wire types; the drift test writes
+# app/ui/src/generated/protocol.ts.
+ts = ["dep:ts-rs"]
+
+[dependencies]
+# The loader's module-name rule, for project file listings (no dependencies).
+functor-lang = { path = "../../functor-lang" }
+# Gitignore-aware directory walk for project discovery.
+ignore = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
+
+[dev-dependencies]
+tempfile = "3"

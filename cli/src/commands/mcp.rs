@@ -24,6 +24,7 @@ use base64::Engine as _;
 use functor_docgen::{ApiItem, ApiReference};
 use functor_runtime_common::net::ConnCommand;
 use functor_runtime_common::{debug_protocol::DEBUG_PROTOCOL_SERVICE, Key};
+use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::service::RequestContext;
@@ -129,10 +130,31 @@ const LANGUAGE_GUIDE: &str = include_str!("../../../.claude/skills/functor-lang/
 /// Matched as a slug PREFIX, so rewording the heading's tail cannot lose it.
 const QUICK_FACTS_SLUG: &str = "quick-facts";
 
-/// Serve MCP over stdio until the client disconnects.
-pub async fn execute() -> io::Result<()> {
-    let server = FunctorMcp::new();
+/// Serve MCP over stdio until the client disconnects, or over loopback HTTP
+/// (`http` = port) until signalled or stdin closes. `attach` URLs become
+/// attached sessions first, exactly as `connect_game` would make them.
+/// `no_unsafe_code` drops `run_game_code_unsafe` from the tools.
+pub async fn execute(http: Option<u16>, attach: &[String], no_unsafe_code: bool) -> io::Result<()> {
+    // Read the token before anything else so a misconfigured start fails fast.
+    let token = http.map(|_| super::mcp_http::token_from_env()).transpose()?;
+    let server = FunctorMcp {
+        http_mode: http.is_some(),
+        no_unsafe_code,
+        ..FunctorMcp::new()
+    };
+    for raw in attach {
+        let url = raw.trim_end_matches('/');
+        server
+            .attach(url, std::future::pending())
+            .await
+            .map_err(|error| io::Error::other(format!("--attach {raw}: {error}")))?;
+    }
     let sessions = server.sessions.clone();
+    if let (Some(port), Some(token)) = (http, token) {
+        let quit = super::mcp_http::serve(server, port, token).await;
+        Registry::shutdown(&sessions);
+        return quit;
+    }
     let service = server
         .serve(stdio())
         .await
@@ -152,7 +174,7 @@ pub async fn execute() -> io::Result<()> {
 }
 
 /// Resolve when the host asks this process to stop (SIGTERM or Ctrl-C).
-async fn shutdown_signal() {
+pub(super) async fn shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -900,6 +922,12 @@ pub struct FunctorMcp {
     /// The prelude API reference, generated on first use. The `.funi` sources
     /// are embedded in this binary, so it cannot change while we run.
     docs: Arc<OnceLock<Result<ApiReference, String>>>,
+    /// The JSON object an embedding app last `PUT /app-context` (HTTP mode).
+    app_context: Arc<Mutex<Option<Value>>>,
+    /// Served over HTTP, where an app can set the context: lists `app_context`.
+    http_mode: bool,
+    /// `--no-unsafe-code`: `run_game_code_unsafe` is neither listed nor callable.
+    no_unsafe_code: bool,
 }
 
 fn ok_text(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
@@ -1143,7 +1171,29 @@ impl FunctorMcp {
                 .expect("failed to build the MCP HTTP client"),
             sessions: Arc::new(Mutex::new(Registry::default())),
             docs: Arc::new(OnceLock::new()),
+            app_context: Arc::new(Mutex::new(None)),
+            http_mode: false,
+            no_unsafe_code: false,
         }
+    }
+
+    /// The embedding app's current context: the JSON object the app hosting
+    /// this server last supplied, saying what its user is looking at — e.g.
+    /// `view` (which panel), `file` (the open file) and `session` (the game
+    /// session in view). Read it to resolve "this file" or "this game". It may
+    /// be absent: `context` is null when no app has supplied one. Its keys
+    /// are the app's, not a fixed schema. Served over HTTP only.
+    #[tool]
+    async fn app_context(&self) -> Result<CallToolResult, ErrorData> {
+        let context = self.app_context.lock().expect("app context poisoned").clone();
+        let body = match context {
+            Some(context) => serde_json::json!({ "context": context }),
+            None => serde_json::json!({
+                "context": null,
+                "note": "none set: no embedding app has supplied a context",
+            }),
+        };
+        ok_text(body.to_string())
     }
 
     /// Search the engine API reference: the `.funi` prelude embedded in this
@@ -1533,13 +1583,7 @@ may still be running, and this server no longer tracks them.",
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let url = args.url.trim_end_matches('/').to_string();
-        let reservation = self.reserve_connect(&url);
-        let target = reservation.target();
-        let _operation = resolve!(self.acquire_operation(&target, &context).await);
-        let discovery = resolve!(self.discover(&url).await);
-        // Discovery may have overlapped an owned stop marking this transient
-        // lifecycle closing. Recheck atomically with insertion.
-        let id = resolve!(reservation.finish());
+        let (id, discovery) = resolve!(self.attach(&url, context.ct.cancelled()).await);
         ok_text(
             serde_json::json!({
                 "session": id,
@@ -2227,6 +2271,19 @@ rebuild that runtime from this version of Functor."
 }
 
 impl FunctorMcp {
+    /// This server's tools, which `list_tools` and `call_tool` both go
+    /// through: a removed one is unlisted and a call to it is refused.
+    fn router(&self) -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
+        if self.no_unsafe_code {
+            router.remove_route("run_game_code_unsafe");
+        }
+        if !self.http_mode {
+            router.remove_route("app_context");
+        }
+        router
+    }
+
     /// The prelude API reference, generated once per process.
     fn api_docs(&self) -> Result<&ApiReference, String> {
         self.docs
@@ -2260,6 +2317,28 @@ impl FunctorMcp {
             closing,
             active: true,
         }
+    }
+
+    /// Register `url` (normalized) as an attached session: `connect_game`'s
+    /// body, also run for `--attach` at startup. Returns the id and discovery.
+    async fn attach(
+        &self,
+        url: &str,
+        cancelled: impl Future<Output = ()>,
+    ) -> Result<(String, Value), String> {
+        let reservation = self.reserve_connect(url);
+        let target = reservation.target();
+        let _operation = acquire_target_operation(&target, cancelled).await?;
+        let discovery = self.discover(url).await?;
+        // Discovery may have overlapped an owned stop marking this transient
+        // lifecycle closing. Recheck atomically with insertion.
+        let id = reservation.finish()?;
+        Ok((id, discovery))
+    }
+
+    /// Store the embedding app's context object for the `app_context` tool.
+    pub(super) fn set_app_context(&self, context: Value) {
+        *self.app_context.lock().expect("app context poisoned") = Some(context);
     }
 
     fn read_url(&self, session: &str) -> Result<String, String> {
@@ -2298,6 +2377,8 @@ impl FunctorMcp {
             .map_err(|error| format!("cannot locate the functor executable: {error}"))?;
 
         let mut command = Command::new(exe);
+        // The HTTP bearer token is this server's secret, not its children's.
+        command.env_remove(super::mcp_http::TOKEN_ENV);
         command.arg("-d").arg(dir);
         if let Some(entry) = entry {
             command.arg("--entry").arg(entry);
@@ -3971,6 +4052,7 @@ fn spawn_node_child(program: impl AsRef<Path>) -> Result<Child, String> {
     let program = program.as_ref();
     let mut command = Command::new(program);
     command
+        .env_remove(super::mcp_http::TOKEN_ENV)
         .arg("--input-type=module")
         .arg("--eval")
         .arg(NODE_RUNNER_SOURCE)
@@ -4528,10 +4610,11 @@ async fn acquire_target_operation(
 }
 
 #[tool_handler(
+    router = self.router(),
     name = "functor",
     instructions = "Drive Functor games over their debug runtime. Launch or attach to a game \
 (launch_game / connect_game). For trusted local multi-step automation, prefer \
-`run_game_code_unsafe`: it runs a Playwright-style JavaScript function against an injected \
+`run_game_code_unsafe` when it is listed: it runs a Playwright-style JavaScript function against an injected \
 `game` SDK in a Node.js child process, returning its value, SDK-call trace, logs, and captures. \
 It is explicitly RCE-equivalent local code, not a security sandbox. For one-off operations or \
 clients without Node.js, observe with get_state (read model), get_scene, get_trace, or \
@@ -5512,6 +5595,38 @@ mod tests {
         reqwest::get(format!("{}/", fake_http_url(raw).await))
             .await
             .unwrap()
+    }
+
+    #[test]
+    fn no_tool_uses_a_name_an_embedding_agent_runner_reserves() {
+        // An embedding agent runner reserves these for its own tools and hides them.
+        let names: Vec<String> = FunctorMcp::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert!(names.iter().any(|name| name == "app_context"), "{names:?}");
+        for reserved in ["report_status", "report_evidence", "report_result", "approve", "merge_pr"] {
+            assert!(!names.iter().any(|name| name == reserved), "{reserved} is reserved");
+        }
+    }
+
+    #[test]
+    fn the_router_drops_the_code_runner_on_request_and_app_context_off_http() {
+        let names = |server: FunctorMcp| -> Vec<String> {
+            let router = server.router();
+            router.list_all().into_iter().map(|tool| tool.name.to_string()).collect()
+        };
+        let has = |names: &[String], name: &str| names.iter().any(|n| n == name);
+        let stdio = names(FunctorMcp::new());
+        assert!(has(&stdio, "run_game_code_unsafe") && !has(&stdio, "app_context"), "{stdio:?}");
+        let app = names(FunctorMcp {
+            http_mode: true,
+            no_unsafe_code: true,
+            ..FunctorMcp::new()
+        });
+        assert!(!has(&app, "run_game_code_unsafe") && has(&app, "app_context"), "{app:?}");
+        assert_eq!(app.len(), stdio.len());
     }
 
     #[test]

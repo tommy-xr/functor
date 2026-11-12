@@ -1,0 +1,28 @@
+[package]
+name = "functor-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
+clap = { version = "4.5.6", features = ["derive"] }
+functor-app-core = { path = "../functor-app-core" }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# The agent runner (claude / codex) and its event types; one pinned revision.
+mis-agent = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
+mis-types = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
+serde_json = "1.0"
+# Game-session children, signals and timers; the server runs on the same
+# runtime.
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
+# Kills a hung tool server's process tree, and finds child processes in
+# tests, on every OS (the version mis-agent uses).
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+# Task ids for `mis-agent` runs and the tool server's bearer tokens.
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# The debug server's `POST /input` type, for the `GameInput` drift test.
+functor_runtime_common = { path = "../../runtime/functor-runtime-common" }
+tempfile = "3"
+tokio-tungstenite = "0.29"
