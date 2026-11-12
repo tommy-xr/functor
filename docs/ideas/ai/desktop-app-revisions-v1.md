@@ -450,6 +450,72 @@ calls, a sticky error mark — follows
 of places. Here there are several agents at once, so the agents are the
 characters and the kinds are what appears over their heads.
 
+### D35 — the decision page answers at a glance
+
+Refines D31. Easy decisions are approved from the first page without opening
+anything; hard ones are drilled into. So the first page of a presentation
+carries the whole case in small, and the four parts are depth behind it.
+
+**The first page shows, in this order**
+
+- **Size of the change.** Lines added and removed, the number of files, and
+  which kind they are (game logic, assets, engine). A small change is easier
+  to approve, or to approve on evidence alone.
+- **Before and after.** The one image pair or short animation that shows the
+  change best, in place — not behind a tab.
+- **A one-paragraph summary** in Simplified Technical English (ASD-STE100):
+  short sentences, one meaning per word, active voice, no idiom.
+- **Evidence.** What was run and the result: checks, tests, captures compared.
+- **Things to note.** What was not verified, what was assumed, side effects,
+  anything the user would want to know before saying yes.
+- **The decision.** Keep, Revert, or say what is off — always on this page.
+
+**Depth is tabs 1 → 2 → 3 → 4.** The four parts of D31 are tabs in order of
+effort: Highlights, Captures, Lab, Real before and after. Each item on the
+first page opens the tab that backs it — the size opens Highlights at the
+code, the image opens Captures, a note opens the part it is about — so the
+user can go deeper from the thing they doubt, or walk the tabs in order.
+
+**The presentation says how deep to go.** It marks the change as one to
+approve at a glance or one to look into, with the reason ("12 lines in one
+file, tests pass" or "changes how the grip feels: try the lab"), and opens on
+the suggested tab only when the user asks to look.
+
+The same page is the task's card on the desktop and the first panel page in
+the headset.
+
+### D36 — in the headset, a presentation can be shown in the world
+
+Some changes are judged with the eyes or the hands, not on a panel. For
+those, an item of the presentation may also be shown at the place or on the
+object it is about.
+
+- **Two versions side by side.** The old and the new — two models, two
+  weapons, two ladders — stand next to each other in front of the user, each
+  labelled, each usable. The user compares by looking and by picking each up.
+  This is the lab (D31) without a screen.
+- **A ghost of the old.** Where two objects cannot stand apart (a grip pose, a
+  holster position), the old version is drawn translucent on the new one.
+- **Notes pinned to the thing.** A highlight or a thing to note sits at the
+  object it concerns; a measured line shows a distance that changed.
+- **The decision may be an act.** Taking the version you prefer keeps it. The
+  panel's Keep and Revert always work as well.
+
+Rules:
+
+- It is a property of an item, not a mode. The panel item and its place in
+  the world highlight each other, and the panel alone is always enough.
+- Only for items about a place or an object. A rule change or a refactor
+  stays on the panel, with the size, the evidence and the summary.
+- The runtime draws it over the game (D28); the game's own scene and state
+  are untouched. The old version is the real old code running (D32), never an
+  approximation.
+- Few at a time: no more than a handful of marks in view.
+- The presentation agent chooses per item, through the same tools (D31).
+
+Pinned notes and measured lines need only a point or object to attach to and
+come first; side-by-side versions and ghosts wait on the branching spike (S5).
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
