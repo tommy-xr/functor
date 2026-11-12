@@ -360,7 +360,10 @@ mod tests {
         std::os::unix::fs::symlink(root.join("elsewhere"), root.join("linked")).unwrap();
         assert_eq!(
             check(&request("linked", &root)).unwrap_err(),
-            format!("{} exists and is not a folder", root.join("linked").display())
+            format!(
+                "{} exists and is not a folder",
+                root.join("linked").display()
+            )
         );
         std::fs::create_dir_all(root.join("x/y")).unwrap();
         assert_eq!(
