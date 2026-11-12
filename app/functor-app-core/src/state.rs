@@ -526,13 +526,13 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             }
         }
         Event::Client(ClientMsg::ForgetDevice { device }) => {
-            match devices::forget(&mut state.devices, &device) {
-                Ok(command) => {
-                    commands.push(Command::Link(command));
-                    (true, false)
+            match devices::forget(&state.devices, &device) {
+                Ok(command) => commands.push(Command::Link(command)),
+                Err(reason) => {
+                    reject(&mut commands, reason);
                 }
-                Err(reason) => (reject(&mut commands, reason), false),
             }
+            (false, false)
         }
         Event::Client(ClientMsg::GetFile { path }) => {
             get_file(&state, path, &mut commands);
@@ -4632,6 +4632,12 @@ mod tests {
             Command::Link(LinkCommand::Forget {
                 device: "ab".into()
             })
+        );
+        let (s, _) = update(
+            s,
+            link(LinkEvent::Forgotten {
+                device: "ab".into(),
+            }),
         );
         assert_eq!(s.devices.headset, Headset::NotPaired);
     }

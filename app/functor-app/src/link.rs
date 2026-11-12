@@ -87,6 +87,10 @@ pub struct Hub(Arc<Inner>);
 
 struct Inner {
     home: PathBuf,
+    /// `<home>/device-link.lock`, held while this process owns the pairings:
+    /// only the owner listens or writes them, so app processes sharing a
+    /// home never undo each other's pairing or Forget.
+    owner: Option<std::fs::File>,
     id: DesktopId,
     name: String,
     events: UnboundedSender<Event>,
@@ -133,7 +137,14 @@ impl Hub {
         let id = store::desktop_id(&home)?;
         let pairings = store::load_pairings(&home)?;
         let name = desktop_name();
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(home.join("device-link.lock"))?;
+        let owner = lock.try_lock().is_ok().then_some(lock);
         Ok(Hub(Arc::new(Inner {
+            owner,
             home,
             id,
             name,
@@ -168,6 +179,9 @@ impl Hub {
     /// Binds the listener and serves it (and, with `advertise`, the mDNS
     /// advert) until the runtime ends; its bound address.
     pub async fn listen(&self, config: Config) -> std::io::Result<SocketAddr> {
+        if self.0.owner.is_none() {
+            return Err(not_owner());
+        }
         let listener = TcpListener::bind(config.bind).await?;
         let addr = listener.local_addr()?;
         if config.advertise {
@@ -330,6 +344,9 @@ impl Hub {
         s: &mut HubState,
         change: impl FnOnce(&mut Vec<StoredPairing>),
     ) -> std::io::Result<()> {
+        if self.0.owner.is_none() {
+            return Err(not_owner());
+        }
         let mut pairings = store::load_pairings(&self.0.home)?;
         change(&mut pairings);
         store::save_pairings(&self.0.home, &pairings)?;
@@ -342,15 +359,20 @@ impl Hub {
     /// written, nothing changes and the core is told.
     fn forget(&self, device: &str) {
         let mut s = self.0.state.lock().unwrap();
-        let shown = s.pairings.iter().find(|p| p.id == device).map(paired);
+        let name = s
+            .pairings
+            .iter()
+            .find(|p| p.id == device)
+            .map(|p| p.name.clone());
         if let Err(e) = self.update_pairings(&mut s, |all| all.retain(|p| p.id != device)) {
-            if let Some(device) = shown {
-                let reason = format!("cannot forget {}: {e}", device.name);
-                self.send(LinkEvent::NotForgotten { device });
-                self.send(LinkEvent::Failed { reason });
-            }
+            let name = name.unwrap_or_else(|| "the headset".into());
+            let reason = format!("cannot forget {name}: {e}");
+            self.send(LinkEvent::Failed { reason });
             return;
         }
+        self.send(LinkEvent::Forgotten {
+            device: device.to_string(),
+        });
         for conn in s.conns.values() {
             let _ = conn.cmds.send(ConnCmd::Forgotten(device.to_string()));
         }
@@ -537,6 +559,10 @@ fn check_upgrade(req: &Request, res: WsResponse) -> Result<WsResponse, ErrorResp
         return refuse(StatusCode::FORBIDDEN);
     }
     Ok(res)
+}
+
+fn not_owner() -> std::io::Error {
+    std::io::Error::other("another Functor app using this app home has the headsets")
 }
 
 /// The address limits count by: itself, or for IPv6 its /64 (one host can

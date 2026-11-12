@@ -437,3 +437,29 @@ async fn a_wrong_secret_is_refused_then_rate_limited() {
     // It never linked.
     assert!(!lines.iter().any(|l| l.starts_with("linked")));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_second_app_on_one_home_leaves_the_headsets_to_the_first() {
+    let first = app().await;
+    let mut second = Command::new(BIN)
+        .args(["--headless", "--no-gpu", "--port", "0"])
+        .args(["--device-link", "127.0.0.1:0", "--no-mdns", "-d"])
+        .arg(first._project.path())
+        .env("FUNCTOR_APP_HOME", first.home.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(second.stderr.take().unwrap());
+    let mut lines = String::new();
+    for _ in 0..2 {
+        stderr.read_line(&mut lines).unwrap();
+    }
+    let _ = second.kill();
+    let _ = second.wait();
+    assert!(lines.starts_with("[functor-app] listening on"), "{lines}");
+    assert!(
+        lines.contains("the device link is off: another Functor app"),
+        "{lines}"
+    );
+}

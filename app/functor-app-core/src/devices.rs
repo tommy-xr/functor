@@ -207,9 +207,9 @@ pub enum LinkEvent {
         device: String,
         url: String,
     },
-    /// A Forget could not be written: `device` is still paired on disk.
-    NotForgotten {
-        device: Paired,
+    /// `device`'s pairing is deleted: its card goes.
+    Forgotten {
+        device: String,
     },
     /// Something the user asked for failed; every page is told.
     Failed {
@@ -475,10 +475,8 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                 d.tunnel = Some(url);
             }
         }
-        LinkEvent::NotForgotten { device } => {
-            if devices.find(&device.id).is_none() {
-                devices.insert_paired(device);
-            }
+        LinkEvent::Forgotten { device } => {
+            devices.list.retain(|d| !(d.paired && d.id == device));
         }
         // Nothing changes here; `update` tells the pages.
         LinkEvent::Failed { .. } => {}
@@ -530,18 +528,15 @@ pub fn deny(devices: &mut Devices, request: u64) -> Result<LinkCommand, String> 
     }
 }
 
-/// Forget paired `device`: its card goes now (and comes back if the shell
-/// cannot write that: `LinkEvent::NotForgotten`).
-pub fn forget(devices: &mut Devices, device: &str) -> Result<LinkCommand, String> {
-    let before = devices.list.len();
-    devices.list.retain(|d| !(d.paired && d.id == device));
-    if devices.list.len() == before {
-        return Err(format!("no paired device {device}"));
+/// Forget paired `device`. Its card stays until the shell has deleted the
+/// pairing (`LinkEvent::Forgotten`), so a failed write leaves it as it was.
+pub fn forget(devices: &Devices, device: &str) -> Result<LinkCommand, String> {
+    match devices.list.iter().any(|d| d.paired && d.id == device) {
+        true => Ok(LinkCommand::Forget {
+            device: device.to_string(),
+        }),
+        false => Err(format!("no paired device {device}")),
     }
-    devices.headset = headset(devices);
-    Ok(LinkCommand::Forget {
-        device: device.to_string(),
-    })
 }
 
 #[cfg(test)]
@@ -874,26 +869,22 @@ mod tests {
     }
 
     #[test]
-    fn forget_removes_a_paired_device_and_a_failed_write_brings_it_back() {
+    fn forget_removes_a_paired_device_once_the_shell_has() {
         let mut d = started(&["a"]);
+        connect(&mut d, 1, "a", "0.1.0", 0);
         assert_eq!(
-            forget(&mut d, "a"),
+            forget(&d, "a"),
             Ok(LinkCommand::Forget { device: "a".into() })
         );
+        // Until the shell says so (a failed write keeps it), the card stays whole.
+        assert!(matches!(state(&d, "a"), DeviceState::Connected { .. }));
+        on_link(&mut d, LinkEvent::Forgotten { device: "a".into() }, 5);
         assert!(d.list.is_empty());
         assert_eq!(d.headset, Headset::NotPaired);
-        assert!(forget(&mut d, "a").is_err());
-        on_link(
-            &mut d,
-            LinkEvent::NotForgotten {
-                device: paired("a"),
-            },
-            5,
-        );
-        assert!(d.list[0].paired);
+        assert!(forget(&d, "a").is_err());
         // Not a request.
         ask(&mut d, 1, "x", 0);
-        assert!(forget(&mut d, "x").is_err());
+        assert!(forget(&d, "x").is_err());
     }
 
     #[test]

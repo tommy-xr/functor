@@ -295,17 +295,25 @@ async fn app(
     let (listener, origin) = server::bind(args.port).await?;
     // Runs started from here on can show views (`task` and `--print` have no route).
     views.listen(&origin);
-    let listening = match args.no_device_link {
-        true => None,
+    // The rest of the app works without the link; why it is off is said
+    // after the `listening on` line, which launchers read first.
+    let link = match args.no_device_link {
+        true => Ok(None),
         false => {
             let config = link::Config {
                 bind: args.device_link,
                 advertise: !args.no_mdns,
             };
-            Some(hub.listen(config).await?.to_string())
+            hub.listen(config).await.map(|addr| Some(addr.to_string()))
         }
     };
+    let listening = link.as_ref().ok().cloned().flatten();
     let _ = tx.send(hub.started(listening.clone()));
+    let say_link = || match &link {
+        Ok(Some(addr)) => eprintln!("[functor-app] device link on {addr}"),
+        Ok(None) => {}
+        Err(e) => eprintln!("functor-app: the device link is off: {e}"),
+    };
     let code = match window {
         // The full URL, for a person to open; see `server` on the token.
         None => {
@@ -313,9 +321,7 @@ async fn app(
                 "[functor-app] listening on {origin}/#token={}",
                 token.reveal()
             );
-            if let Some(addr) = &listening {
-                eprintln!("[functor-app] device link on {addr}");
-            }
+            say_link();
             let shutdown = async { 128 + signal.await };
             server::serve(
                 state,
@@ -331,9 +337,7 @@ async fn app(
         }
         Some((window_origin, close)) => {
             eprintln!("[functor-app] listening on {origin}");
-            if let Some(addr) = &listening {
-                eprintln!("[functor-app] device link on {addr}");
-            }
+            say_link();
             let _ = window_origin.send(origin);
             // Closing the window stops everything the way a signal does.
             let shutdown = async {
