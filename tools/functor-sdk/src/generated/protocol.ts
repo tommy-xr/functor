@@ -89,6 +89,19 @@ export type CellsWalk = { visible: number, portals: number, cut: number, outside
 export type CullCounts = { tested: number, culled: number, };
 
 /**
+ * `/state.link`: the headset's device link.
+ */
+export type DeviceLinkState = { 
+/**
+ * The paired desktop's name.
+ */
+paired: string | null, linked: boolean, 
+/**
+ * A pairing in progress or just ended, as the headset's overlay shows it.
+ */
+pairing: PairingState | null, };
+
+/**
  * A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
  */
 export type DisplayRefreshRate = { 
@@ -496,6 +509,11 @@ pressed: MouseButtons,
 released: MouseButtons, };
 
 /**
+ * A pairing as the headset shows it.
+ */
+export type PairingState = { "stage": "searching" } | { "stage": "code", desktop: string, code: string, confirmed: boolean, } | { "stage": "paired", desktop: string, } | { "stage": "failed", reason: string, };
+
+/**
  * How a shell is showing the real world behind `Frame.withPassthrough`
  * frames, as `GET /state.passthrough` reports it.
  */
@@ -729,7 +747,12 @@ haptics?: HapticCounts,
  * p50/p99/max per stage over the shell's frame ring (v30); `GET /frames`
  * has the frames. Omitted before the first frame.
  */
-frame_stats?: FrameStats, };
+frame_stats?: FrameStats, 
+/**
+ * The headset's device link to a desktop app (v37). Omitted by runtimes
+ * without one, such as desktop.
+ */
+link?: DeviceLinkState, };
 
 /**
  * One rendered view. Desktop reports one `main` view; stereo XR reports one

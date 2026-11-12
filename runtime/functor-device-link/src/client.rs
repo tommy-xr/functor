@@ -256,7 +256,10 @@ impl Client {
 enum Ended {
     Paired,
     /// It was linked (backoff restarts) or not.
-    Over { linked: bool, why: String },
+    Over {
+        linked: bool,
+        why: String,
+    },
     /// The user asked to pair: drop this link and pair.
     PairRequested,
     /// The user cancelled the pairing.
@@ -267,7 +270,7 @@ enum Ended {
 
 enum Found {
     At(String),
-    NotFound,
+    Nothing,
     Command(Command),
     Gone,
 }
@@ -311,10 +314,11 @@ impl<H: Host> Worker<H> {
                 }
                 continue;
             };
-            self.shared.update(|v| v.paired = stored.desktop_name.clone());
+            self.shared
+                .update(|v| v.paired = stored.desktop_name.clone());
             let ended = match self.find(Some(desktop)) {
                 Found::At(addr) => self.session(&addr, device, Some(&secret)),
-                Found::NotFound => Ended::Over {
+                Found::Nothing => Ended::Over {
                     linked: false,
                     why: "desktop not found".into(),
                 },
@@ -361,7 +365,7 @@ impl<H: Host> Worker<H> {
         self.shared.update(|v| v.pairing = Some(Pairing::Searching));
         let ended = match self.find(None) {
             Found::At(addr) => self.session(&addr, device, None),
-            Found::NotFound => Ended::Over {
+            Found::Nothing => Ended::Over {
                 linked: false,
                 why: "No Functor desktop found on this network".into(),
             },
@@ -374,7 +378,9 @@ impl<H: Host> Worker<H> {
             // Unless the connection already said why.
             Ended::Over { why, .. } => self.shared.update(|v| {
                 if !matches!(v.pairing, Some(Pairing::Failed { .. })) {
-                    v.pairing = Some(Pairing::Failed { reason: why.clone() });
+                    v.pairing = Some(Pairing::Failed {
+                        reason: why.clone(),
+                    });
                 }
             }),
             Ended::Cancelled => self.shared.update(|v| v.pairing = None),
@@ -400,7 +406,7 @@ impl<H: Host> Worker<H> {
             Ok(d) => d,
             Err(e) => {
                 log::warn!("device link: mDNS: {e}");
-                return Found::NotFound;
+                return Found::Nothing;
             }
         };
         let found = match daemon.browse(SERVICE) {
@@ -408,7 +414,7 @@ impl<H: Host> Worker<H> {
             Err(e) => {
                 log::warn!("device link: mDNS browse: {e}");
                 let _ = daemon.shutdown();
-                return Found::NotFound;
+                return Found::Nothing;
             }
         };
         let want = desktop.map(|d| hex(&d));
@@ -425,14 +431,18 @@ impl<H: Host> Worker<H> {
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 log::info!("device link: no desktop {want:?} among {seen:?}");
-                break Found::NotFound;
+                break Found::Nothing;
             };
             let info = match found.recv_timeout(left.min(Duration::from_millis(250))) {
                 Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => info,
                 _ => continue,
             };
             let id = info.get_property_val_str("id");
-            seen.push(format!("{} {id:?} {:?}", info.get_fullname(), info.get_addresses_v4()));
+            seen.push(format!(
+                "{} {id:?} {:?}",
+                info.get_fullname(),
+                info.get_addresses_v4()
+            ));
             if want.is_some() && id != want.as_deref() {
                 continue;
             }
@@ -478,17 +488,26 @@ impl<H: Host> Worker<H> {
             conn.apply(first, self)?;
             let mut next_beat = now() + HEARTBEAT_MS;
             loop {
-                let poll = if conn.in_flight > 0 { POLL_BUSY } else { POLL_IDLE };
+                let poll = if conn.in_flight > 0 {
+                    POLL_BUSY
+                } else {
+                    POLL_IDLE
+                };
                 let _ = conn.ws.get_ref().set_read_timeout(Some(poll));
                 match conn.ws.read() {
                     Ok(Message::Binary(bytes)) => {
                         let out = machine.receive(&bytes, now());
                         conn.apply(out, self)?;
                     }
-                    Ok(Message::Close(_)) => return Err(Ended::over(conn.linked, "closed by the desktop")),
+                    Ok(Message::Close(_)) => {
+                        return Err(Ended::over(conn.linked, "closed by the desktop"))
+                    }
                     Ok(_) => {}
                     Err(tungstenite::Error::Io(e))
-                        if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {}
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) => {}
                     Err(e) => return Err(Ended::over(conn.linked, e.to_string())),
                 }
                 while let Ok(response) = conn.responses.1.try_recv() {
@@ -608,7 +627,11 @@ impl Connection<'_> {
             Ok(msgs) => msgs,
             // Too large or not text the link carries: say so instead.
             Err(e) => machine
-                .respond(text(id, 502, &format!("the response cannot cross the link: {e}")))
+                .respond(text(
+                    id,
+                    502,
+                    &format!("the response cannot cross the link: {e}"),
+                ))
                 .map_err(|e| Ended::over(self.linked, e.to_string()))?,
         };
         self.send_all(msgs)
@@ -616,11 +639,17 @@ impl Connection<'_> {
 
     /// Sends what the machine produced and acts on its events; `Err` once
     /// the connection is over.
-    fn apply<H: Host>(&mut self, out: Output<device::Event>, worker: &Worker<H>) -> Result<(), Ended> {
+    fn apply<H: Host>(
+        &mut self,
+        out: Output<device::Event>,
+        worker: &Worker<H>,
+    ) -> Result<(), Ended> {
         self.send_all(out.send)?;
         for event in out.events {
             match event {
-                device::Event::Code { desktop_name, code, .. } => {
+                device::Event::Code {
+                    desktop_name, code, ..
+                } => {
                     worker.shared.update(|v| {
                         v.pairing = Some(Pairing::Code {
                             desktop: desktop_name,
@@ -642,14 +671,18 @@ impl Connection<'_> {
                     });
                     if let Err(e) = stored {
                         let reason = format!("Could not store the pairing: {e}");
-                        worker.shared.update(|v| v.pairing = Some(Pairing::Failed { reason }));
+                        worker
+                            .shared
+                            .update(|v| v.pairing = Some(Pairing::Failed { reason }));
                         return Err(Ended::over(false, "pairing not stored"));
                     }
                     log::info!("device link: paired with {desktop_name}");
                     self.paired = true;
                     worker.shared.update(|v| {
                         v.paired = Some(desktop_name.clone());
-                        v.pairing = Some(Pairing::Paired { desktop: desktop_name });
+                        v.pairing = Some(Pairing::Paired {
+                            desktop: desktop_name,
+                        });
                     });
                 }
                 device::Event::Linked { desktop_name, .. } => {
@@ -687,7 +720,10 @@ impl Connection<'_> {
             return Ended::Cancelled;
         }
         // Pairing: the user sees why.
-        if matches!(worker.shared.view().pairing, Some(Pairing::Code { .. } | Pairing::Searching)) {
+        if matches!(
+            worker.shared.view().pairing,
+            Some(Pairing::Code { .. } | Pairing::Searching)
+        ) {
             let reason = match &e {
                 Error::Denied => "The desktop said the code was not its own".to_string(),
                 Error::Expired => "The code expired".to_string(),
@@ -731,7 +767,11 @@ pub fn forward(debug: SocketAddr, request: &Request) -> Response {
         return text(request.id, 400, "bad target");
     }
     exchange(debug, request).unwrap_or_else(|e| {
-        text(request.id, 502, &format!("the headset's debug runtime did not answer: {e}"))
+        text(
+            request.id,
+            502,
+            &format!("the headset's debug runtime did not answer: {e}"),
+        )
     })
 }
 
@@ -834,29 +874,51 @@ mod tests {
         let r = request(
             "POST",
             "/time?x=1",
-            &[("content-type", "application/json"), ("cookie", "no"), ("origin", "http://127.0.0.1:3000")],
+            &[
+                ("content-type", "application/json"),
+                ("cookie", "no"),
+                ("origin", "http://127.0.0.1:3000"),
+            ],
             b"{\"pause\":true}",
         );
         let response = forward(addr, &r);
         assert_eq!(response.id, 7);
         assert_eq!(response.status, 201);
         assert_eq!(response.body, b"{}");
-        assert_eq!(response.headers, vec![("content-type".to_string(), "application/json".to_string())]);
+        assert_eq!(
+            response.headers,
+            vec![("content-type".to_string(), "application/json".to_string())]
+        );
         let head = seen.recv().unwrap();
         assert!(head.starts_with("POST /time?x=1 HTTP/1.1\r\n"), "{head}");
         assert!(head.contains("Content-Length: 14\r\n") && head.ends_with("{\"pause\":true}"));
         assert!(head.contains("origin: http://127.0.0.1:3000\r\n"));
-        assert!(!head.contains("cookie"), "only the headers the runtime reads: {head}");
+        assert!(
+            !head.contains("cookie"),
+            "only the headers the runtime reads: {head}"
+        );
     }
 
     #[test]
     fn stream_is_refused_and_a_missing_runtime_is_a_502() {
         let (addr, seen) = server("unused");
-        assert_eq!(forward(addr, &request("GET", "/stream?w=2", &[], b"")).status, 501);
+        assert_eq!(
+            forward(addr, &request("GET", "/stream?w=2", &[], b"")).status,
+            501
+        );
         assert!(seen.try_recv().is_err(), "never forwarded");
-        let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        assert_eq!(forward(closed, &request("GET", "/state", &[], b"")).status, 502);
-        assert_eq!(forward(addr, &request("GET", "state", &[], b"")).status, 400);
+        let closed = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        assert_eq!(
+            forward(closed, &request("GET", "/state", &[], b"")).status,
+            502
+        );
+        assert_eq!(
+            forward(addr, &request("GET", "state", &[], b"")).status,
+            400
+        );
     }
 
     #[test]

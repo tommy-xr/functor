@@ -71,15 +71,26 @@ impl QuestHost {
                     .call_method(
                         &manager,
                         jni_str!("createMulticastLock"),
-                        jni_sig!("(Ljava/lang/String;)Landroid/net/wifi/WifiManager$MulticastLock;"),
+                        jni_sig!(
+                            "(Ljava/lang/String;)Landroid/net/wifi/WifiManager$MulticastLock;"
+                        ),
                         &[JValue::Object(&tag)],
                     )?
                     .l()?;
-                env.call_method(&made, jni_str!("setReferenceCounted"), jni_sig!("(Z)V"), &[JValue::Bool(false)])?;
+                env.call_method(
+                    &made,
+                    jni_str!("setReferenceCounted"),
+                    jni_sig!("(Z)V"),
+                    &[JValue::Bool(false)],
+                )?;
                 *lock = Some(env.new_global_ref(made)?);
             }
             let made = lock.as_ref().expect("made above");
-            let method = if on { jni_str!("acquire") } else { jni_str!("release") };
+            let method = if on {
+                jni_str!("acquire")
+            } else {
+                jni_str!("release")
+            };
             env.call_method(made, method, jni_sig!("()V"), &[])?;
             Ok(())
         })
@@ -88,7 +99,11 @@ impl QuestHost {
 
 /// Starts the client; `debug` is the debug runtime's listener for tunnelled
 /// requests.
-pub fn start(store_dir: Option<std::path::PathBuf>, debug: SocketAddr, build: &str) -> Option<Client> {
+pub fn start(
+    store_dir: Option<std::path::PathBuf>,
+    debug: SocketAddr,
+    build: &str,
+) -> Option<Client> {
     let Some(dir) = store_dir else {
         log::warn!("device link: no app storage, so no pairing");
         return None;
@@ -125,7 +140,15 @@ pub fn command(gesture: Gesture) -> Command {
 pub fn pairing_state(pairing: Pairing) -> PairingState {
     match pairing {
         Pairing::Searching => PairingState::Searching,
-        Pairing::Code { desktop, code, confirmed } => PairingState::Code { desktop, code, confirmed },
+        Pairing::Code {
+            desktop,
+            code,
+            confirmed,
+        } => PairingState::Code {
+            desktop,
+            code,
+            confirmed,
+        },
         Pairing::Paired { desktop } => PairingState::Paired { desktop },
         Pairing::Failed { reason } => PairingState::Failed { reason },
     }

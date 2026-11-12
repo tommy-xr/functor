@@ -211,6 +211,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `application/octet-stream`; each part carries `X-Rendered-Frame` (as
 /// `/state` numbers `rendered_frames`) and `X-Capture-Ms`. Desktop only; a
 /// pre-v36 runtime answers 404.
+///
+/// 37 adds the optional `link` field on `GET /state` ([`DeviceLinkState`]):
+/// a headset's device link to a desktop app and the pairing its overlay
+/// shows. Omitted on desktop.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 37;
 
 /// The well-known localhost port `functor develop` serves this protocol on

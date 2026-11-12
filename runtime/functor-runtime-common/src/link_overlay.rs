@@ -39,9 +39,18 @@ pub struct Gestures {
 
 impl Gestures {
     /// One sample; `open` while the overlay shows.
-    pub fn step(&mut self, xr: Option<&XrInputSnapshot>, open: bool, now: Instant) -> Option<Gesture> {
+    pub fn step(
+        &mut self,
+        xr: Option<&XrInputSnapshot>,
+        open: bool,
+        now: Instant,
+    ) -> Option<Gesture> {
         let (menu, a, b) = xr.map_or((false, false, false), |xr| {
-            (xr.left.menu_pressed, xr.right.primary_pressed, xr.right.secondary_pressed)
+            (
+                xr.left.menu_pressed,
+                xr.right.primary_pressed,
+                xr.right.secondary_pressed,
+            )
         });
         let pressed = |was: &mut bool, is: bool| !std::mem::replace(was, is) && is;
         let (a, b) = (pressed(&mut self.a, a), pressed(&mut self.b, b));
@@ -109,15 +118,27 @@ pub fn spaced(code: &str) -> String {
 
 /// The panel's lines for `pairing`.
 pub fn lines(pairing: &PairingState) -> Vec<Line> {
-    let line = |text: &str, size, color| Line { text: text.to_string(), size, color };
+    let line = |text: &str, size, color| Line {
+        text: text.to_string(),
+        size,
+        color,
+    };
     match pairing {
         PairingState::Searching => vec![
             line("PAIR WITH A DESKTOP", HEADING, CYAN),
             line("Looking for Functor on this network...", BODY, WHITE),
             line("B  Cancel", BODY, DIM),
         ],
-        PairingState::Code { desktop, code, confirmed } => vec![
-            line(&format!("PAIR WITH {}", desktop.to_uppercase()), HEADING, CYAN),
+        PairingState::Code {
+            desktop,
+            code,
+            confirmed,
+        } => vec![
+            line(
+                &format!("PAIR WITH {}", desktop.to_uppercase()),
+                HEADING,
+                CYAN,
+            ),
             line(&spaced(code), CODE, WHITE),
             if *confirmed {
                 line("Now click Allow on the desktop", BODY, WHITE)
@@ -134,10 +155,9 @@ pub fn lines(pairing: &PairingState) -> Vec<Line> {
             line("PAIRED", HEADING, CYAN),
             line(&format!("with {desktop}"), BODY, WHITE),
         ],
-        PairingState::Failed { reason } => vec![
-            line("NOT PAIRED", HEADING, PINK),
-            line(reason, BODY, WHITE),
-        ],
+        PairingState::Failed { reason } => {
+            vec![line("NOT PAIRED", HEADING, PINK), line(reason, BODY, WHITE)]
+        }
     }
 }
 
@@ -152,20 +172,34 @@ const GAP: f32 = 0.018;
 pub fn mesh(lines: &[Line]) -> Vec<f32> {
     let width = |l: &Line| sprite_font::advance_count(&l.text) as f32 * l.size;
     let inner_w = lines.iter().map(width).fold(0.0, f32::max);
-    let inner_h = lines.iter().map(|l| l.size).sum::<f32>() + GAP * lines.len().saturating_sub(1) as f32;
+    let inner_h =
+        lines.iter().map(|l| l.size).sum::<f32>() + GAP * lines.len().saturating_sub(1) as f32;
     let (w, h) = (inner_w + 2.0 * PAD, inner_h + 2.0 * PAD);
     let mut out = Vec::new();
     let bg = crate::color_space::srgb_to_linear3([BACKGROUND[0], BACKGROUND[1], BACKGROUND[2]]);
-    quad(&mut out, [-w / 2.0, -h / 2.0, w, h], None, [bg[0], bg[1], bg[2], BACKGROUND[3]]);
+    quad(
+        &mut out,
+        [-w / 2.0, -h / 2.0, w, h],
+        None,
+        [bg[0], bg[1], bg[2], BACKGROUND[3]],
+    );
     let mut top = h / 2.0 - PAD;
-    let atlas = [sprite_font::ATLAS_WIDTH as f32, sprite_font::ATLAS_HEIGHT as f32];
+    let atlas = [
+        sprite_font::ATLAS_WIDTH as f32,
+        sprite_font::ATLAS_HEIGHT as f32,
+    ];
     for line in lines {
         let [r, g, b] = crate::color_space::srgb_to_linear3(line.color);
         let mut x = -width(line) / 2.0;
         for character in line.text.chars() {
             if let Some((cx, cy, cw, ch)) = sprite_font::glyph_cell(character) {
                 let uv = [cx / atlas[0], cy / atlas[1], cw / atlas[0], ch / atlas[1]];
-                quad(&mut out, [x, top - line.size, line.size, line.size], Some(uv), [r, g, b, 1.0]);
+                quad(
+                    &mut out,
+                    [x, top - line.size, line.size, line.size],
+                    Some(uv),
+                    [r, g, b, 1.0],
+                );
             }
             x += line.size;
         }
@@ -179,25 +213,48 @@ pub fn mesh(lines: &[Line]) -> Vec<f32> {
 fn quad(out: &mut Vec<f32>, rect: [f32; 4], uv: Option<[f32; 4]>, color: [f32; 4]) {
     let [x, y, w, h] = rect;
     let corner = |dx: f32, dy: f32| {
-        let (u, v) = uv.map_or((-1.0, -1.0), |[u, v, uw, vh]| (u + dx * uw, v + (1.0 - dy) * vh));
-        [x + dx * w, y + dy * h, u, v, color[0], color[1], color[2], color[3]]
+        let (u, v) = uv.map_or((-1.0, -1.0), |[u, v, uw, vh]| {
+            (u + dx * uw, v + (1.0 - dy) * vh)
+        });
+        [
+            x + dx * w,
+            y + dy * h,
+            u,
+            v,
+            color[0],
+            color[1],
+            color[2],
+            color[3],
+        ]
     };
-    for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+    for (dx, dy) in [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+    ] {
         out.extend(corner(dx, dy));
     }
 }
 
-/// Head-locked for one eye: a metre ahead, a little below the gaze. `fov`
+/// Head-locked for one eye: a metre ahead, 10° below the gaze. `fov`
 /// is the eye's `[left, right, down, up]` in radians; `eye_in_head` its pose
 /// relative to the head centre, so both eyes agree on the panel's depth.
 pub fn head_locked_transform(fov: [f32; 4], eye_in_head: TrackingPose) -> Matrix4<f32> {
     let [left, right, down, up] = fov;
-    let projection = crate::Camera { near: 0.05, far: 10.0, ..Default::default() }
-        .projection_matrix_from_fov_angles(left, right, down, up);
+    let projection = crate::Camera {
+        near: 0.05,
+        far: 10.0,
+        ..Default::default()
+    }
+    .projection_matrix_from_fov_angles(left, right, down, up);
     let [x, y, z, w] = eye_in_head.orientation;
-    let eye = Matrix4::from_translation(eye_in_head.position.into()) * Matrix4::from(Quaternion::new(w, x, y, z));
+    let eye = Matrix4::from_translation(eye_in_head.position.into())
+        * Matrix4::from(Quaternion::new(w, x, y, z));
     let eye_from_head = eye.invert().unwrap_or(Matrix4::identity());
-    projection * eye_from_head * Matrix4::from_translation(cgmath::vec3(0.0, -0.08, -1.0))
+    projection * eye_from_head * Matrix4::from_translation(cgmath::vec3(0.0, -0.18, -1.0))
 }
 
 /// The overlay's GL program, font atlas and current mesh.
@@ -279,7 +336,14 @@ impl LinkOverlayPainter {
             let stride = (STRIDE * 4) as i32;
             for (index, (size, offset)) in [(2, 0), (2, 2), (4, 4)].into_iter().enumerate() {
                 gl.enable_vertex_attrib_array(index as u32);
-                gl.vertex_attrib_pointer_f32(index as u32, size, glow::FLOAT, false, stride, offset * 4);
+                gl.vertex_attrib_pointer_f32(
+                    index as u32,
+                    size,
+                    glow::FLOAT,
+                    false,
+                    stride,
+                    offset * 4,
+                );
             }
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
@@ -310,7 +374,12 @@ impl LinkOverlayPainter {
         // The shell's `SceneContext::output_srgb_encode()`.
         output_srgb_encode: bool,
     ) {
-        let caps = [glow::CULL_FACE, glow::DEPTH_TEST, glow::SCISSOR_TEST, glow::BLEND];
+        let caps = [
+            glow::CULL_FACE,
+            glow::DEPTH_TEST,
+            glow::SCISSOR_TEST,
+            glow::BLEND,
+        ];
         unsafe {
             if self.shown.as_ref() != Some(pairing) {
                 let mesh = mesh(&lines(pairing));
@@ -336,11 +405,13 @@ impl LinkOverlayPainter {
             );
             gl.viewport(0, 0, viewport.0 as i32, viewport.1 as i32);
             self.program.use_program(gl);
-            self.program.set_uniform_matrix4(gl, &self.transform, &transform);
+            self.program
+                .set_uniform_matrix4(gl, &self.transform, &transform);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas));
             self.program.set_uniform_1i(gl, &self.atlas_uniform, 0);
-            self.output.set(&self.program, gl, output_srgb_encode, OutputAlpha::Blend);
+            self.output
+                .set(&self.program, gl, output_srgb_encode, OutputAlpha::Blend);
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, self.vertices);
             gl.bind_vertex_array(None);
@@ -374,14 +445,26 @@ mod tests {
         let t0 = Instant::now();
         let mut g = Gestures::default();
         assert_eq!(g.step(Some(&xr(true, false, false)), false, t0), None);
-        assert_eq!(g.step(Some(&xr(true, false, false)), false, t0 + HOLD / 2), None);
-        assert_eq!(g.step(Some(&xr(true, false, false)), false, t0 + HOLD), Some(Gesture::Pair));
-        assert_eq!(g.step(Some(&xr(true, false, false)), false, t0 + HOLD * 3), None);
+        assert_eq!(
+            g.step(Some(&xr(true, false, false)), false, t0 + HOLD / 2),
+            None
+        );
+        assert_eq!(
+            g.step(Some(&xr(true, false, false)), false, t0 + HOLD),
+            Some(Gesture::Pair)
+        );
+        assert_eq!(
+            g.step(Some(&xr(true, false, false)), false, t0 + HOLD * 3),
+            None
+        );
         // A short press is the game's.
         let t1 = t0 + HOLD * 4;
         assert_eq!(g.step(Some(&xr(false, false, false)), false, t1), None);
         assert_eq!(g.step(Some(&xr(true, false, false)), false, t1), None);
-        assert_eq!(g.step(Some(&xr(false, false, false)), false, t1 + HOLD / 2), None);
+        assert_eq!(
+            g.step(Some(&xr(false, false, false)), false, t1 + HOLD / 2),
+            None
+        );
         assert_eq!(g.step(None, false, t1 + HOLD * 2), None);
     }
 
@@ -393,9 +476,15 @@ mod tests {
         assert_eq!(g.step(Some(&xr(false, true, false)), false, t), None);
         assert_eq!(g.step(Some(&xr(false, true, false)), true, t), None);
         assert_eq!(g.step(Some(&xr(false, false, false)), true, t), None);
-        assert_eq!(g.step(Some(&xr(false, true, false)), true, t), Some(Gesture::Matches));
+        assert_eq!(
+            g.step(Some(&xr(false, true, false)), true, t),
+            Some(Gesture::Matches)
+        );
         assert_eq!(g.step(Some(&xr(false, true, false)), true, t), None);
-        assert_eq!(g.step(Some(&xr(false, true, true)), true, t), Some(Gesture::Cancel));
+        assert_eq!(
+            g.step(Some(&xr(false, true, true)), true, t),
+            Some(Gesture::Cancel)
+        );
         // Closed, A is the game's.
         assert_eq!(g.step(Some(&xr(false, false, false)), false, t), None);
         assert_eq!(g.step(Some(&xr(false, true, false)), false, t), None);
@@ -410,27 +499,45 @@ mod tests {
         without_presses(&mut sample);
         assert!(sample.right.active && sample.right.aim.is_some());
         assert_eq!(sample.right.trigger, 0.0);
-        assert!(!sample.left.menu_pressed && !sample.right.primary_pressed && !sample.right.secondary_pressed);
+        assert!(
+            !sample.left.menu_pressed
+                && !sample.right.primary_pressed
+                && !sample.right.secondary_pressed
+        );
     }
 
     #[test]
     fn the_code_reads_in_two_groups_and_the_panel_fits_its_lines() {
         assert_eq!(spaced("482913"), "482 913");
-        let code = PairingState::Code { desktop: "Mac".into(), code: "482913".into(), confirmed: false };
+        let code = PairingState::Code {
+            desktop: "Mac".into(),
+            code: "482913".into(),
+            confirmed: false,
+        };
         let lines = lines(&code);
         assert_eq!(lines[0].text, "PAIR WITH MAC");
         assert_eq!(lines[1].text, "482 913");
         assert!(lines[3].text.contains("Matches"));
         let mesh = mesh(&lines);
         // Background plus one quad per visible glyph (spaces draw nothing).
-        let glyphs: usize = lines.iter().map(|l| l.text.chars().filter(|c| *c != ' ').count()).sum();
+        let glyphs: usize = lines
+            .iter()
+            .map(|l| l.text.chars().filter(|c| *c != ' ').count())
+            .sum();
         assert_eq!(mesh.len(), (1 + glyphs) * 6 * STRIDE);
         // Every glyph lies inside the background.
         let xs: Vec<f32> = mesh.chunks(STRIDE).map(|v| v[0]).collect();
         let ys: Vec<f32> = mesh.chunks(STRIDE).map(|v| v[1]).collect();
         let (bw, bh) = (xs[1] - xs[0], ys[2] - ys[0]);
-        assert!(xs.iter().all(|x| x.abs() <= bw / 2.0 + 1e-6) && ys.iter().all(|y| y.abs() <= bh / 2.0 + 1e-6));
-        let confirmed = PairingState::Code { desktop: "Mac".into(), code: "482913".into(), confirmed: true };
+        assert!(
+            xs.iter().all(|x| x.abs() <= bw / 2.0 + 1e-6)
+                && ys.iter().all(|y| y.abs() <= bh / 2.0 + 1e-6)
+        );
+        let confirmed = PairingState::Code {
+            desktop: "Mac".into(),
+            code: "482913".into(),
+            confirmed: true,
+        };
         assert!(super::lines(&confirmed)[2].text.contains("Allow"));
     }
 }

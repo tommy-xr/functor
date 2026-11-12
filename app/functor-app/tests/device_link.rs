@@ -50,12 +50,7 @@ async fn app_with(link: &[&str]) -> App {
     std::fs::write(project.path().join("game.fun"), "").unwrap();
     let home = tempfile::tempdir().unwrap();
     let mut child = Command::new(BIN)
-        .args([
-            "--headless",
-            "--no-gpu",
-            "--port",
-            "0",
-        ])
+        .args(["--headless", "--no-gpu", "--port", "0"])
         .args(link)
         .arg("-d")
         .arg(project.path())
@@ -224,7 +219,13 @@ fn get_as(url: &str, path: &str, host: &str) -> Result<(u16, String), std::io::E
 
 /// `POST path` with a JSON `body`.
 fn post(url: &str, path: &str, body: &str) -> Result<(u16, String), std::io::Error> {
-    http(url, "POST", path, url.strip_prefix("http://").unwrap(), body)
+    http(
+        url,
+        "POST",
+        path,
+        url.strip_prefix("http://").unwrap(),
+        body,
+    )
 }
 
 fn http(
@@ -636,8 +637,10 @@ async fn the_headset_client_pairs_tunnels_and_relinks() {
     })
     .await;
     quest.send(headset::Command::Cancel);
-    until("the overlay closes", || quest.pairing().is_none().then_some(()))
-        .await;
+    until("the overlay closes", || {
+        quest.pairing().is_none().then_some(())
+    })
+    .await;
     app.devices_where("the request goes", |d| asking(d, "Client Quest").is_none())
         .await;
     until("it relinks", || quest.view().linked.then_some(())).await;
@@ -686,7 +689,9 @@ impl Quest {
     /// Launches the app afresh and waits until it renders.
     async fn launch(&self) {
         self.shell("am broadcast -a com.oculus.vrpowermanager.prox_close");
-        self.shell(&format!("am start -S -n {PACKAGE}/android.app.NativeActivity"));
+        self.shell(&format!(
+            "am start -S -n {PACKAGE}/android.app.NativeActivity"
+        ));
         let rendered = |url: &str| -> Option<u64> {
             let (_, body) = get(url, "/state").ok()?;
             serde_json::from_str::<Value>(&body).ok()?["rendered_frames"].as_u64()
@@ -703,7 +708,8 @@ impl Quest {
 
     /// Holds `controls` (an `xr` sample's hand fields) for `ms`, then lets go.
     async fn press(&self, url: &str, hand: &str, field: &str, ms: u64) {
-        let sample = |on: bool| json!({"type": "xr", hand: {"active": true, field: on}}).to_string();
+        let sample =
+            |on: bool| json!({"type": "xr", hand: {"active": true, field: on}}).to_string();
         let ok = |sent: (u16, String)| assert_eq!(sent.0, 200, "{}", sent.1);
         ok(post(url, "/input", &sample(true)).unwrap());
         tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -742,7 +748,10 @@ impl Drop for Quest {
                 self.shell(&format!("run-as {PACKAGE} rm -f {PAIRING_FILE}"));
             }
         }
-        self.shell(&format!("setprop debug.oculus.guardian_pause {}", self.guardian));
+        self.shell(&format!(
+            "setprop debug.oculus.guardian_pause {}",
+            self.guardian
+        ));
         let port = self.debug.rsplit(':').next().unwrap().to_string();
         let _ = self.adb(&["forward", "--remove", &format!("tcp:{port}")]);
     }
@@ -801,7 +810,9 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
     assert_eq!(quest.link()["linked"], false);
 
     // Hold the menu button: the overlay looks for a desktop and shows a code.
-    quest.press(&quest.debug, "left", "menu_pressed", 1500).await;
+    quest
+        .press(&quest.debug, "left", "menu_pressed", 1500)
+        .await;
     let code = until("the headset shows a code", || {
         let pairing = quest.link()["pairing"].clone();
         (pairing["stage"] == "code").then(|| pairing["code"].as_str().unwrap().to_string())
@@ -818,7 +829,9 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
     let name = ask["name"].as_str().unwrap().to_string();
 
     // A: Matches. Then the desktop allows.
-    quest.press(&quest.debug, "right", "primary_pressed", 300).await;
+    quest
+        .press(&quest.debug, "right", "primary_pressed", 300)
+        .await;
     until("the headset waits for the desktop", || {
         (quest.link()["pairing"]["confirmed"] == true).then_some(())
     })
@@ -831,7 +844,10 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
             state_of(d, &name) == "connected" && !card(d, &name).unwrap()["tunnel"].is_null()
         })
         .await;
-    until("the headset is linked", || (quest.link()["linked"] == true).then_some(())).await;
+    until("the headset is linked", || {
+        (quest.link()["linked"] == true).then_some(())
+    })
+    .await;
     quest.capture("paired.png");
 
     // The tunnel reaches the headset's own debug runtime.
@@ -843,21 +859,29 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
     assert_eq!(status, 200, "{body}");
     let state: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(state["link"]["linked"], true);
-    assert!(state["views"].as_array().is_some_and(|v| v.len() == 2), "both eyes");
+    assert!(
+        state["views"].as_array().is_some_and(|v| v.len() == 2),
+        "both eyes"
+    );
 
     // The tunnel's presses never reach the overlay: no pairing starts.
     quest.press(&tunnel, "left", "menu_pressed", 1500).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let pairing = quest.link()["pairing"].clone();
     // Only the outcome of the pairing above may still show.
-    assert!(pairing.is_null() || pairing["stage"] == "paired", "{pairing}");
-    assert_eq!(post(&tunnel, "/input", r#"{"type":"xr_clear"}"#).unwrap().0, 200);
+    assert!(
+        pairing.is_null() || pairing["stage"] == "paired",
+        "{pairing}"
+    );
+    assert_eq!(
+        post(&tunnel, "/input", r#"{"type":"xr_clear"}"#).unwrap().0,
+        200
+    );
 
     // Restarted, it relinks by itself: no new request on the desktop.
     quest.launch().await;
     app.devices_where("it relinks", |d| {
-        state_of(d, &name) == "connected"
-            && d["requests"].as_array().is_none_or(|r| r.is_empty())
+        state_of(d, &name) == "connected" && d["requests"].as_array().is_none_or(|r| r.is_empty())
     })
     .await;
     until("the tunnel answers again", || {
@@ -866,12 +890,19 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
     .await;
 
     // Forget: the desktop drops it.
-    let id = card(&app.devices_where("connected", |d| state_of(d, &name) == "connected").await, &name)
-        .unwrap()["id"]
+    let id = card(
+        &app.devices_where("connected", |d| state_of(d, &name) == "connected")
+            .await,
+        &name,
+    )
+    .unwrap()["id"]
         .clone();
     app.send(json!({"type": "forget_device", "device": id}))
         .await;
     app.devices_where("it is forgotten", |d| card(d, &name).is_none())
         .await;
-    until("the headset is unlinked", || (quest.link()["linked"] == false).then_some(())).await;
+    until("the headset is unlinked", || {
+        (quest.link()["linked"] == false).then_some(())
+    })
+    .await;
 }
