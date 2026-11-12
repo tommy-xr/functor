@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent_view::Step;
+use crate::agent_view::WalkthroughStep;
 use crate::changes::Change;
 use crate::session::loopback_url;
 
@@ -143,7 +143,7 @@ pub enum Item {
     /// The agent's walkthrough (`present`, D25), which the user steps
     /// through; `current` is the step shown last, `None` until one is.
     Walkthrough {
-        steps: Vec<Step>,
+        steps: Vec<WalkthroughStep>,
         current: Option<usize>,
     },
 }

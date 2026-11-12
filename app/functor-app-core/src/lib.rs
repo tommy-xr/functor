@@ -15,6 +15,7 @@ pub mod session;
 pub mod state;
 pub mod tasks;
 
+pub use agent_view::AppContext;
 pub use changes::Change;
 pub use folders::Recent;
 pub use layout::{Layout, LayoutOp, View};
@@ -23,7 +24,6 @@ pub use projects::discover;
 pub use session::{
     listening_url, Display, Polled, Session, SessionEvent, SessionMode, SessionStatus,
 };
-pub use agent_view::AppContext;
 pub use state::{update, AppState, Command, Event, GitInfo, RunSpec};
 pub use tasks::{AgentEvent, Harness, Item, RunEvent, Task, TaskStatus};
 

@@ -1147,7 +1147,12 @@ fn prune(state: &mut AppState, project: &str, commands: &mut Vec<Command>) -> bo
     changed
 }
 
-pub(crate) fn save_layout(state: &mut AppState, project: &str, layout: Layout, commands: &mut Vec<Command>) {
+pub(crate) fn save_layout(
+    state: &mut AppState,
+    project: &str,
+    layout: Layout,
+    commands: &mut Vec<Command>,
+) {
     commands.push(Command::SaveLayout {
         dir: project_dir(Path::new(&state.repo_root), project),
         layout: Box::new(layout.clone()),
