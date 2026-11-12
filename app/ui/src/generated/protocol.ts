@@ -1,6 +1,17 @@
 // Generated from the Rust app-protocol types by ts-rs. Do not edit.
 // Regenerate: UPDATE_TS=1 cargo test -p functor-app-core --features ts ts_bindings
 
+export type Activity = { stance: Stance, 
+/**
+ * The run's calls still waiting on their results, oldest first.
+ */
+calls: Array<Call>, 
+/**
+ * The last run's error or refusal, one short line; cleared by the
+ * user's next message.
+ */
+error: string | null, };
+
 /**
  * The agent's part of a layout (D25): kept with it, so it survives restarts.
  */
@@ -70,6 +81,10 @@ no_gpu: boolean,
  */
 tasks: Array<Task>, 
 /**
+ * Per task id, what its agent is doing (D34), refreshed after every event.
+ */
+activity: { [key in number]: Activity }, 
+/**
  * Per project path, the chat's current task (`None`: a new one), the
  * one the Tasks pane shows selected. Absent until a client first
  * chooses one for the project; not kept across restarts.
@@ -115,6 +130,17 @@ new_project: NewProject | null,
  * What the agent or a walkthrough step last pointed at (D25).
  */
 highlight: Highlight | null, };
+
+export type Call = { kind: CallKind, 
+/**
+ * Short: "reading weapons.fun", "running cargo test".
+ */
+label: string, };
+
+/**
+ * What a call touches.
+ */
+export type CallKind = "thinking" | "files" | "shell" | "network" | "game" | "agents" | "skills" | "ask";
 
 /**
  * The summary that travels with the task.
@@ -428,6 +454,8 @@ export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "
  * `surface_height`): the space `/input` mouse coordinates are in.
  */
 surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
+
+export type Stance = "thinking" | "working" | "waiting" | "done" | "failed";
 
 /**
  * Where creating a project is.

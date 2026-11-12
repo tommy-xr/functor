@@ -1,0 +1,12 @@
+{"ms":0,"event":{"type":"started","session":"fake-session-3","model":"claude-model"}}
+{"ms":10,"event":{"type":"tool_use","name":"Read","input":{"file_path":"/work/functor/examples/fps/weapons.fun"}}}
+{"ms":10,"event":{"type":"tool_use","name":"Grep","input":{"pattern":"fireRate","path":"/work/functor/examples/fps"}}}
+{"ms":20,"event":{"type":"tool_result","content":"1\t// weapons"}}
+{"ms":30,"event":{"type":"tool_result","content":"weapons.fun:4:  fireRate: 0.2,"}}
+{"ms":40,"event":{"type":"tool_use","name":"Bash","input":{"command":"cd examples/fps && cargo test","description":"Run the tests"}}}
+{"ms":50,"event":{"type":"tool_result","content":"Claude requested permissions to use Bash, but you haven't granted it yet."}}
+{"ms":60,"event":{"type":"text","text":"I can't run the tests here."}}
+{"ms":70,"event":{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Raise the fire rate or the damage?"}]}}}
+{"ms":80,"event":{"type":"tool_result","content":"The fire rate."}}
+{"ms":90,"event":{"type":"usage","input":6100,"output":210}}
+{"ms":90,"event":{"type":"finished","ok":true,"summary":"I'd raise the fire rate."}}

@@ -3,6 +3,7 @@
 //! tasks. No UI, window or server; the shell in `functor-app` runs IO and
 //! feeds results in as events.
 
+pub mod activity;
 pub mod agent_view;
 pub mod changes;
 pub mod creation;
@@ -16,6 +17,7 @@ pub mod state;
 pub mod tasks;
 pub mod transport;
 
+pub use activity::{Activity, Call, CallKind, Stance};
 pub use agent_view::AppContext;
 pub use changes::Change;
 pub use folders::Recent;

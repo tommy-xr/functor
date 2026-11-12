@@ -1,0 +1,8 @@
+{"ms":0,"event":{"type":"started","session":"fake-thread-2","model":null}}
+{"ms":10,"event":{"type":"tool_use","name":"shell","input":{"command":"/bin/zsh -lc 'cat game.fun'"}}}
+{"ms":20,"event":{"type":"tool_result","content":"// counter\n"}}
+{"ms":30,"event":{"type":"tool_use","name":"shell","input":{"command":"/bin/zsh -lc 'curl -s https://functor.games/docs/'"}}}
+{"ms":40,"event":{"type":"tool_result","content":""}}
+{"ms":50,"event":{"type":"text","text":"error: stream disconnected before completion"}}
+{"ms":60,"event":{"type":"usage","input":9000,"output":120}}
+{"ms":60,"event":{"type":"finished","ok":true,"summary":null}}
