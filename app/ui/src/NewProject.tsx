@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Harness, NewProjectRequest, Template } from "./generated/protocol";
-import { PathField, type FolderProps } from "./Folders";
+import { ASK_MS, PathField, type FolderProps } from "./Folders";
 import { ALL, filterTemplates, stepTemplate, tagChips } from "./new-project-model";
 import type { PlanMsg } from "./socket";
 
-/** How long typing pauses before the server is asked for the plan. */
-const ASK_MS = 150;
 /** The template the modal starts on. */
 const DEFAULT_TEMPLATE = "3d";
 
@@ -55,9 +53,15 @@ export function NewProjectModal(props: NewProjectProps) {
   const create = () => {
     if (ready && send({ type: "create_project", request, harness }) && describe.trim()) onDescribed();
   };
-  // Escape closes, as Cancel does.
+  // Focus goes back where it was when the modal closes.
+  useEffect(() => {
+    const before = document.activeElement as HTMLElement | null;
+    return () => before?.focus();
+  }, []);
+  // Escape closes, as Cancel does (a search with text clears first).
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
+    const search = e.target instanceof HTMLInputElement && e.target.type === "search" && e.target.value;
+    if (e.key === "Escape" && !search) {
       e.stopPropagation();
       close();
     }
@@ -218,6 +222,7 @@ function Gallery({
   // The one card Tab reaches: the selected one, else the first shown.
   const tabbable = shown.some((t) => t.name === selected) ? selected : shown[0]?.name;
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
     const next = stepTemplate(shown, selected, e.key);
     if (next === null) return;
     e.preventDefault();

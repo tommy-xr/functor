@@ -455,7 +455,7 @@ fn oid(base: &str) -> Result<&str, String> {
 
 /// `path` without Windows' `\\?\` prefix (from `canonicalize`), which git
 /// cannot open paths under.
-fn plain(path: &Path) -> PathBuf {
+pub(crate) fn plain(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     match text.strip_prefix(r"\\?\") {
         Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),

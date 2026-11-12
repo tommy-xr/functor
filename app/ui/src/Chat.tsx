@@ -16,6 +16,7 @@ import {
   connectionLines,
   initialTask,
   outcome,
+  pickHarness,
   toolFile,
   phraseText,
   STATUS_WORDS,
@@ -118,11 +119,7 @@ export function ChatDock({
   }, [conn]);
 
   const lines = useConnectionLines(state, conn, current?.id ?? null, items?.length);
-  // The project's pick, while that agent is still installed.
-  const available = state?.harnesses ?? [];
-  const picked = active ? state?.harness_choice[active] : undefined;
-  const harness: Harness =
-    current?.harness ?? (picked && available.includes(picked) ? picked : available[0]) ?? "claude";
+  const harness: Harness = current?.harness ?? pickHarness(state);
   const running = current?.run != null;
 
   const submit = () => {
@@ -617,7 +614,7 @@ function Composer({
   return (
     <div className="composer">
       <ul className="chips" aria-label="What the agent will see">
-        {project && <li className="chip mono">{project.path}</li>}
+        {project && <li className="chip mono">{project.path === "." ? project.name : project.path}</li>}
         <li className="chip">{session === "running" ? "Game running" : "No game running"}</li>
         <li className="chip">{canvasWord}</li>
       </ul>

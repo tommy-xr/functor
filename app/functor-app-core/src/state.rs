@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::changes::Change;
-use crate::creation::{folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template};
+use crate::creation::{
+    folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template, OPEN_STEP, TASK_STEP,
+};
 use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
@@ -71,6 +73,10 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub last_parent: Option<String>,
+    /// A new project's first task, waiting on its game session (by id).
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub first_task: Option<(u64, String, Harness)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +121,7 @@ impl AppState {
             templates_error: None,
             new_project: None,
             last_parent: None,
+            first_task: None,
         }
     }
 
@@ -197,6 +204,15 @@ pub enum Event {
     },
     /// The app is exiting: stop the session and every run.
     Shutdown,
+}
+
+/// Why the user cannot open a folder now: [`can_open`], or a new project
+/// being created (it opens itself).
+fn can_open_now(state: &AppState) -> Result<(), String> {
+    match &state.new_project {
+        Some(np) if np.step.busy() => Err("a new project is being created".to_string()),
+        _ => can_open(state),
+    }
 }
 
 /// Why no other folder can be opened now: a run (or revert) of this
@@ -382,14 +398,18 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             get_file(&state, path, &mut commands);
             (false, false)
         }
-        Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
+        Event::Session { id, event } => {
+            let changed = on_session(&mut state, id, event, &mut commands);
+            release_first_task(&mut state, &mut commands);
+            (changed, false)
+        }
         Event::Client(ClientMsg::OpenFolder { path })
         | Event::Picked {
             path: Some(path),
             parent: false,
         } => {
             let id = state.opening + 1;
-            let open = can_open(&state).map(|()| Command::OpenFolder { id, path });
+            let open = can_open_now(&state).map(|()| Command::OpenFolder { id, path });
             (try_open(&mut state, open, &mut commands), false)
         }
         Event::Picked { path: None, .. } => (false, false),
@@ -452,7 +472,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 return (state, vec![reject_cmd(reason)]);
             }
             let from = Some(PathBuf::from(&state.folder)).filter(|f| !f.as_os_str().is_empty());
-            let pick = can_open(&state).map(|()| Command::PickFolder {
+            let pick = can_open_now(&state).map(|()| Command::PickFolder {
                 from,
                 parent: false,
             });
@@ -685,6 +705,7 @@ fn opened(
         templates_error: _,
         new_project: _,
         last_parent: _,
+        first_task: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {
@@ -719,12 +740,29 @@ fn opened(
             state.open_error = note.clone();
             state.new_project = None;
             start(state, commands);
-            if let Some((message, harness)) = task {
-                commands.push(Command::ReserveTask { message, harness });
-            }
+            // Once the game listens, so the agent's tools attach to it.
+            let session = state.session.as_ref().map(|s| s.id);
+            state.first_task = task.zip(session).map(|((m, h), id)| (id, m, h));
         }
     }
     true
+}
+
+/// Starts a new project's first task once its game session is past
+/// starting: listening (its tools attach to it), or ended or stopped (the
+/// agent can still work on the files).
+fn release_first_task(state: &mut AppState, commands: &mut Vec<Command>) {
+    let Some((id, _, _)) = &state.first_task else {
+        return;
+    };
+    let starting = state
+        .session
+        .as_ref()
+        .is_some_and(|s| s.id == *id && s.status == SessionStatus::Starting);
+    if !starting {
+        let (_, message, harness) = state.first_task.take().expect("checked");
+        commands.push(Command::ReserveTask { message, harness });
+    }
 }
 
 /// A created project that open request `id` failed to open: the modal
@@ -741,9 +779,10 @@ fn not_opened(state: &mut AppState, id: u64) {
     } = &np.step
     {
         if *made == id {
-            let mut not_done = vec!["Open it and start the game".to_string()];
+            let mut not_done = vec![OPEN_STEP.to_string()];
+            let path = format!("{path}, with the template's files");
             if task.is_some() {
-                not_done.push("Start a task with your description".to_string());
+                not_done.push(TASK_STEP.to_string());
             }
             np.step = Step::Failed {
                 reason: state.open_error.clone().unwrap_or_default(),
@@ -758,12 +797,19 @@ fn not_opened(state: &mut AppState, id: u64) {
 /// Its parent defaults to where the last project went, else beside the
 /// open workspace, else the home folder. The templates are listed again.
 fn show_new_project(state: &mut AppState, here: bool, commands: &mut Vec<Command>) -> bool {
-    if state.new_project.as_ref().is_some_and(|np| np.step.busy()) {
+    if state.new_project.is_some() {
         return false;
     }
     let folder = Path::new(&state.folder);
     let (name, parent) = match (here, folder.parent(), folder.file_name()) {
-        (true, Some(parent), Some(name)) => (name.to_string_lossy(), parent.to_string_lossy()),
+        // The folder itself, when its name is a project folder name as it is;
+        // else a new folder in it.
+        (true, Some(parent), Some(name))
+            if folder_name(&name.to_string_lossy()).as_deref() == Ok(&*name.to_string_lossy()) =>
+        {
+            (name.to_string_lossy(), parent.to_string_lossy())
+        }
+        (true, _, _) if !state.folder.is_empty() => ("".into(), state.folder.as_str().into()),
         _ => {
             let beside = Path::new(&state.repo_root)
                 .parent()
@@ -3800,10 +3846,20 @@ mod tests {
             dir: PathBuf::from("/games/Space-Race"),
             display: Display::Hidden,
         }));
-        assert!(commands.contains(&Command::ReserveTask {
+        // The task waits for the game, so the agent's tools attach to it.
+        let reserve = Command::ReserveTask {
             message: "a racing game".into(),
             harness: Harness::Codex,
-        }));
+        };
+        assert!(!commands.contains(&reserve));
+        let (s, commands) = update(s, session(1, SessionEvent::Spawned { pid: 7 }));
+        assert!(!commands.contains(&reserve));
+        let listening = SessionEvent::Listening {
+            debug_url: URL.into(),
+        };
+        let (s, commands) = update(s, session(1, listening));
+        assert!(commands.contains(&reserve));
+        assert_eq!(s.first_task, None);
         // The reserved id starts the task as the chat's would.
         let (s, _) = update(s, nth_task(5, "a racing game"));
         assert_eq!(task(&s, 5).project, ".");
@@ -3886,7 +3942,7 @@ mod tests {
             step(&next),
             &Step::Failed {
                 reason: "cannot open /games/Space: it does not exist".into(),
-                done: vec!["Created /games/Space".into()],
+                done: vec!["Created /games/Space, with the template's files".into()],
                 not_done: vec![
                     "Open it and start the game".into(),
                     "Start a task with your description".into()
@@ -3899,6 +3955,58 @@ mod tests {
         // Then it can be closed.
         let (closed, _) = update(next, client(ClientMsg::CloseNewProject));
         assert_eq!(closed.new_project, None);
+    }
+
+    #[test]
+    fn nothing_else_opens_while_a_project_is_being_created() {
+        let (s, _) = update(listed(), show(false));
+        let (s, _) = update(s, create("Space", ""));
+        let reason = Some("a new project is being created".to_string());
+        let (next, commands) = update(s.clone(), open("/other"));
+        assert_eq!(next.open_error, reason);
+        assert!(!commands
+            .iter()
+            .any(|c| matches!(c, Command::OpenFolder { .. })));
+        let (next, _) = update(
+            AppState {
+                native_picker: true,
+                ..s
+            },
+            client(ClientMsg::PickFolder),
+        );
+        assert_eq!(next.open_error, reason);
+        // Its own open goes ahead.
+        let made = Event::Created {
+            result: Ok("/games/Space".into()),
+            note: None,
+        };
+        let (_, commands) = update(next, made);
+        assert!(commands.contains(&Command::OpenFolder {
+            id: 1,
+            path: "/games/Space".into()
+        }));
+    }
+
+    #[test]
+    fn here_is_the_open_folder_itself_or_a_new_folder_in_it() {
+        let named = |folder: &str| {
+            let s = AppState {
+                folder: folder.into(),
+                ..listed()
+            };
+            let np = update(s, show(true)).0.new_project.unwrap();
+            (np.name, np.parent)
+        };
+        assert_eq!(named("/games/space"), ("space".into(), "/games".into()));
+        // Not a name a project folder could have as it is: a folder in it.
+        assert_eq!(
+            named("/games/my game"),
+            ("".into(), "/games/my game".into())
+        );
+        // Already open: the modal keeps what was typed.
+        let (s, _) = update(listed(), show(false));
+        let (_, commands) = update(s, show(true));
+        assert!(matches!(commands[..], [Command::Reply(_)]));
     }
 
     #[test]

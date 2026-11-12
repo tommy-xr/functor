@@ -69,7 +69,7 @@ pub struct Driver {
     templates: Arc<Mutex<Option<(SystemTime, TemplateList)>>>,
 }
 
-type TemplateList = Result<Vec<functor_app_core::creation::Template>, String>;
+pub type TemplateList = Result<Vec<functor_app_core::creation::Template>, String>;
 
 /// Workspaces read for `Event::Opened`, by request id, until the core takes
 /// one (`Command::UseWorkspace`): its git and highest task id.
@@ -205,33 +205,20 @@ impl Driver {
                 });
             }
             Command::ListTemplates => {
-                let (functor, cache, events) = (
-                    self.functor.clone(),
-                    self.templates.clone(),
-                    self.events.clone(),
-                );
+                let (list, events) = (self.list_templates(), self.events.clone());
                 tokio::spawn(async move {
-                    let modified = std::fs::metadata(&functor).and_then(|m| m.modified()).ok();
-                    let kept = cache.lock().unwrap().clone();
-                    let result = match (kept, modified) {
-                        (Some((at, list)), Some(now)) if at == now => list,
-                        _ => {
-                            let list = crate::creation::list(&functor).await;
-                            *cache.lock().unwrap() = modified.map(|m| (m, list.clone()));
-                            list
-                        }
-                    };
+                    let result = list.await;
                     let _ = events.send(Event::Templates { result });
                 });
             }
             Command::CreateProject { request, folder } => {
                 let (functor, events) = (self.functor.clone(), self.events.clone());
-                tokio::spawn(async move {
-                    let (result, note) =
-                        match crate::creation::create(&functor, &request, &folder).await {
-                            Ok(made) => (Ok(made.path), made.note),
-                            Err(failure) => (Err(failure), None),
-                        };
+                tokio::task::spawn_blocking(move || {
+                    let (result, note) = match crate::creation::create(&functor, &request, &folder)
+                    {
+                        Ok(made) => (Ok(made.path), made.note),
+                        Err(failure) => (Err(failure), None),
+                    };
                     let _ = events.send(Event::Created { result, note });
                 });
             }
@@ -341,6 +328,27 @@ impl Driver {
             };
             let _ = reply.try_send(serde_json::to_string(&msg).expect("ServerMsg serializes"));
         });
+    }
+
+    /// `functor init --list --json`'s templates, kept while the binary's
+    /// modification time stays the same.
+    pub fn list_templates(&self) -> impl std::future::Future<Output = TemplateList> + 'static {
+        let (functor, cache) = (self.functor.clone(), self.templates.clone());
+        async move {
+            let modified = std::fs::metadata(&functor).and_then(|m| m.modified()).ok();
+            let kept = cache.lock().unwrap().clone();
+            match (kept, modified) {
+                (Some((at, list)), Some(now)) if at == now => list,
+                _ => {
+                    let list = crate::creation::list(&functor).await;
+                    // A failure is asked again next time.
+                    if let (Some(m), Ok(_)) = (modified, &list) {
+                        *cache.lock().unwrap() = Some((m, list.clone()));
+                    }
+                    list
+                }
+            }
+        }
     }
 
     /// Works out what `request` would do in the background and sends it to

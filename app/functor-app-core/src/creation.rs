@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::tasks::Harness;
 
+/// The plan's steps after the files, as the modal lists them.
+pub const OPEN_STEP: &str = "Open it and start the game";
+pub const TASK_STEP: &str = "Start a task with your description";
+
 /// Longest folder name a project gets.
 const MAX_NAME: usize = 64;
 /// Most names said to be in the way of a new project.
@@ -146,9 +150,9 @@ pub fn plan(
     if git_init {
         steps.push("Track changes with git (git init)".to_string());
     }
-    steps.push("Open it and start the game".to_string());
+    steps.push(OPEN_STEP.to_string());
     if !request.describe.trim().is_empty() {
-        steps.push("Start a task with your description".to_string());
+        steps.push(TASK_STEP.to_string());
     }
     Ok(Plan {
         path: path.to_string(),

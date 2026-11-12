@@ -13,8 +13,8 @@ export type FolderProps = {
   listDirs: (path: string) => void;
 };
 
-/** How long typing pauses before the server is asked about the path. */
-const ASK_MS = 150;
+/** How long typing pauses before the server is asked about it. */
+export const ASK_MS = 150;
 
 
 /**

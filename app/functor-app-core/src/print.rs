@@ -425,6 +425,7 @@ mod tests {
             templates_error: None,
             new_project: None,
             last_parent: None,
+            first_task: None,
         };
         assert_eq!(
             print(&state),

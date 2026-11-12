@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { AppState, ClientMsg, Harness, Session, View as TabView } from "./generated/protocol";
+import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
-import { basename } from "./chat-model";
+import { basename, pickHarness } from "./chat-model";
 import { FolderActions, NoProject, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
@@ -37,15 +37,16 @@ export function App() {
   // The chat's current task (`null`: a new one).
   const [selected, setSelected] = useState<number | null>(null);
   const [target, setTarget] = useState<CanvasProps["target"]>(null);
-  // A new project created with a description: its first task, once it starts, is the chat's.
-  const [follow, setFollow] = useState(false);
+  // A new project created with a description: its first task (newer than
+  // every task when it was created), once it starts, is the chat's.
+  const [follow, setFollow] = useState<number | null>(null);
   useEffect(() => {
-    if (!follow || !state) return;
-    if (state.new_project?.step.kind === "failed") return setFollow(false);
-    const first = state.new_project ? undefined : state.tasks.find((t) => t.project === state.active);
-    if (!first) return;
+    if (follow === null || !state) return;
+    if (state.new_project?.step.kind === "failed") return setFollow(null);
+    const first = state.tasks.find((t) => t.id > follow && t.project === state.active);
+    if (state.new_project || !first) return;
     setSelected(first.id);
-    setFollow(false);
+    setFollow(null);
   }, [follow, state]);
   // The chat's actions open or focus a view beside what the user is looking at.
   const openBeside = (view: TabView) => send({ type: "layout", op: { type: "open", view, target: { kind: "side" } } });
@@ -63,7 +64,9 @@ export function App() {
   const folder: FolderProps = { state, online, send, dirs, listDirs };
   useWindowMenu(state, send);
   return (
-    <div className="app">
+    <>
+    {/* Behind the new-project modal, nothing takes focus or clicks. */}
+    <div className="app" inert={!!state?.new_project}>
       <TitleBar state={state} conn={conn} />
       <div className="workspace">
         <Rail view={view} onSelect={setView} />
@@ -113,23 +116,18 @@ export function App() {
           />
         </div>
       </div>
-      {state?.new_project && (
-        <NewProjectModal
-          {...folder}
-          plan={plan}
-          checkProject={checkProject}
-          harness={newTaskHarness(state)}
-          onDescribed={() => setFollow(true)}
-        />
-      )}
     </div>
+    {state?.new_project && (
+      <NewProjectModal
+        {...folder}
+        plan={plan}
+        checkProject={checkProject}
+        harness={pickHarness(state)}
+        onDescribed={() => setFollow(Math.max(0, ...state.tasks.map((t) => t.id)))}
+      />
+    )}
+    </>
   );
-}
-
-/** The agent a new task starts with: the active project's pick while installed, else the first. */
-function newTaskHarness(state: AppState): Harness {
-  const picked = state.active ? state.harness_choice[state.active] : undefined;
-  return (picked && state.harnesses.includes(picked) ? picked : state.harnesses[0]) ?? "claude";
 }
 
 /** The window's own hooks into the page; absent in a browser. */

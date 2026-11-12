@@ -12,14 +12,19 @@ use functor_app_core::creation::{
     folder_name, parse_templates, plan, CreateFailure, NewProjectRequest, Plan, Target, Template,
 };
 
+/// How long `functor init --list --json` may take.
+const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// `functor init --list --json`: the templates, or why there are none.
 pub async fn list(functor: &Path) -> Result<Vec<Template>, String> {
-    let out = tokio::process::Command::new(functor)
+    let output = tokio::process::Command::new(functor)
         .args(["init", "--list", "--json"])
         .stdin(Stdio::null())
         .kill_on_drop(true)
-        .output()
+        .output();
+    let out = tokio::time::timeout(LIST_TIMEOUT, output)
         .await
+        .map_err(|_| format!("{} did not list its templates", functor.display()))?
         .map_err(|e| format!("cannot run {}: {e}", functor.display()))?;
     if !out.status.success() {
         return Err(format!(
@@ -54,15 +59,16 @@ pub fn target(dir: &Path) -> Target {
     }
 }
 
-/// `dir`'s nearest existing ancestor (itself included), canonical, and the
-/// names below it that do not exist yet, top first.
+/// `dir`'s nearest existing ancestor (itself included), canonical (as git
+/// can open it on Windows), and the names below it that do not exist yet,
+/// top first.
 fn existing_ancestor(dir: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
     let mut missing = Vec::new();
     for at in dir.ancestors() {
         match std::fs::canonicalize(at) {
             Ok(real) => {
                 missing.reverse();
-                return Some((real, missing));
+                return Some((crate::changes::plain(&real), missing));
             }
             Err(_) => missing.push(PathBuf::from(at.file_name()?)),
         }
@@ -88,35 +94,55 @@ fn in_git(git: &OsStr, dir: &Path) -> bool {
         .is_ok_and(|o| o.status.success() && o.stdout.starts_with(b"true"))
 }
 
-/// The project's `folder` under `request`'s parent (its `~` expanded and
-/// its existing part resolved), that existing part, and the names under it
-/// to create, top first.
-fn locate(
-    request: &NewProjectRequest,
-    folder: &str,
-) -> Result<(PathBuf, PathBuf, Vec<PathBuf>), String> {
+/// Where a project goes: `path`, under `base` (the nearest existing
+/// ancestor of its parent, resolved), with `missing` the names below `base`
+/// to create, top first, the project's own folder last unless it exists.
+struct Located {
+    path: PathBuf,
+    base: PathBuf,
+    missing: Vec<PathBuf>,
+}
+
+/// Locates `folder` under `request`'s parent (`~` expanded). The parent is
+/// resolved; the folder itself never is, so a link there is in the way.
+fn locate(request: &NewProjectRequest, folder: &str) -> Result<Located, String> {
     let parent = crate::folders::expand(&request.parent, std::env::home_dir().as_deref())
         .filter(|p| p.is_absolute())
         .ok_or("give the folder's full path")?;
-    let dir = parent.join(folder);
-    let (base, missing) = existing_ancestor(&dir).ok_or("no part of that folder exists")?;
-    let path = missing.iter().fold(base.clone(), |p, m| p.join(m));
-    Ok((path, base, missing))
+    let (base, mut missing) = existing_ancestor(&parent).ok_or("no part of that folder exists")?;
+    let path = missing
+        .iter()
+        .fold(base.clone(), |p, m| p.join(m))
+        .join(folder);
+    if std::fs::symlink_metadata(&path).is_err() {
+        missing.push(PathBuf::from(folder));
+    }
+    Ok(Located {
+        path,
+        base,
+        missing,
+    })
 }
 
 /// What `request` would do, checked against the disk now.
 pub fn check(request: &NewProjectRequest) -> Result<Plan, String> {
-    check_with(OsStr::new("git"), request)
+    Ok(checked(OsStr::new("git"), request, &folder_name(&request.name)?)?.0)
 }
 
-fn check_with(git: &OsStr, request: &NewProjectRequest) -> Result<Plan, String> {
-    let (path, base, _) = locate(request, &folder_name(&request.name)?)?;
-    plan(
+/// The plan for `request` with its project in `folder`, and where that is.
+fn checked(
+    git: &OsStr,
+    request: &NewProjectRequest,
+    folder: &str,
+) -> Result<(Plan, Located), String> {
+    let at = locate(request, folder)?;
+    let plan = plan(
         request,
-        &path.to_string_lossy(),
-        &target(&path),
-        in_git(git, &base),
-    )
+        &at.path.to_string_lossy(),
+        &target(&at.path),
+        in_git(git, &at.base),
+    )?;
+    Ok((plan, at))
 }
 
 /// What creating did: the project's folder, and a note when git could not
@@ -130,15 +156,16 @@ pub struct Created {
 /// it) under its parent: the folder (and missing parents), the
 /// template's files (`functor -d <folder> init <template>`), then `git
 /// init` if planned. On failure, folders this made are removed if empty.
-pub async fn create(
+/// Blocking.
+pub fn create(
     functor: &Path,
     request: &NewProjectRequest,
     folder: &str,
 ) -> Result<Created, CreateFailure> {
-    create_with(functor, OsStr::new("git"), request, folder).await
+    create_with(functor, OsStr::new("git"), request, folder)
 }
 
-async fn create_with(
+fn create_with(
     functor: &Path,
     git: &OsStr,
     request: &NewProjectRequest,
@@ -149,9 +176,16 @@ async fn create_with(
         done,
         not_done: not_done.to_vec(),
     };
-    let plan = check_with(git, request).map_err(|e| fail(e, vec![], &[]))?;
-    let (path, base, missing) =
-        locate(request, folder).map_err(|e| fail(e, vec![], &plan.steps))?;
+    // Located once: what is created is what was checked. (Another process
+    // of this user swapping in a link meanwhile is out of reach here.)
+    let (
+        plan,
+        Located {
+            path,
+            base,
+            missing,
+        },
+    ) = checked(git, request, folder).map_err(|e| fail(e, vec![], &[]))?;
     let mut done = Vec::new();
     // Made one at a time, so each one made is known (and only those undone).
     let mut made = Vec::new();
@@ -168,14 +202,12 @@ async fn create_with(
     if !made.is_empty() {
         done.push(plan.steps[0].clone());
     }
-    let out = tokio::process::Command::new(functor)
+    let out = std::process::Command::new(functor)
         .arg("-d")
         .arg(&path)
         .args(["init", &request.template])
         .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await;
+        .output();
     let failed = match out {
         Ok(out) if out.status.success() => None,
         Ok(out) => {
@@ -196,17 +228,16 @@ async fn create_with(
     done.push(plan.steps[1].clone());
     let mut note = None;
     if plan.git_init {
-        let mut command = tokio::process::Command::new(git);
+        let mut command = std::process::Command::new(git);
         command
             .arg("-C")
             .arg(&path)
             .args(["init", "-q"])
-            .stdin(Stdio::null())
-            .kill_on_drop(true);
+            .stdin(Stdio::null());
         for var in crate::changes::REPO_ENV {
             command.env_remove(var);
         }
-        match command.output().await {
+        match command.output() {
             Ok(out) if out.status.success() => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 note = Some(
@@ -323,6 +354,14 @@ mod tests {
         ] {
             assert!(check(&bad).unwrap_err().starts_with(why), "{why}");
         }
+        // A link where the project would go is in the way, though it leads
+        // to an empty folder: it is never followed.
+        std::fs::create_dir(root.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), root.join("linked")).unwrap();
+        assert_eq!(
+            check(&request("linked", &root)).unwrap_err(),
+            format!("{} exists and is not a folder", root.join("linked").display())
+        );
         std::fs::create_dir_all(root.join("x/y")).unwrap();
         assert_eq!(
             check(&request("x", &root)).unwrap_err(),
@@ -333,13 +372,12 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_failed_init_says_what_was_done_and_removes_only_what_it_made() {
+    #[test]
+    fn a_failed_init_says_what_was_done_and_removes_only_what_it_made() {
         let (_tmp, root) = tmp();
         let functor = fake_functor(&root, "echo 'error: no such template' >&2; exit 1");
         let parent = root.join("games");
         let failed = create_with(&functor, OsStr::new(NO_GIT), &request("A", &parent), "A")
-            .await
             .err()
             .unwrap();
         assert_eq!(
@@ -361,19 +399,17 @@ mod tests {
         // An empty folder that was already there is kept.
         std::fs::create_dir(root.join("B")).unwrap();
         let failed = create_with(&functor, OsStr::new(NO_GIT), &request("B", &root), "B")
-            .await
             .err()
             .unwrap();
         assert!(failed.done.is_empty(), "{:?}", failed.done);
         assert!(root.join("B").is_dir());
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn without_git_the_project_is_made_with_a_note() {
+    #[test]
+    fn without_git_the_project_is_made_with_a_note() {
         let (_tmp, root) = tmp();
         let functor = fake_functor(&root, "echo '{}' > \"$2/functor.json\"");
         let made = create_with(&functor, OsStr::new(NO_GIT), &request("C", &root), "C")
-            .await
             .ok()
             .unwrap();
         assert_eq!(made.path, root.join("C").to_string_lossy());
@@ -381,7 +417,6 @@ mod tests {
         assert!(made.note.unwrap().contains("review features are off"));
         // A folder that is not empty is refused before anything is written.
         let failed = create_with(&functor, OsStr::new(NO_GIT), &request("C", &root), "C")
-            .await
             .err()
             .unwrap();
         assert!(failed.reason.ends_with("functor.json would be in the way"));

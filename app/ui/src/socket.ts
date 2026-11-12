@@ -59,6 +59,8 @@ export function useAppSocket() {
   const [dirs, setDirs] = useState<DirsMsg | null>(null);
   // The last new-project plan asked for (`checkProject`).
   const [plan, setPlan] = useState<PlanMsg | null>(null);
+  // The plan asked for last: an older one answered late is dropped.
+  const planAsked = useRef("");
   const socket = useRef<WebSocket | null>(null);
   // The open folder's root: files are keyed by project path, which another
   // folder's project may share.
@@ -91,7 +93,7 @@ export function useAppSocket() {
             setDirs(msg);
             break;
           case "new_project_plan":
-            setPlan(msg);
+            if (JSON.stringify(msg.request) === planAsked.current) setPlan(msg);
             break;
           case "transcript":
             setTranscripts((all) => new Map(all).set(msg.task, msg.items));
@@ -161,7 +163,10 @@ export function useAppSocket() {
   const fetchDiff = (task: number) => send({ type: "get_diff", task });
   const fetchFile = (path: string) => send({ type: "get_file", path });
   const listDirs = (path: string) => send({ type: "list_dirs", path });
-  const checkProject = (request: NewProjectRequest) => send({ type: "check_new_project", request });
+  const checkProject = (request: NewProjectRequest) => {
+    planAsked.current = JSON.stringify(request);
+    send({ type: "check_new_project", request });
+  };
   return {
     state,
     conn,
