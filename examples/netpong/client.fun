@@ -1,7 +1,8 @@
 // client.fun — Netpong: authoritative Pong over a REAL wire.
-//   functor -d examples/netpong run native --entry server   # the authority
-//   functor -d examples/netpong run native                  # a paddle dials it
-//   functor -d examples/netpong run native                  # …and a second
+// From this directory:
+//   functor run native --entry server   # the authority
+//   functor run native                  # a paddle dials it
+//   functor run native                  # …and a second
 // W/S or ↑/↓ steer your paddle (and take it off autopilot), Space toggles
 // autopilot back on, R asks for a rematch once someone has won. Nobody has to
 // connect: with no clients the server plays itself, so the sample is its own

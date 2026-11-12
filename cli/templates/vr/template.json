@@ -1,0 +1,6 @@
+{
+  "name": "vr",
+  "description": "Tracked controllers and a cube to pick up; runs on a headset or under --emulate-xr.",
+  "tags": ["3d", "vr", "xr"],
+  "kind": "starter"
+}

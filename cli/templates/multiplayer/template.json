@@ -1,0 +1,6 @@
+{
+  "name": "multiplayer",
+  "description": "Authoritative client and server in one file; arrows or WASD move your square.",
+  "tags": ["2d", "multiplayer", "keyboard"],
+  "kind": "starter"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "2d",
+  "description": "Shapes and text on a 2D camera; WASD or the arrows move the player.",
+  "tags": ["2d", "keyboard"],
+  "kind": "starter"
+}

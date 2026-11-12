@@ -99,3 +99,9 @@ jobs:
       # test; no GPU: its one launched game runs headless).
       - name: Test MCP over HTTP
         run: cargo test -p functor-cli --test mcp_http
+
+      # `functor init`'s templates: each one builds and passes its expects, the
+      # table matches the template directories (examples included), `--list`
+      # matches its snapshots, and MCP `init_game` takes every name.
+      - name: Test project templates
+        run: cargo test -p functor-cli --bin functor -- commands::init init_game init_dispatches

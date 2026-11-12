@@ -1,0 +1,6 @@
+{
+  "name": "3d",
+  "description": "A small lit 3D scene: a spinning cube, a sphere and a floor.",
+  "tags": ["3d"],
+  "kind": "starter"
+}
