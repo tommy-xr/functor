@@ -127,7 +127,6 @@ function Rail({ view, onSelect }: { view: View; onSelect: (v: View) => void }) {
 function ExplorerPane({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
   const projects = state?.projects ?? [];
   const session = state?.session;
-  const live = isLive(session);
   const status = session?.status;
   const frame = status?.kind === "running" ? status.frame : null;
   const reason = status?.kind === "failed" || status?.kind === "exited" ? status.reason : null;
@@ -186,24 +185,6 @@ function ExplorerPane({ state, online, send }: { state: AppState | null; online:
           </div>
         </dl>
         {reason && <p className="reason">{reason}</p>}
-        <div className="actions">
-          <button
-            type="button"
-            className="button button-primary"
-            disabled={!online || live || !state?.active}
-            onClick={() => send({ type: "start_session" })}
-          >
-            Start
-          </button>
-          <button
-            type="button"
-            className="button"
-            disabled={!online || !live}
-            onClick={() => send({ type: "stop_session" })}
-          >
-            Stop
-          </button>
-        </div>
       </section>
     </aside>
   );
@@ -268,6 +249,12 @@ function Canvas({
         {current.id === "game" && (
           <>
             <span className="spacer" />
+            {/* The one place to stop the game; starting it is the game view's empty state. */}
+            {isLive(state?.session) && (
+              <button type="button" className="button" disabled={!online} onClick={() => send({ type: "stop_session" })}>
+                Stop game
+              </button>
+            )}
             <ModePicker state={state} online={online} send={send} />
           </>
         )}

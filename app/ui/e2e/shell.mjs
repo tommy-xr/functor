@@ -70,8 +70,8 @@ async function run(browser, width, height) {
       expectedFiles(SWITCH_TO),
     );
 
-    const start = explorer.getByRole("button", { name: "Start" });
-    const stop = explorer.getByRole("button", { name: "Stop" });
+    const start = page.getByTestId("game-view").getByRole("button", { name: "Start game" });
+    const stop = page.getByRole("button", { name: "Stop game" });
     if (FUNCTOR) {
       await start.click();
       await expect(status).toHaveText("running", { timeout: 60_000 });
@@ -138,7 +138,7 @@ async function gameViewNoGpu(browser) {
   try {
     await page.goto(server.url);
     await expect(view).toHaveText(/^No game running/);
-    await expect(view.getByRole("button", { name: "Start" })).toBeEnabled();
+    await expect(view.getByRole("button", { name: "Start game" })).toBeEnabled();
     await expect(picker).toHaveValue("hidden");
     // Arrow keys on the picker stay with it rather than switching tabs.
     await picker.focus();
@@ -157,7 +157,7 @@ async function gameViewNoGpu(browser) {
       return;
     }
 
-    await view.getByRole("button", { name: "Start" }).click();
+    await view.getByRole("button", { name: "Start game" }).click();
     await expect(view).toContainText("Frames need a GPU session", { timeout: 60_000 });
     const debugUrl = app.state.session.status.debug_url;
 
@@ -278,7 +278,7 @@ async function gameViewGpu(browser) {
   };
   try {
     await page.goto(server.url);
-    await view.getByRole("button", { name: "Start" }).click();
+    await view.getByRole("button", { name: "Start game" }).click();
     await expect(img).toBeVisible({ timeout: 60_000 });
     const debugUrl = app.state.session.status.debug_url;
     const port = Number(new URL(debugUrl).port);
@@ -354,7 +354,7 @@ async function gameViewGpu(browser) {
     }
 
     // Stopping the session ends the stream.
-    await page.getByRole("complementary", { name: "Explorer" }).getByRole("button", { name: "Stop" }).click();
+    await page.getByRole("button", { name: "Stop game" }).click();
     await expect(view).toHaveText(/^No game running/);
     await expect.poll(() => openStreams(port)).toBe(0);
     expect(errors, "console errors").toEqual([]);

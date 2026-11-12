@@ -43,7 +43,7 @@ export function GameView({ state, online, send }: { state: AppState | null; onli
         disabled={!online || !state?.active}
         onClick={() => send({ type: "start_session" })}
       >
-        Start
+        Start game
       </button>
     </GameMessage>
   );

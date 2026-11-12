@@ -216,10 +216,10 @@ async function failure(browser) {
     await expect(dock.getByTestId("task-status")).toHaveText("Failed");
     if (FUNCTOR) {
       const lines = dock.locator(".conn-line");
-      await page.getByTestId("game-view").getByRole("button", { name: "Start" }).click();
+      await page.getByTestId("game-view").getByRole("button", { name: "Start game" }).click();
       await expect(lines).toHaveText(["Game session started"], { timeout: 60_000 });
       await expect(dock.getByRole("listitem").filter({ hasText: "Game running" })).toHaveCount(1);
-      await page.getByRole("complementary", { name: "Explorer" }).getByRole("button", { name: "Stop" }).click();
+      await page.getByRole("button", { name: "Stop game" }).click();
       await expect(lines).toHaveText(["Game session started", "Game session stopped"]);
     } else {
       console.log("SKIPPED: session lines — set FUNCTOR_BIN (npm run build:cli:debug)");
