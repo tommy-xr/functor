@@ -119,11 +119,10 @@ pub fn fit_within(
     (side(width), side(height))
 }
 
-/// Now as Unix ms, the clock `X-Capture-Ms` uses.
+/// Now as Unix ms, the clock `X-Capture-Ms` uses: the prelude's portable
+/// clock, for the desktop render loop.
 pub fn unix_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |since| since.as_secs_f64() * 1000.0)
+    crate::functor_lang_prelude::now_ms()
 }
 
 /// One read-back frame, as the render loop hands it over.
