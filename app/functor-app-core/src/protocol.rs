@@ -139,6 +139,20 @@ pub enum ClientMsg {
     DeleteTask {
         task: u64,
     },
+    /// The user compared the codes: pair the device asking with `request`
+    /// (`DeviceState::AskingToPair`).
+    AllowPairing {
+        request: u64,
+    },
+    /// The code is not theirs: refuse `request`, storing nothing.
+    DenyPairing {
+        request: u64,
+    },
+    /// Forget paired `device` (its id): its pairing secret is deleted on
+    /// this side and its link closes.
+    ForgetDevice {
+        device: String,
+    },
 }
 
 /// Keyboard and mouse input in the debug server's `POST /input` shape.

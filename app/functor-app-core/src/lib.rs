@@ -6,6 +6,7 @@
 pub mod agent_view;
 pub mod changes;
 pub mod creation;
+pub mod devices;
 pub mod folders;
 pub mod layout;
 pub mod print;
@@ -17,6 +18,7 @@ pub mod tasks;
 
 pub use agent_view::AppContext;
 pub use changes::Change;
+pub use devices::{Device, DeviceState, Devices, Headset, LinkCommand, LinkEvent};
 pub use folders::Recent;
 pub use layout::{Layout, LayoutOp, View};
 pub use print::{print, print_change, print_item, print_layout};
