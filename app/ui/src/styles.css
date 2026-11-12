@@ -3315,3 +3315,208 @@ blockquote {
     min-height: 320px;
   }
 }
+
+/* Agent cards (D34): an avatar, a thought bubble and the stance. Claude is
+   round and clay, Codex angular and violet; waiting for you is the loudest. */
+
+:root {
+  --claude: #e0885c;
+  --codex: #a99cff;
+}
+
+.agent-strip {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-card {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.agent-card:hover {
+  border-color: var(--border-strong);
+}
+
+.agent-card.agent-waiting {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+  box-shadow: 0 0 0 1px var(--warn);
+}
+
+.agent-card.agent-failed {
+  border-color: var(--danger-bg);
+}
+
+.avatar {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  overflow: visible;
+}
+
+.avatar-claude {
+  color: var(--claude);
+}
+
+.avatar-codex {
+  color: var(--codex);
+}
+
+.avatar-body {
+  fill: currentColor;
+}
+
+.avatar-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+
+.avatar-eyes {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+g.avatar-eyes {
+  fill: var(--bg);
+  stroke: none;
+}
+
+.agent-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.agent-thinking .agent-stance,
+.agent-working .agent-stance {
+  background: var(--accent-soft-bg);
+  color: var(--accent-soft);
+}
+
+.agent-waiting .agent-stance {
+  background: var(--warn);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.agent-failed .agent-stance {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* A thought bubble, a small puff toward the avatar. */
+.agent-bubble {
+  position: relative;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  background: var(--bubble);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.agent-bubble::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 8px;
+  width: 6px;
+  height: 6px;
+  border: inherit;
+  border-radius: 50%;
+  background: inherit;
+}
+
+.agent-bubble .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.agent-bubble-error {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.agent-bubble-error .icon {
+  color: var(--danger);
+}
+
+.agent-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Only while it works does anything move. */
+.agent-thinking .agent-bubble:not(.agent-bubble-error) .icon,
+.agent-working .agent-bubble:not(.agent-bubble-error) .icon {
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-thinking .agent-bubble:not(.agent-bubble-error) .icon,
+  .agent-working .agent-bubble:not(.agent-bubble-error) .icon {
+    animation: none;
+  }
+}
+
+.chat-agent {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}

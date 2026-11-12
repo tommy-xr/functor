@@ -41,7 +41,7 @@ export function taskGroup(status: TaskStatus): Group {
 export const untitled = (task: Task) => task.title || "Untitled task";
 
 /** Most recently active first; tasks without a time (none yet) by id. */
-function newestFirst(a: Task, b: Task): number {
+export function newestFirst(a: Task, b: Task): number {
   return (b.updated_at ?? 0) - (a.updated_at ?? 0) || b.id - a.id;
 }
 

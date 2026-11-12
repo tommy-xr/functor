@@ -1,0 +1,12 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-agents-1", "model": "claude-model"}}
+{"ms": 2500, "event": {"type": "tool_use", "name": "Read", "input": {"file_path": "game.fun"}}}
+{"ms": 2500, "event": {"type": "tool_use", "name": "Grep", "input": {"pattern": "count", "path": "."}}}
+{"ms": 5000, "event": {"type": "tool_result", "content": "13\tlet init = { count: 0.0 }"}}
+{"ms": 5000, "event": {"type": "tool_result", "content": "game.fun:13:let init = { count: 0.0 }"}}
+{"ms": 5200, "event": {"type": "tool_use", "name": "AskUserQuestion", "input": {"questions": [{"question": "Start the count at ten or twenty?"}]}}}
+{"ms": 8000, "event": {"type": "tool_result", "content": "Ten."}}
+{"ms": 8200, "event": {"type": "tool_use", "name": "Bash", "input": {"command": "curl -s https://functor.games/docs/", "description": "Read the docs"}}}
+{"ms": 10500, "event": {"type": "tool_result", "content": "Claude requested permissions to use Bash, but you haven't granted it yet."}}
+{"ms": 13000, "event": {"type": "text", "text": "I could not read the docs; the count starts at ten."}}
+{"ms": 13100, "event": {"type": "usage", "input": 4800, "output": 60}}
+{"ms": 13200, "event": {"type": "finished", "ok": true, "summary": "I could not read the docs; the count starts at ten."}}
