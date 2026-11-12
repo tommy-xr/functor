@@ -19,11 +19,16 @@ import { APP, requireBuilt, shot, startServer, stopServer, tempDir, tempProject,
 
 requireBuilt();
 
+// A failed step must not leave stubs retrying a gone desktop.
+const stubs = [];
+process.on("exit", () => stubs.forEach((c) => c.exitCode === null && c.kill()));
+
 /** A stub headset; `line(prefix)` waits for its next line starting so. */
 function stub(link, store, name, extra = []) {
   const child = spawn(APP, ["device-stub", "--desktop", link, "--name", name, "--store", store, ...extra], {
     stdio: ["ignore", "pipe", "ignore"],
   });
+  stubs.push(child);
   const lines = [];
   let buf = "";
   child.stdout.on("data", (d) => {
