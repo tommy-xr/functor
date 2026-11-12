@@ -67,6 +67,8 @@ pub struct Driver {
     /// `functor init --list --json`'s answer, with the binary's modification
     /// time it was read at (`None`: not known, so not kept).
     templates: Arc<Mutex<Option<(SystemTime, TemplateList)>>>,
+    /// The device link, once started.
+    pub link: Option<crate::link::Hub>,
 }
 
 pub type TemplateList = Result<Vec<functor_app_core::creation::Template>, String>;
@@ -123,6 +125,7 @@ impl Driver {
             layouts: Arc::default(),
             opened: Arc::default(),
             templates: Arc::default(),
+            link: None,
         }
     }
 
@@ -276,6 +279,11 @@ impl Driver {
                 paths,
             } => self.revert(task, baseline, paths),
             Command::AppContext { task, run, context } => self.runs.context(task, run, &context),
+            Command::Link(command) => {
+                if let Some(link) = &self.link {
+                    link.command(command);
+                }
+            }
             // Clients and view requests are the server's (`server::run`); `--print` has neither.
             Command::Reply(_) | Command::Broadcast(_) | Command::ViewReply(_) => {}
         }

@@ -417,7 +417,7 @@ pub fn wall_ms() -> u64 {
 
 /// Milliseconds since this process started, on a monotonic clock: the
 /// core's clock (`AppState::clock`).
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START
         .get_or_init(std::time::Instant::now)
