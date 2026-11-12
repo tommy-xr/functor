@@ -458,6 +458,46 @@ fn enqueue(queue: &mut VecDeque<GameInput>, input: GameInput) {
 mod tests {
     use super::*;
 
+    /// Every `GameInput` the app posts reads back as the debug server's
+    /// `InputCommand` with the same fields: the hand mirror cannot drift.
+    #[test]
+    fn game_inputs_are_debug_server_input_commands() {
+        use functor_app_core::protocol::MouseButton;
+        use functor_runtime_common::debug_protocol::InputCommand;
+        let buttons = [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
+        let inputs = [
+            GameInput::Key {
+                key: "space".into(),
+                down: true,
+            },
+            GameInput::MouseMove { x: -3, y: 7 },
+            GameInput::MouseWheel { delta: -1 },
+        ]
+        .into_iter()
+        .chain(buttons.map(|button| GameInput::MouseButton {
+            button,
+            down: false,
+        }));
+        for input in inputs {
+            // Exhaustive: a new variant fails to compile until it is mapped.
+            let expected = match input.clone() {
+                GameInput::Key { key, down } => InputCommand::Key { key, down },
+                GameInput::MouseMove { x, y } => InputCommand::MouseMove { x, y },
+                GameInput::MouseWheel { delta } => InputCommand::MouseWheel { delta },
+                GameInput::MouseButton { button, down } => {
+                    let name = serde_json::to_value(button).unwrap();
+                    let name = name.as_str().unwrap().to_string();
+                    assert!(functor_runtime_common::MouseButton::from_name(&name).is_some());
+                    InputCommand::MouseButton { button: name, down }
+                }
+            };
+            let wire = serde_json::to_value(&input).unwrap();
+            let read: InputCommand = serde_json::from_value(wire.clone())
+                .unwrap_or_else(|e| panic!("{wire} is not an InputCommand: {e}"));
+            assert_eq!(read, expected, "{wire}");
+        }
+    }
+
     #[test]
     fn cause_prefers_an_error_or_panic_line() {
         let tail = |lines: &[&str]| lines.iter().map(|l| l.to_string()).collect::<VecDeque<_>>();
