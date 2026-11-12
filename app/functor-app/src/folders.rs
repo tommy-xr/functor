@@ -16,7 +16,7 @@ const MAX_SUGGESTIONS: usize = 20;
 const MAX_SCANNED: usize = 5000;
 
 /// `path` with a leading `~` as the user's `home`.
-fn expand(path: &str, home: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn expand(path: &str, home: Option<&Path>) -> Option<PathBuf> {
     match (path.strip_prefix('~'), home) {
         (Some(""), Some(home)) => Some(home.to_path_buf()),
         (Some(rest), Some(home)) if rest.starts_with(std::path::is_separator) => {

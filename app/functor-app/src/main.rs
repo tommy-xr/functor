@@ -2,6 +2,7 @@
 
 mod agent;
 mod changes;
+mod creation;
 mod files;
 mod folders;
 mod server;
@@ -258,6 +259,8 @@ async fn app(
         Some(dir) => server::Ui::Dir(dir),
         None => server::Ui::Embedded,
     };
+    // For the new-project modal; listed again whenever it opens.
+    driver.run(Command::ListTemplates).await;
     let signal = shutdown_signal()?;
     let (listener, origin) = server::bind(args.port).await?;
     let code = match window {

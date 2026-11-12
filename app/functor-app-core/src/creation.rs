@@ -183,12 +183,16 @@ pub enum Step {
         #[cfg_attr(feature = "ts", ts(skip))]
         task: Option<(String, Harness)>,
     },
-    /// Created; the app is opening it as open request `id`.
+    /// Created; the app is opening it as open request `id`. `note`: said
+    /// once it is open (git could not track it).
     Opening {
         path: String,
         #[serde(skip)]
         #[cfg_attr(feature = "ts", ts(skip))]
         id: u64,
+        #[serde(skip)]
+        #[cfg_attr(feature = "ts", ts(skip))]
+        note: Option<String>,
         #[serde(skip)]
         #[cfg_attr(feature = "ts", ts(skip))]
         task: Option<(String, Harness)>,

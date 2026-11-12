@@ -156,9 +156,11 @@ pub enum Event {
     Templates {
         result: Result<Vec<Template>, String>,
     },
-    /// The shell's `CreateProject`: the project's folder, or how it failed.
+    /// The shell's `CreateProject`: the project's folder (with a `note`
+    /// to show once it is open), or how it failed.
     Created {
         result: Result<String, CreateFailure>,
+        note: Option<String>,
     },
     /// From the shell, about run `run` of task `task`.
     Run {
@@ -441,7 +443,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             state.templates_error = error;
             (changed, false)
         }
-        Event::Created { result } => (created(&mut state, result, &mut commands), false),
+        Event::Created { result, note } => {
+            (created(&mut state, result, note, &mut commands), false)
+        }
         Event::Client(ClientMsg::PickFolder) => {
             if !state.native_picker {
                 let reason = "there is no folder picker here: type the folder's path";
@@ -699,12 +703,20 @@ fn opened(
     remember_active(state, commands);
     // A project just created: its game starts, then its first task.
     if let Some(NewProject {
-        step: Step::Opening { id: made, task, .. },
+        step:
+            Step::Opening {
+                id: made,
+                task,
+                note,
+                ..
+            },
         ..
     }) = &state.new_project
     {
         if *made == id {
             let task = task.clone();
+            // Shown where folders' troubles are.
+            state.open_error = note.clone();
             state.new_project = None;
             start(state, commands);
             if let Some((message, harness)) = task {
@@ -725,6 +737,7 @@ fn not_opened(state: &mut AppState, id: u64) {
         path,
         id: made,
         task,
+        ..
     } = &np.step
     {
         if *made == id {
@@ -813,6 +826,7 @@ fn create_project(
 fn created(
     state: &mut AppState,
     result: Result<String, CreateFailure>,
+    note: Option<String>,
     commands: &mut Vec<Command>,
 ) -> bool {
     let Some(np) = &mut state.new_project else {
@@ -833,6 +847,7 @@ fn created(
             Step::Opening {
                 path,
                 id,
+                note,
                 task: task.clone(),
             }
         }
@@ -3751,6 +3766,7 @@ mod tests {
 
         let made = Event::Created {
             result: Ok("/games/Space-Race".into()),
+            note: Some("git is not installed".into()),
         };
         let (s, commands) = update(s, made);
         assert!(matches!(step(&s), Step::Opening { id: 1, .. }));
@@ -3777,6 +3793,8 @@ mod tests {
         let (s, commands) = update(s, opened);
         assert_eq!(s.new_project, None);
         assert_eq!(s.repo_root, "/games/Space-Race");
+        // The creation's note is said once it is open.
+        assert_eq!(s.open_error.as_deref(), Some("git is not installed"));
         assert!(commands.contains(&Command::StartSession {
             id: 1,
             dir: PathBuf::from("/games/Space-Race"),
@@ -3837,6 +3855,7 @@ mod tests {
             creating.clone(),
             Event::Created {
                 result: Err(failure.clone()),
+                note: None,
             },
         );
         assert_eq!(
@@ -3852,6 +3871,7 @@ mod tests {
             creating,
             Event::Created {
                 result: Ok("/games/Space".into()),
+                note: Some("git is not installed".into()),
             },
         );
         let (next, commands) = update(

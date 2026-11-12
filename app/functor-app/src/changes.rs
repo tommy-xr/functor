@@ -25,7 +25,7 @@ pub const BASELINE_GONE: &str = "the snapshot taken when the task started is no 
      available (the app's data was removed), so its change cannot be reverted";
 
 /// Environment that points git elsewhere; dropped so the repo at `root` is the one used.
-const REPO_ENV: [&str; 6] = [
+pub(crate) const REPO_ENV: [&str; 6] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
