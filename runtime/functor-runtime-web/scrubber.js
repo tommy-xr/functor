@@ -42,22 +42,29 @@ import {
 import {
   PREVIEW_SECONDS_MAX,
   PREVIEW_SECONDS_MIN,
+  STEP_BUTTON,
+  TIMELINE_COLORS,
   TIMELINE_FPS,
   createTimelineState,
   describeRecordedAvailability,
   deriveTimelineView,
+  markerDetail,
+  markerLabel,
+  pauseButton,
   reduceTimeline,
+  seekKeyTarget,
+  timelineTicks,
   unitToFrame,
 } from "./timeline-model.js";
 
 const STYLE = `
 #scrubber {
-  --sb-bg: var(--scrub-bg, rgba(30, 24, 51, 0.92));
-  --sb-line: var(--scrub-line, #2b2542);
-  --sb-text: var(--scrub-text, #e9e6f2);
-  --sb-dim: var(--scrub-dim, #9b94b3);
-  --sb-accent: var(--scrub-accent, #41d8e6);
-  --sb-future: var(--scrub-future, #e858b8);
+  --sb-bg: var(--scrub-bg, ${TIMELINE_COLORS.bg});
+  --sb-line: var(--scrub-line, ${TIMELINE_COLORS.line});
+  --sb-text: var(--scrub-text, ${TIMELINE_COLORS.text});
+  --sb-dim: var(--scrub-dim, ${TIMELINE_COLORS.dim});
+  --sb-accent: var(--scrub-accent, ${TIMELINE_COLORS.accent});
+  --sb-future: var(--scrub-future, ${TIMELINE_COLORS.future});
   --sb-font: var(--scrub-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   /* Docked TOP: the transport instrument sits above the scene it governs,
      matching the sandbox's chrono bar — one product-wide rule. */
@@ -142,16 +149,16 @@ const STYLE = `
   stroke: #8ff2fa; stroke-width: 1; stroke-opacity: 0.9;
 }
 .scrub-event { pointer-events: none; }
-.scrub-event.input { fill: #ffd166; fill-opacity: 0.75; }
-.scrub-event.reload { fill: #b994ff; }
-.scrub-event.reload-error { fill: #ff6b7d; }
+.scrub-event.input { fill: ${TIMELINE_COLORS.input}; fill-opacity: 0.75; }
+.scrub-event.reload { fill: ${TIMELINE_COLORS.reload}; }
+.scrub-event.reload-error { fill: ${TIMELINE_COLORS.reloadError}; }
 /* A landing reload glows on the rail and settles. The color property mirrors
    the fill so the drop-shadow takes the marker's own hue (violet ok / red
    error), and fill-box keeps the widen centered on the 3px tick, not the viewBox.
    The class is applied by hand (see reglowMarkerCluster): marker nodes are
    reused, so an insertion-time animation would only ever run once. */
-.scrub-event.reload { color: #b994ff; }
-.scrub-event.reload-error { color: #ff6b7d; }
+.scrub-event.reload { color: ${TIMELINE_COLORS.reload}; }
+.scrub-event.reload-error { color: ${TIMELINE_COLORS.reloadError}; }
 .scrub-event.reload, .scrub-event.reload-error {
   transform-box: fill-box; transform-origin: center;
 }
@@ -379,9 +386,10 @@ const JUICE_STYLE = `
 
 const HTML = `
   <div id="scrub-main">
-    <button id="scrub-pause" data-tip="Pause" aria-label="Pause">⏸</button>
-    <button id="scrub-step" data-tip="Step one frame"
-      aria-label="Step one frame forward">⏭</button>
+    <button id="scrub-pause" data-tip="${pauseButton(false).tip}"
+      aria-label="${pauseButton(false).label}">${pauseButton(false).glyph}</button>
+    <button id="scrub-step" data-tip="${STEP_BUTTON.tip}"
+      aria-label="${STEP_BUTTON.label}">${STEP_BUTTON.glyph}</button>
     <button id="scrub-reset" data-tip="Reset the demo"
       aria-label="Reset the demo" hidden>↺</button>
     <span id="scrub-rail" aria-label="Time-travel timeline" title="Drag to seek">
@@ -684,8 +692,7 @@ export function mountScrubber({ hidden = false } = {}) {
         markerNodes.set(marker.id, group);
       }
 
-      const suffix = marker.count > 1 ? `, ${marker.count} nearby events` : "";
-      group.setAttribute("aria-label", `frame ${marker.frame}, ${marker.labels[0]}${suffix}`);
+      group.setAttribute("aria-label", markerLabel(marker));
       group.setAttribute("transform", `translate(${marker.unit * 1000} 0)`);
       // Retain nodes/listeners and touch the DOM only when clustering changes
       // their chronological keyboard-navigation order.
@@ -707,8 +714,7 @@ export function mountScrubber({ hidden = false } = {}) {
     if (current.activeEvent) {
       eventDetail.style.display = "block";
       eventDetail.style.left = `${Math.min(95, Math.max(5, current.activeEvent.unit * 100))}%`;
-      const count = current.activeEvent.count > 1 ? ` · ${current.activeEvent.count} events` : "";
-      const detail = `frame ${current.activeEvent.frame} · ${current.activeEvent.labels[0]}${count}`;
+      const detail = markerDetail(current.activeEvent);
       if (eventDetail.textContent !== detail) eventDetail.textContent = detail;
     } else {
       eventDetail.style.display = "none";
@@ -760,36 +766,27 @@ export function mountScrubber({ hidden = false } = {}) {
     });
   };
 
-  // Ticks along the rail: one per second (TIMELINE_FPS frames), heavier every
-  // 5s. If a viewport ever spans enough seconds that ticks would smear
-  // together, the step widens (5s/30s) to keep them ≥ ~20 viewBox units
-  // apart. Skipped entirely when (lo, span) are unchanged since last render —
-  // the common paused case — so steady-state cost is one key comparison.
+  // Ticks along the rail (`timelineTicks`). Skipped entirely when the
+  // viewport is unchanged since last render — the common paused case — so
+  // steady-state cost is one key comparison.
   const ticksLayer = $("scrub-ticks");
   let lastTickKey = "";
   const renderTicks = (current) => {
     const ns = "http://www.w3.org/2000/svg";
-    const lo = current.viewport.lo;
-    const span = Math.max(current.viewport.hi - lo, 1);
-    const perSecond = TIMELINE_FPS;
-    const step =
-      span / perSecond <= 50 ? perSecond : span / perSecond <= 250 ? 5 * perSecond : 30 * perSecond;
-    const tickKey = `${lo}:${span}:${step}`;
+    const tickKey = `${current.viewport.lo}:${current.viewport.hi}`;
     if (tickKey === lastTickKey) return;
     lastTickKey = tickKey;
-    const frames = [];
-    for (let f = Math.ceil(lo / step) * step; f <= current.viewport.hi; f += step) frames.push(f);
-    while (ticksLayer.children.length > frames.length) ticksLayer.lastElementChild.remove();
-    while (ticksLayer.children.length < frames.length) {
+    const ticks = timelineTicks(current.viewport);
+    while (ticksLayer.children.length > ticks.length) ticksLayer.lastElementChild.remove();
+    while (ticksLayer.children.length < ticks.length) {
       const rect = document.createElementNS(ns, "rect");
       rect.setAttribute("width", "1.5");
       ticksLayer.appendChild(rect);
     }
-    frames.forEach((frame, index) => {
+    ticks.forEach(({ major, x }, index) => {
       const rect = ticksLayer.children[index];
-      const major = frame % (5 * step) === 0;
       rect.setAttribute("class", major ? "scrub-tick major" : "scrub-tick");
-      rect.setAttribute("x", String(((frame - lo) / span) * 1000));
+      rect.setAttribute("x", String(x));
       rect.setAttribute("y", major ? "9" : "11");
       rect.setAttribute("height", major ? "12" : "8");
     });
@@ -925,9 +922,10 @@ export function mountScrubber({ hidden = false } = {}) {
         : "") +
       (state.preview.enabled ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
       ` / ${Math.round(current.viewport.hi)}`;
-    pause.textContent = current.paused ? "▶" : "⏸";
-    pause.dataset.tip = current.paused ? "Play" : "Pause";
-    pause.setAttribute("aria-label", current.paused ? "Play" : "Pause");
+    const pauseLook = pauseButton(current.paused);
+    pause.textContent = pauseLook.glyph;
+    pause.dataset.tip = pauseLook.tip;
+    pause.setAttribute("aria-label", pauseLook.label);
     camera.hidden = false;
     camera.disabled = pendingPointerLock || pendingDetachedGeneration !== null;
     camera.textContent = detachedActive ? "🔗" : "📷";
@@ -1056,22 +1054,10 @@ export function mountScrubber({ hidden = false } = {}) {
     if (rail.hasPointerCapture(event.pointerId)) requestSeek(frameAtPointer(event));
   });
   const seekKey = (event) => {
-    const current = view();
-    if (!current) return;
-    const steps = event.shiftKey ? 10 : 1;
-    const targets = {
-      ArrowLeft: current.selectedFrame - steps,
-      ArrowDown: current.selectedFrame - steps,
-      ArrowRight: current.selectedFrame + steps,
-      ArrowUp: current.selectedFrame + steps,
-      PageDown: current.selectedFrame - TIMELINE_FPS,
-      PageUp: current.selectedFrame + TIMELINE_FPS,
-      Home: current.recorded.lo,
-      End: current.recorded.hi,
-    };
-    if (!(event.key in targets)) return;
+    const target = seekKeyTarget(view(), event.key, event.shiftKey);
+    if (target === null) return;
     event.preventDefault();
-    requestSeek(targets[event.key]);
+    requestSeek(target);
   };
   playhead.addEventListener("keydown", seekKey);
 
