@@ -64,9 +64,9 @@ pub struct Driver {
     opened: Arc<Opened>,
 }
 
-/// Workspaces read for `Event::Opened`, by root, until the core takes one
-/// (`Command::UseWorkspace`): its git and highest task id.
-type Opened = Mutex<HashMap<PathBuf, (Option<Git>, u64)>>;
+/// Workspaces read for `Event::Opened`, by request id, until the core takes
+/// one (`Command::UseWorkspace`): its git and highest task id.
+type Opened = Mutex<HashMap<u64, (Option<Git>, u64)>>;
 
 /// Writes and forgets every pending layout.
 fn write_layouts(home: &Path, pending: &Mutex<HashMap<PathBuf, Layout>>) {
@@ -117,10 +117,10 @@ impl Driver {
         }
     }
 
-    /// Reads the folder `path` names for the core (blocking), keeping its
-    /// git for `Command::UseWorkspace`; with `track`, changes are tracked.
+    /// Reads the folder `path` names for the core (blocking) as request 0,
+    /// the one at startup; with `track`, changes are tracked.
     pub fn open(&self, path: String, track: bool) -> Event {
-        open_folder(&self.home, &self.opened, path, track)
+        open_folder(&self.home, &self.opened, 0, path, track)
     }
 
     /// A client's new task as the core takes it: with an id reserved in
@@ -167,15 +167,22 @@ impl Driver {
                 let files = read_project_files(&dir);
                 let _ = self.events.send(Event::Files { path, dir, files });
             }
-            Command::OpenFolder { path } => {
+            Command::OpenFolder { id, path } => {
                 let (home, opened, events) =
                     (self.home.clone(), self.opened.clone(), self.events.clone());
                 tokio::task::spawn_blocking(move || {
-                    let _ = events.send(open_folder(&home, &opened, path, true));
+                    let _ = events.send(open_folder(&home, &opened, id, path, true));
                 });
             }
-            Command::UseWorkspace { root } => {
-                let Some((git, highest)) = self.opened.lock().unwrap().remove(&root) else {
+            Command::UseWorkspace { id } => {
+                let taken = {
+                    let mut opened = self.opened.lock().unwrap();
+                    let taken = opened.remove(&id);
+                    // Earlier requests were superseded: the core drops their readings.
+                    opened.retain(|&other, _| other > id);
+                    taken
+                };
+                let Some((git, highest)) = taken else {
                     return;
                 };
                 self.git = git.map(Arc::new);
@@ -295,6 +302,7 @@ impl Driver {
     /// to `reply` as `ServerMsg::File`.
     pub fn read_file(
         &self,
+        root: String,
         project: String,
         path: String,
         dir: PathBuf,
@@ -309,6 +317,7 @@ impl Driver {
                 Err(error) => (None, Some(error)),
             };
             let msg = ServerMsg::File {
+                root,
                 project,
                 path,
                 text,
@@ -397,18 +406,16 @@ impl Driver {
     }
 }
 
-/// `Event::Opened` for the folder `path` names, keeping what the core does
-/// not hold (its git, its highest task id) in `opened` by root.
-fn open_folder(home: &Path, opened: &Opened, path: String, track: bool) -> Event {
+/// `Event::Opened` for request `id`, the folder `path` names, keeping what
+/// the core does not hold (its git, its highest task id) in `opened`.
+fn open_folder(home: &Path, opened: &Opened, id: u64, path: String, track: bool) -> Event {
     let result = crate::folders::load(&path, home, track).map(|loaded| {
-        let root = PathBuf::from(&loaded.state.repo_root);
-        opened
-            .lock()
-            .unwrap()
-            .insert(root, (loaded.git, loaded.highest));
+        let kept = (loaded.git, loaded.highest);
+        opened.lock().unwrap().insert(id, kept);
         Box::new(loaded.state)
     });
     Event::Opened {
+        id,
         folder: path,
         result,
     }

@@ -149,8 +149,10 @@ pub enum ServerMsg {
     },
     /// `path` of `project` as it is on disk, answering `GetFile`: its
     /// `text`, or the `error` saying why not (outside the project, too
-    /// large, not UTF-8).
+    /// large, not UTF-8). `root` is the workspace's (`AppState::repo_root`)
+    /// when it was asked: another folder's project may share `project`.
     File {
+        root: String,
         project: String,
         path: String,
         text: Option<String>,

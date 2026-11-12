@@ -199,6 +199,7 @@ async fn app(
         if let Event::Opened {
             folder,
             result: Err(e),
+            ..
         } = &opened
         {
             eprintln!("functor-app: cannot open {folder}: {e}");

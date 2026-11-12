@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 import type { AppState, Recent } from "./generated/protocol";
+import { basename } from "./chat-model";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
 import type { DirsMsg, Send } from "./socket";
@@ -15,8 +16,6 @@ export type FolderProps = {
 /** How long typing pauses before the server is asked about the path. */
 const ASK_MS = 150;
 
-/** The last part of a path, as a folder's name. */
-export const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 /**
  * A folder path field with the server's suggestions under it: directory
@@ -65,7 +64,7 @@ export function PathField({
           {suggestions.map((dir) => (
             <li key={dir}>
               <button type="button" className="mono" title={dir} aria-label={dir} onClick={() => onChange(`${dir}/`)}>
-                {baseName(dir)}/
+                {basename(dir)}/
               </button>
             </li>
           ))}

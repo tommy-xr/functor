@@ -420,6 +420,7 @@ mod tests {
             ],
             native_picker: false,
             open_error: None,
+            opening: 0,
         };
         assert_eq!(
             print(&state),

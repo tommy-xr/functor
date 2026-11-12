@@ -55,6 +55,11 @@ pub struct AppState {
     pub native_picker: bool,
     /// Why the last folder asked for did not open; cleared by the next try.
     pub open_error: Option<String>,
+    /// The last folder asked for (`Command::OpenFolder`'s `id`): only its
+    /// reading is used, so a slower, earlier one never lands after it.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub opening: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +99,7 @@ impl AppState {
             recents: Vec::new(),
             native_picker: false,
             open_error: None,
+            opening: 0,
         }
     }
 
@@ -121,6 +127,7 @@ pub enum Event {
     /// workspace as the shell loads it (repo root, projects, active project
     /// and its files, tasks, layouts, picks, git), or why it cannot be opened.
     Opened {
+        id: u64,
         folder: String,
         result: Result<Box<AppState>, String>,
     },
@@ -202,10 +209,11 @@ pub enum Command {
     },
     /// Read project `path`'s files in `dir`, answering with `Event::Files`.
     ListFiles { path: String, dir: PathBuf },
-    /// Read the folder `path` names as a workspace, answering with `Event::Opened`.
-    OpenFolder { path: String },
-    /// The workspace rooted at `root` is open: its git measures changes now.
-    UseWorkspace { root: PathBuf },
+    /// Read the folder `path` names as a workspace, answering with
+    /// `Event::Opened` with the same `id`.
+    OpenFolder { id: u64, path: String },
+    /// The workspace read for request `id` is open: its git measures changes now.
+    UseWorkspace { id: u64 },
     /// Show the native folder picker at `from`, answering with `Event::Picked`.
     PickFolder { from: Option<PathBuf> },
     /// List directories completing `path`, answering the asking client
@@ -226,6 +234,7 @@ pub enum Command {
     /// Read `path` (checked by [`check_relative`]) in project `project`'s
     /// `dir`, answering the asking client with `ServerMsg::File`.
     ReadFile {
+        root: String,
         project: String,
         path: String,
         dir: PathBuf,
@@ -333,7 +342,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
         Event::Client(ClientMsg::OpenFolder { path }) | Event::Picked { path: Some(path) } => {
-            let open = can_open(&state).map(|()| Command::OpenFolder { path });
+            let id = state.opening + 1;
+            let open = can_open(&state).map(|()| Command::OpenFolder { id, path });
             (try_open(&mut state, open, &mut commands), false)
         }
         Event::Picked { path: None } => (false, false),
@@ -346,8 +356,10 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             let pick = can_open(&state).map(|()| Command::PickFolder { from });
             (try_open(&mut state, pick, &mut commands), false)
         }
-        Event::Opened { folder, result } => {
-            (opened(&mut state, folder, result, &mut commands), false)
+        // A reading superseded by a later request is dropped.
+        Event::Opened { id, .. } if id != state.opening => (false, false),
+        Event::Opened { id, folder, result } => {
+            (opened(&mut state, id, folder, result, &mut commands), false)
         }
         Event::Client(ClientMsg::ListDirs { path }) => {
             commands.push(Command::ListDirs { path });
@@ -507,6 +519,9 @@ fn try_open(
 ) -> bool {
     let error = match command {
         Ok(command) => {
+            if let Command::OpenFolder { id, .. } = command {
+                state.opening = id;
+            }
             commands.push(command);
             None
         }
@@ -521,6 +536,7 @@ fn try_open(
 /// session; or records why it cannot in `open_error`.
 fn opened(
     state: &mut AppState,
+    id: u64,
     folder: String,
     result: Result<Box<AppState>, String>,
     commands: &mut Vec<Command>,
@@ -560,10 +576,9 @@ fn opened(
         recents: _,
         native_picker: _,
         open_error: _,
+        opening: _,
     } = *new;
-    commands.push(Command::UseWorkspace {
-        root: PathBuf::from(&repo_root),
-    });
+    commands.push(Command::UseWorkspace { id });
     *state = AppState {
         repo_root,
         folder,
@@ -779,11 +794,13 @@ fn get_file(state: &AppState, path: String, commands: &mut Vec<Command>) {
     };
     match check_view(state, &project, &View::File { path: path.clone() }) {
         Ok(()) => commands.push(Command::ReadFile {
+            root: state.repo_root.clone(),
             dir: project_dir(Path::new(&state.repo_root), &project),
             project,
             path,
         }),
         Err(error) => commands.push(Command::Reply(ServerMsg::File {
+            root: state.repo_root.clone(),
             project,
             path,
             text: None,
@@ -2990,6 +3007,7 @@ mod tests {
         assert_eq!(
             commands,
             vec![Command::ReadFile {
+                root: "/repo".to_string(),
                 project: "examples/a".to_string(),
                 path: "game.fun".to_string(),
                 dir: PathBuf::from("/repo/examples/a"),
@@ -3004,6 +3022,7 @@ mod tests {
         assert_eq!(
             commands,
             vec![Command::Reply(ServerMsg::File {
+                root: "/repo".to_string(),
                 project: "examples/a".to_string(),
                 path: "/etc/passwd".to_string(),
                 text: None,
@@ -3023,6 +3042,7 @@ mod tests {
         assert_eq!(
             commands,
             vec![Command::Reply(ServerMsg::File {
+                root: "/repo".to_string(),
                 project: "examples/a".to_string(),
                 path: ".env".to_string(),
                 text: None,
@@ -3110,10 +3130,17 @@ mod tests {
     #[test]
     fn opening_a_folder_asks_the_shell_to_read_it() {
         let (next, commands) = update(state(), open("/other"));
-        assert_eq!(next, state());
+        assert_eq!(
+            next,
+            AppState {
+                opening: 1,
+                ..state()
+            }
+        );
         assert_eq!(
             commands,
             vec![Command::OpenFolder {
+                id: 1,
                 path: "/other".into()
             }]
         );
@@ -3138,6 +3165,7 @@ mod tests {
         assert_eq!(commands, vec![broadcast(&refused)]);
         // Nor when a run started while the folder was read.
         let read = Event::Opened {
+            id: 0,
             folder: "/other".into(),
             result: Ok(Box::new(other())),
         };
@@ -3168,6 +3196,7 @@ mod tests {
             missing: false,
         }];
         let read = Event::Opened {
+            id: 0,
             folder: "/other/".into(),
             result: Ok(Box::new(other())),
         };
@@ -3195,9 +3224,7 @@ mod tests {
             commands,
             vec![
                 Command::StopSession { id: 1 },
-                Command::UseWorkspace {
-                    root: PathBuf::from("/other")
-                },
+                Command::UseWorkspace { id: 0 },
                 Command::SaveRecents {
                     recents: expected.recents.clone()
                 },
@@ -3225,6 +3252,7 @@ mod tests {
             missing: false,
         }];
         let failed = |folder: &str| Event::Opened {
+            id: 0,
             folder: folder.into(),
             result: Err("it does not exist".into()),
         };
@@ -3266,6 +3294,41 @@ mod tests {
                 broadcast(&removed)
             ]
         );
+    }
+
+    #[test]
+    fn only_the_last_folder_asked_for_opens() {
+        let (s, _) = update(state(), open("/first"));
+        let (s, commands) = update(s, open("/other"));
+        assert_eq!(
+            commands,
+            vec![Command::OpenFolder {
+                id: 2,
+                path: "/other".into()
+            }]
+        );
+        // The first one's reading, arriving late, is dropped.
+        let first = |id| Event::Opened {
+            id,
+            folder: "/first".into(),
+            result: Ok(Box::new(AppState::new(
+                Path::new("/first"),
+                Path::new("/first"),
+                vec![],
+            ))),
+        };
+        let (s, commands) = update(s.clone(), first(1));
+        assert_eq!((s.repo_root.as_str(), commands), ("/repo", vec![]));
+        let (s, commands) = update(
+            s,
+            Event::Opened {
+                id: 2,
+                folder: "/other".into(),
+                result: Ok(Box::new(other())),
+            },
+        );
+        assert_eq!(s.repo_root, "/other");
+        assert!(commands.contains(&Command::UseWorkspace { id: 2 }));
     }
 
     #[test]

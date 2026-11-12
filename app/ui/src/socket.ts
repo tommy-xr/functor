@@ -111,6 +111,8 @@ export function useAppSocket() {
             setDiffs((all) => new Map(all).set(msg.task, msg));
             break;
           case "file":
+            // Read for a folder open before this one.
+            if (msg.root !== root.current) break;
             setFiles((all) => {
               const key = fileKey(msg.project, msg.path);
               const had = all.get(key);

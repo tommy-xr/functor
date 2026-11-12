@@ -219,7 +219,7 @@ async fn run(
     let token = token();
     // A cancel while starting drops the child's stdin, which stops it.
     let started = tokio::select! {
-        started = ToolServer::start(functor, &spec.dir, spec.attach.as_deref(), &token) => started,
+        started = ToolServer::start(functor, spec.attach.as_deref(), &token) => started,
         _ = &mut cancel => return None,
     };
     let server = match started {
@@ -334,18 +334,10 @@ fn tool_server_args(attach: Option<&str>) -> Vec<&str> {
 }
 
 impl ToolServer {
-    /// In `dir`, the run's project, as the agent is: the app's own working
-    /// directory is wherever it was started, not the open folder.
-    async fn start(
-        functor: &Path,
-        dir: &Path,
-        attach: Option<&str>,
-        token: &str,
-    ) -> Result<Self, String> {
+    async fn start(functor: &Path, attach: Option<&str>, token: &str) -> Result<Self, String> {
         // Killed if dropped before `stop` (a cancel or failure while starting).
         let mut child = Command::new(functor)
             .args(tool_server_args(attach))
-            .current_dir(dir)
             .kill_on_drop(true)
             .env(TOKEN_ENV, token)
             .stdin(Stdio::piped())

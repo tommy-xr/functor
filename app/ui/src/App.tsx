@@ -2,7 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
-import { baseName, FolderActions, NoProject, type FolderProps } from "./Folders";
+import { basename } from "./chat-model";
+import { FolderActions, NoProject, type FolderProps } from "./Folders";
 import { Icon } from "./Icon";
 import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
@@ -146,7 +147,7 @@ function canvasWord(state: AppState | null): string {
 
 function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
   // The project, else the open folder.
-  const name = activeProject(state)?.name ?? (state?.folder ? baseName(state.folder) : null);
+  const name = activeProject(state)?.name ?? (state?.folder ? basename(state.folder) : null);
   const word = sessionWord(state?.session);
   // The app window shows it as its title.
   useEffect(() => {

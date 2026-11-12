@@ -29,8 +29,8 @@ fn expand(path: &str, home: Option<&Path>) -> Option<PathBuf> {
 
 /// The folder `path` names, as the app may open it: `~` expanded, absolute,
 /// resolved through symlinks and `..`, an existing directory it can list.
+/// Taken as given (a name may end in a space); the page trims what is typed.
 pub fn resolve(path: &str, home: Option<&Path>) -> Result<PathBuf, String> {
-    let path = path.trim();
     if path.is_empty() {
         return Err("no folder given".to_string());
     }
@@ -173,11 +173,10 @@ mod tests {
         let (_tmp, root) = tree(&["a/b/", "file.txt"]);
         let s = |p: &Path| p.to_string_lossy().into_owned();
         assert_eq!(resolve(&s(&root.join("a/b")), None), Ok(root.join("a/b")));
-        // Trailing separators, `..` and spaces around it all name the same folder.
+        // Trailing separators and `..` name the same folder.
         for spelled in [
             format!("{}/", s(&root.join("a/b"))),
             s(&root.join("a/b/../b")),
-            format!("  {}  ", s(&root.join("a/b"))),
         ] {
             assert_eq!(resolve(&spelled, None), Ok(root.join("a/b")), "{spelled}");
         }

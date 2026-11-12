@@ -118,7 +118,8 @@ function isObject(v: JsonValue): v is { [key: string]: JsonValue } {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function basename(path: string): string {
+/** The last part of a path. */
+export function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 

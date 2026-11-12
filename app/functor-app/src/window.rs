@@ -20,6 +20,9 @@ use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Window, WindowBuilder};
 use wry::{NewWindowResponse, WebView, WebViewBuilder};
 
+use functor_app_core::folders::MAX_RECENTS;
+use functor_app_core::Recent;
+
 use crate::server::Token;
 use crate::WindowLink;
 
@@ -38,8 +41,8 @@ enum UserEvent {
     Title(String),
     /// A menu bar item was chosen.
     Menu(MenuId),
-    /// The page's recent projects, for Open Recent: (name, path).
-    Recents(Vec<(String, String)>),
+    /// The page's recent projects, for Open Recent.
+    Recents(Vec<Recent>),
     /// The runtime thread has finished.
     Done,
 }
@@ -312,14 +315,14 @@ fn menu() -> muda::Result<(Menu, Submenu)> {
 }
 
 /// Replaces Open Recent's items with `recents`; disabled when there are none.
-fn fill_recent(menu: &Submenu, recents: &[(String, String)]) {
+fn fill_recent(menu: &Submenu, recents: &[Recent]) {
     for item in menu.items() {
         if let Some(item) = item.as_menuitem() {
             let _ = menu.remove(item);
         }
     }
-    for (i, (name, path)) in recents.iter().enumerate() {
-        let label = format!("{name} — {path}");
+    for (i, r) in recents.iter().enumerate() {
+        let label = format!("{} — {}", r.name, r.path);
         let _ = menu.append(&MenuItem::with_id(
             format!("{RECENT}{i}"),
             label,
@@ -330,27 +333,25 @@ fn fill_recent(menu: &Submenu, recents: &[(String, String)]) {
     menu.set_enabled(!recents.is_empty());
 }
 
-/// The page's `{"recents": [{"name", "path"}, …]}`, at most ten entries.
-fn parse_recents(body: &str) -> Option<Vec<(String, String)>> {
-    let json: serde_json::Value = serde_json::from_str(body).ok()?;
-    let list = json["recents"].as_array()?.iter().take(10);
-    list.map(|r| {
-        Some((
-            r["name"].as_str()?.to_string(),
-            r["path"].as_str()?.to_string(),
-        ))
-    })
-    .collect()
+/// The page's `{"recents": [{"name", "path"}, …]}`, at most [`MAX_RECENTS`].
+fn parse_recents(body: &str) -> Option<Vec<Recent>> {
+    #[derive(serde::Deserialize)]
+    struct Listed {
+        recents: Vec<Recent>,
+    }
+    let mut list = serde_json::from_str::<Listed>(body).ok()?.recents;
+    list.truncate(MAX_RECENTS);
+    Some(list)
 }
 
 /// The script that hands menu item `id`'s command to the page, which sends
 /// it as its own buttons do (the server checks every path).
-fn menu_script(id: &str, recents: &[(String, String)]) -> Option<String> {
+fn menu_script(id: &str, recents: &[Recent]) -> Option<String> {
     let msg = match id {
         OPEN_FOLDER => serde_json::json!({"type": "pick_folder"}),
         _ => {
             let i: usize = id.strip_prefix(RECENT)?.parse().ok()?;
-            serde_json::json!({"type": "open_folder", "path": recents.get(i)?.1})
+            serde_json::json!({"type": "open_folder", "path": recents.get(i)?.path})
         }
     };
     Some(format!("window.functorMenu?.({msg});"))
@@ -512,7 +513,7 @@ mod tests {
 
     #[test]
     fn menu_commands_reach_the_page_as_messages() {
-        let recents = [("hello".to_string(), "/a/\"hello\"');".to_string())];
+        let recents = [recent("hello", "/a/\"hello\"');")];
         assert_eq!(
             menu_script(OPEN_FOLDER, &recents).unwrap(),
             r#"window.functorMenu?.({"type":"pick_folder"});"#
@@ -530,14 +531,22 @@ mod tests {
     #[test]
     fn recents_from_the_page_are_names_and_paths() {
         let body = r#"{"recents":[{"name":"a","path":"/a"},{"name":"b","path":"/b"}]}"#;
-        let ab = vec![("a".into(), "/a".into()), ("b".into(), "/b".into())];
+        let ab = vec![recent("a", "/a"), recent("b", "/b")];
         assert_eq!(parse_recents(body), Some(ab));
         for bad in ["", "{}", r#"{"recents":[{"name":1,"path":"/a"}]}"#] {
             assert_eq!(parse_recents(bad), None, "{bad}");
         }
         let many = (0..20).map(|i| format!(r#"{{"name":"{i}","path":"/{i}"}}"#));
         let body = format!(r#"{{"recents":[{}]}}"#, many.collect::<Vec<_>>().join(","));
-        assert_eq!(parse_recents(&body).unwrap().len(), 10);
+        assert_eq!(parse_recents(&body).unwrap().len(), MAX_RECENTS);
+    }
+
+    fn recent(name: &str, path: &str) -> Recent {
+        Recent {
+            name: name.into(),
+            path: path.into(),
+            missing: false,
+        }
     }
 
     #[test]

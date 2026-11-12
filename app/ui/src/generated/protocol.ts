@@ -281,7 +281,7 @@ usage: Usage | null, };
 /**
  * Core → UI.
  */
-export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", project: string, path: string, text: string | null, error: string | null, } | { "type": "dirs", path: string, dirs: Array<string>, error: string | null, } | { "type": "rejected", reason: string, };
+export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", root: string, project: string, path: string, text: string | null, error: string | null, } | { "type": "dirs", path: string, dirs: Array<string>, error: string | null, } | { "type": "rejected", reason: string, };
 
 export type Session = { 
 /**
