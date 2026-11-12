@@ -95,6 +95,17 @@ jobs:
         env:
           FUNCTOR_BIN: ${{ github.workspace }}/target/debug/functor${{ runner.os == 'Windows' && '.exe' || '' }}
 
+      # The app's real window (macOS only): opens it, waits until its page has
+      # connected, closes it. The page needs the UI bundle, hence npm.
+      - name: Window smoke
+        if: matrix.os == 'macos-latest'
+        run: |
+          npm ci
+          npm run build:app-ui
+          cargo run -q -p functor-app -- --window-smoke -d examples/primitives --ui-dir app/ui/dist
+        env:
+          FUNCTOR_APP_HOME: ${{ runner.temp }}/functor-app-home
+
       # `functor mcp --http` against the real binary (cargo builds it for the
       # test; no GPU: its one launched game runs headless).
       - name: Test MCP over HTTP

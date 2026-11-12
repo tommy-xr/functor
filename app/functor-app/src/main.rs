@@ -6,6 +6,8 @@ mod files;
 mod server;
 mod session;
 mod store;
+#[cfg(target_os = "macos")]
+mod window;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -34,9 +36,14 @@ struct Args {
     #[arg(short, long, global = true)]
     dir: Option<PathBuf>,
 
-    /// Run without a window.
+    /// Run without a window: serve the UI for a browser, at the printed URL.
     #[arg(long, global = true)]
     headless: bool,
+
+    /// Open the window, wait until its page has connected, close it and exit
+    /// 0; non-zero with the reason if that takes too long.
+    #[arg(long, hide = true, conflicts_with = "headless")]
+    window_smoke: bool,
 
     /// Print the state as text and exit.
     #[arg(long)]
@@ -98,8 +105,16 @@ enum Cmd {
     },
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> std::io::Result<ExitCode> {
+/// The window's side of the runtime thread: where to send the server's
+/// origin once it listens, and the window's request to shut down.
+type WindowLink = (
+    std::sync::mpsc::Sender<String>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
+fn main() -> std::io::Result<ExitCode> {
+    // First, while this is the only thread: it edits the environment.
+    let token = server::Token::take();
     let args = Args::parse();
     if let Some(fixture) = &args.replay_events {
         return Ok(
@@ -112,10 +127,41 @@ async fn main() -> std::io::Result<ExitCode> {
             },
         );
     }
-    if !args.headless {
-        eprintln!("functor-app: only --headless is supported yet");
+    let runtime = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+    };
+    if args.headless {
+        return runtime()?.block_on(app(args, token, None));
+    }
+    if args.print || args.command.is_some() {
+        eprintln!("functor-app: --print and task need --headless");
         return Ok(ExitCode::from(2));
     }
+    #[cfg(target_os = "macos")]
+    {
+        let home = store::home(std::env::var_os("FUNCTOR_APP_HOME"), std::env::home_dir());
+        let smoke = args.window_smoke;
+        let reveal = token.clone();
+        window::run(home, smoke, reveal, move |link| {
+            runtime()?.block_on(app(args, token, Some(link)))
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        eprintln!("functor-app: the window is macOS-only for now; run with --headless");
+        Ok(ExitCode::from(2))
+    }
+}
+
+/// Everything but the window, on the runtime thread: `--print`, `task`, or
+/// the server until a signal (or, with `window`, the window) stops it.
+async fn app(
+    args: Args,
+    token: server::Token,
+    window: Option<WindowLink>,
+) -> std::io::Result<ExitCode> {
     let start = std::fs::canonicalize(args.dir.unwrap_or_else(|| PathBuf::from(".")))?;
     let mut state = functor_app_core::discover(&start);
     state.no_gpu = args.no_gpu;
@@ -185,8 +231,32 @@ async fn main() -> std::io::Result<ExitCode> {
         Some(dir) => server::Ui::Dir(dir),
         None => server::Ui::Embedded,
     };
-    let shutdown = shutdown_signal()?;
-    server::serve(state, driver, events, args.port, ui, shutdown).await
+    let signal = shutdown_signal()?;
+    let (listener, origin) = server::bind(args.port).await?;
+    let code = match window {
+        // The full URL, for a person to open; see `server` on the token.
+        None => {
+            eprintln!(
+                "[functor-app] listening on {origin}/#token={}",
+                token.reveal()
+            );
+            let shutdown = async { 128 + signal.await };
+            server::serve(state, driver, events, listener, token, ui, shutdown).await?
+        }
+        Some((listening, close)) => {
+            eprintln!("[functor-app] listening on {origin}");
+            let _ = listening.send(origin);
+            // Closing the window stops everything the way a signal does.
+            let shutdown = async {
+                tokio::select! {
+                    signal = signal => 128 + signal,
+                    _ = close => 0,
+                }
+            };
+            server::serve(state, driver, events, listener, token, ui, shutdown).await?
+        }
+    };
+    Ok(ExitCode::from(code))
 }
 
 type Shutdown<'a> = Pin<&'a mut dyn Future<Output = u8>>;

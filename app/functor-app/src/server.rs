@@ -1,12 +1,23 @@
-//! `--headless` without `--print`: serves the UI and one WebSocket carrying
-//! the core protocol on 127.0.0.1. One loop owns the state and runs `update`;
-//! socket handlers only forward messages in and out.
+//! Serves the UI and one WebSocket carrying the core protocol on 127.0.0.1,
+//! for the window or a browser (`--headless`). One loop owns the state and
+//! runs `update`; socket handlers only forward messages in and out.
+//!
+//! Access: any local process (or another user on this machine) can reach
+//! loopback, and any web page can open a WebSocket to it. So `/ws`, the one
+//! route that drives the app, needs this launch's random [`Token`] in its
+//! query (compared in constant time) AND, from a browser, our own page's
+//! `Origin`. The page learns the token from the window (an injected script)
+//! or from the fragment of the URL `--headless` prints, never from the
+//! server; fragments are not sent in requests or `Referer`, and the page drops
+//! it from the address bar. The token is never logged in window mode, never
+//! in argv, and never in a child's environment. The UI's static files are
+//! the same for everyone and are served without it.
 
 use std::collections::{HashMap, HashSet};
 use std::future::{Future, IntoFuture};
 use std::net::Ipv4Addr;
 use std::path::{Component, Path, PathBuf};
-use std::process::{ExitCode, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -54,30 +65,90 @@ enum Input {
     Disconnect { id: u64 },
 }
 
+/// This launch's secret for `/ws` (see the module docs). Its `Debug` hides it.
+#[derive(Clone)]
+pub struct Token(String);
+
+impl Token {
+    /// Random; in a debug build, `FUNCTOR_APP_TOKEN` instead when it is
+    /// URL-safe (tests restarting a server for the same open page). The
+    /// variable is removed either way, so no child inherits it. Call before
+    /// any thread starts.
+    pub fn take() -> Token {
+        let var = std::env::var("FUNCTOR_APP_TOKEN").ok();
+        std::env::remove_var("FUNCTOR_APP_TOKEN");
+        let safe = |t: &String| {
+            !t.is_empty()
+                && t.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        };
+        match var.filter(|t| cfg!(debug_assertions) && safe(t)) {
+            Some(token) => Token(token),
+            None => Token(crate::agent::token()),
+        }
+    }
+
+    /// The text to hand to the page.
+    pub fn reveal(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether `query` (a request's query string) carries this token.
+    fn presented_in(&self, query: Option<&str>) -> bool {
+        let given = query
+            .unwrap_or("")
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("token="))
+            .unwrap_or("");
+        same(given.as_bytes(), self.0.as_bytes())
+    }
+}
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Token(..)")
+    }
+}
+
+/// `a == b` in time that depends only on their lengths.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
+}
+
+/// The listener for `port` on 127.0.0.1 (0: a free one), and its origin.
+pub async fn bind(port: u16) -> std::io::Result<(TcpListener, String)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+    let port = listener.local_addr()?.port();
+    Ok((listener, format!("http://127.0.0.1:{port}")))
+}
+
 struct Ctx {
     inputs: UnboundedSender<Input>,
     next_id: AtomicU64,
+    token: Token,
     /// The page's own origins; see `ws`.
     origins: [String; 2],
     ui: Ui,
 }
 
-/// Serves until `shutdown` resolves to a signal number, then stops the
-/// session and every agent run and returns 128 + it.
+/// Serves until `shutdown` resolves to an exit code, then stops the session
+/// and every agent run and returns it.
 pub async fn serve(
     state: AppState,
     mut driver: Driver,
     events: UnboundedReceiver<Event>,
-    port: u16,
+    listener: TcpListener,
+    token: Token,
     ui: Ui,
     shutdown: impl Future<Output = u8>,
-) -> std::io::Result<ExitCode> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+) -> std::io::Result<u8> {
     let port = listener.local_addr()?.port();
     let (inputs, inputs_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(Ctx {
         inputs,
         next_id: AtomicU64::new(1),
+        token,
         origins: [
             format!("http://127.0.0.1:{port}"),
             format!("http://localhost:{port}"),
@@ -88,15 +159,12 @@ pub async fn serve(
         .route("/ws", get(ws))
         .fallback(get(asset))
         .with_state(ctx);
-    eprintln!("[functor-app] listening on http://127.0.0.1:{port}");
     tokio::select! {
         result = axum::serve(listener, app).into_future() => {
             result?;
-            Ok(ExitCode::FAILURE)
+            Ok(1)
         }
-        signal = run(state, &mut driver, events, inputs_rx, shutdown) => {
-            Ok(ExitCode::from(128 + signal))
-        }
+        code = run(state, &mut driver, events, inputs_rx, shutdown) => Ok(code),
     }
 }
 
@@ -257,15 +325,17 @@ fn json(msg: &ServerMsg) -> String {
 
 async fn ws(
     State(ctx): State<Arc<Ctx>>,
+    uri: Uri,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    // Any web page can open a WebSocket to loopback; only our own page (or a
-    // non-browser client, which sends no Origin) may drive the app.
-    if let Some(origin) = headers.get(header::ORIGIN) {
-        if !ctx.origins.iter().any(|o| origin == o.as_str()) {
-            return StatusCode::FORBIDDEN.into_response();
-        }
+    // The token, and from a browser our own page (a non-browser client sends
+    // no Origin): see the module docs.
+    let own_origin = headers
+        .get(header::ORIGIN)
+        .is_none_or(|origin| ctx.origins.iter().any(|o| origin == o.as_str()));
+    if !own_origin || !ctx.token.presented_in(uri.query()) {
+        return StatusCode::FORBIDDEN.into_response();
     }
     upgrade.on_upgrade(move |socket| client(ctx, socket))
 }
@@ -428,6 +498,34 @@ mod tests {
                 item(2, 2, "x")
             ]
         );
+    }
+
+    #[test]
+    fn the_token_must_be_presented_exactly() {
+        let token = Token("abc123".to_string());
+        assert!(token.presented_in(Some("token=abc123")));
+        assert!(token.presented_in(Some("x=1&token=abc123")));
+        for query in [
+            None,
+            Some(""),
+            Some("token="),
+            Some("token=abc12"),
+            Some("token=abc1234"),
+            Some("token=ABC123"),
+            Some("xtoken=abc123"),
+        ] {
+            assert!(!token.presented_in(query), "{query:?}");
+        }
+        assert_eq!(format!("{token:?}"), "Token(..)");
+    }
+
+    #[test]
+    fn same_compares_bytes_and_lengths() {
+        assert!(same(b"", b""));
+        assert!(same(b"abc", b"abc"));
+        assert!(!same(b"abc", b"abd"));
+        assert!(!same(b"abc", b"ab"));
+        assert!(!same(b"", b"a"));
     }
 
     #[test]

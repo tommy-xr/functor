@@ -13,6 +13,8 @@ mis-agent = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba
 mis-types = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
 serde = "1.0"
 serde_json = "1.0"
+# Constant-time token comparison (as the CLI's MCP bearer check uses).
+subtle = "2.6"
 # Game-session children, signals and timers; the server runs on the same
 # runtime.
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
@@ -21,6 +23,13 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 # Task ids for `mis-agent` runs and the tool server's bearer tokens.
 uuid = { version = "1", features = ["v4"] }
+
+# The window (macOS only for now): a WKWebView (wry) on tao's event loop, and
+# the menu bar that gives it Quit and the Edit shortcuts (muda).
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21", default-features = false }
+tao = "0.37"
+wry = { version = "0.57", default-features = false }
 
 [dev-dependencies]
 # The debug server's `POST /input` type, for the `GameInput` drift test.

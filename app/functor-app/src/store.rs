@@ -201,7 +201,7 @@ fn save_json<T: serde::Serialize>(file: &Path, value: &T) -> io::Result<()> {
 /// Written aside then renamed, so a crash never leaves half a file. The
 /// temp name is this write's own (`<file>.<pid>.<n>.tmp`): writers never
 /// share one.
-fn write_whole(file: &Path, text: &str) -> io::Result<()> {
+pub(crate) fn write_whole(file: &Path, text: &str) -> io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let n = WRITES.fetch_add(1, Ordering::Relaxed);
     let mut tmp = file.as_os_str().to_owned();

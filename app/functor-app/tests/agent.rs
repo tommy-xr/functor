@@ -458,7 +458,8 @@ mod socket {
 
     pub struct App {
         pub child: Child,
-        pub addr: String,
+        /// `/ws` with the launch's token.
+        pub ws: String,
     }
 
     impl Drop for App {
@@ -487,25 +488,23 @@ mod socket {
         let mut stderr = BufReader::new(child.stderr.take().unwrap());
         let mut line = String::new();
         stderr.read_line(&mut line).unwrap();
-        let addr = line
+        let (addr, token) = line
             .trim()
             .strip_prefix("[functor-app] listening on http://")
-            .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
-            .to_string();
+            .and_then(|url| url.split_once("/#token="))
+            .unwrap_or_else(|| panic!("unexpected first line: {line:?}"));
+        let ws = format!("ws://{addr}/ws?token={token}");
         // Kept draining, so the app never blocks on its stderr.
         std::thread::spawn(move || for _ in stderr.lines() {});
-        App { child, addr }
+        App { child, ws }
     }
 
     pub type Socket = tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >;
 
-    pub async fn connect(addr: &str) -> Socket {
-        tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
-            .await
-            .unwrap()
-            .0
+    pub async fn connect(ws: &str) -> Socket {
+        tokio_tungstenite::connect_async(ws).await.unwrap().0
     }
 
     pub async fn send(socket: &mut Socket, msg: Value) {
@@ -567,7 +566,7 @@ async fn tasks_over_the_websocket() {
     let fixture = slow_fixture(home.path(), 2000);
     let app = serve(repo.path(), home.path(), &functor, &fixture);
     let pid = app.child.id();
-    let mut ws = connect(&app.addr).await;
+    let mut ws = connect(&app.ws).await;
     assert_eq!(next(&mut ws).await["state"]["tasks"], json!([]));
 
     // A new task: its items stream in order and it ends waiting on the user.
@@ -671,7 +670,7 @@ async fn tasks_over_the_websocket() {
 
     // A restart with the same home has the task and its transcript back.
     let app = serve(repo.path(), home.path(), &functor, &fixture);
-    let mut ws = connect(&app.addr).await;
+    let mut ws = connect(&app.ws).await;
     let state = next(&mut ws).await;
     let task = &state["state"]["tasks"][0];
     assert_eq!(
@@ -711,7 +710,7 @@ async fn a_change_is_reviewed_kept_and_reverted() {
     let fixture = edit_fixture(home.path());
     let head = git(repo.path(), &["rev-parse", "HEAD"]);
     let app = serve(repo.path(), home.path(), &functor, &fixture);
-    let mut ws = connect(&app.addr).await;
+    let mut ws = connect(&app.ws).await;
     assert_eq!(next(&mut ws).await["state"]["tracks_changes"], true);
     let game = repo.path().join("a/game.fun");
     let read = || std::fs::read_to_string(&game).unwrap();
@@ -822,7 +821,7 @@ async fn shutdown_stops_a_run() {
     let (functor, _requests) = stub::functor(home.path());
     let fixture = slow_fixture(home.path(), 30_000);
     let mut app = serve(repo.path(), home.path(), &functor, &fixture);
-    let mut ws = connect(&app.addr).await;
+    let mut ws = connect(&app.ws).await;
     next(&mut ws).await;
     send(
         &mut ws,

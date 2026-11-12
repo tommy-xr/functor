@@ -1,10 +1,10 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { AppState, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
 import { Icon } from "./Icon";
 import { focusedPane, panesOf, tabTitles, viewKey } from "./layout-model";
-import { useAppSocket, type Conn, type Send } from "./socket";
+import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 
 
 const VIEWS = ["explorer", "tasks", "devices"] as const;
@@ -115,6 +115,10 @@ function canvasWord(state: AppState | null): string {
 function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
   const project = activeProject(state);
   const word = sessionWord(state?.session);
+  // The app window shows it as its title.
+  useEffect(() => {
+    document.title = project ? `Functor — ${project.name}` : "Functor";
+  }, [project?.name]);
   return (
     <header className="titlebar">
       <span className="brand">
@@ -130,7 +134,13 @@ function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
       <span className="spacer" />
       <span role="status" className="conn">
         {conn !== "open" && (
-          <span className="pill pill-warn">{conn === "connecting" ? "Connecting…" : "Reconnecting…"}</span>
+          <span className="pill pill-warn">
+            {!HAS_TOKEN
+              ? "No session token — open the URL functor-app printed"
+              : conn === "connecting"
+                ? "Connecting…"
+                : "Reconnecting…"}
+          </span>
         )}
       </span>
       {/* Dimmed while disconnected: the last state may no longer be true. */}

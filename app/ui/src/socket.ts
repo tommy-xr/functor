@@ -20,6 +20,24 @@ const MIN_DELAY = 250;
 const MAX_DELAY = 5000;
 
 /**
+ * This launch's token for `/ws`, kept in memory only: set by the app window,
+ * or the `#token=` the `--headless` URL carries, which is then dropped from
+ * the address bar and history entry. Without it the server refuses the socket.
+ */
+const TOKEN = takeToken();
+
+/** False after a reload in a browser, say: the page can then never connect. */
+export const HAS_TOKEN = TOKEN !== "";
+
+function takeToken(): string {
+  const injected = (window as { functorToken?: string }).functorToken;
+  if (injected) return injected;
+  const token = /^#token=([0-9a-zA-Z_-]+)$/.exec(location.hash)?.[1] ?? "";
+  if (token) history.replaceState(null, "", location.pathname + location.search);
+  return token;
+}
+
+/**
  * The core's last state over `/ws`, reconnecting with backoff when the
  * socket drops, and the transcripts fetched so far. A transcript is fetched
  * once per connection (`fetchTranscript`), then kept current by `Item`s; after
@@ -45,7 +63,7 @@ export function useAppSocket() {
     let disposed = false;
     let seq = 0;
     const open = () => {
-      const ws = new WebSocket(`ws://${location.host}/ws`);
+      const ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(TOKEN)}`);
       socket.current = ws;
       ws.onopen = () => {
         delay = MIN_DELAY;

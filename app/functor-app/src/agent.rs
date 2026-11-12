@@ -287,9 +287,10 @@ fn mirror(event: mis_types::AgentEvent) -> Option<AgentEvent> {
     })
 }
 
-/// A fresh bearer token: 64 hex digits from two random UUIDs. Only ever in
-/// the tool server's and the agent's environments, never argv or output.
-fn token() -> String {
+/// A fresh secret: 64 hex digits from two random UUIDs. As the tool server's
+/// bearer token it is only ever in its and the agent's environments, never
+/// argv or output; for the app's own, see `server::Token`.
+pub(crate) fn token() -> String {
     let a = uuid::Uuid::new_v4().simple();
     let b = uuid::Uuid::new_v4().simple();
     format!("{a}{b}")

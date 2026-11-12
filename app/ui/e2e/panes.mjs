@@ -9,17 +9,7 @@
 // APP_UI_SHOTS=<dir> saves stills at both widths and the frames of an
 // open → side → move → split → view-diff loop at 1440×900.
 import { chromium, expect } from "@playwright/test";
-import {
-  ROOT,
-  requireBuilt,
-  shot,
-  startServer,
-  stopServer,
-  tempProject,
-  watchErrors,
-  watchExternal,
-  watchState,
-} from "./app.mjs";
+import { reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const EDIT = `${ROOT}app/ui/e2e/fixtures/edit.jsonl`;
 const PROJECT = "examples/counter";
@@ -136,7 +126,7 @@ async function panes(browser, width, height) {
 
     // A reload shows exactly this layout, from the core.
     const before = JSON.stringify(layout());
-    await page.reload();
+    await reopen(page, server.url);
     await expect.poll(() => JSON.stringify(layout())).toBe(before);
     await expect.poll(() => tabs(page)).toEqual([["functor.json", "game.fun"], ["Game"]]);
     await expect.poll(() => shown(page)).toEqual(["game.fun", "Game"]);
