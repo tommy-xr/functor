@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::activity::{activity, Activity};
+use crate::activity::{activities, Activity};
 use crate::agent_view::{
     agent_view, app_context, auto_apply, prune_highlight, refresh_contexts, step_clicked,
     AppContext, Highlight, ViewReply, ViewRequest,
@@ -768,8 +768,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
     };
     prune_highlight(&mut state);
-    let activity: BTreeMap<u64, Activity> =
-        state.tasks.iter().map(|t| (t.id, activity(t))).collect();
+    let activity = activities(&state.tasks);
     let changed = changed || state.highlight != highlighted || state.activity != activity;
     state.activity = activity;
     refresh_contexts(&mut state, &mut commands);
@@ -3013,7 +3012,7 @@ mod tests {
 
     /// `s` with its tasks' activity derived, as every step leaves it.
     fn derived(mut s: AppState) -> AppState {
-        s.activity = s.tasks.iter().map(|t| (t.id, activity(t))).collect();
+        s.activity = activities(&s.tasks);
         s
     }
 

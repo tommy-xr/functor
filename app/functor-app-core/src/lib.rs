@@ -17,7 +17,6 @@ pub mod state;
 pub mod tasks;
 pub mod transport;
 
-pub use activity::{Activity, Call, CallKind, Stance};
 pub use agent_view::AppContext;
 pub use changes::Change;
 pub use folders::Recent;

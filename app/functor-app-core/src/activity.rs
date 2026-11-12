@@ -2,10 +2,12 @@
 //! each call still running, a stance, and an error mark that stays until the
 //! user's next message. Derived purely from the task.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::tasks::{Harness, Item, Task, TaskStatus};
+use crate::tasks::{Item, Task, TaskStatus};
 
 /// Longest call label or error line, in characters.
 const LABEL_CHARS: usize = 40;
@@ -62,6 +64,11 @@ pub struct Call {
     pub label: String,
 }
 
+/// Every task's activity, by id.
+pub fn activities(tasks: &[Task]) -> BTreeMap<u64, Activity> {
+    tasks.iter().map(|t| (t.id, activity(t))).collect()
+}
+
 /// `task`'s activity, from its run, status and last run's items.
 pub fn activity(task: &Task) -> Activity {
     let items = &task.transcript;
@@ -102,7 +109,7 @@ pub fn activity(task: &Task) -> Activity {
     let error = last
         .iter()
         .rev()
-        .find_map(|i| error_of(i, task.harness))
+        .find_map(error_of)
         .or_else(|| match &task.status {
             TaskStatus::Failed { summary } => Some(line(summary.as_deref())),
             _ => None,
@@ -114,27 +121,16 @@ pub fn activity(task: &Task) -> Activity {
     }
 }
 
-/// An error or refusal `item` reports, as one line. Tool results carry no
-/// error flag in the event stream, so these are the markers the harnesses
-/// put in the text: Claude's `<tool_use_error>` and permission refusals,
-/// Codex's `error:` notes.
-fn error_of(item: &Item, harness: Harness) -> Option<String> {
+/// A failed run's summary, or a refusal, as one line. Errors the agent
+/// works past (a missed edit, a failing command) are not marked: they are
+/// routine. Tool results carry no refusal flag in the event stream, so a
+/// refusal is read from Claude's wording.
+fn error_of(item: &Item) -> Option<String> {
     match item {
         Item::Finished { ok: false, summary } => Some(line(summary.as_deref())),
         Item::Tool {
             result: Some(text), ..
-        } => {
-            let text = text.trim_start();
-            if let Some(rest) = text.strip_prefix("<tool_use_error>") {
-                let inner = rest.split("</tool_use_error>").next();
-                return Some(line(inner));
-            }
-            text.contains("but you haven't granted it yet")
-                .then(|| line(Some(text)))
-        }
-        Item::Agent { text, .. } if harness == Harness::Codex => {
-            text.strip_prefix("error: ").map(|t| line(Some(t)))
-        }
+        } if text.starts_with("Claude requested permissions to") => Some(line(Some(text))),
         _ => None,
     }
 }
@@ -158,11 +154,11 @@ fn cut(text: &str) -> String {
 /// The kind and label of a call to tool `name` with `input`, as either
 /// harness names it (Codex runs commands as `shell`; both name MCP tools
 /// `mcp__<server>__<tool>`).
-pub fn classify(name: &str, input: &Value) -> Call {
+fn classify(name: &str, input: &Value) -> Call {
     let s = |key: &str| input[key].as_str().unwrap_or("");
     let file = |key: &str| short(s(key));
     let (kind, label) = match name {
-        "Read" | "NotebookRead" => (CallKind::Files, format!("reading {}", file("file_path"))),
+        "Read" => (CallKind::Files, format!("reading {}", file("file_path"))),
         "Write" => (CallKind::Files, format!("writing {}", file("file_path"))),
         "Edit" | "MultiEdit" => (CallKind::Files, format!("editing {}", file("file_path"))),
         "NotebookEdit" => (
@@ -171,24 +167,21 @@ pub fn classify(name: &str, input: &Value) -> Call {
         ),
         "Grep" => (CallKind::Files, format!("searching for {}", s("pattern"))),
         "Glob" => (CallKind::Files, format!("finding {}", s("pattern"))),
-        "LS" => (CallKind::Files, format!("listing {}", file("path"))),
-        "Bash" | "PowerShell" | "shell" => return shell(&input["command"]),
+        "Bash" | "shell" => return shell(&input["command"]),
         "WebFetch" => (CallKind::Network, format!("fetching {}", short(s("url")))),
         "WebSearch" => (
             CallKind::Network,
             format!("searching the web for {}", s("query")),
         ),
         "Task" | "Agent" => (CallKind::Agents, format!("subagent: {}", s("description"))),
-        "SendMessage" | "TaskStop" | "TaskOutput" => {
-            (CallKind::Agents, "talking to a subagent".into())
-        }
+        "SendMessage" | "TaskStop" => (CallKind::Agents, "talking to a subagent".into()),
         "Skill" => (CallKind::Skills, format!("using {}", s("skill"))),
         "ToolSearch" => (CallKind::Skills, "loading tools".into()),
         "AskUserQuestion" => {
             let question = input["questions"][0]["question"].as_str().unwrap_or("");
             (CallKind::Ask, format!("asking: {question}"))
         }
-        "TodoWrite" | "ExitPlanMode" | "EnterPlanMode" => (CallKind::Thinking, "planning".into()),
+        "TodoWrite" | "ExitPlanMode" => (CallKind::Thinking, "planning".into()),
         _ => match name.strip_prefix("mcp__").and_then(|r| r.split_once("__")) {
             Some(("mis", tool)) => (CallKind::Game, tool.replace('_', " ")),
             Some((server, tool)) => (
@@ -286,11 +279,21 @@ const FETCH_VERBS: &[&str] = &[
 
 const GIT_NETWORK: &[&str] = &["push", "pull", "fetch", "clone", "ls-remote"];
 
-/// Commands that run the command after their own flags.
+/// Commands that run the command after their own options, with the
+/// options that take a value: `sudo -u root curl …`.
 #[rustfmt::skip]
-const WRAPPERS: &[&str] = &[
-    "sudo", "doas", "env", "time", "timeout", "nohup", "nice", "ionice", "stdbuf", "caffeinate",
-    "command", "exec", "xargs",
+const WRAPPERS: &[(&str, &[&str])] = &[
+    ("sudo", &["-u", "-g", "-h", "-p", "-C", "-U"]),
+    ("doas", &["-u", "-C"]),
+    ("env", &["-u", "-C"]),
+    ("timeout", &["-s", "-k"]),
+    ("nice", &["-n"]),
+    ("ionice", &["-c", "-n", "-p"]),
+    ("stdbuf", &["-i", "-o", "-e"]),
+    ("caffeinate", &["-t", "-w"]),
+    ("exec", &["-a"]),
+    ("xargs", &["-I", "-n", "-P", "-L", "-d", "-s", "-E", "-a"]),
+    ("time", &[]), ("nohup", &[]), ("command", &[]),
 ];
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash"];
@@ -328,20 +331,23 @@ fn unwrap(mut words: Vec<String>) -> Vec<Vec<String>> {
         };
         *first = short(first).to_string();
         let name = first.clone();
-        if WRAPPERS.contains(&name.as_str()) {
-            // Its flags, `env`'s assignments, and a value: `timeout`'s
-            // duration, `nice -n 10`'s number.
-            let timeout = name == "timeout";
-            let mut skip = 1 + words[1..]
-                .iter()
-                .take_while(|w| {
-                    w.starts_with('-') || is_assignment(w) || (!timeout && is_number(w))
-                })
-                .count();
-            if timeout {
-                skip += 1;
+        if let Some((_, valued)) = WRAPPERS.iter().find(|(w, _)| *w == name) {
+            // Its options (with their values) and `env`'s assignments; then
+            // `timeout`'s duration.
+            let mut at = 1;
+            while let Some(w) = words.get(at) {
+                if valued.contains(&w.as_str()) {
+                    at += 2;
+                } else if w.starts_with('-') || is_assignment(w) {
+                    at += 1;
+                } else {
+                    break;
+                }
             }
-            words.drain(..skip.min(words.len()));
+            if name == "timeout" {
+                at += 1;
+            }
+            words.drain(..at.min(words.len()));
             continue;
         }
         if SHELLS.contains(&name.as_str()) {
@@ -369,14 +375,16 @@ fn is_number(word: &str) -> bool {
 }
 
 /// `script`'s simple commands as words, quotes removed: split at `;`, `&`,
-/// `|`, `(`, `)`, `` ` ``, `$(` and newlines; redirection targets and
-/// here-document bodies left out.
+/// `|`, `(`, `)`, `` ` ``, `$(` and newlines; redirection targets,
+/// comments and here-document bodies left out.
 fn commands(script: &str) -> Vec<Vec<String>> {
     let mut out: Vec<Vec<String>> = vec![vec![]];
     let mut word: Option<String> = None;
     // Here-document delimiters whose bodies start at the next newline.
     let mut heredocs: Vec<String> = vec![];
     let mut redirect = false;
+    // `$(…)` and `` `…` `` inside double quotes, split out at the end.
+    let mut substitutions: Vec<String> = vec![];
     let mut chars = script.chars().peekable();
     let end_word = |word: &mut Option<String>, out: &mut Vec<Vec<String>>, redirect: &mut bool| {
         if let Some(w) = word.take() {
@@ -397,10 +405,27 @@ fn commands(script: &str) -> Vec<Vec<String>> {
                     match c {
                         '"' => break,
                         '\\' => w.extend(chars.next()),
+                        // A substitution still runs: `"$(curl …)"`.
+                        '$' if chars.peek() == Some(&'(') => {
+                            chars.next();
+                            let mut depth = 1;
+                            let inner: String = chars
+                                .by_ref()
+                                .take_while(|&c| {
+                                    depth += i32::from(c == '(') - i32::from(c == ')');
+                                    depth > 0
+                                })
+                                .collect();
+                            substitutions.push(inner);
+                        }
+                        '`' => {
+                            substitutions.push(chars.by_ref().take_while(|&c| c != '`').collect())
+                        }
                         c => w.push(c),
                     }
                 }
             }
+            '#' if word.is_none() => while chars.next_if(|&c| c != '\n').is_some() {},
             '\\' => match chars.next() {
                 Some('\n') | None => {}
                 Some(n) => word.get_or_insert_with(String::new).push(n),
@@ -469,6 +494,7 @@ fn commands(script: &str) -> Vec<Vec<String>> {
         }
     }
     end_word(&mut word, &mut out, &mut redirect);
+    out.extend(substitutions.iter().flat_map(|s| commands(s)));
     out.retain(|c| !c.is_empty());
     out
 }
@@ -538,6 +564,13 @@ mod tests {
             ("find . -name '*.fun' | xargs grep -l tick", Files, "running find *.fun"),
             ("ls $(git rev-parse --show-toplevel)", Shell, "running ls"),
             ("/usr/bin/curl x.dev", Network, "running curl x.dev"),
+            ("sudo -u root curl x.dev", Network, "running curl x.dev"),
+            ("timeout -s TERM 30 curl x.dev", Network, "running curl x.dev"),
+            ("xargs -I {} cat {}", Files, "running cat {}"),
+            // Substitutions run, comments do not.
+            ("cat \"$(curl -s x.dev)\"", Network, "running cat"),
+            ("echo \"`gh api user`\"", Network, "running gh api"),
+            ("cat game.fun # then: curl x.dev", Files, "running cat game.fun"),
             // Codex wraps each command in a login shell.
             ("/bin/zsh -lc 'cat game.fun'", Files, "running cat game.fun"),
             ("/bin/zsh -lc \"git push && echo ok\"", Network, "running git push"),
@@ -573,16 +606,14 @@ mod tests {
             .collect()
     }
 
-    fn running(harness: Harness) -> Task {
-        let mut task = from_stored(
+    fn running() -> Task {
+        from_stored(
             r#"{"version": 1, "transcript": [{"kind": "user", "text": "hi"}], "task": {
                 "id": 1, "project": "p", "title": "hi", "status": {"kind": "in_progress"},
                 "harness": "claude", "model": null, "session_id": null,
                 "run": {"id": 0, "usage": null}}}"#,
         )
-        .unwrap();
-        task.harness = harness;
-        task
+        .unwrap()
     }
 
     /// The activity after each event that changed it, as `stance kind:label… !error`.
@@ -617,7 +648,7 @@ mod tests {
 
     #[test]
     fn a_claude_run_reads_as_calls_a_refusal_and_a_question() {
-        let mut task = running(Harness::Claude);
+        let mut task = running();
         let refused = "!Claude requested permissions to use Bas…";
         assert_eq!(
             replay(&mut task, CLAUDE),
@@ -641,8 +672,8 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_run_sorts_its_shell_calls_and_keeps_its_error_note() {
-        let mut task = running(Harness::Codex);
+    fn a_codex_run_sorts_its_shell_calls() {
+        let mut task = running();
         assert_eq!(
             replay(&mut task, CODEX),
             [
@@ -650,25 +681,22 @@ mod tests {
                 "Working Files:running cat game.fun",
                 "Thinking",
                 "Working Network:running curl functor.games",
+                // A note it worked past is not an error.
                 "Thinking",
-                "Thinking !stream disconnected before completion",
-                "Done !stream disconnected before completion",
+                "Done",
             ]
         );
-        // The same text from Claude is just text.
-        let mut task = running(Harness::Claude);
-        assert_eq!(replay(&mut task, CODEX).last().unwrap(), "Done");
     }
 
     #[test]
     fn a_failed_run_is_failed_with_its_summary() {
-        let mut task = running(Harness::Claude);
+        let mut task = running();
         assert_eq!(
             replay(&mut task, MISSING),
             ["Thinking !spawning claude", "Failed !spawning claude"]
         );
         // Interrupted: no outcome item, the status's summary.
-        let mut task = running(Harness::Claude);
+        let mut task = running();
         task.run = None;
         task.status = derive_status(&task);
         assert_eq!(activity(&task).stance, Stance::Failed);
@@ -677,7 +705,7 @@ mod tests {
 
     #[test]
     fn stances_follow_the_status_once_the_run_ends() {
-        let mut task = running(Harness::Claude);
+        let mut task = running();
         task.run = None;
         for (status, stance) in [
             (TaskStatus::WaitingOnYou, Stance::Waiting),
@@ -697,5 +725,25 @@ mod tests {
             result: None,
         });
         assert_eq!(activity(&task).calls, []);
+    }
+
+    #[test]
+    fn only_a_result_that_is_a_refusal_marks_an_error() {
+        let mut task = running();
+        let read = |content: &str| Item::Tool {
+            name: "Read".into(),
+            input: json!({}),
+            result: Some(content.into()),
+        };
+        // A file that quotes a refusal is not one, nor an error worked past.
+        task.transcript.push(read(CLAUDE));
+        task.transcript.push(read(
+            "<tool_use_error>File does not exist.</tool_use_error>",
+        ));
+        assert_eq!(activity(&task).error, None);
+        task.transcript
+            .push(read("Claude requested permissions to write to x.fun"));
+        let refused = "Claude requested permissions to write t…";
+        assert_eq!(activity(&task).error.as_deref(), Some(refused));
     }
 }
