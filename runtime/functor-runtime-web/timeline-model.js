@@ -1,9 +1,38 @@
 // Pure state and geometry for the web time-travel timeline. The DOM component
 // dispatches semantic actions and renders the derived view; it never owns the
 // timeline policy itself. Keeping this file browser-free makes the pause/seek /
-// extrapolation invariants cheap to test under Node.
+// extrapolation invariants cheap to test under Node. The desktop app's
+// transport bar draws the same timeline from this module too.
 
 export const TIMELINE_FPS = 60;
+
+// The bar's palette, shared by every surface that draws it: the played track
+// and playhead (accent), extrapolation (future), and the three mark kinds.
+export const TIMELINE_COLORS = Object.freeze({
+  bg: "rgba(30, 24, 51, 0.92)",
+  line: "#2b2542",
+  text: "#e9e6f2",
+  dim: "#9b94b3",
+  accent: "#41d8e6",
+  future: "#e858b8",
+  input: "#ffd166",
+  reload: "#b994ff",
+  reloadError: "#ff6b7d",
+});
+
+// The transport buttons: glyph, tooltip, accessible name. The pause button
+// names what a click does, so it reads ▶ "Play" while paused.
+export function pauseButton(paused) {
+  return paused
+    ? { glyph: "▶", tip: "Play", label: "Play" }
+    : { glyph: "⏸", tip: "Pause", label: "Pause" };
+}
+
+export const STEP_BUTTON = Object.freeze({
+  glyph: "⏭",
+  tip: "Step one frame",
+  label: "Step one frame forward",
+});
 export const PREVIEW_SECONDS_MIN = 0.5;
 export const PREVIEW_SECONDS_MAX = 5;
 export const PREVIEW_RATE_MIN = 1;
@@ -285,6 +314,54 @@ export function deriveTimelineView(state) {
     selectedEventId: state.selectedEventId,
     hoveredEventId: state.hoveredEventId,
   };
+}
+
+// The frame a key on the focused playhead seeks to, or null for a key it
+// leaves alone: arrows ±1 (Shift ±10), PageUp/PageDown ±1 s, Home/End the
+// recorded ends.
+export function seekKeyTarget(view, key, shiftKey = false) {
+  if (!view) return null;
+  const steps = shiftKey ? 10 : 1;
+  const targets = {
+    ArrowLeft: view.selectedFrame - steps,
+    ArrowDown: view.selectedFrame - steps,
+    ArrowRight: view.selectedFrame + steps,
+    ArrowUp: view.selectedFrame + steps,
+    PageDown: view.selectedFrame - TIMELINE_FPS,
+    PageUp: view.selectedFrame + TIMELINE_FPS,
+    Home: view.recorded.lo,
+    End: view.recorded.hi,
+  };
+  return key in targets ? targets[key] : null;
+}
+
+// A marker cluster's tooltip ("frame 12 · W down · 3 events") and accessible
+// name ("frame 12, W down, 3 nearby events"): marks explain themselves, so
+// the bar needs no legend.
+export function markerDetail(marker) {
+  const count = marker.count > 1 ? ` · ${marker.count} events` : "";
+  return `frame ${marker.frame} · ${marker.labels[0]}${count}`;
+}
+
+export function markerLabel(marker) {
+  const suffix = marker.count > 1 ? `, ${marker.count} nearby events` : "";
+  return `frame ${marker.frame}, ${marker.labels[0]}${suffix}`;
+}
+
+// Rail ticks across `viewport`: one a second, heavier every fifth; past 50 s
+// the step widens (5 s, then 30 s) so ticks stay apart. `x` is in the rail's
+// 0–1000 viewBox.
+export function timelineTicks(viewport) {
+  const lo = viewport.lo;
+  const span = Math.max(viewport.hi - lo, 1);
+  const perSecond = TIMELINE_FPS;
+  const step =
+    span / perSecond <= 50 ? perSecond : span / perSecond <= 250 ? 5 * perSecond : 30 * perSecond;
+  const ticks = [];
+  for (let frame = Math.ceil(lo / step) * step; frame <= viewport.hi; frame += step) {
+    ticks.push({ frame, major: frame % (5 * step) === 0, x: ((frame - lo) / span) * 1000 });
+  }
+  return ticks;
 }
 
 export function describeRecordedAvailability(view) {

@@ -234,6 +234,13 @@ async fn run(
         let any = stacked.values().any(|s| *s);
         Event::Client(ClientMsg::CanvasStacked { stacked: any })
     };
+    // Per client, whether it shows a transport bar: the core is told "watched"
+    // while any connected client does.
+    let mut watching: HashMap<u64, bool> = HashMap::new();
+    let watch_msg = |watching: &HashMap<u64, bool>| {
+        let on = watching.values().any(|w| *w);
+        Event::Client(ClientMsg::WatchTransport { on })
+    };
     loop {
         let (events, from, mut answer) = tokio::select! {
             biased;
@@ -270,6 +277,10 @@ async fn run(
                     stacked.insert(id, s);
                     (vec![stacked_msg(&stacked)], Some(id), None)
                 }
+                Input::Client { id, msg: ClientMsg::WatchTransport { on } } => {
+                    watching.insert(id, on);
+                    (vec![watch_msg(&watching)], Some(id), None)
+                }
                 Input::Client { id, msg } => {
                     if let ClientMsg::Input { input } = &msg {
                         track(held.entry(id).or_default(), input);
@@ -283,6 +294,9 @@ async fn run(
                     let mut events: Vec<Event> = releases.collect();
                     if stacked.remove(&id).is_some() {
                         events.push(stacked_msg(&stacked));
+                    }
+                    if watching.remove(&id).is_some() {
+                        events.push(watch_msg(&watching));
                     }
                     (events, None, None)
                 }
@@ -359,10 +373,12 @@ async fn run(
 }
 
 /// Queues `msg`, dropping the message just before it when `msg` replaces
-/// it: the state again, or the same transcript item again.
+/// it: the state, transport or marks again, or the same transcript item again.
 fn queue(out: &mut Vec<ServerMsg>, msg: ServerMsg) {
     let replaces = match (out.last(), &msg) {
-        (Some(ServerMsg::State { .. }), ServerMsg::State { .. }) => true,
+        (Some(ServerMsg::State { .. }), ServerMsg::State { .. })
+        | (Some(ServerMsg::Transport { .. }), ServerMsg::Transport { .. })
+        | (Some(ServerMsg::Marks { .. }), ServerMsg::Marks { .. }) => true,
         (
             Some(ServerMsg::Item { task, index, .. }),
             ServerMsg::Item {
@@ -660,6 +676,24 @@ mod tests {
                 item(2, 2, "x")
             ]
         );
+        // A burst of seeks is one transport message.
+        let at = |frame| ServerMsg::Transport {
+            transport: Some(functor_app_core::Transport {
+                frame,
+                ..Default::default()
+            }),
+        };
+        let mut out = Vec::new();
+        for msg in [
+            at(1),
+            at(2),
+            ServerMsg::Marks { marks: vec![] },
+            at(3),
+            at(4),
+        ] {
+            queue(&mut out, msg);
+        }
+        assert_eq!(out, [at(2), ServerMsg::Marks { marks: vec![] }, at(4)]);
     }
 
     #[test]

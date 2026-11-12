@@ -6,6 +6,7 @@ use crate::changes::FileDiff;
 use crate::creation::{NewProjectRequest, Plan};
 use crate::layout::LayoutOp;
 use crate::tasks::{Harness, Item};
+use crate::transport::{Mark, Transport, TransportCall};
 use crate::AppState;
 
 /// UI → core.
@@ -24,6 +25,16 @@ pub enum ClientMsg {
     /// Forwarded to a running session; dropped otherwise. Not answered.
     Input {
         input: GameInput,
+    },
+    /// The transport bar's call, posted in order with input; dropped
+    /// without a running session. Answered by `ServerMsg::Transport`.
+    Transport {
+        call: TransportCall,
+    },
+    /// This page shows a transport bar, or no longer does: while any page
+    /// does, the session is polled often and its marks are read.
+    WatchTransport {
+        on: bool,
     },
     /// Start a task in the active project with its first message.
     NewTask {
@@ -241,4 +252,9 @@ pub enum ServerMsg {
     },
     /// A message was refused, saying why; nothing changed.
     Rejected { reason: String },
+    /// The active session's clock as it changes; `None` while no session
+    /// runs, or before it first answers.
+    Transport { transport: Option<Transport> },
+    /// The marks on the active session's recorded history, as they change.
+    Marks { marks: Vec<Mark> },
 }

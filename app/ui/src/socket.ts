@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppState, ClientMsg, Item, NewProjectRequest, ServerMsg } from "./generated/protocol";
+import type { AppState, ClientMsg, Item, Mark, NewProjectRequest, ServerMsg, Transport } from "./generated/protocol";
 import { applyItem } from "./chat-model";
 
 export type Send = (msg: ClientMsg) => boolean;
@@ -59,6 +59,9 @@ export function useAppSocket() {
   const [dirs, setDirs] = useState<DirsMsg | null>(null);
   // The last new-project plan asked for (`checkProject`).
   const [plan, setPlan] = useState<PlanMsg | null>(null);
+  // The active session's clock and marks, sent apart from the state.
+  const [transport, setTransport] = useState<Transport | null>(null);
+  const [marks, setMarks] = useState<Mark[]>([]);
   // The plan asked for last: an older one answered late is dropped.
   const planAsked = useRef("");
   const socket = useRef<WebSocket | null>(null);
@@ -132,10 +135,19 @@ export function useAppSocket() {
           case "rejected":
             setNotice({ reason: msg.reason, seq: ++seq });
             break;
+          case "transport":
+            setTransport(msg.transport);
+            break;
+          case "marks":
+            setMarks(msg.marks);
+            break;
         }
       };
       ws.onclose = () => {
         socket.current = null;
+        // A new connection is sent them afresh, if any.
+        setTransport(null);
+        setMarks([]);
         if (disposed) return;
         setConn((c) => (c === "connecting" ? c : "reconnecting"));
         timer = setTimeout(open, delay);
@@ -183,5 +195,7 @@ export function useAppSocket() {
     listDirs,
     plan,
     checkProject,
+    transport,
+    marks,
   };
 }

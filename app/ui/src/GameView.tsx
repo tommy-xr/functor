@@ -10,7 +10,9 @@ import {
 } from "react";
 import type { AppState, GameInput, MouseButton } from "./generated/protocol";
 import { fitRect, streamUrl, toSurface, wireKey, type Rect, type Size } from "./game-view";
+import { placementOf } from "./layout-model";
 import type { Send } from "./socket";
+import { TransportBar, useTransport } from "./TransportBar";
 
 
 const BUTTONS: Record<number, MouseButton> = { 0: "left", 1: "middle", 2: "right" };
@@ -28,6 +30,7 @@ export function GameView({ state, online, send }: { state: AppState | null; onli
         noGpu={state!.no_gpu}
         online={online}
         send={send}
+        compact={placementOf(state?.active ? state.layouts[state.active] : null) === "mini"}
       />
     );
   }
@@ -62,6 +65,8 @@ function GameMessage({ text, error = false, children }: { text: string; error?: 
  * A running hidden session: its `/stream` in an `<img>` while the page is
  * shown, and keyboard and mouse forwarded once clicked. Esc always releases
  * and is never forwarded, so a game that uses Esc needs its own window.
+ * Paused, input is not forwarded, as the game's own window ignores it then.
+ * The transport bar sits under it (`compact` in the mini view).
  */
 function LiveGame({
   debugUrl,
@@ -69,13 +74,17 @@ function LiveGame({
   noGpu,
   online,
   send,
+  compact,
 }: {
   debugUrl: string;
   surface: [number, number] | null;
   noGpu: boolean;
   online: boolean;
   send: Send;
+  compact: boolean;
 }) {
+  const { transport, marks } = useTransport();
+  const paused = !!transport?.clock && transport.paused;
   const area = useRef<HTMLDivElement>(null);
   const img = useRef<HTMLImageElement>(null);
   const box = useBoxSize(area);
@@ -99,14 +108,15 @@ function LiveGame({
 
   // The frame's own pixels in CSS pixels cap its size, so it is never scaled up.
   const rect = box && frame ? fitRect(box, frame, { w: frame.w / dpr, h: frame.h / dpr }) : null;
-  const capture = useCapture(send, area, rect ?? (box && { x: 0, y: 0, ...box }), surface);
+  const capture = useCapture(send, area, rect ?? (box && { x: 0, y: 0, ...box }), surface, paused);
   const { release } = capture;
-  // Offline, input would be dropped, so the view lets go of it.
+  // Offline or paused, input would be dropped or ignored, so the view lets go of it.
   useEffect(() => {
-    if (!visible || !online) release();
-  }, [visible, online, release]);
+    if (!visible || !online || paused) release();
+  }, [visible, online, paused, release]);
 
   return (
+    <div className="game-stack">
     <div
       ref={area}
       className={`game game-live${capture.captured ? " game-captured" : ""}`}
@@ -132,8 +142,12 @@ function LiveGame({
         }}
       />
       <span className="game-banner" role="status">
-        {capture.captured ? "Esc to release" : "Click to play"}
+        {paused ? "Paused" : capture.captured ? "Esc to release" : "Click to play"}
       </span>
+    </div>
+    {transport?.clock && visible && (
+      <TransportBar transport={transport} marks={marks} online={online} send={send} compact={compact} />
+    )}
     </div>
   );
 }
@@ -150,6 +164,7 @@ function useCapture(
   area: RefObject<HTMLDivElement | null>,
   rect: Rect | null,
   surface: [number, number] | null,
+  paused: boolean,
 ) {
   const [captured, setCaptured] = useState(false);
   const live = useRef({ captured, rect, surface, send });
@@ -237,6 +252,8 @@ function useCapture(
     // Mouse events, not pointer events: those report only the first button
     // of a chord going down and the last coming up.
     onMouseDown: (e: ReactMouseEvent<HTMLDivElement>) => {
+      // Paused, there is nothing to capture for.
+      if (paused) return;
       // The click that captures is not forwarded.
       if (!captured) {
         live.current.captured = true;

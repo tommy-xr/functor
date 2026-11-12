@@ -1048,7 +1048,7 @@ fn service_debug_request(
                 debug.pending_capture = Some(response);
             }
         }
-        DebugRequest::State(response) => {
+        DebugRequest::State(with_model, response) => {
             let width = eyes
                 .iter()
                 .try_fold(0_u32, |total, eye| total.checked_add(eye.width))
@@ -1070,11 +1070,12 @@ fn service_debug_request(
             let mut input = debug.input.clone();
             apply_xr_override(&mut input, debug.xr_override.as_ref());
             debug.input_edges.apply_to(&mut input);
-            let (frame, rendered_frames, tts, pending_steps) = (
+            let (frame, rendered_frames, tts, pending_steps, paused) = (
                 debug.frame_count,
                 debug.rendered_frames,
                 clock.current_tts(),
                 clock.pending_steps(),
+                clock.is_paused(),
             );
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
@@ -1115,10 +1116,19 @@ fn service_debug_request(
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
                     reload,
+                    clock: functor_runtime_common::protocol::clock_state(g, paused),
                     viewport: RuntimeViewport::new(width, height),
                     views,
-                    model: g.state_json(),
-                    model_debug: g.state_debug(),
+                    model: if with_model {
+                        g.state_json()
+                    } else {
+                        serde_json::Value::Null
+                    },
+                    model_debug: if with_model {
+                        g.state_debug()
+                    } else {
+                        String::new()
+                    },
                     input,
                     sim_thread: Some(sim_thread),
                     display_refresh_rate,
@@ -1403,6 +1413,20 @@ desktop runtime's --headless/--debug-port path"
             });
             if let Some(tts) = tts {
                 clock.rebase(tts as f32);
+            }
+            let _ = response.send(result);
+        }
+        DebugRequest::Seek(frame, response) => {
+            let (result, tts) = sim.call(move |g| {
+                let result = functor_runtime_common::protocol::seek_to_state_frame(g, frame);
+                let tts = result.is_ok().then(|| g.current_scene_tts()).flatten();
+                (result, tts)
+            });
+            if result.is_ok() {
+                if let Some(tts) = tts {
+                    clock.rebase(tts as f32);
+                }
+                clock.pause();
             }
             let _ = response.send(result);
         }

@@ -379,7 +379,9 @@ async fn start_and_poll(
     let outcome = loop {
         match state.session.as_ref().map(|s| &s.status) {
             None => break Err((1, "no project to start a session for".to_string())),
-            Some(SessionStatus::Running { frame: Some(_), .. }) => break Ok(()),
+            Some(SessionStatus::Running { timeline, .. }) if timeline.clock.is_some() => {
+                break Ok(())
+            }
             Some(SessionStatus::Starting | SessionStatus::Running { .. }) => {}
             Some(_) => break Err((1, "the session ended before answering /state".to_string())),
         }

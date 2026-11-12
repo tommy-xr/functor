@@ -19,6 +19,8 @@
     "noEmit": true,
     // Pure modules import each other as `./x.ts`, so `node --test` resolves them too.
     "allowImportingTsExtensions": true,
+    // The transport imports the web runtime's timeline model (plain JS) as is.
+    "allowJs": true,
     "skipLibCheck": true
   },
   // `*.test.ts` run under Node (`node --test`, type stripping), importing

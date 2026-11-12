@@ -1240,8 +1240,8 @@ mod tests {
             pid: None,
             status: SessionStatus::Running {
                 debug_url: "http://127.0.0.1:9".into(),
-                frame: None,
                 surface: None,
+                timeline: Default::default(),
             },
         });
         s

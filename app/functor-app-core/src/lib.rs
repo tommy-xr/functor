@@ -15,6 +15,7 @@ pub mod protocol;
 pub mod session;
 pub mod state;
 pub mod tasks;
+pub mod transport;
 
 pub use agent_view::AppContext;
 pub use changes::Change;
@@ -24,10 +25,11 @@ pub use layout::{Layout, LayoutOp, View};
 pub use print::{print, print_change, print_item, print_layout};
 pub use projects::discover;
 pub use session::{
-    listening_url, Display, Polled, Session, SessionEvent, SessionMode, SessionStatus,
+    listening_url, Display, Polled, PolledClock, Session, SessionEvent, SessionMode, SessionStatus,
 };
 pub use state::{update, AppState, Command, Event, GitInfo, RunSpec};
 pub use tasks::{AgentEvent, Harness, Item, RunEvent, Task, TaskStatus};
+pub use transport::{LogPage, SessionCall, Transport, TransportCall};
 
 #[cfg(all(test, feature = "ts"))]
 mod ts_bindings;

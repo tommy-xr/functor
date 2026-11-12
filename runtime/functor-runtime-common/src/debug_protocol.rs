@@ -212,10 +212,20 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `/state` numbers `rendered_frames`) and `X-Capture-Ms`. Desktop only; a
 /// pre-v36 runtime answers 404.
 ///
-/// 37 adds the optional `link` field on `GET /state` ([`DeviceLinkState`]):
+/// 37 is what a timeline bar needs: `clock` on `GET /state` ([`ClockState`]:
+/// paused, the recorded window, its generation, the program revision); `GET
+/// /state?model=0`, the same document without `model` and `model_debug`, so
+/// a fast poll never serializes the model; `POST /seek` ([`SeekCommand`]), a
+/// non-destructive scrub that pauses on a recorded frame, which the next step
+/// or resume branches from; and `marks` on each `GET /input-log` step, its
+/// recorded edge events labelled as the web timeline labels them. Additive:
+/// a pre-v37 runtime omits `clock` (read as running, nothing recorded) and
+/// `marks`, ignores `?model=0`, and answers `/seek` with 404.
+///
+/// 38 adds the optional `link` field on `GET /state` ([`DeviceLinkState`]):
 /// a headset's device link to a desktop app and the pairing its overlay
 /// shows. Omitted on desktop.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 37;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 38;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -274,7 +284,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, rendered_frames (frames rendered and submitted; advances while paused), tts, pending_steps (queued clock steps not yet run), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad/touch), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
+        description: "runtime state JSON: frame, rendered_frames (frames rendered and submitted; advances while paused), tts, pending_steps (queued clock steps not yet run), clock (paused, the recorded window {oldest, newest} numbered as frame, its generation, program_revision), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad/touch), model (structured lossy JSON view of the model), model_debug (Rust Debug text); ?model=0 leaves model null and model_debug empty, for a cheap poll",
     },
     DebugRoute {
         method: "GET",
@@ -354,12 +364,17 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/input-log",
-        description: "recorded sampled input — ?from=N returns {generation, oldest, newest, steps: [{frame, tts, dts, input}]}: each retained step from state frame N on (default: all), `input` the sampled snapshot it consumed (null for a game without sampledInput); frames as GET /state numbers them",
+        description: "recorded sampled input — ?from=N returns {generation, oldest, newest, steps: [{frame, tts, dts, input, marks}]}: each retained step from state frame N on (default: all), `input` the sampled snapshot it consumed (null for a game without sampledInput), `marks` its recorded edge events as [{kind, label}]; frames as GET /state numbers them",
     },
     DebugRoute {
         method: "POST",
         path: "/rewind",
         description: "coupled scene rewind — {\"frame\":42} restores model + physics to the state GET /state reported as frame 42 (pin the clock first); 400 if unrecorded/pruned",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/seek",
+        description: "non-destructive scrub — {\"frame\":42} pauses and shows the state GET /state reported as frame 42, keeping the recorded future: seek again anywhere in clock.recorded; the next step or resume branches from it; clamped to the recorded window; 400 if nothing is recorded",
     },
     DebugRoute {
         method: "POST",
@@ -497,6 +512,10 @@ pub struct RuntimeState {
     /// because a pre-v35 runtime omits it.
     #[serde(default)]
     pub reload: crate::reload_indicator::ReloadState,
+    /// The clock and its recorded history (v37). `default` because a pre-v37
+    /// runtime omits it.
+    #[serde(default)]
+    pub clock: ClockState,
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
     /// The structured JSON view of the model
@@ -597,7 +616,7 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_stats: Option<crate::frame_telemetry::FrameStats>,
-    /// The headset's device link to a desktop app (v37). Omitted by runtimes
+    /// The headset's device link to a desktop app (v38). Omitted by runtimes
     /// without one, such as desktop.
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -634,6 +653,34 @@ pub enum PairingState {
     Failed {
         reason: String,
     },
+}
+
+/// `GET /state`'s `clock` (v37): whether time runs, and the recorded window
+/// a timeline can seek in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClockState {
+    /// Pinned by `POST /time` (`set`, `advance`, `cancel`), `POST /seek`, or
+    /// the shell's own scrubber. Steps an `advance` queued still run.
+    pub paused: bool,
+    /// The seekable window, numbered as `frame`. Omitted before the first
+    /// recorded step, and for producers that record no history.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded: Option<RecordedFrames>,
+    /// Bumps when recorded frames are replaced (a branch, a hot reload that
+    /// restarts history, a project load); `GET /input-log`'s `generation`.
+    pub generation: u64,
+    /// Successful code swaps (hot reloads) since the program loaded.
+    pub program_revision: u64,
+}
+
+/// The oldest and newest frames of a recorded window, inclusive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RecordedFrames {
+    pub oldest: u64,
+    pub newest: u64,
 }
 
 /// Mean per-frame stage cost over a shell's last completed [`StageWindow`]
@@ -898,6 +945,14 @@ pub struct RewindCommand {
     pub frame: u64,
 }
 
+/// A non-destructive scrub sent through `POST /seek` (v37).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeekCommand {
+    /// A recorded frame, as `GET /state` reports `frame`.
+    pub frame: u64,
+}
+
 /// A debug-view command sent through `POST /camera`.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -943,6 +998,19 @@ pub struct InputLogStep {
     /// The sampled snapshot `sampledInput` received; `None` for a game that
     /// doesn't define it.
     pub input: Option<InputSnapshot>,
+    /// The step's recorded edge events (v37), as timeline marks. `default`
+    /// because a pre-v37 runtime omits it.
+    #[serde(default)]
+    pub marks: Vec<TimelineMark>,
+}
+
+/// One recorded event as a timeline shows it: `kind` (`key-down`,
+/// `mouse-button-up`, `ui-input`, …) and a human `label` (`W down`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TimelineMark {
+    pub kind: String,
+    pub label: String,
 }
 
 /// A display refresh-rate request sent through `POST /display-refresh-rate`.
@@ -1316,7 +1384,8 @@ pub enum DebugRequest {
     /// `GET /stream`: the render loop's frame tap, which reads back a frame
     /// whenever a client requests one. `Err` (503) without a framebuffer.
     Stream(Sender<Result<std::sync::Arc<crate::frame_stream::FrameTap>, String>>),
-    State(Sender<RuntimeState>),
+    /// `GET /state`; `false` (`?model=0`) leaves the model out.
+    State(bool, Sender<RuntimeState>),
     Scene(Sender<String>),
     Trace(Sender<String>),
     /// `GET /frames`: the newest `last` frames (all when `None`).
@@ -1353,6 +1422,8 @@ pub enum DebugRequest {
     ReloadAsset(ProjectAsset, Sender<Result<String, String>>),
     SyncAssets(ProjectAssetPaths, Sender<Result<String, String>>),
     Rewind(u64, Sender<Result<String, String>>),
+    /// `POST /seek`: show this recorded state frame, paused, keeping the future.
+    Seek(u64, Sender<Result<String, String>>),
     /// Detach or reattach the shell's debug camera. `Err` on runtimes with no
     /// rendered view to override, or for an invalid view.
     Camera(CameraCommand, Sender<Result<String, String>>),
@@ -1537,6 +1608,15 @@ mod tests {
             pending_net: 2,
             http: Default::default(),
             reload: Default::default(),
+            clock: ClockState {
+                paused: true,
+                recorded: Some(RecordedFrames {
+                    oldest: 3,
+                    newest: 42,
+                }),
+                generation: 2,
+                program_revision: 1,
+            },
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: json!({ "label": "hello" }),
@@ -1653,6 +1733,12 @@ mod tests {
                 "pending_net": 2,
                 "http": { "pending": 0, "completed": 0, "failed": 0 },
                 "reload": { "in_progress": false },
+                "clock": {
+                    "paused": true,
+                    "recorded": { "oldest": 3, "newest": 42 },
+                    "generation": 2,
+                    "program_revision": 1
+                },
                 "viewport": { "width": 1920, "height": 1080 },
                 "views": [{
                     "name": "main",
@@ -2057,6 +2143,7 @@ mod tests {
             "POST /project-files",
             "POST /sync-assets",
             "POST /rewind",
+            "POST /seek",
             "POST /camera",
             "POST /display-refresh-rate",
             "GET /net/outbound",
