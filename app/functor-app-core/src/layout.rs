@@ -133,6 +133,28 @@ pub enum LayoutOp {
 pub const RATIO_MIN: u16 = 100;
 pub const RATIO_MAX: u16 = 900;
 
+impl Pane {
+    /// Keeps the tabs `keep` accepts; the shown tab stays shown if kept,
+    /// else the one now at its place (or the last) shows.
+    fn retain_tabs(&mut self, keep: &mut impl FnMut(&View) -> bool) {
+        let shown = self.tabs.get(self.active).cloned();
+        let mut at = self.active;
+        let mut i = 0;
+        self.tabs.retain(|t| {
+            let kept = keep(t);
+            if !kept && i < self.active {
+                at -= 1;
+            }
+            i += 1;
+            kept
+        });
+        self.active = match shown {
+            Some(v) if self.tabs.contains(&v) => self.tabs.iter().position(|t| *t == v).unwrap(),
+            _ => at.min(self.tabs.len().saturating_sub(1)),
+        };
+    }
+}
+
 impl Default for Layout {
     fn default() -> Self {
         Self::initial()
@@ -231,7 +253,7 @@ impl Layout {
         for id in emptied {
             self.remove_pane(id);
         }
-        self.for_each_pane(|p| p.tabs.retain(&keep));
+        self.for_each_pane(|p| p.retain_tabs(&mut |t| keep(t)));
         self.normalize();
     }
 
@@ -250,8 +272,7 @@ impl Layout {
         ) {
             let id = match node {
                 Node::Pane(p) => {
-                    p.tabs.retain(|t| views.insert(t.clone()));
-                    p.active = p.active.min(p.tabs.len().saturating_sub(1));
+                    p.retain_tabs(&mut |t| views.insert(t.clone()));
                     &mut p.id
                 }
                 Node::Split {
@@ -1022,6 +1043,21 @@ mod tests {
             )
         );
         check(&l);
+    }
+
+    #[test]
+    fn dropping_an_earlier_tab_keeps_the_shown_one_shown() {
+        let mut l = layout(pane(1, &[file("a"), View::Game, file("b")], 1), 1);
+        l.retain(|v| *v != file("a"));
+        assert_eq!(l, layout(pane(1, &[View::Game, file("b")], 0), 1));
+        // A repeat before the shown tab, dropped by `normalize`, likewise.
+        let mut l = layout(pane(1, &[file("a"), file("a"), file("b")], 2), 1);
+        l.normalize();
+        assert_eq!(l, layout(pane(1, &[file("a"), file("b")], 1), 1));
+        // The shown tab itself dropped: the one now at its place shows.
+        let mut l = layout(pane(1, &[file("a"), file("b"), file("c")], 1), 1);
+        l.retain(|v| *v != file("b"));
+        assert_eq!(l, layout(pane(1, &[file("a"), file("c")], 1), 1));
     }
 
     /// Every invariant `normalize` promises, checked directly.

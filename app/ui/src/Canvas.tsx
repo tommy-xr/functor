@@ -6,7 +6,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type DragEvent,
   type KeyboardEvent,
   type PointerEvent,
   type ReactNode,
@@ -18,6 +17,7 @@ import { hasChange } from "./diff-model";
 import { FileView } from "./FileView";
 import { GameView } from "./GameView";
 import { Icon } from "./Icon";
+import { useMenu } from "./menu";
 import {
   focusedPane,
   isTyping,
@@ -57,7 +57,7 @@ export type CanvasProps = {
 
 /** What every pane needs, passed down the split tree. */
 type Ctx = CanvasProps & {
-  op: (op: LayoutOp) => void;
+  op: (op: LayoutOp) => boolean;
   titles: Map<string, string>;
   focus: number | null;
   /** Moves DOM focus into the focused pane once the next layout arrives. */
@@ -201,11 +201,14 @@ function SplitView({ split, ctx }: { split: SplitNode; ctx: Ctx }) {
   useEffect(() => setDragged(null), [split.ratio]);
   const ratio = dragged ?? split.ratio;
   const right = split.direction === "right";
-  /** Sends `r` (clamped) unless it is `from`; the clamped ratio. */
+  /**
+   * Sends `r` (clamped) unless it is `from`; the ratio to show until the
+   * core's arrives: the clamped one, or null (the core's) when unsent.
+   */
   const resize = (r: number, from: number) => {
     const clamped = Math.round(Math.min(Math.max(r, RATIO_MIN), RATIO_MAX));
-    if (clamped !== from) ctx.op({ type: "resize", split: split.id, ratio: clamped });
-    return clamped;
+    if (clamped === from) return from === split.ratio ? null : from;
+    return ctx.op({ type: "resize", split: split.id, ratio: clamped }) ? clamped : null;
   };
   const at = (e: PointerEvent) => {
     const r = box.current!.getBoundingClientRect();
@@ -249,11 +252,10 @@ function SplitView({ split, ctx }: { split: SplitNode; ctx: Ctx }) {
           if (e.currentTarget.hasPointerCapture(e.pointerId)) setDragged(Math.min(Math.max(at(e), RATIO_MIN), RATIO_MAX));
         }}
         onPointerUp={(e) => {
-          if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-          // Unchanged, the core sends nothing new to replace the local ratio.
-          if (resize(at(e), split.ratio) === split.ratio) setDragged(null);
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) setDragged(resize(at(e), split.ratio));
         }}
-        onLostPointerCapture={() => setDragged((d) => (d !== null && Math.round(d) === split.ratio ? null : d))}
+        // A drag cancelled before it was let go sent nothing: back to the core's ratio.
+        onPointerCancel={() => setDragged(null)}
       />
       <div className="split-child" style={{ flexGrow: 1000 - ratio }}>
         <NodeView node={split.second} ctx={ctx} />
@@ -267,9 +269,9 @@ function tabId(pane: number, view: View) {
 }
 
 /** The view dragged in `e`, if it is a tab. Another page's drag may carry anything; the core moves only open views. */
-function dragged(e: DragEvent): View | null {
+function dragged(e: globalThis.DragEvent): View | null {
   try {
-    return JSON.parse(e.dataTransfer.getData(DRAG_TYPE)) as View;
+    return JSON.parse(e.dataTransfer?.getData(DRAG_TYPE) ?? "") as View;
   } catch {
     return null;
   }
@@ -284,22 +286,33 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
   useEffect(() => {
     if (active) document.getElementById(tabId(pane.id, active))?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [pane.id, active && viewKey(active)]);
-  // Drops anywhere on the pane; on a tab, before or after it by its middle.
-  const dropProps = {
-    onDragOver: (e: DragEvent) => {
-      if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
+  // Native listeners, not React's: the game view is portalled in from
+  // `GameHost`, so its React events never pass through this pane.
+  const box = useRef<HTMLElement>(null);
+  const live = useRef({ focused, pane, op });
+  live.current = { focused, pane, op };
+  useEffect(() => {
+    const el = box.current!;
+    const focus = () => {
+      const { focused, pane, op } = live.current;
+      if (!focused) op({ type: "focus", pane: pane.id });
+    };
+    const dragOver = (e: globalThis.DragEvent) => {
+      if (!e.dataTransfer?.types.includes(DRAG_TYPE)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       setOver(true);
-    },
-    onDragLeave: (e: DragEvent) => {
-      if (!e.currentTarget.contains(e.relatedTarget as globalThis.Node | null)) setOver(false);
-    },
-    onDrop: (e: DragEvent) => {
+    };
+    const dragLeave = (e: globalThis.DragEvent) => {
+      if (!el.contains(e.relatedTarget as globalThis.Node | null)) setOver(false);
+    };
+    // Drops anywhere on the pane; on a tab, before or after it by its middle.
+    const drop = (e: globalThis.DragEvent) => {
       setOver(false);
       const view = dragged(e);
       if (!view) return;
       e.preventDefault();
+      const { pane, op } = live.current;
       const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-tab-index]");
       let index = pane.tabs.length;
       if (tab) {
@@ -307,8 +320,19 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
         index = Number(tab.dataset.tabIndex) + (e.clientX > r.left + r.width / 2 ? 1 : 0);
       }
       op({ type: "move", view, pane: pane.id, index });
-    },
-  };
+    };
+    const listeners: [string, EventListener, boolean][] = [
+      ["pointerdown", focus, true],
+      ["focusin", focus, true],
+      ["dragover", dragOver as EventListener, false],
+      ["dragleave", dragLeave as EventListener, false],
+      ["drop", drop as EventListener, false],
+    ];
+    for (const [type, f, capture] of listeners) el.addEventListener(type, f, capture);
+    return () => {
+      for (const [type, f, capture] of listeners) el.removeEventListener(type, f, capture);
+    };
+  }, []);
   const show = (view: View) => op({ type: "open", view, target: { kind: "pane", pane: pane.id } });
   // Arrow keys move between tabs (and show them), as in the ARIA tabs pattern.
   const onTabKey = (e: KeyboardEvent, i: number) => {
@@ -335,9 +359,7 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
       className={`pane-box${focused ? " pane-focused" : ""}${over ? " pane-drop" : ""}`}
       data-pane={pane.id}
       aria-label={active ? (titles.get(viewKey(active)) ?? "Pane") : "Empty pane"}
-      onPointerDownCapture={() => !focused && op({ type: "focus", pane: pane.id })}
-      onFocusCapture={() => !focused && op({ type: "focus", pane: pane.id })}
-      {...dropProps}
+      ref={box}
     >
       <div className="pane-bar">
         <div
@@ -536,30 +558,7 @@ function PaneActions({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
 
 /** "Open a view here": a menu of `offers`, then "Reset layout". */
 function ViewMenu({ ctx, pane }: { ctx: Ctx; pane: Pane }) {
-  const [open, setOpen] = useState(false);
-  const menu = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    menu.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
-    const close = (e: MouseEvent) => {
-      if (!menu.current?.contains(e.target as globalThis.Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
-      setOpen(false);
-      menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
-      return;
-    }
-    const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-    if (!step) return;
-    e.preventDefault();
-    const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    items[(at + step + items.length) % items.length]?.focus();
-  };
+  const { open, setOpen, ref: menu, onKeyDown } = useMenu();
   const pick = (op: LayoutOp) => {
     setOpen(false);
     ctx.op(op);

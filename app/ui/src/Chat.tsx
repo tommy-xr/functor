@@ -30,6 +30,7 @@ import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
 import type { Accepted, Conn, Notice, Send } from "./socket";
 import { Icon } from "./Icon";
+import { useMenu } from "./menu";
 
 
 const RECENT = 8;
@@ -217,29 +218,7 @@ function ChatHead({
   current: Task | null;
   onSelect: (task: number | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const menu = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    menu.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
-    const close = (e: MouseEvent) => {
-      if (!menu.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
-      setOpen(false);
-      menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    }
-    const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-    if (!step) return;
-    e.preventDefault();
-    const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    items[(at + step + items.length) % items.length]?.focus();
-  };
+  const { open, setOpen, ref: menu, onKeyDown } = useMenu();
   return (
     <header className="chat-head">
       <div className="chat-title">

@@ -42,13 +42,13 @@ export function findView(layout: Layout | null | undefined, view: View): { pane:
   return null;
 }
 
+function basename(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
 /** The pane with the focus, if any. */
 export function focusedPane(layout: Layout | null | undefined): Pane | null {
   return panesOf(layout).find((p) => p.id === layout?.focus) ?? null;
-}
-
-function baseName(path: string): string {
-  return path.slice(path.lastIndexOf("/") + 1);
 }
 
 function folder(path: string): string {
@@ -62,7 +62,7 @@ function folder(path: string): string {
  */
 export function tabTitles(views: View[], tasks: Task[]): Map<string, string> {
   const names = new Map<string, number>();
-  for (const v of views) if (v.kind === "file") names.set(baseName(v.path), (names.get(baseName(v.path)) ?? 0) + 1);
+  for (const v of views) if (v.kind === "file") names.set(basename(v.path), (names.get(basename(v.path)) ?? 0) + 1);
   const taskTitle = (id: number) => tasks.find((t) => t.id === id)?.title || `task ${id}`;
   const titles = new Map<string, string>();
   for (const v of views) {
@@ -72,7 +72,7 @@ export function tabTitles(views: View[], tasks: Task[]): Map<string, string> {
         title = "Game";
         break;
       case "file": {
-        const name = baseName(v.path);
+        const name = basename(v.path);
         const dir = folder(v.path);
         title = (names.get(name) ?? 0) > 1 && dir ? `${name} · ${dir}` : name;
         break;

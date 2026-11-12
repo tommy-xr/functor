@@ -156,45 +156,46 @@ fn create_private(file: &Path) -> io::Result<File> {
 /// Each discovered project's picked agent; a missing or unreadable file is
 /// no pick.
 pub fn load_harnesses(home: &Path, state: &AppState) -> BTreeMap<String, Harness> {
-    let root = Path::new(&state.repo_root);
-    state
-        .projects
-        .iter()
-        .filter_map(|p| {
-            let text = std::fs::read_to_string(harness_file(home, &project_dir(root, &p.path)));
-            let harness = serde_json::from_str(&text.ok()?).ok()?;
-            Some((p.path.clone(), harness))
-        })
-        .collect()
+    load_each(home, state, harness_file)
 }
 
 /// Writes `harness` as the pick for the project at `dir`.
 pub fn save_harness(home: &Path, dir: &Path, harness: Harness) -> std::io::Result<()> {
-    let file = harness_file(home, dir);
-    create_private_dir(file.parent().expect("under home"))?;
-    write_whole(&file, &serde_json::to_string(&harness)?)
+    save_json(&harness_file(home, dir), &harness)
 }
 
 /// Each discovered project's saved layout, as written; the core normalizes
 /// it. A missing or unreadable file is no layout.
 pub fn load_layouts(home: &Path, state: &AppState) -> BTreeMap<String, Layout> {
+    load_each(home, state, layout_file)
+}
+
+/// Writes `layout` for the project at `dir`.
+pub fn save_layout(home: &Path, dir: &Path, layout: &Layout) -> io::Result<()> {
+    save_json(&layout_file(home, dir), layout)
+}
+
+/// Each discovered project's value from its `file`, by project path;
+/// missing or unreadable ones are left out.
+fn load_each<T: serde::de::DeserializeOwned>(
+    home: &Path,
+    state: &AppState,
+    file: fn(&Path, &Path) -> PathBuf,
+) -> BTreeMap<String, T> {
     let root = Path::new(&state.repo_root);
     state
         .projects
         .iter()
         .filter_map(|p| {
-            let text = std::fs::read_to_string(layout_file(home, &project_dir(root, &p.path)));
-            let layout = serde_json::from_str(&text.ok()?).ok()?;
-            Some((p.path.clone(), layout))
+            let text = std::fs::read_to_string(file(home, &project_dir(root, &p.path)));
+            Some((p.path.clone(), serde_json::from_str(&text.ok()?).ok()?))
         })
         .collect()
 }
 
-/// Writes `layout` for the project at `dir`.
-pub fn save_layout(home: &Path, dir: &Path, layout: &Layout) -> io::Result<()> {
-    let file = layout_file(home, dir);
+fn save_json<T: serde::Serialize>(file: &Path, value: &T) -> io::Result<()> {
     create_private_dir(file.parent().expect("under home"))?;
-    write_whole(&file, &serde_json::to_string(layout)?)
+    write_whole(file, &serde_json::to_string(value)?)
 }
 
 /// Written aside then renamed, so a crash never leaves half a file. The

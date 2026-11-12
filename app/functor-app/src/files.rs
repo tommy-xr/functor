@@ -29,15 +29,46 @@ pub fn read_project_file(dir: &Path, path: &str) -> Result<String, String> {
     if meta.len() > MAX_BYTES {
         return Err(too_large());
     }
+    let mut opened = std::fs::File::open(&file).map_err(|e| format!("cannot read {path}: {e}"))?;
+    // The path may have been swapped since it was checked: what was opened
+    // must be a regular file, and the path must still lead to it inside.
+    let same = opened
+        .metadata()
+        .is_ok_and(|m| m.is_file() && same_file(&m, &file, &root));
+    if !same {
+        return Err(format!("{path} changed while being read"));
+    }
     let mut bytes = Vec::new();
-    std::fs::File::open(&file)
-        .and_then(|f| f.take(MAX_BYTES + 1).read_to_end(&mut bytes))
+    opened
+        .by_ref()
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| format!("cannot read {path}: {e}"))?;
     // It may have grown since the check.
     if bytes.len() as u64 > MAX_BYTES {
         return Err(too_large());
     }
     String::from_utf8(bytes).map_err(|_| format!("{path} is not UTF-8 text"))
+}
+
+/// Whether `file` (canonical) still resolves inside `root` to the file `opened` describes.
+fn same_file(opened: &std::fs::Metadata, file: &Path, root: &Path) -> bool {
+    let Ok(now) = std::fs::canonicalize(file) else {
+        return false;
+    };
+    if !now.starts_with(root) {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(&now).is_ok_and(|m| (m.dev(), m.ino()) == (opened.dev(), opened.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = opened;
+        true
+    }
 }
 
 #[cfg(test)]
