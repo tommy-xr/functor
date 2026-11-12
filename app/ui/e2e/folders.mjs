@@ -11,7 +11,7 @@ import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, git, reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempHome, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { clock, FUNCTOR, git, reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempHome, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 requireBuilt();
 
@@ -57,8 +57,7 @@ async function folders(browser, width, height) {
   const openedPaused = async () => {
     if (!FUNCTOR) return null;
     await expect.poll(() => app.state?.session?.status.kind, { timeout: 60_000 }).toBe("running");
-    const state = await (await fetch(`${app.state.session.status.debug_url}/state?model=0`)).json();
-    expect({ frame: state.frame, paused: state.clock.paused }).toEqual({ frame: 0, paused: true });
+    expect(await clock(app.state.session.status.debug_url)).toMatchObject({ frame: 0, paused: true });
     return app.state.session.pid;
   };
   const alive = (pid) => {

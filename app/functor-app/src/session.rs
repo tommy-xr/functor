@@ -557,7 +557,7 @@ async fn supervise(
     let send = |event| {
         let _ = events.send(Event::Session { id, event });
     };
-    let sources = newest_source(&dir);
+    let sources = source_stamp(&dir);
     // Both streams: the runtime logs to stderr, but the CLI's own messages
     // (load errors included) go to stdout when it is a pipe.
     let (line_tx, mut lines) = mpsc::unbounded_channel();
@@ -604,25 +604,23 @@ async fn supervise(
     loop {
         tokio::select! {
             _ = &mut stop => return,
-            _ = tokio::time::sleep(SOURCE_POLL) => if newest_source(&dir) != sources {
+            _ = tokio::time::sleep(SOURCE_POLL) => if source_stamp(&dir) != sources {
                 return send(SessionEvent::SourceChanged);
             },
         }
     }
 }
 
-/// The newest modification time of `dir`'s `.fun`, `.funi` and `functor.json`.
-fn newest_source(dir: &Path) -> Option<SystemTime> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter(|e| {
-            let path = e.path();
-            path.file_name() == Some("functor.json".as_ref())
-                || matches!(path.extension().and_then(|x| x.to_str()), Some("fun" | "funi"))
+/// `dir`'s project files and their modification times: any edit, addition
+/// or removal changes it.
+fn source_stamp(dir: &Path) -> Vec<(String, Option<SystemTime>)> {
+    read_project_files(dir)
+        .into_iter()
+        .map(|name| {
+            let modified = std::fs::metadata(dir.join(&name)).and_then(|m| m.modified());
+            (name, modified.ok())
         })
-        .filter_map(|e| e.metadata().ok()?.modified().ok())
-        .max()
+        .collect()
 }
 
 /// Sends `reader`'s lines until it closes. Reads to the end whatever the

@@ -13,6 +13,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
 import {
+  clock,
   FUNCTOR,
   ROOT,
   requireBuilt,
@@ -31,12 +32,6 @@ requireBuilt();
 if (!FUNCTOR) {
   console.log("SKIPPED: transport — set FUNCTOR_BIN (npm run build:cli:debug)");
   process.exit(0);
-}
-
-/** The session's own clock, without the model. */
-async function clock(debugUrl) {
-  const state = await (await fetch(`${debugUrl}/state?model=0`)).json();
-  return { frame: state.frame, ...state.clock };
 }
 
 /**

@@ -165,7 +165,8 @@ impl GameClock {
     ///   single advance can be — is one `{ dts: step, … }`, so one advance is
     ///   one observable stepped frame.
     /// - **Paused**: EMPTY — no model advance. The shell still renders the frozen
-    ///   (or scrubbed) pose once at the held `tts`.
+    ///   (or scrubbed) pose once at the held `tts`. Paused before the first
+    ///   frame, it emits the one `{ dts: 0 }` bootstrap first.
     /// - **Live**: accumulate `real_delta` and emit one frame per whole
     ///   [`FIXED_DT`] of backlog, clamped to [`MAX_SUBSTEPS`] so a stall doesn't
     ///   replay as a burst. The remainder carries to the next rendered frame, so
@@ -210,33 +211,28 @@ impl GameClock {
             self.started = true;
             return frames;
         }
-        if self.paused {
-            // Paused before the first frame (a `--paused` launch): the
-            // bootstrap below still runs once, so frame 0 draws settled.
-            if self.started {
-                return Vec::new();
-            }
-            self.started = true;
-            return vec![FrameTime {
-                dts: 0.0,
-                tts: self.game_time,
-            }];
-        }
-        self.accumulator += real_delta;
-        let max_backlog = FIXED_DT * MAX_SUBSTEPS as f32;
-        if self.accumulator > max_backlog {
-            self.accumulator = max_backlog;
+        // Paused, nothing advances; paused before the first frame (a
+        // `--paused` launch), the bootstrap below still runs once.
+        if self.paused && self.started {
+            return Vec::new();
         }
         let mut frames = Vec::new();
-        while self.accumulator >= FIXED_DT {
-            self.accumulator -= FIXED_DT;
-            self.game_time += FIXED_DT;
-            frames.push(FrameTime {
-                dts: FIXED_DT,
-                tts: self.game_time,
-            });
+        if !self.paused {
+            self.accumulator += real_delta;
+            let max_backlog = FIXED_DT * MAX_SUBSTEPS as f32;
+            if self.accumulator > max_backlog {
+                self.accumulator = max_backlog;
+            }
+            while self.accumulator >= FIXED_DT {
+                self.accumulator -= FIXED_DT;
+                self.game_time += FIXED_DT;
+                frames.push(FrameTime {
+                    dts: FIXED_DT,
+                    tts: self.game_time,
+                });
+            }
         }
-        // First live frame: run the body once even if under a whole step has
+        // First frame: run the body once even if under a whole step has
         // accumulated, so the model/physics settles before the first draw. A
         // zero-dt sub-frame advances nothing (the accumulator keeps its time for
         // the next frame) — it just guarantees `tick`/`physics` run frame one.

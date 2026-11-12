@@ -1860,10 +1860,12 @@ pub fn run(args: Args) {
         &args.entry_prefix,
     );
     let entry_source = args.entry_source.clone();
-    // A deterministic run (scripted input, a capture, a fixed clock) and a
-    // headless one (an agent reads `/state`) load before their first frame;
-    // a windowed one draws the loading screen while the load job runs.
+    // A deterministic run (scripted input, a capture, a fixed clock), a
+    // headless one (an agent reads `/state`) and a paused one (its first
+    // frame is the loaded game's frame 0) load before their first frame; a
+    // windowed one draws the loading screen while the load job runs.
     let load_first = args.headless
+        || args.paused
         || args.input_script.is_some()
         || args.capture_at_frame.is_some()
         || args.capture_frame.is_some()

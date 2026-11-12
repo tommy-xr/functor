@@ -535,7 +535,10 @@ it from there. The game view has no Start prompt.
   transport bar's.
 - **Own window** is not started on open, and runs at once when started: that
   window has no transport bar.
-- **A game that fails to load** shows its error where the frame would be.
+- **A live game in a pane keeps its tab**, so opening a project brings its
+  Game tab back if it was closed.
+- **A game that fails to load** shows its error where the frame would be;
+  saving a project file starts it again.
 - **Cost:** one hidden game process per open project, from the moment it
   opens. Switching projects stops the previous one; closing the app stops it.
 - **The agent** is told the game starts paused; its tools step or resume it.

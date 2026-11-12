@@ -462,9 +462,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 state.active = Some(path);
                 remember_active(&mut state, &mut commands);
                 // The session follows the active project.
-                let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
                 stop(&mut state, &mut commands);
-                if live || starts_on_open(&state) {
+                if starts_on_open(&state) {
                     start(&mut state, &mut commands);
                 }
             }
@@ -2476,7 +2475,8 @@ mod tests {
 
     #[test]
     fn switching_projects_restarts_a_live_session() {
-        let before = with_session(1, Some(9), running(Some(12)));
+        let mut before = with_session(1, Some(9), running(Some(12)));
+        before.start_on_open = true;
         let (next, commands) = update(before, switch("examples/b"));
         assert_eq!(next.active.as_deref(), Some("examples/b"));
         assert_eq!(
@@ -2893,6 +2893,7 @@ mod tests {
     fn a_session_restarted_for_another_project_opens_its_game_tab() {
         // examples/b's saved layout has no Game tab; its session starts in a pane.
         let mut s = with_session(1, Some(9), running(Some(12)));
+        s.start_on_open = true;
         let file_only = Layout {
             root: Some(crate::layout::Node::Pane(crate::layout::Pane {
                 id: 1,
@@ -2913,6 +2914,7 @@ mod tests {
         );
         // In Mini, none opens.
         let mut s = with_session(1, Some(9), running(Some(12)));
+        s.start_on_open = true;
         let mut mini = Layout::initial();
         mini.game.placement = Placement::Mini;
         mini.normalize();
@@ -4699,6 +4701,13 @@ mod tests {
             vec![(PathBuf::from("/repo/examples/b"), Display::Hidden)]
         );
         assert_eq!(next.session.unwrap().status, SessionStatus::Starting);
+        // Nor to a project in its own window, though one was live.
+        let mut live = with_session(1, Some(9), running(Some(12)));
+        live.start_on_open = true;
+        let mut window = Layout::initial();
+        window.game.placement = Placement::Window;
+        live.layouts.insert("examples/b".into(), window);
+        assert_eq!(starts(&update(live, switch("examples/b")).1), vec![]);
     }
 
     #[test]
