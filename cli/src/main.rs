@@ -126,10 +126,14 @@ enum Command {
         #[arg(long, value_name = "PATH", conflicts_with = "output")]
         check: Option<PathBuf>,
     },
-    /// Scaffold a new Functor Lang project (defaults to the 3d template).
+    /// Scaffold a new Functor Lang project from a template (defaults to 3d).
+    /// `init --list` prints the templates; with `--json`, as a JSON array.
     Init {
-        #[arg(value_enum, default_value = "3d")]
-        template: commands::init::Template,
+        #[arg(default_value = commands::init::DEFAULT, value_parser = commands::init::parser())]
+        template: &'static commands::init::Template,
+        /// Print the templates instead of creating a project.
+        #[arg(long, conflicts_with = "template")]
+        list: bool,
     },
     /// Typecheck the Functor Lang project (the strict build gate — diagnostics are
     /// errors). `build wasm` also exports a self-contained static web bundle
@@ -476,6 +480,12 @@ async fn main() -> tokio::io::Result<()> {
         return finish_inspect(res);
     }
 
+    // `init --list` is a data command like `docs`: its listing is the payload.
+    if let Command::Init { list: true, .. } = &args.command {
+        print!("{}", commands::init::list(args.json));
+        return Ok(());
+    }
+
     finish(run(&args).await, started)
 }
 
@@ -508,7 +518,7 @@ async fn run(args: &Args) -> io::Result<()> {
 
     // `init` creates the metadata file, so it is the one project command that
     // must run before functor.json validation.
-    if let Command::Init { template } = &args.command {
+    if let Command::Init { template, .. } = &args.command {
         commands::init::execute(&working_directory, template)?;
         emit(Event::Info {
             message: format!(

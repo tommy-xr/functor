@@ -29,6 +29,22 @@ is the payload and it already has its own dual mode (`--format text|json`), so i
 report to stdout directly and does **not** emit lifecycle events (which would pollute the
 report JSON). `inspect` errors go to stderr. Everything else flows through the event stream.
 
+`init --list` is a data command in the same way: it prints the template listing and no events.
+Plain, it is a table (`NAME KIND TAGS DESCRIPTION`); under `--json` it is **one JSON array**, not
+ndjson, whose elements are the templates' `template.json` manifests in `--list` order:
+
+| Field         | Type                         | Meaning |
+| ------------- | ---------------------------- | ------- |
+| `name`        | string                       | what `functor init <name>` (and MCP `init_game`) takes |
+| `description` | string                       | one line |
+| `tags`        | string[]                     | e.g. `"2d"`, `"vr"`, `"multiplayer"` |
+| `kind`        | `"starter"` \| `"example"`   | a small project to build on, or a complete game from `examples/` |
+| `preview`     | string?                      | an image path relative to the template's directory; omitted when absent (no built-in template sets one yet, and the CLI does not embed it) |
+
+```json
+[{"name":"3d","description":"A small lit 3D scene: a spinning cube, a sphere and a floor.","tags":["3d"],"kind":"starter"}, …]
+```
+
 ## Renderer selection
 
 Selected once at startup from flags + environment:

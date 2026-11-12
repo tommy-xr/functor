@@ -1,0 +1,9 @@
+NAME         KIND     TAGS                            DESCRIPTION
+3d           starter  3d                              A small lit 3D scene: a spinning cube, a sphere and a floor.
+blank        starter  3d                              The smallest game: an empty scene and a camera.
+2d           starter  2d,keyboard                     Shapes and text on a 2D camera; WASD or the arrows move the player.
+fps          starter  3d,first-person,keyboard,mouse  First person: WASD to move, the mouse to look.
+multiplayer  starter  2d,multiplayer,keyboard         Authoritative client and server in one file; arrows or WASD move your square.
+vr           starter  3d,vr,xr                        Tracked controllers and a cube to pick up; runs on a headset or under --emulate-xr.
+netpong      example  2d,multiplayer,keyboard         Authoritative multiplayer Pong; the server and client roles are separate files.
+tetris       example  2d,puzzle,keyboard              A complete falling-block puzzle with ghost pieces, wall kicks and scoring.

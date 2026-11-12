@@ -1102,10 +1102,9 @@ pub struct InitGameArgs {
     /// Directory to scaffold, absolute or relative to the MCP server's
     /// working directory. It is created if it does not exist.
     pub dir: String,
-    /// `"3d"` (default — a small lit scene), `"fps"` (WASD + mouse-look), or
-    /// `"multiplayer"` (an authoritative client/server starter whose `client`
-    /// and `server` roles share one file; run the authority with
-    /// `launch_game`'s `entry: "server"`).
+    /// A template name from `functor init --list` (default `"3d"`, a small lit
+    /// scene); an unknown name's error lists them all. For `"multiplayer"`,
+    /// run the authority with `launch_game`'s `entry: "server"`.
     pub template: Option<String>,
 }
 
@@ -2151,35 +2150,32 @@ in the list have already advanced; the group is no longer in lockstep."
             .await
     }
 
-    /// Scaffold a new project on disk — the same `functor.json` + `game.fun`
-    /// starter `functor init` writes. `template` is `"3d"` (default, a small
-    /// lit scene), `"fps"` (WASD + mouse-look), or `"multiplayer"` (an
-    /// authoritative client/server starter — launch its authority with
-    /// `launch_game`'s `entry: "server"`). Existing files are never
-    /// overwritten. The directory it returns is ready to pass straight to
-    /// `launch_game`'s `dir`.
+    /// Scaffold a new project on disk — the same files `functor init` writes.
+    /// `template` is a name `functor init --list` prints: starters such as
+    /// `"3d"` (default), `"blank"`, `"2d"`, `"fps"`, `"vr"` and
+    /// `"multiplayer"` (launch its authority with `launch_game`'s
+    /// `entry: "server"`), or a complete example game. An unknown name's error
+    /// lists them all. Existing files are never overwritten. The directory it
+    /// returns is ready to pass straight to `launch_game`'s `dir`.
     #[tool]
     async fn init_game(
         &self,
         Parameters(args): Parameters<InitGameArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let name = args.template.as_deref().unwrap_or("3d");
-        let template = match name {
-            "3d" => crate::commands::init::Template::ThreeD,
-            "fps" => crate::commands::init::Template::Fps,
-            "multiplayer" => crate::commands::init::Template::Multiplayer,
-            other => {
-                return tool_error(format!(
-                    "unknown template {other:?}: expected \"3d\" (a small lit 3D scene) \
-or \"fps\" (a first-person WASD + mouse-look scene) or \"multiplayer\" (an \
-authoritative client/server starter)"
-                ))
-            }
+        let name = args
+            .template
+            .as_deref()
+            .unwrap_or(crate::commands::init::DEFAULT);
+        let Some(template) = crate::commands::init::find(name) else {
+            return tool_error(format!(
+                "unknown template {name:?}: expected one of {}",
+                crate::commands::init::names().join(", ")
+            ));
         };
         let dir = std::path::PathBuf::from(&args.dir);
         // The scaffolder's own refusal to overwrite is the contract here: a
         // half-written project is worse than a failed call.
-        resolve!(crate::commands::init::execute(&dir, &template)
+        resolve!(crate::commands::init::execute(&dir, template)
             .map_err(|error| format!("could not initialize a project: {error}")));
         ok_text(
             serde_json::json!({
@@ -5859,6 +5855,39 @@ mod tests {
         let error = spawn_node_child(&missing).unwrap_err();
         assert!(error.contains("requires Node.js 20 or newer"), "{error}");
         assert!(error.contains("FUNCTOR_NODE"), "{error}");
+    }
+
+    /// `init_game` takes every `functor init` template by the same table, and
+    /// names them all when given an unknown one.
+    #[tokio::test]
+    async fn init_game_accepts_every_init_template() {
+        let server = FunctorMcp::new();
+        let root = std::env::temp_dir().join(format!("functor-mcp-init-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for template in crate::commands::init::TEMPLATES {
+            let dir = root.join(template.name);
+            let result = server
+                .init_game(super::Parameters(super::InitGameArgs {
+                    dir: dir.to_string_lossy().into_owned(),
+                    template: Some(template.name.to_string()),
+                }))
+                .await
+                .unwrap();
+            assert_ne!(result.is_error, Some(true), "{}: {result:?}", template.name);
+            for file in template.file_names() {
+                assert!(dir.join(file).is_file(), "{}/{file}", template.name);
+            }
+        }
+        let unknown = server
+            .init_game(super::Parameters(super::InitGameArgs {
+                dir: root.join("unknown").to_string_lossy().into_owned(),
+                template: Some("nope".into()),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(unknown.is_error, Some(true));
+        assert!(format!("{unknown:?}").contains("tetris"), "{unknown:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

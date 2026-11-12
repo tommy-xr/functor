@@ -193,7 +193,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 
 | Tool | What it does |
 | --- | --- |
-| `init_game` | Scaffold a starter project on disk — the same `functor.json` + `game.fun` `functor init` writes. `template` is `"3d"` (default), `"fps"`, or `"multiplayer"`. Never overwrites; its `dir` goes straight into `launch_game`. |
+| `init_game` | Scaffold a project on disk — the same files `functor init` writes. `template` is any name `functor init --list` prints (default `"3d"`). Never overwrites; its `dir` goes straight into `launch_game`. |
 | `save_project` | Write a session's **current** source to a directory, with the `functor.json` it booted with — so a multi-entry (multiplayer) project keeps its roles. The sources come from the RUNTIME (`GET /project`), so they include every wire-only edit. Refuses a directory that already holds a project unless `overwrite`. |
 
 **Learning the language and the API.** Two session-free tools, and they are
