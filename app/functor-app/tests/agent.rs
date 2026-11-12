@@ -781,7 +781,12 @@ async fn a_change_is_reviewed_kept_and_reverted() {
         ]
     );
 
-    send(&mut ws, json!({"type": "revert_change", "task": 1})).await;
+    let tree = msg["tree"].clone();
+    send(
+        &mut ws,
+        json!({"type": "revert_change", "task": 1, "tree": tree}),
+    )
+    .await;
     until(&mut ws, status_is("reverted")).await;
     assert_eq!(read(), "let xx = 1\n");
     assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), head);

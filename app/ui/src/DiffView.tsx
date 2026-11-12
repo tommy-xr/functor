@@ -177,7 +177,8 @@ export function ReviewActions({
   const act = (type: "keep_change" | "revert_change") => {
     setSince(notice?.seq ?? 0);
     setConfirming(false);
-    send({ type, task: task.id });
+    // A revert names the change it shows: one measured differently since is refused.
+    send(type === "keep_change" ? { type, task: task.id } : { type, task: task.id, tree: task.change?.tree ?? "" });
   };
   const refusal = notice && notice.seq > since ? notice.reason : null;
   if (confirming) {

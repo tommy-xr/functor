@@ -59,8 +59,11 @@ pub enum ClientMsg {
         task: u64,
     },
     /// Put the files `task` changed back as they were before it started.
+    /// `tree` is the `Change::tree` the user confirmed: a change measured
+    /// differently since is refused, to be reviewed again.
     RevertChange {
         task: u64,
+        tree: String,
     },
 }
 

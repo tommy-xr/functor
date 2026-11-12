@@ -283,8 +283,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::KeepChange { task }) => {
             (keep(&mut state, task, &mut commands), false)
         }
-        Event::Client(ClientMsg::RevertChange { task }) => {
-            (revert(&mut state, task, &mut commands), false)
+        Event::Client(ClientMsg::RevertChange { task, tree }) => {
+            (revert(&mut state, task, &tree, &mut commands), false)
         }
         Event::Client(ClientMsg::GetDiff { task }) => {
             get_diff(&state, task, &mut commands);
@@ -648,7 +648,7 @@ fn keep(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
 /// Starts reverting task `id`'s change, as far as the user reviewed it.
 /// Refused while any run (an agent may edit anywhere in the repo) or other
 /// revert is under way, and for a change too large to list in full.
-fn revert(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
+fn revert(state: &mut AppState, id: u64, tree: &str, commands: &mut Vec<Command>) -> bool {
     let busy = state
         .tasks
         .iter()
@@ -665,6 +665,10 @@ fn revert(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
         Err(reason) => return reject(commands, reason),
     };
     let change = task.change.as_ref().expect("reviewable");
+    if change.tree != tree {
+        let reason = format!("task {id}'s change has changed since you saw it: review it again");
+        return reject(commands, reason);
+    }
     if change.more > 0 {
         let reason =
             format!("task {id} changed more files than the app lists: revert them with git");
@@ -1957,7 +1961,10 @@ mod tests {
     }
 
     fn revert(task: u64) -> Event {
-        client(ClientMsg::RevertChange { task })
+        client(ClientMsg::RevertChange {
+            task,
+            tree: "now-2".to_string(),
+        })
     }
 
     fn reverted(task: u64, tree: &str, result: Result<(), String>) -> Event {
@@ -2171,6 +2178,13 @@ mod tests {
             commands,
             rejected("task 1 changed more files than the app lists: revert them with git")
         );
+        // Measured again (to `now-3`) after the user confirmed `now-2`.
+        let (s, commands) = update(reviewed(one_file(3)), revert(1));
+        assert!(!task(&s, 1).reverting);
+        assert_eq!(
+            commands,
+            rejected("task 1's change has changed since you saw it: review it again")
+        );
     }
 
     #[test]
@@ -2242,8 +2256,11 @@ mod tests {
                 ClientMsg::KeepChange { task: 1 },
             ),
             (
-                r#"{"type":"revert_change","task":1}"#,
-                ClientMsg::RevertChange { task: 1 },
+                r#"{"type":"revert_change","task":1,"tree":"t"}"#,
+                ClientMsg::RevertChange {
+                    task: 1,
+                    tree: "t".to_string(),
+                },
             ),
         ] {
             assert_eq!(serde_json::from_str::<ClientMsg>(json).unwrap(), msg);

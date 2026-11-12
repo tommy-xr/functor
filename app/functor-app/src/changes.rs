@@ -166,15 +166,10 @@ impl Git {
                 let _ = self.git(&["read-tree", "HEAD"], Some(&index.0)).await;
             }
         }
-        // `--ignore-errors`: a file git cannot add (an unreadable one, a
-        // nested repo with no commit) stays out; the rest is still a snapshot.
-        let out = self
-            .output(&["add", "-A", "--ignore-errors"], Some(&index.0), "")
-            .await?;
-        if !matches!(out.status.code(), Some(0 | 1)) {
-            let err = String::from_utf8_lossy(&out.stderr);
-            return Err(format!("git add: {}", err.trim()));
-        }
+        // All or nothing: a file left out of a baseline (an unreadable one, a
+        // nested repo with no commit) would look created by the task later,
+        // and Revert would delete it.
+        self.git(&["add", "-A"], Some(&index.0)).await?;
         let tree = self.git(&["write-tree"], Some(&index.0)).await?;
         let _ = tokio::fs::rename(&index.0, &kept).await;
         Ok(tree.trim().to_string())
@@ -198,14 +193,15 @@ impl Git {
         args.extend(ignored.iter().map(String::as_str));
         let head = self.git(&args, None).await.unwrap_or_default();
         let head: HashSet<String> = nul_list(&head).into_iter().collect();
-        let mut args = vec!["rm", "-q", "--cached", "--"];
+        // `-f`: the app's index may hold content neither HEAD nor the file has.
+        let mut args = vec!["rm", "-q", "-f", "--cached", "--"];
         args.extend(
             ignored
                 .iter()
                 .filter(|p| !head.contains(*p))
                 .map(String::as_str),
         );
-        if args.len() > 4 {
+        if args.len() > 5 {
             self.git(&args, Some(index)).await?;
         }
         Ok(())
@@ -360,6 +356,12 @@ impl Git {
         let (rule_writes, writes): (Vec<_>, Vec<_>) = writes.into_iter().partition(rules);
         self.apply(base, rule_deletes, rule_writes).await?;
         let deletes = self.not_ignored(deletes).await?;
+        // Checked again: a kept file may sit in a directory a write replaces.
+        let (root, d, w) = (self.root.clone(), deletes.clone(), writes.clone());
+        tokio::task::spawn_blocking(move || preflight(&root, &d, &w))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("{e} (only the .gitignore files were reverted)"))?;
         self.apply(base, deletes, writes).await
     }
 
@@ -950,16 +952,16 @@ pub(crate) mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a_nested_repo_neither_breaks_a_snapshot_nor_is_deleted_by_revert() {
+    async fn a_nested_repo_fails_a_snapshot_or_is_refused_by_revert() {
         let repo = repo();
         let git = repo.open();
         let base = git.snapshot().await.unwrap();
-        // With no commit, git cannot add it: the rest is still measured.
+        // With no commit, git cannot add it: no partial snapshot is taken.
         std::fs::create_dir(repo.root.join("sub")).unwrap();
         repo.git(&["-C", "sub", "init", "-q"]);
         edit(&repo);
-        let change = git.change(&base).await.unwrap();
-        assert!(change.files.iter().any(|f| f.path == "game.fun"));
+        let failed = git.change(&base).await.unwrap_err();
+        assert!(failed.contains("sub"), "{failed}");
         // With one, it is a change git calls a file: Revert refuses it whole.
         repo.write("sub/x.txt", "x\n");
         repo.git(&["-C", "sub", "add", "x.txt"]);
@@ -973,6 +975,37 @@ pub(crate) mod tests {
             Some("let n = 1\n")
         );
         assert_eq!(repo.read("sub/x.txt").as_deref(), Some("x\n"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn revert_never_replaces_a_directory_holding_a_file_kept_as_ignored() {
+        let repo = Repo::new(&[(".gitignore", "data/secret\n"), ("data", "a file\n")]);
+        let git = repo.open();
+        let base = git.snapshot().await.unwrap();
+        std::fs::remove_file(repo.root.join("data")).unwrap();
+        repo.write("data/secret", "precious\n");
+        repo.write(".gitignore", "");
+        let change = git.change(&base).await.unwrap();
+        let refused = git.revert(&base, &change.paths()).await.unwrap_err();
+        assert!(refused.contains("data/secret"), "{refused}");
+        assert_eq!(repo.read("data/secret").as_deref(), Some("precious\n"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_file_ignored_after_a_snapshot_leaves_the_next_one() {
+        let repo = repo();
+        let git = repo.open();
+        let base = git.snapshot().await.unwrap();
+        // In the kept index, changed on disk, then ignored.
+        repo.write("notes.txt", "changed\n");
+        repo.write(".gitignore", "*.log\nnotes.txt\n");
+        let change = git.change(&base).await.unwrap();
+        let paths: Vec<_> = change.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, [".gitignore", "notes.txt"]);
+        // The next snapshot no longer has it: deleted, as git now sees it.
+        let again = git.change(&base).await.unwrap();
+        assert_eq!(again.files[1].path, "notes.txt");
+        assert_eq!((again.files[1].added, again.files[1].removed), (0, 1));
     }
 
     #[tokio::test(flavor = "current_thread")]
