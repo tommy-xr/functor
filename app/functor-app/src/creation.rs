@@ -275,7 +275,7 @@ fn undo(made: &[PathBuf], done: &mut Vec<String>) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
 
     fn request(name: &str, parent: &Path) -> NewProjectRequest {
         NewProjectRequest {
@@ -296,8 +296,19 @@ mod tests {
     /// A `functor` that runs `script` (`$2` is the `-d` folder).
     fn fake_functor(dir: &Path, script: &str) -> PathBuf {
         let path = dir.join("fake-functor");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Written by a child: a file this process holds open for writing can
+        // be inherited by another test's fork, and running it then fails
+        // with "Text file busy".
+        let wrote = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '#!/bin/sh\\n%s\\n' \"$1\" > \"$0\" && chmod 755 \"$0\"",
+            ])
+            .arg(&path)
+            .arg(script)
+            .status()
+            .unwrap();
+        assert!(wrote.success());
         path
     }
 

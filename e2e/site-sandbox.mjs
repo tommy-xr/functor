@@ -687,6 +687,18 @@ const playerFrame = (page) => {
     { timeout: 8000 }
   );
   await heroPlayer.evaluate(() => window.__scrub.togglePause());
+  // The pause lands on a later frame: wait until the timeline stops growing,
+  // or the seek below aims at an end that has already moved.
+  await heroPlayer.waitForFunction(
+    () => {
+      const end = window.__scrub.range()[1];
+      const settled = window.__scrub.paused() && window.__settledEnd === end;
+      window.__settledEnd = end;
+      return settled;
+    },
+    undefined,
+    { timeout: 8000, polling: 100 }
+  );
   const afterRejectedBatch = await heroPlayer.evaluate(
     () => window.__scrub.events().filter((event) => event.kind === "input").length
   );
