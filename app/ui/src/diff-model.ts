@@ -4,7 +4,7 @@
 // so `node --test` runs them.
 
 import { createElement as h, type ReactNode } from "react";
-import type { Change, DiffLine, FileChange, FileDiff, LineKind, Omitted, Task } from "./generated/protocol";
+import type { Change, DiffLine, FileChange, LineKind, Omitted, Task } from "./generated/protocol";
 
 /** A file's lines shown before "Show more". */
 export const COLLAPSE_LINES = 80;
@@ -39,18 +39,6 @@ export function totals(change: Change): Totals {
 
 export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
-}
-
-/** What tells one summary from another: a diff is current when its key is the summary's. */
-export function changeKey(files: FileChange[], more: number): string {
-  return JSON.stringify([files.map((f) => [f.path, f.from, f.added, f.removed]), more]);
-}
-
-export function diffKey(files: FileDiff[], more: number): string {
-  return changeKey(
-    files.map((d) => d.file),
-    more,
-  );
 }
 
 /** The lines shown, and how many are held back until "Show more". */

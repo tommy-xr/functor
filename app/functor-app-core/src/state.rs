@@ -165,9 +165,13 @@ pub enum Command {
         baseline: String,
         reply: bool,
     },
-    /// Put the files that differ from `baseline` back as they were there,
-    /// answering with `Event::Reverted`.
-    Revert { task: u64, baseline: String },
+    /// Put those of `paths` (the change the user reviewed) that differ from
+    /// `baseline` back as they were there, answering with `Event::Reverted`.
+    Revert {
+        task: u64,
+        baseline: String,
+        paths: Vec<String>,
+    },
 }
 
 /// One agent run for the shell to start.
@@ -516,11 +520,8 @@ fn can_run(
             "task {} is running in {project}: one run per project at a time",
             busy.id
         )),
-        None => match state
-            .tasks
-            .iter()
-            .find(|t| t.project == project && t.reverting)
-        {
+        // A revert writes anywhere in the repo, as an agent may.
+        None => match state.tasks.iter().find(|t| t.reverting) {
             Some(t) => Err(format!("task {}'s change is being reverted", t.id)),
             None => Ok(()),
         },
@@ -644,18 +645,18 @@ fn keep(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
     true
 }
 
-/// Starts reverting task `id`'s change; refused while any run in its
-/// project could be editing the same files.
+/// Starts reverting task `id`'s change, as far as the user reviewed it.
+/// Refused while any run (an agent may edit anywhere in the repo) or other
+/// revert is under way, and for a change too large to list in full.
 fn revert(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
-    let project = state.tasks.iter().find(|t| t.id == id).map(|t| &t.project);
     let busy = state
         .tasks
         .iter()
-        .find(|t| t.run.is_some() && t.id != id && Some(&t.project) == project);
+        .find(|t| t.id != id && (t.run.is_some() || t.reverting));
     if let Some(busy) = busy {
         let reason = format!(
-            "task {} is running in {}: wait for it before reverting",
-            busy.id, busy.project
+            "task {} is running or reverting: wait for it before reverting",
+            busy.id
         );
         return reject(commands, reason);
     }
@@ -663,10 +664,18 @@ fn revert(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
         Ok(task) => task,
         Err(reason) => return reject(commands, reason),
     };
+    let change = task.change.as_ref().expect("reviewable");
+    if change.more > 0 {
+        let reason =
+            format!("task {id} changed more files than the app lists: revert them with git");
+        return reject(commands, reason);
+    }
+    let paths = change.paths();
     task.reverting = true;
     commands.push(Command::Revert {
         task: id,
         baseline: task.baseline.clone().expect("reviewable"),
+        paths,
     });
     true
 }
@@ -693,6 +702,7 @@ fn get_diff(state: &AppState, id: u64, commands: &mut Vec<Command>) {
         }),
         _ => commands.push(Command::Reply(ServerMsg::Diff {
             task: id,
+            tree: None,
             files: vec![],
             more: 0,
             error: None,
@@ -1911,14 +1921,17 @@ mod tests {
     }
 
     fn one_file(added: u32) -> Change {
-        Change::from_files(vec![FileChange {
-            path: "examples/a/game.fun".to_string(),
-            from: None,
-            added,
-            removed: 1,
-            binary: false,
-            large: false,
-        }])
+        Change::from_files(
+            vec![FileChange {
+                path: "examples/a/game.fun".to_string(),
+                from: None,
+                added,
+                removed: 1,
+                binary: false,
+                large: false,
+            }],
+            format!("now-{added}"),
+        )
     }
 
     fn change(task: u64, tree: &str, change: Change) -> Event {
@@ -2055,7 +2068,8 @@ mod tests {
             vec![
                 Command::Revert {
                     task: 1,
-                    baseline: "tree-1".to_string()
+                    baseline: "tree-1".to_string(),
+                    paths: vec!["examples/a/game.fun".to_string()],
                 },
                 broadcast(&s)
             ]
@@ -2135,17 +2149,28 @@ mod tests {
                 assert_eq!(commands, rejected(reason));
             }
         }
-        // Another task running in the project: its edits are not reverted under it.
-        let (s, _) = update(reviewed(one_file(2)), new_task("second"));
+        // Another task running, even in another project: an agent may edit
+        // anywhere in the repo, so no revert goes on under it.
+        let (s, _) = update(reviewed(one_file(2)), switch("examples/b"));
+        let (s, _) = update(s, new_task("second"));
         let (next, commands) = update(s.clone(), revert(1));
         assert_eq!(next, s);
         assert_eq!(
             commands,
-            rejected("task 2 is running in examples/a: wait for it before reverting")
+            rejected("task 2 is running or reverting: wait for it before reverting")
         );
         // Keeping touches no files, so it may.
         let (next, _) = update(s, keep(1));
         assert_eq!(task(&next, 1).status, TaskStatus::Kept);
+        // A change too large to list in full is not reverted blind.
+        let mut large = one_file(2);
+        large.more = 3;
+        let (s, commands) = update(reviewed(large), revert(1));
+        assert!(!task(&s, 1).reverting);
+        assert_eq!(
+            commands,
+            rejected("task 1 changed more files than the app lists: revert them with git")
+        );
     }
 
     #[test]
@@ -2163,6 +2188,7 @@ mod tests {
         );
         let empty = vec![Command::Reply(ServerMsg::Diff {
             task: 1,
+            tree: None,
             files: vec![],
             more: 0,
             error: None,

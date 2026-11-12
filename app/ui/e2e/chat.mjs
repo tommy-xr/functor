@@ -5,12 +5,12 @@
 //   npm run test:app-ui     # builds the UI and functor-app, then the shell and chat tests
 //
 // APP_UI_SHOTS=<dir> saves the empty state and a finished conversation.
-import { mkdirSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
 import {
   FUNCTOR,
   ROOT,
   requireBuilt,
+  shot,
   startServer,
   stopServer,
   tempProject,
@@ -28,11 +28,6 @@ const FIRST = "What frame is the game on?";
 
 requireBuilt();
 
-async function shot(page, name) {
-  if (!SHOTS) return;
-  mkdirSync(SHOTS, { recursive: true });
-  await page.screenshot({ path: `${SHOTS}/${name}.png` });
-}
 
 /** The kinds of the conversation's rows, in order: user, step, capture, change, agent, result, line. */
 function rows(log) {

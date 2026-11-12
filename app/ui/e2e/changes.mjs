@@ -7,13 +7,14 @@
 //
 // APP_UI_SHOTS=<dir> saves stills of the Diff tab and the frames of a
 // review → view diff → revert loop at 1440×900.
-import { mkdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
 import {
   ROOT,
   git,
   requireBuilt,
+  shot,
   startServer,
   stopServer,
   tempProject,
@@ -22,7 +23,6 @@ import {
   watchState,
 } from "./app.mjs";
 
-const SHOTS = process.env.APP_UI_SHOTS;
 const EDIT = `${ROOT}app/ui/e2e/fixtures/edit.jsonl`;
 const BEFORE = "let init = { count: 0.0 }";
 const AFTER = "let init = { count: 10.0 }";
@@ -30,11 +30,6 @@ const AFTER = "let init = { count: 10.0 }";
 requireBuilt();
 
 let frame = 0;
-async function shot(page, name) {
-  if (!SHOTS) return;
-  mkdirSync(SHOTS, { recursive: true });
-  await page.screenshot({ path: `${SHOTS}/${name}.png` });
-}
 /** A numbered frame of the GIF loop (1440 only). */
 async function step(page, width) {
   if (width === 1440) await shot(page, `loop-${String(frame++).padStart(2, "0")}`);

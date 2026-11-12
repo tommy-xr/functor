@@ -1,11 +1,13 @@
 //! The git behind a task's change: snapshots of the working tree, the
 //! change since one, and reverting it. A snapshot is a git tree written with
-//! a throwaway index into the app's own object store
-//! (`<home>/repos/<key>/objects`), which reads the repo's objects as an
-//! alternate. So the user's repo — HEAD, refs, index, stash and object
-//! database — is only ever read; ignored files are not in a snapshot. Git
-//! runs as a subprocess, paths go after `--` or on stdin, never through a shell.
+//! the app's own index into its own object store (`<home>/repos/<key>`),
+//! which reads the repo's objects as an alternate. So the user's repo —
+//! HEAD, refs, index, stash and object database — is only ever read; ignored
+//! files are not in a snapshot. Hooks never run; the repo's clean and smudge
+//! filters do, as for any `git add` or checkout. Git runs as a subprocess,
+//! paths go after `--` or on stdin, never through a shell.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -39,9 +41,6 @@ pub struct Git {
     dir: PathBuf,
     /// The repo's own objects, read as an alternate.
     objects: PathBuf,
-    /// The repo's index, copied to seed a snapshot's, so unchanged files
-    /// are not hashed again.
-    index: PathBuf,
 }
 
 impl Git {
@@ -53,7 +52,7 @@ impl Git {
             .arg("-C")
             .arg(root)
             .args(["rev-parse", "--path-format=absolute", "--show-toplevel"])
-            .args(["--git-path", "objects", "--git-path", "index"])
+            .args(["--git-path", "objects"])
             .stdin(Stdio::null())
             .stderr(Stdio::null());
         for var in REPO_ENV {
@@ -62,7 +61,7 @@ impl Git {
         let out = command.output().ok().filter(|o| o.status.success())?;
         let text = String::from_utf8(out.stdout).ok()?;
         let mut lines = text.lines().map(PathBuf::from);
-        let (top, objects, index) = (lines.next()?, lines.next()?, lines.next()?);
+        let (top, objects) = (lines.next()?, lines.next()?);
         if std::fs::canonicalize(&top).ok()? != std::fs::canonicalize(root).ok()? {
             return None;
         }
@@ -76,14 +75,22 @@ impl Git {
             root: root.to_path_buf(),
             dir,
             objects,
-            index,
         })
     }
 
     /// `git -C <root> <args>` against the store, with `index` as its index.
     fn command(&self, args: &[&str], index: Option<&Path>) -> tokio::process::Command {
         let mut command = tokio::process::Command::new("git");
-        command.arg("-C").arg(&self.root).args(args);
+        command.arg("-C").arg(&self.root);
+        // No hooks (writing an index runs `post-index-change`), no fsmonitor
+        // daemon, and an index wholly the app's (never a split one shared
+        // with the repo's `.git`).
+        let hooks = self.dir.join("no-hooks");
+        command
+            .arg("-c")
+            .arg(format!("core.hooksPath={}", hooks.display()))
+            .args(["-c", "core.fsmonitor=false", "-c", "core.splitIndex=false"])
+            .args(args);
         for var in REPO_ENV {
             command.env_remove(var);
         }
@@ -123,14 +130,15 @@ impl Git {
     /// as a tree in the store.
     pub async fn snapshot(&self) -> Result<String, String> {
         let index = TempIndex::new(&self.dir);
-        // Seeded from the repo's index: git then hashes only what changed.
-        if let Err(e) = tokio::fs::copy(&self.index, &index.0).await {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                return Err(format!("cannot read the repo's index: {e}"));
-            }
+        let kept = self.dir.join("index");
+        // Seeded from the last snapshot's index, so git hashes only what
+        // changed since; the first starts from HEAD (none before a commit).
+        if tokio::fs::copy(&kept, &index.0).await.is_err() {
+            let _ = self.git(&["read-tree", "HEAD"], Some(&index.0)).await;
         }
         self.git(&["add", "-A"], Some(&index.0)).await?;
         let tree = self.git(&["write-tree"], Some(&index.0)).await?;
+        let _ = tokio::fs::rename(&index.0, &kept).await;
         Ok(tree.trim().to_string())
     }
 
@@ -149,7 +157,8 @@ impl Git {
 
     /// The change since `base`.
     pub async fn change(&self, base: &str) -> Result<Change, String> {
-        Ok(Change::from_files(self.files(base).await?.0))
+        let (files, now) = self.files(base).await?;
+        Ok(Change::from_files(files, now))
     }
 
     /// The change since `base` and its full diff: at most [`MAX_FILES`]
@@ -178,7 +187,7 @@ impl Git {
         };
         let diffs = file_diffs(shown, &planned, &patch, truncated);
         let more = (files.len() - shown.len()) as u32;
-        Ok((Change::from_files(files), diffs, more))
+        Ok((Change::from_files(files, now), diffs, more))
     }
 
     /// Git's stdout up to [`PATCH_BYTES`], and whether it was cut there.
@@ -208,10 +217,12 @@ impl Git {
         Ok((String::from_utf8_lossy(&out).into_owned(), truncated))
     }
 
-    /// Puts every path that differs from `base` back as it was there:
-    /// created files deleted, the rest checked out from `base`. Refused,
-    /// with nothing touched, when the snapshot or one of its files is gone.
-    pub async fn revert(&self, base: &str) -> Result<(), String> {
+    /// Puts each of `paths` (the change the user reviewed) that still
+    /// differs from `base` back as it was there: created files deleted, the
+    /// rest checked out from `base`. Refused, with nothing touched, when the
+    /// snapshot or one of its files is gone, or when it would reach through a
+    /// symlink or remove anything outside those paths.
+    pub async fn revert(&self, base: &str, paths: &[String]) -> Result<(), String> {
         let tree = format!("{base}^{{tree}}");
         if self.git(&["cat-file", "-e", &tree], None).await.is_err() {
             return Err(BASELINE_GONE.to_string());
@@ -223,7 +234,11 @@ impl Git {
                 None,
             )
             .await?;
-        let changed = nul_list(&names);
+        let reviewed: HashSet<&str> = paths.iter().map(String::as_str).collect();
+        let changed: Vec<String> = nul_list(&names)
+            .into_iter()
+            .filter(|p| reviewed.contains(p.as_str()))
+            .collect();
         if changed.is_empty() {
             return Ok(());
         }
@@ -231,10 +246,10 @@ impl Git {
             .git(&["ls-tree", "-r", "-z", "--full-tree", base], None)
             .await?;
         let plan = revert_plan(&listing, &changed)?;
-        let writes: Vec<&str> = plan
+        let writes: Vec<String> = plan
             .iter()
             .filter_map(|op| match op {
-                RevertOp::Write { path, .. } => Some(path.as_str()),
+                RevertOp::Write { path, .. } => Some(path.clone()),
                 RevertOp::Delete { .. } => None,
             })
             .collect();
@@ -258,9 +273,13 @@ impl Git {
                 RevertOp::Write { .. } => None,
             })
             .collect();
-        tokio::task::spawn_blocking(move || delete_all(&root, &deletes))
-            .await
-            .map_err(|e| e.to_string())??;
+        let checked = writes.clone();
+        tokio::task::spawn_blocking(move || {
+            preflight(&root, &deletes, &checked)?;
+            delete_all(&root, &deletes)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         if writes.is_empty() {
             return Ok(());
         }
@@ -307,6 +326,57 @@ impl Git {
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
+}
+
+/// Refuses a revert that would reach through a symlink or remove what it
+/// does not own: each path's leading directories must be directories (or
+/// absent, or a file or link the revert deletes), and a path to write must
+/// not be a directory holding anything the revert does not delete. A
+/// checkout would otherwise remove such a directory whole, ignored files
+/// and all.
+fn preflight(root: &Path, deletes: &[String], writes: &[String]) -> Result<(), String> {
+    let deleted: HashSet<&str> = deletes.iter().map(String::as_str).collect();
+    for path in deletes.iter().chain(writes) {
+        let mut prefix = String::new();
+        for part in path.split('/').take(path.split('/').count() - 1) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            match std::fs::symlink_metadata(root.join(&prefix)) {
+                Err(_) => break,
+                Ok(m) if m.is_dir() => {}
+                Ok(_) if deleted.contains(prefix.as_str()) => break,
+                Ok(_) => return Err(format!("{path}: {prefix} is not a directory")),
+            }
+        }
+    }
+    for path in writes {
+        let dir = root.join(path);
+        if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            let entries = std::fs::read_dir(&d).map_err(|e| format!("{path}: {e}"))?;
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("{path}: {e}"))?;
+                let full = entry.path();
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    stack.push(full);
+                    continue;
+                }
+                let rel = full.strip_prefix(root).unwrap_or(&full);
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if !deleted.contains(rel.as_str()) {
+                    return Err(format!(
+                        "{path} is a directory now, holding {rel}: move it away to revert"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Removes each of `paths` (repo-relative) under `root`, then directories
@@ -446,7 +516,10 @@ pub(crate) mod tests {
                 .args(args)
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("XDG_CONFIG_HOME", std::env::var_os("XDG_CONFIG_HOME").unwrap())
+                .env(
+                    "XDG_CONFIG_HOME",
+                    std::env::var_os("XDG_CONFIG_HOME").unwrap(),
+                )
                 .output()
                 .unwrap();
             assert!(out.status.success(), "git {args:?}: {out:?}");
@@ -610,7 +683,15 @@ pub(crate) mod tests {
         let git = repo.open();
         let base = git.snapshot().await.unwrap();
         edit(&repo);
-        git.revert(&base).await.unwrap();
+        let reviewed = git.change(&base).await.unwrap().paths();
+        // Edited after the review: not part of what Revert was shown.
+        repo.write("later.txt", "written after the review\n");
+        git.revert(&base, &reviewed).await.unwrap();
+        assert_eq!(
+            repo.read("later.txt").as_deref(),
+            Some("written after the review\n")
+        );
+        std::fs::remove_file(repo.root.join("later.txt")).unwrap();
         assert_eq!(
             repo.read("game.fun").as_deref(),
             Some("let a = 1\nlet b = 2\n")
@@ -652,7 +733,8 @@ pub(crate) mod tests {
         // The directory becomes a link to somewhere else.
         std::fs::remove_dir_all(repo.root.join("data")).unwrap();
         std::os::unix::fs::symlink(outside.path(), repo.root.join("data")).unwrap();
-        git.revert(&base).await.unwrap();
+        let reviewed = git.change(&base).await.unwrap().paths();
+        git.revert(&base, &reviewed).await.unwrap();
         let mode = std::fs::metadata(&run).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0, "{mode:o}");
         assert!(repo.root.join("data").is_dir());
@@ -670,10 +752,14 @@ pub(crate) mod tests {
         let git = repo.open();
         let base = git.snapshot().await.unwrap();
         edit(&repo);
+        let reviewed = git.change(&base).await.unwrap().paths();
         // As if the app's store were removed, or pruned.
         std::fs::remove_dir_all(git.dir.join("objects")).unwrap();
         std::fs::create_dir_all(git.dir.join("objects")).unwrap();
-        assert_eq!(git.revert(&base).await, Err(BASELINE_GONE.to_string()));
+        assert_eq!(
+            git.revert(&base, &reviewed).await,
+            Err(BASELINE_GONE.to_string())
+        );
         assert_eq!(
             repo.read("game.fun").as_deref(),
             Some("let a = 1\nlet b = 3\nlet c = 4\n")
@@ -682,6 +768,48 @@ pub(crate) mod tests {
             repo.read("dir/new file.fun").as_deref(),
             Some("let n = 1\n")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn revert_never_removes_a_directory_holding_files_outside_the_change() {
+        let repo = Repo::new(&[(".gitignore", "*.log\n"), ("data", "a file\n")]);
+        let git = repo.open();
+        let base = git.snapshot().await.unwrap();
+        // The file becomes a directory, with an ignored file in it.
+        std::fs::remove_file(repo.root.join("data")).unwrap();
+        repo.write("data/new.txt", "new\n");
+        repo.write("data/keep.log", "precious\n");
+        let reviewed = git.change(&base).await.unwrap().paths();
+        let refused = git.revert(&base, &reviewed).await.unwrap_err();
+        assert!(refused.contains("data/keep.log"), "{refused}");
+        // Nothing was touched.
+        assert_eq!(repo.read("data/new.txt").as_deref(), Some("new\n"));
+        assert_eq!(repo.read("data/keep.log").as_deref(), Some("precious\n"));
+        // With the directory holding only the change, the file comes back.
+        std::fs::remove_file(repo.root.join("data/keep.log")).unwrap();
+        git.revert(&base, &reviewed).await.unwrap();
+        assert_eq!(repo.read("data").as_deref(), Some("a file\n"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_snapshot_runs_none_of_the_repos_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = repo();
+        let marker = repo.root.with_file_name("hook-ran");
+        let hook = repo.root.join(".git/hooks/post-index-change");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        let script = format!("#!/bin/sh\ntouch '{}'\n", marker.display());
+        std::fs::write(&hook, script).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let git = repo.open();
+        let base = git.snapshot().await.unwrap();
+        edit(&repo);
+        git.change(&base).await.unwrap();
+        assert!(!marker.exists(), "a hook ran");
+        // The hook is live: the user's own `git add` runs it.
+        repo.git(&["add", "game.fun"]);
+        assert!(marker.exists(), "the hook is not installed");
     }
 
     #[test]

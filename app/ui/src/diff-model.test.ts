@@ -4,9 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Change, DiffLine, FileChange, Task } from "./generated/protocol.ts";
 import {
-  changeKey,
   collapse,
-  diffKey,
   fileFor,
   hasChange,
   omittedText,
@@ -24,7 +22,11 @@ const file = (path: string, added = 1, removed = 0): FileChange => ({
   large: false,
 });
 
-const change: Change = { files: [file("examples/counter/game.fun", 2, 1), file("README.md", 3, 0)], more: 0 };
+const change: Change = {
+  files: [file("examples/counter/game.fun", 2, 1), file("README.md", 3, 0)],
+  more: 0,
+  tree: "t",
+};
 
 test("a tool call's file finds its entry, absolute or relative", () => {
   const game = change.files[0];
@@ -44,13 +46,6 @@ test("totals and whether there is a change", () => {
   assert.ok(!hasChange({ ...task, change: { files: [], more: 0 } }));
   assert.ok(!hasChange({ ...task, baseline: null }));
   assert.ok(!hasChange(null));
-});
-
-test("a diff is current when it matches the summary", () => {
-  const diff = change.files.map((f) => ({ file: f, lines: [], omitted: null }));
-  assert.equal(diffKey(diff, 0), changeKey(change.files, 0));
-  assert.notEqual(diffKey(diff, 0), changeKey([file("examples/counter/game.fun", 3, 1)], 0));
-  assert.notEqual(diffKey(diff, 1), changeKey(change.files, 0));
 });
 
 test("long files collapse until expanded", () => {

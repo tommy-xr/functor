@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { AppState, Change, Harness, Item, Task, TaskStatus, Usage } from "./generated/protocol";
+import type { AppState, Change, Harness, Item, Task, Usage } from "./generated/protocol";
 import {
   atBottom,
   clip,
@@ -25,7 +25,7 @@ import {
   usageText,
   type Snapshot,
 } from "./chat-model";
-import { Counts, ReviewActions } from "./DiffView";
+import { Counts, ReviewActions, TaskBadge } from "./DiffView";
 import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
 import type { Accepted, Conn, Notice, Send } from "./socket";
@@ -317,14 +317,6 @@ function ReviewCard({
       </p>
       <ReviewActions task={task} send={send} online={online} notice={notice} onViewDiff={() => onViewDiff(null)} />
     </div>
-  );
-}
-
-function TaskBadge({ status }: { status: TaskStatus }) {
-  return (
-    <span className={`badge badge-${status.kind}`} data-testid="task-status">
-      {STATUS_WORDS[status.kind]}
-    </span>
   );
 }
 

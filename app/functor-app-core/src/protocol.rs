@@ -113,9 +113,11 @@ pub enum ServerMsg {
     Item { task: u64, index: usize, item: Item },
     /// `task`'s full diff, answering `GetDiff`: the summary's files (all of
     /// them, listed or not, are in `files` or counted in `more`), each with
-    /// its lines unless omitted. `error` when it could not be computed.
+    /// its lines unless omitted. `tree` is the snapshot it shows (the
+    /// summary's `Change::tree`); `error` when it could not be computed.
     Diff {
         task: u64,
+        tree: Option<String>,
         files: Vec<FileDiff>,
         more: u32,
         error: Option<String>,

@@ -236,6 +236,7 @@ mod tests {
                 },
             ],
             more: 2,
+            tree: "t".into(),
         };
         assert_eq!(
             print_change(&change),
@@ -442,14 +443,17 @@ projects: 3
                 session_id: None,
                 run: None,
                 baseline: Some("tree".into()),
-                change: Some(Change::from_files(vec![FileChange {
-                    path: "examples/counter/game.fun".into(),
-                    from: None,
-                    added: 2,
-                    removed: 1,
-                    binary: false,
-                    large: false,
-                }])),
+                change: Some(Change::from_files(
+                    vec![FileChange {
+                        path: "examples/counter/game.fun".into(),
+                        from: None,
+                        added: 2,
+                        removed: 1,
+                        binary: false,
+                        large: false,
+                    }],
+                    "t".into(),
+                )),
                 reverting: false,
                 transcript: transcript.clone(),
             }],

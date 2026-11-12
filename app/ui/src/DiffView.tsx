@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { AppState, FileDiff, Task } from "./generated/protocol";
+import type { AppState, FileDiff, Task, TaskStatus } from "./generated/protocol";
 import {
-  changeKey,
   collapse,
-  diffKey,
   hasChange,
   omittedText,
   plural,
@@ -38,15 +36,16 @@ export function DiffView({
 }) {
   const tracked = state?.tracks_changes ?? false;
   const change = hasChange(task) ? task.change : null;
-  const key = task && change ? `${task.id} ${changeKey(change.files, change.more)}` : null;
+  // A summary names the snapshot it measured: a diff of the same tree is current.
+  const key = task && change ? `${task.id} ${change.tree}` : null;
   // Asked once each time the tab opens (the user may have edited by hand),
-  // then again only for a summary the diff does not show yet.
+  // then again only for a snapshot the diff does not show yet.
   const asked = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    if (!task || !key || !online || !tracked || asked.current === key) return;
+    if (!task || !change || !online || !tracked || asked.current === key) return;
     const opened = asked.current === undefined;
     asked.current = key;
-    if (!opened && diff && diff.task === task.id && `${task.id} ${diffKey(diff.files, diff.more)}` === key) return;
+    if (!opened && diff?.task === task.id && diff.tree === change.tree) return;
     fetchDiff(task.id);
   }, [key, online]);
 
@@ -79,9 +78,7 @@ export function DiffView({
         <span className="diff-total">
           {plural(sum.files, "file")} <Counts added={sum.added} removed={sum.removed} />
         </span>
-        <span className={`badge badge-${task.status.kind}`} data-testid="diff-status">
-          {STATUS_WORDS[task.status.kind]}
-        </span>
+        <TaskBadge status={task.status} testid="diff-status" />
         <span className="spacer" />
         <ReviewActions task={task} send={send} online={online} notice={notice} />
       </header>
@@ -133,6 +130,14 @@ function FileBlock({ id, diff, current }: { id: string; diff: FileDiff; current:
         </button>
       )}
     </section>
+  );
+}
+
+export function TaskBadge({ status, testid = "task-status" }: { status: TaskStatus; testid?: string }) {
+  return (
+    <span className={`badge badge-${status.kind}`} data-testid={testid}>
+      {STATUS_WORDS[status.kind]}
+    </span>
   );
 }
 

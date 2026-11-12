@@ -64,7 +64,12 @@ files: Array<FileChange>,
 /**
  * Changed files past [`MAX_FILES`], not listed.
  */
-more: number, };
+more: number, 
+/**
+ * The snapshot measured against the baseline: the same tree, the same
+ * contents, so a diff fetched for it is still current.
+ */
+tree: string, };
 
 /**
  * UI → core.
@@ -172,7 +177,7 @@ usage: Usage | null, };
 /**
  * Core → UI.
  */
-export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "rejected", reason: string, };
+export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "rejected", reason: string, };
 
 export type Session = { 
 /**

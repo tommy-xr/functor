@@ -738,9 +738,15 @@ async fn a_change_is_reviewed_kept_and_reverted() {
     let task = &state["state"]["tasks"][0];
     let first = task["baseline"].as_str().unwrap().to_string();
     assert_eq!(
-        task["change"],
-        json!({"files": [{"path": "a/game.fun", "from": null, "added": 1, "removed": 1,
-            "binary": false, "large": false}], "more": 0})
+        (
+            task["change"]["files"].clone(),
+            task["change"]["more"].clone()
+        ),
+        (
+            json!([{"path": "a/game.fun", "from": null, "added": 1, "removed": 1,
+                "binary": false, "large": false}]),
+            json!(0)
+        )
     );
     assert_eq!(read(), "let xx = 1\n");
     send(&mut ws, json!({"type": "get_diff", "task": 1})).await;

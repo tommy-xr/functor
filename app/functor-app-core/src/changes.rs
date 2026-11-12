@@ -22,6 +22,9 @@ pub struct Change {
     pub files: Vec<FileChange>,
     /// Changed files past [`MAX_FILES`], not listed.
     pub more: u32,
+    /// The snapshot measured against the baseline: the same tree, the same
+    /// contents, so a diff fetched for it is still current.
+    pub tree: String,
 }
 
 impl Change {
@@ -29,11 +32,21 @@ impl Change {
         self.files.is_empty() && self.more == 0
     }
 
-    /// `files` as a summary, listing at most [`MAX_FILES`].
-    pub fn from_files(mut files: Vec<FileChange>) -> Self {
+    /// `files` (measured as `tree`) as a summary, listing at most [`MAX_FILES`].
+    pub fn from_files(mut files: Vec<FileChange>, tree: String) -> Self {
         let more = files.len().saturating_sub(MAX_FILES) as u32;
         files.truncate(MAX_FILES);
-        Self { files, more }
+        Self { files, more, tree }
+    }
+
+    /// Every path the summary names, a rename's old one included: what a
+    /// revert of it may touch.
+    pub fn paths(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .flat_map(|f| f.from.iter().chain([&f.path]))
+            .cloned()
+            .collect()
     }
 }
 
@@ -374,10 +387,16 @@ mod tests {
         let files: Vec<_> = (0..MAX_FILES + 3)
             .map(|i| file(&format!("f{i}"), 1, 0))
             .collect();
-        let change = Change::from_files(files);
+        let change = Change::from_files(files, "t".to_string());
         assert_eq!((change.files.len(), change.more), (MAX_FILES, 3));
         assert!(!change.is_empty());
-        assert!(Change::from_files(vec![]).is_empty());
+        assert!(Change::from_files(vec![], "t".to_string()).is_empty());
+        let renamed = FileChange {
+            from: Some("old".to_string()),
+            ..file("new", 1, 0)
+        };
+        let change = Change::from_files(vec![renamed, file("b", 1, 0)], "t".to_string());
+        assert_eq!(change.paths(), ["old", "new", "b"]);
     }
 
     #[test]

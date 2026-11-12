@@ -124,7 +124,11 @@ impl Driver {
             }
             // Without a client to answer, only the summary is refreshed.
             Command::Diff { task, baseline, .. } => self.diff(task, baseline, None),
-            Command::Revert { task, baseline } => self.revert(task, baseline),
+            Command::Revert {
+                task,
+                baseline,
+                paths,
+            } => self.revert(task, baseline, paths),
             // Clients are the server's (`server::run`); `--print` has none.
             Command::Reply(_) | Command::Broadcast(_) => {}
         }
@@ -143,6 +147,7 @@ impl Driver {
             };
             let msg = match git.diff(&baseline).await {
                 Ok((change, files, more)) => {
+                    let tree = Some(change.tree.clone());
                     let _ = events.send(Event::Change {
                         task,
                         baseline,
@@ -150,6 +155,7 @@ impl Driver {
                     });
                     ServerMsg::Diff {
                         task,
+                        tree,
                         files,
                         more,
                         error: None,
@@ -157,6 +163,7 @@ impl Driver {
                 }
                 Err(error) => ServerMsg::Diff {
                     task,
+                    tree: None,
                     files: vec![],
                     more: 0,
                     error: Some(error),
@@ -166,12 +173,12 @@ impl Driver {
         });
     }
 
-    fn revert(&self, task: u64, baseline: String) {
+    fn revert(&self, task: u64, baseline: String, paths: Vec<String>) {
         let git = self.git.clone();
         let events = self.events.clone();
         tokio::spawn(async move {
             let result = match git {
-                Some(git) => git.revert(&baseline).await,
+                Some(git) => git.revert(&baseline, &paths).await,
                 None => Err("changes are tracked only in a git repository".to_string()),
             };
             let _ = events.send(Event::Reverted {

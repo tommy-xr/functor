@@ -26,6 +26,14 @@ export function requireBuilt() {
   }
 }
 
+/** With APP_UI_SHOTS=<dir>, saves the page as `<dir>/<name>.png`. */
+export async function shot(page, name) {
+  const dir = process.env.APP_UI_SHOTS;
+  if (!dir) return;
+  mkdirSync(dir, { recursive: true });
+  await page.screenshot({ path: `${dir}/${name}.png` });
+}
+
 /** A fresh app home, removed when the process exits. */
 export function tempHome() {
   const home = mkdtempSync(join(tmpdir(), "functor-app-e2e-"));
