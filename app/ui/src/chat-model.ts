@@ -1,7 +1,7 @@
 // The chat dock's pure parts: tool-call phrases, transcript updates, outcome
 // pills, connection lines and scroll-follow. No React, so `node --test` runs them.
 
-import type { Item, JsonValue, SessionStatus, Task, TaskStatus, Usage } from "./generated/protocol";
+import type { AppState, Harness, Item, JsonValue, SessionStatus, Task, TaskStatus, Usage } from "./generated/protocol";
 
 export const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
   in_progress: "In progress",
@@ -116,6 +116,13 @@ export function toolKind(name: string): "change" | "capture" | "step" {
 
 function isObject(v: JsonValue): v is { [key: string]: JsonValue } {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** The agent a new task starts with: the active project's pick while it is installed, else the first. */
+export function pickHarness(state: AppState | null): Harness {
+  const available = state?.harnesses ?? [];
+  const picked = state?.active ? state.harness_choice[state.active] : undefined;
+  return (picked && available.includes(picked) ? picked : available[0]) ?? "claude";
 }
 
 /** The last part of a path. */

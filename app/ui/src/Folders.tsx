@@ -13,8 +13,8 @@ export type FolderProps = {
   listDirs: (path: string) => void;
 };
 
-/** How long typing pauses before the server is asked about the path. */
-const ASK_MS = 150;
+/** How long typing pauses before the server is asked about it. */
+export const ASK_MS = 150;
 
 
 /**
@@ -151,6 +151,14 @@ export function FolderActions(props: FolderProps) {
   const recents = state?.recents ?? [];
   return (
     <>
+      <button
+        type="button"
+        className="button button-compact"
+        disabled={!online}
+        onClick={() => send({ type: "show_new_project", here: false })}
+      >
+        New project…
+      </button>
       <div className="folder-actions">
         <button
           type="button"
@@ -187,10 +195,9 @@ export function FolderActions(props: FolderProps) {
 
 /**
  * The canvas with no project to show: no folder open, or one holding no
- * project. Offers to open a folder (and a recent one), and a new project here
- * once the caller can make one.
+ * project. Offers to open a folder (and a recent one), or a new project here.
  */
-export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProject?: () => void }) {
+export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProject: () => void }) {
   const { state, online, send } = props;
   const recents = state?.recents ?? [];
   const folder = state?.folder ?? "";
@@ -207,20 +214,13 @@ export function NoProject({ onNewProject, ...props }: FolderProps & { onNewProje
             <h2 className="pane-title">No folder open</h2>
           )}
           <div className="empty-actions">
-            {folder && onNewProject && (
-              <button
-                type="button"
-                className="button button-compact button-primary"
-                disabled={!online}
-                onClick={onNewProject}
-              >
-                New project here
-              </button>
-            )}
+            <button type="button" className="button button-compact button-primary" disabled={!online} onClick={onNewProject}>
+              {folder ? "New project here" : "New project…"}
+            </button>
             {state?.native_picker && (
               <button
                 type="button"
-                className={`button button-compact${folder && onNewProject ? "" : " button-primary"}`}
+                className="button button-compact"
                 disabled={!online}
                 onClick={() => send({ type: "pick_folder" })}
               >

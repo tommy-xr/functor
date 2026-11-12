@@ -69,7 +69,19 @@ native_picker: boolean,
 /**
  * Why the last folder asked for did not open; cleared by the next try.
  */
-open_error: string | null, };
+open_error: string | null, 
+/**
+ * What `functor init --list --json` lists, starters first.
+ */
+templates: Array<Template>, 
+/**
+ * Why there are no templates (no `functor`, or one too old to list them).
+ */
+templates_error: string | null, 
+/**
+ * The new-project modal, while open.
+ */
+new_project: NewProject | null, };
 
 /**
  * The summary that travels with the task.
@@ -92,7 +104,7 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -207,6 +219,33 @@ export type Mini = { corner: Corner, width: number, };
 
 export type MouseButton = "left" | "right" | "middle";
 
+/**
+ * The new-project modal, while it is open.
+ */
+export type NewProject = { 
+/**
+ * The name and parent folder the modal starts with ("New project here"
+ * fills both; a picked folder replaces `parent`).
+ */
+name: string, parent: string, step: Step, };
+
+/**
+ * What the modal asks for.
+ */
+export type NewProjectRequest = { name: string, 
+/**
+ * Where the project's folder goes: absolute, or `~/…`.
+ */
+parent: string, template: string, 
+/**
+ * Run `git init` when the folder is not in a git work tree already.
+ */
+git: boolean, 
+/**
+ * The first task's message; blank for none.
+ */
+describe: string, };
+
 export type Node = { "kind": "pane" } & Pane | { "kind": "split", id: number, direction: Direction, 
 /**
  * The first child's share, in thousandths ([`RATIO_MIN`]..=[`RATIO_MAX`]).
@@ -236,6 +275,27 @@ active: number, };
  * Where the project's one game view shows (D21).
  */
 export type Placement = "pane" | "mini" | "window";
+
+/**
+ * What creating the project will do, for the modal and for the shell.
+ */
+export type Plan = { 
+/**
+ * The project's folder.
+ */
+path: string, 
+/**
+ * It is inside a git work tree already (no `git init` is offered).
+ */
+in_git: boolean, 
+/**
+ * `git init` runs after the template's files are written.
+ */
+git_init: boolean, 
+/**
+ * The steps, in order, as the modal lists them.
+ */
+steps: Array<string>, };
 
 export type Project = { 
 /**
@@ -281,7 +341,7 @@ usage: Usage | null, };
 /**
  * Core → UI.
  */
-export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", root: string, project: string, path: string, text: string | null, error: string | null, } | { "type": "dirs", path: string, dirs: Array<string>, error: string | null, } | { "type": "rejected", reason: string, };
+export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", root: string, project: string, path: string, text: string | null, error: string | null, } | { "type": "dirs", path: string, dirs: Array<string>, error: string | null, } | { "type": "new_project_plan", request: NewProjectRequest, plan: Plan | null, error: string | null, } | { "type": "rejected", reason: string, };
 
 export type Session = { 
 /**
@@ -299,6 +359,11 @@ export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "
  * `surface_height`): the space `/input` mouse coordinates are in.
  */
 surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
+
+/**
+ * Where creating a project is.
+ */
+export type Step = { "kind": "editing" } | { "kind": "creating", path: string, } | { "kind": "opening", path: string, } | { "kind": "failed", reason: string, done: Array<string>, not_done: Array<string>, };
 
 /**
  * Where [`LayoutOp::Open`] puts a view that is not open yet.
@@ -350,6 +415,17 @@ change: Change | null,
 reverting: boolean, };
 
 export type TaskStatus = { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
+
+/**
+ * One of `functor init --list --json`'s entries.
+ */
+export type Template = { 
+/**
+ * What `functor init <name>` takes.
+ */
+name: string, description: string, tags: Array<string>, kind: TemplateKind, };
+
+export type TemplateKind = "starter" | "example";
 
 export type Usage = { 
 /**

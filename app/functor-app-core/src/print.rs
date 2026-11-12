@@ -421,6 +421,11 @@ mod tests {
             native_picker: false,
             open_error: None,
             opening: 0,
+            templates: vec![],
+            templates_error: None,
+            new_project: None,
+            last_parent: None,
+            first_task: None,
         };
         assert_eq!(
             print(&state),

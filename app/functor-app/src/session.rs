@@ -9,7 +9,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+use functor_app_core::creation::NewProjectRequest;
 
 use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::{GameInput, ServerMsg};
@@ -62,7 +64,12 @@ pub struct Driver {
     /// Layouts not written yet, by project dir; flushed on drop too.
     layouts: Arc<Mutex<HashMap<PathBuf, Layout>>>,
     opened: Arc<Opened>,
+    /// `functor init --list --json`'s answer, with the binary's modification
+    /// time it was read at (`None`: not known, so not kept).
+    templates: Arc<Mutex<Option<(SystemTime, TemplateList)>>>,
 }
+
+pub type TemplateList = Result<Vec<functor_app_core::creation::Template>, String>;
 
 /// Workspaces read for `Event::Opened`, by request id, until the core takes
 /// one (`Command::UseWorkspace`): its git and highest task id.
@@ -114,6 +121,7 @@ impl Driver {
             git: None,
             layouts: Arc::default(),
             opened: Arc::default(),
+            templates: Arc::default(),
         }
     }
 
@@ -189,13 +197,37 @@ impl Driver {
                 self.runs.set_git(self.git.clone());
                 self.next_task = self.next_task.max(highest + 1);
             }
-            Command::PickFolder { from } => {
+            Command::PickFolder { from, parent } => {
                 let events = self.events.clone();
                 tokio::spawn(async move {
                     let path = crate::folders::pick(from).await;
-                    let _ = events.send(Event::Picked { path });
+                    let _ = events.send(Event::Picked { path, parent });
                 });
             }
+            Command::ListTemplates => {
+                let (list, events) = (self.list_templates(), self.events.clone());
+                tokio::spawn(async move {
+                    let result = list.await;
+                    let _ = events.send(Event::Templates { result });
+                });
+            }
+            Command::CreateProject { request, folder } => {
+                let (functor, events) = (self.functor.clone(), self.events.clone());
+                tokio::task::spawn_blocking(move || {
+                    let (result, note) = match crate::creation::create(&functor, &request, &folder)
+                    {
+                        Ok(made) => (Ok(made.path), made.note),
+                        Err(failure) => (Err(failure), None),
+                    };
+                    let _ = events.send(Event::Created { result, note });
+                });
+            }
+            Command::ReserveTask { message, harness } => {
+                let event = self.new_task(message, harness);
+                let _ = self.events.send(event);
+            }
+            // Without a client to answer there is no one to check for.
+            Command::CheckNewProject { .. } => {}
             Command::SaveRecents { recents } => {
                 if let Err(e) = crate::store::save_recents(&self.home, &recents) {
                     eprintln!("functor-app: cannot save the recent projects: {e}");
@@ -293,6 +325,47 @@ impl Driver {
                 dirs: crate::folders::suggest(&path, home.as_deref()),
                 error: crate::folders::resolve(&path, home.as_deref()).err(),
                 path,
+            };
+            let _ = reply.try_send(serde_json::to_string(&msg).expect("ServerMsg serializes"));
+        });
+    }
+
+    /// `functor init --list --json`'s templates, kept while the binary's
+    /// modification time stays the same.
+    pub fn list_templates(&self) -> impl std::future::Future<Output = TemplateList> + 'static {
+        let (functor, cache) = (self.functor.clone(), self.templates.clone());
+        async move {
+            let modified = std::fs::metadata(&functor).and_then(|m| m.modified()).ok();
+            let kept = cache.lock().unwrap().clone();
+            match (kept, modified) {
+                (Some((at, list)), Some(now)) if at == now => list,
+                _ => {
+                    let list = crate::creation::list(&functor).await;
+                    // A failure is asked again next time.
+                    if let (Some(m), Ok(_)) = (modified, &list) {
+                        *cache.lock().unwrap() = Some((m, list.clone()));
+                    }
+                    list
+                }
+            }
+        }
+    }
+
+    /// Works out what `request` would do in the background and sends it to
+    /// `reply` as `ServerMsg::NewProjectPlan`.
+    pub fn check_new_project(&self, request: NewProjectRequest, reply: Option<Sender<String>>) {
+        let Some(reply) = reply else {
+            return;
+        };
+        tokio::task::spawn_blocking(move || {
+            let (plan, error) = match crate::creation::check(&request) {
+                Ok(plan) => (Some(plan), None),
+                Err(error) => (None, Some(error)),
+            };
+            let msg = ServerMsg::NewProjectPlan {
+                request,
+                plan,
+                error,
             };
             let _ = reply.try_send(serde_json::to_string(&msg).expect("ServerMsg serializes"));
         });

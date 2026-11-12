@@ -2,8 +2,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
-import { basename } from "./chat-model";
+import { basename, pickHarness } from "./chat-model";
 import { FolderActions, NoProject, type FolderProps } from "./Folders";
+import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
 import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
@@ -15,12 +16,38 @@ type View = (typeof VIEWS)[number];
 const VIEW_LABELS: Record<View, string> = { explorer: "Explorer", tasks: "Tasks", devices: "Devices" };
 
 export function App() {
-  const { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff, files, fetchFile, dirs, listDirs } =
-    useAppSocket();
+  const {
+    state,
+    conn,
+    send,
+    transcripts,
+    fetchTranscript,
+    accepted,
+    notice,
+    diffs,
+    fetchDiff,
+    files,
+    fetchFile,
+    dirs,
+    listDirs,
+    plan,
+    checkProject,
+  } = useAppSocket();
   const [view, setView] = useView();
   // The chat's current task (`null`: a new one).
   const [selected, setSelected] = useState<number | null>(null);
   const [target, setTarget] = useState<CanvasProps["target"]>(null);
+  // A new project created with a description: its first task (newer than
+  // every task when it was created), once it starts, is the chat's.
+  const [follow, setFollow] = useState<number | null>(null);
+  useEffect(() => {
+    if (follow === null || !state) return;
+    if (state.new_project?.step.kind === "failed") return setFollow(null);
+    const first = state.tasks.find((t) => t.id > follow && t.project === state.active);
+    if (state.new_project || !first) return;
+    setSelected(first.id);
+    setFollow(null);
+  }, [follow, state]);
   // The chat's actions open or focus a view beside what the user is looking at.
   const openBeside = (view: TabView) => send({ type: "layout", op: { type: "open", view, target: { kind: "side" } } });
   const viewDiff = (path: string | null) => {
@@ -37,7 +64,9 @@ export function App() {
   const folder: FolderProps = { state, online, send, dirs, listDirs };
   useWindowMenu(state, send);
   return (
-    <div className="app">
+    <>
+    {/* Behind the new-project modal, nothing takes focus or clicks. */}
+    <div className="app" inert={!!state?.new_project}>
       <TitleBar state={state} conn={conn} />
       <div className="workspace">
         <Rail view={view} onSelect={setView} />
@@ -54,7 +83,7 @@ export function App() {
             </PlaceholderPane>
           )}
           {state && !state.active ? (
-            <NoProject {...folder} />
+            <NoProject {...folder} onNewProject={() => send({ type: "show_new_project", here: !!state.folder })} />
           ) : (
             <Canvas
               state={state}
@@ -88,6 +117,16 @@ export function App() {
         </div>
       </div>
     </div>
+    {state?.new_project && (
+      <NewProjectModal
+        {...folder}
+        plan={plan}
+        checkProject={checkProject}
+        harness={pickHarness(state)}
+        onDescribed={() => setFollow(Math.max(0, ...state.tasks.map((t) => t.id)))}
+      />
+    )}
+    </>
   );
 }
 
@@ -105,7 +144,7 @@ function useWindowMenu(state: AppState | null, send: Send) {
   const hooks = window as WindowHooks;
   useEffect(() => {
     hooks.functorMenu = (msg) => {
-      if (msg.type === "pick_folder" || msg.type === "open_folder") send(msg);
+      if (msg.type === "pick_folder" || msg.type === "open_folder" || msg.type === "show_new_project") send(msg);
     };
   }, [send]);
   const listed = (state?.recents ?? []).filter((r) => !r.missing).map(({ name, path }) => ({ name, path }));
@@ -228,7 +267,8 @@ function ExplorerPane(props: FolderProps) {
           >
             {projects.map((p) => (
               <option key={p.path} value={p.path}>
-                {p.path}
+                {/* The folder itself: its name, not `.`. */}
+                {p.path === "." ? p.name : p.path}
               </option>
             ))}
           </select>

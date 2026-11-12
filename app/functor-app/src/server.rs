@@ -255,6 +255,9 @@ async fn run(
                         baseline,
                         from.and_then(|id| clients.get(&id).cloned()),
                     ),
+                    // So is a new project's plan.
+                    Command::CheckNewProject { request } => driver
+                        .check_new_project(request, from.and_then(|id| clients.get(&id).cloned())),
                     // So are directory suggestions.
                     Command::ListDirs { path } => {
                         driver.list_dirs(path, from.and_then(|id| clients.get(&id).cloned()))

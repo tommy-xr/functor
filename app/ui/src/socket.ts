@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppState, ClientMsg, Item, ServerMsg } from "./generated/protocol";
+import type { AppState, ClientMsg, Item, NewProjectRequest, ServerMsg } from "./generated/protocol";
 import { applyItem } from "./chat-model";
 
 export type Send = (msg: ClientMsg) => boolean;
@@ -13,6 +13,7 @@ export type Notice = { reason: string; seq: number };
 export type DiffMsg = Extract<ServerMsg, { type: "diff" }>;
 export type FileMsg = Extract<ServerMsg, { type: "file" }>;
 export type DirsMsg = Extract<ServerMsg, { type: "dirs" }>;
+export type PlanMsg = Extract<ServerMsg, { type: "new_project_plan" }>;
 
 /** `files`' key for `path` of `project`. */
 export const fileKey = (project: string, path: string) => `${project}\n${path}`;
@@ -56,6 +57,10 @@ export function useAppSocket() {
   const [files, setFiles] = useState<ReadonlyMap<string, FileMsg>>(new Map());
   // The last directory suggestions asked for (`listDirs`).
   const [dirs, setDirs] = useState<DirsMsg | null>(null);
+  // The last new-project plan asked for (`checkProject`).
+  const [plan, setPlan] = useState<PlanMsg | null>(null);
+  // The plan asked for last: an older one answered late is dropped.
+  const planAsked = useRef("");
   const socket = useRef<WebSocket | null>(null);
   // The open folder's root: files are keyed by project path, which another
   // folder's project may share.
@@ -86,6 +91,9 @@ export function useAppSocket() {
             break;
           case "dirs":
             setDirs(msg);
+            break;
+          case "new_project_plan":
+            if (JSON.stringify(msg.request) === planAsked.current) setPlan(msg);
             break;
           case "transcript":
             setTranscripts((all) => new Map(all).set(msg.task, msg.items));
@@ -155,6 +163,10 @@ export function useAppSocket() {
   const fetchDiff = (task: number) => send({ type: "get_diff", task });
   const fetchFile = (path: string) => send({ type: "get_file", path });
   const listDirs = (path: string) => send({ type: "list_dirs", path });
+  const checkProject = (request: NewProjectRequest) => {
+    planAsked.current = JSON.stringify(request);
+    send({ type: "check_new_project", request });
+  };
   return {
     state,
     conn,
@@ -169,5 +181,7 @@ export function useAppSocket() {
     fetchFile,
     dirs,
     listDirs,
+    plan,
+    checkProject,
   };
 }

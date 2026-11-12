@@ -109,7 +109,12 @@ async fn clients_get_the_state_and_see_a_switch_broadcast() {
     let mut one = connect(&server.ws).await;
     let mut two = connect(&server.ws).await;
     for socket in [&mut one, &mut two] {
-        let state = next_state(socket).await;
+        // The templates are listed as the app starts, then broadcast.
+        let state = state_where(socket, |s| {
+            s["templates"].as_array().is_some_and(|t| !t.is_empty())
+                || !s["templates_error"].is_null()
+        })
+        .await;
         // Outside any project, a child of the start directory opens first.
         assert_eq!(state["active"], "a", "{state}");
         assert_eq!(

@@ -88,8 +88,13 @@ async function folders(browser, width, height) {
     await expect(none).toContainText(empty);
     await expect(explorer).toContainText("No projects in this folder");
     await expect(page).toHaveTitle(`Functor — ${empty.split("/").pop()}`);
-    // Nothing is offered that cannot be done yet.
-    await expect(none.getByRole("button", { name: /New project/ })).toHaveCount(0);
+    // "New project here" fills the new-project modal with this folder.
+    await none.getByRole("button", { name: "New project here" }).click();
+    const dialog = page.getByRole("dialog", { name: "New project" });
+    await expect(dialog.getByRole("textbox", { name: "Name" })).toHaveValue(empty.split("/").pop());
+    await expect(dialog.getByRole("textbox", { name: "Parent folder" })).toHaveValue(empty.slice(0, empty.lastIndexOf("/")));
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toBeHidden();
     await expect(none.getByRole("region", { name: "Recent projects" }).getByRole("button")).toHaveText([
       /^mygame/,
       /^counter/,
