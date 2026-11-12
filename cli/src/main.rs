@@ -523,7 +523,7 @@ async fn run(args: &Args) -> io::Result<()> {
         emit(Event::Info {
             message: format!(
                 "initialized {} Functor Lang project in {} ({})",
-                template.as_str(),
+                template.name,
                 working_directory.display(),
                 template.file_names().join(", ")
             ),

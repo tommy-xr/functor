@@ -5,6 +5,8 @@
 //! hand-written [`TEMPLATES`] table, embedded with `include_bytes!` so the CLI
 //! needs no source tree. A test fails when a table entry and its directory
 //! disagree; that is simpler than a build script and keeps the set readable.
+//! A row lists the files a new project gets: every module and `functor.json`,
+//! plus any assets, but not an example's repo-only extras (capture scripts).
 
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use serde::{Deserialize, Serialize};
@@ -87,11 +89,7 @@ pub static TEMPLATES: &[Template] = &[
         "../examples/netpong",
         ["functor.json", "client.fun", "server.fun", "protocol.fun", "game.fun"]
     ),
-    template!(
-        "tetris",
-        "../examples/tetris",
-        ["functor.json", "game.fun", "boxart.script"]
-    ),
+    template!("tetris", "../examples/tetris", ["functor.json", "game.fun"]),
 ];
 
 pub fn find(name: &str) -> Option<&'static Template> {
@@ -115,10 +113,6 @@ pub fn parser() -> impl TypedValueParser<Value = &'static Template> {
 }
 
 impl Template {
-    pub fn as_str(&self) -> &'static str {
-        self.name
-    }
-
     pub fn manifest(&self) -> Manifest {
         serde_json::from_str(self.manifest).expect("template.json is valid (tested)")
     }
@@ -200,7 +194,7 @@ pub fn execute(directory: &Path, template: &Template) -> io::Result<()> {
             io::ErrorKind::AlreadyExists,
             format!(
                 "cannot initialize the {} project in {}: refusing to overwrite {}",
-                template.as_str(),
+                template.name,
                 directory.display(),
                 conflicts.join(", ")
             ),
@@ -349,10 +343,11 @@ mod tests {
         assert_eq!(config.select(None).unwrap().role, "client");
     }
 
-    /// The table and the directories agree: each template's directory holds
-    /// exactly its listed files (plus `template.json` and the preview), the
-    /// embedded bytes are the files on disk (so an example template is the
-    /// example itself), and every directory under `cli/templates` is listed.
+    /// The table and the directories agree: every listed file exists and is
+    /// embedded byte for byte (so an example template is the example itself),
+    /// every module and `functor.json` in the directory is listed (a missing
+    /// sibling module would break the project; missing assets fail the build
+    /// test above), and every directory under `cli/templates` is listed.
     #[test]
     fn the_table_matches_the_template_directories() {
         let mut names = BTreeSet::new();
@@ -363,16 +358,22 @@ mod tests {
             assert!(!manifest.description.contains('\n'), "{}: one line", template.name);
 
             let dir = template_dir(template);
-            let on_disk: BTreeSet<String> = fs::read_dir(&dir)
+            let required: BTreeSet<String> = fs::read_dir(&dir)
                 .unwrap_or_else(|error| panic!("{}: {error}", dir.display()))
                 .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-                // What a project export skips, plus the template's own metadata.
-                .filter(|name| !name.starts_with('.') && name != "dist" && name != "template.json")
-                .filter(|name| Some(name) != manifest.preview.as_ref())
+                .filter(|name| {
+                    name == "functor.json" || name.ends_with(".fun") || name.ends_with(".funi")
+                })
                 .collect();
             let listed: BTreeSet<String> =
                 template.file_names().into_iter().map(String::from).collect();
-            assert_eq!(on_disk, listed, "{} lists every file in {}", template.name, dir.display());
+            assert!(
+                required.is_subset(&listed),
+                "{} must list every module in {}: {:?}",
+                template.name,
+                dir.display(),
+                required.difference(&listed).collect::<Vec<_>>()
+            );
 
             for file in template.files {
                 let mut components = Path::new(file.name).components();
@@ -406,13 +407,13 @@ mod tests {
     }
 
     /// `--list`'s text and JSON, pinned. Regenerate the snapshots with
-    /// `UPDATE_SNAPSHOTS=1 cargo test -p functor-cli --bin functor init::`.
+    /// `UPDATE_GOLDENS=1 cargo test -p functor-cli --bin functor init::`.
     #[test]
     fn list_matches_its_snapshots() {
         let snapshots = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
         for (file, actual) in [("init-list.txt", list(false)), ("init-list.json", list(true))] {
             let path = snapshots.join(file);
-            if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+            if std::env::var_os("UPDATE_GOLDENS").is_some() {
                 fs::create_dir_all(&snapshots).unwrap();
                 fs::write(&path, &actual).unwrap();
             }
