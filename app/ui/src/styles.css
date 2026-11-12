@@ -459,6 +459,8 @@ blockquote {
 
 .canvas-body {
   flex: 1 1 auto;
+  /* Bounded, so a long diff scrolls inside the tab, not the page. */
+  min-height: 0;
   padding: 14px;
   display: flex;
 }

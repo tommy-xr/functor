@@ -10,6 +10,7 @@ import {
   renderLines,
   totals,
 } from "./diff-model";
+import { STATUS_WORDS } from "./chat-model";
 import type { DiffMsg, Notice, Send } from "./socket";
 
 /** A file "View diff" asked to show; `seq` tells repeats apart. */
@@ -77,6 +78,9 @@ export function DiffView({
         <h2 className="eyebrow">Change</h2>
         <span className="diff-total">
           {plural(sum.files, "file")} <Counts added={sum.added} removed={sum.removed} />
+        </span>
+        <span className={`badge badge-${task.status.kind}`} data-testid="diff-status">
+          {STATUS_WORDS[task.status.kind]}
         </span>
         <span className="spacer" />
         <ReviewActions task={task} send={send} online={online} notice={notice} />
@@ -175,8 +179,8 @@ export function ReviewActions({
     return (
       <div className="review review-confirm" role="group" aria-label="Confirm revert">
         <p>
-          This puts the {plural(files, "file")} this task changed back as they were before it started; edits anyone
-          else made to them since are undone too.
+          Revert puts the {plural(files, "file")} this task changed back as {files === 1 ? "it was" : "they were"}{" "}
+          before it started, undoing any other edits made to {files === 1 ? "it" : "them"} since.
         </p>
         <div className="review-buttons">
           <button type="button" className="button button-danger" disabled={busy} onClick={() => act("revert_change")}>

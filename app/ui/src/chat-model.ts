@@ -1,7 +1,16 @@
 // The chat dock's pure parts: tool-call phrases, transcript updates, outcome
 // pills, connection lines and scroll-follow. No React, so `node --test` runs them.
 
-import type { Item, JsonValue, SessionStatus, Task, Usage } from "./generated/protocol";
+import type { Item, JsonValue, SessionStatus, Task, TaskStatus, Usage } from "./generated/protocol";
+
+export const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
+  in_progress: "In progress",
+  waiting_on_you: "Waiting on you",
+  ready_for_review: "Ready for review",
+  failed: "Failed",
+  kept: "Kept",
+  reverted: "Reverted",
+};
 
 /** A step's one line: a verb, and a file, command or pattern shown as code. */
 export type Phrase = { text: string; code?: string };

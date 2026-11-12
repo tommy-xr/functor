@@ -72,6 +72,7 @@ async function review(browser, width, height) {
     const change = log.getByTestId("change-card");
     await expect(change.locator(".counts")).toHaveText("+81 −1");
     await expect(card).toContainText("Review change · 1 file +81 −1");
+    await expect(dock.getByTestId("task-status")).toHaveText("Ready for review");
     await step(page, width);
 
     // The recent-tasks menu says it too.
@@ -84,9 +85,15 @@ async function review(browser, width, height) {
     await expect(diffTab).toHaveAttribute("aria-selected", "true");
     const file = canvas.getByRole("region", { name: "examples/counter/game.fun" });
     await expect(file).toBeInViewport();
+    await expect(canvas.getByTestId("diff-status")).toHaveText("Ready for review");
     await expect(file.locator(".dl-removed .dl-text")).toHaveText([BEFORE]);
     await expect(file.locator(".dl-added .dl-text").first()).toHaveText(AFTER);
     await expect(file.locator(".dl-hunk").first()).toContainText("@@ -10,7 +10,87 @@");
+    // Stills from the top of the change.
+    await canvas.getByTestId("diff-view").evaluate((el) => el.scrollTo(0, 0));
+    await page.locator(".canvas").evaluate((el) => el.scrollIntoView());
+    await step(page, width);
+    await shot(page, `diff-${width}`);
     // Long files collapse until asked.
     const more = file.getByRole("button", { name: /^Show \d+ more lines$/ });
     await expect(more).toBeVisible();
@@ -94,8 +101,6 @@ async function review(browser, width, height) {
     await more.click();
     await expect(file.getByRole("button", { name: /more lines/ })).toHaveCount(0);
     expect(await file.locator(".dl").count()).toBeGreaterThan(before);
-    await step(page, width);
-    await shot(page, `diff-${width}`);
 
     // Every scroller is themed: a thin dark thumb on a clear track.
     const view = canvas.getByTestId("diff-view");
@@ -117,7 +122,7 @@ async function review(browser, width, height) {
     const head = canvas.locator(".diff-head");
     await head.getByRole("button", { name: "Revert", exact: true }).click();
     const confirm = canvas.getByRole("group", { name: "Confirm revert" });
-    await expect(confirm).toContainText("This puts the 1 file this task changed back as they were before it started");
+    await expect(confirm).toContainText("Revert puts the 1 file this task changed back as it was before it started, undoing any other edits made to it since.");
     await step(page, width);
     await confirm.getByRole("button", { name: "Cancel" }).click();
     await expect(confirm).toHaveCount(0);
