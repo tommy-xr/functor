@@ -41,6 +41,8 @@ tao = "0.37"
 wry = { version = "0.57", default-features = false }
 
 [dev-dependencies]
+# The headset's client, driven against this app in the device-link tests.
+functor-device-link = { path = "../../runtime/functor-device-link", features = ["client"] }
 # The debug server's `POST /input` type, for the `GameInput` drift test.
 functor_runtime_common = { path = "../../runtime/functor-runtime-common" }
 tempfile = "3"
