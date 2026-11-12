@@ -328,8 +328,10 @@ fn tool_server_args(attach: Option<&str>) -> Vec<&str> {
 
 impl ToolServer {
     async fn start(functor: &Path, attach: Option<&str>, token: &str) -> Result<Self, String> {
+        // Killed if dropped before `stop` (a cancel or failure while starting).
         let mut child = Command::new(functor)
             .args(tool_server_args(attach))
+            .kill_on_drop(true)
             .env(TOKEN_ENV, token)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -563,6 +565,66 @@ mod tests {
             attached.ends_with(&["--attach", "http://127.0.0.1:9"]),
             "{attached:?}"
         );
+    }
+
+    /// A run cancelled before its tool server listens leaves no server.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cancel_while_the_tool_server_starts_kills_it() {
+        use std::os::unix::fs::PermissionsExt;
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        // Never prints its listening line.
+        let stub = dir.path().join("functor");
+        let script = format!(
+            "#!/bin/sh\necho $$ > '{0}.tmp' && mv '{0}.tmp' '{0}'\nexec sleep 60\n",
+            pid_file.display()
+        );
+        std::fs::write(&stub, script).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx, _events) = mpsc::unbounded_channel();
+        let mut runner = Runner::new(stub, Agents::Fake(dir.path().join("x")), None, tx);
+        runner.start(RunSpec {
+            task: 1,
+            run: 1,
+            harness: Harness::Claude,
+            dir: dir.path().to_path_buf(),
+            repo_root: dir.path().to_path_buf(),
+            message: "hi".to_string(),
+            resume: None,
+            snapshot: false,
+            baseline: None,
+            attach: None,
+            context: functor_app_core::AppContext {
+                project: ".".to_string(),
+                session: None,
+                session_mode: Default::default(),
+            },
+        });
+        let pid = loop {
+            if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                break text.trim().parse::<u32>().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        runner.stop(1, 1).await;
+        let alive = || {
+            let mut sys = System::new();
+            let pid = Pid::from_u32(pid);
+            let only = ProcessesToUpdate::Some(&[pid]);
+            sys.refresh_processes_specifics(only, true, ProcessRefreshKind::nothing());
+            sys.process(pid)
+                .is_some_and(|p| p.status() != ProcessStatus::Zombie)
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while alive() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "tool server {pid} outlived its run"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[test]
