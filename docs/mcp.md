@@ -2,7 +2,8 @@
 
 `functor mcp` is an [MCP](https://modelcontextprotocol.io) server: it exposes the
 [debug runtime](debug-runtime.md) — launch a game, read its model, pause it,
-inject input, step the clock, capture a frame — as standard tools, over stdio.
+inject input, step the clock, capture a frame — as standard tools, over stdio
+or [loopback HTTP](#serving-over-http).
 
 The capability is not new; the *interface* is. A trusted local MCP agent can
 launch or attach to a game, then use `run_game_code_unsafe` to observe, drive,
@@ -40,6 +41,63 @@ For any other MCP client, the generic stdio-server config shape is:
 `functor mcp` speaks JSON-RPC on **stdout**, so it takes no `-d` and prints
 nothing else there — each game names its own directory when it is launched, and
 a launched runtime's own output is captured rather than inherited.
+
+`--attach <url>` (repeatable) registers an already-running debug runtime at
+startup, exactly as `connect_game` would, so the game tools work immediately:
+`functor mcp --attach http://127.0.0.1:8077`. A URL that does not answer as a
+Functor debug runtime is a startup error naming it. Attached sessions are never
+killed on shutdown.
+
+## Serving over HTTP
+
+`functor mcp --http <port>` serves the **same tools** over MCP streamable HTTP,
+for a host that runs the server as a child and hands its URL to an agent:
+
+```sh
+FUNCTOR_MCP_TOKEN=$(openssl rand -hex 32) functor mcp --http 0 --attach http://127.0.0.1:53498
+# stderr: [mcp] listening on http://127.0.0.1:61234/mcp
+```
+
+- **Loopback only.** It binds `127.0.0.1`; `0` picks a free port. Exactly one
+  `[mcp] listening on <url>` line on stderr gives the real URL; stdout carries
+  nothing.
+- **Bearer token.** `FUNCTOR_MCP_TOKEN` (visible ASCII) is required — never a
+  flag: argv is visible to other local users; starting without it is an error.
+  Every request must send `Authorization: Bearer <token>` (the token exact, the
+  scheme in any case) or gets `401`. The token is not
+  passed on to launched games or the Node code runner.
+- **`Host` check.** Requests whose `Host` is not loopback (`localhost`,
+  `127.0.0.1`, `::1`) get `403` from `/mcp`, against DNS rebinding.
+- **Sessions are shared.** Every MCP connection sees the same game sessions.
+- **Lifecycle.** The server stops on SIGINT/SIGTERM (Ctrl-C on Windows) or when
+  its **stdin reaches EOF** — the convention for a child, which works on every
+  OS: the host must pipe stdin and hold it open, and closes it (or dies) to stop
+  the server. An inherited `/dev/null` (`< /dev/null`, a GUI launch, a
+  non-interactive background job) therefore stops it at once; a terminal is not
+  watched. Shutdown kills launched games; attached ones
+  keep running.
+
+### `app_context`
+
+An embedding app tells the agent what its user is looking at by `PUT`ting a
+JSON **object** to `/app-context` on the same server (same token; at most
+64 KiB, else `413`; a non-object is `400`). Each `PUT` replaces the last. The
+`app_context` tool returns `{"context": <that object>}`, or
+`{"context": null, "note": "none set: …"}` before any `PUT` and always over
+stdio. The app owns the keys; for example:
+
+```sh
+curl -X PUT -H "Authorization: Bearer $FUNCTOR_MCP_TOKEN" \
+  -d '{"view": "game", "file": "examples/counter/game.fun", "session": "s1"}' \
+  http://127.0.0.1:61234/app-context
+```
+
+### Reserved tool names
+
+An embedding agent runner may reserve tool names for its own reporting and
+approval tools and hide calls to them from its event stream. This server
+therefore never exposes `report_status`, `report_evidence`, `report_result`,
+`approve` or `merge_pr`; a unit test enforces it.
 
 ## The tools
 
@@ -95,6 +153,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | --- | --- |
 | `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `entry` names the ROLE, for a project whose `functor.json` declares `entries` (`"server"`, `"client"`; default `client`, or the sole entry) — one session per role. `mode` is `hidden` (default) or `headless`. The response carries `protocol_version`; pass `discovery: true` for the full endpoint index. |
 | `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
+| `app_context` | What the embedding app's user is looking at (view, file, session), as the app last supplied it — or `null` when none is set. See [`app_context`](#app_context). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
 | `stop_game` | Kill a launched game and close its exact-URL aliases/pending connects; merely forget one attached id. |
 
