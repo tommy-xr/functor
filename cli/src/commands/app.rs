@@ -47,6 +47,17 @@ pub fn find(
     Err(looked.join(", "))
 }
 
+/// Whether a `functor-app` can be found (see `find`).
+pub fn installed() -> bool {
+    find(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os("FUNCTOR_APP_BIN"),
+        std::env::var_os("PATH"),
+        Path::is_file,
+    )
+    .is_ok()
+}
+
 /// `functor-app`'s arguments: this CLI, the project directory, then `extra`.
 pub fn args(functor: &Path, dir: Option<&Path>, extra: &[String]) -> Vec<OsString> {
     let mut args = vec![OsString::from("--functor"), functor.into()];
