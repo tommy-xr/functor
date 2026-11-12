@@ -450,6 +450,40 @@ calls, a sticky error mark — follows
 of places. Here there are several agents at once, so the agents are the
 characters and the kinds are what appears over their heads.
 
+### D35 — the decision page answers at a glance
+
+Refines D31. Easy decisions are approved from the first page without opening
+anything; hard ones are drilled into. So the first page of a presentation
+carries the whole case in small, and the four parts are depth behind it.
+
+**The first page shows, in this order**
+
+- **Size of the change.** Lines added and removed, the number of files, and
+  which kind they are (game logic, assets, engine). A small change is easier
+  to approve, or to approve on evidence alone.
+- **Before and after.** The one image pair or short animation that shows the
+  change best, in place — not behind a tab.
+- **A one-paragraph summary** in Simplified Technical English (ASD-STE100):
+  short sentences, one meaning per word, active voice, no idiom.
+- **Evidence.** What was run and the result: checks, tests, captures compared.
+- **Things to note.** What was not verified, what was assumed, side effects,
+  anything the user would want to know before saying yes.
+- **The decision.** Keep, Revert, or say what is off — always on this page.
+
+**Depth is tabs 1 → 2 → 3 → 4.** The four parts of D31 are tabs in order of
+effort: Highlights, Captures, Lab, Real before and after. Each item on the
+first page opens the tab that backs it — the size opens Highlights at the
+code, the image opens Captures, a note opens the part it is about — so the
+user can go deeper from the thing they doubt, or walk the tabs in order.
+
+**The presentation says how deep to go.** It marks the change as one to
+approve at a glance or one to look into, with the reason ("12 lines in one
+file, tests pass" or "changes how the grip feels: try the lab"), and opens on
+the suggested tab only when the user asks to look.
+
+The same page is the task's card on the desktop and the first panel page in
+the headset.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
