@@ -98,6 +98,28 @@ curl -X PUT -H "Authorization: Bearer $FUNCTOR_MCP_TOKEN" \
   http://127.0.0.1:61234/app-context
 ```
 
+### View tools (`--app-url`)
+
+`--app-url <url>` (with `--http`) adds `show_view` and `present`, which
+forward to the embedding app: each call `POST`s a JSON request to `<url>`
+with `Authorization: Bearer $FUNCTOR_MCP_APP_TOKEN` (a second secret, from
+the environment only, never passed on to launched games or the Node runner)
+and returns the app's answer. The URL must be `http://` on loopback. Without
+the flag the tools are not listed, over either transport.
+
+| Request (`POST <url>`) | From |
+| --- | --- |
+| `{"op": "show", "view": <view>}` | `show_view` |
+| `{"op": "present", "steps": [{"title", "note"?, "view": <view>}, …]}` | `present`, 1–8 steps |
+
+A `<view>` is `{"kind": "file", "path", "lines"?: [first, last]}` (1-based,
+inclusive), `{"kind": "changes", "path"?}` or `{"kind": "game"}`; paths are
+relative to the project. Malformed input (an unknown field or kind, a bad
+line range, a step count outside 1–8) is refused before anything is sent.
+The app answers `200` with `{"ok": true|false, "message": "…"}`: `message`
+becomes the tool's text, an error when `ok` is false. Any other answer, no
+answer within 5 s, or no app at all is a tool error.
+
 ### Reserved tool names
 
 An embedding agent runner may reserve tool names for its own reporting and
@@ -160,6 +182,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `entry` names the ROLE, for a project whose `functor.json` declares `entries` (`"server"`, `"client"`; default `client`, or the sole entry) — one session per role. `mode` is `hidden` (default) or `headless`. The response carries `protocol_version`; pass `discovery: true` for the full endpoint index. |
 | `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
 | `app_context` | HTTP only. What the embedding app's user is looking at (view, file, session), as the app last supplied it — or `null` when none is set. See [`app_context`](#app_context). |
+| `show_view` / `present` | `--app-url` only. Show the user one view in the embedding app, or a walkthrough of steps. See [View tools](#view-tools---app-url). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
 | `stop_game` | Kill a launched game and close its exact-URL aliases/pending connects; merely forget one attached id. |
 

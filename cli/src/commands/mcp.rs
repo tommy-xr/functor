@@ -133,13 +133,24 @@ const QUICK_FACTS_SLUG: &str = "quick-facts";
 /// Serve MCP over stdio until the client disconnects, or over loopback HTTP
 /// (`http` = port) until signalled or stdin closes. `attach` URLs become
 /// attached sessions first, exactly as `connect_game` would make them.
-/// `no_unsafe_code` drops `run_game_code_unsafe` from the tools.
-pub async fn execute(http: Option<u16>, attach: &[String], no_unsafe_code: bool) -> io::Result<()> {
-    // Read the token before anything else so a misconfigured start fails fast.
+/// `no_unsafe_code` drops `run_game_code_unsafe` from the tools; `app_url`
+/// adds the view tools, forwarding to that app.
+pub async fn execute(
+    http: Option<u16>,
+    attach: &[String],
+    no_unsafe_code: bool,
+    app_url: Option<&str>,
+) -> io::Result<()> {
+    // Read the secrets before anything else so a misconfigured start fails fast.
     let token = http.map(|_| super::mcp_http::token_from_env()).transpose()?;
+    let app = app_url
+        .map(super::mcp_app::app_link)
+        .transpose()
+        .map_err(io::Error::other)?;
     let server = FunctorMcp {
         http_mode: http.is_some(),
         no_unsafe_code,
+        app,
         ..FunctorMcp::new()
     };
     for raw in attach {
@@ -917,7 +928,7 @@ impl Drop for ConnectReservation {
 
 #[derive(Clone)]
 pub struct FunctorMcp {
-    http: reqwest::Client,
+    pub(super) http: reqwest::Client,
     sessions: Arc<Mutex<Registry>>,
     /// The prelude API reference, generated on first use. The `.funi` sources
     /// are embedded in this binary, so it cannot change while we run.
@@ -928,15 +939,17 @@ pub struct FunctorMcp {
     http_mode: bool,
     /// `--no-unsafe-code`: `run_game_code_unsafe` is neither listed nor callable.
     no_unsafe_code: bool,
+    /// `--app-url`: the view tools exist and forward there.
+    pub(super) app: Option<super::mcp_app::AppLink>,
 }
 
-fn ok_text(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
+pub(super) fn ok_text(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
 /// A tool-level error: the request was valid, the operation failed in a way the
 /// caller should read (a 400 from `/input`, a load error from `/reload-source`).
-fn tool_error(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
+pub(super) fn tool_error(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::error(vec![ContentBlock::text(text)]))
 }
 
@@ -1173,6 +1186,7 @@ impl FunctorMcp {
             app_context: Arc::new(Mutex::new(None)),
             http_mode: false,
             no_unsafe_code: false,
+            app: None,
         }
     }
 
@@ -2277,6 +2291,9 @@ impl FunctorMcp {
         if !self.http_mode {
             router.remove_route("app_context");
         }
+        if self.app.is_some() {
+            router.merge(Self::app_tool_router());
+        }
         router
     }
 
@@ -2375,6 +2392,7 @@ impl FunctorMcp {
         let mut command = Command::new(exe);
         // The HTTP bearer token is this server's secret, not its children's.
         command.env_remove(super::mcp_http::TOKEN_ENV);
+        command.env_remove(super::mcp_app::APP_TOKEN_ENV);
         command.arg("-d").arg(dir);
         if let Some(entry) = entry {
             command.arg("--entry").arg(entry);
@@ -4049,6 +4067,7 @@ fn spawn_node_child(program: impl AsRef<Path>) -> Result<Child, String> {
     let mut command = Command::new(program);
     command
         .env_remove(super::mcp_http::TOKEN_ENV)
+        .env_remove(super::mcp_app::APP_TOKEN_ENV)
         .arg("--input-type=module")
         .arg("--eval")
         .arg(NODE_RUNNER_SOURCE)
@@ -5596,7 +5615,7 @@ mod tests {
     #[test]
     fn no_tool_uses_a_name_an_embedding_agent_runner_reserves() {
         // An embedding agent runner reserves these for its own tools and hides them.
-        let names: Vec<String> = FunctorMcp::tool_router()
+        let names: Vec<String> = (FunctorMcp::tool_router() + FunctorMcp::app_tool_router())
             .list_all()
             .into_iter()
             .map(|tool| tool.name.to_string())
@@ -5623,6 +5642,20 @@ mod tests {
         });
         assert!(!has(&app, "run_game_code_unsafe") && has(&app, "app_context"), "{app:?}");
         assert_eq!(app.len(), stdio.len());
+        // The view tools exist only with an app to forward to.
+        for names in [&stdio, &app] {
+            assert!(!has(names, "show_view") && !has(names, "present"), "{names:?}");
+        }
+        let linked = names(FunctorMcp {
+            http_mode: true,
+            app: Some(super::super::mcp_app::AppLink {
+                url: "http://127.0.0.1:9/view".into(),
+                token: "t".into(),
+            }),
+            ..FunctorMcp::new()
+        });
+        assert!(has(&linked, "show_view") && has(&linked, "present"), "{linked:?}");
+        assert_eq!(linked.len(), stdio.len() + 3);
     }
 
     #[test]

@@ -342,6 +342,12 @@ enum Command {
         /// calls to it, for a host that sandboxes its agent.
         #[arg(long)]
         no_unsafe_code: bool,
+
+        /// Add the view tools (`show_view`, `present`), forwarding to the
+        /// embedding app at this loopback URL with the secret in
+        /// `FUNCTOR_MCP_APP_TOKEN`.
+        #[arg(long, value_name = "URL", requires = "http")]
+        app_url: Option<String>,
     },
     /// Open the desktop app (preview) on the project: runs the `functor-app`
     /// next to this `functor`, else `FUNCTOR_APP_BIN`, else on PATH, with this
@@ -430,9 +436,11 @@ async fn main() -> tokio::io::Result<()> {
         http,
         attach,
         no_unsafe_code,
+        app_url,
     } = &args.command
     {
-        return finish_inspect(commands::mcp::execute(*http, attach, *no_unsafe_code).await);
+        let app_url = app_url.as_deref();
+        return finish_inspect(commands::mcp::execute(*http, attach, *no_unsafe_code, app_url).await);
     }
     // `app` hands the terminal to another process: no output stream here.
     if let Command::App { app_args } = &args.command {

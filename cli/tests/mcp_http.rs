@@ -1,5 +1,5 @@
 //! `functor mcp --http`: the token gate, tool parity with stdio, `app_context`,
-//! `--no-unsafe-code`, `--attach`, and shutdown — against the real binary, no GPU (docs/mcp.md).
+//! `--no-unsafe-code`, `--attach`, the `--app-url` view tools, and shutdown — against the real binary, no GPU (docs/mcp.md).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -459,4 +459,192 @@ fn sigterm_exits_promptly_and_spares_attached_runtimes() {
     let status = wait_exit(&mut server.child, Duration::from_secs(5)).expect("exits on SIGTERM");
     assert!(status.success(), "{status} after {:?}", started.elapsed());
     assert!(answers(&runtime));
+}
+
+const APP_TOKEN: &str = "app-secret-0123456789";
+
+/// One request the stub app received: its request line, headers and body.
+struct AppRequest {
+    line: String,
+    headers: String,
+    body: Value,
+}
+
+/// A stand-in app endpoint: records each request and answers with the next
+/// of `replies` (`None`: never answers, holding the connection).
+fn stub_app(replies: Vec<Option<Value>>) -> (String, mpsc::Receiver<AppRequest>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/agent/view", listener.local_addr().unwrap());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut replies = replies.into_iter();
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).to_string();
+            let length = head
+                .lines()
+                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                .unwrap_or(0);
+            let mut body = vec![0u8; length];
+            stream.read_exact(&mut body).unwrap();
+            let (line, headers) = head.split_once("\r\n").unwrap();
+            let _ = tx.send(AppRequest {
+                line: line.to_string(),
+                headers: headers.to_ascii_lowercase(),
+                body: serde_json::from_slice(&body).unwrap(),
+            });
+            match replies.next().flatten() {
+                Some(reply) => {
+                    let reply = reply.to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    );
+                }
+                None => {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(30));
+                        drop(stream);
+                    });
+                }
+            }
+        }
+    });
+    (url, rx)
+}
+
+/// `functor mcp --http 0 --app-url <url>` with both secrets set.
+fn app_server(url: &str) -> HttpServer {
+    let mut child = functor()
+        .args(["mcp", "--http", "0", "--no-unsafe-code", "--app-url", url])
+        .env("FUNCTOR_MCP_TOKEN", TOKEN)
+        .env("FUNCTOR_MCP_APP_TOKEN", APP_TOKEN)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let line = lines.next().unwrap().unwrap();
+    std::thread::spawn(move || lines.for_each(drop));
+    let url = line.strip_prefix("[mcp] listening on ").expect(&line).to_string();
+    HttpServer { child, stdin, url }
+}
+
+#[test]
+fn without_app_url_there_are_no_view_tools_and_app_url_needs_its_secret() {
+    let server = HttpServer::start(&[]);
+    let http = tool_names(&HttpMcp::connect(&server.url).request("tools/list", json!({})));
+    let stdio = tool_names(&stdio_requests(&[], &[("tools/list", json!({}))])[0]);
+    for names in [&http, &stdio] {
+        assert!(!names.contains(&"show_view".into()) && !names.contains(&"present".into()), "{names:?}");
+    }
+    // Only over HTTP, only to loopback, only with the secret in the environment.
+    let fails = |args: &[&str], secret: bool| {
+        let mut command = functor();
+        command.arg("mcp").args(args).env("FUNCTOR_MCP_TOKEN", TOKEN).env_remove("FUNCTOR_MCP_APP_TOKEN");
+        if secret {
+            command.env("FUNCTOR_MCP_APP_TOKEN", APP_TOKEN);
+        }
+        let output = command.stdin(Stdio::null()).output().unwrap();
+        assert!(!output.status.success(), "{args:?}");
+        String::from_utf8_lossy(&output.stderr).to_string()
+    };
+    let app = "http://127.0.0.1:9/agent/view";
+    assert!(fails(&["--app-url", app], true).contains("--http"));
+    assert!(fails(&["--http", "0", "--app-url", app], false).contains("FUNCTOR_MCP_APP_TOKEN"));
+    for remote in ["http://example.com/agent/view", "https://127.0.0.1:9/agent/view"] {
+        let stderr = fails(&["--http", "0", "--app-url", remote], true);
+        assert!(stderr.contains("must be an http:// URL on 127.0.0.1"), "{stderr}");
+    }
+}
+
+#[test]
+fn view_tools_forward_typed_requests_with_the_secret_and_relay_the_answer() {
+    let (url, requests) = stub_app(vec![
+        Some(json!({"ok": true, "message": "Opened game.fun beside your pane"})),
+        Some(json!({"ok": false, "message": "notes.txt is not one of the project's files"})),
+        Some(json!({"ok": true, "message": "Added a walkthrough of 2 steps"})),
+    ]);
+    let server = app_server(&url);
+    let mut mcp = HttpMcp::connect(&server.url);
+    let names = tool_names(&mcp.request("tools/list", json!({})));
+    assert!(names.contains(&"show_view".into()) && names.contains(&"present".into()), "{names:?}");
+
+    let view = json!({"kind": "file", "path": "game.fun", "lines": [4, 5]});
+    assert_eq!(mcp.call("show_view", json!({"view": view})), "Opened game.fun beside your pane");
+    let got = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(got.line.starts_with("POST /agent/view "), "{}", got.line);
+    assert!(got.headers.contains(&format!("authorization: bearer {}", APP_TOKEN.to_ascii_lowercase())), "{}", got.headers);
+    assert!(!got.headers.contains(TOKEN), "the MCP token stays on this side");
+    assert_eq!(got.body, json!({"op": "show", "view": view}));
+
+    // A refusal is a tool error carrying the app's reason.
+    let refused = mcp.request("tools/call", json!({"name": "show_view", "arguments": {"view": {"kind": "file", "path": "notes.txt"}}}));
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(refused["content"][0]["text"].as_str().unwrap().contains("not one of the project's files"));
+    requests.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    let steps = json!([
+        {"title": "The new step", "note": "It counts by two.", "view": {"kind": "changes", "path": "game.fun"}},
+        {"title": "The game", "view": {"kind": "game"}}
+    ]);
+    assert_eq!(mcp.call("present", json!({"steps": steps})), "Added a walkthrough of 2 steps");
+    let got = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(got.body["op"], "present");
+    assert_eq!(got.body["steps"][1]["view"], json!({"kind": "game"}));
+    assert_eq!(got.body["steps"][0]["note"], "It counts by two.");
+}
+
+#[test]
+fn malformed_view_requests_are_rejected_before_forwarding() {
+    let (url, requests) = stub_app(vec![]);
+    let server = app_server(&url);
+    let mut mcp = HttpMcp::connect(&server.url);
+    let file = json!({"kind": "file", "path": "game.fun"});
+    let step = json!({"title": "t", "view": file});
+    for (tool, arguments) in [
+        ("show_view", json!({})),
+        ("show_view", json!({"view": {"kind": "task", "task": 1}})),
+        ("show_view", json!({"view": file, "beside": true})),
+        ("show_view", json!({"view": {"kind": "file", "path": "game.fun", "lines": [0, 3]}})),
+        ("show_view", json!({"view": {"kind": "file", "path": "game.fun", "lines": [5, 4]}})),
+        ("show_view", json!({"view": {"kind": "file", "path": "game.fun", "lines": [5]}})),
+        ("present", json!({"steps": []})),
+        ("present", json!({"steps": vec![step.clone(); 9]})),
+        ("present", json!({"steps": [{"view": file}]})),
+    ] {
+        let response = mcp.response("tools/call", json!({"name": tool, "arguments": arguments}));
+        let refused = response["error"].is_object() || response["result"]["isError"] == true;
+        assert!(refused, "{tool} {arguments}: {response}");
+    }
+    assert!(requests.recv_timeout(Duration::from_millis(300)).is_err(), "nothing was forwarded");
+}
+
+#[test]
+fn an_app_that_does_not_answer_times_out_cleanly() {
+    let (url, requests) = stub_app(vec![None]);
+    let server = app_server(&url);
+    let mut mcp = HttpMcp::connect(&server.url);
+    let started = Instant::now();
+    let result = mcp.request("tools/call", json!({"name": "show_view", "arguments": {"view": {"kind": "game"}}}));
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(result["content"][0]["text"].as_str().unwrap().contains("did not answer"), "{result}");
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+    assert!(requests.try_recv().is_ok(), "the request went out");
+    // An app that is not there at all is a tool error too, not a hang.
+    let dead = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/agent/view", listener.local_addr().unwrap())
+    };
+    let server = app_server(&dead);
+    let mut mcp = HttpMcp::connect(&server.url);
+    let result = mcp.request("tools/call", json!({"name": "show_view", "arguments": {"view": {"kind": "game"}}}));
+    assert!(result["content"][0]["text"].as_str().unwrap().contains("cannot reach the app"), "{result}");
 }
