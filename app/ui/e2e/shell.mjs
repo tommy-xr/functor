@@ -51,7 +51,7 @@ async function run(browser, width, height) {
   const external = watchExternal(page);
   const titlebar = page.locator(".titlebar");
   const explorer = page.getByRole("complementary", { name: "Explorer" });
-  const status = page.getByTestId("session-status");
+  const status = titlebar.locator("[class*='pill-session-']");
   try {
     // Without the launch's token (here, the printed URL's fragment) the page
     // cannot connect: its attempts are refused and no state arrives.
@@ -81,7 +81,8 @@ async function run(browser, width, height) {
     );
 
     // Switching project updates the title bar and the file list.
-    await page.getByLabel("Project").selectOption(SWITCH_TO);
+    await explorer.getByRole("button", { name: /^Project: / }).click();
+    await page.getByRole("menu", { name: "Projects" }).getByRole("menuitem", { name: SWITCH_TO, exact: true }).click();
     await expect(titlebar).toContainText(nameOf(SWITCH_TO));
     await expect(explorer.getByRole("list", { name: "Files" }).getByRole("listitem")).toHaveText(
       expectedFiles(SWITCH_TO),
@@ -91,9 +92,8 @@ async function run(browser, width, height) {
     const stop = page.getByRole("button", { name: "Stop game" });
     if (FUNCTOR) {
       await start.click();
-      await expect(status).toHaveText("running", { timeout: 60_000 });
-      await expect(page.getByTestId("session-frame")).toHaveText(/^\d+$/, { timeout: 30_000 });
-      await expect(titlebar).toContainText("Local session · running");
+      await expect(status).toHaveText("Local session · running", { timeout: 60_000 });
+      await expect(page.getByTestId("transport-frame")).toHaveText(/^\d+ \/ \d+$/, { timeout: 30_000 });
     } else {
       console.log(`SKIPPED (${tag}): Start/Stop session — set FUNCTOR_BIN (npm run build:cli:debug)`);
     }
@@ -109,7 +109,7 @@ async function run(browser, width, height) {
 
     if (FUNCTOR) {
       await stop.click();
-      await expect(status).toHaveText("stopped", { timeout: 30_000 });
+      await expect(status).toHaveText("Local session · stopped", { timeout: 30_000 });
       await expect(start).toBeEnabled();
     }
 
@@ -128,7 +128,7 @@ async function run(browser, width, height) {
     server = await startServer(server.port, { home: server.home, token: server.token });
     await expect(titlebar).not.toContainText("Reconnecting…", { timeout: 15_000 });
     await expect(titlebar).toContainText(nameOf(DEFAULT));
-    await expect(page.getByLabel("Project")).toHaveValue(DEFAULT);
+    await expect(explorer.getByRole("button", { name: /^Project: / })).toHaveAccessibleName(`Project: ${DEFAULT}`);
 
     expect(external, "requests to non-loopback hosts").toEqual([]);
     console.log(`ok: ${tag}`);
