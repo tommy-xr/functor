@@ -262,9 +262,23 @@ async function tasksView(browser, width, height) {
     await expect(heading).toHaveText("Label the counter clearly");
     await expect(page.getByRole("tab", { name: "Task · Label the counter clearly" })).toHaveAttribute("aria-selected", "true");
 
+    // The dock's recent-tasks menu and the pane share one current task.
+    await dock.getByRole("button", { name: "Recent tasks" }).click();
+    await dock.getByRole("menu").getByRole("menuitem", { name: new RegExp(KEPT) }).click();
+    await expect(heading).toHaveText(KEPT);
+    await expect(row(KEPT).locator(".task-main")).toHaveAttribute("aria-current", "true");
+    await expect(pane.locator('.task-main[aria-current="true"]')).toHaveCount(1);
+
     // Continue in chat: the composer, on this task.
     await row(RUNNING).locator(".task-main").click();
     await expect(heading).toHaveText(RUNNING);
+    // The page's title renames in place too (a run in flight does not stop it).
+    const running = page.getByTestId("task-page").filter({ hasText: RUNNING });
+    await running.getByRole("button", { name: "Rename task" }).click();
+    await running.getByLabel("Task title").fill("Think for a long while");
+    await running.getByLabel("Task title").press("Enter");
+    await expect(heading).toHaveText("Think for a long while");
+    await expect(running.getByRole("heading", { name: "Think for a long while" })).toBeVisible();
     await page.getByRole("tab", { name: "Task · Label the counter clearly" }).click();
     const label = page.getByTestId("task-page").filter({ hasText: "Label the counter clearly" });
     await label.getByRole("button", { name: "Continue in chat" }).click();

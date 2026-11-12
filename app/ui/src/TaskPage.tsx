@@ -3,6 +3,7 @@ import type { AppState, Item, Task } from "./generated/protocol";
 import { stepAvailable, tokens, viewPhrase } from "./chat-model";
 import { Counts, ReviewActions, TaskBadge } from "./DiffView";
 import { hasChange, plural, totals } from "./diff-model";
+import { Icon } from "./Icon";
 import type { Notice, Send } from "./socket";
 import { taskPage, usageTable, type RunSteps } from "./task-page-model";
 import { relativeTime } from "./tasks-model";
@@ -202,11 +203,22 @@ function Title({ task, id, online, send }: { task: Task; id: string; online: boo
     );
   }
   return (
-    <h2 id={id} className="task-page-name">
-      <button ref={button} type="button" className="task-name-button" title="Rename" disabled={!online} onClick={() => setEditing(true)}>
+    <>
+      <h2 id={id} className="task-page-name">
         {untitled(task)}
+      </h2>
+      <button
+        ref={button}
+        type="button"
+        className="icon-button"
+        aria-label="Rename task"
+        title="Rename"
+        disabled={!online}
+        onClick={() => setEditing(true)}
+      >
+        <Icon name="compose" />
       </button>
-    </h2>
+    </>
   );
 }
 

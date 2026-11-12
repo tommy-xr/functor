@@ -2638,21 +2638,12 @@ blockquote {
   min-width: 0;
   font-size: 18px;
   font-weight: 600;
-}
-
-.task-name-button {
-  max-width: 100%;
-  padding: 0 2px;
-  border: 0;
-  border-radius: var(--radius-s);
-  background: transparent;
-  font: inherit;
-  text-align: left;
   overflow-wrap: anywhere;
 }
 
-.task-name-button:hover:not(:disabled) {
-  background: var(--surface-2);
+.task-page-title .icon-button {
+  width: 30px;
+  height: 30px;
 }
 
 .task-page-rename {
