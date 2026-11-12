@@ -635,16 +635,10 @@ mod tests {
                 text: "{\"Move\":[1,0]}".into()
             }]
         );
-        assert!(
-            net.take_outbox("client1").is_empty(),
-            "no echo to the sender"
-        );
+        assert!(net.take_outbox("client1").is_empty(), "no echo to the sender");
 
         let last = net.packets().last().expect("a routed packet");
-        assert_eq!(
-            (last.from.as_str(), last.to.as_str()),
-            ("client1", "server")
-        );
+        assert_eq!((last.from.as_str(), last.to.as_str()), ("client1", "server"));
         assert_eq!(last.kind, "message");
         assert_eq!(last.size, 14);
         assert_eq!(last.payload_text.as_deref(), Some("{\"Move\":[1,0]}"));
@@ -680,10 +674,7 @@ mod tests {
         let mut net = group(&["server", "client1", "client2"]);
         net.perform("client1", connect("ws://127.0.0.1:9101/orbs"));
         net.perform("client2", connect("ws://127.0.0.1:9101/orbs"));
-        assert!(
-            net.take_outbox("client1").is_empty(),
-            "nothing to connect to yet"
-        );
+        assert!(net.take_outbox("client1").is_empty(), "nothing to connect to yet");
 
         net.perform("server", listen("127.0.0.1:9101"));
         assert_eq!(
@@ -866,12 +857,7 @@ mod tests {
             },
         );
         assert!(net.take_outbox("server").is_empty());
-        net.perform(
-            "client1",
-            ConnCommand::CloseConn {
-                conn: (1u64 << 32) + 1,
-            },
-        );
+        net.perform("client1", ConnCommand::CloseConn { conn: (1u64 << 32) + 1 });
         assert_eq!(
             net.connection_counts().get("client1"),
             Some(&1),

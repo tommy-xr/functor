@@ -448,13 +448,14 @@ async fn main() -> tokio::io::Result<()> {
     } = &args.command
     {
         let app_url = app_url.as_deref();
-        return finish_inspect(
-            commands::mcp::execute(*http, attach, *no_unsafe_code, app_url).await,
-        );
+        return finish_inspect(commands::mcp::execute(*http, attach, *no_unsafe_code, app_url).await);
     }
     // `app` hands the terminal to another process: no output stream here.
     if let Command::App { app_args } = &args.command {
-        return finish_inspect(Err(commands::app::execute(args.dir.as_deref(), app_args)));
+        return finish_inspect(Err(commands::app::execute(
+            args.dir.as_deref(),
+            app_args,
+        )));
     }
 
     output::init(
@@ -637,15 +638,9 @@ async fn run(args: &Args) -> io::Result<()> {
         // headset view needs no flag.
         let vr_default = matches!(
             &args.command,
-            Command::Run {
-                environment: Some(Environment::Vr),
-                ..
-            } | Command::Develop {
-                environment: Some(Environment::Vr),
-                ..
-            } | Command::Build {
-                environment: Some(Environment::Vr)
-            }
+            Command::Run { environment: Some(Environment::Vr), .. }
+                | Command::Develop { environment: Some(Environment::Vr), .. }
+                | Command::Build { environment: Some(Environment::Vr) }
         ) && config.has_entry("vr");
         let requested = args
             .entry
@@ -723,9 +718,7 @@ async fn run(args: &Args) -> io::Result<()> {
             }
             Command::Export { output, parts, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
-                let output = output
-                    .as_ref()
-                    .expect("clap requires -o without --views or --html");
+                let output = output.as_ref().expect("clap requires -o without --views or --html");
                 let default = ["part".to_string()];
                 let parts = if parts.is_empty() {
                     &default[..]
@@ -788,14 +781,8 @@ async fn run(args: &Args) -> io::Result<()> {
                         role.check_contract(&loaded)?;
                     }
                     // The role `run <environment>` would launch.
-                    if let Some(environment) =
-                        environment.as_ref().filter(|_| role.role == project.role)
-                    {
-                        commands::functor_lang_project::warn_unsupported(
-                            role,
-                            &loaded,
-                            environment,
-                        );
+                    if let Some(environment) = environment.as_ref().filter(|_| role.role == project.role) {
+                        commands::functor_lang_project::warn_unsupported(role, &loaded, environment);
                     }
                 }
                 match environment {
@@ -805,11 +792,7 @@ async fn run(args: &Args) -> io::Result<()> {
             }
             Command::Run { environment, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
-                commands::functor_lang_project::warn_unsupported(
-                    &project,
-                    &loaded,
-                    &Environment::default(environment),
-                );
+                commands::functor_lang_project::warn_unsupported(&project, &loaded, &Environment::default(environment));
                 project
                     .run(
                         &working_directory_str,
@@ -821,11 +804,7 @@ async fn run(args: &Args) -> io::Result<()> {
             }
             Command::Develop { environment, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
-                commands::functor_lang_project::warn_unsupported(
-                    &project,
-                    &loaded,
-                    &Environment::default(environment),
-                );
+                commands::functor_lang_project::warn_unsupported(&project, &loaded, &Environment::default(environment));
                 project
                     .run(
                         &working_directory_str,

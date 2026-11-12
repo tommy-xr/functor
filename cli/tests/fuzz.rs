@@ -7,9 +7,7 @@ use std::process::Command;
 
 /// Run `functor -d examples/<example> fuzz <args>`; its output either way.
 fn fuzz(example: &str, args: &[&str]) -> Result<String, String> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../examples")
-        .join(example);
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples").join(example);
     let run = Command::new(env!("CARGO_BIN_EXE_functor"))
         .arg("-d")
         .arg(dir)
@@ -39,10 +37,7 @@ fn fuzz_runs_seeds_and_summarizes() {
 fn fuzz_replays_an_op_list() {
     let out = fuzz(
         "physics",
-        &[
-            "--replay",
-            "play:20:1 pause seek:back:5 resume play:3:2 rewind:oldest reload",
-        ],
+        &["--replay", "play:20:1 pause seek:back:5 resume play:3:2 rewind:oldest reload"],
     )
     .unwrap();
     assert!(out.contains("7 replayed ops"), "{out}");
@@ -54,11 +49,8 @@ fn a_failure_prints_a_replay_that_reproduces_it() {
     let dir = std::env::temp_dir().join(format!("functor-fuzz-broken-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("functor.json"),
-        r#"{"language":"functor-lang","entry":"game.fun"}"#,
-    )
-    .unwrap();
+    std::fs::write(dir.join("functor.json"), r#"{"language":"functor-lang","entry":"game.fun"}"#)
+        .unwrap();
     let game = "let fuzzReload0 = 1.0\nlet init = 0.0\nlet tick = (model, dt, tts) => model + 1.0\n\
 let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
     std::fs::write(dir.join("game.fun"), game).unwrap();
@@ -87,10 +79,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 3.0, -6.0
     let (ok, again) = run(&["--replay", ops]);
     assert!(!ok && again.contains("Reload at op 0"), "{again}");
     // The project is untouched: no saves, no regenerated files.
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name())
-        .collect();
+    let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
     files.sort();
     assert_eq!(files, ["functor.json", "game.fun"]);
     assert_eq!(std::fs::read_to_string(dir.join("game.fun")).unwrap(), game);

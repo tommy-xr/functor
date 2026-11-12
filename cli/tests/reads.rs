@@ -14,11 +14,7 @@ fn reads_matches_the_golden_dump() {
         .args(["--quiet", "reads"])
         .output()
         .unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     // The report, without the run's status lines (`✓ done in …`).
     let actual: String = String::from_utf8(run.stdout)
         .unwrap()

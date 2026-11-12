@@ -453,8 +453,7 @@ impl PlainRenderer {
                 {
                     s.push_str(&format!(", inst {uploads:.1}up/{bytes:.0}B/frame"));
                 }
-                if let (Some(patches), Some(vertices)) = (gpu_terrain_patches, gpu_terrain_vertices)
-                {
+                if let (Some(patches), Some(vertices)) = (gpu_terrain_patches, gpu_terrain_vertices) {
                     if *patches > 0 {
                         s.push_str(&format!(", terrain {patches}patch/{vertices}vtx"));
                     }

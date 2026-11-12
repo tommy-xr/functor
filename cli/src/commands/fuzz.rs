@@ -59,11 +59,7 @@ pub fn execute(
                 failure,
                 repro: ops.clone(),
             });
-            (
-                stats,
-                Vec::from_iter(found),
-                format!("{} replayed ops", ops.len()),
-            )
+            (stats, Vec::from_iter(found), format!("{} replayed ops", ops.len()))
         }
         None => {
             let seeds: Vec<u64> = match options.seed {
