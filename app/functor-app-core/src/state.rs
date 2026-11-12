@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::changes::Change;
+use crate::creation::{folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template};
 use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
@@ -60,6 +61,16 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub opening: u64,
+    /// What `functor init --list --json` lists, starters first.
+    pub templates: Vec<Template>,
+    /// Why there are no templates (no `functor`, or one too old to list them).
+    pub templates_error: Option<String>,
+    /// The new-project modal, while open.
+    pub new_project: Option<NewProject>,
+    /// Where the last project was created, the modal's next default.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub last_parent: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +111,10 @@ impl AppState {
             native_picker: false,
             open_error: None,
             opening: 0,
+            templates: Vec::new(),
+            templates_error: None,
+            new_project: None,
+            last_parent: None,
         }
     }
 
@@ -132,8 +147,18 @@ pub enum Event {
         result: Result<Box<AppState>, String>,
     },
     /// The folder chosen in the native picker; `None` if it was cancelled.
+    /// `parent`: for the new project's parent folder, not to open.
     Picked {
         path: Option<String>,
+        parent: bool,
+    },
+    /// `functor init --list --json`'s templates, or why there are none.
+    Templates {
+        result: Result<Vec<Template>, String>,
+    },
+    /// The shell's `CreateProject`: the project's folder, or how it failed.
+    Created {
+        result: Result<String, CreateFailure>,
     },
     /// From the shell, about run `run` of task `task`.
     Run {
@@ -214,8 +239,23 @@ pub enum Command {
     OpenFolder { id: u64, path: String },
     /// The workspace read for request `id` is open: its git measures changes now.
     UseWorkspace { id: u64 },
-    /// Show the native folder picker at `from`, answering with `Event::Picked`.
-    PickFolder { from: Option<PathBuf> },
+    /// Show the native folder picker at `from`, answering with
+    /// `Event::Picked` (for the new project's parent, with `parent`).
+    PickFolder { from: Option<PathBuf>, parent: bool },
+    /// List the templates, answering with `Event::Templates`.
+    ListTemplates,
+    /// Work out what `request` would do, answering the asking client with
+    /// `ServerMsg::NewProjectPlan`.
+    CheckNewProject { request: NewProjectRequest },
+    /// Create `request`'s project in `folder` under its parent, answering
+    /// with `Event::Created`.
+    CreateProject {
+        request: NewProjectRequest,
+        folder: String,
+    },
+    /// Start a task as the chat's "new task" does: an id is reserved, then
+    /// `Event::NewTask`.
+    ReserveTask { message: String, harness: Harness },
     /// List directories completing `path`, answering the asking client
     /// with `ServerMsg::Dirs`.
     ListDirs { path: String },
@@ -341,19 +381,77 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (false, false)
         }
         Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
-        Event::Client(ClientMsg::OpenFolder { path }) | Event::Picked { path: Some(path) } => {
+        Event::Client(ClientMsg::OpenFolder { path })
+        | Event::Picked {
+            path: Some(path),
+            parent: false,
+        } => {
             let id = state.opening + 1;
             let open = can_open(&state).map(|()| Command::OpenFolder { id, path });
             (try_open(&mut state, open, &mut commands), false)
         }
-        Event::Picked { path: None } => (false, false),
+        Event::Picked { path: None, .. } => (false, false),
+        Event::Picked {
+            path: Some(path),
+            parent: true,
+        } => match &mut state.new_project {
+            Some(np) if !np.step.busy() && np.parent != path => {
+                np.parent = path;
+                (true, false)
+            }
+            _ => (false, false),
+        },
+        Event::Client(ClientMsg::PickParent) => {
+            match (&state.new_project, state.native_picker) {
+                (Some(np), true) if !np.step.busy() => {
+                    let from = Some(PathBuf::from(&np.parent)).filter(|p| p.is_absolute());
+                    commands.push(Command::PickFolder { from, parent: true });
+                }
+                _ => {
+                    reject(&mut commands, "there is no folder picker here".to_string());
+                }
+            }
+            (false, false)
+        }
+        Event::Client(ClientMsg::ShowNewProject { here }) => {
+            (show_new_project(&mut state, here, &mut commands), true)
+        }
+        Event::Client(ClientMsg::CloseNewProject) => match &state.new_project {
+            Some(np) if np.step.busy() => (
+                reject(&mut commands, "the project is being created".to_string()),
+                false,
+            ),
+            _ => (state.new_project.take().is_some(), true),
+        },
+        Event::Client(ClientMsg::CheckNewProject { request }) => {
+            commands.push(Command::CheckNewProject { request });
+            (false, false)
+        }
+        Event::Client(ClientMsg::CreateProject { request, harness }) => (
+            create_project(&mut state, request, harness, &mut commands),
+            false,
+        ),
+        Event::Templates { result } => {
+            let (templates, error) = match result {
+                Ok(list) => (list, None),
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            let changed = (&state.templates, &state.templates_error) != (&templates, &error);
+            state.templates = templates;
+            state.templates_error = error;
+            (changed, false)
+        }
+        Event::Created { result } => (created(&mut state, result, &mut commands), false),
         Event::Client(ClientMsg::PickFolder) => {
             if !state.native_picker {
                 let reason = "there is no folder picker here: type the folder's path";
                 return (state, vec![reject_cmd(reason)]);
             }
             let from = Some(PathBuf::from(&state.folder)).filter(|f| !f.as_os_str().is_empty());
-            let pick = can_open(&state).map(|()| Command::PickFolder { from });
+            let pick = can_open(&state).map(|()| Command::PickFolder {
+                from,
+                parent: false,
+            });
             (try_open(&mut state, pick, &mut commands), false)
         }
         // A reading superseded by a later request is dropped.
@@ -548,12 +646,14 @@ fn opened(
             if mark_missing(&mut state.recents, &folder) {
                 save_recents(state, commands);
             }
+            not_opened(state, id);
             return true;
         }
     };
     // A run may have started while the folder was read.
     if let Err(reason) = can_open(state) {
         state.open_error = Some(reason);
+        not_opened(state, id);
         return true;
     }
     stop(state, commands);
@@ -577,6 +677,10 @@ fn opened(
         native_picker: _,
         open_error: _,
         opening: _,
+        templates: _,
+        templates_error: _,
+        new_project: _,
+        last_parent: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {
@@ -593,6 +697,155 @@ fn opened(
         ..std::mem::replace(state, AppState::none())
     };
     remember_active(state, commands);
+    // A project just created: its game starts, then its first task.
+    if let Some(NewProject {
+        step: Step::Opening { id: made, task, .. },
+        ..
+    }) = &state.new_project
+    {
+        if *made == id {
+            let task = task.clone();
+            state.new_project = None;
+            start(state, commands);
+            if let Some((message, harness)) = task {
+                commands.push(Command::ReserveTask { message, harness });
+            }
+        }
+    }
+    true
+}
+
+/// A created project that open request `id` failed to open: the modal
+/// says so (the reason is `open_error`).
+fn not_opened(state: &mut AppState, id: u64) {
+    let Some(np) = &mut state.new_project else {
+        return;
+    };
+    if let Step::Opening {
+        path,
+        id: made,
+        task,
+    } = &np.step
+    {
+        if *made == id {
+            let mut not_done = vec!["Open it and start the game".to_string()];
+            if task.is_some() {
+                not_done.push("Start a task with your description".to_string());
+            }
+            np.step = Step::Failed {
+                reason: state.open_error.clone().unwrap_or_default(),
+                done: vec![format!("Created {path}")],
+                not_done,
+            };
+        }
+    }
+}
+
+/// Opens the new-project modal: empty, or (`here`) for the open folder.
+/// Its parent defaults to where the last project went, else beside the
+/// open workspace, else the home folder. The templates are listed again.
+fn show_new_project(state: &mut AppState, here: bool, commands: &mut Vec<Command>) -> bool {
+    if state.new_project.as_ref().is_some_and(|np| np.step.busy()) {
+        return false;
+    }
+    let folder = Path::new(&state.folder);
+    let (name, parent) = match (here, folder.parent(), folder.file_name()) {
+        (true, Some(parent), Some(name)) => (name.to_string_lossy(), parent.to_string_lossy()),
+        _ => {
+            let beside = Path::new(&state.repo_root)
+                .parent()
+                .map(|p| p.to_string_lossy());
+            let parent = state.last_parent.clone().map(Into::into).or(beside);
+            ("".into(), parent.unwrap_or("~".into()))
+        }
+    };
+    state.new_project = Some(NewProject {
+        name: name.into_owned(),
+        parent: parent.into_owned(),
+        step: Step::Editing,
+    });
+    commands.push(Command::ListTemplates);
+    true
+}
+
+/// Starts creating `request`'s project, or records why not in the modal.
+fn create_project(
+    state: &mut AppState,
+    request: NewProjectRequest,
+    harness: Harness,
+    commands: &mut Vec<Command>,
+) -> bool {
+    let Some(np) = &state.new_project else {
+        return reject(commands, "the new-project window is not open".to_string());
+    };
+    if np.step.busy() {
+        return reject(commands, "the project is being created".to_string());
+    }
+    let known = state.templates.iter().any(|t| t.name == request.template);
+    let checked =
+        folder_name(&request.name).and_then(|folder| match (&state.templates_error, known) {
+            (Some(why), _) => Err(why.clone()),
+            (None, false) => Err(format!("there is no template {:?}", request.template)),
+            (None, true) => can_open(state).map(|()| folder),
+        });
+    let step = match checked {
+        Ok(folder) => {
+            let path = format!("{}/{folder}", request.parent.trim_end_matches('/'));
+            let describe = request.describe.trim().to_string();
+            let task = (!describe.is_empty()).then_some((describe, harness));
+            state.last_parent = Some(request.parent.clone());
+            commands.push(Command::CreateProject { request, folder });
+            Step::Creating { path, task }
+        }
+        Err(reason) => Step::Failed {
+            reason,
+            done: Vec::new(),
+            not_done: Vec::new(),
+        },
+    };
+    let np = state.new_project.as_mut().expect("checked");
+    let changed = np.step != step;
+    np.step = step;
+    changed
+}
+
+/// The shell created the project (and opens it now) or failed.
+fn created(
+    state: &mut AppState,
+    result: Result<String, CreateFailure>,
+    commands: &mut Vec<Command>,
+) -> bool {
+    let Some(np) = &mut state.new_project else {
+        return false;
+    };
+    let Step::Creating { task, .. } = &np.step else {
+        return false;
+    };
+    np.step = match result {
+        Ok(path) => {
+            let id = state.opening + 1;
+            state.opening = id;
+            state.open_error = None;
+            commands.push(Command::OpenFolder {
+                id,
+                path: path.clone(),
+            });
+            Step::Opening {
+                path,
+                id,
+                task: task.clone(),
+            }
+        }
+        Err(CreateFailure {
+            reason,
+            done,
+            not_done,
+        }) => Step::Failed {
+            reason,
+            done,
+            not_done,
+        },
+    };
     true
 }
 
@@ -3146,10 +3399,21 @@ mod tests {
         );
         // The picker's choice opens the same way; a cancel does nothing.
         let picked = Event::Picked {
+            parent: false,
             path: Some("/other".into()),
         };
         assert_eq!(update(state(), picked).1, commands);
-        assert_eq!(update(state(), Event::Picked { path: None }).1, vec![]);
+        assert_eq!(
+            update(
+                state(),
+                Event::Picked {
+                    path: None,
+                    parent: false
+                }
+            )
+            .1,
+            vec![]
+        );
     }
 
     #[test]
@@ -3347,7 +3611,8 @@ mod tests {
         assert_eq!(
             commands,
             vec![Command::PickFolder {
-                from: Some(PathBuf::from("/repo/examples/a"))
+                from: Some(PathBuf::from("/repo/examples/a")),
+                parent: false,
             }]
         );
         let (busy, _) = update(window, new_task("hi"));
@@ -3378,5 +3643,266 @@ mod tests {
         assert_eq!(none.active, None);
         let (_, commands) = update(none, client(ClientMsg::StartSession));
         assert!(matches!(commands[..], [Command::Reply(_)]));
+    }
+
+    // New projects.
+
+    use crate::creation::TemplateKind;
+
+    fn templates() -> Vec<Template> {
+        ["3d", "tetris"]
+            .map(|name| Template {
+                name: name.into(),
+                description: "d".into(),
+                tags: vec![],
+                kind: TemplateKind::Starter,
+            })
+            .to_vec()
+    }
+
+    /// `state()` with the folder open at `/repo/examples/a` and templates listed.
+    fn listed() -> AppState {
+        AppState {
+            folder: "/repo/examples/a".into(),
+            templates: templates(),
+            ..state()
+        }
+    }
+
+    fn ask(name: &str, describe: &str) -> NewProjectRequest {
+        NewProjectRequest {
+            name: name.into(),
+            parent: "/games".into(),
+            template: "3d".into(),
+            git: true,
+            describe: describe.into(),
+        }
+    }
+
+    fn show(here: bool) -> Event {
+        client(ClientMsg::ShowNewProject { here })
+    }
+
+    fn create(name: &str, describe: &str) -> Event {
+        client(ClientMsg::CreateProject {
+            request: ask(name, describe),
+            harness: Harness::Codex,
+        })
+    }
+
+    fn step(state: &AppState) -> &Step {
+        &state.new_project.as_ref().unwrap().step
+    }
+
+    #[test]
+    fn the_modal_opens_beside_the_workspace_or_for_the_open_folder() {
+        let (s, commands) = update(listed(), show(false));
+        let np = s.new_project.clone().unwrap();
+        assert_eq!((np.name.as_str(), np.parent.as_str()), ("", "/"));
+        assert_eq!(np.step, Step::Editing);
+        assert_eq!(commands, vec![Command::ListTemplates, broadcast(&s)]);
+        let (s, _) = update(listed(), show(true));
+        let np = s.new_project.unwrap();
+        assert_eq!(
+            (np.name.as_str(), np.parent.as_str()),
+            ("a", "/repo/examples")
+        );
+        // No folder open: the home folder.
+        let (s, _) = update(AppState::none(), show(false));
+        assert_eq!(s.new_project.unwrap().parent, "~");
+        // After a project was made, where it went.
+        let (s, _) = update(
+            AppState {
+                last_parent: Some("/games".into()),
+                ..listed()
+            },
+            show(false),
+        );
+        assert_eq!(s.new_project.unwrap().parent, "/games");
+    }
+
+    #[test]
+    fn a_project_is_created_opened_started_and_given_its_task() {
+        let (s, _) = update(listed(), show(false));
+        let (s, commands) = update(s, create("Space Race", "a racing game"));
+        assert_eq!(
+            step(&s),
+            &Step::Creating {
+                path: "/games/Space-Race".into(),
+                task: Some(("a racing game".into(), Harness::Codex)),
+            }
+        );
+        assert_eq!(
+            commands,
+            vec![
+                Command::CreateProject {
+                    request: ask("Space Race", "a racing game"),
+                    folder: "Space-Race".into(),
+                },
+                broadcast(&s),
+            ]
+        );
+        assert_eq!(s.last_parent.as_deref(), Some("/games"));
+        // A second create while this one runs is refused.
+        let (_, commands) = update(s.clone(), create("Other", ""));
+        assert_eq!(commands, rejected("the project is being created"));
+        let (_, commands) = update(s.clone(), client(ClientMsg::CloseNewProject));
+        assert_eq!(commands, rejected("the project is being created"));
+
+        let made = Event::Created {
+            result: Ok("/games/Space-Race".into()),
+        };
+        let (s, commands) = update(s, made);
+        assert!(matches!(step(&s), Step::Opening { id: 1, .. }));
+        assert_eq!(
+            commands,
+            vec![
+                Command::OpenFolder {
+                    id: 1,
+                    path: "/games/Space-Race".into()
+                },
+                broadcast(&s),
+            ]
+        );
+        let new = AppState::new(
+            Path::new("/games/Space-Race"),
+            Path::new("/games/Space-Race"),
+            vec![project(".")],
+        );
+        let opened = Event::Opened {
+            id: 1,
+            folder: "/games/Space-Race".into(),
+            result: Ok(Box::new(new)),
+        };
+        let (s, commands) = update(s, opened);
+        assert_eq!(s.new_project, None);
+        assert_eq!(s.repo_root, "/games/Space-Race");
+        assert!(commands.contains(&Command::StartSession {
+            id: 1,
+            dir: PathBuf::from("/games/Space-Race"),
+            display: Display::Hidden,
+        }));
+        assert!(commands.contains(&Command::ReserveTask {
+            message: "a racing game".into(),
+            harness: Harness::Codex,
+        }));
+        // The reserved id starts the task as the chat's would.
+        let (s, _) = update(s, nth_task(5, "a racing game"));
+        assert_eq!(task(&s, 5).project, ".");
+    }
+
+    #[test]
+    fn creation_that_cannot_start_says_why_in_the_modal() {
+        let failed = |reason: &str| Step::Failed {
+            reason: reason.into(),
+            done: vec![],
+            not_done: vec![],
+        };
+        let (s, _) = update(listed(), show(false));
+        let (next, _) = update(s.clone(), create("a/b", ""));
+        assert!(matches!(step(&next), Step::Failed { reason, .. } if reason.starts_with("'/'")));
+        let mut unknown = s.clone();
+        unknown.templates.truncate(0);
+        unknown.templates_error = Some("functor cannot list templates".into());
+        let (next, _) = update(unknown, create("ok", ""));
+        assert_eq!(step(&next), &failed("functor cannot list templates"));
+        let mut other = s.clone();
+        other.templates.remove(0);
+        let (next, _) = update(other, create("ok", ""));
+        assert_eq!(step(&next), &failed("there is no template \"3d\""));
+        let (busy, _) = update(s, new_task("hi"));
+        let (next, commands) = update(busy, create("ok", ""));
+        assert_eq!(
+            step(&next),
+            &failed("task 1 is running: stop it before opening another folder")
+        );
+        assert!(!commands
+            .iter()
+            .any(|c| matches!(c, Command::CreateProject { .. })));
+        // Closed, there is nothing to create in.
+        let (_, commands) = update(listed(), create("ok", ""));
+        assert_eq!(commands, rejected("the new-project window is not open"));
+    }
+
+    #[test]
+    fn failures_after_starting_say_what_was_and_was_not_done() {
+        let (s, _) = update(listed(), show(false));
+        let (creating, _) = update(s, create("Space", "describe"));
+        let failure = CreateFailure {
+            reason: "functor init failed".into(),
+            done: vec!["Created /games/Space".into()],
+            not_done: vec!["Add the 3d template's files".into()],
+        };
+        let (next, _) = update(
+            creating.clone(),
+            Event::Created {
+                result: Err(failure.clone()),
+            },
+        );
+        assert_eq!(
+            step(&next),
+            &Step::Failed {
+                reason: failure.reason,
+                done: failure.done,
+                not_done: failure.not_done,
+            }
+        );
+        // Created, but it does not open.
+        let (opening, _) = update(
+            creating,
+            Event::Created {
+                result: Ok("/games/Space".into()),
+            },
+        );
+        let (next, commands) = update(
+            opening,
+            Event::Opened {
+                id: 1,
+                folder: "/games/Space".into(),
+                result: Err("it does not exist".into()),
+            },
+        );
+        assert_eq!(
+            step(&next),
+            &Step::Failed {
+                reason: "cannot open /games/Space: it does not exist".into(),
+                done: vec!["Created /games/Space".into()],
+                not_done: vec![
+                    "Open it and start the game".into(),
+                    "Start a task with your description".into()
+                ],
+            }
+        );
+        assert!(!commands
+            .iter()
+            .any(|c| matches!(c, Command::StartSession { .. })));
+        // Then it can be closed.
+        let (closed, _) = update(next, client(ClientMsg::CloseNewProject));
+        assert_eq!(closed.new_project, None);
+    }
+
+    #[test]
+    fn a_picked_parent_fills_the_modal() {
+        let window = AppState {
+            native_picker: true,
+            ..listed()
+        };
+        let (s, _) = update(window, show(false));
+        let (_, commands) = update(s.clone(), client(ClientMsg::PickParent));
+        assert_eq!(
+            commands,
+            vec![Command::PickFolder {
+                from: Some(PathBuf::from("/")),
+                parent: true
+            }]
+        );
+        let picked = Event::Picked {
+            path: Some("/games".into()),
+            parent: true,
+        };
+        let (s, _) = update(s, picked);
+        assert_eq!(s.new_project.unwrap().parent, "/games");
+        let (_, commands) = update(listed(), client(ClientMsg::PickParent));
+        assert_eq!(commands, rejected("there is no folder picker here"));
     }
 }

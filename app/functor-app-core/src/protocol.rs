@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::changes::FileDiff;
+use crate::creation::{NewProjectRequest, Plan};
 use crate::layout::LayoutOp;
 use crate::tasks::{Harness, Item};
 use crate::AppState;
@@ -79,6 +80,24 @@ pub enum ClientMsg {
     },
     /// Choose a folder to open in the native picker (`AppState::native_picker`).
     PickFolder,
+    /// Open the new-project modal; `here` fills it with the open folder.
+    ShowNewProject {
+        here: bool,
+    },
+    /// Close it; refused while a project is being created.
+    CloseNewProject,
+    /// Answered with [`ServerMsg::NewProjectPlan`]: what `request` would do.
+    CheckNewProject {
+        request: NewProjectRequest,
+    },
+    /// Choose the new project's parent folder in the native picker.
+    PickParent,
+    /// Create the project, open it, start its game, and start a task with
+    /// `request.describe` (with `harness`) if it is not blank.
+    CreateProject {
+        request: NewProjectRequest,
+        harness: Harness,
+    },
     /// Answered with [`ServerMsg::Dirs`]: directories completing `path`.
     ListDirs {
         path: String,
@@ -164,6 +183,13 @@ pub enum ServerMsg {
     Dirs {
         path: String,
         dirs: Vec<String>,
+        error: Option<String>,
+    },
+    /// Answering `CheckNewProject`: the `plan` for `request`, or the
+    /// `error` saying why it cannot be made.
+    NewProjectPlan {
+        request: NewProjectRequest,
+        plan: Option<Plan>,
         error: Option<String>,
     },
     /// A message was refused, saying why; nothing changed.

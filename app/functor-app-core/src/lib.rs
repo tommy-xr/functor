@@ -4,6 +4,7 @@
 //! feeds results in as events.
 
 pub mod changes;
+pub mod creation;
 pub mod folders;
 pub mod layout;
 pub mod print;
