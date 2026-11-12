@@ -985,7 +985,8 @@ async fn the_view_route_takes_only_the_running_runs_secret() {
     let home = tempfile::tempdir().unwrap();
     let (args, secret) = (home.path().join("args"), home.path().join("secret"));
     let body = format!(
-        "printf '%s\\n' \"$@\" > '{0}'\nprintf %s \"$FUNCTOR_MCP_APP_TOKEN\" > '{1}.tmp' && mv '{1}.tmp' '{1}'\nexec cat >/dev/null",
+        // Only as the tool server: the app also runs `functor init --list`.
+        "[ \"$1\" = mcp ] && printf '%s\\n' \"$@\" > '{0}' && printf %s \"$FUNCTOR_MCP_APP_TOKEN\" > '{1}.tmp' && mv '{1}.tmp' '{1}'\nexec cat >/dev/null",
         args.display(),
         secret.display()
     );
@@ -1009,7 +1010,7 @@ async fn the_view_route_takes_only_the_running_runs_secret() {
     let at = args
         .iter()
         .position(|a| *a == "--app-url")
-        .expect("--app-url");
+        .unwrap_or_else(|| panic!("no --app-url in {args:?}"));
     let url = args[at + 1].to_string();
     assert!(
         url.starts_with("http://127.0.0.1:") && url.ends_with("/agent/view"),
