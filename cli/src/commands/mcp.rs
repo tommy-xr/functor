@@ -4614,7 +4614,7 @@ async fn acquire_target_operation(
     name = "functor",
     instructions = "Drive Functor games over their debug runtime. Launch or attach to a game \
 (launch_game / connect_game). For trusted local multi-step automation, prefer \
-`run_game_code_unsafe`: it runs a Playwright-style JavaScript function against an injected \
+`run_game_code_unsafe` when it is listed: it runs a Playwright-style JavaScript function against an injected \
 `game` SDK in a Node.js child process, returning its value, SDK-call trace, logs, and captures. \
 It is explicitly RCE-equivalent local code, not a security sandbox. For one-off operations or \
 clients without Node.js, observe with get_state (read model), get_scene, get_trace, or \

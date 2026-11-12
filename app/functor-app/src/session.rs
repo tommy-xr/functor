@@ -87,7 +87,7 @@ impl Driver {
     }
 
     /// A client's new task as the core takes it: with an id reserved in
-    /// the store.
+    /// the store. A task the core then rejects leaves its id unused.
     pub fn new_task(&mut self, message: String, harness: Harness) -> Event {
         let id = crate::store::reserve_id(&self.home, self.next_task);
         if let Ok(id) = id {

@@ -4238,8 +4238,8 @@ Escape again to quit"
             // Hidden and `--fixed-time` runs skip vsync above, and a hidden
             // window's swap never blocks on the compositor — cap the loop
             // explicitly so a long-lived session (`--hidden --debug-port`)
-            // doesn't busy-spin a core: a hidden live session paces to the
-            // display's rate, other runs sleep 16 ms (as the headless loop
+            // doesn't busy-spin a core: a hidden live session paces to 60 Hz
+            // (or `--display-hz`), other runs sleep 16 ms (as the headless loop
             // does). `--capture-frame` runs are exempt: they exit at the
             // capture, and `--capture-at-frame N` counts sim frames, so the
             // cap would stretch a near-instant scripted capture to N/60 s.
@@ -4258,7 +4258,6 @@ Escape again to quit"
 mod tests {
     #[test]
     fn hidden_live_sessions_pace_at_60_hz_unless_display_hz_says() {
-        use super::hidden_pace_hz;
         assert_eq!(hidden_pace_hz(true, false, None), Some(60.0));
         assert_eq!(hidden_pace_hz(true, false, Some(120.0)), Some(120.0));
         // Scripted runs and visible windows keep their own timing.

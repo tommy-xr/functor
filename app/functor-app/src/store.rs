@@ -116,6 +116,18 @@ pub fn reserve_id(home: &Path, from: u64) -> io::Result<u64> {
     }
 }
 
+/// Makes an existing `home` 0700 on Unix, so a store from before files were
+/// private is closed to other users too; creates it if missing.
+pub fn make_private(home: &Path) -> io::Result<()> {
+    create_private_dir(home)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Creates `dir` and its missing parents as 0700 on Unix. Windows has no
 /// mode bits: they inherit the home's ACL, the user's own by default.
 fn create_private_dir(dir: &Path) -> io::Result<()> {
@@ -358,6 +370,23 @@ mod tests {
             assert_eq!(mode(d.clone()), 0o700, "{}", d.display());
         }
         assert_eq!(mode(home.join("task-ids")), 0o700);
+    }
+
+    /// A home from before the store was private (0755, a 0644 task file)
+    /// is closed to other users at startup.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_open_home_is_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, dir, home) = one_project(tmp.path());
+        let tasks = tasks_dir(&home, &dir);
+        std::fs::create_dir_all(&tasks).unwrap();
+        std::fs::write(tasks.join("3.json"), V1_TASK_3).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+        make_private(&home).unwrap();
+        let mode = std::fs::metadata(&home).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 
     /// A store written before ids were reserved (format 1, numeric ids, no

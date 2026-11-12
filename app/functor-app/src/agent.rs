@@ -306,8 +306,9 @@ fn redact(event: AgentEvent, token: &str) -> AgentEvent {
     serde_json::from_str(&json.replace(token, "[token]")).expect("still an event")
 }
 
-/// A `functor mcp --http 0` child. It stops (and stops the games it
-/// launched) when its stdin closes, so dropping it is a graceful stop.
+/// A `functor mcp --http 0` child. [`ToolServer::stop`] stops it gracefully
+/// (it stops the games it launched when its stdin closes); dropping it
+/// instead kills it.
 struct ToolServer {
     child: Child,
     stdin: ChildStdin,

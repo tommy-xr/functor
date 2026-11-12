@@ -122,6 +122,9 @@ async fn main() -> std::io::Result<ExitCode> {
         eprintln!("functor-app: no home directory; set FUNCTOR_APP_HOME");
         return Ok(ExitCode::from(2));
     };
+    if let Err(e) = store::make_private(&home) {
+        eprintln!("functor-app: cannot make {} private: {e}", home.display());
+    }
     let (tasks, highest) = store::load(&home, &state);
     state = update(state, Event::TasksLoaded { tasks }).0;
     if args.print && !args.start_session {
