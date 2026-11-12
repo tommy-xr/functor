@@ -692,6 +692,8 @@ impl Connection {
                     Some(Err(WsError::Io(_) | WsError::ConnectionClosed | WsError::Protocol(
                         ProtocolError::ResetWithoutClosingHandshake,
                     ))) => return Ok(()),
+                    // Over our message limit: said plainly.
+                    Some(Err(WsError::Capacity(_))) => return Err(Error::TooLarge),
                     Some(Err(e)) => return Err(Error::Closed(e.to_string())),
                 },
                 Some(cmd) = cmds.recv() => match cmd {
