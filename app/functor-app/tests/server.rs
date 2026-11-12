@@ -1,5 +1,5 @@
-//! `--headless` serving: the WebSocket protocol, origin check and UI files,
-//! against a temp tree of two projects.
+//! `--headless` serving: the WebSocket protocol, token and origin checks and
+//! UI files, against a temp tree of two projects.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -16,6 +16,8 @@ use tokio_tungstenite::tungstenite::Message;
 struct Server {
     child: Child,
     addr: String,
+    /// `/ws` with this launch's token.
+    ws: String,
 }
 
 impl Drop for Server {
@@ -26,10 +28,15 @@ impl Drop for Server {
 }
 
 fn serve(dir: &Path, extra: &[&str]) -> Server {
+    serve_env(dir, extra, &[])
+}
+
+fn serve_env(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server {
     let mut child = Command::new(env!("CARGO_BIN_EXE_functor-app"))
         .args(["--headless", "--port", "0", "-d"])
         .arg(dir)
         .args(extra)
+        .envs(env.iter().copied())
         // Never the user's saved tasks; these tests start none.
         .env("FUNCTOR_APP_HOME", dir.join(".app-home"))
         .stdout(Stdio::null())
@@ -39,12 +46,14 @@ fn serve(dir: &Path, extra: &[&str]) -> Server {
     let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut line = String::new();
     stderr.read_line(&mut line).unwrap();
-    let addr = line
+    let (addr, token) = line
         .trim()
         .strip_prefix("[functor-app] listening on http://")
-        .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
-        .to_string();
-    Server { child, addr }
+        .and_then(|url| url.split_once("/#token="))
+        .unwrap_or_else(|| panic!("unexpected first line: {line:?}"));
+    let ws = format!("ws://{addr}/ws?token={token}");
+    let addr = addr.to_string();
+    Server { child, addr, ws }
 }
 
 fn tree() -> tempfile::TempDir {
@@ -67,8 +76,8 @@ fn tree() -> tempfile::TempDir {
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn connect(addr: &str) -> Socket {
-    tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+async fn connect(ws: &str) -> Socket {
+    tokio_tungstenite::connect_async(ws)
         .await
         .unwrap()
         .0
@@ -100,8 +109,8 @@ async fn state_where(socket: &mut Socket, done: impl Fn(&Value) -> bool) -> Valu
 async fn clients_get_the_state_and_see_a_switch_broadcast() {
     let tmp = tree();
     let server = serve(tmp.path(), &[]);
-    let mut one = connect(&server.addr).await;
-    let mut two = connect(&server.addr).await;
+    let mut one = connect(&server.ws).await;
+    let mut two = connect(&server.ws).await;
     for socket in [&mut one, &mut two] {
         let state = next_state(socket).await;
         // Outside any project, a child of the start directory opens first.
@@ -129,26 +138,45 @@ async fn clients_get_the_state_and_see_a_switch_broadcast() {
     assert!(quiet.is_err(), "the other client got {quiet:?}");
 }
 
+/// Whether `/ws` at `url` upgrades with `origin`; else the refusal.
+async fn upgrade(url: &str, origin: Option<&str>) -> Result<Socket, String> {
+    let mut request = url.into_client_request().unwrap();
+    if let Some(origin) = origin {
+        request
+            .headers_mut()
+            .insert("Origin", origin.parse().unwrap());
+    }
+    match tokio_tungstenite::connect_async(request).await {
+        Ok((socket, _)) => Ok(socket),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn another_origin_is_refused() {
+async fn the_socket_needs_the_token_and_our_own_origin() {
     let tmp = tree();
     let server = serve(tmp.path(), &[]);
-    let mut request = format!("ws://{}/ws", server.addr)
-        .into_client_request()
-        .unwrap();
-    request
-        .headers_mut()
-        .insert("Origin", "http://evil.example".parse().unwrap());
-    let refused = tokio_tungstenite::connect_async(request).await.unwrap_err();
-    assert!(refused.to_string().contains("403"), "{refused}");
-
-    let mut request = format!("ws://{}/ws", server.addr)
-        .into_client_request()
-        .unwrap();
     let own = format!("http://{}", server.addr);
-    request.headers_mut().insert("Origin", own.parse().unwrap());
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-    assert_eq!(next_state(&mut socket).await["active"], "a");
+    let no_token = format!("ws://{}/ws", server.addr);
+    let wrong = format!("ws://{}/ws?token=0123", server.addr);
+    for (url, origin) in [
+        // No token or the wrong one: with our origin, or none (any process).
+        (&no_token, Some(own.as_str())),
+        (&no_token, None),
+        (&wrong, Some(own.as_str())),
+        (&wrong, None),
+        // The token from another page.
+        (&server.ws, Some("http://evil.example")),
+        (&server.ws, Some("http://127.0.0.1:1")),
+    ] {
+        let refused = upgrade(url, origin).await.err();
+        let refused = refused.unwrap_or_else(|| panic!("{url} from {origin:?} was accepted"));
+        assert!(refused.contains("403"), "{refused}");
+    }
+    for origin in [Some(own.as_str()), None] {
+        let mut socket = upgrade(&server.ws, origin).await.unwrap();
+        assert_eq!(next_state(&mut socket).await["active"], "a");
+    }
 }
 
 /// `GET path` over HTTP/1.1: the status line, headers and body as text.
@@ -239,7 +267,7 @@ async fn input_is_posted_to_the_session() {
     std::fs::write(&fake, script).unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let server = serve(tmp.path(), &["--functor", fake.to_str().unwrap()]);
-    let mut socket = connect(&server.addr).await;
+    let mut socket = connect(&server.ws).await;
     next_state(&mut socket).await;
 
     socket
@@ -295,11 +323,50 @@ async fn input_is_posted_to_the_session() {
     let quiet = inputs.recv_timeout(Duration::from_millis(300));
     assert!(quiet.is_err(), "more input posted: {quiet:?}");
 
-    let mut socket = connect(&server.addr).await;
+    let mut socket = connect(&server.ws).await;
     next_state(&mut socket).await;
     socket
         .send(Message::text(r#"{"type":"stop_session"}"#))
         .await
         .unwrap();
     state_where(&mut socket, |s| s["session"]["status"]["kind"] == "stopped").await;
+}
+
+/// The token reaches no child: the game session's environment and arguments
+/// do not carry it, even when it came in through `FUNCTOR_APP_TOKEN`.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn the_game_child_never_sees_the_token() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (inputs_tx, _inputs) = std::sync::mpsc::channel();
+    let port = fake_debug_server(inputs_tx);
+    let tmp = tree();
+    let seen = tmp.path().join("seen.txt");
+    let fake = tmp.path().join("functor");
+    let script = format!(
+        "#!/bin/sh\n{{ env; echo \"$@\"; }} > '{}'\n\
+         echo '[debug-server] listening on http://127.0.0.1:{port}' >&2\nexec sleep 30\n",
+        seen.display()
+    );
+    std::fs::write(&fake, script).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let token = "e2e0token0that0must0not0leak";
+    let server = serve_env(
+        tmp.path(),
+        &["--functor", fake.to_str().unwrap()],
+        &[("FUNCTOR_APP_TOKEN", token)],
+    );
+    assert!(server.ws.ends_with(token), "{}", server.ws);
+    let mut socket = connect(&server.ws).await;
+    next_state(&mut socket).await;
+    socket
+        .send(Message::text(r#"{"type":"start_session"}"#))
+        .await
+        .unwrap();
+    state_where(&mut socket, |s| s["session"]["status"]["kind"] == "running").await;
+    let seen = std::fs::read_to_string(&seen).unwrap();
+    assert!(seen.contains("--debug-port"), "{seen}");
+    assert!(!seen.contains(token), "{seen}");
+    assert!(!seen.contains("FUNCTOR_APP_TOKEN"), "{seen}");
 }

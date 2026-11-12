@@ -1,3 +1,4 @@
+pub mod app;
 pub mod bake;
 pub mod docs;
 pub mod functor_lang_project;

@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { AppState, Session, SessionMode, Task } from "./generated/protocol";
 import { ChatDock, type CanvasTab } from "./Chat";
 import { DiffView, type DiffTarget } from "./DiffView";
@@ -99,6 +99,10 @@ function isLive(session: Session | null | undefined): boolean {
 function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
   const project = activeProject(state);
   const word = sessionWord(state?.session);
+  // The app window shows it as its title.
+  useEffect(() => {
+    document.title = project ? `Functor — ${project.name}` : "Functor";
+  }, [project?.name]);
   return (
     <header className="titlebar">
       <span className="brand">

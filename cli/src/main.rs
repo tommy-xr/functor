@@ -339,6 +339,14 @@ enum Command {
         #[arg(long)]
         no_unsafe_code: bool,
     },
+    /// Open the desktop app (preview) on the project: runs the `functor-app`
+    /// next to this `functor`, else `FUNCTOR_APP_BIN`, else on PATH, with this
+    /// `functor` for its game sessions. Arguments after `--` go to the app
+    /// (e.g. `functor app -- --headless`).
+    App {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        app_args: Vec<String>,
+    },
     /// Inspect assets headlessly (no GPU/GL context).
     Inspect {
         #[command(subcommand)]
@@ -421,6 +429,13 @@ async fn main() -> tokio::io::Result<()> {
     } = &args.command
     {
         return finish_inspect(commands::mcp::execute(*http, attach, *no_unsafe_code).await);
+    }
+    // `app` hands the terminal to another process: no output stream here.
+    if let Command::App { app_args } = &args.command {
+        return finish_inspect(Err(commands::app::execute(
+            args.dir.as_deref(),
+            app_args,
+        )));
     }
 
     output::init(
@@ -613,6 +628,7 @@ async fn run(args: &Args) -> io::Result<()> {
             | Command::Init { .. }
             | Command::Inspect { .. }
             | Command::Mcp { .. }
+            | Command::App { .. }
             | Command::Import => {
                 unreachable!("is_routed excludes")
             }
@@ -803,7 +819,7 @@ async fn run(args: &Args) -> io::Result<()> {
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
         // Handled earlier (before the output stream is initialized).
-        Command::Mcp { .. } => unreachable!(),
+        Command::Mcp { .. } | Command::App { .. } => unreachable!(),
         // Handled earlier (right after functor.json validation).
         Command::Import => unreachable!(),
     }
@@ -859,6 +875,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Run { .. } => "run",
         Command::Develop { .. } => "develop",
         Command::Mcp { .. } => "mcp",
+        Command::App { .. } => "app",
         Command::Inspect { .. } => "inspect",
         Command::Import => "import",
         Command::Push { .. } => "push",
