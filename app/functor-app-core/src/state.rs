@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::changes::Change;
 use crate::projects::{default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, GameInput, ServerMsg};
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
-    apply, derive_status, end_run, stop_run, title, Harness, Item, Run, RunEvent, Task, TaskStatus,
+    apply, derive_status, end_run, has_change, stop_run, title, Harness, Item, Run, RunEvent, Task,
+    TaskStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +28,9 @@ pub struct AppState {
     pub files: Vec<String>,
     /// The repo's checkout; `None` outside git.
     pub git: Option<GitInfo>,
+    /// The repo root is a git work tree, so tasks' changes are tracked
+    /// (snapshot, diff, keep, revert). Off outside git.
+    pub tracks_changes: bool,
     /// The active project's game session; `None` until one first starts.
     pub session: Option<Session>,
     /// Where sessions run; a change restarts a live one.
@@ -66,6 +71,7 @@ impl AppState {
             active,
             files: Vec::new(),
             git: None,
+            tracks_changes: false,
             session: None,
             session_mode: SessionMode::default(),
             no_gpu: false,
@@ -101,6 +107,18 @@ pub enum Event {
     TasksLoaded {
         tasks: Vec<Task>,
         highest: u64,
+    },
+    /// Task `task`'s change since `baseline`, as the shell's git computed it.
+    Change {
+        task: u64,
+        baseline: String,
+        change: Change,
+    },
+    /// The shell's revert of task `task`'s change since `baseline`.
+    Reverted {
+        task: u64,
+        baseline: String,
+        result: Result<(), String>,
     },
     /// The app is exiting: stop the session and every run.
     Shutdown,
@@ -139,6 +157,17 @@ pub enum Command {
     SaveTask { dir: PathBuf, task: Box<Task> },
     /// Remember `harness` as the pick for new tasks in the project at `dir`.
     SaveHarness { dir: PathBuf, harness: Harness },
+    /// Compute task `task`'s change since `baseline`, answering with
+    /// `Event::Change`; with `reply`, also its full diff to the asking
+    /// client as `ServerMsg::Diff`.
+    Diff {
+        task: u64,
+        baseline: String,
+        reply: bool,
+    },
+    /// Put the files that differ from `baseline` back as they were there,
+    /// answering with `Event::Reverted`.
+    Revert { task: u64, baseline: String },
 }
 
 /// One agent run for the shell to start.
@@ -154,6 +183,9 @@ pub struct RunSpec {
     pub message: String,
     /// The agent session to continue; `None` starts one.
     pub resume: Option<String>,
+    /// Snapshot the working tree before the agent starts, as the task's
+    /// baseline: changes are tracked and the task has none yet.
+    pub snapshot: bool,
     /// The game session's debug server, when it runs this task's project.
     pub attach: Option<String>,
     pub context: AppContext,
@@ -241,6 +273,32 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::StopTask { task }) => {
             (stop_task(&mut state, task, &mut commands), false)
         }
+        Event::Client(ClientMsg::KeepChange { task }) => {
+            (keep(&mut state, task, &mut commands), false)
+        }
+        Event::Client(ClientMsg::RevertChange { task }) => {
+            (revert(&mut state, task, &mut commands), false)
+        }
+        Event::Client(ClientMsg::GetDiff { task }) => {
+            get_diff(&state, task, &mut commands);
+            (false, false)
+        }
+        Event::Change {
+            task,
+            baseline,
+            change,
+        } => (
+            on_change(&mut state, task, &baseline, change, &mut commands),
+            false,
+        ),
+        Event::Reverted {
+            task,
+            baseline,
+            result,
+        } => (
+            on_reverted(&mut state, task, baseline, result, &mut commands),
+            false,
+        ),
         Event::Client(ClientMsg::GetTranscript { task }) => {
             let reply = match state.tasks.iter().find(|t| t.id == task) {
                 Some(t) => ServerMsg::Transcript {
@@ -259,8 +317,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             state.tasks = tasks
                 .into_iter()
                 .map(|mut t| {
-                    // A run saved in flight died with the app.
+                    // A run (or revert) saved in flight died with the app.
                     t.run = None;
+                    t.reverting = false;
                     t.status = derive_status(&t);
                     t
                 })
@@ -403,6 +462,9 @@ fn new_task(
         model: None,
         session_id: None,
         run: None,
+        baseline: None,
+        change: None,
+        reverting: false,
         transcript: Vec::new(),
     });
     start_run(state, id, message, commands);
@@ -451,7 +513,14 @@ fn can_run(
             "task {} is running in {project}: one run per project at a time",
             busy.id
         )),
-        None => Ok(()),
+        None => match state
+            .tasks
+            .iter()
+            .find(|t| t.project == project && t.reverting)
+        {
+            Some(t) => Err(format!("task {}'s change is being reverted", t.id)),
+            None => Ok(()),
+        },
     }
 }
 
@@ -473,6 +542,7 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
         _ => None,
     };
     let session_mode = state.session_mode;
+    let tracks = state.tracks_changes;
     let task = state
         .tasks
         .iter_mut()
@@ -495,6 +565,7 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
         repo_root: root.clone(),
         message,
         resume: task.session_id.clone(),
+        snapshot: tracks && task.baseline.is_none(),
         attach: attach.clone(),
         context: AppContext {
             project: task.project.clone(),
@@ -518,8 +589,173 @@ fn stop_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
     };
     commands.push(Command::StopRun { task: id, run });
     let changed = stop_run(task);
+    // A stopped run reports no change of its own: what it left is measured now.
+    if let Some(baseline) = task.baseline.clone() {
+        commands.push(Command::Diff {
+            task: id,
+            baseline,
+            reply: false,
+        });
+    }
     commands.push(save(&root, task));
     broadcast_items(commands, task, changed);
+    true
+}
+
+/// Task `id`, when its change can be kept or reverted now.
+fn reviewable<'a>(state: &'a mut AppState, id: u64) -> Result<&'a mut Task, String> {
+    if !state.tracks_changes {
+        return Err("changes are tracked only in a git repository".to_string());
+    }
+    let task = state
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id)
+        .ok_or_else(|| format!("there is no task {id}"))?;
+    if task.run.is_some() {
+        return Err(format!(
+            "task {id} is still running: wait for it to finish or stop it"
+        ));
+    }
+    if task.reverting {
+        return Err(format!("task {id}'s change is being reverted"));
+    }
+    if !has_change(task) {
+        return Err(format!("task {id} has no change to review"));
+    }
+    Ok(task)
+}
+
+/// Keeps task `id`'s change: the baseline is dropped and the task is done
+/// until a follow-up, whose run takes a new one.
+fn keep(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    let task = match reviewable(state, id) {
+        Ok(task) => task,
+        Err(reason) => return reject(commands, reason),
+    };
+    task.baseline = None;
+    task.change = None;
+    close(&root, task, Item::Kept, commands);
+    true
+}
+
+/// Starts reverting task `id`'s change; refused while any run in its
+/// project could be editing the same files.
+fn revert(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
+    let project = state.tasks.iter().find(|t| t.id == id).map(|t| &t.project);
+    let busy = state
+        .tasks
+        .iter()
+        .find(|t| t.run.is_some() && t.id != id && Some(&t.project) == project);
+    if let Some(busy) = busy {
+        let reason = format!(
+            "task {} is running in {}: wait for it before reverting",
+            busy.id, busy.project
+        );
+        return reject(commands, reason);
+    }
+    let task = match reviewable(state, id) {
+        Ok(task) => task,
+        Err(reason) => return reject(commands, reason),
+    };
+    task.reverting = true;
+    commands.push(Command::Revert {
+        task: id,
+        baseline: task.baseline.clone().expect("reviewable"),
+    });
+    true
+}
+
+/// Ends task `id`'s review with `item` (`Kept` or `Reverted`).
+fn close(root: &Path, task: &mut Task, item: Item, commands: &mut Vec<Command>) {
+    task.transcript.push(item);
+    task.status = derive_status(task);
+    commands.push(save(root, task));
+    broadcast_items(commands, task, vec![task.transcript.len() - 1]);
+}
+
+/// Answers `GetDiff`: an empty diff when nothing is tracked for the task.
+fn get_diff(state: &AppState, id: u64, commands: &mut Vec<Command>) {
+    let Some(task) = state.tasks.iter().find(|t| t.id == id) else {
+        commands.push(Command::Reply(no_task(id)));
+        return;
+    };
+    match (&task.baseline, state.tracks_changes) {
+        (Some(baseline), true) => commands.push(Command::Diff {
+            task: id,
+            baseline: baseline.clone(),
+            reply: true,
+        }),
+        _ => commands.push(Command::Reply(ServerMsg::Diff {
+            task: id,
+            files: vec![],
+            more: 0,
+            error: None,
+        })),
+    }
+}
+
+/// Records a computed change; one measured from an older baseline is dropped.
+fn on_change(
+    state: &mut AppState,
+    id: u64,
+    baseline: &str,
+    change: Change,
+    commands: &mut Vec<Command>,
+) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    let Some(task) = state
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id && t.baseline.as_deref() == Some(baseline))
+    else {
+        return false;
+    };
+    if task.change.as_ref() == Some(&change) {
+        return false;
+    }
+    task.change = Some(change);
+    task.status = derive_status(task);
+    commands.push(save(&root, task));
+    true
+}
+
+/// A finished revert closes the task; a failed one says why and measures
+/// what is left.
+fn on_reverted(
+    state: &mut AppState,
+    id: u64,
+    baseline: String,
+    result: Result<(), String>,
+    commands: &mut Vec<Command>,
+) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    let Some(task) = state
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id && t.reverting && t.baseline.as_ref() == Some(&baseline))
+    else {
+        return false;
+    };
+    task.reverting = false;
+    match result {
+        Ok(()) => {
+            task.baseline = None;
+            task.change = None;
+            close(&root, task, Item::Reverted, commands);
+        }
+        Err(reason) => {
+            commands.push(Command::Broadcast(ServerMsg::Rejected {
+                reason: format!("cannot revert task {id}'s change: {reason}"),
+            }));
+            commands.push(Command::Diff {
+                task: id,
+                baseline,
+                reply: false,
+            });
+        }
+    }
     true
 }
 
@@ -541,6 +777,12 @@ fn on_run(
         return false;
     };
     match event {
+        RunEvent::Baseline { tree } => {
+            task.baseline = Some(tree);
+            task.change = None;
+            commands.push(save(&root, task));
+            true
+        }
         RunEvent::Agent(event) => {
             let before = (task.session_id.clone(), task.model.clone());
             let changed = apply(task, event);
@@ -666,6 +908,7 @@ mod tests {
             active: Some("examples/a".to_string()),
             files: vec!["functor.json".to_string(), "game.fun".to_string()],
             git: None,
+            tracks_changes: false,
             session: None,
             session_mode: SessionMode::Hidden,
             no_gpu: false,
@@ -1260,6 +1503,7 @@ mod tests {
                     repo_root: PathBuf::from("/repo"),
                     message: "  What is the count?\nAnd why?".to_string(),
                     resume: None,
+                    snapshot: false,
                     attach: None,
                     context: AppContext {
                         project: "examples/a".to_string(),
@@ -1638,5 +1882,348 @@ mod tests {
             "waiting_on_you"
         );
         assert!(json["state"]["tasks"][0].get("transcript").is_none());
+    }
+
+    // Changes.
+
+    use crate::changes::FileChange;
+
+    fn tracked() -> AppState {
+        AppState {
+            tracks_changes: true,
+            ..state()
+        }
+    }
+
+    fn baseline(task: u64, run: u64, tree: &str) -> Event {
+        Event::Run {
+            task,
+            run,
+            event: RunEvent::Baseline {
+                tree: tree.to_string(),
+            },
+        }
+    }
+
+    fn one_file(added: u32) -> Change {
+        Change::from_files(vec![FileChange {
+            path: "examples/a/game.fun".to_string(),
+            from: None,
+            added,
+            removed: 1,
+            binary: false,
+            large: false,
+        }])
+    }
+
+    fn change(task: u64, tree: &str, change: Change) -> Event {
+        Event::Change {
+            task,
+            baseline: tree.to_string(),
+            change,
+        }
+    }
+
+    /// Task 1's first run, through its baseline, a change and its end.
+    fn reviewed(with: Change) -> AppState {
+        let (s, commands) = update(tracked(), new_task("Make it spin"));
+        assert!(spec(&commands).snapshot);
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", with));
+        update(s, ended(1, 0)).0
+    }
+
+    fn keep(task: u64) -> Event {
+        client(ClientMsg::KeepChange { task })
+    }
+
+    fn revert(task: u64) -> Event {
+        client(ClientMsg::RevertChange { task })
+    }
+
+    fn reverted(task: u64, tree: &str, result: Result<(), String>) -> Event {
+        Event::Reverted {
+            task,
+            baseline: tree.to_string(),
+            result,
+        }
+    }
+
+    #[test]
+    fn a_finished_run_with_a_change_is_ready_for_review() {
+        let s = reviewed(one_file(2));
+        let t = task(&s, 1);
+        assert_eq!(t.status, TaskStatus::ReadyForReview);
+        assert_eq!(t.baseline.as_deref(), Some("tree-1"));
+        assert_eq!(t.change, Some(one_file(2)));
+        // No change: waiting on the user, as without git.
+        let s = reviewed(Change::default());
+        assert_eq!(task(&s, 1).status, TaskStatus::WaitingOnYou);
+        // A failed run with a change stays failed.
+        let (s, _) = update(tracked(), new_task("x"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let error = Event::Run {
+            task: 1,
+            run: 0,
+            event: RunEvent::Ended {
+                error: Some("broke".to_string()),
+            },
+        };
+        let (s, _) = update(s, error);
+        assert!(matches!(task(&s, 1).status, TaskStatus::Failed { .. }));
+    }
+
+    #[test]
+    fn a_change_is_recorded_once_and_only_for_the_current_baseline() {
+        let s = reviewed(one_file(2));
+        let (next, commands) = update(s.clone(), change(1, "tree-1", one_file(5)));
+        assert_eq!(task(&next, 1).change, Some(one_file(5)));
+        assert!(
+            matches!(commands[0], Command::SaveTask { .. }),
+            "{commands:?}"
+        );
+        assert_eq!(commands.last(), Some(&broadcast(&next)));
+        // The same again, or one from another baseline, changes nothing.
+        for event in [
+            change(1, "tree-1", one_file(2)),
+            change(1, "tree-0", one_file(9)),
+            change(7, "tree-1", one_file(9)),
+        ] {
+            let (again, commands) = update(s.clone(), event);
+            assert_eq!((again, commands), (s.clone(), vec![]));
+        }
+        // An emptied change (the user undid it by hand) waits on the user.
+        let (next, _) = update(s, change(1, "tree-1", Change::default()));
+        assert_eq!(task(&next, 1).status, TaskStatus::WaitingOnYou);
+    }
+
+    #[test]
+    fn keep_closes_the_review_and_a_follow_up_takes_a_new_baseline() {
+        let (s, commands) = update(reviewed(one_file(2)), keep(1));
+        let t = task(&s, 1);
+        assert_eq!(t.status, TaskStatus::Kept);
+        assert_eq!((t.baseline.as_ref(), t.change.as_ref()), (None, None));
+        assert_eq!(t.transcript.last(), Some(&Item::Kept));
+        let index = t.transcript.len() - 1;
+        assert_eq!(
+            commands,
+            vec![
+                Command::SaveTask {
+                    dir: PathBuf::from("/repo/examples/a"),
+                    task: Box::new(t.clone()),
+                },
+                broadcast(&s),
+                Command::Broadcast(ServerMsg::Item {
+                    task: 1,
+                    index,
+                    item: Item::Kept
+                }),
+            ]
+        );
+        // A follow-up reopens it, snapshotting afresh.
+        let (s, commands) = update(s, send(1, "And faster"));
+        assert!(spec(&commands).snapshot);
+        assert_eq!(task(&s, 1).status, TaskStatus::InProgress);
+        let run = spec(&commands).run;
+        let (s, _) = update(s, baseline(1, run, "tree-2"));
+        assert_eq!(task(&s, 1).baseline.as_deref(), Some("tree-2"));
+        // While a baseline stands, a follow-up does not take another.
+        let (s, _) = update(s, agent(1, run, finished()));
+        let (s, _) = update(s, change(1, "tree-2", one_file(1)));
+        let (s, _) = update(s, ended(1, run));
+        assert_eq!(task(&s, 1).status, TaskStatus::ReadyForReview);
+        let (_, commands) = update(s, send(1, "More"));
+        assert!(!spec(&commands).snapshot);
+        // Untracked, no run snapshots.
+        let (_, commands) = update(state(), new_task("x"));
+        assert!(!spec(&commands).snapshot);
+    }
+
+    #[test]
+    fn revert_asks_the_shell_and_closes_the_review_when_done() {
+        let (s, commands) = update(reviewed(one_file(2)), revert(1));
+        assert!(task(&s, 1).reverting);
+        assert_eq!(
+            commands,
+            vec![
+                Command::Revert {
+                    task: 1,
+                    baseline: "tree-1".to_string()
+                },
+                broadcast(&s)
+            ]
+        );
+        // Nothing else may start meanwhile.
+        let (_, commands) = update(s.clone(), revert(1));
+        assert_eq!(commands, rejected("task 1's change is being reverted"));
+        let (_, commands) = update(s.clone(), send(1, "more"));
+        assert_eq!(commands, rejected("task 1's change is being reverted"));
+        let (_, commands) = update(s.clone(), new_task("other"));
+        assert_eq!(commands, rejected("task 1's change is being reverted"));
+
+        let (done, commands) = update(s.clone(), reverted(1, "tree-1", Ok(())));
+        let t = task(&done, 1);
+        assert_eq!(t.status, TaskStatus::Reverted);
+        assert!(!t.reverting);
+        assert_eq!((t.baseline.as_ref(), t.change.as_ref()), (None, None));
+        assert_eq!(t.transcript.last(), Some(&Item::Reverted));
+        assert!(
+            matches!(commands[0], Command::SaveTask { .. }),
+            "{commands:?}"
+        );
+
+        // A failed revert says why and measures what is left.
+        let (failed, commands) = update(s, reverted(1, "tree-1", Err("gone".to_string())));
+        let t = task(&failed, 1);
+        assert!(!t.reverting);
+        assert_eq!(t.status, TaskStatus::ReadyForReview);
+        assert_eq!(
+            commands,
+            vec![
+                Command::Broadcast(ServerMsg::Rejected {
+                    reason: "cannot revert task 1's change: gone".to_string()
+                }),
+                Command::Diff {
+                    task: 1,
+                    baseline: "tree-1".to_string(),
+                    reply: false
+                },
+                broadcast(&failed),
+            ]
+        );
+        // A late answer for no revert in flight is dropped.
+        let (again, commands) = update(failed.clone(), reverted(1, "tree-1", Ok(())));
+        assert_eq!((again, commands), (failed, vec![]));
+    }
+
+    #[test]
+    fn keep_and_revert_are_rejected_without_a_reviewable_change() {
+        // Running: the change is not settled.
+        let (running, _) = update(tracked(), new_task("x"));
+        let (running, _) = update(running, baseline(1, 0, "tree-1"));
+        let (running, _) = update(running, change(1, "tree-1", one_file(2)));
+        let untracked = AppState {
+            tracks_changes: false,
+            ..reviewed(one_file(2))
+        };
+        for (s, reason) in [
+            (
+                running,
+                "task 1 is still running: wait for it to finish or stop it",
+            ),
+            (
+                reviewed(Change::default()),
+                "task 1 has no change to review",
+            ),
+            (
+                update(reviewed(one_file(2)), keep(1)).0,
+                "task 1 has no change to review",
+            ),
+            (untracked, "changes are tracked only in a git repository"),
+            (tracked(), "there is no task 1"),
+        ] {
+            for event in [keep(1), revert(1)] {
+                let (next, commands) = update(s.clone(), event);
+                assert_eq!(next, s);
+                assert_eq!(commands, rejected(reason));
+            }
+        }
+        // Another task running in the project: its edits are not reverted under it.
+        let (s, _) = update(reviewed(one_file(2)), new_task("second"));
+        let (next, commands) = update(s.clone(), revert(1));
+        assert_eq!(next, s);
+        assert_eq!(
+            commands,
+            rejected("task 2 is running in examples/a: wait for it before reverting")
+        );
+        // Keeping touches no files, so it may.
+        let (next, _) = update(s, keep(1));
+        assert_eq!(task(&next, 1).status, TaskStatus::Kept);
+    }
+
+    #[test]
+    fn get_diff_asks_the_shell_or_answers_empty() {
+        let s = reviewed(one_file(2));
+        let (next, commands) = update(s.clone(), client(ClientMsg::GetDiff { task: 1 }));
+        assert_eq!(next, s);
+        assert_eq!(
+            commands,
+            vec![Command::Diff {
+                task: 1,
+                baseline: "tree-1".to_string(),
+                reply: true
+            }]
+        );
+        let empty = vec![Command::Reply(ServerMsg::Diff {
+            task: 1,
+            files: vec![],
+            more: 0,
+            error: None,
+        })];
+        let (_, commands) = update(finished_task(), client(ClientMsg::GetDiff { task: 1 }));
+        assert_eq!(commands, empty);
+        let (_, commands) = update(state(), client(ClientMsg::GetDiff { task: 1 }));
+        assert_eq!(commands, rejected("there is no task 1"));
+    }
+
+    #[test]
+    fn stopping_a_run_with_a_baseline_measures_its_change() {
+        let (s, _) = update(tracked(), new_task("x"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (_, commands) = update(s, client(ClientMsg::StopTask { task: 1 }));
+        assert_eq!(
+            commands[1],
+            Command::Diff {
+                task: 1,
+                baseline: "tree-1".to_string(),
+                reply: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_loaded_task_is_not_left_reverting() {
+        let mut saved = task(&reviewed(one_file(2)), 1).clone();
+        saved.reverting = true;
+        let (s, _) = update(
+            tracked(),
+            Event::TasksLoaded {
+                tasks: vec![saved],
+                highest: 1,
+            },
+        );
+        let t = task(&s, 1);
+        assert!(!t.reverting);
+        assert_eq!(t.status, TaskStatus::ReadyForReview);
+    }
+
+    #[test]
+    fn change_messages_are_type_tagged() {
+        for (json, msg) in [
+            (
+                r#"{"type":"get_diff","task":1}"#,
+                ClientMsg::GetDiff { task: 1 },
+            ),
+            (
+                r#"{"type":"keep_change","task":1}"#,
+                ClientMsg::KeepChange { task: 1 },
+            ),
+            (
+                r#"{"type":"revert_change","task":1}"#,
+                ClientMsg::RevertChange { task: 1 },
+            ),
+        ] {
+            assert_eq!(serde_json::from_str::<ClientMsg>(json).unwrap(), msg);
+        }
+        let json = serde_json::to_value(ServerMsg::State {
+            state: Box::new(reviewed(one_file(2))),
+        })
+        .unwrap();
+        let t = &json["state"]["tasks"][0];
+        assert_eq!(t["status"]["kind"], "ready_for_review");
+        assert_eq!(t["change"]["files"][0]["path"], "examples/a/game.fun");
+        assert_eq!(t["change"]["files"][0]["added"], 2);
     }
 }

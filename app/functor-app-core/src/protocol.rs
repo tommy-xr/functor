@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::changes::FileDiff;
 use crate::tasks::{Harness, Item};
 use crate::{AppState, SessionMode};
 
@@ -48,6 +49,18 @@ pub enum ClientMsg {
     /// per project.
     SetHarness {
         harness: Harness,
+    },
+    /// Answered with [`ServerMsg::Diff`]; also refreshes the task's change.
+    GetDiff {
+        task: u64,
+    },
+    /// Keep `task`'s change: its review closes, the files stay as they are.
+    KeepChange {
+        task: u64,
+    },
+    /// Put the files `task` changed back as they were before it started.
+    RevertChange {
+        task: u64,
     },
 }
 
@@ -98,6 +111,15 @@ pub enum ServerMsg {
     /// Item `index` of `task`'s transcript, added (at the end) or replaced:
     /// a streamed text arrives as repeats of one index.
     Item { task: u64, index: usize, item: Item },
+    /// `task`'s full diff, answering `GetDiff`: the summary's files (all of
+    /// them, listed or not, are in `files` or counted in `more`), each with
+    /// its lines unless omitted. `error` when it could not be computed.
+    Diff {
+        task: u64,
+        files: Vec<FileDiff>,
+        more: u32,
+        error: Option<String>,
+    },
     /// A message was refused, saying why; nothing changed.
     Rejected { reason: String },
 }
