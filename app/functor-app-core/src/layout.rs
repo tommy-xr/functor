@@ -133,7 +133,7 @@ impl Default for Mini {
     }
 }
 
-pub const MINI_MIN: u32 = 240;
+pub const MINI_MIN: u32 = 280;
 pub const MINI_MAX: u32 = 1200;
 
 /// Where the Game tab was when it left its pane, so docking puts it back.

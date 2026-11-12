@@ -9,18 +9,21 @@ import {
   type KeyboardEvent,
   type PointerEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import type { AppState, Direction, LayoutOp, Node, Pane, Session, SessionMode, Task, View } from "./generated/protocol";
+import type { AppState, Direction, LayoutOp, Mini, Node, Pane, Placement, Session, Task, View } from "./generated/protocol";
 import { DiffView, type DiffTarget } from "./DiffView";
 import { hasChange } from "./diff-model";
 import { FileView } from "./FileView";
 import { GameView } from "./GameView";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
+import { DEFAULT_ASPECT, isLeft, isTop, miniKey, miniRect, nearestCorner, resizedWidth, clampWidth } from "./mini-model";
 import {
   focusedPane,
   isTyping,
+  placementOf,
   keysFor,
   panesOf,
   shortcutFor,
@@ -102,10 +105,15 @@ export function Canvas(props: CanvasProps) {
 
   useShortcuts(layout, op, refocus);
   const ctx: Ctx = { ...props, op, titles, focus: layout?.focus ?? null, refocus };
+  const placement = placementOf(layout);
   return (
     <main className="canvas" ref={main} aria-label="Canvas">
+      {placement === "window" && <WindowNote ctx={ctx} />}
       <GameHost state={state} online={props.online} send={send}>
-        {layout?.root ? <NodeView key={nodeId(layout.root)} node={layout.root} ctx={ctx} /> : <EmptyCanvas ctx={ctx} />}
+        <div className="canvas-body">
+          {layout?.root ? <NodeView key={nodeId(layout.root)} node={layout.root} ctx={ctx} /> : <EmptyCanvas ctx={ctx} />}
+        </div>
+        {placement === "mini" && layout && <MiniGame ctx={ctx} mini={layout.game.mini} canvas={main} />}
       </GameHost>
     </main>
   );
@@ -425,16 +433,19 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
                 >
                   {title}
                 </button>
-                <button
-                  type="button"
-                  className="tab-close"
-                  tabIndex={-1}
-                  aria-label={`Close ${title}`}
-                  title={`Close (${keysFor("close_tab", PLATFORM)}, or middle-click the tab)`}
-                  onClick={() => op({ type: "close", view })}
-                >
-                  ×
-                </button>
+                {/* A running game keeps its tab (the core refuses): Stop game, or Mini, first. */}
+                {!(view.kind === "game" && isLive(ctx.state?.session)) && (
+                  <button
+                    type="button"
+                    className="tab-close"
+                    tabIndex={-1}
+                    aria-label={`Close ${title}`}
+                    title={`Close (${keysFor("close_tab", PLATFORM)}, or middle-click the tab)`}
+                    onClick={() => op({ type: "close", view })}
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             );
           })}
@@ -492,44 +503,194 @@ function ViewBody({ view, ctx }: { view: View; ctx: Ctx }) {
   }
 }
 
-/** Start/Stop beside where the game runs (D22), while the Game tab shows. */
+/** Stop and the placement control, in the tab bar while the Game tab shows (D21, D22). */
 function GameControls({ ctx }: { ctx: Ctx }) {
-  const { state, online, send } = ctx;
   return (
     <div className="pane-game">
-      {isLive(state?.session) && (
-        <button type="button" className="button button-compact" disabled={!online} onClick={() => send({ type: "stop_session" })}>
-          Stop game
-        </button>
-      )}
-      <ModePicker state={state} online={online} send={send} />
+      <StopGame ctx={ctx} />
+      <PlacementControl ctx={ctx} />
     </div>
   );
 }
 
-const MODES: { mode: SessionMode; label: string }[] = [
-  { mode: "hidden", label: "In this window" },
-  { mode: "window", label: "Its own window" },
+function StopGame({ ctx, compact = false }: { ctx: Ctx; compact?: boolean }) {
+  if (!isLive(ctx.state?.session)) return null;
+  const stop = () => ctx.send({ type: "stop_session" });
+  if (compact) {
+    return (
+      <button type="button" className="icon-button" aria-label="Stop game" title="Stop game" disabled={!ctx.online} onClick={stop}>
+        <Icon name="stop" />
+      </button>
+    );
+  }
+  return (
+    <button type="button" className="button button-compact" disabled={!ctx.online} onClick={stop}>
+      Stop game
+    </button>
+  );
+}
+
+const PLACEMENTS: { placement: Placement; label: string; title: string }[] = [
+  { placement: "pane", label: "Pane", title: "Show the game in a pane" },
+  { placement: "mini", label: "Mini", title: "Float the game over the canvas" },
+  { placement: "window", label: "Own window", title: "Run the game in its own window (restarts a running game)" },
 ];
 
-/** Where the game runs; a change restarts a live session. */
-function ModePicker({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
+/** Where the game shows; to or from its own window restarts a live session. */
+function PlacementControl({ ctx }: { ctx: Ctx }) {
+  const layout = ctx.state?.active ? ctx.state.layouts[ctx.state.active] : null;
+  const current = placementOf(layout);
   return (
-    <div className="switcher switcher-compact">
-      <select
-        aria-label="Where the game runs"
-        value={state?.session_mode ?? "hidden"}
-        disabled={!online}
-        onChange={(e) => send({ type: "set_session_mode", mode: e.target.value as SessionMode })}
-      >
-        {MODES.map(({ mode, label }) => (
-          <option key={mode} value={mode}>
-            {label}
-          </option>
-        ))}
-      </select>
-      <Icon name="chevron" />
+    <div className="segmented" role="group" aria-label="Where the game shows">
+      {PLACEMENTS.map(({ placement, label, title }) => (
+        <button
+          key={placement}
+          type="button"
+          aria-pressed={placement === current}
+          title={title}
+          disabled={!ctx.online}
+          onClick={() => placement !== current && ctx.op({ type: "place", placement })}
+        >
+          {label}
+        </button>
+      ))}
     </div>
+  );
+}
+
+/** The game in its own window: one line saying so, and the ways back (D21). */
+function WindowNote({ ctx }: { ctx: Ctx }) {
+  const live = isLive(ctx.state?.session);
+  return (
+    <div className="game-note" data-testid="game-note">
+      <p>{live ? "The game is running in its own window." : "The game runs in its own window."}</p>
+      {!live && (
+        <button
+          type="button"
+          className="button button-compact"
+          disabled={!ctx.online || !ctx.state?.active}
+          onClick={() => ctx.send({ type: "start_session" })}
+        >
+          Start game
+        </button>
+      )}
+      <button type="button" className="button button-compact" disabled={!ctx.online} onClick={() => ctx.op({ type: "place", placement: "pane" })}>
+        Bring back to a pane
+      </button>
+      <StopGame ctx={ctx} />
+    </div>
+  );
+}
+
+/** The mini view's title strip height (CSS: `.mini-strip`). */
+const MINI_STRIP = 36;
+
+/** `el`'s padding box in CSS pixels, following resizes. */
+function useClientSize(el: RefObject<HTMLElement | null>) {
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const target = el.current;
+    if (!target) return;
+    const read = () => {
+      const { clientWidth: w, clientHeight: h } = target;
+      setSize((s) => (s?.w === w && s.h === h ? s : { w, h }));
+    };
+    read();
+    const observer = new ResizeObserver(read);
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [el]);
+  return size;
+}
+
+/**
+ * The game floating over the canvas (D21 Mini): the one game view, moved
+ * into this card. Dragged by its strip and let go, it snaps to the nearest
+ * corner; its corner handle resizes it at the game's aspect ratio. Only the
+ * drag is local: a let-go sends the corner and width to the core.
+ */
+function MiniGame({ ctx, mini, canvas }: { ctx: Ctx; mini: Mini; canvas: RefObject<HTMLElement | null> }) {
+  const size = useClientSize(canvas);
+  const status = ctx.state?.session?.status;
+  const surface = status?.kind === "running" ? status.surface : null;
+  const aspect = surface ? surface[0] / surface[1] : DEFAULT_ASPECT;
+  // Sent and not yet back from the core; dropped once the core's changes.
+  const [sent, setSent] = useState<Mini | null>(null);
+  useEffect(() => setSent(null), [mini.corner, mini.width]);
+  const [drag, setDrag] = useState<{ x: number; y: number; dx: number; dy: number; resize: boolean } | null>(null);
+  const shown = sent ?? mini;
+  const width = drag?.resize ? resizedWidth(shown.corner, shown.width, drag.dx, drag.dy, aspect) : shown.width;
+  // Unmeasured, it is laid out unseen: the game view moves in at once, never remounted.
+  const canvasSize = size ?? { w: 0, h: 0 };
+  const rect = miniRect({ ...shown, width }, aspect, canvasSize, MINI_STRIP);
+  // Moved, the card stays inside the canvas.
+  const within = (v: number, room: number) => Math.min(Math.max(v, 0), Math.max(0, room));
+  const x = drag && !drag.resize ? within(rect.x + drag.dx, canvasSize.w - rect.w) : rect.x;
+  const y = drag && !drag.resize ? within(rect.y + drag.dy, canvasSize.h - rect.h) : rect.y;
+
+  const put = (next: Mini) => {
+    if (next.corner === shown.corner && next.width === shown.width) return;
+    if (ctx.op({ type: "set_mini", mini: next })) setSent(next);
+  };
+  const begin = (e: PointerEvent<HTMLElement>, resize: boolean) => {
+    // The strip's controls are clicked, not dragged; its grip and the rest drag.
+    if (e.button !== 0 || (!resize && (e.target as HTMLElement).closest("button:not(.mini-grip)"))) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDrag({ x: e.clientX, y: e.clientY, dx: 0, dy: 0, resize });
+  };
+  const move = (e: PointerEvent<HTMLElement>) => {
+    if (drag && e.currentTarget.hasPointerCapture(e.pointerId)) setDrag({ ...drag, dx: e.clientX - drag.x, dy: e.clientY - drag.y });
+  };
+  const end = (e: PointerEvent<HTMLElement>) => {
+    if (!drag || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    setDrag(null);
+    if (drag.resize) put({ ...shown, width: clampWidth(rect.w) });
+    else put({ ...shown, corner: nearestCorner(x + rect.w / 2, y + rect.h / 2, canvasSize) });
+  };
+  const handlers = { onPointerMove: move, onPointerUp: end, onPointerCancel: () => setDrag(null) };
+  const onKeyDown = (e: KeyboardEvent) => {
+    const next = miniKey(shown, e.key);
+    if (!next) return;
+    e.preventDefault();
+    put(next);
+  };
+  const corner = `mini-${isTop(shown.corner) ? "top" : "bottom"}-${isLeft(shown.corner) ? "left" : "right"}`;
+  return (
+    <section
+      className={`mini ${corner}${drag ? " mini-dragging" : ""}`}
+      aria-label="Game (mini)"
+      data-testid="mini"
+      style={{ left: x, top: y, width: rect.w, height: rect.h, visibility: size ? undefined : "hidden" }}
+    >
+      <div className="mini-strip" onPointerDown={(e) => begin(e, false)} {...handlers}>
+        <button
+          type="button"
+          className="mini-grip"
+          aria-label="Move the game view"
+          title="Drag to move it to a corner. Keys: arrows move it, + and − resize it"
+          onKeyDown={onKeyDown}
+        >
+          Game
+        </button>
+        <PlacementControl ctx={ctx} />
+        <StopGame ctx={ctx} compact />
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Dock"
+          title="Dock: back to its pane"
+          disabled={!ctx.online}
+          onClick={() => ctx.op({ type: "place", placement: "pane" })}
+        >
+          <Icon name="dock" />
+        </button>
+      </div>
+      <div className="mini-body">
+        <GameSlot />
+      </div>
+      <div className="mini-resize" aria-hidden="true" onPointerDown={(e) => begin(e, true)} {...handlers} />
+    </section>
   );
 }
 
@@ -538,7 +699,8 @@ function offers(ctx: Ctx): { view: View; label: string }[] {
   const { state, currentTask } = ctx;
   const open = new Set(ctx.titles.keys());
   const out: { view: View; label: string }[] = [];
-  if (!open.has("game")) out.push({ view: { kind: "game" }, label: "Game" });
+  const layout = state?.active ? state.layouts[state.active] : null;
+  if (!open.has("game") && placementOf(layout) === "pane") out.push({ view: { kind: "game" }, label: "Game" });
   for (const path of state?.files ?? []) out.push({ view: { kind: "file", path }, label: path });
   if (currentTask && hasChange(currentTask)) {
     out.push({ view: { kind: "changes", task: currentTask.id }, label: `Changes · ${currentTask.title || "Untitled task"}` });
@@ -659,17 +821,18 @@ function EmptyCanvas({ ctx }: { ctx: Ctx }) {
     <div className="placeholder empty-canvas">
       <p>Nothing open</p>
       <div className="empty-actions">
-        <button
-          type="button"
-          className="button button-primary"
-          disabled={!online || !state?.active}
-          onClick={() => {
-            op({ type: "open", view: { kind: "game" }, target: focused });
-            if (!isLive(state?.session)) send({ type: "start_session" });
-          }}
-        >
-          Start game
-        </button>
+        {/* In Mini or its own window the game has its own Start game. */}
+        {placementOf(state?.active ? state.layouts[state.active] : null) === "pane" && (
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={!online || !state?.active}
+            // In a pane, a starting session opens its Game tab here.
+            onClick={() => send({ type: "start_session" })}
+          >
+            Start game
+          </button>
+        )}
         <button type="button" className="button" disabled={!online || !state?.files.length} aria-expanded={picking} onClick={() => setPicking((p) => !p)}>
           Open a file
         </button>

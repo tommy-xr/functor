@@ -143,7 +143,7 @@ async function sessionInput(debugUrl) {
   return (await (await fetch(`${debugUrl}/state`)).json()).input;
 }
 
-/** Game view without a GPU (CI): states, input capture and release, the mode picker. */
+/** Game view without a GPU (CI): states, input capture and release, the placement control. */
 async function gameViewNoGpu(browser) {
   const server = await startServer(0, { dir: `${ROOT}examples/counter` });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -151,25 +151,22 @@ async function gameViewNoGpu(browser) {
   const errors = watchErrors(page);
   const view = page.getByTestId("game-view");
   const banner = view.getByRole("status");
-  const picker = page.getByLabel("Where the game runs");
+  const placement = page.getByRole("group", { name: "Where the game shows" });
+  const placed = () => app.state?.layouts[app.state.active]?.game.placement;
+  const note = page.getByTestId("game-note");
   try {
     await page.goto(server.url);
     await expect(view).toHaveText(/^No game running/);
     await expect(view.getByRole("button", { name: "Start game" })).toBeEnabled();
-    await expect(picker).toHaveValue("hidden");
-    // Arrow keys on the picker stay with it rather than switching tabs.
-    await picker.focus();
-    await page.keyboard.press("ArrowRight");
-    await expect(page.getByRole("tab", { name: "Game", exact: true })).toHaveAttribute("aria-selected", "true");
-    await page.keyboard.press("Escape");
-    await picker.selectOption("hidden");
-    await expect.poll(() => app.state?.session_mode).toBe("hidden");
+    await expect(placement.getByRole("button", { name: "Pane" })).toHaveAttribute("aria-pressed", "true");
+    // No headset placement until M2, not even disabled.
+    await expect(placement.getByRole("button")).toHaveText(["Pane", "Mini", "Own window"]);
     if (!FUNCTOR) {
-      // Without a session the picker only records the mode for the next start.
-      await picker.selectOption("window");
-      await expect.poll(() => app.state?.session_mode).toBe("window");
-      await picker.selectOption("hidden");
-      await expect.poll(() => app.state?.session_mode).toBe("hidden");
+      // Without a session the control only records the placement for the next start.
+      await placement.getByRole("button", { name: "Own window" }).click();
+      await expect.poll(placed).toBe("window");
+      await note.getByRole("button", { name: "Bring back to a pane" }).click();
+      await expect.poll(placed).toBe("pane");
       console.log("SKIPPED: game view with a session — set FUNCTOR_BIN (npm run build:cli:debug)");
       return;
     }
@@ -225,13 +222,21 @@ async function gameViewNoGpu(browser) {
     await page.getByRole("tab", { name: "Game", exact: true }).click();
     await expect(banner).toHaveText("Click to play");
 
-    // The picker restarts the session in the other mode (headless here, so no window opens).
-    for (const mode of ["window", "hidden"]) {
+    // Own window restarts the session in the other mode (headless here, so no
+    // window opens); the canvas says so, and bringing it back restarts it again.
+    for (const back of [false, true]) {
       const id = app.state.session.id;
-      await picker.selectOption(mode);
+      if (back) await note.getByRole("button", { name: "Bring back to a pane" }).click();
+      else await placement.getByRole("button", { name: "Own window" }).click();
       await expect.poll(() => app.state.session.id).toBe(id + 1);
       await expect.poll(() => app.state.session.status.kind, { timeout: 60_000 }).toBe("running");
-      expect(app.state.session_mode).toBe(mode);
+      expect(placed()).toBe(back ? "pane" : "window");
+      await expect(note).toHaveCount(back ? 0 : 1);
+      if (!back) {
+        await expect(note).toContainText("The game is running in its own window.");
+        await expect(page.getByRole("tab", { name: "Game", exact: true })).toHaveCount(0);
+        await expect(view).toHaveCount(0);
+      }
     }
     await expect(view).toContainText("Frames need a GPU session");
     expect(errors, "console errors").toEqual([]);
@@ -401,6 +406,44 @@ async function gameViewGpu(browser) {
     expect(moved.equals(await img.screenshot()), "the frame changed after the move").toBe(false);
     expect(await page.getByTestId("game-view").count()).toBe(1);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/game-moved-1440.png` });
+
+    // Pane → Mini → Pane moves the same view too: the same <img>, never a
+    // second stream, the same session, frames that keep changing, and a key
+    // still reaching the game in Mini.
+    const session = app.state.session.id;
+    const minis = [];
+    const sampleMini = setInterval(() => minis.push(openStreams(port)), 150);
+    const mini = page.getByTestId("mini");
+    try {
+      await page.getByRole("group", { name: "Where the game shows" }).getByRole("button", { name: "Mini" }).click();
+      await expect(mini.locator("img")).toHaveAttribute("data-mark", "the one");
+      await expect(page.getByRole("tab", { name: "Game", exact: true })).toHaveCount(0);
+      await expect.poll(() => openStreams(port)).toBe(1);
+      await page.waitForTimeout(600);
+      const inMini = await img.screenshot();
+      await page.waitForTimeout(500);
+      expect(inMini.equals(await img.screenshot()), "the frame changed in Mini").toBe(false);
+      await view.click();
+      await expect(view.getByRole("status")).toHaveText("Esc to release");
+      await page.keyboard.down("KeyW");
+      await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual(["W"]);
+      await page.keyboard.press("Escape");
+      await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual([]);
+      await page.keyboard.up("KeyW");
+      if (SHOTS) await page.screenshot({ path: `${SHOTS}/game-mini-1440.png` });
+      await mini.getByRole("button", { name: "Dock" }).click();
+      await expect(page.getByRole("tab", { name: "Game", exact: true })).toBeVisible();
+      await expect(img).toHaveAttribute("data-mark", "the one");
+      await expect.poll(() => openStreams(port)).toBe(1);
+      await page.waitForTimeout(600);
+    } finally {
+      clearInterval(sampleMini);
+    }
+    expect(Math.max(...minis), "streams open at once across pane → mini → pane").toBeLessThanOrEqual(1);
+    expect(app.state.session.id, "the same session").toBe(session);
+    const docked = await img.screenshot();
+    await page.waitForTimeout(500);
+    expect(docked.equals(await img.screenshot()), "the frame changed after docking").toBe(false);
 
     // Stopping the session ends the stream.
     await page.getByRole("button", { name: "Stop game" }).click();

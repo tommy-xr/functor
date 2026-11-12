@@ -3,7 +3,7 @@ import type { AppState, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
 import { Icon } from "./Icon";
-import { focusedPane, panesOf, tabTitles, viewKey } from "./layout-model";
+import { focusedPane, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 
 
@@ -71,7 +71,8 @@ export function App() {
             accepted={accepted}
             notice={notice}
             canvasWord={canvasWord(state)}
-            onOpenGame={() => openBeside({ kind: "game" })}
+            // In Mini or its own window the game is already in view.
+            onOpenGame={() => placementOf(state?.active ? state.layouts[state.active] : null) === "pane" && openBeside({ kind: "game" })}
             selected={selected}
             onSelect={setSelected}
             onViewDiff={viewDiff}

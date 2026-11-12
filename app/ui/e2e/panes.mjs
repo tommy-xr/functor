@@ -121,7 +121,8 @@ async function panes(browser, width, height) {
     // A click in a pane focuses it, the game view (portalled in) included.
     await pane(0).getByTestId("file-view").click();
     await expect(pane(0)).toHaveClass(/pane-focused/);
-    await page.getByTestId("game-view").click();
+    // In a corner, clear of its Start game: a running game would keep its tab below.
+    await page.getByTestId("game-view").click({ position: { x: 8, y: 8 } });
     await expect(pane(1)).toHaveClass(/pane-focused/);
 
     // A reload shows exactly this layout, from the core.
