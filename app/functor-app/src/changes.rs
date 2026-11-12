@@ -50,7 +50,7 @@ impl Git {
         let mut command = std::process::Command::new("git");
         command
             .arg("-C")
-            .arg(root)
+            .arg(plain(root))
             .args(["rev-parse", "--path-format=absolute", "--show-toplevel"])
             .args(["--git-path", "objects"])
             .stdin(Stdio::null())
@@ -65,14 +65,16 @@ impl Git {
         if std::fs::canonicalize(&top).ok()? != std::fs::canonicalize(root).ok()? {
             return None;
         }
-        let dir = home
-            .join("repos")
-            .join(crate::store::key(&std::fs::canonicalize(root).ok()?));
+        let dir = plain(
+            &home
+                .join("repos")
+                .join(crate::store::key(&std::fs::canonicalize(root).ok()?)),
+        );
         for sub in ["objects/info", "objects/pack"] {
             std::fs::create_dir_all(dir.join(sub)).ok()?;
         }
         Some(Self {
-            root: root.to_path_buf(),
+            root: plain(root),
             dir,
             objects,
         })
@@ -325,6 +327,16 @@ impl Git {
             return Err(format!("git {}: {}", args[0], err.trim()));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+/// `path` without Windows' `\\?\` prefix (from `canonicalize`), which git
+/// cannot open paths under.
+fn plain(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => path.to_path_buf(),
     }
 }
 
@@ -810,6 +822,13 @@ pub(crate) mod tests {
         // The hook is live: the user's own `git add` runs it.
         repo.git(&["add", "game.fun"]);
         assert!(marker.exists(), "the hook is not installed");
+    }
+
+    #[test]
+    fn verbatim_windows_paths_are_made_plain_for_git() {
+        assert_eq!(plain(Path::new(r"\\?\C:\a\b")), Path::new(r"C:\a\b"));
+        assert_eq!(plain(Path::new(r"\\?\UNC\s\x")), Path::new(r"\\?\UNC\s\x"));
+        assert_eq!(plain(Path::new("/a/b")), Path::new("/a/b"));
     }
 
     #[test]
