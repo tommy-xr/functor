@@ -508,7 +508,7 @@ export type TemplateKind = "starter" | "example";
 
 /**
  * What the bar shows: `GET /state`'s `frame` and `clock`, with the bar's
- * own calls applied until the runtime has answered them.
+ * seeks applied until the runtime has answered them.
  */
 export type Transport = { 
 /**

@@ -684,7 +684,13 @@ mod tests {
             }),
         };
         let mut out = Vec::new();
-        for msg in [at(1), at(2), ServerMsg::Marks { marks: vec![] }, at(3), at(4)] {
+        for msg in [
+            at(1),
+            at(2),
+            ServerMsg::Marks { marks: vec![] },
+            at(3),
+            at(4),
+        ] {
             queue(&mut out, msg);
         }
         assert_eq!(out, [at(2), ServerMsg::Marks { marks: vec![] }, at(4)]);
