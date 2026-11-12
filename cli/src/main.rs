@@ -284,7 +284,8 @@ enum Command {
 
         /// Extra arguments forwarded to the in-process desktop runtime (native
         /// only). E.g. `run native --fixed-time 2 --capture-frame f.png`. A
-        /// leading `--` is also accepted. On wasm these are ignored except
+        /// leading `--` is also accepted. `--arg key=value` (repeatable) is
+        /// what the game reads with `Launch.args()`. On wasm these are ignored except
         /// `--no-open`, which keeps the dev server but skips launching the browser.
         /// On vr only `--refresh-rate <hz>` (the headset display rate to request,
         /// one it offers, e.g. 90 or 120) and the push caps `--max-file-mb <n>`
@@ -310,7 +311,8 @@ enum Command {
         /// Extra arguments forwarded to the in-process desktop runtime (native
         /// only). E.g. `develop native --debug-port 9001` to override the
         /// default debug port, or `--no-debug` to start no debug server at
-        /// all. A leading `--` is also accepted.
+        /// all. A leading `--` is also accepted. `--arg key=value`
+        /// (repeatable) is what the game reads with `Launch.args()`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         runner_args: Vec<String>,
     },

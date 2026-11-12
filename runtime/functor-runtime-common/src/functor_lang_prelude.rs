@@ -219,6 +219,8 @@ pub mod nav;
 pub mod lightmap;
 pub mod mesh;
 pub mod model;
+mod json;
+pub mod launch;
 pub mod path;
 pub mod solid;
 mod sprite;
@@ -1864,6 +1866,8 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         bytes::register(&mut reg);
         job::register(&mut reg);
         path::register(&mut reg);
+        json::register(&mut reg);
+        launch::register(&mut reg);
         mesh::register(&mut reg);
         cells::register(&mut reg);
         nav::register(&mut reg);
@@ -7981,7 +7985,7 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
     /// Evaluate a `main` under the prelude WITH the engine's `.funi`
     /// interfaces linked, so unit suffixes and their operators resolve —
     /// `eval` above lowers one bare source, where no `unit` is declared.
-    fn eval_with_prelude(src: &str) -> Result<Value, String> {
+    pub(super) fn eval_with_prelude(src: &str) -> Result<Value, String> {
         eval_with_prelude_impl(src, true)
     }
 
@@ -10759,6 +10763,56 @@ Vec3.make(x, y, z)"
             "unexpected message: {}",
             failure.error.message
         );
+    }
+
+    /// `Plot`: a segment's box runs end to end, `width` across; a polyline
+    /// joins neighbours; a point is a `size` square where it was put.
+    #[test]
+    fn plot_places_boxes_end_to_end_and_squares_on_points() {
+        use cgmath::{InnerSpace, Quaternion, Vector3};
+        let value = eval_with_prelude(
+            "let a = Vec3.make(1.0, 2.0, 3.0)
+let b = Vec3.make(4.0, 6.0, -9.0)
+let c = Vec3.make(4.0, 7.0, -9.0)
+let white = Color.rgb(1.0, 1.0, 1.0)
+let main = (Plot.segments(0.1, white, [(a, b)]), Plot.polyline(0.1, white, [a, b, c]), Plot.points(0.2, white, [a, b]))
+",
+        )
+        .expect("evaluates");
+        let Value::Tuple(items) = &value else {
+            panic!("expected a tuple");
+        };
+        // Segments sit under their `Scene.castShadows(false)`.
+        let instances = |item: &Value| match &scene_of(item).expect("a Scene").obj {
+            SceneObject::Instanced { instances, .. } => instances.to_vec(),
+            SceneObject::CastShadows(false, children) => match &children[0].obj {
+                SceneObject::Instanced { instances, .. } => instances.to_vec(),
+                other => panic!("expected Instanced, got {other:?}"),
+            },
+            other => panic!("expected Instanced, got {other:?}"),
+        };
+        let (a, b, c) = (Vector3::new(1.0, 2.0, 3.0), Vector3::new(4.0, 6.0, -9.0), Vector3::new(4.0, 7.0, -9.0));
+        // Where the unit box's -Z and +Z faces land.
+        let ends = |i: &InstanceData| {
+            let [x, y, z, w] = i.rotation;
+            let half = Quaternion::new(w, x, y, z) * Vector3::new(0.0, 0.0, 0.5 * i.scale[2]);
+            (Vector3::from(i.position) - half, Vector3::from(i.position) + half)
+        };
+        let joins = |i: &InstanceData, from: Vector3<f32>, to: Vector3<f32>| {
+            let (start, end) = ends(i);
+            (start - from).magnitude() < 1e-4 && (end - to).magnitude() < 1e-4 && i.scale[0] == 0.1 && i.scale[1] == 0.1
+        };
+        let segments = instances(&items[0]);
+        assert!(segments.len() == 1 && joins(&segments[0], a, b), "{segments:?}");
+        let polyline = instances(&items[1]);
+        assert_eq!(polyline.len(), 2);
+        // b → c is straight up: the degenerate yaw.
+        assert!(joins(&polyline[0], a, b) && joins(&polyline[1], b, c), "{polyline:?}");
+        let points = instances(&items[2]);
+        assert_eq!(points.iter().map(|i| (i.position, i.scale)).collect::<Vec<_>>(), [
+            ([1.0, 2.0, 3.0], [0.2; 3]),
+            ([4.0, 6.0, -9.0], [0.2; 3]),
+        ]);
     }
 
     /// The SAME Functor Lang list converts once: both nodes share one

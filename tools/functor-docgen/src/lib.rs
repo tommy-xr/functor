@@ -90,10 +90,14 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
     (
         ApiGroup::Engine,
         "Shell options",
-        &["Config", "Source", "Settings", "Xr"],
+        &["Config", "Launch", "Source", "Settings", "Xr"],
     ),
     (ApiGroup::Engine, "Parts", &["Solid", "Sketch", "Typeface", "Mesh"]),
-    (ApiGroup::Engine, "Binary data", &["File", "Path", "Bytes", "Binary"]),
+    (
+        ApiGroup::Engine,
+        "Files & data",
+        &["File", "Path", "Bytes", "Binary", "Json"],
+    ),
     (ApiGroup::Stdlib, "Collections", &["List", "Map", "Loop"]),
     (ApiGroup::Stdlib, "Text", &["Text"]),
     (

@@ -10,20 +10,20 @@
 
 type t<'a> = { decoder: Decode.t<'a>, encoder: ('a) => Encode.t }
 
-let u8 = { decoder: Decode.u8, encoder: Encode.u8 }
-let i8 = { decoder: Decode.i8, encoder: Encode.i8 }
-let u16le = { decoder: Decode.u16le, encoder: Encode.u16le }
-let u16be = { decoder: Decode.u16be, encoder: Encode.u16be }
-let i16le = { decoder: Decode.i16le, encoder: Encode.i16le }
-let i16be = { decoder: Decode.i16be, encoder: Encode.i16be }
-let u32le = { decoder: Decode.u32le, encoder: Encode.u32le }
-let u32be = { decoder: Decode.u32be, encoder: Encode.u32be }
-let i32le = { decoder: Decode.i32le, encoder: Encode.i32le }
-let i32be = { decoder: Decode.i32be, encoder: Encode.i32be }
-let f32le = { decoder: Decode.f32le, encoder: Encode.f32le }
-let f32be = { decoder: Decode.f32be, encoder: Encode.f32be }
-let f64le = { decoder: Decode.f64le, encoder: Encode.f64le }
-let f64be = { decoder: Decode.f64be, encoder: Encode.f64be }
+let u8: t<float> = { decoder: Decode.u8, encoder: Encode.u8 }
+let i8: t<float> = { decoder: Decode.i8, encoder: Encode.i8 }
+let u16le: t<float> = { decoder: Decode.u16le, encoder: Encode.u16le }
+let u16be: t<float> = { decoder: Decode.u16be, encoder: Encode.u16be }
+let i16le: t<float> = { decoder: Decode.i16le, encoder: Encode.i16le }
+let i16be: t<float> = { decoder: Decode.i16be, encoder: Encode.i16be }
+let u32le: t<float> = { decoder: Decode.u32le, encoder: Encode.u32le }
+let u32be: t<float> = { decoder: Decode.u32be, encoder: Encode.u32be }
+let i32le: t<float> = { decoder: Decode.i32le, encoder: Encode.i32le }
+let i32be: t<float> = { decoder: Decode.i32be, encoder: Encode.i32be }
+let f32le: t<float> = { decoder: Decode.f32le, encoder: Encode.f32le }
+let f32be: t<float> = { decoder: Decode.f32be, encoder: Encode.f32be }
+let f64le: t<float> = { decoder: Decode.f64le, encoder: Encode.f64le }
+let f64be: t<float> = { decoder: Decode.f64be, encoder: Encode.f64be }
 
 // Latin-1 text of exactly `length` characters.
 let latin1 = (length: float): t<string> =>

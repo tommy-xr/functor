@@ -41,6 +41,18 @@ pub fn bundled_modules() -> Vec<BundledModule> {
         include_str!("../stdlib/codec.fun"),
     ));
     bundled.push(BundledModule::implementation(
+        "JsonDecode",
+        include_str!("../stdlib/json_decode.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "JsonEncode",
+        include_str!("../stdlib/json_encode.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "JsonCodec",
+        include_str!("../stdlib/json_codec.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
         "Connector",
         include_str!("../stdlib/connector.fun"),
     ));
@@ -55,6 +67,10 @@ pub fn bundled_modules() -> Vec<BundledModule> {
     bundled.push(BundledModule::implementation(
         "Thread",
         include_str!("../stdlib/thread.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "Plot",
+        include_str!("../stdlib/plot.fun"),
     ));
     bundled.push(BundledModule::implementation(
         "OrbitCamera",
@@ -101,6 +117,7 @@ pub fn modules() -> Vec<(String, String)> {
         module("Typeface", include_str!("../prelude/typeface.funi")),
         module("Bytes", include_str!("../prelude/bytes.funi")),
         module("Binary", include_str!("../prelude/binary.funi")),
+        module("Json", include_str!("../prelude/json.funi")),
         module("File", include_str!("../prelude/file.funi")),
         module("Job", include_str!("../prelude/job.funi")),
         module("Path", include_str!("../prelude/path.funi")),
@@ -141,6 +158,7 @@ pub fn modules() -> Vec<(String, String)> {
         module("Xr", include_str!("../prelude/xr.funi")),
         module("Source", include_str!("../prelude/source.funi")),
         module("Config", include_str!("../prelude/config.funi")),
+        module("Launch", include_str!("../prelude/launch.funi")),
         module("Settings", include_str!("../prelude/settings.funi")),
     ]
 }

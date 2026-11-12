@@ -64,6 +64,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Typeface",
     "Bytes",
     "Binary",
+    "Json",
     "File",
     "Job",
     "Path",
@@ -100,6 +101,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Xr",
     "Source",
     "Config",
+    "Launch",
     "Settings",
     "Debug",
 ];
