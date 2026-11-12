@@ -10,29 +10,16 @@
 // session on examples/primitives — local only, and FUNCTOR_BIN must be built
 // from this checkout. APP_UI_SHOTS=<dir> saves a PNG of each rail view at
 // each width.
-import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
+import { APP, FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal, watchState } from "./app.mjs";
 
-const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
-const EXE = process.platform === "win32" ? ".exe" : "";
-const APP = `${ROOT}target/debug/functor-app${EXE}`;
-const FUNCTOR = process.env.FUNCTOR_BIN && existsSync(process.env.FUNCTOR_BIN) ? process.env.FUNCTOR_BIN : null;
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 const SHOTS = process.env.APP_UI_SHOTS;
 const SWITCH_TO = "examples/counter";
-const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
-for (const [path, what] of [
-  [APP, "cargo build -p functor-app"],
-  [`${ROOT}app/ui/dist/index.html`, "npm run build:app-ui"],
-]) {
-  if (!existsSync(path)) {
-    console.error(`FAIL: ${path} missing — run ${what}`);
-    process.exit(1);
-  }
-}
+requireBuilt();
 
 const git = (...args) => execFileSync("git", ["-C", ROOT, ...args], { encoding: "utf8" }).trim();
 const BRANCH = git("rev-parse", "--abbrev-ref", "HEAD");
@@ -49,32 +36,6 @@ function expectedFiles(path) {
     .sort();
 }
 
-/** Starts functor-app and resolves with it and its URL once it listens. */
-function startServer(port = 0, { dir = ROOT, gpu = false } = {}) {
-  const args = ["--headless", "--port", String(port), "-d", dir];
-  if (!gpu) args.push("--no-gpu");
-  if (FUNCTOR) args.push("--functor", FUNCTOR);
-  const child = spawn(APP, args, { stdio: ["ignore", "ignore", "pipe"] });
-  let err = "";
-  return new Promise((resolve, reject) => {
-    child.stderr.on("data", (d) => {
-      err += d;
-      // Up to the newline: the line can arrive split across chunks.
-      const m = err.match(/^\[functor-app\] listening on (http:\/\/\S+)\r?\n/m);
-      if (m) resolve({ child, url: m[1], port: Number(new URL(m[1]).port) });
-    });
-    child.on("exit", (code) => reject(new Error(`functor-app exited (${code}) before listening:\n${err}`)));
-  });
-}
-
-function stopServer({ child }) {
-  if (child.exitCode !== null) return Promise.resolve();
-  return new Promise((resolve) => {
-    child.on("exit", resolve);
-    child.kill("SIGTERM");
-  });
-}
-
 async function shot(page, name) {
   if (!SHOTS) return;
   mkdirSync(SHOTS, { recursive: true });
@@ -87,11 +48,7 @@ async function run(browser, width, height) {
   let server = await startServer();
   const page = await browser.newPage({ viewport: { width, height } });
   const errors = watchErrors(page);
-  const external = [];
-  page.on("request", (r) => {
-    const { hostname } = new URL(r.url());
-    if (!LOOPBACK.has(hostname)) external.push(r.url());
-  });
+  const external = watchExternal(page);
   const titlebar = page.locator(".titlebar");
   const explorer = page.getByRole("complementary", { name: "Explorer" });
   const status = page.getByTestId("session-status");
@@ -113,8 +70,8 @@ async function run(browser, width, height) {
       expectedFiles(SWITCH_TO),
     );
 
-    const start = explorer.getByRole("button", { name: "Start" });
-    const stop = explorer.getByRole("button", { name: "Stop" });
+    const start = page.getByTestId("game-view").getByRole("button", { name: "Start game" });
+    const stop = page.getByRole("button", { name: "Stop game" });
     if (FUNCTOR) {
       await start.click();
       await expect(status).toHaveText("running", { timeout: 60_000 });
@@ -139,8 +96,8 @@ async function run(browser, width, height) {
       await expect(start).toBeEnabled();
     }
 
-    // The chat composer is drawn but inert.
-    await expect(page.getByLabel("Message the agent")).toBeDisabled();
+    // The chat composer takes text; Send waits for some.
+    await expect(page.getByLabel("Message the agent")).toBeEditable();
     await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
 
     // Panes stack rather than overflow sideways.
@@ -151,7 +108,7 @@ async function run(browser, width, height) {
     // The page reconnects to a restarted server and takes its state.
     await stopServer(server);
     await expect(titlebar).toContainText("Reconnecting…");
-    server = await startServer(server.port);
+    server = await startServer(server.port, { home: server.home });
     await expect(titlebar).not.toContainText("Reconnecting…", { timeout: 15_000 });
     await expect(titlebar).toContainText(nameOf(DEFAULT));
     await expect(page.getByLabel("Project")).toHaveValue(DEFAULT);
@@ -162,25 +119,6 @@ async function run(browser, width, height) {
     await page.close();
     await stopServer(server);
   }
-}
-
-/** The app's last state, as its WebSocket delivered it. */
-function watchState(page) {
-  const app = { state: null };
-  page.on("websocket", (ws) =>
-    ws.on("framereceived", ({ payload }) => {
-      const msg = JSON.parse(payload);
-      if (msg.type === "state") app.state = msg.state;
-    }),
-  );
-  return app;
-}
-
-function watchErrors(page) {
-  const errors = [];
-  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-  page.on("pageerror", (e) => errors.push(String(e)));
-  return errors;
 }
 
 /** The session's `/state.input`, read by the test (the page never talks to it). */
@@ -200,7 +138,7 @@ async function gameViewNoGpu(browser) {
   try {
     await page.goto(server.url);
     await expect(view).toHaveText(/^No game running/);
-    await expect(view.getByRole("button", { name: "Start" })).toBeEnabled();
+    await expect(view.getByRole("button", { name: "Start game" })).toBeEnabled();
     await expect(picker).toHaveValue("hidden");
     // Arrow keys on the picker stay with it rather than switching tabs.
     await picker.focus();
@@ -219,7 +157,7 @@ async function gameViewNoGpu(browser) {
       return;
     }
 
-    await view.getByRole("button", { name: "Start" }).click();
+    await view.getByRole("button", { name: "Start game" }).click();
     await expect(view).toContainText("Frames need a GPU session", { timeout: 60_000 });
     const debugUrl = app.state.session.status.debug_url;
 
@@ -340,7 +278,7 @@ async function gameViewGpu(browser) {
   };
   try {
     await page.goto(server.url);
-    await view.getByRole("button", { name: "Start" }).click();
+    await view.getByRole("button", { name: "Start game" }).click();
     await expect(img).toBeVisible({ timeout: 60_000 });
     const debugUrl = app.state.session.status.debug_url;
     const port = Number(new URL(debugUrl).port);
@@ -416,7 +354,7 @@ async function gameViewGpu(browser) {
     }
 
     // Stopping the session ends the stream.
-    await page.getByRole("complementary", { name: "Explorer" }).getByRole("button", { name: "Stop" }).click();
+    await page.getByRole("button", { name: "Stop game" }).click();
     await expect(view).toHaveText(/^No game running/);
     await expect.poll(() => openStreams(port)).toBe(0);
     expect(errors, "console errors").toEqual([]);

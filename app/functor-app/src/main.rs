@@ -136,6 +136,8 @@ async fn main() -> std::io::Result<ExitCode> {
         Some(fixture) => Agents::Fake(std::path::absolute(fixture)?),
         None => Agents::Real,
     };
+    state.harnesses = agents.available();
+    state.harness_choice = store::load_harnesses(&home, &state);
     let (tx, events) = mpsc::unbounded_channel();
     let driver = Driver::new(functor, agents, home, tx);
     if args.print {

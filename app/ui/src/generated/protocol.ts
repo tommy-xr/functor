@@ -38,12 +38,20 @@ no_gpu: boolean,
 /**
  * Every project's tasks, by id; their transcripts travel separately.
  */
-tasks: Array<Task>, };
+tasks: Array<Task>, 
+/**
+ * The agents this machine can run, in the order the picker lists them.
+ */
+harnesses: Array<Harness>, 
+/**
+ * Per project path, the agent last picked for its new tasks.
+ */
+harness_choice: { [key in string]: Harness }, };
 
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, };
 
 /**
  * What `functor.json` declares to run.

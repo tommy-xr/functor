@@ -1,5 +1,6 @@
 //! `AppState` and the pure `update` that steps it.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,10 @@ pub struct AppState {
     pub no_gpu: bool,
     /// Every project's tasks, by id; their transcripts travel separately.
     pub tasks: Vec<Task>,
+    /// The agents this machine can run, in the order the picker lists them.
+    pub harnesses: Vec<Harness>,
+    /// Per project path, the agent last picked for its new tasks.
+    pub harness_choice: BTreeMap<String, Harness>,
     /// The next new task's id: above every id on disk, readable or not, so
     /// no new task overwrites a file the store skipped.
     #[serde(skip)]
@@ -65,6 +70,8 @@ impl AppState {
             session_mode: SessionMode::default(),
             no_gpu: false,
             tasks: Vec::new(),
+            harnesses: Vec::new(),
+            harness_choice: BTreeMap::new(),
             next_task: 1,
         }
     }
@@ -130,6 +137,8 @@ pub enum Command {
     StopRun { task: u64, run: u64 },
     /// Write `task` (with its transcript) to the store for the project at `dir`.
     SaveTask { dir: PathBuf, task: Box<Task> },
+    /// Remember `harness` as the pick for new tasks in the project at `dir`.
+    SaveHarness { dir: PathBuf, harness: Harness },
 }
 
 /// One agent run for the shell to start.
@@ -209,6 +218,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (!live && start(&mut state, &mut commands), true)
         }
         Event::Client(ClientMsg::StopSession) => (stop(&mut state, &mut commands), true),
+        Event::Client(ClientMsg::SetHarness { harness }) => {
+            (set_harness(&mut state, harness, &mut commands), true)
+        }
         Event::Session { id, event } => (on_session(&mut state, id, event, &mut commands), false),
         // A listing for a project switched away from is dropped.
         Event::Files { path, files } => {
@@ -275,7 +287,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     // A client message that changed nothing still answers with the state, so
     // the sender sees what is active.
     let msg = || ServerMsg::State {
-        state: state.clone(),
+        state: Box::new(state.clone()),
     };
     if changed {
         // Before any transcript items, so a client knows their task first.
@@ -330,6 +342,26 @@ fn stop(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     }
     session.status = SessionStatus::Stopped;
     session.pid = None;
+    true
+}
+
+/// Records `harness` as the active project's pick; false when it already is.
+fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Command>) -> bool {
+    let Some(path) = &state.active else {
+        return false;
+    };
+    if !state.harnesses.contains(&harness) {
+        let name = harness.name();
+        return reject(commands, format!("{name} is not available on this machine"));
+    }
+    if state.harness_choice.get(path) == Some(&harness) {
+        return false;
+    }
+    commands.push(Command::SaveHarness {
+        dir: project_dir(Path::new(&state.repo_root), path),
+        harness,
+    });
+    state.harness_choice.insert(path.clone(), harness);
     true
 }
 
@@ -638,6 +670,8 @@ mod tests {
             session_mode: SessionMode::Hidden,
             no_gpu: false,
             tasks: vec![],
+            harnesses: vec![Harness::Claude, Harness::Codex],
+            harness_choice: BTreeMap::new(),
             next_task: 1,
         }
     }
@@ -686,7 +720,7 @@ mod tests {
 
     fn broadcast(state: &AppState) -> Command {
         Command::Broadcast(ServerMsg::State {
-            state: state.clone(),
+            state: Box::new(state.clone()),
         })
     }
 
@@ -723,7 +757,9 @@ mod tests {
         assert_eq!(next, state());
         assert_eq!(
             commands,
-            vec![Command::Reply(ServerMsg::State { state: state() })]
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(state())
+            })]
         );
     }
 
@@ -759,7 +795,9 @@ mod tests {
             assert_eq!(next, state());
             assert_eq!(
                 commands,
-                vec![Command::Reply(ServerMsg::State { state: state() })]
+                vec![Command::Reply(ServerMsg::State {
+                    state: Box::new(state())
+                })]
             );
         }
     }
@@ -796,7 +834,9 @@ mod tests {
             assert_eq!(next, before);
             assert_eq!(
                 commands,
-                vec![Command::Reply(ServerMsg::State { state: before })]
+                vec![Command::Reply(ServerMsg::State {
+                    state: Box::new(before)
+                })]
             );
         }
     }
@@ -911,7 +951,9 @@ mod tests {
         let (next, commands) = update(next.clone(), client(ClientMsg::StopSession));
         assert_eq!(
             commands,
-            vec![Command::Reply(ServerMsg::State { state: next })]
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(next)
+            })]
         );
     }
 
@@ -1028,7 +1070,9 @@ mod tests {
         assert_eq!(again, next);
         assert_eq!(
             commands,
-            vec![Command::Reply(ServerMsg::State { state: next })]
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(next)
+            })]
         );
     }
 
@@ -1109,7 +1153,7 @@ mod tests {
             assert_eq!(input(&msg.to_string()), wire);
         }
         let json = serde_json::to_value(ServerMsg::State {
-            state: with_session(1, Some(9), running(Some(12))),
+            state: Box::new(with_session(1, Some(9), running(Some(12)))),
         })
         .unwrap();
         assert_eq!(json["type"], "state");
@@ -1499,6 +1543,66 @@ mod tests {
     }
 
     #[test]
+    fn the_harness_pick_is_remembered_per_project() {
+        let pick = |harness| client(ClientMsg::SetHarness { harness });
+        let (s, commands) = update(state(), pick(Harness::Codex));
+        assert_eq!(s.harness_choice["examples/a"], Harness::Codex);
+        assert_eq!(
+            commands,
+            vec![
+                Command::SaveHarness {
+                    dir: PathBuf::from("/repo/examples/a"),
+                    harness: Harness::Codex
+                },
+                broadcast(&s)
+            ]
+        );
+        // The same pick again changes nothing; another project keeps its own.
+        let (s, commands) = update(s, pick(Harness::Codex));
+        assert_eq!(
+            commands,
+            vec![Command::Reply(ServerMsg::State {
+                state: Box::new(s.clone())
+            })]
+        );
+        let (s, _) = update(s, switch("examples/b"));
+        let (s, _) = update(s, pick(Harness::Claude));
+        assert_eq!(
+            s.harness_choice,
+            BTreeMap::from([
+                ("examples/a".to_string(), Harness::Codex),
+                ("examples/b".to_string(), Harness::Claude)
+            ])
+        );
+        // An agent this machine does not have is refused.
+        let only_claude = AppState {
+            harnesses: vec![Harness::Claude],
+            ..state()
+        };
+        let (next, commands) = update(only_claude.clone(), pick(Harness::Codex));
+        assert_eq!(next, only_claude);
+        assert_eq!(
+            commands,
+            vec![
+                Command::Reply(ServerMsg::Rejected {
+                    reason: "codex is not available on this machine".to_string()
+                }),
+                Command::Reply(ServerMsg::State {
+                    state: Box::new(only_claude)
+                })
+            ]
+        );
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"set_harness","harness":"codex"}"#).unwrap();
+        assert_eq!(
+            msg,
+            ClientMsg::SetHarness {
+                harness: Harness::Codex
+            }
+        );
+    }
+
+    #[test]
     fn task_messages_are_type_tagged() {
         let msg: ClientMsg =
             serde_json::from_str(r#"{"type":"new_task","message":"hi","harness":"codex"}"#)
@@ -1526,7 +1630,7 @@ mod tests {
         );
         // The state carries task summaries, not transcripts.
         let json = serde_json::to_value(ServerMsg::State {
-            state: finished_task(),
+            state: Box::new(finished_task()),
         })
         .unwrap();
         assert_eq!(

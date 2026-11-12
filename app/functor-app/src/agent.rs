@@ -69,6 +69,19 @@ pub enum Agents {
 }
 
 impl Agents {
+    /// The harnesses tasks can run with: those whose CLI is on `PATH`, or
+    /// every one under the fake agent.
+    pub fn available(&self) -> Vec<Harness> {
+        let all = [Harness::Claude, Harness::Codex];
+        match self {
+            Self::Fake(_) => all.to_vec(),
+            Self::Real => all
+                .into_iter()
+                .filter(|h| mis_agent::which(h.name()))
+                .collect(),
+        }
+    }
+
     fn get(&self, harness: Harness) -> Box<dyn Agent> {
         match (self, harness) {
             (Self::Fake(fixture), _) => Box::new(FakeAgent {

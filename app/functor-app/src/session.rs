@@ -112,6 +112,11 @@ impl Driver {
                     eprintln!("functor-app: cannot save task {}: {e}", task.id);
                 }
             }
+            Command::SaveHarness { dir, harness } => {
+                if let Err(e) = crate::store::save_harness(&self.home, &dir, harness) {
+                    eprintln!("functor-app: cannot save the agent choice: {e}");
+                }
+            }
             // Clients are the server's (`server::run`); `--print` has none.
             Command::Reply(_) | Command::Broadcast(_) => {}
         }
