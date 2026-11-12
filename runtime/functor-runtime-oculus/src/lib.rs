@@ -1960,20 +1960,6 @@ pub fn android_main(app: AndroidApp) {
                 );
             }
         }
-        // The pairing overlay: the user's presses (or a sample injected on
-        // this device's own debug port) drive it; shown over any game.
-        let pairing = debug.link.as_ref().and_then(|client| {
-            let shown = client.pairing();
-            let sample = if debug.xr_override_local {
-                debug.xr_override.as_ref()
-            } else {
-                debug.input.xr.as_ref()
-            };
-            if let Some(gesture) = debug.link_gestures.step(sample, shown.is_some(), Instant::now()) {
-                client.send(link::command(gesture));
-            }
-            shown.map(link::pairing_state)
-        });
         // A load job that landed answers its `/load-project`: installed
         // here, between frames (and while the session is stopped), so the
         // clock restarts before the new game's first frame.
@@ -2083,6 +2069,22 @@ pub fn android_main(app: AndroidApp) {
                     })
             })
             .flatten();
+        // The pairing overlay, shown over any game. Driven by the live sample
+        // (read here, before any injected one replaces it) or by a sample
+        // injected on this device's own debug port, never the link's.
+        let pairing = debug.link.as_ref().and_then(|client| {
+            let shown = client.pairing();
+            let sample = if debug.xr_override_local {
+                debug.xr_override.as_ref()
+            } else {
+                debug.input.xr.as_ref()
+            };
+            if let Some(gesture) = debug.link_gestures.step(sample, shown.is_some(), Instant::now()) {
+                log::info!("device link: {gesture:?} pressed");
+                client.send(link::command(gesture));
+            }
+            shown.map(link::pairing_state)
+        });
 
         if !xr_frame_state.should_render {
             // `should_render` controls layer submission, not tracking

@@ -326,6 +326,7 @@ impl<H: Host> Worker<H> {
             match ended {
                 Ended::Gone => return,
                 Ended::PairRequested => {
+                    log::info!("device link: closed to pair again");
                     self.wants_pairing = true;
                     continue;
                 }
@@ -412,6 +413,8 @@ impl<H: Host> Worker<H> {
         };
         let want = desktop.map(|d| hex(&d));
         let deadline = Instant::now() + BROWSE;
+        // What answered, for the log when ours did not.
+        let mut seen = Vec::new();
         let result = loop {
             match self.commands.try_recv() {
                 // Nothing to confirm yet.
@@ -421,13 +424,16 @@ impl<H: Host> Worker<H> {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                log::info!("device link: no desktop {want:?} among {seen:?}");
                 break Found::NotFound;
             };
             let info = match found.recv_timeout(left.min(Duration::from_millis(250))) {
                 Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => info,
                 _ => continue,
             };
-            if want.is_some() && info.get_property_val_str("id") != want.as_deref() {
+            let id = info.get_property_val_str("id");
+            seen.push(format!("{} {id:?} {:?}", info.get_fullname(), info.get_addresses_v4()));
+            if want.is_some() && id != want.as_deref() {
                 continue;
             }
             if let Some(ip) = info.get_addresses_v4().into_iter().next() {

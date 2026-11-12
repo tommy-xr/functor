@@ -80,10 +80,12 @@ async fn app_with(link: &[&str]) -> App {
         .strip_prefix("[functor-app] device link on ")
         .unwrap_or_else(|| panic!("unexpected second line: {line:?}"))
         .to_string();
-    // Keep draining, so the app never blocks on a full pipe.
+    // Keep draining, so the app never blocks on a full pipe; shown with a
+    // failure (or `--nocapture`).
     std::thread::spawn(move || {
-        let mut sink = Vec::new();
-        let _ = stderr.read_to_end(&mut sink);
+        for line in stderr.lines().map_while(Result::ok) {
+            eprintln!("{line}");
+        }
     });
     let socket = tokio_tungstenite::connect_async(&ws).await.unwrap().0;
     App {
@@ -243,7 +245,12 @@ fn http(
     )?;
     let mut text = String::new();
     stream.read_to_string(&mut text)?;
-    let status = text.split(' ').nth(1).unwrap().parse().unwrap();
+    // An adb forward with nothing behind it answers empty.
+    let status = text
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or(std::io::ErrorKind::UnexpectedEof)?;
     let body = text
         .split_once("\r\n\r\n")
         .map_or("", |(_, b)| b)
@@ -685,10 +692,7 @@ impl Quest {
             serde_json::from_str::<Value>(&body).ok()?["rendered_frames"].as_u64()
         };
         let debug = self.debug.clone();
-        let first = until("the app answers", || {
-            rendered(&debug).filter(|_| self.adb(&["forward", "--list"]).status.success())
-        })
-        .await;
+        let first = until("the app answers", || rendered(&debug)).await;
         until("it renders", || rendered(&debug).filter(|n| *n > first)).await;
     }
 
@@ -700,9 +704,10 @@ impl Quest {
     /// Holds `controls` (an `xr` sample's hand fields) for `ms`, then lets go.
     async fn press(&self, url: &str, hand: &str, field: &str, ms: u64) {
         let sample = |on: bool| json!({"type": "xr", hand: {"active": true, field: on}}).to_string();
-        assert_eq!(post(url, "/input", &sample(true)).unwrap().0, 200);
+        let ok = |sent: (u16, String)| assert_eq!(sent.0, 200, "{}", sent.1);
+        ok(post(url, "/input", &sample(true)).unwrap());
         tokio::time::sleep(Duration::from_millis(ms)).await;
-        assert_eq!(post(url, "/input", &sample(false)).unwrap().0, 200);
+        ok(post(url, "/input", &sample(false)).unwrap());
     }
 
     fn capture(&self, name: &str) {
@@ -843,7 +848,9 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
     // The tunnel's presses never reach the overlay: no pairing starts.
     quest.press(&tunnel, "left", "menu_pressed", 1500).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(quest.link()["pairing"].is_null(), "{}", quest.link());
+    let pairing = quest.link()["pairing"].clone();
+    // Only the outcome of the pairing above may still show.
+    assert!(pairing.is_null() || pairing["stage"] == "paired", "{pairing}");
     assert_eq!(post(&tunnel, "/input", r#"{"type":"xr_clear"}"#).unwrap().0, 200);
 
     // Restarted, it relinks by itself: no new request on the desktop.
