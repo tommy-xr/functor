@@ -816,6 +816,16 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
     quest.launch().await;
     assert_eq!(quest.link()["linked"], false);
 
+    // Without the property, an injected press is the game's alone (as one
+    // from game code reaching this port would be).
+    quest.shell("setprop debug.functor.pair_input 0");
+    quest
+        .press(&quest.debug, "left", "menu_pressed", 1500)
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(quest.link()["pairing"].is_null(), "{}", quest.link());
+    quest.shell("setprop debug.functor.pair_input 1");
+
     // Hold the menu button: the overlay looks for a desktop and shows a code.
     quest
         .press(&quest.debug, "left", "menu_pressed", 1500)
