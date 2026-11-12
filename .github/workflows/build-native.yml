@@ -109,7 +109,7 @@ jobs:
       # `functor mcp --http` against the real binary (cargo builds it for the
       # test; no GPU: its one launched game runs headless).
       - name: Test MCP over HTTP
-        run: cargo test -p functor-cli --test mcp_http
+        run: cargo test -p functor-cli --test mcp_http --test default_app
 
       # `functor init`'s templates: each one builds and passes its expects, the
       # table matches the template directories (examples included), `--list`

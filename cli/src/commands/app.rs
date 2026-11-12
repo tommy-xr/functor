@@ -47,15 +47,19 @@ pub fn find(
     Err(looked.join(", "))
 }
 
-/// Whether a `functor-app` can be found (see `find`).
-pub fn installed() -> bool {
+/// `find` for this process: its own path, environment and PATH.
+fn locate(functor: Option<&Path>) -> Result<PathBuf, String> {
     find(
-        std::env::current_exe().ok().as_deref(),
+        functor,
         std::env::var_os("FUNCTOR_APP_BIN"),
         std::env::var_os("PATH"),
         Path::is_file,
     )
-    .is_ok()
+}
+
+/// Whether a `functor-app` can be found.
+pub fn installed() -> bool {
+    locate(std::env::current_exe().ok().as_deref()).is_ok()
 }
 
 /// `functor-app`'s arguments: this CLI, the project directory, then `extra`.
@@ -75,12 +79,7 @@ pub fn execute(dir: Option<&Path>, extra: &[String]) -> io::Error {
         Ok(exe) => exe,
         Err(e) => return e,
     };
-    let app = match find(
-        Some(&functor),
-        std::env::var_os("FUNCTOR_APP_BIN"),
-        std::env::var_os("PATH"),
-        Path::is_file,
-    ) {
+    let app = match locate(Some(&functor)) {
         Ok(app) => app,
         Err(looked) => {
             return io::Error::new(

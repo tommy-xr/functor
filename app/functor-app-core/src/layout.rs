@@ -207,7 +207,8 @@ pub struct GamePlacement {
     pub dock: Option<Dock>,
 }
 
-/// Where [`LayoutOp::Open`] puts a view that is not open yet.
+/// Where [`LayoutOp::Open`] puts a view. One already open moves only to a
+/// named `Pane`; otherwise it is shown where it is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -228,8 +229,8 @@ pub enum Target {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutOp {
-    /// Shows `view` and focuses its pane: where it is if already open, else
-    /// added last in `target`.
+    /// Shows `view` and focuses its pane: added last in `target`, or if
+    /// already open, where it is (moved there when `target` names a pane).
     Open {
         view: View,
         target: Target,
