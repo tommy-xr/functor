@@ -25,7 +25,7 @@ use glfw::{Action, Key};
 use glow::*;
 
 use crate::game::Game;
-use functor_runtime_common::frame_stream::{FrameTap, StreamFrame};
+use functor_runtime_common::frame_stream::{FrameTapOwner, StreamFrame};
 use functor_runtime_common::FramePacer;
 use functor_runtime_common::frame_telemetry::{us, FrameRecord, FrameTelemetry};
 use functor_runtime_common::reload_indicator::{ReloadIndicator, ReloadIndicatorPainter};
@@ -2321,7 +2321,7 @@ Escape releases while captured"
         // `/state.rendered_frames`: buffer swaps so far.
         let mut rendered_frames: u64 = 0;
         // `GET /stream`'s frame tap, made by the first stream request.
-        let mut stream_tap: Option<Arc<FrameTap>> = None;
+        let mut stream_tap: Option<FrameTapOwner> = None;
         // Hidden live sessions pace toward the display's rate; the other
         // unsynced runs keep their fixed sleep below.
         let monitor_hz = glfw.with_primary_monitor(|_, monitor| {
@@ -4086,7 +4086,7 @@ Escape again to quit"
                         }
                         debug_server::DebugRequest::Stream(resp) => {
                             let tap = stream_tap.get_or_insert_with(Default::default);
-                            let _ = resp.send(Ok(tap.clone()));
+                            let _ = resp.send(Ok(tap.share()));
                             continue;
                         }
                         req => req,
@@ -4190,7 +4190,7 @@ Escape again to quit"
                 }
             }
             // The last client left: drop the tap and its held frame.
-            if stream_tap.as_ref().is_some_and(|tap| Arc::strong_count(tap) == 1) {
+            if stream_tap.as_ref().is_some_and(FrameTapOwner::unshared) {
                 stream_tap = None;
             }
             reload.poll(Instant::now(), rendered_frames);
