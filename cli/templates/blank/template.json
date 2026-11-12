@@ -1,0 +1,6 @@
+{
+  "name": "blank",
+  "description": "The smallest game: an empty scene and a camera.",
+  "tags": ["3d"],
+  "kind": "starter"
+}

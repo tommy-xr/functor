@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::changes::FileDiff;
+use crate::layout::LayoutOp;
 use crate::tasks::{Harness, Item};
 use crate::{AppState, SessionMode};
 
@@ -65,6 +66,15 @@ pub enum ClientMsg {
         task: u64,
         tree: String,
     },
+    /// Changes the active project's layout (`AppState::layouts`).
+    Layout {
+        op: LayoutOp,
+    },
+    /// Answered with [`ServerMsg::File`]: the text of `path`, relative to
+    /// the active project's directory.
+    GetFile {
+        path: String,
+    },
 }
 
 /// Keyboard and mouse input in the debug server's `POST /input` shape.
@@ -123,6 +133,15 @@ pub enum ServerMsg {
         tree: Option<String>,
         files: Vec<FileDiff>,
         more: u32,
+        error: Option<String>,
+    },
+    /// `path` of `project` as it is on disk, answering `GetFile`: its
+    /// `text`, or the `error` saying why not (outside the project, too
+    /// large, not UTF-8).
+    File {
+        project: String,
+        path: String,
+        text: Option<String>,
         error: Option<String>,
     },
     /// A message was refused, saying why; nothing changed.

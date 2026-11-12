@@ -229,11 +229,15 @@ npm run check:docs
 The released CLI exposes the same generator as `functor docs` (Markdown to stdout
 by default; `--format json`, `--output <path>`, and `--check <path>` are available).
 
-**Scaffold a game.** `init` creates an embedded Functor Lang starter without overwriting an existing
-`functor.json` or `game.fun`; `3d` is the default template:
+**Scaffold a game.** `init` creates a project from an embedded template without overwriting any
+file the template writes; `3d` is the default. `init --list` prints the templates (`--json`: a JSON
+array). A template is a directory with a `template.json` manifest: starters under `cli/templates/`
+(`3d`, `blank`, `2d`, `fps`, `multiplayer`, `vr`) and complete examples embedded from `examples/`
+(`netpong`, `tetris`); the table is in `cli/src/commands/init.rs`:
 
 ```sh
-./target/debug/functor -d my-game init [3d|fps|multiplayer]
+./target/debug/functor init --list
+./target/debug/functor -d my-game init [<template>]
 ```
 
 **Run / build a game.** The CLI operates on a directory with a `functor.json`

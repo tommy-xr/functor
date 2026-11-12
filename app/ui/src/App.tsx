@@ -1,10 +1,10 @@
-import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
-import type { AppState, Session, SessionMode, Task } from "./generated/protocol";
-import { ChatDock, type CanvasTab } from "./Chat";
-import { DiffView, type DiffTarget } from "./DiffView";
-import { GameView } from "./GameView";
+import { useEffect, useState, type ReactNode } from "react";
+import type { AppState, Session, View as TabView } from "./generated/protocol";
+import { Canvas, type CanvasProps } from "./Canvas";
+import { ChatDock } from "./Chat";
 import { Icon } from "./Icon";
-import { HAS_TOKEN, useAppSocket, type Conn, type DiffMsg, type Notice, type Send } from "./socket";
+import { focusedPane, panesOf, tabTitles, viewKey } from "./layout-model";
+import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 
 
 const VIEWS = ["explorer", "tasks", "devices"] as const;
@@ -13,16 +13,22 @@ type View = (typeof VIEWS)[number];
 const VIEW_LABELS: Record<View, string> = { explorer: "Explorer", tasks: "Tasks", devices: "Devices" };
 
 export function App() {
-  const { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff } = useAppSocket();
+  const { state, conn, send, transcripts, fetchTranscript, accepted, notice, diffs, fetchDiff, files, fetchFile } =
+    useAppSocket();
   const [view, setView] = useView();
-  // Lifted so the chat's cards can switch it.
-  const [tab, setTab] = useState<CanvasTab>("game");
-  // The chat's current task (`null`: a new one), which the Diff tab reviews.
+  // The chat's current task (`null`: a new one).
   const [selected, setSelected] = useState<number | null>(null);
-  const [target, setTarget] = useState<DiffTarget | null>(null);
+  const [target, setTarget] = useState<CanvasProps["target"]>(null);
+  // The chat's actions open or focus a view beside what the user is looking at.
+  const openBeside = (view: TabView) => send({ type: "layout", op: { type: "open", view, target: { kind: "side" } } });
   const viewDiff = (path: string | null) => {
-    setTab("diff");
-    setTarget((t) => ({ path, seq: (t?.seq ?? 0) + 1 }));
+    if (selected === null) return;
+    openBeside({ kind: "changes", task: selected });
+    setTarget((t) => ({ task: selected, path, seq: (t?.seq ?? 0) + 1 }));
+  };
+  const newTask = () => {
+    setSelected(null);
+    document.querySelector<HTMLTextAreaElement>("textarea[aria-label='Message the agent']")?.focus();
   };
   const online = conn === "open" && state !== null;
   const task = state?.tasks.find((t) => t.id === selected && t.project === state.active) ?? null;
@@ -47,9 +53,14 @@ export function App() {
             state={state}
             online={online}
             send={send}
-            tab={tab}
-            onTab={setTab}
-            review={{ task, diff: task ? diffs.get(task.id) : undefined, fetchDiff, notice, target }}
+            diffs={diffs}
+            fetchDiff={fetchDiff}
+            notice={notice}
+            target={target}
+            files={files}
+            fetchFile={fetchFile}
+            currentTask={task}
+            onNewTask={newTask}
           />
           <ChatDock
             state={state}
@@ -59,8 +70,8 @@ export function App() {
             fetchTranscript={fetchTranscript}
             accepted={accepted}
             notice={notice}
-            tab={tab}
-            onTab={setTab}
+            canvasWord={canvasWord(state)}
+            onOpenGame={() => openBeside({ kind: "game" })}
             selected={selected}
             onSelect={setSelected}
             onViewDiff={viewDiff}
@@ -91,9 +102,14 @@ function sessionWord(session: Session | null | undefined): string {
   return session?.status.kind ?? "stopped";
 }
 
-function isLive(session: Session | null | undefined): boolean {
-  const kind = session?.status.kind;
-  return kind === "starting" || kind === "running";
+/** The focused tab, as the composer's context chip names it. */
+function canvasWord(state: AppState | null): string {
+  const layout = state?.active ? state.layouts[state.active] : undefined;
+  const pane = focusedPane(layout);
+  const view = pane?.tabs[pane.active];
+  if (!view) return "Nothing open";
+  const views = panesOf(layout).flatMap((p) => p.tabs);
+  return `${tabTitles(views, state?.tasks ?? []).get(viewKey(view))} tab`;
 }
 
 function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
@@ -159,6 +175,8 @@ function ExplorerPane({ state, online, send }: { state: AppState | null; online:
   const status = session?.status;
   const frame = status?.kind === "running" ? status.frame : null;
   const reason = status?.kind === "failed" || status?.kind === "exited" ? status.reason : null;
+  const openFile = (path: string, side: boolean) =>
+    send({ type: "layout", op: { type: "open", view: { kind: "file", path }, target: { kind: side ? "side" : "focused" } } });
   return (
     <aside className="pane" aria-label="Explorer">
       <section className="stack">
@@ -189,10 +207,29 @@ function ExplorerPane({ state, online, send }: { state: AppState | null; online:
                 : `One of ${projects.length} projects in this repo`}
           </p>
         )}
+        {/* A click opens the file in the focused pane; Alt-click or the side button, beside it. */}
         <ul className="files" aria-label="Files">
           {(state?.files ?? []).map((f) => (
             <li key={f} className={f.endsWith(".fun") ? undefined : "dim"}>
-              {f}
+              <button
+                type="button"
+                className="file-button"
+                disabled={!online}
+                title={`Open ${f} (Alt-click: to the side)`}
+                onClick={(e) => openFile(f, e.altKey)}
+              >
+                {f}
+              </button>
+              <button
+                type="button"
+                className="file-side"
+                disabled={!online}
+                aria-label={`Open ${f} to the side`}
+                title="Open to the side"
+                onClick={() => openFile(f, true)}
+              >
+                <Icon name="split-right" />
+              </button>
             </li>
           ))}
         </ul>
@@ -225,117 +262,5 @@ function PlaceholderPane({ title, children }: { title: string; children: ReactNo
       <h2 className="pane-title">{title}</h2>
       <p className="hint">{children}</p>
     </aside>
-  );
-}
-
-const TABS = [
-  { id: "game", label: "Game" },
-  { id: "code", label: "Code", text: "The project's code will open here." },
-  { id: "diff", label: "Diff" },
-] as const;
-
-/** What the Diff tab shows: the current task's change. */
-type Review = {
-  task: Task | null;
-  diff: DiffMsg | undefined;
-  fetchDiff: (task: number) => void;
-  notice: Notice | null;
-  target: DiffTarget | null;
-};
-
-function Canvas({
-  state,
-  online,
-  send,
-  tab: id,
-  onTab,
-  review,
-}: {
-  state: AppState | null;
-  online: boolean;
-  send: Send;
-  tab: CanvasTab;
-  onTab: (tab: CanvasTab) => void;
-  review: Review;
-}) {
-  const tab = TABS.findIndex((t) => t.id === id);
-  // Arrow keys move between tabs, as in the ARIA tabs pattern.
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    // Only from a tab: the mode picker in the same bar keeps its arrow keys.
-    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
-    if (!step || (e.target as HTMLElement).getAttribute("role") !== "tab") return;
-    const next = TABS[(tab + step + TABS.length) % TABS.length]!;
-    onTab(next.id);
-    document.getElementById(`tab-${next.id}`)?.focus();
-  };
-  const current = TABS[tab]!;
-  return (
-    <main className="canvas">
-      <div className="tabs" role="tablist" aria-label="Canvas" onKeyDown={onKeyDown}>
-        {TABS.map((t, i) => (
-          <button
-            key={t.id}
-            id={`tab-${t.id}`}
-            type="button"
-            role="tab"
-            aria-selected={i === tab}
-            aria-controls="canvas-panel"
-            tabIndex={i === tab ? 0 : -1}
-            onClick={() => onTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-        {current.id === "game" && (
-          <>
-            <span className="spacer" />
-            {/* The one place to stop the game; starting it is the game view's empty state. */}
-            {isLive(state?.session) && (
-              <button type="button" className="button" disabled={!online} onClick={() => send({ type: "stop_session" })}>
-                Stop game
-              </button>
-            )}
-            <ModePicker state={state} online={online} send={send} />
-          </>
-        )}
-      </div>
-      <div className="canvas-body" id="canvas-panel" role="tabpanel" aria-labelledby={`tab-${current.id}`}>
-        {current.id === "game" ? (
-          <GameView state={state} online={online} send={send} />
-        ) : current.id === "diff" ? (
-          <DiffView state={state} online={online} send={send} {...review} />
-        ) : (
-          <div className="placeholder">
-            <p>{current.text}</p>
-          </div>
-        )}
-      </div>
-    </main>
-  );
-}
-
-const MODES: { mode: SessionMode; label: string }[] = [
-  { mode: "hidden", label: "In this window" },
-  { mode: "window", label: "Its own window" },
-];
-
-/** Where the game runs; a change restarts a live session. */
-function ModePicker({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
-  return (
-    <div className="switcher switcher-compact">
-      <select
-        aria-label="Where the game runs"
-        value={state?.session_mode ?? "hidden"}
-        disabled={!online}
-        onChange={(e) => send({ type: "set_session_mode", mode: e.target.value as SessionMode })}
-      >
-        {MODES.map(({ mode, label }) => (
-          <option key={mode} value={mode}>
-            {label}
-          </option>
-        ))}
-      </select>
-      <Icon name="chevron" />
-    </div>
   );
 }

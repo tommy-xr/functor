@@ -2,6 +2,7 @@
 
 mod agent;
 mod changes;
+mod files;
 mod server;
 mod session;
 mod store;
@@ -173,6 +174,8 @@ async fn app(
     }
     let (tasks, highest) = store::load(&home, &state);
     state = update(state, Event::TasksLoaded { tasks }).0;
+    let layouts = store::load_layouts(&home, &state);
+    state = update(state, Event::LayoutsLoaded { layouts }).0;
     if args.print && !args.start_session {
         print!("{}", print(&state));
         return Ok(ExitCode::SUCCESS);

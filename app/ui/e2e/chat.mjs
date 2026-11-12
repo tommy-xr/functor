@@ -143,12 +143,21 @@ async function conversation(browser, width, height) {
     await expect(badge).toHaveText("Waiting on you");
     await idle();
 
-    // Cards switch the canvas.
+    // Cards open or focus a view beside the game, and the composer keeps the keyboard.
+    await input.fill("half-typed");
     await log.getByRole("button", { name: "View diff" }).first().click();
-    await expect(page.getByRole("tab", { name: "Diff" })).toHaveAttribute("aria-selected", "true");
-    await expect(dock.getByRole("listitem").filter({ hasText: "Diff tab" })).toHaveCount(1);
+    const changes = page.getByRole("tab", { name: /^Changes · / });
+    await expect(changes).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator(".pane-box")).toHaveCount(2);
+    await expect(dock.getByRole("listitem").filter({ hasText: /^Changes · .* tab$/ })).toHaveCount(1);
+    await expect(input).toBeFocused();
     await log.getByRole("button", { name: "Open in canvas" }).first().click();
-    await expect(page.getByRole("tab", { name: "Game" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: "Game", exact: true })).toHaveAttribute("aria-selected", "true");
+    // Neither replaced what the other pane shows.
+    await expect(changes).toHaveAttribute("aria-selected", "true");
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue("half-typed");
+    await input.fill("");
 
     // Scrolled up, the log stops following and offers the way back.
     const scroll = () => log.evaluate((el) => ({ top: el.scrollTop, max: el.scrollHeight - el.clientHeight }));

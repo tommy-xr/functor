@@ -11,6 +11,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # The agent runner (claude / codex) and its event types; one pinned revision.
 mis-agent = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
 mis-types = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
+serde = "1.0"
 serde_json = "1.0"
 # Constant-time token comparison (as the CLI's MCP bearer check uses).
 subtle = "2.6"

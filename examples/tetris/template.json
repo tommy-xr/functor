@@ -1,0 +1,6 @@
+{
+  "name": "tetris",
+  "description": "A complete falling-block puzzle with ghost pieces, wall kicks and scoring.",
+  "tags": ["2d", "puzzle", "keyboard"],
+  "kind": "example"
+}
