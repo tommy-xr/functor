@@ -109,6 +109,13 @@ export async function reopen(page, url) {
   await page.goto(url);
 }
 
+/** Each pane's tab names, in reading order. */
+export function tabs(page) {
+  return page.locator(".pane-box").evaluateAll((panes) =>
+    panes.map((p) => [...p.querySelectorAll("[role=tab]")].map((t) => t.textContent)),
+  );
+}
+
 export function stopServer({ child }) {
   if (child.exitCode !== null) return Promise.resolve();
   return new Promise((resolve) => {

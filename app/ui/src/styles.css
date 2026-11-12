@@ -164,11 +164,22 @@ blockquote {
 .canvas {
   flex: 1 1 400px;
   min-width: 0;
+  /* The mini game view floats over it (`.mini`). */
+  position: relative;
   display: flex;
   flex-direction: column;
+  gap: 8px;
   padding: 10px;
   /* Narrow, side-by-side panes stack (see the container query below). */
   container-type: inline-size;
+}
+
+/* The panes, under the mini view; it scrolls when they stack, never the mini. */
+.canvas-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .chat {
@@ -662,10 +673,164 @@ blockquote {
   margin-left: auto;
 }
 
-/* At tab height, so the bar does not grow while the Game tab shows. */
-.pane-game .switcher-compact select {
-  min-height: 30px;
-  font-size: 12.5px;
+/* The game's placement (D21): one segmented control, in a tab bar or the mini strip. */
+.segmented {
+  flex: none;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--bg);
+}
+
+.segmented button {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.segmented button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.segmented button:disabled {
+  opacity: 0.5;
+}
+
+/* The game in its own window: one slim line across the canvas's top. */
+.game-note {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.game-note p {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+/* Mini: a small card over the panes, placed by the page (miniRect). */
+.mini {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+.mini-dragging {
+  opacity: 0.9;
+  user-select: none;
+}
+
+/* 36px tall: MINI_STRIP in Canvas.tsx. */
+.mini-strip {
+  flex: none;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 2px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.mini-dragging .mini-strip {
+  cursor: grabbing;
+}
+
+.mini-grip {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mini-grip:not(:disabled) {
+  cursor: grab;
+}
+
+.mini-strip .icon-button {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+
+.mini-strip .icon-button .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.mini-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.mini .game {
+  border-width: 1px 0 0;
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+}
+
+/* The resize handle: the corner facing the canvas's middle. */
+.mini-resize {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  touch-action: none;
+}
+
+.mini-bottom-right .mini-resize {
+  left: -4px;
+  top: -4px;
+  cursor: nwse-resize;
+}
+
+.mini-bottom-left .mini-resize {
+  right: -4px;
+  top: -4px;
+  cursor: nesw-resize;
+}
+
+.mini-top-right .mini-resize {
+  left: -4px;
+  bottom: -4px;
+  cursor: nesw-resize;
+}
+
+.mini-top-left .mini-resize {
+  right: -4px;
+  bottom: -4px;
+  cursor: nwse-resize;
 }
 
 .pane-actions .icon-button {
@@ -1003,16 +1168,6 @@ blockquote {
 
 .diff-more {
   margin: 0 12px 10px;
-}
-
-/* The picker in the tab bar: the project switcher's look, at tab height. */
-.switcher-compact select {
-  min-height: 36px;
-  padding: 0 32px 0 12px;
-  border-radius: var(--radius-m);
-  font-family: var(--sans);
-  font-size: 13px;
-  color: var(--text-2);
 }
 
 /* Game view: frames letterboxed in one dark area, one line for any other state. */
@@ -1715,10 +1870,14 @@ blockquote {
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
-  /* Bounded, so a long file scrolls inside its pane rather than the page. */
+  /* Bounded, so a long file scrolls inside its pane rather than the page;
+     the panes scroll, so the mini view stays put over them. */
   .canvas {
     height: 85vh;
     min-height: 480px;
+    overflow: hidden;
+  }
+  .canvas-body {
     overflow: auto;
   }
 }

@@ -30,12 +30,9 @@ git: GitInfo | null,
 tracks_changes: boolean, 
 /**
  * The active project's game session; `None` until one first starts.
+ * It runs as its project's game placement says (`Layout::game`).
  */
 session: Session | null, 
-/**
- * Where sessions run; a change restarts a live one.
- */
-session_mode: SessionMode, 
 /**
  * Sessions run `--headless` (`functor-app --no-gpu`), so there are no frames.
  */
@@ -78,7 +75,9 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "set_session_mode", mode: SessionMode, } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, };
+
+export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
 export type DiffLine = { kind: LineKind, 
 /**
@@ -90,6 +89,11 @@ text: string, };
  * `Right`: the second child sits right of the first; `Down`: below it.
  */
 export type Direction = "right" | "down";
+
+/**
+ * Where the Game tab was when it left its pane, so docking puts it back.
+ */
+export type Dock = { pane: number, index: number, };
 
 /**
  * What `functor.json` declares to run.
@@ -128,6 +132,12 @@ lines: Array<DiffLine>, omitted: Omitted | null, };
  */
 export type GameInput = { "type": "key", key: string, down: boolean, } | { "type": "mouse_move", x: number, y: number, } | { "type": "mouse_button", button: MouseButton, down: boolean, } | { "type": "mouse_wheel", delta: number, };
 
+export type GamePlacement = { placement: Placement, mini: Mini, 
+/**
+ * Set when the Game tab leaves a pane; taken when it comes back.
+ */
+dock: Dock | null, };
+
 export type GitInfo = { 
 /**
  * `HEAD` when detached.
@@ -156,15 +166,27 @@ root: Node | null,
  * The pane views open in by default; a pane of `root` exactly when
  * there is one.
  */
-focus: number | null, };
+focus: number | null, 
+/**
+ * Where the game view shows. Absent from layouts saved before it
+ * existed, which load as a pane.
+ */
+game: GamePlacement, };
 
 /**
  * A change to the layout. Ops naming a pane or split that is gone (another
  * window changed the layout first) change nothing.
  */
-export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" };
+export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "set_mini", mini: Mini, };
 
 export type LineKind = "hunk" | "context" | "added" | "removed" | "note";
+
+/**
+ * The mini view: the canvas corner it sits in and its width in CSS
+ * pixels ([`MINI_MIN`]..=[`MINI_MAX`]); its height follows the game's
+ * aspect ratio, and the page shrinks it to fit a smaller canvas.
+ */
+export type Mini = { corner: Corner, width: number, };
 
 export type MouseButton = "left" | "right" | "middle";
 
@@ -192,6 +214,11 @@ tabs: Array<View>,
  * Index of the shown tab in `tabs` (0 when empty).
  */
 active: number, };
+
+/**
+ * Where the project's one game view shows (D21).
+ */
+export type Placement = "pane" | "mini" | "window";
 
 export type Project = { 
 /**
@@ -234,11 +261,6 @@ id: number,
  * The child's process id once spawned.
  */
 pid: number | null, status: SessionStatus, };
-
-/**
- * Where the session's game shows; the user picks it above the game view.
- */
-export type SessionMode = "hidden" | "window";
 
 export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "kind": "running", debug_url: string, frame: number | null, 
 /**

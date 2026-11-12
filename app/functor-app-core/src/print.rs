@@ -1,7 +1,7 @@
 //! The `--print` text dump of the state.
 
 use crate::changes::Change;
-use crate::layout::{Direction, Layout, Node, View};
+use crate::layout::{Corner, Direction, GamePlacement, Layout, Node, Placement, View};
 use crate::projects::Entries;
 use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 
@@ -13,6 +13,7 @@ use crate::{AppState, Display, Item, SessionStatus, Task, TaskStatus};
 /// active: examples/hello
 /// session: running pid 4242 http://127.0.0.1:52011 frame 30
 /// mode: hidden
+/// placement: pane
 /// layout: right 50% (>#1[*game] | #3[*file:game.fun, changes:1])
 /// projects: 2
 /// * examples/hello (hello): entry game.fun
@@ -32,6 +33,7 @@ pub fn print(state: &AppState) -> String {
     ];
     if let Some(active) = active {
         let layout = state.layouts.get(active).cloned().unwrap_or_default();
+        lines.push(format!("placement: {}", print_placement(&layout.game)));
         lines.push(format!("layout: {}", print_layout(&layout)));
     }
     lines.push(format!("projects: {}", state.projects.len()));
@@ -231,9 +233,30 @@ fn clip(text: &str) -> String {
     }
 }
 
+/// The game view's placement: `pane`, `window`, or `mini` with its corner
+/// and width, `mini bottom_right 360`.
+fn print_placement(game: &GamePlacement) -> String {
+    let corner = match game.mini.corner {
+        Corner::TopLeft => "top_left",
+        Corner::TopRight => "top_right",
+        Corner::BottomLeft => "bottom_left",
+        Corner::BottomRight => "bottom_right",
+    };
+    match game.placement {
+        Placement::Pane => "pane".to_string(),
+        Placement::Window => "window".to_string(),
+        Placement::Mini => format!("mini {corner} {}", game.mini.width),
+    }
+}
+
 /// How the next (or the live) session runs: `hidden`, `window` or `headless`.
 fn mode(state: &AppState) -> &'static str {
-    match Display::new(state.session_mode, state.no_gpu) {
+    let placement = state
+        .active
+        .as_deref()
+        .map(|a| crate::state::placement(state, a))
+        .unwrap_or_default();
+    match Display::new(placement.session_mode(), state.no_gpu) {
         Display::Headless => "headless",
         Display::Hidden => "hidden",
         Display::Window => "window",
@@ -264,7 +287,7 @@ mod tests {
     use super::*;
     use crate::changes::FileChange;
     use crate::projects::{Project, Role};
-    use crate::{Session, SessionMode};
+    use crate::Session;
 
     #[test]
     fn prints_a_change_with_renames_binaries_and_the_rest_counted() {
@@ -352,7 +375,6 @@ mod tests {
                     surface: Some([800, 600]),
                 },
             }),
-            session_mode: SessionMode::Hidden,
             no_gpu: false,
             tasks: vec![],
             harnesses: vec![],
@@ -366,6 +388,7 @@ repo: /src/functor
 active: examples/hello
 session: running pid 4242 http://127.0.0.1:52011 frame 30
 mode: hidden
+placement: pane
 layout: right 60% (#1[game, *file:game.fun] | down 50% (>#2[*changes:2, task:2] | #5[]))
 projects: 3
 * examples/hello (hello): entry game.fun
@@ -406,6 +429,7 @@ projects: 3
                 }),
             }),
             focus: Some(2),
+            game: GamePlacement::default(),
         }
     }
 
@@ -415,10 +439,23 @@ projects: 3
         assert_eq!(
             print_layout(&Layout {
                 root: None,
-                focus: None
+                focus: None,
+                game: GamePlacement::default(),
             }),
             "empty"
         );
+    }
+
+    #[test]
+    fn prints_the_placement() {
+        let mut game = GamePlacement::default();
+        assert_eq!(print_placement(&game), "pane");
+        game.placement = Placement::Window;
+        assert_eq!(print_placement(&game), "window");
+        game.placement = Placement::Mini;
+        game.mini.corner = Corner::TopLeft;
+        game.mini.width = 480;
+        assert_eq!(print_placement(&game), "mini top_left 480");
     }
 
     #[test]
@@ -431,7 +468,6 @@ projects: 3
             git: None,
             tracks_changes: false,
             session: None,
-            session_mode: SessionMode::Window,
             no_gpu: false,
             tasks: vec![],
             harnesses: vec![],
@@ -440,7 +476,7 @@ projects: 3
         };
         assert_eq!(
             print(&state),
-            "repo: /tmp/empty\nactive: none\nsession: stopped\nmode: window\nprojects: 0\n"
+            "repo: /tmp/empty\nactive: none\nsession: stopped\nmode: hidden\nprojects: 0\n"
         );
         let no_gpu = AppState {
             no_gpu: true,
@@ -460,7 +496,6 @@ projects: 3
                 git: None,
                 tracks_changes: false,
                 session: Some(Session { id: 1, pid, status }),
-                session_mode: SessionMode::Hidden,
                 no_gpu: false,
                 tasks: vec![],
                 harnesses: vec![],
@@ -529,7 +564,6 @@ projects: 3
             git: None,
             tracks_changes: false,
             session: None,
-            session_mode: SessionMode::Hidden,
             no_gpu: false,
             tasks: vec![Task {
                 id: 3,

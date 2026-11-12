@@ -2,7 +2,7 @@
 // titles, and which keys are layout shortcuts. The layout itself is the
 // core's (`AppState.layouts`); the page only renders it and sends ops.
 
-import type { Layout, Pane, Task, View } from "./generated/protocol";
+import type { Layout, Pane, Placement, Task, View } from "./generated/protocol";
 
 /** A view as a string, for React keys, DOM ids and comparisons. */
 export function viewKey(view: View): string {
@@ -30,6 +30,11 @@ export function panesOf(layout: Layout | null | undefined): Pane[] {
   };
   walk(layout?.root ?? null);
   return out;
+}
+
+/** Where the game view shows; a pane until a layout says otherwise. */
+export function placementOf(layout: Layout | null | undefined): Placement {
+  return layout?.game.placement ?? "pane";
 }
 
 /** The pane with the focus, if any. */

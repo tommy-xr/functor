@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::changes::Change;
-use crate::layout::{Layout, LayoutOp, View};
+use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, GameInput, ServerMsg};
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
@@ -33,9 +33,8 @@ pub struct AppState {
     /// (snapshot, diff, keep, revert). Off outside git.
     pub tracks_changes: bool,
     /// The active project's game session; `None` until one first starts.
+    /// It runs as its project's game placement says (`Layout::game`).
     pub session: Option<Session>,
-    /// Where sessions run; a change restarts a live one.
-    pub session_mode: SessionMode,
     /// Sessions run `--headless` (`functor-app --no-gpu`), so there are no frames.
     pub no_gpu: bool,
     /// Every project's tasks, by id; their transcripts travel separately.
@@ -76,7 +75,6 @@ impl AppState {
             git: None,
             tracks_changes: false,
             session: None,
-            session_mode: SessionMode::default(),
             no_gpu: false,
             tasks: Vec::new(),
             harnesses: Vec::new(),
@@ -245,14 +243,6 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 state.files.clear();
                 state.active = Some(path);
                 // The session follows the active project.
-                restart_live(&mut state, &mut commands);
-            }
-            (switch, true)
-        }
-        Event::Client(ClientMsg::SetSessionMode { mode }) => {
-            let switch = state.session_mode != mode;
-            if switch {
-                state.session_mode = mode;
                 restart_live(&mut state, &mut commands);
             }
             (switch, true)
@@ -432,13 +422,26 @@ fn restart_live(state: &mut AppState, commands: &mut Vec<Command>) {
 }
 
 /// Starts a session for the active project; false when there is none.
+/// Placed in a pane, its Game tab opens in the focused pane if it is not
+/// open: a live session in a pane always has its tab (see `layout_op`).
 fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
-    let Some(path) = &state.active else {
+    let Some(path) = state.active.clone() else {
         return false;
     };
+    let mut layout = state.layouts.get(&path).cloned().unwrap_or_default();
+    let placement = layout.game.placement;
+    if placement == Placement::Pane && layout.find(&View::Game).is_none() {
+        let open = LayoutOp::Open {
+            view: View::Game,
+            target: Target::Focused,
+        };
+        if layout.apply(open, |_| Ok(())) == Ok(true) {
+            save_layout(state, &path, layout, commands);
+        }
+    }
     let id = state.session.as_ref().map_or(1, |s| s.id + 1);
-    let dir = project_dir(Path::new(&state.repo_root), path);
-    let display = Display::new(state.session_mode, state.no_gpu);
+    let dir = project_dir(Path::new(&state.repo_root), &path);
+    let display = Display::new(placement.session_mode(), state.no_gpu);
     commands.push(Command::StartSession { id, dir, display });
     state.session = Some(Session {
         id,
@@ -484,20 +487,45 @@ fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Comman
     true
 }
 
-/// Applies `op` to the active project's layout.
+/// Applies `op` to the active project's layout. A live game in a pane
+/// keeps its tab: closing it is refused (Stop game, or another placement,
+/// first). A placement whose session runs differently restarts it.
 fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<Command>) -> bool {
     let Some(project) = state.active.clone() else {
         return false;
     };
-    let mut layout = state.layouts.get(&project).cloned().unwrap_or_default();
+    let before = state.layouts.get(&project).cloned().unwrap_or_default();
+    let mut layout = before.clone();
     match layout.apply(op, |view| check_view(state, &project, view)) {
         Ok(true) => {
+            let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
+            if live
+                && layout.game.placement == Placement::Pane
+                && layout.find(&View::Game).is_none()
+            {
+                let reason = "the game is running: stop it, or switch it to Mini, to close its tab";
+                return reject(commands, reason.to_string());
+            }
+            let restart =
+                before.game.placement.session_mode() != layout.game.placement.session_mode();
             save_layout(state, &project, layout, commands);
+            if restart {
+                restart_live(state, commands);
+            }
             true
         }
         Ok(false) => false,
         Err(reason) => reject(commands, reason),
     }
+}
+
+/// `project`'s game placement.
+pub(crate) fn placement(state: &AppState, project: &str) -> Placement {
+    state
+        .layouts
+        .get(project)
+        .map(|l| l.game.placement)
+        .unwrap_or_default()
 }
 
 /// Drops `project`'s tabs whose view no longer exists; whether any did.
@@ -686,7 +714,7 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
         }) if state.active.as_ref() == Some(project) => Some(debug_url.clone()),
         _ => None,
     };
-    let session_mode = state.session_mode;
+    let session_mode = placement(state, project).session_mode();
     let tracks = state.tracks_changes;
     let task = state
         .tasks
@@ -1069,7 +1097,6 @@ mod tests {
             git: None,
             tracks_changes: false,
             session: None,
-            session_mode: SessionMode::Hidden,
             no_gpu: false,
             tasks: vec![],
             harnesses: vec![Harness::Claude, Harness::Codex],
@@ -1419,18 +1446,33 @@ mod tests {
         assert_eq!(commands, vec![poll(1), broadcast(&next)]);
     }
 
+    /// `s` with the active project's game at `placement`.
+    fn placed(mut s: AppState, placement: Placement) -> AppState {
+        let mut layout = Layout::initial();
+        layout.game.placement = placement;
+        layout.normalize();
+        s.layouts.insert("examples/a".to_string(), layout);
+        s
+    }
+
+    fn place(placement: Placement) -> Event {
+        client(ClientMsg::Layout {
+            op: LayoutOp::Place { placement },
+        })
+    }
+
     #[test]
-    fn the_mode_and_gpu_choose_the_display() {
-        for (mode, no_gpu, display) in [
-            (SessionMode::Hidden, false, Display::Hidden),
-            (SessionMode::Window, false, Display::Window),
-            (SessionMode::Hidden, true, Display::Headless),
-            (SessionMode::Window, true, Display::Headless),
+    fn the_placement_and_gpu_choose_the_display() {
+        for (placement, no_gpu, display) in [
+            (Placement::Pane, false, Display::Hidden),
+            (Placement::Mini, false, Display::Hidden),
+            (Placement::Window, false, Display::Window),
+            (Placement::Pane, true, Display::Headless),
+            (Placement::Window, true, Display::Headless),
         ] {
             let before = AppState {
-                session_mode: mode,
                 no_gpu,
-                ..state()
+                ..placed(state(), placement)
             };
             let (_, commands) = update(before, client(ClientMsg::StartSession));
             assert_eq!(commands[0], start_cmd(1, "examples/a", display));
@@ -1438,37 +1480,50 @@ mod tests {
     }
 
     #[test]
-    fn switching_mode_restarts_a_live_session_in_the_new_mode() {
-        let window = || ClientMsg::SetSessionMode {
-            mode: SessionMode::Window,
-        };
-        for status in [SessionStatus::Starting, running(Some(12))] {
-            let (next, commands) = update(with_session(1, Some(9), status), client(window()));
-            assert_eq!(next.session_mode, SessionMode::Window);
-            assert_eq!(
-                next.session,
-                Some(Session {
-                    id: 2,
-                    pid: None,
-                    status: SessionStatus::Starting
-                })
-            );
-            assert_eq!(
-                commands,
-                vec![
-                    Command::StopSession { id: 1 },
-                    start_cmd(2, "examples/a", Display::Window),
-                    broadcast(&next)
-                ]
-            );
+    fn to_or_from_own_window_restarts_a_live_session_in_the_new_mode() {
+        for (from, to, display) in [
+            (Placement::Pane, Placement::Window, Display::Window),
+            (Placement::Mini, Placement::Window, Display::Window),
+            (Placement::Window, Placement::Pane, Display::Hidden),
+            (Placement::Window, Placement::Mini, Display::Hidden),
+        ] {
+            for status in [SessionStatus::Starting, running(Some(12))] {
+                let before = placed(with_session(1, Some(9), status), from);
+                let (next, commands) = update(before, place(to));
+                assert_eq!(next.layouts["examples/a"].game.placement, to);
+                assert_eq!(
+                    next.session,
+                    Some(Session {
+                        id: 2,
+                        pid: None,
+                        status: SessionStatus::Starting
+                    })
+                );
+                assert_eq!(
+                    commands,
+                    vec![
+                        save_layout_cmd("examples/a", &next.layouts["examples/a"]),
+                        Command::StopSession { id: 1 },
+                        start_cmd(2, "examples/a", display),
+                        broadcast(&next)
+                    ],
+                    "{from:?} -> {to:?}"
+                );
+            }
         }
-        // Without a live session the mode is only recorded, for the next start.
-        let (next, commands) = update(state(), client(window()));
-        assert_eq!(next.session_mode, SessionMode::Window);
+        // Without a live session the placement is only recorded, for the next start.
+        let (next, commands) = update(state(), place(Placement::Window));
+        assert_eq!(next.layouts["examples/a"].game.placement, Placement::Window);
         assert_eq!(next.session, None);
-        assert_eq!(commands, vec![broadcast(&next)]);
-        // The current mode again only replies.
-        let (again, commands) = update(next.clone(), client(window()));
+        assert_eq!(
+            commands,
+            vec![
+                save_layout_cmd("examples/a", &next.layouts["examples/a"]),
+                broadcast(&next)
+            ]
+        );
+        // The current placement again only replies.
+        let (again, commands) = update(next.clone(), place(Placement::Window));
         assert_eq!(again, next);
         assert_eq!(
             commands,
@@ -1476,6 +1531,91 @@ mod tests {
                 state: Box::new(next)
             })]
         );
+    }
+
+    #[test]
+    fn pane_and_mini_switch_without_a_restart() {
+        let live = with_session(1, Some(9), running(Some(12)));
+        let (mini, commands) = update(live.clone(), place(Placement::Mini));
+        assert_eq!(mini.session, live.session);
+        assert_eq!(mini.layouts["examples/a"].find(&View::Game), None);
+        assert_eq!(
+            commands,
+            vec![
+                save_layout_cmd("examples/a", &mini.layouts["examples/a"]),
+                broadcast(&mini)
+            ]
+        );
+        // Docked: back where it was, the same session.
+        let (pane, commands) = update(mini, place(Placement::Pane));
+        assert_eq!(pane.session, live.session);
+        assert_eq!(pane.layouts["examples/a"], Layout::initial());
+        assert!(!commands.iter().any(|c| matches!(
+            c,
+            Command::StopSession { .. } | Command::StartSession { .. }
+        )));
+    }
+
+    #[test]
+    fn a_live_game_in_a_pane_keeps_its_tab() {
+        let live = with_session(1, Some(9), running(Some(12)));
+        let reason = "the game is running: stop it, or switch it to Mini, to close its tab";
+        for op in [
+            LayoutOp::Close { view: View::Game },
+            LayoutOp::ClosePane { pane: 1 },
+        ] {
+            let (next, commands) = update(live.clone(), client(ClientMsg::Layout { op }));
+            assert_eq!(next, live);
+            // Refused, with the state for the page to show what is open.
+            assert_eq!(commands[..1], rejected(reason)[..]);
+        }
+        // Stopped (or ended), it closes like any tab, and Start game opens it again.
+        let (stopped, _) = update(live, client(ClientMsg::StopSession));
+        let close = client(ClientMsg::Layout {
+            op: LayoutOp::Close { view: View::Game },
+        });
+        let (closed, _) = update(stopped, close);
+        assert_eq!(closed.layouts["examples/a"].root, None);
+        let (started, commands) = update(closed, client(ClientMsg::StartSession));
+        assert_eq!(started.layouts["examples/a"], Layout::initial());
+        assert_eq!(
+            commands[..2],
+            [
+                save_layout_cmd("examples/a", &Layout::initial()),
+                start_cmd(2, "examples/a", Display::Hidden)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_session_restarted_for_another_project_opens_its_game_tab() {
+        // examples/b's saved layout has no Game tab; its session starts in a pane.
+        let mut s = with_session(1, Some(9), running(Some(12)));
+        let file_only = Layout {
+            root: Some(crate::layout::Node::Pane(crate::layout::Pane {
+                id: 1,
+                tabs: vec![View::File {
+                    path: "game.fun".to_string(),
+                }],
+                active: 0,
+            })),
+            focus: Some(1),
+            game: Default::default(),
+        };
+        s.layouts.insert("examples/b".to_string(), file_only);
+        let (next, _) = update(s, switch("examples/b"));
+        assert_eq!(
+            crate::print_layout(&next.layouts["examples/b"]),
+            ">#1[file:game.fun, *game]"
+        );
+        // In Mini, none opens.
+        let mut s = with_session(1, Some(9), running(Some(12)));
+        let mut mini = Layout::initial();
+        mini.game.placement = Placement::Mini;
+        mini.normalize();
+        s.layouts.insert("examples/b".to_string(), mini.clone());
+        let (next, _) = update(s, switch("examples/b"));
+        assert_eq!(next.layouts["examples/b"], mini);
     }
 
     #[test]
@@ -1533,11 +1673,14 @@ mod tests {
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"start_session"}"#).unwrap();
         assert_eq!(msg, ClientMsg::StartSession);
         let msg: ClientMsg =
-            serde_json::from_str(r#"{"type":"set_session_mode","mode":"window"}"#).unwrap();
+            serde_json::from_str(r#"{"type":"layout","op":{"type":"place","placement":"window"}}"#)
+                .unwrap();
         assert_eq!(
             msg,
-            ClientMsg::SetSessionMode {
-                mode: SessionMode::Window
+            ClientMsg::Layout {
+                op: LayoutOp::Place {
+                    placement: Placement::Window
+                }
             }
         );
         // Input is already in `POST /input`'s shape.
@@ -2574,11 +2717,13 @@ mod tests {
                 )),
             }),
             focus: Some(2),
+            game: Default::default(),
         };
         // Another project's files are not listed yet, so its file tabs stay.
         let theirs = Layout {
             root: Some(pane(1, vec![file("b.fun")])),
             focus: Some(1),
+            game: Default::default(),
         };
         let layouts = BTreeMap::from([
             ("examples/a".to_string(), saved),
@@ -2599,7 +2744,8 @@ mod tests {
             b.layouts["examples/b"],
             Layout {
                 root: None,
-                focus: None
+                focus: None,
+                game: Default::default(),
             }
         );
         assert_eq!(

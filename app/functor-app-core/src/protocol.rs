@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::changes::FileDiff;
 use crate::layout::LayoutOp;
 use crate::tasks::{Harness, Item};
-use crate::{AppState, SessionMode};
+use crate::AppState;
 
 /// UI → core.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,10 +20,6 @@ pub enum ClientMsg {
     /// Start a game session for the active project, unless one is live.
     StartSession,
     StopSession,
-    /// Where the game shows; restarts a live session in the new mode.
-    SetSessionMode {
-        mode: SessionMode,
-    },
     /// Forwarded to a running session; dropped otherwise. Not answered.
     Input {
         input: GameInput,
@@ -66,7 +62,8 @@ pub enum ClientMsg {
         task: u64,
         tree: String,
     },
-    /// Changes the active project's layout (`AppState::layouts`).
+    /// Changes the active project's layout (`AppState::layouts`), the game
+    /// view's placement included.
     Layout {
         op: LayoutOp,
     },

@@ -19,10 +19,8 @@ const RESIZE_DEBOUNCE_MS = 200;
 /** The Game tab: the session's state in one line, or its live frames. */
 export function GameView({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
   const status = state?.session?.status ?? { kind: "stopped" };
+  // Shown only in a pane or Mini, so a running session is a hidden one.
   if (status.kind === "running") {
-    if (!state!.no_gpu && state!.session_mode === "window") {
-      return <GameMessage text="Running in its own window" />;
-    }
     return (
       <LiveGame
         debugUrl={status.debug_url}

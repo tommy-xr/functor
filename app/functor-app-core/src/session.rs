@@ -40,7 +40,7 @@ pub enum SessionStatus {
     },
 }
 
-/// Where the session's game shows; the user picks it above the game view.
+/// How the session runs: its project's game placement decides (`Placement::session_mode`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]

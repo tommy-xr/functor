@@ -1,11 +1,14 @@
 //! The canvas layout (D20): a tree of splits whose leaves are panes of tabs,
 //! each tab a [`View`]. A view is open at most once in the whole layout, so a
-//! view names its tab. [`Layout::apply`] is the one reducer and
-//! [`Layout::normalize`] the one place the invariants are enforced.
+//! view names its tab. The game view's placement (D21) is part of it: only
+//! [`Placement::Pane`] has a Game tab. [`Layout::apply`] is the one reducer
+//! and [`Layout::normalize`] the one place the invariants are enforced.
 
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+
+use crate::session::SessionMode;
 
 /// What a tab shows. New view types need no layout work.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -70,6 +73,84 @@ pub struct Layout {
     /// The pane views open in by default; a pane of `root` exactly when
     /// there is one.
     pub focus: Option<u64>,
+    /// Where the game view shows. Absent from layouts saved before it
+    /// existed, which load as a pane.
+    #[serde(default)]
+    pub game: GamePlacement,
+}
+
+/// Where the project's one game view shows (D21).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Placement {
+    /// A Game tab in a pane, streamed from a hidden session.
+    #[default]
+    Pane,
+    /// Floating over the canvas, streamed from a hidden session; no Game tab.
+    Mini,
+    /// The session runs as a normal game window; no Game tab.
+    Window,
+}
+
+impl Placement {
+    /// How a session for this placement runs: switching between placements
+    /// with different modes restarts a live session.
+    pub fn session_mode(self) -> SessionMode {
+        match self {
+            Self::Pane | Self::Mini => SessionMode::Hidden,
+            Self::Window => SessionMode::Window,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// The mini view: the canvas corner it sits in and its width in CSS
+/// pixels ([`MINI_MIN`]..=[`MINI_MAX`]); its height follows the game's
+/// aspect ratio, and the page shrinks it to fit a smaller canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Mini {
+    pub corner: Corner,
+    pub width: u32,
+}
+
+impl Default for Mini {
+    fn default() -> Self {
+        Self {
+            corner: Corner::BottomRight,
+            width: 360,
+        }
+    }
+}
+
+pub const MINI_MIN: u32 = 280;
+pub const MINI_MAX: u32 = 1200;
+
+/// Where the Game tab was when it left its pane, so docking puts it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Dock {
+    pub pane: u64,
+    pub index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GamePlacement {
+    pub placement: Placement,
+    pub mini: Mini,
+    /// Set when the Game tab leaves a pane; taken when it comes back.
+    pub dock: Option<Dock>,
 }
 
 /// Where [`LayoutOp::Open`] puts a view that is not open yet.
@@ -126,8 +207,17 @@ pub enum LayoutOp {
         split: u64,
         ratio: u16,
     },
-    /// Back to [`Layout::initial`].
+    /// Back to [`Layout::initial`]'s panes; the placement stays.
     Reset,
+    /// Moves the game view. Back to a pane, the Game tab goes where it left
+    /// from, or to the focused pane if that pane is gone.
+    Place {
+        placement: Placement,
+    },
+    /// The mini view's corner and width (clamped).
+    SetMini {
+        mini: Mini,
+    },
 }
 
 pub const RATIO_MIN: u16 = 100;
@@ -171,6 +261,7 @@ impl Layout {
                 active: 0,
             })),
             focus: Some(1),
+            game: GamePlacement::default(),
         }
     }
 
@@ -214,6 +305,20 @@ impl Layout {
                 if self.find(&view).is_none() {
                     valid(&view)?;
                 }
+                // Opening the game brings it into a pane, at `target`, or the
+                // focused pane if that one is gone: never placed with no tab.
+                let target = match target {
+                    Target::Pane { pane }
+                        if view == View::Game && self.pane_mut(pane).is_none() =>
+                    {
+                        Target::Focused
+                    }
+                    target => target,
+                };
+                if view == View::Game {
+                    self.game.placement = Placement::Pane;
+                    self.game.dock = None;
+                }
                 self.open(view, target);
             }
             LayoutOp::Move { view, pane, index } => self.move_view(&view, pane, index),
@@ -238,7 +343,14 @@ impl Layout {
                     *r = ratio;
                 }
             }
-            LayoutOp::Reset => *self = Self::initial(),
+            LayoutOp::Reset => {
+                *self = Self {
+                    game: self.game,
+                    ..Self::initial()
+                }
+            }
+            LayoutOp::Place { placement } => self.place(placement),
+            LayoutOp::SetMini { mini } => self.game.mini = mini,
         }
         self.normalize();
         Ok(*self != before)
@@ -261,8 +373,9 @@ impl Layout {
     }
 
     /// The invariants, for a layout from any source (disk included): each
-    /// view open once (so at most one Game tab), unique ids, each pane's
-    /// `active` in range, ratios clamped, and the focus on a pane.
+    /// view open once (so at most one Game tab, and none unless the game's
+    /// placement is a pane), unique ids, each pane's `active` in range,
+    /// ratios and the mini width clamped, and the focus on a pane.
     pub fn normalize(&mut self) {
         let mut views = HashSet::new();
         let mut ids = HashSet::new();
@@ -300,6 +413,21 @@ impl Layout {
         if let Some(root) = &mut self.root {
             walk(root, &mut views, &mut ids, &mut next);
         }
+        // The Game tab leaving for Mini or Own window remembers its place.
+        if self.game.placement != Placement::Pane {
+            if let Some((pane, index)) = self.find(&View::Game) {
+                self.game.dock = Some(Dock { pane, index });
+                self.take_tab(pane, index);
+            }
+        }
+        // A dock whose pane is gone is dropped, so a later pane given its id
+        // is never mistaken for it.
+        if let Some(dock) = self.game.dock {
+            if self.pane_mut(dock.pane).is_none() {
+                self.game.dock = None;
+            }
+        }
+        self.game.mini.width = self.game.mini.width.clamp(MINI_MIN, MINI_MAX);
         let panes = self.panes();
         if !panes.iter().any(|p| Some(p.id) == self.focus) {
             self.focus = panes.first().map(|p| p.id);
@@ -330,6 +458,25 @@ impl Layout {
         p.tabs.push(view);
         let last = p.tabs.len() - 1;
         self.show(pane, last);
+    }
+
+    /// Leaving a pane, `normalize` takes the Game tab out; coming back, it
+    /// goes to its dock if that pane is still there.
+    fn place(&mut self, to: Placement) {
+        if self.game.placement == to {
+            return;
+        }
+        self.game.placement = to;
+        if to != Placement::Pane {
+            return;
+        }
+        match self.game.dock.take() {
+            Some(Dock { pane, index }) if self.pane_mut(pane).is_some() => {
+                self.open(View::Game, Target::Pane { pane });
+                self.move_view(&View::Game, pane, index);
+            }
+            _ => self.open(View::Game, Target::Focused),
+        }
     }
 
     fn move_view(&mut self, view: &View, to: u64, index: usize) {
@@ -533,6 +680,7 @@ mod tests {
         Layout {
             root: Some(root),
             focus: Some(focus),
+            game: GamePlacement::default(),
         }
     }
 
@@ -638,6 +786,7 @@ mod tests {
             let mut l = Layout {
                 root: None,
                 focus: None,
+                game: GamePlacement::default(),
             };
             assert!(apply(&mut l, open(View::Game, target)));
             assert_eq!(l, Layout::initial());
@@ -889,7 +1038,8 @@ mod tests {
             l,
             Layout {
                 root: None,
-                focus: None
+                focus: None,
+                game: GamePlacement::default(),
             }
         );
     }
@@ -990,6 +1140,7 @@ mod tests {
                 second: Box::new(pane(2, &[View::Game, file("a"), file("b")], 0)),
             }),
             focus: Some(42),
+            game: GamePlacement::default(),
         };
         l.normalize();
         assert_eq!(
@@ -1003,6 +1154,7 @@ mod tests {
                     second: Box::new(pane(2, &[file("b")], 0)),
                 }),
                 focus: Some(1),
+                game: GamePlacement::default(),
             }
         );
         check(&l);
@@ -1010,6 +1162,7 @@ mod tests {
         let mut empty = Layout {
             root: None,
             focus: Some(1),
+            game: GamePlacement::default(),
         };
         empty.normalize();
         assert_eq!(empty.focus, None);
@@ -1097,6 +1250,11 @@ mod tests {
             Some(f) => assert!(panes.iter().any(|p| p.id == f), "{l:?}"),
             None => assert!(l.root.is_none(), "{l:?}"),
         }
+        // A Game tab only in a pane placement.
+        if l.game.placement != Placement::Pane {
+            assert_eq!(l.find(&View::Game), None, "{l:?}");
+        }
+        assert!((MINI_MIN..=MINI_MAX).contains(&l.game.mini.width));
     }
 
     /// Long random op sequences (a fixed-seed generator) keep the invariants.
@@ -1122,7 +1280,7 @@ mod tests {
             for _ in 0..60 {
                 let view = views[next(views.len() as u64) as usize].clone();
                 let id = next(12);
-                let op = match next(9) {
+                let op = match next(11) {
                     0 => open(view, Target::Focused),
                     1 => open(view, Target::Side),
                     2 => open(view, Target::Pane { pane: id }),
@@ -1145,12 +1303,210 @@ mod tests {
                         split: id,
                         ratio: next(1200) as u16,
                     },
+                    8 => LayoutOp::Place {
+                        placement: [Placement::Pane, Placement::Mini, Placement::Window]
+                            [next(3) as usize],
+                    },
+                    9 => LayoutOp::SetMini {
+                        mini: Mini {
+                            corner: Corner::TopLeft,
+                            width: next(2000) as u32,
+                        },
+                    },
                     _ => LayoutOp::ClosePane { pane: id },
                 };
                 apply(&mut l, op);
                 check(&l);
             }
         }
+    }
+
+    fn place(placement: Placement) -> LayoutOp {
+        LayoutOp::Place { placement }
+    }
+
+    #[test]
+    fn mini_takes_the_game_tab_out_and_dock_puts_it_back() {
+        let mut l = layout(
+            split(
+                3,
+                Direction::Right,
+                pane(1, &[file("b.fun"), View::Game, file("c.fun")], 1),
+                pane(2, &[file("a.fun")], 0),
+            ),
+            1,
+        );
+        let before = l.clone();
+        assert!(apply(&mut l, place(Placement::Mini)));
+        assert_eq!(l.find(&View::Game), None);
+        assert_eq!(l.game.dock, Some(Dock { pane: 1, index: 1 }));
+        // The tab after it shows.
+        assert_eq!(l.panes()[0].tabs[l.panes()[0].active], file("c.fun"));
+        // Panes and splits change underneath; the game stays out.
+        assert!(apply(&mut l, open(file("d.fun"), Target::Focused)));
+        assert!(apply(
+            &mut l,
+            LayoutOp::Split {
+                pane: 2,
+                direction: Direction::Down
+            }
+        ));
+        assert_eq!(l.find(&View::Game), None);
+        assert_eq!(l.game.placement, Placement::Mini);
+        // Docked: the same pane and place, shown and focused.
+        assert!(apply(&mut l, place(Placement::Pane)));
+        assert_eq!(l.find(&View::Game), Some((1, 1)));
+        assert_eq!(l.focus, Some(1));
+        assert_eq!(l.game.dock, None);
+        assert_eq!(
+            l.panes()[0].tabs,
+            before.panes()[0].tabs[..2]
+                .iter()
+                .cloned()
+                .chain([file("c.fun"), file("d.fun")])
+                .collect::<Vec<_>>()
+        );
+        // The same placement again: nothing.
+        assert!(!apply(&mut l, place(Placement::Pane)));
+    }
+
+    #[test]
+    fn docking_to_a_pane_that_is_gone_uses_the_focused_one() {
+        // The Game tab alone in its pane: the pane goes with it.
+        let mut l = two();
+        assert!(apply(&mut l, place(Placement::Mini)));
+        assert_eq!(
+            l,
+            Layout {
+                game: l.game,
+                ..layout(pane(2, &[file("a.fun")], 0), 2)
+            }
+        );
+        // Its pane is gone, so is the dock.
+        assert_eq!(l.game.dock, None);
+        assert!(apply(&mut l, place(Placement::Pane)));
+        assert_eq!(l.find(&View::Game), Some((2, 1)));
+        // A pane made later with the gone pane's id is not taken for it.
+        let mut l = layout(
+            split(
+                5,
+                Direction::Right,
+                pane(1, &[file("a.fun")], 0),
+                pane(3, &[View::Game], 0),
+            ),
+            3,
+        );
+        assert!(apply(&mut l, place(Placement::Mini)));
+        assert!(apply(
+            &mut l,
+            LayoutOp::Split {
+                pane: 1,
+                direction: Direction::Down
+            }
+        ));
+        assert_eq!(l.panes()[1].id, 3);
+        assert!(apply(&mut l, LayoutOp::Focus { pane: 1 }));
+        assert!(apply(&mut l, place(Placement::Pane)));
+        assert_eq!(l.find(&View::Game), Some((1, 1)));
+        // And on an empty canvas, a new pane.
+        let mut l = Layout::initial();
+        assert!(apply(&mut l, place(Placement::Mini)));
+        assert_eq!(l.root, None);
+        assert!(apply(&mut l, place(Placement::Pane)));
+        assert_eq!(l, Layout::initial());
+    }
+
+    #[test]
+    fn own_window_has_no_game_tab_and_comes_back_like_mini() {
+        let mut l = two();
+        assert!(apply(&mut l, place(Placement::Window)));
+        assert_eq!(l.find(&View::Game), None);
+        // Window to Mini keeps the dock from the pane it left.
+        let mut l = layout(pane(1, &[View::Game, file("a.fun")], 1), 1);
+        assert!(apply(&mut l, place(Placement::Window)));
+        assert!(apply(&mut l, place(Placement::Mini)));
+        assert_eq!(l.game.dock, Some(Dock { pane: 1, index: 0 }));
+        assert!(apply(&mut l, place(Placement::Window)));
+        assert!(apply(&mut l, place(Placement::Pane)));
+        assert_eq!(l.find(&View::Game), Some((1, 0)));
+    }
+
+    #[test]
+    fn opening_the_game_brings_it_into_a_pane_at_the_target() {
+        for from in [Placement::Mini, Placement::Window] {
+            let mut l = two();
+            assert!(apply(&mut l, place(from)));
+            assert!(apply(&mut l, open(View::Game, Target::Pane { pane: 2 })));
+            assert_eq!(l.game.placement, Placement::Pane);
+            assert_eq!(l.game.dock, None);
+            assert_eq!(l.find(&View::Game), Some((2, 1)));
+            // Into a pane that is gone: the focused one, never no tab.
+            let mut l = two();
+            assert!(apply(&mut l, place(from)));
+            assert!(apply(&mut l, open(View::Game, Target::Pane { pane: 9 })));
+            assert_eq!(l.game.placement, Placement::Pane);
+            assert_eq!(l.find(&View::Game), Some((2, 1)));
+        }
+    }
+
+    #[test]
+    fn reset_keeps_the_placement() {
+        let mut l = two();
+        assert!(apply(&mut l, place(Placement::Mini)));
+        assert!(apply(&mut l, LayoutOp::Reset));
+        // The initial pane held only the game, which is in Mini: an empty canvas.
+        assert_eq!(l.root, None);
+        assert_eq!(l.game.placement, Placement::Mini);
+        assert!(apply(&mut l, place(Placement::Pane)));
+        assert_eq!(l, Layout::initial());
+    }
+
+    #[test]
+    fn the_mini_width_is_clamped() {
+        let mut l = Layout::initial();
+        for (width, kept) in [(10, MINI_MIN), (480, 480), (99_999, MINI_MAX)] {
+            let mini = Mini {
+                corner: Corner::TopLeft,
+                width,
+            };
+            apply(&mut l, LayoutOp::SetMini { mini });
+            assert_eq!(
+                l.game.mini,
+                Mini {
+                    width: kept,
+                    ..mini
+                }
+            );
+        }
+        // Not a placement change: the Game tab stays.
+        assert_eq!(l.find(&View::Game), Some((1, 0)));
+    }
+
+    #[test]
+    fn layouts_saved_before_placements_load_as_a_pane() {
+        // What `layout.json` held before placements: the root and focus only.
+        let old = r#"{"root":{"kind":"pane","id":1,"tabs":[{"kind":"game"},{"kind":"file","path":"game.fun"}],"active":1},"focus":1}"#;
+        let l: Layout = serde_json::from_str(old).unwrap();
+        assert_eq!(l.game, GamePlacement::default());
+        assert_eq!(l.game.placement, Placement::Pane);
+        assert_eq!(
+            l.game.mini,
+            Mini {
+                corner: Corner::BottomRight,
+                width: 360
+            }
+        );
+        assert_eq!(l.find(&View::Game), Some((1, 0)));
+        // A saved Mini with a Game tab (edited by hand) loses the tab, keeping its place.
+        let mut mini: Layout = serde_json::from_str(&old.replace(
+            r#""focus":1}"#,
+            r#""focus":1,"game":{"placement":"mini","mini":{"corner":"top_left","width":5},"dock":null}}"#,
+        ))
+        .unwrap();
+        mini.normalize();
+        assert_eq!(mini.find(&View::Game), None);
+        assert_eq!(mini.game.dock, Some(Dock { pane: 1, index: 0 }));
+        assert_eq!(mini.game.mini.width, MINI_MIN);
     }
 
     #[test]
