@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { clampLines } from "./layout-model";
 import type { FileMsg } from "./socket";
+import { renderText } from "./syntax";
 
 /** How often a shown file is read again, so the agent's edits appear. */
 const REFRESH_MS = 2000;
@@ -51,6 +52,8 @@ export function FileView({
   const shown = text === null ? null : text.endsWith("\n") ? text.slice(0, -1) : text;
   const count = shown === null ? 0 : shown === "" ? 1 : shown.split("\n").length;
   const range = mark && count ? clampLines(mark.lines, count) : null;
+  // Tokenised once per text: the 2s refresh returns the same string, so React reuses the nodes.
+  const code = useMemo(() => (shown === null ? null : renderText(path, shown)), [path, shown]);
 
   const scroller = useRef<HTMLDivElement>(null);
   const band = useRef<HTMLDivElement>(null);
@@ -117,7 +120,7 @@ export function FileView({
           <pre className="code-gutter" aria-hidden="true">
             {numbers}
           </pre>
-          <pre className="code-text">{shown}</pre>
+          <pre className="code-text">{code}</pre>
         </div>
       </div>
     );
