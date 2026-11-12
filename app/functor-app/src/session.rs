@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::{GameInput, ServerMsg};
-use functor_app_core::{listening_url, Command, Display, Event, Polled, SessionEvent};
+use functor_app_core::{listening_url, Command, Display, Event, Harness, Polled, SessionEvent};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Child;
@@ -48,6 +48,9 @@ pub struct Driver {
     runs: Runner,
     /// Where tasks are saved (`store::home`).
     home: PathBuf,
+    /// Where the next task id reservation starts: above every id loaded
+    /// or reserved here.
+    next_task: u64,
     /// The repo's git, when changes are tracked.
     git: Option<Arc<Git>>,
 }
@@ -63,10 +66,12 @@ struct Live {
 }
 
 impl Driver {
+    /// `highest` is the highest task id in `home` (`store::load`).
     pub fn new(
         functor: PathBuf,
         agents: Agents,
         home: PathBuf,
+        highest: u64,
         git: Option<Arc<Git>>,
         events: UnboundedSender<Event>,
     ) -> Self {
@@ -76,7 +81,22 @@ impl Driver {
             events,
             live: None,
             home,
+            next_task: highest + 1,
             git,
+        }
+    }
+
+    /// A client's new task as the core takes it: with an id reserved in
+    /// the store.
+    pub fn new_task(&mut self, message: String, harness: Harness) -> Event {
+        let id = crate::store::reserve_id(&self.home, self.next_task);
+        if let Ok(id) = id {
+            self.next_task = id + 1;
+        }
+        Event::NewTask {
+            id: id.map_err(|e| e.to_string()),
+            message,
+            harness,
         }
     }
 

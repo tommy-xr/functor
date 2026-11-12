@@ -304,7 +304,6 @@ mod tests {
             tasks: vec![],
             harnesses: vec![],
             harness_choice: Default::default(),
-            next_task: 1,
         };
         assert_eq!(
             print(&state),
@@ -336,7 +335,6 @@ projects: 3
             tasks: vec![],
             harnesses: vec![],
             harness_choice: Default::default(),
-            next_task: 1,
         };
         assert_eq!(
             print(&state),
@@ -365,7 +363,6 @@ projects: 3
                 tasks: vec![],
                 harnesses: vec![],
                 harness_choice: Default::default(),
-                next_task: 1,
             };
             print(&state).lines().nth(2).unwrap().to_string()
         };
@@ -459,7 +456,6 @@ projects: 3
             }],
             harnesses: vec![],
             harness_choice: Default::default(),
-            next_task: 4,
         };
         let text = print(&state);
         assert!(
