@@ -542,6 +542,30 @@ it from there. The game view has no Start prompt.
 - **Cost:** one hidden game process per open project, from the moment it
   opens. Switching projects stops the previous one; closing the app stops it.
 - **The agent** is told the game starts paused; its tools step or resume it.
+### D38 — the extrapolation is before-and-after evidence
+
+The runtime can already draw where the game goes next under the current code:
+the extrapolated path from a moment, with the recorded inputs. Run from the
+same moment under the old code and under the new, that is a before and after
+in one picture, with no second game kept alive.
+
+- **In the transport bar.** An Extrapolate control beside pause and step shows
+  the predicted path in the game view. When an edit lands while paused — the
+  user's or the agent's — the path is shown for a moment by itself, so the
+  effect of the edit is seen before anything is replayed.
+- **In the chat.** When a run changes the code, the change card carries the
+  two paths from the moment the user was looking at: the old one faint, the
+  new one bright ("fell short" beside "clears the gap"). It is the default
+  before-and-after on the decision page (D35) whenever the change moves
+  something, and it opens the Captures tab.
+- **Same moment, same inputs, both codes.** The picture is honest only if the
+  two paths differ by the code alone; it says which moment and which inputs
+  it used.
+- **Limits.** It shows motion and position, not feel, sound or anything a
+  path cannot draw; those still need captures, the lab or the real before and
+  after (D31, D32). A change that moves nothing gets no path.
+
+In the headset the two paths are drawn in the world (D36).
 
 ## Open
 

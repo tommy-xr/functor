@@ -1,0 +1,8 @@
+{"ms": 0, "event": {"type": "started", "session": "demo-jump-2", "model": "claude-model"}}
+{"ms": 500, "event": {"type": "tool_use", "name": "Edit", "input": {"file_path": "game.fun", "old_string": "let jumpVelocity = 8.0 ", "new_string": "let jumpVelocity = 16.0"}}}
+{"ms": 600, "edit": {"path": "game.fun", "old": "let jumpVelocity = 8.0 ", "new": "let jumpVelocity = 16.0"}}
+{"ms": 800, "event": {"type": "tool_result", "content": "The file has been updated."}}
+{"ms": 1800, "mcp": {"tool": "present", "arguments": {"steps": [{"title": "A stronger jump", "note": "jumpVelocity goes from 8.0 to 16.0, so the arc is longer than the gap.", "view": {"kind": "file", "path": "game.fun", "lines": [22, 22]}}, {"title": "The change", "view": {"kind": "changes", "path": "game.fun"}}, {"title": "Try the jump", "note": "Run to the edge and jump.", "view": {"kind": "game"}}]}}}
+{"ms": 2400, "event": {"type": "text", "text": "jumpVelocity is 16.0 now."}}
+{"ms": 2500, "event": {"type": "usage", "input": 3000, "output": 40}}
+{"ms": 2600, "event": {"type": "finished", "ok": true, "summary": "jumpVelocity is 16.0 now."}}

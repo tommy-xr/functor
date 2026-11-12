@@ -99,7 +99,10 @@
     "demo:llm-native": "node site/demos/llm-native.mjs",
     "demo:mcp-drive": "node site/demos/mcp-drive.mjs",
     "demo:multiplayer": "node site/demos/multiplayer.mjs",
-    "demo:box-art": "node site/demos/box-art.mjs"
+    "demo:box-art": "node site/demos/box-art.mjs",
+    "demo:app-loop": "node site/demos/app-loop.mjs",
+    "demo:app-review": "node site/demos/app-review.mjs",
+    "demo:app-transport": "node site/demos/app-transport.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
