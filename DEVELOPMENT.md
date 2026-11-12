@@ -144,7 +144,7 @@ Run it from the release `functor` (it finds the `functor-app` next to itself,
 else `FUNCTOR_APP_BIN`, else on PATH):
 
 ```sh
-./target/release/functor app -d examples/primitives                 # the window (macOS only for now)
+./target/release/functor -d examples/primitives                     # the window (macOS only for now); `functor app` is the same
 ./target/release/functor app -d examples/primitives -- --headless   # no window: open the printed URL in a browser
 ```
 

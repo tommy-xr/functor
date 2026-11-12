@@ -422,7 +422,18 @@ enum InspectTarget {
 #[tokio::main]
 async fn main() -> tokio::io::Result<()> {
     let started = Instant::now();
-    let args = Args::parse();
+    // No subcommand opens the desktop app when it is installed; else clap's help.
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let args = match Args::try_parse_from(&argv) {
+        Ok(args) => args,
+        // A nested command missing its own subcommand (`functor inspect`)
+        // does not parse with `app` added either: its own help stands.
+        Err(e) if no_subcommand(&e) && commands::app::installed() => {
+            Args::try_parse_from(argv.into_iter().chain(["app".into()]))
+                .unwrap_or_else(|_| e.exit())
+        }
+        Err(e) => e.exit(),
+    };
     if let Err(message) = validate_args(&args) {
         eprintln!("error: {message}");
         process::exit(2);
@@ -878,6 +889,15 @@ fn take_flag_args(runner_args: &[String], flag: &str) -> io::Result<(Vec<String>
         }
     }
     Ok((found, rest))
+}
+
+/// Clap's error for a command line that names no subcommand.
+fn no_subcommand(e: &clap::Error) -> bool {
+    use clap::error::ErrorKind::*;
+    matches!(
+        e.kind(),
+        MissingSubcommand | DisplayHelpOnMissingArgumentOrSubcommand
+    )
 }
 
 fn command_name(command: &Command) -> &'static str {

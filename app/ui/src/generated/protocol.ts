@@ -536,7 +536,8 @@ export type Side = "headset" | "desktop";
 export type Step = { "kind": "editing" } | { "kind": "creating", path: string, } | { "kind": "opening", path: string, } | { "kind": "failed", reason: string, done: Array<string>, not_done: Array<string>, };
 
 /**
- * Where [`LayoutOp::Open`] puts a view that is not open yet.
+ * Where [`LayoutOp::Open`] puts a view. One already open moves only to a
+ * named `Pane`; otherwise it is shown where it is.
  */
 export type Target = { "kind": "focused" } | { "kind": "side" } | { "kind": "pane", pane: number, };
 
