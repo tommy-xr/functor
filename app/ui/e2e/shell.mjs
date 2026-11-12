@@ -72,7 +72,7 @@ async function run(browser, width, height) {
     // The state arrives over the socket: project and branch in the title bar.
     await expect(titlebar).toContainText(nameOf(DEFAULT));
     await expect(titlebar).toContainText(`${BRANCH} · ${COMMIT}`);
-    await expect(titlebar).toContainText("No headset");
+    await expect(titlebar).toContainText("Headset · Not paired");
     // The token is dropped from the address bar once read; the title names the project.
     expect(page.url(), "address bar").not.toContain("token");
     await expect(page).toHaveTitle(`Functor — ${nameOf(DEFAULT)}`);

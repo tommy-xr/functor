@@ -2817,6 +2817,182 @@ blockquote {
   font-weight: 600;
 }
 
+/* Devices (D27): a card per headset, its state's word as on the title pill. */
+
+.pane-devices {
+  flex-basis: 300px;
+}
+
+.device-card {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.device-card p {
+  margin: 0;
+}
+
+.device-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.device-card .rows dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.device-code {
+  font: 15px var(--mono);
+  letter-spacing: 0.12em;
+}
+
+.device-reason {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.device-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.device-actions .button {
+  flex: 1 1 auto;
+}
+
+.device-forget {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.device-forget:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.device-confirm {
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.pill-hs-connected {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.pill-hs-asking_to_pair,
+.pill-hs-needs_update {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.pill-hs-cannot_reach {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.pill-hs-not_paired,
+.pill-hs-away {
+  color: var(--text-2);
+}
+
+/* The title pill is a button onto the Devices pane. */
+.pill-button {
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+}
+
+/* A pairing request waits behind the pill while the user types. */
+.pill-attention {
+  box-shadow: 0 0 0 1px var(--warn);
+}
+
+/* The pairing prompt: one request, centred, its code large. */
+.pair-modal {
+  width: min(440px, 100%);
+  padding: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.pair-modal:focus {
+  outline: none;
+}
+
+.pair-modal h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pair-modal p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.pair-code {
+  font: 44px var(--mono);
+  letter-spacing: 0.18em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pair-warn {
+  padding: 8px 10px;
+  border-radius: var(--radius-m);
+  background: var(--warn-bg);
+  color: var(--warn) !important;
+  font-size: 12px;
+}
+
+.pair-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.button-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
 /* Responsive overrides last, so they win over the rules above. */
 
 /* Below desktop width the chat drops under the canvas. */

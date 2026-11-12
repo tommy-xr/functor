@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
+import { DevicesPane, PairPrompt } from "./Devices";
+import { mayInterrupt, nextRequest, WORDS } from "./devices-model";
 import { basename, pickHarness } from "./chat-model";
 import { FolderActions, NoProject, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
@@ -78,11 +80,16 @@ export function App() {
   const task = state?.tasks.find((t) => t.id === selected && t.project === state.active) ?? null;
   const folder: FolderProps = { state, online, send, dirs, listDirs };
   useWindowMenu(state, send);
+  const pairing = usePairPrompt(state);
+  const showDevices = () => {
+    setView("devices");
+    pairing.show();
+  };
   return (
     <>
-    {/* Behind the new-project modal, nothing takes focus or clicks. */}
-    <div className="app" inert={!!state?.new_project}>
-      <TitleBar state={state} conn={conn} />
+    {/* Behind a modal, nothing takes focus or clicks. */}
+    <div className="app" inert={!!state?.new_project || pairing.request !== null}>
+      <TitleBar state={state} conn={conn} deferred={pairing.deferred} onHeadset={showDevices} />
       <div className="workspace">
         <Rail view={view} onSelect={setView} waiting={needsYou(state?.tasks ?? [], state?.active ?? null)} />
         <div className="panes">
@@ -100,11 +107,7 @@ export function App() {
               onNewTask={newTask}
             />
           )}
-          {view === "devices" && (
-            <PlaceholderPane title="Devices">
-              Headsets you connect by cable or Wi-Fi will appear here.
-            </PlaceholderPane>
-          )}
+          {view === "devices" && <DevicesPane devices={state?.devices} online={online} send={send} />}
           {state && !state.active ? (
             <NoProject {...folder} onNewProject={() => send({ type: "show_new_project", here: !!state.folder })} />
           ) : (
@@ -151,8 +154,54 @@ export function App() {
         harness={pickHarness(state)}
       />
     )}
+    {pairing.request && (
+      <PairPrompt
+        request={pairing.request}
+        waiting={(state?.devices.requests.length ?? 1) - 1}
+        online={online}
+        send={send}
+        onLater={pairing.later}
+      />
+    )}
     </>
   );
+}
+
+/**
+ * When the pairing prompt shows. A new request opens it at once, unless the
+ * user is typing in a field (the composer): then the pill turns amber and
+ * the prompt waits for that field to lose focus, or for a click on the pill.
+ * "Later" hides it until the pill is clicked.
+ */
+function usePairPrompt(state: AppState | null) {
+  const next = nextRequest(state?.devices);
+  const id = next?.request ?? null;
+  const [open, setOpen] = useState<number | null>(null);
+  const [later, setLater] = useState<number | null>(null);
+  useEffect(() => {
+    if (id === null || id === later) return;
+    if (mayInterrupt(document.activeElement)) {
+      setOpen(id);
+      return;
+    }
+    // After the focus has moved: then the new element is known.
+    const moved = () =>
+      setTimeout(() => {
+        if (mayInterrupt(document.activeElement)) setOpen(id);
+      }, 0);
+    document.addEventListener("focusout", moved);
+    return () => document.removeEventListener("focusout", moved);
+  }, [id, later]);
+  const shown = next !== null && open === next.request;
+  return {
+    request: shown ? next : null,
+    deferred: next !== null && !shown,
+    show: () => setOpen(id),
+    later: () => {
+      setLater(id);
+      setOpen(null);
+    },
+  };
 }
 
 /** The window's own hooks into the page; absent in a browser. */
@@ -209,7 +258,19 @@ function canvasWord(state: AppState | null): string {
   return `${tabTitles(views, state?.tasks ?? []).get(viewKey(view))} tab`;
 }
 
-function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
+function TitleBar({
+  state,
+  conn,
+  deferred,
+  onHeadset,
+}: {
+  state: AppState | null;
+  conn: Conn;
+  /** A pairing request is waiting behind the pill. */
+  deferred: boolean;
+  onHeadset: () => void;
+}) {
+  const headset = state?.devices.headset ?? "not_paired";
   // The project, else the open folder.
   const name = activeProject(state)?.name ?? (state?.folder ? basename(state.folder) : null);
   const word = sessionWord(state?.session);
@@ -243,7 +304,15 @@ function TitleBar({ state, conn }: { state: AppState | null; conn: Conn }) {
       </span>
       {/* Dimmed while disconnected: the last state may no longer be true. */}
       <span className={`pill pill-session-${word}${conn === "open" ? "" : " pill-stale"}`}>Local session · {word}</span>
-      <span className="pill">No headset</span>
+      <button
+        type="button"
+        className={`pill pill-button pill-hs-${headset}${deferred ? " pill-attention" : ""}${conn === "open" ? "" : " pill-stale"}`}
+        data-testid="headset-pill"
+        title="Devices"
+        onClick={onHeadset}
+      >
+        Headset · {WORDS[headset]}
+      </button>
     </header>
   );
 }
@@ -363,11 +432,3 @@ function ExplorerPane(props: FolderProps) {
   );
 }
 
-function PlaceholderPane({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <aside className="pane" aria-label={title}>
-      <h2 className="pane-title">{title}</h2>
-      <p className="hint">{children}</p>
-    </aside>
-  );
-}
