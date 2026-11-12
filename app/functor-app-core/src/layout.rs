@@ -305,7 +305,16 @@ impl Layout {
                 if self.find(&view).is_none() {
                     valid(&view)?;
                 }
-                // Opening the game brings it into a pane, at `target`.
+                // Opening the game brings it into a pane, at `target`, or the
+                // focused pane if that one is gone: never placed with no tab.
+                let target = match target {
+                    Target::Pane { pane }
+                        if view == View::Game && self.pane_mut(pane).is_none() =>
+                    {
+                        Target::Focused
+                    }
+                    target => target,
+                };
                 if view == View::Game {
                     self.game.placement = Placement::Pane;
                     self.game.dock = None;
@@ -336,10 +345,7 @@ impl Layout {
             }
             LayoutOp::Reset => {
                 *self = Self {
-                    game: GamePlacement {
-                        dock: None,
-                        ..self.game
-                    },
+                    game: self.game,
                     ..Self::initial()
                 }
             }
@@ -412,6 +418,13 @@ impl Layout {
             if let Some((pane, index)) = self.find(&View::Game) {
                 self.game.dock = Some(Dock { pane, index });
                 self.take_tab(pane, index);
+            }
+        }
+        // A dock whose pane is gone is dropped, so a later pane given its id
+        // is never mistaken for it.
+        if let Some(dock) = self.game.dock {
+            if self.pane_mut(dock.pane).is_none() {
+                self.game.dock = None;
             }
         }
         self.game.mini.width = self.game.mini.width.clamp(MINI_MIN, MINI_MAX);
@@ -1369,9 +1382,32 @@ mod tests {
                 ..layout(pane(2, &[file("a.fun")], 0), 2)
             }
         );
-        assert_eq!(l.game.dock, Some(Dock { pane: 1, index: 0 }));
+        // Its pane is gone, so is the dock.
+        assert_eq!(l.game.dock, None);
         assert!(apply(&mut l, place(Placement::Pane)));
         assert_eq!(l.find(&View::Game), Some((2, 1)));
+        // A pane made later with the gone pane's id is not taken for it.
+        let mut l = layout(
+            split(
+                5,
+                Direction::Right,
+                pane(1, &[file("a.fun")], 0),
+                pane(3, &[View::Game], 0),
+            ),
+            3,
+        );
+        assert!(apply(&mut l, place(Placement::Mini)));
+        assert!(apply(
+            &mut l,
+            LayoutOp::Split {
+                pane: 1,
+                direction: Direction::Down
+            }
+        ));
+        assert_eq!(l.panes()[1].id, 3);
+        assert!(apply(&mut l, LayoutOp::Focus { pane: 1 }));
+        assert!(apply(&mut l, place(Placement::Pane)));
+        assert_eq!(l.find(&View::Game), Some((1, 1)));
         // And on an empty canvas, a new pane.
         let mut l = Layout::initial();
         assert!(apply(&mut l, place(Placement::Mini)));
@@ -1386,11 +1422,13 @@ mod tests {
         assert!(apply(&mut l, place(Placement::Window)));
         assert_eq!(l.find(&View::Game), None);
         // Window to Mini keeps the dock from the pane it left.
+        let mut l = layout(pane(1, &[View::Game, file("a.fun")], 1), 1);
+        assert!(apply(&mut l, place(Placement::Window)));
         assert!(apply(&mut l, place(Placement::Mini)));
         assert_eq!(l.game.dock, Some(Dock { pane: 1, index: 0 }));
         assert!(apply(&mut l, place(Placement::Window)));
         assert!(apply(&mut l, place(Placement::Pane)));
-        assert_eq!(l.find(&View::Game), Some((2, 1)));
+        assert_eq!(l.find(&View::Game), Some((1, 0)));
     }
 
     #[test]
@@ -1401,6 +1439,12 @@ mod tests {
             assert!(apply(&mut l, open(View::Game, Target::Pane { pane: 2 })));
             assert_eq!(l.game.placement, Placement::Pane);
             assert_eq!(l.game.dock, None);
+            assert_eq!(l.find(&View::Game), Some((2, 1)));
+            // Into a pane that is gone: the focused one, never no tab.
+            let mut l = two();
+            assert!(apply(&mut l, place(from)));
+            assert!(apply(&mut l, open(View::Game, Target::Pane { pane: 9 })));
+            assert_eq!(l.game.placement, Placement::Pane);
             assert_eq!(l.find(&View::Game), Some((2, 1)));
         }
     }

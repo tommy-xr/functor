@@ -501,7 +501,6 @@ fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<Command>) ->
             let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
             if live
                 && layout.game.placement == Placement::Pane
-                && before.find(&View::Game).is_some()
                 && layout.find(&View::Game).is_none()
             {
                 let reason = "the game is running: stop it, or switch it to Mini, to close its tab";
@@ -521,7 +520,7 @@ fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<Command>) ->
 }
 
 /// `project`'s game placement.
-fn placement(state: &AppState, project: &str) -> Placement {
+pub(crate) fn placement(state: &AppState, project: &str) -> Placement {
     state
         .layouts
         .get(project)

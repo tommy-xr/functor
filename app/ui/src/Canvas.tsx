@@ -12,7 +12,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import type { AppState, Direction, LayoutOp, Mini, Node, Pane, Placement, Session, Task, View } from "./generated/protocol";
+import type { AppState, Direction, GamePlacement, LayoutOp, Mini, Node, Pane, Placement, Session, Task, View } from "./generated/protocol";
 import { DiffView, type DiffTarget } from "./DiffView";
 import { hasChange } from "./diff-model";
 import { FileView } from "./FileView";
@@ -63,6 +63,8 @@ type Ctx = CanvasProps & {
   op: (op: LayoutOp) => boolean;
   titles: Map<string, string>;
   focus: number | null;
+  /** Where the active project's game view shows. */
+  placement: Placement;
   /** With an op's `send` result: DOM focus follows into the focused pane once its layout arrives. */
   refocus: (sent: boolean) => void;
 };
@@ -104,8 +106,8 @@ export function Canvas(props: CanvasProps) {
   }, [layout]);
 
   useShortcuts(layout, op, refocus);
-  const ctx: Ctx = { ...props, op, titles, focus: layout?.focus ?? null, refocus };
   const placement = placementOf(layout);
+  const ctx: Ctx = { ...props, op, titles, focus: layout?.focus ?? null, placement, refocus };
   return (
     <main className="canvas" ref={main} aria-label="Canvas">
       {placement === "window" && <WindowNote ctx={ctx} />}
@@ -113,7 +115,8 @@ export function Canvas(props: CanvasProps) {
         <div className="canvas-body">
           {layout?.root ? <NodeView key={nodeId(layout.root)} node={layout.root} ctx={ctx} /> : <EmptyCanvas ctx={ctx} />}
         </div>
-        {placement === "mini" && layout && <MiniGame ctx={ctx} mini={layout.game.mini} canvas={main} />}
+        {/* Keyed by project, so a preview never carries over to another. */}
+        {placement === "mini" && layout && <MiniGame key={state?.active} ctx={ctx} game={layout.game} canvas={main} />}
       </GameHost>
     </main>
   );
@@ -168,8 +171,9 @@ function useShortcuts(
 
 /**
  * The one game view, kept mounted in a detached element that moves into
- * whichever pane shows the Game tab: moving the tab moves the view, so its
- * stream and input capture carry over. Unmounted while no pane shows it.
+ * whichever slot claims it (the pane showing the Game tab, or the Mini
+ * card): moving it keeps its stream and input capture. Unmounted while no
+ * slot shows it.
  */
 const GameSlotContext = createContext<(el: HTMLElement, on: boolean) => void>(() => {});
 
@@ -193,7 +197,7 @@ function GameHost({ state, online, send, children }: { state: AppState | null; o
   );
 }
 
-/** Where the game view shows in the pane whose Game tab is shown. */
+/** Where the game view shows: the pane whose Game tab is shown, or the Mini card. */
 function GameSlot() {
   const ref = useRef<HTMLDivElement>(null);
   const claim = useContext(GameSlotContext);
@@ -538,8 +542,7 @@ const PLACEMENTS: { placement: Placement; label: string; title: string }[] = [
 
 /** Where the game shows; to or from its own window restarts a live session. */
 function PlacementControl({ ctx }: { ctx: Ctx }) {
-  const layout = ctx.state?.active ? ctx.state.layouts[ctx.state.active] : null;
-  const current = placementOf(layout);
+  const current = ctx.placement;
   return (
     <div className="segmented" role="group" aria-label="Where the game shows">
       {PLACEMENTS.map(({ placement, label, title }) => (
@@ -560,15 +563,19 @@ function PlacementControl({ ctx }: { ctx: Ctx }) {
 
 /** The game in its own window: one line saying so, and the ways back (D21). */
 function WindowNote({ ctx }: { ctx: Ctx }) {
+  const status = ctx.state?.session?.status;
   const live = isLive(ctx.state?.session);
+  // An ended session says why, as the game view would.
+  const reason = status?.kind === "failed" || status?.kind === "exited" ? status.reason : null;
   return (
     <div className="game-note" data-testid="game-note">
-      <p>
-        {ctx.state?.no_gpu
-          ? "Own window: sessions here run without a GPU, so there is no window to show."
-          : live
-            ? "The game is running in its own window."
-            : "The game runs in its own window."}
+      <p className={reason ? "reason" : undefined}>
+        {reason ??
+          (ctx.state?.no_gpu
+            ? "Own window: sessions here run without a GPU, so there is no window to show."
+            : live
+              ? "The game is running in its own window."
+              : "The game runs in its own window.")}
       </p>
       {!live && (
         <button
@@ -615,19 +622,23 @@ function useClientSize(el: RefObject<HTMLElement | null>) {
  * corner; its corner handle resizes it at the game's aspect ratio. Only the
  * drag is local: a let-go sends the corner and width to the core.
  */
-function MiniGame({ ctx, mini, canvas }: { ctx: Ctx; mini: Mini; canvas: RefObject<HTMLElement | null> }) {
+function MiniGame({ ctx, game, canvas }: { ctx: Ctx; game: GamePlacement; canvas: RefObject<HTMLElement | null> }) {
+  const { mini } = game;
   const size = useClientSize(canvas);
   const status = ctx.state?.session?.status;
   const surface = status?.kind === "running" ? status.surface : null;
   const aspect = surface ? surface[0] / surface[1] : DEFAULT_ASPECT;
-  // Sent and not yet back from the core; dropped once the core's changes.
+  // Sent and not yet answered. The core answers every op with its state (a
+  // new object, changed or not), so the next one replaces the preview.
   const [sent, setSent] = useState<Mini | null>(null);
-  useEffect(() => setSent(null), [mini.corner, mini.width]);
+  useEffect(() => setSent(null), [game]);
   const [drag, setDrag] = useState<{ x: number; y: number; dx: number; dy: number; resize: boolean } | null>(null);
-  const shown = sent ?? mini;
-  const width = drag?.resize ? resizedWidth(shown.corner, shown.width, drag.dx, drag.dy, aspect) : shown.width;
   // Unmeasured, it is laid out unseen: the game view moves in at once, never remounted.
   const canvasSize = size ?? { w: 0, h: 0 };
+  // Resizing starts from the width shown, which a small canvas may have cut.
+  const fitted = miniRect(sent ?? mini, aspect, canvasSize, MINI_STRIP);
+  const shown = { ...(sent ?? mini), width: size ? clampWidth(fitted.w) : (sent ?? mini).width };
+  const width = drag?.resize ? resizedWidth(shown.corner, shown.width, drag.dx, drag.dy, aspect) : shown.width;
   const rect = miniRect({ ...shown, width }, aspect, canvasSize, MINI_STRIP);
   // Moved, the card stays inside the canvas.
   const within = (v: number, room: number) => Math.min(Math.max(v, 0), Math.max(0, room));
@@ -635,7 +646,8 @@ function MiniGame({ ctx, mini, canvas }: { ctx: Ctx; mini: Mini; canvas: RefObje
   const y = drag && !drag.resize ? within(rect.y + drag.dy, canvasSize.h - rect.h) : rect.y;
 
   const put = (next: Mini) => {
-    if (next.corner === shown.corner && next.width === shown.width) return;
+    const now = sent ?? mini;
+    if (next.corner === now.corner && next.width === now.width) return;
     if (ctx.op({ type: "set_mini", mini: next })) setSent(next);
   };
   const begin = (e: PointerEvent<HTMLElement>, resize: boolean) => {
@@ -652,11 +664,12 @@ function MiniGame({ ctx, mini, canvas }: { ctx: Ctx; mini: Mini; canvas: RefObje
     if (!drag || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
     setDrag(null);
     if (drag.resize) put({ ...shown, width: clampWidth(rect.w) });
-    else put({ ...shown, corner: nearestCorner(x + rect.w / 2, y + rect.h / 2, canvasSize) });
+    // A move keeps the width asked for, not the one a small canvas cut it to.
+    else put({ ...(sent ?? mini), corner: nearestCorner(x + rect.w / 2, y + rect.h / 2, canvasSize) });
   };
   const handlers = { onPointerMove: move, onPointerUp: end, onPointerCancel: () => setDrag(null) };
   const onKeyDown = (e: KeyboardEvent) => {
-    const next = miniKey(shown, e.key);
+    const next = miniKey(e.key.startsWith("Arrow") ? (sent ?? mini) : shown, e.key);
     if (!next) return;
     e.preventDefault();
     put(next);
@@ -705,8 +718,7 @@ function offers(ctx: Ctx): { view: View; label: string }[] {
   const { state, currentTask } = ctx;
   const open = new Set(ctx.titles.keys());
   const out: { view: View; label: string }[] = [];
-  const layout = state?.active ? state.layouts[state.active] : null;
-  if (!open.has("game") && placementOf(layout) === "pane") out.push({ view: { kind: "game" }, label: "Game" });
+  if (!open.has("game") && ctx.placement === "pane") out.push({ view: { kind: "game" }, label: "Game" });
   for (const path of state?.files ?? []) out.push({ view: { kind: "file", path }, label: path });
   if (currentTask && hasChange(currentTask)) {
     out.push({ view: { kind: "changes", task: currentTask.id }, label: `Changes · ${currentTask.title || "Untitled task"}` });
@@ -828,7 +840,7 @@ function EmptyCanvas({ ctx }: { ctx: Ctx }) {
       <p>Nothing open</p>
       <div className="empty-actions">
         {/* In Mini or its own window the game has its own Start game. */}
-        {placementOf(state?.active ? state.layouts[state.active] : null) === "pane" && (
+        {ctx.placement === "pane" && (
           <button
             type="button"
             className="button button-primary"

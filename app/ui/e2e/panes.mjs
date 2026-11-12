@@ -9,7 +9,7 @@
 // APP_UI_SHOTS=<dir> saves stills at both widths and the frames of an
 // open → side → move → split → view-diff loop at 1440×900.
 import { chromium, expect } from "@playwright/test";
-import { reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { reopen, requireBuilt, tabs, ROOT, shot, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const EDIT = `${ROOT}app/ui/e2e/fixtures/edit.jsonl`;
 const PROJECT = "examples/counter";
@@ -19,13 +19,6 @@ requireBuilt();
 let frame = 0;
 async function step(page, width) {
   if (width === 1440) await shot(page, `panes-loop-${String(frame++).padStart(2, "0")}`);
-}
-
-/** Each pane's tab names, in reading order. */
-function tabs(page) {
-  return page.locator(".pane-box").evaluateAll((panes) =>
-    panes.map((p) => [...p.querySelectorAll("[role=tab]")].map((t) => t.textContent)),
-  );
 }
 
 /** The selected tab's name in each pane. */

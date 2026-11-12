@@ -11,7 +11,7 @@
 // stills at both widths and the frames of a pane → mini → drag → resize →
 // dock loop at 1440×900.
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, reopen, requireBuilt, shot, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { FUNCTOR, reopen, requireBuilt, shot, startServer, stopServer, tabs, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const PROJECT = "examples/counter";
 
@@ -20,13 +20,6 @@ requireBuilt();
 let frame = 0;
 async function step(page, width) {
   if (width === 1440) await shot(page, `placements-loop-${String(frame++).padStart(2, "0")}`);
-}
-
-/** Each pane's tab names, in reading order. */
-function tabs(page) {
-  return page.locator(".pane-box").evaluateAll((panes) =>
-    panes.map((p) => [...p.querySelectorAll("[role=tab]")].map((t) => t.textContent)),
-  );
 }
 
 /** Whether box `a` lies inside box `b`. */

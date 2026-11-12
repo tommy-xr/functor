@@ -253,9 +253,8 @@ fn print_placement(game: &GamePlacement) -> String {
 fn mode(state: &AppState) -> &'static str {
     let placement = state
         .active
-        .as_ref()
-        .and_then(|a| state.layouts.get(a))
-        .map(|l| l.game.placement)
+        .as_deref()
+        .map(|a| crate::state::placement(state, a))
         .unwrap_or_default();
     match Display::new(placement.session_mode(), state.no_gpu) {
         Display::Headless => "headless",

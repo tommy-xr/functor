@@ -500,7 +500,8 @@ mod tests {
             print_layout(&layout),
             "right 50% (#1[*game] | >#3[*file:game.fun])"
         );
-        // Moved to Mini, saved and read back: placement, corner, width and dock.
+        // Moved to Mini, saved and read back: placement, corner and width (no
+        // dock: the Game tab was alone, so its pane went with it).
         let mini = LayoutOp::SetMini {
             mini: Mini {
                 corner: Corner::TopLeft,
@@ -521,7 +522,7 @@ mod tests {
         assert_eq!(print_layout(&back), ">#3[*file:game.fun]");
         assert_eq!(back.game.placement, Placement::Mini);
         assert_eq!(back.game.mini.width, 420);
-        assert!(back.game.dock.is_some());
+        assert_eq!(back.game.dock, None);
     }
 
     #[test]

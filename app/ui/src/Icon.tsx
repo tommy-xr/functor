@@ -34,7 +34,7 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M3 12h18" />
     </>
   ),
-  dock: <path d="M20 4l-8 8M12 7v5h5M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />,
+  dock: <path d="M12 4v10M8 10l4 4 4-4M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />,
   "pop-out": <path d="M14 4h6v6M20 4l-8 8M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />,
 };
 
