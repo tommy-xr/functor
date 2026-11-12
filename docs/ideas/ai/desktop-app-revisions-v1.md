@@ -282,6 +282,25 @@ A modal, opened from the project switcher:
   from the chosen template. This covers genres with no template.
 - **Create and start.** The game always starts; there is no option not to.
 
+### D25 — the agent can drive the view (proposed)
+
+The layout is core state (D20), so the agent can change it through tools, the
+same way it drives the game.
+
+- **Tools.** Open or focus a view (a file at a line range, a task's changes
+  at a file, the game, a task page); arrange it (to the side, split);
+  highlight lines; put the game at a moment (pause, a frame, a dev camera).
+  The agent reads the current layout through `app_context`.
+- **Walkthroughs.** The agent's main use is showing its work: an ordered list
+  of steps ("the change in `ladder.fun`", "the climb at the top rung, paused")
+  shown in the chat as one card the user steps through, and can replay.
+- **It never takes the wheel.** Agent-opened views go to a pane the user is
+  not typing in; the focused tab and the text cursor are never moved; the
+  agent cannot close the user's tabs; "restore my layout" undoes everything
+  it arranged.
+- **Open:** whether the first step of a walkthrough is applied automatically
+  when a run finishes, or only when the user clicks the card.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
