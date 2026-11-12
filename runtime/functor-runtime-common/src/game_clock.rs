@@ -84,7 +84,8 @@ pub struct GameClock {
     /// Unconditional pin (`--fixed-time` / `?fixed-time`). When set, every frame
     /// is `{ dts: 0, tts: <const> }` — no accumulation, no pause, no rebase.
     fixed_time: Option<f32>,
-    /// Whether [`Self::fixed_frames`] has run its first live frame yet. The live
+    /// Whether [`Self::fixed_frames`] has run the body yet (live, stepped or
+    /// paused before its first frame). The live
     /// path emits ZERO sub-frames when under one whole [`FIXED_DT`] has
     /// accumulated — normal at >60fps, but on the VERY FIRST frame that would
     /// draw before the model/physics has run at all (physics never reconciles,
@@ -189,6 +190,7 @@ impl GameClock {
                     tts: self.game_time,
                 });
             }
+            self.started = true;
             return frames;
         }
         if self.pending_frames > 0 {
@@ -205,10 +207,20 @@ impl GameClock {
                     tts: self.game_time,
                 });
             }
+            self.started = true;
             return frames;
         }
         if self.paused {
-            return Vec::new();
+            // Paused before the first frame (a `--paused` launch): the
+            // bootstrap below still runs once, so frame 0 draws settled.
+            if self.started {
+                return Vec::new();
+            }
+            self.started = true;
+            return vec![FrameTime {
+                dts: 0.0,
+                tts: self.game_time,
+            }];
         }
         self.accumulator += real_delta;
         let max_backlog = FIXED_DT * MAX_SUBSTEPS as f32;
@@ -574,6 +586,22 @@ mod tests {
         // ...and the bootstrap is one-shot: a second sub-one-step frame is empty.
         let third = clock.fixed_frames(FIXED_DT * 0.1);
         assert!(third.is_empty(), "bootstrap fires only once");
+    }
+
+    #[test]
+    fn fixed_frames_bootstrap_a_clock_paused_before_its_first_frame() {
+        let mut clock = GameClock::new(None);
+        clock.pause();
+        let first = clock.fixed_frames(FIXED_DT * 5.0);
+        assert_eq!(first.len(), 1, "the paused first frame still runs the body");
+        assert_eq!((first[0].dts, first[0].tts), (0.0, 0.0));
+        assert!(clock.fixed_frames(FIXED_DT * 5.0).is_empty(), "then it holds");
+        assert_eq!(clock.current_tts(), 0.0);
+        // Resuming plays on from frame 0, with no second bootstrap.
+        clock.resume();
+        let played = clock.fixed_frames(FIXED_DT * 1.5);
+        assert_eq!(played.len(), 1);
+        assert!((played[0].dts - FIXED_DT).abs() < 1e-6);
     }
 
     #[test]

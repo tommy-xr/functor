@@ -11,7 +11,7 @@ import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { git, reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempHome, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { FUNCTOR, git, reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempHome, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 requireBuilt();
 
@@ -53,6 +53,22 @@ async function folders(browser, width, height) {
   const titlebar = page.locator(".titlebar");
   const explorer = page.getByRole("complementary", { name: "Explorer" });
   const field = explorer.getByRole("textbox", { name: "Folder path" });
+  // The open project's game: started on its own, paused on frame 0 (D37); its pid.
+  const openedPaused = async () => {
+    if (!FUNCTOR) return null;
+    await expect.poll(() => app.state?.session?.status.kind, { timeout: 60_000 }).toBe("running");
+    const state = await (await fetch(`${app.state.session.status.debug_url}/state?model=0`)).json();
+    expect({ frame: state.frame, paused: state.clock.paused }).toEqual({ frame: 0, paused: true });
+    return app.state.session.pid;
+  };
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   try {
     await page.goto(server.url);
     await expect(titlebar).toContainText("counter");
@@ -73,6 +89,7 @@ async function folders(browser, width, height) {
     await expect(explorer).toContainText("The only project in this folder");
     expect(app.state.tracks_changes, "a loose folder tracks no changes").toBe(false);
     await expect(field).toBeHidden();
+    const loosePid = await openedPaused();
 
     // A path that is not a folder says why, and cannot be opened.
     await explorer.getByRole("button", { name: "Open folder…" }).click();
@@ -88,6 +105,9 @@ async function folders(browser, width, height) {
     await expect(none).toContainText(empty);
     await expect(explorer).toContainText("No projects in this folder");
     await expect(page).toHaveTitle(`Functor — ${empty.split("/").pop()}`);
+    // The last project's game is stopped, its process gone.
+    expect(app.state.session?.status.kind ?? "stopped").toBe("stopped");
+    if (loosePid) await expect.poll(() => alive(loosePid)).toBe(false);
     // "New project here" fills the new-project modal with this folder.
     await none.getByRole("button", { name: "New project here" }).click();
     const dialog = page.getByRole("dialog", { name: "New project" });
@@ -111,6 +131,7 @@ async function folders(browser, width, height) {
     await expect.poll(() => app.state.repo_root).toBe(repo);
     await expect(explorer.getByRole("combobox")).toHaveValue("games/counter");
     expect(app.state.tracks_changes, "the repo tracks changes").toBe(true);
+    await openedPaused();
 
     // A reopened page shows the same workspace.
     await reopen(page, server.url);

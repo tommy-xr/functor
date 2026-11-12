@@ -39,13 +39,24 @@ async function clock(debugUrl) {
   return { frame: state.frame, ...state.clock };
 }
 
-/** Starts the active project's game in a pane and resolves with its bar and debug server. */
+/**
+ * Opens the app: with no click, the active project's game is there, paused
+ * on frame 0 (D37), and Play runs it. Resolves with its bar and debug server.
+ */
 async function begin(page, app, server) {
   await page.goto(server.url);
-  await page.getByTestId("game-view").getByRole("button", { name: "Start game" }).click();
   const bar = page.getByRole("group", { name: "Transport" });
   await expect(bar).toBeVisible({ timeout: 60_000 });
-  return { bar, debugUrl: app.state.session.status.debug_url };
+  const debugUrl = app.state.session.status.debug_url;
+  await expect(bar.getByRole("button", { name: "Play" })).toBeVisible();
+  expect(await clock(debugUrl)).toMatchObject({ frame: 0, paused: true });
+  await page.waitForTimeout(400);
+  expect((await clock(debugUrl)).frame, "held on frame 0").toBe(0);
+  await bar.getByRole("button", { name: "Play" }).click();
+  await expect.poll(async () => (await clock(debugUrl)).frame).toBeGreaterThan(0);
+  // The page has seen it play: a click on the view now captures input.
+  await expect(bar.getByRole("button", { name: "Pause" })).toBeVisible();
+  return { bar, debugUrl };
 }
 
 /** The playhead's frame as the bar shows it. */
@@ -174,6 +185,10 @@ async function noGpu(browser) {
     // Stopped, the bar goes with the session.
     await mini.getByRole("button", { name: "Stop game" }).click();
     await expect(page.getByRole("group", { name: "Transport" })).toHaveCount(0);
+    // Start brings it back paused on frame 0.
+    await mini.getByRole("button", { name: "Start game" }).click();
+    await expect(compact.getByRole("button", { name: "Play" })).toBeVisible({ timeout: 60_000 });
+    expect(await clock(app.state.session.status.debug_url)).toMatchObject({ frame: 0, paused: true });
 
     expect(errors, "console errors").toEqual([]);
     expect(external, "non-loopback requests").toEqual([]);

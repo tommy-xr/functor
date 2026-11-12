@@ -49,7 +49,11 @@ async function panes(browser, width, height) {
     // The default: one pane with the Game tab.
     await expect.poll(() => tabs(page)).toEqual([["Game"]]);
     await expect(page.getByRole("tab", { name: "Game", exact: true })).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByTestId("game-view")).toHaveText(/No game running/);
+    // The game opens on its own (D37); stopped, its tab closes like any other.
+    const kind = () => app.state?.session?.status.kind;
+    await expect.poll(kind, { timeout: 60_000 }).toMatch(/running|failed/);
+    if (kind() === "running") await page.getByRole("button", { name: "Stop game" }).click();
+    await expect.poll(kind).toMatch(/stopped|failed/);
     await shot(page, `panes-default-${width}`);
     await step(page, width);
 
@@ -128,7 +132,7 @@ async function panes(browser, width, height) {
     // A click in a pane focuses it, the game view (portalled in) included.
     await pane(0).getByTestId("file-view").click();
     await expect(pane(0)).toHaveClass(/pane-focused/);
-    // In a corner, clear of its Start game: a running game would keep its tab below.
+    // In a corner, clear of its message: a running game would keep its tab below.
     await page.getByTestId("game-view").click({ position: { x: 8, y: 8 } });
     await expect(pane(1)).toHaveClass(/pane-focused/);
 

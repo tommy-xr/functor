@@ -259,6 +259,9 @@ Flows:
 placement control. The explorer's session card shows status only. "Stop" in
 the chat always means the agent.
 
+*Revised 2026-11-12 by D37: no empty state to start from; the game opens
+paused on its first frame.*
+
 ### D23 — the app opens any folder
 
 A project is a folder, not a place in a repository: a subfolder of a repo, a
@@ -515,6 +518,27 @@ Rules:
 
 Pinned notes and measured lines need only a point or object to attach to and
 come first; side-by-side versions and ghosts wait on the branching spike (S5).
+
+### D37 — the game opens paused on its first frame
+
+*2026-11-12. Replaces D22's "Start game" empty state.*
+
+Opening a project — at app start, from a folder or a recent project, by
+switching projects, or after creating one — starts its game, hidden and
+paused on frame 0: after `init`, before any tick moves time. The game view
+shows that frame; the transport bar shows it paused at the start. Play runs
+it from there. The game view has no Start prompt.
+
+- **One start/stop control** stays beside the placement control (D22):
+  **Stop game** ends the process and frees what it holds; when stopped,
+  **Start game** brings it back paused on frame 0. Play and pause are the
+  transport bar's.
+- **Own window** is not started on open, and runs at once when started: that
+  window has no transport bar.
+- **A game that fails to load** shows its error where the frame would be.
+- **Cost:** one hidden game process per open project, from the moment it
+  opens. Switching projects stops the previous one; closing the app stops it.
+- **The agent** is told the game starts paused; its tools step or resume it.
 
 ## Open
 

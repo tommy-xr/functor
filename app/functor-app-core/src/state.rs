@@ -19,7 +19,7 @@ use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, ServerMsg};
-use crate::session::{Display, Session, SessionEvent, SessionStatus};
+use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, Harness, Item, Run,
     RunEvent, Task, TaskStatus,
@@ -51,6 +51,11 @@ pub struct AppState {
     pub session: Option<Session>,
     /// Sessions run `--headless` (`functor-app --no-gpu`), so there are no frames.
     pub no_gpu: bool,
+    /// Opening a project starts its game, paused on frame 0 (D37). Off for
+    /// `--print` and `task`, which start one only when asked.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub start_on_open: bool,
     /// Every project's tasks, by id; their transcripts travel separately.
     pub tasks: Vec<Task>,
     /// Per task id, what its agent is doing (D34), refreshed after every event.
@@ -158,6 +163,7 @@ impl AppState {
             tracks_changes: false,
             session: None,
             no_gpu: false,
+            start_on_open: false,
             tasks: Vec::new(),
             activity: BTreeMap::new(),
             current_task: BTreeMap::new(),
@@ -456,7 +462,11 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 state.active = Some(path);
                 remember_active(&mut state, &mut commands);
                 // The session follows the active project.
-                restart_live(&mut state, &mut commands);
+                let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
+                stop(&mut state, &mut commands);
+                if live || starts_on_open(&state) {
+                    start(&mut state, &mut commands);
+                }
             }
             (switch, true)
         }
@@ -977,6 +987,7 @@ fn opened(
         activity: _,
         session: _,
         no_gpu: _,
+        start_on_open: _,
         harnesses: _,
         recents: _,
         native_picker: _,
@@ -1016,6 +1027,7 @@ fn opened(
     };
     remember_active(state, commands);
     // A project just created: its game starts, then its first task.
+    let mut started = false;
     if let Some(NewProject {
         step:
             Step::Opening {
@@ -1032,13 +1044,26 @@ fn opened(
             // Shown where folders' troubles are.
             state.open_error = note.clone();
             state.new_project = None;
-            start(state, commands);
+            started = start(state, commands);
             // Once the game listens, so the agent's tools attach to it.
             let session = state.session.as_ref().map(|s| s.id);
             state.first_task = task.zip(session).map(|((m, h), id)| (id, m, h));
         }
     }
+    if !started && starts_on_open(state) {
+        start(state, commands);
+    }
     true
+}
+
+/// Whether opening the active project starts its game: in the app (not
+/// `--print` or `task`), shown in a pane or Mini rather than its own window.
+fn starts_on_open(state: &AppState) -> bool {
+    state.start_on_open
+        && state
+            .active
+            .as_ref()
+            .is_some_and(|p| placement(state, p).session_mode() == SessionMode::Hidden)
 }
 
 /// Starts a new project's first task once its game session is past
@@ -2034,6 +2059,10 @@ fn on_session(
             session.status = SessionStatus::Failed { reason };
             session.pid = None;
         }
+        // A fix to a game that failed to load starts it again (D37).
+        (SessionEvent::SourceChanged, SessionStatus::Failed { .. }) => {
+            return start(state, commands);
+        }
         _ => return false,
     }
     true
@@ -2273,6 +2302,28 @@ mod tests {
         let stopped = with_session(4, None, SessionStatus::Stopped);
         let (next, _) = update(stopped, client(ClientMsg::StartSession));
         assert_eq!(next.session.unwrap().id, 5);
+    }
+
+    #[test]
+    fn a_source_change_restarts_only_a_game_that_failed_to_load() {
+        let reason = || "error: game.fun:1:1".to_string();
+        let failed = with_session(3, None, SessionStatus::Failed { reason: reason() });
+        let (next, commands) = update(failed, session(3, SessionEvent::SourceChanged));
+        assert_eq!(next, with_session(4, None, SessionStatus::Starting));
+        assert_eq!(
+            commands,
+            vec![start_cmd(4, "examples/a", Display::Hidden), broadcast(&next)]
+        );
+        // Ended after running, stopped, or a stale session: no restart.
+        for before in [
+            with_session(3, None, SessionStatus::Exited { reason: reason() }),
+            with_session(3, None, SessionStatus::Stopped),
+            with_session(4, None, SessionStatus::Failed { reason: reason() }),
+        ] {
+            let (next, commands) = update(before.clone(), session(3, SessionEvent::SourceChanged));
+            assert_eq!(next, before);
+            assert!(!commands.iter().any(|c| matches!(c, Command::StartSession { .. })));
+        }
     }
 
     #[test]
@@ -4606,6 +4657,48 @@ mod tests {
                 display: Display::Headless,
             }
         );
+    }
+
+    #[test]
+    fn in_the_app_opening_or_switching_starts_the_game_unless_it_has_its_own_window() {
+        let starts = |commands: &[Command]| {
+            commands
+                .iter()
+                .filter_map(|c| match c {
+                    Command::StartSession { dir, display, .. } => Some((dir.clone(), *display)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let read = |placement| {
+            let mut other = other();
+            other.layouts.get_mut(".").unwrap().game.placement = placement;
+            Event::Opened {
+                id: 0,
+                folder: "/other".into(),
+                result: Ok(Box::new(other)),
+            }
+        };
+        let mut app = state();
+        app.start_on_open = true;
+        for (placement, expected) in [
+            (Placement::Pane, vec![(PathBuf::from("/other"), Display::Hidden)]),
+            (Placement::Mini, vec![(PathBuf::from("/other"), Display::Hidden)]),
+            (Placement::Window, vec![]),
+        ] {
+            let (next, commands) = update(app.clone(), read(placement));
+            assert_eq!(starts(&commands), expected, "{placement:?}");
+            assert_eq!(next.session.is_some(), !expected.is_empty());
+        }
+        // `--print` and `task` start none.
+        assert_eq!(starts(&update(state(), read(Placement::Pane)).1), vec![]);
+        // Switching starts the new project's, though none was live.
+        let (next, commands) = update(app, switch("examples/b"));
+        assert_eq!(
+            starts(&commands),
+            vec![(PathBuf::from("/repo/examples/b"), Display::Hidden)]
+        );
+        assert_eq!(next.session.unwrap().status, SessionStatus::Starting);
     }
 
     #[test]

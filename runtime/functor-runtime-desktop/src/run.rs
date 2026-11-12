@@ -783,6 +783,11 @@ pub struct Args {
     #[arg(long)]
     fixed_time: Option<f32>,
 
+    /// Start with the clock paused on frame 0: `init`, its zero-time
+    /// bootstrap step, then `draw`. `POST /time` resumes or steps it.
+    #[arg(long, conflicts_with_all = ["fixed_time", "input_script"])]
+    paused: bool,
+
     /// A `key=value` the game reads with `Launch.args()`. Repeatable; a
     /// repeated key keeps its last value.
     #[arg(long = "arg", value_parser = functor_runtime_common::functor_lang_prelude::launch::parse_arg)]
@@ -952,6 +957,15 @@ fn parse_script_dt(s: &str) -> Result<f32, String> {
         return Err("must be a positive, finite timestep in seconds".into());
     }
     Ok(v)
+}
+
+/// The game clock as launched: pinned by `--fixed-time`, paused by `--paused`.
+fn launch_clock(args: &Args) -> GameClock {
+    let mut clock = GameClock::new(args.fixed_time);
+    if args.paused {
+        clock.pause();
+    }
+    clock
 }
 
 /// The rate a `hidden` window paces to, unless `scripted` (`--fixed-time`,
@@ -1595,7 +1609,7 @@ fn service_debug_request(
 fn run_headless(
     mut sim: SimDriver,
     debug_requests: Option<std::sync::mpsc::Receiver<debug_server::DebugRequest>>,
-    fixed_time: Option<f32>,
+    mut clock: GameClock,
     emulate_xr: bool,
     xr_eye_height: f32,
     input_script: Option<HashMap<u64, Vec<RecordedInput>>>,
@@ -1611,7 +1625,6 @@ fn run_headless(
     let start_time = Instant::now();
     let mut last_time: f32 = 0.0;
     let mut frame_count: u64 = 0;
-    let mut clock = GameClock::new(fixed_time);
     let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
     let mut held_buttons = MouseButtons::default();
     // Shell-owned across loop iterations: a render iteration may run zero
@@ -1981,7 +1994,7 @@ sockets)."
         run_headless(
             sim,
             debug_requests,
-            args.fixed_time,
+            launch_clock(&args),
             args.emulate_xr,
             args.xr_eye_height,
             input_script,
@@ -2197,7 +2210,7 @@ Escape releases while captured"
         // frame delta while live, freezes on pause (scrubber / debug POST /time),
         // and rebases on a time-travel branch. `--fixed-time` seeds an
         // unconditional pin for deterministic captures / goldens.
-        let mut clock = GameClock::new(args.fixed_time);
+        let mut clock = launch_clock(&args);
         // Runtime-owned input snapshot for GET /state, maintained from both the
         // GLFW event stream and the debug server's POST /input. Generic and
         // serializable, unlike the game model (which is Debug text only).
@@ -4343,6 +4356,19 @@ mod tests {
             false,
         ));
         assert_eq!(game_mouse_pos, (30, 40));
+    }
+
+    #[test]
+    fn paused_launches_on_a_paused_clock() {
+        let paused = Args::try_parse_from(["functor", "--game-path", "g.fun", "--paused"]).unwrap();
+        assert!(launch_clock(&paused).is_paused());
+        let live = Args::try_parse_from(["functor", "--game-path", "g.fun"]).unwrap();
+        assert!(!launch_clock(&live).is_paused());
+        // A capture pin cannot also be paused.
+        assert!(
+            Args::try_parse_from(["functor", "--game-path", "g.fun", "--paused", "--fixed-time", "1"])
+                .is_err()
+        );
     }
 
     #[test]

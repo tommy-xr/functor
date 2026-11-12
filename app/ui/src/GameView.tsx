@@ -5,7 +5,6 @@ import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
-  type ReactNode,
   type RefObject,
 } from "react";
 import type { AppState, GameInput, MouseButton } from "./generated/protocol";
@@ -35,27 +34,16 @@ export function GameView({ state, online, send }: { state: AppState | null; onli
     );
   }
   if (status.kind === "starting") return <GameMessage text="Starting…" />;
+  // Start game sits beside the placement control (D22, D37).
   const reason = status.kind === "failed" || status.kind === "exited" ? status.reason : null;
-  return (
-    <GameMessage text={reason ?? "No game running"} error={reason !== null}>
-      <button
-        type="button"
-        className="button button-primary"
-        disabled={!online || !state?.active}
-        onClick={() => send({ type: "start_session" })}
-      >
-        Start game
-      </button>
-    </GameMessage>
-  );
+  return <GameMessage text={reason ?? "The game is stopped"} error={reason !== null} />;
 }
 
-function GameMessage({ text, error = false, children }: { text: string; error?: boolean; children?: ReactNode }) {
+function GameMessage({ text, error = false }: { text: string; error?: boolean }) {
   return (
     <div className="game" data-testid="game-view">
       <div className="game-message">
         <p className={error ? "reason" : undefined}>{text}</p>
-        {children}
       </div>
     </div>
   );

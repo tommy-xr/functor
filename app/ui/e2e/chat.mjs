@@ -70,11 +70,11 @@ async function conversation(browser, width, height) {
     // The empty state: what the agent will see, the inert attach and mic, the agent picker.
     await expect(heading).toHaveText("New task");
     await expect(log).toContainText("Ask the agent for a change");
-    await expect(dock.getByRole("list", { name: "What the agent will see" }).getByRole("listitem")).toHaveText([
-      "examples/counter",
-      "No game running",
-      "Game tab",
-    ]);
+    // The game opens on its own (D37), so the agent sees it running.
+    await expect(dock.getByRole("list", { name: "What the agent will see" }).getByRole("listitem")).toHaveText(
+      ["examples/counter", FUNCTOR ? "Game running" : /Game running|No game running/, "Game tab"],
+      { timeout: 60_000 },
+    );
     await expect(send).toBeDisabled();
     for (const name of [/^Attach/, /^Hold to talk/]) {
       await expect(dock.getByRole("button", { name })).toHaveAttribute("aria-disabled", "true");
@@ -231,12 +231,13 @@ async function failure(browser) {
     await expect(dock.getByTestId("result")).toHaveText("Failed: No game session is running.");
     await expect(dock.getByTestId("task-status")).toHaveText("Failed");
     if (FUNCTOR) {
+      // Opened, the game is running (D37); stopping and starting it say so.
       const lines = dock.locator(".conn-line");
-      await page.getByTestId("game-view").getByRole("button", { name: "Start game" }).click();
-      await expect(lines).toHaveText(["Game session started"], { timeout: 60_000 });
-      await expect(dock.getByRole("listitem").filter({ hasText: "Game running" })).toHaveCount(1);
+      await expect(dock.getByRole("listitem").filter({ hasText: "Game running" })).toHaveCount(1, { timeout: 60_000 });
       await page.getByRole("button", { name: "Stop game" }).click();
-      await expect(lines).toHaveText(["Game session started", "Game session stopped"]);
+      await expect(lines.last()).toHaveText("Game session stopped");
+      await page.getByRole("button", { name: "Start game" }).click();
+      await expect(lines.last()).toHaveText("Game session started", { timeout: 60_000 });
     } else {
       console.log("SKIPPED: session lines — set FUNCTOR_BIN (npm run build:cli:debug)");
     }
